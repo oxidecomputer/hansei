@@ -7,11 +7,16 @@ use hansei_runtime::tokio::graph::{self as rt_graph, Analysis};
 use hansei_runtime::tokio::{bundle, census, contract};
 use proc::{Proc, Target};
 
+#[cfg(not(target_os = "illumos"))]
+use mimalloc::MiMalloc;
+use tracing_subscriber::{EnvFilter, fmt, prelude::*};
+
 use std::cell::{Cell, OnceCell, RefCell};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 
+mod bundle_cmd;
 mod graph;
 mod output;
 mod print;
@@ -29,8 +34,18 @@ pub mod types;
 mod umem;
 mod whatis;
 
+// mimalloc's vendored C sources fail to assemble with the illumos
+// gcc/gas toolchain. Everywhere else it is what extraction's
+// allocation-heavy interning was tuned against.
+#[cfg(not(target_os = "illumos"))]
+#[global_allocator]
+static GLOBAL: MiMalloc = MiMalloc;
+
 /// The command line names a target; what to ask of it comes from
 /// `--exec`, or failing that from stdin, at a prompt or from a pipe.
+///
+/// A subcommand instead of a target says to work on bundle *files* —
+/// producing one, or reporting what is in one — and opens no session.
 #[derive(Parser)]
 #[command(
     about = "Inspect a tokio runtime in a core dump",
@@ -38,16 +53,24 @@ mod whatis;
                   The command line names a target. What to ask of it is read \
                   from stdin — at a prompt when stdin is a terminal, otherwise \
                   one command per line, stopping at the first failure — or \
-                  given with --exec, which asks and exits.",
+                  given with --exec, which asks and exits.\n\n\
+                  Naming no target but the `bundle` subcommand instead works \
+                  on bundle files rather than on a running target's remains.",
     after_help = "Examples:\n  \
                   hansei --core core.app --bundle app.bundle\n  \
                   hansei --core core.app --bundle app.bundle -e 'tasks; graph'\n  \
-                  echo 'trace 42 -v' | hansei --core core.app --bundle app.bundle\n\n\
-                  Type `help` for the commands a session accepts."
+                  echo 'trace 42 -v' | hansei --core core.app --bundle app.bundle\n  \
+                  hansei bundle extract app.debug -o app.bundle\n\n\
+                  Type `help` for the commands a session accepts.",
+    subcommand_negates_reqs = true,
+    args_conflicts_with_subcommands = true
 )]
 struct Cli {
+    #[command(subcommand)]
+    cmd: Option<Cmd>,
+
     #[command(flatten)]
-    session: SessionArgs,
+    session: Option<SessionArgs>,
 
     /// Commands to run instead of reading stdin, `;` between them —
     /// `\;` for a literal `;`, as an array type's name needs. Repeat
@@ -55,6 +78,20 @@ struct Cli {
     /// or at the first one that fails.
     #[arg(long, short, value_name = "COMMANDS")]
     exec: Vec<String>,
+}
+
+/// What argv can ask for other than a session on a target.
+#[derive(Subcommand)]
+enum Cmd {
+    /// Produce a bundle, or report what one holds.
+    ///
+    /// Distinct from the session's `--bundle` flag, which names a
+    /// bundle to read: this side writes and inspects the files that
+    /// flag consumes.
+    Bundle {
+        #[command(subcommand)]
+        cmd: bundle_cmd::BundleCmd,
+    },
 }
 
 /// What it takes to attach: the pair of files, and how strictly they
@@ -1150,28 +1187,56 @@ pub fn dispatch(
 fn main() {
     let args = Cli::parse();
 
-    // Cap the worker pool rendering fans out on: value rendering is
-    // memory-bound and stops scaling well before the 128-256 logical
-    // CPUs of a rack sled, and a debugging session should not
-    // commandeer a sled's worth of threads either.
-    let threads = std::thread::available_parallelism()
-        .map_or(1, |n| n.get())
-        .min(16);
-    if let Err(e) = rayon::ThreadPoolBuilder::new()
-        .num_threads(threads)
-        .thread_name(|i| format!("reify-render-{i}"))
-        .build_global()
-    {
-        let _ = writeln!(io::stderr(), "Error: {e:?}");
-        std::process::exit(1);
-    }
+    // Extraction reports what it declined — an unhandled location, a
+    // layout that did not match, a unit skipped — as tracing events,
+    // and a session's own diagnostics go the same way. Without a
+    // subscriber `RUST_LOG` selects nothing and they all vanish.
+    tracing_subscriber::registry()
+        .with(fmt::layer())
+        .with(EnvFilter::from_default_env())
+        .init();
 
-    let res = run(&args.session, &args.exec);
+    let res = match args.cmd {
+        Some(Cmd::Bundle { cmd }) => {
+            // Extraction's heavy phases build their own scoped pools;
+            // what is left for the global one is the vtable scan, with
+            // no interactive session to stay out of the way of.
+            build_pool(None, "exegesis");
+            bundle_cmd::exec(cmd)
+        }
+        None => {
+            build_pool(Some(16), "reify-render");
+            // clap requires --core and --bundle of every invocation
+            // that names no subcommand.
+            let session = args.session.expect("session args without a subcommand");
+            run(&session, &args.exec)
+        }
+    };
     if let Err(e) = res {
         if exits_quietly(&e) {
             return;
         }
 
+        let _ = writeln!(io::stderr(), "Error: {e:?}");
+        std::process::exit(1);
+    }
+}
+
+/// Build the global rayon pool this invocation fans out on.
+///
+/// A session passes a cap, because value rendering is memory-bound and
+/// stops scaling well before the 128-256 logical CPUs of a rack sled,
+/// and a debugging session should not commandeer a sled's worth of
+/// threads either. A one-shot command wants the machine.
+fn build_pool(cap: Option<usize>, name: &'static str) {
+    let mut builder = rayon::ThreadPoolBuilder::new().thread_name(move |i| format!("{name}-{i}"));
+    if let Some(cap) = cap {
+        let threads = std::thread::available_parallelism()
+            .map_or(1, |n| n.get())
+            .min(cap);
+        builder = builder.num_threads(threads);
+    }
+    if let Err(e) = builder.build_global() {
         let _ = writeln!(io::stderr(), "Error: {e:?}");
         std::process::exit(1);
     }
@@ -1630,5 +1695,92 @@ mod fingerprint_tests {
         assert!(sample.ends_with("  ... and 1 more"), "{sample}");
         assert!(sample.contains("sym4"), "{sample}");
         assert!(!sample.contains("sym5"), "{sample}");
+    }
+}
+
+#[cfg(test)]
+mod cli_tests {
+    use super::{Cli, Cmd};
+    use crate::bundle_cmd::BundleCmd;
+
+    use clap::Parser;
+
+    fn parse(argv: &[&str]) -> Cli {
+        Cli::try_parse_from(argv).expect("should parse")
+    }
+
+    /// Naming a target opens a session, exactly as before the argv
+    /// grammar grew a subcommand.
+    #[test]
+    fn test_bare_invocation_is_a_session() {
+        let cli = parse(&[
+            "hansei",
+            "-c",
+            "core.app",
+            "-b",
+            "app.bundle",
+            "-e",
+            "tasks",
+        ]);
+        assert!(cli.cmd.is_none());
+        let session = cli.session.expect("session args");
+        assert_eq!(session.core.to_str(), Some("core.app"));
+        assert_eq!(session.bundle.to_str(), Some("app.bundle"));
+        assert_eq!(cli.exec, ["tasks"]);
+    }
+
+    /// The subcommand takes the whole invocation: no target is named,
+    /// and the flags a session requires are not asked for.
+    #[test]
+    fn test_bundle_extract_takes_the_exegesis_flags() {
+        let cli = parse(&[
+            "hansei",
+            "bundle",
+            "extract",
+            "app.debug",
+            "-o",
+            "app.bundle",
+            "--stats",
+            "--include-type",
+            "core::net::IpAddr",
+            "--explain-format",
+            "Notify",
+        ]);
+        assert!(cli.session.is_none());
+        let Some(Cmd::Bundle {
+            cmd:
+                BundleCmd::Extract {
+                    binary,
+                    output,
+                    stats,
+                    include_types,
+                    allow_missing_infra,
+                    explain_format,
+                    explain_walk,
+                },
+        }) = cli.cmd
+        else {
+            panic!("expected `bundle extract`");
+        };
+        assert_eq!(binary.to_str(), Some("app.debug"));
+        assert_eq!(output.to_str(), Some("app.bundle"));
+        assert!(stats);
+        assert_eq!(include_types, ["core::net::IpAddr"]);
+        assert!(!allow_missing_infra);
+        assert_eq!(explain_format.as_deref(), Some("Notify"));
+        assert_eq!(explain_walk, None);
+    }
+
+    /// The two sides are alternatives, not layers: a session's flags
+    /// alongside a subcommand is a mistake worth naming, and naming
+    /// neither leaves the session flags required.
+    #[test]
+    fn test_the_two_sides_do_not_mix() {
+        assert!(
+            Cli::try_parse_from(["hansei", "-c", "core.app", "bundle", "extract", "app.debug"])
+                .is_err()
+        );
+        assert!(Cli::try_parse_from(["hansei"]).is_err());
+        assert!(Cli::try_parse_from(["hansei", "-c", "core.app"]).is_err());
     }
 }

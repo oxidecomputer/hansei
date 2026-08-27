@@ -16,9 +16,6 @@ edition = "2024"
 snapshot = ["hansei-runtime/testkit"]
 
 [dev-dependencies]
-# Only the acceptance suite builds a bundle from a fixture binary; hansei
-# itself reads bundles and never produces one.
-exegesis = { workspace = true }
 # The unit tests drive enumeration and rendering over the checked-in
 # fixture pairs through testkit; the non-test code never touches it
 # (outside the `snapshot` feature, which enables this itself).
@@ -34,6 +31,12 @@ testrun = { workspace = true }
 [dependencies]
 anyhow = { workspace = true }
 clap = { workspace = true }
+# `hansei bundle` produces and inspects bundle files, so the DWARF stack
+# reaches this bin crate — and only the arg-handling entry points in
+# `bundle_cmd.rs`. Nothing a session, hansei-runtime or reify does may
+# import it: if read-side code seems to need something from exegesis, it
+# wants hansei-bundle.
+exegesis = { workspace = true }
 hansei-bundle = { workspace = true }
 hansei-runtime = { workspace = true }
 proc = { workspace = true }
@@ -42,4 +45,12 @@ reedline = { workspace = true }
 reify = { workspace = true }
 rustc-demangle = { workspace = true }
 subprocess = { workspace = true }
+# `RUST_LOG` selects among extraction's (and the session's) tracing
+# events; with no subscriber installed they go nowhere.
+tracing-subscriber = { workspace = true }
 unwind = { workspace = true }
+
+# mimalloc's vendored C sources fail to assemble with the illumos
+# gcc/gas toolchain, so it is the global allocator everywhere else only.
+[target.'cfg(not(target_os = "illumos"))'.dependencies]
+mimalloc = { workspace = true }

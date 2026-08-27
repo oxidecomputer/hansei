@@ -15,11 +15,14 @@ Linux hosts. Type/bundle/render work lives in `exegesis`, `hansei-bundle`
 and `reify`, which are fully portable, tests included.
 
 Only exegesis reads DWARF, so only exegesis depends on the DWARF stack
-(gimli, object, memmap2, regex). reify does not depend on exegesis at all;
-hansei and hansei-runtime keep it as a **dev**-dependency, because their
-acceptance and matrix-golden tests build bundles from fixture binaries.
-Adding `exegesis` back to any of their `[dependencies]` undoes that — if
-read-side code seems to need it, it wants `hansei-bundle`.
+(gimli, object, memmap2, regex). **hansei-runtime and reify never depend on
+exegesis** — reify not at all, hansei-runtime as a **dev**-dependency only,
+because its matrix goldens build bundles from fixture binaries. The `hansei`
+bin crate does depend on it, because `hansei bundle` produces and inspects
+bundle files, but the DWARF stack reaches no further than the entry points
+arg handling calls (`hansei/src/bundle_cmd.rs`). No session, runtime or
+render code imports exegesis types; if read-side code seems to need
+something from it, it wants `hansei-bundle`.
 
 **Naming:** `durin` is only this repository's name. In prose — commit
 messages, comments, docs — the tool as a whole is **`hansei`**; say "what
