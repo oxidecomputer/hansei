@@ -51,6 +51,10 @@ pub struct DwReader<'dw> {
     type_declarations: HashSet<TypeId>,
     /// Type DIE → declaration DIE from `DW_AT_specification`.
     type_specifications: HashMap<TypeId, TypeId>,
+    /// `{vtable_type}` DIE → the concrete type its `DW_AT_containing_type`
+    /// names. Keyed by the raw DIE offset a vtable variable's `DW_AT_type`
+    /// points at, so a lookup needs no canonicalization.
+    pub containing_types: HashMap<TypeId, TypeId>,
     /// All static variables, keyed by their VarId.
     pub variables: HashMap<VarId, RawStaticVariable<StrId>>,
     /// All functions, keyed by their FuncId.
@@ -295,6 +299,7 @@ impl<'dw> DwReader<'dw> {
             subs: HashMap::new(),
             type_declarations: HashSet::new(),
             type_specifications: HashMap::new(),
+            containing_types: HashMap::new(),
             variables: HashMap::new(),
             functions: HashMap::new(),
             namespaces: NamespaceTable::new(),
@@ -325,6 +330,7 @@ impl<'dw> DwReader<'dw> {
         self.subroutine_types.extend(cgu.subroutine_types);
         self.type_declarations.extend(cgu.type_declarations);
         self.type_specifications.extend(cgu.type_specifications);
+        self.containing_types.extend(cgu.containing_types);
 
         // Static variables are unique by address, functions by DIE — no dedup
         // needed. Type references are canonicalized on access after the final
@@ -914,6 +920,7 @@ struct InternedCgu {
     variables: HashMap<VarId, RawStaticVariable<StrId>>,
     type_declarations: HashSet<TypeId>,
     type_specifications: HashMap<TypeId, TypeId>,
+    containing_types: HashMap<TypeId, TypeId>,
     funcs: HashMap<FuncId, RawFunc<StrId>>,
 }
 
@@ -957,6 +964,7 @@ fn intern_cgu<'dw>(global: &ShardedInterner<'dw>, cgu: CodegenUnit<'dw>) -> Inte
         variables,
         type_declarations: cgu.type_declarations,
         type_specifications: cgu.type_specifications,
+        containing_types: cgu.containing_types,
         funcs,
     }
 }
