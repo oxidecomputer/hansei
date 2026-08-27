@@ -76,7 +76,7 @@ keep_failure() {
     mkdir -p "$keep"
     cp -f "$GEN_SRC" "$keep/gen-churn.rs"
     cp -f "$FIXTURES/bin-a/gen-churn" "$keep/gen-churn.bin" 2>/dev/null
-    cp -f "$PAIRS/gen-churn.bundle" "$keep/" 2>/dev/null
+    cp -f "$PAIRS/gen-churn.tinfo" "$keep/" 2>/dev/null
     cp -f "$PAIRS/gen-churn.snapshot" "$keep/" 2>/dev/null
     [[ -f "$core" ]] && cp -f "$core" "$keep/core"
     cp -f "$log" "$keep/log"
@@ -94,7 +94,7 @@ for (( seed = START; seed < START + SEEDS; seed++ )); do
     if ! { REGEN_BIN_DIR="$FIXTURES/bin-a" REGEN_TARGET_DIR="$FIXTURES/target-a" \
                "$ROOT/test-programs/regen.sh" --no-debug-info gen-churn &&
            "$ROOT/test-programs/regen.sh" gen-churn &&
-           "$HANSEI" tokio-info extract "$FIXTURES/bin/gen-churn" -o "$PAIRS/gen-churn.bundle";
+           "$HANSEI" tokio-info extract "$FIXTURES/bin/gen-churn" -o "$PAIRS/gen-churn.tinfo";
          } >>"$seedlog" 2>&1; then
         echo "churn.sh: seed $seed: build failed (see $seedlog)"
         failures+=("$seed-build")
@@ -128,7 +128,7 @@ for (( seed = START; seed < START + SEEDS; seed++ )); do
         [[ "$BINARY_FLAG" == 1 ]] && binary=(--binary "$FIXTURES/bin-a/gen-churn")
         snaplog="$OUT/snap.log"
         echo "snapshot $PAIRS/gen-churn.snapshot" |
-            timeout 300 "$HANSEI" --core "$core" --tokio-info "$PAIRS/gen-churn.bundle" \
+            timeout 300 "$HANSEI" --core "$core" --tokio-info "$PAIRS/gen-churn.tinfo" \
                 "${binary[@]}" >"$snaplog" 2>&1
         status=$?
         cat "$snaplog" >>"$seedlog"

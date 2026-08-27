@@ -61,7 +61,7 @@ fn test_allow_missing_infra_yields_a_valid_bundle() {
 
     // And it survives a save/load round trip like any other bundle.
     let dir = scratch();
-    let path = dir.path().join("self.bundle");
+    let path = dir.path().join("self.tinfo");
     bundle.save(&path).expect("the placeholder bundle saves");
     Bundle::load(&path).expect("the placeholder bundle reloads");
 }

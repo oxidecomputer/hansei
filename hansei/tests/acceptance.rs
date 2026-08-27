@@ -210,7 +210,7 @@ impl Fixtures {
     }
 
     fn bundle(&self, program: &str) -> PathBuf {
-        self.bundles.join(format!("{program}.bundle"))
+        self.bundles.join(format!("{program}.tinfo"))
     }
 }
 
@@ -300,7 +300,7 @@ fn fixtures() -> &'static Fixtures {
                     let (bundle, _stats) = extract_file(&bin_b.join(program), &opts)
                         .unwrap_or_else(|e| panic!("extraction of {program} failed: {e}"));
                     bundle
-                        .save(&bundles.join(format!("{program}.bundle")))
+                        .save(&bundles.join(format!("{program}.tinfo")))
                         .expect("failed to write the bundle");
                 }
             },

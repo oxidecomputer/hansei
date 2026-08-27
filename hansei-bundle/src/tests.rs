@@ -289,7 +289,7 @@ fn random_bundle(seed: u64) -> Bundle {
                 build_id: Some(vec![0xab; 20]),
                 blake3: [0x5a; 32],
             },
-            extract_args: "bundle extract futurelock -o fl.bundle".into(),
+            extract_args: "tokio-info extract futurelock -o fl.tinfo".into(),
             symbol_fingerprint: (0..rng.below(20)).map(|i| format!("_RINv_fp{i}")).collect(),
             newest_family: Some(FamilyCeiling {
                 name: "v1_53".into(),
@@ -1359,7 +1359,7 @@ fn test_save_validates() {
     let mut b = tiny_bundle();
     b.infra.header = BundleTypeId(999);
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("bad.bundle");
+    let path = dir.path().join("bad.tinfo");
     assert!(matches!(b.save(&path), Err(Error::Corrupt(_))));
     assert!(!path.exists());
 }
@@ -1368,7 +1368,7 @@ fn test_save_validates() {
 fn test_save_load_file() {
     let b = random_bundle(11);
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("t.bundle");
+    let path = dir.path().join("t.tinfo");
     b.save(&path).expect("save failed");
     let loaded = Bundle::load(&path).expect("load failed");
     assert_eq!(b, loaded);

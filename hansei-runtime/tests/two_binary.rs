@@ -6,7 +6,7 @@
 //!
 //! Each fixture pair was produced by `test-programs/capture-snapshots.sh`:
 //! the `.snapshot` is everything the analysis read from a live run of
-//! one compilation (build A), and the `.bundle` was extracted from a
+//! one compilation (build A), and the `.tinfo` was extracted from a
 //! *separate* compilation of the same sources (build B). Joining B's
 //! layouts against A's memory by mangled symbol name is the two-binary
 //! constraint the whole design rests on, exercised here in plain
@@ -183,7 +183,7 @@ fn test_fixtures_record_the_current_programs() {
 /// first `load` panics. The reverse is silent: a program added to
 /// `capture-snapshots.sh` but forgotten here leaves its pair sitting
 /// in every `fixtures/<set>/` directory with nothing reading it, and
-/// nothing to say so. So each set's `*.bundle`/`*.snapshot` basenames
+/// nothing to say so. So each set's `*.tinfo`/`*.snapshot` basenames
 /// must be exactly the program list; non-pair files (`SOURCES.snap`)
 /// are exempt by extension.
 #[test]
@@ -201,7 +201,7 @@ fn test_every_fixture_pair_is_in_the_program_list() {
                 continue;
             };
             match path.extension().and_then(|e| e.to_str()) {
-                Some("bundle") => {
+                Some("tinfo") => {
                     bundles.insert(stem.to_owned());
                 }
                 Some("snapshot") => {
@@ -212,7 +212,7 @@ fn test_every_fixture_pair_is_in_the_program_list() {
         }
         assert_eq!(
             bundles, expected,
-            "[{set}] the *.bundle files are not exactly PROGRAMS — \
+            "[{set}] the *.tinfo files are not exactly PROGRAMS — \
              a pair captured but not listed is read by nothing"
         );
         assert_eq!(

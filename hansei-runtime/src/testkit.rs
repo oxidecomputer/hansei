@@ -64,8 +64,8 @@ pub fn load_any(program: &str) -> (Bundle, Snapshot) {
 
 /// Load a program's fixture pair from `set`.
 pub fn load(set: &str, program: &str) -> (Bundle, Snapshot) {
-    let bundle = Bundle::load(&fixture(set, &format!("{program}.bundle")))
-        .expect("fixture bundle loads; regenerate with capture-snapshots.sh");
+    let bundle = Bundle::load(&fixture(set, &format!("{program}.tinfo")))
+        .expect("fixture tokio info loads; regenerate with capture-snapshots.sh");
     let snapshot = Snapshot::load(&fixture(set, &format!("{program}.snapshot")))
         .expect("fixture snapshot loads; regenerate with capture-snapshots.sh");
     (bundle, snapshot)

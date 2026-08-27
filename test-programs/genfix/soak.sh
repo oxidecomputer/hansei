@@ -85,7 +85,7 @@ for (( seed = START; seed < START + SEEDS; seed++ )); do
     keep="$OUT/failures/seed-$seed"
     mkdir -p "$keep"
     cp -f "$GEN_SRC" "$keep/gen-soak.rs"
-    cp -f "$PAIRS/gen-soak.bundle" "$PAIRS/gen-soak.snapshot" "$keep/" 2>/dev/null
+    cp -f "$PAIRS/gen-soak.tinfo" "$PAIRS/gen-soak.snapshot" "$keep/" 2>/dev/null
     mv -f "$log" "$keep/log"
     note_outcomes "$keep/log"
     echo "soak.sh: seed $seed FAILED; kept under $keep"
