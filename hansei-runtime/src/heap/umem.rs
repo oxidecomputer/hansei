@@ -2203,6 +2203,15 @@ pub(crate) mod tests {
                     end: OVERSIZE + 0x4400,
                     kind: VMEM_ALLOC,
                 },
+                // With a gap between it and the next: an arena's
+                // segments need not abut, and the hole between two of
+                // them is the memory the arena has not handed out and
+                // has not been asked to account for either.
+                SegSpec {
+                    start: OVERSIZE + 0x4800,
+                    end: OVERSIZE + 0x4c00,
+                    kind: VMEM_ALLOC,
+                },
             ],
         );
     }
@@ -3273,8 +3282,8 @@ pub(crate) mod tests {
         assert!(heap.violations().is_empty(), "{:?}", heap.violations());
         assert!(heap.stats().oversize_walked);
         assert_eq!(heap.stats().arenas, 2);
-        assert_eq!((heap.stats().arena_live, heap.stats().arena_freed), (2, 1));
-        assert_eq!(heap.stats().arena_live_bytes, 0x2000 + 0x400);
+        assert_eq!((heap.stats().arena_live, heap.stats().arena_freed), (3, 1));
+        assert_eq!(heap.stats().arena_live_bytes, 0x2000 + 0x400 + 0x400);
 
         let oversize = heap
             .arenas()
@@ -3298,9 +3307,12 @@ pub(crate) mod tests {
                 source: Source::Arena(oversize),
             }
         );
-        // Past everything the arena imported, and the memalign arena's
-        // own segment, which is a second arena rather than more of the
-        // first.
+        // The byte past an allocation's end is not in it, and neither
+        // is the hole after it -- the one place an off-by-one in the
+        // segment search would show.
+        assert_eq!(heap.locate(OVERSIZE + 0x4400), Liveness::Unknown);
+        assert_eq!(heap.locate(OVERSIZE + 0x4700), Liveness::Unknown);
+        // And past everything the arena imported.
         assert_eq!(heap.locate(OVERSIZE + 0x5000), Liveness::Unknown);
         assert_eq!(
             heap.locate(OVERSIZE + 0x4000),
@@ -3311,9 +3323,23 @@ pub(crate) mod tests {
         );
 
         // The cache buffers are the slab layer's, and the arenas add
-        // nothing to what an enumeration differential compares: an
-        // arena has no buffers to enumerate.
+        // nothing to what an enumeration differential compares against
+        // mdb's cache walkers: an arena has no buffers to enumerate.
         assert_eq!(heap.live_buffers().count(), 17);
+
+        // What the differential against its *arena* walkers compares,
+        // spelled the same way: every extent of one liveness, in
+        // address order, bounds and all.
+        let extents = |live: bool| heap.arena_extents(live).collect::<Vec<_>>();
+        assert_eq!(
+            extents(true),
+            [
+                OVERSIZE..OVERSIZE + 0x2000,
+                OVERSIZE + 0x4000..OVERSIZE + 0x4400,
+                OVERSIZE + 0x4800..OVERSIZE + 0x4c00,
+            ]
+        );
+        assert_eq!(extents(false), [OVERSIZE + 0x2000..OVERSIZE + 0x4000]);
     }
 
     /// A static holding a pointer is worth what the thing it points at
