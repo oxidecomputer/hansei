@@ -193,6 +193,9 @@ fn spawned(loc: &str) -> String {
 struct Fixtures {
     /// Build A: the binaries that run (and are cored).
     bin_a: PathBuf,
+    /// Build B: the same programs carrying DWARF, which the bundles
+    /// below were extracted from and which `--debug-binary` takes.
+    bin_b: PathBuf,
     /// Bundles extracted from build B, one per program.
     bundles: PathBuf,
 }
@@ -200,6 +203,10 @@ struct Fixtures {
 impl Fixtures {
     fn program(&self, program: &str) -> PathBuf {
         self.bin_a.join(program)
+    }
+
+    fn debug_binary(&self, program: &str) -> PathBuf {
+        self.bin_b.join(program)
     }
 
     fn bundle(&self, program: &str) -> PathBuf {
@@ -301,6 +308,7 @@ fn fixtures() -> &'static Fixtures {
 
         Fixtures {
             bin_a: base.join("bin-a"),
+            bin_b,
             bundles,
         }
     })
@@ -411,9 +419,17 @@ fn hansei(bundle: &Path, core: &Path, command: &str) -> Output {
 /// [`hansei`], with session flags — what shapes the attach itself, and
 /// so cannot be asked for once a session is up.
 fn hansei_with(bundle: &Path, core: &Path, flags: &[&str], command: &str) -> Output {
+    hansei_from(("--bundle", bundle), core, flags, command)
+}
+
+/// [`hansei_with`], saying where the session's types come from: a
+/// bundle file behind `--bundle`, or a debug build behind
+/// `--debug-binary` for the session to extract one from at launch.
+fn hansei_from(types: (&str, &Path), core: &Path, flags: &[&str], command: &str) -> Output {
+    let (types_flag, types_path) = types;
     let mut child = Command::new(env!("CARGO_BIN_EXE_hansei"))
-        .arg("--bundle")
-        .arg(bundle)
+        .arg(types_flag)
+        .arg(types_path)
         .arg("--core")
         .arg(core)
         .args(flags)
@@ -1026,6 +1042,56 @@ fn assert_locals(verbose_trace: &str, names: &[&str]) {
             "local {name} missing from trace:\n{verbose_trace}"
         );
     }
+}
+
+/// A session opens on a debug build directly, extracting at launch,
+/// and answers exactly what the bundle file extracted from that same
+/// build answers — but for the one line that says which way in it was.
+///
+/// The equivalence is the point: `--debug-binary` is meant to save the
+/// operator a file, not to be a second, lesser way of reading a target.
+#[test]
+fn test_a_session_can_extract_from_a_debug_binary() {
+    let program = "simple-await";
+    let bundle = fixtures().bundle(program);
+    let debug_binary = fixtures().debug_binary(program);
+    // Enough of the session to exercise the whole attach: the summary,
+    // the task listing off the census, and the wait graph.
+    let command = "info\ntasks --futures\ngraph\n";
+    with_core(program, |core| {
+        let from_bundle = hansei_ok(&bundle, core, command);
+        let out = hansei_from(("--debug-binary", &debug_binary), core, &[], command);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            out.status.success(),
+            "extracting session failed:\n{stderr}\n{}",
+            String::from_utf8_lossy(&out.stdout)
+        );
+        assert!(stderr.is_empty(), "extracting session warned:\n{stderr}");
+        let from_binary = String::from_utf8(out.stdout).expect("hansei output is UTF-8");
+
+        assert!(
+            from_binary.contains(&format!(
+                "bundle: extracted from {}",
+                debug_binary.display()
+            )),
+            "the summary should name what it extracted from:\n{from_binary}"
+        );
+        assert!(
+            from_bundle.contains(&format!("bundle: {}", bundle.display())),
+            "the summary should name the bundle it read:\n{from_bundle}"
+        );
+        let strip_source = |out: &str| {
+            out.lines()
+                .map(|line| match line.starts_with("bundle: ") {
+                    true => "bundle: <source>",
+                    false => line,
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        assert_eq!(strip_source(&from_binary), strip_source(&from_bundle));
+    });
 }
 
 // ---------------------------------------------------------------------------
