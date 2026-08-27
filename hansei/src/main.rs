@@ -1,5 +1,5 @@
 use anyhow::{Context as _, Result};
-use clap::{Args, Parser, Subcommand};
+use clap::{ArgGroup, Args, Parser, Subcommand};
 use hansei_bundle::{Bundle, BundleView};
 use hansei_runtime::heap::umem::UmemHeap;
 use hansei_runtime::heap::view::{GateCounts, HeapView};
@@ -58,6 +58,7 @@ static GLOBAL: MiMalloc = MiMalloc;
                   on bundle files rather than on a running target's remains.",
     after_help = "Examples:\n  \
                   hansei --core core.app --bundle app.bundle\n  \
+                  hansei --core core.app --debug-binary app.debug\n  \
                   hansei --core core.app --bundle app.bundle -e 'tasks; graph'\n  \
                   echo 'trace 42 -v' | hansei --core core.app --bundle app.bundle\n  \
                   hansei bundle extract app.debug -o app.bundle\n\n\
@@ -97,6 +98,7 @@ enum Cmd {
 /// What it takes to attach: the pair of files, and how strictly they
 /// have to agree.
 #[derive(Args)]
+#[command(group = ArgGroup::new("types").required(true).args(["bundle", "debug_binary"]))]
 struct SessionArgs {
     /// The core dump to open.
     #[arg(long, short)]
@@ -104,7 +106,19 @@ struct SessionArgs {
 
     /// The debug bundle to read (produced by `exegesis extract`).
     #[arg(long, short)]
-    bundle: PathBuf,
+    bundle: Option<PathBuf>,
+
+    /// A debug build of the target, to extract a bundle from now
+    /// instead of naming one with --bundle.
+    ///
+    /// Extraction is the slower way in — a large binary's DWARF costs
+    /// seconds — so it is the answer for a one-off look, and `hansei
+    /// bundle extract` is the answer when the same target will be
+    /// opened again. This is the build carrying DWARF, not the binary
+    /// that *ran*: that one is --program, and the two share no
+    /// addresses.
+    #[arg(long, value_name = "PATH")]
+    debug_binary: Option<PathBuf>,
 
     /// The executable the core was taken from.
     ///
@@ -153,6 +167,35 @@ struct SessionArgs {
     /// target.
     #[arg(long, hide = true)]
     audit: bool,
+}
+
+impl SessionArgs {
+    /// Where this session's types come from, as the attach summary
+    /// should say it. clap's required group leaves exactly one of the
+    /// two named.
+    fn bundle_source(&self) -> BundleSource<'_> {
+        match (&self.bundle, &self.debug_binary) {
+            (Some(path), _) => BundleSource::File(path),
+            (None, Some(path)) => BundleSource::Extracted(path),
+            (None, None) => unreachable!("clap requires --bundle or --debug-binary"),
+        }
+    }
+}
+
+/// A session's bundle: the file it read, or the debug binary it
+/// extracted one from at launch.
+enum BundleSource<'a> {
+    File(&'a Path),
+    Extracted(&'a Path),
+}
+
+impl std::fmt::Display for BundleSource<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::File(path) => write!(f, "{}", path.display()),
+            Self::Extracted(path) => write!(f, "extracted from {}", path.display()),
+        }
+    }
 }
 
 /// Everything a session can be asked. These are read from stdin, never
@@ -804,7 +847,7 @@ pub struct Session<'b> {
     /// and the launch-time worker's own context walks under it.
     policy: contract::WalkPolicy,
     core: &'b Path,
-    bundle_path: &'b Path,
+    bundle_source: BundleSource<'b>,
     workers: Vec<bundle::Worker>,
     /// Every lwp the target has, whatever it is doing, with its
     /// registers and recorded stack range. The workers above are the
@@ -931,7 +974,7 @@ impl<'b> Session<'b> {
             bundle,
             policy,
             core: &args.core,
-            bundle_path: &args.bundle,
+            bundle_source: args.bundle_source(),
             workers,
             lwps,
             runtimes,
@@ -1258,19 +1301,22 @@ fn exits_quietly(e: &anyhow::Error) -> bool {
 fn run(args: &SessionArgs, exec: &[String]) -> Result<()> {
     // The two files are independent and each costs real time to read
     // (the core indexes its symbol tables, the bundle decompresses and
-    // decodes), so one is opened on a second thread.
+    // decodes — or, from a debug binary, is extracted outright), so one
+    // is opened on a second thread.
     let (proc, bundle) = std::thread::scope(|scope| {
-        let bundle = scope.spawn(|| {
-            Bundle::load(&args.bundle)
-                .with_context(|| format!("failed to load bundle {}", args.bundle.display()))
-        });
+        let bundle = scope.spawn(|| bundle_for(args));
         // Named for the attach rather than for the core: either file
         // can be the one that failed, and the cause says which.
         let proc = Proc::open_core_with_program(&args.core, args.program.as_deref())
             .with_context(|| format!("failed to attach to {}", args.core.display()));
         (proc, bundle.join().expect("bundle loader panicked"))
     });
-    let (proc, bundle) = (proc?, bundle?);
+    let (proc, (bundle, warnings)) = (proc?, bundle?);
+    // Held back until here rather than printed by the worker, whose
+    // stderr the attach's own warnings are interleaved with.
+    for warning in &warnings {
+        writeln!(io::stderr(), "{warning}")?;
+    }
     check_program(&proc, args)?;
     let session = Session::attach(&proc, &bundle, args)?;
 
@@ -1293,6 +1339,23 @@ fn run(args: &SessionArgs, exec: &[String]) -> Result<()> {
         session.warm.borrow_mut().take();
         res
     })
+}
+
+/// The types this session reads: the bundle `--bundle` names, or one
+/// extracted on the spot from the debug build `--debug-binary` names.
+///
+/// Extraction's warnings come back rather than being printed, because
+/// this runs beside the attach and its stderr is not this thread's to
+/// write to.
+fn bundle_for(args: &SessionArgs) -> Result<(Bundle, Vec<String>)> {
+    match args.bundle_source() {
+        BundleSource::File(path) => {
+            let bundle = Bundle::load(path)
+                .with_context(|| format!("failed to load bundle {}", path.display()))?;
+            Ok((bundle, Vec::new()))
+        }
+        BundleSource::Extracted(path) => bundle_cmd::extract_for_session(path),
+    }
 }
 
 /// Whether this `census()` call is the one that runs `--audit`'s
@@ -1360,7 +1423,7 @@ fn warm_worker(
 fn exec_info(session: &Session<'_>, out: &mut dyn io::Write) -> Result<()> {
     let fp = session.ctx.validate_fingerprint();
     writeln!(out, "core:   {}", session.core.display())?;
-    writeln!(out, "bundle: {}", session.bundle_path.display())?;
+    writeln!(out, "bundle: {}", session.bundle_source)?;
     writeln!(
         out,
         "symbols resolved: {}/{}{}",
@@ -1706,6 +1769,8 @@ mod cli_tests {
 
     use clap::Parser;
 
+    use std::path::Path;
+
     fn parse(argv: &[&str]) -> Cli {
         Cli::try_parse_from(argv).expect("should parse")
     }
@@ -1726,8 +1791,44 @@ mod cli_tests {
         assert!(cli.cmd.is_none());
         let session = cli.session.expect("session args");
         assert_eq!(session.core.to_str(), Some("core.app"));
-        assert_eq!(session.bundle.to_str(), Some("app.bundle"));
+        assert_eq!(session.bundle.as_deref(), Some(Path::new("app.bundle")));
+        assert_eq!(session.debug_binary, None);
         assert_eq!(cli.exec, ["tasks"]);
+    }
+
+    /// A debug build stands in for a bundle file, and the summary says
+    /// which of the two the session's types came from.
+    #[test]
+    fn test_a_debug_binary_stands_in_for_a_bundle() {
+        let cli = parse(&["hansei", "-c", "core.app", "--debug-binary", "app.debug"]);
+        let session = cli.session.expect("session args");
+        assert_eq!(session.bundle, None);
+        assert_eq!(
+            session.debug_binary.as_deref(),
+            Some(Path::new("app.debug"))
+        );
+        assert_eq!(
+            session.bundle_source().to_string(),
+            "extracted from app.debug"
+        );
+    }
+
+    /// The two ways in are alternatives: one is required, and naming
+    /// both would leave it ambiguous which the types came from.
+    #[test]
+    fn test_the_two_ways_in_are_exclusive() {
+        assert!(
+            Cli::try_parse_from([
+                "hansei",
+                "-c",
+                "core.app",
+                "-b",
+                "app.bundle",
+                "--debug-binary",
+                "app.debug",
+            ])
+            .is_err()
+        );
     }
 
     /// The subcommand takes the whole invocation: no target is named,

@@ -8,7 +8,8 @@
 
 use anyhow::{Context as _, Result};
 use clap::Subcommand;
-use exegesis::extract::{ExtractOptions, RUSTC_FLOOR, extract_file};
+use exegesis::extract::{ExtractOptions, ExtractStats, RUSTC_FLOOR, extract_file};
+use hansei_bundle::Bundle;
 
 use std::path::{Path, PathBuf};
 
@@ -64,6 +65,43 @@ pub fn exec(cmd: BundleCmd) -> Result<()> {
     }
 }
 
+/// Extract a bundle for a session to attach to, rather than for a file
+/// to be written: every option is its default, since the flags that
+/// shape an extraction are `bundle extract`'s alone, and the argv a
+/// bundle records is provenance for a file this one never becomes.
+///
+/// The warnings come back as text for the caller to print when it
+/// suits; nothing here writes to stderr, because this runs on the
+/// thread overlapping the attach.
+pub fn extract_for_session(binary: &Path) -> Result<(Bundle, Vec<String>)> {
+    let (bundle, stats) = extract_file(binary, &ExtractOptions::default())
+        .with_context(|| format!("failed to extract from {}", binary.display()))?;
+    Ok((bundle, warnings(&stats)))
+}
+
+/// What extraction leaves uncertain about the bundle it produced: the
+/// facts about the binary that decide which layouts were assumed.
+/// Empty for a binary whose toolchain and tokio version were both
+/// recovered and both supported, which is nearly every one.
+fn warnings(stats: &ExtractStats) -> Vec<String> {
+    let mut out = Vec::new();
+    if let Some(v) = &stats.rustc_below_floor {
+        out.push(format!(
+            "warning: this binary was produced by rustc {v}, older than the \
+             supported floor {RUSTC_FLOOR}; extraction proceeds but is \
+             untested against older toolchains"
+        ));
+    }
+    if let Some(family) = &stats.tokio_family_guessed {
+        out.push(format!(
+            "warning: no tokio version could be recovered from this binary \
+             (vendored or forked tokio?); version-dependent formatters \
+             assumed the newest supported family ({family})"
+        ));
+    }
+    out
+}
+
 fn extract(
     binary: &Path,
     output: &Path,
@@ -84,19 +122,8 @@ fn extract(
     };
     let (bundle, stats) = extract_file(binary, &opts)
         .with_context(|| format!("failed to extract from {}", binary.display()))?;
-    if let Some(v) = &stats.rustc_below_floor {
-        eprintln!(
-            "warning: this binary was produced by rustc {v}, older than the \
-             supported floor {RUSTC_FLOOR}; extraction proceeds but is \
-             untested against older toolchains"
-        );
-    }
-    if let Some(family) = &stats.tokio_family_guessed {
-        eprintln!(
-            "warning: no tokio version could be recovered from this binary \
-             (vendored or forked tokio?); version-dependent formatters \
-             assumed the newest supported family ({family})"
-        );
+    for warning in warnings(&stats) {
+        eprintln!("{warning}");
     }
     bundle
         .save(output)
@@ -147,7 +174,7 @@ fn extract(
 
 #[cfg(test)]
 mod tests {
-    use super::{BundleCmd, exec};
+    use super::{BundleCmd, ExtractStats, RUSTC_FLOOR, exec, warnings};
 
     use hansei_bundle::Bundle;
 
@@ -161,6 +188,38 @@ mod tests {
             explain_format: None,
             explain_walk: None,
         }
+    }
+
+    /// The two facts extraction can be unsure of each get said, and a
+    /// binary it was sure of draws nothing. Both callers — the verb and
+    /// a session extracting at launch — print whatever comes back, so
+    /// what is worth pinning is that the text names the version and the
+    /// family the operator has to judge the bundle by.
+    #[test]
+    fn test_warnings_name_what_extraction_had_to_assume() {
+        assert!(warnings(&ExtractStats::default()).is_empty());
+
+        let stats = ExtractStats {
+            rustc_below_floor: Some("1.70.0".to_owned()),
+            ..Default::default()
+        };
+        let [line] = warnings(&stats).try_into().expect("one warning");
+        assert!(line.contains("1.70.0"), "{line}");
+        assert!(line.contains(RUSTC_FLOOR), "{line}");
+
+        let stats = ExtractStats {
+            tokio_family_guessed: Some("v1_53".to_owned()),
+            ..Default::default()
+        };
+        let [line] = warnings(&stats).try_into().expect("one warning");
+        assert!(line.contains("v1_53"), "{line}");
+
+        let stats = ExtractStats {
+            rustc_below_floor: Some("1.70.0".to_owned()),
+            tokio_family_guessed: Some("v1_53".to_owned()),
+            ..Default::default()
+        };
+        assert_eq!(warnings(&stats).len(), 2);
     }
 
     /// The verb runs a real extraction and leaves behind a bundle that
