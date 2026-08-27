@@ -449,6 +449,17 @@ pub enum Command {
     /// `tasks --futures`, `graph` or `whatis` costs nothing.
     Runtimes,
 
+    /// Write this session's tokio info to a file `--tokio-info` can
+    /// take next time, saving the launch-time extraction. Only a
+    /// session that extracted at launch (`--debug-info`) has anything
+    /// to save; one that read a tokio-info file refuses — that file
+    /// already exists.
+    #[command(name = "save-tokio-info")]
+    SaveTokioInfo {
+        /// Where to write it (`.tinfo` by convention).
+        output: PathBuf,
+    },
+
     /// Capture a replayable snapshot of everything the analysis reads
     /// from the target: task enumeration and every task's
     /// await chain are driven once with a recording wrapper in place,
@@ -1192,6 +1203,7 @@ pub fn dispatch(
             runtimes::exec_runtime(session, scope, fields, render, out)?
         }
         Command::Runtimes => runtimes::exec_runtimes(session, out)?,
+        Command::SaveTokioInfo { output } => exec_save_tokio_info(session, &output, out)?,
         #[cfg(feature = "snapshot")]
         Command::Snapshot { output } => snapshot_cmd::exec_snapshot(session, &output, out)?,
         Command::Sync { addr } => sync::exec_sync(session, addr, out)?,
@@ -1493,6 +1505,29 @@ fn exec_info(session: &Session<'_>, out: &mut dyn io::Write) -> Result<()> {
         "{}{sets} (see `runtimes`)",
         summary::counted(session.runtimes.len(), "runtime")
     )?;
+    Ok(())
+}
+
+/// Persist the tokio info this session extracted at launch, so the
+/// next session on this target can take the file with `--tokio-info`
+/// instead of paying for extraction again.
+fn exec_save_tokio_info(
+    session: &Session<'_>,
+    output: &Path,
+    out: &mut dyn io::Write,
+) -> Result<()> {
+    let BundleSource::Extracted(_) = session.bundle_source else {
+        anyhow::bail!(
+            "this session read its tokio info from {}; that file already \
+             exists — there is nothing to save",
+            session.bundle_source
+        );
+    };
+    session
+        .bundle
+        .save(output)
+        .with_context(|| format!("failed to write {}", output.display()))?;
+    writeln!(out, "wrote {}", output.display())?;
     Ok(())
 }
 
