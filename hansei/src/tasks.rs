@@ -195,6 +195,31 @@ fn census_capped_warning(capped: census::Capped, fate: &str) -> Option<String> {
     ))
 }
 
+/// A census that dropped finds looks like completeness too.
+fn warn_census_refused(refused: usize, fate: &str) -> io::Result<()> {
+    if let Some(warning) = census_refused_warning(refused, fate) {
+        writeln!(io::stderr(), "warning: {warning}")?;
+    }
+    Ok(())
+}
+
+/// What a walk that refused finds has to say for itself, or `None`
+/// when it refused none — which is every healthy target.
+///
+/// A refusal is the allocator contradicting a pointer the walk was
+/// about to believe, so what is missing is not a fact about the
+/// program's futures at all: it is memory somebody handed back. The
+/// find and everything under it go together, which is what makes this
+/// worth a count rather than a silent absence.
+fn census_refused_warning(refused: usize, fate: &str) -> Option<String> {
+    (refused > 0).then(|| {
+        format!(
+            "the allocator has taken back the memory {refused} find(s) lay in; \
+             they and anything they held are not {fate}"
+        )
+    })
+}
+
 /// The error for a task id the runtime does not own, naming the ids it
 /// does.
 pub(crate) fn no_such_task(list: &bundle::TaskList, id: u64) -> anyhow::Error {
@@ -490,6 +515,7 @@ pub(crate) fn exec_tasks(
         // is a lower bound either way (`help tasks`), but this is the part
         // of it that varies by target rather than being inherent.
         warn_census_capped(census.capped, "listed")?;
+        warn_census_refused(census.refused, "listed")?;
     }
 
     print_tasks(
@@ -650,6 +676,7 @@ pub(crate) fn exec_census(
     // completeness in a count, so it says so.
     if let Some(census) = census {
         warn_census_capped(census.capped, "counted")?;
+        warn_census_refused(census.refused, "counted")?;
     }
 
     let runtime = match sections.threads {
@@ -818,7 +845,7 @@ fn optional<T>(read: Result<T>, what: &str) -> Result<Option<T>> {
 
 #[cfg(test)]
 mod census_warning_tests {
-    use super::census_capped_warning;
+    use super::{census_capped_warning, census_refused_warning};
 
     use hansei_runtime::tokio::census::Capped;
 
@@ -863,6 +890,28 @@ mod census_warning_tests {
             distant,
             "the scan stopped at its nesting limit in 5 place(s); \
              anything held further out is not counted"
+        );
+    }
+
+    /// A walk that refused nothing says nothing, for the reason an
+    /// uncapped one does: on every healthy target this is zero, and a
+    /// line printed there would be the noise that hides the run where
+    /// it is not.
+    #[test]
+    fn test_a_walk_that_refused_nothing_warns_of_nothing() {
+        assert_eq!(census_refused_warning(0, "listed"), None);
+    }
+
+    /// A refusal names what was refused and what the listing it
+    /// shortened was claiming to cover — and says that the finds under
+    /// the ones dropped went with them, which is the part a reader
+    /// cannot see from the listing.
+    #[test]
+    fn test_a_refusal_says_what_the_listing_is_missing() {
+        assert_eq!(
+            census_refused_warning(3, "counted").expect("a refusing walk warns"),
+            "the allocator has taken back the memory 3 find(s) lay in; \
+             they and anything they held are not counted"
         );
     }
 
