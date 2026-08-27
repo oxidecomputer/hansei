@@ -504,22 +504,34 @@ fn bound_to_allocation(
     let Some(heap) = gate.heap else {
         return Ok((want, Shortfall::default()));
     };
-    // Whether the buffer starts where its allocation does is evidence
-    // about the pointer, not yet grounds to refuse it: an owning pointer
-    // that sits mid-allocation is one that was never this value's.
-    if gate.owning && heap.owns(base) == Some(false) {
-        heap.note(Gate::BaseMismatch);
-    }
     match heap.locate(base) {
         Liveness::Freed => {
             heap.note(Gate::Freed);
             Err(SeqError::Freed)
         }
-        Liveness::Live { block } if block.end - base < want => {
-            heap.note(Gate::Clipped);
-            Ok((block.end - base, Shortfall::PastAllocation))
+        Liveness::Live { block } => {
+            // Whether the buffer starts where its allocation does is
+            // evidence about the pointer, not yet grounds to refuse it:
+            // an owning pointer that sits mid-allocation is one that
+            // was never this value's.
+            //
+            // Weighed only where the allocation is live, because a
+            // freed one has no handed-out pointer left to measure
+            // from — freeing scrubs the header that recorded it, so
+            // every pointer into a freed block reads as an interior
+            // one and the evidence would be an artifact of the free.
+            if gate.owning && heap.owns(base) == Some(false) {
+                heap.note(Gate::BaseMismatch);
+            }
+            match block.end - base < want {
+                true => {
+                    heap.note(Gate::Clipped);
+                    Ok((block.end - base, Shortfall::PastAllocation))
+                }
+                false => Ok((want, Shortfall::default())),
+            }
         }
-        _ => Ok((want, Shortfall::default())),
+        Liveness::Unknown => Ok((want, Shortfall::default())),
     }
 }
 

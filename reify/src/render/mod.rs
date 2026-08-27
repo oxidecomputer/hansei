@@ -1722,5 +1722,17 @@ mod tests {
             "[5, 8, 13]"
         );
         assert_eq!(borrowed.counts(), (0, 0, 0));
+
+        // And a freed block is weighed for nothing but being freed:
+        // the free scrubbed the header that recorded which pointer was
+        // handed out, so every address in it reads as an interior one
+        // and a mismatch would be an artifact of the free rather than
+        // evidence about the pointer.
+        let gone = FakeHeap::new().freed(0x1f00, 0x200);
+        assert_eq!(
+            format!("{}", vec.display_from_target(&mem, 8).heap(&gone)),
+            "<freed slice buffer>"
+        );
+        assert_eq!(gone.counts(), (1, 0, 0));
     }
 }
