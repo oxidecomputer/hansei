@@ -80,6 +80,7 @@ const PROGRAMS: &[&str] = &[
     "local-set-io",
     "foreign-runtime",
     "spin-poll",
+    "stale-local",
 ];
 
 fn workspace_root() -> &'static Path {
@@ -2929,6 +2930,39 @@ fn test_the_allocator_index_answers_for_what_it_can_read() {
             ),
             "{out}"
         );
+    });
+}
+
+/// The render gates, on a target that gives them something to refuse.
+///
+/// Every other fixture here is healthy, so the corroboration declines
+/// nothing when the suite runs and a gate wired to nothing would pass
+/// every one of those tests. `stale-local` parks a task holding the
+/// address of a block it has handed back, which is exactly one pointer
+/// the renderer must not follow — on a target whose allocator is
+/// libumem. On glibc there is no allocator to ask, and the same frame
+/// renders the way it always did, which is the other half of the claim.
+#[test]
+fn test_a_stale_pointer_is_not_expanded_into_what_the_bytes_say() {
+    let bundle = fixtures().bundle("stale-local");
+    with_core("stale-local", |core| {
+        let rows = list_tasks(&bundle, core);
+        let task = task_with_future(&rows, "async fn stale_local::holder");
+        let out = hansei_ok(&bundle, core, &format!("trace {} -v ; umem-audit", task.id));
+        assert!(out.contains("stale"), "{out}");
+        if out.contains("no umem metadata in this target") {
+            assert!(!out.contains("<freed"), "{out}");
+            return;
+        }
+        // The block is free wherever the allocator is keeping it — a
+        // per-CPU magazine, most likely, since a free reaches a slab's
+        // freelist only when that magazine fills.
+        assert!(out.contains("-> <freed>"), "{out}");
+        assert!(
+            out.contains("gates: 1 pointer(s) into freed memory"),
+            "{out}"
+        );
+        assert!(out.contains("self-check: clean"), "{out}");
     });
 }
 
