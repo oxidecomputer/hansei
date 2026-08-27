@@ -3485,6 +3485,11 @@ pub(crate) mod tests {
         assert!(heap.violations().is_empty(), "{:?}", heap.violations());
         assert!(heap.stats().oversize_walked);
         assert_eq!(heap.stats().arenas, 2);
+        // Each arena's own count of what it holds, which is what the
+        // audit's table prints and the only number in it that says how
+        // much of an arena's list was believed.
+        let segs: Vec<usize> = heap.arenas().iter().map(|a| a.segs).collect();
+        assert_eq!(segs, [2, 2]);
         assert_eq!((heap.stats().arena_live, heap.stats().arena_freed), (3, 1));
         assert_eq!(heap.stats().arena_live_bytes, 0x2000 + 0x400 + 0x400);
 
