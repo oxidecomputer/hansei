@@ -37,6 +37,15 @@ Extract the tokio info:
 cargo run --release -p hansei -- tokio-info extract ${PATH_TO_DEBUG_BINARY} -o app.tinfo
 ----
 
+Extraction also takes a binary whose debug info was split out after the link — a companion file
+(`gobjcopy --only-keep-debug`) or a dSYM — as the binary plus the split file. The binary supplies the program
+contents and identity, the companion the DWARF, and the pair is verified to come from one link:
+
+[source,shell]
+----
+cargo run --release -p hansei -- tokio-info extract ${PATH_TO_BINARY} --debug-info ${PATH_TO_COMPANION} -o app.tinfo
+----
+
 Then attach to a target. The core and the tokio info name the *session*, and are the only things the command line
 takes; commands are read from stdin:
 

@@ -284,11 +284,16 @@ fn random_bundle(seed: u64) -> Bundle {
             rustc_version: "rustc 1.97.0 (2d8144b78 2026-07-07)".into(),
             tokio_version: Some(semver::Version::new(1, 52, 3)),
             tokio_unstable: Some(true),
-            debug_binary: BinaryIdent {
+            binary: BinaryIdent {
                 basename: "futurelock".into(),
                 build_id: Some(vec![0xab; 20]),
                 blake3: [0x5a; 32],
             },
+            debug_info: Some(crate::DebugSourceIdent {
+                basename: "futurelock.dbg".into(),
+                blake3: [0xa5; 32],
+            }),
+            vtable_data: crate::VtableDataSource::File("futurelock".into()),
             extract_args: "tokio-info extract futurelock -o fl.tinfo".into(),
             symbol_fingerprint: (0..rng.below(20)).map(|i| format!("_RINv_fp{i}")).collect(),
             newest_family: Some(FamilyCeiling {

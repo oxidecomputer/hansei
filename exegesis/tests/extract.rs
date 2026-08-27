@@ -89,3 +89,222 @@ fn test_dwarf_summary_reads_what_extraction_refuses() {
         Err(Error::Object(_))
     ));
 }
+
+// ---------------------------------------------------------------------------
+// The input contract, over synthetic ELFs: flavors are decided by
+// content, split flavors demand their sibling, and a pair from two
+// different links is refused. Real split pairs are covered by the
+// golden suite's objcopy test; these pin the classification and the
+// refusals themselves, which need every flavor including ones no
+// fixture produces (a dwp, a mismatched build id).
+// ---------------------------------------------------------------------------
+
+use exegesis::extract::{DebugFlavor, DebugSources, classify_file, extract_sources};
+
+use object::write::Object as WriteObject;
+use object::{Architecture, BinaryFormat, Endianness, SectionKind};
+
+use std::path::{Path, PathBuf};
+
+/// A `.note.gnu.build-id` section's contents: one ELF note, type
+/// NT_GNU_BUILD_ID, name "GNU", descriptor `id`.
+fn build_id_note(id: &[u8]) -> Vec<u8> {
+    let mut note = Vec::new();
+    note.extend_from_slice(&4u32.to_le_bytes());
+    note.extend_from_slice(&(id.len() as u32).to_le_bytes());
+    note.extend_from_slice(&3u32.to_le_bytes());
+    note.extend_from_slice(b"GNU\0");
+    note.extend_from_slice(id);
+    while note.len() % 4 != 0 {
+        note.push(0);
+    }
+    note
+}
+
+/// Assemble a synthetic ELF from `(name, kind, contents)` triples;
+/// `None` contents makes the section `SHT_NOBITS`, the shape a
+/// companion's program sections have.
+fn write_elf(dir: &Path, name: &str, sections: &[(&str, SectionKind, Option<&[u8]>)]) -> PathBuf {
+    let mut obj = WriteObject::new(BinaryFormat::Elf, Architecture::X86_64, Endianness::Little);
+    for &(section_name, kind, contents) in sections {
+        let id = obj.add_section(Vec::new(), section_name.as_bytes().to_vec(), kind);
+        match contents {
+            Some(data) => {
+                obj.append_section_data(id, data, 4);
+            }
+            None => {
+                obj.append_section_bss(id, 64, 4);
+            }
+        }
+    }
+    let path = dir.join(name);
+    std::fs::write(&path, obj.write().expect("a synthetic ELF assembles")).expect("write");
+    path
+}
+
+const CODE: &[u8] = &[0xc3; 16];
+const DWARF: &[u8] = b"not real DWARF, but bytes in .debug_info";
+
+fn full_binary(dir: &Path, name: &str, id: &[u8]) -> PathBuf {
+    write_elf(
+        dir,
+        name,
+        &[
+            (".text", SectionKind::Text, Some(CODE)),
+            (".debug_info", SectionKind::Debug, Some(DWARF)),
+            (
+                ".note.gnu.build-id",
+                SectionKind::Note,
+                Some(&build_id_note(id)),
+            ),
+        ],
+    )
+}
+
+fn companion(dir: &Path, name: &str, id: &[u8]) -> PathBuf {
+    write_elf(
+        dir,
+        name,
+        &[
+            (".text", SectionKind::UninitializedData, None),
+            (".debug_info", SectionKind::Debug, Some(DWARF)),
+            (
+                ".note.gnu.build-id",
+                SectionKind::Note,
+                Some(&build_id_note(id)),
+            ),
+        ],
+    )
+}
+
+#[test]
+fn test_input_flavors_are_classified_by_content() {
+    let dir = scratch();
+    let full = full_binary(dir.path(), "full", b"same-link");
+    assert_eq!(classify_file(&full).unwrap(), DebugFlavor::Full);
+
+    let dbg = companion(dir.path(), "app.dbg", b"same-link");
+    assert_eq!(classify_file(&dbg).unwrap(), DebugFlavor::Companion);
+
+    let dwp = write_elf(
+        dir.path(),
+        "app.dwp",
+        &[
+            (".debug_info.dwo", SectionKind::Debug, Some(DWARF)),
+            (".debug_cu_index", SectionKind::Debug, Some(&[1, 2, 3, 4])),
+        ],
+    );
+    assert_eq!(classify_file(&dwp).unwrap(), DebugFlavor::Dwp);
+
+    let plain = write_elf(
+        dir.path(),
+        "plain",
+        &[(".text", SectionKind::Text, Some(CODE))],
+    );
+    assert_eq!(classify_file(&plain).unwrap(), DebugFlavor::NoDebugInfo);
+}
+
+/// The refusal matrix: each wrong shape of invocation is refused with
+/// the flavor that was recognized and what is missing, before any
+/// DWARF is read.
+#[test]
+fn test_the_refusal_matrix_names_what_it_recognized() {
+    let dir = scratch();
+    let opts = ExtractOptions::default();
+    let full = full_binary(dir.path(), "full", b"same-link");
+    let dbg = companion(dir.path(), "app.dbg", b"same-link");
+    let dwp = write_elf(
+        dir.path(),
+        "app.dwp",
+        &[(".debug_cu_index", SectionKind::Debug, Some(&[1, 2, 3, 4]))],
+    );
+    let plain = write_elf(
+        dir.path(),
+        "plain",
+        &[(".text", SectionKind::Text, Some(CODE))],
+    );
+    let sources = |binary: &'static str, debug_info: Option<&'static str>| DebugSources {
+        binary: match binary {
+            "full" => &full,
+            "dbg" => &dbg,
+            "dwp" => &dwp,
+            _ => &plain,
+        },
+        debug_info: debug_info.map(|d| match d {
+            "dbg" => dbg.as_path(),
+            "dwp" => dwp.as_path(),
+            _ => plain.as_path(),
+        }),
+    };
+
+    // Split debug info alone: refused naming the flavor and the need.
+    let err = extract_sources(&sources("dbg", None), &opts).unwrap_err();
+    assert!(matches!(err, Error::SplitAlone { .. }), "{err}");
+    let msg = err.to_string();
+    assert!(msg.contains("companion"), "{msg}");
+    assert!(msg.contains("binary it was split from"), "{msg}");
+
+    let err = extract_sources(&sources("dwp", None), &opts).unwrap_err();
+    assert!(matches!(err, Error::SplitAlone { .. }), "{err}");
+    assert!(err.to_string().contains("dwp"), "{}", err);
+
+    // Split debug info cannot fill the binary role even when a debug
+    // file is also given.
+    let err = extract_sources(&sources("dbg", Some("dbg")), &opts).unwrap_err();
+    assert!(matches!(err, Error::SplitAlone { .. }), "{err}");
+
+    // A binary with no DWARF and nothing else: refused as such.
+    let err = extract_sources(&sources("plain", None), &opts).unwrap_err();
+    assert!(matches!(err, Error::NoDebugInfo { .. }), "{err}");
+    assert!(err.to_string().contains("no debug info"), "{}", err);
+
+    // A --debug-info file with no debug info in it: same refusal,
+    // naming that file.
+    let err = extract_sources(&sources("full", Some("plain")), &opts).unwrap_err();
+    assert!(matches!(err, Error::NoDebugInfo { .. }), "{err}");
+    assert!(err.to_string().contains("plain"), "{}", err);
+
+    // A dwp is recognized and refused as unsupported, sibling or not.
+    let err = extract_sources(&sources("full", Some("dwp")), &opts).unwrap_err();
+    assert!(matches!(err, Error::DwpUnsupported { .. }), "{err}");
+    assert!(err.to_string().contains("not yet supported"), "{}", err);
+}
+
+/// Pairing is verified: matching build ids proceed (into the DWARF,
+/// where these synthetic bytes fail), differing ones are refused as a
+/// mismatched pair. The address-based check for id-less binaries runs
+/// against real files in the golden suite's objcopy test.
+#[test]
+fn test_sibling_build_ids_adjudicate_the_pair() {
+    let dir = scratch();
+    let opts = ExtractOptions::default();
+    let binary = full_binary(dir.path(), "app", b"same-link");
+    let dbg = companion(dir.path(), "app.dbg", b"same-link");
+    let foreign = companion(dir.path(), "other.dbg", b"another-link");
+
+    let err = extract_sources(
+        &DebugSources {
+            binary: &binary,
+            debug_info: Some(&foreign),
+        },
+        &opts,
+    )
+    .unwrap_err();
+    assert!(matches!(err, Error::SiblingMismatch { .. }), "{err}");
+    let msg = err.to_string();
+    assert!(msg.contains("build ids differ"), "{msg}");
+    assert!(msg.contains("separate debug build"), "{msg}");
+
+    let err = extract_sources(
+        &DebugSources {
+            binary: &binary,
+            debug_info: Some(&dbg),
+        },
+        &opts,
+    )
+    .unwrap_err();
+    assert!(
+        matches!(err, Error::Dwarf(_)),
+        "a matched pair should get as far as reading the (fake) DWARF: {err}"
+    );
+}
