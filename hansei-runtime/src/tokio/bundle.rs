@@ -259,10 +259,10 @@ impl<'b, T: Target> Context<'b, T> {
         let ty = self
             .view
             .ty(id)
-            .ok_or_else(|| anyhow!("bundle has no type entry for {what}"))?;
+            .ok_or_else(|| anyhow!("the tokio info has no type entry for {what}"))?;
         if matches!(ty.def(), TypeDef::Opaque { .. }) {
             bail!(
-                "bundle has no layout for {what} \
+                "the tokio info has no layout for {what} \
                  (was it extracted with --allow-missing-infra?)"
             );
         }
@@ -392,7 +392,7 @@ impl<'b, T: Target> Context<'b, T> {
             .get(&StaticRole::TlsContextKey)
             .ok_or_else(|| {
                 anyhow!(
-                    "bundle records no TLS context static \
+                    "the tokio info records no TLS context static \
                      (was it extracted with --allow-missing-infra?)"
                 )
             })?;
@@ -937,7 +937,7 @@ impl<'b, T: Target> Context<'b, T> {
         };
         ensure!(
             trailer_offset == vt.trailer_offset,
-            "bundle/target layout mismatch for {}: bundle Cell.trailer at {:#x}, \
+            "tokio-info/target layout mismatch for {}: recorded Cell.trailer at {:#x}, \
              target vtable trailer_offset {:#x}",
             known.display_name,
             trailer_offset,
@@ -946,7 +946,7 @@ impl<'b, T: Target> Context<'b, T> {
         if let Some(id_offset) = self.walk(WalkRole::CellTaskId).member_offset(cell) {
             ensure!(
                 id_offset == vt.id_offset,
-                "bundle/target layout mismatch for {}: bundle Core.task_id at {:#x}, \
+                "tokio-info/target layout mismatch for {}: recorded Core.task_id at {:#x}, \
                  target vtable id_offset {:#x}",
                 known.display_name,
                 id_offset,
@@ -1016,7 +1016,9 @@ impl<'b, T: Target> Context<'b, T> {
                     .as_ref()
                     .map(|s| format!(" (poll symbol {s})"))
                     .unwrap_or_default();
-                bail!("the task's future type is not in the bundle{sym}; nothing can be traced");
+                bail!(
+                    "the task's future type is not in the tokio info{sym}; nothing can be traced"
+                );
             }
             FutureInfo::Ambiguous { symbol, candidates } => bail!(
                 "the task's normalized future symbol {symbol} is ambiguous: {}; nothing can be traced",
@@ -1751,7 +1753,7 @@ impl<'b, T: Target> Context<'b, T> {
                 .statics
                 .entries
                 .get(&StaticRole::TaskWakerVtable)
-                .ok_or_else(|| "bundle records no task WAKER_VTABLE static".to_owned())?;
+                .ok_or_else(|| "the tokio info records no task WAKER_VTABLE static".to_owned())?;
             self.object_symbol(&def.symbol)
                 .map(|symbol| symbol.map(|s| s.st_value))
                 .map_err(|error| format!("{error:#}"))

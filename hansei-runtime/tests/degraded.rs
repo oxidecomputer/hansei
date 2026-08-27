@@ -1083,7 +1083,7 @@ fn test_a_lying_vtable_offset_is_a_loud_mismatch() {
     let errs: Vec<String> = list.errors.iter().map(|e| format!("{e:#}")).collect();
     assert!(
         errs.iter()
-            .any(|e| e.contains("bundle/target layout mismatch")),
+            .any(|e| e.contains("tokio-info/target layout mismatch")),
         "{errs:?}"
     );
 }

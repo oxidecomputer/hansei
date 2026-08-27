@@ -1527,7 +1527,7 @@ fn resolve_root(
             };
             let Some(id) = id else {
                 return Roots::Broken(vec![format!(
-                    "the bundle has no layout for {name} \
+                    "the tokio info has no layout for {name} \
                      (was it extracted with --allow-missing-infra?)"
                 )]);
             };
@@ -1550,7 +1550,7 @@ fn resolve_root(
             }
             if types.is_empty() {
                 return Roots::Broken(vec![
-                    "the bundle has no layout for either scheduler flavor's Handle \
+                    "the tokio info has no layout for either scheduler flavor's Handle \
                      (was it extracted with --allow-missing-infra?)"
                         .to_owned(),
                 ]);
@@ -1566,7 +1566,7 @@ fn resolve_root(
                 .collect();
             if types.is_empty() {
                 return Roots::Absent(format!(
-                    "no {key}\u{2026} type in the bundle (the target does not reach one)"
+                    "no {key}\u{2026} type in the tokio info (the target does not reach one)"
                 ));
             }
             let note = (types.len() > 1).then(|| format!("{} types", types.len()));

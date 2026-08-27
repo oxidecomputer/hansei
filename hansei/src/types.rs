@@ -88,7 +88,7 @@ pub fn describe(
     let matches = definitions_named(view, impls, name);
     if matches.is_empty() {
         bail!(
-            "the bundle records no type named {name}; try `find-types {name}`{}",
+            "the tokio info records no type named {name}; try `find-types {name}`{}",
             split_hint(name)
         );
     }
@@ -201,7 +201,7 @@ pub fn resolve_type_spec<'a>(
             displayed.dedup();
             match displayed.as_slice() {
                 [] => bail!(
-                    "the bundle records no type named {spec}; try `find-types {spec}`{}",
+                    "the tokio info records no type named {spec}; try `find-types {spec}`{}",
                     split_hint(spec)
                 ),
                 [name] => bail!(
