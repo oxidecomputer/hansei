@@ -146,6 +146,14 @@ pub(crate) fn exec_snapshot(
                 .max(census::Bounds::default().scan_depth),
             ..session.bounds
         },
+        // Deliberately uncorroborated, whatever this target's
+        // allocator says. A snapshot holds the pages the capture read,
+        // and the offline replay of it has no umem metadata to consult
+        // — so a walk that refused a find here would leave the pages
+        // that find's chain needs out of the snapshot, and the replay,
+        // which refuses nothing, would then read what is not there.
+        // The capture reads the whole walk; the gate is a session's.
+        None,
     );
 
     // The fixture's ground-truth registry, when the target carries one:

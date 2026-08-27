@@ -2240,6 +2240,44 @@ pub(crate) mod tests {
         f
     }
 
+    /// An index answering [`Liveness::Freed`] for exactly `block` and
+    /// [`Liveness::Unknown`] everywhere else, built without a walk.
+    ///
+    /// Everything else here lays metadata at addresses of its own
+    /// choosing and reads it back, which is what a test of the *walk*
+    /// wants. A test of a **consumer** cannot: the values it gates are
+    /// wherever its own fixture put them — a captured snapshot's heap,
+    /// megabytes from anything a fake target could hold — and no walk
+    /// can be made to answer for those. So this states the verdicts
+    /// directly, as one arena's free segments, and what it answers
+    /// still comes out of [`UmemHeap::locate`] rather than out of a
+    /// stand-in for it.
+    pub(crate) fn freeing(block: Range<u64>) -> UmemHeap {
+        let segs = vec![Seg {
+            start: block.start,
+            end: block.end,
+            arena: 0,
+            live: false,
+        }];
+        let span = block;
+        UmemHeap {
+            caches: Vec::new(),
+            slabs: Vec::new(),
+            parked: Vec::new(),
+            arenas: vec![Arena {
+                addr: 0,
+                name: "umem_oversize".to_string(),
+                segs: segs.len(),
+                live: 0,
+                freed: segs.len() as u64,
+                live_bytes: 0,
+            }],
+            segs,
+            arena_span: span,
+            stats: Stats::default(),
+        }
+    }
+
     /// Lay a cache and its slabs, and splice it into the list between
     /// the anchor and whatever is already there.
     ///
