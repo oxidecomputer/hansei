@@ -1099,6 +1099,64 @@ fn test_a_session_can_extract_from_debug_info() {
     });
 }
 
+/// `save-tokio-info` persists what a `--debug-info` session extracted
+/// at launch: the file it writes opens a later session that answers
+/// exactly what the extracting one did. A session that read a
+/// tokio-info file refuses — the file it would save already exists.
+#[test]
+fn test_save_tokio_info_persists_the_extraction() {
+    let program = "simple-await";
+    let bundle = fixtures().bundle(program);
+    let debug_binary = fixtures().debug_binary(program);
+    let command = "info\ntasks --futures\n";
+    with_core(program, |core| {
+        let dir = tempfile::tempdir().expect("failed to create a tempdir");
+        let saved = dir.path().join("saved.tinfo");
+        let save = format!("save-tokio-info {}\n", saved.display());
+
+        let out = hansei_from(
+            ("--debug-info", &debug_binary),
+            core,
+            &[],
+            &format!("{command}{save}"),
+        );
+        assert!(
+            out.status.success(),
+            "saving session failed:\n{}\n{}",
+            String::from_utf8_lossy(&out.stderr),
+            String::from_utf8_lossy(&out.stdout)
+        );
+        let extracting = String::from_utf8(out.stdout).expect("hansei output is UTF-8");
+        assert!(
+            extracting.contains(&format!("wrote {}", saved.display())),
+            "the save should say where it wrote:\n{extracting}"
+        );
+
+        // The saved file answers as the extracting session did, but
+        // for the summary line that says which way in it was.
+        let from_saved = hansei_ok(&saved, core, command);
+        let strip = |out: &str| {
+            out.lines()
+                .filter(|line| !line.starts_with("wrote "))
+                .map(|line| match line.starts_with("tokio info: ") {
+                    true => "tokio info: <source>",
+                    false => line,
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        assert_eq!(strip(&from_saved), strip(&extracting));
+
+        let out = hansei(&bundle, core, &save);
+        assert!(
+            !out.status.success(),
+            "a --tokio-info session accepted save-tokio-info"
+        );
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(stderr.contains("nothing to save"), "{stderr}");
+    });
+}
+
 // ---------------------------------------------------------------------------
 // Acceptance tests: exact await-chain goldens
 // ---------------------------------------------------------------------------
