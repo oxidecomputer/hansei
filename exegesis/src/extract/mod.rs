@@ -34,7 +34,9 @@ pub use sources::DebugFlavor;
 use self::paths::{OwnedLoc, display_path, rustc_below_floor, rustc_version_of, tokio_version_of};
 use self::statics::find_statics;
 use self::sweep::{Sweep, cell_from_dealloc_param, find_stage, sweep_functions};
-use self::vtables::{VtableTypeHint, discover_vtable_types, resolve_vtable_type_hints};
+use self::vtables::{
+    VtableTypeHint, discover_vtable_types, harvest_vtables, resolve_vtable_type_hints,
+};
 use crate::bundle::{
     BinaryIdent, Bundle, BundleTypeId, DebugSourceIdent, DynFutureTable, FamilyCeiling, FutureKind,
     InfraTypes, Meta, Provenance, ProvenanceTable, SourceLoc, StaticsTable, TaskEntryId,
@@ -146,6 +148,25 @@ pub struct ExtractStats {
     pub vtable_types_missing: usize,
     /// Vtable type hints that matched multiple distinct DWARF layouts.
     pub vtable_types_ambiguous: usize,
+    /// Distinct `<C as T>::{vtable}` DIEs harvested from the DWARF.
+    pub vtables_harvested: usize,
+    /// Vtable DIEs whose `{vtable_type}` is missing or is not a whole
+    /// number of words with room for the drop-glue/size/align header.
+    pub vtables_unshaped: usize,
+    /// Vtable DIEs whose name did not split into a concrete type and a
+    /// trait around the type `DW_AT_containing_type` names.
+    pub vtables_unsplit: usize,
+    /// Vtable DIEs with no statically resolvable address.
+    pub vtables_no_location: usize,
+    /// Vtable DIEs dropped as an exact repeat of one already harvested
+    /// (embedded DWARF describes a vtable once per referencing CGU).
+    pub vtables_duplicate: usize,
+    /// Addresses carrying more than one `<C as T>` name — vtables the
+    /// linker folded together, and so the pairs a lookup cannot separate.
+    pub vtables_folded: usize,
+    /// Harvested vtables with at least one method slot the debug info
+    /// describes no member for.
+    pub vtables_vacant: usize,
     /// Total types emitted into the bundle.
     pub types_emitted: usize,
     /// Emitted `Opaque` entries (placeholders included).
@@ -243,6 +264,14 @@ impl fmt::Display for ExtractStats {
             "  ambiguous:              {}",
             self.vtable_types_ambiguous
         )?;
+        writeln!(f, "vtables:")?;
+        writeln!(f, "  harvested:              {}", self.vtables_harvested)?;
+        writeln!(f, "  unshaped:               {}", self.vtables_unshaped)?;
+        writeln!(f, "  unsplit names:          {}", self.vtables_unsplit)?;
+        writeln!(f, "  no location:            {}", self.vtables_no_location)?;
+        writeln!(f, "  duplicate DIEs:         {}", self.vtables_duplicate)?;
+        writeln!(f, "  folded addresses:       {}", self.vtables_folded)?;
+        writeln!(f, "  with vacant slots:      {}", self.vtables_vacant)?;
         writeln!(
             f,
             "include roots:            {} resolved",
@@ -946,6 +975,11 @@ fn extract_from_view(
     }
 
     let vtable_type_ids = resolve_vtable_type_hints(reader, vtable_types, &mut stats);
+
+    // The trait-object vtable table. Nothing carries it into the bundle
+    // yet, so for now the harvest reports itself through `--stats` and a
+    // `debug!` line per vtable.
+    let _vtables = harvest_vtables(reader, &mut stats);
 
     // --- Phase 3: transitive closure and emission. ---
 
