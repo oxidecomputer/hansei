@@ -2130,6 +2130,11 @@ pub(crate) mod tests {
         f.symbol("umem_tmem_off", BASE + 0x308);
         f.put_u64(BASE + 0x308, TMEM_OFF);
         f.thread(tid, ulwp);
+        // The size the roots follow, given a value that would pass for
+        // a buffer if anything ever read it as a root: a walk off by
+        // one word parks that buffer as well as the magazine holding
+        // it, and the set is refused for holding it twice.
+        f.put_u64(ulwp + TMEM_OFF, BUFFERS);
         for &(root, buffers) in held {
             let mut next = 0;
             for &buf in buffers.iter().rev() {
@@ -2464,6 +2469,11 @@ pub(crate) mod tests {
                 source: Source::Cache(cache("umem_alloc_128")),
             }
         );
+
+        // Which layer answered, by name: what the audit prints beside a
+        // verdict, and the only thing that says which of the two the
+        // index holds it came from.
+        assert_eq!(heap.source_name(Source::Cache(alloc_64)), "umem_alloc_64");
 
         // Past the last chunk of a slab is the slab's own metadata and
         // colouring, which no chunk covers and nothing claims.
@@ -3205,6 +3215,146 @@ pub(crate) mod tests {
         );
     }
 
+    /// A cache whose CPUs have never loaded a magazine keeps nothing in
+    /// their own copies of the size, and the magazine type it points at
+    /// is what says how big a full magazine is — which is the only
+    /// thing that says how many rounds the depot's hold.
+    fn depot_only() -> (Fake, u64) {
+        let mut f = fake();
+        cache(
+            &mut f,
+            0,
+            "umem_alloc_64",
+            64,
+            0,
+            &[SlabSpec {
+                base: BUFFERS,
+                chunks: 8,
+                free: vec![7],
+            }],
+        );
+        magazines(
+            &mut f,
+            0,
+            &Magazines {
+                magsize: 0,
+                cpus: vec![(Vec::new(), Vec::new())],
+                depot: vec![vec![BUFFERS, BUFFERS + 64, BUFFERS + 128]],
+            },
+        );
+        let magtype = MAGS + 0x1000;
+        f.put_u64(CACHES + LP64.cache_magtype, magtype);
+        f.put_u32(magtype + LP64.mt_magsize, 3);
+        (f, magtype)
+    }
+
+    #[test]
+    fn test_a_cache_that_never_loaded_a_magazine_asks_its_magazine_type() {
+        let (f, _) = depot_only();
+        let heap = UmemHeap::build(&f).expect("the walk built an index");
+        assert!(!heap.stats().incomplete());
+        assert_eq!(heap.stats().parked_chunks, 3);
+        assert!(heap.violations().is_empty(), "{:?}", heap.violations());
+
+        // A cache whose magazine layer is turned off holds nothing
+        // there whatever its depot looks like, and that is nothing to
+        // walk rather than something unreadable.
+        let (mut f, _) = depot_only();
+        f.put_u32(CACHES + LP64.cache_flags, UMF_NOMAGAZINE);
+        let heap = UmemHeap::build(&f).expect("the walk built an index");
+        assert!(!heap.stats().incomplete());
+        assert_eq!(heap.stats().parked_chunks, 0);
+
+        // And one whose type says a magazine holds a number of rounds
+        // no magazine could is a type read from the wrong place.
+        let (mut f, magtype) = depot_only();
+        f.put_u32(magtype + LP64.mt_magsize, MAX_ROUNDS as u32 + 1);
+        let heap = UmemHeap::build(&f).expect("the slab layer still walks");
+        assert_eq!(heap.stats().caches_parked_declined, 1);
+    }
+
+    /// The depot's list may end by looping back to its own head rather
+    /// than at a null, and both are the whole list once.
+    #[test]
+    fn test_a_depot_list_that_loops_back_to_its_head_ends_there() {
+        let mut f = fake();
+        cache(
+            &mut f,
+            0,
+            "umem_alloc_64",
+            64,
+            0,
+            &[SlabSpec {
+                base: BUFFERS,
+                chunks: 8,
+                free: vec![7],
+            }],
+        );
+        magazines(
+            &mut f,
+            0,
+            &Magazines {
+                magsize: 3,
+                cpus: vec![(Vec::new(), Vec::new())],
+                depot: vec![
+                    vec![BUFFERS, BUFFERS + 64, BUFFERS + 128],
+                    vec![BUFFERS + 192, BUFFERS + 256, BUFFERS + 320],
+                ],
+            },
+        );
+        // The list the builder laid ends at a null; libumem's ends by
+        // coming back to its own head, and both are the whole list
+        // once round.
+        let depot = CACHES + LP64.cache_full;
+        let head = f.read_u64(depot + LP64.ml_list).unwrap();
+        let second = f.read_u64(head + LP64.mag_next).unwrap();
+        f.put_u64(second + LP64.mag_next, head);
+        let heap = UmemHeap::build(&f).expect("the walk built an index");
+        assert!(!heap.stats().incomplete());
+        assert_eq!(heap.stats().parked_chunks, 6);
+    }
+
+    /// A depot that claims more magazines than a target could hold, and
+    /// one whose list is longer than it claims: the first is bounded
+    /// before the walk starts, the second while it runs.
+    #[test]
+    fn test_an_implausible_depot_declines_the_layer() {
+        for (member, value) in [(LP64.ml_total, MAX_MAGAZINES + 1), (LP64.ml_total, 0)] {
+            let mut f = magazined();
+            f.put_u64(CACHES + LP64.cache_full + member, value);
+            let heap = UmemHeap::build(&f).expect("the slab layer still walks");
+            assert_eq!(heap.stats().caches_parked_declined, 1, "{value}");
+            assert_eq!(heap.stats().parked_chunks, 0);
+        }
+    }
+
+    /// A CPU cache array is sized to a mask, so its count is a power of
+    /// two; anything else is a number read from the wrong place.
+    #[test]
+    fn test_an_implausible_cpu_count_declines_the_layer() {
+        for mask in [2u32, MAX_CPUS as u32] {
+            let mut f = magazined();
+            f.put_u32(CACHES + LP64.cache_cpu_mask, mask);
+            let heap = UmemHeap::build(&f).expect("the slab layer still walks");
+            assert_eq!(heap.stats().caches_parked_declined, 1, "{mask}");
+        }
+    }
+
+    /// A magazine as full as its own size is the ordinary case, not the
+    /// one over it: the check is on more rounds than fit, not on as
+    /// many as fit.
+    #[test]
+    fn test_a_magazine_filled_to_its_size_is_walked() {
+        let mut f = magazined();
+        let loaded = magazine(&mut f, 9, &[BUFFERS, BUFFERS + 320, BUFFERS + 384]);
+        let cpu = CACHES + LP64.cache_cpu;
+        f.put_u32(cpu + LP64.cc_rounds, 3);
+        f.put_u64(cpu + LP64.cc_loaded, loaded);
+        let heap = UmemHeap::build(&f).expect("the walk built an index");
+        assert!(!heap.stats().incomplete());
+        assert_eq!(heap.stats().parked_chunks, 7);
+    }
+
     /// The layer no cache records: a buffer a thread is holding for
     /// itself, found by walking threads rather than caches.
     #[test]
@@ -3221,6 +3371,59 @@ pub(crate) mod tests {
             (0, 7)
         );
         assert!(matches!(heap.locate(BUFFERS + 320), Liveness::Freed { .. }));
+    }
+
+    /// A thread's roots are a size followed by the roots themselves, so
+    /// reading them one word early reads the size as a buffer. The
+    /// fixture puts a plausible buffer address there for exactly that:
+    /// a walk off by one word parks a buffer twice and refuses the set.
+    #[test]
+    fn test_a_threads_roots_begin_past_the_size_before_them() {
+        let mut f = magazined();
+        f.put_u32(CACHES + LP64.cache_flags, UMF_PTC);
+        per_thread(&mut f, 1, &[(4, &[BUFFERS + 320])]);
+        let heap = UmemHeap::build(&f).expect("the walk built an index");
+        assert!(!heap.stats().incomplete());
+        assert_eq!(heap.stats().parked_chunks, 6);
+    }
+
+    /// A thread pointer that does not point at a thread is a number,
+    /// and the layer it would have been read through declines.
+    #[test]
+    fn test_a_thread_pointer_that_names_no_thread_declines_the_layer() {
+        let mut f = magazined();
+        f.put_u32(CACHES + LP64.cache_flags, UMF_PTC);
+        per_thread(&mut f, 1, &[(4, &[BUFFERS + 320])]);
+        f.put_u64(THREADS + 0x200, 0);
+        let heap = UmemHeap::build(&f).expect("the slab layer still walks");
+        assert!(!heap.stats().ptc_walked);
+        assert_eq!(heap.stats().parked_chunks, 5);
+    }
+
+    /// A cache libumem does not cache per thread has no per-thread list
+    /// to be in, so a root holding one of its buffers is a root read
+    /// from the wrong place.
+    #[test]
+    fn test_a_thread_holding_a_buffer_of_a_cache_it_cannot_cache_declines() {
+        let mut f = magazined();
+        per_thread(&mut f, 1, &[(4, &[BUFFERS + 320])]);
+        let heap = UmemHeap::build(&f).expect("the slab layer still walks");
+        assert!(!heap.stats().ptc_walked);
+        assert_eq!(heap.stats().parked_chunks, 5);
+    }
+
+    /// A list that never ends is bounded rather than followed, however
+    /// long a thread's cache is allowed to be.
+    #[test]
+    fn test_a_thread_cache_that_loops_is_bounded_and_refused() {
+        let mut f = magazined();
+        f.put_u32(CACHES + LP64.cache_flags, UMF_PTC);
+        per_thread(&mut f, 1, &[(4, &[BUFFERS + 320, BUFFERS + 384])]);
+        // The second buffer points back at the first.
+        f.put_u64(BUFFERS + 384, BUFFERS + 320);
+        let heap = UmemHeap::build(&f).expect("the slab layer still walks");
+        assert!(!heap.stats().ptc_walked);
+        assert_eq!(heap.stats().parked_chunks, 5);
     }
 
     /// A core can name one thread from two LWP records, and nexus has
@@ -3290,6 +3493,7 @@ pub(crate) mod tests {
             .iter()
             .position(|a| a.name == "umem_oversize")
             .expect("the arena is in the index");
+        assert_eq!(heap.source_name(Source::Arena(oversize)), "umem_oversize");
         // An address inside the allocation, not only its base: an
         // arena's segment is the whole extent, so anything in it is
         // answered for.
