@@ -197,7 +197,7 @@ pub trait Target: Sync {
     /// per-object symbols: an illumos core carries one table per
     /// mapped object, so a library's internals are readable from the
     /// core alone, while a Linux core carries no symbols at all and
-    /// only the `--program` executable's are on hand.
+    /// only the `--binary` executable's are on hand.
     fn lookup_symbol_by_name(&self, name: &str) -> Option<SymbolBuf>;
 
     /// Every function symbol in the target executable's symtab.
@@ -608,14 +608,14 @@ pub fn fault_code_name(signal: &str, code: i32) -> Option<&'static str> {
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct BuildIds {
     pub core: Option<Vec<u8>>,
-    pub program: Option<Vec<u8>>,
+    pub binary: Option<Vec<u8>>,
 }
 
 impl BuildIds {
     /// Whether the two are both present and differ — the one case that
     /// says the file is not the binary the core was taken from.
     pub fn disagree(&self) -> bool {
-        matches!((&self.core, &self.program), (Some(a), Some(b)) if a != b)
+        matches!((&self.core, &self.binary), (Some(a), Some(b)) if a != b)
     }
 }
 

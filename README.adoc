@@ -1,8 +1,8 @@
 = Hansei
 
-A suite of tools for extracting DWARF-derived *debug bundles* from Rust
-binaries and using them to reconstruct the runtime state of a live (or cored)
-`tokio` process.
+A suite of tools for extracting DWARF-derived *tokio runtime debug info*
+from Rust binaries and using it to reconstruct the runtime state of a live
+(or cored) `tokio` process.
 
 Experimental and mostly untested, expect bugs.
 
@@ -12,73 +12,73 @@ These are the workspace members that may be useful:
 
 * hansei: The one binary. Inspect the state of the `tokio` multi-threaded
   runtime in a core dump: task listings, automatic await-chain traces, and
-  task dependency graphs with futurelock detection; `hansei bundle` produces
-  and inspects the bundles it reads.
-* exegesis: The library behind `hansei bundle`: read a debug binary's DWARF
-  and extract a self-contained *debug bundle* describing its async runtime
-  and types.
-* hansei-bundle: The bundle's wire format, and the only thing the read side
-  depends on.
+  task dependency graphs with futurelock detection; `hansei tokio-info`
+  produces and inspects the tokio-info files it reads.
+* exegesis: The library behind `hansei tokio-info`: read a debug binary's
+  DWARF and extract a self-contained *tokio-info* file describing its async
+  runtime and types.
+* hansei-bundle: The tokio-info file's wire format, and the only thing the
+  read side depends on.
 * hansei-runtime: The tokio-introspection library behind hansei.
-* reify: Interpret a process's memory through a debug bundle, rendering values
-  of the bundle's types for humans.
+* reify: Interpret a process's memory through a tokio-info file, rendering
+  values of its recorded types for humans.
 * proc: Target access — readers for illumos and Linux core dumps, minimal
   bindings for illumos `libproc`, and replayable target snapshots.
 
 A core is read according to what wrote it rather than what is reading it, so an
 illumos core opens on Linux and a Linux core opens on illumos. hansei inspects
-cores only; take one with `gcore` and point hansei at it. Bundle extraction
-and type/value work (reify) are portable.
+cores only; take one with `gcore` and point hansei at it. Extraction and
+type/value work (reify) are portable.
 
 == Usage
 
-The workflow has two stages: extract a bundle once from a debug binary
+The workflow has two stages: extract tokio info once from a debug binary
 (anywhere), then point hansei at a matching target.
 
-=== 1. Extract a bundle
+=== 1. Extract tokio info
 
-Read the DWARF from a debug build and write a bundle:
+Read the DWARF from a debug build and write a tokio-info file:
 
 [source,sh]
 ----
-hansei bundle extract path/to/sled-agent.debug -o sled-agent.bundle
+hansei tokio-info extract path/to/sled-agent.debug -o sled-agent.tinfo
 ----
 
-The bundle is self-contained; the debug binary is not needed again. Other
+The file is self-contained; the debug binary is not needed again. Other
 subcommands inspect what was produced:
 
 [source,sh]
 ----
-hansei bundle stats sled-agent.bundle   # summary counts
-hansei bundle dump  sled-agent.bundle   # full tables as text
+hansei tokio-info stats sled-agent.tinfo   # summary counts
+hansei tokio-info dump  sled-agent.tinfo   # full tables as text
 ----
 
 `extract --include-type <fqn>` forces an otherwise-unreached type to be
 emitted, and `--allow-missing-infra` lets extraction proceed on a binary that
 isn't a tokio target.
 
-A session can also skip this stage: `--debug-binary` in place of `--bundle`
-extracts one in memory while the core is attaching. That is the answer for a
-one-off look, and a bundle file the answer when the same target will be
+A session can also skip this stage: `--debug-info` in place of `--tokio-info`
+extracts in memory while the core is attaching. That is the answer for a
+one-off look, and a tokio-info file the answer when the same target will be
 opened again.
 
 === 2. Inspect a target
 
 hansei reads a core dump (`--core`) written by either system, interpreting it
-through the bundle from step 1. Together they name a *session*, and what to ask
-of it is read from stdin.
+through the tokio info from step 1. Together they name a *session*, and what
+to ask of it is read from stdin.
 
 [source,sh]
 ----
-hansei --core core.sled-agent --bundle sled-agent.bundle
+hansei --core core.sled-agent --tokio-info sled-agent.tinfo
 ----
 
-A **Linux** core needs a third file, `--program`: the executable it was taken
+A **Linux** core needs a third file, `--binary`: the executable it was taken
 from.
 
 [source,sh]
 ----
-hansei --core core.oxide --bundle oxide.bundle --program ./oxide
+hansei --core core.oxide --tokio-info oxide.tinfo --binary ./oxide
 ----
 
 This is not a convenience. A Linux core carries no symbol table — `.symtab` is
@@ -89,11 +89,11 @@ that file not one symbol resolves. An illumos core carries each mapped object's
 symbol table in its own section headers, so it needs no companion binary and
 warns if given one.
 
-Pass the binary that **ran**, not the debug build behind `--bundle`. The two
-share no addresses, and the debug build resolves every symbol *name*, so
-nothing downstream would notice; hansei compares the core's `NT_GNU_BUILD_ID`
-against the file's and refuses a mismatch (`--force` downgrades it to a
-warning).
+Pass the binary that **ran**, not a separate debug build of the same source.
+The two share no addresses, and the debug build resolves every symbol *name*,
+so nothing downstream would notice; hansei compares the core's
+`NT_GNU_BUILD_ID` against the file's and refuses a mismatch (`--force`
+downgrades it to a warning).
 
 When stdin is a terminal that is a prompt, with history, tab completion, and
 errors that end the command rather than the session:
@@ -106,7 +106,7 @@ hansei〉graph                    # the dependency graph, and any futurelock
 hansei〉threads                  # the runtime's threads: worker cores and stacks
 hansei〉runtime shared           # the scheduler state the workers share
 hansei〉runtime drivers          # the io, signal and time drivers
-hansei〉find-types oxide         # bundle type names containing a substring
+hansei〉find-types oxide         # recorded type names containing a substring
 hansei〉type sled_agent::Foo     # one type's recorded layout
 hansei〉type -r sled_agent::Foo  # that layout with everything it names in it
 hansei〉info                     # what is attached, and how well it matches
@@ -119,7 +119,7 @@ hansei〉quit
 graph flags any futurelock — a lock future granted or queued on a contended
 semaphore whose task stopped polling it (RFD 609). `threads` and `runtime`
 read the runtime's own state out of the target and take the same
-`--depth`; `find-types` and `type` ask the bundle instead of the target, and
+`--depth`; `find-types` and `type` ask the tokio info instead of the target, and
 report the layouts every other command decodes memory with — `type` stops at
 the names a layout mentions, `type --recursive`/`-r` opens each of them under
 the line that names it, and whatever they name in turn, marking with a `…`
@@ -134,11 +134,11 @@ line instead, and the session exits when they are answered:
 
 [source,sh]
 ----
-echo 'trace 42 -v' | hansei --core core.sled-agent --bundle sled-agent.bundle
+echo 'trace 42 -v' | hansei --core core.sled-agent --tokio-info sled-agent.tinfo
 
-hansei --core core.sled-agent --bundle sled-agent.bundle -e 'tasks; graph'
+hansei --core core.sled-agent --tokio-info sled-agent.tinfo -e 'tasks; graph'
 
-hansei --core core.sled-agent --bundle sled-agent.bundle <<'EOF'
+hansei --core core.sled-agent --tokio-info sled-agent.tinfo <<'EOF'
 # blank lines and comments are skipped
 tasks
 graph
@@ -148,9 +148,9 @@ EOF
 Either way the session stops at the first command that fails and exits
 non-zero; `quit` ends it early.
 
-The session takes `--force`/`-f` to proceed even when the bundle's symbols don't all
-resolve in the target (a bundle from a mismatched build otherwise refuses to
-attach); `trace` takes `--ugly`/`-u` to bypass the custom value formatters and
+The session takes `--force`/`-f` to proceed even when the tokio info's symbols
+don't all resolve in the target (tokio info from a mismatched build otherwise
+refuses to attach); `trace` takes `--ugly`/`-u` to bypass the custom value formatters and
 show the raw structural view.
 
 == What's with the name?

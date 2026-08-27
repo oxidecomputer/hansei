@@ -1,10 +1,10 @@
-//! `hansei bundle …` — the producing side.
+//! `hansei tokio-info …` — the producing side.
 //!
-//! A session reads a bundle; these verbs make one, and say what is in
-//! it. They are thin wrappers over `exegesis`'s public library calls,
-//! and this is the one place in hansei that reaches for the DWARF
-//! stack: nothing a session, the runtime, or the renderer does may
-//! import exegesis.
+//! A session reads a tokio-info file; these verbs make one, and say
+//! what is in it. They are thin wrappers over `exegesis`'s public
+//! library calls, and this is the one place in hansei that reaches for
+//! the DWARF stack: nothing a session, the runtime, or the renderer
+//! does may import exegesis.
 
 use anyhow::{Context as _, Result};
 use clap::Subcommand;
@@ -15,11 +15,11 @@ use std::path::{Path, PathBuf};
 
 #[derive(Subcommand)]
 pub enum BundleCmd {
-    /// Extract an async debug bundle from a debug binary's DWARF.
+    /// Extract tokio runtime debug info from a debug binary's DWARF.
     Extract {
         /// Debug binary (or any DWARF-bearing object).
         binary: PathBuf,
-        /// Output bundle path.
+        /// Output path (`.tinfo` by convention).
         #[arg(short, long)]
         output: PathBuf,
         /// Print extraction statistics.
@@ -41,15 +41,15 @@ pub enum BundleCmd {
         #[arg(long, value_name = "ROLE")]
         explain_walk: Option<String>,
     },
-    /// Print summary statistics for a bundle file.
+    /// Print summary statistics for a tokio-info file.
     Stats {
-        /// Bundle file produced by `hansei bundle extract`.
-        bundle: PathBuf,
+        /// Tokio-info file produced by `hansei tokio-info extract`.
+        tokio_info: PathBuf,
     },
-    /// Dump a bundle's tables as text.
+    /// Dump a tokio-info file's tables as text.
     Dump {
-        /// Bundle file produced by `hansei bundle extract`.
-        bundle: PathBuf,
+        /// Tokio-info file produced by `hansei tokio-info extract`.
+        tokio_info: PathBuf,
     },
     /// Parse a binary's DWARF and summarize its types and statics.
     #[command(hide = true)]
@@ -78,8 +78,8 @@ pub fn exec(cmd: BundleCmd) -> Result<()> {
             explain_format,
             explain_walk,
         ),
-        BundleCmd::Stats { bundle } => stats(&bundle),
-        BundleCmd::Dump { bundle } => dump(&bundle),
+        BundleCmd::Stats { tokio_info } => stats(&tokio_info),
+        BundleCmd::Dump { tokio_info } => dump(&tokio_info),
         BundleCmd::DumpDwarf { binary } => dump_dwarf(&binary),
     }
 }
@@ -93,7 +93,7 @@ fn load(path: &Path) -> Result<Bundle> {
 
 /// Extract a bundle for a session to attach to, rather than for a file
 /// to be written: every option is its default, since the flags that
-/// shape an extraction are `bundle extract`'s alone, and the argv a
+/// shape an extraction are `tokio-info extract`'s alone, and the argv a
 /// bundle records is provenance for a file this one never becomes.
 ///
 /// The warnings come back as text for the caller to print when it
@@ -201,7 +201,7 @@ fn extract(
 fn stats(path: &Path) -> Result<()> {
     let bundle = load(path)?;
     let m = &bundle.meta;
-    println!("bundle: {}", path.display());
+    println!("tokio info: {}", path.display());
     println!("  format version:  {}", m.format_version);
     println!("  rustc:           {}", m.rustc_version);
     match &m.tokio_version {
@@ -557,10 +557,10 @@ mod tests {
 
         for cmd in [
             BundleCmd::Stats {
-                bundle: junk.clone(),
+                tokio_info: junk.clone(),
             },
             BundleCmd::Dump {
-                bundle: junk.clone(),
+                tokio_info: junk.clone(),
             },
             BundleCmd::DumpDwarf {
                 binary: junk.clone(),

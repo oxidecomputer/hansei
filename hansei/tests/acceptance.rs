@@ -194,7 +194,7 @@ struct Fixtures {
     /// Build A: the binaries that run (and are cored).
     bin_a: PathBuf,
     /// Build B: the same programs carrying DWARF, which the bundles
-    /// below were extracted from and which `--debug-binary` takes.
+    /// below were extracted from and which `--debug-info` takes.
     bin_b: PathBuf,
     /// Bundles extracted from build B, one per program.
     bundles: PathBuf,
@@ -393,7 +393,7 @@ fn with_core(program: &str, check: impl Fn(&Path)) {
     check(&core);
 }
 
-/// The `--program` flags an attach to `core` needs, if any.
+/// The `--binary` flags an attach to `core` needs, if any.
 ///
 /// A Linux core carries no symbol table, so hansei requires the
 /// executable to be named; an illumos core carries its own and warns if
@@ -401,9 +401,9 @@ fn with_core(program: &str, check: impl Fn(&Path)) {
 /// where it was, so the path the core recorded is the right answer —
 /// which is the whole reason the flag can be filled in here rather than
 /// threaded through every caller.
-fn program_args(core: &Path) -> Vec<PathBuf> {
+fn binary_args(core: &Path) -> Vec<PathBuf> {
     let proc = Proc::open_core(core).expect("failed to open the core");
-    match proc.needs_program() {
+    match proc.needs_binary() {
         false => Vec::new(),
         true => vec![proc.exec_name().expect("the core names no executable")],
     }
@@ -419,12 +419,12 @@ fn hansei(bundle: &Path, core: &Path, command: &str) -> Output {
 /// [`hansei`], with session flags — what shapes the attach itself, and
 /// so cannot be asked for once a session is up.
 fn hansei_with(bundle: &Path, core: &Path, flags: &[&str], command: &str) -> Output {
-    hansei_from(("--bundle", bundle), core, flags, command)
+    hansei_from(("--tokio-info", bundle), core, flags, command)
 }
 
 /// [`hansei_with`], saying where the session's types come from: a
-/// bundle file behind `--bundle`, or a debug build behind
-/// `--debug-binary` for the session to extract one from at launch.
+/// tokio-info file behind `--tokio-info`, or a debug build behind
+/// `--debug-info` for the session to extract one from at launch.
 fn hansei_from(types: (&str, &Path), core: &Path, flags: &[&str], command: &str) -> Output {
     let (types_flag, types_path) = types;
     let mut child = Command::new(env!("CARGO_BIN_EXE_hansei"))
@@ -434,9 +434,9 @@ fn hansei_from(types: (&str, &Path), core: &Path, flags: &[&str], command: &str)
         .arg(core)
         .args(flags)
         .args(
-            program_args(core)
+            binary_args(core)
                 .iter()
-                .flat_map(|p| ["--program".as_ref(), p.as_os_str()]),
+                .flat_map(|p| ["--binary".as_ref(), p.as_os_str()]),
         )
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -458,9 +458,13 @@ fn hansei_from(types: (&str, &Path), core: &Path, flags: &[&str], command: &str)
 /// so a run that succeeds is also proof that `--exec` is what was read.
 fn hansei_exec(bundle: &Path, core: &Path, exec: &[&str]) -> Output {
     let mut command = Command::new(env!("CARGO_BIN_EXE_hansei"));
-    command.arg("--bundle").arg(bundle).arg("--core").arg(core);
-    for program in program_args(core) {
-        command.arg("--program").arg(program);
+    command
+        .arg("--tokio-info")
+        .arg(bundle)
+        .arg("--core")
+        .arg(core);
+    for binary in binary_args(core) {
+        command.arg("--binary").arg(binary);
     }
     for commands in exec {
         command.arg("--exec").arg(commands);
@@ -1045,13 +1049,14 @@ fn assert_locals(verbose_trace: &str, names: &[&str]) {
 }
 
 /// A session opens on a debug build directly, extracting at launch,
-/// and answers exactly what the bundle file extracted from that same
-/// build answers — but for the one line that says which way in it was.
+/// and answers exactly what the tokio-info file extracted from that
+/// same build answers — but for the one line that says which way in it
+/// was.
 ///
-/// The equivalence is the point: `--debug-binary` is meant to save the
+/// The equivalence is the point: `--debug-info` is meant to save the
 /// operator a file, not to be a second, lesser way of reading a target.
 #[test]
-fn test_a_session_can_extract_from_a_debug_binary() {
+fn test_a_session_can_extract_from_debug_info() {
     let program = "simple-await";
     let bundle = fixtures().bundle(program);
     let debug_binary = fixtures().debug_binary(program);
@@ -1060,7 +1065,7 @@ fn test_a_session_can_extract_from_a_debug_binary() {
     let command = "info\ntasks --futures\ngraph\n";
     with_core(program, |core| {
         let from_bundle = hansei_ok(&bundle, core, command);
-        let out = hansei_from(("--debug-binary", &debug_binary), core, &[], command);
+        let out = hansei_from(("--debug-info", &debug_binary), core, &[], command);
         let stderr = String::from_utf8_lossy(&out.stderr);
         assert!(
             out.status.success(),
@@ -1072,19 +1077,19 @@ fn test_a_session_can_extract_from_a_debug_binary() {
 
         assert!(
             from_binary.contains(&format!(
-                "bundle: extracted from {}",
+                "tokio info: extracted from {}",
                 debug_binary.display()
             )),
             "the summary should name what it extracted from:\n{from_binary}"
         );
         assert!(
-            from_bundle.contains(&format!("bundle: {}", bundle.display())),
-            "the summary should name the bundle it read:\n{from_bundle}"
+            from_bundle.contains(&format!("tokio info: {}", bundle.display())),
+            "the summary should name the tokio-info file it read:\n{from_bundle}"
         );
         let strip_source = |out: &str| {
             out.lines()
-                .map(|line| match line.starts_with("bundle: ") {
-                    true => "bundle: <source>",
+                .map(|line| match line.starts_with("tokio info: ") {
+                    true => "tokio info: <source>",
                     false => line,
                 })
                 .collect::<Vec<_>>()
@@ -3256,13 +3261,17 @@ fn test_mismatched_bundle_refused() {
     assert!(fp.matched < fp.total, "{}/{}", fp.matched, fp.total);
 }
 
-/// Run hansei against `core` with exactly the `--program` given, past
+/// Run hansei against `core` with exactly the `--binary` given, past
 /// the helper that would otherwise fill one in.
-fn hansei_with_program(bundle: &Path, core: &Path, program: Option<&Path>) -> Output {
+fn hansei_with_binary(bundle: &Path, core: &Path, binary: Option<&Path>) -> Output {
     let mut command = Command::new(env!("CARGO_BIN_EXE_hansei"));
-    command.arg("--bundle").arg(bundle).arg("--core").arg(core);
-    if let Some(program) = program {
-        command.arg("--program").arg(program);
+    command
+        .arg("--tokio-info")
+        .arg(bundle)
+        .arg("--core")
+        .arg(core);
+    if let Some(binary) = binary {
+        command.arg("--binary").arg(binary);
     }
     command
         .arg("--exec")
@@ -3276,45 +3285,45 @@ fn hansei_with_program(bundle: &Path, core: &Path, program: Option<&Path>) -> Ou
 /// core carries its own symbols, and says so rather than taking a flag
 /// it would not use.
 #[test]
-fn test_program_required_for_a_linux_core() {
+fn test_binary_required_for_a_linux_core() {
     with_core("simple-await", |core| {
         let bundle = fixtures().bundle("simple-await");
-        let out = hansei_with_program(&bundle, core, None);
+        let out = hansei_with_binary(&bundle, core, None);
         let stderr = String::from_utf8_lossy(&out.stderr);
 
-        if !Proc::open_core(core).expect("core opens").needs_program() {
+        if !Proc::open_core(core).expect("core opens").needs_binary() {
             assert!(
                 out.status.success(),
-                "a core carrying its own symbols needs no --program:\n{stderr}"
+                "a core carrying its own symbols needs no --binary:\n{stderr}"
             );
             return;
         }
 
         assert!(
             !out.status.success(),
-            "a Linux core without --program must be refused:\n{}",
+            "a Linux core without --binary must be refused:\n{}",
             String::from_utf8_lossy(&out.stdout)
         );
         assert!(
-            stderr.contains("--program is required"),
+            stderr.contains("--binary is required"),
             "diagnostic does not name the missing input:\n{stderr}"
         );
-        // The failure this replaces blamed the bundle for a missing
+        // The failure this replaces blamed the tokio info for a missing
         // file, which sent the reader after the wrong thing entirely.
         assert!(
             !stderr.contains("does not match this binary"),
-            "a missing executable must not read as a bundle mismatch:\n{stderr}"
+            "a missing executable must not read as a tokio-info mismatch:\n{stderr}"
         );
     });
 }
 
-/// The debug build that produced the bundle resolves every symbol name
+/// The debug build the tokio info came from resolves every symbol name
 /// and shares none of the addresses, so the fingerprint cannot see the
 /// substitution — the build id is what catches it.
 #[test]
-fn test_wrong_program_refused_by_build_id() {
+fn test_wrong_binary_refused_by_build_id() {
     with_core("simple-await", |core| {
-        if !Proc::open_core(core).expect("core opens").needs_program() {
+        if !Proc::open_core(core).expect("core opens").needs_binary() {
             return;
         }
         let bundle = fixtures().bundle("simple-await");
@@ -3322,7 +3331,7 @@ fn test_wrong_program_refused_by_build_id() {
         // and its build id is necessarily another one.
         let wrong = fixtures().program("futurelock");
 
-        let out = hansei_with_program(&bundle, core, Some(&wrong));
+        let out = hansei_with_binary(&bundle, core, Some(&wrong));
         let stderr = String::from_utf8_lossy(&out.stderr);
         assert!(
             !out.status.success(),
@@ -3341,11 +3350,11 @@ fn test_wrong_program_refused_by_build_id() {
         // `--force` downgrades it, as it does the fingerprint.
         let mut forced = Command::new(env!("CARGO_BIN_EXE_hansei"));
         let out = forced
-            .arg("--bundle")
+            .arg("--tokio-info")
             .arg(&bundle)
             .arg("--core")
             .arg(core)
-            .arg("--program")
+            .arg("--binary")
             .arg(&wrong)
             .arg("--force")
             .arg("--exec")

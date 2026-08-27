@@ -1,4 +1,4 @@
-//! The extraction pipeline (`hansei bundle extract`): turn a debug
+//! The extraction pipeline (`hansei tokio-info extract`): turn a debug
 //! binary's DWARF into a [`Bundle`].
 //!
 //! The pipeline has three phases:
@@ -81,7 +81,7 @@ pub struct ExtractOptions {
 pub struct ExtractStats {
     /// Formatter traces requested with [`ExtractOptions::explain_format`], one
     /// per matching type. Not part of the `Display` form, which is the
-    /// `--stats` summary; `hansei bundle extract --explain-format` renders these
+    /// `--stats` summary; `hansei tokio-info extract --explain-format` renders these
     /// itself, against the bundle the extraction produced.
     pub format_explanations: Vec<FormatExplanation>,
     /// Walk-binder traces requested with [`ExtractOptions::explain_walk`],
