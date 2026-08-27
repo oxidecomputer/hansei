@@ -27,23 +27,33 @@
 //!   the cross-check that catches both a misread layout and a core
 //!   caught mid-`malloc`.
 //!
-//! What this deliberately does not cover, and so errs toward [`Live`]
-//! on (never toward wrongly [`Freed`]):
+//! The slab layer is not the whole allocator, though, and taking it
+//! for the whole one is how almost everything free reads live: a free
+//! travels only as far as the nearest layer that will keep it.
 //!
-//! - **The magazine and per-thread layers.** A buffer freed into a
-//!   per-CPU magazine, a depot magazine, or a `UMF_PTC` cache's
-//!   per-thread cache is free, but the slab layer above still counts it
-//!   allocated. mdb subtracts them; this does not yet, so such a buffer
-//!   reads `Live`.
-//! - **The oversize and memalign vmem arenas.** Allocations too large
-//!   for any cache come from `umem_oversize` and are in no slab at all,
-//!   so nothing here covers them and they answer [`Liveness::Unknown`].
+//! - **The magazine layer.** A buffer freed into the magazine loaded
+//!   on a CPU, into the one loaded before it, or into a full magazine
+//!   in the depot is free — while the slab holding it goes on counting
+//!   it allocated. On nexus that is 208,615 buffers against the 679 the
+//!   slab layer calls free.
+//! - **The threads' own caches.** A `UMF_PTC` cache's buffers can also
+//!   be held per thread, in a list rooted in each thread's `ulwp_t` and
+//!   chained through the first word of each buffer — the one layer no
+//!   cache structure records, and so the one found by walking threads.
+//!
+//! What is left errs toward [`Live`], never toward wrongly [`Freed`]:
+//! an allocation from the oversize or memalign arena is in no slab at
+//! all and answers [`Liveness::Unknown`], a buffer freed and handed
+//! straight back out is somebody else's live allocation, and a layer
+//! that declined leaves its buffers reading the way they read before it
+//! was walked at all.
 //!
 //! Every step validates before it believes, and a violation declines —
-//! the slab, the cache, or the whole index, whichever the violation
-//! scopes to. An index that declines part of the target says so in its
-//! [`Stats`], because a walk that quietly covered less than it claims
-//! would turn a missing verdict into a wrong one.
+//! the slab, a cache's parked set, the cache, or the whole
+//! index, whichever the violation scopes to. An index that declines
+//! part of the target says so in its [`Stats`], because a walk that
+//! quietly covered less than it claims would turn a missing verdict
+//! into a wrong one.
 //!
 //! [`Live`]: Liveness::Live
 //! [`Freed`]: Liveness::Freed
@@ -62,6 +72,10 @@ const LIBUMEM: &str = "libumem.so.1";
 /// (`UMEM_READY` in `umem_impl.h`). Anything else — mid-init, or an
 /// init that failed — means the metadata below is not yet meaningful.
 const UMEM_READY: u32 = 3;
+
+/// `UMF_NOMAGAZINE`: the cache has no magazine layer, so every free
+/// goes straight to a slab and there is nothing beneath it to walk.
+const UMF_NOMAGAZINE: u32 = 0x20;
 
 /// `UMF_HASH`: the cache keeps its bufctls outside the buffers, in a
 /// hash table, rather than embedded at `cache_bufctl` inside them.
@@ -82,6 +96,32 @@ const MAX_CHUNKS_PER_SLAB: u64 = 1 << 20;
 
 /// How many buckets a cache's hash table may have.
 const MAX_HASH_BUCKETS: u64 = 1 << 24;
+
+/// How many per-CPU caches one cache's `cache_cpu[]` may hold. A real
+/// target sizes it to the machine's CPU count.
+const MAX_CPUS: u64 = 1 << 12;
+
+/// How many rounds one magazine may hold. libumem's largest magazine
+/// type takes 143.
+const MAX_ROUNDS: i32 = 1 << 12;
+
+/// How many magazines the depot's full list may chain, before the walk
+/// calls the list looped rather than long.
+const MAX_MAGAZINES: u64 = 1 << 22;
+
+/// How many buffers one thread's per-thread cache may chain. Bounded by
+/// `umem_ptc_size` in the target (a megabyte by default, so a hundred
+/// thousand of the smallest buffers); this bounds a cycle.
+const MAX_PTC_BUFFERS: usize = 1 << 20;
+
+/// `NTMEMBASE`: how many roots a thread's `tmem_t` holds, one per size
+/// class libumem caches per-thread. The array is `{ size_t tm_size;
+/// void *tm_roots[NTMEMBASE]; }`, so the first root sits one word in.
+const NTMEMBASE: u64 = 16;
+
+/// `UMF_PTC`: the cache's buffers may also be held in a thread's own
+/// cache, which is the layer no per-cache structure records.
+const UMF_PTC: u32 = 0x800;
 
 /// How many decline notes are kept. Enough to say what went wrong
 /// without hoarding one line per slab of a torn core.
@@ -121,6 +161,23 @@ struct Layout {
     slab_size: u64,
     bufctl_next: u64,
     bufctl_addr: u64,
+    cache_cpu_mask: u64,
+    cache_magtype: u64,
+    cache_full: u64,
+    cache_cpu: u64,
+    /// `sizeof (umem_cpu_cache_t)`: the stride of the `cache_cpu[]`
+    /// array, which is padded to a cache line.
+    cpu_cache: u64,
+    cc_loaded: u64,
+    cc_ploaded: u64,
+    cc_rounds: u64,
+    cc_prounds: u64,
+    cc_magsize: u64,
+    ml_list: u64,
+    ml_total: u64,
+    mag_next: u64,
+    mag_round: u64,
+    mt_magsize: u64,
 }
 
 /// The layout every illumos libumem has had: `umem_impl.h` has not
@@ -148,6 +205,21 @@ const LP64: Layout = Layout {
     slab_size: 56,
     bufctl_next: 0,
     bufctl_addr: 8,
+    cache_cpu_mask: 224,
+    cache_magtype: 448,
+    cache_full: 456,
+    cache_cpu: 536,
+    cpu_cache: 64,
+    cc_loaded: 32,
+    cc_ploaded: 40,
+    cc_rounds: 48,
+    cc_prounds: 52,
+    cc_magsize: 56,
+    ml_list: 0,
+    ml_total: 8,
+    mag_next: 0,
+    mag_round: 8,
+    mt_magsize: 0,
 };
 
 /// Every layout the walk knows, tried in order.
@@ -162,7 +234,7 @@ const LAYOUTS: &[Layout] = &[LP64];
 /// that was never heap are all equally outside it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Liveness {
-    /// The address is inside an allocated buffer.
+    /// The address is inside an allocation still handed out.
     Live {
         /// The buffer's exact bounds — what a pointer claiming to own
         /// this allocation must fit inside. Not the chunk's: a cache
@@ -172,11 +244,11 @@ pub enum Liveness {
         /// Index into [`UmemHeap::caches`].
         cache: usize,
     },
-    /// The address is inside a buffer on its slab's freelist: freed,
-    /// and not since handed back out.
+    /// The address is inside a buffer the allocator has taken back: on
+    /// its slab's freelist, or held by a layer below it.
     Freed { buffer: Range<u64>, cache: usize },
-    /// No walked buffer covers the address, and nothing is claimed
-    /// about it.
+    /// Nothing the walk covers holds the address, and nothing is
+    /// claimed about it.
     Unknown,
 }
 
@@ -195,10 +267,11 @@ pub struct Allocation {
     /// Whether the allocator still considers the block handed out.
     ///
     /// The two verdicts are not equally strong. `false` is corroborated
-    /// twice — the block is on its slab's freelist *and* its malloc
-    /// header has been scrubbed — while `true` says only that the
-    /// allocator has not taken the block back, which a buffer parked in
-    /// a magazine also satisfies until that layer is walked.
+    /// twice — the allocator holds the block, on a slab's freelist or
+    /// in a magazine, *and* its malloc header has been scrubbed —
+    /// while `true` says only that the allocator has not taken the
+    /// block back, which a block handed straight back out to somebody
+    /// else also satisfies.
     pub live: bool,
     /// How big the allocation is, and whose number that is.
     pub size: Size,
@@ -238,8 +311,20 @@ pub struct Cache {
     /// Slabs dropped by a failed invariant, whose chunks are in no
     /// verdict at all.
     pub slabs_declined: usize,
+    /// Buffers handed out to the program: the chunks the slab layer
+    /// counts allocated, less the ones a layer below it holds.
     pub live: u64,
+    /// Buffers on a slab's freelist.
     pub freed: u64,
+    /// Buffers the slab layer counts allocated but the magazine, depot
+    /// or per-thread layer holds — free, and the reason those two
+    /// numbers alone do not add up to the cache's own `BUFTOTL`.
+    pub parked: u64,
+    /// Whether the layers below the slab were read for this cache. A
+    /// cache whose magazine layer declined counts none of its buffers
+    /// parked, so they read live, which is what they did before this
+    /// layer was walked at all.
+    pub parked_walked: bool,
     /// How far into a buffer a raw cache's embedded bufctl sits — the
     /// one cache property the freelist walk needs and nobody else does.
     bufctl: u64,
@@ -265,17 +350,29 @@ pub struct Stats {
     pub caches_declined: usize,
     pub slabs: usize,
     pub slabs_declined: usize,
+    /// Buffers handed out to the program.
     pub live_chunks: u64,
+    /// Buffers on a slab's freelist.
     pub freed_chunks: u64,
+    /// Buffers the magazine, depot or per-thread layer holds. Free,
+    /// and counted apart because the slab layer calls them allocated:
+    /// the two readings disagreeing is the layer's whole point.
+    pub parked_chunks: u64,
     /// Bytes in live chunks, chunk stride rather than requested size.
     pub live_bytes: u64,
     /// Slabs dropped because another slab already claimed their
     /// address range — an overlap is two readings of the same memory,
     /// so neither is believed.
     pub overlaps: usize,
-    /// Whether the magazine, depot and per-thread layers were
-    /// subtracted. False here: a buffer parked in one reads `Live`.
+    /// Whether the per-CPU magazines and the depot were read. False
+    /// only where a target's caches have no magazine layer at all.
     pub magazines_walked: bool,
+    /// Whether the threads' own caches were read.
+    pub ptc_walked: bool,
+    /// Caches whose parked set was declined by a failed invariant.
+    /// Their buffers read live, which is what every buffer did before
+    /// these layers were walked.
+    pub caches_parked_declined: usize,
     /// Whether the oversize and memalign vmem arenas were walked.
     /// False here: allocations from them answer `Unknown`.
     pub oversize_walked: bool,
@@ -287,7 +384,10 @@ impl Stats {
     /// Whether anything was declined — the "this index covers less than
     /// the target" signal a verdict-consuming answer should carry.
     pub fn incomplete(&self) -> bool {
-        self.caches_declined > 0 || self.slabs_declined > 0 || self.overlaps > 0
+        self.caches_declined > 0
+            || self.slabs_declined > 0
+            || self.overlaps > 0
+            || self.caches_parked_declined > 0
     }
 }
 
@@ -306,6 +406,18 @@ struct Slab {
     /// Bit `i` set means chunk `i` is on the freelist. Empty for a slab
     /// with nothing free, which is most of a busy target's.
     free: Vec<u64>,
+    /// Bit `i` set means a layer below the slab holds chunk `i`: a
+    /// magazine, the depot, or a thread's own cache.
+    ///
+    /// Its own bitmap rather than another way of setting a freelist
+    /// bit, because the two say different things and one of them is
+    /// load-bearing: the freelist bits are what the freelist length
+    /// cross-check is derived from, and a parked buffer is allocated as
+    /// far as its slab is concerned. Answering `locate` from a bitmap
+    /// rather than from a search over every parked buffer in the target
+    /// is what keeps the verdict as cheap as it was before this layer
+    /// existed — it runs on every pointer the renderer follows.
+    parked: Vec<u64>,
 }
 
 impl Slab {
@@ -314,15 +426,48 @@ impl Slab {
     }
 
     fn is_free(&self, chunk: u32) -> bool {
-        let word = chunk as usize / 64;
-        self.free
-            .get(word)
-            .is_some_and(|w| w >> (chunk % 64) & 1 == 1)
+        bit(&self.free, chunk)
+    }
+
+    /// Whether a layer below the slab holds the chunk. Free, the same
+    /// as [`is_free`](Slab::is_free) — the slab is simply not the layer
+    /// that knows it.
+    fn is_parked(&self, chunk: u32) -> bool {
+        bit(&self.parked, chunk)
+    }
+
+    /// Whether the allocator holds the chunk, by either reading.
+    fn is_held(&self, chunk: u32) -> bool {
+        self.is_free(chunk) || self.is_parked(chunk)
     }
 
     fn freed(&self) -> u64 {
         self.free.iter().map(|w| w.count_ones() as u64).sum()
     }
+
+    /// Where the chunk holding `addr` starts.
+    fn base_of(&self, addr: u64) -> u64 {
+        self.base + (addr - self.base) / self.chunksize * self.chunksize
+    }
+}
+
+/// Bit `chunk` of a bitmap that may be empty, meaning no bit is set.
+fn bit(map: &[u64], chunk: u32) -> bool {
+    map.get(chunk as usize / 64)
+        .is_some_and(|word| word >> (chunk % 64) & 1 == 1)
+}
+
+/// The slab holding `addr`, by binary search over a set sorted by base
+/// and known not to overlap.
+fn slab_at(slabs: &[Slab], addr: u64) -> Option<&Slab> {
+    slabs.get(slab_index(slabs, addr)?)
+}
+
+/// Where that slab is, for a caller that has to write to it.
+fn slab_index(slabs: &[Slab], addr: u64) -> Option<usize> {
+    let above = slabs.partition_point(|s| s.base <= addr);
+    let at = above.checked_sub(1)?;
+    (addr < slabs[at].end()).then_some(at)
 }
 
 /// libumem's own account of which of the target's allocations are live.
@@ -332,6 +477,10 @@ pub struct UmemHeap {
     /// Sorted by base and non-overlapping, so an address finds its slab
     /// by binary search.
     slabs: Vec<Slab>,
+    /// Buffers the slab layer counts allocated and a layer below it
+    /// holds: per-CPU magazines, the depot's full magazines, the
+    /// threads' own caches. Sorted, so a chunk asks in one search.
+    parked: Vec<u64>,
     stats: Stats,
 }
 
@@ -351,8 +500,12 @@ impl UmemHeap {
     }
 
     /// What the allocator says about `addr`.
+    ///
+    /// A slab covering the address settles it, including when the
+    /// answer is that the address is in the slab's own slack rather
+    /// than in a buffer.
     pub fn locate(&self, addr: u64) -> Liveness {
-        let Some(slab) = self.slab_at(addr) else {
+        let Some(slab) = slab_at(&self.slabs, addr) else {
             return Liveness::Unknown;
         };
         let index = ((addr - slab.base) / slab.chunksize) as u32;
@@ -368,7 +521,11 @@ impl UmemHeap {
         if !buffer.contains(&addr) {
             return Liveness::Unknown;
         }
-        match slab.is_free(index) {
+        // Free on the slab's own freelist, or held by one of the layers
+        // beneath it. The two are the same verdict: the allocator has
+        // the buffer either way, and which of its pockets it is in is a
+        // fact about libumem rather than about the allocation.
+        match slab.is_held(index) {
             true => Liveness::Freed { buffer, cache },
             false => Liveness::Live { buffer, cache },
         }
@@ -425,13 +582,6 @@ impl UmemHeap {
         )
     }
 
-    fn slab_at(&self, addr: u64) -> Option<&Slab> {
-        let above = self.slabs.partition_point(|s| s.base <= addr);
-        self.slabs
-            .get(above.checked_sub(1)?)
-            .filter(|s| addr < s.end())
-    }
-
     /// The caches the walk believed, in the order the cache list holds
     /// them. A [`Liveness`] names one by its index here.
     pub fn caches(&self) -> &[Cache] {
@@ -442,33 +592,42 @@ impl UmemHeap {
         &self.stats
     }
 
-    /// Every allocated buffer, in address order: the set mdb's `::walk
-    /// umem` enumerates, which is what an enumeration differential
-    /// against it diffs.
+    /// Every buffer still handed out to the program, in address order:
+    /// the set mdb's `::walk umem` enumerates, which is what an
+    /// enumeration differential against it diffs.
     pub fn live_buffers(&self) -> impl Iterator<Item = Range<u64>> + '_ {
-        self.buffers(false)
-    }
-
-    /// Every buffer found on a slab's freelist, in address order. This
-    /// is a subset of what mdb calls freed, which also counts the
-    /// magazine layer this walk does not read.
-    pub fn freed_buffers(&self) -> impl Iterator<Item = Range<u64>> + '_ {
         self.buffers(true)
     }
 
-    fn buffers(&self, free: bool) -> impl Iterator<Item = Range<u64>> + '_ {
+    /// Every buffer the allocator has taken back, in address order: on
+    /// a slab's freelist, or held by the magazine, depot or per-thread
+    /// layer. This is what mdb's `::walk freemem` enumerates, and the
+    /// two partition a cache.
+    pub fn freed_buffers(&self) -> impl Iterator<Item = Range<u64>> + '_ {
+        self.buffers(false)
+    }
+
+    fn buffers(&self, live: bool) -> impl Iterator<Item = Range<u64>> + '_ {
         self.slabs.iter().flat_map(move |slab| {
             let bufsize = self.caches[slab.cache as usize].bufsize;
             (0..slab.chunks).filter_map(move |i| {
                 let start = slab.base + i as u64 * slab.chunksize;
-                (slab.is_free(i) == free).then(|| start..start + bufsize)
+                (slab.is_held(i) != live).then(|| start..start + bufsize)
             })
         })
     }
 
     /// Self-consistency invariants, checked over the finished index
-    /// rather than during the walk that built it: live chunks never
-    /// overlap, and every cache's counts add up to its slabs'.
+    /// rather than during the walk that built it: nothing the walk
+    /// covers overlaps anything else it covers, and every cache's
+    /// counts add up to what the index actually holds.
+    ///
+    /// The slab layer's arithmetic is checked on its own terms rather
+    /// than loosened to accommodate the layers below it: a parked
+    /// buffer is allocated as far as its slab is concerned, so the
+    /// slab-derived count has to match `live + parked` exactly. That
+    /// keeps phase-1's freelist cross-check — two independently derived
+    /// numbers agreeing — worth exactly what it was worth.
     ///
     /// Cheap enough to run on every real-core session that asks for a
     /// verdict, and what turns a walker bug or a torn core into a
@@ -494,10 +653,69 @@ impl UmemHeap {
             }
         }
         for (i, cache) in self.caches.iter().enumerate() {
-            if (cache.live, cache.freed) != (live[i], freed[i]) {
+            if (cache.live + cache.parked, cache.freed) != (live[i], freed[i]) {
                 out.push(format!(
-                    "{} counted {} live / {} freed, its slabs hold {} / {}",
-                    cache.name, cache.live, cache.freed, live[i], freed[i]
+                    "{} counted {} live / {} parked / {} freed, its slabs hold {} / {}",
+                    cache.name, cache.live, cache.parked, cache.freed, live[i], freed[i]
+                ));
+            }
+        }
+        out.extend(self.parked_violations());
+        out
+    }
+
+    /// What the parked set has to satisfy on its own terms, none of
+    /// which the slab arithmetic above would catch: a buffer two
+    /// magazines both claim is counted twice and freed once, and a
+    /// round that is not a buffer at all is a misread layout.
+    ///
+    /// The set is kept twice over — as the addresses the walk found,
+    /// and as a bit on the slab holding each — so this checks the two
+    /// against each other as well, the way every other reading here is
+    /// checked against a second one.
+    fn parked_violations(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        let mut counted = vec![0u64; self.caches.len()];
+        for pair in self.parked.windows(2) {
+            if pair[0] >= pair[1] {
+                out.push(format!("{:#x} is parked twice", pair[0]));
+            }
+        }
+        for &addr in &self.parked {
+            let Some(slab) = slab_at(&self.slabs, addr).filter(|s| addr == s.base_of(addr)) else {
+                out.push(format!("parked {addr:#x} is no walked buffer"));
+                continue;
+            };
+            let index = ((addr - slab.base) / slab.chunksize) as u32;
+            if slab.is_free(index) {
+                out.push(format!("parked {addr:#x} is also on its slab's freelist"));
+            }
+            if !slab.is_parked(index) {
+                out.push(format!("parked {addr:#x} is not marked on its slab"));
+            }
+            counted[slab.cache as usize] += 1;
+        }
+        let marked: u64 = self
+            .slabs
+            .iter()
+            .map(|slab| {
+                slab.parked
+                    .iter()
+                    .map(|w| w.count_ones() as u64)
+                    .sum::<u64>()
+            })
+            .sum();
+        if marked != self.parked.len() as u64 {
+            out.push(format!(
+                "{} buffer(s) are parked, {marked} are marked on a slab",
+                self.parked.len()
+            ));
+        }
+        for (i, cache) in self.caches.iter().enumerate() {
+            if cache.parked != counted[i] {
+                out.push(format!(
+                    "{} counted {} parked, the index holds {}",
+                    cache.name, cache.parked, counted[i]
                 ));
             }
         }
@@ -511,6 +729,15 @@ struct Walk<'t, T> {
     layout: Layout,
     caches: Vec<Cache>,
     slabs: Vec<Slab>,
+    /// Buffers the layers below the slab hold, as `(cache, buffer)`
+    /// pairs kept until the slabs are sorted: what a round is has to be
+    /// checked against the slab that holds it, and that check wants the
+    /// finished set rather than the one this cache had when the round
+    /// was read.
+    parked: Vec<(u32, u64)>,
+    /// Caches whose parked set failed an invariant, and whose buffers
+    /// therefore read live.
+    parked_declined: Vec<u32>,
     stats: Stats,
 }
 
@@ -521,6 +748,8 @@ impl<'t, T: Target> Walk<'t, T> {
             layout,
             caches: Vec::new(),
             slabs: Vec::new(),
+            parked: Vec::new(),
+            parked_declined: Vec::new(),
             stats: Stats {
                 layout: layout.name,
                 ..Stats::default()
@@ -535,12 +764,24 @@ impl<'t, T: Target> Walk<'t, T> {
         }
         let anchor = self.symbol("umem_null_cache")?;
         self.walk_caches(anchor)?;
+        // The per-CPU and depot layers are read with the cache that
+        // owns them; a cache that declined its own is counted, not this
+        // flag, which says the build read that layer at all.
+        self.stats.magazines_walked = true;
 
         self.slabs.sort_unstable_by_key(|s| s.base);
         self.drop_overlaps();
+        // The threads' caches hold buffers no per-cache structure
+        // records, so they are found by walking threads rather than
+        // caches — which needs the slabs sorted, because the only thing
+        // that says which cache such a buffer belongs to is the slab
+        // holding it.
+        self.walk_ptc();
+        let parked = self.fold_parked();
         Some(UmemHeap {
             caches: self.caches,
             slabs: self.slabs,
+            parked,
             stats: self.stats,
         })
     }
@@ -602,6 +843,22 @@ impl<'t, T: Target> Walk<'t, T> {
             self.decline_cache(addr, "its hash table disagrees with its slabs");
             return;
         }
+        // The layers below the slab decline on their own: a cache whose
+        // magazines cannot be read is still a cache whose slabs were,
+        // and its buffers then read live — which is what every buffer
+        // read before these layers were walked at all.
+        let mut parked = Vec::new();
+        match self.walk_magazines(addr, &cache, index, &mut parked) {
+            Some(()) => {
+                cache.parked_walked = true;
+                self.parked.append(&mut parked);
+            }
+            None => {
+                self.parked_declined.push(index);
+                self.stats.caches_parked_declined += 1;
+                self.note(format!("{}: its magazine layer declined", cache.name));
+            }
+        }
         self.stats.caches += 1;
         self.stats.slabs += cache.slabs;
         self.stats.live_chunks += cache.live;
@@ -638,6 +895,8 @@ impl<'t, T: Target> Walk<'t, T> {
             slabs_declined: 0,
             live: 0,
             freed: 0,
+            parked: 0,
+            parked_walked: false,
             bufctl,
         })
     }
@@ -749,6 +1008,7 @@ impl<'t, T: Target> Walk<'t, T> {
             chunks: chunks as u32,
             cache: index,
             free,
+            parked: Vec::new(),
         })
     }
 
@@ -809,6 +1069,331 @@ impl<'t, T: Target> Walk<'t, T> {
         entries == cache.live
     }
 
+    /// The buffers this cache's per-CPU magazines and depot hold.
+    ///
+    /// A buffer here is free — the program handed it back — but the
+    /// slab layer above still counts it allocated, because a free
+    /// travels no further than the magazine it lands in until that
+    /// magazine fills. The disagreement is the point: without this
+    /// layer the freed set is only the remainder that made it all the
+    /// way down to a slab, which on a busy target is almost none of it.
+    fn walk_magazines(
+        &self,
+        cache_addr: u64,
+        cache: &Cache,
+        index: u32,
+        out: &mut Vec<(u32, u64)>,
+    ) -> Option<()> {
+        let magsize = self.magazine_size(cache_addr, cache)?;
+        // A cache whose magazine layer is off holds nothing here, which
+        // is not the same as holding something unreadable.
+        if magsize == 0 {
+            return Some(());
+        }
+        self.walk_depot(cache_addr, cache, magsize, index, out)?;
+        self.walk_cpu_caches(cache_addr, cache, index, out)
+    }
+
+    /// How many rounds a full magazine of this cache holds, or zero for
+    /// a cache with no magazine layer.
+    ///
+    /// CPU zero's copy is authoritative wherever it is set — it is what
+    /// the allocator itself reads — and the magazine type the cache
+    /// points at answers for a cache that has never loaded one there.
+    fn magazine_size(&self, cache_addr: u64, cache: &Cache) -> Option<i32> {
+        let cpu = cache_addr + self.layout.cache_cpu;
+        match self.read_i32(cpu + self.layout.cc_magsize)? {
+            size @ 1..=MAX_ROUNDS => return Some(size),
+            0 => {}
+            _ => return None,
+        }
+        if cache.flags & UMF_NOMAGAZINE != 0 {
+            return Some(0);
+        }
+        let magtype = self.read(cache_addr + self.layout.cache_magtype)?;
+        if magtype == 0 {
+            return Some(0);
+        }
+        let magsize = self.read_i32(magtype + self.layout.mt_magsize)?;
+        (0..=MAX_ROUNDS).contains(&magsize).then_some(magsize)
+    }
+
+    /// The depot's full magazines, each holding a whole magazine of
+    /// rounds. The empty list is not walked: an empty magazine holds no
+    /// buffer, by definition.
+    fn walk_depot(
+        &self,
+        cache_addr: u64,
+        cache: &Cache,
+        magsize: i32,
+        index: u32,
+        out: &mut Vec<(u32, u64)>,
+    ) -> Option<()> {
+        let depot = cache_addr + self.layout.cache_full;
+        let head = self.read(depot + self.layout.ml_list)?;
+        let total = self.read(depot + self.layout.ml_total)?;
+        if total > MAX_MAGAZINES {
+            return None;
+        }
+        let mut mag = head;
+        let mut seen = 0;
+        while mag != 0 {
+            seen += 1;
+            if seen > total {
+                return None;
+            }
+            self.read_rounds(mag, magsize, cache, index, out)?;
+            mag = self.read(mag + self.layout.mag_next)?;
+            if mag == head {
+                break;
+            }
+        }
+        // The depot counts its own magazines, so walking them is a
+        // second reading that has to come out at the same number.
+        (seen == total).then_some(())
+    }
+
+    /// The magazines the CPUs hold: the one loaded and the one before
+    /// it, on each of the per-CPU caches this cache was sized for.
+    fn walk_cpu_caches(
+        &self,
+        cache_addr: u64,
+        cache: &Cache,
+        index: u32,
+        out: &mut Vec<(u32, u64)>,
+    ) -> Option<()> {
+        let mask = self
+            .target
+            .read_u32(cache_addr + self.layout.cache_cpu_mask)
+            .ok()?;
+        let cpus = mask as u64 + 1;
+        if !cpus.is_power_of_two() || cpus > MAX_CPUS {
+            return None;
+        }
+        for cpu in 0..cpus {
+            let cpu = cache_addr + self.layout.cache_cpu + cpu * self.layout.cpu_cache;
+            let magsize = self.read_i32(cpu + self.layout.cc_magsize)?;
+            for (rounds, loaded) in [
+                (self.layout.cc_rounds, self.layout.cc_loaded),
+                (self.layout.cc_prounds, self.layout.cc_ploaded),
+            ] {
+                // A CPU with no magazine loaded records minus one
+                // rather than zero, so the count is signed and its
+                // sentinel is the common case rather than an edge: most
+                // CPUs of a real target never allocated from this cache
+                // at all.
+                let rounds = self.read_i32(cpu + rounds)?;
+                if rounds <= 0 {
+                    continue;
+                }
+                if rounds > magsize {
+                    return None;
+                }
+                let mag = self.read(cpu + loaded)?;
+                if mag == 0 {
+                    return None;
+                }
+                self.read_rounds(mag, rounds, cache, index, out)?;
+            }
+        }
+        Some(())
+    }
+
+    /// The rounds one magazine holds: the first `rounds` of its array,
+    /// the slots past them being the ones it has handed out.
+    fn read_rounds(
+        &self,
+        mag: u64,
+        rounds: i32,
+        cache: &Cache,
+        index: u32,
+        out: &mut Vec<(u32, u64)>,
+    ) -> Option<()> {
+        for round in 0..rounds as u64 {
+            let buf = self.read(mag + self.layout.mag_round + round * 8)?;
+            if buf == 0 {
+                return None;
+            }
+            out.push((index, buf));
+        }
+        // The layers below the slabs cannot hold more buffers than the
+        // slabs above them call allocated, and a walk that believes
+        // they do is following a list that loops.
+        (out.len() as u64 <= cache.live).then_some(())
+    }
+
+    /// The buffers the threads' own caches hold.
+    ///
+    /// libumem caches the smallest size classes per thread as well, in
+    /// a list rooted in each thread's `ulwp_t` rather than in anything
+    /// a cache knows about — so this is the one layer found by walking
+    /// threads. A buffer here is as free as one in a magazine, and as
+    /// allocated as one to the slab holding it.
+    fn walk_ptc(&mut self) {
+        let before = self.parked.len();
+        match self.walk_thread_caches() {
+            Some(()) => self.stats.ptc_walked = true,
+            None => {
+                // Part of a layer is not the layer: what was collected
+                // before it went wrong accounts for the threads walked
+                // so far and for no others, and a freed set that stops
+                // partway through is a guess about the rest.
+                self.parked.truncate(before);
+                self.note("the threads' own caches did not walk".to_string());
+            }
+        }
+    }
+
+    fn walk_thread_caches(&mut self) -> Option<()> {
+        // A libumem too old to cache per-thread has neither the switch
+        // nor the layer, and one whose switch is off has the roots and
+        // never puts anything in them: both are nothing to walk rather
+        // than something unreadable.
+        let Some(enabled) = self.symbol("umem_ptc_enabled") else {
+            self.stats.ptc_walked = true;
+            return Some(());
+        };
+        if self.target.read_u32(enabled).ok()? == 0 {
+            return Some(());
+        }
+        let tmem = self.read(self.symbol("umem_tmem_off")?)?;
+        // By thread pointer rather than by LWP: a cache belongs to the
+        // thread, and a core can name one thread from two LWP records —
+        // nexus has such a pair — which would walk its lists twice and
+        // count every buffer in them twice over.
+        let mut threads: Vec<u64> = self
+            .target
+            .lwps()
+            .ok()?
+            .iter()
+            .map(|lwp| lwp.regs.fsbase)
+            .collect();
+        threads.sort_unstable();
+        threads.dedup();
+        for ulwp in threads {
+            // The thread pointer holds the address of the thread's own
+            // `ulwp_t`, whose first member points back at it — the one
+            // check that says this is a thread rather than a number.
+            if ulwp == 0 || self.read(ulwp)? != ulwp {
+                return None;
+            }
+            for root in 0..NTMEMBASE {
+                // A `tmem_t` is a size followed by its roots, one per
+                // size class cached this way.
+                self.walk_ptc_root(ulwp + tmem + 8 + root * 8)?;
+            }
+        }
+        Some(())
+    }
+
+    /// One root of one thread's cache: a list of buffers chained
+    /// through the first word of each.
+    fn walk_ptc_root(&mut self, head: u64) -> Option<()> {
+        let mut buf = self.read(head)?;
+        let mut cache = None;
+        let mut seen = 0;
+        while buf != 0 {
+            seen += 1;
+            if seen > MAX_PTC_BUFFERS {
+                return None;
+            }
+            let index = slab_at(&self.slabs, buf)?.cache;
+            // One root holds one size class, and the cache serving it
+            // has to be one libumem caches this way at all.
+            if *cache.get_or_insert(index) != index
+                || self.caches[index as usize].flags & UMF_PTC == 0
+            {
+                return None;
+            }
+            self.parked.push((index, buf));
+            buf = self.read(buf)?;
+        }
+        Some(())
+    }
+
+    /// Fold the parked candidates into the index, believing one cache's
+    /// set only whole.
+    ///
+    /// Every entry has to be a buffer of that cache the slab layer
+    /// calls allocated, and no buffer may be in two pockets at once. A
+    /// set with one entry that is not is a reading of that layer that
+    /// went wrong somewhere, and keeping the rest of it would be
+    /// keeping a freed set that is partly a guess — where dropping it
+    /// leaves those buffers reading live, which is what every buffer
+    /// read before this layer was walked at all.
+    fn fold_parked(&mut self) -> Vec<u64> {
+        let parked = std::mem::take(&mut self.parked);
+        let mut sorted = parked;
+        sorted.sort_unstable();
+        let mut kept = Vec::with_capacity(sorted.len());
+        let mut at = 0;
+        while at < sorted.len() {
+            let cache = sorted[at].0;
+            let group = &sorted[at..][..sorted[at..].partition_point(|&(c, _)| c == cache)];
+            at += group.len();
+            if self.parked_declined.contains(&cache) {
+                continue;
+            }
+            if let Some((stray, why)) = self.stray_parked(cache, group) {
+                self.caches[cache as usize].parked_walked = false;
+                self.parked_declined.push(cache);
+                self.stats.caches_parked_declined += 1;
+                let name = self.caches[cache as usize].name.clone();
+                self.note(format!("{name}: parked {stray:#x} {why}"));
+                continue;
+            }
+            self.caches[cache as usize].parked = group.len() as u64;
+            for &(_, buf) in group {
+                // Beside the freelist bit, never in place of it: what
+                // the slab believes about the buffer has not changed,
+                // and the cross-check derived from it must go on
+                // meaning what it meant.
+                let slab = slab_index(&self.slabs, buf).expect("the group is this cache's buffers");
+                let chunk = ((buf - self.slabs[slab].base) / self.slabs[slab].chunksize) as u32;
+                let slab = &mut self.slabs[slab];
+                if slab.parked.is_empty() {
+                    slab.parked = vec![0; (slab.chunks as usize).div_ceil(64)];
+                }
+                slab.parked[chunk as usize / 64] |= 1 << (chunk % 64);
+            }
+            kept.extend(group.iter().map(|&(_, buf)| buf));
+        }
+        // The slab layer counted a parked buffer allocated, which is
+        // what it is to the slab and not what it is to the program.
+        for cache in &mut self.caches {
+            cache.live -= cache.parked;
+        }
+        self.stats.parked_chunks = kept.len() as u64;
+        self.stats.live_chunks = self.caches.iter().map(|c| c.live).sum();
+        self.stats.live_bytes = self.caches.iter().map(|c| c.live * c.chunksize).sum();
+        kept.sort_unstable();
+        kept
+    }
+
+    /// The first entry of one cache's parked set that is not a buffer
+    /// of that cache the slab layer counts allocated, or that two of
+    /// its pockets both claim, with what is wrong with it — and `None`
+    /// where the whole set is sound.
+    fn stray_parked(&self, cache: u32, group: &[(u32, u64)]) -> Option<(u64, &'static str)> {
+        if let Some(pair) = group.windows(2).find(|pair| pair[0].1 == pair[1].1) {
+            return Some((pair[0].1, "is held twice"));
+        }
+        group.iter().find_map(|&(_, buf)| {
+            let Some(slab) = slab_at(&self.slabs, buf) else {
+                return Some((buf, "is in no walked slab"));
+            };
+            if slab.cache != cache {
+                return Some((buf, "belongs to another cache"));
+            }
+            if slab.base_of(buf) != buf {
+                return Some((buf, "is not a buffer's base"));
+            }
+            let chunk = ((buf - slab.base) / slab.chunksize) as u32;
+            slab.is_free(chunk)
+                .then_some((buf, "is also on its slab's freelist"))
+        })
+    }
+
     /// Drop any slab whose chunks overlap one already accepted. Two
     /// readings of the same memory cannot both be right, and which is
     /// wrong is exactly what the walk cannot tell.
@@ -865,6 +1450,12 @@ impl<'t, T: Target> Walk<'t, T> {
 
     fn read(&self, addr: u64) -> Option<u64> {
         self.target.read_u64(addr).ok()
+    }
+
+    /// A signed count, of which libumem has several: a magazine's
+    /// rounds are minus one where there is no magazine.
+    fn read_i32(&self, addr: u64) -> Option<i32> {
+        self.target.read_u32(addr).ok().map(|word| word as i32)
     }
 
     /// A `char[32]` cache name, up to its NUL.
@@ -1003,6 +1594,9 @@ pub(crate) mod tests {
         /// An address range that reads as unmapped, however much of the
         /// run it covers: a page the core did not dump.
         hole: Range<u64>,
+        /// What the target's LWPs are, for the one layer found by
+        /// walking threads rather than caches.
+        lwps: Vec<proc::LwpInfo>,
     }
 
     impl Fake {
@@ -1012,7 +1606,28 @@ pub(crate) mod tests {
                 bytes: vec![0; len],
                 symbols: BTreeMap::new(),
                 hole: 0..0,
+                lwps: Vec::new(),
             }
+        }
+
+        /// A thread, the way a core names one: a thread pointer in an
+        /// LWP's registers, and the self-pointer libc keeps at the
+        /// start of the `ulwp_t` it points at.
+        fn thread(&mut self, tid: u32, ulwp: u64) {
+            self.put_u64(ulwp, ulwp);
+            self.lwps.push(proc::LwpInfo {
+                tid,
+                regs: Regs {
+                    fsbase: ulwp,
+                    ..Regs::default()
+                },
+                stack_range: 0..0,
+                altstack: 0..0,
+                tstamp: proc::Timespec {
+                    tv_sec: 0,
+                    tv_nsec: 0,
+                },
+            });
         }
 
         pub(crate) fn put_u64(&mut self, addr: u64, value: u64) {
@@ -1074,7 +1689,7 @@ pub(crate) mod tests {
         }
 
         fn lwps(&self) -> proc::Result<Vec<proc::LwpInfo>> {
-            unimplemented!("the umem walk never asks")
+            Ok(self.lwps.clone())
         }
 
         fn tls_var_addr(&self, _: &Regs, _: &SymbolBuf) -> proc::Result<Option<u64>> {
@@ -1094,9 +1709,102 @@ pub(crate) mod tests {
     /// Where the buffers themselves are, one slab's worth every 0x1000.
     pub(crate) const BUFFERS: u64 = BASE + 0x10_0000;
 
+    /// Where magazines are laid, one every 0x200 bytes.
+    const MAGS: u64 = BASE + 0x18000;
+    /// Where the threads' `ulwp_t`s are, one every 0x200 bytes.
+    const THREADS: u64 = BASE + 0x1e000;
+    /// What `umem_tmem_off` says: how far into a `ulwp_t` its `tmem_t`
+    /// begins. Its roots start one word past that, after the size.
+    const TMEM_OFF: u64 = 0x100;
+
     /// A hashed cache's `cache_hash_mask`: four buckets, so a walk
     /// that reads the wrong number of them comes up short.
     const HASH_MASK: u64 = 3;
+
+    /// What one cache's layers below the slab hold.
+    #[derive(Default)]
+    struct Magazines {
+        /// How many rounds a full magazine of this cache holds.
+        magsize: i32,
+        /// The rounds of each CPU's loaded and previously loaded
+        /// magazines. A CPU with no magazine loaded gets an empty list,
+        /// which is written as libumem writes it: minus one rounds.
+        cpus: Vec<(Vec<u64>, Vec<u64>)>,
+        /// The rounds of each full magazine in the depot.
+        depot: Vec<Vec<u64>>,
+    }
+
+    /// Lay a magazine holding `rounds`, and answer where it is.
+    fn magazine(f: &mut Fake, index: u64, rounds: &[u64]) -> u64 {
+        let mag = MAGS + index * 0x200;
+        for (i, &buf) in rounds.iter().enumerate() {
+            f.put_u64(mag + LP64.mag_round + i as u64 * 8, buf);
+        }
+        mag
+    }
+
+    /// Give a cache the magazine layer described: one per-CPU cache per
+    /// entry of `cpus`, and the depot's full list.
+    fn magazines(f: &mut Fake, index: u64, spec: &Magazines) {
+        let addr = CACHES + index * 0x400;
+        let mut mags = index * 16;
+        let mut lay = |f: &mut Fake, rounds: &[u64]| {
+            mags += 1;
+            magazine(f, mags, rounds)
+        };
+        f.put_u32(
+            addr + LP64.cache_cpu_mask,
+            spec.cpus.len().max(1) as u32 - 1,
+        );
+        for (i, (loaded, previous)) in spec.cpus.iter().enumerate() {
+            let cpu = addr + LP64.cache_cpu + i as u64 * LP64.cpu_cache;
+            f.put_u32(cpu + LP64.cc_magsize, spec.magsize as u32);
+            for (rounds, at, mag) in [
+                (loaded, LP64.cc_rounds, LP64.cc_loaded),
+                (previous, LP64.cc_prounds, LP64.cc_ploaded),
+            ] {
+                match rounds.is_empty() {
+                    // No magazine loaded at all, which is not the same
+                    // as one with nothing in it.
+                    true => f.put_u32(cpu + at, -1i32 as u32),
+                    false => {
+                        f.put_u32(cpu + at, rounds.len() as u32);
+                        let held = lay(f, rounds);
+                        f.put_u64(cpu + mag, held);
+                    }
+                }
+            }
+        }
+        let depot = addr + LP64.cache_full;
+        f.put_u64(depot + LP64.ml_total, spec.depot.len() as u64);
+        let mut head = 0;
+        for rounds in spec.depot.iter().rev() {
+            let mag = lay(f, rounds);
+            f.put_u64(mag + LP64.mag_next, head);
+            head = mag;
+        }
+        f.put_u64(depot + LP64.ml_list, head);
+    }
+
+    /// Give the fake the per-thread caching libumem does when it is
+    /// turned on: the switch, the offset of a thread's roots, and a
+    /// thread holding the buffers listed in the root named.
+    fn per_thread(f: &mut Fake, tid: u32, held: &[(u64, &[u64])]) {
+        let ulwp = THREADS + tid as u64 * 0x200;
+        f.symbol("umem_ptc_enabled", BASE + 0x300);
+        f.put_u32(BASE + 0x300, 1);
+        f.symbol("umem_tmem_off", BASE + 0x308);
+        f.put_u64(BASE + 0x308, TMEM_OFF);
+        f.thread(tid, ulwp);
+        for &(root, buffers) in held {
+            let mut next = 0;
+            for &buf in buffers.iter().rev() {
+                f.put_u64(buf, next);
+                next = buf;
+            }
+            f.put_u64(ulwp + TMEM_OFF + 8 + root * 8, next);
+        }
+    }
 
     /// One slab to lay: which chunks are free, in freelist order.
     pub(crate) struct SlabSpec {
@@ -1817,6 +2525,17 @@ pub(crate) mod tests {
         );
     }
 
+    /// An index staged by hand rather than walked: the caches and slabs
+    /// given, and nothing beneath them.
+    fn staged(caches: Vec<Cache>, slabs: Vec<Slab>) -> UmemHeap {
+        UmemHeap {
+            caches,
+            slabs,
+            parked: Vec::new(),
+            stats: Stats::default(),
+        }
+    }
+
     /// The self-check earns its keep only if it can fail, and the walk
     /// is built not to produce either failure -- so both are staged
     /// here by hand, over an index the walk would never hand back.
@@ -1828,6 +2547,7 @@ pub(crate) mod tests {
             chunks,
             cache: 0,
             free,
+            parked: Vec::new(),
         };
         let cache = Cache {
             addr: CACHES,
@@ -1840,47 +2560,360 @@ pub(crate) mod tests {
             slabs_declined: 0,
             live: 8,
             freed: 0,
+            parked: 0,
+            parked_walked: true,
             bufctl: 56,
         };
-        let sound = UmemHeap {
-            caches: vec![cache.clone()],
-            slabs: vec![slab(BUFFERS, 4, vec![]), slab(BUFFERS + 0x1000, 4, vec![])],
-            stats: Stats::default(),
-        };
+        let sound = staged(
+            vec![cache.clone()],
+            vec![slab(BUFFERS, 4, vec![]), slab(BUFFERS + 0x1000, 4, vec![])],
+        );
         assert!(sound.violations().is_empty());
 
         // Two slabs claiming the same memory: neither reading can be
         // trusted, and which is wrong is what nothing here can tell.
-        let overlapping = UmemHeap {
-            slabs: vec![slab(BUFFERS, 4, vec![]), slab(BUFFERS + 128, 4, vec![])],
-            ..UmemHeap {
-                caches: vec![cache.clone()],
-                slabs: Vec::new(),
-                stats: Stats::default(),
-            }
-        };
+        let overlapping = staged(
+            vec![cache.clone()],
+            vec![slab(BUFFERS, 4, vec![]), slab(BUFFERS + 128, 4, vec![])],
+        );
         let found = overlapping.violations();
         assert_eq!(found.len(), 1, "{found:?}");
         assert!(found[0].contains("overlap"), "{found:?}");
 
         // Slabs that touch exactly are not an overlap: a chunk ends
         // where the next begins.
-        let abutting = UmemHeap {
-            caches: vec![cache.clone()],
-            slabs: vec![slab(BUFFERS, 4, vec![]), slab(BUFFERS + 256, 4, vec![])],
-            stats: Stats::default(),
-        };
+        let abutting = staged(
+            vec![cache.clone()],
+            vec![slab(BUFFERS, 4, vec![]), slab(BUFFERS + 256, 4, vec![])],
+        );
         assert!(abutting.violations().is_empty());
 
         // A cache whose totals do not add up to its own slabs'.
-        let miscounted = UmemHeap {
-            caches: vec![Cache { live: 7, ..cache }],
-            slabs: vec![slab(BUFFERS, 4, vec![]), slab(BUFFERS + 0x1000, 4, vec![])],
-            stats: Stats::default(),
-        };
+        let miscounted = staged(
+            vec![Cache { live: 7, ..cache }],
+            vec![slab(BUFFERS, 4, vec![]), slab(BUFFERS + 0x1000, 4, vec![])],
+        );
         let found = miscounted.violations();
         assert_eq!(found.len(), 1, "{found:?}");
         assert!(found[0].contains("umem_alloc_64"), "{found:?}");
+    }
+
+    /// The ordinary shape of a busy target: a cache whose magazine
+    /// layer holds most of what is free, and one buffer that made it
+    /// all the way down to a slab's freelist.
+    fn magazined() -> Fake {
+        let mut f = fake();
+        cache(
+            &mut f,
+            0,
+            "umem_alloc_64",
+            64,
+            0,
+            &[SlabSpec {
+                base: BUFFERS,
+                chunks: 8,
+                free: vec![7],
+            }],
+        );
+        magazines(
+            &mut f,
+            0,
+            &Magazines {
+                magsize: 3,
+                cpus: vec![
+                    (vec![BUFFERS], Vec::new()),
+                    (Vec::new(), vec![BUFFERS + 64]),
+                ],
+                depot: vec![vec![BUFFERS + 128, BUFFERS + 192, BUFFERS + 256]],
+            },
+        );
+        f
+    }
+
+    /// A buffer a magazine holds is free, whatever its slab says.
+    ///
+    /// The slab layer counts it allocated — a free travels no further
+    /// than the magazine it lands in — so the two readings disagree by
+    /// construction, and the verdict is the lower layer's.
+    #[test]
+    fn test_a_buffer_a_magazine_holds_is_freed() {
+        let heap = UmemHeap::build(&magazined()).expect("the walk built an index");
+        assert!(heap.violations().is_empty(), "{:?}", heap.violations());
+
+        let stats = heap.stats();
+        assert!(stats.magazines_walked && !stats.incomplete());
+        assert_eq!(
+            (stats.live_chunks, stats.freed_chunks, stats.parked_chunks),
+            (2, 1, 5)
+        );
+        // The bytes follow the live count rather than the slab's, so a
+        // parked buffer is not counted as memory in use either.
+        assert_eq!(stats.live_bytes, 2 * 64);
+        let cache = &heap.caches()[0];
+        assert_eq!((cache.live, cache.freed, cache.parked), (2, 1, 5));
+        assert!(cache.parked_walked);
+
+        // Loaded, previously loaded, and in the depot: each is freed,
+        // and each still names the buffer it is a round of.
+        for held in [BUFFERS, BUFFERS + 64, BUFFERS + 128, BUFFERS + 256] {
+            assert_eq!(
+                heap.locate(held),
+                Liveness::Freed {
+                    buffer: held..held + 64,
+                    cache: 0,
+                },
+                "{held:#x}",
+            );
+        }
+        assert_eq!(
+            heap.locate(BUFFERS + 320),
+            Liveness::Live {
+                buffer: BUFFERS + 320..BUFFERS + 384,
+                cache: 0,
+            }
+        );
+
+        // What the enumeration differential diffs: the two sets
+        // partition the cache, with the magazine layer counted on the
+        // freed side where mdb's own walkers count it.
+        let live: Vec<u64> = heap.live_buffers().map(|b| b.start).collect();
+        assert_eq!(live, [BUFFERS + 320, BUFFERS + 384]);
+        let freed: Vec<u64> = heap.freed_buffers().map(|b| b.start).collect();
+        assert_eq!(
+            freed,
+            [
+                BUFFERS,
+                BUFFERS + 64,
+                BUFFERS + 128,
+                BUFFERS + 192,
+                BUFFERS + 256,
+                BUFFERS + 448,
+            ]
+        );
+    }
+
+    /// A CPU that has no magazine loaded records minus one rounds, and
+    /// whatever the pointer beside it held last. Reading that pointer
+    /// because the count looked unsigned is the mistake this pins:
+    /// most CPUs of a real target are in exactly this state.
+    #[test]
+    fn test_a_cpu_with_no_magazine_loaded_is_not_read() {
+        let mut f = magazined();
+        let cpu = CACHES + LP64.cache_cpu + LP64.cpu_cache;
+        f.put_u64(cpu + LP64.cc_loaded, BUFFERS + 0x10_0000);
+        let heap = UmemHeap::build(&f).expect("the walk built an index");
+        assert!(!heap.stats().incomplete());
+        assert_eq!(heap.stats().parked_chunks, 5);
+    }
+
+    /// The depot counts its own magazines, so a list that walks to a
+    /// different number is a list this walk is not reading right.
+    #[test]
+    fn test_a_depot_that_miscounts_its_magazines_declines_the_layer() {
+        let mut f = magazined();
+        f.put_u64(CACHES + LP64.cache_full + LP64.ml_total, 2);
+        let heap = UmemHeap::build(&f).expect("the slab layer still walks");
+        let stats = heap.stats();
+        assert_eq!(stats.caches_parked_declined, 1);
+        assert!(stats.incomplete());
+        // Declining the layer leaves its buffers reading live, which is
+        // what they read before the layer was walked at all -- never
+        // the other way round.
+        assert_eq!((stats.live_chunks, stats.parked_chunks), (7, 0));
+        assert!(!heap.caches()[0].parked_walked);
+        assert!(matches!(heap.locate(BUFFERS), Liveness::Live { .. }));
+        assert!(heap.violations().is_empty(), "{:?}", heap.violations());
+    }
+
+    /// A magazine cannot hold more rounds than its own size, and a
+    /// count that says it does is a count read from the wrong place.
+    #[test]
+    fn test_more_rounds_than_a_magazine_holds_declines_the_layer() {
+        let mut f = magazined();
+        f.put_u32(CACHES + LP64.cache_cpu + LP64.cc_rounds, 4);
+        let heap = UmemHeap::build(&f).expect("the slab layer still walks");
+        assert_eq!(heap.stats().caches_parked_declined, 1);
+        assert_eq!(heap.stats().parked_chunks, 0);
+    }
+
+    /// A round has to be a buffer of the cache whose magazine holds it,
+    /// on its own boundary -- the check that catches a layout read one
+    /// member out, where every round lands somewhere plausible.
+    #[test]
+    fn test_a_round_that_is_not_a_buffer_declines_the_layer() {
+        let mut f = magazined();
+        let mag = MAGS + 0x200;
+        f.put_u64(mag + LP64.mag_round, BUFFERS + 8);
+        let heap = UmemHeap::build(&f).expect("the slab layer still walks");
+        assert_eq!(heap.stats().caches_parked_declined, 1);
+        assert!(
+            heap.stats()
+                .notes
+                .iter()
+                .any(|note| note.contains("is not a buffer's base")),
+            "{:?}",
+            heap.stats().notes
+        );
+    }
+
+    /// No buffer is in two pockets at once, so a set that says one is
+    /// has read one of the two pockets wrong.
+    #[test]
+    fn test_a_buffer_two_magazines_both_hold_is_refused() {
+        let mut f = magazined();
+        f.put_u64(MAGS + 2 * 0x200 + LP64.mag_round, BUFFERS);
+        let heap = UmemHeap::build(&f).expect("the slab layer still walks");
+        assert_eq!(heap.stats().caches_parked_declined, 1);
+        assert!(
+            heap.stats()
+                .notes
+                .iter()
+                .any(|note| note.contains("is held twice")),
+            "{:?}",
+            heap.stats().notes
+        );
+    }
+
+    /// A buffer on its slab's freelist is not also in a magazine: the
+    /// slab layer gets it only once the magazine gives it back.
+    #[test]
+    fn test_a_parked_buffer_on_its_slabs_freelist_is_refused() {
+        let mut f = magazined();
+        f.put_u64(MAGS + 0x200 + LP64.mag_round, BUFFERS + 448);
+        let heap = UmemHeap::build(&f).expect("the slab layer still walks");
+        assert_eq!(heap.stats().caches_parked_declined, 1);
+        assert!(
+            heap.stats()
+                .notes
+                .iter()
+                .any(|note| note.contains("freelist")),
+            "{:?}",
+            heap.stats().notes
+        );
+    }
+
+    /// The layer no cache records: a buffer a thread is holding for
+    /// itself, found by walking threads rather than caches.
+    #[test]
+    fn test_a_buffer_a_thread_holds_is_freed() {
+        let mut f = magazined();
+        // The cache has to be one libumem caches per-thread at all.
+        f.put_u32(CACHES + LP64.cache_flags, UMF_PTC);
+        per_thread(&mut f, 1, &[(4, &[BUFFERS + 320, BUFFERS + 384])]);
+        let heap = UmemHeap::build(&f).expect("the walk built an index");
+        assert!(heap.violations().is_empty(), "{:?}", heap.violations());
+        assert!(heap.stats().ptc_walked && !heap.stats().incomplete());
+        assert_eq!(
+            (heap.stats().live_chunks, heap.stats().parked_chunks),
+            (0, 7)
+        );
+        assert!(matches!(heap.locate(BUFFERS + 320), Liveness::Freed { .. }));
+    }
+
+    /// A core can name one thread from two LWP records, and nexus has
+    /// such a pair. Walking its lists twice would count every buffer in
+    /// them twice -- and then refuse the whole set for holding a buffer
+    /// twice, which is how this was found.
+    #[test]
+    fn test_a_thread_two_lwps_name_is_walked_once() {
+        let mut f = magazined();
+        f.put_u32(CACHES + LP64.cache_flags, UMF_PTC);
+        per_thread(&mut f, 1, &[(4, &[BUFFERS + 320])]);
+        let ulwp = THREADS + 0x200;
+        f.thread(9, ulwp);
+        let heap = UmemHeap::build(&f).expect("the walk built an index");
+        assert!(!heap.stats().incomplete());
+        assert_eq!(heap.stats().parked_chunks, 6);
+    }
+
+    /// One root holds one size class, because the root a buffer goes
+    /// back to is chosen by the cache that served it. A root holding
+    /// two is a root address read from the wrong offset.
+    #[test]
+    fn test_a_root_holding_two_size_classes_declines_the_layer() {
+        let mut f = fake();
+        for (index, name, chunk, base) in [
+            (0, "umem_alloc_64", 64u64, BUFFERS),
+            (1, "umem_alloc_128", 128u64, BUFFERS + 0x2000),
+        ] {
+            cache(
+                &mut f,
+                index,
+                name,
+                chunk,
+                UMF_PTC,
+                &[SlabSpec {
+                    base,
+                    chunks: 4,
+                    free: Vec::new(),
+                }],
+            );
+        }
+        per_thread(&mut f, 1, &[(4, &[BUFFERS, BUFFERS + 0x2000])]);
+        let heap = UmemHeap::build(&f).expect("the slab layer still walks");
+        assert!(!heap.stats().ptc_walked);
+        assert_eq!(heap.stats().parked_chunks, 0);
+        assert!(matches!(heap.locate(BUFFERS), Liveness::Live { .. }));
+    }
+
+    /// The other half of the self-check, staged the same way: what the
+    /// layer below the slab has to satisfy, none of which the slab
+    /// arithmetic above would notice.
+    #[test]
+    fn test_the_self_check_catches_a_parked_reading_that_cannot_be() {
+        let cache = Cache {
+            addr: CACHES,
+            name: "umem_alloc_64".to_string(),
+            bufsize: 64,
+            chunksize: 64,
+            slabsize: 0x1000,
+            flags: 0,
+            slabs: 1,
+            slabs_declined: 0,
+            live: 3,
+            freed: 0,
+            parked: 1,
+            parked_walked: true,
+            bufctl: 56,
+        };
+        // The parked buffer is the second chunk, marked on the slab
+        // the way the walk marks it -- the bit beside the freelist's,
+        // never one of the freelist's own.
+        let slab = || Slab {
+            base: BUFFERS,
+            chunksize: 64,
+            chunks: 4,
+            cache: 0,
+            free: Vec::new(),
+            parked: vec![0b10],
+        };
+        let heap = |parked: Vec<u64>| UmemHeap {
+            caches: vec![cache.clone()],
+            slabs: vec![slab()],
+            parked,
+            stats: Stats::default(),
+        };
+
+        let sound = heap(vec![BUFFERS + 64]);
+        assert!(sound.violations().is_empty(), "{:?}", sound.violations());
+
+        // Each of these is a reading the walk refuses to produce, and
+        // the message says which: a parked buffer that is no buffer,
+        // one two pockets both hold, a count that does not match what
+        // the index holds, and -- since the set is kept twice over --
+        // two readings of it that do not say the same thing.
+        for (parked, expected) in [
+            (vec![BUFFERS + 8], "no walked buffer"),
+            (vec![BUFFERS + 64, BUFFERS + 64], "parked twice"),
+            (Vec::new(), "counted 1 parked"),
+            (vec![BUFFERS + 128], "not marked on its slab"),
+        ] {
+            let found = heap(parked).violations();
+            assert!(
+                found.iter().any(|v| v.contains(expected)),
+                "{expected}: {found:?}"
+            );
+        }
     }
 
     #[test]
