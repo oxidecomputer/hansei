@@ -108,6 +108,11 @@ pub struct CodegenUnit<'dw> {
     pub type_declarations: HashSet<TypeId>,
     /// Type DIE → declaration DIE from `DW_AT_specification`.
     pub type_specifications: HashMap<TypeId, TypeId>,
+    /// Type DIE → the type its `DW_AT_containing_type` names. rustc emits
+    /// that attribute on exactly one kind of DIE: the `{vtable_type}`
+    /// structure describing an emitted trait-object vtable, where it
+    /// names the concrete type the vtable is for.
+    pub containing_types: HashMap<TypeId, TypeId>,
     /// Functions.
     pub funcs: HashMap<FuncId, RawFunc<&'dw str>>,
 }
@@ -188,6 +193,7 @@ impl<'dw> CodegenUnit<'dw> {
             variables: HashMap::new(),
             type_declarations: HashSet::new(),
             type_specifications: HashMap::new(),
+            containing_types: HashMap::new(),
             funcs: HashMap::new(),
         };
 
@@ -376,9 +382,22 @@ impl<'dw> CodegenUnit<'dw> {
         let mut members = Vec::new();
         let mut template_params = Vec::new();
         let mut variant_shape: Option<VariantShape<&'dw str>> = None;
-        let common = CommonAttrs::from_entry(unit, entry, |_| Ok(()))?;
+        let mut containing_type = None;
+        let common = CommonAttrs::from_entry(unit, entry, |attr| {
+            if attr.name() == gimli::DW_AT_containing_type {
+                match unit.attr_ref(attr.value()) {
+                    Some(o) => containing_type = Some(TypeId(o)),
+                    None => debug!("unexpected containing_type value: {:?}", attr.value()),
+                }
+            }
+            Ok(())
+        })?;
 
         self.record_type_attrs(&common);
+        if let Some(concrete) = containing_type {
+            self.containing_types
+                .insert(TypeId(common.debug_offset), concrete);
+        }
 
         let ns = self.namespaces.insert(self.ns, common.name.unwrap_or(ANON));
 
@@ -1201,9 +1220,9 @@ impl<'dw> DwString<'dw> for Attribute<Slice<'dw>> {
 
 #[cfg(test)]
 mod tests {
-    use crate::StrId;
     use crate::raw_types::{RawType, VariantShape};
     use crate::reader::{DwReader, ReadArgs};
+    use crate::{StrId, TypeId};
 
     use gimli::write as gwrite;
     use gimli::write::AttributeValue as W;
@@ -1276,6 +1295,63 @@ mod tests {
             "several canonical types named {want}"
         );
         found
+    }
+
+    fn id_named(reader: &DwReader<'_>, want: &str) -> TypeId {
+        let mut named = reader
+            .canonical_types()
+            .filter(|(_, ty)| ty.name().map(|n| reader.strings.get(n)) == Some(want));
+        let (id, _) = named
+            .next()
+            .unwrap_or_else(|| panic!("no type named {want}"));
+        assert!(
+            named.next().is_none(),
+            "several canonical types named {want}"
+        );
+        id
+    }
+
+    /// rustc marks exactly one kind of DIE with `DW_AT_containing_type`:
+    /// the `{vtable_type}` structure describing an emitted vtable, where
+    /// it names the concrete type the vtable is for. That edge is the
+    /// only route from a vtable to a type the rest of the extraction
+    /// knows, so the parse keeps it — and keeps it for nothing else.
+    #[test]
+    fn test_containing_type_edge_is_kept() {
+        parsed(
+            gimli::RunTimeEndian::Little,
+            |dwarf, unit_id| {
+                let unit = dwarf.units.get_mut(unit_id);
+                let root = unit.root();
+
+                let concrete = unit.add(root, gimli::DW_TAG_structure_type);
+                let entry = unit.get_mut(concrete);
+                entry.set(gimli::DW_AT_name, W::String(b"Concrete".to_vec()));
+                entry.set(gimli::DW_AT_byte_size, W::Udata(8));
+
+                let vtable = unit.add(root, gimli::DW_TAG_structure_type);
+                let entry = unit.get_mut(vtable);
+                entry.set(gimli::DW_AT_name, W::String(b"{vtable_type}".to_vec()));
+                entry.set(gimli::DW_AT_byte_size, W::Udata(32));
+                entry.set(gimli::DW_AT_containing_type, W::UnitRef(concrete));
+
+                let plain = unit.add(root, gimli::DW_TAG_structure_type);
+                let entry = unit.get_mut(plain);
+                entry.set(gimli::DW_AT_name, W::String(b"Plain".to_vec()));
+                entry.set(gimli::DW_AT_byte_size, W::Udata(8));
+                entry.set(gimli::DW_AT_type, W::UnitRef(concrete));
+            },
+            |reader| {
+                assert_eq!(
+                    reader
+                        .containing_types
+                        .get(&id_named(reader, "{vtable_type}"))
+                        .copied(),
+                    Some(id_named(reader, "Concrete"))
+                );
+                assert_eq!(reader.containing_types.len(), 1);
+            },
+        );
     }
 
     #[test]
