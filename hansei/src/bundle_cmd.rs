@@ -144,3 +144,51 @@ fn extract(
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{BundleCmd, exec};
+
+    use hansei_bundle::Bundle;
+
+    fn extract_cmd(binary: std::path::PathBuf, output: std::path::PathBuf) -> BundleCmd {
+        BundleCmd::Extract {
+            binary,
+            output,
+            stats: false,
+            include_types: Vec::new(),
+            allow_missing_infra: true,
+            explain_format: None,
+            explain_walk: None,
+        }
+    }
+
+    /// The verb runs a real extraction and leaves behind a bundle that
+    /// loads. Its subject is this test binary, a Rust program with no
+    /// tokio in it — which is what `--allow-missing-infra` is for — so
+    /// the case needs neither a fixture nor a target, and what the
+    /// bundle *says* is exegesis's own suites' business.
+    #[test]
+    fn test_extract_writes_a_loadable_bundle() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let output = dir.path().join("self.bundle");
+        let binary = std::env::current_exe().expect("this test binary's path");
+        exec(extract_cmd(binary, output.clone())).expect("extraction should succeed");
+        Bundle::load(&output).expect("the bundle it wrote should load");
+    }
+
+    /// A subject nothing can be read out of fails, naming the file,
+    /// rather than reporting a bundle it never wrote.
+    #[test]
+    fn test_extract_reports_what_it_could_not_read() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let binary = dir.path().join("not-an-object");
+        std::fs::write(&binary, b"neither an ELF nor a Mach-O").expect("write");
+        let output = dir.path().join("out.bundle");
+        let err = exec(extract_cmd(binary.clone(), output.clone()))
+            .expect_err("a file with no object format in it cannot be extracted from");
+        let msg = format!("{err:?}");
+        assert!(msg.contains(&binary.display().to_string()), "{msg}");
+        assert!(!output.exists(), "nothing should have been written");
+    }
+}
