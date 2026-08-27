@@ -529,6 +529,7 @@ dependencies = [
  "hansei-bundle",
  "hansei-runtime",
  "insta",
+ "mimalloc",
  "proc",
  "rayon",
  "reedline",
@@ -539,6 +540,7 @@ dependencies = [
  "subprocess",
  "tempfile",
  "testrun",
+ "tracing-subscriber",
  "unwind",
 ]
 
