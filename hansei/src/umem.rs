@@ -20,6 +20,11 @@ use std::io;
 pub enum Dump {
     Live,
     Freed,
+    /// The arenas' own sets, which are no cache's buffers and so are in
+    /// neither of the above: what mdb's `::walk vmem_alloc` and `::walk
+    /// vmem_free` enumerate over the same two arenas.
+    ArenaLive,
+    ArenaFreed,
 }
 
 pub fn exec_umem_audit(
@@ -41,6 +46,8 @@ pub fn exec_umem_audit(
         let buffers: Box<dyn Iterator<Item = _>> = match dump {
             Dump::Live => Box::new(heap.live_buffers()),
             Dump::Freed => Box::new(heap.freed_buffers()),
+            Dump::ArenaLive => Box::new(heap.arena_extents(true)),
+            Dump::ArenaFreed => Box::new(heap.arena_extents(false)),
         };
         for buffer in buffers {
             writeln!(out, "{:#x}", buffer.start)?;
@@ -51,8 +58,8 @@ pub fn exec_umem_audit(
     let stats = heap.stats();
     writeln!(
         out,
-        "umem: layout {}, {} cache(s), {} slab(s)",
-        stats.layout, stats.caches, stats.slabs
+        "umem: layout {}, {} cache(s), {} slab(s), {} arena(s)",
+        stats.layout, stats.caches, stats.slabs, stats.arenas
     )?;
     writeln!(
         out,
@@ -102,6 +109,25 @@ pub fn exec_umem_audit(
             },
             cache.slabs_declined
         )?;
+    }
+
+    // The arenas are a second table rather than more rows of the first:
+    // an arena has no buffers, no slabs and no size class, and a
+    // segment of one is an allocation of whatever size was asked for.
+    if !heap.arenas().is_empty() {
+        writeln!(out)?;
+        writeln!(
+            out,
+            "{:<24} {:>9} {:>10} {:>8} {:>10}",
+            "ARENA", "SEGMENTS", "LIVE", "FREED", "BYTES"
+        )?;
+        for arena in heap.arenas() {
+            writeln!(
+                out,
+                "{:<24} {:>9} {:>10} {:>8} {:>10}",
+                arena.name, arena.segs, arena.live, arena.freed, arena.live_bytes
+            )?;
+        }
     }
 
     if stats.incomplete() {
@@ -176,18 +202,18 @@ pub fn exec_umem_audit(
 }
 
 fn locate_line(heap: &UmemHeap, addr: u64, out: &mut dyn io::Write) -> Result<()> {
-    let (verdict, buffer, cache) = match heap.locate(addr) {
-        Liveness::Live { buffer, cache } => ("live", buffer, cache),
-        Liveness::Freed { buffer, cache } => ("freed", buffer, cache),
+    let (verdict, buffer, source) = match heap.locate(addr) {
+        Liveness::Live { buffer, source } => ("live", buffer, source),
+        Liveness::Freed { buffer, source } => ("freed", buffer, source),
         Liveness::Unknown => {
-            writeln!(out, "no walked buffer covers it")?;
+            writeln!(out, "nothing walked covers it")?;
             return Ok(());
         }
     };
     writeln!(
         out,
-        "{verdict}, in {} buffer {:#x}..{:#x}{}",
-        heap.caches()[cache].name,
+        "{verdict}, in {} {:#x}..{:#x}{}",
+        heap.source_name(source),
         buffer.start,
         buffer.end,
         match addr == buffer.start {

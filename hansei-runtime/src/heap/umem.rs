@@ -40,16 +40,20 @@
 //!   be held per thread, in a list rooted in each thread's `ulwp_t` and
 //!   chained through the first word of each buffer — the one layer no
 //!   cache structure records, and so the one found by walking threads.
+//! - **The arenas `malloc` allocates out of.** What is too big for the
+//!   largest size class comes from the `umem_oversize` arena, and what
+//!   is aligned more strictly than a cache promises from
+//!   `umem_memalign` — every tokio task cell among them. Neither is in
+//!   any slab, so only the arena's own segment list answers for them,
+//!   and a freed one has somewhere to be freed *to*.
 //!
-//! What is left errs toward [`Live`], never toward wrongly [`Freed`]:
-//! an allocation from the oversize or memalign arena is in no slab at
-//! all and answers [`Liveness::Unknown`], a buffer freed and handed
-//! straight back out is somebody else's live allocation, and a layer
-//! that declined leaves its buffers reading the way they read before it
-//! was walked at all.
+//! What is left errs toward [`Live`], never toward wrongly [`Freed`]: a
+//! buffer freed and handed straight back out is somebody else's live
+//! allocation, and a layer that declined leaves its buffers reading the
+//! way they read before it was walked at all.
 //!
 //! Every step validates before it believes, and a violation declines —
-//! the slab, a cache's parked set, the cache, or the whole
+//! the slab, a cache's parked set, an arena, the cache, or the whole
 //! index, whichever the violation scopes to. An index that declines
 //! part of the target says so in its [`Stats`], because a walk that
 //! quietly covered less than it claims would turn a missing verdict
@@ -123,6 +127,27 @@ const NTMEMBASE: u64 = 16;
 /// cache, which is the layer no per-cache structure records.
 const UMF_PTC: u32 = 0x800;
 
+/// How many segments one arena's list may hold.
+const MAX_SEGS: usize = 1 << 22;
+
+/// `vs_type` values (`sys/vmem.h`): what a segment in an arena's list
+/// is. A span describes memory the arena imported and contains the
+/// other two; a rotor is a marker rather than memory.
+const VMEM_ALLOC: u8 = 0x01;
+const VMEM_FREE: u8 = 0x02;
+const VMEM_SPAN: u8 = 0x10;
+
+/// The two arenas libumem's `malloc` shim allocates straight out of,
+/// with the global naming each: everything too big for the largest
+/// cache comes from the first, and everything whose alignment a cache
+/// cannot promise from the second. Each is named here as the arena's
+/// own `vm_name` spells it, which is what the walk checks it against
+/// before believing a pointer read out of a static.
+const MALLOC_ARENAS: &[(&str, &str)] = &[
+    ("umem_oversize_arena", "umem_oversize"),
+    ("umem_memalign_arena", "umem_memalign"),
+];
+
 /// How many decline notes are kept. Enough to say what went wrong
 /// without hoarding one line per slab of a torn core.
 const MAX_NOTES: usize = 32;
@@ -178,6 +203,13 @@ struct Layout {
     mag_next: u64,
     mag_round: u64,
     mt_magsize: u64,
+    vm_name: u64,
+    vm_seg0: u64,
+    vs_start: u64,
+    vs_end: u64,
+    vs_anext: u64,
+    vs_aprev: u64,
+    vs_type: u64,
 }
 
 /// The layout every illumos libumem has had: `umem_impl.h` has not
@@ -220,6 +252,13 @@ const LP64: Layout = Layout {
     mag_next: 0,
     mag_round: 8,
     mt_magsize: 0,
+    vm_name: 0,
+    vm_seg0: 184,
+    vs_start: 0,
+    vs_end: 8,
+    vs_anext: 32,
+    vs_aprev: 40,
+    vs_type: 48,
 };
 
 /// Every layout the walk knows, tried in order.
@@ -227,29 +266,43 @@ const LAYOUTS: &[Layout] = &[LP64];
 
 /// What the allocator says about an address.
 ///
-/// There is no verdict for "not in the heap": an address no walked slab
-/// covers is [`Unknown`](Liveness::Unknown), because the walk covers
-/// only what it understands — the slab layer of a live umem — and the
-/// oversize arenas, another allocator's memory, a stack and a mapping
-/// that was never heap are all equally outside it.
+/// There is no verdict for "not in the heap": an address nothing the
+/// walk covers holds is [`Unknown`](Liveness::Unknown), because another
+/// allocator's memory, a stack and a mapping that was never heap are
+/// all equally outside it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Liveness {
     /// The address is inside an allocation still handed out.
     Live {
-        /// The buffer's exact bounds — what a pointer claiming to own
-        /// this allocation must fit inside. Not the chunk's: a cache
-        /// whose buffer is shorter than its stride keeps the slack
-        /// past the buffer's end for itself.
+        /// The allocation's exact bounds — what a pointer claiming to
+        /// own it must fit inside. For a cache buffer that is the
+        /// buffer rather than the chunk: a cache whose buffer is
+        /// shorter than its stride keeps the slack past the buffer's
+        /// end for itself.
         buffer: Range<u64>,
-        /// Index into [`UmemHeap::caches`].
-        cache: usize,
+        /// Which layer of the allocator answered.
+        source: Source,
     },
-    /// The address is inside a buffer the allocator has taken back: on
-    /// its slab's freelist, or held by a layer below it.
-    Freed { buffer: Range<u64>, cache: usize },
+    /// The address is inside an allocation the allocator has taken
+    /// back: a buffer on its slab's freelist or held by a layer below
+    /// it, or a segment its arena has marked free.
+    Freed { buffer: Range<u64>, source: Source },
     /// Nothing the walk covers holds the address, and nothing is
     /// claimed about it.
     Unknown,
+}
+
+/// Which of the allocator's two ways of serving an allocation this one
+/// came from, and where the walk's account of it is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Source {
+    /// A buffer of a slab of the cache at this index into
+    /// [`UmemHeap::caches`].
+    Cache(usize),
+    /// A segment of the arena at this index into
+    /// [`UmemHeap::arenas`] — an allocation too big for any cache, or
+    /// aligned more strictly than one can promise.
+    Arena(usize),
 }
 
 /// What the allocator knows about one address as an *allocation*:
@@ -374,8 +427,15 @@ pub struct Stats {
     /// these layers were walked.
     pub caches_parked_declined: usize,
     /// Whether the oversize and memalign vmem arenas were walked.
-    /// False here: allocations from them answer `Unknown`.
     pub oversize_walked: bool,
+    /// Arenas walked and believed.
+    pub arenas: usize,
+    /// Allocations still handed out by a walked arena, and the bytes
+    /// in them.
+    pub arena_live: u64,
+    pub arena_live_bytes: u64,
+    /// Segments a walked arena has marked free.
+    pub arena_freed: u64,
     /// Why the declines above happened, capped at [`MAX_NOTES`].
     pub notes: Vec<String>,
 }
@@ -470,6 +530,38 @@ fn slab_index(slabs: &[Slab], addr: u64) -> Option<usize> {
     (addr < slabs[at].end()).then_some(at)
 }
 
+/// One vmem arena the malloc shim allocates straight out of, as its own
+/// accounting.
+///
+/// Two of these serve allocations no cache can: one for what is too big
+/// for the largest size class, one for what is aligned more strictly
+/// than a cache promises. Their memory is in no slab, which is why the
+/// slab walk alone answers nothing about a 12 MB buffer or a tokio task
+/// cell.
+#[derive(Debug, Clone)]
+pub struct Arena {
+    /// Where the `vmem_t` is, for a hand check under mdb.
+    pub addr: u64,
+    pub name: String,
+    /// Segments believed, allocated and free together.
+    pub segs: usize,
+    pub live: u64,
+    pub freed: u64,
+    /// Bytes in the allocated segments.
+    pub live_bytes: u64,
+}
+
+/// One allocated or free extent of an arena. The spans an arena
+/// imported are not kept: a span contains these rather than being one,
+/// so keeping it would cover every address twice.
+#[derive(Debug)]
+struct Seg {
+    start: u64,
+    end: u64,
+    arena: u32,
+    live: bool,
+}
+
 /// libumem's own account of which of the target's allocations are live.
 #[derive(Debug)]
 pub struct UmemHeap {
@@ -481,6 +573,12 @@ pub struct UmemHeap {
     /// holds: per-CPU magazines, the depot's full magazines, the
     /// threads' own caches. Sorted, so a chunk asks in one search.
     parked: Vec<u64>,
+    arenas: Vec<Arena>,
+    /// Sorted by start and non-overlapping, the way `slabs` is.
+    segs: Vec<Seg>,
+    /// What `segs` spans, first start to last end: what an address has
+    /// to be inside for a search of them to be worth making.
+    arena_span: Range<u64>,
     stats: Stats,
 }
 
@@ -501,12 +599,14 @@ impl UmemHeap {
 
     /// What the allocator says about `addr`.
     ///
-    /// A slab covering the address settles it, including when the
-    /// answer is that the address is in the slab's own slack rather
-    /// than in a buffer.
+    /// The slab layer answers first and alone: a slab covering the
+    /// address settles it, including when the answer is that the
+    /// address is in the slab's own slack rather than in a buffer. Only
+    /// an address no slab holds is the arenas' to answer for, which is
+    /// the order the allocator itself serves them in.
     pub fn locate(&self, addr: u64) -> Liveness {
         let Some(slab) = slab_at(&self.slabs, addr) else {
-            return Liveness::Unknown;
+            return self.locate_in_arena(addr);
         };
         let index = ((addr - slab.base) / slab.chunksize) as u32;
         let start = slab.base + index as u64 * slab.chunksize;
@@ -521,13 +621,39 @@ impl UmemHeap {
         if !buffer.contains(&addr) {
             return Liveness::Unknown;
         }
+        let source = Source::Cache(cache);
         // Free on the slab's own freelist, or held by one of the layers
         // beneath it. The two are the same verdict: the allocator has
         // the buffer either way, and which of its pockets it is in is a
         // fact about libumem rather than about the allocation.
         match slab.is_held(index) {
-            true => Liveness::Freed { buffer, cache },
-            false => Liveness::Live { buffer, cache },
+            true => Liveness::Freed { buffer, source },
+            false => Liveness::Live { buffer, source },
+        }
+    }
+
+    /// What an arena says about an address no slab covers.
+    fn locate_in_arena(&self, addr: u64) -> Liveness {
+        // Most addresses the renderer follows are in neither arena --
+        // a stack, a static, a mapping that was never heap -- and the
+        // span the arenas imported answers for all of them at once,
+        // before any search.
+        if !self.arena_span.contains(&addr) {
+            return Liveness::Unknown;
+        }
+        let above = self.segs.partition_point(|s| s.start <= addr);
+        let Some(seg) = above
+            .checked_sub(1)
+            .map(|i| &self.segs[i])
+            .filter(|s| addr < s.end)
+        else {
+            return Liveness::Unknown;
+        };
+        let buffer = seg.start..seg.end;
+        let source = Source::Arena(seg.arena as usize);
+        match seg.live {
+            true => Liveness::Live { buffer, source },
+            false => Liveness::Freed { buffer, source },
         }
     }
 
@@ -582,10 +708,35 @@ impl UmemHeap {
         )
     }
 
+    /// Every allocation an arena still has handed out, and every extent
+    /// it has taken back, in address order: the two sets mdb's `::walk
+    /// vmem_alloc` and `::walk vmem_free` enumerate over the same
+    /// arenas.
+    pub fn arena_extents(&self, live: bool) -> impl Iterator<Item = Range<u64>> + '_ {
+        self.segs
+            .iter()
+            .filter(move |seg| seg.live == live)
+            .map(|seg| seg.start..seg.end)
+    }
+
     /// The caches the walk believed, in the order the cache list holds
-    /// them. A [`Liveness`] names one by its index here.
+    /// them. A [`Source::Cache`] names one by its index here.
     pub fn caches(&self) -> &[Cache] {
         &self.caches
+    }
+
+    /// The arenas the walk believed. A [`Source::Arena`] names one by
+    /// its index here.
+    pub fn arenas(&self) -> &[Arena] {
+        &self.arenas
+    }
+
+    /// What to call whichever layer answered, for a line a human reads.
+    pub fn source_name(&self, source: Source) -> &str {
+        match source {
+            Source::Cache(i) => &self.caches[i].name,
+            Source::Arena(i) => &self.arenas[i].name,
+        }
     }
 
     pub fn stats(&self) -> &Stats {
@@ -594,7 +745,8 @@ impl UmemHeap {
 
     /// Every buffer still handed out to the program, in address order:
     /// the set mdb's `::walk umem` enumerates, which is what an
-    /// enumeration differential against it diffs.
+    /// enumeration differential against it diffs. Cache buffers only —
+    /// an arena's allocations are in no cache and in neither of these.
     pub fn live_buffers(&self) -> impl Iterator<Item = Range<u64>> + '_ {
         self.buffers(true)
     }
@@ -619,8 +771,8 @@ impl UmemHeap {
 
     /// Self-consistency invariants, checked over the finished index
     /// rather than during the walk that built it: nothing the walk
-    /// covers overlaps anything else it covers, and every cache's
-    /// counts add up to what the index actually holds.
+    /// covers overlaps anything else it covers, and every cache's and
+    /// arena's counts add up to what the index actually holds.
     ///
     /// The slab layer's arithmetic is checked on its own terms rather
     /// than loosened to accommodate the layers below it: a parked
@@ -661,6 +813,7 @@ impl UmemHeap {
             }
         }
         out.extend(self.parked_violations());
+        out.extend(self.arena_violations());
         out
     }
 
@@ -721,6 +874,45 @@ impl UmemHeap {
         }
         out
     }
+
+    /// What an arena's segments have to satisfy: they tile no memory
+    /// twice, and they are memory no cache also claims. A cache's slabs
+    /// and these arenas are carved from the same heap, so an address
+    /// both layers answer for means one of the two readings is wrong.
+    fn arena_violations(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        let mut counted = vec![(0u64, 0u64); self.arenas.len()];
+        for pair in self.segs.windows(2) {
+            if pair[0].end > pair[1].start {
+                out.push(format!(
+                    "segments at {:#x} and {:#x} overlap",
+                    pair[0].start, pair[1].start
+                ));
+            }
+        }
+        for seg in &self.segs {
+            if slab_at(&self.slabs, seg.start).is_some() {
+                out.push(format!(
+                    "the segment at {:#x} is inside a walked slab",
+                    seg.start
+                ));
+            }
+            let counts = &mut counted[seg.arena as usize];
+            match seg.live {
+                true => counts.0 += 1,
+                false => counts.1 += 1,
+            }
+        }
+        for (i, arena) in self.arenas.iter().enumerate() {
+            if (arena.live, arena.freed) != counted[i] {
+                out.push(format!(
+                    "{} counted {} live / {} freed, the index holds {} / {}",
+                    arena.name, arena.live, arena.freed, counted[i].0, counted[i].1
+                ));
+            }
+        }
+        out
+    }
 }
 
 /// One walk of the metadata, under one candidate [`Layout`].
@@ -738,6 +930,8 @@ struct Walk<'t, T> {
     /// Caches whose parked set failed an invariant, and whose buffers
     /// therefore read live.
     parked_declined: Vec<u32>,
+    arenas: Vec<Arena>,
+    segs: Vec<Seg>,
     stats: Stats,
 }
 
@@ -750,6 +944,8 @@ impl<'t, T: Target> Walk<'t, T> {
             slabs: Vec::new(),
             parked: Vec::new(),
             parked_declined: Vec::new(),
+            arenas: Vec::new(),
+            segs: Vec::new(),
             stats: Stats {
                 layout: layout.name,
                 ..Stats::default()
@@ -778,10 +974,19 @@ impl<'t, T: Target> Walk<'t, T> {
         // holding it.
         self.walk_ptc();
         let parked = self.fold_parked();
+        self.walk_arenas();
+        self.segs.sort_unstable_by_key(|s| s.start);
+        let arena_span = match (self.segs.first(), self.segs.last()) {
+            (Some(first), Some(last)) => first.start..last.end,
+            _ => 0..0,
+        };
         Some(UmemHeap {
             caches: self.caches,
             slabs: self.slabs,
             parked,
+            arenas: self.arenas,
+            segs: self.segs,
+            arena_span,
             stats: self.stats,
         })
     }
@@ -1394,6 +1599,114 @@ impl<'t, T: Target> Walk<'t, T> {
         })
     }
 
+    /// The two arenas the malloc shim allocates straight out of.
+    ///
+    /// Everything too big for the largest cache, and everything aligned
+    /// more strictly than a cache promises, is in no slab at all: it is
+    /// a segment of one of these. This is what lets an address inside a
+    /// twelve-megabyte buffer — or inside a tokio task cell, which is
+    /// memaligned — be answered for at all, and what gives a freed
+    /// allocation of that kind anywhere to be freed *to*.
+    fn walk_arenas(&mut self) {
+        let mut walked = true;
+        for &(symbol, name) in MALLOC_ARENAS {
+            let first = self.segs.len();
+            let index = self.arenas.len() as u32;
+            match self.walk_arena(symbol, name, index) {
+                Some(arena) => self.arenas.push(arena),
+                None => {
+                    self.segs.truncate(first);
+                    self.note(format!("the {name} arena did not walk"));
+                    walked = false;
+                }
+            }
+        }
+        self.stats.oversize_walked = walked;
+        self.stats.arenas = self.arenas.len();
+        self.stats.arena_live = self.arenas.iter().map(|a| a.live).sum();
+        self.stats.arena_freed = self.arenas.iter().map(|a| a.freed).sum();
+        self.stats.arena_live_bytes = self.arenas.iter().map(|a| a.live_bytes).sum();
+    }
+
+    /// One arena's segments, from the anchor its own `vm_seg0` is.
+    fn walk_arena(&mut self, symbol: &str, name: &str, index: u32) -> Option<Arena> {
+        let arena = self.read(self.symbol(symbol)?)?;
+        if arena == 0 {
+            return None;
+        }
+        // A static holding a pointer is worth what the thing it points
+        // at says it is: an arena names itself, and one that does not
+        // carry the name this static was supposed to name is not it.
+        if self.read_name(arena + self.layout.vm_name)? != name {
+            return None;
+        }
+        let mut out = Arena {
+            addr: arena,
+            name: name.to_string(),
+            segs: 0,
+            live: 0,
+            freed: 0,
+            live_bytes: 0,
+        };
+        let anchor = arena + self.layout.vm_seg0;
+        let mut addr = self.read(anchor + self.layout.vs_anext)?;
+        let mut prev = anchor;
+        let mut seen = 0;
+        // What the arena imported. The segments below tile it in
+        // address order, and a span is not an extent of its own: it
+        // contains them, so believing it as one would cover every
+        // address in it twice.
+        let mut span = 0..0;
+        let mut last = 0;
+        while addr != anchor {
+            seen += 1;
+            if seen > MAX_SEGS {
+                return None;
+            }
+            if self.read(addr + self.layout.vs_aprev)? != prev {
+                return None;
+            }
+            let start = self.read(addr + self.layout.vs_start)?;
+            let end = self.read(addr + self.layout.vs_end)?;
+            match self.target.read_u8(addr + self.layout.vs_type).ok()? {
+                VMEM_SPAN => {
+                    if start >= end {
+                        return None;
+                    }
+                    span = start..end;
+                    last = start;
+                }
+                kind @ (VMEM_ALLOC | VMEM_FREE) => {
+                    if start >= end || start < last || end > span.end {
+                        return None;
+                    }
+                    last = end;
+                    let live = kind == VMEM_ALLOC;
+                    out.segs += 1;
+                    match live {
+                        true => {
+                            out.live += 1;
+                            out.live_bytes += end - start;
+                        }
+                        false => out.freed += 1,
+                    }
+                    self.segs.push(Seg {
+                        start,
+                        end,
+                        arena: index,
+                        live,
+                    });
+                }
+                // The rotor, which marks a place in the list rather
+                // than describing memory.
+                _ => {}
+            }
+            prev = addr;
+            addr = self.read(addr + self.layout.vs_anext)?;
+        }
+        Some(out)
+    }
+
     /// Drop any slab whose chunks overlap one already accepted. Two
     /// readings of the same memory cannot both be right, and which is
     /// wrong is exactly what the walk cannot tell.
@@ -1610,6 +1923,10 @@ pub(crate) mod tests {
             }
         }
 
+        fn put_u8(&mut self, addr: u64, value: u8) {
+            self.bytes[(addr - self.base) as usize] = value;
+        }
+
         /// A thread, the way a core names one: a thread pointer in an
         /// LWP's registers, and the self-pointer libc keeps at the
         /// start of the `ulwp_t` it points at.
@@ -1711,6 +2028,16 @@ pub(crate) mod tests {
 
     /// Where magazines are laid, one every 0x200 bytes.
     const MAGS: u64 = BASE + 0x18000;
+    /// Where the `vmem_t`s are laid, one every 0x400 bytes — only the
+    /// first 216 of a real one is anything this walk reads.
+    const ARENAS: u64 = BASE + 0x1c000;
+    /// Where the statics naming them are, 8 bytes each.
+    const ARENA_PTRS: u64 = BASE + 0x200;
+    /// Where arena segments are laid, one every 0x40 bytes.
+    const SEGS: u64 = BASE + 0x1d000;
+    /// Where the arenas' own memory is: nothing any slab covers, which
+    /// is what makes it an arena's to answer for.
+    const OVERSIZE: u64 = BASE + 0x18_0000;
     /// Where the threads' `ulwp_t`s are, one every 0x200 bytes.
     const THREADS: u64 = BASE + 0x1e000;
     /// What `umem_tmem_off` says: how far into a `ulwp_t` its `tmem_t`
@@ -1732,6 +2059,13 @@ pub(crate) mod tests {
         cpus: Vec<(Vec<u64>, Vec<u64>)>,
         /// The rounds of each full magazine in the depot.
         depot: Vec<Vec<u64>>,
+    }
+
+    /// One segment of an arena's list.
+    struct SegSpec {
+        start: u64,
+        end: u64,
+        kind: u8,
     }
 
     /// Lay a magazine holding `rounds`, and answer where it is.
@@ -1804,6 +2138,73 @@ pub(crate) mod tests {
             }
             f.put_u64(ulwp + TMEM_OFF + 8 + root * 8, next);
         }
+    }
+
+    /// Lay an arena and its segment list, and the static naming it.
+    fn arena(f: &mut Fake, index: u64, symbol: &str, name: &str, segs: &[SegSpec]) {
+        let arena = ARENAS + index * 0x400;
+        f.symbol(symbol, ARENA_PTRS + index * 8);
+        f.put_u64(ARENA_PTRS + index * 8, arena);
+        f.put_str(arena + LP64.vm_name, name);
+        let anchor = arena + LP64.vm_seg0;
+        let mut prev = anchor;
+        for (i, spec) in segs.iter().enumerate() {
+            let seg = SEGS + (index * 64 + i as u64) * 0x40;
+            f.put_u64(seg + LP64.vs_start, spec.start);
+            f.put_u64(seg + LP64.vs_end, spec.end);
+            f.put_u8(seg + LP64.vs_type, spec.kind);
+            f.put_u64(prev + LP64.vs_anext, seg);
+            f.put_u64(seg + LP64.vs_aprev, prev);
+            prev = seg;
+        }
+        f.put_u64(prev + LP64.vs_anext, anchor);
+        f.put_u64(anchor + LP64.vs_aprev, prev);
+    }
+
+    /// The two arenas a real target always has, with one allocation
+    /// each: one still handed out, one the arena has taken back.
+    fn arenas(f: &mut Fake) {
+        arena(
+            f,
+            0,
+            "umem_oversize_arena",
+            "umem_oversize",
+            &[
+                SegSpec {
+                    start: OVERSIZE,
+                    end: OVERSIZE + 0x4000,
+                    kind: VMEM_SPAN,
+                },
+                SegSpec {
+                    start: OVERSIZE,
+                    end: OVERSIZE + 0x2000,
+                    kind: VMEM_ALLOC,
+                },
+                SegSpec {
+                    start: OVERSIZE + 0x2000,
+                    end: OVERSIZE + 0x4000,
+                    kind: VMEM_FREE,
+                },
+            ],
+        );
+        arena(
+            f,
+            1,
+            "umem_memalign_arena",
+            "umem_memalign",
+            &[
+                SegSpec {
+                    start: OVERSIZE + 0x4000,
+                    end: OVERSIZE + 0x5000,
+                    kind: VMEM_SPAN,
+                },
+                SegSpec {
+                    start: OVERSIZE + 0x4000,
+                    end: OVERSIZE + 0x4400,
+                    kind: VMEM_ALLOC,
+                },
+            ],
+        );
     }
 
     /// One slab to lay: which chunks are free, in freelist order.
@@ -2030,28 +2431,28 @@ pub(crate) mod tests {
             heap.locate(BUFFERS + 64),
             Liveness::Freed {
                 buffer: BUFFERS + 64..BUFFERS + 128,
-                cache: alloc_64,
+                source: Source::Cache(alloc_64),
             }
         );
         assert_eq!(
             heap.locate(BUFFERS + 64 + 63),
             Liveness::Freed {
                 buffer: BUFFERS + 64..BUFFERS + 128,
-                cache: alloc_64,
+                source: Source::Cache(alloc_64),
             }
         );
         assert_eq!(
             heap.locate(BUFFERS + 130),
             Liveness::Live {
                 buffer: BUFFERS + 128..BUFFERS + 192,
-                cache: alloc_64,
+                source: Source::Cache(alloc_64),
             }
         );
         assert_eq!(
             heap.locate(BUFFERS + 0x2000 + 3 * 128),
             Liveness::Freed {
                 buffer: BUFFERS + 0x2000 + 384..BUFFERS + 0x2000 + 512,
-                cache: cache("umem_alloc_128"),
+                source: Source::Cache(cache("umem_alloc_128")),
             }
         );
 
@@ -2109,7 +2510,7 @@ pub(crate) mod tests {
             heap.locate(BUFFERS + 47),
             Liveness::Live {
                 buffer: BUFFERS..BUFFERS + 48,
-                cache: alloc_64,
+                source: Source::Cache(alloc_64),
             }
         );
         assert_eq!(heap.locate(BUFFERS + 48), Liveness::Unknown);
@@ -2120,7 +2521,7 @@ pub(crate) mod tests {
             heap.locate(BUFFERS + 64),
             Liveness::Freed {
                 buffer: BUFFERS + 64..BUFFERS + 112,
-                cache: alloc_64,
+                source: Source::Cache(alloc_64),
             }
         );
 
@@ -2532,6 +2933,9 @@ pub(crate) mod tests {
             caches,
             slabs,
             parked: Vec::new(),
+            arenas: Vec::new(),
+            segs: Vec::new(),
+            arena_span: 0..0,
             stats: Stats::default(),
         }
     }
@@ -2660,7 +3064,7 @@ pub(crate) mod tests {
                 heap.locate(held),
                 Liveness::Freed {
                     buffer: held..held + 64,
-                    cache: 0,
+                    source: Source::Cache(0),
                 },
                 "{held:#x}",
             );
@@ -2669,7 +3073,7 @@ pub(crate) mod tests {
             heap.locate(BUFFERS + 320),
             Liveness::Live {
                 buffer: BUFFERS + 320..BUFFERS + 384,
-                cache: 0,
+                source: Source::Cache(0),
             }
         );
 
@@ -2856,11 +3260,169 @@ pub(crate) mod tests {
         assert!(matches!(heap.locate(BUFFERS), Liveness::Live { .. }));
     }
 
-    /// The other half of the self-check, staged the same way: what the
-    /// layer below the slab has to satisfy, none of which the slab
-    /// arithmetic above would notice.
+    /// An allocation no cache served: too big for the largest size
+    /// class, or aligned more strictly than one can promise. It is in
+    /// no slab at all, so only the arena it came from can answer -- and
+    /// a freed one has somewhere to be freed *to*, which is what the
+    /// large size classes lacked before.
     #[test]
-    fn test_the_self_check_catches_a_parked_reading_that_cannot_be() {
+    fn test_an_arena_answers_for_an_allocation_no_cache_served() {
+        let mut f = two_caches();
+        arenas(&mut f);
+        let heap = UmemHeap::build(&f).expect("the walk built an index");
+        assert!(heap.violations().is_empty(), "{:?}", heap.violations());
+        assert!(heap.stats().oversize_walked);
+        assert_eq!(heap.stats().arenas, 2);
+        assert_eq!((heap.stats().arena_live, heap.stats().arena_freed), (2, 1));
+        assert_eq!(heap.stats().arena_live_bytes, 0x2000 + 0x400);
+
+        let oversize = heap
+            .arenas()
+            .iter()
+            .position(|a| a.name == "umem_oversize")
+            .expect("the arena is in the index");
+        // An address inside the allocation, not only its base: an
+        // arena's segment is the whole extent, so anything in it is
+        // answered for.
+        assert_eq!(
+            heap.locate(OVERSIZE + 0x100),
+            Liveness::Live {
+                buffer: OVERSIZE..OVERSIZE + 0x2000,
+                source: Source::Arena(oversize),
+            }
+        );
+        assert_eq!(
+            heap.locate(OVERSIZE + 0x2000),
+            Liveness::Freed {
+                buffer: OVERSIZE + 0x2000..OVERSIZE + 0x4000,
+                source: Source::Arena(oversize),
+            }
+        );
+        // Past everything the arena imported, and the memalign arena's
+        // own segment, which is a second arena rather than more of the
+        // first.
+        assert_eq!(heap.locate(OVERSIZE + 0x5000), Liveness::Unknown);
+        assert_eq!(
+            heap.locate(OVERSIZE + 0x4000),
+            Liveness::Live {
+                buffer: OVERSIZE + 0x4000..OVERSIZE + 0x4400,
+                source: Source::Arena(1 - oversize),
+            }
+        );
+
+        // The cache buffers are the slab layer's, and the arenas add
+        // nothing to what an enumeration differential compares: an
+        // arena has no buffers to enumerate.
+        assert_eq!(heap.live_buffers().count(), 17);
+    }
+
+    /// A static holding a pointer is worth what the thing it points at
+    /// says it is.
+    #[test]
+    fn test_an_arena_that_does_not_name_itself_is_refused() {
+        let mut f = two_caches();
+        arenas(&mut f);
+        f.put_str(ARENAS + LP64.vm_name, "umem_internal");
+        let heap = UmemHeap::build(&f).expect("the caches still walk");
+        assert!(!heap.stats().oversize_walked);
+        assert_eq!(heap.stats().arenas, 1);
+        assert_eq!(heap.locate(OVERSIZE + 0x100), Liveness::Unknown);
+    }
+
+    /// Segments tile the span they are in, in address order. One that
+    /// reaches past it, or back over the one before it, is a list this
+    /// walk is not reading right -- and the whole arena declines,
+    /// because which of the two readings is wrong is what nothing here
+    /// can tell.
+    #[test]
+    fn test_a_segment_outside_its_span_declines_the_arena() {
+        for (member, value) in [
+            (LP64.vs_end, OVERSIZE + 0x5000),
+            (LP64.vs_start, OVERSIZE - 0x1000),
+        ] {
+            let mut f = two_caches();
+            arenas(&mut f);
+            f.put_u64(SEGS + 0x40 + member, value);
+            let heap = UmemHeap::build(&f).expect("the caches still walk");
+            assert_eq!(heap.stats().arenas, 1, "{member} {value:#x}");
+            assert_eq!(heap.locate(OVERSIZE + 0x100), Liveness::Unknown);
+        }
+    }
+
+    /// A span is not an allocation: it is what the arena imported, and
+    /// the segments inside it are what it handed out. Believing it as
+    /// an extent of its own would answer for every address in it twice.
+    #[test]
+    fn test_a_span_is_not_an_allocation() {
+        let mut f = two_caches();
+        arena(
+            &mut f,
+            0,
+            "umem_oversize_arena",
+            "umem_oversize",
+            &[SegSpec {
+                start: OVERSIZE,
+                end: OVERSIZE + 0x4000,
+                kind: VMEM_SPAN,
+            }],
+        );
+        arena(
+            &mut f,
+            1,
+            "umem_memalign_arena",
+            "umem_memalign",
+            &[SegSpec {
+                start: OVERSIZE + 0x4000,
+                end: OVERSIZE + 0x5000,
+                kind: VMEM_SPAN,
+            }],
+        );
+        let heap = UmemHeap::build(&f).expect("the walk built an index");
+        assert!(heap.stats().oversize_walked);
+        assert_eq!((heap.stats().arena_live, heap.stats().arena_freed), (0, 0));
+        assert_eq!(heap.locate(OVERSIZE), Liveness::Unknown);
+    }
+
+    /// The malloc header of an arena allocation is read at the segment
+    /// the arena kept, which is what lets an address *inside* a
+    /// memaligned allocation -- every tokio task cell is one -- answer
+    /// for the allocation containing it rather than for nothing.
+    #[test]
+    fn test_an_arena_allocation_answers_from_the_header_at_its_base() {
+        let mut f = two_caches();
+        arenas(&mut f);
+        // What `memalign` writes: two tags of its own, and a pointer
+        // sixteen bytes above the segment the arena handed out.
+        let ptr = OVERSIZE + 16;
+        tag(&mut f, ptr, MEMALIGN_MAGIC, 0x1800);
+        high_tag(&mut f, ptr, MEMALIGN_MAGIC, 0x1800);
+        let heap = UmemHeap::build(&f).expect("the walk built an index");
+
+        assert_eq!(
+            heap.allocation(&f, ptr + 0x40),
+            Some(Allocation {
+                live: true,
+                size: Size::Requested(0x1800 - 16),
+                offset: 0x40,
+            })
+        );
+        // The freed segment beside it has no header left to read, so
+        // the segment is all there is to measure.
+        assert_eq!(
+            heap.allocation(&f, OVERSIZE + 0x2000),
+            Some(Allocation {
+                live: false,
+                size: Size::Block(0x2000),
+                offset: 0,
+            })
+        );
+    }
+
+    /// The other half of the self-check, staged the same way: what the
+    /// layers below and beside the slab have to satisfy, none of which
+    /// the slab arithmetic above would notice.
+    #[test]
+    fn test_the_self_check_catches_a_parked_or_arena_reading_that_cannot_be() {
         let cache = Cache {
             addr: CACHES,
             name: "umem_alloc_64".to_string(),
@@ -2887,28 +3449,75 @@ pub(crate) mod tests {
             free: Vec::new(),
             parked: vec![0b10],
         };
-        let heap = |parked: Vec<u64>| UmemHeap {
+        let arena = Arena {
+            addr: ARENAS,
+            name: "umem_oversize".to_string(),
+            segs: 1,
+            live: 1,
+            freed: 0,
+            live_bytes: 0x1000,
+        };
+        let seg = |start: u64, live: bool| Seg {
+            start,
+            end: start + 0x1000,
+            arena: 0,
+            live,
+        };
+        let heap = |parked: Vec<u64>, segs: Vec<Seg>| UmemHeap {
             caches: vec![cache.clone()],
             slabs: vec![slab()],
             parked,
+            arenas: vec![arena.clone()],
+            segs,
+            arena_span: OVERSIZE..OVERSIZE + 0x2000,
             stats: Stats::default(),
         };
 
-        let sound = heap(vec![BUFFERS + 64]);
+        let sound = heap(vec![BUFFERS + 64], vec![seg(OVERSIZE, true)]);
         assert!(sound.violations().is_empty(), "{:?}", sound.violations());
 
         // Each of these is a reading the walk refuses to produce, and
         // the message says which: a parked buffer that is no buffer,
         // one two pockets both hold, a count that does not match what
-        // the index holds, and -- since the set is kept twice over --
-        // two readings of it that do not say the same thing.
-        for (parked, expected) in [
-            (vec![BUFFERS + 8], "no walked buffer"),
-            (vec![BUFFERS + 64, BUFFERS + 64], "parked twice"),
-            (Vec::new(), "counted 1 parked"),
-            (vec![BUFFERS + 128], "not marked on its slab"),
+        // the index holds, and an arena segment inside a slab -- two
+        // layers answering for the same memory, where the walk answers
+        // from the more specific one and would be answering wrong.
+        for (parked, segs, expected) in [
+            (
+                vec![BUFFERS + 8],
+                vec![seg(OVERSIZE, true)],
+                "no walked buffer",
+            ),
+            (
+                vec![BUFFERS + 64, BUFFERS + 64],
+                vec![seg(OVERSIZE, true)],
+                "parked twice",
+            ),
+            (Vec::new(), vec![seg(OVERSIZE, true)], "counted 1 parked"),
+            (
+                vec![BUFFERS + 64],
+                vec![seg(BUFFERS, true)],
+                "inside a walked slab",
+            ),
+            (
+                vec![BUFFERS + 64],
+                vec![seg(OVERSIZE, true), seg(OVERSIZE + 8, false)],
+                "overlap",
+            ),
+            (
+                vec![BUFFERS + 64],
+                vec![seg(OVERSIZE, false)],
+                "counted 1 live",
+            ),
+            // The parked set is kept twice over; the two readings have
+            // to say the same thing about the same buffer.
+            (
+                vec![BUFFERS + 128],
+                vec![seg(OVERSIZE, true)],
+                "not marked on its slab",
+            ),
         ] {
-            let found = heap(parked).violations();
+            let found = heap(parked, segs).violations();
             assert!(
                 found.iter().any(|v| v.contains(expected)),
                 "{expected}: {found:?}"
