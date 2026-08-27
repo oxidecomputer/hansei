@@ -2,32 +2,31 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-//! The `exegesis` binary, run the way a user runs it.
+//! `hansei bundle …`, run the way a user runs it.
 //!
-//! Everything below argv was already covered — extraction by the golden
-//! suite, bundle io by the unit tests — but the commands themselves ran
-//! under no test at all: `dump` is the sole production caller of the
-//! full display-program describer, `dump-dwarf` is a second,
-//! independent DWARF entry point, and the failure paths are what an
-//! operator actually sees when a binary is not what they thought.
+//! Everything below argv is covered elsewhere — extraction by
+//! exegesis's golden suite, bundle io by the wire crate's unit tests —
+//! but the verbs themselves are what an operator types: `dump` is the
+//! sole production caller of the full display-program describer,
+//! `dump-dwarf` is a second, independent DWARF entry point, and the
+//! failure paths are what they see when a binary is not what they
+//! thought.
 //!
-//! No fixture is built here. The bundle-reading commands run over the
+//! No fixture is built here. The bundle-reading verbs run over the
 //! checked-in `hansei-runtime` fixture bundles — real tokio bundles
 //! with every formatter attached — and the DWARF-reading ones over
-//! this test binary itself, which is a real debug binary on every
+//! this test binary itself, which is a real object file on every
 //! platform and contains no tokio on any of them.
-
-use exegesis::bundle::Bundle;
-use exegesis::extract::{Error, ExtractOptions, extract_file};
 
 use std::path::PathBuf;
 use std::process::{Command, Output};
 
-fn exegesis(args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_exegesis"))
+fn hansei(args: &[&str]) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_hansei"))
+        .arg("bundle")
         .args(args)
         .output()
-        .expect("failed to run exegesis")
+        .expect("failed to run hansei")
 }
 
 fn stdout(out: &Output) -> String {
@@ -41,8 +40,8 @@ fn stderr(out: &Output) -> String {
 /// The checked-in offline fixture bundles, shared with `hansei-runtime`.
 ///
 /// The illumos set by name rather than whichever this build would read:
-/// what these want is bundles to run the CLI over, and that set has one
-/// per program on every platform, macOS included.
+/// what these want is bundles to run the verbs over, and that set has
+/// one per program on every platform, macOS included.
 fn fixture_bundles() -> Vec<PathBuf> {
     let dir =
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../hansei-runtime/tests/fixtures/illumos");
@@ -60,6 +59,20 @@ fn scratch() -> tempfile::TempDir {
     tempfile::tempdir().expect("failed to create a tempdir")
 }
 
+/// The kind-breakdown rows of a `stats` listing: four spaces, a type
+/// kind, its count, and nothing else on the line — which is what tells
+/// them from the `normalized … keys` rows at the same indent.
+fn kind_counts(text: &str) -> Vec<(&str, usize)> {
+    text.lines()
+        .filter_map(|line| {
+            let mut fields = line.strip_prefix("    ")?.split_whitespace();
+            let name = fields.next()?;
+            let count = fields.next()?.parse().ok()?;
+            fields.next().is_none().then_some((name, count))
+        })
+        .collect()
+}
+
 // ---------------------------------------------------------------------------
 // stats and dump, over every checked-in bundle
 // ---------------------------------------------------------------------------
@@ -70,7 +83,7 @@ fn test_stats_reports_a_bundle() {
         .into_iter()
         .find(|p| p.ends_with("futurelock.bundle"))
         .expect("the futurelock fixture is checked in");
-    let out = exegesis(&["stats", bundle.to_str().unwrap()]);
+    let out = hansei(&["stats", bundle.to_str().unwrap()]);
     assert!(out.status.success(), "{}", stderr(&out));
     let text = stdout(&out);
     for want in [
@@ -93,8 +106,9 @@ fn test_stats_reports_a_bundle() {
 /// Every checked-in bundle must survive it.
 #[test]
 fn test_dump_renders_every_checked_in_bundle() {
+    let mut awaits = 0;
     for bundle in fixture_bundles() {
-        let out = exegesis(&["dump", bundle.to_str().unwrap()]);
+        let out = hansei(&["dump", bundle.to_str().unwrap()]);
         assert!(out.status.success(), "{bundle:?}: {}", stderr(&out));
         let text = stdout(&out);
         for want in [
@@ -109,22 +123,34 @@ fn test_dump_renders_every_checked_in_bundle() {
         // with hardly any means the describer or the bundle lost them.
         let described = text.matches("debug: ").count();
         assert!(described > 20, "{bundle:?}: only {described} debug formats");
+
+        // An await site is printed only where it says something the
+        // variant's declaration does not, so every one of these lines
+        // must name a place its own `@ decl` did not.
+        for line in text.lines().filter(|l| l.contains("(awaited at ")) {
+            let (decl, site) = line.rsplit_once("(awaited at ").expect("the line matched");
+            let site = site.trim_end_matches(')');
+            let decl = decl.rsplit_once("@ ").map(|(_, d)| d.trim());
+            assert_ne!(decl, Some(site), "{bundle:?}: {line}");
+            awaits += 1;
+        }
     }
+    assert!(awaits > 0, "no fixture recorded an await site");
 }
 
 #[test]
-fn test_bundle_commands_reject_what_is_not_a_bundle() {
+fn test_the_verbs_reject_what_is_not_theirs_to_read() {
     let dir = scratch();
     let path = dir.path().join("garbage");
     std::fs::write(&path, b"not a bundle").unwrap();
-    for cmd in ["stats", "dump"] {
-        let out = exegesis(&[cmd, path.to_str().unwrap()]);
-        assert!(!out.status.success(), "{cmd} accepted garbage");
-        assert!(
-            stderr(&out).starts_with("error: "),
-            "{cmd}: {}",
-            stderr(&out)
-        );
+    for verb in ["stats", "dump", "dump-dwarf"] {
+        let out = hansei(&[verb, path.to_str().unwrap()]);
+        assert!(!out.status.success(), "{verb} accepted garbage");
+        // The whole cause chain, named file included: `Error: …` is
+        // anyhow's `Debug`, which is where a context line shows up.
+        let err = stderr(&out);
+        assert!(err.starts_with("Error: "), "{verb}: {err}");
+        assert!(err.contains(&path.display().to_string()), "{verb}: {err}");
     }
 }
 
@@ -135,32 +161,27 @@ fn test_bundle_commands_reject_what_is_not_a_bundle() {
 #[test]
 fn test_dump_dwarf_summarizes_an_object() {
     let exe = std::env::current_exe().unwrap();
-    let out = exegesis(&["dump-dwarf", exe.to_str().unwrap()]);
+    let out = hansei(&["dump-dwarf", exe.to_str().unwrap()]);
     assert!(out.status.success(), "{}", stderr(&out));
     let text = stdout(&out);
     assert!(text.contains("total types"), "{text}");
     assert!(text.contains("total statics"), "{text}");
-
-    let dir = scratch();
-    let path = dir.path().join("garbage");
-    std::fs::write(&path, b"not an object").unwrap();
-    let out = exegesis(&["dump-dwarf", path.to_str().unwrap()]);
-    assert!(!out.status.success());
 }
 
 // ---------------------------------------------------------------------------
 // extract: the failure paths an operator sees
 // ---------------------------------------------------------------------------
 
-/// The errors reach the user as their messages, hints included — not as
-/// their `Debug` spelling, which is what returning them from `main`
-/// printed.
+/// The errors reach the user as their messages, hints included, rather
+/// than as the name of an error variant: what tells a missing file from
+/// a file that is no object from a binary with no tokio in it is the
+/// text, and each of the three has its own.
 #[test]
 fn test_extract_failures_name_their_cause() {
-    let out = exegesis(&["extract", "/no/such/binary", "-o", "/dev/null"]);
+    let out = hansei(&["extract", "/no/such/binary", "-o", "/dev/null"]);
     assert!(!out.status.success());
     assert!(
-        stderr(&out).contains("error: failed to read the debug binary"),
+        stderr(&out).contains("failed to read the debug binary"),
         "{}",
         stderr(&out)
     );
@@ -168,10 +189,10 @@ fn test_extract_failures_name_their_cause() {
     let dir = scratch();
     let path = dir.path().join("garbage");
     std::fs::write(&path, b"not an object file").unwrap();
-    let out = exegesis(&["extract", path.to_str().unwrap(), "-o", "/dev/null"]);
+    let out = hansei(&["extract", path.to_str().unwrap(), "-o", "/dev/null"]);
     assert!(!out.status.success());
     assert!(
-        stderr(&out).contains("error: failed to parse the debug binary"),
+        stderr(&out).contains("failed to parse the debug binary"),
         "{}",
         stderr(&out)
     );
@@ -179,7 +200,7 @@ fn test_extract_failures_name_their_cause() {
     // A real debug binary with no tokio in it: refused, with the flag
     // that overrides the refusal named in the message.
     let exe = std::env::current_exe().unwrap();
-    let out = exegesis(&["extract", exe.to_str().unwrap(), "-o", "/dev/null"]);
+    let out = hansei(&["extract", exe.to_str().unwrap(), "-o", "/dev/null"]);
     assert!(!out.status.success());
     assert!(
         stderr(&out).contains("--allow-missing-infra"),
@@ -196,7 +217,7 @@ fn test_allow_missing_infra_extracts_a_placeholder_bundle() {
     let dir = scratch();
     let bundle = dir.path().join("self.bundle");
     let exe = std::env::current_exe().unwrap();
-    let out = exegesis(&[
+    let out = hansei(&[
         "extract",
         exe.to_str().unwrap(),
         "-o",
@@ -207,63 +228,19 @@ fn test_allow_missing_infra_extracts_a_placeholder_bundle() {
     assert!(out.status.success(), "{}", stderr(&out));
     assert!(stdout(&out).contains("wrote "), "{}", stdout(&out));
 
-    let out = exegesis(&["stats", bundle.to_str().unwrap()]);
+    let out = hansei(&["stats", bundle.to_str().unwrap()]);
     assert!(out.status.success(), "{}", stderr(&out));
-    assert!(
-        stdout(&out).contains("tokio:           (unknown)"),
-        "{}",
-        stdout(&out)
-    );
+    let text = stdout(&out);
+    assert!(text.contains("tokio:           (unknown)"), "{text}");
+    // The kind breakdown lists what the bundle has. This one is all
+    // placeholders, so the kinds it has none of are absent rather than
+    // listed as zeroes.
+    let kinds = kind_counts(&text);
+    assert!(!kinds.is_empty(), "{text}");
+    for (kind, count) in kinds {
+        assert!(count > 0, "{kind} listed with {count}:\n{text}");
+    }
 
-    let out = exegesis(&["dump", bundle.to_str().unwrap()]);
+    let out = hansei(&["dump", bundle.to_str().unwrap()]);
     assert!(out.status.success(), "{}", stderr(&out));
-}
-
-// ---------------------------------------------------------------------------
-// The same failure modes as the library reports them
-// ---------------------------------------------------------------------------
-
-#[test]
-fn test_extract_file_reports_typed_errors() {
-    let opts = ExtractOptions::default();
-    assert!(matches!(
-        extract_file("/no/such/binary".as_ref(), &opts),
-        Err(Error::Io(_))
-    ));
-
-    let dir = scratch();
-    let path = dir.path().join("garbage");
-    std::fs::write(&path, b"not an object file").unwrap();
-    assert!(matches!(extract_file(&path, &opts), Err(Error::Object(_))));
-
-    let exe = std::env::current_exe().unwrap();
-    assert!(matches!(
-        extract_file(&exe, &opts),
-        Err(Error::NoTaskFutures)
-    ));
-}
-
-/// The placeholder path yields a bundle that passes its own validation
-/// and records what it could not recover, rather than inventing it.
-#[test]
-fn test_allow_missing_infra_yields_a_valid_bundle() {
-    let exe = std::env::current_exe().unwrap();
-    let opts = ExtractOptions {
-        allow_missing_infra: true,
-        ..Default::default()
-    };
-    let (bundle, stats) = extract_file(&exe, &opts).expect("placeholder extraction succeeds");
-    bundle.validate().expect("the placeholder bundle validates");
-    assert_eq!(bundle.meta.tokio_version, None);
-    assert!(
-        !stats.infra_missing.is_empty(),
-        "a tokio-less binary is missing all infra"
-    );
-    assert!(bundle.tasks.entries.is_empty());
-
-    // And it survives a save/load round trip like any other bundle.
-    let dir = scratch();
-    let path = dir.path().join("self.bundle");
-    bundle.save(&path).expect("the placeholder bundle saves");
-    Bundle::load(&path).expect("the placeholder bundle reloads");
 }

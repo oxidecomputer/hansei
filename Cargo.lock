@@ -389,13 +389,11 @@ name = "exegesis"
 version = "0.1.0"
 dependencies = [
  "blake3",
- "clap",
  "foldhash 0.2.0",
  "gimli",
  "hansei-bundle",
  "insta",
  "memmap2",
- "mimalloc",
  "object",
  "postcard",
  "rayon",
@@ -406,7 +404,6 @@ dependencies = [
  "testrun",
  "thiserror 2.0.18",
  "tracing",
- "tracing-subscriber",
  "zstd",
  "zstd-sys",
 ]

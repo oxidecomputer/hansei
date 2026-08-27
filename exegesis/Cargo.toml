@@ -3,21 +3,8 @@ name = "exegesis"
 version = "0.1.0"
 edition = "2024"
 
-[features]
-default = ["cli"]
-# Everything only the `exegesis` binary needs, so that library consumers
-# (reify/hansei) can skip the CLI stack by depending on us with
-# `default-features = false`.
-cli = ["dep:clap", "dep:tracing-subscriber", "dep:mimalloc"]
-
-[[bin]]
-name = "exegesis"
-path = "src/main.rs"
-required-features = ["cli"]
-
 [dependencies]
 blake3.workspace = true
-clap = { workspace = true, optional = true }
 foldhash.workspace = true
 gimli.workspace = true
 hansei-bundle.workspace = true
@@ -30,18 +17,12 @@ semver = { workspace = true, features = ["serde"] }
 serde.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
-tracing-subscriber = { workspace = true, optional = true }
 zstd.workspace = true
 
-# mimalloc's vendored C sources fail to assemble with the illumos gcc/gas
-# toolchain; it is only used as the global allocator in the exegesis binary.
-[target.'cfg(not(target_os = "illumos"))'.dependencies]
-mimalloc = { workspace = true, optional = true }
-
-# zstd-sys's vendored C hits the same gcc/gas problem (Sun-syntax cmov
-# mnemonics); helios ships libzstd + pkg-config, so link the system library
-# there. Enabling the feature on this target-specific dep flips zstd-sys's
-# build.rs for the whole graph, but only when compiling for illumos.
+# zstd-sys's vendored C fails to assemble with the illumos gcc/gas toolchain
+# (Sun-syntax cmov mnemonics); helios ships libzstd + pkg-config, so link the
+# system library there. Enabling the feature on this target-specific dep flips
+# zstd-sys's build.rs for the whole graph, but only when compiling for illumos.
 [target.'cfg(target_os = "illumos")'.dependencies]
 zstd-sys = { workspace = true, features = ["pkg-config"] }
 

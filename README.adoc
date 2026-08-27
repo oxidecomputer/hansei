@@ -10,12 +10,15 @@ Experimental and mostly untested, expect bugs.
 
 These are the workspace members that may be useful:
 
-* exegesis: Read a debug binary's DWARF and extract a self-contained *debug
-  bundle* describing its async runtime and types; also the bundle format's
-  reader and type views.
-* hansei: Inspect the state of the `tokio` multi-threaded runtime in a core
-  dump: task listings, automatic await-chain traces, and task dependency
-  graphs with futurelock detection.
+* hansei: The one binary. Inspect the state of the `tokio` multi-threaded
+  runtime in a core dump: task listings, automatic await-chain traces, and
+  task dependency graphs with futurelock detection; `hansei bundle` produces
+  and inspects the bundles it reads.
+* exegesis: The library behind `hansei bundle`: read a debug binary's DWARF
+  and extract a self-contained *debug bundle* describing its async runtime
+  and types.
+* hansei-bundle: The bundle's wire format, and the only thing the read side
+  depends on.
 * hansei-runtime: The tokio-introspection library behind hansei.
 * reify: Interpret a process's memory through a debug bundle, rendering values
   of the bundle's types for humans.
@@ -25,20 +28,20 @@ These are the workspace members that may be useful:
 A core is read according to what wrote it rather than what is reading it, so an
 illumos core opens on Linux and a Linux core opens on illumos. hansei inspects
 cores only; take one with `gcore` and point hansei at it. Bundle extraction
-(exegesis) and type/value work (reify) are portable.
+and type/value work (reify) are portable.
 
 == Usage
 
 The workflow has two stages: extract a bundle once from a debug binary
 (anywhere), then point hansei at a matching target.
 
-=== 1. Extract a bundle (exegesis)
+=== 1. Extract a bundle
 
 Read the DWARF from a debug build and write a bundle:
 
 [source,sh]
 ----
-exegesis extract path/to/sled-agent.debug -o sled-agent.bundle
+hansei bundle extract path/to/sled-agent.debug -o sled-agent.bundle
 ----
 
 The bundle is self-contained; the debug binary is not needed again. Other
@@ -46,15 +49,20 @@ subcommands inspect what was produced:
 
 [source,sh]
 ----
-exegesis stats sled-agent.bundle   # summary counts
-exegesis dump  sled-agent.bundle    # full tables as text
+hansei bundle stats sled-agent.bundle   # summary counts
+hansei bundle dump  sled-agent.bundle   # full tables as text
 ----
 
 `extract --include-type <fqn>` forces an otherwise-unreached type to be
 emitted, and `--allow-missing-infra` lets extraction proceed on a binary that
 isn't a tokio target.
 
-=== 2. Inspect a target (hansei)
+A session can also skip this stage: `--debug-binary` in place of `--bundle`
+extracts one in memory while the core is attaching. That is the answer for a
+one-off look, and a bundle file the answer when the same target will be
+opened again.
+
+=== 2. Inspect a target
 
 hansei reads a core dump (`--core`) written by either system, interpreting it
 through the bundle from step 1. Together they name a *session*, and what to ask

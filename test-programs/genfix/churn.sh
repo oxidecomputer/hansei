@@ -63,8 +63,7 @@ esac
 
 cargo build -q -p genfix
 GENFIX="$ROOT/target/debug/genfix"
-(cd "$ROOT" && cargo build -q -p exegesis && cargo build -q -p hansei --features snapshot)
-EXEGESIS="$ROOT/target/debug/exegesis"
+(cd "$ROOT" && cargo build -q -p hansei --features snapshot)
 HANSEI="$ROOT/target/debug/hansei"
 # Compile the oracle before the loop so its first run is not charged to
 # the first capture's timeout.
@@ -95,7 +94,7 @@ for (( seed = START; seed < START + SEEDS; seed++ )); do
     if ! { REGEN_BIN_DIR="$FIXTURES/bin-a" REGEN_TARGET_DIR="$FIXTURES/target-a" \
                "$ROOT/test-programs/regen.sh" --no-debug-info gen-churn &&
            "$ROOT/test-programs/regen.sh" gen-churn &&
-           "$EXEGESIS" extract "$FIXTURES/bin/gen-churn" -o "$PAIRS/gen-churn.bundle";
+           "$HANSEI" bundle extract "$FIXTURES/bin/gen-churn" -o "$PAIRS/gen-churn.bundle";
          } >>"$seedlog" 2>&1; then
         echo "churn.sh: seed $seed: build failed (see $seedlog)"
         failures+=("$seed-build")

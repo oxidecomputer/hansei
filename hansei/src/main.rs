@@ -104,7 +104,7 @@ struct SessionArgs {
     #[arg(long, short)]
     core: PathBuf,
 
-    /// The debug bundle to read (produced by `exegesis extract`).
+    /// The debug bundle to read (produced by `hansei bundle extract`).
     #[arg(long, short)]
     bundle: Option<PathBuf>,
 
@@ -1244,7 +1244,7 @@ fn main() {
             // Extraction's heavy phases build their own scoped pools;
             // what is left for the global one is the vtable scan, with
             // no interactive session to stay out of the way of.
-            build_pool(None, "exegesis");
+            build_pool(None, "bundle");
             bundle_cmd::exec(cmd)
         }
         None => {
@@ -1834,7 +1834,7 @@ mod cli_tests {
     /// The subcommand takes the whole invocation: no target is named,
     /// and the flags a session requires are not asked for.
     #[test]
-    fn test_bundle_extract_takes_the_exegesis_flags() {
+    fn test_bundle_extract_takes_the_extraction_flags() {
         let cli = parse(&[
             "hansei",
             "bundle",

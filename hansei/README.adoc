@@ -7,7 +7,7 @@ A tool to inspect where we have erred with `tokio`: it reads the state of a toki
 core dump — written by illumos or by Linux, and read on either — using debug information produced from a
 *separate* build of the same sources. Currently a proof-of-concept, expect bugs.
 
-hansei reads a debug *bundle* produced by `exegesis extract` (targets built with rustc ≥ 1.97): `exegesis`
+hansei reads a debug *bundle* produced by `hansei bundle extract` (targets built with rustc ≥ 1.97), which
 reads a debug binary's DWARF and writes a compact bundle describing the async runtime. Task futures are joined
 between the debug binary and the target by their v0-mangled symbol names, so tasks are selected by id and their
 await chains are recovered fully automatically.
@@ -34,7 +34,7 @@ Extract the bundle:
 
 [source,shell]
 ----
-cargo run --release -p exegesis -- extract ${PATH_TO_DEBUG_BINARY} -o app.bundle
+cargo run --release -p hansei -- bundle extract ${PATH_TO_DEBUG_BINARY} -o app.bundle
 ----
 
 Then attach to a target. The core and the bundle name the *session*, and are the only things the command line
