@@ -308,3 +308,21 @@ fn test_sibling_build_ids_adjudicate_the_pair() {
         "a matched pair should get as far as reading the (fake) DWARF: {err}"
     );
 }
+
+/// A `.debug_info` section that is present but empty is no debug info:
+/// classification reads contents, not presence, so a stripped binary
+/// keeping a zero-length stub still gets the crisp no-debug-info
+/// refusal rather than an extraction that finds nothing.
+#[test]
+fn test_an_empty_debug_info_section_is_no_debug_info() {
+    let dir = scratch();
+    let empty = write_elf(
+        dir.path(),
+        "empty-debug",
+        &[
+            (".text", SectionKind::Text, Some(CODE)),
+            (".debug_info", SectionKind::Debug, Some(&[])),
+        ],
+    );
+    assert_eq!(classify_file(&empty).unwrap(), DebugFlavor::NoDebugInfo);
+}
