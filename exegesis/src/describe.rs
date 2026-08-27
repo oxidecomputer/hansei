@@ -1,7 +1,7 @@
 //! Render a [`DisplayNode`] as text: every selector resolved to its
 //! field-name chain *and* byte offset, rooted the way resolution roots it.
 //!
-//! One renderer serves two readers. `exegesis dump` prints it so an operator
+//! One renderer serves two readers. `hansei bundle dump` prints it so an operator
 //! can see what a formatter actually addresses in a given binary, and the
 //! golden tests assert on it, where resolving to names and offsets is what
 //! catches a detector that fires but navigates to the wrong member. Those two

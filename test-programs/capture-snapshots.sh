@@ -112,15 +112,14 @@ else
     ./regen.sh "${PROGRAMS[@]}"
 fi
 
-# The capture tools themselves come from the workspace as-is, except
-# that `snapshot` is not in a default hansei: it makes test data rather
-# than answering anything about a target, so it is behind a feature.
-(cd .. && cargo build -p exegesis && cargo build -p hansei --features snapshot)
-EXEGESIS=../target/debug/exegesis
+# The capture tool itself comes from the workspace as-is, except that
+# `snapshot` is not in a default hansei: it makes test data rather than
+# answering anything about a target, so it is behind a feature.
+(cd .. && cargo build -p hansei --features snapshot)
 HANSEI=../target/debug/hansei
 
 for p in "${PROGRAMS[@]}"; do
-    "$EXEGESIS" extract "$BIN_B/$p" -o "$OUT/$p.bundle"
+    "$HANSEI" bundle extract "$BIN_B/$p" -o "$OUT/$p.bundle"
 
     fifo="$(mktemp -u)"
     mkfifo "$fifo"

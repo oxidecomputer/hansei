@@ -162,7 +162,7 @@ pub(super) use reach;
 pub struct FormatExplanation {
     /// The fully-qualified name the type was reported under.
     pub name: String,
-    /// The type the trace belongs to, as `exegesis dump` numbers it.
+    /// The type the trace belongs to, as `hansei bundle dump` numbers it.
     pub id: BundleTypeId,
     /// What the navigators saw, one line each, in the order they saw it.
     pub trace: Vec<String>,

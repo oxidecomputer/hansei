@@ -289,7 +289,7 @@ fn random_bundle(seed: u64) -> Bundle {
                 build_id: Some(vec![0xab; 20]),
                 blake3: [0x5a; 32],
             },
-            extract_args: "exegesis extract futurelock -o fl.bundle".into(),
+            extract_args: "bundle extract futurelock -o fl.bundle".into(),
             symbol_fingerprint: (0..rng.below(20)).map(|i| format!("_RINv_fp{i}")).collect(),
             newest_family: Some(FamilyCeiling {
                 name: "v1_53".into(),

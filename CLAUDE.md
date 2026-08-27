@@ -20,9 +20,10 @@ exegesis** — reify not at all, hansei-runtime as a **dev**-dependency only,
 because its matrix goldens build bundles from fixture binaries. The `hansei`
 bin crate does depend on it, because `hansei bundle` produces and inspects
 bundle files, but the DWARF stack reaches no further than the entry points
-arg handling calls (`hansei/src/bundle_cmd.rs`). No session, runtime or
-render code imports exegesis types; if read-side code seems to need
-something from it, it wants `hansei-bundle`.
+arg handling calls (`hansei/src/bundle_cmd.rs`). exegesis builds no
+binary of its own: `hansei` is the only one the workspace produces. No
+session, runtime or render code imports exegesis types; if read-side code
+seems to need something from it, it wants `hansei-bundle`.
 
 **Naming:** `durin` is only this repository's name. In prose — commit
 messages, comments, docs — the tool as a whole is **`hansei`**; say "what
@@ -325,8 +326,8 @@ needed on this machine: `nexus.22247.bin` (the debug nexus binary),
 them. Reach for these first — every value-printing command runs against
 them right here (`hansei -b ./cores/nexus.22247.bundle -c
 ./cores/nexus.22247.core`), no remote host required. After an exegesis
-change, re-extract with `exegesis extract ./cores/nexus.22247.bin -o
-./cores/nexus.22247.bundle`. The files are gitignored and exist only on
+change, re-extract with `hansei bundle extract ./cores/nexus.22247.bin
+-o ./cores/nexus.22247.bundle`. The files are gitignored and exist only on
 this machine; the illumos host below is still where a *sled-agent* core
 and the acceptance suite live.
 
@@ -340,8 +341,8 @@ is at `/data/aborts/core.sled-agent-v0`. Full loop:
 
 ```
 ssh illumos 'cd /data/durin && git pull origin main &&
-  cargo build --release -p exegesis -p hansei &&
-  ./target/release/exegesis extract /tmp/sled-agent.debug -o /tmp/sled-agent.bundle &&
+  cargo build --release -p hansei &&
+  ./target/release/hansei bundle extract /tmp/sled-agent.debug -o /tmp/sled-agent.bundle &&
   ./target/release/hansei task-trace --task-id <N> --bundle /tmp/sled-agent.bundle \
     --core /data/aborts/core.sled-agent-v0 -v --value-depth 500'
 ```
