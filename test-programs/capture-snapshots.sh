@@ -119,7 +119,7 @@ fi
 HANSEI=../target/debug/hansei
 
 for p in "${PROGRAMS[@]}"; do
-    "$HANSEI" tokio-info extract "$BIN_B/$p" -o "$OUT/$p.bundle"
+    "$HANSEI" tokio-info extract "$BIN_B/$p" -o "$OUT/$p.tinfo"
 
     fifo="$(mktemp -u)"
     mkfifo "$fifo"
@@ -147,7 +147,7 @@ for p in "${PROGRAMS[@]}"; do
     fi
     # hansei takes its commands on stdin, not as arguments.
     echo "snapshot $OUT/$p.snapshot" |
-        "$HANSEI" --core "$coredir/core.$pid" --tokio-info "$OUT/$p.bundle" "${binary[@]}"
+        "$HANSEI" --core "$coredir/core.$pid" --tokio-info "$OUT/$p.tinfo" "${binary[@]}"
 
     kill "$pid" 2>/dev/null || true
     wait "$pid" 2>/dev/null || true
@@ -155,7 +155,7 @@ for p in "${PROGRAMS[@]}"; do
     rm -f "$fifo"
     trap - EXIT
 
-    echo "capture-snapshots.sh: $p -> $OUT/$p.{bundle,snapshot}"
+    echo "capture-snapshots.sh: $p -> $OUT/$p.{tinfo,snapshot}"
 done
 
 # What the pairs were captured from. A snapshot is frozen but the

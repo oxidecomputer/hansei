@@ -7,7 +7,7 @@
 //! snapshot pair.
 //!
 //! Opt-in, like the genfix oracle: `HANSEI_CHURN_PAIR=<prefix>` names
-//! a pair as `<prefix>.bundle` / `<prefix>.snapshot` (the churn loop,
+//! a pair as `<prefix>.tinfo` / `<prefix>.snapshot` (the churn loop,
 //! `test-programs/genfix/churn.sh`, passes what it just captured), and
 //! without it the test skips with a message.
 //!
@@ -36,7 +36,7 @@ fn test_churn_capture_walks_safely() {
         return;
     };
 
-    let bundle = Bundle::load(format!("{prefix}.bundle").as_ref()).expect("the bundle loads");
+    let bundle = Bundle::load(format!("{prefix}.tinfo").as_ref()).expect("the bundle loads");
     let snapshot =
         Snapshot::load(format!("{prefix}.snapshot").as_ref()).expect("the snapshot loads");
     // The capture-time pipeline ran to completion to produce this pair,

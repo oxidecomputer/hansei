@@ -532,7 +532,7 @@ mod tests {
     #[test]
     fn test_extract_writes_a_loadable_bundle() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let output = dir.path().join("self.bundle");
+        let output = dir.path().join("self.tinfo");
         let binary = std::env::current_exe().expect("this test binary's path");
         exec(extract_cmd(binary, output.clone())).expect("extraction should succeed");
         Bundle::load(&output).expect("the bundle it wrote should load");
@@ -547,7 +547,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let junk = dir.path().join("not-an-object");
         std::fs::write(&junk, b"neither an ELF nor a Mach-O").expect("write");
-        let output = dir.path().join("out.bundle");
+        let output = dir.path().join("out.tinfo");
 
         let err = exec(extract_cmd(junk.clone(), output.clone()))
             .expect_err("a file with no object format in it cannot be extracted from");

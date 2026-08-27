@@ -48,7 +48,7 @@ fn fixture_bundles() -> Vec<PathBuf> {
     let mut bundles: Vec<PathBuf> = std::fs::read_dir(&dir)
         .expect("the fixture dir exists")
         .map(|e| e.unwrap().path())
-        .filter(|p| p.extension().is_some_and(|e| e == "bundle"))
+        .filter(|p| p.extension().is_some_and(|e| e == "tinfo"))
         .collect();
     bundles.sort();
     assert!(!bundles.is_empty(), "no fixture bundles in {dir:?}");
@@ -81,7 +81,7 @@ fn kind_counts(text: &str) -> Vec<(&str, usize)> {
 fn test_stats_reports_a_bundle() {
     let bundle = fixture_bundles()
         .into_iter()
-        .find(|p| p.ends_with("futurelock.bundle"))
+        .find(|p| p.ends_with("futurelock.tinfo"))
         .expect("the futurelock fixture is checked in");
     let out = hansei(&["stats", bundle.to_str().unwrap()]);
     assert!(out.status.success(), "{}", stderr(&out));

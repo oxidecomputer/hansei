@@ -46,7 +46,7 @@ await sites — so reflowing a single statement shifts every line below it and
 fails that program's golden. Re-bless it
 (`INSTA_UPDATE=always cargo nextest run -p exegesis --test golden`) and confirm
 the diff
-is *only* the shift. The checked-in `hansei-runtime/tests/fixtures/*.bundle`
+is *only* the shift. The checked-in `hansei-runtime/tests/fixtures/*.tinfo`
 pairs record those line numbers too, but are not rebuilt from source, so they
 will not fail — they go quietly stale against the fixture they came from.
 Regenerating them is the *Format bumps* loop below.
@@ -236,7 +236,7 @@ check:
     `format!("{}", value.display_from_target(&mem, depth))`. Byte helpers:
     `u32s`, `u64s`, `node_bytes`, `sync_waiter`, `btree_leaf`, `mpsc_block`;
     selector/expr helpers: `sel`, `ebf`/`ubf`, `vread`/`vconst`/`vadd`/….
-- **Offline two-binary fixtures** (`hansei-runtime/tests/fixtures/*.bundle`) are
+- **Offline two-binary fixtures** (`hansei-runtime/tests/fixtures/*.tinfo`) are
   checked-in *binary* bundles with a version header, so **any `FORMAT_VERSION`
   bump makes a `-p hansei-runtime` run fail to load them** — see *Format
   bumps* above for the regeneration loop, which needs illumos.
@@ -322,12 +322,12 @@ canary because every fixture is rebuilt from source.
 
 A **local core pair** sits under `./cores/` for when a test core is
 needed on this machine: `nexus.22247.bin` (the debug nexus binary),
-`nexus.22247.core` (its core), and `nexus.22247.bundle` extracted from
+`nexus.22247.core` (its core), and `nexus.22247.tinfo` extracted from
 them. Reach for these first — every value-printing command runs against
-them right here (`hansei -t ./cores/nexus.22247.bundle -c
+them right here (`hansei -t ./cores/nexus.22247.tinfo -c
 ./cores/nexus.22247.core`), no remote host required. After an exegesis
 change, re-extract with `hansei tokio-info extract ./cores/nexus.22247.bin
--o ./cores/nexus.22247.bundle`. The files are gitignored and exist only on
+-o ./cores/nexus.22247.tinfo`. The files are gitignored and exist only on
 this machine; the illumos host below is still where a *sled-agent* core
 and the acceptance suite live.
 

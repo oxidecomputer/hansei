@@ -6,7 +6,7 @@
 //! genfix program must satisfy, over one snapshot pair.
 //!
 //! Opt-in, like the matrix: `HANSEI_GENFIX_PAIR=<prefix>` names a pair
-//! as `<prefix>.bundle` / `<prefix>.snapshot` (the soak loop passes
+//! as `<prefix>.tinfo` / `<prefix>.snapshot` (the soak loop passes
 //! what `capture-snapshots.sh` just wrote), and without it the test
 //! skips with a message. The soak loop (`test-programs/genfix/soak.sh`)
 //! runs this once per seed; a failure here after a clean recapture is
@@ -33,7 +33,7 @@ fn test_generated_pair_matches_its_registry() {
         return;
     };
 
-    let bundle = Bundle::load(format!("{prefix}.bundle").as_ref()).expect("the bundle loads");
+    let bundle = Bundle::load(format!("{prefix}.tinfo").as_ref()).expect("the bundle loads");
     let snapshot =
         Snapshot::load(format!("{prefix}.snapshot").as_ref()).expect("the snapshot loads");
     // The total audit runs (and panics) inside the pipeline.
