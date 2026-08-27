@@ -50,6 +50,60 @@ fn fixture_dsym(program: &str) -> PathBuf {
         .join(program)
 }
 
+/// The packed-split build of a fixture: the skeleton-DWARF binary, with
+/// its `.dwp` sitting beside it (`regen.sh --dwp`).
+#[cfg(target_os = "linux")]
+fn dwp_binary(program: &str) -> PathBuf {
+    test_programs_dir().join("fixtures/bin/dwp").join(program)
+}
+
+/// [`ensure_fixture`], for the packed-split build of a program: built
+/// once per run by `regen.sh --dwp` into its own bin dir, stamped and
+/// digested separately from the unsplit build of the same sources.
+#[cfg(target_os = "linux")]
+fn ensure_dwp_fixture(program: &str) -> bool {
+    static BUILT: Mutex<BTreeMap<String, bool>> = Mutex::new(BTreeMap::new());
+    let mut built = BUILT.lock().unwrap();
+    if let Some(&usable) = built.get(program) {
+        return usable;
+    }
+    let usable = if !toolchain_installed() {
+        if dwp_binary(program).exists() {
+            eprintln!(
+                "warning: toolchain {TOOLCHAIN} not installed; testing against \
+                 the {program} dwp fixture already built"
+            );
+            true
+        } else {
+            eprintln!(
+                "SKIP: dwp fixture {program} missing and toolchain {TOOLCHAIN} \
+                 not installed (rustup toolchain install {TOOLCHAIN})"
+            );
+            false
+        }
+    } else {
+        testrun::once_per_run(
+            &built_stamp(&format!("dwp-{program}")),
+            || format!("dwp-{}", built_from(program)),
+            || {
+                let status = Command::new(test_programs_dir().join("regen.sh"))
+                    .arg("--dwp")
+                    .arg(program)
+                    .status()
+                    .expect("failed to run regen.sh");
+                assert!(status.success(), "regen.sh --dwp failed for {program}");
+            },
+        );
+        assert!(
+            dwp_binary(program).exists(),
+            "regen.sh --dwp succeeded but the {program} binary is still missing"
+        );
+        true
+    };
+    built.insert(program.to_string(), usable);
+    usable
+}
+
 /// Extract a fixture the way an operator would: the binary as the
 /// input, and — where the platform split the DWARF out into a dSYM —
 /// that companion as the debug-info file. Every macOS run therefore
@@ -1265,6 +1319,98 @@ fn test_a_split_pair_extracts_the_same_bundle() {
             "{err}"
         );
     }
+}
+
+/// The packed Linux split — skeleton DWARF in the binary, every unit's
+/// DIEs in the dwp rustc packs at link time — extracts to the same
+/// bundle the unsplit build of the same sources does, identity fields
+/// aside. This is the one place the real toolchain's DebugFission
+/// spellings are exercised end to end: GNU forms, the header-less v4
+/// str-offsets, `.debug_addr`-indexed locations, and the
+/// `.debug_line.dwo` file tables — which tokio version recovery reads,
+/// so equality here is what says family selection still works against
+/// a dwp.
+#[cfg(target_os = "linux")]
+#[test]
+fn test_a_packed_dwp_pair_extracts_the_same_bundle() {
+    let program = "select-combinator";
+    if !ensure_fixture(program) || !ensure_dwp_fixture(program) {
+        return;
+    }
+
+    let opts = ExtractOptions::default();
+    let (mut unsplit, _) = extract_sources(
+        &DebugSources {
+            binary: &fixture_binary(program),
+            debug_info: None,
+        },
+        &opts,
+    )
+    .expect("unsplit extraction");
+    let bin = dwp_binary(program);
+    let dwp = bin.with_extension("dwp");
+    let (mut split, _) = extract_sources(
+        &DebugSources {
+            binary: &bin,
+            debug_info: Some(&dwp),
+        },
+        &opts,
+    )
+    .expect("packed pair extraction");
+
+    let debug_info = split
+        .meta
+        .debug_info
+        .take()
+        .expect("the pair records its debug source");
+    assert_eq!(debug_info.basename, format!("{program}.dwp"));
+    assert_eq!(split.meta.binary.basename, program);
+    // Two separate compilations, so the identity fields differ by
+    // construction.
+    split.meta.binary = unsplit.meta.binary.clone();
+    // So do the raw mangled symbols: the split-debuginfo profile
+    // setting feeds -Cmetadata, so every crate disambiguator — and
+    // with it every symbol key — differs between the two builds. The
+    // *normalized* symbol indexes must still agree (matching symbols
+    // across builds is what they exist for), so only the raw keys are
+    // cleared on both sides.
+    // One more consequence of the metadata drift: rustc duplicates a
+    // coroutine's resume fn across CGUs and does not give every copy
+    // its awaitees' declaration coordinates, and *which* copy carries
+    // them shifts between the two compilations — so one build confirms
+    // an await site the other leaves unconfirmed. A confirmed site
+    // equal to the variant's decl adds nothing (rendering already
+    // suppresses it), so that redundant spelling is normalized away on
+    // both sides; a site that disagrees with its decl still has to
+    // match exactly.
+    for bundle in [&mut split, &mut unsplit] {
+        bundle.meta.symbol_fingerprint.clear();
+        bundle.tasks.by_symbol.clear();
+        bundle.dyn_futures.by_symbol.clear();
+        for def in bundle.statics.entries.values_mut() {
+            def.symbol.clear();
+        }
+        for def in &mut bundle.types.types {
+            if let TypeDef::Enum { shape, .. } = def {
+                for variant in &mut shape.variants {
+                    if variant.await_site == variant.decl {
+                        variant.await_site = None;
+                    }
+                }
+            }
+        }
+    }
+
+    // Field by field before the whole, so a mismatch names its table
+    // rather than dumping two bundles.
+    assert_eq!(split.meta, unsplit.meta, "{program}: meta differs");
+    assert_eq!(split.types, unsplit.types, "{program}: type table differs");
+    assert_eq!(split.tasks, unsplit.tasks, "{program}: task table differs");
+    assert_eq!(split.walks, unsplit.walks, "{program}: walk table differs");
+    assert_eq!(
+        split, unsplit,
+        "{program}: the packed split changed the bundle"
+    );
 }
 
 /// The `--explain-format` / `--explain-walk` traces: the one diagnostic

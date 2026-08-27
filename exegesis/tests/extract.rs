@@ -264,10 +264,12 @@ fn test_the_refusal_matrix_names_what_it_recognized() {
     assert!(matches!(err, Error::NoDebugInfo { .. }), "{err}");
     assert!(err.to_string().contains("plain"), "{}", err);
 
-    // A dwp is recognized and refused as unsupported, sibling or not.
+    // A dwp beside its binary is accepted into the package reader —
+    // which chokes on this one's junk index rather than refusing the
+    // shape. The working package paths are covered by the synthetic
+    // package below and the golden suite's packed-fixture test.
     let err = extract_sources(&sources("full", Some("dwp")), &opts).unwrap_err();
-    assert!(matches!(err, Error::DwpUnsupported { .. }), "{err}");
-    assert!(err.to_string().contains("not yet supported"), "{}", err);
+    assert!(matches!(err, Error::Dwarf(_)), "{err}");
 }
 
 /// Pairing is verified: matching build ids proceed (into the DWARF,

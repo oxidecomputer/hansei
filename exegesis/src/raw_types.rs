@@ -1,4 +1,4 @@
-use crate::cgu::DwString;
+use crate::cgu::{DwString, UnitCtx};
 use crate::{Result, Slice, TypeId};
 
 use foldhash::{HashMap, HashMapExt};
@@ -470,7 +470,7 @@ impl<'dw> CommonAttrs<'dw> {
     /// Parse common attributes from a DIE, forwarding unrecognized
     /// attributes to `other_attr` for type-specific handling.
     pub fn from_entry(
-        unit: &UnitRef<Slice<'dw>>,
+        unit: &UnitCtx<'_, 'dw>,
         entry: &DebuggingInformationEntry<Slice<'dw>>,
         mut other_attr: impl FnMut(&Attribute<Slice<'dw>>) -> Result<()>,
     ) -> Result<Self> {
@@ -481,7 +481,7 @@ impl<'dw> CommonAttrs<'dw> {
         let mut is_decl = false;
         let mut specification = None;
         let mut source_loc = SourceLoc::default();
-        let offset = entry.offset().to_unit_section_offset(unit);
+        let offset = unit.die_offset(entry);
 
         let mut attrs = entry.attrs();
         while let Some(attr) = attrs.next()? {
@@ -495,18 +495,14 @@ impl<'dw> CommonAttrs<'dw> {
                 gimli::DW_AT_alignment => {
                     alignment = attr.value().udata_value().and_then(NonZero::new);
                 }
-                gimli::DW_AT_type => match attr.value() {
-                    AttributeValue::UnitRef(o) => type_id = Some(o.to_unit_section_offset(unit)),
-                    AttributeValue::DebugInfoRef(o) => type_id = Some(o.into()),
-                    _ => panic!("unexpected type type: {:?}", attr.value()),
+                gimli::DW_AT_type => match unit.attr_ref(attr.value()) {
+                    Some(o) => type_id = Some(o),
+                    None => panic!("unexpected type type: {:?}", attr.value()),
                 },
                 gimli::DW_AT_declaration => is_decl = true,
-                gimli::DW_AT_specification => match attr.value() {
-                    AttributeValue::UnitRef(o) => {
-                        specification = Some(o.to_unit_section_offset(unit));
-                    }
-                    AttributeValue::DebugInfoRef(o) => specification = Some(o.into()),
-                    _ => debug!("unexpected specification type: {:?}", attr.value()),
+                gimli::DW_AT_specification => match unit.attr_ref(attr.value()) {
+                    Some(o) => specification = Some(o),
+                    None => debug!("unexpected specification type: {:?}", attr.value()),
                 },
                 gimli::DW_AT_decl_file => {
                     let AttributeValue::FileIndex(f) = attr.value() else {

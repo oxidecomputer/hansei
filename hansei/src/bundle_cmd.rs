@@ -124,14 +124,6 @@ pub fn extract_for_session(
 ) -> Result<(Bundle, Vec<String>, bool)> {
     let flavor = classify_file(debug_info)
         .with_context(|| format!("failed to read {}", debug_info.display()))?;
-    // A dwp is recognized so the refusal can say what it is, but its
-    // machinery does not exist yet — say that rather than sending the
-    // caller hunting for a --binary that would not help.
-    anyhow::ensure!(
-        flavor != exegesis::extract::DebugFlavor::Dwp,
-        "{} is a DWARF package (dwp), which is not yet supported",
-        debug_info.display()
-    );
     let sources = match (flavor.is_split(), binary) {
         (false, _) => DebugSources {
             binary: debug_info,

@@ -30,6 +30,11 @@
 #                    extracted from such a build; pair it with a full
 #                    debug build of the same cell, which is what
 #                    capture-snapshots.sh does for its core target.
+#   --dwp            build with -C split-debuginfo=packed (via the cargo
+#                    profile), producing a skeleton-DWARF binary and its
+#                    .dwp package side by side under fixtures/bin/dwp.
+#                    ELF hosts only — this is the Linux split shape; the
+#                    dSYM covers the same ground on macOS.
 #
 # The tokio/toolchain/unstable axes come from matrix.toml. A build with
 # any non-primary axis value is a matrix *cell*: it is compiled from a
@@ -53,6 +58,7 @@ TOKIO=""
 UNSTABLE=1
 CT_ONLY=0
 DEBUG_INFO=1
+DWP=0
 PROGRAMS=()
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -61,6 +67,7 @@ while [[ $# -gt 0 ]]; do
         --no-unstable) UNSTABLE=0; shift ;;
         --ct-only) CT_ONLY=1; UNSTABLE=0; shift ;;
         --no-debug-info) DEBUG_INFO=0; shift ;;
+        --dwp) DWP=1; shift ;;
         --*) echo "regen.sh: unknown option $1" >&2; exit 2 ;;
         *) PROGRAMS+=("$1"); shift ;;
     esac
@@ -134,6 +141,15 @@ else
     TARGET_DIR="${REGEN_TARGET_DIR:-$FIXTURES/cells/$PAIR/target}"
 fi
 
+# The packed-split build is the primary recipe with the debug info
+# split out, kept in its own bin and target dirs so it never writes a
+# skeleton-DWARF binary over a fixture the goldens read whole.
+if [[ "$DWP" == 1 ]]; then
+    BIN_DIR="${REGEN_BIN_DIR:-$FIXTURES/bin/dwp}"
+    TARGET_DIR="${REGEN_TARGET_DIR:-$FIXTURES/target-dwp}"
+    export CARGO_PROFILE_RELEASE_SPLIT_DEBUGINFO=packed
+fi
+
 # Full debug info for every crate in the graph, not just test-programs:
 # tokio's own CUs carry the statics (CONTEXT, WAKER_VTABLE) the extractor
 # needs. A dedicated target dir keeps this profile from thrashing the
@@ -178,6 +194,11 @@ trap 'rm -rf "$BIN_DIR"/*.tmp$$ "$BIN_DIR"/*.dSYM.tmp$$' EXIT
 
 for p in "${PROGRAMS[@]}"; do
     install "$TARGET_DIR/release/$p" "$BIN_DIR/$p"
+    if [[ "$DWP" == 1 ]]; then
+        # cargo uplifts the package rustc's thorin wrote beside the
+        # binary; without it the pair above is only half an input.
+        install "$TARGET_DIR/release/$p.dwp" "$BIN_DIR/$p.dwp"
+    fi
     if [[ "$(uname)" == "Darwin" && "$DEBUG_INFO" == 1 ]]; then
         # Mach-O executables don't carry DWARF; link it into a dSYM. The
         # bundle is built aside and its one file of interest — the linked
