@@ -1,4 +1,4 @@
-use crate::cgu::CodegenUnit;
+use crate::cgu::{CodegenUnit, UnitCtx};
 use crate::raw_types::{
     NamespaceTable, NsId, RawAwaitee, RawBase, RawEnum, RawEnumerator, RawFunc,
     RawGenericParameter, RawMember, RawPointer, RawStaticVariable, RawStruct, RawSubParameter,
@@ -9,12 +9,12 @@ use crate::{Error, FuncId, Result, Slice};
 use crate::{TypeId, VarId};
 
 use foldhash::{HashMap, HashMapExt, HashSet, HashSetExt};
-use gimli::{Dwarf, UnitRef};
+use gimli::{Dwarf, DwarfPackage, Section as _, Unit, UnitRef};
 use rayon::iter::{
     IndexedParallelIterator, IntoParallelIterator, IntoParallelRefIterator, ParallelIterator,
 };
 
-use tracing::debug;
+use tracing::{debug, warn};
 
 use std::collections::BTreeSet;
 use std::num::NonZero;
@@ -123,12 +123,98 @@ impl<'dw> DwReader<'dw> {
     pub fn read_types(dwarf: &Dwarf<Slice<'dw>>, args: ReadArgs) -> Result<DwReader<'dw>> {
         // Unit headers carry only offsets, so enumerating them up front is
         // cheap and gives the parallel walk an indexable work list.
-        let mut headers = Vec::new();
+        let mut jobs = Vec::new();
         let mut units = dwarf.units();
         while let Some(header) = units.next()? {
-            headers.push(header);
+            jobs.push(UnitJob::Plain(header));
+        }
+        Self::read_jobs(dwarf, None, jobs, args)
+    }
+
+    /// Parse split DWARF: skeleton units in `dwarf` (the binary), their
+    /// DIEs in the package (the dwp) — each skeleton's dwo-id resolved
+    /// through the package's index to the contribution holding its real
+    /// unit. Units in the binary *without* a dwo-id (objects compiled
+    /// without fission and linked in) are parsed from the binary as in
+    /// [`Self::read_types`]. Skeletons contribute no ids or DIEs of
+    /// their own; what they carry (the `.debug_addr` base, the comp
+    /// dir) is copied onto the split unit before it is parsed.
+    ///
+    /// The dwo-id join is also the pairing check — a dwp carries no
+    /// build-id — so a skeleton whose id the index does not know makes
+    /// the whole read fail with a found-of-total count, and a binary
+    /// with no skeletons at all (its `.debug_*` sections stripped after
+    /// the split) is refused rather than read as empty.
+    pub fn read_types_package(
+        dwarf: &Dwarf<Slice<'dw>>,
+        package: &DwarfPackage<Slice<'dw>>,
+        args: ReadArgs,
+    ) -> Result<DwReader<'dw>> {
+        // Contribution offsets restart per unit, so split ids are biased
+        // past the skeleton section's end to keep the two spaces
+        // disjoint — see [`UnitCtx`]. The bias constants are allocated
+        // cumulatively in *skeleton* order, not taken from the package's
+        // own layout: a packer orders contributions however it likes,
+        // and several downstream choices — the sweep's first-wins
+        // fields, canonical-id tie-breaks — follow id order, which this
+        // keeps identical to what extracting the same link unsplit
+        // would see.
+        let mut next_bias = dwarf.debug_info.reader().len();
+        if package.tu_index.unit_count() > 0 {
+            // rustc emits no type units; a packer that wrote some is
+            // outside anything verified here, and their types would be
+            // silently absent.
+            warn!(
+                units = package.tu_index.unit_count(),
+                "the DWARF package carries type units, which are not read"
+            );
         }
 
+        let mut jobs = Vec::new();
+        let mut total = 0usize;
+        let mut missing = 0usize;
+        let mut units = dwarf.units();
+        while let Some(header) = units.next()? {
+            let unit = dwarf.unit(header)?;
+            let Some(dwo_id) = unit.dwo_id else {
+                jobs.push(UnitJob::Plain(header));
+                continue;
+            };
+            total += 1;
+            let Some(row) = package.cu_index.find(dwo_id.0) else {
+                missing += 1;
+                continue;
+            };
+            let size = package
+                .cu_index
+                .sections(row)?
+                .find(|s| s.section == gimli::IndexSectionId::DebugInfo)
+                .map_or(0, |s| s.size as usize);
+            jobs.push(UnitJob::Split {
+                skeleton: Box::new(unit),
+                row,
+                bias: next_bias,
+            });
+            next_bias += size;
+        }
+        if total == 0 {
+            return Err(Error::DwpNoSkeletons);
+        }
+        if missing > 0 {
+            return Err(Error::DwpUnitsMissing {
+                found: total - missing,
+                total,
+            });
+        }
+        Self::read_jobs(dwarf, Some(package), jobs, args)
+    }
+
+    fn read_jobs(
+        dwarf: &Dwarf<Slice<'dw>>,
+        package: Option<&DwarfPackage<Slice<'dw>>>,
+        jobs: Vec<UnitJob<'dw>>,
+        args: ReadArgs,
+    ) -> Result<DwReader<'dw>> {
         // Interning is the single most expensive part of collection (tens of
         // millions of strings), so it runs on the parallel workers via a
         // sharded, lock-striped interner. Namespace assignment and type-map
@@ -174,15 +260,10 @@ impl<'dw> DwReader<'dw> {
             // serializes behind its chunk-mates instead of starting the
             // moment a thread frees up (measured ~2× on the parse phase).
             let parsed = pool.install(|| {
-                headers
-                    .into_par_iter()
+                jobs.into_par_iter()
                     .with_max_len(1)
-                    .try_for_each_with(tx, |tx, header| {
-                        let unit = dwarf.unit(header)?;
-                        let unit_ref = UnitRef::new(dwarf, &unit);
-                        let mut cursor = unit.entries();
-                        cursor.next_entry()?;
-                        let cgu = CodegenUnit::from_cursor(&unit_ref, &mut cursor)?;
+                    .try_for_each_with(tx, |tx, job| {
+                        let cgu = parse_job(dwarf, package, job)?;
                         debug!("processed unit {}", cgu.name);
                         // The collector hangs up only after every sender is
                         // dropped, so a failed send can only follow its panic —
@@ -752,6 +833,69 @@ impl<'dw> DwReader<'dw> {
             .iter()
             .filter(|(id, _)| !self.subs.contains_key(id))
             .map(|(&id, ty)| (id, ty))
+    }
+}
+
+/// One unit's worth of parse work for the worker pool.
+enum UnitJob<'dw> {
+    /// A unit whose DIEs are where its header is — the main file's
+    /// `.debug_info` — parsed with no id bias.
+    Plain(gimli::UnitHeader<Slice<'dw>>),
+    /// A skeleton unit whose DIEs live in a DWARF package: the worker
+    /// slices contribution `row` out of the package, parses the split
+    /// unit there, and biases every id by `bias`. The parsed skeleton
+    /// is boxed to keep the job list's slots small.
+    Split {
+        skeleton: Box<Unit<Slice<'dw>>>,
+        row: u32,
+        bias: usize,
+    },
+}
+
+/// Parse one unit into a [`CodegenUnit`] on a worker thread.
+fn parse_job<'dw>(
+    dwarf: &Dwarf<Slice<'dw>>,
+    package: Option<&DwarfPackage<Slice<'dw>>>,
+    job: UnitJob<'dw>,
+) -> Result<CodegenUnit<'dw>> {
+    let parse = |ctx: &UnitCtx<'_, 'dw>| {
+        let mut cursor = ctx.entries();
+        cursor.next_entry()?;
+        CodegenUnit::from_cursor(ctx, &mut cursor)
+    };
+    match job {
+        UnitJob::Plain(header) => {
+            let unit = dwarf.unit(header)?;
+            parse(&UnitCtx::new(UnitRef::new(dwarf, &unit), 0))
+        }
+        UnitJob::Split {
+            skeleton,
+            row,
+            bias,
+        } => {
+            let package = package.expect("split jobs exist only in package mode");
+            // The per-contribution `Dwarf` borrows the same section
+            // bytes, so the parsed unit's strings outlive it; the
+            // package's `.debug_addr` and ranges come from the binary.
+            let dwo = package.cu_sections(row, dwarf)?;
+            let mut units = dwo.units();
+            let header = units.next()?.ok_or(Error::DwpEmptyContribution)?;
+            let mut unit = dwo.unit(header)?;
+            // The address base lives on the skeleton (`.debug_addr` is
+            // never split). rustc's v4 fission also writes no
+            // `.debug_line.dwo` and no split-side comp dir: the split
+            // unit's file indices refer to the skeleton's line table in
+            // the binary, so both come from the skeleton whenever the
+            // split unit carries none of its own.
+            unit.copy_relocated_attributes(&skeleton);
+            if unit.line_program.is_none() {
+                unit.line_program = skeleton.line_program.clone();
+            }
+            if unit.comp_dir.is_none() {
+                unit.comp_dir = skeleton.comp_dir;
+            }
+            parse(&UnitCtx::new(UnitRef::new(&dwo, &unit), bias))
+        }
     }
 }
 

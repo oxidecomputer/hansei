@@ -292,11 +292,11 @@ pub enum Error {
     #[error("no debug info in {path}: it carries no DWARF")]
     NoDebugInfo { path: String },
     #[error(
-        "{path} is a DWARF package (dwp), which is not yet supported; \
-         when it is, the sibling binary carrying its skeleton sections \
-         will still be required alongside it"
+        "the debug info in {path} was split out at build time \
+         (-C split-debuginfo): its units are skeletons whose DIEs live \
+         in a DWARF package — pass the .dwp as --debug-info"
     )]
-    DwpUnsupported { path: String },
+    SplitOutDwarf { path: String },
     #[error(
         "{debug_info} was not split from {binary}: {reason}. A separate \
          debug build is not a sibling — extract from it alone."
@@ -360,6 +360,47 @@ fn load_dwarf_sections<'data>(
     let sections = gimli::DwarfSections::load(&load_section)
         .map_err(|e| Error::Io(std::io::Error::other(e.to_string())))?;
     Ok((sections, endian))
+}
+
+/// Whether this DWARF's leading units are fission skeletons, their
+/// DIEs split out into a `.dwo`/`.dwp`. Probes only the first few
+/// units: rustc's split builds make every unit a skeleton, and probing
+/// them all would tax every normal extraction for the sake of an error
+/// message.
+fn references_split_dwarf<R: gimli::Reader>(
+    dwarf: &gimli::Dwarf<R>,
+) -> std::result::Result<bool, gimli::Error> {
+    let mut units = dwarf.units();
+    for _ in 0..8 {
+        let Some(header) = units.next()? else {
+            break;
+        };
+        if dwarf.unit(header)?.dwo_id.is_some() {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// Read a parsed dwp's `.dwo` sections and unit indexes, by the dwo
+/// spellings of their names. Like [`load_dwarf_sections`], borrowing
+/// them into a [`gimli::DwarfPackage`] stays with the caller.
+fn load_dwarf_package_sections<'data>(
+    obj: &object::File<'data>,
+) -> Result<gimli::DwarfPackageSections<std::borrow::Cow<'data, [u8]>>> {
+    let load_section = |id: gimli::SectionId| -> std::result::Result<
+        std::borrow::Cow<'data, [u8]>,
+        Box<dyn std::error::Error>,
+    > {
+        use object::ObjectSection;
+        let name = id.dwo_name().expect("every dwp section has a dwo name");
+        Ok(match obj.section_by_name(name) {
+            Some(section) => section.uncompressed_data()?,
+            None => std::borrow::Cow::Borrowed(&[]),
+        })
+    };
+    gimli::DwarfPackageSections::load(&load_section)
+        .map_err(|e| Error::Io(std::io::Error::other(e.to_string())))
 }
 
 /// What a binary's DWARF holds before extraction selects anything out of
@@ -471,12 +512,12 @@ pub fn extract_sources(
     let debug = Input::open(debug_path)?;
     let debug_obj = object::File::parse(&debug.bytes[..])?;
     match sources::classify(&debug_obj) {
-        DebugFlavor::Dwp => Err(Error::DwpUnsupported {
-            path: debug.display.clone(),
-        }),
         DebugFlavor::NoDebugInfo => Err(Error::NoDebugInfo {
             path: debug.display.clone(),
         }),
+        // A dwp carries no build-id and no placed sections to compare;
+        // the dwo-id join inside the read is the pairing check.
+        DebugFlavor::Dwp => extract_parsed(&binary, &binary_obj, Some((&debug, &debug_obj)), opts),
         DebugFlavor::Full | DebugFlavor::Companion => {
             if let Some(reason) = sources::sibling_mismatch(&binary_obj, &debug_obj) {
                 return Err(Error::SiblingMismatch {
@@ -522,11 +563,39 @@ fn extract_parsed(
     let binary_hash = binary.hash();
     let debug_hash = debug.map(|(input, _)| input.hash());
 
-    let dwarf_obj = debug.map(|(_, obj)| obj).unwrap_or(binary_obj);
+    // A dwp holds only the split-out halves of the binary's units, so
+    // the `Dwarf` proper — skeletons, `.debug_addr`, the skeleton line
+    // tables — is loaded from the *binary*, and the package is resolved
+    // against it one skeleton at a time inside the reader. Every other
+    // debug-info flavor is itself the DWARF to read.
+    let package_obj = debug
+        .map(|(_, obj)| obj)
+        .filter(|obj| sources::classify(obj) == DebugFlavor::Dwp);
+    let dwarf_obj = match package_obj {
+        Some(_) => binary_obj,
+        None => debug.map(|(_, obj)| obj).unwrap_or(binary_obj),
+    };
     let (sections, endian) = load_dwarf_sections(dwarf_obj)?;
     let borrow_section =
         |section| gimli::EndianSlice::new(std::borrow::Cow::as_ref(section), endian);
     let dwarf = sections.borrow(borrow_section);
+    let package_sections = package_obj.map(load_dwarf_package_sections).transpose()?;
+    let package = package_sections
+        .as_ref()
+        .map(|s| s.borrow(borrow_section, gimli::EndianSlice::new(&[], endian)))
+        .transpose()
+        .map_err(crate::Error::from)?;
+
+    // A packed-split binary classifies as full — it has DWARF sections
+    // with contents — but its units are skeletons whose DIEs live in
+    // the dwp. Extracting from it alone would find nothing and blame
+    // the target ("is this a tokio debug binary?"), so name the real
+    // problem instead.
+    if debug.is_none() && references_split_dwarf(&dwarf).map_err(crate::Error::from)? {
+        return Err(Error::SplitOutDwarf {
+            path: binary.display.clone(),
+        });
+    }
 
     // The vtable scan wants file bytes for the data sections, which a
     // companion (or dSYM) does not have — its program sections claim
@@ -561,7 +630,10 @@ fn extract_parsed(
             };
             (symbols, vtable_types)
         });
-        let reader = DwReader::read_types(&dwarf, Default::default())?;
+        let reader = match package.as_ref() {
+            Some(package) => DwReader::read_types_package(&dwarf, package, Default::default())?,
+            None => DwReader::read_types(&dwarf, Default::default())?,
+        };
         let (symbols, vtable_types) = aux.join().expect("symbol-gathering thread panicked");
         Ok::<_, Error>((reader, symbols, vtable_types))
     })?;

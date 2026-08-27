@@ -40,6 +40,19 @@ pub enum Error {
     UnexpectedStrAttr(gimli::DwAt),
     #[error("item was not valid UTF-8")]
     InvalidUtf8,
+    #[error(
+        "the DWARF package does not match the binary: {found} of {total} \
+         split debug units found in its index"
+    )]
+    DwpUnitsMissing { found: usize, total: usize },
+    #[error(
+        "the binary carries no split-unit skeletons for the DWARF package \
+         to complete; if its .debug_* sections were stripped, the package \
+         cannot be used — they name and address everything in it"
+    )]
+    DwpNoSkeletons,
+    #[error("a DWARF package index row points at an empty unit contribution")]
+    DwpEmptyContribution,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]

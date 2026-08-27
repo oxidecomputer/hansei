@@ -7,12 +7,81 @@ use crate::{Error, FuncId, Result, Slice, TypeId, VarId};
 
 use foldhash::{HashMap, HashMapExt, HashSet, HashSetExt};
 use gimli::{
-    Attribute, AttributeValue, EntriesCursor, EvaluationResult, Reader, UnitRef, UnitSectionOffset,
+    Attribute, AttributeValue, DebuggingInformationEntry, EntriesCursor, EvaluationResult, Reader,
+    UnitRef, UnitSectionOffset,
 };
 use tracing::debug;
 
 const ANON: &str = "<anon>";
 const UNNAMED_CGU: &str = "<unnamed_cgu>";
+
+/// The unit being parsed, carrying the constant that places its DIE
+/// offsets in the reader's one id space.
+///
+/// A unit read from a plain `.debug_info` needs no help: gimli's
+/// section offsets are unique across the whole file, and `bias` is 0.
+/// A unit resolved out of a DWARF package is handed *sliced* sections —
+/// each contribution's offsets restart near zero — so equal ids from
+/// different units would silently alias distinct types through the
+/// dedup. `bias` is a per-unit constant the reader allocates to keep
+/// every unit's ids disjoint (see `read_types_package` for how the
+/// constants are chosen), and adding one per-unit constant preserves
+/// every equality because split DWARF forbids cross-unit references:
+/// nothing a unit can spell escapes its own contribution.
+///
+/// Every conversion from a DIE or attribute to a [`UnitSectionOffset`]
+/// must go through [`Self::die_offset`] / [`Self::attr_ref`]; one raw
+/// `to_unit_section_offset` call is a silent cross-unit aliasing bug in
+/// package mode.
+pub(crate) struct UnitCtx<'a, 'dw> {
+    unit: UnitRef<'a, Slice<'dw>>,
+    bias: usize,
+}
+
+impl<'a, 'dw> UnitCtx<'a, 'dw> {
+    pub(crate) fn new(unit: UnitRef<'a, Slice<'dw>>, bias: usize) -> Self {
+        Self { unit, bias }
+    }
+
+    fn biased(&self, offset: UnitSectionOffset) -> UnitSectionOffset {
+        match offset {
+            UnitSectionOffset::DebugInfoOffset(o) => {
+                UnitSectionOffset::DebugInfoOffset(gimli::DebugInfoOffset(o.0 + self.bias))
+            }
+            UnitSectionOffset::DebugTypesOffset(o) => {
+                UnitSectionOffset::DebugTypesOffset(gimli::DebugTypesOffset(o.0 + self.bias))
+            }
+        }
+    }
+
+    /// The id-space offset of a DIE in this unit.
+    pub(crate) fn die_offset(
+        &self,
+        entry: &DebuggingInformationEntry<'_, '_, Slice<'dw>>,
+    ) -> UnitSectionOffset {
+        self.biased(entry.offset().to_unit_section_offset(&self.unit))
+    }
+
+    /// The id-space offset a reference attribute points at, under either
+    /// spelling a same-file reference can take (`DW_FORM_ref*` relative
+    /// to the unit, `DW_FORM_ref_addr` relative to the section). `None`
+    /// for any other value class.
+    pub(crate) fn attr_ref(&self, value: AttributeValue<Slice<'dw>>) -> Option<UnitSectionOffset> {
+        match value {
+            AttributeValue::UnitRef(o) => Some(self.biased(o.to_unit_section_offset(&self.unit))),
+            AttributeValue::DebugInfoRef(o) => Some(self.biased(o.into())),
+            _ => None,
+        }
+    }
+}
+
+impl<'a, 'dw> std::ops::Deref for UnitCtx<'a, 'dw> {
+    type Target = UnitRef<'a, Slice<'dw>>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.unit
+    }
+}
 
 /// The parsed contents of a single DWARF codegen unit.
 #[derive(Debug)]
@@ -90,7 +159,7 @@ impl<'dw> CodegenUnit<'dw> {
     /// `DW_TAG_compile_unit` entry. Returns a fully initialized
     /// [`CodegenUnit`].
     pub fn from_cursor(
-        unit: &UnitRef<Slice<'dw>>,
+        unit: &UnitCtx<'_, 'dw>,
         cursor: &mut EntriesCursor<Slice<'dw>>,
     ) -> Result<Self> {
         let entry = cursor
@@ -98,7 +167,7 @@ impl<'dw> CodegenUnit<'dw> {
             .expect("cursor must be positioned at a compile unit entry");
         assert_eq!(entry.tag(), gimli::DW_TAG_compile_unit);
 
-        let offset = entry.offset().to_unit_section_offset(unit);
+        let offset = unit.die_offset(entry);
         let name = match entry.attr(gimli::DW_AT_name)? {
             Some(attr) => attr.attr_str(unit)?,
             None => UNNAMED_CGU,
@@ -137,7 +206,7 @@ impl<'dw> CodegenUnit<'dw> {
 
     fn parse_nested_types(
         &mut self,
-        unit: &UnitRef<Slice<'dw>>,
+        unit: &UnitCtx<'_, 'dw>,
         cursor: &mut EntriesCursor<Slice<'dw>>,
     ) -> Result<()> {
         let Some(entry) = cursor.current() else {
@@ -149,7 +218,7 @@ impl<'dw> CodegenUnit<'dw> {
             gimli::DW_TAG_namespace => self.parse_namespace(unit, cursor),
             gimli::DW_TAG_pointer_type => self.parse_pointer_type(unit, cursor),
             gimli::DW_TAG_subroutine_type => {
-                let id = TypeId(entry.offset().to_unit_section_offset(unit));
+                let id = TypeId(unit.die_offset(entry));
                 self.subroutine_types.insert(id);
                 cursor.consume_entry()
             }
@@ -165,7 +234,7 @@ impl<'dw> CodegenUnit<'dw> {
 
     fn parse_base(
         &mut self,
-        unit: &UnitRef<Slice<'dw>>,
+        unit: &UnitCtx<'_, 'dw>,
         cursor: &mut EntriesCursor<Slice<'dw>>,
     ) -> Result<()> {
         let Some(entry) = cursor.current() else {
@@ -220,7 +289,7 @@ impl<'dw> CodegenUnit<'dw> {
 
     fn parse_pointer_type(
         &mut self,
-        unit: &UnitRef<Slice<'dw>>,
+        unit: &UnitCtx<'_, 'dw>,
         cursor: &mut EntriesCursor<Slice<'dw>>,
     ) -> Result<()> {
         let entry = cursor.current().unwrap();
@@ -268,7 +337,7 @@ impl<'dw> CodegenUnit<'dw> {
 
     fn parse_namespace(
         &mut self,
-        unit: &UnitRef<Slice<'dw>>,
+        unit: &UnitCtx<'_, 'dw>,
         cursor: &mut EntriesCursor<Slice<'dw>>,
     ) -> Result<()> {
         let entry = cursor.current().unwrap();
@@ -296,7 +365,7 @@ impl<'dw> CodegenUnit<'dw> {
 
     fn process_struct(
         &mut self,
-        unit: &UnitRef<Slice<'dw>>,
+        unit: &UnitCtx<'_, 'dw>,
         cursor: &mut EntriesCursor<Slice<'dw>>,
     ) -> Result<()> {
         let Some(entry) = cursor.current() else {
@@ -376,7 +445,7 @@ impl<'dw> CodegenUnit<'dw> {
     /// nested type definitions.
     fn process_union(
         &mut self,
-        unit: &UnitRef<Slice<'dw>>,
+        unit: &UnitCtx<'_, 'dw>,
         cursor: &mut EntriesCursor<Slice<'dw>>,
     ) -> Result<()> {
         let Some(entry) = cursor.current() else {
@@ -436,7 +505,7 @@ impl<'dw> CodegenUnit<'dw> {
     /// `DW_TAG_subrange_type` child.
     fn parse_array_type(
         &mut self,
-        unit: &UnitRef<Slice<'dw>>,
+        unit: &UnitCtx<'_, 'dw>,
         cursor: &mut EntriesCursor<Slice<'dw>>,
     ) -> Result<()> {
         let entry = cursor.current().unwrap();
@@ -488,7 +557,7 @@ impl<'dw> CodegenUnit<'dw> {
     /// with `VariantShape::CStyle`.
     fn parse_enumeration_type(
         &mut self,
-        unit: &UnitRef<Slice<'dw>>,
+        unit: &UnitCtx<'_, 'dw>,
         cursor: &mut EntriesCursor<Slice<'dw>>,
     ) -> Result<()> {
         let entry = cursor.current().unwrap();
@@ -543,7 +612,7 @@ impl<'dw> CodegenUnit<'dw> {
 
     fn process_static_variable(
         &mut self,
-        unit: &UnitRef<Slice<'dw>>,
+        unit: &UnitCtx<'_, 'dw>,
         cursor: &mut EntriesCursor<Slice<'dw>>,
     ) -> Result<()> {
         let entry = cursor.current().unwrap();
@@ -552,7 +621,7 @@ impl<'dw> CodegenUnit<'dw> {
         let mut linkage_name = None;
         let mut addr = None;
 
-        let offset = entry.offset().to_unit_section_offset(unit);
+        let offset = unit.die_offset(entry);
         let common = CommonAttrs::from_entry(unit, entry, |attr| {
             match attr.name() {
                 gimli::DW_AT_linkage_name => {
@@ -586,6 +655,12 @@ impl<'dw> CodegenUnit<'dw> {
                             }
                             EvaluationResult::RequiresRelocatedAddress(a) => {
                                 result = eval.resume_with_relocated_address(a)?;
+                            }
+                            // A split unit spells the address as an index
+                            // into the binary's `.debug_addr` (the unit's
+                            // addr base was copied over from its skeleton).
+                            EvaluationResult::RequiresIndexedAddress { index, relocate: _ } => {
+                                result = eval.resume_with_indexed_address(unit.address(index)?)?;
                             }
                             other => {
                                 // TLS statics land here (their locations
@@ -630,7 +705,7 @@ impl<'dw> CodegenUnit<'dw> {
 
     fn process_function(
         &mut self,
-        unit: &UnitRef<Slice<'dw>>,
+        unit: &UnitCtx<'_, 'dw>,
         cursor: &mut EntriesCursor<Slice<'dw>>,
     ) -> Result<()> {
         let entry = cursor.current().unwrap();
@@ -652,28 +727,23 @@ impl<'dw> CodegenUnit<'dw> {
                     }
                     v => panic!("unexpected noreturn value: {:?}", v),
                 },
-                gimli::DW_AT_low_pc => {
-                    if let gimli::AttributeValue::Addr(a) = attr.value() {
-                        lo_pc = Some(a);
-                    } else {
-                        debug!("unexpected low_pc type: {:?}", attr.value());
-                    }
-                }
+                gimli::DW_AT_low_pc => match attr.value() {
+                    gimli::AttributeValue::Addr(a) => lo_pc = Some(a),
+                    // Split units index `.debug_addr` instead; nothing
+                    // reads `lo_pc`, so it is not worth resolving.
+                    gimli::AttributeValue::DebugAddrIndex(_) => {}
+                    v => debug!("unexpected low_pc type: {v:?}"),
+                },
                 gimli::DW_AT_high_pc => {
                     hi_pc = attr.value().udata_value();
                     if hi_pc.is_none() {
                         debug!("non udata hi_pc {:?}", attr.value());
                     }
                 }
-                gimli::DW_AT_abstract_origin => {
-                    if let gimli::AttributeValue::UnitRef(o) = attr.value() {
-                        abstract_origin = Some(o.to_unit_section_offset(unit));
-                    } else if let gimli::AttributeValue::DebugInfoRef(o) = attr.value() {
-                        abstract_origin = Some(o.into());
-                    } else {
-                        panic!("unexpected abstract_origin type: {:?}", attr.value());
-                    }
-                }
+                gimli::DW_AT_abstract_origin => match unit.attr_ref(attr.value()) {
+                    Some(o) => abstract_origin = Some(o),
+                    None => panic!("unexpected abstract_origin type: {:?}", attr.value()),
+                },
                 // sibling
                 // inline
                 // prototyped
@@ -758,7 +828,7 @@ impl<'dw> CodegenUnit<'dw> {
 /// locals. A resume body nests one block per suspend point, so the
 /// awaits of a coroutine with several of them sit at different depths.
 fn collect_awaitees<'dw>(
-    unit: &UnitRef<Slice<'dw>>,
+    unit: &UnitCtx<'_, 'dw>,
     cursor: &mut EntriesCursor<Slice<'dw>>,
     out: &mut Vec<RawAwaitee<&'dw str>>,
 ) -> Result<()> {
@@ -793,7 +863,7 @@ fn collect_awaitees<'dw>(
 
 /// Read a `DW_TAG_variable` if it is an `__awaitee`, else skip it.
 fn process_awaitee<'dw>(
-    unit: &UnitRef<Slice<'dw>>,
+    unit: &UnitCtx<'_, 'dw>,
     cursor: &mut EntriesCursor<Slice<'dw>>,
 ) -> Result<Option<RawAwaitee<&'dw str>>> {
     let entry = cursor.current().unwrap();
@@ -821,7 +891,7 @@ fn boxed_source_loc<S>(loc: SourceLoc<S>) -> Option<Box<SourceLoc<S>>> {
 }
 
 fn process_member<'dw>(
-    unit: &UnitRef<Slice<'dw>>,
+    unit: &UnitCtx<'_, 'dw>,
     cursor: &mut EntriesCursor<Slice<'dw>>,
 ) -> Result<RawMember<&'dw str>> {
     let entry = cursor.current().unwrap();
@@ -862,7 +932,7 @@ fn process_member<'dw>(
 ///
 /// The cursor must be positioned at the `DW_TAG_variant_part` entry.
 fn parse_variant_part<'dw>(
-    unit: &UnitRef<Slice<'dw>>,
+    unit: &UnitCtx<'_, 'dw>,
     cursor: &mut EntriesCursor<Slice<'dw>>,
 ) -> Result<VariantShape<&'dw str>> {
     let entry = cursor.current().unwrap();
@@ -873,13 +943,9 @@ fn parse_variant_part<'dw>(
     let mut attrs = entry.attrs();
     while let Some(attr) = attrs.next()? {
         if attr.name() == gimli::DW_AT_discr {
-            match attr.value() {
-                AttributeValue::UnitRef(o) => {
-                    discr_ref = Some(o.to_unit_section_offset(unit));
-                }
-                _ => {
-                    debug!("unexpected DW_AT_discr value: {:?}", attr.value());
-                }
+            match unit.attr_ref(attr.value()) {
+                Some(o) => discr_ref = Some(o),
+                None => debug!("unexpected DW_AT_discr value: {:?}", attr.value()),
             }
         }
     }
@@ -925,7 +991,7 @@ fn parse_variant_part<'dw>(
 /// Returns `(discriminant_value, variant)`. A `None` discriminant value
 /// indicates the default/niche variant.
 fn parse_variant<'dw>(
-    unit: &UnitRef<Slice<'dw>>,
+    unit: &UnitCtx<'_, 'dw>,
     cursor: &mut EntriesCursor<Slice<'dw>>,
 ) -> Result<(Option<u128>, RawVariant<&'dw str>)> {
     let entry = cursor.current().unwrap();
@@ -999,7 +1065,7 @@ fn attr_discr_value(attr: &Attribute<Slice<'_>>) -> u128 {
 
 /// Parse a `DW_TAG_enumerator` entry into a `RawEnumerator`.
 fn parse_enumerator<'dw>(
-    unit: &UnitRef<Slice<'dw>>,
+    unit: &UnitCtx<'_, 'dw>,
     cursor: &mut EntriesCursor<Slice<'dw>>,
 ) -> Result<RawEnumerator<&'dw str>> {
     let entry = cursor.current().unwrap();
@@ -1033,7 +1099,7 @@ fn parse_enumerator<'dw>(
 /// chooses not to describe); the caller records what is present rather than
 /// failing the whole DIE.
 fn process_generic_parameter<'dw>(
-    unit: &UnitRef<Slice<'dw>>,
+    unit: &UnitCtx<'_, 'dw>,
     cursor: &mut EntriesCursor<Slice<'dw>>,
 ) -> Result<Option<RawGenericParameter<&'dw str>>> {
     let entry = cursor.current().unwrap();
@@ -1053,7 +1119,7 @@ fn process_generic_parameter<'dw>(
 }
 
 fn process_sub_parameter<'dw>(
-    unit: &UnitRef<Slice<'dw>>,
+    unit: &UnitCtx<'_, 'dw>,
     cursor: &mut EntriesCursor<Slice<'dw>>,
 ) -> Result<RawSubParameter<&'dw str>> {
     let entry = cursor.current().unwrap();
@@ -1064,15 +1130,10 @@ fn process_sub_parameter<'dw>(
 
     let common = CommonAttrs::from_entry(unit, entry, |attr| {
         match attr.name() {
-            gimli::DW_AT_abstract_origin => {
-                if let gimli::AttributeValue::UnitRef(o) = attr.value() {
-                    abstract_origin = Some(o.to_unit_section_offset(unit));
-                } else if let gimli::AttributeValue::DebugInfoRef(o) = attr.value() {
-                    abstract_origin = Some(o.into());
-                } else {
-                    panic!("unexpected abstract_origin type: {:?}", attr.value());
-                }
-            }
+            gimli::DW_AT_abstract_origin => match unit.attr_ref(attr.value()) {
+                Some(o) => abstract_origin = Some(o),
+                None => panic!("unexpected abstract_origin type: {:?}", attr.value()),
+            },
             gimli::DW_AT_const_value => {
                 const_value = attr.value().udata_value();
             }
