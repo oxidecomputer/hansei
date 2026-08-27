@@ -2879,11 +2879,17 @@ fn test_the_allocator_index_answers_for_what_it_can_read() {
             return;
         }
 
-        // A real index: caches with buffers in them, and every
-        // invariant it claims about itself holding.
+        // A real index: caches with buffers in them, every invariant it
+        // claims about itself holding, and every layer of the
+        // allocator read -- the magazines and the depot, the threads'
+        // own caches, and the two arenas `malloc` allocates out of,
+        // which are the layers a walk of the slabs alone would miss.
         assert!(out.contains("umem_alloc_"), "{out}");
         assert!(out.contains("self-check: clean"), "{out}");
         assert!(!out.contains("declined:"), "{out}");
+        assert!(!out.contains("not walked:"), "{out}");
+        assert!(out.contains("umem_oversize"), "{out}");
+        assert!(out.contains("umem_memalign"), "{out}");
         let live = regex::Regex::new(r"live: (\d+) chunk")
             .unwrap()
             .captures(&out)
@@ -2900,6 +2906,22 @@ fn test_the_allocator_index_answers_for_what_it_can_read() {
         let chunk = dump.lines().next().expect("a live chunk").to_string();
         let out = hansei_ok(&bundle, core, &format!("umem-audit {chunk}"));
         assert!(out.contains(&format!("{chunk}: live, in umem_")), "{out}");
+
+        // The same of the arenas, whose allocations are in no cache and
+        // so in neither set above: what the table counts is what the
+        // dump lists, and an address it named is one the lookup places
+        // in the arena that named it.
+        let arenas = regex::Regex::new(r"(?m)^(umem_(?:oversize|memalign)) +\d+ +(\d+) ")
+            .unwrap()
+            .captures_iter(&out)
+            .map(|row| row[2].parse::<usize>().unwrap())
+            .sum::<usize>();
+        let dump = hansei_ok(&bundle, core, "umem-audit --dump arena-live");
+        assert_eq!(dump.lines().count(), arenas, "the dump is the count");
+        if let Some(extent) = dump.lines().next() {
+            let out = hansei_ok(&bundle, core, &format!("umem-audit {extent}"));
+            assert!(out.contains(&format!("{extent}: live, in umem_")), "{out}");
+        }
 
         // And what `whatis` makes of the same address: the verdict in
         // the allocation's own terms, with no allocator vocabulary in
