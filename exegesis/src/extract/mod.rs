@@ -307,6 +307,66 @@ pub(crate) fn raw_type_size(reader: &DwReader<'_>, id: TypeId) -> Option<u64> {
     }
 }
 
+/// Read a parsed object's DWARF sections, and the endianness they are
+/// to be read with. Borrowing them into a `gimli::Dwarf` stays with the
+/// caller: that borrow lives no longer than the caller's frame.
+fn load_dwarf_sections<'data>(
+    obj: &object::File<'data>,
+) -> Result<(
+    gimli::DwarfSections<std::borrow::Cow<'data, [u8]>>,
+    gimli::RunTimeEndian,
+)> {
+    let endian = if obj.is_little_endian() {
+        gimli::RunTimeEndian::Little
+    } else {
+        gimli::RunTimeEndian::Big
+    };
+    let load_section = |id: gimli::SectionId| -> std::result::Result<
+        std::borrow::Cow<'data, [u8]>,
+        Box<dyn std::error::Error>,
+    > {
+        use object::ObjectSection;
+        Ok(match obj.section_by_name(id.name()) {
+            Some(section) => section.uncompressed_data()?,
+            None => std::borrow::Cow::Borrowed(&[]),
+        })
+    };
+    let sections = gimli::DwarfSections::load(&load_section)
+        .map_err(|e| Error::Io(std::io::Error::other(e.to_string())))?;
+    Ok((sections, endian))
+}
+
+/// What a binary's DWARF holds before extraction selects anything out of
+/// it. A count of zero types says the parse found nothing to read, which
+/// is the question this answers that a failed extraction cannot: whether
+/// the binary carries debug info at all.
+pub struct DwarfSummary {
+    pub types: usize,
+    pub statics: usize,
+    pub duplicate_strings: usize,
+    pub strings: usize,
+}
+
+/// Parse a binary's DWARF and count what came out of it, without
+/// selecting anything or building a bundle.
+pub fn dwarf_summary(path: &Path) -> Result<DwarfSummary> {
+    let f = std::fs::File::open(path)?;
+    let obj_bytes = unsafe { memmap2::Mmap::map(&f) }?;
+    let obj = object::File::parse(&obj_bytes[..])?;
+    let (sections, endian) = load_dwarf_sections(&obj)?;
+    let borrow_section =
+        |section| gimli::EndianSlice::new(std::borrow::Cow::as_ref(section), endian);
+    let dwarf = sections.borrow(borrow_section);
+
+    let dw = DwReader::read_types(&dwarf, Default::default())?;
+    Ok(DwarfSummary {
+        types: dw.types.len(),
+        statics: dw.variables.len(),
+        duplicate_strings: dw.strings.dups_found(),
+        strings: dw.strings.len(),
+    })
+}
+
 /// Extract a bundle from a debug binary (or any DWARF-bearing object).
 pub fn extract_file(path: &Path, opts: &ExtractOptions) -> Result<(Bundle, ExtractStats)> {
     let f = std::fs::File::open(path)?;
@@ -323,28 +383,10 @@ pub fn extract_file(path: &Path, opts: &ExtractOptions) -> Result<(Bundle, Extra
     };
 
     let obj = object::File::parse(&obj_bytes[..])?;
-    let endian = if obj.is_little_endian() {
-        gimli::RunTimeEndian::Little
-    } else {
-        gimli::RunTimeEndian::Big
-    };
-
-    let load_section = |id: gimli::SectionId| -> std::result::Result<
-        std::borrow::Cow<'_, [u8]>,
-        Box<dyn std::error::Error>,
-    > {
-        use object::ObjectSection;
-        Ok(match obj.section_by_name(id.name()) {
-            Some(section) => section.uncompressed_data()?,
-            None => std::borrow::Cow::Borrowed(&[]),
-        })
-    };
+    let (sections, endian) = load_dwarf_sections(&obj)?;
     let borrow_section =
         |section| gimli::EndianSlice::new(std::borrow::Cow::as_ref(section), endian);
-
-    let dwarf_sections = gimli::DwarfSections::load(&load_section)
-        .map_err(|e| Error::Io(std::io::Error::other(e.to_string())))?;
-    let dwarf = dwarf_sections.borrow(borrow_section);
+    let dwarf = sections.borrow(borrow_section);
 
     // Gathering the symbol tables and the vtable-type hints depends only on
     // `obj`, not on the DWARF, so run it on a helper thread that overlaps the
