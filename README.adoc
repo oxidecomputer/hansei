@@ -104,8 +104,9 @@ hansei〉tasks                    # every task: id, state, future type, spawn si
 hansei〉trace 42 -v              # one task's await chain, with its live locals
 hansei〉graph                    # the dependency graph, and any futurelock
 hansei〉threads                  # the runtime's threads: worker cores and stacks
-hansei〉runtime shared           # the scheduler state the workers share
-hansei〉runtime drivers          # the io, signal and time drivers
+hansei〉runtimes --list          # every runtime and LocalSet, and what each holds
+hansei〉runtimes --shared        # the scheduler state each runtime's workers share
+hansei〉runtimes --drivers       # the io, signal and time drivers
 hansei〉find-types oxide         # recorded type names containing a substring
 hansei〉type sled_agent::Foo     # one type's recorded layout
 hansei〉type -r sled_agent::Foo  # that layout with everything it names in it
@@ -117,7 +118,7 @@ hansei〉quit
 
 `trace` takes `--depth`/`-d` to bound how deep values are formatted, and the
 graph flags any futurelock — a lock future granted or queued on a contended
-semaphore whose task stopped polling it (RFD 609). `threads` and `runtime`
+semaphore whose task stopped polling it (RFD 609). `threads` and `runtimes`
 read the runtime's own state out of the target and take the same
 `--depth`; `find-types` and `type` ask the tokio info instead of the target, and
 report the layouts every other command decodes memory with — `type` stops at

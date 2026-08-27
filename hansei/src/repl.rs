@@ -539,82 +539,86 @@ mod tests {
         assert!(Line::try_parse_from(["print", "0x7f10"]).is_err());
     }
 
-    /// `runtime` and `runtimes` are two commands whose names are a
-    /// prefix apart, so an exact name has to beat inference — and every
-    /// shorter prefix now fits both, which is the price of the listing
-    /// being named after what it lists.
-    #[test]
-    fn test_runtime_and_runtimes_are_told_apart_by_their_exact_names() {
-        let parsed = |line: &[&str]| Line::try_parse_from(line).map(|l| l.command);
-        assert!(matches!(parsed(&["runtimes"]), Ok(Command::Runtimes)));
-        assert!(matches!(parsed(&["runtime"]), Ok(Command::Runtime { .. })));
-        let ambiguous = parsed(&["runtim"])
-            .err()
-            .expect("a shared prefix is refused");
-        let message = ambiguous.to_string();
-        for candidate in ["runtime", "runtimes"] {
-            assert!(
-                message.contains(candidate),
-                "{candidate} missing: {message}"
-            );
-        }
-    }
-
-    /// The runtime's sections are flags rather than a value, the way
+    /// The runtimes' sections are flags rather than a value, the way
     /// the census's are, so both can be asked for at once and naming
     /// neither asks for the whole runtime.
     #[test]
-    fn test_runtime_takes_its_sections_as_flags() {
+    fn test_runtimes_takes_its_sections_as_flags() {
         let sections = |line: &[&str]| {
-            let Command::Runtime {
+            let Command::Runtimes {
                 drivers, shared, ..
             } = Line::try_parse_from(line)
-                .expect("runtime takes its section flags")
+                .expect("runtimes takes its section flags")
                 .command
             else {
-                panic!("runtime parsed as another command");
+                panic!("runtimes parsed as another command");
             };
             (drivers, shared)
         };
-        assert_eq!(sections(&["runtime", "-D"]), (true, false));
-        assert_eq!(sections(&["runtime", "--shared"]), (false, true));
-        assert_eq!(sections(&["runtime", "-Ds"]), (true, true));
+        assert_eq!(sections(&["runtimes", "-D"]), (true, false));
+        assert_eq!(sections(&["runtimes", "--shared"]), (false, true));
+        assert_eq!(sections(&["runtimes", "-Ds"]), (true, true));
     }
 
-    /// The runtime a command is pointed at is named by its index in the
-    /// listing or by the handle address printed beside it, and the two
-    /// spellings cannot be confused for one another.
+    /// The runtimes a command is pointed at are named by their index in
+    /// the listing or by the handle address printed beside them, as
+    /// many as the reader cares to name, and the two spellings cannot
+    /// be confused for one another.
     #[test]
-    fn test_runtime_is_pointed_at_one_runtime() {
+    fn test_runtimes_is_pointed_at_the_runtimes_named() {
         let scope = |line: &[&str]| {
-            let Command::Runtime { scope, .. } = Line::try_parse_from(line)
-                .expect("runtime takes a scope")
+            let Command::Runtimes { scope, .. } = Line::try_parse_from(line)
+                .expect("runtimes takes scopes")
                 .command
             else {
-                panic!("runtime parsed as another command");
+                panic!("runtimes parsed as another command");
             };
             scope
         };
-        assert!(matches!(
-            scope(&["runtime", "0x7f11c0"]),
-            Some(RuntimeScope::Handle(0x7f11c0))
-        ));
+        assert_eq!(
+            scope(&["runtimes", "0x7f11c0"]),
+            [RuntimeScope::Handle(0x7f11c0)]
+        );
         // The listing spells the handle `@0x…`, so a pasted cell works
         // with the `@` still on it.
-        assert!(matches!(
-            scope(&["runtime", "@0x7f11c0"]),
-            Some(RuntimeScope::Handle(0x7f11c0))
-        ));
-        assert!(matches!(
-            scope(&["runtime", "2"]),
-            Some(RuntimeScope::Index(2))
-        ));
-        assert!(scope(&["runtime"]).is_none());
+        assert_eq!(
+            scope(&["runtimes", "@0x7f11c0"]),
+            [RuntimeScope::Handle(0x7f11c0)]
+        );
+        assert_eq!(scope(&["runtimes", "2"]), [RuntimeScope::Index(2)]);
+        // Several at once, since the question "what are these two
+        // doing" is the one several runtimes raise.
+        assert_eq!(
+            scope(&["runtimes", "2", "@0x7f11c0"]),
+            [RuntimeScope::Index(2), RuntimeScope::Handle(0x7f11c0)]
+        );
+        assert!(scope(&["runtimes"]).is_empty());
 
         // An address without its prefix would be an index; one that is
         // neither is refused rather than guessed at, as is an `@` on
         // anything but an address.
-        assert!(Line::try_parse_from(["runtime", "7f11c0"]).is_err());
-        assert!(Line::try_parse_from(["runtime", "@2"]).is_err());
+        assert!(Line::try_parse_from(["runtimes", "7f11c0"]).is_err());
+        assert!(Line::try_parse_from(["runtimes", "@2"]).is_err());
+    }
+
+    /// `--list` asks a different question than the state views, so it
+    /// is refused alongside anything that narrows one: a section flag,
+    /// or a named runtime.
+    #[test]
+    fn test_the_listing_is_asked_for_on_its_own() {
+        let listing = |line: &[&str]| {
+            let Command::Runtimes { list, .. } = Line::try_parse_from(line)
+                .expect("runtimes takes --list")
+                .command
+            else {
+                panic!("runtimes parsed as another command");
+            };
+            list
+        };
+        assert!(listing(&["runtimes", "-l"]));
+        assert!(!listing(&["runtimes"]));
+        assert!(Line::try_parse_from(["runtimes", "-l", "-D"]).is_err());
+        assert!(Line::try_parse_from(["runtimes", "--list", "--shared"]).is_err());
+        assert!(Line::try_parse_from(["runtimes", "-l", "0"]).is_err());
     }
 }

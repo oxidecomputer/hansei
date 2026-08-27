@@ -1,5 +1,5 @@
-//! The `runtimes` and `runtime` commands: which executors the target
-//! holds, and the state of each.
+//! The `runtimes` command: the state of each executor the target holds,
+//! and — with `--list` — which executors those are.
 
 use crate::summary::counted;
 use crate::threads::render;
@@ -21,9 +21,9 @@ use std::io;
 pub(crate) struct Group {
     /// What kind of executor it is, and its index among the ones of
     /// that kind: together the identifier the task listing tags a block
-    /// with, and the one the `runtime` command selects by. They are
-    /// kept apart so a column of indices lines up under itself however
-    /// the kinds beside them are spelled.
+    /// with, and the one `runtimes` selects by. They are kept apart so
+    /// a column of indices lines up under itself however the kinds
+    /// beside them are spelled.
     kind: &'static str,
     index: usize,
     /// The scheduler flavor, empty for a local set — which is not a
@@ -43,13 +43,13 @@ pub(crate) struct Group {
 }
 
 /// How a runtime is named wherever one is meant: the index the
-/// `runtimes` listing lists it under, and the handle address printed
-/// beside it there.
+/// `runtimes --list` listing lists it under, and the handle address
+/// printed beside it there.
 ///
-/// Both halves identify it on their own — the `runtime` command takes
-/// either, `@` included, and `--runtime` the index — so a name printed
-/// anywhere in a session pastes straight back in, and an index that
-/// shifts under `--runtime` is still pinned by the address next to it.
+/// Both halves identify it on their own — `runtimes` takes either, `@`
+/// included, and `--runtime` the index — so a name printed anywhere in
+/// a session pastes straight back in, and an index that shifts under
+/// `--runtime` is still pinned by the address next to it.
 pub(crate) fn runtime_label(index: usize, rt: &bundle::RuntimeRef<'_>) -> String {
     format!("runtime {index} @{:#x}", rt.handle.addr)
 }
@@ -194,8 +194,8 @@ pub(crate) fn print_groups(
     Ok(())
 }
 
-/// List every executor the target holds.
-pub(crate) fn exec_runtimes(session: &Session<'_>, out: &mut dyn io::Write) -> Result<()> {
+/// `runtimes --list`: every executor the target holds, a row apiece.
+pub(crate) fn exec_list(session: &Session<'_>, out: &mut dyn io::Write) -> Result<()> {
     let groups = groups(
         &session.runtimes,
         &session.local_sets,
@@ -205,7 +205,7 @@ pub(crate) fn exec_runtimes(session: &Session<'_>, out: &mut dyn io::Write) -> R
     print_groups(&groups, session.excluded.len(), out)
 }
 
-/// Which of the runtime handle's members `runtime` was asked for.
+/// Which of the runtime handle's members `runtimes` was asked for.
 #[derive(Copy, Clone)]
 pub(crate) struct Fields {
     drivers: bool,
@@ -238,20 +238,20 @@ impl Fields {
     }
 }
 
-/// Render a runtime's own state out of the target: the scheduler state
-/// its workers share, and the drivers they park on.
+/// Render each named runtime's own state out of the target: the
+/// scheduler state its workers share, and the drivers they park on.
 ///
 /// Both are read straight through the bundle's layouts rather than into
 /// a hand-written mirror of tokio's structs, so a field tokio adds shows
 /// up without hansei being taught about it.
-pub(crate) fn exec_runtime(
+pub(crate) fn exec_runtimes(
     session: &Session<'_>,
-    scope: Option<RuntimeScope>,
+    scopes: &[RuntimeScope],
     fields: Fields,
     opts: RenderOpts,
     out: &mut dyn io::Write,
 ) -> Result<()> {
-    let selected = select(session, scope)?;
+    let selected = select(session, scopes)?;
     let members = fields.members();
     // The bundle's `Elided` formats hide the runtime graph from *user*
     // values; this command exists to show the runtime's own insides, so
@@ -305,32 +305,60 @@ fn blank_before(printed: bool, head_runtimes: bool, i: usize) -> bool {
     printed && !(head_runtimes && i == 0)
 }
 
-/// The runtimes a scope names, with the index each is listed under:
-/// one, or every discovered runtime when the command named none.
+/// The runtimes the scopes name, with the index each is listed under —
+/// every discovered runtime when the command named none.
+///
+/// A scope that names nothing is an error before anything is printed,
+/// the way [`crate::threads::exec_threads`] resolves its lwps: a number
+/// that came from somewhere else says so rather than quietly showing
+/// the rest. What survives is in listing order however the scopes were
+/// written, and a runtime named twice is still shown once.
 fn select<'s, 'b>(
     session: &'s Session<'b>,
-    scope: Option<RuntimeScope>,
+    scopes: &[RuntimeScope],
 ) -> Result<Vec<(usize, &'s bundle::RuntimeRef<'b>)>> {
-    let Some(scope) = scope else {
-        return Ok(session.runtimes.iter().enumerate().collect());
-    };
-    let found = session
-        .runtimes
-        .iter()
-        .enumerate()
-        .find(|(index, rt)| match scope {
-            RuntimeScope::Index(named) => *index == named,
-            RuntimeScope::Handle(addr) => rt.handle.addr == addr,
-        });
-    match found {
-        Some(hit) => Ok(vec![hit]),
-        None => Err(no_such_runtime(session, scope)),
+    let handles: Vec<u64> = session.runtimes.iter().map(|rt| rt.handle.addr).collect();
+    match selected(&handles, scopes) {
+        Ok(indices) => Ok(indices
+            .into_iter()
+            .map(|index| (index, &session.runtimes[index]))
+            .collect()),
+        Err(scope) => Err(no_such_runtime(session, scope)),
+    }
+}
+
+/// The positions the scopes pick out of the runtimes, named here by
+/// their handle addresses alone — or the first scope that names none of
+/// them.
+fn selected(handles: &[u64], scopes: &[RuntimeScope]) -> Result<Vec<usize>, RuntimeScope> {
+    for &scope in scopes {
+        if !(0..handles.len()).any(|index| names(scope, index, handles[index])) {
+            return Err(scope);
+        }
+    }
+    Ok((0..handles.len())
+        .filter(|&index| {
+            scopes.is_empty()
+                || scopes
+                    .iter()
+                    .any(|&scope| names(scope, index, handles[index]))
+        })
+        .collect())
+}
+
+/// Whether a scope names the runtime at this position. Either
+/// identifier stands on its own, so the two arms are one question asked
+/// of two spellings.
+fn names(scope: RuntimeScope, index: usize, handle: u64) -> bool {
+    match scope {
+        RuntimeScope::Index(named) => index == named,
+        RuntimeScope::Handle(addr) => handle == addr,
     }
 }
 
 /// The error for a scope that names nothing: what was asked for, and
-/// the runtimes there are — the same answer `runtimes` gives, since a
-/// reader who guessed wrong wants the list and not a refusal.
+/// the runtimes there are — the same answer `runtimes --list` gives,
+/// since a reader who guessed wrong wants the list and not a refusal.
 fn no_such_runtime(session: &Session<'_>, scope: RuntimeScope) -> anyhow::Error {
     let named = match scope {
         RuntimeScope::Index(index) => index.to_string(),
@@ -353,9 +381,52 @@ fn no_such_runtime(session: &Session<'_>, scope: RuntimeScope) -> anyhow::Error 
 /// against a real captured snapshot resolves to.
 #[cfg(test)]
 mod runtimes_tests {
-    use super::{Fields, blank_before, groups, print_groups};
+    use super::{Fields, blank_before, groups, print_groups, selected};
+    use crate::RuntimeScope;
     use hansei_runtime::testkit;
     use hansei_runtime::tokio::census;
+
+    /// Naming no runtime asks for all of them; naming some asks for
+    /// those, by index or by handle address, in listing order however
+    /// they were written and once each however often they were named.
+    #[test]
+    fn test_scopes_select_by_either_identifier() {
+        let handles = [0x10, 0x20, 0x30];
+        let select = |scopes: &[RuntimeScope]| selected(&handles, scopes);
+        assert_eq!(select(&[]), Ok(vec![0, 1, 2]));
+        assert_eq!(select(&[RuntimeScope::Index(1)]), Ok(vec![1]));
+        assert_eq!(select(&[RuntimeScope::Handle(0x30)]), Ok(vec![2]));
+        assert_eq!(
+            select(&[RuntimeScope::Handle(0x30), RuntimeScope::Index(0)]),
+            Ok(vec![0, 2])
+        );
+        assert_eq!(
+            select(&[RuntimeScope::Index(1), RuntimeScope::Handle(0x20)]),
+            Ok(vec![1])
+        );
+
+        // A scope that names nothing fails the whole selection, rather
+        // than showing the runtimes the others named as if the number
+        // that fit none had not been asked for.
+        assert_eq!(
+            select(&[RuntimeScope::Index(0), RuntimeScope::Index(3)]),
+            Err(RuntimeScope::Index(3))
+        );
+        assert_eq!(
+            select(&[RuntimeScope::Handle(0x40)]),
+            Err(RuntimeScope::Handle(0x40))
+        );
+        // An index is never read as an address, nor an address as an
+        // index: neither identifier answers for the other's spelling.
+        assert_eq!(
+            select(&[RuntimeScope::Handle(1)]),
+            Err(RuntimeScope::Handle(1))
+        );
+        assert_eq!(
+            select(&[RuntimeScope::Index(0x10)]),
+            Err(RuntimeScope::Index(0x10))
+        );
+    }
 
     /// The futures column counts what the census found through each
     /// group's tasks: the tasks themselves, plus the held futures and

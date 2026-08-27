@@ -1656,11 +1656,11 @@ fn test_local_set_acceptance() {
             "{out}"
         );
 
-        // `runtimes` names the set, its owner thread, its population,
+        // The listing names the set, its owner thread, its population,
         // and the route that found it — beside the runtime it shares
         // that thread with, which the golden holds too rather than
         // leaving the page's other row unread.
-        let out = hansei_ok(&bundle, core, "runtimes");
+        let out = hansei_ok(&bundle, core, "runtimes -l");
         golden("local-set-runtimes", &Symbols::new().columns().apply(&out));
     });
 }
@@ -1701,9 +1701,9 @@ fn test_local_set_timer_acceptance() {
             "{out}"
         );
 
-        // `runtimes` names the route, which is the whole point of the
-        // fixture.
-        let out = hansei_ok(&bundle, core, "runtimes");
+        // The listing names the route, which is the whole point of
+        // the fixture.
+        let out = hansei_ok(&bundle, core, "runtimes -l");
         golden(
             "local-set-timer-runtimes",
             &Symbols::new().columns().apply(&out),
@@ -1745,9 +1745,9 @@ fn test_local_set_io_acceptance() {
             assert!(out.contains("tokio::net::unix"), "{out}");
         }
 
-        // `runtimes` names the route, which is the whole point of the
-        // fixture.
-        let out = hansei_ok(&bundle, core, "runtimes");
+        // The listing names the route, which is the whole point of
+        // the fixture.
+        let out = hansei_ok(&bundle, core, "runtimes -l");
         golden(
             "local-set-io-runtimes",
             &Symbols::new().columns().apply(&out),
@@ -1803,7 +1803,7 @@ fn test_foreign_runtime_acceptance() {
         // the hidden runtime's wheel is pinned to a thread of its own,
         // not the one the main runtime runs on — which two maskings of
         // `lwp \d+` could not have said either way.
-        let out = hansei_ok(&bundle, core, "runtimes");
+        let out = hansei_ok(&bundle, core, "runtimes -l");
         golden(
             "foreign-runtime-runtimes",
             &Symbols::new().columns().apply(&out),
@@ -1811,7 +1811,7 @@ fn test_foreign_runtime_acceptance() {
 
         let info = hansei_ok(&bundle, core, "info");
         assert!(
-            info.contains("2 runtimes, 1 local set (see `runtimes`)"),
+            info.contains("2 runtimes, 1 local set (see `runtimes --list`)"),
             "{info}"
         );
     });
@@ -2585,46 +2585,68 @@ fn test_threads_registers_annotate_on_request() {
     });
 }
 
-/// `runtime` selects by listed index and by handle address, and earns
+/// `runtimes` selects by listed index and by handle address, and earns
 /// headings only from an ambiguity they resolve: one runtime and one
 /// section print the value alone.
 #[test]
-fn test_runtime_selects_by_index_and_address() {
+fn test_runtimes_selects_by_index_and_address() {
     let bundle = fixtures().bundle("simple-await");
     with_core("simple-await", |core| {
-        let out = hansei_ok(&bundle, core, "runtime -D");
+        let out = hansei_ok(&bundle, core, "runtimes -D");
         assert!(out.contains("runtime::driver::Handle"), "{out}");
         assert!(!out.contains("drivers:"), "{out}");
         assert!(!out.contains("(multi_thread):"), "{out}");
 
-        let by_index = hansei_ok(&bundle, core, "runtime 0 -D");
+        let by_index = hansei_ok(&bundle, core, "runtimes 0 -D");
         assert_eq!(out, by_index, "index 0 selects the one runtime");
 
-        let listed = hansei_ok(&bundle, core, "runtimes");
+        let listed = hansei_ok(&bundle, core, "runtimes -l");
         let addr = regex::Regex::new(r"@(0x[0-9a-f]+)")
             .unwrap()
             .captures(&listed)
-            .expect("runtimes lists a handle address")[1]
+            .expect("the listing prints a handle address")[1]
             .to_string();
-        let by_addr = hansei_ok(&bundle, core, &format!("runtime {addr} -D"));
+        let by_addr = hansei_ok(&bundle, core, &format!("runtimes {addr} -D"));
         assert_eq!(out, by_addr, "the listed handle address selects it");
 
         // Two sections is an ambiguity, and earns each its heading.
-        let whole = hansei_ok(&bundle, core, "runtime");
+        let whole = hansei_ok(&bundle, core, "runtimes");
         assert!(whole.contains("drivers:\n"), "{whole}");
         assert!(whole.contains("\n\nshared:\n"), "{whole}");
+
+        // A runtime the target does not hold is refused with the ones
+        // it does, rather than printing the runtimes that were found.
+        let out = hansei(&bundle, core, "runtimes 0 3 -D");
+        assert!(!out.status.success(), "an absent index was shown anyway");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            stderr.contains("no runtime 3 in this target; it has 1 runtime: runtime 0 @"),
+            "{stderr}"
+        );
     });
 }
 
 /// Several runtimes are an ambiguity too: each gets a heading naming
-/// it, with a blank line between one runtime's output and the next.
+/// it, with a blank line between one runtime's output and the next —
+/// and naming some of them shows those alone.
 #[test]
 fn test_several_runtimes_are_told_apart_by_headings() {
     let bundle = fixtures().bundle("foreign-runtime");
     with_core("foreign-runtime", |core| {
-        let out = hansei_ok(&bundle, core, "runtime -D");
+        let out = hansei_ok(&bundle, core, "runtimes -D");
         assert_eq!(out.matches(" (current_thread):\n").count(), 2, "{out}");
         assert!(out.contains("\n\nruntime 1 @"), "{out}");
+
+        // One of the two named is one of the two shown, and with no
+        // ambiguity left it prints without a heading at all.
+        let one = hansei_ok(&bundle, core, "runtimes 1 -D");
+        assert_eq!(one.matches(" (current_thread):\n").count(), 0, "{one}");
+        assert!(!one.contains("runtime 1 @"), "{one}");
+
+        // Naming both is naming none: the same two blocks, in listing
+        // order however the two were written.
+        let both = hansei_ok(&bundle, core, "runtimes 1 0 -D");
+        assert_eq!(out, both, "naming every runtime shows every runtime");
     });
 }
 
@@ -2834,13 +2856,13 @@ fn test_census_counts_a_set_and_what_is_held_beside_it() {
 fn test_shared_state_and_drivers() {
     let bundle = fixtures().bundle("simple-await");
     with_core("simple-await", |core| {
-        let shared = hansei_ok(&bundle, core, "runtime -s");
+        let shared = hansei_ok(&bundle, core, "runtimes -s");
         assert!(shared.contains("multi_thread::worker::Shared"), "{shared}");
         assert!(shared.contains("owned:"), "{shared}");
         assert!(shared.contains("inject:"), "{shared}");
         assert!(shared.contains("num_workers:"), "{shared}");
 
-        let drivers = hansei_ok(&bundle, core, "runtime -D");
+        let drivers = hansei_ok(&bundle, core, "runtimes -D");
         assert!(drivers.contains("runtime::driver::Handle"), "{drivers}");
         assert!(drivers.contains("io:"), "{drivers}");
         assert!(drivers.contains("time:"), "{drivers}");
@@ -2849,7 +2871,7 @@ fn test_shared_state_and_drivers() {
         // elisions never apply to them: however deep the sweep goes, no
         // subtree may come back `<elided>` — a regression here means a new
         // elided row leaked into runtime introspection.
-        for command in ["runtime -s -d 64", "runtime -D -d 64"] {
+        for command in ["runtimes -s -d 64", "runtimes -D -d 64"] {
             let deep = hansei_ok(&bundle, core, command);
             assert!(!deep.contains("<elided>"), "`{command}`: {deep}");
         }
@@ -3175,7 +3197,7 @@ fn test_exec_asks_from_the_command_line() {
     with_core("simple-await", |core| {
         // Two commands in one flag, and a second flag after it: both
         // spellings of "more than one question".
-        let out = hansei_exec(&bundle, core, &["info ; runtime -D -d 1", "tasks"]);
+        let out = hansei_exec(&bundle, core, &["info ; runtimes -D -d 1", "tasks"]);
         let stdout = String::from_utf8_lossy(&out.stdout);
         assert!(
             out.status.success(),
@@ -3205,11 +3227,11 @@ fn test_exec_asks_from_the_command_line() {
 fn test_a_line_can_hold_several_commands() {
     let bundle = fixtures().bundle("simple-await");
     with_core("simple-await", |core| {
-        let out = hansei_ok(&bundle, core, "info ; runtime -D");
+        let out = hansei_ok(&bundle, core, "info ; runtimes -D");
         assert!(out.contains("symbols resolved:"), "{out}");
         assert!(out.contains("runtime::driver::Handle"), "{out}");
 
-        let out = hansei(&bundle, core, "info ; trace 99999 ; runtime -D");
+        let out = hansei(&bundle, core, "info ; trace 99999 ; runtimes -D");
         assert!(
             !out.status.success(),
             "a failing command must end the line:\n{}",
@@ -3235,11 +3257,11 @@ fn test_a_unique_prefix_names_a_command() {
         assert!(hansei_ok(&bundle, core, "i").contains("symbols resolved:"));
         // The prefix names the command; its arguments are never inferred.
         assert!(hansei_ok(&bundle, core, "thr -f 0").contains("lwp "));
-        // `runtime` and `runtimes` share every shorter prefix, so each
-        // answers to its exact name and to nothing else.
+        // `runtimes` is the only command starting with an `r`, so every
+        // prefix of it fits.
         assert!(hansei_ok(&bundle, core, "runtime -D -d 1").contains("runtime::driver::Handle"));
-        assert!(hansei_ok(&bundle, core, "runtime -s").contains("multi_thread::worker::Shared"));
-        assert!(hansei_ok(&bundle, core, "runtimes").contains("multi_thread"));
+        assert!(hansei_ok(&bundle, core, "r -s").contains("multi_thread::worker::Shared"));
+        assert!(hansei_ok(&bundle, core, "runtimes -l").contains("multi_thread"));
 
         let out = hansei(&bundle, core, "t");
         assert!(
