@@ -8,8 +8,8 @@
 
 use anyhow::{Context as _, Result};
 use clap::Subcommand;
-use exegesis::extract::{ExtractOptions, ExtractStats, RUSTC_FLOOR, extract_file};
-use hansei_bundle::Bundle;
+use exegesis::extract::{ExtractOptions, ExtractStats, RUSTC_FLOOR, dwarf_summary, extract_file};
+use hansei_bundle::{Bundle, BundleTypeId, MemberRef, StaticRole, Step, TypeDef};
 
 use std::path::{Path, PathBuf};
 
@@ -41,6 +41,22 @@ pub enum BundleCmd {
         #[arg(long, value_name = "ROLE")]
         explain_walk: Option<String>,
     },
+    /// Print summary statistics for a bundle file.
+    Stats {
+        /// Bundle file produced by `hansei bundle extract`.
+        bundle: PathBuf,
+    },
+    /// Dump a bundle's tables as text.
+    Dump {
+        /// Bundle file produced by `hansei bundle extract`.
+        bundle: PathBuf,
+    },
+    /// Parse a binary's DWARF and summarize its types and statics.
+    #[command(hide = true)]
+    DumpDwarf {
+        /// Debug binary (or any DWARF-bearing object).
+        binary: PathBuf,
+    },
 }
 
 pub fn exec(cmd: BundleCmd) -> Result<()> {
@@ -62,7 +78,17 @@ pub fn exec(cmd: BundleCmd) -> Result<()> {
             explain_format,
             explain_walk,
         ),
+        BundleCmd::Stats { bundle } => stats(&bundle),
+        BundleCmd::Dump { bundle } => dump(&bundle),
+        BundleCmd::DumpDwarf { binary } => dump_dwarf(&binary),
     }
+}
+
+/// Load a bundle a verb was pointed at, saying which file failed —
+/// these verbs take a path from argv, so a typo is the likeliest way
+/// in and the message has to name what it tried.
+fn load(path: &Path) -> Result<Bundle> {
+    Bundle::load(path).with_context(|| format!("failed to load {}", path.display()))
 }
 
 /// Extract a bundle for a session to attach to, rather than for a file
@@ -172,6 +198,282 @@ fn extract(
     Ok(())
 }
 
+fn stats(path: &Path) -> Result<()> {
+    let bundle = load(path)?;
+    let m = &bundle.meta;
+    println!("bundle: {}", path.display());
+    println!("  format version:  {}", m.format_version);
+    println!("  rustc:           {}", m.rustc_version);
+    match &m.tokio_version {
+        Some(v) => println!("  tokio:           {v}"),
+        None => println!("  tokio:           (unknown)"),
+    }
+    match m.tokio_unstable {
+        Some(true) => println!("  tokio_unstable:  yes"),
+        Some(false) => println!("  tokio_unstable:  no"),
+        None => println!("  tokio_unstable:  (unknown)"),
+    }
+    println!("  debug binary:    {}", m.debug_binary.basename);
+    println!("  extract args:    {}", m.extract_args);
+    println!("  fingerprint:     {} symbols", m.symbol_fingerprint.len());
+
+    let mut kinds = [
+        ("base", 0usize),
+        ("pointer", 0),
+        ("array", 0),
+        ("struct", 0),
+        ("union", 0),
+        ("enum", 0),
+        ("c-enum", 0),
+        ("opaque", 0),
+    ];
+    for def in &bundle.types.types {
+        let slot = match def {
+            TypeDef::Base { .. } => 0,
+            TypeDef::Pointer { .. } => 1,
+            TypeDef::Array { .. } => 2,
+            TypeDef::Struct { .. } => 3,
+            TypeDef::Union { .. } => 4,
+            TypeDef::Enum { .. } => 5,
+            TypeDef::CEnum { .. } => 6,
+            TypeDef::Opaque { .. } => 7,
+        };
+        kinds[slot].1 += 1;
+    }
+    println!("  types:           {}", bundle.types.types.len());
+    for (name, count) in kinds {
+        if count > 0 {
+            println!("    {name:<10} {count}");
+        }
+    }
+    println!("  strings:         {}", bundle.strings.len());
+    println!(
+        "  task entries:    {} ({} symbol keys)",
+        bundle.tasks.entries.len(),
+        bundle.tasks.by_symbol.len()
+    );
+    println!(
+        "    normalized     {} keys ({} ambiguous)",
+        bundle.tasks.by_normalized_symbol.len(),
+        bundle
+            .tasks
+            .by_normalized_symbol
+            .values()
+            .filter(|ids| ids.len() > 1)
+            .count()
+    );
+    println!("  dyn futures:     {}", bundle.dyn_futures.by_symbol.len());
+    println!(
+        "    normalized     {} keys ({} ambiguous)",
+        bundle.dyn_futures.by_normalized_symbol.len(),
+        bundle
+            .dyn_futures
+            .by_normalized_symbol
+            .values()
+            .filter(|ids| ids.len() > 1)
+            .count()
+    );
+    println!("  statics:         {}", bundle.statics.entries.len());
+    let with_decl = bundle
+        .provenance
+        .entries
+        .iter()
+        .filter(|p| p.decl.is_some())
+        .count();
+    println!(
+        "  provenance:      {}/{} with source location",
+        with_decl,
+        bundle.provenance.entries.len()
+    );
+    println!("  impls:           {}", bundle.impls.entries.len());
+    Ok(())
+}
+
+fn dump(path: &Path) -> Result<()> {
+    let bundle = load(path)?;
+    // Loading trusts the payload hash; the debugging tool re-checks the
+    // contents in depth, so a bad display program or cross-reference
+    // surfaces here rather than silently.
+    bundle
+        .validate()
+        .with_context(|| format!("{} is not internally consistent", path.display()))?;
+    let s = |r| bundle.strings.get(r).unwrap_or("<bad strref>");
+
+    println!("== types ({}) ==", bundle.types.types.len());
+    for (i, def) in bundle.types.types.iter().enumerate() {
+        match def {
+            TypeDef::Base {
+                name,
+                size,
+                encoding,
+            } => {
+                println!("[{i}] base {} size={size} {encoding:?}", s(*name));
+            }
+            TypeDef::Pointer { name, target } => {
+                let name = name.map(s).unwrap_or("<anon>");
+                println!("[{i}] pointer {name} -> [{}]", target.0);
+            }
+            TypeDef::Array { elem, count } => println!("[{i}] array [{}; {count}]", elem.0),
+            TypeDef::Struct {
+                name,
+                size,
+                members,
+            } => {
+                println!("[{i}] struct {} size={size}", s(*name));
+                for m in members {
+                    println!("      +{:<5} {} : [{}]", m.offset, s(m.name), m.ty.0);
+                }
+            }
+            TypeDef::Union {
+                name,
+                size,
+                members,
+            } => {
+                println!("[{i}] union {} size={size}", s(*name));
+                for m in members {
+                    println!("      +{:<5} {} : [{}]", m.offset, s(m.name), m.ty.0);
+                }
+            }
+            TypeDef::Enum { name, size, shape } => {
+                println!("[{i}] enum {} size={size}", s(*name));
+                if let Some(d) = &shape.discr {
+                    println!("      discr +{} : [{}]", d.offset, d.ty.0);
+                }
+                for v in &shape.variants {
+                    let vals = match &v.discr_values {
+                        None => "default".to_string(),
+                        Some(dv) => format!("{:?}", dv.0),
+                    };
+                    let decl = v
+                        .decl
+                        .map(|l| format!(" @ {}:{}", s(l.file), l.line))
+                        .unwrap_or_default();
+                    // Only when it says something `decl` does not: an await
+                    // whose two descriptions agree needs no second line.
+                    let await_site = v
+                        .await_site
+                        .filter(|l| v.decl != Some(*l))
+                        .map(|l| format!(" (awaited at {}:{})", s(l.file), l.line))
+                        .unwrap_or_default();
+                    println!(
+                        "      {} ({vals}) +{} : [{}]{decl}{await_site}",
+                        s(v.name),
+                        v.payload.offset,
+                        v.payload.ty.0
+                    );
+                }
+            }
+            TypeDef::CEnum {
+                name,
+                size,
+                repr,
+                enumerators,
+            } => {
+                println!("[{i}] c-enum {} size={size} repr=[{}]", s(*name), repr.0);
+                for (ename, val) in enumerators {
+                    println!("      {} = {val}", s(*ename));
+                }
+            }
+            TypeDef::Opaque { name, size } => {
+                println!("[{i}] opaque {} size={size:?}", s(*name));
+            }
+        }
+        let id = BundleTypeId(i as u32);
+        if let Some(format) = bundle.types.debug_formats.get(&id) {
+            // Resolved, not `Debug`: a raw dump spells a selector as interned
+            // string ids, which says nothing about which member a formatter
+            // reaches or where it sits.
+            //
+            // Indented shallower than the member and variant lines above: the
+            // display program belongs to the type, and at their column it reads
+            // as one more entry in a list it is not part of.
+            println!(
+                "  debug: {}",
+                exegesis::describe::describe_node(&bundle, id, format)
+            );
+        }
+    }
+
+    println!("== tasks ({}) ==", bundle.tasks.entries.len());
+    for (i, e) in bundle.tasks.entries.iter().enumerate() {
+        println!(
+            "[{i}] {} future=[{}] cell=[{}] stage=[{}] scheduler=[{}]",
+            s(e.display_name),
+            e.future.0,
+            e.cell.0,
+            e.stage.0,
+            e.scheduler.0
+        );
+        if let Some(p) = bundle.provenance.entries.get(i) {
+            let loc = p
+                .decl
+                .map(|l| format!("{}:{}", s(l.file), l.line))
+                .unwrap_or_else(|| "<no decl>".into());
+            println!("      {:?} {loc}", p.kind);
+        }
+    }
+    println!("== task symbol keys ({}) ==", bundle.tasks.by_symbol.len());
+    for (sym, id) in &bundle.tasks.by_symbol {
+        println!("{sym} -> [{}]", id.0);
+    }
+
+    println!("== dyn futures ({}) ==", bundle.dyn_futures.by_symbol.len());
+    for (sym, id) in &bundle.dyn_futures.by_symbol {
+        println!("{sym} -> [{}]", id.0);
+    }
+
+    println!("== statics ({}) ==", bundle.statics.entries.len());
+    for (role, def) in &bundle.statics.entries {
+        let role = match role {
+            StaticRole::TlsContextKey => "tls-context-key",
+            StaticRole::TaskWakerVtable => "task-waker-vtable",
+            StaticRole::TlsLocalSetKey => "tls-local-set-key",
+        };
+        println!("{role}: {} ({})", def.symbol, def.display);
+    }
+
+    println!("== impls ({}) ==", bundle.impls.entries.len());
+    for &(path, self_type) in &bundle.impls.entries {
+        println!("{} -> {}", s(path), s(self_type));
+    }
+
+    println!("== walks ({}) ==", bundle.walks.entries.len());
+    for (role, binding) in &bundle.walks.entries {
+        println!("{}", exegesis::summary::walk_entry_line(*role, binding));
+        if binding.steps.is_empty() {
+            continue;
+        }
+        let steps: Vec<String> = binding
+            .steps
+            .iter()
+            .map(|step| match step {
+                Step::Member(MemberRef::Named(name)) => s(*name).to_owned(),
+                Step::Member(MemberRef::Index(index)) => format!("%{index}"),
+                Step::Deref => "*".to_owned(),
+                Step::Variant(name) => format!("<{}>", s(*name)),
+                Step::ActiveVariant => "<active variant>".to_owned(),
+            })
+            .collect();
+        let roots: Vec<String> = binding
+            .roots
+            .iter()
+            .map(|id| format!("[{}]", id.0))
+            .collect();
+        println!("        {} from {}", steps.join("."), roots.join(" "));
+    }
+    Ok(())
+}
+
+fn dump_dwarf(path: &Path) -> Result<()> {
+    let summary = dwarf_summary(path)
+        .with_context(|| format!("failed to read DWARF from {}", path.display()))?;
+    println!("{} total types", summary.types);
+    println!("{} total statics", summary.statics);
+    println!("{} dup strings", summary.duplicate_strings);
+    println!("{} total strings", summary.strings);
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::{BundleCmd, ExtractStats, RUSTC_FLOOR, exec, warnings};
@@ -237,17 +539,36 @@ mod tests {
     }
 
     /// A subject nothing can be read out of fails, naming the file,
-    /// rather than reporting a bundle it never wrote.
+    /// rather than reporting a bundle it never wrote — and the readers
+    /// say the same of a file that is no bundle, since a path from argv
+    /// is as easily mistyped as it is right.
     #[test]
-    fn test_extract_reports_what_it_could_not_read() {
+    fn test_the_verbs_report_what_they_could_not_read() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let binary = dir.path().join("not-an-object");
-        std::fs::write(&binary, b"neither an ELF nor a Mach-O").expect("write");
+        let junk = dir.path().join("not-an-object");
+        std::fs::write(&junk, b"neither an ELF nor a Mach-O").expect("write");
         let output = dir.path().join("out.bundle");
-        let err = exec(extract_cmd(binary.clone(), output.clone()))
+
+        let err = exec(extract_cmd(junk.clone(), output.clone()))
             .expect_err("a file with no object format in it cannot be extracted from");
         let msg = format!("{err:?}");
-        assert!(msg.contains(&binary.display().to_string()), "{msg}");
+        assert!(msg.contains(&junk.display().to_string()), "{msg}");
         assert!(!output.exists(), "nothing should have been written");
+
+        for cmd in [
+            BundleCmd::Stats {
+                bundle: junk.clone(),
+            },
+            BundleCmd::Dump {
+                bundle: junk.clone(),
+            },
+            BundleCmd::DumpDwarf {
+                binary: junk.clone(),
+            },
+        ] {
+            let err = exec(cmd).expect_err("a file that is not what the verb takes");
+            let msg = format!("{err:?}");
+            assert!(msg.contains(&junk.display().to_string()), "{msg}");
+        }
     }
 }
