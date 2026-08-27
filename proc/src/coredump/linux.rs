@@ -266,10 +266,10 @@ impl Core {
     /// demand, so a core whose libraries have moved still yields
     /// everything that was actually dumped.
     pub fn open(core_path: &Path) -> Result<Self> {
-        Self::open_with_program(core_path, None)
+        Self::open_with_binary(core_path, None)
     }
 
-    /// Open a core dump, reading the executable from `program` instead
+    /// Open a core dump, reading the executable from `binary` instead
     /// of from the path the core recorded for it.
     ///
     /// A Linux core carries no symbol table of its own — `.symtab` is
@@ -279,7 +279,7 @@ impl Core {
     /// a core read anywhere but where it was written resolves symbols
     /// at all, and [`Core::build_ids`] is what holds the substitution
     /// to the right file.
-    pub fn open_with_program(core_path: &Path, program: Option<&Path>) -> Result<Self> {
+    pub fn open_with_binary(core_path: &Path, binary: Option<&Path>) -> Result<Self> {
         let file = File::open(core_path).map_err(Error::read)?;
         // SAFETY: as everywhere else in this workspace, we assume the
         // file is not modified while mapped.
@@ -359,7 +359,7 @@ impl Core {
         files.sort_by_key(|f| f.range.start);
 
         // Which mapped file is the executable has to be settled before
-        // any of them is opened, so that `program` can stand in for it:
+        // any of them is opened, so that `binary` can stand in for it:
         // the substitution is keyed by the path the core recorded, and
         // everything downstream — the load bias, the symtab, reads that
         // fall through to the file — goes through that one entry.
@@ -370,7 +370,7 @@ impl Core {
             .copied()
             .and_then(|phdr| file_at(&files, phdr))
             .map(|f| f.path.clone());
-        let mut substitute = match program {
+        let mut substitute = match binary {
             Some(path) => {
                 if exec_path.is_none() {
                     return Err(Error::bad_core(
@@ -616,7 +616,7 @@ impl Core {
     pub fn build_ids(&self) -> BuildIds {
         BuildIds {
             core: self.core_build_id(),
-            program: self.program_build_id(),
+            binary: self.binary_build_id(),
         }
     }
 
@@ -650,7 +650,7 @@ impl Core {
         })
     }
 
-    fn program_build_id(&self) -> Option<Vec<u8>> {
+    fn binary_build_id(&self) -> Option<Vec<u8>> {
         let exec = self.exec.as_ref()?;
         let backing = self.backing(&exec.path)?;
         let elf = Elf::parse(&backing.map).ok()?;
@@ -855,7 +855,7 @@ impl Core {
 
     /// The executable's symbol spelled `name`. A Linux core carries no
     /// symbols of its own and the backing files it names are rarely
-    /// still there, so the `--program` executable is the only table on
+    /// still there, so the `--binary` executable is the only table on
     /// hand: an object-qualified name resolves only when it names that
     /// executable, and a library's internals are out of reach entirely.
     pub fn lookup_symbol_by_name(&self, name: &str) -> Option<SymbolBuf> {
@@ -1057,7 +1057,7 @@ impl Target for Core {
 /// The `NT_FILE` entry covering `addr`, in a table sorted by address.
 ///
 /// Free rather than a method so that the executable can be identified
-/// before the `Core` exists — which is what lets a substituted program
+/// before the `Core` exists — which is what lets a substituted binary
 /// be opened in place of it.
 fn file_at(files: &[FileMap], addr: u64) -> Option<&FileMap> {
     let idx = files.partition_point(|f| f.range.start <= addr);
@@ -1659,18 +1659,18 @@ mod tests {
         let p = Core::open(&core).expect("failed to open the core");
         let ids = p.build_ids();
         assert_eq!(ids.core.as_deref(), Some(&[0xab; 20][..]));
-        assert_eq!(ids.program, ids.core);
+        assert_eq!(ids.binary, ids.core);
         assert!(!ids.disagree());
     }
 
-    /// A substituted program is what the reader opens in place of the
+    /// A substituted binary is what the reader opens in place of the
     /// executable — and the core still says what actually ran, so a
     /// different binary is caught even though it parses perfectly well.
     ///
     /// This is the case the symbol fingerprint cannot see: names it
     /// would still resolve, addresses it never compares.
     #[test]
-    fn test_a_substituted_program_is_checked_against_the_core() {
+    fn test_a_substituted_binary_is_checked_against_the_core() {
         let dir = tempfile::tempdir().expect("failed to create a tempdir");
         let exe = dir.path().join("program");
         let image = program_with_build_id(&exe, &[0xab; 20]);
@@ -1679,29 +1679,29 @@ mod tests {
         let other = dir.path().join("other");
         program_with_build_id(&other, &[0xcd; 20]);
 
-        let p = Core::open_with_program(&core, Some(&other)).expect("failed to open the core");
+        let p = Core::open_with_binary(&core, Some(&other)).expect("failed to open the core");
         let ids = p.build_ids();
         assert_eq!(ids.core.as_deref(), Some(&[0xab; 20][..]));
-        assert_eq!(ids.program.as_deref(), Some(&[0xcd; 20][..]));
+        assert_eq!(ids.binary.as_deref(), Some(&[0xcd; 20][..]));
         assert!(ids.disagree());
         // The recorded path is still what the core named; only the
         // bytes behind it were substituted.
         assert_eq!(p.exec_name().unwrap(), exe);
     }
 
-    /// A named program that is not there is an error rather than a
+    /// A named binary that is not there is an error rather than a
     /// silent degradation. Falling back to the recorded path is what
     /// produced a 0-of-N symbol match reported as a bundle mismatch.
     #[test]
-    fn test_a_missing_program_is_an_error() {
+    fn test_a_missing_binary_is_an_error() {
         let dir = tempfile::tempdir().expect("failed to create a tempdir");
         let exe = dir.path().join("program");
         let image = program_with_build_id(&exe, &[0xab; 20]);
         let core = core_of_program(dir.path(), &image, &exe);
 
         let missing = dir.path().join("not-here");
-        let err = Core::open_with_program(&core, Some(&missing))
-            .expect_err("a missing program must not open");
+        let err = Core::open_with_binary(&core, Some(&missing))
+            .expect_err("a missing binary must not open");
         assert!(
             err.to_string().contains("not-here"),
             "the error does not name the file: {err}"

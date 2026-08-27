@@ -56,8 +56,8 @@ cleanup() {
 trap cleanup EXIT
 
 case "$(uname -s)" in
-    Linux) PROGRAM_FLAG=1 ;;
-    SunOS) PROGRAM_FLAG=0 ;;
+    Linux) BINARY_FLAG=1 ;;
+    SunOS) BINARY_FLAG=0 ;;
     *) echo "churn.sh: $(uname -s) takes no ELF core to capture from" >&2; exit 1 ;;
 esac
 
@@ -94,7 +94,7 @@ for (( seed = START; seed < START + SEEDS; seed++ )); do
     if ! { REGEN_BIN_DIR="$FIXTURES/bin-a" REGEN_TARGET_DIR="$FIXTURES/target-a" \
                "$ROOT/test-programs/regen.sh" --no-debug-info gen-churn &&
            "$ROOT/test-programs/regen.sh" gen-churn &&
-           "$HANSEI" bundle extract "$FIXTURES/bin/gen-churn" -o "$PAIRS/gen-churn.bundle";
+           "$HANSEI" tokio-info extract "$FIXTURES/bin/gen-churn" -o "$PAIRS/gen-churn.bundle";
          } >>"$seedlog" 2>&1; then
         echo "churn.sh: seed $seed: build failed (see $seedlog)"
         failures+=("$seed-build")
@@ -124,12 +124,12 @@ for (( seed = START; seed < START + SEEDS; seed++ )); do
         core="$coredir/core.$CHILD"
         captures=$(( captures + 1 ))
 
-        program=()
-        [[ "$PROGRAM_FLAG" == 1 ]] && program=(--program "$FIXTURES/bin-a/gen-churn")
+        binary=()
+        [[ "$BINARY_FLAG" == 1 ]] && binary=(--binary "$FIXTURES/bin-a/gen-churn")
         snaplog="$OUT/snap.log"
         echo "snapshot $PAIRS/gen-churn.snapshot" |
-            timeout 300 "$HANSEI" --core "$core" --bundle "$PAIRS/gen-churn.bundle" \
-                "${program[@]}" >"$snaplog" 2>&1
+            timeout 300 "$HANSEI" --core "$core" --tokio-info "$PAIRS/gen-churn.bundle" \
+                "${binary[@]}" >"$snaplog" 2>&1
         status=$?
         cat "$snaplog" >>"$seedlog"
         if [[ $status -eq 124 ]]; then

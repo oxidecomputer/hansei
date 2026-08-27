@@ -7,8 +7,8 @@ A tool to inspect where we have erred with `tokio`: it reads the state of a toki
 core dump — written by illumos or by Linux, and read on either — using debug information produced from a
 *separate* build of the same sources. Currently a proof-of-concept, expect bugs.
 
-hansei reads a debug *bundle* produced by `hansei bundle extract` (targets built with rustc ≥ 1.97), which
-reads a debug binary's DWARF and writes a compact bundle describing the async runtime. Task futures are joined
+hansei reads *tokio runtime debug info* produced by `hansei tokio-info extract` (targets built with rustc ≥ 1.97),
+which reads a debug binary's DWARF and writes a compact tokio-info file describing the async runtime. Task futures are joined
 between the debug binary and the target by their v0-mangled symbol names, so tasks are selected by id and their
 await chains are recovered fully automatically.
 
@@ -30,19 +30,19 @@ debug information (an optimized profile with `debug = true`). Both compilations 
 though the build hash will be different in the mangled name. Stripping the hash, we can use that and the struct
 layout as the join key that lets layouts from one binary interpret memory from the other.
 
-Extract the bundle:
+Extract the tokio info:
 
 [source,shell]
 ----
-cargo run --release -p hansei -- bundle extract ${PATH_TO_DEBUG_BINARY} -o app.bundle
+cargo run --release -p hansei -- tokio-info extract ${PATH_TO_DEBUG_BINARY} -o app.tinfo
 ----
 
-Then attach to a target. The core and the bundle name the *session*, and are the only things the command line
+Then attach to a target. The core and the tokio info name the *session*, and are the only things the command line
 takes; commands are read from stdin:
 
 [source,shell]
 ----
-hansei --core ${PATH_TO_CORE} --bundle app.bundle
+hansei --core ${PATH_TO_CORE} --tokio-info app.tinfo
 ----
 
 When stdin is a terminal this is a prompt, and the session stays attached so each command reads the target
@@ -58,7 +58,7 @@ hansei〉quit
 
 Tab completes command names, a leading substring that fits one command names it (`sh` for `shared-state`), `!`
 pipes a command's output into a shell command, and `;` separates commands, which then run in order and stop at
-the first failure. `info` reports what is attached and how completely the bundle's symbols resolved, and `help`
+the first failure. `info` reports what is attached and how completely the tokio info's symbols resolved, and `help`
 lists the commands. A command that fails ends the command, not the session.
 
 When stdin is not a terminal the same commands are read one per line — blank lines and `#` comments are
@@ -67,9 +67,9 @@ line instead of on stdin, and the session exits once they are answered:
 
 [source,shell]
 ----
-echo "trace ${ID} -v" | hansei --core ${PATH_TO_CORE} --bundle app.bundle
+echo "trace ${ID} -v" | hansei --core ${PATH_TO_CORE} --tokio-info app.tinfo
 
-hansei --core ${PATH_TO_CORE} --bundle app.bundle -e "tasks; trace ${ID}"
+hansei --core ${PATH_TO_CORE} --tokio-info app.tinfo -e "tasks; trace ${ID}"
 ----
 
 There a failing command is fatal: the session stops at it and exits non-zero, rather than running the rest of
@@ -129,11 +129,11 @@ the coroutines inside it are. The wakers a set's children register carry the set
 than a task Header; under `trace -v` those are labelled `task N via FuturesUnordered` (the task a wake would
 ultimately run), and `task-at` resolves one to the polling task and the child future in that slot.
 
-At attach time the bundle's symbol fingerprint is resolved against the target's symtab; anything less than a
-100% match is refused (`--force`/`-f` to override) so a wrong bundle can never silently misinterpret memory.
+At attach time the tokio info's symbol fingerprint is resolved against the target's symtab; anything less than a
+100% match is refused (`--force`/`-f` to override) so mismatched tokio info can never silently misinterpret memory.
 
-The `snapshot` command captures everything a bundle-backed analysis reads from a target into a small replayable file;
-together with a bundle extracted from a *separate* build it feeds the offline two-binary tests in
+The `snapshot` command captures everything the analysis reads from a target into a small replayable file;
+together with tokio info extracted from a *separate* build it feeds the offline two-binary tests in
 `hansei-runtime/tests`.
 
 == Testing

@@ -18,8 +18,8 @@ Only exegesis reads DWARF, so only exegesis depends on the DWARF stack
 (gimli, object, memmap2, regex). **hansei-runtime and reify never depend on
 exegesis** — reify not at all, hansei-runtime as a **dev**-dependency only,
 because its matrix goldens build bundles from fixture binaries. The `hansei`
-bin crate does depend on it, because `hansei bundle` produces and inspects
-bundle files, but the DWARF stack reaches no further than the entry points
+bin crate does depend on it, because `hansei tokio-info` produces and inspects
+tokio-info files, but the DWARF stack reaches no further than the entry points
 arg handling calls (`hansei/src/bundle_cmd.rs`). exegesis builds no
 binary of its own: `hansei` is the only one the workspace produces. No
 session, runtime or render code imports exegesis types; if read-side code
@@ -324,9 +324,9 @@ A **local core pair** sits under `./cores/` for when a test core is
 needed on this machine: `nexus.22247.bin` (the debug nexus binary),
 `nexus.22247.core` (its core), and `nexus.22247.bundle` extracted from
 them. Reach for these first — every value-printing command runs against
-them right here (`hansei -b ./cores/nexus.22247.bundle -c
+them right here (`hansei -t ./cores/nexus.22247.bundle -c
 ./cores/nexus.22247.core`), no remote host required. After an exegesis
-change, re-extract with `hansei bundle extract ./cores/nexus.22247.bin
+change, re-extract with `hansei tokio-info extract ./cores/nexus.22247.bin
 -o ./cores/nexus.22247.bundle`. The files are gitignored and exist only on
 this machine; the illumos host below is still where a *sled-agent* core
 and the acceptance suite live.
@@ -342,9 +342,9 @@ is at `/data/aborts/core.sled-agent-v0`. Full loop:
 ```
 ssh illumos 'cd /data/durin && git pull origin main &&
   cargo build --release -p hansei &&
-  ./target/release/hansei bundle extract /tmp/sled-agent.debug -o /tmp/sled-agent.bundle &&
-  ./target/release/hansei task-trace --task-id <N> --bundle /tmp/sled-agent.bundle \
-    --core /data/aborts/core.sled-agent-v0 -v --value-depth 500'
+  ./target/release/hansei tokio-info extract /tmp/sled-agent.debug -o /tmp/sled-agent.tinfo &&
+  echo 'trace <N> -v' | ./target/release/hansei -t /tmp/sled-agent.tinfo \
+    --core /data/aborts/core.sled-agent-v0'
 ```
 
 Every value-printing hansei command takes `--ugly`, which disables every custom
@@ -379,16 +379,16 @@ What varies by target, and so must never be pinned in a portable test:
   each mapped object's symbol table in its own section headers; a Linux one
   carries no symbols at all (`.symtab` is not `SHF_ALLOC`, so it is never in
   the address space there is to dump), and names a path that is rarely still
-  right on the machine reading it. So hansei requires `--program` — the
-  executable that *ran*, not the debug build behind `--bundle` — for a Linux
+  right on the machine reading it. So hansei requires `--binary` — the
+  executable that *ran*, not a separate debug build — for a Linux
   core, checks it against the core's `NT_GNU_BUILD_ID`, and warns that it is
   ignored for an illumos one. The acceptance suite fills the flag in from the
-  core itself (`program_args`), so its call sites do not carry it.
+  core itself (`binary_args`), so its call sites do not carry it.
 - **How much of a stack unwinds exactly.** An illumos core carries every
   mapped object's text, so library CFI is always on hand; a Linux core
   carries none, and the backing files its `NT_FILE` names exist only on
   the capture host. Read elsewhere, a walk is exact through the
-  `--program` binary, then cuts at the first library frame with a
+  `--binary` executable, then cuts at the first library frame with a
   `(walk ended: no CFI for …)` note; any frame the frame-pointer
   fallback bridges is marked `(frame-pointer walk)`. Only supplying the
   named libraries makes those frames exact.

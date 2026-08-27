@@ -2,7 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-//! `hansei bundle …`, run the way a user runs it.
+//! `hansei tokio-info …`, run the way a user runs it.
 //!
 //! Everything below argv is covered elsewhere — extraction by
 //! exegesis's golden suite, bundle io by the wire crate's unit tests —
@@ -23,7 +23,7 @@ use std::process::{Command, Output};
 
 fn hansei(args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_hansei"))
-        .arg("bundle")
+        .arg("tokio-info")
         .args(args)
         .output()
         .expect("failed to run hansei")

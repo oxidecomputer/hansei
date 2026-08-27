@@ -44,8 +44,8 @@ static GLOBAL: MiMalloc = MiMalloc;
 /// The command line names a target; what to ask of it comes from
 /// `--exec`, or failing that from stdin, at a prompt or from a pipe.
 ///
-/// A subcommand instead of a target says to work on bundle *files* —
-/// producing one, or reporting what is in one — and opens no session.
+/// A subcommand instead of a target says to work on tokio-info *files*
+/// — producing one, or reporting what is in one — and opens no session.
 #[derive(Parser)]
 #[command(
     about = "Inspect a tokio runtime in a core dump",
@@ -54,14 +54,15 @@ static GLOBAL: MiMalloc = MiMalloc;
                   from stdin — at a prompt when stdin is a terminal, otherwise \
                   one command per line, stopping at the first failure — or \
                   given with --exec, which asks and exits.\n\n\
-                  Naming no target but the `bundle` subcommand instead works \
-                  on bundle files rather than on a running target's remains.",
+                  Naming no target but the `tokio-info` subcommand instead \
+                  works on tokio-info files rather than on a running target's \
+                  remains.",
     after_help = "Examples:\n  \
-                  hansei --core core.app --bundle app.bundle\n  \
-                  hansei --core core.app --debug-binary app.debug\n  \
-                  hansei --core core.app --bundle app.bundle -e 'tasks; graph'\n  \
-                  echo 'trace 42 -v' | hansei --core core.app --bundle app.bundle\n  \
-                  hansei bundle extract app.debug -o app.bundle\n\n\
+                  hansei --core core.app --tokio-info app.tinfo\n  \
+                  hansei --core core.app --debug-info app.debug\n  \
+                  hansei --core core.app --tokio-info app.tinfo -e 'tasks; graph'\n  \
+                  echo 'trace 42 -v' | hansei --core core.app --tokio-info app.tinfo\n  \
+                  hansei tokio-info extract app.debug -o app.tinfo\n\n\
                   Type `help` for the commands a session accepts.",
     subcommand_negates_reqs = true,
     args_conflicts_with_subcommands = true
@@ -84,12 +85,12 @@ struct Cli {
 /// What argv can ask for other than a session on a target.
 #[derive(Subcommand)]
 enum Cmd {
-    /// Produce a bundle, or report what one holds.
+    /// Produce a tokio-info file, or report what one holds.
     ///
-    /// Distinct from the session's `--bundle` flag, which names a
-    /// bundle to read: this side writes and inspects the files that
+    /// Distinct from the session's `--tokio-info` flag, which names a
+    /// file to read: this side writes and inspects the files that
     /// flag consumes.
-    Bundle {
+    TokioInfo {
         #[command(subcommand)]
         cmd: bundle_cmd::BundleCmd,
     },
@@ -98,40 +99,43 @@ enum Cmd {
 /// What it takes to attach: the pair of files, and how strictly they
 /// have to agree.
 #[derive(Args)]
-#[command(group = ArgGroup::new("types").required(true).args(["bundle", "debug_binary"]))]
+#[command(group = ArgGroup::new("types").required(true).args(["tokio_info", "debug_info"]))]
 struct SessionArgs {
     /// The core dump to open.
     #[arg(long, short)]
     core: PathBuf,
 
-    /// The debug bundle to read (produced by `hansei bundle extract`).
+    /// Tokio runtime debug info extracted from the debug build
+    /// (produced by `hansei tokio-info extract`).
     #[arg(long, short)]
-    bundle: Option<PathBuf>,
+    tokio_info: Option<PathBuf>,
 
-    /// A debug build of the target, to extract a bundle from now
-    /// instead of naming one with --bundle.
+    /// Debug info to extract from now, instead of naming a file with
+    /// --tokio-info: a build of the target carrying DWARF — the full
+    /// binary, or split debug info (a companion file, a dSYM, a dwp)
+    /// with --binary naming the binary it was split from.
     ///
     /// Extraction is the slower way in — a large binary's DWARF costs
     /// seconds — so it is the answer for a one-off look, and `hansei
-    /// bundle extract` is the answer when the same target will be
-    /// opened again. This is the build carrying DWARF, not the binary
-    /// that *ran*: that one is --program, and the two share no
-    /// addresses.
-    #[arg(long, value_name = "PATH")]
-    debug_binary: Option<PathBuf>,
+    /// tokio-info extract` is the answer when the same target will be
+    /// opened again.
+    #[arg(long, short, value_name = "PATH")]
+    debug_info: Option<PathBuf>,
 
-    /// The executable the core was taken from.
+    /// The executable the core was taken from — the binary that ran.
     ///
     /// Required for a Linux core, which carries no symbol table of its
     /// own and names a path that is rarely still right on the machine
-    /// reading the core. This is the binary that *ran*, not the debug
-    /// build behind `--bundle`: the two share no addresses. An illumos
-    /// core carries its own symbols and ignores this.
+    /// reading the core; an illumos core carries its own symbols. A
+    /// separate debug build of the same source is not this binary: it
+    /// shares none of the addresses, and the build id tells the two
+    /// apart.
     #[arg(long, short, value_name = "PATH")]
-    program: Option<PathBuf>,
+    binary: Option<PathBuf>,
 
-    /// Proceed even if the bundle's symbols don't all resolve in the
-    /// target, or `--program` is not the binary the core was taken from.
+    /// Proceed even if the tokio info's symbols don't all resolve in
+    /// the target, or `--binary` is not the binary the core was taken
+    /// from.
     #[arg(long, short)]
     force: bool,
 
@@ -174,16 +178,16 @@ impl SessionArgs {
     /// should say it. clap's required group leaves exactly one of the
     /// two named.
     fn bundle_source(&self) -> BundleSource<'_> {
-        match (&self.bundle, &self.debug_binary) {
+        match (&self.tokio_info, &self.debug_info) {
             (Some(path), _) => BundleSource::File(path),
             (None, Some(path)) => BundleSource::Extracted(path),
-            (None, None) => unreachable!("clap requires --bundle or --debug-binary"),
+            (None, None) => unreachable!("clap requires --tokio-info or --debug-info"),
         }
     }
 }
 
-/// A session's bundle: the file it read, or the debug binary it
-/// extracted one from at launch.
+/// A session's bundle: the tokio-info file it read, or the debug info
+/// it extracted one from at launch.
 enum BundleSource<'a> {
     File(&'a Path),
     Extracted(&'a Path),
@@ -249,8 +253,8 @@ pub enum Command {
     /// Only what is out of the ordinary is called out beside those.
     /// That nearly every task is detached is true of every target and
     /// says nothing about this one; that some are cancelled and not yet
-    /// complete, or that the bundle cannot name what some are running,
-    /// is worth knowing.
+    /// complete, or that the tokio info cannot name what some are
+    /// running, is worth knowing.
     ///
     /// The future section counts three populations that do not overlap:
     /// the futures on the tasks' own await chains, the ones their
@@ -337,7 +341,8 @@ pub enum Command {
     /// mark on its own row.
     Graph,
 
-    /// Show the target, the bundle, and how far its symbols resolve.
+    /// Show the target, the tokio info, and how far its symbols
+    /// resolve.
     Info,
 
     /// Dump what libumem knows about the target's heap: every cache the
@@ -376,7 +381,7 @@ pub enum Command {
         /// The type to render the memory as: the exact fully-qualified
         /// name as `find-types` lists it (several words are joined back
         /// into one name, so generics holding spaces paste in whole),
-        /// or a bundle type id — the `type 4821` a listing prints where
+        /// or a type id — the `type 4821` a listing prints where
         /// a name alone is not a handle. The kind-joined spelling the
         /// listings display (`async fn app::work`) names a function
         /// rather than the type its memory holds, so it is refused with
@@ -389,12 +394,12 @@ pub enum Command {
         render: RenderOpts,
     },
 
-    /// Show a runtime's own state, read straight through the bundle's
-    /// layouts: its drivers, and the scheduler state its workers share.
-    /// Naming no section shows both.
+    /// Show a runtime's own state, read straight through the tokio
+    /// info's layouts: its drivers, and the scheduler state its workers
+    /// share. Naming no section shows both.
     ///
-    /// The bundle's elisions (which hide runtime internals inside user
-    /// values) never apply to this view.
+    /// The tokio info's elisions (which hide runtime internals inside
+    /// user values) never apply to this view.
     ///
     /// Every discovered runtime is shown, each under a heading, unless
     /// one is named — by its index in the `runtimes` listing, or by the
@@ -443,12 +448,13 @@ pub enum Command {
     /// `tasks --futures`, `graph` or `whatis` costs nothing.
     Runtimes,
 
-    /// Capture a replayable snapshot of everything the bundle-backed
-    /// analysis reads from the target: task enumeration and every task's
+    /// Capture a replayable snapshot of everything the analysis reads
+    /// from the target: task enumeration and every task's
     /// await chain are driven once with a recording wrapper in place,
     /// and the memory, symbol, and lwp state they touched is written
-    /// out. Together with a bundle extracted from a *separate* build of
-    /// the same source, the snapshot feeds the offline two-binary tests.
+    /// out. Together with tokio info extracted from a *separate* build
+    /// of the same source, the snapshot feeds the offline two-binary
+    /// tests.
     #[cfg(feature = "snapshot")]
     #[command(hide = true)]
     Snapshot {
@@ -631,7 +637,7 @@ pub enum Command {
         #[command(flatten)]
         render: RenderOpts,
 
-        /// Show the values the bundle renders as `<elided>` (runtime
+        /// Show the values rendered as `<elided>` (runtime
         /// handles, loggers) instead of hiding them.
         #[arg(long, short = 'n')]
         no_elide: bool,
@@ -642,21 +648,21 @@ pub enum Command {
         /// instantiation, a matched type stays elided under --no-elide,
         /// and a name may be spelled the way the listings display it
         /// (folded, kind word and all), the way the debug info records
-        /// it, or as a bundle type id — the `type 4821` a listing
+        /// it, or as a type id — the `type 4821` a listing
         /// prints where a name alone is not a handle — which elides
         /// that exact instantiation.
         #[arg(long, short = 'e', value_name = "TYPE")]
         elide: Vec<String>,
     },
 
-    /// Print the layout the bundle records for a type, by its exact
-    /// fully-qualified name: members and their offsets, or an enum's
-    /// variants and the discriminant that selects them.
+    /// Print the layout the tokio info records for a type, by its
+    /// exact fully-qualified name: members and their offsets, or an
+    /// enum's variants and the discriminant that selects them.
     Type {
         /// The fully-qualified name, as `find-types` lists it (several
         /// words are joined back into one name, so generics holding
         /// spaces paste in whole) — or as another listing displays it,
-        /// folded and with the kind word — or a bundle type id, the
+        /// folded and with the kind word — or a type id, the
         /// `type 4821` a listing prints where the name alone is not a
         /// handle (an ambiguous site, one definition of several).
         #[arg(value_name = "NAME", required = true, num_args = 1..)]
@@ -1240,16 +1246,16 @@ fn main() {
         .init();
 
     let res = match args.cmd {
-        Some(Cmd::Bundle { cmd }) => {
+        Some(Cmd::TokioInfo { cmd }) => {
             // Extraction's heavy phases build their own scoped pools;
             // what is left for the global one is the vtable scan, with
             // no interactive session to stay out of the way of.
-            build_pool(None, "bundle");
+            build_pool(None, "tokio-info");
             bundle_cmd::exec(cmd)
         }
         None => {
             build_pool(Some(16), "reify-render");
-            // clap requires --core and --bundle of every invocation
+            // clap requires --core and --tokio-info of every invocation
             // that names no subcommand.
             let session = args.session.expect("session args without a subcommand");
             run(&session, &args.exec)
@@ -1307,7 +1313,7 @@ fn run(args: &SessionArgs, exec: &[String]) -> Result<()> {
         let bundle = scope.spawn(|| bundle_for(args));
         // Named for the attach rather than for the core: either file
         // can be the one that failed, and the cause says which.
-        let proc = Proc::open_core_with_program(&args.core, args.program.as_deref())
+        let proc = Proc::open_core_with_binary(&args.core, args.binary.as_deref())
             .with_context(|| format!("failed to attach to {}", args.core.display()));
         (proc, bundle.join().expect("bundle loader panicked"))
     });
@@ -1317,7 +1323,7 @@ fn run(args: &SessionArgs, exec: &[String]) -> Result<()> {
     for warning in &warnings {
         writeln!(io::stderr(), "{warning}")?;
     }
-    check_program(&proc, args)?;
+    check_binary(&proc, args)?;
     let session = Session::attach(&proc, &bundle, args)?;
 
     // The joint state every deep command reads — task extents and the
@@ -1341,8 +1347,8 @@ fn run(args: &SessionArgs, exec: &[String]) -> Result<()> {
     })
 }
 
-/// The types this session reads: the bundle `--bundle` names, or one
-/// extracted on the spot from the debug build `--debug-binary` names.
+/// The types this session reads: the file `--tokio-info` names, or
+/// tokio info extracted on the spot from what `--debug-info` names.
 ///
 /// Extraction's warnings come back rather than being printed, because
 /// this runs beside the attach and its stderr is not this thread's to
@@ -1351,7 +1357,7 @@ fn bundle_for(args: &SessionArgs) -> Result<(Bundle, Vec<String>)> {
     match args.bundle_source() {
         BundleSource::File(path) => {
             let bundle = Bundle::load(path)
-                .with_context(|| format!("failed to load bundle {}", path.display()))?;
+                .with_context(|| format!("failed to load tokio info {}", path.display()))?;
             Ok((bundle, Vec::new()))
         }
         BundleSource::Extracted(path) => bundle_cmd::extract_for_session(path),
@@ -1422,8 +1428,8 @@ fn warm_worker(
 /// is worth being able to ask after the fact.
 fn exec_info(session: &Session<'_>, out: &mut dyn io::Write) -> Result<()> {
     let fp = session.ctx.validate_fingerprint();
-    writeln!(out, "core:   {}", session.core.display())?;
-    writeln!(out, "bundle: {}", session.bundle_source)?;
+    writeln!(out, "core:       {}", session.core.display())?;
+    writeln!(out, "tokio info: {}", session.bundle_source)?;
     writeln!(
         out,
         "symbols resolved: {}/{}{}",
@@ -1468,7 +1474,7 @@ fn exec_info(session: &Session<'_>, out: &mut dyn io::Write) -> Result<()> {
     Ok(())
 }
 
-/// Hold `--program` to what the core says the executable was.
+/// Hold `--binary` to what the core says the executable was.
 ///
 /// A Linux core carries no symbol table — `.symtab` is not `SHF_ALLOC`,
 /// so it is never in the address space there is to dump — and the path
@@ -1477,18 +1483,19 @@ fn exec_info(session: &Session<'_>, out: &mut dyn io::Write) -> Result<()> {
 /// rather than a convenience: without it not one symbol resolves, and
 /// the attach dies at the thread-local the runtime lives behind.
 ///
-/// *Which* binary is just as load-bearing. The debug build that
-/// produced the bundle resolves every symbol *name* and shares none of
+/// *Which* binary is just as load-bearing. A separate debug build of
+/// the same source resolves every symbol *name* while sharing none of
 /// the addresses, so the fingerprint passes in full and every task
 /// comes out named after whatever now sits at its address. The build
-/// id is what separates the two, and it is the only exact check there
-/// is between a core and a file.
-fn check_program(proc: &Proc, args: &SessionArgs) -> Result<()> {
-    if !proc.needs_program() {
-        if let Some(path) = &args.program {
+/// id is the check that catches the substitution — and what tells that
+/// mistake from a split-debug companion, which does share the
+/// deployed binary's addresses.
+fn check_binary(proc: &Proc, args: &SessionArgs) -> Result<()> {
+    if !proc.needs_binary() {
+        if let Some(path) = &args.binary {
             writeln!(
                 io::stderr(),
-                "warning: ignoring --program {}; this core carries its own \
+                "warning: ignoring --binary {}; this core carries its own \
                  symbol tables",
                 path.display()
             )?;
@@ -1496,16 +1503,16 @@ fn check_program(proc: &Proc, args: &SessionArgs) -> Result<()> {
         return Ok(());
     }
 
-    let Some(path) = &args.program else {
+    let Some(path) = &args.binary else {
         let named = proc
             .exec_name()
             .map(|p| p.display().to_string())
             .unwrap_or_else(|_| "the executable".to_owned());
         anyhow::bail!(
-            "--program is required for a Linux core: the core carries no \
+            "--binary is required for a Linux core: the core carries no \
              symbol table, so {named} has to be read alongside it. Pass the \
-             binary that ran — not the debug build behind --bundle, which \
-             shares none of its addresses."
+             binary that ran — not a separate debug build, which shares \
+             none of its addresses."
         );
     };
 
@@ -1532,7 +1539,7 @@ fn check_program(proc: &Proc, args: &SessionArgs) -> Result<()> {
          executable has build id {}, this file has {}",
         path.display(),
         hex(&ids.core),
-        hex(&ids.program),
+        hex(&ids.binary),
     );
     anyhow::ensure!(args.force, "{complaint}\nPass --force to proceed anyway.");
     writeln!(io::stderr(), "warning: {complaint}; output may be wrong")?;
@@ -1550,8 +1557,8 @@ fn check_fingerprint<T: proc::Target>(ctx: &bundle::Context<'_, T>, force: bool)
     let sample = missing_sample(&fp.missing);
     anyhow::ensure!(
         force,
-        "only {}/{} bundle symbols resolve in the target — the bundle does \
-         not match this binary. Missing, for example:\n{}\n\
+        "only {}/{} tokio-info symbols resolve in the target — the tokio \
+         info does not match this binary. Missing, for example:\n{}\n\
          Pass --force to proceed anyway.",
         fp.matched,
         fp.total,
@@ -1559,7 +1566,7 @@ fn check_fingerprint<T: proc::Target>(ctx: &bundle::Context<'_, T>, force: bool)
     );
     writeln!(
         io::stderr(),
-        "warning: only {}/{} bundle symbols resolve in the target; \
+        "warning: only {}/{} tokio-info symbols resolve in the target; \
          output may be wrong",
         fp.matched,
         fp.total
@@ -1572,7 +1579,7 @@ fn check_fingerprint<T: proc::Target>(ctx: &bundle::Context<'_, T>, force: bool)
 /// can be linked without a build id, and a core can dump too little of
 /// the executable to carry one — but it is worth a warning.
 fn unverifiable(ids: &proc::BuildIds) -> bool {
-    ids.core.is_none() || ids.program.is_none()
+    ids.core.is_none() || ids.binary.is_none()
 }
 
 /// The first few missing symbols, demangled, and a count of the rest:
@@ -1714,9 +1721,9 @@ mod glue_tests {
     /// checked, whichever way the comparison then goes.
     #[test]
     fn test_either_missing_id_is_unverifiable() {
-        let ids = |core: bool, program: bool| proc::BuildIds {
+        let ids = |core: bool, binary: bool| proc::BuildIds {
             core: core.then(|| vec![1, 2]),
-            program: program.then(|| vec![1, 2]),
+            binary: binary.then(|| vec![1, 2]),
         };
         assert!(unverifiable(&ids(false, false)));
         assert!(unverifiable(&ids(true, false)));
@@ -1779,34 +1786,23 @@ mod cli_tests {
     /// grammar grew a subcommand.
     #[test]
     fn test_bare_invocation_is_a_session() {
-        let cli = parse(&[
-            "hansei",
-            "-c",
-            "core.app",
-            "-b",
-            "app.bundle",
-            "-e",
-            "tasks",
-        ]);
+        let cli = parse(&["hansei", "-c", "core.app", "-t", "app.tinfo", "-e", "tasks"]);
         assert!(cli.cmd.is_none());
         let session = cli.session.expect("session args");
         assert_eq!(session.core.to_str(), Some("core.app"));
-        assert_eq!(session.bundle.as_deref(), Some(Path::new("app.bundle")));
-        assert_eq!(session.debug_binary, None);
+        assert_eq!(session.tokio_info.as_deref(), Some(Path::new("app.tinfo")));
+        assert_eq!(session.debug_info, None);
         assert_eq!(cli.exec, ["tasks"]);
     }
 
-    /// A debug build stands in for a bundle file, and the summary says
-    /// which of the two the session's types came from.
+    /// A debug build stands in for a tokio-info file, and the summary
+    /// says which of the two the session's types came from.
     #[test]
-    fn test_a_debug_binary_stands_in_for_a_bundle() {
-        let cli = parse(&["hansei", "-c", "core.app", "--debug-binary", "app.debug"]);
+    fn test_debug_info_stands_in_for_a_tokio_info_file() {
+        let cli = parse(&["hansei", "-c", "core.app", "-d", "app.debug"]);
         let session = cli.session.expect("session args");
-        assert_eq!(session.bundle, None);
-        assert_eq!(
-            session.debug_binary.as_deref(),
-            Some(Path::new("app.debug"))
-        );
+        assert_eq!(session.tokio_info, None);
+        assert_eq!(session.debug_info.as_deref(), Some(Path::new("app.debug")));
         assert_eq!(
             session.bundle_source().to_string(),
             "extracted from app.debug"
@@ -1822,9 +1818,9 @@ mod cli_tests {
                 "hansei",
                 "-c",
                 "core.app",
-                "-b",
-                "app.bundle",
-                "--debug-binary",
+                "-t",
+                "app.tinfo",
+                "--debug-info",
                 "app.debug",
             ])
             .is_err()
@@ -1834,14 +1830,14 @@ mod cli_tests {
     /// The subcommand takes the whole invocation: no target is named,
     /// and the flags a session requires are not asked for.
     #[test]
-    fn test_bundle_extract_takes_the_extraction_flags() {
+    fn test_tokio_info_extract_takes_the_extraction_flags() {
         let cli = parse(&[
             "hansei",
-            "bundle",
+            "tokio-info",
             "extract",
             "app.debug",
             "-o",
-            "app.bundle",
+            "app.tinfo",
             "--stats",
             "--include-type",
             "core::net::IpAddr",
@@ -1849,7 +1845,7 @@ mod cli_tests {
             "Notify",
         ]);
         assert!(cli.session.is_none());
-        let Some(Cmd::Bundle {
+        let Some(Cmd::TokioInfo {
             cmd:
                 BundleCmd::Extract {
                     binary,
@@ -1862,10 +1858,10 @@ mod cli_tests {
                 },
         }) = cli.cmd
         else {
-            panic!("expected `bundle extract`");
+            panic!("expected `tokio-info extract`");
         };
         assert_eq!(binary.to_str(), Some("app.debug"));
-        assert_eq!(output.to_str(), Some("app.bundle"));
+        assert_eq!(output.to_str(), Some("app.tinfo"));
         assert!(stats);
         assert_eq!(include_types, ["core::net::IpAddr"]);
         assert!(!allow_missing_infra);
@@ -1879,8 +1875,15 @@ mod cli_tests {
     #[test]
     fn test_the_two_sides_do_not_mix() {
         assert!(
-            Cli::try_parse_from(["hansei", "-c", "core.app", "bundle", "extract", "app.debug"])
-                .is_err()
+            Cli::try_parse_from([
+                "hansei",
+                "-c",
+                "core.app",
+                "tokio-info",
+                "extract",
+                "app.debug"
+            ])
+            .is_err()
         );
         assert!(Cli::try_parse_from(["hansei"]).is_err());
         assert!(Cli::try_parse_from(["hansei", "-c", "core.app"]).is_err());

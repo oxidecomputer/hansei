@@ -26,19 +26,19 @@ pub enum Proc {
 impl Proc {
     /// Open a core dump, whichever system wrote it.
     pub fn open_core(path: &Path) -> Result<Self> {
-        Self::open_core_with_program(path, None)
+        Self::open_core_with_binary(path, None)
     }
 
-    /// Open a core dump, reading the executable from `program` rather
+    /// Open a core dump, reading the executable from `binary` rather
     /// than from the path the core recorded for it.
     ///
     /// Only a Linux core has anything to substitute. An illumos core
     /// carries each mapped object's symbol table in its own section
     /// headers, so it needs no companion binary and ignores one.
-    pub fn open_core_with_program(path: &Path, program: Option<&Path>) -> Result<Self> {
+    pub fn open_core_with_binary(path: &Path, binary: Option<&Path>) -> Result<Self> {
         match coredump::flavour(path)? {
-            Flavour::Linux => Ok(Proc::LinuxCore(coredump::linux::Core::open_with_program(
-                path, program,
+            Flavour::Linux => Ok(Proc::LinuxCore(coredump::linux::Core::open_with_binary(
+                path, binary,
             )?)),
             Flavour::Illumos => Ok(Proc::IllumosCore(coredump::illumos::Core::open(path)?)),
         }
@@ -46,7 +46,7 @@ impl Proc {
 
     /// Whether this core needs a companion executable to resolve any
     /// symbol at all.
-    pub fn needs_program(&self) -> bool {
+    pub fn needs_binary(&self) -> bool {
         matches!(self, Proc::LinuxCore(_))
     }
 

@@ -31,7 +31,7 @@ testrun = { workspace = true }
 [dependencies]
 anyhow = { workspace = true }
 clap = { workspace = true }
-# `hansei bundle` produces and inspects bundle files, so the DWARF stack
+# `hansei tokio-info` produces and inspects tokio-info files, so the DWARF stack
 # reaches this bin crate — and only the arg-handling entry points in
 # `bundle_cmd.rs`. Nothing a session, hansei-runtime or reify does may
 # import it: if read-side code seems to need something from exegesis, it
