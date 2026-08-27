@@ -33,17 +33,17 @@ pub type Result<T> = std::result::Result<T, Error>;
 #[derive(thiserror::Error, Debug)]
 #[non_exhaustive]
 pub enum Error {
-    #[error("bundle i/o failed")]
+    #[error("tokio-info i/o failed")]
     Io(#[from] std::io::Error),
-    #[error("not a bundle file (bad magic)")]
+    #[error("not a tokio-info file (bad magic)")]
     BadMagic,
-    #[error("bundle format version {found} unsupported (this tool reads version {expected})")]
+    #[error("tokio-info format version {found} unsupported (this tool reads version {expected})")]
     VersionMismatch { found: u32, expected: u32 },
-    #[error("failed to decode bundle payload")]
+    #[error("failed to decode tokio-info payload")]
     Decode(#[source] postcard::Error),
-    #[error("failed to encode bundle payload")]
+    #[error("failed to encode tokio-info payload")]
     Encode(#[source] postcard::Error),
-    #[error("corrupt bundle: {0}")]
+    #[error("corrupt tokio info: {0}")]
     Corrupt(String),
 }
 

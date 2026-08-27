@@ -239,7 +239,7 @@ impl<'b, T: Target> Bound<'_, 'b, T> {
     /// did not.
     fn steps(&self) -> std::result::Result<&'b [Step], String> {
         match self.ctx.view.bundle().walks.entries.get(&self.role) {
-            None => Err("the bundle records no walk binding for this role".to_owned()),
+            None => Err("the tokio info records no walk binding for this role".to_owned()),
             Some(binding) => match &binding.outcome {
                 WalkOutcome::Bound { .. } => Ok(&binding.steps),
                 WalkOutcome::Absent { reason } => Err(reason.clone()),
@@ -559,7 +559,7 @@ pub fn verify_walk_contract(view: &BundleView<'_>) -> ContractReport {
         } else {
             WalkOutcome::Broken {
                 errors: vec![format!(
-                    "the bundle records no {role:?} static \
+                    "the tokio info records no {role:?} static \
                      (was it extracted with --allow-missing-infra?)"
                 )],
             }
@@ -576,7 +576,7 @@ pub fn verify_walk_contract(view: &BundleView<'_>) -> ContractReport {
             Some(binding) => binding.outcome.clone(),
             None => WalkOutcome::Broken {
                 errors: vec![
-                    "the bundle records no walk binding for this role \
+                    "the tokio info records no walk binding for this role \
                      (extracted before the walk binder?)"
                         .to_owned(),
                 ],
@@ -636,7 +636,7 @@ impl ContractReport {
         }
         let lines: Vec<String> = fatal.iter().map(|e| format!("  {}", e.line())).collect();
         bail!(
-            "the bundle's walk contract does not hold against this tokio ({}):\n{}",
+            "the tokio info's walk contract does not hold against this tokio ({}):\n{}",
             self.target,
             lines.join("\n")
         );
