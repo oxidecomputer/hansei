@@ -135,4 +135,8 @@ impl Target for Proc {
     fn tls_var_addr(&self, regs: &Regs, sym: &SymbolBuf) -> Result<Option<u64>> {
         dispatch!(self, tls_var_addr(regs, sym))
     }
+
+    fn exec_bias(&self) -> Option<u64> {
+        dispatch!(self, exec_bias())
+    }
 }

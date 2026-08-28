@@ -906,6 +906,14 @@ impl Core {
                 .wrapping_add(sym.st_value),
         ))
     }
+
+    /// How far the executable landed from where it was linked, found
+    /// through `AT_PHDR` when the core was opened. `None` for a core
+    /// whose auxiliary vector never named the executable's program
+    /// headers, which is the same core that resolves no symbol.
+    pub fn exec_bias(&self) -> Option<u64> {
+        self.exec.as_ref().map(|e| e.bias)
+    }
 }
 
 /// The terminating signal, from the first prstatus's `cursig` and the
@@ -1051,6 +1059,10 @@ impl Target for Core {
 
     fn tls_var_addr(&self, regs: &Regs, sym: &SymbolBuf) -> Result<Option<u64>> {
         Core::tls_var_addr(self, regs, sym)
+    }
+
+    fn exec_bias(&self) -> Option<u64> {
+        Core::exec_bias(self)
     }
 }
 
@@ -2018,6 +2030,10 @@ mod tests {
             .min()
             .unwrap();
         let bias = BASE - lowest;
+        // The same number the core reports for itself, which is what
+        // moves an address out of the debug info into this target —
+        // asked through the trait, since that is how a reader asks.
+        assert_eq!(Target::exec_bias(&p), Some(bias));
 
         for (name, link_value) in want {
             let sym = p

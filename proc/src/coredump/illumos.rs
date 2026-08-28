@@ -288,6 +288,18 @@ fn span_of(phdrs: &[ProgramHeader], bias: u64) -> Option<Range<u64>> {
     (start < end).then_some(start..end)
 }
 
+/// How far an object landed from where it was linked, from its own
+/// program headers: the table describes where it is itself, so comparing
+/// that with where it turned out to be — `at_phdr` — gives the bias.
+/// Zero for a position-dependent executable, its base for a PIE.
+///
+/// `None` where the table does not describe itself, which is a table
+/// that cannot say rather than one saying zero.
+fn phdr_bias(at_phdr: u64, phdrs: &[ProgramHeader]) -> Option<u64> {
+    let phdr = phdrs.iter().find(|p| p.p_type == PT_PHDR)?;
+    Some(at_phdr.wrapping_sub(phdr.p_vaddr))
+}
+
 pub struct Core {
     core: Mmap,
     segments: Vec<Segment>,
@@ -309,6 +321,9 @@ pub struct Core {
     symbols: BTreeMap<u64, Symbols>,
     /// The object the executable was loaded at, if its table is here.
     exec_base: Option<u64>,
+    /// How far the executable landed from where it was linked, from its
+    /// own program headers ([`phdr_bias`]).
+    exec_bias: Option<u64>,
     /// The `brk` extent as the core's `pstatus_t` recorded it — the one
     /// region `pmap` calls `[ heap ]`. `None` for a core whose pstatus
     /// is absent or predates the field, which falls back to a guess.
@@ -439,15 +454,20 @@ impl Core {
             fatal,
             symbols,
             exec_base: None,
+            exec_bias: None,
             brk,
         };
         core_file.fill_stack_ranges();
 
         // The link map lives in the target's memory, so it can only be
-        // walked once the segments are readable.
+        // walked once the segments are readable. So are the program
+        // headers the bias comes from.
         let objects = core_file.link_map_objects(&auxv);
         core_file.mappings = build_mappings(&core_file.segments, &objects, core_file.brk.as_ref());
         core_file.exec_base = core_file.find_exec_base(&objects);
+        core_file.exec_bias = core_file
+            .exec_phdrs(&auxv)
+            .and_then(|(at_phdr, phdrs)| phdr_bias(at_phdr, &phdrs));
         Ok(core_file)
     }
 
@@ -558,18 +578,8 @@ impl Core {
     /// `None` for a statically linked executable, which has neither a
     /// dynamic section nor a link map.
     fn r_debug(&self, auxv: &BTreeMap<u64, u64>) -> Option<u64> {
-        let at_phdr = *auxv.get(&AT_PHDR)?;
-        let phent = *auxv.get(&AT_PHENT)? as u16;
-        let phnum = *auxv.get(&AT_PHNUM)? as u16;
-        let phdrs = self.read_phdrs(at_phdr, phent, phnum)?;
-
-        // The table describes where it is itself, so comparing that to
-        // where it turned out to be gives the bias — zero for a
-        // position-dependent executable, its base for a PIE.
-        let bias = phdrs
-            .iter()
-            .find(|p| p.p_type == PT_PHDR)
-            .map_or(0, |p| at_phdr.wrapping_sub(p.p_vaddr));
+        let (at_phdr, phdrs) = self.exec_phdrs(auxv)?;
+        let bias = phdr_bias(at_phdr, &phdrs).unwrap_or(0);
 
         let mut at = phdrs
             .iter()
@@ -586,6 +596,15 @@ impl Core {
                 _ => at = at.checked_add(SIZEOF_DYN as u64)?,
             }
         }
+    }
+
+    /// The executable's program headers, and the address the auxiliary
+    /// vector says they were loaded at.
+    fn exec_phdrs(&self, auxv: &BTreeMap<u64, u64>) -> Option<(u64, Vec<ProgramHeader>)> {
+        let at_phdr = *auxv.get(&AT_PHDR)?;
+        let phent = *auxv.get(&AT_PHENT)? as u16;
+        let phnum = *auxv.get(&AT_PHNUM)? as u16;
+        Some((at_phdr, self.read_phdrs(at_phdr, phent, phnum)?))
     }
 
     /// The addresses one mapped object occupies, from the program
@@ -835,6 +854,13 @@ impl Core {
     /// memory instead.
     pub fn tls_var_addr(&self, regs: &Regs, sym: &SymbolBuf) -> Result<Option<u64>> {
         crate::tls_addr_from_pthread_key(&|addr| self.read_u64(addr), regs, sym)
+    }
+
+    /// How far the executable landed from where it was linked, read
+    /// from its own program headers when the core was opened. `None`
+    /// for a core whose auxiliary vector never named them.
+    pub fn exec_bias(&self) -> Option<u64> {
+        self.exec_bias
     }
 }
 
@@ -1226,6 +1252,10 @@ impl Target for Core {
 
     fn tls_var_addr(&self, regs: &Regs, sym: &SymbolBuf) -> Result<Option<u64>> {
         Core::tls_var_addr(self, regs, sym)
+    }
+
+    fn exec_bias(&self) -> Option<u64> {
+        Core::exec_bias(self)
     }
 }
 
@@ -2684,6 +2714,50 @@ mod tests {
         let maps = p.mappings().unwrap();
         assert_eq!(maps.get(BASE).unwrap().path.as_deref(), Some("/opt/pie"));
         assert_eq!(maps.get(0x9000).unwrap().path, None);
+    }
+
+    /// The bias a static address out of the debug info must be moved by
+    /// to be read here: its base for a PIE, zero for a
+    /// position-dependent executable — a claim, not the absence of one
+    /// — and nothing at all for a core whose auxiliary vector never
+    /// named the program headers to work it out from.
+    #[test]
+    fn test_the_exec_bias_says_where_the_executable_landed() {
+        const BASE: u64 = 0x5555_0000;
+
+        let core = |e_type, vbase, auxv: bool| {
+            let exec = exec_image(BASE, e_type, vbase);
+            let ldata = link_map(&[(BASE, "/opt/prog")], None);
+            let mut b = CoreBuilder::default()
+                .thread(1, regs_at(BASE + 0x100, 0x9000))
+                .dumped(0x9000, PF_R | PF_W, vec![0; PAGE as usize])
+                .dumped(BASE, PF_R | PF_X, exec.bytes)
+                .dumped(LDATA, PF_R | PF_W, ldata.bytes);
+            if auxv {
+                b = b
+                    .auxv(AT_PHDR, BASE + SIZEOF_EHDR as u64)
+                    .auxv(AT_PHENT, SIZEOF_PHDR as u64)
+                    .auxv(AT_PHNUM, 3);
+            }
+            b.proc()
+        };
+
+        // Asked through the trait, which is how every reader asks and
+        // so the surface that has to answer.
+        //
+        // A PIE: its headers describe themselves at an offset, and they
+        // turned out to be that far above `BASE`.
+        let (_dir, p) = core(ET_DYN, 0, true);
+        assert_eq!(Target::exec_bias(&p), Some(BASE));
+
+        // Position-dependent: the headers name the address they are at.
+        let (_dir, p) = core(ET_EXEC, BASE, true);
+        assert_eq!(Target::exec_bias(&p), Some(0));
+
+        // And with nothing saying where the headers are, there is no
+        // bias to report rather than a zero to assume.
+        let (_dir, p) = core(ET_DYN, 0, false);
+        assert_eq!(Target::exec_bias(&p), None);
     }
 
     /// A link map whose chain loops is walked no further than the

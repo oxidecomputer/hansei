@@ -402,6 +402,15 @@ fn test_object_symbols_default_to_none() {
     assert!(target.object_symbols().unwrap().is_empty());
 }
 
+/// A target that cannot say where the executable landed says nothing,
+/// which is a different answer from zero: zero is the claim that a
+/// debug-info address can be read as it stands.
+#[test]
+fn test_exec_bias_defaults_to_saying_nothing() {
+    let target = MemTarget::new(0, Vec::new());
+    assert_eq!(target.exec_bias(), None);
+}
+
 /// `ulwp_t.ul_ftsd` sits at a fixed offset past `%fsbase` and holds nine
 /// pointers: the offset, the length and the decode are all pinned here,
 /// because nothing in the target tells us when they go wrong.
