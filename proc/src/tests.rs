@@ -620,3 +620,39 @@ fn test_fault_codes_decode_for_every_fault_signal() {
     assert_eq!(fault_code_name("SIGSEGV", -1), None);
     assert_eq!(fault_code_name("SIGKILL", 1), None);
 }
+
+/// A target with no holes serves the whole range as one run.
+#[test]
+fn test_readable_runs_serves_a_contiguous_range() {
+    let runs = readable_runs(0x10000, 0x5000, |_, max| max);
+    assert_eq!(runs, vec![(0x10000, 0x5000)]);
+}
+
+/// A run ending mid-page — a backing file's last partial page —
+/// resumes at the very next page boundary, neither re-probing the
+/// dead half-page nor overshooting a region that starts right
+/// after it.
+#[test]
+fn test_readable_runs_steps_a_hole_to_the_next_page_boundary() {
+    let regions = [(0x10000u64, 0x11800u64), (0x12000, 0x14000)];
+    let readable = |addr: u64, max: u64| {
+        regions
+            .iter()
+            .find(|&&(start, end)| (start..end).contains(&addr))
+            .map_or(0, |&(_, end)| (end - addr).min(max))
+    };
+    let runs = readable_runs(0x10000, 0x4000, readable);
+    assert_eq!(runs, vec![(0x10000, 0x1800), (0x12000, 0x2000)]);
+}
+
+/// The probe never asks past the end of the part, even when the
+/// target could serve more — a region is one source's extent, and
+/// what lies beyond the part belongs to the next part's own reads.
+#[test]
+fn test_readable_runs_stays_within_the_range() {
+    // A hole over the first page, then readable as far as anyone
+    // asks: only the `max` the probe passes bounds the run.
+    let readable = |addr: u64, max: u64| if addr < 0x11000 { 0 } else { max };
+    let runs = readable_runs(0x10000, 0x4000, readable);
+    assert_eq!(runs, vec![(0x11000, 0x3000)]);
+}
