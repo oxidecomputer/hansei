@@ -350,10 +350,36 @@ fn assert_walk(program: &str, bundle: &Bundle, role: WalkRole, expected: &str) {
     );
 }
 
+/// What the vtable harvest declined, which no `.golden` file carries.
+///
+/// A fixture is built from source moments before it is read, so its
+/// DWARF and its bytes describe the same program: every decline here is
+/// the harvest failing to read debug info it should have read.
+fn assert_vtables(program: &str, stats: &ExtractStats) {
+    // A DIE the binary's own bytes contradict is dropped, so a nonzero
+    // count here is the DWARF and the image telling different stories
+    // about one program — a real disagreement on a fixture built from
+    // source moments ago, not the drift the check is aimed at.
+    assert_eq!(
+        stats.vtables_contradicted, 0,
+        "{program}: vtable DIEs the binary's own bytes contradict"
+    );
+    assert_eq!(
+        stats.vtables_unshaped, 0,
+        "{program}: vtable DIEs whose {{vtable_type}} is not a vtable layout"
+    );
+    // `vtables_unsplit` is deliberately not pinned to zero: an array
+    // concrete type (`<[u8; 4] as core::fmt::Debug>`) has no name for
+    // the split to strip, and whether a fixture links one is the
+    // platform's business — illumos's fixtures carry a dozen where the
+    // Mach-O and Linux builds of the same sources carry none.
+}
+
 /// Structural assertions that hold for every fixture — the "zero silent
 /// drops" checks plus metadata sanity.
 fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
     assert_addresses_by_name(program, bundle);
+    assert_vtables(program, stats);
     // The impl table records only what the bundle's strings mention —
     // an entry nothing names is dead weight the emit filter should have
     // dropped. (Sortedness and the plain-path value rules are the
