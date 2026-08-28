@@ -17,9 +17,10 @@ pub use schema::{
     DiscrValues, DisplayNode, DynFutureTable, FamilyCeiling, Field, FieldRender, FutureKind,
     ImplTable, InfraTypes, MapEntries, MemberDef, MemberRef, Meta, Notation, Provenance,
     ProvenanceTable, ScalarDecode, Selector, SourceLoc, StaticDef, StaticRole, StaticsTable, Step,
-    Stmt, SymbolLookup, TaskEntryId, TaskFutureEntry, TaskTable, TypeDef, TypeTable, ValueExpr,
-    VariantDef, VariantShape, VtableDataSource, WalkBinding, WalkOutcome, WalkRole, WalksTable,
-    strip_build_prefix, strip_llvm_suffix,
+    Stmt, SymbolLookup, TaskEntryId, TaskFutureEntry, TaskTable, TypeDef, TypeTable,
+    VTABLE_HEADER_SLOTS, ValueExpr, VariantDef, VariantShape, VtableDataSource, VtableEntry,
+    VtableTable, WalkBinding, WalkOutcome, WalkRole, WalksTable, strip_build_prefix,
+    strip_llvm_suffix,
 };
 pub use shape::Shape;
 pub use strings::{StrRef, StringInterner, StringTable};

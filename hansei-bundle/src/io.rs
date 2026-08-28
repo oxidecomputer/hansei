@@ -10,8 +10,8 @@
 
 use crate::schema::{
     Bundle, BundleTypeId, DisplayNode, Field, FieldRender, MapEntries, MemberDef, MemberRef,
-    Notation, ScalarDecode, Selector, StaticsTable, Step, Stmt, TypeDef, ValueExpr, WalkOutcome,
-    strip_llvm_suffix,
+    Notation, ScalarDecode, Selector, StaticsTable, Step, Stmt, TypeDef, VTABLE_HEADER_SLOTS,
+    ValueExpr, WalkOutcome, strip_llvm_suffix,
 };
 use crate::shape::{Addressed, Shape};
 use crate::strings::StrRef;
@@ -26,7 +26,7 @@ pub const MAGIC: [u8; 8] = *b"exegesis";
 
 /// The current bundle format version. Bump on any schema change, including
 /// indirect ones (e.g. new [`crate::Encoding`] variants).
-pub const FORMAT_VERSION: u32 = 42;
+pub const FORMAT_VERSION: u32 = 43;
 
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -1357,6 +1357,44 @@ impl Bundle {
                 return corrupt(format!("impl table not sorted at {path:?}"));
             }
             prev = Some(path);
+        }
+
+        // The vtable table is searched by substring and reported in the
+        // order it is stored, so its sort is part of the format rather
+        // than an accident of extraction; and a reader that hands an
+        // operator a slot index must be able to trust that the header
+        // fits and that a vacancy names a slot the vtable has.
+        let mut prev: Option<(&str, &str, u64)> = None;
+        for (i, entry) in self.vtables.entries.iter().enumerate() {
+            let what = &format!("vtable {i}");
+            check_str(what, entry.trait_)?;
+            check_str(what, entry.concrete)?;
+            if let Some(id) = entry.type_id {
+                check_ty(what, id)?;
+            }
+            if entry.slot_count < VTABLE_HEADER_SLOTS {
+                return corrupt(format!("{what}: {} slots", entry.slot_count));
+            }
+            let vacant = &entry.undescribed_slots;
+            let ascending = vacant.windows(2).all(|w| w[0] < w[1]);
+            let in_range = vacant
+                .iter()
+                .all(|&slot| (VTABLE_HEADER_SLOTS..entry.slot_count).contains(&slot));
+            if !ascending || !in_range {
+                return corrupt(format!(
+                    "{what}: vacant slots {vacant:?} of {}",
+                    entry.slot_count
+                ));
+            }
+            let key = (
+                self.strings.get(entry.trait_).unwrap(),
+                self.strings.get(entry.concrete).unwrap(),
+                entry.address,
+            );
+            if prev.is_some_and(|p| p >= key) {
+                return corrupt(format!("vtable table not sorted at {what}"));
+            }
+            prev = Some(key);
         }
 
         Ok(())

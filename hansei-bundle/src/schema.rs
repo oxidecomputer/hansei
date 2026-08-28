@@ -44,6 +44,7 @@ pub struct Bundle {
     pub infra: InfraTypes,
     pub provenance: ProvenanceTable,
     pub impls: ImplTable,
+    pub vtables: VtableTable,
 }
 
 // Parallel rendering shares one loaded bundle across worker threads:
@@ -1489,6 +1490,57 @@ pub struct ImplTable {
     /// key string. A value never contains an `{impl#` segment of its
     /// own, which keeps substitution idempotent.
     pub entries: Vec<(StrRef, StrRef)>,
+}
+
+/// Every trait-object vtable the target's debug info describes.
+///
+/// rustc emits one `DW_TAG_variable` per vtable it instantiates, named
+/// with the whole `<{concrete} as {trait}>::{vtable}` pair, so the answer
+/// to "which vtables implement trait T" is in the debug info and needs no
+/// scanning. It is carried here because the read side must keep working
+/// where there is only a bundle and a core — the host debugging a
+/// production target has no DWARF to consult.
+///
+/// This table is metadata, not roots: an entry never causes a type to be
+/// emitted, and [`VtableEntry::type_id`] is filled only when the concrete
+/// type was already in the bundle for its own reasons.
+#[derive(Clone, PartialEq, Debug, Default, Serialize, Deserialize)]
+pub struct VtableTable {
+    /// Sorted by `(trait, concrete, address)` and unique. Several entries
+    /// may share an `address` — the linker folded identical vtables
+    /// together — and one `(trait, concrete)` pair may appear at several
+    /// addresses; neither is a duplicate, and both are the ambiguity a
+    /// lookup has to show rather than resolve.
+    pub entries: Vec<VtableEntry>,
+}
+
+/// The words every Rust vtable opens with — drop glue, size, align —
+/// before its first method slot.
+pub const VTABLE_HEADER_SLOTS: u16 = 3;
+
+/// One trait-object vtable: which pair it implements, where it is, and
+/// how many words it occupies.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub struct VtableEntry {
+    /// The trait side, e.g. `core::future::future::Future`.
+    pub trait_: StrRef,
+    /// The concrete side, e.g. `dyn_future::boxed_leaf::{async_fn_env#0}`.
+    pub concrete: StrRef,
+    /// Static address in the debug binary's address space; a reader adds
+    /// the target's load bias, as it does for a static.
+    pub address: u64,
+    /// Total words, the drop-glue/size/align header included, so the
+    /// first method slot is 3.
+    pub slot_count: u16,
+    /// Method slots the `{vtable_type}` names no member for, ascending.
+    /// rustc emits a vacant entry for a method a trait object cannot
+    /// dispatch (`where Self: Sized`, say), and the debug info shows that
+    /// statically: a neutral fact about the vtable, not a fault.
+    pub undescribed_slots: Vec<u16>,
+    /// The concrete type in this bundle's type table, when it is there.
+    /// `None` is the common case — a target instantiates far more
+    /// vtables than a bundle has reason to describe types for.
+    pub type_id: Option<BundleTypeId>,
 }
 
 /// Source provenance for one future type.

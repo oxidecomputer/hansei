@@ -350,12 +350,17 @@ fn assert_walk(program: &str, bundle: &Bundle, role: WalkRole, expected: &str) {
     );
 }
 
-/// What the vtable harvest declined, which no `.golden` file carries.
+/// The trait-object vtable table, which the `.golden` files do not
+/// carry: like the debug formats, it is asserted here or nowhere, and
+/// re-blessing a golden says nothing about it.
 ///
-/// A fixture is built from source moments before it is read, so its
-/// DWARF and its bytes describe the same program: every decline here is
-/// the harvest failing to read debug info it should have read.
-fn assert_vtables(program: &str, stats: &ExtractStats) {
+/// What is portable is the anchor rather than the whole table. Which of
+/// a program's vtables survive into the debug info is the linker's call
+/// — `dsymutil` keeps only some of a crate's own, and `--gc-sections`
+/// discards the storage behind most of an ELF binary's DIEs — so the
+/// count and the membership vary by platform where the pair below does
+/// not.
+fn assert_vtables(program: &str, bundle: &Bundle, stats: &ExtractStats) {
     // A DIE the binary's own bytes contradict is dropped, so a nonzero
     // count here is the DWARF and the image telling different stories
     // about one program — a real disagreement on a fixture built from
@@ -373,13 +378,56 @@ fn assert_vtables(program: &str, stats: &ExtractStats) {
     // the split to strip, and whether a fixture links one is the
     // platform's business — illumos's fixtures carry a dozen where the
     // Mach-O and Linux builds of the same sources carry none.
+
+    // Every Rust program with a `main` instantiates this one, which
+    // makes it the pair to anchor on: `lang_start` boxes the closure it
+    // calls `main` through. Six words — the drop-glue/size/align header
+    // and the three call shims `Fn` carries with its supertraits — and
+    // rustc describes every one of them.
+    let anchor = "std::rt::lang_start::{closure_env#0}<()>";
+    let mut found = 0;
+    for entry in &bundle.vtables.entries {
+        if bundle.strings.get(entry.concrete) != Some(anchor) {
+            continue;
+        }
+        found += 1;
+        assert_eq!(
+            bundle.strings.get(entry.trait_),
+            Some("core::ops::function::Fn<()>"),
+            "{program}: {anchor} paired with an unexpected trait"
+        );
+        assert_eq!(entry.slot_count, 6, "{program}: {anchor} slot count");
+        assert!(
+            entry.undescribed_slots.is_empty(),
+            "{program}: {anchor} has vacant slots {:?}",
+            entry.undescribed_slots
+        );
+        assert_ne!(entry.address, 0, "{program}: {anchor} placed at zero");
+    }
+    assert!(found > 0, "{program}: no vtable entry for {anchor}");
+
+    // The bundle-id join is by DIE, not by name, so an entry carrying
+    // one must be carrying the type its own concrete half names; a
+    // mismatch is a remap bug rather than a name collision.
+    for entry in &bundle.vtables.entries {
+        let Some(id) = entry.type_id else { continue };
+        let concrete = bundle.strings.get(entry.concrete).unwrap();
+        assert!(
+            bundle
+                .types
+                .find_by_name(&bundle.strings, concrete)
+                .any(|found| found == id),
+            "{program}: vtable entry for {concrete} joined to type {}, which is named otherwise",
+            id.0
+        );
+    }
 }
 
 /// Structural assertions that hold for every fixture — the "zero silent
 /// drops" checks plus metadata sanity.
 fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
     assert_addresses_by_name(program, bundle);
-    assert_vtables(program, stats);
+    assert_vtables(program, bundle, stats);
     // The impl table records only what the bundle's strings mention —
     // an entry nothing names is dead weight the emit filter should have
     // dropped. (Sortedness and the plain-path value rules are the
@@ -1409,7 +1457,25 @@ fn test_a_packed_dwp_pair_extracts_the_same_bundle() {
     // suppresses it), so that redundant spelling is normalized away on
     // both sides; a site that disagrees with its decl still has to
     // match exactly.
+    // And so do the vtable addresses: two links place their vtables
+    // where they place them. The pair, the slot layout and the entry
+    // count still have to match exactly — that is what says the dwp's
+    // `.debug_addr`-indexed locations resolved at all, since a vtable
+    // whose location does not resolve is dropped rather than kept at
+    // some other address. Sorted after clearing because the address is
+    // part of the order two entries of one pair are stored in.
     for bundle in [&mut split, &mut unsplit] {
+        for entry in &mut bundle.vtables.entries {
+            entry.address = 0;
+        }
+        bundle.vtables.entries.sort_by(|a, b| {
+            (a.trait_.0, a.concrete.0, a.slot_count, &a.undescribed_slots).cmp(&(
+                b.trait_.0,
+                b.concrete.0,
+                b.slot_count,
+                &b.undescribed_slots,
+            ))
+        });
         bundle.meta.symbol_fingerprint.clear();
         bundle.tasks.by_symbol.clear();
         bundle.dyn_futures.by_symbol.clear();

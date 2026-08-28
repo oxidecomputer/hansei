@@ -11,7 +11,7 @@ use hansei_bundle::{
     FieldRender as BundleFieldRender, ImplTable, InfraTypes, MapEntries as BundleMapEntries,
     MemberDef, MemberRef, Meta, Notation, ProvenanceTable, ScalarDecode as BundleScalarDecode,
     Selector, StaticsTable, Step, Stmt as BundleStmt, StrRef, StringInterner, TaskTable, TypeDef,
-    TypeTable, ValueExpr, VariantDef, VariantShape, WalksTable,
+    TypeTable, ValueExpr, VariantDef, VariantShape, VtableTable, WalksTable,
 };
 
 use std::collections::BTreeMap;
@@ -2327,6 +2327,7 @@ pub fn test_bundle() -> Bundle {
         },
         provenance: ProvenanceTable::default(),
         impls: ImplTable::default(),
+        vtables: VtableTable::default(),
     };
     b.types.build_normalized_index(&b.strings);
     b.validate().expect("test bundle must validate");
@@ -2581,6 +2582,7 @@ pub fn node_bundle() -> Bundle {
         },
         provenance: ProvenanceTable::default(),
         impls: ImplTable::default(),
+        vtables: VtableTable::default(),
     };
     b.types.build_normalized_index(&b.strings);
     b.validate().expect("node bundle must validate");
