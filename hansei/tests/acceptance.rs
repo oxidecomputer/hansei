@@ -3026,13 +3026,6 @@ fn test_vtables_acceptance() {
         let out = hansei_ok(&bundle, core, &format!("vtables -v {anchor}"));
         assert!(out.contains("core::ops::function::Fn<()>\n"), "{out}");
         assert!(out.contains(&format!("6 slots  {anchor}")), "{out}");
-        for slot in 0..6 {
-            assert!(out.contains(&format!("slot {slot}  ")), "{out}");
-        }
-        if !out.contains("(unreadable)") {
-            assert!(out.contains("drop glue"), "{out}");
-            assert!(out.contains("align: "), "{out}");
-        }
         // Nothing about this pair is vacant, so nothing says it is.
         assert!(!out.contains("no entry recorded"), "{out}");
         let count = out.trim_end().lines().last().unwrap_or_default();
@@ -3040,6 +3033,30 @@ fn test_vtables_acceptance() {
             count.ends_with(" vtable") || count.ends_with(" vtables"),
             "{out}"
         );
+
+        // Everything below turns on whether the recorded addresses are
+        // this target's, and this suite's pair cannot settle that in
+        // advance: build A runs and build B carries the DWARF, so where
+        // B's addresses land in A is the linker's business and comes
+        // out differently on each system. So the listing is asked, and
+        // what is pinned is that every other answer agrees with it.
+        if out.contains("note: the tokio info is from a different build") {
+            // Another build's addresses are shown as nothing at all —
+            // no column, and no slots even though `-v` asked for them.
+            assert!(!out.contains("0x"), "{out}");
+            assert!(!out.contains("slot 0"), "{out}");
+            let none = hansei_ok(&bundle, core, "vtables no::such::trait");
+            assert!(none.trim_end().ends_with("0 vtables"), "{none}");
+            return;
+        }
+
+        for slot in 0..6 {
+            assert!(out.contains(&format!("slot {slot}  ")), "{out}");
+        }
+        if !out.contains("(unreadable)") {
+            assert!(out.contains("drop glue"), "{out}");
+            assert!(out.contains("align: "), "{out}");
+        }
 
         // The row's address is the recorded one moved by the load bias
         // the core itself reports — so a session that never applied it
@@ -3070,10 +3087,7 @@ fn test_vtables_acceptance() {
         // where they do not that `whatis` declines to name the pair: the
         // question there is about an arbitrary address rather than about
         // this table, so a contradicted entry is a false lead and not an
-        // answer. Which of the two a fixture pair falls into is the
-        // linker's business — build A ran and build B carries the DWARF,
-        // and where B's address lands in A is up to neither of them — so
-        // what is pinned is the agreement, not the outcome.
+        // answer.
         let named = hansei_ok(&bundle, core, &format!("whatis {printed:#x}"));
         match row.contains("(unverified)") {
             true => assert!(!named.contains("Implements:"), "{named}"),

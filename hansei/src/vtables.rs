@@ -13,10 +13,17 @@
 //! which is that plus the target's executable load bias. Worse, the two
 //! only mean the same thing when the tokio info came from the very
 //! build that ran: extract from a second, separately-linked compilation
-//! of the same sources and every address is a fiction. So each address
-//! this prints is checked against the words it names — the same
-//! believability check `whatis` applies to an arbitrary address — and
-//! one that does not hold up is marked rather than presented as fact.
+//! of the same sources and every address is a fiction.
+//!
+//! So the addresses are checked twice, at two scales. Once for the
+//! table as a whole ([`Placement`]): a recorded address belongs in some
+//! object's mapped image, and a table whose addresses land in anonymous
+//! memory instead describes a build this target did not run — then no
+//! address is offered at all, because every one of them is wrong.
+//! Then once per row, against the words it names — the same
+//! believability check `whatis` applies to an arbitrary address — so a
+//! single vtable that does not hold up is marked rather than presented
+//! as fact.
 
 use crate::Session;
 use crate::output::Table;
@@ -89,7 +96,8 @@ impl<'a> Image<'a> {
         }
     }
 
-    /// Where an entry's vtable is in this target.
+    /// Where an entry's vtable is in this target — `None` where the
+    /// table's addresses are not this target's to begin with.
     fn at(&self, entry: &VtableEntry) -> Option<u64> {
         Some(entry.address.wrapping_add(self.bias?))
     }
@@ -117,12 +125,134 @@ impl<'a> Image<'a> {
         self.mappings.get(addr).is_some_and(|m| m.flags.is_exec())
     }
 
+    /// Whether `addr` is in some object's mapped image, which is where
+    /// static data — a vtable among it — has to be. The test is that a
+    /// file is behind the mapping: which object it is does not matter,
+    /// since a `dyn` implemented in a library keeps its vtable there.
+    fn is_image(&self, addr: u64) -> bool {
+        self.mappings.get(addr).is_some_and(|m| m.path.is_some())
+    }
+
     /// The demangled symbol covering `addr`.
     pub(crate) fn symbol(&self, addr: u64) -> Option<String> {
         let symbol = self.target.lookup_symbol_by_addr(addr)?;
         let stripped = hansei_bundle::strip_llvm_suffix(&symbol.name);
         let demangled = rustc_demangle::try_demangle(stripped).ok()?;
         Some(format!("{demangled:#}"))
+    }
+}
+
+/// Whether the addresses the recorded table carries are this target's
+/// addresses at all.
+///
+/// A vtable is static data in some object's image, so a recorded
+/// address, once biased, lands in a mapping that has a file behind it —
+/// the executable's, or a library's. Land them in anonymous memory
+/// instead and the arithmetic is not off by a little: the tokio info
+/// describes a *different build*, whose sections are laid out
+/// differently, and every address in the table is a statement about
+/// that build rather than this one.
+///
+/// This is the coarse gate, and the reason it exists is that the
+/// per-row check cannot say it. A row whose words deny it is one fact
+/// about one vtable; forty-five thousand of them are one fact about the
+/// pair of files, and it is the second that a reader has to be told
+/// once instead of inferring from a column of marks.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Placement {
+    /// The recorded addresses land in mapped images, so they are this
+    /// target's.
+    Placed,
+    /// They do not: only `placed` of `checked` land anywhere an image
+    /// is mapped, so this tokio info is not from the build that ran.
+    OtherBuild { placed: usize, checked: usize },
+    /// The target cannot say where its executable landed, so no
+    /// recorded address can be moved into it at all.
+    Unbiased,
+    /// There is no table to place.
+    Empty,
+}
+
+/// How many recorded addresses have to land in a mapped image for the
+/// table to be this target's.
+///
+/// Not all of them: a core need not dump every mapping, and a vtable in
+/// a library the core left out is a miss that says nothing about the
+/// build. Not one of them either — on a mismatched pair an address can
+/// fall inside some unrelated file-backed mapping by luck. A majority
+/// separates "laid out like this target" from "laid out like something
+/// else" with room on both sides, and the two real cases are not near
+/// the line: a matched pair places essentially all of them and a
+/// mismatched one essentially none.
+const PLACED_FRACTION: usize = 2;
+
+impl Placement {
+    /// Whether this target's mappings bear out the table's addresses.
+    ///
+    /// Every entry is looked at rather than a sample. The lookup is a
+    /// binary search over a few hundred mappings, so the whole of
+    /// nexus's forty-five thousand costs well under a millisecond, and
+    /// a sample would have to defend its size against a table sorted
+    /// by name — whose addresses are in no order at all.
+    pub(crate) fn of(image: &Image<'_>, entries: &[VtableEntry]) -> Placement {
+        if entries.is_empty() {
+            return Placement::Empty;
+        }
+        if image.bias.is_none() {
+            return Placement::Unbiased;
+        }
+        let placed = entries
+            .iter()
+            .filter(|entry| image.at(entry).is_some_and(|addr| image.is_image(addr)))
+            .count();
+        match placed * PLACED_FRACTION >= entries.len() {
+            true => Placement::Placed,
+            false => Placement::OtherBuild {
+                placed,
+                checked: entries.len(),
+            },
+        }
+    }
+
+    /// Whether a recorded entry says anything about *this* target — the
+    /// gate on using the table at all, as against merely printing its
+    /// addresses.
+    pub(crate) fn applies(self) -> bool {
+        matches!(self, Placement::Placed | Placement::Empty)
+    }
+
+    /// What is wrong with the table's addresses, in one clause — the
+    /// form an attach summary can print under a heading. `None` where
+    /// nothing is wrong, which is the ordinary case and wants no line.
+    pub(crate) fn note(self) -> Option<String> {
+        match self {
+            Placement::Placed | Placement::Empty => None,
+            Placement::Unbiased => {
+                Some("this target cannot say where its executable landed".to_string())
+            }
+            Placement::OtherBuild { placed, checked } => Some(format!(
+                "the tokio info is from a different build than the core \
+                 ({placed} of its {checked} recorded addresses land in a \
+                 mapped image)"
+            )),
+        }
+    }
+
+    /// The same fault as the line a listing leads with: what is wrong,
+    /// what is missing from the listing because of it, and what to do.
+    fn listing_note(self) -> Option<String> {
+        let note = self.note()?;
+        Some(match self {
+            Placement::OtherBuild { .. } => format!(
+                "{note}, so no address is shown below. The pairs, slot counts \
+                 and vacancies are the debug info's own and hold either way; \
+                 extract a tokio info from the binary that ran to place them."
+            ),
+            _ => format!(
+                "{note}, so the addresses below are link-time ones and nothing \
+                 was read at them."
+            ),
+        })
     }
 }
 
@@ -225,6 +355,10 @@ fn report_vtables(
     out: &mut dyn io::Write,
 ) -> Result<()> {
     let entries = &view.bundle().vtables.entries;
+    let placement = Placement::of(image, entries);
+    if let Some(note) = placement.listing_note() {
+        writeln!(out, "note: {note}\n")?;
+    }
     let Some(needle) = needle else {
         // A target instantiates tens of thousands of these; dumping
         // them all is not a listing anyone reads.
@@ -238,6 +372,11 @@ fn report_vtables(
         };
     };
 
+    // A table whose addresses are another build's has none to offer for
+    // any row, so the column goes rather than filling with a mark that
+    // says the same thing forty-five thousand times.
+    let placed = !matches!(placement, Placement::OtherBuild { .. });
+
     let matches: Vec<Match<'_>> = entries
         .iter()
         .filter_map(|entry| {
@@ -245,7 +384,7 @@ fn report_vtables(
             let concrete = view.str(entry.concrete)?;
             let hit = trait_.contains(needle) || concrete.contains(needle);
             hit.then(|| {
-                let addr = image.at(entry);
+                let addr = placed.then(|| image.at(entry)).flatten();
                 let words = addr.map_or_else(Vec::new, |a| image.words(a, entry.slot_count));
                 let standing = match addr {
                     None => Standing::Unbiased,
@@ -266,15 +405,18 @@ fn report_vtables(
     // One table over every match rather than one per trait, so the
     // columns line up down the whole listing; the trait headings are
     // written between its rendered rows.
-    let mut table = Table::new(3).align_right(1);
+    let mut table = Table::new(2 + usize::from(placed)).align_right(usize::from(placed));
     for m in &matches {
-        table.row([
-            address(m),
-            format!("{} slots", m.entry.slot_count),
-            names::fold_type_name(m.concrete, impls).into_owned(),
-        ]);
+        let slots = format!("{} slots", m.entry.slot_count);
+        let concrete = names::fold_type_name(m.concrete, impls).into_owned();
+        match placed {
+            true => table.row([address(m), slots, concrete]),
+            false => table.row([slots, concrete]),
+        }
     }
-    let expand = verbose || matches.len() <= EXPAND;
+    // Nothing was read where no address was offered, so there are no
+    // slots to open even when they were asked for.
+    let expand = placed && (verbose || matches.len() <= EXPAND);
     let mut heading: Option<&str> = None;
     for (m, row) in matches.iter().zip(table.render()) {
         if heading != Some(m.trait_) {
@@ -374,7 +516,7 @@ fn erased_symbol(image: &Image<'_>, drop_fn: u64) -> Option<String> {
 /// fail to hold, the vtables it describes.
 #[cfg(test)]
 pub(crate) mod vtable_tests {
-    use super::{Image, MAX_ALIGN, report_vtables};
+    use super::{Image, MAX_ALIGN, Placement, report_vtables};
 
     use hansei_bundle::{
         Bundle, BundleTypeId, BundleView, Encoding, FORMAT_VERSION, InfraTypes, Meta,
@@ -747,6 +889,92 @@ pub(crate) mod vtable_tests {
             listing(&bundle(&[]), &fake, None, false),
             "this tokio info records no vtables\n"
         );
+    }
+
+    /// A tokio info out of a build the target did not run records
+    /// addresses that are statements about that build, so not one of
+    /// them is offered: the column goes, nothing is read at them, and
+    /// one note at the top says why once instead of a mark saying it on
+    /// every row. What the debug info knows without the target — the
+    /// pair and the slot count — is what is left, and it is still true.
+    #[test]
+    fn test_a_table_from_another_build_offers_no_addresses() {
+        let (bundle, fake) = fixture();
+        // The same table read against a target that maps nothing where
+        // the table says its vtables are.
+        let elsewhere = Mappings::from_iter([LoadedObjectWithPath {
+            path: Some("/bin/fake".to_string()),
+            vaddr: TEXT,
+            size: 0x1000,
+            flags: MapFlags(0x05),
+        }]);
+        let image = Image {
+            target: &fake,
+            mappings: &elsewhere,
+            bias: fake.bias,
+        };
+        assert_eq!(
+            Placement::of(&image, &bundle.vtables.entries),
+            Placement::OtherBuild {
+                placed: 0,
+                checked: 8
+            }
+        );
+
+        let mut out = Vec::new();
+        // `-v` was asked for and cannot be honoured: there is no
+        // address to read slots at.
+        report_vtables(
+            &BundleView::new(&bundle),
+            &image,
+            &names::ImplFold::default(),
+            Some("a::Dyn"),
+            true,
+            &mut out,
+        )
+        .expect("the listing renders");
+        let shown = String::from_utf8(out).expect("rendered output is UTF-8");
+        assert!(
+            shown.starts_with(
+                "note: the tokio info is from a different build than the core \
+                 (0 of its 8 recorded addresses land in a mapped image), so no \
+                 address is shown below."
+            ),
+            "{shown}"
+        );
+        assert!(
+            shown.ends_with(
+                "a::Dyn\n\
+                 \x20   4 slots  a::None\n\
+                 \x20   4 slots  a::One\n\
+                 \x20   4 slots  a::Two\n\
+                 \n\
+                 3 vtables\n"
+            ),
+            "{shown}"
+        );
+        assert!(!shown.contains("0x"), "{shown}");
+        assert!(!shown.contains("slot 0"), "{shown}");
+    }
+
+    /// A target whose mappings do bear the table out says nothing about
+    /// it: the note is for a reader about to be shown less than they
+    /// asked for, and there is no such reader here.
+    #[test]
+    fn test_a_placed_table_says_nothing_about_its_placement() {
+        let (bundle, fake) = fixture();
+        let mappings = mappings();
+        let image = Image {
+            target: &fake,
+            mappings: &mappings,
+            bias: fake.bias,
+        };
+        assert_eq!(
+            Placement::of(&image, &bundle.vtables.entries),
+            Placement::Placed
+        );
+        assert_eq!(Placement::Placed.note(), None);
+        assert!(!listing(&bundle, &fake, Some("a::One"), false).contains("note:"));
     }
 
     /// A needle nothing matches is an empty answer, not an error.
