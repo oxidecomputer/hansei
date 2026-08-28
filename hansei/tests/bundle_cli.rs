@@ -97,6 +97,7 @@ fn test_stats_reports_a_bundle() {
         "types:",
         "struct",
         "task entries:",
+        "vtables:",
     ] {
         assert!(text.contains(want), "missing {want:?} in:\n{text}");
     }

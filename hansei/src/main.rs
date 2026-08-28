@@ -32,6 +32,7 @@ mod threads;
 mod trace;
 pub mod types;
 mod umem;
+mod vtables;
 mod whatis;
 
 // mimalloc's vendored C sources fail to assemble with the illumos
@@ -695,6 +696,42 @@ pub enum Command {
         depth: usize,
     },
 
+    /// List the trait-object vtables whose trait or concrete type
+    /// contains a substring: which pair each implements, where it is in
+    /// the target, and how many slots it has.
+    ///
+    /// This is the answer to "what implements this trait", and to the
+    /// question a crashed indirect call raises: whether the slot it
+    /// jumped through has an entry at all. rustc describes every vtable
+    /// it instantiates and the tokio info carries that description, so
+    /// nothing here needs debug info at hand.
+    ///
+    /// A recorded address is where the vtable was *linked*, which is
+    /// where it is now only when this tokio info came from the very
+    /// build the target ran. So each address is read before it is
+    /// printed and marked `(unverified)` when the words there are not
+    /// the vtable being described — a mismatched pair says so on every
+    /// row rather than printing addresses that lead nowhere.
+    ///
+    /// A single match prints its slots as though `-v` had been given:
+    /// one match is the end of a search, and the slots are what the
+    /// search was for.
+    Vtables {
+        /// A substring of the trait or of the concrete type, matched
+        /// case-sensitively the way `find-types` matches (several words
+        /// are joined back into one, so a name holding spaces pastes in
+        /// whole). Naming none reports how many there are, since a
+        /// target instantiates far too many to list.
+        #[arg(value_name = "SUBSTRING", num_args = 0..)]
+        needle: Vec<String>,
+
+        /// Print every vtable's slots: the drop glue, size and align
+        /// words rustc opens with, then a line per method slot with
+        /// whatever symbol its address resolves to.
+        #[arg(long, short)]
+        verbose: bool,
+    },
+
     /// Say what an address is: the task whose allocation contains it,
     /// every future the census found that claims it — and, for the
     /// second word of a trait object, the vtable it points at, named
@@ -1263,6 +1300,9 @@ pub fn dispatch(
             out,
         )?,
         Command::UmemAudit { addrs, dump } => umem::exec_umem_audit(session, &addrs, dump, out)?,
+        Command::Vtables { needle, verbose } => {
+            vtables::exec_vtables(session, &needle, verbose, out)?
+        }
         Command::Whatis { addr } => whatis::exec_whatis(session, addr, out)?,
         Command::Quit | Command::Exit => return Ok(Flow::Quit),
     }

@@ -55,7 +55,7 @@
 use exegesis::extract::{ExtractOptions, extract_file};
 use hansei_bundle::{Bundle, BundleView};
 use hansei_runtime::tokio::bundle::Context as BundleContext;
-use proc::Proc;
+use proc::{Proc, Target};
 
 use std::collections::HashSet;
 use std::fs;
@@ -2985,6 +2985,88 @@ fn test_type_recursive_nests_what_the_layout_names() {
         assert!(!out.status.success(), "{bounded}");
         let stderr = String::from_utf8_lossy(&out.stderr);
         assert!(stderr.contains("--recursive"), "{stderr}");
+    });
+}
+
+/// `vtables` answers from the tokio info what the target's own memory
+/// cannot be asked: which vtables implement a trait, how wide each is,
+/// and — the question a crashed indirect call raises — whether the slot
+/// it went through has an entry at all.
+///
+/// What the suite's two compilations allow is what is pinned here. The
+/// addresses come from build B and build A is what ran, so whether the
+/// two placed a vtable alike is the linker's business rather than this
+/// test's: the row's verification mark is deliberately left alone, and
+/// the pair, the slot count and the slot lines — none of which depend
+/// on that — are what is asserted.
+///
+/// Whether the words are there to read at all follows from those same
+/// two builds. B's address lands where it lands in A: inside a mapping,
+/// where it reads back as somebody else's bytes, or in a hole between
+/// two segments, where it reads back as nothing — which of the two is
+/// the linker's business again, and differs by platform because the
+/// layouts do. What each slot line *says* is therefore asserted only
+/// where the words were served.
+#[test]
+fn test_vtables_acceptance() {
+    let bundle = fixtures().bundle("simple-await");
+    with_core("simple-await", |core| {
+        // Naming no substring is a count, not a dump: a real target
+        // instantiates tens of thousands.
+        let all = hansei_ok(&bundle, core, "vtables");
+        assert!(all.contains("name a substring"), "{all}");
+        assert!(!all.contains("slots"), "{all}");
+
+        // Every Rust program with a `main` instantiates this pair —
+        // `lang_start` boxes the closure it calls `main` through — so
+        // it is the one entry a fixture can be sure of. Six words: the
+        // drop-glue/size/align header, then the three call shims `Fn`
+        // carries with its supertraits.
+        let anchor = "std::rt::lang_start::{closure_env#0}<()>";
+        let out = hansei_ok(&bundle, core, &format!("vtables -v {anchor}"));
+        assert!(out.contains("core::ops::function::Fn<()>\n"), "{out}");
+        assert!(out.contains(&format!("6 slots  {anchor}")), "{out}");
+        for slot in 0..6 {
+            assert!(out.contains(&format!("slot {slot}  ")), "{out}");
+        }
+        if !out.contains("(unreadable)") {
+            assert!(out.contains("drop glue"), "{out}");
+            assert!(out.contains("align: "), "{out}");
+        }
+        // Nothing about this pair is vacant, so nothing says it is.
+        assert!(!out.contains("no entry recorded"), "{out}");
+        let count = out.trim_end().lines().last().unwrap_or_default();
+        assert!(
+            count.ends_with(" vtable") || count.ends_with(" vtables"),
+            "{out}"
+        );
+
+        // The row's address is the recorded one moved by the load bias
+        // the core itself reports — so a session that never applied it
+        // prints an address below where the executable even starts.
+        // This core says where the executable landed, so no row may
+        // fall back to a link-time address.
+        assert!(!out.contains("(link-time)"), "{out}");
+        let bias = Proc::open_core(core)
+            .expect("failed to open the core")
+            .exec_bias()
+            .expect("the core says where the executable landed");
+        let row = out
+            .lines()
+            .find(|l| l.contains(" slots  "))
+            .expect("the listing has a row");
+        let hex = row
+            .trim_start()
+            .split_whitespace()
+            .next()
+            .and_then(|cell| cell.strip_prefix("0x"))
+            .expect("the row opens with an address");
+        let printed = u64::from_str_radix(hex, 16).expect("the address is hex");
+        assert!(printed >= bias, "{printed:#x} is below the bias {bias:#x}");
+
+        // A needle nothing matches is an empty answer, not a failure.
+        let none = hansei_ok(&bundle, core, "vtables no::such::trait");
+        assert_eq!(none.trim(), "0 vtables");
     });
 }
 
