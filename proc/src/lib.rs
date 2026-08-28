@@ -275,6 +275,35 @@ pub trait Target: Sync {
     }
 }
 
+/// The maximal readable stretches of the `size` bytes at `vaddr`, as
+/// `(addr, len)` pairs in address order. `readable` answers how many of
+/// at most `max` bytes at an address it can serve — zero inside a hole
+/// — and a hole is skipped to the next page boundary, the only place a
+/// new readable region can begin: mappings and the dumped extents
+/// within them start page-aligned, and only a readable run's *end* (a
+/// backing file's last partial page) falls mid-page.
+///
+/// Anything sweeping a stretch of a target wants this rather than one
+/// read of the whole: a core dumps a mapping in whatever pieces its
+/// filter kept, and a single read across the first seam fails and takes
+/// everything after it with it.
+pub fn readable_runs(vaddr: u64, size: u64, readable: impl Fn(u64, u64) -> u64) -> Vec<(u64, u64)> {
+    const PAGE: u64 = 4096;
+    let mut runs = Vec::new();
+    let mut off = 0u64;
+    while off < size {
+        let addr = vaddr + off;
+        let n = readable(addr, size - off);
+        if n == 0 {
+            off += PAGE - (addr & (PAGE - 1));
+            continue;
+        }
+        runs.push((addr, n));
+        off += n;
+    }
+    runs
+}
+
 /// Resolve a thread-local through a pthread key: the illumos model,
 /// where `sym` is a static holding a `pthread_key_t` and the thread's
 /// value for that key sits in its fast-TSD slots (see
