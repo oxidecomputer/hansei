@@ -12,6 +12,7 @@
 
 use super::{ExtractStats, fq_name, raw_type_size, strip};
 use crate::detect::struct_of;
+use crate::raw_types::RawType;
 use crate::{DwReader, TypeId};
 
 use object::{Object, ObjectSection, ObjectSymbol, SectionKind, SymbolKind};
@@ -19,6 +20,7 @@ use rayon::iter::ParallelIterator;
 use rayon::slice::ParallelSlice;
 use tracing::debug;
 
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -27,12 +29,98 @@ pub(super) struct VtableTypeHint {
     size: u64,
 }
 
+/// The debug executable's own placed bytes, addressed the way the image
+/// places them.
+///
+/// Both vtable passes read from here: the hint scan looks for whole
+/// vtable images to name concrete types by, and the DWARF harvest checks
+/// each vtable the debug info claims against the words actually at that
+/// address. An empty image — a companion debug file has program sections
+/// but no file bytes behind them — is not "the target disagrees", it is
+/// nothing to compare with, and both passes say so instead of guessing.
+#[derive(Default)]
+pub(super) struct VtableImage<'data> {
+    /// Every placed section, ascending by address and non-overlapping,
+    /// which is what makes the last section starting at or below an
+    /// address the only one that can cover it.
+    sections: Vec<Placed<'data>>,
+    little_endian: bool,
+}
+
+/// One placed section of the image.
+struct Placed<'data> {
+    address: u64,
+    bytes: Cow<'data, [u8]>,
+    /// Whether the hint scan reads this one.
+    ///
+    /// That scan reads every word of what it is given and is screened
+    /// only by the shape of what it finds, so it stays on the sections
+    /// `object` names as data outright. The harvest reads one word at an
+    /// address DWARF has already named, which no amount of unrelated
+    /// section content can mislead — and needs the wider set, because
+    /// `object` has no rule for Mach-O's `__DATA_CONST`, which is where
+    /// ld64 puts the vtables.
+    scanned: bool,
+}
+
+impl<'data> VtableImage<'data> {
+    /// Read an object's placed sections. A section whose contents will
+    /// not decompress is left out rather than read as zeros.
+    pub(super) fn read<O: Object<'data>>(obj: &O) -> Self {
+        let mut sections: Vec<Placed<'data>> = obj
+            .sections()
+            .filter(|s| {
+                matches!(
+                    s.kind(),
+                    // Initialized, placed, and not code: what a vtable
+                    // can be in. `Unknown` is a section format the
+                    // `object` crate has no rule for, which is a
+                    // classification it lacks rather than one it made.
+                    SectionKind::Data
+                        | SectionKind::ReadOnlyData
+                        | SectionKind::ReadOnlyString
+                        | SectionKind::Unknown
+                )
+            })
+            .filter_map(|s| {
+                Some(Placed {
+                    address: s.address(),
+                    scanned: matches!(s.kind(), SectionKind::Data | SectionKind::ReadOnlyData),
+                    bytes: s.uncompressed_data().ok()?,
+                })
+            })
+            .collect();
+        sections.sort_by_key(|s| s.address);
+        Self {
+            sections,
+            little_endian: obj.is_little_endian(),
+        }
+    }
+
+    /// Whether there are any bytes here to check anything against.
+    fn is_empty(&self) -> bool {
+        self.sections.iter().all(|s| s.bytes.is_empty())
+    }
+
+    /// The word at load address `addr`, if a section covers it.
+    fn word(&self, addr: u64) -> Option<u64> {
+        let index = self.sections.partition_point(|s| s.address <= addr);
+        let section = self.sections.get(index.checked_sub(1)?)?;
+        let offset = usize::try_from(addr - section.address).ok()?;
+        let bytes = section.bytes.get(offset..offset + 8)?;
+        Some(read_object_word(bytes, self.little_endian))
+    }
+}
+
 /// Find concrete types named by vtables that are actually present in the
 /// debug executable. A Rust vtable begins with drop glue, size, and align;
 /// the first method follows that header. Function symbols identify the
 /// concrete type, while size and align keep ordinary function tables from
 /// becoming roots accidentally.
-pub(super) fn discover_vtable_types<'data, O: Object<'data>>(obj: &O) -> Vec<VtableTypeHint> {
+pub(super) fn discover_vtable_types<'data, O: Object<'data>>(
+    obj: &O,
+    image: &VtableImage<'_>,
+) -> Vec<VtableTypeHint> {
     let mut text_addresses = BTreeSet::new();
     let mut concrete_by_address: BTreeMap<u64, BTreeSet<String>> = BTreeMap::new();
 
@@ -61,20 +149,11 @@ pub(super) fn discover_vtable_types<'data, O: Object<'data>>(obj: &O) -> Vec<Vta
     }
 
     let mut hints = BTreeSet::new();
-    for section in obj.sections() {
-        if !matches!(
-            section.kind(),
-            SectionKind::Data | SectionKind::ReadOnlyData
-        ) {
-            continue;
-        }
-        let Ok(data) = section.uncompressed_data() else {
-            continue;
-        };
+    for section in image.sections.iter().filter(|s| s.scanned) {
         scan_vtable_section(
-            data.as_ref(),
-            section.address(),
-            obj.is_little_endian(),
+            section.bytes.as_ref(),
+            section.address,
+            image.little_endian,
             &text_addresses,
             &concrete_by_address,
             &mut hints,
@@ -221,6 +300,15 @@ const VTABLE_SUFFIX: &str = ">::{vtable}";
 /// before the first method slot.
 const VTABLE_HEADER_SLOTS: u16 = 3;
 
+/// Byte offsets of the two header words the image check reads: the size
+/// of the concrete type, and its alignment.
+const SIZE_OFFSET: u64 = 8;
+const ALIGN_OFFSET: u64 = 16;
+
+/// The largest alignment a Rust type can be given, as the hint scan also
+/// screens for.
+const MAX_ALIGN: u64 = 1 << 30;
+
 /// One trait-object vtable, as DWARF describes it.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) struct VtableRecord {
@@ -250,8 +338,14 @@ pub(super) struct VtableRecord {
 /// instead of being guessed at. Every rejection is counted, never fatal:
 /// this shape is rustc's internal convention, so a release that moves it
 /// must cost the table, not the extraction.
+///
+/// DWARF is the compiler's testimony about the program, not the program
+/// — the miscompile this table was built for had debug info that agreed
+/// with it — so an entry is kept only if the bytes at the address it
+/// names still look like the vtable it claims: see [`image_agrees`].
 pub(super) fn harvest_vtables(
     reader: &DwReader<'_>,
+    image: &VtableImage<'_>,
     stats: &mut ExtractStats,
 ) -> Vec<VtableRecord> {
     let mut records = Vec::new();
@@ -272,7 +366,7 @@ pub(super) fn harvest_vtables(
             stats.vtables_unshaped += 1;
             continue;
         };
-        let Some((concrete, trait_)) = split_pair(reader, var.type_id, pair) else {
+        let Some((concrete_id, concrete, trait_)) = split_pair(reader, var.type_id, pair) else {
             debug!("declined, name does not split: {name}");
             stats.vtables_unsplit += 1;
             continue;
@@ -294,6 +388,12 @@ pub(super) fn harvest_vtables(
             stats.vtables_no_location += 1;
             continue;
         };
+
+        if !image.is_empty() && !image_agrees(image, address, declared_size(reader, concrete_id)) {
+            debug!("declined, image disagrees at {address:#x}: {name}");
+            stats.vtables_contradicted += 1;
+            continue;
+        }
 
         let (slot_count, undescribed_slots) = shape;
         records.push(VtableRecord {
@@ -340,6 +440,52 @@ pub(super) fn harvest_vtables(
     records
 }
 
+/// Whether the words at `address` are still the vtable the debug info
+/// says is there.
+///
+/// Two of the three header words can be checked without reading anything
+/// the linker relocates: the size word must be the concrete type's DWARF
+/// size, and the alignment word must be a power of two a Rust type could
+/// have. The drop-glue and method slots are addresses filled in at load
+/// time on a position-independent image, and read as zero here, so they
+/// say nothing.
+///
+/// `concrete_size` is the size DWARF *states* for the concrete type; see
+/// [`declared_size`] for why one that states none leaves that half
+/// unchecked rather than failing the entry.
+fn image_agrees(image: &VtableImage<'_>, address: u64, concrete_size: Option<u64>) -> bool {
+    let (Some(size), Some(align)) = (
+        image.word(address + SIZE_OFFSET),
+        image.word(address + ALIGN_OFFSET),
+    ) else {
+        // The debug info placed a vtable where the image has no data at
+        // all. Whatever that address is, it is not this vtable.
+        return false;
+    };
+    align != 0
+        && align.is_power_of_two()
+        && align <= MAX_ALIGN
+        && concrete_size.is_none_or(|declared| declared == size)
+}
+
+/// The byte size a type's DIE states, for the types that state one.
+///
+/// [`raw_type_size`] answers for every type, but for a pointer the
+/// answer is inferred rather than read — and inferred wrong for a fat
+/// one, whose vtable would then be thrown away for disagreeing with a
+/// size DWARF never claimed. An array's is computed from its element
+/// the same way. Neither records a size of its own, so neither has one
+/// to check against.
+fn declared_size(reader: &DwReader<'_>, id: TypeId) -> Option<u64> {
+    match reader.canonical_type(id)? {
+        RawType::Base(base) => Some(base.size),
+        RawType::Enum(en) => Some(en.size),
+        RawType::Struct(st) => Some(st.size),
+        RawType::Union(union) => Some(union.size),
+        RawType::Pointer(_) | RawType::Array(_) => None,
+    }
+}
+
 /// The slot count and vacant slots of a `{vtable_type}` structure, or
 /// `None` if the DIE is not one: a vtable is whole words, and always has
 /// room for the drop-glue, size and align the layout opens with.
@@ -362,20 +508,22 @@ fn vtable_shape(reader: &DwReader<'_>, id: TypeId) -> Option<(u16, Vec<u16>)> {
 
 /// Split `{concrete} as {trait}` — the inside of a vtable variable's name
 /// — using the concrete type the `{vtable_type}`'s `DW_AT_containing_type`
-/// names as the prefix to strip.
-fn split_pair(reader: &DwReader<'_>, id: TypeId, pair: &str) -> Option<(String, String)> {
-    let concrete = fq_name(reader, *reader.containing_types.get(&id)?)?;
+/// names as the prefix to strip. Returns that type as well: it is what
+/// the size check and the bundle-id join are about.
+fn split_pair(reader: &DwReader<'_>, id: TypeId, pair: &str) -> Option<(TypeId, String, String)> {
+    let concrete_id = reader.canonicalize(*reader.containing_types.get(&id)?);
+    let concrete = fq_name(reader, concrete_id)?;
     let trait_ = pair.strip_prefix(&concrete)?.strip_prefix(" as ")?;
-    Some((concrete, trait_.to_owned()))
+    Some((concrete_id, concrete, trait_.to_owned()))
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        ExtractStats, VtableRecord, VtableTypeHint, discover_vtable_types, harvest_vtables,
-        resolve_vtable_type_hints, scan_vtable_section,
+        ExtractStats, Placed, VtableImage, VtableRecord, VtableTypeHint, discover_vtable_types,
+        harvest_vtables, resolve_vtable_type_hints, scan_vtable_section,
     };
-    use crate::raw_types::{RawMember, RawStaticVariable, RawStruct, RawType};
+    use crate::raw_types::{RawMember, RawPointer, RawStaticVariable, RawStruct, RawType};
     use crate::{DwReader, TypeId, VarId};
 
     use gimli::{DebugInfoOffset, UnitSectionOffset};
@@ -391,6 +539,10 @@ mod tests {
         /// namespace path can spell, which is what an array — `[u8; 4]`,
         /// the case real binaries carry — looks like here.
         concrete: Option<&'static str>,
+        /// The containing type's stated byte size, which the image check
+        /// compares the vtable's size word against. `None` builds the
+        /// concrete type as a pointer, which states none.
+        concrete_size: Option<u64>,
         /// Whether the `{vtable_type}` carries the containing-type edge
         /// at all.
         containing: bool,
@@ -408,6 +560,7 @@ mod tests {
     fn vt(concrete: &'static str, name: &'static str, addr: u64) -> Vtable {
         Vtable {
             concrete: Some(concrete),
+            concrete_size: Some(24),
             containing: true,
             name,
             addr: Some(addr),
@@ -432,17 +585,21 @@ mod tests {
         fn add(&mut self, vtable: Vtable) {
             let concrete_id = TypeId(self.offset());
             let concrete_name = vtable.concrete.map(|n| self.reader.strings.intern(n));
-            self.reader.types.insert(
-                concrete_id,
-                RawType::Struct(RawStruct {
+            let concrete = match vtable.concrete_size {
+                Some(size) => RawType::Struct(RawStruct {
                     name: concrete_name,
                     namespace: None,
-                    size: 0,
+                    size,
                     members: Box::new([]),
                     template_params: Box::new([]),
                     source_loc: None,
                 }),
-            );
+                None => RawType::Pointer(RawPointer {
+                    name: concrete_name,
+                    target_type_id: concrete_id,
+                }),
+            };
+            self.reader.types.insert(concrete_id, concrete);
 
             // Only the members' offsets are read; their names are not.
             let slot = self.reader.strings.intern("__method");
@@ -489,13 +646,22 @@ mod tests {
         }
     }
 
+    /// Harvest with nothing to check the DIEs against, which is what an
+    /// extraction from a companion debug file alone has.
     fn harvest(vtables: impl IntoIterator<Item = Vtable>) -> (Vec<VtableRecord>, ExtractStats) {
+        harvest_against(&VtableImage::default(), vtables)
+    }
+
+    fn harvest_against(
+        image: &VtableImage<'_>,
+        vtables: impl IntoIterator<Item = Vtable>,
+    ) -> (Vec<VtableRecord>, ExtractStats) {
         let mut v = Vtables::default();
         for vtable in vtables {
             v.add(vtable);
         }
         let mut stats = ExtractStats::default();
-        let records = harvest_vtables(&v.reader, &mut stats);
+        let records = harvest_vtables(&v.reader, image, &mut stats);
         (records, stats)
     }
 
@@ -646,6 +812,83 @@ mod tests {
         assert_eq!(stats.vtables_harvested, 4);
         assert_eq!(stats.vtables_duplicate, 1);
         assert_eq!(stats.vtables_folded, 1);
+    }
+
+    /// An image holding one section based at `address`.
+    fn image(address: u64, words: &[u64]) -> VtableImage<'static> {
+        let bytes: Vec<u8> = words.iter().copied().flat_map(u64::to_le_bytes).collect();
+        VtableImage {
+            sections: vec![Placed {
+                address,
+                bytes: std::borrow::Cow::Owned(bytes),
+                scanned: true,
+            }],
+            little_endian: true,
+        }
+    }
+
+    /// A vtable whose header words the image confirms is kept; one whose
+    /// size word disagrees with the concrete type's DWARF size, whose
+    /// alignment word is not one a Rust type could have, or that the
+    /// image does not cover at all is not the vtable the debug info
+    /// claims, whatever the debug info says.
+    #[test]
+    fn test_harvest_declines_what_the_image_contradicts() {
+        // Four vtables laid out from 0x1000: agreeing, wrong size,
+        // impossible alignment, and — past the section's end — absent.
+        // Only the drop-glue, size and align words matter; the method
+        // slot is relocation-filled and reads as zero.
+        let words = [
+            0, 24, 8, 0, // 0x1000: as declared
+            0, 32, 8, 0, // 0x1020: size 32 against a 24-byte type
+            0, 24, 3, 0, // 0x1040: alignment 3
+        ];
+        let (records, stats) = harvest_against(
+            &image(0x1000, &words),
+            [
+                vt("app::Agrees", "<app::Agrees as app::Dyn>::{vtable}", 0x1000),
+                vt("app::Grew", "<app::Grew as app::Dyn>::{vtable}", 0x1020),
+                vt("app::Skew", "<app::Skew as app::Dyn>::{vtable}", 0x1040),
+                vt("app::Gone", "<app::Gone as app::Dyn>::{vtable}", 0x9000),
+            ],
+        );
+
+        assert_eq!(
+            records
+                .iter()
+                .map(|r| r.concrete.as_str())
+                .collect::<Vec<_>>(),
+            ["app::Agrees"]
+        );
+        assert_eq!(stats.vtables_contradicted, 3);
+    }
+
+    /// A concrete type that states no size of its own — a pointer,
+    /// whose width the reader infers, and infers as thin — leaves the
+    /// size word unchecked rather than failing the entry. The alignment
+    /// word is still checked.
+    #[test]
+    fn test_harvest_checks_alignment_without_a_stated_size() {
+        let unstated = |name, addr| Vtable {
+            concrete_size: None,
+            ..vt("&[u8]", name, addr)
+        };
+        let (records, stats) = harvest_against(
+            &image(0x1000, &[0, 16, 8, 0, 0, 16, 0, 0]),
+            [
+                unstated("<&[u8] as app::Dyn>::{vtable}", 0x1000),
+                unstated("<&[u8] as app::Other>::{vtable}", 0x1020),
+            ],
+        );
+
+        assert_eq!(
+            records
+                .iter()
+                .map(|r| r.trait_.as_str())
+                .collect::<Vec<_>>(),
+            ["app::Dyn"]
+        );
+        assert_eq!(stats.vtables_contradicted, 1);
     }
 
     #[test]
@@ -814,7 +1057,7 @@ mod tests {
         let bytes = obj.write().expect("a synthetic ELF assembles");
         let file = object::File::parse(&*bytes).expect("the synthetic ELF parses");
 
-        let hints = discover_vtable_types(&file);
+        let hints = discover_vtable_types(&file, &VtableImage::read(&file));
         let hint = |size| VtableTypeHint {
             name: "app::Foo".to_owned(),
             size,

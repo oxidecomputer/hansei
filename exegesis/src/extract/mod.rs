@@ -35,7 +35,7 @@ use self::paths::{OwnedLoc, display_path, rustc_below_floor, rustc_version_of, t
 use self::statics::find_statics;
 use self::sweep::{Sweep, cell_from_dealloc_param, find_stage, sweep_functions};
 use self::vtables::{
-    VtableTypeHint, discover_vtable_types, harvest_vtables, resolve_vtable_type_hints,
+    VtableImage, VtableTypeHint, discover_vtable_types, harvest_vtables, resolve_vtable_type_hints,
 };
 use crate::bundle::{
     BinaryIdent, Bundle, BundleTypeId, DebugSourceIdent, DynFutureTable, FamilyCeiling, FutureKind,
@@ -158,6 +158,10 @@ pub struct ExtractStats {
     pub vtables_unsplit: usize,
     /// Vtable DIEs with no statically resolvable address.
     pub vtables_no_location: usize,
+    /// Vtable DIEs the debug executable's own bytes contradict: no data
+    /// at the address at all, an alignment word no Rust type could have,
+    /// or a size word disagreeing with the concrete type's DWARF size.
+    pub vtables_contradicted: usize,
     /// Vtable DIEs dropped as an exact repeat of one already harvested
     /// (embedded DWARF describes a vtable once per referencing CGU).
     pub vtables_duplicate: usize,
@@ -269,6 +273,7 @@ impl fmt::Display for ExtractStats {
         writeln!(f, "  unshaped:               {}", self.vtables_unshaped)?;
         writeln!(f, "  unsplit names:          {}", self.vtables_unsplit)?;
         writeln!(f, "  no location:            {}", self.vtables_no_location)?;
+        writeln!(f, "  image disagrees:        {}", self.vtables_contradicted)?;
         writeln!(f, "  duplicate DIEs:         {}", self.vtables_duplicate)?;
         writeln!(f, "  folded addresses:       {}", self.vtables_folded)?;
         writeln!(f, "  with vacant slots:      {}", self.vtables_vacant)?;
@@ -641,7 +646,7 @@ fn extract_parsed(
     // thread that overlaps the (parallel) parse. Serially it is ~0.4s of
     // scanning `.symtab`/`.dynsym` after the read has already finished;
     // overlapped, it is free.
-    let (reader, symbols, vtable_types) = std::thread::scope(|scope| {
+    let (reader, symbols, vtable_types, image) = std::thread::scope(|scope| {
         let aux = scope.spawn(|| {
             // The named statics are recovered from the symbol table alone
             // (see `find_statics`), and a symbol can live in either table —
@@ -653,18 +658,22 @@ fn extract_parsed(
                 merged.extend(object_symbols(debug_obj));
             }
             let symbols: Vec<&str> = merged.into_iter().collect();
-            let vtable_types = match vtable_source {
-                VtableDataSource::None => Vec::new(),
-                VtableDataSource::File(_) => discover_vtable_types(binary_obj),
+            let (image, vtable_types) = match vtable_source {
+                VtableDataSource::None => (VtableImage::default(), Vec::new()),
+                VtableDataSource::File(_) => {
+                    let image = VtableImage::read(binary_obj);
+                    let hints = discover_vtable_types(binary_obj, &image);
+                    (image, hints)
+                }
             };
-            (symbols, vtable_types)
+            (symbols, vtable_types, image)
         });
         let reader = match package.as_ref() {
             Some(package) => DwReader::read_types_package(&dwarf, package, Default::default())?,
             None => DwReader::read_types(&dwarf, Default::default())?,
         };
-        let (symbols, vtable_types) = aux.join().expect("symbol-gathering thread panicked");
-        Ok::<_, Error>((reader, symbols, vtable_types))
+        let (symbols, vtable_types, image) = aux.join().expect("symbol-gathering thread panicked");
+        Ok::<_, Error>((reader, symbols, vtable_types, image))
     })?;
 
     let view = reader.view();
@@ -688,7 +697,7 @@ fn extract_parsed(
         vtable_data: vtable_source,
     };
 
-    extract_from_view(&view, &symbols, ident, opts, &vtable_types)
+    extract_from_view(&view, &symbols, ident, opts, &vtable_types, &image)
 }
 
 /// Every symbol-table name in an object, spelled the way DWARF linkage
@@ -794,6 +803,7 @@ fn extract_from_view(
     ident: Identity,
     opts: &ExtractOptions,
     vtable_types: &[VtableTypeHint],
+    image: &VtableImage<'_>,
 ) -> Result<(Bundle, ExtractStats)> {
     let mut stats = ExtractStats::default();
     let reader = view.collector();
@@ -979,7 +989,7 @@ fn extract_from_view(
     // The trait-object vtable table. Nothing carries it into the bundle
     // yet, so for now the harvest reports itself through `--stats` and a
     // `debug!` line per vtable.
-    let _vtables = harvest_vtables(reader, &mut stats);
+    let _vtables = harvest_vtables(reader, image, &mut stats);
 
     // --- Phase 3: transitive closure and emission. ---
 
@@ -1725,7 +1735,7 @@ mod tests {
             debug_info: None,
             vtable_data: VtableDataSource::None,
         };
-        extract_from_view(&view, &[], ident, &opts, &[])
+        extract_from_view(&view, &[], ident, &opts, &[], &Default::default())
     }
 
     #[test]
