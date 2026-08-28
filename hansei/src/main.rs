@@ -1519,6 +1519,20 @@ fn exec_info(session: &Session<'_>, out: &mut dyn io::Write) -> Result<()> {
         fp.total,
         if fp.is_complete() { "" } else { " (forced)" }
     )?;
+    // A symbol resolves by *name*, so that line stays complete across a
+    // rebuild and says nothing about whether the tokio info's recorded
+    // addresses are this target's. Only the vtable table carries any —
+    // statics all arrive through symbols — so this is the one place a
+    // build mismatch shows, and it is worth saying at the attach rather
+    // than leaving `vtables` to say it later.
+    if let Some(note) = vtables::Placement::of(
+        &vtables::Image::of(session),
+        &session.bundle.vtables.entries,
+    )
+    .note()
+    {
+        writeln!(out, "vtable addresses: {note}")?;
+    }
     // What ended the process, or that nothing did: a core with no
     // fatal signal is a live capture, which is worth saying outright —
     // "why does hansei show no crash?" is the question this preempts.

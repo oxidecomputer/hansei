@@ -2,7 +2,7 @@
 
 use crate::Session;
 use crate::tasks::{future_name, task_id, task_label};
-use crate::vtables::{Image, Standing};
+use crate::vtables::{Image, Placement, Standing};
 
 use anyhow::Result;
 use hansei_bundle::BundleView;
@@ -167,17 +167,22 @@ fn vtable_at(view: &BundleView<'_>, image: &Image<'_>, addr: u64) -> Option<Vtab
 /// The pairs the bundle's table records at `addr`, which is asked of it
 /// under the address the vtable was *linked* at rather than the one it
 /// has here. None where the target cannot say where its executable
-/// landed, since then there is no link-time address to ask by.
+/// landed, since then there is no link-time address to ask by — and
+/// none where the table's addresses are some other build's, where a
+/// hit would be a coincidence between two layouts rather than a fact
+/// about this one.
 ///
 /// Several is legal: identical vtables the linker folded share an
 /// address, and the table keeps every name it recorded for them.
 fn recorded_at<'a>(view: &BundleView<'a>, image: &Image<'_>, addr: u64) -> Vec<&'a VtableEntry> {
+    let entries = &view.bundle().vtables.entries;
+    if !Placement::of(image, entries).applies() {
+        return Vec::new();
+    }
     let Some(linked) = image.unbias(addr) else {
         return Vec::new();
     };
-    view.bundle()
-        .vtables
-        .entries
+    entries
         .iter()
         .filter(|entry| entry.address == linked)
         .collect()
@@ -565,7 +570,7 @@ pub(crate) fn via_suffix(census: &census::FutureCensus, via: Option<census::Via>
 mod whatis_tests {
     use super::{Allocation, Size, VtableAt, from_memory, report_whatis, separate, vtable_at};
     use crate::parse_hex_addr;
-    use crate::vtables::{Image, Standing};
+    use crate::vtables::{Image, Placement, Standing};
     use hansei_bundle::BundleView;
     use hansei_runtime::testkit;
     use hansei_runtime::tokio::bundle::{LocalSetRef, RuntimeRef, TaskExtents, TaskList};
@@ -726,14 +731,18 @@ mod whatis_tests {
         }
     }
 
-    /// The one mapping the shape check reads.
+    /// The two mappings the checks read: the text everything a vtable
+    /// dispatches to has to be in, and the image the vtable itself sits
+    /// in — which is what says the recorded addresses are this
+    /// target's rather than another build's.
     fn mappings() -> proc::Mappings {
-        proc::Mappings::from_iter([proc::LoadedObjectWithPath {
+        let map = |vaddr, flags| proc::LoadedObjectWithPath {
             path: Some("/bin/fake".to_string()),
-            vaddr: TEXT,
+            vaddr,
             size: 0x1000,
-            flags: proc::MapFlags(0x05),
-        }])
+            flags: proc::MapFlags(flags),
+        };
+        proc::Mappings::from_iter([map(AT, 0x04), map(TEXT, 0x05)])
     }
 
     /// The target as both routes read it. The mappings have to outlive
@@ -959,10 +968,73 @@ mod whatis_tests {
                 ..target(&WHOLE, Some(DROP_ONE))
             },
         );
+        // The second table's one entry is placed where this target's
+        // image is — a word along from the address asked about — so
+        // what leaves the memory route alone here is the address
+        // missing the table, not the table missing the target.
         alone(
-            &crate::vtables::vtable_tests::bundle(&[("a::Dyn", "a::One", 0x9000, 4, &[])]),
+            &crate::vtables::vtable_tests::bundle(&[("a::Dyn", "a::One", AT - BIAS + 8, 4, &[])]),
             &target(&WHOLE, Some(DROP_ONE)),
         );
+    }
+
+    /// A table whose addresses land nowhere an image is mapped is some
+    /// other build's, and is not consulted at all — not even for the
+    /// address it appears to name, which on a mismatched pair is a
+    /// coincidence between two layouts rather than a fact about this
+    /// one. Without that gate the memory-denied case would still be
+    /// caught per row, but the unreadable one would name a pair the
+    /// target never held.
+    #[test]
+    fn test_a_table_from_another_build_is_not_consulted() {
+        let bundle = recorded();
+        let view = BundleView::new(&bundle);
+        // The vtable's words are exactly what the entry describes, so
+        // only the placement of the table as a whole can refuse it.
+        let mem = target(&WHOLE, Some(DROP_ONE));
+        with_image(&mem, |image| {
+            assert_eq!(
+                Placement::of(image, &bundle.vtables.entries),
+                Placement::Placed
+            );
+            let found = vtable_at(&view, image, AT).expect("a placed table names it");
+            assert_eq!(found.trait_.as_deref(), Some("a::Dyn"));
+        });
+
+        // The same table and the same words, against a target whose
+        // mappings are elsewhere: nothing recorded is believed, and
+        // only what the memory proved is left.
+        let mappings = proc::Mappings::from_iter([proc::LoadedObjectWithPath {
+            path: Some("/bin/fake".to_string()),
+            vaddr: TEXT,
+            size: 0x1000,
+            flags: proc::MapFlags(0x05),
+        }]);
+        let image = Image {
+            target: &mem,
+            mappings: &mappings,
+            bias: mem.bias,
+        };
+        assert_eq!(
+            Placement::of(&image, &bundle.vtables.entries),
+            Placement::OtherBuild {
+                placed: 0,
+                checked: 1
+            }
+        );
+        let found = vtable_at(&view, &image, AT).expect("the memory route answers");
+        assert_eq!(found.trait_, None);
+        assert_eq!(found.standing, None);
+
+        // And with no symbol to fall back on, nothing is claimed at all
+        // — the case that used to name a pair under `(unreadable)`.
+        let stripped = target(&[], None);
+        let image = Image {
+            target: &stripped,
+            mappings: &mappings,
+            bias: stripped.bias,
+        };
+        assert!(vtable_at(&view, &image, AT).is_none());
     }
 
     /// Identical vtables the linker folded share one address, and the
