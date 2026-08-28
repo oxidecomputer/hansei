@@ -44,11 +44,7 @@ pub(crate) fn exec_vtables(
     verbose: bool,
     out: &mut dyn io::Write,
 ) -> Result<()> {
-    let image = Image {
-        target: session.proc,
-        mappings: &session.ctx.mappings,
-        bias: session.proc.exec_bias(),
-    };
+    let image = Image::of(session);
     report_vtables(
         &session.ctx.view,
         &image,
@@ -69,25 +65,47 @@ fn needle(words: &[String]) -> Option<String> {
 }
 
 /// The target a vtable's words are read from and judged against.
-struct Image<'a> {
-    target: &'a dyn Target,
-    mappings: &'a Mappings,
+///
+/// `whatis` reads a vtable through this too, running the same join
+/// backwards: an address it is handed unbiases to the one the table
+/// records, rather than a recorded address biasing forward into the
+/// target.
+pub(crate) struct Image<'a> {
+    pub(crate) target: &'a dyn Target,
+    pub(crate) mappings: &'a Mappings,
     /// How far the executable landed from where it was linked, which is
     /// what moves a recorded address into this target. `None` where the
     /// target cannot say, and then there is no address in it to offer.
-    bias: Option<u64>,
+    pub(crate) bias: Option<u64>,
 }
 
-impl Image<'_> {
+impl<'a> Image<'a> {
+    /// How this session reads the target.
+    pub(crate) fn of(session: &'a Session<'_>) -> Self {
+        Image {
+            target: session.proc,
+            mappings: &session.ctx.mappings,
+            bias: session.proc.exec_bias(),
+        }
+    }
+
     /// Where an entry's vtable is in this target.
     fn at(&self, entry: &VtableEntry) -> Option<u64> {
         Some(entry.address.wrapping_add(self.bias?))
     }
 
+    /// Where an address in this target was linked, which is the address
+    /// the recorded table would have it under. `None` where the target
+    /// cannot say where its executable landed, or where the address is
+    /// below the bias and so belongs to no part of it.
+    pub(crate) fn unbias(&self, addr: u64) -> Option<u64> {
+        addr.checked_sub(self.bias?)
+    }
+
     /// Every word of a vtable at `addr`, one per slot. A word the
     /// target cannot serve is `None` rather than absent, so the slots
     /// keep the numbers the debug info gave them.
-    fn words(&self, addr: u64, slots: u16) -> Vec<Option<u64>> {
+    pub(crate) fn words(&self, addr: u64, slots: u16) -> Vec<Option<u64>> {
         (0..u64::from(slots))
             .map(|i| self.target.read_u64(addr + i * 8).ok())
             .collect()
@@ -100,7 +118,7 @@ impl Image<'_> {
     }
 
     /// The demangled symbol covering `addr`.
-    fn symbol(&self, addr: u64) -> Option<String> {
+    pub(crate) fn symbol(&self, addr: u64) -> Option<String> {
         let symbol = self.target.lookup_symbol_by_addr(addr)?;
         let stripped = hansei_bundle::strip_llvm_suffix(&symbol.name);
         let demangled = rustc_demangle::try_demangle(stripped).ok()?;
@@ -109,8 +127,8 @@ impl Image<'_> {
 }
 
 /// What the memory at an entry's address says about the entry.
-#[derive(Copy, Clone)]
-enum Standing {
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Standing {
     /// A vtable of the shape the debug info describes is there.
     Confirmed,
     /// Something else is: this tokio info describes a build the target
@@ -126,6 +144,28 @@ enum Standing {
     /// so the recorded address stays a link-time one and there is no
     /// address in the target to check.
     Unbiased,
+}
+
+impl Standing {
+    /// What reading `addr` in this target proved about the entry the
+    /// table records there.
+    pub(crate) fn of(image: &Image<'_>, entry: &VtableEntry, words: &[Option<u64>]) -> Standing {
+        match stands(image, entry, words) {
+            true => Standing::Confirmed,
+            false if words.iter().all(Option::is_none) => Standing::Unreadable,
+            false => Standing::Unverified,
+        }
+    }
+
+    /// How an address is qualified where the words at it do not bear
+    /// out what is being said about it — nothing at all where they do.
+    pub(crate) fn mark(self) -> &'static str {
+        match self {
+            Standing::Confirmed => "",
+            Standing::Unreadable => " (unreadable)",
+            Standing::Unverified | Standing::Unbiased => " (unverified)",
+        }
+    }
 }
 
 /// One entry to print: its two names, where it is, and what reading it
@@ -209,9 +249,7 @@ fn report_vtables(
                 let words = addr.map_or_else(Vec::new, |a| image.words(a, entry.slot_count));
                 let standing = match addr {
                     None => Standing::Unbiased,
-                    Some(_) if stands(image, entry, &words) => Standing::Confirmed,
-                    Some(_) if words.iter().all(Option::is_none) => Standing::Unreadable,
-                    Some(_) => Standing::Unverified,
+                    Some(_) => Standing::of(image, entry, &words),
                 };
                 Match {
                     entry,
@@ -270,11 +308,9 @@ fn report_vtables(
 /// falling back to the link-time address where the target cannot say
 /// where anything landed.
 fn address(m: &Match<'_>) -> String {
-    match (m.addr, m.standing) {
-        (Some(addr), Standing::Confirmed) => format!("{addr:#x}"),
-        (Some(addr), Standing::Unreadable) => format!("{addr:#x} (unreadable)"),
-        (Some(addr), _) => format!("{addr:#x} (unverified)"),
-        (None, _) => format!("{:#x} (link-time)", m.entry.address),
+    match m.addr {
+        Some(addr) => format!("{addr:#x}{}", m.standing.mark()),
+        None => format!("{:#x} (link-time)", m.entry.address),
     }
 }
 
@@ -337,7 +373,7 @@ fn erased_symbol(image: &Image<'_>, drop_fn: u64) -> Option<String> {
 /// table read against a target whose memory is arranged to hold, and to
 /// fail to hold, the vtables it describes.
 #[cfg(test)]
-mod vtable_tests {
+pub(crate) mod vtable_tests {
     use super::{Image, MAX_ALIGN, report_vtables};
 
     use hansei_bundle::{
@@ -441,7 +477,10 @@ mod vtable_tests {
 
     /// One vtable table and nothing else, in the sorted order the
     /// format requires — which `validate` is here to hold us to.
-    fn bundle(entries: &[(&str, &str, u64, u16, &[u16])]) -> Bundle {
+    ///
+    /// `whatis` reads the same table from the other end, so its tests
+    /// build theirs with this rather than a second copy of it.
+    pub(crate) fn bundle(entries: &[(&str, &str, u64, u16, &[u16])]) -> Bundle {
         let mut strings = StringInterner::new();
         // One type, because the infrastructure ids have to name
         // something for the bundle to be a legal one at all.

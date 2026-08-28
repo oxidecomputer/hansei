@@ -735,7 +735,8 @@ pub enum Command {
     /// Say what an address is: the task whose allocation contains it,
     /// every future the census found that claims it — and, for the
     /// second word of a trait object, the vtable it points at, named
-    /// by the concrete type the vtable erases.
+    /// by the concrete type it erases and by the trait it implements
+    /// where the tokio info recorded that vtable (see `vtables`).
     ///
     /// More than one answer is the normal case rather than an
     /// ambiguity, since the things an address can belong to nest: a

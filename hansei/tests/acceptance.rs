@@ -3064,6 +3064,29 @@ fn test_vtables_acceptance() {
         let printed = u64::from_str_radix(hex, 16).expect("the address is hex");
         assert!(printed >= bias, "{printed:#x} is below the bias {bias:#x}");
 
+        // `whatis` reads the same table backwards, and the two commands
+        // agree about the same address. The listing's mark is what says
+        // whether the words there bear the entry out, and it is exactly
+        // where they do not that `whatis` declines to name the pair: the
+        // question there is about an arbitrary address rather than about
+        // this table, so a contradicted entry is a false lead and not an
+        // answer. Which of the two a fixture pair falls into is the
+        // linker's business — build A ran and build B carries the DWARF,
+        // and where B's address lands in A is up to neither of them — so
+        // what is pinned is the agreement, not the outcome.
+        let named = hansei_ok(&bundle, core, &format!("whatis {printed:#x}"));
+        match row.contains("(unverified)") {
+            true => assert!(!named.contains("Implements:"), "{named}"),
+            false => {
+                assert!(named.contains(&format!("Vtable {printed:#x}")), "{named}");
+                assert!(named.contains(&format!("erases {anchor}")), "{named}");
+                assert!(
+                    named.contains("    Implements: core::ops::function::Fn<()>\n"),
+                    "{named}"
+                );
+            }
+        }
+
         // A needle nothing matches is an empty answer, not a failure.
         let none = hansei_ok(&bundle, core, "vtables no::such::trait");
         assert_eq!(none.trim(), "0 vtables");
