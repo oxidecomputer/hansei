@@ -164,20 +164,33 @@ fn vtable_at(view: &BundleView<'_>, image: &Image<'_>, addr: u64) -> Option<Vtab
     })
 }
 
-/// The pairs the bundle's table records at `addr`, which is asked of it
-/// under the address the vtable was *linked* at rather than the one it
-/// has here. None where the target cannot say where its executable
-/// landed, since then there is no link-time address to ask by — and
-/// none where the table's addresses are some other build's, where a
-/// hit would be a coincidence between two layouts rather than a fact
-/// about this one.
+/// The pairs the bundle's table has for `addr`, by whichever of the two
+/// routes to the table this target allows.
 ///
-/// Several is legal: identical vtables the linker folded share an
-/// address, and the table keeps every name it recorded for them.
+/// Where the recorded addresses are this target's, the lookup is by
+/// address: unbias `addr` to the one the vtable was linked at and take
+/// the entries recorded there. Several is legal — identical vtables the
+/// linker folded share an address, and the table keeps every name it
+/// recorded for them. None where the target cannot say where its
+/// executable landed, since then there is no link-time address to ask
+/// by.
+///
+/// Where they are some other build's, an address hit would be a
+/// coincidence between two layouts rather than a fact about this one,
+/// so the lookup is by *content* instead: read the words here and take
+/// the pair the first method slot's symbol names, which is
+/// [`vtables::identify`] — the same join the listing's sweep makes,
+/// made at one address. That is what keeps `whatis` able to name an
+/// address the listing just printed.
+///
+/// [`vtables::identify`]: crate::vtables
 fn recorded_at<'a>(view: &BundleView<'a>, image: &Image<'_>, addr: u64) -> Vec<&'a VtableEntry> {
     let entries = &view.bundle().vtables.entries;
     if !Placement::of(image, entries).applies() {
-        return Vec::new();
+        return crate::vtables::identify_at(image, view, addr)
+            .map(|index| &entries[index])
+            .into_iter()
+            .collect();
     }
     let Some(linked) = image.unbias(addr) else {
         return Vec::new();
@@ -710,12 +723,18 @@ mod whatis_tests {
     /// concrete type the recorded fixture names: the two routes reach
     /// one type by two different means, which is the point of them.
     const DROP_ONE: &str = "_RINvNtCs4gTh5wWLWvJ_4core3ptr9drop_glueNtCs1dINKnBl13J_1a3OneEB1_";
+    /// And v0 manglings of `<a::One as a::Dyn>::call` and its sibling
+    /// for `a::Two` — a method symbol being the one place a symbol
+    /// names a trait, and so the only way to the pair without an
+    /// address.
+    const ONE_CALL: &str = "_RNvXCs1dINKnBl13J_1aNtCs1dINKnBl13J_1a3OneNtCs1dINKnBl13J_1a3Dyn4call";
+    const TWO_CALL: &str = "_RNvXCs1dINKnBl13J_1aNtCs1dINKnBl13J_1a3TwoNtCs1dINKnBl13J_1a3Dyn4call";
 
     /// A fake serving a vtable's words and one function symbol, for
     /// driving both routes' joins without a core.
     struct VtableMem {
         words: Vec<u8>,
-        symbol: Option<(u64, String)>,
+        symbols: Vec<(u64, &'static str)>,
         /// What the target says about where its executable landed, on
         /// which the whole recorded route turns.
         bias: Option<u64>,
@@ -723,10 +742,10 @@ mod whatis_tests {
 
     /// A target holding one vtable's words at `AT`, with the drop-glue
     /// symbol behind its first slot unless it has been stripped of it.
-    fn target(words: &[u64], symbol: Option<&str>) -> VtableMem {
+    fn target(words: &[u64], symbol: Option<&'static str>) -> VtableMem {
         VtableMem {
             words: words.iter().flat_map(|w| w.to_le_bytes()).collect(),
-            symbol: symbol.map(|name| (TEXT, name.to_string())),
+            symbols: symbol.map(|name| (TEXT, name)).into_iter().collect(),
             bias: Some(BIAS),
         }
     }
@@ -775,9 +794,9 @@ mod whatis_tests {
             Ok(&self.words[start as usize..(start + len) as usize])
         }
         fn lookup_symbol_by_addr(&self, addr: u64) -> Option<proc::SymbolBuf> {
-            let (at, name) = self.symbol.as_ref()?;
-            (*at == addr).then(|| proc::SymbolBuf {
-                name: name.clone(),
+            let &(at, name) = self.symbols.iter().find(|&&(at, _)| at == addr)?;
+            (at == addr).then(|| proc::SymbolBuf {
+                name: name.to_string(),
                 st_name: 0,
                 st_info: 0,
                 st_other: 0,
@@ -829,12 +848,12 @@ mod whatis_tests {
         // a real symtab, demangling to
         // `core::ptr::drop_glue::<[reedline::enums::EditCommand; 1]>`.
         const DROP: &str = "_RINvNtCs4gTh5wWLWvJ_4core3ptr9drop_glueANtNtCs1dINKnBl13J_8reedline5enums11EditCommandj1_EBG_";
-        let mem = |drop_fn: u64, align: u64, symbol: Option<&str>| VtableMem {
+        let mem = |drop_fn: u64, align: u64, symbol: Option<&'static str>| VtableMem {
             words: [drop_fn, 48, align]
                 .iter()
                 .flat_map(|w| w.to_le_bytes())
                 .collect(),
-            symbol: symbol.map(|name| (TEXT, name.to_string())),
+            symbols: symbol.map(|name| (TEXT, name)).into_iter().collect(),
             bias: None,
         };
 
@@ -1035,6 +1054,41 @@ mod whatis_tests {
             bias: stripped.bias,
         };
         assert!(vtable_at(&view, &image, AT).is_none());
+    }
+
+    /// A table whose addresses are another build's can still name this
+    /// one, by content instead of by address: the words here are read
+    /// and the pair the first method slot's symbol spells is looked up.
+    /// That is what keeps `whatis` able to name an address the listing
+    /// just printed, which on such a target is a swept address rather
+    /// than a recorded one.
+    #[test]
+    fn test_another_builds_table_still_names_a_vtable_by_its_method() {
+        // Recorded a long way from anything this target maps, so the
+        // address route is closed and only the method symbol is left.
+        let bundle =
+            crate::vtables::vtable_tests::bundle(&[("a::Dyn", "a::One", 0x9_0000, 4, &[])]);
+        let view = BundleView::new(&bundle);
+        let mut mem = target(&[0, 24, 8, TEXT + 0x40], None);
+        mem.symbols.push((TEXT + 0x40, ONE_CALL));
+        with_image(&mem, |image| {
+            assert!(
+                !Placement::of(image, &bundle.vtables.entries).applies(),
+                "the fixture is meant to be another build's"
+            );
+            let found = vtable_at(&view, image, AT).expect("the method symbol names it");
+            assert_eq!(found.concrete, "a::One");
+            assert_eq!(found.trait_.as_deref(), Some("a::Dyn"));
+            assert_eq!(found.standing, Some(Standing::Confirmed));
+        });
+
+        // A vtable whose method names a pair the table does not record
+        // is not one of the table's, and nothing is claimed for it.
+        let mut mem = target(&[0, 24, 8, TEXT + 0x40], None);
+        mem.symbols.push((TEXT + 0x40, TWO_CALL));
+        with_image(&mem, |image| {
+            assert!(vtable_at(&view, image, AT).is_none());
+        });
     }
 
     /// Identical vtables the linker folded share one address, and the
