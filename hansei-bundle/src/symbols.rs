@@ -56,19 +56,36 @@ pub fn concrete_type_from_vtable_symbol(symbol: &str) -> Option<&str> {
         }
     }
 
+    trait_object_pair(symbol).map(|(concrete, _)| concrete)
+}
+
+/// Both halves of the `<Concrete as Trait>` a trait impl's method
+/// symbol opens with — `<std::io::error::Error as core::fmt::Display>::fmt`
+/// yields the two type names in it.
+///
+/// This is the one place a *symbol* names a trait, which makes a vtable
+/// found in a target joinable to the pair the debug info recorded for
+/// it, with no address in common between the two.
+///
+/// Bracket depth decides where each half ends, because both halves are
+/// type names carrying generic arguments full of `<`, `>` and ` as ` of
+/// their own. The returned slices borrow the demangled symbol.
+pub fn trait_object_pair(symbol: &str) -> Option<(&str, &str)> {
     let rest = symbol.strip_prefix('<')?;
     let mut depth = 1usize;
+    let mut split = None;
     for (index, ch) in rest.char_indices() {
         match ch {
             '<' => depth += 1,
             '>' => depth = depth.saturating_sub(1),
             _ => {}
         }
-        if depth == 1 && rest[index..].starts_with(" as ") {
-            return Some(&rest[..index]);
+        if depth == 1 && split.is_none() && rest[index..].starts_with(" as ") {
+            split = Some(index);
         }
         if depth == 0 {
-            break;
+            let split = split?;
+            return Some((&rest[..split], rest.get(split + " as ".len()..index)?));
         }
     }
     None
@@ -260,6 +277,25 @@ mod tests {
             ),
             Some("app::Thing<alloc::vec::Vec<u8>>")
         );
+    }
+
+    /// A method symbol names both halves, and where each ends is
+    /// bracket depth's business: either half may carry generic
+    /// arguments holding `<`, `>` and even an ` as ` of its own.
+    #[test]
+    fn vtable_method_symbols_recover_both_halves() {
+        assert_eq!(
+            super::trait_object_pair("<std::io::error::Error as core::fmt::Display>::fmt"),
+            Some(("std::io::error::Error", "core::fmt::Display"))
+        );
+        assert_eq!(
+            super::trait_object_pair("<a::Map<<b::T as b::Tr>::Out> as c::Trait<d::E<u8>>>::poll"),
+            Some(("a::Map<<b::T as b::Tr>::Out>", "c::Trait<d::E<u8>>"))
+        );
+        // Neither a pair nor anything that could be mistaken for one.
+        assert_eq!(super::trait_object_pair("core::ptr::drop_glue::<u8>"), None);
+        assert_eq!(super::trait_object_pair("<a::T>::method"), None);
+        assert_eq!(super::trait_object_pair("<a::T as b::Tr"), None);
     }
 
     #[test]
