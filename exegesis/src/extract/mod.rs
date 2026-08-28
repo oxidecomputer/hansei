@@ -40,7 +40,7 @@ use self::vtables::{
 use crate::bundle::{
     BinaryIdent, Bundle, BundleTypeId, DebugSourceIdent, DynFutureTable, FamilyCeiling, FutureKind,
     InfraTypes, Meta, Provenance, ProvenanceTable, SourceLoc, StaticsTable, TaskEntryId,
-    TaskFutureEntry, TaskTable, VtableDataSource,
+    TaskFutureEntry, TaskTable, VtableDataSource, VtableEntry, VtableTable,
 };
 use crate::detect::{Family, FormatExplanation, struct_of};
 use crate::raw_types::{NsId, RawType};
@@ -986,10 +986,9 @@ fn extract_from_view(
 
     let vtable_type_ids = resolve_vtable_type_hints(reader, vtable_types, &mut stats);
 
-    // The trait-object vtable table. Nothing carries it into the bundle
-    // yet, so for now the harvest reports itself through `--stats` and a
-    // `debug!` line per vtable.
-    let _vtables = harvest_vtables(reader, image, &mut stats);
+    // The trait-object vtable table. Building the bundle's copy waits on
+    // emission, which decides which concrete types the bundle describes.
+    let harvested = harvest_vtables(reader, image, &mut stats);
 
     // --- Phase 3: transitive closure and emission. ---
 
@@ -1140,6 +1139,26 @@ fn extract_from_view(
         crate::detect::walk::bind_walks(&mut em, &walk_roots, opts.explain_walk.as_deref());
     stats.walk_explanations = walk_explanations;
 
+    // The vtable table, interned last: every root is emitted by now, so
+    // `bundle_id_of` answers for the concrete types this bundle happens
+    // to describe and declines for the rest. It never emits one — a
+    // target instantiates tens of thousands of vtables, and rooting
+    // their concrete types would be the size explosion the table exists
+    // to avoid.
+    let vtables = VtableTable {
+        entries: harvested
+            .iter()
+            .map(|h| VtableEntry {
+                trait_: em.intern(&h.record.trait_),
+                concrete: em.intern(&h.record.concrete),
+                address: h.record.address,
+                slot_count: h.record.slot_count,
+                undescribed_slots: h.record.undescribed_slots.clone(),
+                type_id: em.bundle_id_of(h.concrete_id),
+            })
+            .collect(),
+    };
+
     // Meta.
     let producer = reader
         .producer
@@ -1203,6 +1222,7 @@ fn extract_from_view(
             entries: provenance,
         },
         impls,
+        vtables,
     };
 
     Ok((bundle, stats))

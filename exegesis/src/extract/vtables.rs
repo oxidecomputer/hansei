@@ -11,6 +11,7 @@
 //! to search is already in the debug info and needs no scanning at all.
 
 use super::{ExtractStats, fq_name, raw_type_size, strip};
+use crate::bundle::VTABLE_HEADER_SLOTS;
 use crate::detect::struct_of;
 use crate::raw_types::RawType;
 use crate::{DwReader, TypeId};
@@ -296,10 +297,6 @@ pub(super) fn resolve_vtable_type_hints(
 /// vtable. The whole name is `<{concrete} as {trait}>::{vtable}`.
 const VTABLE_SUFFIX: &str = ">::{vtable}";
 
-/// The three words every Rust vtable opens with — drop glue, size, align —
-/// before the first method slot.
-const VTABLE_HEADER_SLOTS: u16 = 3;
-
 /// Byte offsets of the two header words the image check reads: the size
 /// of the concrete type, and its alignment.
 const SIZE_OFFSET: u64 = 8;
@@ -327,6 +324,20 @@ pub(super) struct VtableRecord {
     pub undescribed_slots: Vec<u16>,
 }
 
+/// A harvested vtable and the DWARF type its concrete half resolved to.
+///
+/// The id is kept out of [`VtableRecord`] because it is not part of a
+/// vtable's identity: embedded DWARF describes one vtable once per
+/// referencing unit, and the units need not agree on which DIE defines
+/// the concrete type. Sorting and deduplicating on the record alone
+/// collapses those repeats; a `TypeId` in the key would keep them.
+pub(super) struct Harvested {
+    pub record: VtableRecord,
+    /// Canonical DWARF id of the concrete type, for the bundle-id join
+    /// once emission has decided what the bundle describes.
+    pub concrete_id: TypeId,
+}
+
 /// Harvest every vtable the target's DWARF describes, sorted by
 /// `(trait, concrete)` and deduplicated.
 ///
@@ -347,7 +358,7 @@ pub(super) fn harvest_vtables(
     reader: &DwReader<'_>,
     image: &VtableImage<'_>,
     stats: &mut ExtractStats,
-) -> Vec<VtableRecord> {
+) -> Vec<Harvested> {
     let mut records = Vec::new();
 
     for var in reader.variables.values() {
@@ -396,12 +407,15 @@ pub(super) fn harvest_vtables(
         }
 
         let (slot_count, undescribed_slots) = shape;
-        records.push(VtableRecord {
-            trait_,
-            concrete,
-            address,
-            slot_count,
-            undescribed_slots,
+        records.push(Harvested {
+            record: VtableRecord {
+                trait_,
+                concrete,
+                address,
+                slot_count,
+                undescribed_slots,
+            },
+            concrete_id,
         });
     }
 
@@ -411,23 +425,23 @@ pub(super) fn harvest_vtables(
     // duplicates — the linker kept two copies of one vtable — and neither
     // are two names at one address, which is a fold and the ambiguity a
     // lookup has to show.
-    records.sort();
+    records.sort_by(|a, b| a.record.cmp(&b.record));
     let before = records.len();
-    records.dedup();
+    records.dedup_by(|a, b| a.record == b.record);
     stats.vtables_duplicate = before - records.len();
 
     let mut by_address: BTreeMap<u64, usize> = BTreeMap::new();
-    for record in &records {
-        *by_address.entry(record.address).or_default() += 1;
+    for h in &records {
+        *by_address.entry(h.record.address).or_default() += 1;
     }
     stats.vtables_folded = by_address.values().filter(|&&n| n > 1).count();
     stats.vtables_harvested = records.len();
     stats.vtables_vacant = records
         .iter()
-        .filter(|r| !r.undescribed_slots.is_empty())
+        .filter(|h| !h.record.undescribed_slots.is_empty())
         .count();
 
-    for record in &records {
+    for Harvested { record, .. } in &records {
         debug!(
             address = format_args!("{:#x}", record.address),
             slots = record.slot_count,
@@ -661,8 +675,8 @@ mod tests {
             v.add(vtable);
         }
         let mut stats = ExtractStats::default();
-        let records = harvest_vtables(&v.reader, image, &mut stats);
-        (records, stats)
+        let harvested = harvest_vtables(&v.reader, image, &mut stats);
+        (harvested.into_iter().map(|h| h.record).collect(), stats)
     }
 
     /// The header is three words, so `slot_count` counts it and the

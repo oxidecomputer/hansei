@@ -648,6 +648,7 @@ mod tests {
             },
             provenance: Default::default(),
             impls: Default::default(),
+            vtables: Default::default(),
         };
         (bundle, Refs { value, a, ghost })
     }
