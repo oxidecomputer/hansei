@@ -30,7 +30,7 @@ pub const MAGIC: [u8; 8] = *b"prosnap\0";
 
 /// Bumped freely on schema change; there is no cross-version
 /// compatibility requirement (same-tool-reads-it rule).
-pub const FORMAT_VERSION: u32 = 4;
+pub const FORMAT_VERSION: u32 = 5;
 
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -91,6 +91,10 @@ pub struct Snapshot {
     tls: BTreeMap<(u64, String), Option<u64>>,
     mappings: Mappings,
     lwps: Vec<LwpInfo>,
+    /// The captured target's executable load bias. Recorded rather than
+    /// derived because a snapshot carries no program headers to derive
+    /// it from, and a debug-info address means nothing without it.
+    exec_bias: Option<u64>,
 }
 
 impl Snapshot {
@@ -223,6 +227,10 @@ impl Target for Snapshot {
             .copied()
             .ok_or_else(|| TargetError::tls_not_recorded(&sym.name, regs.fsbase))
     }
+
+    fn exec_bias(&self) -> Option<u64> {
+        self.exec_bias
+    }
 }
 
 /// A [`Target`] wrapper that records everything read through it, so a
@@ -265,6 +273,7 @@ impl<'a, T: Target> Recorder<'a, T> {
             tls: self.tls.lock().unwrap().clone(),
             mappings: self.target.mappings()?,
             lwps: self.target.lwps()?,
+            exec_bias: self.target.exec_bias(),
         })
     }
 }
@@ -373,6 +382,10 @@ impl<T: Target> Target for Recorder<'_, T> {
             .insert((regs.fsbase, sym.name.clone()), addr);
         Ok(addr)
     }
+
+    fn exec_bias(&self) -> Option<u64> {
+        self.target.exec_bias()
+    }
 }
 
 #[cfg(test)]
@@ -473,6 +486,26 @@ mod tests {
             }
             Ok(Some(regs.fsbase + 0x1000))
         }
+
+        /// The fake is a PIE, so a capture of it has a bias to carry
+        /// rather than "cannot say".
+        fn exec_bias(&self) -> Option<u64> {
+            Some(self.base)
+        }
+    }
+
+    /// The executable's load bias is a fact about the captured target
+    /// and cannot be worked out from a snapshot's contents, so the
+    /// capture records it — and a target that cannot say records
+    /// nothing rather than a zero that would read as a claim.
+    #[test]
+    fn test_the_exec_bias_is_captured() {
+        let target = FakeTarget::new();
+        let rec = Recorder::new(&target);
+        assert_eq!(rec.exec_bias(), Some(target.base));
+        assert_eq!(rec.snapshot().unwrap().exec_bias(), Some(target.base));
+
+        assert_eq!(Target::exec_bias(&snapshot_of(&[])), None);
     }
 
     #[test]
@@ -871,6 +904,7 @@ mod tests {
             tls: BTreeMap::new(),
             mappings: Mappings { inner: vec![] },
             lwps: vec![],
+            exec_bias: None,
         }
     }
 

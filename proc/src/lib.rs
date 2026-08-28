@@ -258,6 +258,21 @@ pub trait Target: Sync {
     /// Callers hand over the symbol and take back an address, which is
     /// the only part both models agree on.
     fn tls_var_addr(&self, regs: &Regs, sym: &SymbolBuf) -> Result<Option<u64>>;
+
+    /// How far the executable landed from where it was linked: what a
+    /// static address out of its debug info must be moved by to be read
+    /// in this target. Zero for a position-dependent executable, its
+    /// load address for a PIE.
+    ///
+    /// `None` is "this target cannot say", which is a different answer
+    /// from zero: a reader that gets it has no runtime address to
+    /// offer, and must say so rather than present a link-time address
+    /// as though it were one. Every symbol a target resolves is already
+    /// biased, so this is only for the addresses that arrive from
+    /// elsewhere — the debug info's own.
+    fn exec_bias(&self) -> Option<u64> {
+        None
+    }
 }
 
 /// Resolve a thread-local through a pthread key: the illumos model,
