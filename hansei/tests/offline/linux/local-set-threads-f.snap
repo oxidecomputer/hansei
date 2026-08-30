@@ -1,0 +1,59 @@
+---
+source: hansei/src/offline.rs
+description: "`threads -f 3` over linux/local-set"
+---
+lwp 2347477  polling no task  runtime 0 @0xADDR
+  thread_id: core::option::Option<tokio::runtime::thread_id::ThreadId>::Some(1)
+  runtime:
+    tokio::runtime::context::runtime::EnterRuntime::Entered {
+        allow_block_in_place: false,
+    }
+  budget: core::option::Option<u8>::None
+  block_on thread of its current_thread runtime
+  parked in the driver
+  defer:
+    core::cell::RefCell<alloc::vec::Vec<core::task::wake::Waker, alloc::alloc::Global>> {
+        borrow: core::cell::Cell<isize> {
+            value: 0,
+        },
+        value: [],
+    }
+  core:
+    tokio::runtime::scheduler::current_thread::Core {
+        tasks: alloc::collections::vec_deque::VecDeque<tokio::runtime::task::Notified<alloc::sync::Arc<tokio::runtime::scheduler::current_thread::Handle, alloc::alloc::Global>>, alloc::alloc::Global> {
+            head: 1,
+            len: 0,
+            buf: alloc::raw_vec::RawVec<tokio::runtime::task::Notified<alloc::sync::Arc<tokio::runtime::scheduler::current_thread::Handle, alloc::alloc::Global>>, alloc::alloc::Global> {
+                inner: alloc::raw_vec::RawVecInner<alloc::alloc::Global> {
+                    ptr: ...,
+                    cap: ...,
+                },
+            },
+        },
+        tick: 3,
+        driver: core::option::Option<tokio::runtime::driver::Driver>::None,
+        metrics: tokio::runtime::metrics::batch::MetricsBatch {
+            busy_duration_total: 10861,
+            processing_scheduled_tasks_started_at: core::option::Option<std::time::Instant>::Some {
+                tv_sec: 1321694,
+                tv_nsec: 357515524,
+            },
+            park_count: 1,
+            park_unpark_count: 1,
+            noop_count: 0,
+            steal_count: 0,
+            steal_operations: 0,
+            poll_count: 1,
+            poll_count_on_last_park: 1,
+            local_schedule_count: 1,
+            overflow_count: 0,
+            poll_timer: core::option::Option<tokio::runtime::metrics::batch::PollTimer>::None,
+        },
+        global_queue_interval: 31,
+        unhandled_panic: false,
+    }
+  stack:
+    0xADDR 
+    0xADDR   (frame-pointer walk)
+    0xADDR   (frame-pointer walk)
+    (walk ended: no CFI for /usr/lib64/libc.so.6 (none of its pages are in the core, and the backing file is not on this machine); the frame-pointer walk found nothing below 0xADDR)

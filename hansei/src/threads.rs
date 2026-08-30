@@ -115,16 +115,11 @@ fn role_of<T: proc::Target>(
             });
             let polling =
                 crate::tasks::polled_task(worker.current_task_id, &session.tasks).is_some();
-            let worker_name = match index {
-                Some(index) => format!("worker {index}"),
-                None => "worker ?".to_string(),
-            };
-            // With several runtimes a worker index means nothing
-            // without the scheduler that numbered it.
-            let scoped = match (session.runtimes.len() > 1, session.runtime_of(tid)) {
-                (true, Some((rt_index, _))) => format!("rt {rt_index} {worker_name}"),
-                _ => worker_name,
-            };
+            let scoped = scoped_worker(
+                index,
+                session.runtimes.len() > 1,
+                session.runtime_of(tid).map(|(rt_index, _)| rt_index),
+            );
             format!("{scoped}, {}", park_word(park, polling))
         }
         Ok(SchedulerState::BlockOn(_)) => "block_on caller".to_string(),
@@ -138,6 +133,21 @@ fn role_of<T: proc::Target>(
         // A context that could not be read is not a thread that
         // merely entered; say what happened instead of guessing.
         Err(_) => "context unreadable".to_string(),
+    }
+}
+
+/// The name half of a worker's role: `worker N` — `worker ?` when the
+/// index could not be read — scoped `rt R worker N` when the target
+/// holds several runtimes, since a worker index means nothing without
+/// the scheduler that numbered it.
+fn scoped_worker(index: Option<u64>, several: bool, rt: Option<usize>) -> String {
+    let worker = match index {
+        Some(index) => format!("worker {index}"),
+        None => "worker ?".to_string(),
+    };
+    match (several, rt) {
+        (true, Some(rt_index)) => format!("rt {rt_index} {worker}"),
+        _ => worker,
     }
 }
 
@@ -637,6 +647,19 @@ mod tests {
             "park state unread"
         );
         assert_eq!(park_word(None, false), "park state unread");
+    }
+
+    /// A worker is scoped to its runtime exactly when there are
+    /// several: the common one-runtime table never says `rt 0`, and a
+    /// worker whose runtime is unknown stays unscoped rather than
+    /// claiming one.
+    #[test]
+    fn test_a_worker_is_scoped_only_among_several_runtimes() {
+        use super::scoped_worker;
+        assert_eq!(scoped_worker(Some(3), false, Some(0)), "worker 3");
+        assert_eq!(scoped_worker(Some(3), true, Some(1)), "rt 1 worker 3");
+        assert_eq!(scoped_worker(Some(3), true, None), "worker 3");
+        assert_eq!(scoped_worker(None, true, Some(1)), "rt 1 worker ?");
     }
 
     /// A blocking-pool thread is known by its stack — `Inner::run`
