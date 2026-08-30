@@ -343,7 +343,13 @@ pub enum Command {
     /// on the tasks above it is marked `← cycle` rather than followed:
     /// a task blocked on a lock its own abandoned future holds is that
     /// mark on its own row.
-    Graph,
+    Graph {
+        /// Show at most this many trees, counted by their roots — in
+        /// task-id order, as always — with a footer counting what the
+        /// cut left out.
+        #[arg(long, value_name = "N")]
+        limit: Option<usize>,
+    },
 
     /// Print the command history: every line typed at a prompt, in
     /// this session and the ones before it, oldest first and numbered.
@@ -1279,7 +1285,7 @@ pub fn dispatch<T: Target>(
             tasks::exec_census(session, sections, top, out)?
         }
         Command::FindTypes { needle } => types::find(&session.ctx.view, &needle, out)?,
-        Command::Graph => graph::exec_graph(session, out)?,
+        Command::Graph { limit } => graph::exec_graph(session, limit, out)?,
         // Answered in `repl`, which knows whether there is a prompt to
         // have a history; it never reaches here.
         Command::History { .. } => unreachable!("history is answered by the repl"),
