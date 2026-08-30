@@ -620,16 +620,16 @@ fn print_task_table(
     if !table.is_empty() {
         table.write(out)?;
     }
-    writeln!(out, "{}", listing_footer(rows.len(), shown))?;
+    writeln!(out, "{}", listing_footer(rows.len(), shown, "task"))?;
     Ok(())
 }
 
 /// The line under a listing: the plain count when everything printed,
 /// both numbers when a limit cut it — the only truncation there is.
-fn listing_footer(total: usize, shown: usize) -> String {
+pub(crate) fn listing_footer(total: usize, shown: usize, noun: &str) -> String {
     match shown < total {
-        true => format!("[{}, {shown} shown]", summary::counted(total, "task")),
-        false => summary::counted(total, "task"),
+        true => format!("[{}, {shown} shown]", summary::counted(total, noun)),
+        false => summary::counted(total, noun),
     }
 }
 
@@ -804,7 +804,7 @@ pub(crate) fn print_tasks(
     // listing narrowed to ids the caller named already knows how many
     // it asked for, so the count would only restate the command line.
     if tasks.is_empty() {
-        writeln!(out, "{}", listing_footer(list.tasks.len(), shown))?;
+        writeln!(out, "{}", listing_footer(list.tasks.len(), shown, "task"))?;
     }
     Ok(())
 }
@@ -1121,10 +1121,14 @@ mod table_tests {
     /// everything printed, both numbers when a limit cut the listing.
     #[test]
     fn test_the_footer_counts_the_cut() {
-        assert_eq!(listing_footer(22498, 100), "[22498 tasks, 100 shown]");
-        assert_eq!(listing_footer(2, 2), "2 tasks");
-        assert_eq!(listing_footer(1, 1), "1 task");
-        assert_eq!(listing_footer(0, 0), "0 tasks");
+        assert_eq!(
+            listing_footer(22498, 100, "task"),
+            "[22498 tasks, 100 shown]"
+        );
+        assert_eq!(listing_footer(2, 2, "task"), "2 tasks");
+        assert_eq!(listing_footer(1, 1, "task"), "1 task");
+        assert_eq!(listing_footer(0, 0, "task"), "0 tasks");
+        assert_eq!(listing_footer(2, 1, "root"), "[2 roots, 1 shown]");
     }
 
     /// The `RT` column exists exactly when the population holds more

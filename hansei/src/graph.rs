@@ -13,6 +13,7 @@ use std::io;
 
 pub(crate) fn exec_graph<T: proc::Target>(
     session: &Session<'_, T>,
+    limit: Option<usize>,
     out: &mut dyn io::Write,
 ) -> Result<()> {
     let analysis = session.analysis();
@@ -24,6 +25,7 @@ pub(crate) fn exec_graph<T: proc::Target>(
         &census.held,
         &census.join_sets,
         &session.impl_fold,
+        limit,
         out,
     )?;
 
@@ -167,6 +169,7 @@ fn print_graph(
     held: &[census::HeldFuture],
     join_sets: &[census::JoinSet],
     impls: &names::ImplFold,
+    limit: Option<usize>,
     out: &mut dyn io::Write,
 ) -> Result<()> {
     let edges = wait_edges(list, analysis, held, join_sets);
@@ -196,25 +199,43 @@ fn print_graph(
     // waiting on each other — which has no such top; those are walked
     // from wherever they are reached, and the row that closes the loop
     // says so.
+    // Where each tree's rows begin, so a limit cuts between trees
+    // rather than mid-subtree.
+    let mut starts = Vec::new();
     for (root, waited) in waited_for.iter().enumerate() {
         if !waited && !alone(root) {
+            starts.push(walk.rows.len());
             walk.visit(root, "", None, EdgeKind::Waiting);
         }
     }
     for root in 0..list.tasks.len() {
         if !walk.printed[root] && !alone(root) {
+            starts.push(walk.rows.len());
             walk.visit(root, "", None, EdgeKind::Waiting);
         }
     }
 
+    let roots = starts.len();
+    let shown = limit.unwrap_or(roots).min(roots);
+    let cut = starts.get(shown).copied().unwrap_or(rows.len());
     let mut table = output::Table::new(3).header(["TASK", "STATE", "WAITING ON"]);
-    for [id, state, target] in rows {
+    for [id, state, target] in rows.drain(..cut) {
         table.row([id, state, target]);
     }
     // A heading over nothing reads as a graph that failed to print
     // rather than a target with no edges to draw.
     if !table.is_empty() {
         table.write(out)?;
+    }
+    // The footer earns its line only when a limit cut the listing —
+    // an uncut graph never printed a count, and every tree there is
+    // remains the quiet answer.
+    if shown < roots {
+        writeln!(
+            out,
+            "{}",
+            crate::tasks::listing_footer(roots, shown, "root")
+        )?;
     }
     Ok(())
 }
@@ -468,6 +489,11 @@ mod graph_tests {
         graph_with(tasks, waits, futurelocks, &[], &[])
     }
 
+    /// The same graph cut to its first `limit` trees.
+    fn graph_limited(tasks: Vec<Task>, waits: Vec<TaskWait>, limit: usize) -> String {
+        graph_full(tasks, waits, Vec::new(), &[], &[], Some(limit))
+    }
+
     /// A graph over what the census found in the tasks' frames as well:
     /// the sets they drive and the handles they hold.
     fn graph_with(
@@ -476,6 +502,17 @@ mod graph_tests {
         futurelocks: Vec<Futurelock>,
         held: &[census::HeldFuture],
         join_sets: &[census::JoinSet],
+    ) -> String {
+        graph_full(tasks, waits, futurelocks, held, join_sets, None)
+    }
+
+    fn graph_full(
+        tasks: Vec<Task>,
+        waits: Vec<TaskWait>,
+        futurelocks: Vec<Futurelock>,
+        held: &[census::HeldFuture],
+        join_sets: &[census::JoinSet],
+        limit: Option<usize>,
     ) -> String {
         let list = TaskList {
             tasks,
@@ -493,6 +530,7 @@ mod graph_tests {
             held,
             join_sets,
             &names::ImplFold::default(),
+            limit,
             &mut out,
         )
         .unwrap();
@@ -712,5 +750,32 @@ TASK                          STATE  WAITING ON
             Vec::new(),
         );
         assert_eq!(page, "");
+    }
+    /// `--limit` counts trees by their roots: the cut falls between
+    /// trees, never mid-subtree, and earns the footer; an uncut graph
+    /// prints no count at all.
+    #[test]
+    fn test_a_limit_cuts_whole_trees_and_says_so() {
+        // Two trees: 2 → 1 (a chain) and 3 → 4.
+        let tasks = || vec![task(1), task(2), task(3), task(4)];
+        let waits = || {
+            vec![
+                wait(1, None),
+                wait(2, Some(joining(1))),
+                wait(3, Some(joining(4))),
+                wait(4, None),
+            ]
+        };
+
+        let cut = graph_limited(tasks(), waits(), 1);
+        assert!(cut.contains("\n2 "), "{cut}");
+        assert!(cut.contains("└─ 1"), "{cut}");
+        assert!(!cut.contains("\n3 "), "{cut}");
+        assert!(!cut.contains("└─ 4"), "{cut}");
+        assert!(cut.ends_with("[2 roots, 1 shown]\n"), "{cut}");
+
+        let whole = graph_limited(tasks(), waits(), 2);
+        assert!(whole.contains("└─ 4"), "{whole}");
+        assert!(!whole.contains("shown]"), "{whole}");
     }
 }
