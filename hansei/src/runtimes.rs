@@ -76,13 +76,14 @@ pub(crate) fn groups(
 
     let mut groups = Vec::new();
     for (i, rt) in runtimes.iter().enumerate() {
-        // A runtime no thread's context reaches has no lwp to name, and
-        // how it was found is the interesting part instead.
+        // A runtime no thread's context reaches has no lwp to count, and
+        // how it was found is the interesting part instead. One that has
+        // threads gets their number and not their ids: a real runtime
+        // runs on a hundred and more, and `threads` is the listing.
         let where_ = if rt.worker_tids.is_empty() {
             format!("no thread inside it, found via {}", rt.route)
         } else {
-            let tids: Vec<String> = rt.worker_tids.iter().map(|t| t.to_string()).collect();
-            format!("on lwp {}", tids.join(", "))
+            format!("on {}", counted(rt.worker_tids.len(), "lwp"))
         };
         groups.push(Group {
             kind: "runtime",
@@ -356,24 +357,16 @@ fn names(scope: RuntimeScope, index: usize, handle: u64) -> bool {
     }
 }
 
-/// The error for a scope that names nothing: what was asked for, and
-/// the runtimes there are — the same answer `runtimes --list` gives,
-/// since a reader who guessed wrong wants the list and not a refusal.
+/// The error for a scope that names nothing: what was asked for and
+/// how many runtimes there are. `runtimes --list` is the listing.
 fn no_such_runtime(session: &Session<'_>, scope: RuntimeScope) -> anyhow::Error {
     let named = match scope {
         RuntimeScope::Index(index) => index.to_string(),
         RuntimeScope::Handle(addr) => format!("{addr:#x}"),
     };
-    let listed: Vec<String> = session
-        .runtimes
-        .iter()
-        .enumerate()
-        .map(|(index, rt)| format!("{} ({})", runtime_label(index, rt), rt.flavor))
-        .collect();
     anyhow!(
-        "no runtime {named} in this target; it has {}: {}",
-        counted(session.runtimes.len(), "runtime"),
-        listed.join(", ")
+        "no runtime {named} ({})",
+        counted(session.runtimes.len(), "runtime")
     )
 }
 
@@ -514,7 +507,7 @@ mod runtimes_tests {
             lines[1].starts_with("runtime    0   current_thread  @0x"),
             "{shown}"
         );
-        assert!(lines[1].contains(" on lwp "), "{shown}");
+        assert!(lines[1].contains("  on 1 lwp"), "{shown}");
         // The counts are the census's own: each group sums its tasks
         // and the futures their frames hold.
         assert!(lines[1].contains("  1 task, 1 future "), "{shown}");

@@ -2382,7 +2382,7 @@ mod future_trace_tests {
             )
             .expect_err("no task owns that id")
             .to_string();
-            assert!(err.contains(&format!("id {unknown}")), "{err}");
+            assert!(err.starts_with(&format!("no task {unknown} (")), "{err}");
             assert!(out.is_empty(), "printed {out:?} before failing");
         });
     }

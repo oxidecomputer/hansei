@@ -2544,10 +2544,7 @@ fn test_threads_selects_one_lwp() {
             String::from_utf8_lossy(&out.stdout)
         );
         let stderr = String::from_utf8_lossy(&out.stderr);
-        assert!(
-            stderr.contains("no thread with lwp 999999 is listed"),
-            "{stderr}"
-        );
+        assert!(stderr.contains("no lwp 999999 ("), "{stderr}");
     });
 }
 
@@ -2614,15 +2611,12 @@ fn test_runtimes_selects_by_index_and_address() {
         assert!(whole.contains("drivers:\n"), "{whole}");
         assert!(whole.contains("\n\nshared:\n"), "{whole}");
 
-        // A runtime the target does not hold is refused with the ones
-        // it does, rather than printing the runtimes that were found.
+        // A runtime the target does not hold is refused with a count,
+        // rather than printing the runtimes that were found.
         let out = hansei(&bundle, core, "runtimes 0 3 -D");
         assert!(!out.status.success(), "an absent index was shown anyway");
         let stderr = String::from_utf8_lossy(&out.stderr);
-        assert!(
-            stderr.contains("no runtime 3 in this target; it has 1 runtime: runtime 0 @"),
-            "{stderr}"
-        );
+        assert!(stderr.contains("no runtime 3 (1 runtime)"), "{stderr}");
     });
 }
 
@@ -3331,10 +3325,7 @@ fn test_exec_asks_from_the_command_line() {
         let out = hansei_exec(&bundle, core, &["trace 99999"]);
         assert!(!out.status.success(), "{stdout}");
         let stderr = String::from_utf8_lossy(&out.stderr);
-        assert!(
-            stderr.contains("no task with id 99999 is listed"),
-            "{stderr}"
-        );
+        assert!(stderr.contains("no task 99999 ("), "{stderr}");
     });
 }
 
