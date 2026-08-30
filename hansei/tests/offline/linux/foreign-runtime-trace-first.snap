@@ -1,0 +1,16 @@
+---
+source: hansei/src/offline.rs
+description: "`trace 1` over linux/foreign-runtime"
+---
+Task 1: async fn foreign_runtime::joined (idle)
+Spawned at: src/bin/foreign-runtime.rs:83:23
+Defined at: src/bin/foreign-runtime.rs:31
+
+Waiting on: a tokio::sync::Semaphore (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 1
+
+#0  async fn      foreign_runtime::joined
+      awaiting at src/bin/foreign-runtime.rs:36 (Suspend0)
+#1  async fn      tokio::sync::semaphore::Semaphore::acquire
+      awaiting at tokio-1.52.4/src/sync/semaphore.rs:597 (Suspend0, 1 local)
+#2  future        tokio::sync::batch_semaphore::Acquire
+      waiting on a tokio::sync::Semaphore (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 1

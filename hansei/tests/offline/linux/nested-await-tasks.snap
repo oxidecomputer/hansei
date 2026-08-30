@@ -1,0 +1,12 @@
+---
+source: hansei/src/offline.rs
+description: "`tasks` over linux/nested-await"
+---
+Task 3: async fn nested_await::outer
+    State: idle
+    Spawned at: src/bin/nested-await.rs:33:21
+    Defined at: src/bin/nested-await.rs:16
+    Held futures: 0
+    Join sets: 0
+
+1 task

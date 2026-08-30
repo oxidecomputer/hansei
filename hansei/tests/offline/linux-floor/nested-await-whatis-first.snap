@@ -1,0 +1,8 @@
+---
+source: hansei/src/offline.rs
+description: "`whatis 0x55f0a0d63900` over linux-floor/nested-await"
+---
+Task 3: async fn nested_await::outer
+    At: offset 0xADDR in the task's allocation (header 0xADDR)
+    State: idle
+    Spawned at: src/bin/nested-await.rs:33:21

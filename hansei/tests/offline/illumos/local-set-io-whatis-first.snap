@@ -1,0 +1,8 @@
+---
+source: hansei/src/offline.rs
+description: "`whatis 0x1172200` over illumos/local-set-io"
+---
+Task 1: async fn local_set_io::local_reader
+    At: offset 0xADDR in the task's allocation (header 0xADDR)
+    State: idle
+    Spawned at: src/bin/local-set-io.rs:98:20

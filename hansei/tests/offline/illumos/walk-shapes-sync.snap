@@ -1,0 +1,12 @@
+---
+source: hansei/src/offline.rs
+description: "`sync` over illumos/walk-shapes"
+---
+a tokio::sync::Semaphore (semaphore 0xADDR): 0 permits available
+    Blocked on it: task 5 (1 permit requested), task 6 (1 permit requested), task 10 (1 permit requested)
+    Wake queue: task 5, task 6, task 10
+
+a tokio::sync::Mutex (semaphore 0xADDR): 0 permits available
+    Abandoned in its queue: task 3's `fut` (async fn tokio::sync::mutex::Mutex::lock<()>), still waiting for 1 permit
+    Blocked on it: task 4 (1 permit requested)
+    Wake queue: a non-task waiter (abandoned), task 4

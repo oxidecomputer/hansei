@@ -755,3 +755,11 @@ mod tests {
     }
 }
 
+/// Parse one command line the way the prompt does, handing back the
+/// grammar's own `Command` for suites that drive `dispatch` directly.
+#[cfg(test)]
+pub(crate) fn parse_line(command: &str) -> Result<crate::Command> {
+    Ok(parse_command(command)?
+        .expect("the offline suites drive complete commands, not `help`")
+        .command)
+}

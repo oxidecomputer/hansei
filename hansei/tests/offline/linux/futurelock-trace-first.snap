@@ -1,0 +1,24 @@
+---
+source: hansei/src/offline.rs
+description: "`trace 5` over linux/futurelock"
+---
+Task 5: async block futurelock::main::{async_block#0} (idle)
+Spawned at: src/bin/futurelock.rs:16:17
+Defined at: src/bin/futurelock.rs:16
+
+Waiting on: a tokio::sync::Mutex (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 5
+
+#0  async block   futurelock::main::{async_block#0}
+      awaiting at src/bin/futurelock.rs:28 (Suspend1, 1 local)
+#1  async fn      futurelock::do_stuff
+      awaiting at src/bin/futurelock.rs:70 (Suspend1, 3 locals; holds 1 pending future)
+#2  async fn      futurelock::do_async_thing
+      awaiting at src/bin/futurelock.rs:78 (Suspend0, 2 locals)
+#3  async fn      tokio::sync::mutex::Mutex::lock<()>
+      awaiting at tokio-1.52.4/src/sync/mutex.rs:455 (Suspend0)
+#4  async block   tokio::sync::mutex::Mutex::lock::{async_fn#0}<()>
+      awaiting at tokio-1.52.4/src/sync/mutex.rs:436 (Suspend0)
+#5  async fn      tokio::sync::mutex::Mutex::acquire<()>
+      awaiting at tokio-1.52.4/src/sync/mutex.rs:658 (Suspend1)
+#6  future        tokio::sync::batch_semaphore::Acquire
+      waiting on a tokio::sync::Mutex (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 5

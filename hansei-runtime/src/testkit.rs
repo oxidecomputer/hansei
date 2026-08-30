@@ -51,6 +51,41 @@ pub fn fixture_dir(set: &str) -> PathBuf {
         .join(set)
 }
 
+/// Every program `capture-snapshots.sh` captures a fixture pair for —
+/// the inventory each set holds, and the program list every suite
+/// reading the pairs iterates. `gen-0007` is quarantined generated
+/// output (see its header): it is in the offline suites and the
+/// capture loop only, not the golden, matrix, or acceptance lists.
+pub const PROGRAMS: &[&str] = &[
+    "simple-await",
+    "nested-await",
+    "dyn-future",
+    "futurelock",
+    "sleep-join",
+    "channels",
+    "unordered",
+    "joinset",
+    "ct-runtime",
+    "local-set",
+    "local-set-timer",
+    "local-set-io",
+    "foreign-runtime",
+    "gen-0007",
+    "walk-shapes",
+];
+
+/// Mask the run-varying values analysis output carries — heap
+/// addresses and timer deadlines (relative to the stop instant, so
+/// they shift with how long the capture took) — so goldens over the
+/// pairs compare exactly.
+pub fn mask(s: &str) -> String {
+    let addrs = regex::Regex::new(r"0x[0-9a-f]+").unwrap();
+    let deadlines = regex::Regex::new(r"deadline -?\d+\.\d{3}s").unwrap();
+    deadlines
+        .replace_all(&addrs.replace_all(s, "0xADDR"), "deadline TS")
+        .into_owned()
+}
+
 /// Load a program's pair from whichever set, for a test that wants
 /// some real capture to work with rather than every capture there is.
 ///

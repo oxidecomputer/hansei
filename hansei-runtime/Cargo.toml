@@ -12,7 +12,7 @@ edition = "2024"
 # below), hansei's tests (its dev-dependency), and hansei's `snapshot`
 # feature (the capture command reads the census registry through
 # `testkit::expect`).
-testkit = ["dep:serde", "dep:toml"]
+testkit = ["dep:serde", "dep:regex", "dep:toml"]
 
 [dev-dependencies]
 blake3.workspace = true
@@ -35,6 +35,7 @@ foldhash.workspace = true
 hansei-bundle.workspace = true
 proc.workspace = true
 reify.workspace = true
-# testkit's matrix-manifest reader.
+# testkit's matrix-manifest reader (toml, serde) and output masker (regex).
+regex = { workspace = true, optional = true }
 serde = { workspace = true, optional = true }
 toml = { workspace = true, optional = true }

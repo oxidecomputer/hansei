@@ -1,0 +1,27 @@
+---
+source: hansei/src/offline.rs
+description: "`census` over illumos/dyn-future"
+---
+Threads: 3 lwps, 3 in runtime 0 @0xADDR
+    0 in the scheduler's run loop
+    3 in runtime 0 @0xADDR, outside the run loop
+
+Tasks: 2 owned by runtime 0 @0xADDR
+    Lifecycle: 2 idle
+    Future types and what they await:
+        1  async fn dyn_future::driver
+           └─ 1  future tokio::sync::oneshot::Receiver<u32>
+        1  async fn dyn_future::set_member
+           └─ 1  future tokio::sync::oneshot::Receiver<u32>
+    Awaiting at:
+        1  src/bin/dyn-future.rs:17
+        1  src/bin/dyn-future.rs:36
+    Spawned at:
+        1  src/bin/dyn-future.rs:28:9
+        1  src/bin/dyn-future.rs:53:21
+
+Futures: 2 in flight, on 5 await-chain frames (up to 3 deep)
+    Location:
+        2  polled as tasks
+        0  held in frames, off any await chain
+        0  in 0 FuturesUnordered

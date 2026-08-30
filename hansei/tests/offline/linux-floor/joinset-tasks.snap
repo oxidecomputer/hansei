@@ -1,0 +1,47 @@
+---
+source: hansei/src/offline.rs
+description: "`tasks` over linux-floor/joinset"
+---
+Task 3: async fn joinset::driver
+    State: idle
+    Spawned at: src/bin/joinset.rs:96:21
+    Defined at: src/bin/joinset.rs:44
+    Held futures: 0
+    Join sets: 2 (6 tasks)
+
+Task 4: async fn joinset::member
+    State: idle
+    Spawned at: src/bin/joinset.rs:50:13
+    Defined at: src/bin/joinset.rs:27
+    Held futures: 0
+    Join sets: 0
+
+Task 5: async fn joinset::member
+    State: idle
+    Spawned at: src/bin/joinset.rs:50:13
+    Defined at: src/bin/joinset.rs:27
+    Held futures: 0
+    Join sets: 0
+
+Task 6: async fn joinset::member
+    State: idle
+    Spawned at: src/bin/joinset.rs:50:13
+    Defined at: src/bin/joinset.rs:27
+    Held futures: 0
+    Join sets: 0
+
+Task 7: async fn joinset::member
+    State: idle
+    Spawned at: src/bin/joinset.rs:58:14
+    Defined at: src/bin/joinset.rs:27
+    Held futures: 0
+    Join sets: 0
+
+Task 8: async fn joinset::member
+    State: idle
+    Spawned at: src/bin/joinset.rs:58:14
+    Defined at: src/bin/joinset.rs:27
+    Held futures: 0
+    Join sets: 0
+
+6 tasks

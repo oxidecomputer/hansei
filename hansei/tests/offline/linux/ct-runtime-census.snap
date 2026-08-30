@@ -1,0 +1,27 @@
+---
+source: hansei/src/offline.rs
+description: "`census` over linux/ct-runtime"
+---
+Threads: 1 lwp, 1 in runtime 0 @0xADDR
+    0 in the scheduler's run loop
+    1 in runtime 0 @0xADDR, outside the run loop
+
+Tasks: 2 owned by runtime 0 @0xADDR
+    Lifecycle: 2 idle
+    Future types and what they await:
+        1  async fn ct_runtime::acquirer
+           └─ 1  a tokio::sync::Semaphore
+        1  async fn ct_runtime::sleeper
+           └─ 1  a timer
+    Awaiting at:
+        1  src/bin/ct-runtime.rs:13
+        1  src/bin/ct-runtime.rs:20
+    Spawned at:
+        1  src/bin/ct-runtime.rs:33:24
+        1  src/bin/ct-runtime.rs:34:25
+
+Futures: 2 in flight, on 5 await-chain frames (up to 3 deep)
+    Location:
+        2  polled as tasks
+        0  held in frames, off any await chain
+        0  in 0 FuturesUnordered

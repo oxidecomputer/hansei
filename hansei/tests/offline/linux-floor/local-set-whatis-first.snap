@@ -1,0 +1,8 @@
+---
+source: hansei/src/offline.rs
+description: "`whatis 0x564434dae680` over linux-floor/local-set"
+---
+Task 1: async fn local_set::local_sleeper
+    At: offset 0xADDR in the task's allocation (header 0xADDR)
+    State: idle
+    Spawned at: src/bin/local-set.rs:46:29

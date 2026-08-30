@@ -1,0 +1,12 @@
+---
+source: hansei/src/offline.rs
+description: "`tasks` over illumos/futurelock"
+---
+Task 5: async block futurelock::main::{async_block#0}
+    State: idle
+    Spawned at: src/bin/futurelock.rs:16:17
+    Defined at: src/bin/futurelock.rs:16
+    Held futures: 1
+    Join sets: 0
+
+1 task

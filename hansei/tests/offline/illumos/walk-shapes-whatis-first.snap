@@ -1,0 +1,8 @@
+---
+source: hansei/src/offline.rs
+description: "`whatis 0x1607580` over illumos/walk-shapes"
+---
+Task 1: async fn walk_shapes::chained
+    At: offset 0xADDR in the task's allocation (header 0xADDR)
+    State: idle
+    Spawned at: src/bin/walk-shapes.rs:245:9

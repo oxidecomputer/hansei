@@ -1,0 +1,16 @@
+---
+source: hansei/src/offline.rs
+description: "`trace 1` over linux/walk-shapes"
+---
+Task 1: async fn walk_shapes::chained (idle)
+Spawned at: src/bin/walk-shapes.rs:245:9
+Defined at: src/bin/walk-shapes.rs:92
+
+#0  async fn      walk_shapes::chained
+      awaiting at src/bin/walk-shapes.rs:103 (Suspend0, 1 local; holds 1 pending future)
+#1  future        walk_shapes::WrapS<walk_shapes::WrapE<walk_shapes::deep>>
+#2  future        walk_shapes::WrapE<walk_shapes::deep>
+      state: Running
+#3  async fn      walk_shapes::deep
+      awaiting at src/bin/walk-shapes.rs:88 (Suspend0, 1 local)
+#4  future        tokio::sync::notify::Notified

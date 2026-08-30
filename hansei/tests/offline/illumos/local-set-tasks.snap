@@ -1,0 +1,29 @@
+---
+source: hansei/src/offline.rs
+description: "`tasks` over illumos/local-set"
+---
+Task 1: async fn local_set::local_sleeper
+    State: idle
+    Owner: local set 0 @0xADDR (lwp 1)
+    Spawned at: src/bin/local-set.rs:46:29
+    Defined at: src/bin/local-set.rs:13
+    Held futures: 0
+    Join sets: 0
+
+Task 2: async fn local_set::local_acquirer
+    State: idle
+    Owner: local set 0 @0xADDR (lwp 1)
+    Spawned at: src/bin/local-set.rs:47:31
+    Defined at: src/bin/local-set.rs:20
+    Held futures: 0
+    Join sets: 0
+
+Task 3: async fn local_set::joiner
+    State: idle
+    Owner: runtime 0 @0xADDR (current_thread)
+    Spawned at: src/bin/local-set.rs:48:23
+    Defined at: src/bin/local-set.rs:27
+    Held futures: 0
+    Join sets: 0
+
+3 tasks

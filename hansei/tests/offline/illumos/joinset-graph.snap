@@ -1,0 +1,11 @@
+---
+source: hansei/src/offline.rs
+description: "`graph` over illumos/joinset"
+---
+TASK                         STATE  WAITING ON
+3                            idle   future tokio::util::idle_notified_set::IdleNotifiedSet<tokio::runtime::task::join::JoinHandle<u32>>
+├─ 4 [in the JoinSet above]  idle   future tokio::sync::notify::Notified
+├─ 5 [in the JoinSet above]  idle   future tokio::sync::notify::Notified
+├─ 6 [in the JoinSet above]  idle   future tokio::sync::notify::Notified
+├─ 7 [in the JoinSet above]  idle   future tokio::sync::notify::Notified
+└─ 8 [in the JoinSet above]  idle   future tokio::sync::notify::Notified
