@@ -368,6 +368,12 @@ impl<T: Target> Target for Recorder<'_, T> {
         self.target.lwps()
     }
 
+    fn lwp_name(&self, tid: u32) -> Option<String> {
+        // Forwarded, not recorded: a snapshot does not carry lwp
+        // names, so replay answers `None` and goldens the absence.
+        self.target.lwp_name(tid)
+    }
+
     fn tls_var_addr(&self, regs: &Regs, sym: &SymbolBuf) -> TargetResult<Option<u64>> {
         // Only the answer is recorded. The wrapped target resolves this
         // through itself, so whatever bytes its TLS model walks — a

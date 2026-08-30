@@ -132,6 +132,14 @@ impl Target for Proc {
         dispatch!(self, lwps())
     }
 
+    fn lwp_name(&self, tid: u32) -> Option<String> {
+        match self {
+            // Only illumos cores record thread names.
+            Proc::LinuxCore(_) => None,
+            Proc::IllumosCore(c) => c.lwp_name(tid).ok().filter(|name| !name.is_empty()),
+        }
+    }
+
     fn tls_var_addr(&self, regs: &Regs, sym: &SymbolBuf) -> Result<Option<u64>> {
         dispatch!(self, tls_var_addr(regs, sym))
     }

@@ -45,6 +45,7 @@ fn commands(session: &Session<'_, proc::snapshot::Snapshot>) -> Vec<(&'static st
     let mut list = vec![
         ("tasks", "tasks".to_owned()),
         ("tasks-v", "tasks -v".to_owned()),
+        ("threads", "threads".to_owned()),
         ("graph", "graph".to_owned()),
         ("sync", "sync".to_owned()),
         ("census", "census".to_owned()),

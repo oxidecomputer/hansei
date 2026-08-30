@@ -217,6 +217,13 @@ pub trait Target: Sync {
         None
     }
 
+    /// The name the target records for this lwp, where its system
+    /// records one. An illumos core carries `NT_LWPNAME` notes; a
+    /// Linux core records none, and a snapshot does not carry them.
+    fn lwp_name(&self, _tid: u32) -> Option<String> {
+        None
+    }
+
     /// The target's memory mappings.
     fn mappings(&self) -> Result<Mappings>;
 
