@@ -2,9 +2,9 @@
 source: hansei/src/offline.rs
 description: "`threads` over linux-floor/futurelock"
 ---
-LWP      NAME  ROLE                TASK  FRAME 0
-3185917  —     entered runtime     —     —
-3185919  —     context unreadable  —     —
-3185920  —     context unreadable  —     —
-3185921  —     context unreadable  —     —
-3185922  —     context unreadable  —     —
+LWP      NAME  ROLE                 TASK  FRAME 0
+2350014  —     entered runtime      —     0xADDR
+2350016  —     worker 0, parked     —     0xADDR
+2350017  —     worker 1, in driver  —     0xADDR ← 0xADDR ← 0xADDR
+2350018  —     worker 3, parked     —     0xADDR
+2350019  —     worker 2, parked     —     0xADDR

@@ -30,7 +30,7 @@ pub const MAGIC: [u8; 8] = *b"prosnap\0";
 
 /// Bumped freely on schema change; there is no cross-version
 /// compatibility requirement (same-tool-reads-it rule).
-pub const FORMAT_VERSION: u32 = 5;
+pub const FORMAT_VERSION: u32 = 6;
 
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -401,6 +401,19 @@ mod tests {
 
     use proptest::prelude::*;
 
+    /// The recorder forwards lwp names without recording them: the
+    /// capture's own output may print them, and the snapshot — which
+    /// does not carry names — answers `None` on replay.
+    #[test]
+    fn test_recorder_forwards_lwp_names_and_snapshots_drop_them() {
+        let target = FakeTarget::new();
+        let recorder = Recorder::new(&target);
+        assert_eq!(recorder.lwp_name(7).as_deref(), Some("tokio-runtime-w"));
+        assert_eq!(recorder.lwp_name(8), None);
+        let snapshot = recorder.snapshot().expect("snapshot assembles");
+        assert_eq!(snapshot.lwp_name(7), None);
+    }
+
     /// An in-memory fake target: one memory run, a few symbols.
     struct FakeTarget {
         base: u64,
@@ -476,6 +489,10 @@ mod tests {
                     flags: MapFlags(0x06),
                 }],
             })
+        }
+
+        fn lwp_name(&self, tid: u32) -> Option<String> {
+            (tid == 7).then(|| "tokio-runtime-w".to_string())
         }
 
         fn lwps(&self) -> TargetResult<Vec<LwpInfo>> {

@@ -2,5 +2,5 @@
 source: hansei/src/offline.rs
 description: "`threads` over linux-floor/ct-runtime"
 ---
-LWP      NAME  ROLE                TASK  FRAME 0
-3186876  —     context unreadable  —     —
+LWP      NAME  ROLE             TASK  FRAME 0
+2350983  —     block_on caller  —     0xADDR ← 0xADDR ← 0xADDR

@@ -2053,6 +2053,16 @@ mod tests {
         // An empty name is no name, and an unknown thread has none.
         assert!(p.lwp_name(2).is_err());
         assert!(p.lwp_name(9).is_err());
+
+        // The Target facade answers the same, as an Option: this is
+        // the spelling the thread listing reads.
+        let target = crate::Proc::IllumosCore(p);
+        assert_eq!(
+            crate::Target::lwp_name(&target, 1).as_deref(),
+            Some("tokio-runtime-w")
+        );
+        assert_eq!(crate::Target::lwp_name(&target, 2), None);
+        assert_eq!(crate::Target::lwp_name(&target, 9), None);
     }
 
     /// The first word of `pr_psargs` names the executable — the nearest

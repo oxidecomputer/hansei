@@ -3,8 +3,13 @@ source: hansei/src/offline.rs
 description: "`census` over illumos/channels"
 ---
 Threads: 3 lwps, 3 in runtime 0 @0xADDR
-    0 in the scheduler's run loop
-    3 in runtime 0 @0xADDR, outside the run loop
+    2 in the scheduler's run loop
+        1 parked in the io driver
+            worker 0, lwp 2
+        1 parked
+    1 in runtime 0 @0xADDR, outside the run loop
+        0 in the blocking pool (0 idle, 0 tasks queued)
+        1 that entered the runtime another way (a block_on caller)
 
 Tasks: 2 owned by runtime 0 @0xADDR
     Lifecycle: 2 idle

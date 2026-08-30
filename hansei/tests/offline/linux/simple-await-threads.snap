@@ -2,7 +2,7 @@
 source: hansei/src/offline.rs
 description: "`threads` over linux/simple-await"
 ---
-LWP      NAME  ROLE                TASK  FRAME 0
-3181373  —     entered runtime     —     —
-3181375  —     context unreadable  —     —
-3181376  —     context unreadable  —     —
+LWP      NAME  ROLE                 TASK  FRAME 0
+2345791  —     entered runtime      —     0xADDR
+2345793  —     worker 0, in driver  —     0xADDR ← 0xADDR ← 0xADDR
+2345794  —     worker 1, parked     —     0xADDR

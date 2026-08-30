@@ -667,6 +667,18 @@ mod tests {
         let worker = names(&["__lwp_park", "cond_wait_queue", "worker::run"]);
         assert_eq!(blocking_role(&worker), None);
         assert_eq!(blocking_role(&[]), None);
+
+        // Each parked spelling testifies alone — the two systems park
+        // through different symbols, and no capture shows them all.
+        for park in [
+            "std::thread::park",
+            "cond_wait_queue",
+            "__lwp_park",
+            "futex_wait",
+        ] {
+            let idle = names(&[park, "tokio::runtime::blocking::pool::Inner::run"]);
+            assert_eq!(blocking_role(&idle), Some("blocking, idle"), "{park}");
+        }
     }
 
     /// The headline is the top three symbols and no more; a stack

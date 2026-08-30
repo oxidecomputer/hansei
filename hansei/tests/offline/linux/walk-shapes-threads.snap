@@ -2,7 +2,7 @@
 source: hansei/src/offline.rs
 description: "`threads` over linux/walk-shapes"
 ---
-LWP      NAME  ROLE                TASK  FRAME 0
-3183956  —     context unreadable  —     —
-3183958  —     entered runtime     —     —
-3183959  —     entered runtime     —     —
+LWP      NAME  ROLE             TASK  FRAME 0
+2348388  —     block_on caller  —     0xADDR ← 0xADDR ← 0xADDR
+2348390  —     entered runtime  —     0xADDR
+2348391  —     entered runtime  —     0xADDR
