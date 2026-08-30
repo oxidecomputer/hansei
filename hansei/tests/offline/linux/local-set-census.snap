@@ -1,0 +1,31 @@
+---
+source: hansei/src/offline.rs
+description: "`census` over linux/local-set"
+---
+Threads: 1 lwp, 1 in runtime 0 @0xADDR
+    0 in the scheduler's run loop
+    1 in runtime 0 @0xADDR, outside the run loop
+
+Tasks: 3 owned by 1 runtime and 1 local set
+    Lifecycle: 3 idle
+    Future types and what they await:
+        1  async fn local_set::joiner
+           └─ 1  another task (JoinHandle)
+        1  async fn local_set::local_acquirer
+           └─ 1  a tokio::sync::Semaphore
+        1  async fn local_set::local_sleeper
+           └─ 1  a timer
+    Awaiting at:
+        1  src/bin/local-set.rs:16
+        1  src/bin/local-set.rs:23
+        1  src/bin/local-set.rs:30
+    Spawned at:
+        1  src/bin/local-set.rs:46:29
+        1  src/bin/local-set.rs:47:31
+        1  src/bin/local-set.rs:48:23
+
+Futures: 3 in flight, on 7 await-chain frames (up to 3 deep)
+    Location:
+        3  polled as tasks
+        0  held in frames, off any await chain
+        0  in 0 FuturesUnordered

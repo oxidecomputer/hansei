@@ -1,0 +1,31 @@
+---
+source: hansei/src/offline.rs
+description: "`census` over linux-floor/local-set-timer"
+---
+Threads: 1 lwp, 1 in runtime 0 @0xADDR
+    0 in the scheduler's run loop
+    1 in runtime 0 @0xADDR, outside the run loop
+
+Tasks: 3 owned by 1 runtime and 1 local set
+    Lifecycle: 3 idle
+    Future types and what they await:
+        1  async fn local_set_timer::local_acquirer
+           └─ 1  a tokio::sync::Semaphore
+        1  async fn local_set_timer::local_sleeper
+           └─ 1  a timer
+        1  async fn local_set_timer::sleeper
+           └─ 1  a timer
+    Awaiting at:
+        1  src/bin/local-set-timer.rs:18
+        1  src/bin/local-set-timer.rs:25
+        1  src/bin/local-set-timer.rs:38
+    Spawned at:
+        1  src/bin/local-set-timer.rs:58:20
+        1  src/bin/local-set-timer.rs:59:20
+        1  src/bin/local-set-timer.rs:64:24
+
+Futures: 3 in flight, on 7 await-chain frames (up to 3 deep)
+    Location:
+        3  polled as tasks
+        0  held in frames, off any await chain
+        0  in 0 FuturesUnordered

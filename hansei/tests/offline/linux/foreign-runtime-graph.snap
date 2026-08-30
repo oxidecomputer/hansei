@@ -1,0 +1,7 @@
+---
+source: hansei/src/offline.rs
+description: "`graph` over linux/foreign-runtime"
+---
+TASK  STATE  WAITING ON
+4     idle   task 1 (JoinHandle)
+└─ 1  idle   a tokio::sync::Semaphore (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 1

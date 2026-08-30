@@ -1,0 +1,13 @@
+---
+source: hansei/src/offline.rs
+description: "`trace 3` over linux-floor/dyn-future"
+---
+Task 3: async fn dyn_future::driver (idle)
+Spawned at: src/bin/dyn-future.rs:53:21
+Defined at: src/bin/dyn-future.rs:24
+
+#0  async fn      dyn_future::driver
+      awaiting at src/bin/dyn-future.rs:36 (Suspend0, 1 local)
+#1  async fn      dyn_future::boxed_leaf [dyn]
+      awaiting at src/bin/dyn-future.rs:12 (Suspend0)
+#2  future        tokio::sync::oneshot::Receiver<u32>

@@ -1,0 +1,37 @@
+---
+source: hansei/src/offline.rs
+description: "`tasks` over linux-floor/foreign-runtime"
+---
+Task 1: async fn foreign_runtime::joined
+    State: idle
+    Owner: runtime 1 @0xADDR (current_thread, no thread inside it)
+    Spawned at: src/bin/foreign-runtime.rs:83:23
+    Defined at: src/bin/foreign-runtime.rs:31
+    Held futures: 0
+    Join sets: 0
+
+Task 2: async fn foreign_runtime::detached
+    State: idle
+    Owner: runtime 1 @0xADDR (current_thread, no thread inside it)
+    Spawned at: src/bin/foreign-runtime.rs:85:18
+    Defined at: src/bin/foreign-runtime.rs:46
+    Held futures: 0
+    Join sets: 0
+
+Task 3: async fn foreign_runtime::local_sleeper
+    State: idle
+    Owner: local set 0 @0xADDR (lwp 3187593)
+    Spawned at: src/bin/foreign-runtime.rs:87:16
+    Defined at: src/bin/foreign-runtime.rs:58
+    Held futures: 0
+    Join sets: 0
+
+Task 4: async fn foreign_runtime::joiner
+    State: idle
+    Owner: runtime 0 @0xADDR (current_thread)
+    Spawned at: src/bin/foreign-runtime.rs:129:23
+    Defined at: src/bin/foreign-runtime.rs:23
+    Held futures: 0
+    Join sets: 0
+
+4 tasks

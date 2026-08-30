@@ -1,0 +1,7 @@
+---
+source: hansei/src/offline.rs
+description: "`sync` over illumos/ct-runtime"
+---
+a tokio::sync::Semaphore (semaphore 0xADDR): 0 permits available
+    Blocked on it: task 2 (1 permit requested)
+    Wake queue: task 2

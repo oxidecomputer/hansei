@@ -1,0 +1,11 @@
+---
+source: hansei/src/offline.rs
+description: "`trace 3` over linux-floor/channels"
+---
+Task 3: async fn channels::notify_waiter (idle)
+Spawned at: src/bin/channels.rs:75:23
+Defined at: src/bin/channels.rs:17
+
+#0  async fn      channels::notify_waiter
+      awaiting at src/bin/channels.rs:30 (Suspend0, 2 locals; holds 1 pending future)
+#1  future        tokio::sync::notify::Notified

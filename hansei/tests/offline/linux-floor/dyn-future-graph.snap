@@ -1,0 +1,7 @@
+---
+source: hansei/src/offline.rs
+description: "`graph` over linux-floor/dyn-future"
+---
+TASK                         STATE  WAITING ON
+3                            idle   future tokio::sync::oneshot::Receiver<u32>
+└─ 4 [in the JoinSet above]  idle   future tokio::sync::oneshot::Receiver<u32>

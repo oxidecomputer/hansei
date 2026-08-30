@@ -1,0 +1,7 @@
+---
+source: hansei/src/offline.rs
+description: "`graph` over illumos/local-set"
+---
+TASK  STATE  WAITING ON
+3     idle   task 1 (JoinHandle)
+└─ 1  idle   the timer: deadline TS

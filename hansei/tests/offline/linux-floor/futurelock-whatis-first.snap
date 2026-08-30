@@ -1,0 +1,8 @@
+---
+source: hansei/src/offline.rs
+description: "`whatis 0x558a1c14d680` over linux-floor/futurelock"
+---
+Task 5: async block futurelock::main::{async_block#0}
+    At: offset 0xADDR in the task's allocation (header 0xADDR)
+    State: idle
+    Spawned at: src/bin/futurelock.rs:16:17

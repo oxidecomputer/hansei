@@ -1,0 +1,35 @@
+---
+source: hansei/src/offline.rs
+description: "`census` over illumos/foreign-runtime"
+---
+Threads: 2 lwps, 2 in 2 runtimes
+    0 in the scheduler's run loop
+    2 in 2 runtimes, outside the run loop
+
+Tasks: 4 owned by 2 runtimes and 1 local set
+    Lifecycle: 4 idle
+    Future types and what they await:
+        1  async fn foreign_runtime::detached
+           └─ 1  future core::future::pending::Pending<()>
+        1  async fn foreign_runtime::joined
+           └─ 1  a tokio::sync::Semaphore
+        1  async fn foreign_runtime::joiner
+           └─ 1  another task (JoinHandle)
+        1  async fn foreign_runtime::local_sleeper
+           └─ 1  a timer
+    Awaiting at:
+        1  src/bin/foreign-runtime.rs:26
+        1  src/bin/foreign-runtime.rs:36
+        1  src/bin/foreign-runtime.rs:51
+        1  src/bin/foreign-runtime.rs:63
+    Spawned at:
+        1  src/bin/foreign-runtime.rs:129:23
+        1  src/bin/foreign-runtime.rs:83:23
+        1  src/bin/foreign-runtime.rs:85:18
+        1  src/bin/foreign-runtime.rs:87:16
+
+Futures: 4 in flight, on 9 await-chain frames (up to 3 deep)
+    Location:
+        4  polled as tasks
+        0  held in frames, off any await chain
+        0  in 0 FuturesUnordered

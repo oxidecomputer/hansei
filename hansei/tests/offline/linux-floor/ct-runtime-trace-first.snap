@@ -1,0 +1,14 @@
+---
+source: hansei/src/offline.rs
+description: "`trace 1` over linux-floor/ct-runtime"
+---
+Task 1: async fn ct_runtime::sleeper (idle)
+Spawned at: src/bin/ct-runtime.rs:33:24
+Defined at: src/bin/ct-runtime.rs:10
+
+Waiting on: the timer: deadline TS on the target's monotonic clock
+
+#0  async fn      ct_runtime::sleeper
+      awaiting at src/bin/ct-runtime.rs:13 (Suspend0)
+#1  future        tokio::time::sleep::Sleep
+      waiting on the timer: deadline TS on the target's monotonic clock

@@ -1,0 +1,23 @@
+---
+source: hansei/src/offline.rs
+description: "`census` over illumos/simple-await"
+---
+Threads: 3 lwps, 3 in runtime 0 @0xADDR
+    0 in the scheduler's run loop
+    3 in runtime 0 @0xADDR, outside the run loop
+
+Tasks: 1 owned by runtime 0 @0xADDR
+    Lifecycle: 1 idle
+    Future types and what they await:
+        1  async fn simple_await::work
+           └─ 1  future tokio::sync::oneshot::Receiver<u32>
+    Awaiting at:
+        1  src/bin/simple-await.rs:40
+    Spawned at:
+        1  src/bin/simple-await.rs:75:21
+
+Futures: 1 in flight, on 2 await-chain frames (up to 2 deep)
+    Location:
+        1  polled as tasks
+        0  held in frames, off any await chain
+        0  in 0 FuturesUnordered

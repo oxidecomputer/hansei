@@ -1,0 +1,19 @@
+---
+source: hansei/src/offline.rs
+description: "`tasks` over linux-floor/ct-runtime"
+---
+Task 1: async fn ct_runtime::sleeper
+    State: idle
+    Spawned at: src/bin/ct-runtime.rs:33:24
+    Defined at: src/bin/ct-runtime.rs:10
+    Held futures: 0
+    Join sets: 0
+
+Task 2: async fn ct_runtime::acquirer
+    State: idle
+    Spawned at: src/bin/ct-runtime.rs:34:25
+    Defined at: src/bin/ct-runtime.rs:17
+    Held futures: 0
+    Join sets: 0
+
+2 tasks

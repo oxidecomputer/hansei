@@ -40,7 +40,7 @@
 //! here would notice the programs moving on without them.
 
 use hansei_bundle::{Bundle, BundleView};
-use hansei_runtime::testkit::{FIXTURE_SETS, load, load_any, matrix};
+use hansei_runtime::testkit::{FIXTURE_SETS, PROGRAMS, load, load_any, mask, matrix};
 use hansei_runtime::tokio::Lifecycle;
 use hansei_runtime::tokio::bundle::{
     AwaitChain, ChainEnd, Context, DiscoveryRoute, FutureInfo, RuntimeFlavor, Task, TaskStage,
@@ -53,28 +53,6 @@ use proc::snapshot::Snapshot;
 use std::collections::{BTreeSet, HashSet};
 use std::fmt::Write;
 use std::path::Path;
-
-/// Every program `capture-snapshots.sh` captures a fixture pair for.
-/// `gen-0007` is quarantined generated output (see its header): it is
-/// in this suite and the capture loop only, not the golden, matrix, or
-/// acceptance lists.
-const PROGRAMS: &[&str] = &[
-    "simple-await",
-    "nested-await",
-    "dyn-future",
-    "futurelock",
-    "sleep-join",
-    "channels",
-    "unordered",
-    "joinset",
-    "ct-runtime",
-    "local-set",
-    "local-set-timer",
-    "local-set-io",
-    "foreign-runtime",
-    "gen-0007",
-    "walk-shapes",
-];
 
 /// What a fixture pair was captured from: the program's own source, and
 /// the crate every program calls into before it parks.
@@ -221,17 +199,6 @@ fn test_every_fixture_pair_is_in_the_program_list() {
              a pair captured but not listed is read by nothing"
         );
     }
-}
-
-/// Mask the run-varying values the analysis output carries — heap
-/// addresses and timer deadlines (relative to the stop instant, so they
-/// shift with how long the capture took) — so goldens compare exactly.
-fn mask(s: &str) -> String {
-    let addrs = regex::Regex::new(r"0x[0-9a-f]+").unwrap();
-    let deadlines = regex::Regex::new(r"deadline -?\d+\.\d{3}s").unwrap();
-    deadlines
-        .replace_all(&addrs.replace_all(s, "0xADDR"), "deadline TS")
-        .into_owned()
 }
 
 /// Run the full offline pipeline — fingerprint, discovery, enumeration,

@@ -1,0 +1,29 @@
+---
+source: hansei/src/offline.rs
+description: "`census` over linux-floor/unordered"
+---
+Threads: 3 lwps, 3 in runtime 0 @0xADDR
+    0 in the scheduler's run loop
+    3 in runtime 0 @0xADDR, outside the run loop
+
+Tasks: 1 owned by runtime 0 @0xADDR
+    Lifecycle: 1 idle
+    Future types and what they await:
+        1  async fn unordered::driver
+           └─ 1  future futures_util::stream::futures_unordered::FuturesUnordered<unordered::set_member>
+    Awaiting at:
+        1  src/bin/unordered.rs:115
+    Spawned at:
+        1  src/bin/unordered.rs:137:21
+
+Futures: 15 in flight, on 19 await-chain frames (up to 2 deep)
+    Location:
+        1  polled as tasks
+        9  held in frames, off any await chain
+        5  in 2 FuturesUnordered
+    Future types and what they await:
+        8  async fn unordered::leaf
+        5  async fn unordered::set_member
+           ├─ 3  future tokio::sync::notify::Notified
+           └─ 2  async fn unordered::set_member
+        1  async fn unordered::holder<unordered::leaf>

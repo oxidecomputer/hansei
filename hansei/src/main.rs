@@ -18,6 +18,8 @@ use std::sync::mpsc;
 
 mod bundle_cmd;
 mod graph;
+#[cfg(test)]
+mod offline;
 mod output;
 mod print;
 mod registers;

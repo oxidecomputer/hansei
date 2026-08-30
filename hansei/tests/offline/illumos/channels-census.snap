@@ -1,0 +1,29 @@
+---
+source: hansei/src/offline.rs
+description: "`census` over illumos/channels"
+---
+Threads: 3 lwps, 3 in runtime 0 @0xADDR
+    0 in the scheduler's run loop
+    3 in runtime 0 @0xADDR, outside the run loop
+
+Tasks: 2 owned by runtime 0 @0xADDR
+    Lifecycle: 2 idle
+    Future types and what they await:
+        1  async fn channels::hold
+           └─ 1  future tokio::sync::oneshot::Receiver<u32>
+        1  async fn channels::notify_waiter
+           └─ 1  future tokio::sync::notify::Notified
+    Awaiting at:
+        1  src/bin/channels.rs:30
+        1  src/bin/channels.rs:48
+    Spawned at:
+        1  src/bin/channels.rs:75:23
+        1  src/bin/channels.rs:83:23
+
+Futures: 3 in flight, on 5 await-chain frames (up to 2 deep)
+    Location:
+        2  polled as tasks
+        1  held in frames, off any await chain
+        0  in 0 FuturesUnordered
+    Future types and what they await:
+        1  future tokio::sync::notify::Notified
