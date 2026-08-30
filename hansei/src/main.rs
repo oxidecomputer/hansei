@@ -343,6 +343,15 @@ pub enum Command {
     /// mark on its own row.
     Graph,
 
+    /// Print the command history: every line typed at a prompt, in
+    /// this session and the ones before it, oldest first and numbered.
+    /// A scripted session (a pipe, `--exec`) keeps none and says so.
+    History {
+        /// Print only the last N entries.
+        #[arg(value_name = "N")]
+        last: Option<usize>,
+    },
+
     /// Show the target, the tokio info, and how far its symbols
     /// resolve.
     Info,
@@ -1230,6 +1239,9 @@ pub fn dispatch(
         }
         Command::FindTypes { needle } => types::find(&session.ctx.view, &needle, out)?,
         Command::Graph => graph::exec_graph(session, out)?,
+        // Answered in `repl`, which knows whether there is a prompt to
+        // have a history; it never reaches here.
+        Command::History { .. } => unreachable!("history is answered by the repl"),
         Command::Info => exec_info(session, out)?,
         Command::Print { addr, ty, render } => {
             print::exec_print(session, addr, &ty.join(" "), render, out)?

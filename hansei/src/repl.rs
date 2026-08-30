@@ -28,7 +28,7 @@ use reedline::{
 use subprocess::Exec;
 
 use std::io::{self, BufRead, IsTerminal, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 // One line of input. `no_binary_name` is what lets a clap grammar read a
 // typed line: without it clap would take the first word for the
@@ -59,6 +59,14 @@ pub fn run(session: &Session<'_>, exec: &[String]) -> Result<()> {
     }
 }
 
+/// Where the commands come from. The one command that cares is
+/// `history`: a prompt has one, a pipe or `--exec` does not.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Mode {
+    Interactive,
+    Scripted,
+}
+
 /// Answer what `--exec` asked for and stop, without reading stdin.
 ///
 /// The rules are a script's: the commands run in order and the first
@@ -66,7 +74,9 @@ pub fn run(session: &Session<'_>, exec: &[String]) -> Result<()> {
 /// meant them as one question.
 fn from_command_line(session: &Session<'_>, exec: &[String]) -> Result<()> {
     for commands in exec {
-        match execute(session, commands).with_context(|| format!("--exec {commands:?}"))? {
+        match execute(session, Mode::Scripted, commands)
+            .with_context(|| format!("--exec {commands:?}"))?
+        {
             Flow::Continue => continue,
             Flow::Quit => break,
         }
@@ -86,11 +96,20 @@ fn interactive(session: &Session<'_>) -> Result<()> {
 
     loop {
         match editor.read_line(&prompt) {
-            Ok(Signal::Success(line)) => match execute(session, &line) {
-                Ok(Flow::Continue) => continue,
-                Ok(Flow::Quit) => break,
-                Err(e) => eprintln!("error: {e:#}"),
-            },
+            Ok(Signal::Success(line)) => {
+                // reedline writes the file only when the editor is
+                // dropped; writing it per line is what lets `history`
+                // read this session's lines back, and lets a second
+                // session running beside this one see them too.
+                if let Err(e) = editor.sync_history() {
+                    eprintln!("warning: command history not saved: {e}");
+                }
+                match execute(session, Mode::Interactive, &line) {
+                    Ok(Flow::Continue) => continue,
+                    Ok(Flow::Quit) => break,
+                    Err(e) => eprintln!("error: {e:#}"),
+                }
+            }
             Ok(Signal::CtrlC) => continue,
             Ok(Signal::CtrlD) => break,
             Err(e) => {
@@ -115,7 +134,9 @@ fn scripted(session: &Session<'_>) -> Result<()> {
         }
         // The line number is the only handle a script has on which
         // command went wrong, since nothing echoes them.
-        match execute(session, &line).with_context(|| format!("stdin line {}", n + 1))? {
+        match execute(session, Mode::Scripted, &line)
+            .with_context(|| format!("stdin line {}", n + 1))?
+        {
             Flow::Continue => continue,
             Flow::Quit => break,
         }
@@ -132,12 +153,12 @@ fn scripted(session: &Session<'_>) -> Result<()> {
 /// after a `!` — with one way out: `\;` is a literal `;`, which is how
 /// an array type (`[usize\; 4]`) crosses the split. That pair is the
 /// whole escape grammar; every other backslash is itself.
-fn execute(session: &Session<'_>, line: &str) -> Result<Flow> {
+fn execute(session: &Session<'_>, mode: Mode, line: &str) -> Result<Flow> {
     let commands = split_commands(line);
     for command in &commands {
         let flow = match command_frame(commands.len(), command) {
-            None => execute_one(session, command)?,
-            Some(frame) => execute_one(session, command).with_context(|| frame)?,
+            None => execute_one(session, mode, command)?,
+            Some(frame) => execute_one(session, mode, command).with_context(|| frame)?,
         };
         if let Flow::Quit = flow {
             return Ok(Flow::Quit);
@@ -181,7 +202,7 @@ fn command_frame(count: usize, command: &str) -> Option<String> {
 
 /// Parse one command and answer it, sending the output to a shell
 /// pipeline if it asked for one.
-fn execute_one(session: &Session<'_>, line: &str) -> Result<Flow> {
+fn execute_one(session: &Session<'_>, mode: Mode, line: &str) -> Result<Flow> {
     // Everything after the first `!` is a shell command to pipe into,
     // so `tasks ! grep foo` filters the listing.
     let (command, shell) = match line.split_once('!') {
@@ -196,6 +217,17 @@ fn execute_one(session: &Session<'_>, line: &str) -> Result<Flow> {
     let parsed = match parse_command(command)? {
         Some(parsed) => parsed,
         None => return Ok(Flow::Continue),
+    };
+    // `history` is the repl's own to answer — it is about the prompt,
+    // not the target — so it is peeled off before the target is asked.
+    let answer = move |theme: Theme, out: &mut dyn Write| -> Result<Flow> {
+        match parsed.command {
+            Command::History { last } => {
+                print_history(mode, last, out)?;
+                Ok(Flow::Continue)
+            }
+            command => dispatch(session, command, theme, out),
+        }
     };
 
     // Either way the answer streams: a trace's output can run to
@@ -212,14 +244,14 @@ fn execute_one(session: &Session<'_>, line: &str) -> Result<Flow> {
                 stdin: Some(Box::new(Exec::shell(shell.trim()).stream_stdin()?)),
             };
             let mut out = io::BufWriter::new(sink);
-            let flow = dispatch(session, parsed.command, Theme::plain(), &mut out)?;
+            let flow = answer(Theme::plain(), &mut out)?;
             out.flush()?;
             Ok(flow)
         }
         None => {
             let stdout = io::stdout();
             let mut out = io::BufWriter::new(stdout.lock());
-            let flow = dispatch(session, parsed.command, Theme::for_stdout(), &mut out)?;
+            let flow = answer(Theme::for_stdout(), &mut out)?;
             out.flush()?;
             Ok(flow)
         }
@@ -341,6 +373,45 @@ fn line_editor() -> Reedline {
 fn history_path() -> Option<PathBuf> {
     let home = std::env::var_os("HOME")?;
     Some(PathBuf::from(home).join(".hansei_history"))
+}
+
+/// Print the history file — every session's lines, since reedline
+/// merges them there — oldest first, or only the last `last` of them.
+fn print_history(mode: Mode, last: Option<usize>, out: &mut dyn Write) -> Result<()> {
+    if mode == Mode::Scripted {
+        return Err(anyhow!("no history in a scripted session"));
+    }
+    let path = history_path().ok_or_else(|| anyhow!("no history: HOME is not set"))?;
+    for line in history_lines(&read_history(&path)?, last) {
+        writeln!(out, "{line}")?;
+    }
+    Ok(())
+}
+
+/// The history file's text. A file that does not exist yet is an
+/// empty history, not an error: nothing has been typed at a prompt on
+/// this machine before, which `history` answers with nothing.
+fn read_history(path: &Path) -> Result<String> {
+    match std::fs::read_to_string(path) {
+        Ok(text) => Ok(text),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(String::new()),
+        Err(e) => Err(e).with_context(|| format!("reading {}", path.display())),
+    }
+}
+
+/// The history file's entries as the lines `history` prints: each
+/// numbered by its position in the file, oldest first, so the numbers
+/// mean the same under `history` and `history N`. Entries are one per
+/// line in the file, so the file's line is the entry.
+fn history_lines(text: &str, last: Option<usize>) -> Vec<String> {
+    let entries: Vec<&str> = text.lines().collect();
+    let skip = last.map_or(0, |n| entries.len().saturating_sub(n));
+    entries
+        .iter()
+        .enumerate()
+        .skip(skip)
+        .map(|(i, entry)| format!("{:>5}  {entry}", i + 1))
+        .collect()
 }
 
 #[cfg(test)]
@@ -620,5 +691,66 @@ mod tests {
         assert!(Line::try_parse_from(["runtimes", "-l", "-D"]).is_err());
         assert!(Line::try_parse_from(["runtimes", "--list", "--shared"]).is_err());
         assert!(Line::try_parse_from(["runtimes", "-l", "0"]).is_err());
+    }
+
+    /// `history` takes an optional count and nothing else.
+    #[test]
+    fn test_history_takes_a_count_or_nothing() {
+        let last = |line: &[&str]| {
+            let Command::History { last } =
+                Line::try_parse_from(line).expect("history parses").command
+            else {
+                panic!("history parsed as another command");
+            };
+            last
+        };
+        assert_eq!(last(&["history"]), None);
+        assert_eq!(last(&["history", "20"]), Some(20));
+        assert!(Line::try_parse_from(["history", "x"]).is_err());
+        assert!(Line::try_parse_from(["history", "1", "2"]).is_err());
+    }
+
+    /// The numbers are positions in the file, so `history 2` shows the
+    /// same numbers beside the same lines that `history` does.
+    #[test]
+    fn test_history_lines_are_numbered_by_file_position() {
+        let text = "tasks\ngraph\ntrace 42 -v\n";
+        assert_eq!(
+            history_lines(text, None),
+            ["    1  tasks", "    2  graph", "    3  trace 42 -v"]
+        );
+        assert_eq!(
+            history_lines(text, Some(2)),
+            ["    2  graph", "    3  trace 42 -v"]
+        );
+        assert_eq!(history_lines(text, Some(0)), Vec::<String>::new());
+        assert_eq!(history_lines(text, Some(10)).len(), 3);
+        assert_eq!(history_lines("", None), Vec::<String>::new());
+    }
+
+    /// No file yet is an empty history; a file that cannot be read is
+    /// an error that names it.
+    #[test]
+    fn test_a_missing_history_file_is_empty_and_an_unreadable_one_is_an_error() {
+        let dir = std::env::temp_dir().join(format!("hansei-history-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("a scratch dir");
+        assert_eq!(
+            read_history(&dir.join("absent")).expect("missing is empty"),
+            ""
+        );
+        let err = read_history(&dir).expect_err("a directory is not readable as text");
+        assert!(err.to_string().contains("reading "), "{err}");
+        std::fs::write(dir.join("present"), "tasks\n").expect("write");
+        assert_eq!(read_history(&dir.join("present")).expect("read"), "tasks\n");
+        std::fs::remove_dir_all(&dir).expect("cleanup");
+    }
+
+    /// A pipe or `--exec` has no prompt and so no history to show.
+    #[test]
+    fn test_history_is_refused_without_a_prompt() {
+        let mut out = Vec::new();
+        let err = print_history(Mode::Scripted, None, &mut out).unwrap_err();
+        assert_eq!(err.to_string(), "no history in a scripted session");
+        assert!(out.is_empty());
     }
 }
