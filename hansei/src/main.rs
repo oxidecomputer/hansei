@@ -625,15 +625,28 @@ pub enum Command {
         task: Vec<u64>,
     },
 
-    /// Show every thread running a runtime: the task it is polling,
-    /// the worker core it holds, and its stack. The thread that took
-    /// the fatal signal also shows its registers, annotated with what
-    /// each value points into; --registers asks that of every listed
-    /// thread.
+    /// List every thread in the target — one table row per lwp: its
+    /// name where the core records one, its place in a runtime (which
+    /// worker and what its parker says, the block_on caller, a
+    /// blocking-pool thread read from its stack, or no runtime at
+    /// all), the task it is polling, and the top of its stack.
+    ///
+    /// -v prints full blocks instead: the thread's tokio context, the
+    /// worker core it holds, and its whole stack. The thread that
+    /// took the fatal signal also shows its registers, annotated with
+    /// what each value points into; --registers asks that of every
+    /// listed thread. Naming lwps, --frames, or --registers implies
+    /// -v.
     Threads {
-        /// Maximum stack frames to print per thread.
-        #[arg(long, short, default_value_t = 50)]
-        frames: usize,
+        /// Print each selected thread's full block rather than one
+        /// table row.
+        #[arg(long, short)]
+        verbose: bool,
+
+        /// Maximum stack frames to print per thread (50 when -v is
+        /// given without it).
+        #[arg(long, short)]
+        frames: Option<usize>,
 
         /// Show each listed thread's registers — frame-0 trap state,
         /// one line per general-purpose register, annotated with what
@@ -994,6 +1007,9 @@ pub struct Session<'b, T: Target> {
     /// The `tasks` table's rows, built from the analysis on first use
     /// and shared with the filters and the JSON printer.
     task_rows: OnceCell<Vec<tasks::TaskRow>>,
+    /// The `threads` table's rows, likewise; building them pays for
+    /// the one unwind of every stack.
+    thread_rows: OnceCell<Vec<threads::ThreadRow>>,
 }
 
 impl<'b, T: Target> Session<'b, T> {
@@ -1103,6 +1119,7 @@ impl<'b, T: Target> Session<'b, T> {
             ceiling_noticed: Cell::new(false),
             analysis: OnceCell::new(),
             task_rows: OnceCell::new(),
+            thread_rows: OnceCell::new(),
         })
     }
 
@@ -1298,11 +1315,12 @@ pub fn dispatch<T: Target>(
             tasks::exec_tasks(session, verbose, futures, limit, &task, out)?
         }
         Command::Threads {
+            verbose,
             frames,
             registers,
             lwp,
             render,
-        } => threads::exec_threads(session, frames, &lwp, registers, render, out)?,
+        } => threads::exec_threads(session, verbose, frames, &lwp, registers, render, out)?,
         Command::Trace {
             target,
             verbose,

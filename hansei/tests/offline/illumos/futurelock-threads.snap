@@ -1,0 +1,10 @@
+---
+source: hansei/src/offline.rs
+description: "`threads` over illumos/futurelock"
+---
+LWP  NAME  ROLE                TASK  FRAME 0
+1    —     entered runtime     —     —
+2    —     context unreadable  —     —
+3    —     context unreadable  —     —
+4    —     context unreadable  —     —
+5    —     context unreadable  —     —

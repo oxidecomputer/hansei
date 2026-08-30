@@ -1,0 +1,8 @@
+---
+source: hansei/src/offline.rs
+description: "`threads` over linux/walk-shapes"
+---
+LWP      NAME  ROLE                TASK  FRAME 0
+3183956  —     context unreadable  —     —
+3183958  —     entered runtime     —     —
+3183959  —     entered runtime     —     —

@@ -1624,7 +1624,7 @@ fn test_ct_runtime_acceptance() {
         // threads listing names it as such, with what it is doing read
         // from where its core and driver are rather than from the
         // parker array it does not have.
-        let out = hansei_ok(&bundle, core, "threads");
+        let out = hansei_ok(&bundle, core, "threads -v");
         assert!(
             out.contains("block_on thread of its current_thread runtime"),
             "{out}"
@@ -2504,7 +2504,7 @@ fn test_sleep_join_graph() {
 fn test_threads_shows_workers_and_stacks() {
     let bundle = fixtures().bundle("simple-await");
     with_core("simple-await", |core| {
-        let out = hansei_ok(&bundle, core, "threads");
+        let out = hansei_ok(&bundle, core, "threads -v");
         // The listing opens with the first lwp's block, and the blank
         // lines fall between blocks — not ahead of them, and not
         // nowhere.
@@ -2531,6 +2531,32 @@ fn test_threads_shows_workers_and_stacks() {
     });
 }
 
+/// The bare `threads` is a table over every lwp — runtime workers,
+/// the threads that merely entered, and the ones holding no runtime
+/// at all — one row each, with the block form under -v.
+#[test]
+fn test_threads_lists_a_table_row_per_lwp() {
+    let bundle = fixtures().bundle("simple-await");
+    with_core("simple-await", |core| {
+        let out = hansei_ok(&bundle, core, "threads");
+        let mut lines = out.lines();
+        let header = lines.next().expect("the listing has a header");
+        assert!(header.starts_with("LWP"), "{out}");
+        for column in ["NAME", "ROLE", "TASK", "FRAME 0"] {
+            assert!(header.contains(column), "{out}");
+        }
+        let rows: Vec<&str> = lines.collect();
+        // One row per block the -v form prints: the two listings
+        // cover the same population.
+        let blocks = hansei_ok(&bundle, core, "threads -v");
+        assert_eq!(rows.len(), blocks.split("\n\n").count(), "{out}");
+        // A worker's row names its place in the run loop; the main
+        // thread entered the runtime without running its loop.
+        assert!(rows.iter().any(|r| r.contains("worker 0,")), "{out}");
+        assert!(rows.iter().any(|r| r.contains("entered runtime")), "{out}");
+    });
+}
+
 /// `threads` narrows to one thread when its lwp is named: that block
 /// alone is printed, and an lwp the listing does not hold is an error
 /// naming the ones it does.
@@ -2538,7 +2564,7 @@ fn test_threads_shows_workers_and_stacks() {
 fn test_threads_selects_one_lwp() {
     let bundle = fixtures().bundle("simple-await");
     with_core("simple-await", |core| {
-        let full = hansei_ok(&bundle, core, "threads");
+        let full = hansei_ok(&bundle, core, "threads -v");
         let first = full.split("\n\n").next().expect("the listing has a block");
         let tid = first
             .strip_prefix("lwp ")
@@ -2584,7 +2610,7 @@ fn test_threads_selects_one_lwp() {
 fn test_threads_registers_annotate_on_request() {
     let bundle = fixtures().bundle("simple-await");
     with_core("simple-await", |core| {
-        let plain = hansei_ok(&bundle, core, "threads");
+        let plain = hansei_ok(&bundle, core, "threads -v");
         assert!(!plain.contains("registers:"), "{plain}");
 
         let out = hansei_ok(&bundle, core, "threads --registers");

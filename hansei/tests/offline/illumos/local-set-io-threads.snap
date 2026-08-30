@@ -1,0 +1,6 @@
+---
+source: hansei/src/offline.rs
+description: "`threads` over illumos/local-set-io"
+---
+LWP  NAME  ROLE                TASK  FRAME 0
+1    —     context unreadable  —     —

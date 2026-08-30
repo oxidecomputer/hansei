@@ -1,0 +1,8 @@
+---
+source: hansei/src/offline.rs
+description: "`threads` over illumos/channels"
+---
+LWP  NAME  ROLE                TASK  FRAME 0
+1    —     entered runtime     —     —
+2    —     context unreadable  —     —
+3    —     context unreadable  —     —
