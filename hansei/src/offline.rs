@@ -47,11 +47,17 @@ fn commands(session: &Session<'_, proc::snapshot::Snapshot>) -> Vec<(&'static st
         ("tasks-v", "tasks -v".to_owned()),
         ("threads", "threads".to_owned()),
         ("threads-v", "threads -v".to_owned()),
+        // A frame budget alone implies the block form; both spellings
+        // pin the flag plumbing the table/block split rides on.
+        ("threads-f", "threads -f 3".to_owned()),
         ("graph", "graph".to_owned()),
         ("sync", "sync".to_owned()),
         ("census", "census".to_owned()),
         ("runtimes-list", "runtimes --list".to_owned()),
     ];
+    if let Some(lwp) = session.lwps.first() {
+        list.push(("threads-one", format!("threads {}", lwp.tid)));
+    }
     if let Some(task) = session.tasks.tasks.first() {
         if let Some(id) = task.task_id {
             list.push(("trace-first", format!("trace {id}")));
