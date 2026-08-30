@@ -3,11 +3,10 @@
 
 use crate::summary;
 use crate::trace::print_variable;
-use crate::{Proc, RenderOpts, Session};
+use crate::{RenderOpts, Session};
 
 use anyhow::Result;
 use hansei_runtime::tokio::bundle;
-use proc::Target;
 use reify::Value;
 
 use std::collections::BTreeMap;
@@ -20,8 +19,8 @@ use std::io::{self, Write};
 /// empty for the whole listing. The lwp that took the fatal signal
 /// prints its registers unasked — that is exactly when they matter —
 /// and `registers` asks the same of every listed thread.
-pub(crate) fn exec_threads(
-    session: &Session<'_>,
+pub(crate) fn exec_threads<T: proc::Target>(
+    session: &Session<'_, T>,
     frames: usize,
     lwps: &[u32],
     registers: bool,
@@ -151,7 +150,7 @@ fn shows_registers(registers: bool, fatal: Option<&proc::FatalSignal>, tid: u32)
 /// interrupted mid-poll — and any thread whose id belongs to a task that
 /// has since finished — leaves a stale one behind, so the claim is only
 /// made for a task the runtime still owns and still calls running.
-fn polling(session: &Session<'_>, worker: &bundle::Worker) -> String {
+fn polling<T: proc::Target>(session: &Session<'_, T>, worker: &bundle::Worker) -> String {
     polling_line(
         worker.current_task_id,
         crate::tasks::polled_task(worker.current_task_id, &session.tasks),
@@ -170,8 +169,8 @@ fn polling_line(current: Option<u64>, believed: Option<u64>) -> String {
 /// The tokio state a thread carries in its own thread-local `Context`:
 /// which thread the runtime takes it for, whether it has entered a
 /// runtime, and what is left of the task's cooperative budget.
-fn print_thread_context(
-    session: &Session<'_>,
+fn print_thread_context<T: proc::Target>(
+    session: &Session<'_, T>,
     worker: &bundle::Worker,
     opts: RenderOpts,
     out: &mut dyn io::Write,
@@ -185,8 +184,8 @@ fn print_thread_context(
 }
 
 /// Print one named value the way the threads listing indents them.
-fn print_rendered(
-    session: &Session<'_>,
+fn print_rendered<T: proc::Target>(
+    session: &Session<'_, T>,
     name: &str,
     value: &Value<'_>,
     opts: RenderOpts,
@@ -212,8 +211,8 @@ enum SchedulerState<'b> {
     None,
 }
 
-fn scheduler_state<'b>(
-    session: &Session<'b>,
+fn scheduler_state<'b, T: proc::Target>(
+    session: &Session<'b, T>,
     worker: &bundle::Worker,
 ) -> Result<SchedulerState<'b>> {
     if let Some(worker_ctx) = session.ctx.worker_context(worker)? {
@@ -229,8 +228,8 @@ fn scheduler_state<'b>(
 /// while it runs — the run queue, the LIFO slot, the park state and the
 /// counters the scheduler keeps per worker — and the wakers it has
 /// deferred until the current poll returns.
-fn print_worker_state<'b>(
-    session: &Session<'_>,
+fn print_worker_state<'b, T: proc::Target>(
+    session: &Session<'_, T>,
     worker_ctx: Value<'b>,
     opts: RenderOpts,
     out: &mut dyn io::Write,
@@ -250,8 +249,8 @@ fn print_worker_state<'b>(
 /// from where its core and driver are — and the `Core` itself while it
 /// is checked into the context, which is exactly while the thread parks
 /// or polls the `block_on` future.
-fn print_block_on_state<'b>(
-    session: &Session<'_>,
+fn print_block_on_state<'b, T: proc::Target>(
+    session: &Session<'_, T>,
     worker: &bundle::Worker,
     ct_ctx: Value<'b>,
     opts: RenderOpts,
@@ -288,8 +287,8 @@ fn print_block_on_state<'b>(
 /// line the flavor words its checked-out state with. Both flavors keep
 /// it in the same place: a `RefCell<Option<Box<Core>>>` member named
 /// `core`.
-fn print_checked_in_core(
-    session: &Session<'_>,
+fn print_checked_in_core<T: proc::Target>(
+    session: &Session<'_, T>,
     sched_ctx: Value<'_>,
     absent: &str,
     opts: RenderOpts,
@@ -309,12 +308,12 @@ fn print_checked_in_core(
 /// unless asked for the raw structural view. Nothing is rendered until the
 /// caller formats the result (with `{:#}` for the usual pretty layout), so
 /// the text can stream to its destination instead of through a `String`.
-pub(crate) fn render<'r, 'b>(
-    session: &'r Session<'b>,
+pub(crate) fn render<'r, 'b, T: proc::Target>(
+    session: &'r Session<'b, T>,
     value: &'r Value<'b>,
     opts: RenderOpts,
     heap: Option<&'r dyn reify::Heap>,
-) -> reify::DisplayValue<'r, 'b, Proc> {
+) -> reify::DisplayValue<'r, 'b, T> {
     let mut display = value
         .display_from_target(session.ctx.proc, opts.depth)
         .max_str_len(Some(opts.max_str_len))

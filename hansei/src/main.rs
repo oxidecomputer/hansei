@@ -906,9 +906,9 @@ pub enum Flow {
 /// the attach-time walks — worker discovery and task enumeration — are
 /// done here and reused by every command, rather than repeated per
 /// command as they were when each invocation opened its own target.
-pub struct Session<'b> {
-    ctx: bundle::Context<'b, Proc>,
-    proc: &'b Proc,
+pub struct Session<'b, T: Target> {
+    ctx: bundle::Context<'b, T>,
+    proc: &'b T,
     /// Read again under a recording target when a snapshot is captured.
     bundle: &'b Bundle,
     /// How the session attached: the capture attaches the same way,
@@ -973,8 +973,8 @@ pub struct Session<'b> {
     analysis: OnceCell<Analysis>,
 }
 
-impl<'b> Session<'b> {
-    fn attach(proc: &'b Proc, bundle: &'b Bundle, args: &'b SessionArgs) -> Result<Self> {
+impl<'b, T: Target> Session<'b, T> {
+    fn attach(proc: &'b T, bundle: &'b Bundle, args: &'b SessionArgs) -> Result<Self> {
         let policy = if args.best_effort {
             contract::WalkPolicy::BestEffort
         } else {
@@ -1141,7 +1141,7 @@ impl<'b> Session<'b> {
     /// Handed out by value: a render holds the borrow only as long as
     /// it is being written, while the tally it counts into is the
     /// session's and outlives every one of them.
-    pub fn heap_view(&self) -> Option<HeapView<'_, Proc>> {
+    pub fn heap_view(&self) -> Option<HeapView<'_, T>> {
         self.adopt_warm();
         let umem = self
             .umem
@@ -1163,7 +1163,7 @@ impl<'b> Session<'b> {
 
     /// The target itself, for the reads that go straight to it rather
     /// than through a bundle type.
-    pub fn proc(&self) -> &Proc {
+    pub fn proc(&self) -> &T {
         self.proc
     }
 
@@ -1220,8 +1220,8 @@ impl<'b> Session<'b> {
 }
 
 /// Run one command against an attached session.
-pub fn dispatch(
-    session: &Session<'_>,
+pub fn dispatch<T: Target>(
+    session: &Session<'_, T>,
     command: Command,
     theme: output::Theme,
     out: &mut dyn io::Write,
@@ -1520,7 +1520,7 @@ fn warm_worker(
 /// The attach summary: what is being read, and how well the two files
 /// agree. A partial fingerprint is what `--force` waves through, so it
 /// is worth being able to ask after the fact.
-fn exec_info(session: &Session<'_>, out: &mut dyn io::Write) -> Result<()> {
+fn exec_info<T: Target>(session: &Session<'_, T>, out: &mut dyn io::Write) -> Result<()> {
     let fp = session.ctx.validate_fingerprint();
     writeln!(out, "core:       {}", session.core.display())?;
     writeln!(out, "tokio info: {}", session.bundle_source)?;
@@ -1585,8 +1585,8 @@ fn exec_info(session: &Session<'_>, out: &mut dyn io::Write) -> Result<()> {
 /// Persist the tokio info this session extracted at launch, so the
 /// next session on this target can take the file with `--tokio-info`
 /// instead of paying for extraction again.
-fn exec_save_tokio_info(
-    session: &Session<'_>,
+fn exec_save_tokio_info<T: Target>(
+    session: &Session<'_, T>,
     output: &Path,
     out: &mut dyn io::Write,
 ) -> Result<()> {

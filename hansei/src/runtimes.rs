@@ -196,7 +196,10 @@ pub(crate) fn print_groups(
 }
 
 /// `runtimes --list`: every executor the target holds, a row apiece.
-pub(crate) fn exec_list(session: &Session<'_>, out: &mut dyn io::Write) -> Result<()> {
+pub(crate) fn exec_list<T: proc::Target>(
+    session: &Session<'_, T>,
+    out: &mut dyn io::Write,
+) -> Result<()> {
     let groups = groups(
         &session.runtimes,
         &session.local_sets,
@@ -245,8 +248,8 @@ impl Fields {
 /// Both are read straight through the bundle's layouts rather than into
 /// a hand-written mirror of tokio's structs, so a field tokio adds shows
 /// up without hansei being taught about it.
-pub(crate) fn exec_runtimes(
-    session: &Session<'_>,
+pub(crate) fn exec_runtimes<T: proc::Target>(
+    session: &Session<'_, T>,
     scopes: &[RuntimeScope],
     fields: Fields,
     opts: RenderOpts,
@@ -314,8 +317,8 @@ fn blank_before(printed: bool, head_runtimes: bool, i: usize) -> bool {
 /// that came from somewhere else says so rather than quietly showing
 /// the rest. What survives is in listing order however the scopes were
 /// written, and a runtime named twice is still shown once.
-fn select<'s, 'b>(
-    session: &'s Session<'b>,
+fn select<'s, 'b, T: proc::Target>(
+    session: &'s Session<'b, T>,
     scopes: &[RuntimeScope],
 ) -> Result<Vec<(usize, &'s bundle::RuntimeRef<'b>)>> {
     let handles: Vec<u64> = session.runtimes.iter().map(|rt| rt.handle.addr).collect();
@@ -359,7 +362,10 @@ fn names(scope: RuntimeScope, index: usize, handle: u64) -> bool {
 
 /// The error for a scope that names nothing: what was asked for and
 /// how many runtimes there are. `runtimes --list` is the listing.
-fn no_such_runtime(session: &Session<'_>, scope: RuntimeScope) -> anyhow::Error {
+fn no_such_runtime<T: proc::Target>(
+    session: &Session<'_, T>,
+    scope: RuntimeScope,
+) -> anyhow::Error {
     let named = match scope {
         RuntimeScope::Index(index) => index.to_string(),
         RuntimeScope::Handle(addr) => format!("{addr:#x}"),

@@ -7,7 +7,6 @@ use crate::{Session, print_warnings};
 use anyhow::Result;
 use hansei_bundle::names;
 use hansei_runtime::tokio::{Lifecycle, bundle, census};
-use proc::Target;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io::{self, Write};
@@ -490,8 +489,8 @@ pub fn future_name(future: &bundle::FutureInfo, impls: &names::ImplFold) -> Stri
     }
 }
 
-pub(crate) fn exec_tasks(
-    session: &Session<'_>,
+pub(crate) fn exec_tasks<T: proc::Target>(
+    session: &Session<'_, T>,
     futures: bool,
     tasks: &[u64],
     out: &mut dyn io::Write,
@@ -657,8 +656,8 @@ pub(crate) fn print_tasks(
 /// thread section makes. Both walks are the session's cached ones, so a
 /// census pays for the ones it prints and every later command that
 /// wants either pays for neither.
-pub(crate) fn exec_census(
-    session: &Session<'_>,
+pub(crate) fn exec_census<T: proc::Target>(
+    session: &Session<'_, T>,
     sections: summary::Sections,
     top: usize,
     out: &mut dyn io::Write,
@@ -708,7 +707,10 @@ pub(crate) fn exec_census(
 /// index addresses the parker array of the scheduler that numbered it
 /// and no other, and a pool belongs to the runtime that launched it —
 /// so one runtime's readings describe one runtime's threads.
-fn census_runtimes(session: &Session<'_>, states: bool) -> Result<Vec<summary::Runtime>> {
+fn census_runtimes<T: proc::Target>(
+    session: &Session<'_, T>,
+    states: bool,
+) -> Result<Vec<summary::Runtime>> {
     let mut runtimes = Vec::new();
     for (index, rt) in session.runtimes.iter().enumerate() {
         // Naming a runtime reads nothing from the target, so every
@@ -745,7 +747,7 @@ fn census_runtimes(session: &Session<'_>, states: bool) -> Result<Vec<summary::R
 /// runtime's `block_on` thread — each thread is. It is not worth
 /// failing the command over — a census without it still counts
 /// everything else — so a failure costs the thread its role and warns.
-fn runtime_threads(session: &Session<'_>) -> Result<Vec<summary::Thread>> {
+fn runtime_threads<T: proc::Target>(session: &Session<'_, T>) -> Result<Vec<summary::Thread>> {
     let mut runtime = Vec::new();
     for worker in &session.workers {
         runtime.push(summary::Thread {
@@ -775,8 +777,8 @@ pub(crate) fn polled_task(current_task_id: Option<u64>, list: &bundle::TaskList)
 /// `None` for a thread that merely entered the runtime. A failed read
 /// warns and costs only what it could not read: the worker its index,
 /// the block_on thread its park state.
-fn thread_role(
-    session: &Session<'_>,
+fn thread_role<T: proc::Target>(
+    session: &Session<'_, T>,
     worker: &bundle::Worker,
 ) -> Result<Option<summary::ThreadRole>> {
     match session.ctx.worker_context(worker) {

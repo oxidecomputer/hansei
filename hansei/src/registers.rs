@@ -10,7 +10,6 @@ use crate::tasks::task_label;
 use anyhow::Result;
 use hansei_runtime::heap::umem::Liveness;
 use hansei_runtime::tokio::registers::{LwpStack, RegClass, RegClassifier};
-use proc::Target as _;
 
 use std::io;
 
@@ -44,8 +43,8 @@ fn gprs(regs: &proc::Regs) -> [(&'static str, u64); 17] {
 /// section. Frame-0 trap state only: past frame 0 the unwinder
 /// restores only callee-saved registers, and printing the rest would
 /// be confident zeros.
-pub(crate) fn print_lwp_registers(
-    session: &Session<'_>,
+pub(crate) fn print_lwp_registers<T: proc::Target>(
+    session: &Session<'_, T>,
     lwp: u32,
     indent: &str,
     out: &mut dyn io::Write,

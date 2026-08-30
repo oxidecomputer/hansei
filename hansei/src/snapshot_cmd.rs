@@ -7,7 +7,6 @@ use anyhow::{Context as _, Result};
 use hansei_bundle::BundleView;
 use hansei_runtime::tokio::graph as rt_graph;
 use hansei_runtime::tokio::{bundle, census};
-use proc::Target;
 use proc::snapshot::Recorder;
 
 use std::io::{self, Write};
@@ -57,8 +56,8 @@ fn warm_frame_values<T: proc::Target>(
 /// and await chain is walked so the snapshot can answer the offline
 /// tests' whole question set; walk problems are warnings, not errors,
 /// since a partially-traceable target is still worth capturing.
-pub(crate) fn exec_snapshot(
-    session: &Session<'_>,
+pub(crate) fn exec_snapshot<T: proc::Target>(
+    session: &Session<'_, T>,
     output: &Path,
     out: &mut dyn io::Write,
 ) -> Result<()> {
