@@ -2,7 +2,7 @@
 source: hansei/src/offline.rs
 description: "`threads` over linux/dyn-future"
 ---
-LWP      NAME  ROLE                TASK  FRAME 0
-3181737  —     entered runtime     —     —
-3181739  —     context unreadable  —     —
-3181740  —     context unreadable  —     —
+LWP      NAME  ROLE                 TASK  FRAME 0
+2346185  —     entered runtime      —     0xADDR
+2346187  —     worker 0, parked     —     0xADDR
+2346188  —     worker 1, in driver  —     0xADDR ← 0xADDR ← 0xADDR

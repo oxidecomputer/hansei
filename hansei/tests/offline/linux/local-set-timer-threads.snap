@@ -2,5 +2,5 @@
 source: hansei/src/offline.rs
 description: "`threads` over linux/local-set-timer"
 ---
-LWP      NAME  ROLE                TASK  FRAME 0
-3183201  —     context unreadable  —     —
+LWP      NAME  ROLE             TASK  FRAME 0
+2347660  —     block_on caller  —     0xADDR ← 0xADDR ← 0xADDR

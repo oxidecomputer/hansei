@@ -2,7 +2,7 @@
 source: hansei/src/offline.rs
 description: "`threads` over linux-floor/sleep-join"
 ---
-LWP      NAME  ROLE                TASK  FRAME 0
-3186146  —     entered runtime     —     —
-3186148  —     context unreadable  —     —
-3186149  —     context unreadable  —     —
+LWP      NAME  ROLE                 TASK  FRAME 0
+2350256  —     entered runtime      —     0xADDR
+2350258  —     worker 1, in driver  —     0xADDR ← 0xADDR ← 0xADDR
+2350259  —     worker 0, parked     —     0xADDR

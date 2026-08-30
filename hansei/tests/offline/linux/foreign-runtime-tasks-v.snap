@@ -20,7 +20,7 @@ Task 2: async fn foreign_runtime::detached
 
 Task 3: async fn foreign_runtime::local_sleeper
     State: idle
-    Owner: local set 0 @0xADDR (lwp 3183594)
+    Owner: local set 0 @0xADDR (lwp 2348025)
     Spawned at: src/bin/foreign-runtime.rs:87:16
     Defined at: src/bin/foreign-runtime.rs:58
     Held futures: 0

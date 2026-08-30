@@ -3,8 +3,12 @@ source: hansei/src/offline.rs
 description: "`census` over linux-floor/foreign-runtime"
 ---
 Threads: 2 lwps, 2 in 2 runtimes
-    0 in the scheduler's run loop
-    2 in 2 runtimes, outside the run loop
+    1 in the scheduler's run loop
+        1 parked in the io driver
+            block_on thread, lwp 2351700
+    1 in 2 runtimes, outside the run loop
+        0 in the blocking pool of runtime 0 @0xADDR (0 idle, 0 tasks queued)
+        0 in the blocking pool of runtime 1 @0xADDR (0 idle, 0 tasks queued)
 
 Tasks: 4 owned by 2 runtimes and 1 local set
     Lifecycle: 4 idle

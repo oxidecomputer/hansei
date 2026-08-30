@@ -51,6 +51,83 @@ fn warm_frame_values<T: proc::Target>(
     }
 }
 
+/// Drive every read the `threads` listings make, discarding the
+/// output, so the offline table and blocks replay: every lwp's stack
+/// memory, each context's own rendered state, the worker cores, the
+/// parker arrays, and the blocking pool's counters.
+///
+/// Deliberately *not* the unwinder's own reads: CFI walking reads
+/// each mapped object's whole image, which is megabytes per fixture
+/// against the few tens of kilobytes everything else records. With
+/// the stack bytes in hand the offline walk bridges by frame pointer
+/// instead — validated against mapping metadata and symbolized from
+/// the function table, both of which every snapshot already carries —
+/// and its frames golden marked as the heuristic walk they are. The
+/// exact CFI walk stays covered where real cores are: the acceptance
+/// suite.
+fn warm_threads<T: proc::Target>(
+    ctx: &bundle::Context<'_, T>,
+    lwps: &[proc::LwpInfo],
+    workers: &[bundle::Worker],
+    runtimes: &[bundle::RuntimeRef<'_>],
+) {
+    const WARM_DEPTH: usize = 200;
+    for lwp in lwps {
+        let len = lwp.stack_range.end.saturating_sub(lwp.stack_range.start);
+        let runs = proc::readable_runs(lwp.stack_range.start, len, |addr, max| {
+            ctx.proc.readable_len(addr, max)
+        });
+        for (addr, run) in runs {
+            let _ = ctx.proc.read_bytes(addr, run);
+        }
+    }
+    for rt in runtimes {
+        if let bundle::RuntimeFlavor::MultiThread = rt.flavor {
+            let _ = ctx.park_states(rt.handle);
+        }
+        let _ = ctx.blocking_pool(rt.handle);
+    }
+    for worker in workers {
+        let Ok(info) = ctx.context_info(worker.context_addr) else {
+            continue;
+        };
+        for field in ["thread_id", "runtime", "budget"] {
+            if let Ok(value) = info.member(field) {
+                let _ = format!("{:#}", value.display_from_target(ctx.proc, WARM_DEPTH));
+            }
+        }
+        if let Ok(Some(worker_ctx)) = ctx.worker_context(worker) {
+            let _ = ctx.worker_index(worker_ctx);
+            warm_scheduler_ctx(ctx, worker_ctx);
+        }
+        if let Ok(Some(ct_ctx)) = ctx.ct_worker_context(worker) {
+            if let Some(rt) = runtimes
+                .iter()
+                .find(|r| r.worker_tids.contains(&worker.tid))
+            {
+                let _ = ctx.ct_park_state(rt.handle, ct_ctx);
+            }
+            warm_scheduler_ctx(ctx, ct_ctx);
+        }
+    }
+}
+
+/// The reads under one scheduler context's block: the deferred wakers
+/// and the checked-in `Core`, rendered the way `threads -v` renders
+/// them.
+fn warm_scheduler_ctx<T: proc::Target>(ctx: &bundle::Context<'_, T>, sched_ctx: reify::Value<'_>) {
+    const WARM_DEPTH: usize = 200;
+    if let Ok(defer) = sched_ctx.member("defer") {
+        let _ = format!("{:#}", defer.display_from_target(ctx.proc, WARM_DEPTH));
+    }
+    if let Ok(core) = sched_ctx.member("core").and_then(|c| c.member("value"))
+        && let Ok(Some(boxed)) = core.try_select_variant("Some")
+        && let Ok(core) = boxed.deref_ptr(ctx.proc)
+    {
+        let _ = format!("{:#}", core.display_from_target(ctx.proc, WARM_DEPTH));
+    }
+}
+
 /// Drive the full bundle-backed analysis with a recording Target in
 /// place, then persist what it read. Every task's stage
 /// and await chain is walked so the snapshot can answer the offline
@@ -154,6 +231,9 @@ pub(crate) fn exec_snapshot<T: proc::Target>(
         // The capture reads the whole walk; the gate is a session's.
         None,
     );
+
+    // The threads listings' reads: stacks, contexts, parkers, pool.
+    warm_threads(&ctx, &lwps, &workers, &runtimes);
 
     // The fixture's ground-truth registry, when the target carries one:
     // driving the read through the recorder is what puts its bytes (and

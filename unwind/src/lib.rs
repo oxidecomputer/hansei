@@ -137,11 +137,11 @@ pub fn load_frames<T: Target>(target: &T) -> Result<Unwound> {
             }),
         }
     }
-    anyhow::ensure!(
-        !objects.is_empty(),
-        "no mapped object in the target carries unwind information"
-    );
-
+    // No CFI at all — a snapshot, whose capture records stacks but
+    // not object images — still walks: frame 0 needs only registers
+    // and the symbol table, and the frame-pointer fallback bridges
+    // what it can validate. Each walk's truncation says what was
+    // missing.
     let unwinder = Unwinder {
         target,
         objects: &objects,

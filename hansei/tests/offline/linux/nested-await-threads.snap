@@ -2,7 +2,7 @@
 source: hansei/src/offline.rs
 description: "`threads` over linux/nested-await"
 ---
-LWP      NAME  ROLE                TASK  FRAME 0
-3181552  —     entered runtime     —     —
-3181554  —     context unreadable  —     —
-3181555  —     context unreadable  —     —
+LWP      NAME  ROLE                 TASK  FRAME 0
+2345972  —     entered runtime      —     0xADDR
+2345974  —     worker 0, parked     —     0xADDR
+2345975  —     worker 1, in driver  —     0xADDR ← 0xADDR ← 0xADDR

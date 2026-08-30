@@ -2,7 +2,7 @@
 source: hansei/src/offline.rs
 description: "`threads` over linux-floor/unordered"
 ---
-LWP      NAME  ROLE                TASK  FRAME 0
-3186509  —     entered runtime     —     —
-3186511  —     context unreadable  —     —
-3186512  —     context unreadable  —     —
+LWP      NAME  ROLE                 TASK  FRAME 0
+2350619  —     entered runtime      —     0xADDR
+2350621  —     worker 0, parked     —     0xADDR
+2350622  —     worker 1, in driver  —     0xADDR ← 0xADDR ← 0xADDR

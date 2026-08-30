@@ -2,6 +2,6 @@
 source: hansei/src/offline.rs
 description: "`threads` over illumos/foreign-runtime"
 ---
-LWP  NAME  ROLE                TASK  FRAME 0
-1    —     context unreadable  —     —
-2    —     entered runtime     —     —
+LWP  NAME  ROLE             TASK  FRAME 0
+1    —     block_on caller  —     0xADDR ← <mio::poll::Poll>::poll ← <tokio::runtime::io::driver::Driver>::turn
+2    —     entered runtime  —     0xADDR ← 0xADDR ← 0xADDR

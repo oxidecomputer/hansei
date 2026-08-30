@@ -4,7 +4,7 @@ description: "`tasks -v` over linux-floor/local-set-timer"
 ---
 Task 1: async fn local_set_timer::local_sleeper
     State: idle
-    Owner: local set 0 @0xADDR (lwp 3187237)
+    Owner: local set 0 @0xADDR (lwp 2351337)
     Spawned at: src/bin/local-set-timer.rs:58:20
     Defined at: src/bin/local-set-timer.rs:15
     Held futures: 0
@@ -12,7 +12,7 @@ Task 1: async fn local_set_timer::local_sleeper
 
 Task 2: async fn local_set_timer::local_acquirer
     State: idle
-    Owner: local set 0 @0xADDR (lwp 3187237)
+    Owner: local set 0 @0xADDR (lwp 2351337)
     Spawned at: src/bin/local-set-timer.rs:59:20
     Defined at: src/bin/local-set-timer.rs:22
     Held futures: 0

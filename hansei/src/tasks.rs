@@ -1146,6 +1146,36 @@ mod table_tests {
         assert!(!print(false).contains("RT"), "{}", print(false));
     }
 
+    /// The block form honors the same limit: `-v --limit 1` prints
+    /// one block and the same two-number footer.
+    #[test]
+    fn test_a_limit_cuts_the_blocks_too() {
+        use hansei_runtime::tokio::bundle::TaskList;
+
+        let list = TaskList {
+            tasks: vec![task(1, 0), task(2, 0), task(3, 0)],
+            errors: vec![],
+        };
+        let mut out = Vec::new();
+        super::print_tasks(
+            &list,
+            &hansei_bundle::names::ImplFold::default(),
+            &[],
+            &HashMap::new(),
+            &[],
+            &[],
+            &[],
+            false,
+            Some(1),
+            &[],
+            &mut out,
+        )
+        .expect("the listing renders");
+        let out = String::from_utf8(out).expect("utf8");
+        assert_eq!(out.matches("Task ").count(), 1, "{out}");
+        assert!(out.ends_with("[3 tasks, 1 shown]\n"), "{out}");
+    }
+
     /// `--limit` cuts the rows and earns the footer; without it every
     /// row prints above the plain count.
     #[test]
