@@ -1,0 +1,12 @@
+---
+source: hansei/src/offline.rs
+description: "`tasks -v` over illumos/unordered"
+---
+Task 3: async fn unordered::driver
+    State: idle
+    Spawned at: src/bin/unordered.rs:137:21
+    Defined at: src/bin/unordered.rs:78
+    Held futures: 5
+    Join sets: 1 (3 futures)
+
+1 task

@@ -2,18 +2,7 @@
 source: hansei/src/offline.rs
 description: "`tasks` over linux/sleep-join"
 ---
-Task 3: async fn sleep_join::sleeper
-    State: idle
-    Spawned at: src/bin/sleep-join.rs:30:22
-    Defined at: src/bin/sleep-join.rs:9
-    Held futures: 0
-    Join sets: 0
-
-Task 4: async fn sleep_join::joiner
-    State: idle
-    Spawned at: src/bin/sleep-join.rs:31:23
-    Defined at: src/bin/sleep-join.rs:16
-    Held futures: 0
-    Join sets: 0
-
+ID  STATE  AWAITING AT               WAITING ON                                                        FUTURE
+3   idle   src/bin/sleep-join.rs:12  the timer: deadline TS on the target's monotonic clock  async fn sleep_join::sleeper
+4   idle   src/bin/sleep-join.rs:19  task 3 (JoinHandle)                                               async fn sleep_join::joiner
 2 tasks

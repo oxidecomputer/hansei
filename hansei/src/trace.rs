@@ -2101,6 +2101,7 @@ mod future_trace_tests {
             sets,
             join_sets,
             futures,
+            None,
             tasks,
             &mut out,
         )
@@ -2376,6 +2377,7 @@ mod future_trace_tests {
                 &census.sets,
                 &census.join_sets,
                 true,
+                None,
                 &[unknown],
                 &mut out,
             )

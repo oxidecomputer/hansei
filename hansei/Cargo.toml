@@ -44,6 +44,9 @@ rayon = { workspace = true }
 reedline = { workspace = true }
 reify = { workspace = true }
 rustc-demangle = { workspace = true }
+# The listing rows derive Serialize so the JSON printer is a printer,
+# not a second model.
+serde = { workspace = true }
 subprocess = { workspace = true }
 # `RUST_LOG` selects among extraction's (and the session's) tracing
 # events; with no subscriber installed they go nowhere.

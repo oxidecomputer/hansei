@@ -6,6 +6,7 @@ use crate::{Session, print_warnings};
 
 use anyhow::Result;
 use hansei_bundle::names;
+use hansei_runtime::tokio::graph as rt_graph;
 use hansei_runtime::tokio::{Lifecycle, bundle, census};
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -489,13 +490,169 @@ pub fn future_name(future: &bundle::FutureInfo, impls: &names::ImplFold) -> Stri
     }
 }
 
+/// One row of the `tasks` table: the compact per-task answer, built
+/// once from the wait analysis and shared by the table, the filters,
+/// and the JSON printer.
+#[derive(Clone, Debug, serde::Serialize)]
+pub(crate) struct TaskRow {
+    /// The task's decimal id, or its Header address where the target
+    /// records none.
+    pub(crate) id: String,
+    /// The lifecycle, with ` (cancelled)` appended when the cancel
+    /// bit is set.
+    pub(crate) state: String,
+    /// The group index `runtimes --list` prints (runtimes and local
+    /// sets share the space); the column prints only on targets
+    /// holding more than one group.
+    pub(crate) rt: usize,
+    /// The leaf await site — the line of the reader's own code the
+    /// task is parked behind, the site `census`'s "Awaiting at"
+    /// counts.
+    pub(crate) awaiting_at: Option<String>,
+    /// What the task waits on, spelled the way `graph` spells it.
+    pub(crate) waiting_on: String,
+    /// The root future's display name, folded and never truncated.
+    pub(crate) future: String,
+}
+
+/// The table's rows, built on first use and cached on the session.
+/// The wait analysis is the cost — the census's own walk — and every
+/// later `graph`/`census`/`whatis` then pays nothing more.
+pub(crate) fn rows<'s, T: proc::Target>(session: &'s Session<'_, T>) -> &'s [TaskRow] {
+    session.task_rows.get_or_init(|| {
+        let polling: HashMap<u64, u32> = session
+            .workers
+            .iter()
+            .filter_map(|w| w.current_task_id.map(|id| (id, w.tid)))
+            .collect();
+        build_rows(
+            &session.tasks,
+            &session.analysis().waits,
+            &polling,
+            &session.impl_fold,
+        )
+    })
+}
+
+/// Build every row from what it prints — taken apart from the session
+/// so a test can lay out a population no fixture holds.
+fn build_rows(
+    list: &bundle::TaskList,
+    waits: &[rt_graph::TaskWait],
+    polling: &HashMap<u64, u32>,
+    impls: &names::ImplFold,
+) -> Vec<TaskRow> {
+    list.tasks
+        .iter()
+        .enumerate()
+        .map(|(index, task)| TaskRow {
+            id: task_id(list, index),
+            state: row_state(task),
+            rt: task.group,
+            awaiting_at: waits
+                .get(index)
+                .and_then(|w| w.site.as_ref())
+                .map(|(file, line)| format!("{file}:{line}")),
+            waiting_on: waiting_on(task, waits.get(index), polling, impls),
+            future: future_name(&task.future, impls),
+        })
+        .collect()
+}
+
+/// The `STATE` cell: the lifecycle, and the cancel bit — which any
+/// lifecycle can carry — appended rather than replacing it.
+fn row_state(task: &bundle::Task) -> String {
+    let lifecycle = task.state.lifecycle();
+    match task.state.is_cancelled() {
+        true => format!("{lifecycle} (cancelled)"),
+        false => lifecycle.to_string(),
+    }
+}
+
+/// The `WAITING ON` cell: what `graph` computes for the task — the
+/// decoded primitive, else the leaf type the chain bottoms out in —
+/// except that a mid-poll task names the lwp polling it, since a
+/// running task is not waiting at all.
+fn waiting_on(
+    task: &bundle::Task,
+    wait: Option<&rt_graph::TaskWait>,
+    polling: &HashMap<u64, u32>,
+    impls: &names::ImplFold,
+) -> String {
+    if task.state.lifecycle() == Lifecycle::Running {
+        return match task.task_id.and_then(|id| polling.get(&id)) {
+            Some(lwp) => format!("— (mid-poll on lwp {lwp})"),
+            None => "— (mid-poll)".to_string(),
+        };
+    }
+    match wait.map(|w| (&w.target, &w.leaf)) {
+        Some((Some(target), _)) => target.to_string(),
+        Some((None, Some(leaf))) => names::display_future_name(leaf, impls),
+        _ => "—".to_string(),
+    }
+}
+
+/// Print the table: one row per task, in the listing's own id order,
+/// the `RT` column only when the target holds more than one group.
+fn print_task_table(
+    rows: &[TaskRow],
+    groups: bool,
+    limit: Option<usize>,
+    out: &mut dyn io::Write,
+) -> Result<()> {
+    let shown = limit.unwrap_or(rows.len()).min(rows.len());
+    let mut header = vec!["ID", "STATE"];
+    if groups {
+        header.push("RT");
+    }
+    header.extend(["AWAITING AT", "WAITING ON", "FUTURE"]);
+    let mut table = crate::output::Table::new(header.len()).header(header);
+    for row in &rows[..shown] {
+        let mut cells = vec![row.id.clone(), row.state.clone()];
+        if groups {
+            cells.push(row.rt.to_string());
+        }
+        cells.push(row.awaiting_at.clone().unwrap_or_else(|| "—".to_string()));
+        cells.push(row.waiting_on.clone());
+        cells.push(row.future.clone());
+        table.row(cells);
+    }
+    if !table.is_empty() {
+        table.write(out)?;
+    }
+    writeln!(out, "{}", listing_footer(rows.len(), shown))?;
+    Ok(())
+}
+
+/// The line under a listing: the plain count when everything printed,
+/// both numbers when a limit cut it — the only truncation there is.
+fn listing_footer(total: usize, shown: usize) -> String {
+    match shown < total {
+        true => format!("[{}, {shown} shown]", summary::counted(total, "task")),
+        false => summary::counted(total, "task"),
+    }
+}
+
 pub(crate) fn exec_tasks<T: proc::Target>(
     session: &Session<'_, T>,
+    verbose: bool,
     futures: bool,
+    limit: Option<usize>,
     tasks: &[u64],
     out: &mut dyn io::Write,
 ) -> Result<()> {
     let list = &session.tasks;
+
+    // The bare command is the table; ids, -v, or --futures ask for
+    // the block form. The table reads the wait analysis and nothing
+    // else, so it does not pay for the future census the blocks
+    // count.
+    if tasks.is_empty() && !verbose && !futures {
+        print_warnings(&session.analysis().errors)?;
+        print_task_table(rows(session), !session.group_tags().is_empty(), limit, out)?;
+        print_warnings(&list.errors)?;
+        return Ok(());
+    }
 
     // Which lwp is polling which task right now.
     let polling: HashMap<u64, u32> = session
@@ -527,6 +684,7 @@ pub(crate) fn exec_tasks<T: proc::Target>(
         &census.sets,
         &census.join_sets,
         futures,
+        limit,
         tasks,
         out,
     )?;
@@ -558,6 +716,7 @@ pub(crate) fn print_tasks(
     census_sets: &[census::FutureSet],
     census_join_sets: &[census::JoinSet],
     futures: bool,
+    limit: Option<usize>,
     tasks: &[u64],
     out: &mut dyn io::Write,
 ) -> Result<()> {
@@ -588,6 +747,9 @@ pub(crate) fn print_tasks(
     for (index, task) in list.tasks.iter().enumerate() {
         if !selected(index) {
             continue;
+        }
+        if limit.is_some_and(|limit| shown >= limit) {
+            break;
         }
         shown += 1;
         let id = task_id(list, index);
@@ -642,8 +804,7 @@ pub(crate) fn print_tasks(
     // listing narrowed to ids the caller named already knows how many
     // it asked for, so the count would only restate the command line.
     if tasks.is_empty() {
-        let plural = if shown == 1 { "" } else { "s" };
-        writeln!(out, "{shown} task{plural}")?;
+        writeln!(out, "{}", listing_footer(list.tasks.len(), shown))?;
     }
     Ok(())
 }
@@ -843,6 +1004,160 @@ fn optional<T>(read: Result<T>, what: &str) -> Result<Option<T>> {
             writeln!(io::stderr(), "warning: cannot read the {what}: {e:#}")?;
             Ok(None)
         }
+    }
+}
+
+#[cfg(test)]
+mod table_tests {
+    use super::{build_rows, listing_footer, print_task_table};
+
+    use hansei_runtime::tokio::bundle::{FutureInfo, Task, TaskList, WaitTarget};
+    use hansei_runtime::tokio::graph::{TaskRef, TaskWait};
+    use hansei_runtime::tokio::{RawInstant, TaskAddr, TaskState};
+
+    use std::collections::HashMap;
+
+    const REF_ONE: u64 = 1 << 6;
+    const RUNNING: u64 = 0b0001;
+    const CANCELLED: u64 = 0b100_000;
+
+    fn task(id: u64, state: u64) -> Task {
+        Task {
+            addr: TaskAddr(0x1000 + id * 0x100),
+            state: TaskState(REF_ONE | state),
+            owner_id: Some(1),
+            task_id: Some(id),
+            spawn_location: None,
+            future: FutureInfo::Unknown { poll_symbol: None },
+            group: 0,
+        }
+    }
+
+    fn wait(id: u64, target: Option<WaitTarget>) -> TaskWait {
+        TaskWait {
+            task: TaskRef {
+                addr: TaskAddr(0x1000 + id * 0x100),
+                task_id: Some(id),
+            },
+            target,
+            depth: 1,
+            leaf: None,
+            site: None,
+        }
+    }
+
+    fn rows_of(
+        tasks: Vec<Task>,
+        waits: Vec<TaskWait>,
+        polling: HashMap<u64, u32>,
+    ) -> Vec<super::TaskRow> {
+        let list = TaskList {
+            tasks,
+            errors: vec![],
+        };
+        build_rows(
+            &list,
+            &waits,
+            &polling,
+            &hansei_bundle::names::ImplFold::default(),
+        )
+    }
+
+    /// Each cell says what its column promises: the site as
+    /// `file:line`, the wait as `graph` spells it, the leaf type where
+    /// no primitive decoded, `—` where there is nothing to say, and
+    /// the cancel bit appended to whatever lifecycle carries it.
+    #[test]
+    fn test_rows_spell_site_wait_and_cancellation() {
+        let timer = WaitTarget::Timer {
+            deadline: RawInstant {
+                tv_sec: 12,
+                tv_nsec: 0,
+            },
+            stopped: None,
+        };
+        let mut sited = wait(1, Some(timer));
+        sited.site = Some(("src/app.rs".to_string(), 42));
+        let mut leafed = wait(2, None);
+        leafed.leaf = Some("app::child::{async_fn_env#0}".to_string());
+        let bare = wait(3, None);
+
+        let rows = rows_of(
+            vec![task(1, 0), task(2, CANCELLED), task(3, 0)],
+            vec![sited, leafed, bare],
+            HashMap::new(),
+        );
+
+        assert_eq!(rows[0].awaiting_at.as_deref(), Some("src/app.rs:42"));
+        assert!(
+            rows[0]
+                .waiting_on
+                .starts_with("the timer: deadline 12.000s")
+        );
+        assert_eq!(rows[0].state, "idle");
+
+        assert_eq!(rows[1].state, "idle (cancelled)");
+        assert_eq!(rows[1].waiting_on, "async fn app::child");
+        assert_eq!(rows[1].awaiting_at, None);
+
+        assert_eq!(rows[2].waiting_on, "—");
+    }
+
+    /// A running task waits on nothing: its cell names the lwp polling
+    /// it where the runtime says one, and says only mid-poll where it
+    /// does not.
+    #[test]
+    fn test_a_running_row_names_its_lwp() {
+        let rows = rows_of(
+            vec![task(1, RUNNING), task(2, RUNNING)],
+            vec![wait(1, None), wait(2, None)],
+            HashMap::from([(1, 115)]),
+        );
+        assert_eq!(rows[0].waiting_on, "— (mid-poll on lwp 115)");
+        assert_eq!(rows[1].waiting_on, "— (mid-poll)");
+    }
+
+    /// The footer is the only truncation: the plain count when
+    /// everything printed, both numbers when a limit cut the listing.
+    #[test]
+    fn test_the_footer_counts_the_cut() {
+        assert_eq!(listing_footer(22498, 100), "[22498 tasks, 100 shown]");
+        assert_eq!(listing_footer(2, 2), "2 tasks");
+        assert_eq!(listing_footer(1, 1), "1 task");
+        assert_eq!(listing_footer(0, 0), "0 tasks");
+    }
+
+    /// The `RT` column exists exactly when the population holds more
+    /// than one group, so the common single-runtime table never
+    /// carries a column of zeros.
+    #[test]
+    fn test_the_rt_column_prints_only_for_groups() {
+        let rows = rows_of(vec![task(1, 0)], vec![wait(1, None)], HashMap::new());
+        let print = |groups: bool| {
+            let mut out = Vec::new();
+            print_task_table(&rows, groups, None, &mut out).expect("table prints");
+            String::from_utf8(out).expect("utf8")
+        };
+        assert!(print(true).contains("RT"), "{}", print(true));
+        assert!(!print(false).contains("RT"), "{}", print(false));
+    }
+
+    /// `--limit` cuts the rows and earns the footer; without it every
+    /// row prints above the plain count.
+    #[test]
+    fn test_a_limit_cuts_the_rows_and_says_so() {
+        let rows = rows_of(
+            vec![task(1, 0), task(2, 0), task(3, 0)],
+            vec![wait(1, None), wait(2, None), wait(3, None)],
+            HashMap::new(),
+        );
+        let mut out = Vec::new();
+        print_task_table(&rows, false, Some(2), &mut out).expect("table prints");
+        let out = String::from_utf8(out).expect("utf8");
+        assert!(out.contains("\n1 "), "{out}");
+        assert!(out.contains("\n2 "), "{out}");
+        assert!(!out.contains("\n3 "), "{out}");
+        assert!(out.ends_with("[3 tasks, 2 shown]\n"), "{out}");
     }
 }
 

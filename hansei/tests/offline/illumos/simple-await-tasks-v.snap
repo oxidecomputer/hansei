@@ -1,0 +1,12 @@
+---
+source: hansei/src/offline.rs
+description: "`tasks -v` over illumos/simple-await"
+---
+Task 3: async fn simple_await::work
+    State: idle
+    Spawned at: src/bin/simple-await.rs:75:21
+    Defined at: src/bin/simple-await.rs:17
+    Held futures: 0
+    Join sets: 0
+
+1 task

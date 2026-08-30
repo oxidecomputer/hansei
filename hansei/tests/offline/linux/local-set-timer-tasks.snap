@@ -2,28 +2,8 @@
 source: hansei/src/offline.rs
 description: "`tasks` over linux/local-set-timer"
 ---
-Task 1: async fn local_set_timer::local_sleeper
-    State: idle
-    Owner: local set 0 @0xADDR (lwp 3183201)
-    Spawned at: src/bin/local-set-timer.rs:58:20
-    Defined at: src/bin/local-set-timer.rs:15
-    Held futures: 0
-    Join sets: 0
-
-Task 2: async fn local_set_timer::local_acquirer
-    State: idle
-    Owner: local set 0 @0xADDR (lwp 3183201)
-    Spawned at: src/bin/local-set-timer.rs:59:20
-    Defined at: src/bin/local-set-timer.rs:22
-    Held futures: 0
-    Join sets: 0
-
-Task 3: async fn local_set_timer::sleeper
-    State: idle
-    Owner: runtime 0 @0xADDR (current_thread)
-    Spawned at: src/bin/local-set-timer.rs:64:24
-    Defined at: src/bin/local-set-timer.rs:35
-    Held futures: 0
-    Join sets: 0
-
+ID  STATE  RT  AWAITING AT                    WAITING ON                                                                                                FUTURE
+1   idle   1   src/bin/local-set-timer.rs:18  the timer: deadline TS on the target's monotonic clock                                          async fn local_set_timer::local_sleeper
+2   idle   1   src/bin/local-set-timer.rs:25  a tokio::sync::Semaphore (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 2  async fn local_set_timer::local_acquirer
+3   idle   0   src/bin/local-set-timer.rs:38  the timer: deadline TS on the target's monotonic clock                                          async fn local_set_timer::sleeper
 3 tasks
