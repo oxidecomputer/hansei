@@ -534,6 +534,7 @@ dependencies = [
  "reify",
  "rustc-demangle",
  "semver",
+ "serde",
  "subprocess",
  "tempfile",
  "testrun",

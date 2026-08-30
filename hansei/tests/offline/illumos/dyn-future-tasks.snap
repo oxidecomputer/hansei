@@ -2,18 +2,7 @@
 source: hansei/src/offline.rs
 description: "`tasks` over illumos/dyn-future"
 ---
-Task 3: async fn dyn_future::driver
-    State: idle
-    Spawned at: src/bin/dyn-future.rs:53:21
-    Defined at: src/bin/dyn-future.rs:24
-    Held futures: 0
-    Join sets: 1 (1 task)
-
-Task 4: async fn dyn_future::set_member
-    State: idle
-    Spawned at: src/bin/dyn-future.rs:28:9
-    Defined at: src/bin/dyn-future.rs:15
-    Held futures: 0
-    Join sets: 0
-
+ID  STATE  AWAITING AT               WAITING ON                                  FUTURE
+3   idle   src/bin/dyn-future.rs:36  future tokio::sync::oneshot::Receiver<u32>  async fn dyn_future::driver
+4   idle   src/bin/dyn-future.rs:17  future tokio::sync::oneshot::Receiver<u32>  async fn dyn_future::set_member
 2 tasks

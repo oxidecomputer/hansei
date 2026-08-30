@@ -2,11 +2,6 @@
 source: hansei/src/offline.rs
 description: "`tasks` over linux/unordered"
 ---
-Task 3: async fn unordered::driver
-    State: idle
-    Spawned at: src/bin/unordered.rs:137:21
-    Defined at: src/bin/unordered.rs:78
-    Held futures: 5
-    Join sets: 1 (3 futures)
-
+ID  STATE  AWAITING AT               WAITING ON                                                                               FUTURE
+3   idle   src/bin/unordered.rs:115  future futures_util::stream::futures_unordered::FuturesUnordered<unordered::set_member>  async fn unordered::driver
 1 task

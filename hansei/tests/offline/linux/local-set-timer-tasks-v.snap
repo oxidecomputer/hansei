@@ -1,0 +1,29 @@
+---
+source: hansei/src/offline.rs
+description: "`tasks -v` over linux/local-set-timer"
+---
+Task 1: async fn local_set_timer::local_sleeper
+    State: idle
+    Owner: local set 0 @0xADDR (lwp 3183201)
+    Spawned at: src/bin/local-set-timer.rs:58:20
+    Defined at: src/bin/local-set-timer.rs:15
+    Held futures: 0
+    Join sets: 0
+
+Task 2: async fn local_set_timer::local_acquirer
+    State: idle
+    Owner: local set 0 @0xADDR (lwp 3183201)
+    Spawned at: src/bin/local-set-timer.rs:59:20
+    Defined at: src/bin/local-set-timer.rs:22
+    Held futures: 0
+    Join sets: 0
+
+Task 3: async fn local_set_timer::sleeper
+    State: idle
+    Owner: runtime 0 @0xADDR (current_thread)
+    Spawned at: src/bin/local-set-timer.rs:64:24
+    Defined at: src/bin/local-set-timer.rs:35
+    Held futures: 0
+    Join sets: 0
+
+3 tasks

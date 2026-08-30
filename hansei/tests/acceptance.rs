@@ -517,12 +517,12 @@ struct TaskRow {
     defined: String,
 }
 
-/// Run the `tasks` command and parse the listing: a `Task <id>: <future>`
+/// Run `tasks -v` and parse the block listing: a `Task <id>: <future>`
 /// header per task, then one indented `<label>: <value>` line per
 /// attribute, then a blank line. Every block carries every attribute, so
 /// a field left empty here is a row the listing failed to print.
 fn list_tasks(bundle: &Path, core: &Path) -> Vec<TaskRow> {
-    let out = hansei_ok(bundle, core, "tasks");
+    let out = hansei_ok(bundle, core, "tasks -v");
 
     let mut lines = out.lines().peekable();
     let mut rows: Vec<TaskRow> = Vec::new();
@@ -605,6 +605,34 @@ fn task_with_future<'a>(rows: &'a [TaskRow], future: &str) -> &'a TaskRow {
         "more than one task with future {future}: {rows:#?}"
     );
     row
+}
+
+/// The bare `tasks` is a table: a header, one row per task, and the
+/// count footer — the block form is `-v`'s. `--limit` is the only
+/// truncation, and cutting the list earns the footer that counts
+/// what was left out.
+#[test]
+fn test_tasks_lists_a_table_row_per_task() {
+    let bundle = fixtures().bundle("simple-await");
+    with_core("simple-await", |core| {
+        let out = hansei_ok(&bundle, core, "tasks");
+        let mut lines = out.lines();
+        let header = lines.next().expect("the listing has a header");
+        assert!(header.starts_with("ID"), "{out}");
+        for column in ["STATE", "AWAITING AT", "WAITING ON", "FUTURE"] {
+            assert!(header.contains(column), "{out}");
+        }
+        let rest: Vec<&str> = lines.collect();
+        let (footer, rows) = rest.split_last().expect("the listing has a footer");
+        assert_eq!(*footer, format!("{} task", rows.len()), "{out}");
+        assert!(rows[0].contains("async fn simple_await::work"), "{out}");
+
+        // A limit of zero prints no table at all — a header over
+        // nothing would read as data missing — and the footer carries
+        // both numbers.
+        let out = hansei_ok(&bundle, core, "tasks --limit 0");
+        assert_eq!(out, "[1 task, 0 shown]\n", "{out}");
+    });
 }
 
 /// Run the `trace` command and return its output.

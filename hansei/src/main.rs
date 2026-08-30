@@ -516,12 +516,20 @@ pub enum Command {
         addr: Option<u64>,
     },
 
-    /// List every task the target's executors own: id, lifecycle state,
-    /// concrete future type, spawn location, where the future is
-    /// defined, how many futures it holds in its own frames beside its
-    /// await chain, and how many sets it drives from them.
+    /// List every task the target's executors own — one table row per
+    /// task: id, lifecycle state (with the cancel bit where set), the
+    /// owning runtime or local set on targets holding more than one,
+    /// the leaf await site the task is parked behind, what it waits
+    /// on, and its concrete future type, never truncated. `--limit`
+    /// is the only cut, and cutting earns a footer counting what was
+    /// left out.
     ///
-    /// Those two are of what no task listing otherwise shows — a
+    /// `-v` prints each task's full block instead: state, owner,
+    /// spawn location, where the future is defined, how many futures
+    /// it holds in its own frames beside its await chain, and how
+    /// many sets it drives from them.
+    ///
+    /// Those last two are of what no task listing otherwise shows — a
     /// `select!` arm held in a frame, a FuturesUnordered's children, a
     /// JoinSet's tasks. `--futures` lists each under its own count. They
     /// are counted apart because a set is a container rather than a
@@ -596,13 +604,23 @@ pub enum Command {
     /// and says so where it stopped; raise it on the command line for
     /// a target that nests futures deeper than that.
     Tasks {
+        /// Print each task's full block — state, owner, source
+        /// locations and census counts — rather than one table row.
+        #[arg(long, short)]
+        verbose: bool,
+
         /// List each task's futures and task sets under their counts,
-        /// rather than only counting them.
+        /// rather than only counting them. Implies -v.
         #[arg(long, short)]
         futures: bool,
 
-        /// Show only these tasks, each selected by its decimal id. The
-        /// whole list is printed when none is named.
+        /// Show at most this many tasks; a footer counts what the cut
+        /// left out. Everything is listed when the flag is absent.
+        #[arg(long, value_name = "N")]
+        limit: Option<usize>,
+
+        /// Show only these tasks' full blocks, each selected by its
+        /// decimal id. The whole list is printed when none is named.
         #[arg(value_name = "TASK")]
         task: Vec<u64>,
     },
@@ -973,6 +991,9 @@ pub struct Session<'b, T: Target> {
     /// walk commands raise it once per session, not once per line.
     ceiling_noticed: Cell<bool>,
     analysis: OnceCell<Analysis>,
+    /// The `tasks` table's rows, built from the analysis on first use
+    /// and shared with the filters and the JSON printer.
+    task_rows: OnceCell<Vec<tasks::TaskRow>>,
 }
 
 impl<'b, T: Target> Session<'b, T> {
@@ -1081,6 +1102,7 @@ impl<'b, T: Target> Session<'b, T> {
             audit: args.audit,
             ceiling_noticed: Cell::new(false),
             analysis: OnceCell::new(),
+            task_rows: OnceCell::new(),
         })
     }
 
@@ -1266,9 +1288,14 @@ pub fn dispatch<T: Target>(
         #[cfg(feature = "snapshot")]
         Command::Snapshot { output } => snapshot_cmd::exec_snapshot(session, &output, out)?,
         Command::Sync { addr } => sync::exec_sync(session, addr, out)?,
-        Command::Tasks { futures, task } => {
+        Command::Tasks {
+            verbose,
+            futures,
+            limit,
+            task,
+        } => {
             session.note_version_ceiling();
-            tasks::exec_tasks(session, futures, &task, out)?
+            tasks::exec_tasks(session, verbose, futures, limit, &task, out)?
         }
         Command::Threads {
             frames,

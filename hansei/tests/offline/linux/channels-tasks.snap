@@ -2,18 +2,7 @@
 source: hansei/src/offline.rs
 description: "`tasks` over linux/channels"
 ---
-Task 3: async fn channels::notify_waiter
-    State: idle
-    Spawned at: src/bin/channels.rs:75:23
-    Defined at: src/bin/channels.rs:17
-    Held futures: 1
-    Join sets: 0
-
-Task 4: async fn channels::hold
-    State: idle
-    Spawned at: src/bin/channels.rs:83:23
-    Defined at: src/bin/channels.rs:45
-    Held futures: 0
-    Join sets: 0
-
+ID  STATE  AWAITING AT             WAITING ON                                  FUTURE
+3   idle   src/bin/channels.rs:30  future tokio::sync::notify::Notified        async fn channels::notify_waiter
+4   idle   src/bin/channels.rs:48  future tokio::sync::oneshot::Receiver<u32>  async fn channels::hold
 2 tasks
