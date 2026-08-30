@@ -13,8 +13,8 @@ use std::io;
 /// says how, and nothing checks one against the other: printing the
 /// wrong type at an address renders that memory as the type asked for,
 /// which is sometimes exactly the point.
-pub(crate) fn exec_print(
-    session: &Session<'_>,
+pub(crate) fn exec_print<T: proc::Target>(
+    session: &Session<'_, T>,
     addr: u64,
     spec: &str,
     render: RenderOpts,

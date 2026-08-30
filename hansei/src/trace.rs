@@ -9,14 +9,13 @@ use anyhow::{Context as _, Result};
 use hansei_bundle::names;
 use hansei_bundle::{BundleMember, BundleType, BundleTypeId, BundleView, SymbolLookup};
 use hansei_runtime::tokio::{Lifecycle, bundle, census, stackjoin};
-use proc::Target as _;
 use reify::Value;
 
 use std::fmt;
 use std::io::{self, Write};
 
-pub(crate) fn exec_trace(
-    session: &Session<'_>,
+pub(crate) fn exec_trace<T: proc::Target>(
+    session: &Session<'_, T>,
     target: TraceTarget,
     opts: &TraceOpts<'_>,
     out: &mut dyn io::Write,
@@ -27,8 +26,8 @@ pub(crate) fn exec_trace(
     }
 }
 
-fn exec_trace_task(
-    session: &Session<'_>,
+fn exec_trace_task<T: proc::Target>(
+    session: &Session<'_, T>,
     task_id: u64,
     opts: &TraceOpts<'_>,
     out: &mut dyn io::Write,
@@ -113,8 +112,8 @@ fn exec_trace_task(
 /// Trace one future by address: resolve the address against the census
 /// (`tasks --futures` prints the addresses this accepts), say where the
 /// future lives, and render its await chain the way a task's is rendered.
-fn exec_trace_future(
-    session: &Session<'_>,
+fn exec_trace_future<T: proc::Target>(
+    session: &Session<'_, T>,
     addr: u64,
     opts: &TraceOpts<'_>,
     out: &mut dyn io::Write,
@@ -306,8 +305,8 @@ fn future_at(
 /// chain or the held-future/set-child origin for a `trace 0x…` chain —
 /// so each frame can carry the tally of futures the census found parked
 /// beside it.
-fn print_trace_chain<'b>(
-    session: &Session<'b>,
+fn print_trace_chain<'b, T: proc::Target>(
+    session: &Session<'b, T>,
     chain: &bundle::AwaitChain<'b>,
     owner: usize,
     origin: Option<census::Via>,
@@ -681,8 +680,8 @@ fn print_chain_end(
 /// any join fails — no claim, no unwind, no resolved poll symbol, no
 /// frame inside it — nothing native is glued on: the section says why
 /// and names `threads` for the raw stack.
-fn print_native_continuation(
-    session: &Session<'_>,
+fn print_native_continuation<T: proc::Target>(
+    session: &Session<'_, T>,
     task: &bundle::Task,
     task_id: u64,
     chain: &bundle::AwaitChain<'_>,

@@ -12,7 +12,11 @@ use hansei_runtime::tokio::{bundle, census};
 
 use std::io;
 
-pub(crate) fn exec_whatis(session: &Session<'_>, addr: u64, out: &mut dyn io::Write) -> Result<()> {
+pub(crate) fn exec_whatis<T: proc::Target>(
+    session: &Session<'_, T>,
+    addr: u64,
+    out: &mut dyn io::Write,
+) -> Result<()> {
     let image = Image::of(session);
     let vtable = vtable_at(&session.ctx.view, &image, addr);
     report_whatis(
@@ -46,7 +50,7 @@ pub(crate) fn exec_whatis(session: &Session<'_>, addr: u64, out: &mut dyn io::Wr
 /// The register annotations classify a value against the task extents
 /// and the stacks as well; this asks only what kind of memory it is,
 /// because everything more specific is a block of its own above.
-fn region_of(session: &Session<'_>, addr: u64) -> Option<String> {
+fn region_of<T: proc::Target>(session: &Session<'_, T>, addr: u64) -> Option<String> {
     let mapping = session.ctx.mappings.get(addr)?;
     Some(match &mapping.path {
         Some(path) => {

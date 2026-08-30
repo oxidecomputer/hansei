@@ -12,8 +12,8 @@ use hansei_runtime::tokio::graph::{Analysis, Futurelock, TaskRef};
 use std::collections::BTreeMap;
 use std::io;
 
-pub(crate) fn exec_sync(
-    session: &Session<'_>,
+pub(crate) fn exec_sync<T: proc::Target>(
+    session: &Session<'_, T>,
     addr: Option<u64>,
     out: &mut dyn io::Write,
 ) -> Result<()> {

@@ -11,7 +11,10 @@ use hansei_runtime::tokio::{bundle, census, graph};
 use std::collections::HashMap;
 use std::io;
 
-pub(crate) fn exec_graph(session: &Session<'_>, out: &mut dyn io::Write) -> Result<()> {
+pub(crate) fn exec_graph<T: proc::Target>(
+    session: &Session<'_, T>,
+    out: &mut dyn io::Write,
+) -> Result<()> {
     let analysis = session.analysis();
     print_warnings(&analysis.errors)?;
     let census = session.census();

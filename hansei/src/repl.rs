@@ -49,7 +49,7 @@ struct Line {
     command: Command,
 }
 
-pub fn run(session: &Session<'_>, exec: &[String]) -> Result<()> {
+pub fn run<T: proc::Target>(session: &Session<'_, T>, exec: &[String]) -> Result<()> {
     if !exec.is_empty() {
         from_command_line(session, exec)
     } else if io::stdin().is_terminal() {
@@ -72,7 +72,7 @@ enum Mode {
 /// The rules are a script's: the commands run in order and the first
 /// failure is fatal, since a caller that put them on one command line
 /// meant them as one question.
-fn from_command_line(session: &Session<'_>, exec: &[String]) -> Result<()> {
+fn from_command_line<T: proc::Target>(session: &Session<'_, T>, exec: &[String]) -> Result<()> {
     for commands in exec {
         match execute(session, Mode::Scripted, commands)
             .with_context(|| format!("--exec {commands:?}"))?
@@ -87,7 +87,7 @@ fn from_command_line(session: &Session<'_>, exec: &[String]) -> Result<()> {
 /// Read commands from a terminal until asked to stop. A command that
 /// fails is reported and the session carries on: at a prompt the useful
 /// response to a typo is another prompt.
-fn interactive(session: &Session<'_>) -> Result<()> {
+fn interactive<T: proc::Target>(session: &Session<'_, T>) -> Result<()> {
     let mut editor = line_editor();
     let prompt = DefaultPrompt::new(
         DefaultPromptSegment::Basic("hansei".to_string()),
@@ -124,7 +124,7 @@ fn interactive(session: &Session<'_>) -> Result<()> {
 /// Read commands from a pipe or a file, one per line, and stop at the
 /// first one that fails. Blank lines and `#` comments are skipped so a
 /// stored script can be annotated.
-fn scripted(session: &Session<'_>) -> Result<()> {
+fn scripted<T: proc::Target>(session: &Session<'_, T>) -> Result<()> {
     let stdin = io::stdin();
     for (n, line) in stdin.lock().lines().enumerate() {
         let line = line.context("failed to read a command from stdin")?;
@@ -153,7 +153,7 @@ fn scripted(session: &Session<'_>) -> Result<()> {
 /// after a `!` — with one way out: `\;` is a literal `;`, which is how
 /// an array type (`[usize\; 4]`) crosses the split. That pair is the
 /// whole escape grammar; every other backslash is itself.
-fn execute(session: &Session<'_>, mode: Mode, line: &str) -> Result<Flow> {
+fn execute<T: proc::Target>(session: &Session<'_, T>, mode: Mode, line: &str) -> Result<Flow> {
     let commands = split_commands(line);
     for command in &commands {
         let flow = match command_frame(commands.len(), command) {
@@ -202,7 +202,7 @@ fn command_frame(count: usize, command: &str) -> Option<String> {
 
 /// Parse one command and answer it, sending the output to a shell
 /// pipeline if it asked for one.
-fn execute_one(session: &Session<'_>, mode: Mode, line: &str) -> Result<Flow> {
+fn execute_one<T: proc::Target>(session: &Session<'_, T>, mode: Mode, line: &str) -> Result<Flow> {
     // Everything after the first `!` is a shell command to pipe into,
     // so `tasks ! grep foo` filters the listing.
     let (command, shell) = match line.split_once('!') {
@@ -754,3 +754,4 @@ mod tests {
         assert!(out.is_empty());
     }
 }
+

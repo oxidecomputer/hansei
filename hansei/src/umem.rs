@@ -27,8 +27,8 @@ pub enum Dump {
     ArenaFreed,
 }
 
-pub fn exec_umem_audit(
-    session: &Session<'_>,
+pub fn exec_umem_audit<T: proc::Target>(
+    session: &Session<'_, T>,
     addrs: &[u64],
     dump: Option<Dump>,
     out: &mut dyn io::Write,

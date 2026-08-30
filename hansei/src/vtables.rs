@@ -54,8 +54,8 @@ const EXPAND: usize = 1;
 /// the words the target has at that address.
 const MAX_ALIGN: u64 = 1 << 30;
 
-pub(crate) fn exec_vtables(
-    session: &Session<'_>,
+pub(crate) fn exec_vtables<T: proc::Target>(
+    session: &Session<'_, T>,
     words: &[String],
     verbose: bool,
     out: &mut dyn io::Write,
@@ -97,7 +97,7 @@ pub(crate) struct Image<'a> {
 
 impl<'a> Image<'a> {
     /// How this session reads the target.
-    pub(crate) fn of(session: &'a Session<'_>) -> Self {
+    pub(crate) fn of<T: proc::Target>(session: &'a Session<'_, T>) -> Self {
         Image {
             target: session.proc,
             mappings: &session.ctx.mappings,
