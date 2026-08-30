@@ -1,6 +1,7 @@
 //! The `threads` command: every thread the runtime is running on, as
 //! the runtime sees it and as the stack sees it.
 
+use crate::summary;
 use crate::trace::print_variable;
 use crate::{Proc, RenderOpts, Session};
 
@@ -115,15 +116,11 @@ pub(crate) fn exec_threads(
     Ok(())
 }
 
-/// The error for an lwp no runtime is running on: name the lwps the
-/// listing does hold, since the number asked for came from somewhere
-/// else.
+/// The error for an lwp no runtime is running on. It counts the lwps
+/// the listing holds rather than naming them — `threads` is the
+/// listing, and on a real target it is long.
 fn no_such_thread(workers: &[bundle::Worker], tid: u32) -> anyhow::Error {
-    let tids: Vec<u32> = workers.iter().map(|w| w.tid).collect();
-    anyhow::anyhow!(
-        "no thread with lwp {tid} is listed; the target's runtimes run on {} thread(s): {tids:?}",
-        tids.len()
-    )
+    anyhow::anyhow!("no lwp {tid} ({})", summary::counted(workers.len(), "lwp"))
 }
 
 /// The heading tag for the lwp that took the fatal signal — empty for
@@ -396,9 +393,6 @@ mod tests {
                 current_task_id: None,
             })
             .collect();
-        assert_eq!(
-            no_such_thread(&workers, 9).to_string(),
-            "no thread with lwp 9 is listed; the target's runtimes run on 2 thread(s): [3, 5]"
-        );
+        assert_eq!(no_such_thread(&workers, 9).to_string(), "no lwp 9 (2 lwps)");
     }
 }

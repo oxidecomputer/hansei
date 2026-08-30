@@ -220,13 +220,14 @@ fn census_refused_warning(refused: usize, fate: &str) -> Option<String> {
     })
 }
 
-/// The error for a task id the runtime does not own, naming the ids it
-/// does.
+/// The error for a task id the runtime does not own. It says how many
+/// tasks there are and no more: a real target owns tens of thousands,
+/// so listing their ids here made the error itself a hundred-kilobyte
+/// listing, and `tasks` is where the ids are.
 pub(crate) fn no_such_task(list: &bundle::TaskList, id: u64) -> anyhow::Error {
-    let ids: Vec<u64> = list.tasks.iter().filter_map(|t| t.task_id).collect();
     anyhow::anyhow!(
-        "no task with id {id} is listed; the target owns {} task(s): {ids:?}",
-        list.tasks.len()
+        "no task {id} ({})",
+        summary::counted(list.tasks.len(), "task")
     )
 }
 
