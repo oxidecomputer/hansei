@@ -17,6 +17,7 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 
 mod bundle_cmd;
+mod cursor;
 mod graph;
 #[cfg(test)]
 mod offline;
@@ -294,12 +295,45 @@ pub enum Command {
         top: usize,
     },
 
+    /// Move the cursor one await frame inward — toward the leaf the
+    /// chain bottoms out in — and print the frame it lands on.
+    Down,
+
     /// List the types whose name matches a pattern.
     FindTypes {
         /// The pattern to look for: a case-insensitive regex, so a
         /// plain substring types as itself and regex metacharacters
         /// in a type name are escaped with a backslash.
         needle: String,
+    },
+
+    /// Move the cursor within the selected chain — the await frames
+    /// `trace` numbers — or, with no index, print the current frame
+    /// the way `trace -v` prints one. Only the await chain is
+    /// addressable: a running task's native continuation belongs to
+    /// `threads`.
+    Frame {
+        /// The frame number to move to, as `trace` numbers them.
+        /// Naming none prints the current frame.
+        index: Option<usize>,
+    },
+
+    /// Select a lone future as the cursor, by the hex address the
+    /// listings print — for the chains no task contains, such as a
+    /// FuturesUnordered child in its heap node. An address some task
+    /// holds selects that task instead, positioned at the holding
+    /// frame — one cursor, never two. Bare `future` prints the
+    /// cursor's lone future as one line; `-v` prints its await chain.
+    Future {
+        /// The future's address, in hex with a required leading `0x`
+        /// (see `tasks --futures`). Naming none prints the cursor's
+        /// lone future.
+        #[arg(value_parser = parse_hex_addr)]
+        addr: Option<u64>,
+
+        /// Print the future's await chain rather than one line.
+        #[arg(long, short)]
+        verbose: bool,
     },
 
     /// Print the waker-based task dependency graph: what every task is
@@ -544,6 +578,27 @@ pub enum Command {
         addr: Option<u64>,
     },
 
+    /// Select a task as the cursor: the position `trace`, `whatis` and
+    /// `frame` answer about when given no target. A decimal id selects
+    /// that task at frame #0; a 0x address selects the task whose
+    /// allocation contains it, positioned at the await frame that
+    /// claims the address (`whatis` semantics), and refuses when no
+    /// task contains it. Selecting a running task also selects the lwp
+    /// polling it; selecting an idle one clears any thread cursor.
+    /// Bare `task` prints the cursor's task as its table row; `-v` its
+    /// full block.
+    Task {
+        /// A decimal task id (see `tasks`), or a 0x address inside
+        /// the task's allocation. Naming none prints the cursor's
+        /// task.
+        #[arg(value_parser = parse_trace_target, value_name = "ID|0xADDR")]
+        target: Option<TraceTarget>,
+
+        /// Print the cursor task's full block rather than one row.
+        #[arg(long, short)]
+        verbose: bool,
+    },
+
     /// List every task the target's executors own — one table row per
     /// task: id, lifecycle state (with the cancel bit where set), the
     /// owning runtime or local set on targets holding more than one,
@@ -708,6 +763,33 @@ pub enum Command {
         task: Vec<String>,
     },
 
+    /// Select a thread as the cursor, by its lwp id. Selecting one
+    /// also selects the task it is polling, if any; with no task, the
+    /// task-taking commands answer `no task selected` until `task`
+    /// moves on. Bare `thread` prints the cursor's thread as its table
+    /// row; `-v`, `--frames` or `--registers` its full block.
+    Thread {
+        /// The lwp id (see `threads`). Naming none prints the
+        /// cursor's thread.
+        lwp: Option<u32>,
+
+        /// Print the thread's full block rather than one row.
+        #[arg(long, short)]
+        verbose: bool,
+
+        /// Maximum stack frames to print in the block (50 when the
+        /// block form is asked for without it). Implies -v.
+        #[arg(long, short)]
+        frames: Option<usize>,
+
+        /// Show the thread's registers in the block. Implies -v.
+        #[arg(long, short)]
+        registers: bool,
+
+        #[command(flatten)]
+        render: RenderFlags,
+    },
+
     /// List every thread in the target — one table row per lwp: its
     /// name where the core records one, its place in a runtime (which
     /// worker and what its parker says, the block_on caller, a
@@ -766,8 +848,9 @@ pub enum Command {
     Trace {
         /// What to trace: a decimal task id from `tasks`, or a future
         /// address from `tasks --futures`, in hex with a required
-        /// leading `0x`. May be omitted only where something fills it
-        /// in — `tasks --exec trace` runs it under each surviving
+        /// leading `0x`. May be omitted where something fills it in —
+        /// the cursor (`task`, `future`, `thread` select one), or
+        /// `tasks --exec trace`, which runs it under each surviving
         /// task.
         #[arg(value_parser = parse_trace_target)]
         target: Option<TraceTarget>,
@@ -818,6 +901,10 @@ pub enum Command {
         #[arg(long, short, default_value_t = 4, requires = "recursive")]
         depth: usize,
     },
+
+    /// Move the cursor one await frame outward — toward #0, the
+    /// chain's root — and print the frame it lands on.
+    Up,
 
     /// List the trait-object vtables whose trait or concrete type
     /// matches a pattern: which pair each implements, where it is in
@@ -876,9 +963,10 @@ pub enum Command {
     /// what it was printed for.
     Whatis {
         /// The address to look up, written in hex with a required
-        /// leading `0x` (e.g. `0x7fffb1c26100`).
+        /// leading `0x` (e.g. `0x7fffb1c26100`). Naming none asks
+        /// after `$_`, the cursor's current frame.
         #[arg(value_parser = parse_hex_addr)]
-        addr: u64,
+        addr: Option<u64>,
     },
 
     // Last rather than alphabetical: it is not a question to ask of a
@@ -1012,7 +1100,7 @@ fn parse_hex_addr(s: &str) -> std::result::Result<u64, String> {
 
 /// What `trace` was pointed at: a task, by decimal id, or a future, by
 /// the hex address `tasks --futures` prints.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub enum TraceTarget {
     Task(u64),
     Future(u64),
@@ -1037,6 +1125,7 @@ fn parse_trace_target(s: &str) -> std::result::Result<TraceTarget, String> {
 }
 
 /// Whether the session carries on after a command.
+#[derive(Debug)]
 pub enum Flow {
     Continue,
     Quit,
@@ -1120,6 +1209,10 @@ pub struct Session<'b, T: Target> {
     /// The session's standing defaults (`set`): what the per-command
     /// flags resolve against.
     settings: RefCell<settings::Settings>,
+    /// The cursor (`task`/`future`/`thread`/`frame`): what the
+    /// single-target commands fall back to when given no target.
+    /// Listings never read it.
+    cursor: RefCell<cursor::Cursor>,
 }
 
 impl<'b, T: Target> Session<'b, T> {
@@ -1231,6 +1324,7 @@ impl<'b, T: Target> Session<'b, T> {
             task_rows: OnceCell::new(),
             thread_rows: OnceCell::new(),
             settings: RefCell::new(settings::Settings::default()),
+            cursor: RefCell::new(cursor::Cursor::default()),
         })
     }
 
@@ -1389,9 +1483,14 @@ pub fn dispatch<T: Target>(
             let sections = summary::Sections::select(threads, tasks, futures);
             tasks::exec_census(session, sections, top, out)?
         }
+        Command::Down => cursor::exec_down(session, theme, out)?,
         Command::FindTypes { needle } => {
             let pattern = pattern::Pattern::new(&needle).context("find-types")?;
             types::find(&session.ctx.view, &pattern, out)?
+        }
+        Command::Frame { index } => cursor::exec_frame(session, index, theme, out)?,
+        Command::Future { addr, verbose } => {
+            cursor::exec_future(session, addr, verbose, theme, out)?
         }
         Command::Graph { limit } => {
             let limit = limit.or(session.settings.borrow().limit);
@@ -1427,6 +1526,7 @@ pub fn dispatch<T: Target>(
         #[cfg(feature = "snapshot")]
         Command::Snapshot { output } => snapshot_cmd::exec_snapshot(session, &output, out)?,
         Command::Sync { addr } => sync::exec_sync(session, addr, out)?,
+        Command::Task { target, verbose } => cursor::exec_task(session, target, verbose, out)?,
         Command::Tasks {
             verbose,
             futures,
@@ -1450,6 +1550,16 @@ pub fn dispatch<T: Target>(
             };
             tasks::exec_tasks(session, cmd, theme, out)?
         }
+        Command::Thread {
+            lwp,
+            verbose,
+            frames,
+            registers,
+            render,
+        } => {
+            let render = render.resolve(&session.settings.borrow());
+            cursor::exec_thread(session, lwp, verbose, frames, registers, render, out)?
+        }
         Command::Threads {
             verbose,
             frames,
@@ -1469,7 +1579,7 @@ pub fn dispatch<T: Target>(
         } => {
             session.note_version_ceiling();
             let render = render.resolve(&session.settings.borrow());
-            let Some(target) = target else {
+            let Some(target) = target.or(session.cursor.borrow().root) else {
                 anyhow::bail!(
                     "no task selected; trace takes a decimal task id or a 0x future address"
                 );
@@ -1501,10 +1611,16 @@ pub fn dispatch<T: Target>(
             out,
         )?,
         Command::UmemAudit { addrs, dump } => umem::exec_umem_audit(session, &addrs, dump, out)?,
+        Command::Up => cursor::exec_up(session, theme, out)?,
         Command::Vtables { needle, verbose } => {
             vtables::exec_vtables(session, &needle, verbose, out)?
         }
-        Command::Whatis { addr } => whatis::exec_whatis(session, addr, out)?,
+        Command::Whatis { addr } => {
+            let Some(addr) = addr.or(session.cursor.borrow().last_addr) else {
+                anyhow::bail!("no task selected; whatis takes a 0x address");
+            };
+            whatis::exec_whatis(session, addr, out)?
+        }
         Command::Quit | Command::Exit => return Ok(Flow::Quit),
     }
     Ok(Flow::Continue)

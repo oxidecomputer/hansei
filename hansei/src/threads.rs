@@ -212,6 +212,24 @@ fn headline(names: &[String]) -> String {
     }
 }
 
+/// One thread's table row as a single line, cells joined — the line
+/// the cursor's `thread` selector prints. `None` for an lwp the rows
+/// do not hold.
+pub(crate) fn row_line<T: proc::Target>(session: &Session<'_, T>, lwp: u32) -> Option<String> {
+    let dash = || "—".to_string();
+    let row = rows(session).iter().find(|row| row.lwp == lwp)?;
+    Some(
+        [
+            row.lwp.to_string(),
+            row.name.clone().unwrap_or_else(dash),
+            row.role.clone(),
+            row.task.map(|id| id.to_string()).unwrap_or_else(dash),
+            row.frame0.clone(),
+        ]
+        .join("  "),
+    )
+}
+
 /// Print the table: one row per lwp, in lwp order, nothing truncated.
 fn print_thread_table(rows: &[ThreadRow], out: &mut dyn io::Write) -> Result<()> {
     let mut table = crate::output::Table::new(5).header(["LWP", "NAME", "ROLE", "TASK", "FRAME 0"]);
@@ -360,7 +378,7 @@ pub(crate) fn exec_threads<T: proc::Target>(
 /// The error for an lwp the target does not hold. It counts the lwps
 /// there are rather than naming them — `threads` is the listing, and
 /// on a real target it is long.
-fn no_such_thread(lwps: usize, tid: u32) -> anyhow::Error {
+pub(crate) fn no_such_thread(lwps: usize, tid: u32) -> anyhow::Error {
     anyhow::anyhow!("no lwp {tid} ({})", summary::counted(lwps, "lwp"))
 }
 

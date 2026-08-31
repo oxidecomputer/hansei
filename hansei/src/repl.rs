@@ -89,12 +89,15 @@ fn from_command_line<T: proc::Target>(session: &Session<'_, T>, exec: &[String])
 /// response to a typo is another prompt.
 fn interactive<T: proc::Target>(session: &Session<'_, T>) -> Result<()> {
     let mut editor = line_editor();
-    let prompt = DefaultPrompt::new(
-        DefaultPromptSegment::Basic("hansei".to_string()),
-        DefaultPromptSegment::Empty,
-    );
 
     loop {
+        // Rebuilt per line: the prompt is the cursor's account of
+        // where the session stands, and the last command may have
+        // moved it.
+        let prompt = DefaultPrompt::new(
+            DefaultPromptSegment::Basic(crate::cursor::prompt_label(&session.cursor.borrow())),
+            DefaultPromptSegment::Empty,
+        );
         match editor.read_line(&prompt) {
             Ok(Signal::Success(line)) => {
                 // reedline writes the file only when the editor is
@@ -773,6 +776,90 @@ mod tests {
             panic!("tasks parsed as another command");
         };
         assert_eq!(task, ["129"]);
+    }
+
+    /// The singular selectors are exact spellings beside their
+    /// plurals: `task 5` selects, `tasks` lists — clap's inference
+    /// must not swallow one into the other — and the movement
+    /// commands parse bare.
+    #[test]
+    fn test_the_selectors_stand_beside_their_plurals() {
+        assert!(matches!(
+            Line::try_parse_from(["task", "5"])
+                .expect("task selects")
+                .command,
+            Command::Task {
+                target: Some(crate::TraceTarget::Task(5)),
+                verbose: false
+            }
+        ));
+        assert!(matches!(
+            Line::try_parse_from(["task", "0x1f"])
+                .expect("an address selects")
+                .command,
+            Command::Task {
+                target: Some(crate::TraceTarget::Future(0x1f)),
+                ..
+            }
+        ));
+        assert!(matches!(
+            Line::try_parse_from(["tasks"])
+                .expect("tasks lists")
+                .command,
+            Command::Tasks { .. }
+        ));
+        assert!(matches!(
+            Line::try_parse_from(["thread", "3", "-v"])
+                .expect("thread selects")
+                .command,
+            Command::Thread {
+                lwp: Some(3),
+                verbose: true,
+                ..
+            }
+        ));
+        assert!(matches!(
+            Line::try_parse_from(["threads"])
+                .expect("threads lists")
+                .command,
+            Command::Threads { .. }
+        ));
+        assert!(matches!(
+            Line::try_parse_from(["future", "0x10"])
+                .expect("future selects")
+                .command,
+            Command::Future {
+                addr: Some(0x10),
+                verbose: false
+            }
+        ));
+        assert!(matches!(
+            Line::try_parse_from(["frame", "2"])
+                .expect("frame moves")
+                .command,
+            Command::Frame { index: Some(2) }
+        ));
+        assert!(matches!(
+            Line::try_parse_from(["frame"])
+                .expect("bare frame prints")
+                .command,
+            Command::Frame { index: None }
+        ));
+        assert!(matches!(
+            Line::try_parse_from(["up"]).expect("up parses").command,
+            Command::Up
+        ));
+        assert!(matches!(
+            Line::try_parse_from(["down"]).expect("down parses").command,
+            Command::Down
+        ));
+        // `whatis` still takes an address, and now none at all.
+        assert!(matches!(
+            Line::try_parse_from(["whatis"])
+                .expect("bare whatis parses")
+                .command,
+            Command::Whatis { addr: None }
+        ));
     }
 
     /// `set` takes a key alone, a key and a value, or nothing — and
