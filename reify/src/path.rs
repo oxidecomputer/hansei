@@ -763,6 +763,69 @@ mod tests {
         );
     }
 
+    /// The heap-header hop knows Rc's spelling, and the wrapper
+    /// descent lands at the member's real offset past a zero-sized
+    /// leading field.
+    #[test]
+    fn test_rc_headers_and_padded_wrappers_descend() {
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+        // RcBox { strong: 1, weak: 1, value: Point { 27, 42 } }.
+        let mut inner = u64s(&[1, 1]);
+        inner.extend_from_slice(&u32s(&[27, 42]));
+        let mem = FakeMem::new().at(0x6000, inner);
+        let ptr_bytes = u64s(&[0x6000]);
+        let rc = Value::new(v.ty(RC_BOX_PTR).unwrap(), 0x100, &ptr_bytes);
+        assert_eq!(
+            shown(resolve(&mem, rc, &parse(".x").unwrap()).unwrap()),
+            "27"
+        );
+
+        // PadWrap { pad: (), point: Point { 7, 9 } @4 }: the descent
+        // adds the member's offset, so `.y` sits at base + 4 + 4.
+        let mut bytes = vec![0u8; 4];
+        bytes.extend_from_slice(&u32s(&[7, 9]));
+        let wrap = Value::new(v.ty(PAD_WRAP).unwrap(), 0x200, &bytes);
+        let y = one(resolve(&mem, wrap, &parse(".y").unwrap()).unwrap());
+        assert_eq!(format!("{}", y.display()), "9");
+        assert_eq!(y.addr, 0x200 + 4 + 4);
+    }
+
+    /// `*` crosses a niche pointer enum — `Option<NonNull<T>>`'s
+    /// shape — to the pointee its live variant holds.
+    #[test]
+    fn test_deref_crosses_a_niche_pointer_enum() {
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+        let mem = FakeMem::new().at(0x2000, u32s(&[7, 9]));
+        let bytes = u64s(&[0x2000]);
+        let opt = Value::new(v.ty(OPT_PTR).unwrap(), 0x100, &bytes);
+        assert_eq!(
+            shown(resolve(&mem, opt, &parse("*").unwrap()).unwrap()),
+            "Point { x: 7, y: 9 }"
+        );
+    }
+
+    /// A truncated sequence tells an index inside the claim apart
+    /// from one past it: the first is a short read, the second is the
+    /// reader's own overreach.
+    #[test]
+    fn test_truncated_sequences_report_the_claim() {
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+        // The Vec claims five elements; the target serves three.
+        let mem = FakeMem::new().at(0x3000, u32s(&[10, 20, 30]));
+        let bytes = u64s(&[0x3000, 5, 5]);
+        let vec = Value::new(v.ty(VEC).unwrap(), 0x100, &bytes);
+        let run = |path: &str| resolve(&mem, vec, &parse(path).unwrap());
+
+        assert_eq!(shown(run("[2]").unwrap()), "30");
+        let err = run("[3]").expect_err("inside the claim").to_string();
+        assert!(err.contains("claims 5") && err.contains("3"), "{err}");
+        let err = run("[5]").expect_err("past the claim").to_string();
+        assert!(err.contains("past the end"), "{err}");
+    }
+
     /// A missing member names the members that do exist; a type with
     /// no element view refuses indexing.
     #[test]
