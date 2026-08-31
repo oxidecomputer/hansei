@@ -1,0 +1,5 @@
+---
+source: hansei/src/offline.rs
+description: "`task 3` over illumos/gen-0007"
+---
+3  idle  src/bin/gen-0007.rs:125  future gen_0007::GfSel3<core::future::pending::Pending<u64>, core::future::pending::Pending<u64>, core::future::pending::Pending<u64>>  async fn gen_0007::driver_00

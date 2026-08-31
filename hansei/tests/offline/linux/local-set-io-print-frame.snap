@@ -1,0 +1,35 @@
+---
+source: hansei/src/offline.rs
+description: "`print` over linux/local-set-io"
+---
+local_set_io::local_reader::{async_fn_env#0}::Suspend0 {
+    stream: tokio::net::unix::stream::UnixStream {
+        io: tokio::io::poll_evented::PollEvented<mio::net::uds::stream::UnixStream> {
+            io: core::option::Option<mio::net::uds::stream::UnixStream>::Some(...),
+            registration: tokio::runtime::io::registration::Registration {
+                handle: ...,
+                shared: ...,
+            },
+        },
+    },
+    buf: [
+        0xADDR,
+        0xADDR,
+        0xADDR,
+        0xADDR,
+        0xADDR,
+        0xADDR,
+        0xADDR,
+        0xADDR,
+    ],
+    __awaitee: tokio::io::util::read::Read<tokio::net::unix::stream::UnixStream> {
+        reader: 0xADDR -> tokio::net::unix::stream::UnixStream {
+                io: ...,
+            },
+        buf: &mut [u8] {
+            data_ptr: 0xADDR -> ...,
+            length: 8,
+        },
+    },
+    __3: false,
+}

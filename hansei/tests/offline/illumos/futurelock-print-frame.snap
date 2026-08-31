@@ -1,0 +1,35 @@
+---
+source: hansei/src/offline.rs
+description: "`print` over illumos/futurelock"
+---
+futurelock::main::{async_block#0}::{async_block_env#0}::Suspend1 {
+    lock: alloc::sync::Arc<tokio::sync::mutex::Mutex<()>, alloc::alloc::Global> {
+        ptr: 0xADDR -> alloc::sync::ArcInner<tokio::sync::mutex::Mutex<()>> {
+                strong: ...,
+                weak: ...,
+                data: ...,
+            },
+    },
+    __awaitee: futurelock::do_stuff::{async_fn_env#0}::4 {
+        lock: alloc::sync::Arc<tokio::sync::mutex::Mutex<()>, alloc::alloc::Global> {
+            ptr: 0xADDR -> ...,
+        },
+        future1: core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output=()> + core::marker::Send), alloc::alloc::Global>> {
+            pointer: alloc::boxed::Box<(dyn core::future::future::Future<Output=()> + core::marker::Send), alloc::alloc::Global> {
+                pointer: 0xADDR,
+                concrete type: futurelock::do_async_thing::{closure#0},
+                vtable: 0xADDR -> ...,
+            },
+        },
+        disabled: 2,
+        __awaitee: futurelock::do_async_thing::{async_fn_env#0}::3 {
+            label: "op2",
+            lock: alloc::sync::Arc<tokio::sync::mutex::Mutex<()>, alloc::alloc::Global> {
+                ptr: ...,
+            },
+            __awaitee: tokio::sync::mutex::{impl#10}::lock::{async_fn_env#0}<()>::3 {
+                __awaitee: ...,
+            },
+        },
+    },
+}

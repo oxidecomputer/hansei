@@ -1,0 +1,5 @@
+---
+source: hansei/src/offline.rs
+description: "`task 1` over illumos/local-set-io"
+---
+1  idle  1  src/bin/local-set-io.rs:28  future tokio::io::util::read::Read<tokio::net::unix::stream::UnixStream>  async fn local_set_io::local_reader

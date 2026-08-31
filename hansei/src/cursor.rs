@@ -495,8 +495,8 @@ fn cursor_frame<T: proc::Target>(session: &Session<'_, T>) -> Result<usize> {
 
 /// A cursor root's chain, with the coordinates the census records it
 /// under — what the frame printer's holds tally and annotations key on.
-struct ResolvedChain<'b> {
-    chain: bundle::AwaitChain<'b>,
+pub(crate) struct ResolvedChain<'b> {
+    pub(crate) chain: bundle::AwaitChain<'b>,
     /// The owning task's index in the task list.
     owner: usize,
     /// `None` for a task's own chain; the held-future or set-child
@@ -508,7 +508,7 @@ struct ResolvedChain<'b> {
 /// a task's allocation is that task's chain (an id-less task roots by
 /// its header address); one outside every task is asked of the census
 /// the way `trace 0x…` asks.
-fn chain_of<'b, T: proc::Target>(
+pub(crate) fn chain_of<'b, T: proc::Target>(
     session: &Session<'b, T>,
     root: TraceTarget,
 ) -> Result<ResolvedChain<'b>> {

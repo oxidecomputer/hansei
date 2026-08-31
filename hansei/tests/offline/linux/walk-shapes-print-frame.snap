@@ -1,0 +1,27 @@
+---
+source: hansei/src/offline.rs
+description: "`print` over linux/walk-shapes"
+---
+walk_shapes::chained::{async_fn_env#0}::Suspend0 {
+    wz: walk_shapes::WrapZ<walk_shapes::deep::{async_fn_env#0}> {
+        inner: walk_shapes::deep::{async_fn_env#0}::0 {
+            park: alloc::sync::Arc<tokio::sync::notify::Notify, alloc::alloc::Global> {
+                ptr: ...,
+            },
+        },
+    },
+    __awaitee: walk_shapes::WrapS<walk_shapes::WrapE<walk_shapes::deep::{async_fn_env#0}>> {
+        tag: 7,
+        inner: walk_shapes::WrapE<walk_shapes::deep::{async_fn_env#0}>::Running {
+            tag: 9,
+            inner: walk_shapes::deep::{async_fn_env#0}::3 {
+                park: ...,
+                __awaitee: ...,
+            },
+        },
+    },
+    __2: true,
+    __3: false,
+    __4: false,
+    __5: false,
+}

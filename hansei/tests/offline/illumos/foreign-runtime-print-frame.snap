@@ -1,0 +1,22 @@
+---
+source: hansei/src/offline.rs
+description: "`print` over illumos/foreign-runtime"
+---
+foreign_runtime::joined::{async_fn_env#0}::Suspend0 {
+    __awaitee: tokio::sync::semaphore::{impl#0}::acquire::{async_fn_env#0}::3 {
+        self: 0xADDR -> tokio::sync::semaphore::Semaphore {
+                ll_sem: ...,
+            },
+        __awaitee: tokio::sync::batch_semaphore::Acquire {
+            node: tokio::sync::batch_semaphore::Waiter {
+                state: ...,
+                waker: ...,
+                pointers: ...,
+            },
+            semaphore: 0xADDR -> ...,
+            num_permits: 1,
+            queued: true,
+        },
+    },
+    __1: false,
+}

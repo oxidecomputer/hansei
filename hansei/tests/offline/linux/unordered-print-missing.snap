@@ -1,0 +1,5 @@
+---
+source: hansei/src/offline.rs
+description: "`print .no_such_member` over linux/unordered"
+---
+error: type unordered::driver::{async_fn_env#0}::Suspend0 has no member named no_such_member (members: notify, set, held, boxed, pair, maybe, nested_hold, sum, __awaitee, __9, __10, __11, __12, __13, __14)

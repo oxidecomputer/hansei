@@ -1,0 +1,11 @@
+---
+source: hansei/src/offline.rs
+description: "`print` over illumos/ct-runtime"
+---
+ct_runtime::sleeper::{async_fn_env#0}::Suspend0 {
+    __awaitee: tokio::time::sleep::Sleep {
+        deadline: 1000000.001s,
+        state: registered,
+    },
+    __1: false,
+}
