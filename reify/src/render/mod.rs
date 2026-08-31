@@ -53,12 +53,12 @@ const DEFAULT_DEPTH: usize = 8;
 /// ask for 1.4 GB of output. This is the ceiling on how much any one
 /// string can cost to print, whether it is corrupt or merely enormous;
 /// [`DisplayValue::max_str_len`] moves it.
-pub const DEFAULT_MAX_STR_LEN: u64 = 128 * 1024;
+pub const DEFAULT_MAX_STRING_LEN: u64 = 128 * 1024;
 
 /// How many elements of a sequence a render shows before saying how
 /// many are left.
 ///
-/// The sibling of [`DEFAULT_MAX_STR_LEN`] for everything wider than a
+/// The sibling of [`DEFAULT_MAX_STRING_LEN`] for everything wider than a
 /// byte, and counted in elements rather than bytes because that is what
 /// costs a line apiece. The two are separate budgets because they bound
 /// different things, and they are wildly different sizes for the same
@@ -67,7 +67,7 @@ pub const DEFAULT_MAX_STR_LEN: u64 = 128 * 1024;
 /// an indent in front of it. A hundred and twenty-eight of those is
 /// already more than anyone reads; past it a listing is scrolled, not
 /// examined. [`DisplayValue::max_array_len`] moves it.
-pub const DEFAULT_MAX_ARRAY_LEN: u64 = 128;
+pub const DEFAULT_MAX_ARRAY_VALUES: u64 = 128;
 
 /// A caller-supplied label for addresses the renderer prints. A followed
 /// pointer keeps its address and gains the label — `0x… (label) -> …` —
@@ -137,7 +137,7 @@ impl<'r, 'a, T> DisplayValue<'r, 'a, T> {
     }
 
     /// How much of a string to show, in bytes; `None` shows all of it.
-    /// Defaults to [`DEFAULT_MAX_STR_LEN`] — see there for why a
+    /// Defaults to [`DEFAULT_MAX_STRING_LEN`] — see there for why a
     /// ceiling exists at all. What is left is reported rather than
     /// dropped, the way every other shortfall is.
     pub fn max_str_len(mut self, max: Option<u64>) -> Self {
@@ -146,7 +146,7 @@ impl<'r, 'a, T> DisplayValue<'r, 'a, T> {
     }
 
     /// How many elements of a sequence to show; `None` shows all of
-    /// them. Defaults to [`DEFAULT_MAX_ARRAY_LEN`]. Byte sequences are
+    /// them. Defaults to [`DEFAULT_MAX_ARRAY_VALUES`]. Byte sequences are
     /// bounded by [`max_str_len`](DisplayValue::max_str_len) instead,
     /// since they are strings in all but type.
     pub fn max_array_len(mut self, max: Option<u64>) -> Self {
@@ -205,8 +205,8 @@ impl<'a> Value<'a> {
             elide: None,
             annotate: None,
             heap: None,
-            max_str_len: Some(DEFAULT_MAX_STR_LEN),
-            max_array_len: Some(DEFAULT_MAX_ARRAY_LEN),
+            max_str_len: Some(DEFAULT_MAX_STRING_LEN),
+            max_array_len: Some(DEFAULT_MAX_ARRAY_VALUES),
             prefix: "",
             visited: RefCell::new(HashSet::default()),
             formats: FormatCache::default(),
@@ -228,8 +228,8 @@ impl<'a> Value<'a> {
             elide: None,
             annotate: None,
             heap: None,
-            max_str_len: Some(DEFAULT_MAX_STR_LEN),
-            max_array_len: Some(DEFAULT_MAX_ARRAY_LEN),
+            max_str_len: Some(DEFAULT_MAX_STRING_LEN),
+            max_array_len: Some(DEFAULT_MAX_ARRAY_VALUES),
             prefix: "",
             visited: RefCell::new(HashSet::default()),
             formats: FormatCache::default(),

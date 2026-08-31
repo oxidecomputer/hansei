@@ -1972,8 +1972,8 @@ mod filter_tests {
             render: RenderOpts {
                 depth: 4,
                 ugly: false,
-                max_str_len: reify::DEFAULT_MAX_STR_LEN,
-                max_array_len: reify::DEFAULT_MAX_ARRAY_LEN,
+                max_string_len: reify::DEFAULT_MAX_STRING_LEN,
+                max_array_values: reify::DEFAULT_MAX_ARRAY_VALUES,
             },
             no_elide: false,
             elide: Vec::new(),

@@ -558,8 +558,8 @@ pub(crate) fn render<'r, 'b, T: proc::Target>(
 ) -> reify::DisplayValue<'r, 'b, T> {
     let mut display = value
         .display_from_target(session.ctx.proc, opts.depth)
-        .max_str_len(Some(opts.max_str_len))
-        .max_array_len(Some(opts.max_array_len));
+        .max_str_len(Some(opts.max_string_len))
+        .max_array_len(Some(opts.max_array_values));
     if let Some(heap) = heap {
         display = display.heap(heap);
     }

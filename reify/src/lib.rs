@@ -18,7 +18,7 @@ pub use error::Error;
 pub use heap::{Gate, Heap, Liveness};
 pub use parse::ParseWithDbgInfo;
 pub use render::{
-    AddrAnnotator, DEFAULT_MAX_ARRAY_LEN, DEFAULT_MAX_STR_LEN, DisplayValue, ElideOverride,
+    AddrAnnotator, DEFAULT_MAX_ARRAY_VALUES, DEFAULT_MAX_STRING_LEN, DisplayValue, ElideOverride,
 };
 pub use value::Value;
 
