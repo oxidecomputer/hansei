@@ -21,7 +21,6 @@ snapshot = ["hansei-runtime/testkit"]
 # (outside the `snapshot` feature, which enables this itself).
 hansei-runtime = { workspace = true, features = ["testkit"] }
 insta = { workspace = true }
-regex = { workspace = true }
 # The ceiling-notice tests build `Meta.tokio_version` values; the
 # non-test code only reads the ones bundles carry.
 semver = { workspace = true }
@@ -42,6 +41,9 @@ hansei-runtime = { workspace = true }
 proc = { workspace = true }
 rayon = { workspace = true }
 reedline = { workspace = true }
+# Every string search (find-types, vtables, the tasks filters) is one
+# case-insensitive regex helper (`pattern.rs`).
+regex = { workspace = true }
 reify = { workspace = true }
 rustc-demangle = { workspace = true }
 # The listing rows derive Serialize so the JSON printer is a printer,

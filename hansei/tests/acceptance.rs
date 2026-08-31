@@ -3071,7 +3071,13 @@ fn test_vtables_acceptance() {
         // drop-glue/size/align header, then the three call shims `Fn`
         // carries with its supertraits.
         let anchor = "std::rt::lang_start::{closure_env#0}<()>";
-        let out = hansei_ok(&bundle, core, &format!("vtables -v {anchor}"));
+        // The needle is a regex, so the anchor's braces and parens are
+        // escaped to match themselves.
+        let out = hansei_ok(
+            &bundle,
+            core,
+            &format!("vtables -v {}", regex::escape(anchor)),
+        );
         assert!(out.contains("core::ops::function::Fn<()>\n"), "{out}");
         assert!(out.contains(&format!("6 slots  {anchor}")), "{out}");
         // Nothing about this pair is vacant, so nothing says it is.

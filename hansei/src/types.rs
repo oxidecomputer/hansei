@@ -256,13 +256,17 @@ pub fn resolve_elide_spec(view: &BundleView<'_>, spec: String) -> Result<String>
     Ok(type_by_id(view, id)?.name().to_string())
 }
 
-/// List the names containing `needle`, one per line.
-pub fn find(view: &BundleView<'_>, needle: &str, out: &mut dyn io::Write) -> Result<()> {
+/// List the names matching `needle`, one per line.
+pub fn find(
+    view: &BundleView<'_>,
+    needle: &crate::pattern::Pattern,
+    out: &mut dyn io::Write,
+) -> Result<()> {
     // The index is sorted by name, so repeated definitions of one name
     // arrive together and collapse into a single line.
     let mut count = 0usize;
     let mut previous: Option<(&str, Vec<BundleTypeId>)> = None;
-    for (name, ty) in view.named_types().filter(|(n, _)| n.contains(needle)) {
+    for (name, ty) in view.named_types().filter(|(n, _)| needle.is_match(n)) {
         match &mut previous {
             Some((seen, definitions)) if *seen == name => definitions.push(ty.id()),
             _ => {
@@ -856,7 +860,8 @@ mod tests {
         let bundle = bundle();
         let view = BundleView::new(&bundle);
         let mut out = Vec::new();
-        find(&view, needle, &mut out).expect("find succeeds");
+        let needle = crate::pattern::Pattern::new(needle).expect("the test needle compiles");
+        find(&view, &needle, &mut out).expect("find succeeds");
         String::from_utf8(out).unwrap()
     }
 
