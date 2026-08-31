@@ -325,6 +325,29 @@ impl<T> Clone for RenderCtx<'_, '_, T> {
 }
 
 impl<'buf, 'a, T> RenderCtx<'buf, 'a, T> {
+    /// A minimal context for driving a storage walk outside a render
+    /// pass — the path resolver's map-entry enumeration. No depth
+    /// budget, no state shared with any render, no allocator gate:
+    /// the walk believes the bytes, the way the parse path does.
+    pub(crate) fn for_walk(proc: &'a T, formats: &'buf FormatCache<'a>) -> Self {
+        RenderCtx {
+            depth: 0,
+            max_depth: 0,
+            proc: Some(proc),
+            visited: None,
+            formats,
+            parallel: false,
+            hex_integers: false,
+            ugly: false,
+            elide: None,
+            annotate: None,
+            heap: None,
+            max_str_len: None,
+            max_array_len: None,
+            prefix: "",
+        }
+    }
+
     /// The `Send + Sync` slice of this context, from which a worker
     /// thread rebuilds a context of its own around task-local caches.
     pub(crate) fn for_workers(&self) -> WorkerCtx<'buf, 'a, T> {
