@@ -527,6 +527,22 @@ pub(crate) struct TaskRow {
     /// for the task — its wheel entries, the io slots its waker is
     /// parked in. Empty where they hold nothing.
     pub(crate) wait_detail: Vec<String>,
+    /// What would wake the task: every slot hansei decodes whose data
+    /// pointer is this task's header, spelled as the slot kind and
+    /// owner, sorted and comma-joined — so a `select!` over a timer
+    /// and a channel buckets by the combination. `None` is the
+    /// "nothing can wake it" answer, the `<empty>` group.
+    pub(crate) waker: Option<String>,
+    /// The bucket `--group waker` files the row under: the same
+    /// slots at the kind level — `io read`, `timer` — with identity
+    /// kept where it groups usefully (`semaphore 0x…`, `join task
+    /// N`), so twenty thousand parked reads are one bucket rather
+    /// than one each.
+    pub(crate) waker_kind: Option<String>,
+    /// The `-v` lines for the slots the wait detail above does not
+    /// already place: the semaphore wake-queue node, the joined
+    /// task's trailer.
+    pub(crate) waker_detail: Vec<String>,
     /// The root future's display name, folded and never truncated.
     pub(crate) future: String,
     /// `Spawned at:` — where the target records one
@@ -548,9 +564,11 @@ pub(crate) fn rows<'s, T: proc::Target>(session: &'s Session<'_, T>) -> &'s [Tas
             .iter()
             .filter_map(|w| w.current_task_id.map(|id| (id, w.tid)))
             .collect();
+        let analysis = session.analysis();
         build_rows(
             &session.tasks,
-            &session.analysis().waits,
+            &analysis.waits,
+            &analysis.join_wakers,
             &polling,
             &session.impl_fold,
             &session.registries,
@@ -565,6 +583,7 @@ pub(crate) fn rows<'s, T: proc::Target>(session: &'s Session<'_, T>) -> &'s [Tas
 pub(crate) fn build_rows(
     list: &bundle::TaskList,
     waits: &[rt_graph::TaskWait],
+    joins: &[rt_graph::JoinWaker],
     polling: &HashMap<u64, u32>,
     impls: &names::ImplFold,
     registries: &bundle::Registries,
@@ -573,32 +592,108 @@ pub(crate) fn build_rows(
     list.tasks
         .iter()
         .enumerate()
-        .map(|(index, task)| TaskRow {
-            id: task_id(list, index),
-            state: row_state(task, blocking_lwps.get(&task.addr.0).copied()),
-            rt: task.group,
-            awaiting_at: waits
-                .get(index)
-                .and_then(|w| w.site.as_ref())
-                .map(|(file, line)| format!("{file}:{line}")),
-            waiting_on: waiting_on(task, waits.get(index), polling, impls),
-            waiting_kind: waiting_kind(task, waits.get(index), impls),
-            wait_detail: wait_detail(task, registries),
-            future: future_name(&task.future, impls),
-            spawned: task.spawn_location.as_ref().map(|loc| loc.to_string()),
-            defined: match &task.future {
-                bundle::FutureInfo::Known(known) => known
-                    .decl
-                    .as_ref()
+        .map(|(index, task)| {
+            let (waker, waker_kind, waker_detail) =
+                waker_slots(task.addr.0, waits, joins, registries);
+            TaskRow {
+                id: task_id(list, index),
+                state: row_state(task, blocking_lwps.get(&task.addr.0).copied()),
+                rt: task.group,
+                awaiting_at: waits
+                    .get(index)
+                    .and_then(|w| w.site.as_ref())
                     .map(|(file, line)| format!("{file}:{line}")),
-                _ => None,
-            },
-            lwp: match task.state.lifecycle() == Lifecycle::Running {
-                true => task.task_id.and_then(|id| polling.get(&id)).copied(),
-                false => None,
-            },
+                waiting_on: waiting_on(task, waits.get(index), polling, impls),
+                waiting_kind: waiting_kind(task, waits.get(index), impls),
+                wait_detail: wait_detail(task, registries),
+                waker,
+                waker_kind,
+                waker_detail,
+                future: future_name(&task.future, impls),
+                spawned: task.spawn_location.as_ref().map(|loc| loc.to_string()),
+                defined: match &task.future {
+                    bundle::FutureInfo::Known(known) => known
+                        .decl
+                        .as_ref()
+                        .map(|(file, line)| format!("{file}:{line}")),
+                    _ => None,
+                },
+                lwp: match task.state.lifecycle() == Lifecycle::Running {
+                    true => task.task_id.and_then(|id| polling.get(&id)).copied(),
+                    false => None,
+                },
+            }
         })
         .collect()
+}
+
+/// The waker slots armed with the task at `addr`'s waker: the wheel
+/// entries and io slots the registries keep, the wake-queue nodes the
+/// decoded semaphores carry, and the trailer of any task it awaits
+/// through a `JoinHandle` — indexed from reads already made, never a
+/// scan. The joined spelling is the row's `waker` value; the detail
+/// lines place the slots the wait detail does not.
+fn waker_slots(
+    addr: u64,
+    waits: &[rt_graph::TaskWait],
+    joins: &[rt_graph::JoinWaker],
+    registries: &bundle::Registries,
+) -> (Option<String>, Option<String>, Vec<String>) {
+    let mut slots = Vec::new();
+    let mut kinds = Vec::new();
+    let mut detail = Vec::new();
+    for timer in registries.timers_of(addr) {
+        slots.push(format!("timer {:#x}", timer.entry));
+        kinds.push("timer".to_string());
+    }
+    for (resource, waiter) in registries.io_of(addr) {
+        let side = match waiter.slot {
+            bundle::IoSlot::Reader => " read".to_string(),
+            bundle::IoSlot::Writer => " write".to_string(),
+            bundle::IoSlot::Listed { .. } => match waiter.slot.interest() {
+                Some(interest) => format!(" {interest}"),
+                None => String::new(),
+            },
+        };
+        slots.push(format!("io {:#x}{side}", resource.addr));
+        kinds.push(format!("io{side}"));
+    }
+    for wait in waits {
+        let Some(bundle::WaitTarget::Semaphore {
+            addr: sem, waiters, ..
+        }) = &wait.target
+        else {
+            continue;
+        };
+        for w in waiters {
+            if matches!(w.waker, bundle::QueuedWaker::Task { addr: a, .. } if a == addr) {
+                slots.push(format!("semaphore {sem:#x}"));
+                kinds.push(format!("semaphore {sem:#x}"));
+                detail.push(format!(
+                    "semaphore {sem:#x}: waker in its wake-queue node {:#x}",
+                    w.addr
+                ));
+            }
+        }
+    }
+    for join in joins {
+        if join.waiter.addr.0 == addr {
+            slots.push(format!("join {}", join.task));
+            kinds.push(format!("join {}", join.task));
+            detail.push(format!("join {}: waker in its trailer", join.task));
+        }
+    }
+    slots.sort();
+    slots.dedup();
+    kinds.sort();
+    kinds.dedup();
+    detail.sort();
+    detail.dedup();
+    (
+        (!slots.is_empty()).then(|| slots.join(", ")),
+        (!kinds.is_empty()).then(|| kinds.join(", ")),
+        detail,
+    )
 }
 
 /// Which lwp runs each claimed blocking task: unwind the stacks once
@@ -861,6 +956,8 @@ enum Field {
     Awaiting,
     /// The `WAITING ON` spelling.
     WaitingOn,
+    /// The waker slots, as the row joins them.
+    Waker,
     /// The spawn location.
     Spawned,
     /// The definition site.
@@ -880,10 +977,11 @@ enum Field {
 }
 
 impl Field {
-    const NAMES: [(&'static str, Field); 11] = [
+    const NAMES: [(&'static str, Field); 12] = [
         ("type", Field::Type),
         ("awaiting", Field::Awaiting),
         ("waiting-on", Field::WaitingOn),
+        ("waker", Field::Waker),
         ("spawned", Field::Spawned),
         ("defined", Field::Defined),
         ("state", Field::State),
@@ -1053,6 +1151,7 @@ fn field_text(field: Field, row: &TaskRow) -> Option<&str> {
         Field::Type => Some(&row.future),
         Field::Awaiting => row.awaiting_at.as_deref(),
         Field::WaitingOn => Some(&row.waiting_on),
+        Field::Waker => row.waker.as_deref(),
         Field::Spawned => row.spawned.as_deref(),
         Field::Defined => row.defined.as_deref(),
         Field::State => Some(&row.state),
@@ -1094,6 +1193,7 @@ fn group_value(
         // per deadline — and a task waiting on nothing nameable (the
         // table's `—`, a mid-poll row) is the empty bucket, not a value.
         Field::WaitingOn => row.waiting_kind.clone(),
+        Field::Waker => row.waker_kind.clone(),
         Field::Spawned => row.spawned.clone(),
         Field::Defined => row.defined.clone(),
         Field::State => Some(row.state.clone()),
@@ -1461,6 +1561,14 @@ pub(crate) fn print_tasks(
             for line in &row.wait_detail {
                 writeln!(out, "        {line}")?;
             }
+            writeln!(
+                out,
+                "    Waker: {}",
+                row.waker.as_deref().unwrap_or("<empty>")
+            )?;
+            for line in &row.waker_detail {
+                writeln!(out, "        {line}")?;
+            }
         }
         // What the task has off its spine, in two rows rather than one:
         // the futures held in its own frames, and the sets it drives
@@ -1744,6 +1852,7 @@ mod table_tests {
         build_rows(
             &list,
             &waits,
+            &[],
             &polling,
             &hansei_bundle::names::ImplFold::default(),
             &Default::default(),
@@ -1842,6 +1951,7 @@ mod table_tests {
                 errors: vec![],
             },
             &[],
+            &[],
             &HashMap::new(),
             &hansei_bundle::names::ImplFold::default(),
             &Default::default(),
@@ -1868,6 +1978,108 @@ mod table_tests {
             super::task_state(&blocking(4, COMPLETE), &polling, &HashMap::new()),
             "complete"
         );
+    }
+
+    /// The waker column indexes every slot source: the registries'
+    /// wheel entries and io slots, a decoded semaphore's wake-queue
+    /// nodes, and the trailer of a joined task — sorted, joined, and
+    /// `None` (the `<empty>` bucket) where nothing is armed. The
+    /// detail lines place what the wait lines do not: the queue node
+    /// and the trailer.
+    #[test]
+    fn test_waker_slots_index_every_source() {
+        use hansei_runtime::tokio::bundle::{
+            IoResourceInfo, IoSlot, IoWaiterInfo, QueuedWaker, Registries, SemaphoreWaiter,
+            TimerEntryInfo,
+        };
+        use hansei_runtime::tokio::graph::JoinWaker;
+
+        let t1 = 0x1000 + 0x100;
+        let registries = Registries {
+            timers: vec![TimerEntryInfo {
+                entry: 0xdd00,
+                state: None,
+                task: Some(t1),
+            }],
+            io: vec![IoResourceInfo {
+                addr: 0xaa00,
+                readiness: None,
+                waiters: vec![IoWaiterInfo {
+                    slot: IoSlot::Reader,
+                    task: Some(t1),
+                }],
+            }],
+        };
+        let semaphore = WaitTarget::Semaphore {
+            addr: 0x9000,
+            owner: None,
+            num_permits: 1,
+            available: 0,
+            closed: false,
+            waiters: vec![
+                SemaphoreWaiter {
+                    addr: 0xe100,
+                    needed: 1,
+                    waker: QueuedWaker::Task {
+                        addr: t1,
+                        task_id: Some(1),
+                    },
+                },
+                SemaphoreWaiter {
+                    addr: 0xe200,
+                    needed: 1,
+                    waker: QueuedWaker::Unarmed,
+                },
+            ],
+        };
+        // Task 2's wait observes the semaphore; the queue node is
+        // task 1's — the slot lands on the waiter, not the observer.
+        let waits = vec![wait(1, None), wait(2, Some(semaphore))];
+        let joins = vec![JoinWaker {
+            task: TaskRef {
+                addr: TaskAddr(0x1000 + 2 * 0x100),
+                task_id: Some(2),
+            },
+            waiter: TaskRef {
+                addr: TaskAddr(t1),
+                task_id: Some(1),
+            },
+        }];
+        let list = TaskList {
+            tasks: vec![task(1, 0), task(2, 0)],
+            errors: vec![],
+        };
+        let rows = build_rows(
+            &list,
+            &waits,
+            &joins,
+            &HashMap::new(),
+            &hansei_bundle::names::ImplFold::default(),
+            &registries,
+            &Default::default(),
+        );
+        assert_eq!(
+            rows[0].waker.as_deref(),
+            Some("io 0xaa00 read, join task 2, semaphore 0x9000, timer 0xdd00")
+        );
+        // The group bucket is the kind-level combination: addresses
+        // dropped where they would make every bucket a singleton,
+        // kept where identity groups usefully.
+        assert_eq!(
+            rows[0].waker_kind.as_deref(),
+            Some("io read, join task 2, semaphore 0x9000, timer")
+        );
+        assert_eq!(rows[1].waker_kind, None);
+        assert_eq!(
+            rows[0].waker_detail,
+            vec![
+                "join task 2: waker in its trailer".to_string(),
+                "semaphore 0x9000: waker in its wake-queue node 0xe100".to_string(),
+            ]
+        );
+        // The observer's own waker is in no slot.
+        assert_eq!(rows[1].waker, None);
+        assert!(rows[1].waker_detail.is_empty());
     }
 
     /// A running task waits on nothing: its cell names the lwp polling
@@ -1931,6 +2143,7 @@ mod table_tests {
         };
         let rows = build_rows(
             &list,
+            &[],
             &[],
             &HashMap::new(),
             &hansei_bundle::names::ImplFold::default(),
@@ -1997,6 +2210,9 @@ mod filter_tests {
             waiting_on: "—".to_string(),
             waiting_kind: None,
             wait_detail: Vec::new(),
+            waker: None,
+            waker_kind: None,
+            waker_detail: Vec::new(),
             future: "async fn app::work".to_string(),
             spawned: None,
             defined: None,
