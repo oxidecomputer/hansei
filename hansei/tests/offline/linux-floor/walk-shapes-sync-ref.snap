@@ -1,0 +1,6 @@
+---
+source: hansei/src/offline.rs
+description: "`sync 0x55b4b0205800 --kind address` over linux-floor/walk-shapes"
+---
+0xADDR: no decoded resource owns this address
+    Referenced by value: task 7 (frame #0 future walk_shapes::local_parker::Suspend0, in `__awaitee`), task 7 (frame #1 future tokio::sync::notify::Notified, in `waiter`), task 8 (frame #0 future walk_shapes::joiner::Suspend0, in `__awaitee`), task 8 (frame #1 future tokio::runtime::task::join::JoinHandle<u32>, in `raw`)

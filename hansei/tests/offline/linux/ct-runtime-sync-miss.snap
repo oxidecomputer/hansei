@@ -1,0 +1,5 @@
+---
+source: hansei/src/offline.rs
+description: "`sync 0x1` over linux/ct-runtime"
+---
+error: no decoded resource at 0xADDR, and no task's frames hold it by value; `sync` lists semaphores, joined tasks and sets

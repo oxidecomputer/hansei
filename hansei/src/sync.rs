@@ -191,10 +191,15 @@ fn print_task_scoped(
         }
     }
     if kind.is_none_or(|k| k == Kind::Join) {
+        // The tasks it awaits: a semaphore holder is a Waiting edge
+        // too, but its relation is the semaphore block above, not a
+        // join, so only the edges the join index reverses count — and
+        // the task's own block prints only when something joins *it*.
         let awaits = view.relations.edges[index]
             .iter()
             .filter(|e| e.kind == crate::relations::EdgeKind::Waiting)
-            .map(|e| e.to);
+            .map(|e| e.to)
+            .filter(|&to| view.relations.waited_by[to].contains(&index));
         let mut joins: Vec<usize> = [index]
             .into_iter()
             .filter(|&i| view.relations.joined(i))
@@ -203,11 +208,6 @@ fn print_task_scoped(
         joins.sort_unstable();
         joins.dedup();
         for join in joins {
-            // A semaphore holder is a Waiting edge too, but its
-            // relation is the semaphore block above, not a join.
-            if join != index && !view.relations.waited_by[join].contains(&index) {
-                continue;
-            }
             sep(out)?;
             print_join(view, join, out)?;
         }
@@ -799,6 +799,21 @@ mod sync_tests {
             }
         }
 
+        fn print_scoped(&self, index: usize, kind: Option<Kind>) -> anyhow::Result<String> {
+            let relations = Relations::build(&self.list, &self.analysis, &[], &self.join_sets);
+            let view = View {
+                list: &self.list,
+                analysis: &self.analysis,
+                relations: &relations,
+                sets: &self.sets,
+                join_sets: &self.join_sets,
+                impls: &names::ImplFold::default(),
+            };
+            let mut out = Vec::new();
+            super::print_task_scoped(&view, index, kind, &mut out)?;
+            Ok(String::from_utf8(out).unwrap())
+        }
+
         fn print(&self, select: Option<u64>, kind: Option<Kind>) -> anyhow::Result<String> {
             let relations = Relations::build(&self.list, &self.analysis, &[], &self.join_sets);
             let view = View {
@@ -953,6 +968,123 @@ mod sync_tests {
             .print(None, None)
             .unwrap();
         assert_eq!(out, "");
+    }
+
+    /// The scoped view prints exactly what the task is party to: the
+    /// semaphore it is blocked on, the same block for its holder —
+    /// whose own un-joined block is *not* among them, the semaphore
+    /// already being its relation — and, for a joiner, the joined
+    /// task's block.
+    #[test]
+    fn test_scoped_sync_prints_what_the_task_is_party_to() {
+        let waits = vec![wait(40, Some(semaphore(Vec::new()))), wait(7, None)];
+        let fixture = Fixture::new(waits, vec![futurelock(7, 0xa000, 0)]);
+        let blocked = fixture.print_scoped(0, None).unwrap();
+        assert!(blocked.starts_with("a tokio::sync::Mutex"), "{blocked}");
+        assert!(!blocked.contains("party to no"), "{blocked}");
+        let holder = fixture.print_scoped(1, None).unwrap();
+        assert!(holder.starts_with("a tokio::sync::Mutex"), "{holder}");
+        assert!(!holder.contains("No task waits"), "{holder}");
+
+        let fixture = Fixture::new(vec![wait(7, Some(joining(8))), wait(8, None)], Vec::new());
+        let joiner = fixture.print_scoped(0, None).unwrap();
+        assert_eq!(
+            joiner,
+            "task 8 (<unknown>): idle
+    Waited by: task 7
+"
+        );
+    }
+
+    /// A set relates its driver and each member: the member's scope
+    /// prints its one set, the driver of two prints both, blank-line
+    /// separated and nothing before the first.
+    #[test]
+    fn test_scoped_sync_prints_driven_and_member_sets() {
+        let joinset = |set_addr: u64, member: u64| census::JoinSet {
+            owner: 0,
+            frame: 0,
+            local: "tasks".to_string(),
+            via: None,
+            addr: set_addr,
+            ty: "tokio::task::join_set::JoinSet<()>".to_string(),
+            length: 1,
+            children: vec![census::JoinedTask {
+                entry: 0xc000,
+                task: addr(member).0,
+                id: Some(member),
+                state: TaskState(REF_ONE),
+                listed: true,
+            }],
+        };
+        let mut fixture = Fixture::new(vec![wait(9, None), wait(21, None)], Vec::new());
+        fixture.join_sets = vec![joinset(0xb000, 21), joinset(0xb100, 99)];
+        let member = fixture.print_scoped(1, None).unwrap();
+        assert_eq!(
+            member,
+            "task 21 (<unknown>): idle\n    Member of: a tokio::task::join_set::JoinSet<()> (set 0xb000), driven by task 9\n\na tokio::task::join_set::JoinSet<()> (set 0xb000): 1 member, driven by task 9 (`tasks`)\n    Members (idle): task 21\n"
+        );
+        let driver = fixture.print_scoped(0, None).unwrap();
+        assert!(driver.starts_with("a tokio"), "{driver}");
+        assert_eq!(driver.matches("(set 0x").count(), 2, "{driver}");
+        assert_eq!(
+            driver
+                .matches(
+                    "
+
+"
+                )
+                .count(),
+            1,
+            "{driver}"
+        );
+    }
+
+    /// A set whose every child has completed unreaped counts no
+    /// in-flight line at all — a zero would claim a count the set does
+    /// not have.
+    #[test]
+    fn test_a_set_of_only_reaped_children_counts_no_flight() {
+        let mut fixture = Fixture::new(vec![wait(9, None)], Vec::new());
+        fixture.sets = vec![census::FutureSet {
+            owner: 0,
+            frame: 0,
+            local: "work".to_string(),
+            via: None,
+            addr: 0xb000,
+            ty: "futures_util::stream::futures_unordered::FuturesUnordered<()>".to_string(),
+            children: vec![census::SetChild {
+                node: 0xc100,
+                depth: 0,
+                future: None,
+                root: None,
+                state: None,
+                waiting_on: None,
+                wait: None,
+                leaf: None,
+            }],
+        }];
+        assert_eq!(
+            fixture.print(None, None).unwrap(),
+            "a futures_util::stream::futures_unordered::FuturesUnordered<()> (set 0xb000): 1 child, driven by task 9 (`work`)\n    Completed, not yet reaped: 1\n"
+        );
+    }
+
+    /// The reference fallback's block: both lines when frames hold the
+    /// address, the refusal naming the address when none do.
+    #[test]
+    fn test_the_reference_block_prints_or_refuses() {
+        let mut out = Vec::new();
+        super::print_references(0x40, &["task 7 (frame #0 x)".to_string()], &mut out).unwrap();
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            "0x40: no decoded resource owns this address\n    Referenced by value: task 7 (frame #0 x)\n"
+        );
+        let err = super::print_references(0x40, &[], &mut Vec::new()).unwrap_err();
+        assert!(
+            err.to_string().contains("no decoded resource at 0x40"),
+            "{err}"
+        );
     }
 
     /// A joined task earns one block naming every join relation it is
