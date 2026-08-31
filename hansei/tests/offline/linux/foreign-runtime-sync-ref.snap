@@ -1,0 +1,6 @@
+---
+source: hansei/src/offline.rs
+description: "`sync 0x7f97f8006080 --kind address` over linux/foreign-runtime"
+---
+0xADDR: no decoded resource owns this address
+    Referenced by value: task 1 (frame #0 future foreign_runtime::joined::Suspend0, in `__awaitee`), task 1 (frame #1 future tokio::sync::semaphore::Semaphore::acquire::Suspend0, in `__awaitee`), task 1 (frame #2 future tokio::sync::batch_semaphore::Acquire, in `node`), task 4 (frame #0 future foreign_runtime::joiner::Suspend0, in `__awaitee`), task 4 (frame #1 future tokio::runtime::task::join::JoinHandle<u32>, in `raw`)

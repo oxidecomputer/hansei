@@ -1,0 +1,6 @@
+---
+source: hansei/src/offline.rs
+description: "`sync 0xdd6580 --kind address` over illumos/local-set"
+---
+0xADDR: no decoded resource owns this address
+    Referenced by value: task 1 (frame #0 future local_set::local_sleeper::Suspend0, in `__awaitee`), task 1 (frame #1 future tokio::time::sleep::Sleep, in `entry`), task 3 (frame #0 future local_set::joiner::Suspend0, in `__awaitee`), task 3 (frame #1 future tokio::runtime::task::join::JoinHandle<u32>, in `raw`)

@@ -2251,6 +2251,10 @@ mod filter_tests {
         assert!(keeps(&clause("waiting-on", "^timer"), &r));
         assert!(keeps(&clause("spawned", "main.rs"), &r));
         assert!(keeps(&clause("defined", "app.rs:7"), &r));
+        r.waker = Some("join task 2, timer 0xdd00".to_string());
+        assert!(keeps(&clause("waker", "join task 2"), &r));
+        assert!(!keeps(&clause("waker", "semaphore"), &r));
+        assert!(!keeps(&clause("waker", "."), &row("1")));
 
         // Nothing in the field is nothing to match.
         assert!(!keeps(&clause("awaiting", "."), &row("1")));
@@ -2383,6 +2387,16 @@ mod filter_tests {
             group_value(Field::Lwp, 0, &waited, None).as_deref(),
             Some("115")
         );
+        // The waker bucket is the kind-level combination, and a row
+        // with no armed slot is the empty bucket.
+        let mut woken = r.clone();
+        woken.waker = Some("timer 0xdd00".to_string());
+        woken.waker_kind = Some("timer".to_string());
+        assert_eq!(
+            group_value(Field::Waker, 0, &woken, None).as_deref(),
+            Some("timer")
+        );
+        assert_eq!(group_value(Field::Waker, 0, &r, None), None);
         assert_eq!(EMPTY_BUCKET, "<empty>");
 
         let rows: Vec<TaskRow> = (0..5).map(|i| row(&i.to_string())).collect();

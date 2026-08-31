@@ -1,0 +1,6 @@
+---
+source: hansei/src/offline.rs
+description: "`sync 0x1ae0600 --kind address` over illumos/sleep-join"
+---
+0xADDR: no decoded resource owns this address
+    Referenced by value: task 3 (frame #0 future sleep_join::sleeper::Suspend0, in `__awaitee`), task 3 (frame #1 future tokio::time::sleep::Sleep, in `entry`), task 4 (frame #0 future sleep_join::joiner::Suspend0, in `__awaitee`), task 4 (frame #1 future tokio::runtime::task::join::JoinHandle<u32>, in `raw`)

@@ -80,6 +80,9 @@ fn commands(
         ("sync", "sync".to_owned()),
         // One block family alone: the join view of the same listing.
         ("sync-join", "sync --kind join".to_owned()),
+        // The by-value fallback's refusal: nothing maps 0x1, so the
+        // scan is never entered and the miss names what sync lists.
+        ("sync-miss", "sync 0x1".to_owned()),
         ("census", "census".to_owned()),
         ("runtimes-list", "runtimes --list".to_owned()),
         // The info summary and each section. A snapshot records no
@@ -93,6 +96,21 @@ fn commands(
         ("info-fds", "info fds".to_owned()),
         ("info-v", "info -v".to_owned()),
     ];
+    // The by-value fallback's hit: a joined task's header is held
+    // inside its awaiter's JoinHandle frame, so it is an address every
+    // such capture proves the scan can find; --kind address forces the
+    // referenced-by reading past the task-allocation answer.
+    if let Some(joined) = session
+        .analysis()
+        .waits
+        .iter()
+        .find_map(|w| match &w.target {
+            Some(bundle::WaitTarget::Task { addr, .. }) => Some(*addr),
+            _ => None,
+        })
+    {
+        list.push(("sync-ref", format!("sync {joined:#x} --kind address")));
+    }
     if let Some(lwp) = session.lwps.first() {
         list.push(("threads-one", format!("threads {}", lwp.tid)));
     }
