@@ -62,7 +62,7 @@ pub fn run<T: proc::Target>(session: &Session<'_, T>, exec: &[String]) -> Result
 /// Where the commands come from. The one command that cares is
 /// `history`: a prompt has one, a pipe or `--exec` does not.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Mode {
+pub(crate) enum Mode {
     Interactive,
     Scripted,
 }
@@ -156,7 +156,11 @@ fn scripted<T: proc::Target>(session: &Session<'_, T>) -> Result<()> {
 /// after a `!` — with one way out: `\;` is a literal `;`, which is how
 /// an array type (`[usize\; 4]`) crosses the split. That pair is the
 /// whole escape grammar; every other backslash is itself.
-fn execute<T: proc::Target>(session: &Session<'_, T>, mode: Mode, line: &str) -> Result<Flow> {
+pub(crate) fn execute<T: proc::Target>(
+    session: &Session<'_, T>,
+    mode: Mode,
+    line: &str,
+) -> Result<Flow> {
     let commands = split_commands(line);
     for command in &commands {
         let flow = match command_frame(commands.len(), command) {
@@ -205,6 +209,12 @@ fn command_frame(count: usize, command: &str) -> Option<String> {
 
 /// Parse one command and answer it, sending the output to a shell
 /// pipeline if it asked for one.
+///
+/// Two rewrites run on the command half — never on the shell half —
+/// before clap sees it: a leading `task X` / `future X` / `thread X`
+/// with more words after it scopes the rest to that cursor without
+/// moving the session's, and a `$_` token becomes the (scoped)
+/// cursor's current-frame address.
 fn execute_one<T: proc::Target>(session: &Session<'_, T>, mode: Mode, line: &str) -> Result<Flow> {
     // Everything after the first `!` is a shell command to pipe into,
     // so `tasks ! grep foo` filters the listing.
@@ -217,7 +227,36 @@ fn execute_one<T: proc::Target>(session: &Session<'_, T>, mode: Mode, line: &str
         return Ok(Flow::Continue);
     }
 
-    let parsed = match parse_command(command)? {
+    let words: Vec<String> = command.split_whitespace().map(String::from).collect();
+    let (saved, words) = match peel_scope(&words) {
+        Some((scope, rest)) => {
+            let saved = *session.cursor.borrow();
+            // A scope that does not select (a bad id, a wild address)
+            // fails the command; the selectors leave the cursor
+            // untouched unless they succeed.
+            apply_scope(session, scope)?;
+            (Some(saved), rest.to_vec())
+        }
+        None => (None, words),
+    };
+    let result = answer_words(session, mode, &words, shell);
+    if let Some(saved) = saved {
+        *session.cursor.borrow_mut() = saved;
+    }
+    result
+}
+
+/// Answer the already-scoped words: substitute `$_`, parse, dispatch,
+/// stream. Split from [`execute_one`] so the scope above is restored
+/// whichever way this returns.
+fn answer_words<T: proc::Target>(
+    session: &Session<'_, T>,
+    mode: Mode,
+    words: &[String],
+    shell: Option<&str>,
+) -> Result<Flow> {
+    let words = substitute_last_addr(words, session.cursor.borrow().last_addr)?;
+    let parsed = match parse_words(&words)? {
         Some(parsed) => parsed,
         None => return Ok(Flow::Continue),
     };
@@ -261,14 +300,21 @@ fn execute_one<T: proc::Target>(session: &Session<'_, T>, mode: Mode, line: &str
     }
 }
 
-/// Parse one command, or answer it on the spot: `None` means the
-/// command was already answered with printed output rather than parsed
-/// into something to dispatch.
-///
-/// Splitting on whitespace means an argument cannot itself contain a
-/// space; no command takes one today.
+/// Parse one command line, split on whitespace — so an argument cannot
+/// itself contain a space; no command takes one today. The session
+/// path goes through [`parse_words`] after the scope and `$_`
+/// rewrites; this spelling serves the suites.
+#[cfg(test)]
 fn parse_command(command: &str) -> Result<Option<Line>> {
-    match Line::try_parse_from(command.split_whitespace()) {
+    let words: Vec<String> = command.split_whitespace().map(String::from).collect();
+    parse_words(&words)
+}
+
+/// Parse one command's words, or answer it on the spot: `None` means
+/// the command was already answered with printed output rather than
+/// parsed into something to dispatch.
+fn parse_words(words: &[String]) -> Result<Option<Line>> {
+    match Line::try_parse_from(words) {
         Ok(parsed) => Ok(Some(parsed)),
         // `use_stderr` is clap's own split between a real parse failure
         // and output that was asked for: `help` renders as an error but
@@ -279,6 +325,62 @@ fn parse_command(command: &str) -> Result<Option<Line>> {
         }
         Err(e) => Err(anyhow!("{}", clap_message(e))),
     }
+}
+
+/// What a scoped prefix selects: `task 129 trace -v` runs `trace -v`
+/// under a cursor on task 129 without moving the session's own —
+/// delve's `goroutine 42 bt`. This is also what `tasks --exec` runs
+/// each surviving task's command under.
+enum Scope {
+    Task(crate::TraceTarget),
+    Future(u64),
+    Thread(u32),
+}
+
+/// Peel a leading `task X` / `future X` / `thread X` when more words
+/// follow. A bare selector is a command, not a scope, and so is a
+/// selector with only flags after its argument (`task 129 -v`): the
+/// peel requires the word after the argument to start a command. An
+/// argument the selector would not parse (so, a mistyped line) is
+/// left whole for clap to refuse with the selector's own error.
+fn peel_scope(words: &[String]) -> Option<(Scope, &[String])> {
+    if words.len() < 3 || words[2].starts_with('-') {
+        return None;
+    }
+    let arg = &words[1];
+    let scope = match words[0].as_str() {
+        "task" => Scope::Task(crate::parse_trace_target(arg).ok()?),
+        "future" => Scope::Future(crate::parse_hex_addr(arg).ok()?),
+        "thread" => Scope::Thread(arg.parse().ok()?),
+        _ => return None,
+    };
+    Some((scope, &words[2..]))
+}
+
+/// Point the cursor where a scope says, silently: the selection line
+/// belongs to the selector commands, not to a prefix that exists to
+/// run something else.
+fn apply_scope<T: proc::Target>(session: &Session<'_, T>, scope: Scope) -> Result<()> {
+    match scope {
+        Scope::Task(target) => crate::cursor::select_task(session, target).map(|_| ()),
+        Scope::Future(addr) => crate::cursor::select_future(session, addr, &mut io::sink()),
+        Scope::Thread(lwp) => crate::cursor::select_thread(session, lwp),
+    }
+}
+
+/// Substitute `$_` — the cursor's current-frame address — wherever it
+/// stands as a whole word. Only the exact token: anything it is
+/// embedded in is somebody's name, not a reference to the cursor.
+fn substitute_last_addr(words: &[String], last: Option<u64>) -> Result<Vec<String>> {
+    words
+        .iter()
+        .map(|word| match word == "$_" {
+            true => last.map(|addr| format!("{addr:#x}")).ok_or_else(|| {
+                anyhow!("$_ is unset: no cursor stands; `task`, `future` or `thread` selects one")
+            }),
+            false => Ok(word.clone()),
+        })
+        .collect()
 }
 
 /// clap renders a parse failure with an `error: ` prefix of its own.
@@ -776,6 +878,61 @@ mod tests {
             panic!("tasks parsed as another command");
         };
         assert_eq!(task, ["129"]);
+    }
+
+    /// A scoped prefix is a selector, its argument, and a command to
+    /// run: a bare selector, a selector followed only by flags, and a
+    /// non-selector all stay whole, and an argument the selector
+    /// would not parse is left for clap's own refusal.
+    #[test]
+    fn test_a_scope_peels_only_a_selector_with_a_command() {
+        let w = |s: &str| s.split_whitespace().map(String::from).collect::<Vec<_>>();
+
+        let words = w("task 129 trace -v");
+        let (scope, rest) = peel_scope(&words).expect("a task scope peels");
+        assert!(matches!(scope, Scope::Task(crate::TraceTarget::Task(129))));
+        assert_eq!(rest, ["trace", "-v"]);
+
+        let words = w("task 0x20 whatis");
+        assert!(matches!(
+            peel_scope(&words),
+            Some((Scope::Task(crate::TraceTarget::Future(0x20)), _))
+        ));
+        let words = w("future 0x10 trace");
+        assert!(matches!(peel_scope(&words), Some((Scope::Future(0x10), _))));
+        let words = w("thread 3 print $_");
+        assert!(matches!(peel_scope(&words), Some((Scope::Thread(3), _))));
+
+        assert!(peel_scope(&w("task 129")).is_none());
+        assert!(peel_scope(&w("task 129 -v")).is_none());
+        assert!(peel_scope(&w("tasks 129 trace")).is_none());
+        assert!(peel_scope(&w("task nonsense trace")).is_none());
+        assert!(peel_scope(&w("thread 0x10 trace")).is_none());
+        assert!(peel_scope(&w("trace 129 x")).is_none());
+    }
+
+    /// `$_` substitutes only where it stands as a whole word, spells
+    /// the address the way every command reads one back, and refuses
+    /// when no cursor stands.
+    #[test]
+    fn test_last_addr_substitutes_whole_tokens_only() {
+        let w = |s: &str| s.split_whitespace().map(String::from).collect::<Vec<_>>();
+        assert_eq!(
+            substitute_last_addr(&w("whatis $_"), Some(0x1f)).expect("$_ resolves"),
+            ["whatis", "0x1f"]
+        );
+        // An embedded `$_` is somebody's name, not the cursor.
+        assert_eq!(
+            substitute_last_addr(&w("type a$_b"), Some(0x1f)).expect("names pass through"),
+            ["type", "a$_b"]
+        );
+        // No `$_` on the line: the cursor's absence costs nothing.
+        assert_eq!(
+            substitute_last_addr(&w("tasks"), None).expect("no reference, no refusal"),
+            ["tasks"]
+        );
+        let err = substitute_last_addr(&w("whatis $_"), None).unwrap_err();
+        assert!(err.to_string().contains("no cursor"), "{err}");
     }
 
     /// The singular selectors are exact spellings beside their

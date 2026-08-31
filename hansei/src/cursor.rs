@@ -93,7 +93,10 @@ fn task_index<T: proc::Target>(session: &Session<'_, T>, id: u64) -> Result<usiz
 /// inside its allocation at the frame that claims the address
 /// (`whatis` semantics). Selecting a running task selects the lwp
 /// polling it; selecting an idle one clears any thread cursor.
-fn select_task<T: proc::Target>(session: &Session<'_, T>, target: TraceTarget) -> Result<usize> {
+pub(crate) fn select_task<T: proc::Target>(
+    session: &Session<'_, T>,
+    target: TraceTarget,
+) -> Result<usize> {
     let list = &session.tasks;
     let index = match target {
         TraceTarget::Task(id) => task_index(session, id)?,
@@ -216,7 +219,7 @@ pub(crate) fn exec_future<T: proc::Target>(
 /// what was selected. An address some task holds collapses to that
 /// task at the holding frame — one cursor, never two; only a chain no
 /// task contains (a set child in its heap node) roots as a future.
-fn select_future<T: proc::Target>(
+pub(crate) fn select_future<T: proc::Target>(
     session: &Session<'_, T>,
     addr: u64,
     out: &mut dyn io::Write,
@@ -281,19 +284,36 @@ fn select_future<T: proc::Target>(
     Ok(())
 }
 
-/// Frame `n`'s base address in a task's chain, where the task has one.
+/// Frame `n`'s base address in a task's chain, where the task has
+/// one. Frame #0 is the stage itself, no chain walk needed — what
+/// keeps a per-task scope (`tasks --exec`) cheap.
 fn frame_base<T: proc::Target>(
     session: &Session<'_, T>,
     task: &bundle::Task,
     n: usize,
 ) -> Option<u64> {
     match session.ctx.task_stage(task).ok()? {
+        bundle::TaskStage::Running(future) if n == 0 => Some(future.addr),
         bundle::TaskStage::Running(future) => {
             let chain = session.ctx.await_chain(future);
             chain.frames.get(n).map(|f| f.future.addr)
         }
         _ => None,
     }
+}
+
+/// Scope the cursor to one task at frame #0 — what `tasks --exec`
+/// sets before each surviving task's run, so the command's omitted
+/// target and `$_` are that task's.
+pub(crate) fn scope_to<T: proc::Target>(session: &Session<'_, T>, index: usize) {
+    let task = &session.tasks.tasks[index];
+    let last_addr = frame_base(session, task, 0).unwrap_or(task.addr.0);
+    *session.cursor.borrow_mut() = Cursor {
+        lwp: running_lwp(session, task),
+        root: Some(task_root(task)),
+        frame: 0,
+        last_addr: Some(last_addr),
+    };
 }
 
 /// The one-line spelling of a lone future, by asking the census what
@@ -387,7 +407,7 @@ pub(crate) fn exec_thread<T: proc::Target>(
 /// task-taking commands answer `no task selected` until `task` moves
 /// on. `$_` becomes the polled task's stage, else the lwp's stack
 /// pointer.
-fn select_thread<T: proc::Target>(session: &Session<'_, T>, tid: u32) -> Result<()> {
+pub(crate) fn select_thread<T: proc::Target>(session: &Session<'_, T>, tid: u32) -> Result<()> {
     if !session.lwps.iter().any(|l| l.tid == tid) {
         return Err(threads::no_such_thread(session.lwps.len(), tid));
     }
@@ -898,5 +918,78 @@ mod tests {
             (Some(TraceTarget::Future(a)), TraceTarget::Future(b)) => assert_eq!(a, b),
             other => panic!("the cursor did not collapse to the task: {other:?}"),
         }
+    }
+
+    /// A scoped prefix runs its command under a temporary cursor and
+    /// puts the session's back; `$_` resolves against the scope, and
+    /// the shell half of a line is never substituted.
+    #[test]
+    fn test_a_scoped_prefix_does_not_move_the_cursor() {
+        let (bundle, snapshot) = testkit::load("linux", "sleep-join");
+        let args = session_args("linux", "sleep-join");
+        let session = Session::attach(&snapshot, &bundle, &args).expect("the pair attaches");
+        let ids: Vec<u64> = session
+            .tasks
+            .tasks
+            .iter()
+            .filter_map(|t| t.task_id)
+            .collect();
+        assert!(ids.len() >= 2, "sleep-join spawns a second task: {ids:?}");
+
+        // No cursor stands, and the `$_` sits after the `!`: it is the
+        // shell's text, never substituted, so nothing refuses.
+        repl::execute(&session, repl::Mode::Scripted, "set ! head -c 0 # $_")
+            .expect("the shell half is never substituted");
+        // The same token in the command half refuses without a cursor.
+        let err = repl::execute(&session, repl::Mode::Scripted, "whatis $_ ! head -c 0")
+            .expect_err("$_ without a cursor refuses");
+        assert!(err.to_string().contains("no cursor"), "{err}");
+
+        // Scope a command to another task: the session's cursor — root,
+        // frame, `$_` — stays put.
+        exec_task(
+            &session,
+            Some(TraceTarget::Task(ids[0])),
+            false,
+            &mut Vec::new(),
+        )
+        .expect("the first task selects");
+        let mine = session.cursor.borrow().last_addr;
+        repl::execute(
+            &session,
+            repl::Mode::Scripted,
+            &format!("task {} trace ! head -c 0", ids[1]),
+        )
+        .expect("the scoped run answers");
+        let c = *session.cursor.borrow();
+        assert!(matches!(c.root, Some(TraceTarget::Task(i)) if i == ids[0]));
+        assert_eq!(c.last_addr, mine);
+
+        // `$_` inside the scope is the scoped task's — the command
+        // answers — and the session's own `$_` still survives.
+        repl::execute(
+            &session,
+            repl::Mode::Scripted,
+            &format!("task {} whatis $_ ! head -c 0", ids[1]),
+        )
+        .expect("a scoped $_ resolves");
+        assert_eq!(session.cursor.borrow().last_addr, mine);
+    }
+
+    /// `tasks --exec` scopes each run to its task, so any command with
+    /// an omitted target — not just trace — answers per task.
+    #[test]
+    fn test_exec_scopes_every_omitted_target() {
+        let (bundle, snapshot) = testkit::load("linux", "sleep-join");
+        let args = session_args("linux", "sleep-join");
+        let session = Session::attach(&snapshot, &bundle, &args).expect("the pair attaches");
+        let command = repl::parse_line("tasks --exec whatis").expect("the exec line parses");
+        let mut out = Vec::new();
+        dispatch(&session, command, crate::output::Theme::plain(), &mut out)
+            .expect("whatis answers under every task's scope");
+        let text = String::from_utf8(out).expect("output is UTF-8");
+        assert!(text.contains(", 0 failed"), "{text}");
+        // And the loop leaves no cursor behind.
+        assert!(session.cursor.borrow().root.is_none());
     }
 }
