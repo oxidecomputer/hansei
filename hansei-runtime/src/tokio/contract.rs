@@ -188,6 +188,10 @@ pub fn classify(role: WalkRole) -> Class {
         // still lists every scheduler-owned task.
         BlockingQueue | BlockingQueueHead | BlockingQueueLen | BlockingQueueBuf
         | BlockingQueueCap | BlockingTaskHeader => Class::Optional,
+        // The join waker a task's Trailer parks for whoever awaits its
+        // `JoinHandle` — the waker-slot index's join edge. Enrichment
+        // only: a bundle without it still lists and traces.
+        TrailerWaker => Class::Optional,
     }
 }
 

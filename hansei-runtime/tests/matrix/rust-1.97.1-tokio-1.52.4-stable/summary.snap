@@ -122,6 +122,7 @@ ok      blocking::queue.head
 ok      blocking::queue.len
 ok      blocking::queue.buf
 ok      blocking::queue.cap
+ok      Trailer.waker
 
 program: simple-await
 
@@ -228,6 +229,7 @@ ok      blocking::queue.head
 ok      blocking::queue.len
 ok      blocking::queue.buf
 ok      blocking::queue.cap
+ok      Trailer.waker
 
 program: nested-await
 
@@ -334,6 +336,7 @@ ok      blocking::queue.head
 ok      blocking::queue.len
 ok      blocking::queue.buf
 ok      blocking::queue.cap
+ok      Trailer.waker
 
 program: dyn-future
 
@@ -452,6 +455,7 @@ ok      blocking::queue.head
 ok      blocking::queue.len
 ok      blocking::queue.buf
 ok      blocking::queue.cap
+ok      Trailer.waker
 
 program: select-combinator
 
@@ -572,6 +576,7 @@ ok      blocking::queue.head
 ok      blocking::queue.len
 ok      blocking::queue.buf
 ok      blocking::queue.cap
+ok      Trailer.waker
 
 program: many-tasks
 
@@ -676,6 +681,7 @@ ok      blocking::queue.head
 ok      blocking::queue.len
 ok      blocking::queue.buf
 ok      blocking::queue.cap
+ok      Trailer.waker
 
 program: sleep-join
 
@@ -792,6 +798,7 @@ ok      blocking::queue.head
 ok      blocking::queue.len
 ok      blocking::queue.buf
 ok      blocking::queue.cap
+ok      Trailer.waker
 
 program: channels
 
@@ -908,6 +915,7 @@ ok      blocking::queue.head
 ok      blocking::queue.len
 ok      blocking::queue.buf
 ok      blocking::queue.cap
+ok      Trailer.waker
 
 program: unordered
 
@@ -1020,6 +1028,7 @@ ok      blocking::queue.head
 ok      blocking::queue.len
 ok      blocking::queue.buf
 ok      blocking::queue.cap
+ok      Trailer.waker
 
 program: joinset
 
@@ -1150,6 +1159,7 @@ ok      blocking::queue.head
 ok      blocking::queue.len
 ok      blocking::queue.buf
 ok      blocking::queue.cap
+ok      Trailer.waker
 
 program: ct-runtime
 
@@ -1266,6 +1276,7 @@ ok      blocking::queue.head
 ok      blocking::queue.len
 ok      blocking::queue.buf
 ok      blocking::queue.cap
+ok      Trailer.waker
 
 program: local-set
 
@@ -1395,6 +1406,7 @@ ok      blocking::queue.head
 ok      blocking::queue.len
 ok      blocking::queue.buf
 ok      blocking::queue.cap
+ok      Trailer.waker
 
 program: local-set-timer
 
@@ -1524,6 +1536,7 @@ ok      blocking::queue.head
 ok      blocking::queue.len
 ok      blocking::queue.buf
 ok      blocking::queue.cap
+ok      Trailer.waker
 
 program: local-set-io
 
@@ -1666,6 +1679,7 @@ ok      blocking::queue.head
 ok      blocking::queue.len
 ok      blocking::queue.buf
 ok      blocking::queue.cap
+ok      Trailer.waker
 
 program: foreign-runtime
 
@@ -1810,6 +1824,7 @@ ok      blocking::queue.head
 ok      blocking::queue.len
 ok      blocking::queue.buf
 ok      blocking::queue.cap
+ok      Trailer.waker
 
 program: blocking-pool
 
@@ -1947,3 +1962,4 @@ ok      blocking::queue.head
 ok      blocking::queue.len
 ok      blocking::queue.buf
 ok      blocking::queue.cap
+ok      Trailer.waker

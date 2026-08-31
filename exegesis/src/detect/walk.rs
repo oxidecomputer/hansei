@@ -1418,6 +1418,27 @@ fn decls() -> Vec<WalkDecl> {
                 ]]
             },
         ),
+        // The join waker: a task awaiting another through its
+        // `JoinHandle` leaves its own waker in the awaited task's
+        // Trailer, where completion finds it. The cell chain is the
+        // loom `UnsafeCell` the timer entry's waker also crosses, and
+        // the walk lands on the `RawWaker` pair inside the armed
+        // `Waker`, where the wait-queue readers take over.
+        decl(
+            WalkRole::TrailerWaker,
+            Infra(InfraRoot::Trailer),
+            Aggregate,
+            || {
+                vec![reach![
+                    Named("waker"),
+                    Named("__0"),
+                    Named("value"),
+                    Variant("Some"),
+                    Named("__0"),
+                    Named("waker"),
+                ]]
+            },
+        ),
     ]
 }
 

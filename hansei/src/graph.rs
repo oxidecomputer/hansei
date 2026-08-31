@@ -522,6 +522,7 @@ mod graph_tests {
         let analysis = Analysis {
             waits,
             futurelocks,
+            join_wakers: Vec::new(),
             errors: Vec::new(),
         };
         let mut out = Vec::new();

@@ -454,6 +454,14 @@ fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
         WalkRole::SchedulerOwnedId,
         "owned.id.__0.__0",
     );
+    // Every task Trailer parks the join waker in the same loom cell
+    // chain; the walk lands on the RawWaker inside the armed Waker.
+    assert_walk(
+        program,
+        bundle,
+        WalkRole::TrailerWaker,
+        "waker.__0.value.<Some>.__0.waker",
+    );
     assert_eq!(stats.cells_missing, 0, "{program}: cells missing");
     assert_eq!(stats.stages_missing, 0, "{program}: stages missing");
     assert_eq!(

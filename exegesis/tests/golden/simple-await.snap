@@ -106,3 +106,4 @@ ok      blocking::queue.head
 ok      blocking::queue.len
 ok      blocking::queue.buf
 ok      blocking::queue.cap
+ok      Trailer.waker

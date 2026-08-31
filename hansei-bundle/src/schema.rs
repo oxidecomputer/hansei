@@ -1402,6 +1402,7 @@ walk_roles! {
     BlockingQueueBuf = "blocking::queue.buf",
     BlockingQueueCap = "blocking::queue.cap",
     BlockingTaskHeader = "blocking::Task.header",
+    TrailerWaker = "Trailer.waker",
 }
 
 /// What binding one walk role against the target's DWARF concluded.
