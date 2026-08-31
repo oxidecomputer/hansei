@@ -5,7 +5,7 @@ description: "`census` over linux-floor/blocking-pool"
 Threads: 4 lwps, 4 in runtime 0 @0xADDR
     2 in the scheduler's run loop
         1 parked in the io driver
-            worker 0, lwp 3053595
+            worker 0, lwp 3183664
         1 parked
     2 in runtime 0 @0xADDR, outside the run loop
         1 in the blocking pool (0 idle, 2 tasks queued)

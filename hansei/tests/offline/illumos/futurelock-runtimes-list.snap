@@ -2,5 +2,5 @@
 source: hansei/src/offline.rs
 description: "`runtimes --list` over illumos/futurelock"
 ---
-KIND     ID  FLAVOR        HANDLE      HOLDS              WHERE
+KIND     ID  FLAVOR        HANDLE     HOLDS              WHERE
 runtime  0   multi_thread  @0xADDR  1 task, 2 futures  on 5 lwps

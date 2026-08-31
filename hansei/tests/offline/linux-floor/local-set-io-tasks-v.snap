@@ -4,31 +4,34 @@ description: "`tasks -v` over linux-floor/local-set-io"
 ---
 Task 1: async fn local_set_io::local_reader
     State: idle
-    Owner: local set 0 @0xADDR (lwp 2958981)
+    Owner: local set 0 @0xADDR (lwp 3182932)
     Spawned at: src/bin/local-set-io.rs:98:20
     Defined at: src/bin/local-set-io.rs:24
     Waiting on: io fd 9 (readable)
         io 0xADDR: awaiting readable via the read-waiter slot, ready: writable
+    Waker: io 0xADDR read
     Held futures: 0
     Join sets: 0
 
 Task 2: async fn local_set_io::local_watcher
     State: idle
-    Owner: local set 0 @0xADDR (lwp 2958981)
+    Owner: local set 0 @0xADDR (lwp 3182932)
     Spawned at: src/bin/local-set-io.rs:99:20
     Defined at: src/bin/local-set-io.rs:33
     Waiting on: io fd 11 (readable)
         io 0xADDR: awaiting readable via a waiter node, ready: writable
+    Waker: io 0xADDR readable
     Held futures: 0
     Join sets: 0
 
 Task 3: async fn local_set_io::local_writer
     State: idle
-    Owner: local set 0 @0xADDR (lwp 2958981)
+    Owner: local set 0 @0xADDR (lwp 3182932)
     Spawned at: src/bin/local-set-io.rs:100:20
     Defined at: src/bin/local-set-io.rs:45
     Waiting on: io fd 13 (writable)
         io 0xADDR: awaiting writable via the write-waiter slot, ready: <none>
+    Waker: io 0xADDR write
     Held futures: 0
     Join sets: 0
 
@@ -39,6 +42,7 @@ Task 4: async fn local_set_io::reader
     Defined at: src/bin/local-set-io.rs:67
     Waiting on: io fd 15 (readable)
         io 0xADDR: awaiting readable via the read-waiter slot, ready: writable
+    Waker: io 0xADDR read
     Held futures: 0
     Join sets: 0
 

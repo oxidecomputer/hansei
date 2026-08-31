@@ -8,6 +8,7 @@ Task 1: async fn walk_shapes::chained
     Spawned at: src/bin/walk-shapes.rs:245:9
     Defined at: src/bin/walk-shapes.rs:92
     Waiting on: future tokio::sync::notify::Notified
+    Waker: <empty>
     Held futures: 1
     Join sets: 0
 
@@ -17,6 +18,7 @@ Task 2: async fn walk_shapes::holder
     Spawned at: src/bin/walk-shapes.rs:246:9
     Defined at: src/bin/walk-shapes.rs:120
     Waiting on: future tokio::sync::notify::Notified
+    Waker: <empty>
     Held futures: 0
     Join sets: 0
 
@@ -26,6 +28,7 @@ Task 3: async fn walk_shapes::abandoner
     Spawned at: src/bin/walk-shapes.rs:252:9
     Defined at: src/bin/walk-shapes.rs:133
     Waiting on: future tokio::sync::notify::Notified
+    Waker: <empty>
     Held futures: 1
     Join sets: 0
 
@@ -35,6 +38,8 @@ Task 4: async fn walk_shapes::victim
     Spawned at: src/bin/walk-shapes.rs:258:9
     Defined at: src/bin/walk-shapes.rs:151
     Waiting on: a tokio::sync::Mutex (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: a non-task waiter, task 4
+    Waker: semaphore 0xADDR
+        semaphore 0xADDR: waker in its wake-queue node 0xADDR
     Held futures: 0
     Join sets: 0
 
@@ -44,6 +49,8 @@ Task 5: async fn walk_shapes::blocked
     Spawned at: src/bin/walk-shapes.rs:259:9
     Defined at: src/bin/walk-shapes.rs:158
     Waiting on: a tokio::sync::Semaphore (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 5, task 6, task 10
+    Waker: semaphore 0xADDR
+        semaphore 0xADDR: waker in its wake-queue node 0xADDR
     Held futures: 0
     Join sets: 0
 
@@ -53,15 +60,18 @@ Task 6: async fn walk_shapes::blocked
     Spawned at: src/bin/walk-shapes.rs:260:9
     Defined at: src/bin/walk-shapes.rs:158
     Waiting on: a tokio::sync::Semaphore (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 5, task 6, task 10
+    Waker: semaphore 0xADDR
+        semaphore 0xADDR: waker in its wake-queue node 0xADDR
     Held futures: 0
     Join sets: 0
 
 Task 7: async fn walk_shapes::local_parker
     State: idle
-    Owner: local set 1 @0xADDR (lwp 2955310)
+    Owner: local set 1 @0xADDR (lwp 3179474)
     Spawned at: src/bin/walk-shapes.rs:268:28
     Defined at: src/bin/walk-shapes.rs:191
     Waiting on: future tokio::sync::notify::Notified
+    Waker: <empty>
     Held futures: 0
     Join sets: 0
 
@@ -71,15 +81,18 @@ Task 8: async fn walk_shapes::joiner
     Spawned at: src/bin/walk-shapes.rs:269:9
     Defined at: src/bin/walk-shapes.rs:198
     Waiting on: task 7
+    Waker: join task 7
+        join task 7: waker in its trailer
     Held futures: 0
     Join sets: 0
 
 Task 9: async fn walk_shapes::side_parker
     State: queued
-    Owner: local set 0 @0xADDR (lwp 2955313)
+    Owner: local set 0 @0xADDR (lwp 3179477)
     Spawned at: src/bin/walk-shapes.rs:214:23
     Defined at: src/bin/walk-shapes.rs:204
     Waiting on: async fn walk_shapes::side_parker
+    Waker: <empty>
     Held futures: 0
     Join sets: 0
 
@@ -89,6 +102,8 @@ Task 10: async fn walk_shapes::hidden_blocked
     Spawned at: src/bin/walk-shapes.rs:181:18
     Defined at: src/bin/walk-shapes.rs:164
     Waiting on: a tokio::sync::Semaphore (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 5, task 6, task 10
+    Waker: semaphore 0xADDR
+        semaphore 0xADDR: waker in its wake-queue node 0xADDR
     Held futures: 0
     Join sets: 0
 

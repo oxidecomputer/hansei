@@ -1,0 +1,8 @@
+---
+source: hansei/src/offline.rs
+description: "`tasks --group waker` over linux-floor/gen-0007"
+---
+COUNT  WAKER    TASKS
+    4  <empty>  3, 4, 6, …
+    1  timer    5
+2 groups

@@ -9,6 +9,7 @@ Task 1: async fn ct_runtime::sleeper
     Defined at: src/bin/ct-runtime.rs:10
     Waiting on: timer (deadline TS on the target's monotonic clock)
         timer entry 0xADDR in the wheel, registered
+    Waker: timer 0xADDR
     Held futures: 0
     Join sets: 0
 
@@ -17,6 +18,8 @@ Task 2: async fn ct_runtime::acquirer
     Spawned at: src/bin/ct-runtime.rs:34:25
     Defined at: src/bin/ct-runtime.rs:17
     Waiting on: a tokio::sync::Semaphore (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 2
+    Waker: semaphore 0xADDR
+        semaphore 0xADDR: waker in its wake-queue node 0xADDR
     Held futures: 0
     Join sets: 0
 

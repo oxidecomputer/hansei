@@ -4,5 +4,5 @@ description: "`threads` over illumos/nested-await"
 ---
 LWP  NAME  ROLE                 TASK  FRAME 0
 1    —     entered runtime      —     0xADDR ← 0xADDR ← 0xADDR
-2    —     worker 1, in driver  —     0xADDR ← <mio::poll::Poll>::poll ← <tokio::runtime::io::driver::Driver>::turn
-3    —     worker 0, parked     —     0xADDR ← 0xADDR ← 0xADDR
+2    —     worker 0, parked     —     0xADDR ← 0xADDR ← 0xADDR
+3    —     worker 1, in driver  —     0xADDR ← <mio::poll::Poll>::poll ← <tokio::runtime::io::driver::Driver>::turn

@@ -2,5 +2,5 @@
 source: hansei/src/offline.rs
 description: "`runtimes --list` over illumos/blocking-pool"
 ---
-KIND     ID  FLAVOR        HANDLE      HOLDS               WHERE
+KIND     ID  FLAVOR        HANDLE     HOLDS               WHERE
 runtime  0   multi_thread  @0xADDR  5 tasks, 5 futures  on 4 lwps

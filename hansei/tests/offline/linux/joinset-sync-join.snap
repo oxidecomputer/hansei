@@ -1,0 +1,18 @@
+---
+source: hansei/src/offline.rs
+description: "`sync --kind join` over linux/joinset"
+---
+task 4 (async fn joinset::member): idle
+    Member of: a tokio::task::join_set::JoinSet<u32> (set 0xADDR), driven by task 3
+
+task 5 (async fn joinset::member): idle
+    Member of: a tokio::task::join_set::JoinSet<u32> (set 0xADDR), driven by task 3
+
+task 6 (async fn joinset::member): idle
+    Member of: a tokio::task::join_set::JoinSet<u32> (set 0xADDR), driven by task 3
+
+task 7 (async fn joinset::member): idle
+    Member of: a tokio::task::join_set::JoinSet<u32> (set 0xADDR), driven by task 3
+
+task 8 (async fn joinset::member): idle
+    Member of: a tokio::task::join_set::JoinSet<u32> (set 0xADDR), driven by task 3

@@ -9,6 +9,7 @@ Task 1: async fn local_set::local_sleeper
     Defined at: src/bin/local-set.rs:13
     Waiting on: timer (deadline TS)
         timer entry 0xADDR in the wheel, registered
+    Waker: timer 0xADDR
     Held futures: 0
     Join sets: 0
 
@@ -18,6 +19,8 @@ Task 2: async fn local_set::local_acquirer
     Spawned at: src/bin/local-set.rs:47:31
     Defined at: src/bin/local-set.rs:20
     Waiting on: a tokio::sync::Semaphore (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 2
+    Waker: semaphore 0xADDR
+        semaphore 0xADDR: waker in its wake-queue node 0xADDR
     Held futures: 0
     Join sets: 0
 
@@ -27,6 +30,8 @@ Task 3: async fn local_set::joiner
     Spawned at: src/bin/local-set.rs:48:23
     Defined at: src/bin/local-set.rs:27
     Waiting on: task 1
+    Waker: join task 1
+        join task 1: waker in its trailer
     Held futures: 0
     Join sets: 0
 

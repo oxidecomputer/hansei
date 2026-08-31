@@ -86,7 +86,7 @@ lwp 2  last polled task 1
         park: core::option::Option<tokio::runtime::scheduler::multi_thread::park::Parker>::None,
         stats: tokio::runtime::scheduler::multi_thread::stats::Stats {
             batch: tokio::runtime::metrics::batch::MetricsBatch {
-                busy_duration_total: 118497,
+                busy_duration_total: 111833,
                 processing_scheduled_tasks_started_at: core::option::Option<std::time::Instant>::Some {
                     tv_sec: ...,
                     tv_nsec: ...,
@@ -103,23 +103,26 @@ lwp 2  last polled task 1
                 poll_timer: core::option::Option<tokio::runtime::metrics::batch::PollTimer>::None,
             },
             processing_scheduled_tasks_started_at: std::sys::pal::unix::time::Timespec {
-                tv_sec: 5005950,
-                tv_nsec: 708622614,
+                tv_sec: 5016660,
+                tv_nsec: 428099839,
             },
             tasks_polled_in_batch: 0,
-            task_poll_time_ewma: 14781.919672131145,
+            task_poll_time_ewma: 14101.819672131147,
         },
         global_queue_interval: 61,
         rand: tokio::util::rand::FastRand {
-            one: 3035945472,
-            two: 3689245634,
+            one: 427694542,
+            two: 3916926926,
         },
     }
   stack:
     0xADDR 
-    0xADDR <mio::poll::Poll>::poll  (frame-pointer walk)
-    0xADDR <tokio::runtime::io::driver::Driver>::turn  (frame-pointer walk)
-    0xADDR <tokio::runtime::time::Driver>::park_internal  (frame-pointer walk)
+    0xADDR   (frame-pointer walk)
+    0xADDR   (frame-pointer walk)
+    0xADDR   (frame-pointer walk)
+    0xADDR   (frame-pointer walk)
+    0xADDR <parking_lot::condvar::Condvar>::wait_until_internal  (frame-pointer walk)
+    0xADDR <tokio::runtime::scheduler::multi_thread::park::Inner>::park_condvar  (frame-pointer walk)
     0xADDR <tokio::runtime::scheduler::multi_thread::worker::Context>::park_internal  (frame-pointer walk)
     0xADDR <tokio::runtime::scheduler::multi_thread::worker::Context>::run  (frame-pointer walk)
     0xADDR <tokio::runtime::context::scoped::Scoped<tokio::runtime::scheduler::Context>>::set::<tokio::runtime::scheduler::multi_thread::worker::run::{closure#0}::{closure#0}, ()>  (frame-pointer walk)
@@ -190,7 +193,7 @@ lwp 3  last polled task 2
         park: core::option::Option<tokio::runtime::scheduler::multi_thread::park::Parker>::None,
         stats: tokio::runtime::scheduler::multi_thread::stats::Stats {
             batch: tokio::runtime::metrics::batch::MetricsBatch {
-                busy_duration_total: 39848,
+                busy_duration_total: 41804,
                 processing_scheduled_tasks_started_at: core::option::Option<std::time::Instant>::Some {
                     tv_sec: ...,
                     tv_nsec: ...,
@@ -207,26 +210,23 @@ lwp 3  last polled task 2
                 poll_timer: core::option::Option<tokio::runtime::metrics::batch::PollTimer>::None,
             },
             processing_scheduled_tasks_started_at: std::sys::pal::unix::time::Timespec {
-                tv_sec: 5005950,
-                tv_nsec: 708597206,
+                tv_sec: 5016660,
+                tv_nsec: 428057768,
             },
             tasks_polled_in_batch: 1,
-            task_poll_time_ewma: 6874.119672131147,
+            task_poll_time_ewma: 7073.219672131147,
         },
         global_queue_interval: 61,
         rand: tokio::util::rand::FastRand {
-            one: 1383935917,
-            two: 3129592367,
+            one: 1176609490,
+            two: 4046615656,
         },
     }
   stack:
     0xADDR 
-    0xADDR   (frame-pointer walk)
-    0xADDR   (frame-pointer walk)
-    0xADDR   (frame-pointer walk)
-    0xADDR   (frame-pointer walk)
-    0xADDR <parking_lot::condvar::Condvar>::wait_until_internal  (frame-pointer walk)
-    0xADDR <tokio::runtime::scheduler::multi_thread::park::Inner>::park_condvar  (frame-pointer walk)
+    0xADDR <mio::poll::Poll>::poll  (frame-pointer walk)
+    0xADDR <tokio::runtime::io::driver::Driver>::turn  (frame-pointer walk)
+    0xADDR <tokio::runtime::time::Driver>::park_internal  (frame-pointer walk)
     0xADDR <tokio::runtime::scheduler::multi_thread::worker::Context>::park_internal  (frame-pointer walk)
     0xADDR <tokio::runtime::scheduler::multi_thread::worker::Context>::run  (frame-pointer walk)
     0xADDR <tokio::runtime::context::scoped::Scoped<tokio::runtime::scheduler::Context>>::set::<tokio::runtime::scheduler::multi_thread::worker::run::{closure#0}::{closure#0}, ()>  (frame-pointer walk)

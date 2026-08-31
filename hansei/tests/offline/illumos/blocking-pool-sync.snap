@@ -2,4 +2,8 @@
 source: hansei/src/offline.rs
 description: "`sync` over illumos/blocking-pool"
 ---
+task 3 (future tokio::runtime::blocking::task::BlockingTask<blocking_pool::main::{async_block#0}::{closure_env#0}>): running
+    Waited by: task 6
 
+task 4 (future tokio::runtime::blocking::task::BlockingTask<blocking_pool::main::{async_block#0}::{closure_env#1}>): queued
+    Waited by: task 7

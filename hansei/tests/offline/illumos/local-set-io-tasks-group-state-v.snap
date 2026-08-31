@@ -10,6 +10,7 @@ Task 1: async fn local_set_io::local_reader
     Defined at: src/bin/local-set-io.rs:24
     Waiting on: io fd 11 (readable)
         io 0xADDR: awaiting readable via the read-waiter slot, ready: writable
+    Waker: io 0xADDR read
     Held futures: 0
     Join sets: 0
 
@@ -20,6 +21,7 @@ Task 2: async fn local_set_io::local_watcher
     Defined at: src/bin/local-set-io.rs:33
     Waiting on: io fd 13 (readable)
         io 0xADDR: awaiting readable via a waiter node, ready: writable
+    Waker: io 0xADDR readable
     Held futures: 0
     Join sets: 0
 
@@ -30,6 +32,7 @@ Task 3: async fn local_set_io::local_writer
     Defined at: src/bin/local-set-io.rs:45
     Waiting on: io fd 15 (writable)
         io 0xADDR: awaiting writable via the write-waiter slot, ready: <none>
+    Waker: io 0xADDR write
     Held futures: 0
     Join sets: 0
 
@@ -40,6 +43,7 @@ Task 4: async fn local_set_io::reader
     Defined at: src/bin/local-set-io.rs:67
     Waiting on: io fd 17 (readable)
         io 0xADDR: awaiting readable via the read-waiter slot, ready: writable
+    Waker: io 0xADDR read
     Held futures: 0
     Join sets: 0
 

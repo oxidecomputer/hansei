@@ -8,6 +8,8 @@ Task 1: async fn foreign_runtime::joined
     Spawned at: src/bin/foreign-runtime.rs:83:23
     Defined at: src/bin/foreign-runtime.rs:31
     Waiting on: a tokio::sync::Semaphore (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 1
+    Waker: semaphore 0xADDR
+        semaphore 0xADDR: waker in its wake-queue node 0xADDR
     Held futures: 0
     Join sets: 0
 
@@ -17,16 +19,18 @@ Task 2: async fn foreign_runtime::detached
     Spawned at: src/bin/foreign-runtime.rs:85:18
     Defined at: src/bin/foreign-runtime.rs:46
     Waiting on: future core::future::pending::Pending<()>
+    Waker: <empty>
     Held futures: 0
     Join sets: 0
 
 Task 3: async fn foreign_runtime::local_sleeper
     State: idle
-    Owner: local set 0 @0xADDR (lwp 2959160)
+    Owner: local set 0 @0xADDR (lwp 3183120)
     Spawned at: src/bin/foreign-runtime.rs:87:16
     Defined at: src/bin/foreign-runtime.rs:58
     Waiting on: timer (deadline TS on the target's monotonic clock)
         timer entry 0xADDR in the wheel, registered
+    Waker: timer 0xADDR
     Held futures: 0
     Join sets: 0
 
@@ -36,6 +40,8 @@ Task 4: async fn foreign_runtime::joiner
     Spawned at: src/bin/foreign-runtime.rs:129:23
     Defined at: src/bin/foreign-runtime.rs:23
     Waiting on: task 1
+    Waker: join task 1
+        join task 1: waker in its trailer
     Held futures: 0
     Join sets: 0
 

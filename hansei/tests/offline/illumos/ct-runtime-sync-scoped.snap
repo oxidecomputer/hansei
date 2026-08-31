@@ -1,0 +1,5 @@
+---
+source: hansei/src/offline.rs
+description: "`sync` over illumos/ct-runtime"
+---
+task 1 is party to no decoded relation: nothing waits to join it, and it blocks on no semaphore and drives no set

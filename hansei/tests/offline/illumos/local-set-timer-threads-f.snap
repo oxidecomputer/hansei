@@ -33,10 +33,10 @@ lwp 1  polling no task  runtime 0 @0xADDR
         tick: 3,
         driver: core::option::Option<tokio::runtime::driver::Driver>::None,
         metrics: tokio::runtime::metrics::batch::MetricsBatch {
-            busy_duration_total: 133277,
+            busy_duration_total: 212392,
             processing_scheduled_tasks_started_at: core::option::Option<std::time::Instant>::Some {
-                tv_sec: 5005971,
-                tv_nsec: 347138775,
+                tv_sec: 5016681,
+                tv_nsec: 38029201,
             },
             park_count: 1,
             park_unpark_count: 1,

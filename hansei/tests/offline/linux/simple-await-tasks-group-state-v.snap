@@ -8,6 +8,7 @@ Task 3: async fn simple_await::work
     Spawned at: src/bin/simple-await.rs:75:21
     Defined at: src/bin/simple-await.rs:17
     Waiting on: future tokio::sync::oneshot::Receiver<u32>
+    Waker: <empty>
     Held futures: 0
     Join sets: 0
 

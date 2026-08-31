@@ -1,0 +1,15 @@
+---
+source: hansei/src/offline.rs
+description: "`sync --kind join` over linux-floor/gen-0007"
+---
+task 4 (async fn gen_0007::member_02): idle
+    Member of: a tokio::task::join_set::JoinSet<u64> (set 0xADDR), driven by task 3
+
+task 5 (async fn gen_0007::member_03): idle
+    Member of: a tokio::task::join_set::JoinSet<u64> (set 0xADDR), driven by task 3
+
+task 6 (async fn gen_0007::member_06): idle
+    Member of: a tokio::task::join_set::JoinSet<u64> (set 0xADDR), driven by task 5
+
+task 7 (async fn gen_0007::member_07): idle
+    Member of: a tokio::task::join_set::JoinSet<u64> (set 0xADDR), driven by task 5

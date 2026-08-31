@@ -1,0 +1,7 @@
+---
+source: hansei/src/offline.rs
+description: "`tasks --group waker` over illumos/futurelock"
+---
+COUNT  WAKER               TASKS
+    1  semaphore 0xADDR  5
+1 group

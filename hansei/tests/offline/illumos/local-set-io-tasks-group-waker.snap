@@ -1,0 +1,9 @@
+---
+source: hansei/src/offline.rs
+description: "`tasks --group waker` over illumos/local-set-io"
+---
+COUNT  WAKER        TASKS
+    2  io read      1, 4
+    1  io readable  2
+    1  io write     3
+3 groups

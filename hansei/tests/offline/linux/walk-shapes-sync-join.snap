@@ -1,0 +1,6 @@
+---
+source: hansei/src/offline.rs
+description: "`sync --kind join` over linux/walk-shapes"
+---
+task 7 (async fn walk_shapes::local_parker): idle
+    Waited by: task 8
