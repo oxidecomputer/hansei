@@ -141,7 +141,7 @@ struct BTreeNodeLayout<'a> {
     edge_pointer_offset: u64,
 }
 
-enum MapWalkError {
+pub(crate) enum MapWalkError {
     Format,
     Invalid(&'static str),
     Marker(&'static str),
@@ -371,7 +371,7 @@ fn write_map_entry<'a, T: Target>(
     Ok(())
 }
 
-fn walk_map_entries<'a, T: Target>(
+pub(crate) fn walk_map_entries<'a, T: Target>(
     bytes: &[u8],
     ctx: RenderCtx<'_, 'a, T>,
     key: BundleType<'a>,

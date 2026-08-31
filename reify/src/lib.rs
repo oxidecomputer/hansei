@@ -5,6 +5,7 @@ mod elements;
 mod error;
 pub mod heap;
 mod parse;
+pub mod path;
 mod render;
 mod target;
 mod value;
