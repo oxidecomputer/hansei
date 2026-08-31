@@ -1,0 +1,6 @@
+---
+source: hansei/src/offline.rs
+description: "`sync --kind join` over illumos/dyn-future"
+---
+task 4 (async fn dyn_future::set_member): idle
+    Member of: a tokio::task::join_set::JoinSet<u32> (set 0xADDR), driven by task 3

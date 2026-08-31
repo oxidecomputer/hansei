@@ -1,0 +1,8 @@
+---
+source: hansei/src/offline.rs
+description: "`tasks --group waker` over linux-floor/ct-runtime"
+---
+COUNT  WAKER                     TASKS
+    1  semaphore 0xADDR  2
+    1  timer                     1
+2 groups

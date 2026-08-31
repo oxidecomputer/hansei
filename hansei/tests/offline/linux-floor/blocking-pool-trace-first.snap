@@ -8,4 +8,4 @@ Spawned at: src/bin/blocking-pool.rs:35:23
 #0  future        Option<blocking_pool::main::{async_block#0}::{closure_env#0}>
       state: None
 
-mid-poll, but lwp 3053597's walked stack holds no frame in the task's poll symbol (its walk ended: no CFI for /usr/lib64/libc.so.6 (none of its pages are in the core, and the backing file is not on this machine); the frame-pointer walk found nothing below 0xADDR); `threads 3053597` shows the raw stack
+mid-poll, but lwp 3183665's walked stack holds no frame in the task's poll symbol (its walk ended: no CFI for /usr/lib64/libc.so.6 (none of its pages are in the core, and the backing file is not on this machine); the frame-pointer walk found nothing below 0xADDR); `threads 3183665` shows the raw stack

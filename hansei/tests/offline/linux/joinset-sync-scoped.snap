@@ -1,0 +1,10 @@
+---
+source: hansei/src/offline.rs
+description: "`sync` over linux/joinset"
+---
+a tokio::task::join_set::JoinSet<u32> (set 0xADDR): 3 members, driven by task 3 (`set`)
+    Members (idle): task 6, task 5, task 4
+
+a tokio::task::join_set::JoinSet<u32> (set 0xADDR): 3 members, driven by task 3 (`kept`)
+    Members (complete, awaiting join): task 9
+    Members (idle): task 8, task 7

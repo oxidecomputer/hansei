@@ -2,4 +2,23 @@
 source: hansei/src/offline.rs
 description: "`sync` over linux/gen-0007"
 ---
+task 4 (async fn gen_0007::member_02): idle
+    Member of: a tokio::task::join_set::JoinSet<u64> (set 0xADDR), driven by task 3
 
+task 5 (async fn gen_0007::member_03): idle
+    Member of: a tokio::task::join_set::JoinSet<u64> (set 0xADDR), driven by task 3
+
+task 6 (async fn gen_0007::member_06): idle
+    Member of: a tokio::task::join_set::JoinSet<u64> (set 0xADDR), driven by task 5
+
+task 7 (async fn gen_0007::member_07): idle
+    Member of: a tokio::task::join_set::JoinSet<u64> (set 0xADDR), driven by task 5
+
+a tokio::task::join_set::JoinSet<u64> (set 0xADDR): 2 members, driven by task 3 (`v1`)
+    Members (idle): task 5, task 4
+
+a futures_util::stream::futures_unordered::FuturesUnordered<gen_0007::leaf_01> (set 0xADDR): 3 children, driven by task 3 (`v0`)
+    In flight: 3
+
+a tokio::task::join_set::JoinSet<u64> (set 0xADDR): 2 members, driven by task 5 (`v1`)
+    Members (idle): task 7, task 6

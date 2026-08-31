@@ -519,6 +519,8 @@ struct TaskRow {
     /// The wait, spelled as the table's cell — `—` for a task waiting
     /// on nothing nameable.
     waiting: String,
+    /// The waker slots, `<empty>` where nothing is armed.
+    waker: String,
 }
 
 /// Run `tasks -v` and parse the block listing: a `Task <id>: <future>`
@@ -549,6 +551,7 @@ fn list_tasks(bundle: &Path, core: &Path) -> Vec<TaskRow> {
             spawned: String::new(),
             defined: String::new(),
             waiting: String::new(),
+            waker: String::new(),
         };
         lines.next();
 
@@ -575,6 +578,7 @@ fn list_tasks(bundle: &Path, core: &Path) -> Vec<TaskRow> {
                 "Spawned at" => &mut row.spawned,
                 "Defined at" => &mut row.defined,
                 "Waiting on" => &mut row.waiting,
+                "Waker" => &mut row.waker,
                 _ => panic!("unexpected tasks attribute {line:?}"),
             };
             assert!(field.is_empty(), "repeated tasks attribute {line:?}");
@@ -589,6 +593,7 @@ fn list_tasks(bundle: &Path, core: &Path) -> Vec<TaskRow> {
             ("Spawned at", &row.spawned),
             ("Defined at", &row.defined),
             ("Waiting on", &row.waiting),
+            ("Waker", &row.waker),
         ] {
             assert!(!value.is_empty(), "task {} has no {label} row", row.id);
         }
@@ -2565,30 +2570,44 @@ fn test_sync_lists_the_contended_semaphore() {
             .captures(&out)
             .unwrap_or_else(|| panic!("no semaphore address in {out}"))[1]
             .to_string();
+        // The listing may append join and set blocks after the
+        // semaphore's; the selected block is byte-identical to the
+        // listing's first.
         let one = hansei_ok(&bundle, core, &format!("sync {addr}"));
-        assert_eq!(one, out);
+        assert!(out.starts_with(&one), "sync {addr}: {one}\nlisting: {out}");
 
-        // An address the analysis never decoded is refused rather than
-        // answered with silence.
+        // An address the analysis never decoded — no semaphore, no
+        // set, no task's allocation, no frame holding it by value —
+        // is refused rather than answered with silence.
         let miss = hansei(&bundle, core, "sync 0x10");
         assert!(!miss.status.success());
         assert!(
-            String::from_utf8_lossy(&miss.stderr).contains("no decoded semaphore"),
+            String::from_utf8_lossy(&miss.stderr).contains("no decoded resource at 0x10"),
             "{}",
             String::from_utf8_lossy(&miss.stderr)
         );
     });
 }
 
-/// A target with no contention prints nothing at all: the analysis
+/// A target with no relations prints nothing at all: the analysis
 /// reads only the edges it knows how to read, and an empty answer is
-/// "none found here".
+/// "none found here". A joined task is a relation now — sleep-join's
+/// sleeper earns a block in the bare listing — so the empty answer
+/// belongs to a fixture nothing joins, and the no-contention claim to
+/// the semaphore family alone.
 #[test]
 fn test_sync_prints_nothing_without_contention() {
+    let bundle = fixtures().bundle("simple-await");
+    with_core("simple-await", |core| {
+        let out = hansei_ok(&bundle, core, "sync");
+        assert_eq!(out, "", "simple-await relates on nothing");
+    });
     let bundle = fixtures().bundle("sleep-join");
     with_core("sleep-join", |core| {
-        let out = hansei_ok(&bundle, core, "sync");
-        assert_eq!(out, "", "sleep-join contends on nothing");
+        let out = hansei_ok(&bundle, core, "sync --kind semaphore");
+        assert_eq!(out, "", "sleep-join contends on no semaphore");
+        let joins = hansei_ok(&bundle, core, "sync");
+        assert!(joins.contains("Waited by: task "), "{joins}");
     });
 }
 

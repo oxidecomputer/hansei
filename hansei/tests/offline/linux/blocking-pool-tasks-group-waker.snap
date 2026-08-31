@@ -1,0 +1,9 @@
+---
+source: hansei/src/offline.rs
+description: "`tasks --group waker` over linux/blocking-pool"
+---
+COUNT  WAKER        TASKS
+    3  <empty>      3, 4, 5
+    1  join task 3  6
+    1  join task 4  7
+3 groups

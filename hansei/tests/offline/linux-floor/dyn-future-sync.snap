@@ -2,4 +2,8 @@
 source: hansei/src/offline.rs
 description: "`sync` over linux-floor/dyn-future"
 ---
+task 4 (async fn dyn_future::set_member): idle
+    Member of: a tokio::task::join_set::JoinSet<u32> (set 0xADDR), driven by task 3
 
+a tokio::task::join_set::JoinSet<u32> (set 0xADDR): 1 member, driven by task 3 (`set`)
+    Members (idle): task 4

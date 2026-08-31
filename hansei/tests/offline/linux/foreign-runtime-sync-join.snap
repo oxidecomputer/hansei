@@ -1,0 +1,6 @@
+---
+source: hansei/src/offline.rs
+description: "`sync --kind join` over linux/foreign-runtime"
+---
+task 1 (async fn foreign_runtime::joined): idle
+    Waited by: task 4

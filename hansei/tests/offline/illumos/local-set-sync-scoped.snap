@@ -1,0 +1,6 @@
+---
+source: hansei/src/offline.rs
+description: "`sync` over illumos/local-set"
+---
+task 1 (async fn local_set::local_sleeper): idle
+    Waited by: task 3

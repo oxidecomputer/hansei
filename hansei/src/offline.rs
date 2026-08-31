@@ -55,6 +55,10 @@ fn commands(
         ("tasks-with-state", "tasks --with state idle".to_owned()),
         ("tasks-group-waiting", "tasks --group waiting-on".to_owned()),
         ("tasks-group-lwp", "tasks --group lwp".to_owned()),
+        // The waker field: the wakeup overview, with the slot
+        // spellings as bucket values and the armed-nothing rows in
+        // `<empty>`.
+        ("tasks-group-waker", "tasks --group waker".to_owned()),
         // A count field pays the census on the table path; the grouped
         // block form prints each bucket's blocks under its line.
         ("tasks-with-holds", "tasks --with holds >0".to_owned()),
@@ -74,6 +78,8 @@ fn commands(
         ("threads-f", "threads -f 3".to_owned()),
         ("graph", "graph".to_owned()),
         ("sync", "sync".to_owned()),
+        // One block family alone: the join view of the same listing.
+        ("sync-join", "sync --kind join".to_owned()),
         ("census", "census".to_owned()),
         ("runtimes-list", "runtimes --list".to_owned()),
         // The info summary and each section. A snapshot records no
@@ -106,6 +112,10 @@ fn commands(
                 list.push(("print-path", format!("print .{member}")));
             }
             list.push(("print-missing", "print .no_such_member".to_owned()));
+            // The cursor-scoped sync: every relation the selected
+            // task is party to, under the cursor the commands above
+            // set.
+            list.push(("sync-scoped", "sync".to_owned()));
             // The fixture whose frame carries containers drives the
             // element steps: a range keeps its [i] heading even one
             // element wide, and a step after a range applies to each
