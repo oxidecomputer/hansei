@@ -215,7 +215,7 @@ fn exec_trace_future<T: proc::Target>(
 /// What a future address resolved to: the census row that names it, as
 /// the indices the census records it under.
 #[derive(Debug)]
-enum FutureAt {
+pub(crate) enum FutureAt {
     /// Index into [`census::FutureCensus::held`].
     Held(usize),
     /// Indices into [`census::FutureCensus::sets`] and that set's
@@ -229,7 +229,7 @@ enum FutureAt {
 /// by-value awaitee sits inside the future holding it. A miss says
 /// what the address *is* whenever that can be said: a set itself, a
 /// completed child, a task's own allocation.
-fn future_at(
+pub(crate) fn future_at(
     view: &BundleView<'_>,
     list: &bundle::TaskList,
     extents: &bundle::TaskExtents,
@@ -347,7 +347,7 @@ fn print_trace_chain<'b, T: proc::Target>(
 /// frame's detail, and reading the target twice for that would be
 /// waste. A leaf that was recognized but failed to read warns on stderr
 /// rather than failing the trace.
-fn wait_line<T: proc::Target>(
+pub(crate) fn wait_line<T: proc::Target>(
     ctx: &bundle::Context<'_, T>,
     chain: &bundle::AwaitChain<'_>,
     list: &bundle::TaskList,
@@ -370,7 +370,7 @@ fn wait_line<T: proc::Target>(
 /// run through — the shape a futurelock grows from. `origin` matches
 /// [`census::HeldFuture::via`]: `None` counts the finds in `owner`'s
 /// own frames, an origin those in the chain it names.
-fn frame_holds(
+pub(crate) fn frame_holds(
     census: &census::FutureCensus,
     owner: usize,
     origin: Option<census::Via>,
@@ -416,43 +416,74 @@ fn print_await_chain<'b, T: proc::Target>(
         writeln!(out)?;
     }
 
-    let last = chain.frames.len().checked_sub(1);
-    let num_width = format!("#{}", last.unwrap_or(0)).len();
-    for (i, frame) in chain.frames.iter().enumerate() {
-        let kind = async_kind(
-            frame.future.ty.name(),
-            frame.state.as_ref().map(|state| state.name),
-        );
-        let dyn_marker = if frame.dyn_symbol.is_some() {
-            " [dyn]"
-        } else {
-            ""
-        };
-        let name = names::fold_type_name(frame.future.ty.name(), impls);
-        let number = format!("#{i}");
-        writeln!(
-            out,
-            "{number:<num_width$}  {kind:<13} {}",
-            opts.theme.type_name(&format!("{name}{dyn_marker}"))
+    let num_width = chain_num_width(chain);
+    for i in 0..chain.frames.len() {
+        print_frame(
+            ctx, chain, i, num_width, wait, holds, opts, impls, annotate, out,
         )?;
-
-        let held = holds.get(i).copied().unwrap_or(0);
-        match wait {
-            Some(wait) if Some(i) == last => {
-                writeln!(out, "{DETAIL_INDENT}waiting on {}", opts.theme.bold(wait))?;
-            }
-            _ => {
-                if let Some(detail) = frame_detail(frame, held, &opts.theme) {
-                    writeln!(out, "{DETAIL_INDENT}{detail}")?;
-                }
-            }
-        }
-
-        if opts.verbose {
-            print_frame_verbose(ctx, frame, Some(i) == last, opts, impls, annotate, out)?;
-        }
     }
     print_chain_end(chain, impls, out)
+}
+
+/// The width the chain's frame numbers align at: that of the last —
+/// the widest — `#N`.
+pub(crate) fn chain_num_width(chain: &bundle::AwaitChain<'_>) -> usize {
+    format!("#{}", chain.frames.len().saturating_sub(1)).len()
+}
+
+/// Print one frame of a chain the way the chain listing prints it: the
+/// `#N` line, the detail line under it — the leaf frame's is the wait
+/// target — and, under `--verbose`, the locals and suspend points.
+/// Factored from the chain loop so the cursor's `frame` command prints
+/// the selected frame identically.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn print_frame<'b, T: proc::Target>(
+    ctx: &bundle::Context<'b, T>,
+    chain: &bundle::AwaitChain<'b>,
+    i: usize,
+    num_width: usize,
+    wait: Option<&str>,
+    holds: &[usize],
+    opts: &TraceOpts<'_>,
+    impls: &names::ImplFold,
+    annotate: Option<&reify::AddrAnnotator<'_>>,
+    out: &mut dyn io::Write,
+) -> Result<()> {
+    let frame = &chain.frames[i];
+    let last = chain.frames.len().checked_sub(1);
+    let kind = async_kind(
+        frame.future.ty.name(),
+        frame.state.as_ref().map(|state| state.name),
+    );
+    let dyn_marker = if frame.dyn_symbol.is_some() {
+        " [dyn]"
+    } else {
+        ""
+    };
+    let name = names::fold_type_name(frame.future.ty.name(), impls);
+    let number = format!("#{i}");
+    writeln!(
+        out,
+        "{number:<num_width$}  {kind:<13} {}",
+        opts.theme.type_name(&format!("{name}{dyn_marker}"))
+    )?;
+
+    let held = holds.get(i).copied().unwrap_or(0);
+    match wait {
+        Some(wait) if Some(i) == last => {
+            writeln!(out, "{DETAIL_INDENT}waiting on {}", opts.theme.bold(wait))?;
+        }
+        _ => {
+            if let Some(detail) = frame_detail(frame, held, &opts.theme) {
+                writeln!(out, "{DETAIL_INDENT}{detail}")?;
+            }
+        }
+    }
+
+    if opts.verbose {
+        print_frame_verbose(ctx, frame, Some(i) == last, opts, impls, annotate, out)?;
+    }
+    Ok(())
 }
 
 /// Everything under a frame line sits at this indent; entries in a

@@ -3425,13 +3425,28 @@ fn test_a_unique_prefix_names_a_command() {
     let bundle = fixtures().bundle("simple-await");
     with_core("simple-await", |core| {
         assert!(hansei_ok(&bundle, core, "i").contains("symbols resolved:"));
-        // The prefix names the command; its arguments are never inferred.
-        assert!(hansei_ok(&bundle, core, "thr -f 0").contains("lwp "));
-        // `runtimes` is the only command starting with an `r`, so every
-        // prefix of it fits.
+        // The prefix names the command; its arguments are never
+        // inferred. `runtimes` is the only command starting with an
+        // `r`, so every prefix of it fits.
         assert!(hansei_ok(&bundle, core, "runtime -D -d 1").contains("runtime::driver::Handle"));
         assert!(hansei_ok(&bundle, core, "r -s").contains("multi_thread::worker::Shared"));
         assert!(hansei_ok(&bundle, core, "runtimes -l").contains("multi_thread"));
+
+        // The singular selectors sit beside their plurals, so every
+        // proper prefix of `threads` fits `thread` too: only the full
+        // word names the listing now, and `thr` is refused naming
+        // both.
+        assert!(hansei_ok(&bundle, core, "threads -f 0").contains("lwp "));
+        let out = hansei(&bundle, core, "thr -f 0");
+        assert!(
+            !out.status.success(),
+            "a prefix of two commands must be refused:\n{}",
+            String::from_utf8_lossy(&out.stdout)
+        );
+        let err = String::from_utf8_lossy(&out.stderr);
+        for candidate in ["thread", "threads"] {
+            assert!(err.contains(candidate), "{candidate} missing from {err}");
+        }
 
         let out = hansei(&bundle, core, "t");
         assert!(
@@ -3440,7 +3455,7 @@ fn test_a_unique_prefix_names_a_command() {
             String::from_utf8_lossy(&out.stdout)
         );
         let err = String::from_utf8_lossy(&out.stderr);
-        for candidate in ["tasks", "threads", "trace", "type"] {
+        for candidate in ["task", "tasks", "thread", "threads", "trace", "type"] {
             assert!(err.contains(candidate), "{candidate} missing from {err}");
         }
     });

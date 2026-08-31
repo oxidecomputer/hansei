@@ -624,6 +624,44 @@ fn row_cells(row: &TaskRow, groups: bool) -> Vec<String> {
     cells
 }
 
+/// One task's table row as a single line, cells joined — the spelling
+/// `--exec` heads each task's output with, and the line the cursor's
+/// `task` selector prints.
+pub(crate) fn row_line<T: proc::Target>(session: &Session<'_, T>, index: usize) -> String {
+    let groups = !session.group_tags().is_empty();
+    row_cells(&rows(session)[index], groups).join("  ")
+}
+
+/// One task's full block — what `tasks -v` prints for it — for the
+/// cursor's `task -v`.
+pub(crate) fn print_task_block<T: proc::Target>(
+    session: &Session<'_, T>,
+    index: usize,
+    out: &mut dyn io::Write,
+) -> Result<()> {
+    let polling: HashMap<u64, u32> = session
+        .workers
+        .iter()
+        .filter_map(|w| w.current_task_id.map(|id| (id, w.tid)))
+        .collect();
+    let census = session.census();
+    let selected: BTreeSet<usize> = [index].into();
+    print_tasks(
+        &session.tasks,
+        &session.impl_fold,
+        &session.group_tags(),
+        &polling,
+        &census.held,
+        &census.sets,
+        &census.join_sets,
+        false,
+        None,
+        Some(&selected),
+        false,
+        out,
+    )
+}
+
 /// Print the table: one row per task, in the listing's own id order,
 /// the `RT` column only when the target holds more than one group.
 fn print_task_table(

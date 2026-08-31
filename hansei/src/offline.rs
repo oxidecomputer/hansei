@@ -23,7 +23,7 @@ use std::path::Path;
 
 /// The session flags an offline pair is opened under: the pair's two
 /// files and every default a command line would fill in.
-fn session_args(set: &str, program: &str) -> SessionArgs {
+pub(crate) fn session_args(set: &str, program: &str) -> SessionArgs {
     SessionArgs {
         core: testkit::fixture(set, &format!("{program}.snapshot")),
         tokio_info: Some(testkit::fixture(set, &format!("{program}.tinfo"))),
