@@ -1,0 +1,11 @@
+---
+source: hansei/src/offline.rs
+description: "`info` over linux/foreign-runtime"
+---
+core:       <snapshot>
+tokio info: <tokio info>
+symbols resolved: 8/8
+signal: none recorded (a live capture, not a crash)
+objects: 5 loaded (see `info objects`)
+2 worker thread(s), 4 task(s)
+2 runtimes, 1 local set (see `runtimes --list`)

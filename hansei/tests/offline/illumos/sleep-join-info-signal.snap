@@ -1,0 +1,5 @@
+---
+source: hansei/src/offline.rs
+description: "`info signal` over illumos/sleep-join"
+---
+signal: none recorded (a live capture, not a crash)

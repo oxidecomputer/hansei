@@ -1,0 +1,11 @@
+---
+source: hansei/src/offline.rs
+description: "`info` over illumos/sleep-join"
+---
+core:       <snapshot>
+tokio info: <tokio info>
+symbols resolved: 17/17
+signal: none recorded (a live capture, not a crash)
+objects: 10 loaded (see `info objects`)
+3 worker thread(s), 2 task(s)
+1 runtime (see `runtimes --list`)

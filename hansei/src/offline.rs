@@ -76,6 +76,15 @@ fn commands(
         ("sync", "sync".to_owned()),
         ("census", "census".to_owned()),
         ("runtimes-list", "runtimes --list".to_owned()),
+        // The info summary and each section. A snapshot records no
+        // process notes and no fd table, so the goldens pin the
+        // degraded spellings; objects rows come from the recorded
+        // mappings, with every CFI read declined by the capture.
+        ("info", "info".to_owned()),
+        ("info-process", "info process".to_owned()),
+        ("info-signal", "info signal".to_owned()),
+        ("info-objects", "info objects".to_owned()),
+        ("info-fds", "info fds".to_owned()),
     ];
     if let Some(lwp) = session.lwps.first() {
         list.push(("threads-one", format!("threads {}", lwp.tid)));
@@ -157,6 +166,14 @@ fn golden(program: &str) {
             if let Some(e) = error {
                 text.push_str(&format!("error: {e:#}\n"));
             }
+            // `info` prints the fixture pair's absolute paths, which
+            // are this machine's; the golden records their roles.
+            text = text
+                .replace(&args.core.display().to_string(), "<snapshot>")
+                .replace(
+                    &args.tokio_info.as_deref().unwrap().display().to_string(),
+                    "<tokio info>",
+                );
             settings.set_description(format!("`{line}` over {set}/{program}"));
             settings.bind(|| {
                 insta::assert_snapshot!(format!("{program}-{label}"), mask(text.trim_end()));

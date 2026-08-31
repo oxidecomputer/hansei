@@ -1,0 +1,5 @@
+---
+source: hansei/src/offline.rs
+description: "`info fds` over linux/walk-shapes"
+---
+fds: not recorded by this target

@@ -1,0 +1,11 @@
+---
+source: hansei/src/offline.rs
+description: "`info` over linux-floor/local-set-io"
+---
+core:       <snapshot>
+tokio info: <tokio info>
+symbols resolved: 6/6
+signal: none recorded (a live capture, not a crash)
+objects: 5 loaded (see `info objects`)
+1 worker thread(s), 4 task(s)
+1 runtime, 1 local set (see `runtimes --list`)

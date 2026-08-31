@@ -238,6 +238,27 @@ pub trait Target: Sync {
         None
     }
 
+    /// The path of the target's executable, as the target records it.
+    fn exec_path(&self) -> Option<std::path::PathBuf> {
+        None
+    }
+
+    /// The executable's build id from the two places it is recorded,
+    /// for the targets where the question arises — a Linux core
+    /// beside the `--binary` standing in for its executable.
+    fn build_ids(&self) -> Option<BuildIds> {
+        None
+    }
+
+    /// The load addresses of the objects whose symbol tables this
+    /// target can read — an illumos core carries one per mapped
+    /// object, a Linux core only the substituted executable's. Empty
+    /// for a target that cannot attribute symbols to objects (a
+    /// snapshot records a flat table).
+    fn symbol_object_bases(&self) -> Vec<u64> {
+        Vec::new()
+    }
+
     /// The target's memory mappings.
     fn mappings(&self) -> Result<Mappings>;
 

@@ -1112,6 +1112,32 @@ impl Target for Core {
         self.facts.clone()
     }
 
+    fn exec_path(&self) -> Option<PathBuf> {
+        Core::exec_name(self).ok()
+    }
+
+    fn build_ids(&self) -> Option<BuildIds> {
+        Some(Core::build_ids(self))
+    }
+
+    fn symbol_object_bases(&self) -> Vec<u64> {
+        let Some(exec) = &self.exec else {
+            return Vec::new();
+        };
+        // The executable's symtab is served by the file standing in
+        // for it, so symbol presence is that file being on hand.
+        if !matches!(self.backing.get(&exec.path), Some(Some(_))) {
+            return Vec::new();
+        }
+        self.mappings
+            .iter()
+            .filter(|m| m.path.as_deref() == Some(exec.path.as_str()))
+            .map(|m| m.vaddr)
+            .min()
+            .into_iter()
+            .collect()
+    }
+
     fn readable_len(&self, addr: u64, max: u64) -> u64 {
         Core::readable_len(self, addr, max)
     }

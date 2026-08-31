@@ -123,6 +123,27 @@ impl Target for Proc {
         }
     }
 
+    fn exec_path(&self) -> Option<PathBuf> {
+        match self {
+            Proc::LinuxCore(c) => Target::exec_path(c),
+            Proc::IllumosCore(c) => Target::exec_path(c),
+        }
+    }
+
+    fn build_ids(&self) -> Option<BuildIds> {
+        match self {
+            Proc::LinuxCore(c) => Target::build_ids(c),
+            Proc::IllumosCore(c) => Target::build_ids(c),
+        }
+    }
+
+    fn symbol_object_bases(&self) -> Vec<u64> {
+        match self {
+            Proc::LinuxCore(c) => Target::symbol_object_bases(c),
+            Proc::IllumosCore(c) => Target::symbol_object_bases(c),
+        }
+    }
+
     fn lookup_symbol_by_addr(&self, addr: u64) -> Option<SymbolBuf> {
         dispatch!(self, lookup_symbol_by_addr(addr))
     }
