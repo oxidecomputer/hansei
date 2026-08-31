@@ -1396,6 +1396,12 @@ walk_roles! {
     UnixListenerFd = "net::UnixListener.fd",
     UnixDatagramShared = "net::UnixDatagram.shared",
     UnixDatagramFd = "net::UnixDatagram.fd",
+    BlockingQueue = "blocking::Shared.queue",
+    BlockingQueueHead = "blocking::queue.head",
+    BlockingQueueLen = "blocking::queue.len",
+    BlockingQueueBuf = "blocking::queue.buf",
+    BlockingQueueCap = "blocking::queue.cap",
+    BlockingTaskHeader = "blocking::Task.header",
 }
 
 /// What binding one walk role against the target's DWARF concluded.

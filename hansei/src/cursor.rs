@@ -1214,6 +1214,7 @@ mod tests {
             spawn_location: None,
             future: FutureInfo::Unknown { poll_symbol: None },
             group: 0,
+            blocking: false,
         };
         let worker = |tid, current_task_id| Worker {
             tid,

@@ -400,6 +400,7 @@ mod graph_tests {
             spawn_location: None,
             future: FutureInfo::Unknown { poll_symbol: None },
             group: 0,
+            blocking: false,
         }
     }
 

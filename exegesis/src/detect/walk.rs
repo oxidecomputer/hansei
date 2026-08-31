@@ -509,6 +509,103 @@ fn decls() -> Vec<WalkDecl> {
             Any,
             || vec![reach![Named("queue_depth"), PeelTo(WORD)]],
         ),
+        // The pool's queue itself — the spawn_blocking cells no task
+        // list carries — behind the loom mutex, whose spelling varies
+        // with the parking_lot feature within one release: exactly the
+        // divergence ordered alternatives exist for.
+        decl(
+            WalkRole::BlockingQueue,
+            WalkRoot::AnyHandle,
+            Aggregate,
+            || {
+                let prefix = reach![
+                    Named("blocking_spawner"),
+                    Named("inner"),
+                    Named("ptr"),
+                    Named("pointer"),
+                    Deref,
+                    Named("data"),
+                    Named("shared"),
+                ];
+                [
+                    // The parking_lot shim: a tuple whose `__1` is the
+                    // real lock_api mutex, its payload an UnsafeCell
+                    // under `data`.
+                    reach![Named("__1"), Named("data"), Named("value"), Named("queue")],
+                    // The std shim: a tuple over std's Mutex, whose
+                    // payload sits in `data`'s UnsafeCell.
+                    reach![Named("__0"), Named("data"), Named("value"), Named("queue")],
+                    // A bare std Mutex, should the shim fold away.
+                    reach![Named("data"), Named("value"), Named("queue")],
+                ]
+                .into_iter()
+                .map(|tail| {
+                    let mut steps = prefix.clone();
+                    steps.extend(tail);
+                    steps
+                })
+                .collect()
+            },
+        ),
+        // The VecDeque's ring: head index, length, buffer pointer and
+        // capacity. The buffer pointer is named the whole way — the
+        // capacity shares offset zero, so a shape peel cannot pick the
+        // pointer out.
+        decl(
+            WalkRole::BlockingQueueHead,
+            End(WalkRole::BlockingQueue),
+            Word,
+            || vec![reach![Named("head"), PeelTo(WORD)]],
+        ),
+        decl(
+            WalkRole::BlockingQueueLen,
+            End(WalkRole::BlockingQueue),
+            Word,
+            || vec![reach![Named("len")]],
+        ),
+        decl(
+            WalkRole::BlockingQueueBuf,
+            End(WalkRole::BlockingQueue),
+            Pointer,
+            || {
+                vec![reach![
+                    Named("buf"),
+                    Named("inner"),
+                    Named("ptr"),
+                    PeelTo(Shape::Pointer),
+                ]]
+            },
+        ),
+        decl(
+            WalkRole::BlockingQueueCap,
+            End(WalkRole::BlockingQueue),
+            Word,
+            || {
+                vec![reach![
+                    Named("buf"),
+                    Named("inner"),
+                    Named("cap"),
+                    PeelTo(WORD)
+                ]]
+            },
+        ),
+        // The queue's element: the `Header` its `UnownedTask` points
+        // at. Rooted at the element type itself — extraction includes
+        // it for exactly this — the recorded root is also how the
+        // runtime learns the element's size to stride the ring by.
+        decl(
+            WalkRole::BlockingTaskHeader,
+            WalkRoot::Type("tokio::runtime::blocking::pool::Task"),
+            Pointer,
+            || {
+                vec![reach![
+                    Named("task"),
+                    Named("raw"),
+                    Named("ptr"),
+                    Named("pointer"),
+                ]]
+            },
+        ),
         // Task enumeration: `Shared.owned`'s sharded intrusive lists, the
         // `Header` each node is, and the `Trailer.owned` link to the next.
         decl(

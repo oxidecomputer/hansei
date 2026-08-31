@@ -11,6 +11,7 @@
 //! each LWP's fast-TSD slots to find that thread's
 //! `tokio::runtime::context::Context`.
 
+use super::Lifecycle;
 pub use super::model::*;
 
 use super::contract::{self, ContractReport, WalkPolicy, Walked};
@@ -861,6 +862,7 @@ impl<'b, T: Target> Context<'b, T> {
             spawn_location,
             future,
             group: 0,
+            blocking: false,
         };
         Ok((task, next))
     }
@@ -2031,6 +2033,7 @@ impl<'b, T: Target> Context<'b, T> {
         let mut enumerated_sets = 0;
         let mut wheeled = 0;
         let mut ioed = 0;
+        let mut pooled = 0;
         let mut local_blocks: Vec<(usize, std::ops::Range<usize>)> = Vec::new();
         for _round in 0..64 {
             while enumerated_runtimes < runtimes.len() {
@@ -2085,6 +2088,21 @@ impl<'b, T: Target> Context<'b, T> {
                 ioed = runtimes.len();
                 list.errors.extend(errors);
                 found
+            } else if pooled < runtimes.len() {
+                // The blocking pool's queue: the spawn_blocking cells
+                // no task list carries, listed as rows of their own.
+                // They bootstrap nothing — a blocking cell's scheduler
+                // names no list — so the round yields no candidates.
+                for (offset, runtime) in runtimes[pooled..].iter().enumerate() {
+                    if let Err(e) = self.list_queued_blocking(runtime, pooled + offset, list) {
+                        list.errors.push(e.context(format!(
+                            "failed to walk the blocking queue of the runtime at {:#x}",
+                            runtime.handle.addr
+                        )));
+                    }
+                }
+                pooled = runtimes.len();
+                Vec::new()
             } else {
                 break;
             };
@@ -2096,7 +2114,7 @@ impl<'b, T: Target> Context<'b, T> {
                     &thread_ids,
                     runtimes,
                     &mut sets,
-                    &mut list.errors,
+                    list,
                 );
             }
         }
@@ -2576,11 +2594,87 @@ impl<'b, T: Target> Context<'b, T> {
         Ok(Some(addr))
     }
 
+    /// The spawn_blocking cells parked in one runtime's pool queue,
+    /// listed as rows under `group`. The queue is a `VecDeque` ring:
+    /// the recorded element layout strides it, and each element's
+    /// `UnownedTask` names the Header that identifies the cell.
+    fn list_queued_blocking(
+        &self,
+        runtime: &RuntimeRef<'b>,
+        group: usize,
+        list: &mut TaskList,
+    ) -> Result<()> {
+        let Some(queue) = self
+            .walk(WalkRole::BlockingQueue)
+            .try_walk(runtime.handle)?
+            .and_then(Walked::optional)
+        else {
+            return Ok(());
+        };
+        let len: u64 = self.walk(WalkRole::BlockingQueueLen).read(queue)?;
+        if len == 0 {
+            return Ok(());
+        }
+        let head: u64 = self.walk(WalkRole::BlockingQueueHead).read(queue)?;
+        let cap: u64 = self.walk(WalkRole::BlockingQueueCap).read(queue)?;
+        let buf: u64 = self.walk(WalkRole::BlockingQueueBuf).read(queue)?;
+        ensure!(
+            cap > 0 && len <= cap,
+            "the blocking queue claims {len} of {cap} slots"
+        );
+        let elem = self
+            .walk_root_ty(WalkRole::BlockingTaskHeader)
+            .ok_or_else(|| anyhow!("the tokio info records no blocking pool Task layout"))?;
+        for i in 0..len {
+            let slot = (head + i) % cap;
+            let addr = buf + slot * elem.size();
+            let step = (|| -> Result<u64> {
+                ensure!(
+                    self.mappings.contains_addr(addr),
+                    "queue slot {slot} at {addr:#x} is unmapped"
+                );
+                let value = Value::read(self.proc, elem, addr)?;
+                self.walk(WalkRole::BlockingTaskHeader).read(value)
+            })();
+            match step {
+                Ok(header) => self.list_blocking(header, group, list),
+                Err(e) => list
+                    .errors
+                    .push(e.context(format!("failed to read blocking-queue slot {slot}"))),
+            }
+        }
+        Ok(())
+    }
+
+    /// List one blocking cell as a row, wherever it was found: parse
+    /// its Header like any task's and mark it. A complete cell is left
+    /// to the join edge that found it — off the pool, alive only
+    /// through its handle — and a listed one is already a row.
+    fn list_blocking(&self, addr: u64, group: usize, list: &mut TaskList) {
+        if list.contains(addr) {
+            return;
+        }
+        match self.parse_task(addr) {
+            Ok((mut task, _)) => {
+                if task.state.lifecycle() == Lifecycle::Complete {
+                    return;
+                }
+                task.blocking = true;
+                task.group = group;
+                list.tasks.push(task);
+            }
+            Err(e) => list
+                .errors
+                .push(e.context(format!("failed to list the blocking task at {addr:#x}"))),
+        }
+    }
+
     /// Route 1's tail: follow one unlisted Header home through its
     /// cell's scheduler, whatever that scheduler turns out to be. A
-    /// task the bundle cannot classify — a `spawn_blocking` task, an
-    /// unresolvable future — is the common, silent case; only a genuine
-    /// read failure reports.
+    /// blocking cell has no list to follow home and becomes a row of
+    /// its own; a task the bundle cannot classify (an unresolvable
+    /// future) is the common, silent case, and only a genuine read
+    /// failure reports.
     #[allow(clippy::too_many_arguments)]
     fn bootstrap_unlisted(
         &self,
@@ -2590,7 +2684,7 @@ impl<'b, T: Target> Context<'b, T> {
         thread_ids: &[(u64, u32)],
         runtimes: &mut Vec<RuntimeRef<'b>>,
         sets: &mut Vec<LocalSetRef<'b>>,
-        errors: &mut Vec<anyhow::Error>,
+        list: &mut TaskList,
     ) {
         let step = (|| -> Result<Option<(SchedulerKind, Value<'b>, u64)>> {
             ensure!(
@@ -2606,6 +2700,11 @@ impl<'b, T: Target> Context<'b, T> {
             };
             let entry = self.task_entry(known.entry);
             let kind = self.scheduler_kind(entry);
+            // A blocking cell has no owner list to walk to; the header
+            // itself is the whole find.
+            if matches!(kind, SchedulerKind::Blocking) {
+                return Ok(Some((kind, header, 0)));
+            }
             if !matches!(
                 kind,
                 SchedulerKind::LocalSet | SchedulerKind::MultiThread | SchedulerKind::CurrentThread
@@ -2625,7 +2724,11 @@ impl<'b, T: Target> Context<'b, T> {
             Ok(Some((kind, owner, claim)))
         })();
         match step {
+            Ok(Some((SchedulerKind::Blocking, ..))) => {
+                self.list_blocking(addr, 0, list);
+            }
             Ok(Some((SchedulerKind::LocalSet, shared, claim))) => {
+                let errors = &mut list.errors;
                 self.admit_local_set(shared, Some(claim), None, route, thread_ids, sets, errors);
             }
             Ok(Some((SchedulerKind::MultiThread, handle, claim))) => self.admit_hidden_runtime(
@@ -2635,7 +2738,7 @@ impl<'b, T: Target> Context<'b, T> {
                 route,
                 excluded,
                 runtimes,
-                errors,
+                &mut list.errors,
             ),
             Ok(Some((SchedulerKind::CurrentThread, handle, claim))) => self.admit_hidden_runtime(
                 handle,
@@ -2644,10 +2747,10 @@ impl<'b, T: Target> Context<'b, T> {
                 route,
                 excluded,
                 runtimes,
-                errors,
+                &mut list.errors,
             ),
             Ok(Some(_)) | Ok(None) => {}
-            Err(e) => errors.push(e.context(format!(
+            Err(e) => list.errors.push(e.context(format!(
                 "failed to follow the unlisted task at {addr:#x} home"
             ))),
         }
@@ -3318,6 +3421,7 @@ mod tests {
             spawn_location: None,
             future: FutureInfo::Unknown { poll_symbol: None },
             group: 0,
+            blocking: false,
         };
         let ext = ctx.task_extent(&erased).expect("the vtable route");
         assert_eq!(ext.start, known.addr.0);

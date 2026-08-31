@@ -299,6 +299,7 @@ impl Counts {
 /// holds tasks the listing already carries, so its rows say what those
 /// blocks say rather than something of their own.
 struct Listing<'a> {
+    blocking_lwps: &'a HashMap<u64, u32>,
     nested: &'a HashMap<census::Via, Vec<Entry<'a>>>,
     list: &'a bundle::TaskList,
     polling: &'a HashMap<u64, u32>,
@@ -426,8 +427,15 @@ fn print_future_entry<'a>(
 
 /// A task's lifecycle as a listing spells it: the worker holding it
 /// where the runtime says one is, since `running` alone leaves a reader
-/// asking where.
-pub(crate) fn task_state(task: &bundle::Task, polling: &HashMap<u64, u32>) -> String {
+/// asking where — and a blocking cell's queued/running spelling.
+pub(crate) fn task_state(
+    task: &bundle::Task,
+    polling: &HashMap<u64, u32>,
+    blocking_lwps: &HashMap<u64, u32>,
+) -> String {
+    if task.blocking {
+        return blocking_state(task, blocking_lwps.get(&task.addr.0).copied());
+    }
     match (task.state.lifecycle(), task.task_id) {
         (Lifecycle::Running, Some(id)) if polling.contains_key(&id) => {
             format!("running (lwp {})", polling[&id])
@@ -444,7 +452,7 @@ fn joined_task(child: &census::JoinedTask, listing: &Listing<'_>) -> String {
         None => format!("task at {:#x}", child.task),
     };
     if let Some(task) = listing.list.tasks.iter().find(|t| t.addr.0 == child.task) {
-        let state = task_state(task, listing.polling);
+        let state = task_state(task, listing.polling, listing.blocking_lwps);
         return format!(
             "{who}  {}  {state}",
             future_name(&task.future, listing.impls)
@@ -546,25 +554,28 @@ pub(crate) fn rows<'s, T: proc::Target>(session: &'s Session<'_, T>) -> &'s [Tas
             &polling,
             &session.impl_fold,
             &session.registries,
+            blocking_lwps(session),
         )
     })
 }
 
 /// Build every row from what it prints — taken apart from the session
 /// so a test can lay out a population no fixture holds.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn build_rows(
     list: &bundle::TaskList,
     waits: &[rt_graph::TaskWait],
     polling: &HashMap<u64, u32>,
     impls: &names::ImplFold,
     registries: &bundle::Registries,
+    blocking_lwps: &HashMap<u64, u32>,
 ) -> Vec<TaskRow> {
     list.tasks
         .iter()
         .enumerate()
         .map(|(index, task)| TaskRow {
             id: task_id(list, index),
-            state: row_state(task),
+            state: row_state(task, blocking_lwps.get(&task.addr.0).copied()),
             rt: task.group,
             awaiting_at: waits
                 .get(index)
@@ -590,13 +601,67 @@ pub(crate) fn build_rows(
         .collect()
 }
 
-/// The `STATE` cell: the lifecycle, and the cancel bit — which any
-/// lifecycle can carry — appended rather than replacing it.
-fn row_state(task: &bundle::Task) -> String {
-    let lifecycle = task.state.lifecycle();
+/// Which lwp runs each claimed blocking task: unwind the stacks once
+/// and look for a pc inside the task's resolved poll symbol — the
+/// same join key `trace` anchors on. Paid only when some blocking row
+/// is running, and cached on the session for every listing after.
+pub(crate) fn blocking_lwps<'s, T: proc::Target>(
+    session: &'s Session<'_, T>,
+) -> &'s HashMap<u64, u32> {
+    session.blocking_lwps.get_or_init(|| {
+        let running: Vec<&bundle::Task> = session
+            .tasks
+            .tasks
+            .iter()
+            .filter(|t| t.blocking && t.state.lifecycle() == Lifecycle::Running)
+            .collect();
+        if running.is_empty() {
+            return HashMap::new();
+        }
+        let stacks = crate::threads::load_stacks(session);
+        let mut map = HashMap::new();
+        for task in running {
+            let Ok(Some(range)) = session.ctx.poll_symbol_range(task) else {
+                continue;
+            };
+            if let Some((tid, _)) = stacks
+                .iter()
+                .find(|(_, bt)| bt.frames.iter().any(|f| range.contains(&f.pc)))
+            {
+                map.insert(task.addr.0, *tid);
+            }
+        }
+        map
+    })
+}
+
+/// The `blocking (…)` spelling a pool cell's STATE carries: queued
+/// until a thread claims it, running — on the lwp the stacks name,
+/// where they name one — while claimed.
+fn blocking_state(task: &bundle::Task, lwp: Option<u32>) -> String {
+    match task.state.lifecycle() {
+        Lifecycle::Running => match lwp {
+            Some(lwp) => format!("blocking (running on lwp {lwp})"),
+            None => "blocking (running)".to_string(),
+        },
+        lifecycle => match lifecycle == Lifecycle::Complete {
+            true => lifecycle.to_string(),
+            false => "blocking (queued)".to_string(),
+        },
+    }
+}
+
+/// The `STATE` cell: the lifecycle — a blocking cell's queued/running
+/// spelling — and the cancel bit, which any lifecycle can carry,
+/// appended rather than replacing it.
+fn row_state(task: &bundle::Task, blocking_lwp: Option<u32>) -> String {
+    let state = match task.blocking {
+        true => blocking_state(task, blocking_lwp),
+        false => task.state.lifecycle().to_string(),
+    };
     match task.state.is_cancelled() {
-        true => format!("{lifecycle} (cancelled)"),
-        false => lifecycle.to_string(),
+        true => format!("{state} (cancelled)"),
+        false => state,
     }
 }
 
@@ -610,6 +675,11 @@ fn waiting_on(
     polling: &HashMap<u64, u32>,
     impls: &names::ImplFold,
 ) -> String {
+    // A blocking cell waits on a pool thread, not on a future — its
+    // STATE says which; the cell has nothing to add.
+    if task.blocking {
+        return "—".to_string();
+    }
     if task.state.lifecycle() == Lifecycle::Running {
         return match task.task_id.and_then(|id| polling.get(&id)) {
             Some(lwp) => format!("— (mid-poll on lwp {lwp})"),
@@ -632,7 +702,7 @@ fn waiting_kind(
     wait: Option<&rt_graph::TaskWait>,
     impls: &names::ImplFold,
 ) -> Option<String> {
-    if task.state.lifecycle() == Lifecycle::Running {
+    if task.blocking || task.state.lifecycle() == Lifecycle::Running {
         return None;
     }
     match wait.map(|w| (&w.target, &w.leaf)) {
@@ -721,6 +791,7 @@ pub(crate) fn print_task_block<T: proc::Target>(
         &session.impl_fold,
         &session.group_tags(),
         &polling,
+        blocking_lwps(session),
         &census.held,
         &census.sets,
         &census.join_sets,
@@ -1152,6 +1223,7 @@ pub(crate) fn exec_tasks<T: proc::Target>(
         &session.impl_fold,
         &session.group_tags(),
         &polling,
+        blocking_lwps(session),
         &census.held,
         &census.sets,
         &census.join_sets,
@@ -1215,6 +1287,7 @@ fn exec_group<T: proc::Target>(
                 &session.impl_fold,
                 &session.group_tags(),
                 &polling,
+                blocking_lwps(session),
                 &census.held,
                 &census.sets,
                 &census.join_sets,
@@ -1322,6 +1395,7 @@ pub(crate) fn print_tasks(
     impls: &names::ImplFold,
     group_tags: &[String],
     polling: &HashMap<u64, u32>,
+    blocking_lwps: &HashMap<u64, u32>,
     census_held: &[census::HeldFuture],
     census_sets: &[census::FutureSet],
     census_join_sets: &[census::JoinSet],
@@ -1335,6 +1409,7 @@ pub(crate) fn print_tasks(
     let selected = |index: usize| selected.is_none_or(|only| only.contains(&index));
     let census = census_tree(census_held, census_sets, census_join_sets);
     let listing = Listing {
+        blocking_lwps,
         nested: &census.nested,
         list,
         polling,
@@ -1355,7 +1430,11 @@ pub(crate) fn print_tasks(
         shown += 1;
         let id = task_id(list, index);
         writeln!(out, "Task {id}: {}", future_name(&task.future, impls))?;
-        writeln!(out, "    State: {}", task_state(task, polling))?;
+        writeln!(
+            out,
+            "    State: {}",
+            task_state(task, polling, blocking_lwps)
+        )?;
         if let Some(tag) = group_tags.get(task.group) {
             writeln!(out, "    Owner: {tag}")?;
         }
@@ -1636,6 +1715,7 @@ mod table_tests {
             spawn_location: None,
             future: FutureInfo::Unknown { poll_symbol: None },
             group: 0,
+            blocking: false,
         }
     }
 
@@ -1666,6 +1746,7 @@ mod table_tests {
             &waits,
             &polling,
             &hansei_bundle::names::ImplFold::default(),
+            &Default::default(),
             &Default::default(),
         )
     }
@@ -1734,6 +1815,61 @@ mod table_tests {
         assert_eq!(known[0].defined.as_deref(), Some("src/app.rs:7"));
     }
 
+    /// A blocking cell's STATE spells where it is in the pool — queued,
+    /// running (with the lwp where the stacks name one) — its wait
+    /// column stays empty, and the cancel bit rides whichever spelling.
+    #[test]
+    fn test_blocking_rows_spell_queue_and_thread() {
+        let blocking = |id: u64, state: u64| Task {
+            blocking: true,
+            ..task(id, state)
+        };
+        let rows = rows_of(
+            vec![blocking(1, 0), blocking(2, RUNNING), blocking(3, CANCELLED)],
+            vec![wait(1, None), wait(2, None), wait(3, None)],
+            HashMap::new(),
+        );
+        assert_eq!(rows[0].state, "blocking (queued)");
+        assert_eq!(rows[1].state, "blocking (running)");
+        assert_eq!(rows[2].state, "blocking (queued) (cancelled)");
+        assert_eq!(rows[0].waiting_on, "—");
+        assert_eq!(rows[0].waiting_kind, None);
+
+        // The stacks named the lwp running it.
+        let with_lwp = build_rows(
+            &TaskList {
+                tasks: vec![blocking(2, RUNNING)],
+                errors: vec![],
+            },
+            &[],
+            &HashMap::new(),
+            &hansei_bundle::names::ImplFold::default(),
+            &Default::default(),
+            &HashMap::from([(0x1000 + 2 * 0x100, 42)]),
+        );
+        assert_eq!(with_lwp[0].state, "blocking (running on lwp 42)");
+
+        // The block form agrees, complete stays plain.
+        let polling = HashMap::new();
+        assert_eq!(
+            super::task_state(&blocking(1, 0), &polling, &HashMap::new()),
+            "blocking (queued)"
+        );
+        assert_eq!(
+            super::task_state(
+                &blocking(2, RUNNING),
+                &polling,
+                &HashMap::from([(0x1000 + 2 * 0x100, 7)])
+            ),
+            "blocking (running on lwp 7)"
+        );
+        const COMPLETE: u64 = 0b010;
+        assert_eq!(
+            super::task_state(&blocking(4, COMPLETE), &polling, &HashMap::new()),
+            "complete"
+        );
+    }
+
     /// A running task waits on nothing: its cell names the lwp polling
     /// it where the runtime says one, and says only mid-poll where it
     /// does not.
@@ -1799,6 +1935,7 @@ mod table_tests {
             &HashMap::new(),
             &hansei_bundle::names::ImplFold::default(),
             &Default::default(),
+            &Default::default(),
         );
         let mut out = Vec::new();
         super::print_tasks(
@@ -1806,6 +1943,7 @@ mod table_tests {
             &rows,
             &hansei_bundle::names::ImplFold::default(),
             &[],
+            &HashMap::new(),
             &HashMap::new(),
             &[],
             &[],
@@ -2279,8 +2417,10 @@ mod census_listing_tests {
             errors: vec![],
         };
         let polling = HashMap::new();
+        let blocking = HashMap::new();
         let impls = hansei_bundle::names::ImplFold::default();
         let listing = Listing {
+            blocking_lwps: &blocking,
             nested: &nested,
             list: &list,
             polling: &polling,
@@ -2331,6 +2471,7 @@ mod task_state_tests {
             spawn_location: None,
             future: FutureInfo::Unknown { poll_symbol: None },
             group: 0,
+            blocking: false,
         }
     }
 
@@ -2383,20 +2524,29 @@ mod task_state_tests {
         let polling = HashMap::from([(7, 42)]);
 
         assert_eq!(
-            task_state(&task(RUNNING, Some(7)), &polling),
+            task_state(&task(RUNNING, Some(7)), &polling, &HashMap::new()),
             "running (lwp 42)"
         );
 
         // Running, but the runtime does not say a worker holds it: some
         // other task's id, or none of its own.
-        assert_eq!(task_state(&task(RUNNING, Some(9)), &polling), "running");
-        assert_eq!(task_state(&task(RUNNING, None), &polling), "running");
+        assert_eq!(
+            task_state(&task(RUNNING, Some(9)), &polling, &HashMap::new()),
+            "running"
+        );
+        assert_eq!(
+            task_state(&task(RUNNING, None), &polling, &HashMap::new()),
+            "running"
+        );
 
         // A worker polling *something* says nothing about a task that
         // is not running, whatever id it carries.
-        assert_eq!(task_state(&task(IDLE, Some(7)), &polling), "idle");
         assert_eq!(
-            task_state(&task(RUNNING, Some(7)), &HashMap::new()),
+            task_state(&task(IDLE, Some(7)), &polling, &HashMap::new()),
+            "idle"
+        );
+        assert_eq!(
+            task_state(&task(RUNNING, Some(7)), &HashMap::new(), &HashMap::new()),
             "running"
         );
     }

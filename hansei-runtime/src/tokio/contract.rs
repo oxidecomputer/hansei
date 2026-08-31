@@ -183,6 +183,11 @@ pub fn classify(role: WalkRole) -> Class {
         TcpStreamShared | TcpStreamFd | TcpListenerShared | TcpListenerFd | UdpSocketShared
         | UdpSocketFd | UnixStreamShared | UnixStreamFd | UnixListenerShared | UnixListenerFd
         | UnixDatagramShared | UnixDatagramFd => Class::Optional,
+        // The blocking pool's queue and its element layout: what lists
+        // the spawn_blocking cells as rows. A bundle without them
+        // still lists every scheduler-owned task.
+        BlockingQueue | BlockingQueueHead | BlockingQueueLen | BlockingQueueBuf
+        | BlockingQueueCap | BlockingTaskHeader => Class::Optional,
     }
 }
 

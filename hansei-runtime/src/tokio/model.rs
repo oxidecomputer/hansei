@@ -542,6 +542,11 @@ pub struct Task {
     /// and [`Context::discover_hidden_tasks`]. 0 on the single-runtime,
     /// no-local-set targets that are nearly all of them.
     pub group: usize,
+    /// A `spawn_blocking` cell rather than a scheduler-owned task:
+    /// found in the pool's queue, or through a `JoinHandle` whose
+    /// cell records the blocking scheduler. Its STATE spells queued
+    /// or running, never idle — the pool has no parked state.
+    pub blocking: bool,
 }
 
 /// The task's concrete future type, resolved via the symbol join — or not.

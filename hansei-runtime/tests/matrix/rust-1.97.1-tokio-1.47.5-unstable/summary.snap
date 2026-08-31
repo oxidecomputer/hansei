@@ -117,6 +117,11 @@ ok      io::Waiter.waker
 ok      TimerShared.state
 ok      ScheduledIo.readiness
 ok      io::Waiter.interest
+ok      blocking::Shared.queue (spelling 1 of 3)
+ok      blocking::queue.head
+ok      blocking::queue.len
+ok      blocking::queue.buf
+ok      blocking::queue.cap
 
 program: simple-await
 
@@ -218,6 +223,11 @@ ok      io::Waiter.waker
 ok      TimerShared.state
 ok      ScheduledIo.readiness
 ok      io::Waiter.interest
+ok      blocking::Shared.queue (spelling 1 of 3)
+ok      blocking::queue.head
+ok      blocking::queue.len
+ok      blocking::queue.buf
+ok      blocking::queue.cap
 
 program: nested-await
 
@@ -319,6 +329,11 @@ ok      io::Waiter.waker
 ok      TimerShared.state
 ok      ScheduledIo.readiness
 ok      io::Waiter.interest
+ok      blocking::Shared.queue (spelling 1 of 3)
+ok      blocking::queue.head
+ok      blocking::queue.len
+ok      blocking::queue.buf
+ok      blocking::queue.cap
 
 program: dyn-future
 
@@ -432,6 +447,11 @@ ok      io::Waiter.waker
 ok      TimerShared.state
 ok      ScheduledIo.readiness
 ok      io::Waiter.interest
+ok      blocking::Shared.queue (spelling 1 of 3)
+ok      blocking::queue.head
+ok      blocking::queue.len
+ok      blocking::queue.buf
+ok      blocking::queue.cap
 
 program: select-combinator
 
@@ -547,6 +567,11 @@ ok      io::Waiter.waker
 ok      TimerShared.state
 ok      ScheduledIo.readiness
 ok      io::Waiter.interest
+ok      blocking::Shared.queue (spelling 1 of 3)
+ok      blocking::queue.head
+ok      blocking::queue.len
+ok      blocking::queue.buf
+ok      blocking::queue.cap
 
 program: many-tasks
 
@@ -646,6 +671,11 @@ ok      io::Waiter.waker
 ok      TimerShared.state
 ok      ScheduledIo.readiness
 ok      io::Waiter.interest
+ok      blocking::Shared.queue (spelling 1 of 3)
+ok      blocking::queue.head
+ok      blocking::queue.len
+ok      blocking::queue.buf
+ok      blocking::queue.cap
 
 program: sleep-join
 
@@ -757,6 +787,11 @@ ok      io::Waiter.waker
 ok      TimerShared.state
 ok      ScheduledIo.readiness
 ok      io::Waiter.interest
+ok      blocking::Shared.queue (spelling 1 of 3)
+ok      blocking::queue.head
+ok      blocking::queue.len
+ok      blocking::queue.buf
+ok      blocking::queue.cap
 
 program: channels
 
@@ -868,6 +903,11 @@ ok      io::Waiter.waker
 ok      TimerShared.state
 ok      ScheduledIo.readiness
 ok      io::Waiter.interest
+ok      blocking::Shared.queue (spelling 1 of 3)
+ok      blocking::queue.head
+ok      blocking::queue.len
+ok      blocking::queue.buf
+ok      blocking::queue.cap
 
 program: unordered
 
@@ -975,6 +1015,11 @@ ok      io::Waiter.waker
 ok      TimerShared.state
 ok      ScheduledIo.readiness
 ok      io::Waiter.interest
+ok      blocking::Shared.queue (spelling 1 of 3)
+ok      blocking::queue.head
+ok      blocking::queue.len
+ok      blocking::queue.buf
+ok      blocking::queue.cap
 
 program: joinset
 
@@ -1100,6 +1145,11 @@ ok      io::Waiter.waker
 ok      TimerShared.state
 ok      ScheduledIo.readiness
 ok      io::Waiter.interest
+ok      blocking::Shared.queue (spelling 1 of 3)
+ok      blocking::queue.head
+ok      blocking::queue.len
+ok      blocking::queue.buf
+ok      blocking::queue.cap
 
 program: ct-runtime
 
@@ -1211,6 +1261,11 @@ ok      io::Waiter.waker
 ok      TimerShared.state
 ok      ScheduledIo.readiness
 ok      io::Waiter.interest
+ok      blocking::Shared.queue (spelling 1 of 3)
+ok      blocking::queue.head
+ok      blocking::queue.len
+ok      blocking::queue.buf
+ok      blocking::queue.cap
 
 program: local-set
 
@@ -1335,6 +1390,11 @@ ok      io::Waiter.waker
 ok      TimerShared.state
 ok      ScheduledIo.readiness
 ok      io::Waiter.interest
+ok      blocking::Shared.queue (spelling 1 of 3)
+ok      blocking::queue.head
+ok      blocking::queue.len
+ok      blocking::queue.buf
+ok      blocking::queue.cap
 
 program: local-set-timer
 
@@ -1459,6 +1519,11 @@ ok      io::Waiter.waker
 ok      TimerShared.state
 ok      ScheduledIo.readiness
 ok      io::Waiter.interest
+ok      blocking::Shared.queue (spelling 1 of 3)
+ok      blocking::queue.head
+ok      blocking::queue.len
+ok      blocking::queue.buf
+ok      blocking::queue.cap
 
 program: local-set-io
 
@@ -1596,6 +1661,11 @@ ok      io::Waiter.waker
 ok      TimerShared.state
 ok      ScheduledIo.readiness
 ok      io::Waiter.interest
+ok      blocking::Shared.queue (spelling 1 of 3)
+ok      blocking::queue.head
+ok      blocking::queue.len
+ok      blocking::queue.buf
+ok      blocking::queue.cap
 
 program: foreign-runtime
 
@@ -1735,3 +1805,8 @@ ok      io::Waiter.waker
 ok      TimerShared.state
 ok      ScheduledIo.readiness
 ok      io::Waiter.interest
+ok      blocking::Shared.queue (spelling 1 of 3)
+ok      blocking::queue.head
+ok      blocking::queue.len
+ok      blocking::queue.buf
+ok      blocking::queue.cap
