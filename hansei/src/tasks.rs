@@ -511,6 +511,10 @@ pub(crate) struct TaskRow {
     pub(crate) awaiting_at: Option<String>,
     /// What the task waits on, spelled the way `graph` spells it.
     pub(crate) waiting_on: String,
+    /// The kind-level bucket `--group waiting-on` files the row under
+    /// ([`WaitTarget::group_label`], or the leaf future's name), `None`
+    /// where the row waits on nothing nameable — mid-poll included.
+    pub(crate) waiting_kind: Option<String>,
     /// The root future's display name, folded and never truncated.
     pub(crate) future: String,
     /// `Spawned at:` — where the target records one
@@ -561,6 +565,7 @@ fn build_rows(
                 .and_then(|w| w.site.as_ref())
                 .map(|(file, line)| format!("{file}:{line}")),
             waiting_on: waiting_on(task, waits.get(index), polling, impls),
+            waiting_kind: waiting_kind(task, waits.get(index), impls),
             future: future_name(&task.future, impls),
             spawned: task.spawn_location.as_ref().map(|loc| loc.to_string()),
             defined: match &task.future {
@@ -608,6 +613,25 @@ fn waiting_on(
         Some((Some(target), _)) => target.to_string(),
         Some((None, Some(leaf))) => names::display_future_name(leaf, impls),
         _ => "—".to_string(),
+    }
+}
+
+/// The bucket `--group waiting-on` files the row under: the target's
+/// kind-level label, else the leaf's spelling (already kind-level — a
+/// type names every waiter on it alike). A running task waits on
+/// nothing, so it lands in the empty bucket, not a value.
+fn waiting_kind(
+    task: &bundle::Task,
+    wait: Option<&rt_graph::TaskWait>,
+    impls: &names::ImplFold,
+) -> Option<String> {
+    if task.state.lifecycle() == Lifecycle::Running {
+        return None;
+    }
+    match wait.map(|w| (&w.target, &w.leaf)) {
+        Some((Some(target), _)) => Some(target.group_label()),
+        Some((None, Some(leaf))) => Some(names::display_future_name(leaf, impls)),
+        _ => None,
     }
 }
 
@@ -949,9 +973,10 @@ fn group_value(
     match field {
         Field::Type => Some(row.future.clone()),
         Field::Awaiting => row.awaiting_at.clone(),
-        // The table's `—` is a task waiting on nothing nameable; in a
-        // grouping that is the empty bucket, not a value.
-        Field::WaitingOn => (row.waiting_on != "—").then(|| row.waiting_on.clone()),
+        // Grouped at the kind level — every timer one bucket, not one
+        // per deadline — and a task waiting on nothing nameable (the
+        // table's `—`, a mid-poll row) is the empty bucket, not a value.
+        Field::WaitingOn => row.waiting_kind.clone(),
         Field::Spawned => row.spawned.clone(),
         Field::Defined => row.defined.clone(),
         Field::State => Some(row.state.clone()),
@@ -1616,17 +1641,20 @@ mod table_tests {
 
         assert_eq!(rows[0].awaiting_at.as_deref(), Some("src/app.rs:42"));
         assert!(
-            rows[0]
-                .waiting_on
-                .starts_with("the timer: deadline 12.000s")
+            rows[0].waiting_on.starts_with("timer (deadline 12.000s"),
+            "{}",
+            rows[0].waiting_on
         );
+        assert_eq!(rows[0].waiting_kind.as_deref(), Some("timer"));
         assert_eq!(rows[0].state, "idle");
 
         assert_eq!(rows[1].state, "idle (cancelled)");
         assert_eq!(rows[1].waiting_on, "async fn app::child");
+        assert_eq!(rows[1].waiting_kind.as_deref(), Some("async fn app::child"));
         assert_eq!(rows[1].awaiting_at, None);
 
         assert_eq!(rows[2].waiting_on, "—");
+        assert_eq!(rows[2].waiting_kind, None);
 
         // The columns only the filters read: nothing recorded is
         // nothing to match, and a Known future's decl is the
@@ -1765,6 +1793,7 @@ mod filter_tests {
             rt: 0,
             awaiting_at: None,
             waiting_on: "—".to_string(),
+            waiting_kind: None,
             future: "async fn app::work".to_string(),
             spawned: None,
             defined: None,
@@ -1916,10 +1945,20 @@ mod filter_tests {
         assert_eq!(group_value(Field::Rt, 0, &r, None).as_deref(), Some("0"));
         let mut waited = r.clone();
         waited.waiting_on = "task 42".to_string();
+        waited.waiting_kind = Some("task 42".to_string());
         waited.lwp = Some(115);
         assert_eq!(
             group_value(Field::WaitingOn, 0, &waited, None).as_deref(),
             Some("task 42")
+        );
+        // The bucket is the kind, not the row's full spelling: a
+        // deadline-bearing row groups under its kind label.
+        let mut timed = r.clone();
+        timed.waiting_on = "timer (deadline +12.000s)".to_string();
+        timed.waiting_kind = Some("timer".to_string());
+        assert_eq!(
+            group_value(Field::WaitingOn, 0, &timed, None).as_deref(),
+            Some("timer")
         );
         assert_eq!(
             group_value(Field::Lwp, 0, &waited, None).as_deref(),

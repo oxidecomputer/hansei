@@ -5,7 +5,7 @@ description: "`graph` over linux/walk-shapes"
 TASK  STATE  WAITING ON
 4     idle   a tokio::sync::Mutex (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: a non-task waiter, task 4
 └─ 3  idle   future tokio::sync::notify::Notified
-8     idle   task 7 (JoinHandle)
+8     idle   task 7
 └─ 7  idle   future tokio::sync::notify::Notified
 
 futurelock: task 3 holds a place in the wake queue of a tokio::sync::Mutex (semaphore 0xADDR) in a future it stopped polling:

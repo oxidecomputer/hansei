@@ -25,27 +25,27 @@ Defined at: src/bin/foreign-runtime.rs:46
       awaiting at src/bin/foreign-runtime.rs:51 (Suspend0, 1 local)
 #1  future        core::future::pending::Pending<()>
 
-3  idle  2  src/bin/foreign-runtime.rs:63  the timer: deadline TS on the target's monotonic clock  async fn foreign_runtime::local_sleeper
+3  idle  2  src/bin/foreign-runtime.rs:63  timer (deadline TS on the target's monotonic clock)  async fn foreign_runtime::local_sleeper
 Task 3: async fn foreign_runtime::local_sleeper (idle)
 Spawned at: src/bin/foreign-runtime.rs:87:16
 Defined at: src/bin/foreign-runtime.rs:58
 
-Waiting on: the timer: deadline TS on the target's monotonic clock
+Waiting on: timer (deadline TS on the target's monotonic clock)
 
 #0  async fn      foreign_runtime::local_sleeper
       awaiting at src/bin/foreign-runtime.rs:63 (Suspend0)
 #1  future        tokio::time::sleep::Sleep
-      waiting on the timer: deadline TS on the target's monotonic clock
+      waiting on timer (deadline TS on the target's monotonic clock)
 
-4  idle  0  src/bin/foreign-runtime.rs:26  task 1 (JoinHandle)  async fn foreign_runtime::joiner
+4  idle  0  src/bin/foreign-runtime.rs:26  task 1  async fn foreign_runtime::joiner
 Task 4: async fn foreign_runtime::joiner (idle)
 Spawned at: src/bin/foreign-runtime.rs:129:23
 Defined at: src/bin/foreign-runtime.rs:23
 
-Waiting on: task 1 (JoinHandle)
+Waiting on: task 1
 
 #0  async fn      foreign_runtime::joiner
       awaiting at src/bin/foreign-runtime.rs:26 (Suspend0)
 #1  future        tokio::runtime::task::join::JoinHandle<u32>
-      waiting on task 1 (JoinHandle)
+      waiting on task 1
 Executed against 4 tasks, 0 failed

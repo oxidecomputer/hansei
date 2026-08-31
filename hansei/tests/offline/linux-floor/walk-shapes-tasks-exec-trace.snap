@@ -89,17 +89,17 @@ Defined at: src/bin/walk-shapes.rs:191
       awaiting at src/bin/walk-shapes.rs:194 (Suspend0, 1 local)
 #1  future        tokio::sync::notify::Notified
 
-8  idle  0  src/bin/walk-shapes.rs:201  task 7 (JoinHandle)  async fn walk_shapes::joiner
+8  idle  0  src/bin/walk-shapes.rs:201  task 7  async fn walk_shapes::joiner
 Task 8: async fn walk_shapes::joiner (idle)
 Spawned at: src/bin/walk-shapes.rs:269:9
 Defined at: src/bin/walk-shapes.rs:198
 
-Waiting on: task 7 (JoinHandle)
+Waiting on: task 7
 
 #0  async fn      walk_shapes::joiner
       awaiting at src/bin/walk-shapes.rs:201 (Suspend0)
 #1  future        tokio::runtime::task::join::JoinHandle<u32>
-      waiting on task 7 (JoinHandle)
+      waiting on task 7
 
 9  queued  2  src/bin/walk-shapes.rs:204  async fn walk_shapes::side_parker  async fn walk_shapes::side_parker
 Task 9: async fn walk_shapes::side_parker (queued)

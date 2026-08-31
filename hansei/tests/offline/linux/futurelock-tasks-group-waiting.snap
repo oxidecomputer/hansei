@@ -2,6 +2,6 @@
 source: hansei/src/offline.rs
 description: "`tasks --group waiting-on` over linux/futurelock"
 ---
-COUNT  WAITING ON                                                                                            TASKS
-    1  a tokio::sync::Mutex (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 5  5
+COUNT  WAITING ON                                       TASKS
+    1  a tokio::sync::Mutex (semaphore 0xADDR)  5
 1 group

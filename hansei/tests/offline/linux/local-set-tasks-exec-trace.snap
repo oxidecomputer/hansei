@@ -2,17 +2,17 @@
 source: hansei/src/offline.rs
 description: "`tasks --exec trace` over linux/local-set"
 ---
-1  idle  1  src/bin/local-set.rs:16  the timer: deadline TS on the target's monotonic clock  async fn local_set::local_sleeper
+1  idle  1  src/bin/local-set.rs:16  timer (deadline TS on the target's monotonic clock)  async fn local_set::local_sleeper
 Task 1: async fn local_set::local_sleeper (idle)
 Spawned at: src/bin/local-set.rs:46:29
 Defined at: src/bin/local-set.rs:13
 
-Waiting on: the timer: deadline TS on the target's monotonic clock
+Waiting on: timer (deadline TS on the target's monotonic clock)
 
 #0  async fn      local_set::local_sleeper
       awaiting at src/bin/local-set.rs:16 (Suspend0)
 #1  future        tokio::time::sleep::Sleep
-      waiting on the timer: deadline TS on the target's monotonic clock
+      waiting on timer (deadline TS on the target's monotonic clock)
 
 2  idle  1  src/bin/local-set.rs:23  a tokio::sync::Semaphore (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 2  async fn local_set::local_acquirer
 Task 2: async fn local_set::local_acquirer (idle)
@@ -28,15 +28,15 @@ Waiting on: a tokio::sync::Semaphore (semaphore 0xADDR): 1 permit requested, 0 a
 #2  future        tokio::sync::batch_semaphore::Acquire
       waiting on a tokio::sync::Semaphore (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 2
 
-3  idle  0  src/bin/local-set.rs:30  task 1 (JoinHandle)  async fn local_set::joiner
+3  idle  0  src/bin/local-set.rs:30  task 1  async fn local_set::joiner
 Task 3: async fn local_set::joiner (idle)
 Spawned at: src/bin/local-set.rs:48:23
 Defined at: src/bin/local-set.rs:27
 
-Waiting on: task 1 (JoinHandle)
+Waiting on: task 1
 
 #0  async fn      local_set::joiner
       awaiting at src/bin/local-set.rs:30 (Suspend0)
 #1  future        tokio::runtime::task::join::JoinHandle<u32>
-      waiting on task 1 (JoinHandle)
+      waiting on task 1
 Executed against 3 tasks, 0 failed

@@ -8,7 +8,7 @@ error: the tokio info records no type named no::such::Type; try `find-types no::
 4  idle  src/bin/gen-0007.rs:144  future tokio::sync::notify::Notified  async fn gen_0007::member_02
 error: the tokio info records no type named no::such::Type; try `find-types no::such::Type`
 
-5  idle  src/bin/gen-0007.rs:166  the timer: deadline TS on the target's monotonic clock  async fn gen_0007::member_03
+5  idle  src/bin/gen-0007.rs:166  timer (deadline TS on the target's monotonic clock)  async fn gen_0007::member_03
 error: the tokio info records no type named no::such::Type; try `find-types no::such::Type`
 
 6  idle  src/bin/gen-0007.rs:180  future gen_0007::GfSel2<core::future::pending::Pending<u64>, core::future::pending::Pending<u64>>  async fn gen_0007::member_06

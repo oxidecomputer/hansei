@@ -2,4 +2,4 @@
 source: hansei/src/offline.rs
 description: "`task 1` over linux-floor/local-set-timer"
 ---
-1  idle  1  src/bin/local-set-timer.rs:18  the timer: deadline TS on the target's monotonic clock  async fn local_set_timer::local_sleeper
+1  idle  1  src/bin/local-set-timer.rs:18  timer (deadline TS on the target's monotonic clock)  async fn local_set_timer::local_sleeper
