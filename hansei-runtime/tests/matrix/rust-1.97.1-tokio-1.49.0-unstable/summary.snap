@@ -114,6 +114,9 @@ ok      io::Waiters.reader
 ok      io::Waiters.writer
 ok      io::Waiter.next
 ok      io::Waiter.waker
+ok      TimerShared.state
+ok      ScheduledIo.readiness
+ok      io::Waiter.interest
 
 program: simple-await
 
@@ -212,6 +215,9 @@ ok      io::Waiters.reader
 ok      io::Waiters.writer
 ok      io::Waiter.next
 ok      io::Waiter.waker
+ok      TimerShared.state
+ok      ScheduledIo.readiness
+ok      io::Waiter.interest
 
 program: nested-await
 
@@ -310,6 +316,9 @@ ok      io::Waiters.reader
 ok      io::Waiters.writer
 ok      io::Waiter.next
 ok      io::Waiter.waker
+ok      TimerShared.state
+ok      ScheduledIo.readiness
+ok      io::Waiter.interest
 
 program: dyn-future
 
@@ -420,6 +429,9 @@ ok      io::Waiters.reader
 ok      io::Waiters.writer
 ok      io::Waiter.next
 ok      io::Waiter.waker
+ok      TimerShared.state
+ok      ScheduledIo.readiness
+ok      io::Waiter.interest
 
 program: select-combinator
 
@@ -532,6 +544,9 @@ ok      io::Waiters.reader
 ok      io::Waiters.writer
 ok      io::Waiter.next
 ok      io::Waiter.waker
+ok      TimerShared.state
+ok      ScheduledIo.readiness
+ok      io::Waiter.interest
 
 program: many-tasks
 
@@ -628,6 +643,9 @@ ok      io::Waiters.reader
 ok      io::Waiters.writer
 ok      io::Waiter.next
 ok      io::Waiter.waker
+ok      TimerShared.state
+ok      ScheduledIo.readiness
+ok      io::Waiter.interest
 
 program: sleep-join
 
@@ -736,6 +754,9 @@ ok      io::Waiters.reader
 ok      io::Waiters.writer
 ok      io::Waiter.next
 ok      io::Waiter.waker
+ok      TimerShared.state
+ok      ScheduledIo.readiness
+ok      io::Waiter.interest
 
 program: channels
 
@@ -844,6 +865,9 @@ ok      io::Waiters.reader
 ok      io::Waiters.writer
 ok      io::Waiter.next
 ok      io::Waiter.waker
+ok      TimerShared.state
+ok      ScheduledIo.readiness
+ok      io::Waiter.interest
 
 program: unordered
 
@@ -948,6 +972,9 @@ ok      io::Waiters.reader
 ok      io::Waiters.writer
 ok      io::Waiter.next
 ok      io::Waiter.waker
+ok      TimerShared.state
+ok      ScheduledIo.readiness
+ok      io::Waiter.interest
 
 program: joinset
 
@@ -1070,6 +1097,9 @@ ok      io::Waiters.reader
 ok      io::Waiters.writer
 ok      io::Waiter.next
 ok      io::Waiter.waker
+ok      TimerShared.state
+ok      ScheduledIo.readiness
+ok      io::Waiter.interest
 
 program: ct-runtime
 
@@ -1178,6 +1208,9 @@ ok      io::Waiters.reader
 ok      io::Waiters.writer
 ok      io::Waiter.next
 ok      io::Waiter.waker
+ok      TimerShared.state
+ok      ScheduledIo.readiness
+ok      io::Waiter.interest
 
 program: local-set
 
@@ -1299,6 +1332,9 @@ ok      io::Waiters.reader
 ok      io::Waiters.writer
 ok      io::Waiter.next
 ok      io::Waiter.waker
+ok      TimerShared.state
+ok      ScheduledIo.readiness
+ok      io::Waiter.interest
 
 program: local-set-timer
 
@@ -1420,6 +1456,9 @@ ok      io::Waiters.reader
 ok      io::Waiters.writer
 ok      io::Waiter.next
 ok      io::Waiter.waker
+ok      TimerShared.state
+ok      ScheduledIo.readiness
+ok      io::Waiter.interest
 
 program: local-set-io
 
@@ -1554,6 +1593,9 @@ ok      io::Waiters.reader
 ok      io::Waiters.writer
 ok      io::Waiter.next
 ok      io::Waiter.waker
+ok      TimerShared.state
+ok      ScheduledIo.readiness
+ok      io::Waiter.interest
 
 program: foreign-runtime
 
@@ -1690,3 +1732,6 @@ ok      io::Waiters.reader
 ok      io::Waiters.writer
 ok      io::Waiter.next
 ok      io::Waiter.waker
+ok      TimerShared.state
+ok      ScheduledIo.readiness
+ok      io::Waiter.interest

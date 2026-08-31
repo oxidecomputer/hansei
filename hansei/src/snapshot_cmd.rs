@@ -157,7 +157,7 @@ pub(crate) fn exec_snapshot<T: proc::Target>(
     let mut list = ctx.enumerate_all_tasks(&runtimes)?;
     // A snapshot records only the reads the capture performs, so
     // discovery must be driven here for the offline pairs to replay it.
-    ctx.discover_hidden_tasks(&lwps, &workers, &mut runtimes, &[], &mut list);
+    let (_, registries) = ctx.discover_hidden_tasks(&lwps, &workers, &mut runtimes, &[], &mut list);
     print_warnings(&list.errors)?;
 
     let mut chains = 0usize;
@@ -204,7 +204,7 @@ pub(crate) fn exec_snapshot<T: proc::Target>(
     // Drive the dependency analysis too — wake queues and the
     // off-path acquire scan — so its reads are in the snapshot. Its
     // failures duplicate the per-task warnings above.
-    let analysis = rt_graph::analyze(&ctx, &list);
+    let analysis = rt_graph::analyze(&ctx, &list, &registries);
 
     // And the sub-executor census, so the set node chains and child
     // futures it reads replay offline as well. A session that raised

@@ -515,6 +515,10 @@ pub(crate) struct TaskRow {
     /// ([`WaitTarget::group_label`], or the leaf future's name), `None`
     /// where the row waits on nothing nameable — mid-poll included.
     pub(crate) waiting_kind: Option<String>,
+    /// The `-v` detail lines under the wait: what the registries hold
+    /// for the task — its wheel entries, the io slots its waker is
+    /// parked in. Empty where they hold nothing.
+    pub(crate) wait_detail: Vec<String>,
     /// The root future's display name, folded and never truncated.
     pub(crate) future: String,
     /// `Spawned at:` — where the target records one
@@ -541,17 +545,19 @@ pub(crate) fn rows<'s, T: proc::Target>(session: &'s Session<'_, T>) -> &'s [Tas
             &session.analysis().waits,
             &polling,
             &session.impl_fold,
+            &session.registries,
         )
     })
 }
 
 /// Build every row from what it prints — taken apart from the session
 /// so a test can lay out a population no fixture holds.
-fn build_rows(
+pub(crate) fn build_rows(
     list: &bundle::TaskList,
     waits: &[rt_graph::TaskWait],
     polling: &HashMap<u64, u32>,
     impls: &names::ImplFold,
+    registries: &bundle::Registries,
 ) -> Vec<TaskRow> {
     list.tasks
         .iter()
@@ -566,6 +572,7 @@ fn build_rows(
                 .map(|(file, line)| format!("{file}:{line}")),
             waiting_on: waiting_on(task, waits.get(index), polling, impls),
             waiting_kind: waiting_kind(task, waits.get(index), impls),
+            wait_detail: wait_detail(task, registries),
             future: future_name(&task.future, impls),
             spawned: task.spawn_location.as_ref().map(|loc| loc.to_string()),
             defined: match &task.future {
@@ -635,6 +642,44 @@ fn waiting_kind(
     }
 }
 
+/// The `-v` detail lines under a row's wait: every wheel entry armed
+/// with the task's waker, then every io slot holding it — the
+/// registries' whole answer, whatever the row's one-line spelling
+/// chose to name.
+fn wait_detail(task: &bundle::Task, registries: &bundle::Registries) -> Vec<String> {
+    let mut lines = Vec::new();
+    for timer in registries.timers_of(task.addr.0) {
+        let state = match timer.wheel_state() {
+            Some(state) => format!(", {state}"),
+            None => String::new(),
+        };
+        lines.push(format!(
+            "timer entry {:#x} in the wheel{state}",
+            timer.entry
+        ));
+    }
+    for (resource, waiter) in registries.io_of(task.addr.0) {
+        let slot = match waiter.slot {
+            bundle::IoSlot::Reader => "the read-waiter slot",
+            bundle::IoSlot::Writer => "the write-waiter slot",
+            bundle::IoSlot::Listed { .. } => "a waiter node",
+        };
+        let interest = match waiter.slot.interest() {
+            Some(interest) => format!("awaiting {interest}"),
+            None => "interest unreadable".to_string(),
+        };
+        let ready = match resource.ready() {
+            Some(ready) => format!(", ready: {ready}"),
+            None => String::new(),
+        };
+        lines.push(format!(
+            "io {:#x}: {interest} via {slot}{ready}",
+            resource.addr
+        ));
+    }
+    lines
+}
+
 /// One row's table cells, in column order — the table's rows, and the
 /// heading `--exec` opens each task's output with.
 fn row_cells(row: &TaskRow, groups: bool) -> Vec<String> {
@@ -672,6 +717,7 @@ pub(crate) fn print_task_block<T: proc::Target>(
     let selected: BTreeSet<usize> = [index].into();
     print_tasks(
         &session.tasks,
+        rows(session),
         &session.impl_fold,
         &session.group_tags(),
         &polling,
@@ -1038,9 +1084,7 @@ pub(crate) fn exec_tasks<T: proc::Target>(
     });
 
     // The filters' survivors, as indices into the task list — `None`
-    // when there is nothing to filter by, so the unfiltered paths
-    // keep their costs (the bare block form never pays the wait
-    // analysis the rows are built from).
+    // when there is nothing to filter by.
     let survivors: Option<Vec<usize>> = (!clauses.is_empty()).then(|| {
         let rows = rows(session);
         (0..rows.len())
@@ -1104,6 +1148,7 @@ pub(crate) fn exec_tasks<T: proc::Target>(
     let selected: Option<BTreeSet<usize>> = survivors.map(|s| s.into_iter().collect());
     print_tasks(
         list,
+        rows(session),
         &session.impl_fold,
         &session.group_tags(),
         &polling,
@@ -1166,6 +1211,7 @@ fn exec_group<T: proc::Target>(
             let selected: BTreeSet<usize> = members.iter().copied().collect();
             print_tasks(
                 &session.tasks,
+                rows,
                 &session.impl_fold,
                 &session.group_tags(),
                 &polling,
@@ -1272,6 +1318,7 @@ fn exec_heading(n: usize, row: &TaskRow, groups: bool) -> String {
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn print_tasks(
     list: &bundle::TaskList,
+    rows: &[TaskRow],
     impls: &names::ImplFold,
     group_tags: &[String],
     polling: &HashMap<u64, u32>,
@@ -1328,6 +1375,14 @@ pub(crate) fn print_tasks(
             _ => "-".to_string(),
         };
         writeln!(out, "    Defined at: {defined}")?;
+        // The wait, spelled as the table's cell, with the registries'
+        // detail lines under it: which wheel entry, which io slot.
+        if let Some(row) = rows.get(index) {
+            writeln!(out, "    Waiting on: {}", row.waiting_on)?;
+            for line in &row.wait_detail {
+                writeln!(out, "        {line}")?;
+            }
+        }
         // What the task has off its spine, in two rows rather than one:
         // the futures held in its own frames, and the sets it drives
         // from them. A set is a container, so counting it among the
@@ -1611,6 +1666,7 @@ mod table_tests {
             &waits,
             &polling,
             &hansei_bundle::names::ImplFold::default(),
+            &Default::default(),
         )
     }
 
@@ -1737,9 +1793,17 @@ mod table_tests {
             tasks: vec![task(1, 0), task(2, 0), task(3, 0)],
             errors: vec![],
         };
+        let rows = build_rows(
+            &list,
+            &[],
+            &HashMap::new(),
+            &hansei_bundle::names::ImplFold::default(),
+            &Default::default(),
+        );
         let mut out = Vec::new();
         super::print_tasks(
             &list,
+            &rows,
             &hansei_bundle::names::ImplFold::default(),
             &[],
             &HashMap::new(),
@@ -1794,6 +1858,7 @@ mod filter_tests {
             awaiting_at: None,
             waiting_on: "—".to_string(),
             waiting_kind: None,
+            wait_detail: Vec::new(),
             future: "async fn app::work".to_string(),
             spawned: None,
             defined: None,

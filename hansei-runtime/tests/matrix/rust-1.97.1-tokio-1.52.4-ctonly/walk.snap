@@ -2,7 +2,7 @@
 source: hansei-runtime/tests/matrix.rs
 ---
 program: ct-runtime
-walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 91 entries, 0 broken, 23 absent
+walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 94 entries, 0 broken, 23 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -94,3 +94,6 @@ walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 91 entries, 0
   ok      io::Waiters.writer (no multi_thread Handle)
   ok      io::Waiter.next (no multi_thread Handle)
   ok      io::Waiter.waker (no multi_thread Handle)
+  ok      TimerShared.state (no multi_thread Handle)
+  ok      ScheduledIo.readiness (no multi_thread Handle)
+  ok      io::Waiter.interest (no multi_thread Handle)

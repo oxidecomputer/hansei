@@ -228,7 +228,7 @@ fn interpret(bundle: &Bundle, snapshot: &Snapshot) -> String {
 
     // The dependency analysis: wait targets come from it so
     // the per-task lines and the diagnoses agree by construction.
-    let analysis = graph::analyze(&ctx, &list);
+    let analysis = graph::analyze(&ctx, &list, &Default::default());
     assert!(
         analysis.errors.is_empty(),
         "graph analysis reported errors: {:?}",
@@ -754,7 +754,7 @@ fn test_ct_runtime_offline() {
     let list = e.list;
     assert!(list.errors.is_empty(), "{:?}", list.errors);
 
-    let analysis = graph::analyze(&ctx, &list);
+    let analysis = graph::analyze(&ctx, &list, &e.registries);
     assert!(analysis.errors.is_empty(), "{:?}", analysis.errors);
 
     // The two spawned tasks parked at their leaves, decoded through the
@@ -809,7 +809,10 @@ fn test_local_set_offline() {
     // joins is not in any list this session can show.
     assert_eq!(e.list.tasks.len(), 1, "{:#?}", e.list.tasks);
     let joiner = e.list.tasks[0].addr;
-    let joined = match graph::analyze(&ctx, &e.list).waits[0].target.clone() {
+    let joined = match graph::analyze(&ctx, &e.list, &e.registries).waits[0]
+        .target
+        .clone()
+    {
         Some(hansei_runtime::tokio::bundle::WaitTarget::Task {
             addr, listed, kind, ..
         }) => {
@@ -857,7 +860,7 @@ fn test_local_set_offline() {
 
     // And the local tasks read like any other: both leaves decode
     // through the readers the scheduler-owned fixtures exercise.
-    let analysis = graph::analyze(&ctx, &list);
+    let analysis = graph::analyze(&ctx, &list, &e.registries);
     assert!(analysis.errors.is_empty(), "{:?}", analysis.errors);
     let mut leaves: Vec<String> = list
         .tasks
@@ -884,7 +887,7 @@ fn test_local_set_offline() {
 
     // The joined task is now simply listed — the third `listed: false`
     // case the plan called for, closed by discovery rather than worded.
-    let rejoined = graph::analyze(&ctx, &list);
+    let rejoined = graph::analyze(&ctx, &list, &e.registries);
     let joiner_wait = rejoined
         .waits
         .iter()
@@ -919,7 +922,10 @@ fn test_local_set_timer_offline() {
     // own, which is what makes the wheel the only way in.
     assert_eq!(e.list.tasks.len(), 1, "{:#?}", e.list.tasks);
     let scheduler_task = e.list.tasks[0].addr;
-    match graph::analyze(&ctx, &e.list).waits[0].target.clone() {
+    match graph::analyze(&ctx, &e.list, &e.registries).waits[0]
+        .target
+        .clone()
+    {
         Some(hansei_runtime::tokio::bundle::WaitTarget::Timer { .. }) => {}
         other => panic!("the spawned task does not await a timer: {other:?}"),
     }
@@ -959,7 +965,7 @@ fn test_local_set_timer_offline() {
     // Both members read like any listed task, including the one the
     // wheel never named: nothing outside the set points at the
     // semaphore waiter, and it is listed all the same.
-    let analysis = graph::analyze(&ctx, &list);
+    let analysis = graph::analyze(&ctx, &list, &e.registries);
     assert!(analysis.errors.is_empty(), "{:?}", analysis.errors);
     let mut leaves: Vec<String> = list
         .tasks
@@ -1086,7 +1092,10 @@ fn test_foreign_runtime_offline() {
     assert_eq!(e.runtimes.len(), 1, "{:#?}", e.runtimes);
     assert_eq!(e.list.tasks.len(), 1, "{:#?}", e.list.tasks);
     let joiner = e.list.tasks[0].addr;
-    let joined = match graph::analyze(&ctx, &e.list).waits[0].target.clone() {
+    let joined = match graph::analyze(&ctx, &e.list, &e.registries).waits[0]
+        .target
+        .clone()
+    {
         Some(hansei_runtime::tokio::bundle::WaitTarget::Task {
             addr, listed, kind, ..
         }) => {
@@ -1154,7 +1163,7 @@ fn test_foreign_runtime_offline() {
         1,
         "the main runtime's own task is not duplicated"
     );
-    let analysis = graph::analyze(&ctx, &list);
+    let analysis = graph::analyze(&ctx, &list, &e.registries);
     assert!(analysis.errors.is_empty(), "{:?}", analysis.errors);
     let joiner_wait = list
         .tasks

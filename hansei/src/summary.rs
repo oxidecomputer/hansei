@@ -601,6 +601,7 @@ struct Waits {
     timer: usize,
     timer_past_due: usize,
     task: usize,
+    io: usize,
     /// Keyed by the primitive wrapping the semaphore, which is `None`
     /// where the awaiting frame did not name one (a channel's, say).
     semaphores: BTreeMap<Option<&'static str>, usize>,
@@ -671,6 +672,7 @@ impl Waits {
                 self.timer_past_due += usize::from(past_due.unwrap_or(false));
             }
             WaitKind::Task { .. } => self.task += 1,
+            WaitKind::Io => self.io += 1,
             WaitKind::Semaphore { owner } => *self.semaphores.entry(owner).or_default() += 1,
         }
     }
@@ -693,6 +695,7 @@ impl Waits {
         let mut rows = vec![
             Row::new(self.timer, timer),
             Row::new(self.task, "another task (JoinHandle)"),
+            Row::new(self.io, "an io resource"),
             Row::new(self.running, "nothing — mid-poll on a worker"),
             Row::new(self.complete, "nothing — finished"),
             Row::new(self.undecoded, "a chain that stopped before any leaf"),

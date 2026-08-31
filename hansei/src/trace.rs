@@ -2135,9 +2135,17 @@ mod future_trace_tests {
                 .map(|(i, _)| i)
                 .collect()
         });
+        let rows = crate::tasks::build_rows(
+            list,
+            &[],
+            &HashMap::new(),
+            &hansei_bundle::names::ImplFold::default(),
+            &Default::default(),
+        );
         let mut out: Vec<u8> = Vec::new();
         print_tasks(
             list,
+            &rows,
             &hansei_bundle::names::ImplFold::default(),
             &[],
             &HashMap::new(),

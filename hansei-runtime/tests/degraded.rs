@@ -220,7 +220,7 @@ fn test_an_unreadable_task_degrades_only_its_shard() {
     assert_eq!(degraded.tasks.len(), list.tasks.len() - 1);
 
     // The analysis takes the degraded list in stride.
-    let analysis = graph::analyze(&ctx, &degraded);
+    let analysis = graph::analyze(&ctx, &degraded, &Default::default());
     assert!(analysis.errors.is_empty(), "{:?}", analysis.errors);
 }
 
@@ -349,14 +349,14 @@ fn test_a_corrupted_dyn_box_ends_the_chain_with_an_error() {
 fn test_an_unreadable_semaphore_degrades_the_analysis() {
     let (bundle, snapshot) = load_any("futurelock");
     let (ctx, list) = healthy(&bundle, &snapshot);
-    let analysis = graph::analyze(&ctx, &list);
+    let analysis = graph::analyze(&ctx, &list, &Default::default());
     assert!(analysis.errors.is_empty(), "{:?}", analysis.errors);
     assert!(!analysis.futurelocks[0].blocked.is_empty());
     let semaphore = analysis.futurelocks[0].acquire.semaphore;
 
     let corrupt = Corrupt::new(&snapshot).deny(semaphore..semaphore + 0x100);
     let ctx = Context::new(&corrupt, BundleView::new(&bundle)).unwrap();
-    let degraded = graph::analyze(&ctx, &list);
+    let degraded = graph::analyze(&ctx, &list, &Default::default());
 
     let errs: Vec<String> = degraded.errors.iter().map(|e| format!("{e:#}")).collect();
     assert!(errs.iter().any(|e| e.contains("waits on")), "{errs:?}");
@@ -870,7 +870,7 @@ fn healthy_read_set(bundle: &Bundle, snapshot: &Snapshot) -> Vec<Range<u64>> {
     let recorder = Recorder::new(snapshot);
     let ctx = Context::new(&recorder, BundleView::new(bundle)).expect("snapshot has mappings");
     let list = tasks_of(&ctx, &recorder);
-    let _ = graph::analyze(&ctx, &list);
+    let _ = graph::analyze(&ctx, &list, &Default::default());
     let _ = testkit::census(&ctx, &list);
     recorder
         .snapshot()
@@ -945,7 +945,7 @@ fn campaign_run(
         return false;
     };
     e.discover(&ctx, &[]);
-    let _ = graph::analyze(&ctx, &e.list);
+    let _ = graph::analyze(&ctx, &e.list, &e.registries);
     let _ = testkit::census(&ctx, &e.list);
     true
 }
@@ -1025,7 +1025,7 @@ fn ty_by_name<'b>(bundle: &'b Bundle, pred: impl Fn(&str) -> bool) -> BundleType
 fn test_a_patched_permit_word_decodes_count_and_closed_bit() {
     let (bundle, snapshot) = load_any("futurelock");
     let (ctx, list) = healthy(&bundle, &snapshot);
-    let analysis = graph::analyze(&ctx, &list);
+    let analysis = graph::analyze(&ctx, &list, &Default::default());
     let sem_addr = analysis.futurelocks[0].acquire.semaphore;
     let sem_ty = ty_by_name(&bundle, |n| {
         n.starts_with("tokio::sync::batch_semaphore::Semaphore")

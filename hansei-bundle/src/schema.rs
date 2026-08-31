@@ -1381,6 +1381,9 @@ walk_roles! {
     IoWriterWaker = "io::Waiters.writer",
     IoWaiterNext = "io::Waiter.next",
     IoWaiterWaker = "io::Waiter.waker",
+    TimerSharedState = "TimerShared.state",
+    ScheduledIoReadiness = "ScheduledIo.readiness",
+    IoWaiterInterest = "io::Waiter.interest",
 }
 
 /// What binding one walk role against the target's DWARF concluded.
