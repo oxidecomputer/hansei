@@ -1261,8 +1261,8 @@ mod tests {
             "Logger { drain: 7 }"
         );
 
-        // A forced type elides with no format of its own, and the match
-        // covers instantiations: the spec may omit generic arguments.
+        // A forced type elides with no format of its own; the list
+        // names raw type names exactly.
         let force_point = ElideOverride {
             no_elide: false,
             types: vec!["Point".to_owned()],

@@ -300,85 +300,19 @@ pub(crate) struct RenderCtx<'buf, 'a, T> {
 pub struct ElideOverride {
     /// Ignore the `Elided` display formats carried by the bundle.
     pub no_elide: bool,
-    /// Patterns for type names to force to `<elided>`. A pattern with a
-    /// `*` is a glob, each `*` matching any run of characters; one
-    /// without is a fully-qualified name, which also covers every
-    /// instantiation when it carries no generic arguments, the way a
-    /// detector keyed on the base name does. Both sides are compared in
-    /// the normalized spelling (no whitespace, default allocators
-    /// elided), and a pattern matches the folded display spelling as
-    /// well as the raw one — so any name the output prints can be
-    /// pasted back, kind word and all.
+    /// The exact raw names of the types forced to `<elided>`. The
+    /// caller resolves whatever spelling the user typed — hansei
+    /// matches its `--elide` patterns against the displayed names,
+    /// over the bundle it holds — so the renderer down here only
+    /// compares.
     pub types: Vec<String>,
-    /// The bundle's impl-path substitutions, so the folded spelling a
-    /// pattern is matched against is the one the output prints. The
-    /// caller that builds the override holds the bundle; the renderer
-    /// down here does not.
-    pub impls: hansei_bundle::names::ImplFold,
 }
 
 impl ElideOverride {
     /// Whether the value type named `name` is forced to `<elided>`.
     fn forces(&self, name: &str) -> bool {
-        if self.types.is_empty() {
-            return false;
-        }
-        // The raw spelling and the folded one output displays are one
-        // type to the user, so a pattern matches against either — and a
-        // displayed name pasted whole carries the kind word the display
-        // joined, so a spec sheds one before comparing.
-        let raw = hansei_bundle::symbols::normalized_rust_type_name(name);
-        let folded = hansei_bundle::names::fold_type_name(name, &self.impls);
-        let folded = hansei_bundle::symbols::normalized_rust_type_name(&folded);
-        let spellings: &[&str] = if folded == raw {
-            &[&raw]
-        } else {
-            &[&raw, &folded]
-        };
-        self.types.iter().any(|spec| {
-            let spec = hansei_bundle::names::strip_kind_prefix(spec);
-            let spec = hansei_bundle::symbols::normalized_rust_type_name(spec);
-            spellings.iter().any(|name| {
-                if spec.contains('*') {
-                    glob_match(&spec, name)
-                } else {
-                    let base = name.split_once('<').map_or(*name, |(base, _)| base);
-                    spec == *name || spec == base
-                }
-            })
-        })
+        self.types.iter().any(|forced| forced == name)
     }
-}
-
-/// Whether `name` matches `pattern`, where each `*` matches any run of
-/// characters and everything else matches itself. Anchored at both ends:
-/// `steno::*` does not match a name that merely contains `steno::`.
-///
-/// The classic two-pointer walk with one backtrack point per `*`. Bytes
-/// are enough: a `*` consumes UTF-8 continuation bytes like any others,
-/// and the literal stretches only match where the same bytes occur.
-fn glob_match(pattern: &str, name: &str) -> bool {
-    let (pattern, name) = (pattern.as_bytes(), name.as_bytes());
-    let (mut pi, mut ni) = (0, 0);
-    let mut backtrack = None;
-    while ni < name.len() {
-        if pattern.get(pi) == Some(&b'*') {
-            // Match nothing for now; remember where to widen from.
-            backtrack = Some((pi, ni));
-            pi += 1;
-        } else if pattern.get(pi) == Some(&name[ni]) {
-            pi += 1;
-            ni += 1;
-        } else if let Some((star, matched)) = backtrack {
-            // Widen the last `*` by one character and retry after it.
-            backtrack = Some((star, matched + 1));
-            pi = star + 1;
-            ni = matched + 1;
-        } else {
-            return false;
-        }
-    }
-    pattern[pi..].iter().all(|&ch| ch == b'*')
 }
 
 // Derived `Copy`/`Clone` would demand `T: Copy` even though only `&T` is
@@ -1424,93 +1358,21 @@ mod tests {
         );
     }
 
+    /// A forced type is named exactly: the caller resolved the user's
+    /// pattern to raw names, so the renderer compares and never
+    /// interprets.
     #[test]
-    fn test_glob_matches_anchored_wildcards() {
-        use super::glob_match;
-
-        assert!(glob_match("alloc::vec::Vec<*>", "alloc::vec::Vec<u8>"));
-        assert!(glob_match("*::Logger<*>", "slog::Logger<a::B<c::D>>"));
-        assert!(glob_match("steno::*", "steno::saga_log::SagaLog"));
-        assert!(glob_match("*", "anything at all"));
-        assert!(glob_match("a*b*c", "a__b__b__c"));
-        assert!(glob_match("exact", "exact"));
-        // A mismatch on the first character after a leading `*` widens the
-        // star from a zero-length match.
-        assert!(glob_match("*z", "az"));
-
-        // Anchored: a bare segment is not a substring match.
-        assert!(!glob_match("steno::*", "nexus::steno::Wrapper"));
-        assert!(!glob_match("*::Logger", "slog::Logger<a::B>"));
-        assert!(!glob_match("a*b", "a__b__c"));
-        assert!(!glob_match("exact", "exactly"));
-    }
-
-    #[test]
-    fn test_forces_normalizes_both_sides() {
+    fn test_forces_compares_exact_raw_names() {
         use super::ElideOverride;
 
-        let elide = |spec: &str| ElideOverride {
+        let elide = ElideOverride {
             no_elide: false,
-            types: vec![spec.to_owned()],
-            ..Default::default()
+            types: vec!["slog::Logger<a::B>".to_owned()],
         };
-        // Both sides are compared normalized: whitespace gone, default
-        // allocator elided.
-        assert!(elide("alloc::vec::Vec<u8>").forces("alloc::vec::Vec<u8, alloc::alloc::Global>"));
-        assert!(elide("alloc::vec::Vec<*>").forces("alloc::vec::Vec<u8, alloc::alloc::Global>"));
-        // A bare name covers instantiations; a glob must spell them.
-        assert!(elide("slog::Logger").forces("slog::Logger<a::B>"));
-        assert!(!elide("slog::Log*er").forces("slog::Logger<a::B>"));
-        assert!(elide("slog::Log*er<*>").forces("slog::Logger<a::B>"));
-    }
-
-    /// The folded spellings the listings print are accepted back: the
-    /// short std path, the env-folded coroutine name, and either with
-    /// the kind word the display joined still attached.
-    #[test]
-    fn test_forces_accepts_the_displayed_spelling() {
-        use super::ElideOverride;
-
-        let elide = |spec: &str| ElideOverride {
-            no_elide: false,
-            types: vec![spec.to_owned()],
-            ..Default::default()
-        };
-        assert!(elide("Vec<u8>").forces("alloc::vec::Vec<u8, alloc::alloc::Global>"));
-        assert!(elide("Vec").forces("alloc::vec::Vec<u8, alloc::alloc::Global>"));
-        assert!(elide("app::work").forces("app::work::{async_fn_env#0}"));
-        assert!(elide("async fn app::work").forces("app::work::{async_fn_env#0}"));
-        assert!(elide("future tokio::time::Sleep").forces("tokio::time::Sleep"));
-        // The raw spelling still names the type it always did.
-        assert!(elide("app::work::{async_fn_env#0}").forces("app::work::{async_fn_env#0}"));
-        // Folding is a fold, not a licence: another crate's Vec is not
-        // std's.
-        assert!(!elide("Vec<u8>").forces("myalloc::vec::Vec<u8>"));
-    }
-
-    /// With the bundle's impl substitutions on the override, a spec in
-    /// the folded spelling matches the raw impl-path name the bundle
-    /// records — and without them, it does not pretend to.
-    #[test]
-    fn test_forces_accepts_the_impl_folded_spelling() {
-        use super::ElideOverride;
-
-        let elide = |spec: &str, impls| ElideOverride {
-            no_elide: false,
-            types: vec![spec.to_owned()],
-            impls,
-        };
-        let impls = || {
-            hansei_bundle::names::ImplFold::from_pairs([(
-                "tokio::sync::mutex::{impl#10}",
-                "tokio::sync::mutex::Mutex",
-            )])
-        };
-        let raw = "tokio::sync::mutex::{impl#10}::lock::{async_fn_env#0}<()>";
-        assert!(elide("tokio::sync::mutex::Mutex::lock<()>", impls()).forces(raw));
-        assert!(elide("async fn tokio::sync::mutex::Mutex::lock<()>", impls()).forces(raw));
-        assert!(elide(raw, impls()).forces(raw));
-        assert!(!elide("tokio::sync::mutex::Mutex::lock<()>", Default::default()).forces(raw));
+        assert!(elide.forces("slog::Logger<a::B>"));
+        assert!(!elide.forces("slog::Logger<c::D>"));
+        assert!(!elide.forces("slog::Logger"));
+        assert!(!ElideOverride::default().forces("slog::Logger<a::B>"));
     }
 
     /// A pointer into memory the allocator has taken back is not
