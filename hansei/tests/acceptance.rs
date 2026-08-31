@@ -79,6 +79,7 @@ const PROGRAMS: &[&str] = &[
     "local-set-timer",
     "local-set-io",
     "foreign-runtime",
+    "blocking-pool",
     "spin-poll",
     "stale-local",
 ];
@@ -515,6 +516,9 @@ struct TaskRow {
     /// The two source locations, `-` when the target did not record one.
     spawned: String,
     defined: String,
+    /// The wait, spelled as the table's cell — `—` for a task waiting
+    /// on nothing nameable.
+    waiting: String,
 }
 
 /// Run `tasks -v` and parse the block listing: a `Task <id>: <future>`
@@ -544,6 +548,7 @@ fn list_tasks(bundle: &Path, core: &Path) -> Vec<TaskRow> {
             sets: String::new(),
             spawned: String::new(),
             defined: String::new(),
+            waiting: String::new(),
         };
         lines.next();
 
@@ -554,6 +559,11 @@ fn list_tasks(bundle: &Path, core: &Path) -> Vec<TaskRow> {
             let attr = line
                 .strip_prefix("    ")
                 .unwrap_or_else(|| panic!("unexpected tasks line {line:?}"));
+            // A deeper-indented line is registry detail under the wait
+            // row (a wheel entry, an io slot), not an attribute.
+            if attr.starts_with(' ') {
+                continue;
+            }
             let (label, value) = attr
                 .split_once(": ")
                 .unwrap_or_else(|| panic!("unexpected tasks line {line:?}"));
@@ -564,6 +574,7 @@ fn list_tasks(bundle: &Path, core: &Path) -> Vec<TaskRow> {
                 "Join sets" => &mut row.sets,
                 "Spawned at" => &mut row.spawned,
                 "Defined at" => &mut row.defined,
+                "Waiting on" => &mut row.waiting,
                 _ => panic!("unexpected tasks attribute {line:?}"),
             };
             assert!(field.is_empty(), "repeated tasks attribute {line:?}");
@@ -577,6 +588,7 @@ fn list_tasks(bundle: &Path, core: &Path) -> Vec<TaskRow> {
             ("Join sets", &row.sets),
             ("Spawned at", &row.spawned),
             ("Defined at", &row.defined),
+            ("Waiting on", &row.waiting),
         ] {
             assert!(!value.is_empty(), "task {} has no {label} row", row.id);
         }
@@ -1759,6 +1771,48 @@ fn test_local_set_acceptance() {
         // leaving the page's other row unread.
         let out = hansei_ok(&bundle, core, "runtimes -l");
         golden("local-set-runtimes", &Symbols::new().columns().apply(&out));
+    });
+}
+
+/// The blocking pool's cells as rows against a real core: the claimed
+/// cell running on a nameable lwp — the poll-symbol stack join, which
+/// no snapshot can exercise — the queued cell behind it, and each
+/// waiter's join edge pointing at a listed row rather than the old
+/// "no task list carries those" caveat.
+#[test]
+fn test_blocking_pool_acceptance() {
+    let bundle = fixtures().bundle("blocking-pool");
+    with_core("blocking-pool", |core| {
+        let rows = list_tasks(&bundle, core);
+        assert_eq!(rows.len(), 5, "{rows:#?}");
+        // The detached cell: its handle is gone, so this row exists
+        // only because the queue walk read the pool's VecDeque.
+        let detached = task_with_future(
+            &rows,
+            "future tokio::runtime::blocking::task::BlockingTask<\
+             blocking_pool::main::{async_block#0}::{closure_env#2}>",
+        );
+        assert_eq!(detached.state, "blocking (queued)", "{rows:#?}");
+        let running = task_with_future(
+            &rows,
+            "future tokio::runtime::blocking::task::BlockingTask<\
+             blocking_pool::main::{async_block#0}::{closure_env#0}>",
+        );
+        let queued = task_with_future(
+            &rows,
+            "future tokio::runtime::blocking::task::BlockingTask<\
+             blocking_pool::main::{async_block#0}::{closure_env#1}>",
+        );
+        let on_lwp = regex::Regex::new(r"^blocking \(running on lwp \d+\)$").unwrap();
+        assert!(on_lwp.is_match(&running.state), "{rows:#?}");
+        assert_eq!(queued.state, "blocking (queued)", "{rows:#?}");
+        assert_eq!(running.waiting, "—", "{rows:#?}");
+
+        // The join edges point at listed rows, plainly spelled.
+        let a = task_with_future(&rows, "async fn blocking_pool::running_waiter");
+        assert_eq!(a.waiting, format!("task {}", running.id), "{rows:#?}");
+        let b = task_with_future(&rows, "async fn blocking_pool::queued_waiter");
+        assert_eq!(b.waiting, format!("task {}", queued.id), "{rows:#?}");
     });
 }
 

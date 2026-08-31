@@ -70,7 +70,7 @@ lwp 2  last polled task 1
         park: core::option::Option<tokio::runtime::scheduler::multi_thread::park::Parker>::None,
         stats: tokio::runtime::scheduler::multi_thread::stats::Stats {
             batch: tokio::runtime::metrics::batch::MetricsBatch {
-                busy_duration_total: 93436,
+                busy_duration_total: 184293,
                 processing_scheduled_tasks_started_at: core::option::Option<std::time::Instant>::Some {
                     tv_sec: ...,
                     tv_nsec: ...,
@@ -87,16 +87,16 @@ lwp 2  last polled task 1
                 poll_timer: core::option::Option<tokio::runtime::metrics::batch::PollTimer>::None,
             },
             processing_scheduled_tasks_started_at: std::sys::pal::unix::time::Timespec {
-                tv_sec: 4925322,
-                tv_nsec: 704116874,
+                tv_sec: 5005925,
+                tv_nsec: 124334855,
             },
             tasks_polled_in_batch: 1,
-            task_poll_time_ewma: 12296.819672131147,
+            task_poll_time_ewma: 21380.619672131143,
         },
         global_queue_interval: 61,
         rand: tokio::util::rand::FastRand {
-            one: 2000982586,
-            two: 1116861326,
+            one: 2194547072,
+            two: 2078053879,
         },
     }
   stack:
@@ -159,7 +159,7 @@ lwp 3  last polled task 2
         park: core::option::Option<tokio::runtime::scheduler::multi_thread::park::Parker>::None,
         stats: tokio::runtime::scheduler::multi_thread::stats::Stats {
             batch: tokio::runtime::metrics::batch::MetricsBatch {
-                busy_duration_total: 290,
+                busy_duration_total: 345,
                 processing_scheduled_tasks_started_at: core::option::Option<std::time::Instant>::Some {
                     tv_sec: ...,
                     tv_nsec: ...,
@@ -176,16 +176,16 @@ lwp 3  last polled task 2
                 poll_timer: core::option::Option<tokio::runtime::metrics::batch::PollTimer>::None,
             },
             processing_scheduled_tasks_started_at: std::sys::pal::unix::time::Timespec {
-                tv_sec: 4925322,
-                tv_nsec: 704161658,
+                tv_sec: 5005925,
+                tv_nsec: 124338159,
             },
             tasks_polled_in_batch: 0,
             task_poll_time_ewma: 3278.688524590164,
         },
         global_queue_interval: 61,
         rand: tokio::util::rand::FastRand {
-            one: 878366384,
-            two: 2397949510,
+            one: 3255163188,
+            two: 3388413588,
         },
     }
   stack:

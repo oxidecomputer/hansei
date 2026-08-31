@@ -1725,3 +1725,118 @@ walk contract (tokio 1.47.5, rustc 1.97.1 (8bab26f4f 2026-07-14)): 112 entries, 
   ok      blocking::queue.buf
   ok      blocking::queue.cap
   ok      blocking::Task.header
+
+program: blocking-pool
+walk contract (tokio 1.47.5, rustc 1.97.1 (8bab26f4f 2026-07-14)): 112 entries, 0 broken, 40 absent
+  ok      statics.tls_context_key
+  ok      statics.task_waker_vtable
+  absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
+  ok      Context.current_task_id
+  ok      Context.thread_id
+  ok      Context.handle
+  ok      Context.handle.current_thread
+  ok      Context.scheduler
+  ok      Context.scheduler.current_thread
+  ok      worker::Context.index
+  ok      current_thread::Context.core
+  ok      current_thread::Core.driver
+  ok      Handle.shared
+  ok      Shared.remotes
+  ok      Remote.unpark
+  ok      parker::Inner.state
+  ok      parker::Inner.driver_lock
+  ok      current_thread::Shared.woken
+  ok      Handle.blocking_metrics
+  ok      SpawnerMetrics.num_threads
+  ok      SpawnerMetrics.num_idle_threads
+  ok      SpawnerMetrics.queue_depth
+  ok      Shared.owned_lists
+  ok      Shared.owned_id
+  ok      Shard.head
+  ok      Header.state
+  ok      Header.owner_id
+  ok      Header.vtable
+  ok      Trailer.owned_next
+  ok      Vtable.poll
+  ok      Vtable.trailer_offset
+  ok      Vtable.id_offset
+  ok      Vtable.dealloc
+  ok      Vtable.try_read_output
+  ok      Vtable.drop_join_handle_slow
+  ok      Vtable.drop_abort_handle
+  ok      Vtable.shutdown
+  ok      Vtable.spawn_location_offset
+  ok      Location.file (spelling 1 of 3)
+  ok      Location.line
+  ok      Location.col
+  ok      Cell.stage (8 cells)
+  ok      Cell.stage_running (8 cells)
+  ok      Cell.stage_finished (8 cells)
+  ok      Cell.stage_consumed (8 cells)
+  ok      Cell.trailer (8 cells)
+  ok      Cell.task_id (8 cells)
+  ok      Cell.scheduler (8 cells)
+  absent  Sleep.deadline — no tokio::time::sleep::Sleep… type in the tokio info (the target does not reach one)
+  absent  Sleep.deadline.tv_sec — no tokio::time::sleep::Sleep… type in the tokio info (the target does not reach one)
+  absent  Sleep.deadline.tv_nsec — no tokio::time::sleep::Sleep… type in the tokio info (the target does not reach one)
+  ok      JoinHandle.raw
+  absent  Acquire.semaphore — no tokio::sync::batch_semaphore::Acquire… type in the tokio info (the target does not reach one)
+  absent  Acquire.num_permits — no tokio::sync::batch_semaphore::Acquire… type in the tokio info (the target does not reach one)
+  absent  Acquire.node — no tokio::sync::batch_semaphore::Acquire… type in the tokio info (the target does not reach one)
+  absent  Acquire.node.state — no tokio::sync::batch_semaphore::Acquire… type in the tokio info (the target does not reach one)
+  absent  Acquire.queued — no tokio::sync::batch_semaphore::Acquire… type in the tokio info (the target does not reach one)
+  absent  Semaphore.permits — no tokio::sync::batch_semaphore::Acquire… type in the tokio info (the target does not reach one)
+  absent  Semaphore.queue_head — no tokio::sync::batch_semaphore::Acquire… type in the tokio info (the target does not reach one)
+  absent  Waiter.state — no tokio::sync::batch_semaphore::Acquire… type in the tokio info (the target does not reach one)
+  absent  Waiter.next — no tokio::sync::batch_semaphore::Acquire… type in the tokio info (the target does not reach one)
+  absent  Waiter.waker — no tokio::sync::batch_semaphore::Acquire… type in the tokio info (the target does not reach one)
+  ok      RawWaker.data
+  ok      RawWaker.vtable
+  absent  FuturesUnordered.head_all — no futures_util::stream::futures_unordered::FuturesUnordered<… type in the tokio info (the target does not reach one)
+  absent  SetNode.future — no futures_util::stream::futures_unordered::FuturesUnordered<… type in the tokio info (the target does not reach one)
+  absent  SetNode.next_all — no futures_util::stream::futures_unordered::FuturesUnordered<… type in the tokio info (the target does not reach one)
+  absent  JoinSet.length — no tokio::task::join_set::JoinSet<… type in the tokio info (the target does not reach one)
+  absent  JoinSet.lists — no tokio::task::join_set::JoinSet<… type in the tokio info (the target does not reach one)
+  absent  JoinSet.notified_head — no tokio::task::join_set::JoinSet<… type in the tokio info (the target does not reach one)
+  absent  JoinSet.idle_head — no tokio::task::join_set::JoinSet<… type in the tokio info (the target does not reach one)
+  absent  ListEntry.value — no tokio::task::join_set::JoinSet<… type in the tokio info (the target does not reach one)
+  absent  ListEntry.next — no tokio::task::join_set::JoinSet<… type in the tokio info (the target does not reach one)
+  absent  local::Shared.owned_id — no tokio::task::local::Shared… type in the tokio info (the target does not reach one)
+  absent  local::Shared.owned_head — no tokio::task::local::Shared… type in the tokio info (the target does not reach one)
+  absent  local::Shared.owner — no tokio::task::local::Shared… type in the tokio info (the target does not reach one)
+  absent  LocalData.ctx — no tokio::task::local::LocalData… type in the tokio info (the target does not reach one)
+  absent  local::Context.shared — no tokio::task::local::LocalData… type in the tokio info (the target does not reach one)
+  ok      time::Wheel.levels (family v1_47)
+  ok      wheel::Level.slot
+  ok      wheel::Slot.head
+  ok      TimerShared.next
+  ok      TimerShared.waker
+  ok      io::Synced.registrations
+  ok      ScheduledIo.next
+  ok      ScheduledIo.waiters
+  ok      io::Waiters.list
+  ok      io::Waiters.reader
+  ok      io::Waiters.writer
+  ok      io::Waiter.next
+  ok      io::Waiter.waker
+  ok      TimerShared.state
+  ok      ScheduledIo.readiness
+  ok      io::Waiter.interest
+  absent  net::TcpStream.shared — no tokio::net::tcp::stream::TcpStream type in the tokio info (the target does not reach one)
+  absent  net::TcpStream.fd — no tokio::net::tcp::stream::TcpStream type in the tokio info (the target does not reach one)
+  absent  net::TcpListener.shared — no tokio::net::tcp::listener::TcpListener type in the tokio info (the target does not reach one)
+  absent  net::TcpListener.fd — no tokio::net::tcp::listener::TcpListener type in the tokio info (the target does not reach one)
+  absent  net::UdpSocket.shared — no tokio::net::udp::UdpSocket type in the tokio info (the target does not reach one)
+  absent  net::UdpSocket.fd — no tokio::net::udp::UdpSocket type in the tokio info (the target does not reach one)
+  absent  net::UnixStream.shared — no tokio::net::unix::stream::UnixStream type in the tokio info (the target does not reach one)
+  absent  net::UnixStream.fd — no tokio::net::unix::stream::UnixStream type in the tokio info (the target does not reach one)
+  absent  net::UnixListener.shared — no tokio::net::unix::listener::UnixListener type in the tokio info (the target does not reach one)
+  absent  net::UnixListener.fd — no tokio::net::unix::listener::UnixListener type in the tokio info (the target does not reach one)
+  absent  net::UnixDatagram.shared — no tokio::net::unix::datagram::socket::UnixDatagram type in the tokio info (the target does not reach one)
+  absent  net::UnixDatagram.fd — no tokio::net::unix::datagram::socket::UnixDatagram type in the tokio info (the target does not reach one)
+  ok      blocking::Shared.queue (spelling 1 of 3)
+  ok      blocking::queue.head
+  ok      blocking::queue.len
+  ok      blocking::queue.buf
+  ok      blocking::queue.cap
+  ok      blocking::Task.header

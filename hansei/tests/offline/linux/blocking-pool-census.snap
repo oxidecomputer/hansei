@@ -1,0 +1,42 @@
+---
+source: hansei/src/offline.rs
+description: "`census` over linux/blocking-pool"
+---
+Threads: 4 lwps, 4 in runtime 0 @0xADDR
+    2 in the scheduler's run loop
+        1 parked in the io driver
+            worker 0, lwp 3052821
+        1 parked
+    2 in runtime 0 @0xADDR, outside the run loop
+        1 in the blocking pool (0 idle, 2 tasks queued)
+        1 that entered the runtime another way (a block_on caller)
+
+Tasks: 5 owned by runtime 0 @0xADDR
+    Lifecycle: 1 running, 2 queued, 2 idle
+    Future types and what they await:
+        1  async fn blocking_pool::queued_waiter
+           └─ 1  another task (JoinHandle)
+        1  async fn blocking_pool::running_waiter
+           └─ 1  another task (JoinHandle)
+        1  future tokio::runtime::blocking::task::BlockingTask<blocking_pool::main::{async_block#0}::{closure_env#0}>
+           └─ 1  nothing — mid-poll on a worker
+        1  future tokio::runtime::blocking::task::BlockingTask<blocking_pool::main::{async_block#0}::{closure_env#1}>
+           └─ 1  future Option<blocking_pool::main::{async_block#0}::{closure_env#1}>
+        1  future tokio::runtime::blocking::task::BlockingTask<blocking_pool::main::{async_block#0}::{closure_env#2}>
+           └─ 1  future Option<blocking_pool::main::{async_block#0}::{closure_env#2}>
+    Awaiting at:
+        3  no live await site (mid-poll, finished, never polled, or unrecorded)
+        1  src/bin/blocking-pool.rs:18
+        1  src/bin/blocking-pool.rs:24
+    Spawned at:
+        1  src/bin/blocking-pool.rs:35:23
+        1  src/bin/blocking-pool.rs:43:22
+        1  src/bin/blocking-pool.rs:47:14
+        1  src/bin/blocking-pool.rs:51:24
+        1  src/bin/blocking-pool.rs:52:23
+
+Futures: 5 in flight, on 7 await-chain frames (up to 2 deep)
+    Location:
+        5  polled as tasks
+        0  held in frames, off any await chain
+        0  in 0 FuturesUnordered

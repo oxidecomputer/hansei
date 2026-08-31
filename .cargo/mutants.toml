@@ -145,6 +145,14 @@ exclude_re = [
     # returns false. Weakening the join only changes which half rejects
     # a corrupt table, never the answer.
     "replace \\|\\| with && in StringTable::is_well_formed",
+    # Equivalent mutant: a frame member's absolute address is threaded
+    # into the fd join's candidate value for completeness, but the
+    # resource walks consume only its bytes — the ScheduledIo address
+    # comes from the Arc's pointer after a Deref, the fd from
+    # byte-sliced newtypes — so skewing the candidate's own address is
+    # unobservable. If a resource walk ever needs the member's own
+    # address, delete this entry and pin the arithmetic instead.
+    "replace \\+ with [*-] in Context<'b, T>::resource_member",
     # The io-route gate re-armed (`<` to `<=`) only re-runs the io
     # sweep over an empty runtime slice until the 64-round cap ends
     # the loop where the `break` would have: identical output, bounded

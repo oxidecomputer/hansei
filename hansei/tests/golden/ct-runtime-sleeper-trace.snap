@@ -5,9 +5,9 @@ expression: actual
 Task #sleeper: async fn ct_runtime::sleeper (idle)
 Defined at: src/bin/ct-runtime.rs:10
 
-Waiting on: the timer: deadline TS
+Waiting on: timer (deadline TS)
 
 #0  async fn      ct_runtime::sleeper
       awaiting at src/bin/ct-runtime.rs:13 (Suspend0)
 #1  future        tokio::time::sleep::Sleep
-      waiting on the timer: deadline TS
+      waiting on timer (deadline TS)

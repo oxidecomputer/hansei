@@ -11,13 +11,13 @@ Tasks: 4 owned by 1 runtime and 1 local set
     Lifecycle: 4 idle
     Future types and what they await:
         1  async fn local_set_io::local_reader
-           └─ 1  future tokio::io::util::read::Read<tokio::net::unix::stream::UnixStream>
+           └─ 1  an io resource
         1  async fn local_set_io::local_watcher
-           └─ 1  future tokio::runtime::io::scheduled_io::Readiness
+           └─ 1  an io resource
         1  async fn local_set_io::local_writer
-           └─ 1  future tokio::io::util::write_all::WriteAll<tokio::net::unix::stream::UnixStream>
+           └─ 1  an io resource
         1  async fn local_set_io::reader
-           └─ 1  future tokio::io::util::read::Read<tokio::net::unix::stream::UnixStream>
+           └─ 1  an io resource
     Awaiting at:
         1  src/bin/local-set-io.rs:28
         1  src/bin/local-set-io.rs:36

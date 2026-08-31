@@ -5,9 +5,9 @@ expression: actual
 Task #sleeper: async fn sleep_join::sleeper (idle)
 Defined at: src/bin/sleep-join.rs:9
 
-Waiting on: the timer: deadline TS
+Waiting on: timer (deadline TS)
 
 #0  async fn      sleep_join::sleeper
       awaiting at src/bin/sleep-join.rs:12 (Suspend0)
 #1  future        tokio::time::sleep::Sleep
-      waiting on the timer: deadline TS
+      waiting on timer (deadline TS)

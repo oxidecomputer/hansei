@@ -2,7 +2,7 @@
 source: hansei/src/offline.rs
 description: "`threads -f 3` over linux-floor/joinset"
 ---
-lwp 2350799  polling no task
+lwp 2958256  polling no task
   thread_id: core::option::Option<tokio::runtime::thread_id::ThreadId>::None
   runtime:
     tokio::runtime::context::runtime::EnterRuntime::Entered {
@@ -14,7 +14,7 @@ lwp 2350799  polling no task
     0xADDR 
     (walk ended: no CFI for /usr/lib64/libc.so.6 (none of its pages are in the core, and the backing file is not on this machine); the frame-pointer walk found nothing below 0xADDR)
 
-lwp 2350801  last polled task 1
+lwp 2958258  last polled task 1
   thread_id: core::option::Option<tokio::runtime::thread_id::ThreadId>::None
   runtime:
     tokio::runtime::context::runtime::EnterRuntime::Entered {
@@ -31,7 +31,7 @@ lwp 2350801  last polled task 1
     }
   core:
     tokio::runtime::scheduler::multi_thread::worker::Core {
-        tick: 7,
+        tick: 9,
         lifo_slot: core::option::Option<tokio::runtime::task::Notified<alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle, alloc::alloc::Global>>>::None,
         lifo_enabled: false,
         run_queue: tokio::runtime::scheduler::multi_thread::queue::Local<alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle, alloc::alloc::Global>> {
@@ -45,7 +45,7 @@ lwp 2350801  last polled task 1
         park: core::option::Option<tokio::runtime::scheduler::multi_thread::park::Parker>::None,
         stats: tokio::runtime::scheduler::multi_thread::stats::Stats {
             batch: tokio::runtime::metrics::batch::MetricsBatch {
-                busy_duration_total: 28243,
+                busy_duration_total: 9819,
                 processing_scheduled_tasks_started_at: core::option::Option<std::time::Instant>::Some {
                     tv_sec: ...,
                     tv_nsec: ...,
@@ -55,23 +55,23 @@ lwp 2350801  last polled task 1
                 noop_count: 0,
                 steal_count: 0,
                 steal_operations: 0,
-                poll_count: 6,
-                poll_count_on_last_park: 6,
+                poll_count: 8,
+                poll_count_on_last_park: 8,
                 local_schedule_count: 7,
                 overflow_count: 0,
                 poll_timer: core::option::Option<tokio::runtime::metrics::batch::PollTimer>::None,
             },
             processing_scheduled_tasks_started_at: std::sys::pal::unix::time::Timespec {
-                tv_sec: 1321717,
-                tv_nsec: 671992966,
+                tv_sec: 1402303,
+                tv_nsec: 288342699,
             },
-            tasks_polled_in_batch: 6,
-            task_poll_time_ewma: 3952.7004043633883,
+            tasks_polled_in_batch: 8,
+            task_poll_time_ewma: 2109.6862937780943,
         },
         global_queue_interval: 61,
         rand: tokio::util::rand::FastRand {
-            one: 472509950,
-            two: 1911542893,
+            one: 4066564519,
+            two: 350531866,
         },
     }
   stack:
@@ -80,7 +80,7 @@ lwp 2350801  last polled task 1
     0xADDR   (frame-pointer walk)
     (walk ended: no CFI for /usr/lib64/libc.so.6 (none of its pages are in the core, and the backing file is not on this machine); the frame-pointer walk found nothing below 0xADDR)
 
-lwp 2350802  last polled task 2
+lwp 2958259  last polled task 2
   thread_id: core::option::Option<tokio::runtime::thread_id::ThreadId>::None
   runtime:
     tokio::runtime::context::runtime::EnterRuntime::Entered {
@@ -97,7 +97,7 @@ lwp 2350802  last polled task 2
     }
   core:
     tokio::runtime::scheduler::multi_thread::worker::Core {
-        tick: 3,
+        tick: 1,
         lifo_slot: core::option::Option<tokio::runtime::task::Notified<alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle, alloc::alloc::Global>>>::None,
         lifo_enabled: false,
         run_queue: tokio::runtime::scheduler::multi_thread::queue::Local<alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle, alloc::alloc::Global>> {
@@ -111,33 +111,33 @@ lwp 2350802  last polled task 2
         park: core::option::Option<tokio::runtime::scheduler::multi_thread::park::Parker>::None,
         stats: tokio::runtime::scheduler::multi_thread::stats::Stats {
             batch: tokio::runtime::metrics::batch::MetricsBatch {
-                busy_duration_total: 2866,
+                busy_duration_total: 231,
                 processing_scheduled_tasks_started_at: core::option::Option<std::time::Instant>::Some {
                     tv_sec: ...,
                     tv_nsec: ...,
                 },
                 park_count: 1,
                 park_unpark_count: 1,
-                noop_count: 0,
-                steal_count: 2,
-                steal_operations: 1,
-                poll_count: 2,
-                poll_count_on_last_park: 2,
+                noop_count: 1,
+                steal_count: 0,
+                steal_operations: 0,
+                poll_count: 0,
+                poll_count_on_last_park: 0,
                 local_schedule_count: 0,
                 overflow_count: 0,
                 poll_timer: core::option::Option<tokio::runtime::metrics::batch::PollTimer>::None,
             },
             processing_scheduled_tasks_started_at: std::sys::pal::unix::time::Timespec {
-                tv_sec: 1321717,
-                tv_nsec: 672012152,
+                tv_sec: 1402303,
+                tv_nsec: 288381923,
             },
-            tasks_polled_in_batch: 2,
-            task_poll_time_ewma: 2902.2627049180333,
+            tasks_polled_in_batch: 0,
+            task_poll_time_ewma: 3278.688524590164,
         },
         global_queue_interval: 61,
         rand: tokio::util::rand::FastRand {
-            one: 2097225450,
-            two: 3068365767,
+            one: 1880526982,
+            two: 2146418850,
         },
     }
   stack:

@@ -418,6 +418,117 @@ fn test_sleep_join_offline() {
     assert_summary("sleep-join");
 }
 
+/// The blocking pool's cells as rows, offline: the claimed cell and
+/// the queued one both listed, each waiter's join edge pointing at a
+/// listed task rather than the "no task list carries those" caveat.
+#[test]
+fn test_blocking_pool_offline() {
+    assert_summary("blocking-pool");
+}
+
+/// The registry join never overwrites a decoded primitive: a task
+/// whose chain already names its wait keeps it even when a doctored
+/// registry parks an io waker for it — the io upgrade fires only for
+/// a task nothing else decoded. The goldens cannot reach this guard,
+/// since no capture parks one task on both a primitive and a socket.
+#[test]
+fn test_registry_io_never_overwrites_a_decoded_wait() {
+    use hansei_runtime::tokio::bundle::{IoResourceInfo, IoSlot, IoWaiterInfo, WaitTarget};
+
+    let (bundle, snapshot) = load_any("sleep-join");
+    let ctx = hansei_runtime::testkit::context(&bundle, &snapshot);
+    let mut e = hansei_runtime::testkit::enumerate(&ctx, &snapshot);
+    let _sets = e.discover(&ctx, &[]);
+    let mut registries = e.registries;
+    for task in &e.list.tasks {
+        registries.io.push(IoResourceInfo {
+            addr: 0x9990,
+            readiness: None,
+            waiters: vec![IoWaiterInfo {
+                slot: IoSlot::Reader,
+                task: Some(task.addr.0),
+            }],
+        });
+    }
+    let analysis = graph::analyze(&ctx, &e.list, &registries);
+    let target_of = |id: u64| {
+        let index = e
+            .list
+            .tasks
+            .iter()
+            .position(|t| t.task_id == Some(id))
+            .unwrap_or_else(|| panic!("no task {id}"));
+        analysis.waits[index].target.as_ref()
+    };
+    assert!(
+        matches!(target_of(3), Some(WaitTarget::Timer { .. })),
+        "{:#?}",
+        target_of(3)
+    );
+    assert!(
+        matches!(target_of(4), Some(WaitTarget::Task { .. })),
+        "{:#?}",
+        target_of(4)
+    );
+}
+
+/// The fd join's two member shapes, each pinned alone: a frame whose
+/// resource is held by value (the watcher's `stream` local) and one
+/// holding only a reference (the reader's `Read` future's `&mut`).
+/// The goldens see only the two combined — every fixture task's
+/// stream turns out reachable both ways over the whole chain — so a
+/// regression in one arm hides behind the other there.
+#[test]
+fn test_io_resource_fd_member_shapes() {
+    use hansei_runtime::tokio::bundle::WaitTarget;
+
+    let (bundle, snapshot) = load_any("local-set-io");
+    let ctx = hansei_runtime::testkit::context(&bundle, &snapshot);
+    let mut e = hansei_runtime::testkit::enumerate(&ctx, &snapshot);
+    let _sets = e.discover(&ctx, &[]);
+    let analysis = graph::analyze(&ctx, &e.list, &e.registries);
+
+    let case = |name_part: &str, last_frame: bool| {
+        let index = e
+            .list
+            .tasks
+            .iter()
+            .position(|t| known_name(t).contains(name_part))
+            .unwrap_or_else(|| panic!("no task named {name_part}"));
+        let Some(WaitTarget::Io { addr, fd, .. }) = &analysis.waits[index].target else {
+            panic!(
+                "{name_part} decodes no io wait: {:?}",
+                analysis.waits[index]
+            );
+        };
+        let fd = fd.unwrap_or_else(|| panic!("{name_part} resolved no fd"));
+        let TaskStage::Running(future) = ctx
+            .task_stage(&e.list.tasks[index])
+            .expect("the stage decodes")
+        else {
+            panic!("{name_part} is not running");
+        };
+        let chain = ctx.await_chain(future);
+        let frame = match last_frame {
+            true => chain.frames.last().expect("a chain frame"),
+            false => chain.frames.first().expect("a chain frame"),
+        };
+        let payload = match &frame.state {
+            Some(state) => state.payload,
+            None => frame.future,
+        };
+        assert_eq!(
+            ctx.io_resource_fd(&[payload], *addr),
+            Some(fd),
+            "{name_part} (last_frame: {last_frame})"
+        );
+    };
+    // The watcher's own frame holds `stream: UnixStream` by value.
+    case("local_watcher", false);
+    // The reader's `Read` leaf holds only `reader: &mut UnixStream`.
+    case("local_reader", true);
+}
+
 /// The future census, offline: the futurelock fixture's `future1` — a
 /// dyn-boxed lock future held across `do_stuff`'s suspension, the very
 /// future the futurelock diagnosis is about — is found as a held

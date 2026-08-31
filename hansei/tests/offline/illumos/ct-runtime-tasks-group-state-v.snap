@@ -7,6 +7,8 @@ Task 1: async fn ct_runtime::sleeper
     State: idle
     Spawned at: src/bin/ct-runtime.rs:33:24
     Defined at: src/bin/ct-runtime.rs:10
+    Waiting on: timer (deadline TS)
+        timer entry 0xADDR in the wheel, registered
     Held futures: 0
     Join sets: 0
 
@@ -14,6 +16,7 @@ Task 2: async fn ct_runtime::acquirer
     State: idle
     Spawned at: src/bin/ct-runtime.rs:34:25
     Defined at: src/bin/ct-runtime.rs:17
+    Waiting on: a tokio::sync::Semaphore (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 2
     Held futures: 0
     Join sets: 0
 

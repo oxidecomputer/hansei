@@ -1,0 +1,9 @@
+---
+source: hansei/src/offline.rs
+description: "`graph` over illumos/blocking-pool"
+---
+TASK  STATE    WAITING ON
+6     idle     task 3
+└─ 3  running  future Option<blocking_pool::main::{async_block#0}::{closure_env#0}>
+7     idle     task 4
+└─ 4  queued   future Option<blocking_pool::main::{async_block#0}::{closure_env#1}>
