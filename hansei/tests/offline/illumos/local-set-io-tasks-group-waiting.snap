@@ -1,0 +1,9 @@
+---
+source: hansei/src/offline.rs
+description: "`tasks --group waiting-on` over illumos/local-set-io"
+---
+COUNT  WAITING ON                                                                         TASKS
+    2  future tokio::io::util::read::Read<tokio::net::unix::stream::UnixStream>           1, 4
+    1  future tokio::io::util::write_all::WriteAll<tokio::net::unix::stream::UnixStream>  3
+    1  future tokio::runtime::io::scheduled_io::Readiness                                 2
+3 groups

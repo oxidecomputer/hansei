@@ -693,6 +693,58 @@ mod tests {
         assert!(Line::try_parse_from(["runtimes", "-l", "0"]).is_err());
     }
 
+    /// The filter grammar: `--with`/`--without` take FIELD ARG pairs,
+    /// repeatable, and `--group` one field; a field with no argument
+    /// is refused by the grammar itself, so no clause parses by half.
+    #[test]
+    fn test_tasks_takes_filter_clauses_in_pairs() {
+        let Command::Tasks {
+            with,
+            without,
+            group,
+            task,
+            ..
+        } = Line::try_parse_from([
+            "tasks",
+            "--with",
+            "state",
+            "idle",
+            "--with",
+            "waiting-on",
+            "^timer",
+            "--without",
+            "type",
+            "qorb",
+            "--group",
+            "state",
+        ])
+        .expect("the filter grammar parses")
+        .command
+        else {
+            panic!("tasks parsed as another command");
+        };
+        assert_eq!(with, ["state", "idle", "waiting-on", "^timer"]);
+        assert_eq!(without, ["type", "qorb"]);
+        assert_eq!(group.as_deref(), Some("state"));
+        assert!(task.is_empty());
+        assert!(Line::try_parse_from(["tasks", "--with", "state"]).is_err());
+        assert!(Line::try_parse_from(["tasks", "--group"]).is_err());
+    }
+
+    /// A positional id still parses — the refusal that teaches the
+    /// filter spelling is the command's own, not clap's bare
+    /// "unexpected argument".
+    #[test]
+    fn test_tasks_still_carries_a_positional_to_refuse() {
+        let Command::Tasks { task, .. } = Line::try_parse_from(["tasks", "129"])
+            .expect("a positional reaches the command's refusal")
+            .command
+        else {
+            panic!("tasks parsed as another command");
+        };
+        assert_eq!(task, ["129"]);
+    }
+
     /// `history` takes an optional count and nothing else.
     #[test]
     fn test_history_takes_a_count_or_nothing() {

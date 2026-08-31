@@ -1,0 +1,10 @@
+---
+source: hansei/src/offline.rs
+description: "`tasks --group waiting-on` over illumos/foreign-runtime"
+---
+COUNT  WAITING ON                                                                                           TASKS
+    1  a tokio::sync::Semaphore (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 1  1
+    1  future core::future::pending::Pending<()>                                                            2
+    1  task 1 (JoinHandle)                                                                                  3
+    1  the timer: deadline TS                                                                      4
+4 groups

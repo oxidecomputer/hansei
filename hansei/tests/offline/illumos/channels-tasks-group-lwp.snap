@@ -1,0 +1,7 @@
+---
+source: hansei/src/offline.rs
+description: "`tasks --group lwp` over illumos/channels"
+---
+COUNT  LWP      TASKS
+    2  <empty>  3, 4
+1 group

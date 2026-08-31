@@ -2110,12 +2110,12 @@ fn test_futures_acceptance() {
 
         // Narrowing to the driver shows its block alone, with the same
         // finds under it: every one of them is the driver's.
-        let narrowed = hansei_ok(&bundle, core, &format!("tasks -f {}", driver.id));
+        let narrowed = hansei_ok(&bundle, core, &format!("tasks -f --with id {}", driver.id));
         assert!(
             narrowed.starts_with(&format!("Task {}: ", driver.id)),
             "{narrowed}"
         );
-        assert!(!narrowed.contains("\n1 task\n"), "{narrowed}");
+        assert!(narrowed.ends_with("\n1 task\n"), "{narrowed}");
         assert!(narrowed.contains("3 children in flight"), "{narrowed}");
         assert!(
             narrowed.contains("    Join sets: 1 (3 futures)\n"),

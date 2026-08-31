@@ -1,0 +1,8 @@
+---
+source: hansei/src/offline.rs
+description: "`tasks --group waiting-on` over linux/joinset"
+---
+COUNT  WAITING ON                                                                                           TASKS
+    5  future tokio::sync::notify::Notified                                                                 4, 5, 6, …
+    1  future tokio::util::idle_notified_set::IdleNotifiedSet<tokio::runtime::task::join::JoinHandle<u32>>  3
+2 groups

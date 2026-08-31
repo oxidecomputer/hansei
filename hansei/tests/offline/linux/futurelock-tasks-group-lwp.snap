@@ -1,0 +1,7 @@
+---
+source: hansei/src/offline.rs
+description: "`tasks --group lwp` over linux/futurelock"
+---
+COUNT  LWP      TASKS
+    1  <empty>  5
+1 group
