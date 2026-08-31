@@ -200,6 +200,51 @@ fn split_commands(line: &str) -> Vec<String> {
     commands
 }
 
+/// Split one command's text into words. Whitespace separates; a
+/// double- or single-quoted stretch joins into one word with the
+/// quotes dropped, so a name holding spaces (`"Vec<(u64, u64)>"`) is
+/// one token. That is the whole grammar: backslash is a literal
+/// character everywhere — the regex arguments this surface carries
+/// escape with it, and eating those escapes shell-style would quietly
+/// turn `foo\.bar` into a different pattern. An unclosed quote is an
+/// error rather than a guess at what was meant.
+fn split_tokens(command: &str) -> Result<Vec<String>> {
+    let mut words = Vec::new();
+    let mut current = String::new();
+    // Distinct from `current.is_empty()` so `""` stands as an empty
+    // word rather than vanishing.
+    let mut in_word = false;
+    let mut chars = command.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '"' | '\'' => {
+                in_word = true;
+                loop {
+                    match chars.next() {
+                        Some(close) if close == c => break,
+                        Some(inner) => current.push(inner),
+                        None => return Err(anyhow!("unclosed {c} quote")),
+                    }
+                }
+            }
+            c if c.is_whitespace() => {
+                if in_word {
+                    words.push(std::mem::take(&mut current));
+                    in_word = false;
+                }
+            }
+            c => {
+                in_word = true;
+                current.push(c);
+            }
+        }
+    }
+    if in_word {
+        words.push(current);
+    }
+    Ok(words)
+}
+
 /// How a failure names the command it came from. Which command failed
 /// is only a question when the line held more than one; on a
 /// single-command line, the line itself is the answer.
@@ -227,7 +272,7 @@ fn execute_one<T: proc::Target>(session: &Session<'_, T>, mode: Mode, line: &str
         return Ok(Flow::Continue);
     }
 
-    let words: Vec<String> = command.split_whitespace().map(String::from).collect();
+    let words = split_tokens(command)?;
     let (saved, words) = match peel_scope(&words) {
         Some((scope, rest)) => {
             let saved = *session.cursor.borrow();
@@ -300,13 +345,12 @@ fn answer_words<T: proc::Target>(
     }
 }
 
-/// Parse one command line, split on whitespace — so an argument cannot
-/// itself contain a space; no command takes one today. The session
+/// Parse one command line, split by [`split_tokens`]. The session
 /// path goes through [`parse_words`] after the scope and `$_`
 /// rewrites; this spelling serves the suites.
 #[cfg(test)]
 fn parse_command(command: &str) -> Result<Option<Line>> {
-    let words: Vec<String> = command.split_whitespace().map(String::from).collect();
+    let words = split_tokens(command)?;
     parse_words(&words)
 }
 
@@ -911,6 +955,61 @@ mod tests {
         assert!(peel_scope(&w("trace 129 x")).is_none());
     }
 
+    /// Quotes join one word and drop themselves; backslash is a
+    /// literal everywhere, so a typed regex escape survives the split.
+    #[test]
+    fn test_split_tokens_quotes_join_and_backslash_is_literal() {
+        let split = |line| split_tokens(line).expect("splits");
+        assert_eq!(
+            split(r#"print 0x1 "Vec<(u64, u64)>" .a"#),
+            ["print", "0x1", "Vec<(u64, u64)>", ".a"]
+        );
+        assert_eq!(
+            split("tasks --with type 'a b' --limit 3"),
+            ["tasks", "--with", "type", "a b", "--limit", "3"]
+        );
+        // Backslash passes through untouched, quoted or not.
+        assert_eq!(split(r"find-types foo\.bar"), ["find-types", r"foo\.bar"]);
+        assert_eq!(split(r#"type "a\.b""#), ["type", r"a\.b"]);
+        // A quoted stretch glues to the characters beside it, and an
+        // empty pair stands as an empty word.
+        assert_eq!(split(r#"type Vec<"a b">"#), ["type", "Vec<a b>"]);
+        assert_eq!(split(r#"type """#), ["type", ""]);
+        // The other quote kind is an ordinary character inside.
+        assert_eq!(split(r#"type "it's""#), ["type", "it's"]);
+        assert_eq!(split(""), Vec::<String>::new());
+    }
+
+    /// An unclosed quote is refused, naming the quote kind.
+    #[test]
+    fn test_split_tokens_refuses_an_unclosed_quote() {
+        let err = split_tokens(r#"type "Vec<"#).unwrap_err();
+        assert_eq!(err.to_string(), "unclosed \" quote");
+        let err = split_tokens("type 'Vec<").unwrap_err();
+        assert_eq!(err.to_string(), "unclosed ' quote");
+    }
+
+    /// A quoted `--exec` command lands as one word holding whitespace
+    /// and is re-split before parsing; an already-split command is
+    /// taken as it stands.
+    #[test]
+    fn test_exec_command_resplits_a_quoted_word() {
+        let w = |words: &[&str]| words.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert!(matches!(
+            parse_exec_command(&w(&["trace -v"])).expect("resplits"),
+            Command::Trace { .. }
+        ));
+        assert!(matches!(
+            parse_exec_command(&w(&["trace", "-v"])).expect("parses"),
+            Command::Trace { .. }
+        ));
+        // A single word without whitespace is not re-split.
+        assert!(matches!(
+            parse_exec_command(&w(&["census"])).expect("parses"),
+            Command::Census { .. }
+        ));
+    }
+
     /// `$_` substitutes only where it stands as a whole word, spells
     /// the address the way every command reads one back, and refuses
     /// when no cursor stands.
@@ -1118,11 +1217,22 @@ mod tests {
     }
 }
 
-/// Parse one command from the words `tasks --exec` carries — already
-/// split, so nothing here re-splits — for running it under a per-task
-/// scope. Output-only parses (`help`) are errors here: an exec loop
-/// wants a command to run.
+/// Parse one command from the words `tasks --exec` carries, for
+/// running it under a per-task scope. The words usually arrive
+/// already split — `--exec` takes the rest of its line — but a
+/// quoted command (`--exec 'trace -v'`) lands as one word holding
+/// whitespace, and is split here the way the prompt would have split
+/// it unquoted. Output-only parses (`help`) are errors here: an exec
+/// loop wants a command to run.
 pub(crate) fn parse_exec_command(words: &[String]) -> Result<Command> {
+    let resplit;
+    let words = match words {
+        [one] if one.chars().any(char::is_whitespace) => {
+            resplit = split_tokens(one)?;
+            &resplit
+        }
+        words => words,
+    };
     match Line::try_parse_from(words) {
         Ok(line) => Ok(line.command),
         Err(e) => Err(anyhow!("{}", clap_message(e))),
