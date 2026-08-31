@@ -1,0 +1,8 @@
+---
+source: hansei/src/offline.rs
+description: "`tasks --with holds >0` over linux/walk-shapes"
+---
+ID  STATE  RT  AWAITING AT                 WAITING ON                            FUTURE
+1   idle   0   src/bin/walk-shapes.rs:103  future tokio::sync::notify::Notified  async fn walk_shapes::chained
+3   idle   0   src/bin/walk-shapes.rs:147  future tokio::sync::notify::Notified  async fn walk_shapes::abandoner
+2 tasks

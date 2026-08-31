@@ -1,0 +1,87 @@
+---
+source: hansei/src/offline.rs
+description: "`tasks --group state -v` over linux/walk-shapes"
+---
+9  idle
+Task 1: async fn walk_shapes::chained
+    State: idle
+    Owner: runtime 0 @0xADDR (current_thread)
+    Spawned at: src/bin/walk-shapes.rs:245:9
+    Defined at: src/bin/walk-shapes.rs:92
+    Held futures: 1
+    Join sets: 0
+
+Task 2: async fn walk_shapes::holder
+    State: idle
+    Owner: runtime 0 @0xADDR (current_thread)
+    Spawned at: src/bin/walk-shapes.rs:246:9
+    Defined at: src/bin/walk-shapes.rs:120
+    Held futures: 0
+    Join sets: 0
+
+Task 3: async fn walk_shapes::abandoner
+    State: idle
+    Owner: runtime 0 @0xADDR (current_thread)
+    Spawned at: src/bin/walk-shapes.rs:252:9
+    Defined at: src/bin/walk-shapes.rs:133
+    Held futures: 1
+    Join sets: 0
+
+Task 4: async fn walk_shapes::victim
+    State: idle
+    Owner: runtime 0 @0xADDR (current_thread)
+    Spawned at: src/bin/walk-shapes.rs:258:9
+    Defined at: src/bin/walk-shapes.rs:151
+    Held futures: 0
+    Join sets: 0
+
+Task 5: async fn walk_shapes::blocked
+    State: idle
+    Owner: runtime 0 @0xADDR (current_thread)
+    Spawned at: src/bin/walk-shapes.rs:259:9
+    Defined at: src/bin/walk-shapes.rs:158
+    Held futures: 0
+    Join sets: 0
+
+Task 6: async fn walk_shapes::blocked
+    State: idle
+    Owner: runtime 0 @0xADDR (current_thread)
+    Spawned at: src/bin/walk-shapes.rs:260:9
+    Defined at: src/bin/walk-shapes.rs:158
+    Held futures: 0
+    Join sets: 0
+
+Task 7: async fn walk_shapes::local_parker
+    State: idle
+    Owner: local set 1 @0xADDR (lwp 2348388)
+    Spawned at: src/bin/walk-shapes.rs:268:28
+    Defined at: src/bin/walk-shapes.rs:191
+    Held futures: 0
+    Join sets: 0
+
+Task 8: async fn walk_shapes::joiner
+    State: idle
+    Owner: runtime 0 @0xADDR (current_thread)
+    Spawned at: src/bin/walk-shapes.rs:269:9
+    Defined at: src/bin/walk-shapes.rs:198
+    Held futures: 0
+    Join sets: 0
+
+Task 10: async fn walk_shapes::hidden_blocked
+    State: idle
+    Owner: runtime 1 @0xADDR (current_thread, no thread inside it)
+    Spawned at: src/bin/walk-shapes.rs:181:18
+    Defined at: src/bin/walk-shapes.rs:164
+    Held futures: 0
+    Join sets: 0
+
+1  queued
+Task 9: async fn walk_shapes::side_parker
+    State: queued
+    Owner: local set 0 @0xADDR (lwp 2348391)
+    Spawned at: src/bin/walk-shapes.rs:214:23
+    Defined at: src/bin/walk-shapes.rs:204
+    Held futures: 0
+    Join sets: 0
+
+2 groups

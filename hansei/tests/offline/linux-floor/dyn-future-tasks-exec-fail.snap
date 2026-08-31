@@ -1,0 +1,11 @@
+---
+source: hansei/src/offline.rs
+description: "`tasks --exec type no::such::Type` over linux-floor/dyn-future"
+---
+3  idle  src/bin/dyn-future.rs:36  future tokio::sync::oneshot::Receiver<u32>  async fn dyn_future::driver
+error: the tokio info records no type named no::such::Type; try `find-types no::such::Type`
+
+4  idle  src/bin/dyn-future.rs:17  future tokio::sync::oneshot::Receiver<u32>  async fn dyn_future::set_member
+error: the tokio info records no type named no::such::Type; try `find-types no::such::Type`
+Executed against 2 tasks, 2 failed
+error: --exec failed against 2 of 2 tasks

@@ -1,0 +1,20 @@
+---
+source: hansei/src/offline.rs
+description: "`tasks --group state -v` over linux/sleep-join"
+---
+2  idle
+Task 3: async fn sleep_join::sleeper
+    State: idle
+    Spawned at: src/bin/sleep-join.rs:30:22
+    Defined at: src/bin/sleep-join.rs:9
+    Held futures: 0
+    Join sets: 0
+
+Task 4: async fn sleep_join::joiner
+    State: idle
+    Spawned at: src/bin/sleep-join.rs:31:23
+    Defined at: src/bin/sleep-join.rs:16
+    Held futures: 0
+    Join sets: 0
+
+1 group

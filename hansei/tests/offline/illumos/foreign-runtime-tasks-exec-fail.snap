@@ -1,0 +1,17 @@
+---
+source: hansei/src/offline.rs
+description: "`tasks --exec type no::such::Type` over illumos/foreign-runtime"
+---
+1  idle  1  src/bin/foreign-runtime.rs:36  a tokio::sync::Semaphore (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 1  async fn foreign_runtime::joined
+error: the tokio info records no type named no::such::Type; try `find-types no::such::Type`
+
+2  idle  1  src/bin/foreign-runtime.rs:51  future core::future::pending::Pending<()>  async fn foreign_runtime::detached
+error: the tokio info records no type named no::such::Type; try `find-types no::such::Type`
+
+3  idle  0  src/bin/foreign-runtime.rs:26  task 1 (JoinHandle)  async fn foreign_runtime::joiner
+error: the tokio info records no type named no::such::Type; try `find-types no::such::Type`
+
+4  idle  2  src/bin/foreign-runtime.rs:63  the timer: deadline TS  async fn foreign_runtime::local_sleeper
+error: the tokio info records no type named no::such::Type; try `find-types no::such::Type`
+Executed against 4 tasks, 4 failed
+error: --exec failed against 4 of 4 tasks

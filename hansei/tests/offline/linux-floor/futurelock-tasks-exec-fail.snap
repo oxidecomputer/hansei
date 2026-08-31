@@ -1,0 +1,8 @@
+---
+source: hansei/src/offline.rs
+description: "`tasks --exec type no::such::Type` over linux-floor/futurelock"
+---
+5  idle  src/bin/futurelock.rs:28  a tokio::sync::Mutex (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 5  async block futurelock::main::{async_block#0}
+error: the tokio info records no type named no::such::Type; try `find-types no::such::Type`
+Executed against 1 tasks, 1 failed
+error: --exec failed against 1 of 1 tasks

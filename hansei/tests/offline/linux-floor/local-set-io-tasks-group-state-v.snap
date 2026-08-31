@@ -1,0 +1,38 @@
+---
+source: hansei/src/offline.rs
+description: "`tasks --group state -v` over linux-floor/local-set-io"
+---
+4  idle
+Task 1: async fn local_set_io::local_reader
+    State: idle
+    Owner: local set 0 @0xADDR (lwp 2351519)
+    Spawned at: src/bin/local-set-io.rs:98:20
+    Defined at: src/bin/local-set-io.rs:24
+    Held futures: 0
+    Join sets: 0
+
+Task 2: async fn local_set_io::local_watcher
+    State: idle
+    Owner: local set 0 @0xADDR (lwp 2351519)
+    Spawned at: src/bin/local-set-io.rs:99:20
+    Defined at: src/bin/local-set-io.rs:33
+    Held futures: 0
+    Join sets: 0
+
+Task 3: async fn local_set_io::local_writer
+    State: idle
+    Owner: local set 0 @0xADDR (lwp 2351519)
+    Spawned at: src/bin/local-set-io.rs:100:20
+    Defined at: src/bin/local-set-io.rs:45
+    Held futures: 0
+    Join sets: 0
+
+Task 4: async fn local_set_io::reader
+    State: idle
+    Owner: runtime 0 @0xADDR (current_thread)
+    Spawned at: src/bin/local-set-io.rs:101:23
+    Defined at: src/bin/local-set-io.rs:67
+    Held futures: 0
+    Join sets: 0
+
+1 group

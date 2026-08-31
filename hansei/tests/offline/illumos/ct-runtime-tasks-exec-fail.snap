@@ -1,0 +1,11 @@
+---
+source: hansei/src/offline.rs
+description: "`tasks --exec type no::such::Type` over illumos/ct-runtime"
+---
+1  idle  src/bin/ct-runtime.rs:13  the timer: deadline TS  async fn ct_runtime::sleeper
+error: the tokio info records no type named no::such::Type; try `find-types no::such::Type`
+
+2  idle  src/bin/ct-runtime.rs:20  a tokio::sync::Semaphore (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 2  async fn ct_runtime::acquirer
+error: the tokio info records no type named no::such::Type; try `find-types no::such::Type`
+Executed against 2 tasks, 2 failed
+error: --exec failed against 2 of 2 tasks
