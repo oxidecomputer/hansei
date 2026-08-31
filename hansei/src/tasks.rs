@@ -4,7 +4,7 @@
 use crate::summary;
 use crate::{Session, print_warnings};
 
-use anyhow::Result;
+use anyhow::{Context as _, Result};
 use hansei_bundle::names;
 use hansei_runtime::tokio::graph as rt_graph;
 use hansei_runtime::tokio::{Lifecycle, bundle, census};
@@ -513,6 +513,13 @@ pub(crate) struct TaskRow {
     pub(crate) waiting_on: String,
     /// The root future's display name, folded and never truncated.
     pub(crate) future: String,
+    /// `Spawned at:` — where the target records one
+    /// (`tokio_unstable` task instrumentation).
+    pub(crate) spawned: Option<String>,
+    /// `Defined at:` — where the root future's source declares it.
+    pub(crate) defined: Option<String>,
+    /// The lwp mid-poll on the task, where the runtime names one.
+    pub(crate) lwp: Option<u32>,
 }
 
 /// The table's rows, built on first use and cached on the session.
@@ -555,6 +562,18 @@ fn build_rows(
                 .map(|(file, line)| format!("{file}:{line}")),
             waiting_on: waiting_on(task, waits.get(index), polling, impls),
             future: future_name(&task.future, impls),
+            spawned: task.spawn_location.as_ref().map(|loc| loc.to_string()),
+            defined: match &task.future {
+                bundle::FutureInfo::Known(known) => known
+                    .decl
+                    .as_ref()
+                    .map(|(file, line)| format!("{file}:{line}")),
+                _ => None,
+            },
+            lwp: match task.state.lifecycle() == Lifecycle::Running {
+                true => task.task_id.and_then(|id| polling.get(&id)).copied(),
+                false => None,
+            },
         })
         .collect()
 }
@@ -633,23 +652,353 @@ pub(crate) fn listing_footer(total: usize, shown: usize, noun: &str) -> String {
     }
 }
 
+/// Everything the `tasks` command was asked. The filter grammar rides
+/// in as the raw flag values and is parsed here, so the errors name
+/// the flag they came from.
+pub(crate) struct TasksCmd {
+    pub(crate) verbose: bool,
+    pub(crate) futures: bool,
+    pub(crate) limit: Option<usize>,
+    pub(crate) with: Vec<String>,
+    pub(crate) without: Vec<String>,
+    pub(crate) group: Option<String>,
+    pub(crate) task: Vec<String>,
+}
+
+/// One filterable field of the task population — what `--with`,
+/// `--without` and `--group` name.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Field {
+    /// The root future name, as the table prints it.
+    Type,
+    /// The leaf await site, `file:line`.
+    Awaiting,
+    /// The `WAITING ON` spelling.
+    WaitingOn,
+    /// The spawn location.
+    Spawned,
+    /// The definition site.
+    Defined,
+    /// The lifecycle, ` (cancelled)` included.
+    State,
+    /// The group index `runtimes --list` prints — exact.
+    Rt,
+    /// The lwp mid-poll on the task — exact.
+    Lwp,
+    /// A comparison on the `Held futures` count.
+    Holds,
+    /// A comparison on the `Join sets` count.
+    Sets,
+    /// The task id — exact, for scripts.
+    Id,
+}
+
+impl Field {
+    const NAMES: [(&'static str, Field); 11] = [
+        ("type", Field::Type),
+        ("awaiting", Field::Awaiting),
+        ("waiting-on", Field::WaitingOn),
+        ("spawned", Field::Spawned),
+        ("defined", Field::Defined),
+        ("state", Field::State),
+        ("rt", Field::Rt),
+        ("lwp", Field::Lwp),
+        ("holds", Field::Holds),
+        ("sets", Field::Sets),
+        ("id", Field::Id),
+    ];
+
+    /// The field a flag named, or an error listing what it could have.
+    fn parse(name: &str) -> Result<Field> {
+        Self::NAMES
+            .iter()
+            .find(|(n, _)| *n == name)
+            .map(|(_, f)| *f)
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "no field {name:?}; the fields are {}",
+                    Self::NAMES.map(|(n, _)| n).join(", ")
+                )
+            })
+    }
+
+    fn name(self) -> &'static str {
+        Self::NAMES
+            .iter()
+            .find(|(_, f)| *f == self)
+            .map(|(n, _)| *n)
+            .expect("every field is named")
+    }
+
+    /// Whether evaluating this field costs the future census.
+    fn needs_census(self) -> bool {
+        matches!(self, Field::Holds | Field::Sets)
+    }
+}
+
+/// How one clause matches its field's value.
+#[derive(Debug)]
+enum Matcher {
+    /// A case-insensitive regex over the spelled value.
+    Pattern(crate::pattern::Pattern),
+    /// Exact equality: `id`.
+    Exact(String),
+    /// Exact lwp: `lwp`.
+    Lwp(u32),
+    /// A resolved group index: `rt`.
+    Rt(usize),
+    /// `'>N'` / `'<N'` / `'=N'`: `holds`, `sets`.
+    Cmp(Cmp),
+}
+
+/// A count comparison, spelled the way the flag takes it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct Cmp {
+    op: std::cmp::Ordering,
+    n: usize,
+}
+
+impl Cmp {
+    /// Parse `'>N'`, `'<N'` or `'=N'` — the only spellings; the shell
+    /// quotes are the user's, hansei never sees them.
+    fn parse(arg: &str) -> Result<Cmp> {
+        let refuse = || anyhow::anyhow!("a count is compared with '>N', '<N' or '=N', got {arg:?}");
+        let op = match arg.chars().next() {
+            Some('>') => std::cmp::Ordering::Greater,
+            Some('<') => std::cmp::Ordering::Less,
+            Some('=') => std::cmp::Ordering::Equal,
+            _ => return Err(refuse()),
+        };
+        let n = arg[1..].parse().map_err(|_| refuse())?;
+        Ok(Cmp { op, n })
+    }
+
+    fn matches(self, count: usize) -> bool {
+        count.cmp(&self.n) == self.op
+    }
+}
+
+/// One `--with`/`--without` clause.
+#[derive(Debug)]
+struct Clause {
+    field: Field,
+    matcher: Matcher,
+    /// `--without`: the clause keeps the rows it does *not* match.
+    negate: bool,
+}
+
+/// Parse the flag pairs into clauses. clap delivered FIELD/ARG pairs
+/// (`num_args = 2`), so the chunks are exact.
+fn parse_clauses(with: &[String], without: &[String], handles: &[u64]) -> Result<Vec<Clause>> {
+    let mut clauses = Vec::new();
+    for (specs, negate) in [(with, false), (without, true)] {
+        let flag = if negate { "--without" } else { "--with" };
+        for pair in specs.chunks_exact(2) {
+            let field = Field::parse(&pair[0]).with_context(|| flag.to_string())?;
+            let matcher = matcher(field, &pair[1], handles)
+                .with_context(|| format!("{flag} {}", field.name()))?;
+            clauses.push(Clause {
+                field,
+                matcher,
+                negate,
+            });
+        }
+    }
+    Ok(clauses)
+}
+
+/// The matcher one field's argument compiles to.
+fn matcher(field: Field, arg: &str, handles: &[u64]) -> Result<Matcher> {
+    Ok(match field {
+        Field::Id => Matcher::Exact(arg.to_string()),
+        Field::Lwp => Matcher::Lwp(
+            arg.parse()
+                .map_err(|_| anyhow::anyhow!("an lwp is a decimal id, got {arg:?}"))?,
+        ),
+        Field::Rt => Matcher::Rt(resolve_rt(arg, handles)?),
+        Field::Holds | Field::Sets => Matcher::Cmp(Cmp::parse(arg)?),
+        _ => Matcher::Pattern(crate::pattern::Pattern::new(arg)?),
+    })
+}
+
+/// Resolve an `rt` argument — a group index, or a runtime's `@0x`
+/// handle as `runtimes --list` prints it — to the group index rows
+/// carry. Exact, and an unknown handle is an error rather than an
+/// empty match.
+fn resolve_rt(arg: &str, handles: &[u64]) -> Result<usize> {
+    let addr = arg.strip_prefix('@').unwrap_or(arg);
+    if let Some(digits) = addr.strip_prefix("0x").or_else(|| addr.strip_prefix("0X")) {
+        let addr = u64::from_str_radix(digits, 16)
+            .map_err(|e| anyhow::anyhow!("invalid handle address {arg:?}: {e}"))?;
+        return handles
+            .iter()
+            .position(|&h| h == addr)
+            .ok_or_else(|| anyhow::anyhow!("no runtime has the handle {addr:#x}"));
+    }
+    arg.parse().map_err(|_| {
+        anyhow::anyhow!(
+            "a runtime is named by its index in `runtimes --list` or by the \
+             handle address printed beside it there, got {arg:?}"
+        )
+    })
+}
+
+/// The census counts a `holds`/`sets` clause reads, keyed by task
+/// index — built only when some clause or grouping names one, since
+/// they cost the census walk.
+type CountsByTask = BTreeMap<usize, Counts>;
+
+/// Whether one row survives one clause.
+fn survives(clause: &Clause, index: usize, row: &TaskRow, counts: Option<&CountsByTask>) -> bool {
+    let hit = match &clause.matcher {
+        Matcher::Pattern(p) => field_text(clause.field, row).is_some_and(|t| p.is_match(t)),
+        Matcher::Exact(id) => row.id == *id,
+        Matcher::Lwp(lwp) => row.lwp == Some(*lwp),
+        Matcher::Rt(rt) => row.rt == *rt,
+        Matcher::Cmp(cmp) => cmp.matches(field_count(clause.field, index, counts)),
+    };
+    hit != clause.negate
+}
+
+/// The spelled value a regex field matches — `None`, nothing to
+/// match, where the row has nothing to say.
+fn field_text(field: Field, row: &TaskRow) -> Option<&str> {
+    match field {
+        Field::Type => Some(&row.future),
+        Field::Awaiting => row.awaiting_at.as_deref(),
+        Field::WaitingOn => Some(&row.waiting_on),
+        Field::Spawned => row.spawned.as_deref(),
+        Field::Defined => row.defined.as_deref(),
+        Field::State => Some(&row.state),
+        _ => unreachable!("{field:?} is not a regex field"),
+    }
+}
+
+/// The count a comparison field reads.
+fn field_count(field: Field, index: usize, counts: Option<&CountsByTask>) -> usize {
+    let count = counts
+        .expect("census counts are built for a holds/sets clause")
+        .get(&index)
+        .copied()
+        .unwrap_or_default();
+    match field {
+        Field::Holds => count.held,
+        // The row the blocks print: how many sets the task drives, of
+        // either kind.
+        Field::Sets => count.sets + count.join_sets,
+        _ => unreachable!("{field:?} is not a count field"),
+    }
+}
+
+/// The bucket a row with nothing in the grouped field lands in.
+const EMPTY_BUCKET: &str = "<empty>";
+
+/// What a bucket is named for one row: the field's spelled value, or
+/// `None` for [`EMPTY_BUCKET`].
+fn group_value(
+    field: Field,
+    index: usize,
+    row: &TaskRow,
+    counts: Option<&CountsByTask>,
+) -> Option<String> {
+    match field {
+        Field::Type => Some(row.future.clone()),
+        Field::Awaiting => row.awaiting_at.clone(),
+        // The table's `—` is a task waiting on nothing nameable; in a
+        // grouping that is the empty bucket, not a value.
+        Field::WaitingOn => (row.waiting_on != "—").then(|| row.waiting_on.clone()),
+        Field::Spawned => row.spawned.clone(),
+        Field::Defined => row.defined.clone(),
+        Field::State => Some(row.state.clone()),
+        Field::Rt => Some(row.rt.to_string()),
+        Field::Lwp => row.lwp.map(|lwp| lwp.to_string()),
+        Field::Holds | Field::Sets => Some(field_count(field, index, counts).to_string()),
+        Field::Id => Some(row.id.clone()),
+    }
+}
+
+/// Up to three member ids and `…` — the sample a bucket row carries.
+fn member_sample(rows: &[TaskRow], members: &[usize]) -> String {
+    let ids: Vec<&str> = members
+        .iter()
+        .take(3)
+        .map(|&i| rows[i].id.as_str())
+        .collect();
+    match members.len() > ids.len() {
+        true => format!("{}, …", ids.join(", ")),
+        false => ids.join(", "),
+    }
+}
+
+/// The refusal a positional id earns: the grammar that took ids is
+/// gone, and the way to one task's block is a filter.
+fn refuse_positional_ids(task: &[String]) -> Result<()> {
+    match task.first() {
+        Some(first) => Err(anyhow::anyhow!(
+            "tasks takes no task ids; `tasks -v --with id {first}` shows one task's block"
+        )),
+        None => Ok(()),
+    }
+}
+
 pub(crate) fn exec_tasks<T: proc::Target>(
     session: &Session<'_, T>,
-    verbose: bool,
-    futures: bool,
-    limit: Option<usize>,
-    tasks: &[u64],
+    cmd: TasksCmd,
     out: &mut dyn io::Write,
 ) -> Result<()> {
     let list = &session.tasks;
+    refuse_positional_ids(&cmd.task)?;
+    let group = cmd
+        .group
+        .as_deref()
+        .map(Field::parse)
+        .transpose()
+        .context("--group")?;
+    let handles: Vec<u64> = session.runtimes.iter().map(|rt| rt.handle.addr).collect();
+    let clauses = parse_clauses(&cmd.with, &cmd.without, &handles)?;
 
-    // The bare command is the table; ids, -v, or --futures ask for
-    // the block form. The table reads the wait analysis and nothing
-    // else, so it does not pay for the future census the blocks
-    // count.
-    if tasks.is_empty() && !verbose && !futures {
+    // A holds/sets clause or grouping reads what only the census
+    // counts, so exactly those pay its walk on the table path.
+    let counts = (clauses.iter().any(|c| c.field.needs_census())
+        || group.is_some_and(Field::needs_census))
+    .then(|| {
+        let census = session.census();
+        census_counts(&census.held, &census.sets, &census.join_sets)
+    });
+
+    // The filters' survivors, as indices into the task list — `None`
+    // when there is nothing to filter by, so the unfiltered paths
+    // keep their costs (the bare block form never pays the wait
+    // analysis the rows are built from).
+    let survivors: Option<Vec<usize>> = (!clauses.is_empty()).then(|| {
+        let rows = rows(session);
+        (0..rows.len())
+            .filter(|&i| {
+                clauses
+                    .iter()
+                    .all(|c| survives(c, i, &rows[i], counts.as_ref()))
+            })
+            .collect()
+    });
+
+    if let Some(field) = group {
+        return exec_group(session, &cmd, field, survivors, counts, out);
+    }
+
+    // The bare command is the table; -v or --futures ask for the block
+    // form. The table reads the wait analysis and nothing else, so it
+    // does not pay for the future census the blocks count.
+    if !cmd.verbose && !cmd.futures {
         print_warnings(&session.analysis().errors)?;
-        print_task_table(rows(session), !session.group_tags().is_empty(), limit, out)?;
+        let groups = !session.group_tags().is_empty();
+        match &survivors {
+            None => print_task_table(rows(session), groups, cmd.limit, out)?,
+            Some(indices) => {
+                let rows = rows(session);
+                let filtered: Vec<TaskRow> = indices.iter().map(|&i| rows[i].clone()).collect();
+                print_task_table(&filtered, groups, cmd.limit, out)?;
+            }
+        }
         print_warnings(&list.errors)?;
         return Ok(());
     }
@@ -665,7 +1014,7 @@ pub(crate) fn exec_tasks<T: proc::Target>(
     // count every block carries, and — under `--futures` — the finds
     // listed beneath it.
     let census = session.census();
-    if futures {
+    if cmd.futures {
         print_warnings(&census.errors)?;
         // A walk that failed says so above; one that hit a limit says so
         // here, because it looks like completeness otherwise. The listing
@@ -675,6 +1024,7 @@ pub(crate) fn exec_tasks<T: proc::Target>(
         warn_census_refused(census.refused, "listed")?;
     }
 
+    let selected: Option<BTreeSet<usize>> = survivors.map(|s| s.into_iter().collect());
     print_tasks(
         list,
         &session.impl_fold,
@@ -683,9 +1033,10 @@ pub(crate) fn exec_tasks<T: proc::Target>(
         &census.held,
         &census.sets,
         &census.join_sets,
-        futures,
-        limit,
-        tasks,
+        cmd.futures,
+        cmd.limit,
+        selected.as_ref(),
+        true,
         out,
     )?;
 
@@ -694,11 +1045,93 @@ pub(crate) fn exec_tasks<T: proc::Target>(
     Ok(())
 }
 
+/// `--group FIELD`: bucket the surviving rows by the field's spelled
+/// value and print `COUNT VALUE` rows, most numerous first (ties in
+/// value order), each with up to three member ids — or, under `-v`,
+/// every member's block under its bucket. `--limit` cuts buckets.
+fn exec_group<T: proc::Target>(
+    session: &Session<'_, T>,
+    cmd: &TasksCmd,
+    field: Field,
+    survivors: Option<Vec<usize>>,
+    counts: Option<CountsByTask>,
+    out: &mut dyn io::Write,
+) -> Result<()> {
+    print_warnings(&session.analysis().errors)?;
+    let rows = rows(session);
+    let survivors = survivors.unwrap_or_else(|| (0..rows.len()).collect());
+    let mut grouped: BTreeMap<String, Vec<usize>> = BTreeMap::new();
+    for &index in &survivors {
+        let value = group_value(field, index, &rows[index], counts.as_ref())
+            .unwrap_or_else(|| EMPTY_BUCKET.to_string());
+        grouped.entry(value).or_default().push(index);
+    }
+    let mut buckets: Vec<(String, Vec<usize>)> = grouped.into_iter().collect();
+    // Count descending; the map already ordered ties by value, and the
+    // sort is stable.
+    buckets.sort_by_key(|(_, members)| std::cmp::Reverse(members.len()));
+    let shown = cmd.limit.unwrap_or(buckets.len()).min(buckets.len());
+
+    if cmd.verbose || cmd.futures {
+        let polling: HashMap<u64, u32> = session
+            .workers
+            .iter()
+            .filter_map(|w| w.current_task_id.map(|id| (id, w.tid)))
+            .collect();
+        let census = session.census();
+        if cmd.futures {
+            print_warnings(&census.errors)?;
+            warn_census_capped(census.capped, "listed")?;
+            warn_census_refused(census.refused, "listed")?;
+        }
+        for (value, members) in &buckets[..shown] {
+            writeln!(out, "{}  {value}", members.len())?;
+            let selected: BTreeSet<usize> = members.iter().copied().collect();
+            print_tasks(
+                &session.tasks,
+                &session.impl_fold,
+                &session.group_tags(),
+                &polling,
+                &census.held,
+                &census.sets,
+                &census.join_sets,
+                cmd.futures,
+                None,
+                Some(&selected),
+                false,
+                out,
+            )?;
+        }
+    } else {
+        let heading = field.name().replace('-', " ").to_uppercase();
+        let mut table = crate::output::Table::new(3).align_right(0).header([
+            "COUNT".to_string(),
+            heading,
+            "TASKS".to_string(),
+        ]);
+        for (value, members) in &buckets[..shown] {
+            table.row([
+                members.len().to_string(),
+                value.clone(),
+                member_sample(rows, members),
+            ]);
+        }
+        if !table.is_empty() {
+            table.write(out)?;
+        }
+    }
+    writeln!(out, "{}", listing_footer(buckets.len(), shown, "group"))?;
+    print_warnings(&session.tasks.errors)?;
+    Ok(())
+}
+
 /// Print the task listing: a block per task, and — under `futures` —
 /// the census's finds for it, listed beneath the count each belongs
 /// under.
-/// `tasks` narrows the listing to the named tasks, and is empty for the
-/// whole list.
+/// `selected` narrows the listing to those indices of the task list —
+/// the filters' survivors, or a group's bucket — and `None` is the
+/// whole list. `footer` says whether to close with the count line;
+/// a bucket's blocks print under a line that already counted them.
 /// `group_tags` labels each task's group — its runtime, or the local
 /// set that owns it — on the targets holding more than one, and is
 /// empty — no row — for the rest.
@@ -717,21 +1150,12 @@ pub(crate) fn print_tasks(
     census_join_sets: &[census::JoinSet],
     futures: bool,
     limit: Option<usize>,
-    tasks: &[u64],
+    selected: Option<&BTreeSet<usize>>,
+    footer: bool,
     out: &mut dyn io::Write,
 ) -> Result<()> {
-    // Resolve every selected id up front, so an id the runtime does not
-    // own says so rather than printing a listing short of a block. A set
-    // rather than the ids as given: repeating one asks for it once, and
-    // the blocks come out in the listing's own order either way.
-    let mut only = BTreeSet::new();
-    for &id in tasks {
-        let Some(index) = list.tasks.iter().position(|t| t.task_id == Some(id)) else {
-            return Err(no_such_task(list, id));
-        };
-        only.insert(index);
-    }
-    let selected = |index: usize| tasks.is_empty() || only.contains(&index);
+    let total = selected.map_or(list.tasks.len(), BTreeSet::len);
+    let selected = |index: usize| selected.is_none_or(|only| only.contains(&index));
     let census = census_tree(census_held, census_sets, census_join_sets);
     let listing = Listing {
         nested: &census.nested,
@@ -800,11 +1224,8 @@ pub(crate) fn print_tasks(
         }
         writeln!(out)?;
     }
-    // How many tasks the runtime owns is the listing's own answer; a
-    // listing narrowed to ids the caller named already knows how many
-    // it asked for, so the count would only restate the command line.
-    if tasks.is_empty() {
-        writeln!(out, "{}", listing_footer(list.tasks.len(), shown, "task"))?;
+    if footer {
+        writeln!(out, "{}", listing_footer(total, shown, "task"))?;
     }
     Ok(())
 }
@@ -1167,7 +1588,8 @@ mod table_tests {
             &[],
             false,
             Some(1),
-            &[],
+            None,
+            true,
             &mut out,
         )
         .expect("the listing renders");
@@ -1192,6 +1614,203 @@ mod table_tests {
         assert!(out.contains("\n2 "), "{out}");
         assert!(!out.contains("\n3 "), "{out}");
         assert!(out.ends_with("[3 tasks, 2 shown]\n"), "{out}");
+    }
+}
+
+#[cfg(test)]
+mod filter_tests {
+    use super::{
+        Clause, Cmp, Counts, EMPTY_BUCKET, Field, TaskRow, group_value, matcher, member_sample,
+        parse_clauses, refuse_positional_ids, resolve_rt, survives,
+    };
+
+    use std::collections::BTreeMap;
+
+    fn row(id: &str) -> TaskRow {
+        TaskRow {
+            id: id.to_string(),
+            state: "idle".to_string(),
+            rt: 0,
+            awaiting_at: None,
+            waiting_on: "—".to_string(),
+            future: "async fn app::work".to_string(),
+            spawned: None,
+            defined: None,
+            lwp: None,
+        }
+    }
+
+    fn clause(field: &str, arg: &str) -> Clause {
+        let field = Field::parse(field).expect("a test field parses");
+        Clause {
+            field,
+            matcher: matcher(field, arg, &[0x7f11c0]).expect("a test matcher compiles"),
+            negate: false,
+        }
+    }
+
+    fn keeps(c: &Clause, row: &TaskRow) -> bool {
+        survives(c, 0, row, None)
+    }
+
+    /// Every string field matches its own column, case-insensitively,
+    /// and a row with nothing in the field matches no pattern.
+    #[test]
+    fn test_each_string_field_reads_its_own_column() {
+        let mut r = row("129");
+        r.state = "idle (cancelled)".to_string();
+        r.awaiting_at = Some("src/app.rs:42".to_string());
+        r.waiting_on = "timer (deadline +38.364s)".to_string();
+        r.spawned = Some("src/main.rs:10:5".to_string());
+        r.defined = Some("src/app.rs:7".to_string());
+
+        assert!(keeps(&clause("type", "APP::WORK"), &r));
+        assert!(!keeps(&clause("type", "qorb"), &r));
+        assert!(keeps(&clause("state", "cancelled"), &r));
+        assert!(keeps(&clause("awaiting", "app.rs:42$"), &r));
+        assert!(keeps(&clause("waiting-on", "^timer"), &r));
+        assert!(keeps(&clause("spawned", "main.rs"), &r));
+        assert!(keeps(&clause("defined", "app.rs:7"), &r));
+
+        // Nothing in the field is nothing to match.
+        assert!(!keeps(&clause("awaiting", "."), &row("1")));
+        assert!(!keeps(&clause("spawned", "."), &row("1")));
+        assert!(!keeps(&clause("defined", "."), &row("1")));
+    }
+
+    /// The exact fields are exact: the id, the polling lwp, and the
+    /// group index — which an `rt` handle resolves to through the
+    /// runtimes list, or errors, rather than matching nothing.
+    #[test]
+    fn test_the_exact_fields_are_exact() {
+        let mut r = row("129");
+        r.lwp = Some(115);
+        r.rt = 1;
+        assert!(keeps(&clause("id", "129"), &r));
+        assert!(!keeps(&clause("id", "12"), &r));
+        assert!(keeps(&clause("lwp", "115"), &r));
+        assert!(!keeps(&clause("lwp", "116"), &r));
+        assert!(!keeps(&clause("lwp", "115"), &row("129")));
+        assert!(keeps(&clause("rt", "1"), &r));
+        assert!(!keeps(&clause("rt", "0"), &r));
+
+        assert_eq!(resolve_rt("@0x7f11c0", &[0x10, 0x7f11c0]).unwrap(), 1);
+        assert_eq!(resolve_rt("0x7f11c0", &[0x10, 0x7f11c0]).unwrap(), 1);
+        assert!(resolve_rt("@0xdead", &[0x10]).is_err());
+        assert!(resolve_rt("nope", &[]).is_err());
+        assert!(matcher(Field::Lwp, "x", &[]).is_err());
+    }
+
+    /// `holds` and `sets` compare the census's counts with the three
+    /// spellings and no others; `sets` is the blocks' own row — both
+    /// kinds of set together — and a task the census found nothing
+    /// for counts zero.
+    #[test]
+    fn test_count_fields_compare_the_census() {
+        let mut counts: BTreeMap<usize, Counts> = BTreeMap::new();
+        let mut c = Counts::default();
+        c.held = 2;
+        c.sets = 1;
+        c.join_sets = 1;
+        counts.insert(0, c);
+        let keeps =
+            |field: &str, arg: &str| survives(&clause(field, arg), 0, &row("1"), Some(&counts));
+
+        assert!(keeps("holds", ">1"));
+        assert!(keeps("holds", "=2"));
+        assert!(!keeps("holds", "<2"));
+        assert!(keeps("sets", "=2"));
+        assert!(!keeps("sets", ">2"));
+        assert!(survives(
+            &clause("holds", "=0"),
+            5,
+            &row("1"),
+            Some(&counts)
+        ));
+
+        let err = Cmp::parse("2").unwrap_err();
+        assert!(err.to_string().contains("'>N', '<N' or '=N'"), "{err}");
+        assert!(Cmp::parse(">x").is_err());
+        assert!(Cmp::parse("").is_err());
+    }
+
+    /// `--without` keeps what the clause does not match, and clauses
+    /// AND across both flags.
+    #[test]
+    fn test_without_negates_and_clauses_and() {
+        let mut running = row("2");
+        running.state = "running".to_string();
+        let rows = [row("1"), running, row("3")];
+        let with = ["state".to_string(), "idle".to_string()];
+        let without = ["id".to_string(), "1".to_string()];
+        let clauses = parse_clauses(&with, &without, &[]).expect("the clauses parse");
+        let survivors: Vec<&str> = rows
+            .iter()
+            .enumerate()
+            .filter(|(i, r)| clauses.iter().all(|c| survives(c, *i, r, None)))
+            .map(|(_, r)| r.id.as_str())
+            .collect();
+        // idle AND not id 1: row 1 is excluded by id, row 2 by state.
+        assert_eq!(survivors, ["3"]);
+    }
+
+    /// An unknown field lists the fields there are; a broken argument
+    /// names the flag and field it came from.
+    #[test]
+    fn test_filter_errors_name_their_flag() {
+        let err = parse_clauses(&["nope".into(), "x".into()], &[], &[]).unwrap_err();
+        let text = format!("{err:#}");
+        assert!(text.contains("--with"), "{text}");
+        assert!(text.contains("waiting-on"), "{text}");
+        let err = parse_clauses(&[], &["type".into(), "(".into()], &[]).unwrap_err();
+        assert!(format!("{err:#}").contains("--without type"), "{err:#}");
+        let err = parse_clauses(&["holds".into(), "3".into()], &[], &[]).unwrap_err();
+        assert!(format!("{err:#}").contains("--with holds"), "{err:#}");
+    }
+
+    /// The bucket names: the field's spelled value, `<empty>` where it
+    /// has nothing — the table's `—` wait cell included — and the
+    /// member sample stops at three ids.
+    #[test]
+    fn test_group_values_and_the_empty_bucket() {
+        let r = row("129");
+        assert_eq!(group_value(Field::WaitingOn, 0, &r, None), None);
+        assert_eq!(group_value(Field::Awaiting, 0, &r, None), None);
+        assert_eq!(group_value(Field::Lwp, 0, &r, None), None);
+        assert_eq!(
+            group_value(Field::State, 0, &r, None).as_deref(),
+            Some("idle")
+        );
+        assert_eq!(group_value(Field::Rt, 0, &r, None).as_deref(), Some("0"));
+        let mut waited = r.clone();
+        waited.waiting_on = "task 42".to_string();
+        waited.lwp = Some(115);
+        assert_eq!(
+            group_value(Field::WaitingOn, 0, &waited, None).as_deref(),
+            Some("task 42")
+        );
+        assert_eq!(
+            group_value(Field::Lwp, 0, &waited, None).as_deref(),
+            Some("115")
+        );
+        assert_eq!(EMPTY_BUCKET, "<empty>");
+
+        let rows: Vec<TaskRow> = (0..5).map(|i| row(&i.to_string())).collect();
+        assert_eq!(member_sample(&rows, &[0, 1]), "0, 1");
+        assert_eq!(member_sample(&rows, &[0, 1, 2]), "0, 1, 2");
+        assert_eq!(member_sample(&rows, &[0, 1, 2, 3]), "0, 1, 2, …");
+    }
+
+    /// A positional id is refused with the filter spelling that took
+    /// its place.
+    #[test]
+    fn test_positional_ids_are_refused_with_the_filter_spelling() {
+        assert!(refuse_positional_ids(&[]).is_ok());
+        let err = refuse_positional_ids(&["129".to_string()]).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "tasks takes no task ids; `tasks -v --with id 129` shows one task's block"
+        );
     }
 }
 

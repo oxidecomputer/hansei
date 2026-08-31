@@ -1,0 +1,9 @@
+---
+source: hansei/src/offline.rs
+description: "`tasks --with state idle` over illumos/local-set"
+---
+ID  STATE  RT  AWAITING AT              WAITING ON                                                                                          FUTURE
+1   idle   1   src/bin/local-set.rs:16  the timer: deadline TS                                                                     async fn local_set::local_sleeper
+2   idle   1   src/bin/local-set.rs:23  a tokio::sync::Semaphore (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 2  async fn local_set::local_acquirer
+3   idle   0   src/bin/local-set.rs:30  task 1 (JoinHandle)                                                                                 async fn local_set::joiner
+3 tasks

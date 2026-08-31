@@ -2091,6 +2091,17 @@ mod future_trace_tests {
         futures: bool,
         tasks: &[u64],
     ) -> String {
+        // The narrowing print_tasks takes is by index now — the
+        // filters' shape — so the ids these tests select by resolve
+        // here.
+        let selected: Option<std::collections::BTreeSet<usize>> = (!tasks.is_empty()).then(|| {
+            list.tasks
+                .iter()
+                .enumerate()
+                .filter(|(_, t)| t.task_id.is_some_and(|id| tasks.contains(&id)))
+                .map(|(i, _)| i)
+                .collect()
+        });
         let mut out: Vec<u8> = Vec::new();
         print_tasks(
             list,
@@ -2102,7 +2113,8 @@ mod future_trace_tests {
             join_sets,
             futures,
             None,
-            tasks,
+            selected.as_ref(),
+            true,
             &mut out,
         )
         .expect("the listing renders");
@@ -2129,10 +2141,10 @@ mod future_trace_tests {
             assert!(narrowed.contains(", `future1`): 0x"), "{narrowed}");
             assert!(!narrowed.contains("held (frame"), "{narrowed}");
             // Narrowing narrows the listing itself, not just its
-            // futures — and the block it leaves is the whole answer, so
-            // there is no count under it restating the ids asked for.
+            // futures — and the footer counts the survivors, since a
+            // filter's population is not the command line's to know.
             assert_eq!(narrowed.matches("\nTask ").count() + 1, 1, "{narrowed}");
-            assert!(!narrowed.contains("\n1 task\n"), "{narrowed}");
+            assert!(narrowed.ends_with("\n1 task\n"), "{narrowed}");
             assert!(narrowed.contains("    Held futures: 1\n"), "{narrowed}");
 
             // The whole listing carries every task, and the same find
@@ -2176,8 +2188,8 @@ mod future_trace_tests {
                 rendered.contains(&format!("\nTask {second}: ")),
                 "{rendered}"
             );
-            // Two blocks are still not a listing, so nothing counts them.
-            assert!(!rendered.contains("\n2 tasks\n"), "{rendered}");
+            // The footer counts the narrowed listing's own population.
+            assert!(rendered.ends_with("\n2 tasks\n"), "{rendered}");
         });
     }
 
@@ -2352,39 +2364,6 @@ mod future_trace_tests {
             // A task that drives no set says so with a bare zero: what
             // the sets it does not have would hold is noise.
             assert!(rendered.contains("    Join sets: 0\n"), "{rendered}");
-        });
-    }
-
-    /// An id the runtime does not own is an error naming the ids it
-    /// does, not an empty listing.
-    #[test]
-    fn test_futures_rejects_an_unknown_task_id() {
-        with_target("futurelock", |_ctx, list, _extents, census| {
-            let unknown = list
-                .tasks
-                .iter()
-                .filter_map(|t| t.task_id)
-                .max()
-                .expect("some task has an id")
-                + 1;
-            let mut out = Vec::new();
-            let err = print_tasks(
-                list,
-                &hansei_bundle::names::ImplFold::default(),
-                &[],
-                &HashMap::new(),
-                &census.held,
-                &census.sets,
-                &census.join_sets,
-                true,
-                None,
-                &[unknown],
-                &mut out,
-            )
-            .expect_err("no task owns that id")
-            .to_string();
-            assert!(err.starts_with(&format!("no task {unknown} (")), "{err}");
-            assert!(out.is_empty(), "printed {out:?} before failing");
         });
     }
 }

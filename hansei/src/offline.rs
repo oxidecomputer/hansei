@@ -45,6 +45,13 @@ fn commands(session: &Session<'_, proc::snapshot::Snapshot>) -> Vec<(&'static st
     let mut list = vec![
         ("tasks", "tasks".to_owned()),
         ("tasks-v", "tasks -v".to_owned()),
+        // The filter path over a stable field, the grouping path over
+        // a value-bearing field, and a grouping whose every row lands
+        // in `<empty>` (a parked capture polls nothing, so no task
+        // has an lwp).
+        ("tasks-with-state", "tasks --with state idle".to_owned()),
+        ("tasks-group-waiting", "tasks --group waiting-on".to_owned()),
+        ("tasks-group-lwp", "tasks --group lwp".to_owned()),
         ("threads", "threads".to_owned()),
         ("threads-v", "threads -v".to_owned()),
         // A frame budget alone implies the block form; both spellings

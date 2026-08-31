@@ -533,6 +533,15 @@ pub enum Command {
     /// is the only cut, and cutting earns a footer counting what was
     /// left out.
     ///
+    /// Filters are the selection: repeatable `--with FIELD ARG` /
+    /// `--without FIELD ARG` clauses AND together, `--group FIELD`
+    /// tallies the survivors, and one task's block is `tasks -v
+    /// --with id 129`. The string fields — type, awaiting,
+    /// waiting-on, spawned, defined, state — are case-insensitive
+    /// regexes over the spelled value; rt (an index or `@0x` handle),
+    /// lwp and id are exact; holds and sets compare the census's
+    /// counts, spelled '>N', '<N' or '=N' (quote them from a shell).
+    ///
     /// `-v` prints each task's full block instead: state, owner,
     /// spawn location, where the future is defined, how many futures
     /// it holds in its own frames beside its await chain, and how
@@ -623,15 +632,38 @@ pub enum Command {
         #[arg(long, short)]
         futures: bool,
 
-        /// Show at most this many tasks; a footer counts what the cut
-        /// left out. Everything is listed when the flag is absent.
+        /// Show at most this many tasks — or, under --group, this
+        /// many buckets; a footer counts what the cut left out.
+        /// Everything is listed when the flag is absent.
         #[arg(long, value_name = "N")]
         limit: Option<usize>,
 
-        /// Show only these tasks' full blocks, each selected by its
-        /// decimal id. The whole list is printed when none is named.
-        #[arg(value_name = "TASK")]
-        task: Vec<u64>,
+        /// Keep only the tasks whose FIELD matches ARG; repeat for
+        /// more clauses, which AND. Fields: type, awaiting,
+        /// waiting-on, spawned, defined, state (case-insensitive
+        /// regexes); rt, lwp, id (exact); holds, sets ('>N', '<N',
+        /// '=N').
+        #[arg(long, num_args = 2, value_names = ["FIELD", "ARG"])]
+        with: Vec<String>,
+
+        /// Drop the tasks whose FIELD matches ARG; the same fields as
+        /// --with.
+        #[arg(long, num_args = 2, value_names = ["FIELD", "ARG"])]
+        without: Vec<String>,
+
+        /// Bucket the surviving tasks by FIELD's spelled value: one
+        /// `COUNT VALUE` row per bucket, most numerous first, each
+        /// with a few member ids; a task with nothing in the field
+        /// lands in `<empty>`. With -v, every member's block prints
+        /// under its bucket.
+        #[arg(long, value_name = "FIELD")]
+        group: Option<String>,
+
+        // The ids the old grammar took, kept so the refusal can name
+        // the way forward rather than clap's bare "unexpected
+        // argument".
+        #[arg(value_name = "TASK", hide = true)]
+        task: Vec<String>,
     },
 
     /// List every thread in the target — one table row per lwp: its
@@ -1317,10 +1349,22 @@ pub fn dispatch<T: Target>(
             verbose,
             futures,
             limit,
+            with,
+            without,
+            group,
             task,
         } => {
             session.note_version_ceiling();
-            tasks::exec_tasks(session, verbose, futures, limit, &task, out)?
+            let cmd = tasks::TasksCmd {
+                verbose,
+                futures,
+                limit,
+                with,
+                without,
+                group,
+                task,
+            };
+            tasks::exec_tasks(session, cmd, out)?
         }
         Command::Threads {
             verbose,
