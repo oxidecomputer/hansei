@@ -775,6 +775,43 @@ mod tests {
         assert_eq!(task, ["129"]);
     }
 
+    /// `set` takes a key alone, a key and a value, or nothing — and
+    /// the values are plain words, so `set limit off` parses whole.
+    #[test]
+    fn test_set_takes_a_key_and_value_or_less() {
+        let parse = |line: &[&str]| {
+            let Command::Set { key, value } =
+                Line::try_parse_from(line).expect("set parses").command
+            else {
+                panic!("set parsed as another command");
+            };
+            (key, value)
+        };
+        assert_eq!(parse(&["set"]), (None, None));
+        assert_eq!(parse(&["set", "depth"]), (Some("depth".to_string()), None));
+        assert_eq!(
+            parse(&["set", "limit", "off"]),
+            (Some("limit".to_string()), Some("off".to_string()))
+        );
+        assert!(Line::try_parse_from(["set", "depth", "4", "5"]).is_err());
+    }
+
+    /// The render flags default to nothing so the session's own
+    /// values show through; a flag given on the line is carried.
+    #[test]
+    fn test_render_flags_carry_only_what_was_given() {
+        let Command::Trace { render, .. } = Line::try_parse_from(["trace", "42", "-d", "6"])
+            .expect("trace takes render flags")
+            .command
+        else {
+            panic!("trace parsed as another command");
+        };
+        assert_eq!(render.depth, Some(6));
+        assert_eq!(render.max_string_len, None);
+        assert_eq!(render.max_array_values, None);
+        assert!(!render.ugly);
+    }
+
     /// `history` takes an optional count and nothing else.
     #[test]
     fn test_history_takes_a_count_or_nothing() {

@@ -1953,7 +1953,7 @@ mod filter_tests {
     #[test]
     fn test_exec_scopes_an_omitted_trace_target() {
         use super::scope_to_task;
-        use crate::{Command, RenderOpts, TraceTarget};
+        use crate::{Command, RenderFlags, TraceTarget};
         use hansei_runtime::tokio::bundle::{FutureInfo, Task};
         use hansei_runtime::tokio::{TaskAddr, TaskState};
 
@@ -1969,12 +1969,7 @@ mod filter_tests {
         let trace = |target: Option<TraceTarget>| Command::Trace {
             target,
             verbose: false,
-            render: RenderOpts {
-                depth: 4,
-                ugly: false,
-                max_string_len: reify::DEFAULT_MAX_STRING_LEN,
-                max_array_values: reify::DEFAULT_MAX_ARRAY_VALUES,
-            },
+            render: RenderFlags::default(),
             no_elide: false,
             elide: Vec::new(),
         };
