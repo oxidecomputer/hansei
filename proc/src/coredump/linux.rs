@@ -1465,6 +1465,15 @@ mod tests {
             .dumped(0x9000, PF_R | PF_W, vec![0; PAGE as usize])
             .proc();
         assert_eq!(Target::process_facts(&p), None);
+
+        // A prpsinfo shorter than the ABI struct is another system's
+        // bytes: ignored whole, never sliced.
+        let (_dir, p) = CoreBuilder::default()
+            .thread(1, regs_at(0, 0x9000))
+            .prpsinfo(vec![0; 100])
+            .dumped(0x9000, PF_R | PF_W, vec![0; PAGE as usize])
+            .proc();
+        assert_eq!(Target::process_facts(&p), None);
     }
 
     /// An `ET_CORE` header for `phnum` program headers following it.
@@ -1864,6 +1873,17 @@ mod tests {
         assert_eq!(ids.core.as_deref(), Some(&[0xab; 20][..]));
         assert_eq!(ids.binary, ids.core);
         assert!(!ids.disagree());
+
+        // The Target surface answers the same facts generically: the
+        // ids, the recorded exec path, and the executable as the one
+        // object whose symbols are on hand (its file is).
+        assert_eq!(Target::build_ids(&p), Some(p.build_ids()));
+        assert_eq!(Target::exec_path(&p), Some(exe.clone()));
+        assert_eq!(Target::symbol_object_bases(&p), vec![BUILD_ID_BASE]);
+        let target = crate::Proc::LinuxCore(p);
+        assert!(Target::build_ids(&target).is_some());
+        assert_eq!(Target::exec_path(&target), Some(exe));
+        assert_eq!(Target::symbol_object_bases(&target), vec![BUILD_ID_BASE]);
     }
 
     /// A substituted binary is what the reader opens in place of the

@@ -414,6 +414,22 @@ mod tests {
         assert_eq!(snapshot.lwp_name(7), None);
     }
 
+    /// What a snapshot does not carry it answers as absent, through
+    /// the trait defaults: no process identity, no fd table, no exec
+    /// path, no build ids, and no attribution of symbols to objects.
+    #[test]
+    fn test_snapshots_answer_absent_process_facts() {
+        let target = FakeTarget::new();
+        let snapshot = Recorder::new(&target)
+            .snapshot()
+            .expect("snapshot assembles");
+        assert_eq!(Target::process_facts(&snapshot), None);
+        assert_eq!(Target::fds(&snapshot), None);
+        assert_eq!(Target::exec_path(&snapshot), None);
+        assert_eq!(Target::build_ids(&snapshot), None);
+        assert_eq!(Target::symbol_object_bases(&snapshot), Vec::<u64>::new());
+    }
+
     /// An in-memory fake target: one memory run, a few symbols.
     struct FakeTarget {
         base: u64,
