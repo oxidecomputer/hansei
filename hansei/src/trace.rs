@@ -91,8 +91,8 @@ fn exec_trace_task<T: proc::Target>(
             )?;
             let mut value = result
                 .display_from_target(ctx.proc, opts.render.depth)
-                .max_str_len(Some(opts.render.max_str_len))
-                .max_array_len(Some(opts.render.max_array_len));
+                .max_str_len(Some(opts.render.max_string_len))
+                .max_array_len(Some(opts.render.max_array_values));
             if let Some(heap) = opts.heap {
                 value = value.heap(heap);
             }
@@ -554,8 +554,8 @@ fn print_frame_verbose<'b, T: proc::Target>(
                     let v = reify::Value::new(m.ty(), payload.addr + m.offset(), bytes).peel();
                     let mut disp = v
                         .display_from_target(ctx.proc, opts.render.depth)
-                        .max_str_len(Some(opts.render.max_str_len))
-                        .max_array_len(Some(opts.render.max_array_len))
+                        .max_str_len(Some(opts.render.max_string_len))
+                        .max_array_len(Some(opts.render.max_array_values))
                         .elide_override(opts.elide)
                         .line_prefix(&value_prefix);
                     if let Some(heap) = opts.heap {
@@ -1397,8 +1397,8 @@ mod native_section_tests {
             render: RenderOpts {
                 depth: 4,
                 ugly: false,
-                max_str_len: reify::DEFAULT_MAX_STR_LEN,
-                max_array_len: reify::DEFAULT_MAX_ARRAY_LEN,
+                max_string_len: reify::DEFAULT_MAX_STRING_LEN,
+                max_array_values: reify::DEFAULT_MAX_ARRAY_VALUES,
             },
             elide: &elide,
             theme: output::Theme::plain(),
@@ -2038,8 +2038,8 @@ mod future_trace_tests {
                 render: RenderOpts {
                     depth: 4,
                     ugly: false,
-                    max_str_len: reify::DEFAULT_MAX_STR_LEN,
-                    max_array_len: reify::DEFAULT_MAX_ARRAY_LEN,
+                    max_string_len: reify::DEFAULT_MAX_STRING_LEN,
+                    max_array_values: reify::DEFAULT_MAX_ARRAY_VALUES,
                 },
                 elide: &elide,
                 theme: output::Theme::plain(),
@@ -2425,8 +2425,8 @@ mod trace_render_tests {
             render: RenderOpts {
                 depth: 4,
                 ugly: false,
-                max_str_len: reify::DEFAULT_MAX_STR_LEN,
-                max_array_len: reify::DEFAULT_MAX_ARRAY_LEN,
+                max_string_len: reify::DEFAULT_MAX_STRING_LEN,
+                max_array_values: reify::DEFAULT_MAX_ARRAY_VALUES,
             },
             elide: &elide,
             theme,
@@ -2607,8 +2607,8 @@ Waiting on: a tokio::sync::Mutex (semaphore 0xADDR): 1 permit requested, 0 avail
             render: RenderOpts {
                 depth: 4,
                 ugly: false,
-                max_str_len: reify::DEFAULT_MAX_STR_LEN,
-                max_array_len: reify::DEFAULT_MAX_ARRAY_LEN,
+                max_string_len: reify::DEFAULT_MAX_STRING_LEN,
+                max_array_values: reify::DEFAULT_MAX_ARRAY_VALUES,
             },
             elide: &elide,
             theme: output::Theme::plain(),

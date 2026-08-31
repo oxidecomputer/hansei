@@ -887,20 +887,20 @@ pub struct RenderOpts {
     ugly: bool,
 
     /// Show at most this many bytes of any one string, and say how
-    /// many are left. 0 shows none of it; `--max-str-len` with no
+    /// many are left. 0 shows none of it; `--max-string-len` with no
     /// ceiling at all is not offered, because a length read out of a
     /// corrupt header claims whatever its bits say and the target
     /// serves every mapped page under the claim.
-    #[arg(long, value_name = "BYTES", default_value_t = reify::DEFAULT_MAX_STR_LEN)]
-    max_str_len: u64,
+    #[arg(long, value_name = "BYTES", default_value_t = reify::DEFAULT_MAX_STRING_LEN)]
+    max_string_len: u64,
 
     /// Show at most this many elements of any one sequence, and say how
     /// many are left. Counted in elements rather than bytes, because a
     /// wide element is a value with a line of its own; byte sequences
-    /// answer to `--max-str-len` instead, being strings in all but
+    /// answer to `--max-string-len` instead, being strings in all but
     /// type.
-    #[arg(long, value_name = "ELEMENTS", default_value_t = reify::DEFAULT_MAX_ARRAY_LEN)]
-    max_array_len: u64,
+    #[arg(long, value_name = "ELEMENTS", default_value_t = reify::DEFAULT_MAX_ARRAY_VALUES)]
+    max_array_values: u64,
 }
 
 /// Which runtime a command was pointed at.
