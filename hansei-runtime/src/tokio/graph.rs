@@ -115,6 +115,7 @@ pub fn analyze<T: Target>(
         let mut depth = 0;
         let mut leaf = None;
         let mut site = None;
+        let mut frames = Vec::new();
         // Unknown futures cannot be traced (the task listing already
         // calls them out); finished tasks wait on nothing.
         if matches!(task.future, FutureInfo::Known(_)) {
@@ -122,6 +123,14 @@ pub fn analyze<T: Target>(
                 Ok(TaskStage::Running(future)) => {
                     let chain = ctx.await_chain(future);
                     depth = chain.frames.len();
+                    frames = chain
+                        .frames
+                        .iter()
+                        .map(|frame| match &frame.state {
+                            Some(state) => state.payload,
+                            None => frame.future,
+                        })
+                        .collect();
                     leaf = chain.leaf().map(str::to_string);
                     site = chain
                         .frames
@@ -168,7 +177,7 @@ pub fn analyze<T: Target>(
                     .reduce(Interest::union);
                 target = Some(WaitTarget::Io {
                     addr: first.addr,
-                    fd: None,
+                    fd: ctx.io_resource_fd(&frames, first.addr),
                     interest,
                 });
             }

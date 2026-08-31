@@ -25,6 +25,8 @@ pub enum Shape {
     /// An unsigned base type of exactly `size` bytes: an atomic word, a
     /// length, a capacity, a permit count.
     Uint(u64),
+    /// A signed base type of exactly `size` bytes: an fd.
+    Int(u64),
     /// Any type occupying exactly one pointer word: a niche-optimized
     /// `Option<NonNull<_>>` list head/next.
     PointerSized,
@@ -41,6 +43,7 @@ impl std::fmt::Display for Shape {
         match self {
             Shape::Word => write!(f, "a machine word"),
             Shape::Uint(size) => write!(f, "a {size}-byte unsigned integer"),
+            Shape::Int(size) => write!(f, "a {size}-byte signed integer"),
             Shape::PointerSized => write!(f, "a pointer-sized value"),
             Shape::Pointer => write!(f, "a pointer"),
             Shape::Array => write!(f, "an array"),

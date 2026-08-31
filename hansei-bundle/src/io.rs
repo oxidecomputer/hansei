@@ -345,6 +345,11 @@ fn shape_matches(bundle: &Bundle, id: BundleTypeId, shape: Shape) -> bool {
             Some(TypeDef::Base { size: found, encoding: crate::Encoding::Unsigned, .. })
                 if *found == size
         ),
+        Shape::Int(size) => matches!(
+            landed,
+            Some(TypeDef::Base { size: found, encoding: crate::Encoding::Signed, .. })
+                if *found == size
+        ),
         Shape::PointerSized => bundle.types.size_of(id) == Some(crate::POINTER_SIZE),
         Shape::Pointer => matches!(landed, Some(TypeDef::Pointer { .. })),
         Shape::Array => matches!(landed, Some(TypeDef::Array { .. })),

@@ -535,6 +535,13 @@ fn is_unsigned_integer(reader: &DwReader<'_>, id: TypeId, size: u64) -> bool {
     )
 }
 
+fn is_signed_integer(reader: &DwReader<'_>, id: TypeId, size: u64) -> bool {
+    matches!(
+        reader.canonical_type(id),
+        Some(RawType::Base(base)) if base.size == size && base.encoding == Encoding::Signed
+    )
+}
+
 /// What a member walk is looking for, and what it reports on arrival.
 enum Want<'a> {
     /// A type the predicate accepts, reported as itself.
@@ -744,6 +751,7 @@ fn raw_shape_matches(reader: &DwReader<'_>, id: TypeId, shape: Shape) -> bool {
     match shape {
         Shape::Word => matches!(raw_type_size(reader, id), Some(1..=8)),
         Shape::Uint(size) => is_unsigned_integer(reader, id, size),
+        Shape::Int(size) => is_signed_integer(reader, id, size),
         Shape::PointerSized => raw_type_size(reader, id) == Some(crate::bundle::POINTER_SIZE),
         Shape::Pointer => matches!(reader.canonical_type(id), Some(RawType::Pointer(_))),
         Shape::Array => matches!(reader.canonical_type(id), Some(RawType::Array(_))),

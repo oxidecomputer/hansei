@@ -2,7 +2,7 @@
 source: hansei-runtime/tests/matrix.rs
 ---
 program: ct-runtime
-walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 94 entries, 0 broken, 23 absent
+walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 106 entries, 0 broken, 35 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -97,3 +97,15 @@ walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 94 entries, 0
   ok      TimerShared.state (no multi_thread Handle)
   ok      ScheduledIo.readiness (no multi_thread Handle)
   ok      io::Waiter.interest (no multi_thread Handle)
+  absent  net::TcpStream.shared — no tokio::net::tcp::stream::TcpStream type in the tokio info (the target does not reach one)
+  absent  net::TcpStream.fd — no tokio::net::tcp::stream::TcpStream type in the tokio info (the target does not reach one)
+  absent  net::TcpListener.shared — no tokio::net::tcp::listener::TcpListener type in the tokio info (the target does not reach one)
+  absent  net::TcpListener.fd — no tokio::net::tcp::listener::TcpListener type in the tokio info (the target does not reach one)
+  absent  net::UdpSocket.shared — no tokio::net::udp::UdpSocket type in the tokio info (the target does not reach one)
+  absent  net::UdpSocket.fd — no tokio::net::udp::UdpSocket type in the tokio info (the target does not reach one)
+  absent  net::UnixStream.shared — no tokio::net::unix::stream::UnixStream type in the tokio info (the target does not reach one)
+  absent  net::UnixStream.fd — no tokio::net::unix::stream::UnixStream type in the tokio info (the target does not reach one)
+  absent  net::UnixListener.shared — no tokio::net::unix::listener::UnixListener type in the tokio info (the target does not reach one)
+  absent  net::UnixListener.fd — no tokio::net::unix::listener::UnixListener type in the tokio info (the target does not reach one)
+  absent  net::UnixDatagram.shared — no tokio::net::unix::datagram::socket::UnixDatagram type in the tokio info (the target does not reach one)
+  absent  net::UnixDatagram.fd — no tokio::net::unix::datagram::socket::UnixDatagram type in the tokio info (the target does not reach one)

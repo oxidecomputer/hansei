@@ -2,7 +2,7 @@
 source: hansei-runtime/tests/matrix.rs
 ---
 program: futurelock
-walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 94 entries, 0 broken, 16 absent
+walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 106 entries, 0 broken, 28 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -97,9 +97,21 @@ walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 94 entries, 0
   ok      TimerShared.state
   ok      ScheduledIo.readiness
   ok      io::Waiter.interest
+  absent  net::TcpStream.shared — no tokio::net::tcp::stream::TcpStream type in the tokio info (the target does not reach one)
+  absent  net::TcpStream.fd — no tokio::net::tcp::stream::TcpStream type in the tokio info (the target does not reach one)
+  absent  net::TcpListener.shared — no tokio::net::tcp::listener::TcpListener type in the tokio info (the target does not reach one)
+  absent  net::TcpListener.fd — no tokio::net::tcp::listener::TcpListener type in the tokio info (the target does not reach one)
+  absent  net::UdpSocket.shared — no tokio::net::udp::UdpSocket type in the tokio info (the target does not reach one)
+  absent  net::UdpSocket.fd — no tokio::net::udp::UdpSocket type in the tokio info (the target does not reach one)
+  absent  net::UnixStream.shared — no tokio::net::unix::stream::UnixStream type in the tokio info (the target does not reach one)
+  absent  net::UnixStream.fd — no tokio::net::unix::stream::UnixStream type in the tokio info (the target does not reach one)
+  absent  net::UnixListener.shared — no tokio::net::unix::listener::UnixListener type in the tokio info (the target does not reach one)
+  absent  net::UnixListener.fd — no tokio::net::unix::listener::UnixListener type in the tokio info (the target does not reach one)
+  absent  net::UnixDatagram.shared — no tokio::net::unix::datagram::socket::UnixDatagram type in the tokio info (the target does not reach one)
+  absent  net::UnixDatagram.fd — no tokio::net::unix::datagram::socket::UnixDatagram type in the tokio info (the target does not reach one)
 
 program: simple-await
-walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 94 entries, 0 broken, 29 absent
+walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 106 entries, 0 broken, 41 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -194,9 +206,21 @@ walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 94 entries, 0
   ok      TimerShared.state
   ok      ScheduledIo.readiness
   ok      io::Waiter.interest
+  absent  net::TcpStream.shared — no tokio::net::tcp::stream::TcpStream type in the tokio info (the target does not reach one)
+  absent  net::TcpStream.fd — no tokio::net::tcp::stream::TcpStream type in the tokio info (the target does not reach one)
+  absent  net::TcpListener.shared — no tokio::net::tcp::listener::TcpListener type in the tokio info (the target does not reach one)
+  absent  net::TcpListener.fd — no tokio::net::tcp::listener::TcpListener type in the tokio info (the target does not reach one)
+  absent  net::UdpSocket.shared — no tokio::net::udp::UdpSocket type in the tokio info (the target does not reach one)
+  absent  net::UdpSocket.fd — no tokio::net::udp::UdpSocket type in the tokio info (the target does not reach one)
+  absent  net::UnixStream.shared — no tokio::net::unix::stream::UnixStream type in the tokio info (the target does not reach one)
+  absent  net::UnixStream.fd — no tokio::net::unix::stream::UnixStream type in the tokio info (the target does not reach one)
+  absent  net::UnixListener.shared — no tokio::net::unix::listener::UnixListener type in the tokio info (the target does not reach one)
+  absent  net::UnixListener.fd — no tokio::net::unix::listener::UnixListener type in the tokio info (the target does not reach one)
+  absent  net::UnixDatagram.shared — no tokio::net::unix::datagram::socket::UnixDatagram type in the tokio info (the target does not reach one)
+  absent  net::UnixDatagram.fd — no tokio::net::unix::datagram::socket::UnixDatagram type in the tokio info (the target does not reach one)
 
 program: nested-await
-walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 94 entries, 0 broken, 29 absent
+walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 106 entries, 0 broken, 41 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -291,9 +315,21 @@ walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 94 entries, 0
   ok      TimerShared.state
   ok      ScheduledIo.readiness
   ok      io::Waiter.interest
+  absent  net::TcpStream.shared — no tokio::net::tcp::stream::TcpStream type in the tokio info (the target does not reach one)
+  absent  net::TcpStream.fd — no tokio::net::tcp::stream::TcpStream type in the tokio info (the target does not reach one)
+  absent  net::TcpListener.shared — no tokio::net::tcp::listener::TcpListener type in the tokio info (the target does not reach one)
+  absent  net::TcpListener.fd — no tokio::net::tcp::listener::TcpListener type in the tokio info (the target does not reach one)
+  absent  net::UdpSocket.shared — no tokio::net::udp::UdpSocket type in the tokio info (the target does not reach one)
+  absent  net::UdpSocket.fd — no tokio::net::udp::UdpSocket type in the tokio info (the target does not reach one)
+  absent  net::UnixStream.shared — no tokio::net::unix::stream::UnixStream type in the tokio info (the target does not reach one)
+  absent  net::UnixStream.fd — no tokio::net::unix::stream::UnixStream type in the tokio info (the target does not reach one)
+  absent  net::UnixListener.shared — no tokio::net::unix::listener::UnixListener type in the tokio info (the target does not reach one)
+  absent  net::UnixListener.fd — no tokio::net::unix::listener::UnixListener type in the tokio info (the target does not reach one)
+  absent  net::UnixDatagram.shared — no tokio::net::unix::datagram::socket::UnixDatagram type in the tokio info (the target does not reach one)
+  absent  net::UnixDatagram.fd — no tokio::net::unix::datagram::socket::UnixDatagram type in the tokio info (the target does not reach one)
 
 program: dyn-future
-walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 94 entries, 0 broken, 23 absent
+walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 106 entries, 0 broken, 35 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -388,9 +424,21 @@ walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 94 entries, 0
   ok      TimerShared.state
   ok      ScheduledIo.readiness
   ok      io::Waiter.interest
+  absent  net::TcpStream.shared — no tokio::net::tcp::stream::TcpStream type in the tokio info (the target does not reach one)
+  absent  net::TcpStream.fd — no tokio::net::tcp::stream::TcpStream type in the tokio info (the target does not reach one)
+  absent  net::TcpListener.shared — no tokio::net::tcp::listener::TcpListener type in the tokio info (the target does not reach one)
+  absent  net::TcpListener.fd — no tokio::net::tcp::listener::TcpListener type in the tokio info (the target does not reach one)
+  absent  net::UdpSocket.shared — no tokio::net::udp::UdpSocket type in the tokio info (the target does not reach one)
+  absent  net::UdpSocket.fd — no tokio::net::udp::UdpSocket type in the tokio info (the target does not reach one)
+  absent  net::UnixStream.shared — no tokio::net::unix::stream::UnixStream type in the tokio info (the target does not reach one)
+  absent  net::UnixStream.fd — no tokio::net::unix::stream::UnixStream type in the tokio info (the target does not reach one)
+  absent  net::UnixListener.shared — no tokio::net::unix::listener::UnixListener type in the tokio info (the target does not reach one)
+  absent  net::UnixListener.fd — no tokio::net::unix::listener::UnixListener type in the tokio info (the target does not reach one)
+  absent  net::UnixDatagram.shared — no tokio::net::unix::datagram::socket::UnixDatagram type in the tokio info (the target does not reach one)
+  absent  net::UnixDatagram.fd — no tokio::net::unix::datagram::socket::UnixDatagram type in the tokio info (the target does not reach one)
 
 program: select-combinator
-walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 94 entries, 0 broken, 29 absent
+walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 106 entries, 0 broken, 41 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -485,9 +533,21 @@ walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 94 entries, 0
   ok      TimerShared.state
   ok      ScheduledIo.readiness
   ok      io::Waiter.interest
+  absent  net::TcpStream.shared — no tokio::net::tcp::stream::TcpStream type in the tokio info (the target does not reach one)
+  absent  net::TcpStream.fd — no tokio::net::tcp::stream::TcpStream type in the tokio info (the target does not reach one)
+  absent  net::TcpListener.shared — no tokio::net::tcp::listener::TcpListener type in the tokio info (the target does not reach one)
+  absent  net::TcpListener.fd — no tokio::net::tcp::listener::TcpListener type in the tokio info (the target does not reach one)
+  absent  net::UdpSocket.shared — no tokio::net::udp::UdpSocket type in the tokio info (the target does not reach one)
+  absent  net::UdpSocket.fd — no tokio::net::udp::UdpSocket type in the tokio info (the target does not reach one)
+  absent  net::UnixStream.shared — no tokio::net::unix::stream::UnixStream type in the tokio info (the target does not reach one)
+  absent  net::UnixStream.fd — no tokio::net::unix::stream::UnixStream type in the tokio info (the target does not reach one)
+  absent  net::UnixListener.shared — no tokio::net::unix::listener::UnixListener type in the tokio info (the target does not reach one)
+  absent  net::UnixListener.fd — no tokio::net::unix::listener::UnixListener type in the tokio info (the target does not reach one)
+  absent  net::UnixDatagram.shared — no tokio::net::unix::datagram::socket::UnixDatagram type in the tokio info (the target does not reach one)
+  absent  net::UnixDatagram.fd — no tokio::net::unix::datagram::socket::UnixDatagram type in the tokio info (the target does not reach one)
 
 program: many-tasks
-walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 94 entries, 0 broken, 30 absent
+walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 106 entries, 0 broken, 42 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -582,9 +642,21 @@ walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 94 entries, 0
   ok      TimerShared.state
   ok      ScheduledIo.readiness
   ok      io::Waiter.interest
+  absent  net::TcpStream.shared — no tokio::net::tcp::stream::TcpStream type in the tokio info (the target does not reach one)
+  absent  net::TcpStream.fd — no tokio::net::tcp::stream::TcpStream type in the tokio info (the target does not reach one)
+  absent  net::TcpListener.shared — no tokio::net::tcp::listener::TcpListener type in the tokio info (the target does not reach one)
+  absent  net::TcpListener.fd — no tokio::net::tcp::listener::TcpListener type in the tokio info (the target does not reach one)
+  absent  net::UdpSocket.shared — no tokio::net::udp::UdpSocket type in the tokio info (the target does not reach one)
+  absent  net::UdpSocket.fd — no tokio::net::udp::UdpSocket type in the tokio info (the target does not reach one)
+  absent  net::UnixStream.shared — no tokio::net::unix::stream::UnixStream type in the tokio info (the target does not reach one)
+  absent  net::UnixStream.fd — no tokio::net::unix::stream::UnixStream type in the tokio info (the target does not reach one)
+  absent  net::UnixListener.shared — no tokio::net::unix::listener::UnixListener type in the tokio info (the target does not reach one)
+  absent  net::UnixListener.fd — no tokio::net::unix::listener::UnixListener type in the tokio info (the target does not reach one)
+  absent  net::UnixDatagram.shared — no tokio::net::unix::datagram::socket::UnixDatagram type in the tokio info (the target does not reach one)
+  absent  net::UnixDatagram.fd — no tokio::net::unix::datagram::socket::UnixDatagram type in the tokio info (the target does not reach one)
 
 program: sleep-join
-walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 94 entries, 0 broken, 26 absent
+walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 106 entries, 0 broken, 38 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -679,9 +751,21 @@ walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 94 entries, 0
   ok      TimerShared.state
   ok      ScheduledIo.readiness
   ok      io::Waiter.interest
+  absent  net::TcpStream.shared — no tokio::net::tcp::stream::TcpStream type in the tokio info (the target does not reach one)
+  absent  net::TcpStream.fd — no tokio::net::tcp::stream::TcpStream type in the tokio info (the target does not reach one)
+  absent  net::TcpListener.shared — no tokio::net::tcp::listener::TcpListener type in the tokio info (the target does not reach one)
+  absent  net::TcpListener.fd — no tokio::net::tcp::listener::TcpListener type in the tokio info (the target does not reach one)
+  absent  net::UdpSocket.shared — no tokio::net::udp::UdpSocket type in the tokio info (the target does not reach one)
+  absent  net::UdpSocket.fd — no tokio::net::udp::UdpSocket type in the tokio info (the target does not reach one)
+  absent  net::UnixStream.shared — no tokio::net::unix::stream::UnixStream type in the tokio info (the target does not reach one)
+  absent  net::UnixStream.fd — no tokio::net::unix::stream::UnixStream type in the tokio info (the target does not reach one)
+  absent  net::UnixListener.shared — no tokio::net::unix::listener::UnixListener type in the tokio info (the target does not reach one)
+  absent  net::UnixListener.fd — no tokio::net::unix::listener::UnixListener type in the tokio info (the target does not reach one)
+  absent  net::UnixDatagram.shared — no tokio::net::unix::datagram::socket::UnixDatagram type in the tokio info (the target does not reach one)
+  absent  net::UnixDatagram.fd — no tokio::net::unix::datagram::socket::UnixDatagram type in the tokio info (the target does not reach one)
 
 program: channels
-walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 94 entries, 0 broken, 19 absent
+walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 106 entries, 0 broken, 31 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -776,9 +860,21 @@ walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 94 entries, 0
   ok      TimerShared.state
   ok      ScheduledIo.readiness
   ok      io::Waiter.interest
+  absent  net::TcpStream.shared — no tokio::net::tcp::stream::TcpStream type in the tokio info (the target does not reach one)
+  absent  net::TcpStream.fd — no tokio::net::tcp::stream::TcpStream type in the tokio info (the target does not reach one)
+  absent  net::TcpListener.shared — no tokio::net::tcp::listener::TcpListener type in the tokio info (the target does not reach one)
+  absent  net::TcpListener.fd — no tokio::net::tcp::listener::TcpListener type in the tokio info (the target does not reach one)
+  absent  net::UdpSocket.shared — no tokio::net::udp::UdpSocket type in the tokio info (the target does not reach one)
+  absent  net::UdpSocket.fd — no tokio::net::udp::UdpSocket type in the tokio info (the target does not reach one)
+  absent  net::UnixStream.shared — no tokio::net::unix::stream::UnixStream type in the tokio info (the target does not reach one)
+  absent  net::UnixStream.fd — no tokio::net::unix::stream::UnixStream type in the tokio info (the target does not reach one)
+  absent  net::UnixListener.shared — no tokio::net::unix::listener::UnixListener type in the tokio info (the target does not reach one)
+  absent  net::UnixListener.fd — no tokio::net::unix::listener::UnixListener type in the tokio info (the target does not reach one)
+  absent  net::UnixDatagram.shared — no tokio::net::unix::datagram::socket::UnixDatagram type in the tokio info (the target does not reach one)
+  absent  net::UnixDatagram.fd — no tokio::net::unix::datagram::socket::UnixDatagram type in the tokio info (the target does not reach one)
 
 program: unordered
-walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 94 entries, 0 broken, 26 absent
+walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 106 entries, 0 broken, 38 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -873,9 +969,21 @@ walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 94 entries, 0
   ok      TimerShared.state
   ok      ScheduledIo.readiness
   ok      io::Waiter.interest
+  absent  net::TcpStream.shared — no tokio::net::tcp::stream::TcpStream type in the tokio info (the target does not reach one)
+  absent  net::TcpStream.fd — no tokio::net::tcp::stream::TcpStream type in the tokio info (the target does not reach one)
+  absent  net::TcpListener.shared — no tokio::net::tcp::listener::TcpListener type in the tokio info (the target does not reach one)
+  absent  net::TcpListener.fd — no tokio::net::tcp::listener::TcpListener type in the tokio info (the target does not reach one)
+  absent  net::UdpSocket.shared — no tokio::net::udp::UdpSocket type in the tokio info (the target does not reach one)
+  absent  net::UdpSocket.fd — no tokio::net::udp::UdpSocket type in the tokio info (the target does not reach one)
+  absent  net::UnixStream.shared — no tokio::net::unix::stream::UnixStream type in the tokio info (the target does not reach one)
+  absent  net::UnixStream.fd — no tokio::net::unix::stream::UnixStream type in the tokio info (the target does not reach one)
+  absent  net::UnixListener.shared — no tokio::net::unix::listener::UnixListener type in the tokio info (the target does not reach one)
+  absent  net::UnixListener.fd — no tokio::net::unix::listener::UnixListener type in the tokio info (the target does not reach one)
+  absent  net::UnixDatagram.shared — no tokio::net::unix::datagram::socket::UnixDatagram type in the tokio info (the target does not reach one)
+  absent  net::UnixDatagram.fd — no tokio::net::unix::datagram::socket::UnixDatagram type in the tokio info (the target does not reach one)
 
 program: joinset
-walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 94 entries, 0 broken, 13 absent
+walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 106 entries, 0 broken, 25 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -970,9 +1078,21 @@ walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 94 entries, 0
   ok      TimerShared.state
   ok      ScheduledIo.readiness
   ok      io::Waiter.interest
+  absent  net::TcpStream.shared — no tokio::net::tcp::stream::TcpStream type in the tokio info (the target does not reach one)
+  absent  net::TcpStream.fd — no tokio::net::tcp::stream::TcpStream type in the tokio info (the target does not reach one)
+  absent  net::TcpListener.shared — no tokio::net::tcp::listener::TcpListener type in the tokio info (the target does not reach one)
+  absent  net::TcpListener.fd — no tokio::net::tcp::listener::TcpListener type in the tokio info (the target does not reach one)
+  absent  net::UdpSocket.shared — no tokio::net::udp::UdpSocket type in the tokio info (the target does not reach one)
+  absent  net::UdpSocket.fd — no tokio::net::udp::UdpSocket type in the tokio info (the target does not reach one)
+  absent  net::UnixStream.shared — no tokio::net::unix::stream::UnixStream type in the tokio info (the target does not reach one)
+  absent  net::UnixStream.fd — no tokio::net::unix::stream::UnixStream type in the tokio info (the target does not reach one)
+  absent  net::UnixListener.shared — no tokio::net::unix::listener::UnixListener type in the tokio info (the target does not reach one)
+  absent  net::UnixListener.fd — no tokio::net::unix::listener::UnixListener type in the tokio info (the target does not reach one)
+  absent  net::UnixDatagram.shared — no tokio::net::unix::datagram::socket::UnixDatagram type in the tokio info (the target does not reach one)
+  absent  net::UnixDatagram.fd — no tokio::net::unix::datagram::socket::UnixDatagram type in the tokio info (the target does not reach one)
 
 program: ct-runtime
-walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 94 entries, 0 broken, 16 absent
+walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 106 entries, 0 broken, 28 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -1067,9 +1187,21 @@ walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 94 entries, 0
   ok      TimerShared.state
   ok      ScheduledIo.readiness
   ok      io::Waiter.interest
+  absent  net::TcpStream.shared — no tokio::net::tcp::stream::TcpStream type in the tokio info (the target does not reach one)
+  absent  net::TcpStream.fd — no tokio::net::tcp::stream::TcpStream type in the tokio info (the target does not reach one)
+  absent  net::TcpListener.shared — no tokio::net::tcp::listener::TcpListener type in the tokio info (the target does not reach one)
+  absent  net::TcpListener.fd — no tokio::net::tcp::listener::TcpListener type in the tokio info (the target does not reach one)
+  absent  net::UdpSocket.shared — no tokio::net::udp::UdpSocket type in the tokio info (the target does not reach one)
+  absent  net::UdpSocket.fd — no tokio::net::udp::UdpSocket type in the tokio info (the target does not reach one)
+  absent  net::UnixStream.shared — no tokio::net::unix::stream::UnixStream type in the tokio info (the target does not reach one)
+  absent  net::UnixStream.fd — no tokio::net::unix::stream::UnixStream type in the tokio info (the target does not reach one)
+  absent  net::UnixListener.shared — no tokio::net::unix::listener::UnixListener type in the tokio info (the target does not reach one)
+  absent  net::UnixListener.fd — no tokio::net::unix::listener::UnixListener type in the tokio info (the target does not reach one)
+  absent  net::UnixDatagram.shared — no tokio::net::unix::datagram::socket::UnixDatagram type in the tokio info (the target does not reach one)
+  absent  net::UnixDatagram.fd — no tokio::net::unix::datagram::socket::UnixDatagram type in the tokio info (the target does not reach one)
 
 program: local-set
-walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 94 entries, 0 broken, 10 absent
+walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 106 entries, 0 broken, 22 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   ok      statics.tls_local_set_key
@@ -1164,9 +1296,21 @@ walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 94 entries, 0
   ok      TimerShared.state
   ok      ScheduledIo.readiness
   ok      io::Waiter.interest
+  absent  net::TcpStream.shared — no tokio::net::tcp::stream::TcpStream type in the tokio info (the target does not reach one)
+  absent  net::TcpStream.fd — no tokio::net::tcp::stream::TcpStream type in the tokio info (the target does not reach one)
+  absent  net::TcpListener.shared — no tokio::net::tcp::listener::TcpListener type in the tokio info (the target does not reach one)
+  absent  net::TcpListener.fd — no tokio::net::tcp::listener::TcpListener type in the tokio info (the target does not reach one)
+  absent  net::UdpSocket.shared — no tokio::net::udp::UdpSocket type in the tokio info (the target does not reach one)
+  absent  net::UdpSocket.fd — no tokio::net::udp::UdpSocket type in the tokio info (the target does not reach one)
+  absent  net::UnixStream.shared — no tokio::net::unix::stream::UnixStream type in the tokio info (the target does not reach one)
+  absent  net::UnixStream.fd — no tokio::net::unix::stream::UnixStream type in the tokio info (the target does not reach one)
+  absent  net::UnixListener.shared — no tokio::net::unix::listener::UnixListener type in the tokio info (the target does not reach one)
+  absent  net::UnixListener.fd — no tokio::net::unix::listener::UnixListener type in the tokio info (the target does not reach one)
+  absent  net::UnixDatagram.shared — no tokio::net::unix::datagram::socket::UnixDatagram type in the tokio info (the target does not reach one)
+  absent  net::UnixDatagram.fd — no tokio::net::unix::datagram::socket::UnixDatagram type in the tokio info (the target does not reach one)
 
 program: local-set-timer
-walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 94 entries, 0 broken, 10 absent
+walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 106 entries, 0 broken, 22 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   ok      statics.tls_local_set_key
@@ -1261,9 +1405,21 @@ walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 94 entries, 0
   ok      TimerShared.state
   ok      ScheduledIo.readiness
   ok      io::Waiter.interest
+  absent  net::TcpStream.shared — no tokio::net::tcp::stream::TcpStream type in the tokio info (the target does not reach one)
+  absent  net::TcpStream.fd — no tokio::net::tcp::stream::TcpStream type in the tokio info (the target does not reach one)
+  absent  net::TcpListener.shared — no tokio::net::tcp::listener::TcpListener type in the tokio info (the target does not reach one)
+  absent  net::TcpListener.fd — no tokio::net::tcp::listener::TcpListener type in the tokio info (the target does not reach one)
+  absent  net::UdpSocket.shared — no tokio::net::udp::UdpSocket type in the tokio info (the target does not reach one)
+  absent  net::UdpSocket.fd — no tokio::net::udp::UdpSocket type in the tokio info (the target does not reach one)
+  absent  net::UnixStream.shared — no tokio::net::unix::stream::UnixStream type in the tokio info (the target does not reach one)
+  absent  net::UnixStream.fd — no tokio::net::unix::stream::UnixStream type in the tokio info (the target does not reach one)
+  absent  net::UnixListener.shared — no tokio::net::unix::listener::UnixListener type in the tokio info (the target does not reach one)
+  absent  net::UnixListener.fd — no tokio::net::unix::listener::UnixListener type in the tokio info (the target does not reach one)
+  absent  net::UnixDatagram.shared — no tokio::net::unix::datagram::socket::UnixDatagram type in the tokio info (the target does not reach one)
+  absent  net::UnixDatagram.fd — no tokio::net::unix::datagram::socket::UnixDatagram type in the tokio info (the target does not reach one)
 
 program: local-set-io
-walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 94 entries, 0 broken, 23 absent
+walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 106 entries, 0 broken, 33 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   ok      statics.tls_local_set_key
@@ -1358,9 +1514,21 @@ walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 94 entries, 0
   ok      TimerShared.state
   ok      ScheduledIo.readiness
   ok      io::Waiter.interest
+  absent  net::TcpStream.shared — no tokio::net::tcp::stream::TcpStream type in the tokio info (the target does not reach one)
+  absent  net::TcpStream.fd — no tokio::net::tcp::stream::TcpStream type in the tokio info (the target does not reach one)
+  absent  net::TcpListener.shared — no tokio::net::tcp::listener::TcpListener type in the tokio info (the target does not reach one)
+  absent  net::TcpListener.fd — no tokio::net::tcp::listener::TcpListener type in the tokio info (the target does not reach one)
+  absent  net::UdpSocket.shared — no tokio::net::udp::UdpSocket type in the tokio info (the target does not reach one)
+  absent  net::UdpSocket.fd — no tokio::net::udp::UdpSocket type in the tokio info (the target does not reach one)
+  ok      net::UnixStream.shared
+  ok      net::UnixStream.fd
+  absent  net::UnixListener.shared — no tokio::net::unix::listener::UnixListener type in the tokio info (the target does not reach one)
+  absent  net::UnixListener.fd — no tokio::net::unix::listener::UnixListener type in the tokio info (the target does not reach one)
+  absent  net::UnixDatagram.shared — no tokio::net::unix::datagram::socket::UnixDatagram type in the tokio info (the target does not reach one)
+  absent  net::UnixDatagram.fd — no tokio::net::unix::datagram::socket::UnixDatagram type in the tokio info (the target does not reach one)
 
 program: foreign-runtime
-walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 94 entries, 0 broken, 10 absent
+walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 106 entries, 0 broken, 22 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   ok      statics.tls_local_set_key
@@ -1455,3 +1623,15 @@ walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 94 entries, 0
   ok      TimerShared.state
   ok      ScheduledIo.readiness
   ok      io::Waiter.interest
+  absent  net::TcpStream.shared — no tokio::net::tcp::stream::TcpStream type in the tokio info (the target does not reach one)
+  absent  net::TcpStream.fd — no tokio::net::tcp::stream::TcpStream type in the tokio info (the target does not reach one)
+  absent  net::TcpListener.shared — no tokio::net::tcp::listener::TcpListener type in the tokio info (the target does not reach one)
+  absent  net::TcpListener.fd — no tokio::net::tcp::listener::TcpListener type in the tokio info (the target does not reach one)
+  absent  net::UdpSocket.shared — no tokio::net::udp::UdpSocket type in the tokio info (the target does not reach one)
+  absent  net::UdpSocket.fd — no tokio::net::udp::UdpSocket type in the tokio info (the target does not reach one)
+  absent  net::UnixStream.shared — no tokio::net::unix::stream::UnixStream type in the tokio info (the target does not reach one)
+  absent  net::UnixStream.fd — no tokio::net::unix::stream::UnixStream type in the tokio info (the target does not reach one)
+  absent  net::UnixListener.shared — no tokio::net::unix::listener::UnixListener type in the tokio info (the target does not reach one)
+  absent  net::UnixListener.fd — no tokio::net::unix::listener::UnixListener type in the tokio info (the target does not reach one)
+  absent  net::UnixDatagram.shared — no tokio::net::unix::datagram::socket::UnixDatagram type in the tokio info (the target does not reach one)
+  absent  net::UnixDatagram.fd — no tokio::net::unix::datagram::socket::UnixDatagram type in the tokio info (the target does not reach one)

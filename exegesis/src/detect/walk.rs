@@ -143,6 +143,10 @@ enum WalkRoot {
     /// the bundle is an expected absence — the target does not use the
     /// primitive — not a breakage.
     Leaf(&'static str),
+    /// The one emitted type with exactly this fully-qualified name — an
+    /// io resource, generic-free by construction. Absent like a leaf
+    /// when the target reaches none.
+    Type(&'static str),
     /// The (non-opaque) `Cell<T, S>` of every entry in the task table.
     TaskCells,
     /// Where another role's binding landed.
@@ -1227,6 +1231,85 @@ fn decls() -> Vec<WalkDecl> {
             Word,
             || vec![reach![Named("readiness"), PeelTo(WORD)]],
         ),
+        // The net resources: each type's route from the value a task's
+        // frame holds to the `ScheduledIo` its registration points at —
+        // the join key against the io registry — and to the fd inside
+        // its mio half. One spelling serves every resource: they all
+        // wrap a `PollEvented` in `io`, its `Arc<ScheduledIo>` sits at
+        // `registration.shared`, and below the mio type's `inner` the
+        // fd is the one word at the end of the zero-offset chain.
+        decl(
+            WalkRole::TcpStreamShared,
+            WalkRoot::Type("tokio::net::tcp::stream::TcpStream"),
+            Aggregate,
+            shared_of_resource,
+        ),
+        decl(
+            WalkRole::TcpStreamFd,
+            WalkRoot::Type("tokio::net::tcp::stream::TcpStream"),
+            Word,
+            fd_of_resource,
+        ),
+        decl(
+            WalkRole::TcpListenerShared,
+            WalkRoot::Type("tokio::net::tcp::listener::TcpListener"),
+            Aggregate,
+            shared_of_resource,
+        ),
+        decl(
+            WalkRole::TcpListenerFd,
+            WalkRoot::Type("tokio::net::tcp::listener::TcpListener"),
+            Word,
+            fd_of_resource,
+        ),
+        decl(
+            WalkRole::UdpSocketShared,
+            WalkRoot::Type("tokio::net::udp::UdpSocket"),
+            Aggregate,
+            shared_of_resource,
+        ),
+        decl(
+            WalkRole::UdpSocketFd,
+            WalkRoot::Type("tokio::net::udp::UdpSocket"),
+            Word,
+            fd_of_resource,
+        ),
+        decl(
+            WalkRole::UnixStreamShared,
+            WalkRoot::Type("tokio::net::unix::stream::UnixStream"),
+            Aggregate,
+            shared_of_resource,
+        ),
+        decl(
+            WalkRole::UnixStreamFd,
+            WalkRoot::Type("tokio::net::unix::stream::UnixStream"),
+            Word,
+            fd_of_resource,
+        ),
+        decl(
+            WalkRole::UnixListenerShared,
+            WalkRoot::Type("tokio::net::unix::listener::UnixListener"),
+            Aggregate,
+            shared_of_resource,
+        ),
+        decl(
+            WalkRole::UnixListenerFd,
+            WalkRoot::Type("tokio::net::unix::listener::UnixListener"),
+            Word,
+            fd_of_resource,
+        ),
+        decl(
+            WalkRole::UnixDatagramShared,
+            WalkRoot::Type("tokio::net::unix::datagram::socket::UnixDatagram"),
+            Aggregate,
+            shared_of_resource,
+        ),
+        decl(
+            WalkRole::UnixDatagramFd,
+            WalkRoot::Type("tokio::net::unix::datagram::socket::UnixDatagram"),
+            Word,
+            fd_of_resource,
+        ),
         // A listed waiter's interest: which readiness it parked for.
         // The direction slots need none — the reader slot waits
         // readable, the writer writable — so only list nodes carry
@@ -1239,6 +1322,37 @@ fn decls() -> Vec<WalkDecl> {
             || vec![reach![Named("interest"), PeelTo(WORD)]],
         ),
     ]
+}
+
+/// A net resource's route to the `ScheduledIo` its registration holds:
+/// through the `PollEvented` in `io`, the `Arc`'s pointer, and the
+/// `ArcInner`'s `data` — landing on the `ScheduledIo` itself, whose
+/// address is the io registry's join key.
+fn shared_of_resource() -> Vec<Reach<'static>> {
+    vec![reach![
+        Named("io"),
+        Named("registration"),
+        Named("shared"),
+        Named("ptr"),
+        Named("pointer"),
+        Deref,
+        Named("data"),
+    ]]
+}
+
+/// The same resource's fd: the `PollEvented`'s mio half (`io`, live
+/// only while the resource is registered), then the one word at the
+/// end of the zero-offset chain below the mio type's `inner` — every
+/// std socket wraps the fd in nothing but newtypes.
+fn fd_of_resource() -> Vec<Reach<'static>> {
+    vec![reach![
+        Named("io"),
+        Named("io"),
+        Variant("Some"),
+        Named("__0"),
+        Named("inner"),
+        PeelTo(Shape::Int(4)),
+    ]]
 }
 
 // ---------------------------------------------------------------------------
@@ -1601,6 +1715,19 @@ fn resolve_root(
             let note = (types.len() > 1).then(|| format!("{} types", types.len()));
             Roots::Types { types, note }
         }
+        WalkRoot::Type(fqn) => {
+            let types: Vec<(String, TypeId)> = em
+                .emitted_named()
+                .filter(|(_, name)| name == fqn)
+                .map(|(tid, name)| (name.to_owned(), tid))
+                .collect();
+            if types.is_empty() {
+                return Roots::Absent(format!(
+                    "no {fqn} type in the tokio info (the target does not reach one)"
+                ));
+            }
+            Roots::Types { types, note: None }
+        }
         WalkRoot::TaskCells => {
             let mut types = Vec::new();
             let mut opaque = 0usize;
@@ -1792,7 +1919,9 @@ pub fn leaf_rooted(role: WalkRole) -> bool {
     let mut rooted: BTreeMap<WalkRole, bool> = BTreeMap::new();
     for decl in decls() {
         let is_leaf = match decl.root {
-            WalkRoot::Leaf(_) => true,
+            // A type-rooted row is a leaf row for this purpose: which
+            // net resources a binary keeps is the target's call too.
+            WalkRoot::Leaf(_) | WalkRoot::Type(_) => true,
             WalkRoot::Infra(_) | WalkRoot::AnyHandle | WalkRoot::TaskCells => false,
             WalkRoot::End(parent) | WalkRoot::Pointee(parent) | WalkRoot::Elem(parent) => {
                 rooted.get(&parent).copied().unwrap_or(false)

@@ -62,6 +62,43 @@ const LEAF_FUTURES: &[(&str, LeafKind)] = &[
     (contract::ACQUIRE, LeafKind::SemaphoreAcquire),
 ];
 
+/// The io resource types the fd join recognizes: the fully-qualified
+/// name a frame member (or its pointee) must bear, and the two walk
+/// roles rooted at that type — the route to its `ScheduledIo` (the io
+/// registry's join key) and to its fd.
+const IO_RESOURCES: &[(&str, WalkRole, WalkRole)] = &[
+    (
+        "tokio::net::tcp::stream::TcpStream",
+        WalkRole::TcpStreamShared,
+        WalkRole::TcpStreamFd,
+    ),
+    (
+        "tokio::net::tcp::listener::TcpListener",
+        WalkRole::TcpListenerShared,
+        WalkRole::TcpListenerFd,
+    ),
+    (
+        "tokio::net::udp::UdpSocket",
+        WalkRole::UdpSocketShared,
+        WalkRole::UdpSocketFd,
+    ),
+    (
+        "tokio::net::unix::stream::UnixStream",
+        WalkRole::UnixStreamShared,
+        WalkRole::UnixStreamFd,
+    ),
+    (
+        "tokio::net::unix::listener::UnixListener",
+        WalkRole::UnixListenerShared,
+        WalkRole::UnixListenerFd,
+    ),
+    (
+        "tokio::net::unix::datagram::socket::UnixDatagram",
+        WalkRole::UnixDatagramShared,
+        WalkRole::UnixDatagramFd,
+    ),
+];
+
 #[derive(Copy, Clone, Debug)]
 pub(crate) enum LeafKind {
     Sleep,
@@ -1459,6 +1496,72 @@ impl<'b, T: Target> Context<'b, T> {
             LeafKind::JoinHandle => self.read_join_handle(leaf.future, list),
             LeafKind::SemaphoreAcquire => self.read_acquire(leaf.future, chain),
         })
+    }
+
+    /// The fd of the io resource registered as `scheduled_io`, where a
+    /// known resource type held in `frames` owns that registration —
+    /// the `ScheduledIo` itself records no fd, so only a resource in
+    /// the frames can name one. Enrichment only: every miss — no such
+    /// member, an unreadable pointee, a walk the bundle did not bind —
+    /// is a silent `None`, and the io row spells the address instead.
+    pub fn io_resource_fd(&self, frames: &[Value<'b>], scheduled_io: u64) -> Option<i32> {
+        for frame in frames {
+            for member in frame.ty.members() {
+                if member.ty().size() == 0 {
+                    continue;
+                }
+                let value = self.resource_member(*frame, &member)?;
+                let Some(value) = value else { continue };
+                let Some(&(_, shared, fd)) = IO_RESOURCES
+                    .iter()
+                    .find(|(name, ..)| *name == value.ty.name())
+                else {
+                    continue;
+                };
+                let Ok(Some(Walked::At(owned))) = self.walk(shared).try_walk(value) else {
+                    continue;
+                };
+                if owned.addr != scheduled_io {
+                    continue;
+                }
+                return self.walk(fd).try_read::<i32>(value).ok().flatten();
+            }
+        }
+        None
+    }
+
+    /// One frame member as a resource candidate: the member itself, or
+    /// — for a reference member (`&mut UnixStream` in a `Read` future)
+    /// — its pointee, read from the target. `Some(None)` is a member
+    /// that is simply not a resource; the outer `Option` is never
+    /// `None` (the signature rides `?` at the call site).
+    #[allow(clippy::option_option)]
+    fn resource_member(
+        &self,
+        frame: Value<'b>,
+        member: &hansei_bundle::BundleMember<'b>,
+    ) -> Option<Option<Value<'b>>> {
+        let start = member.offset() as usize;
+        let end = start + member.ty().size() as usize;
+        let Some(bytes) = frame.bytes.get(start..end) else {
+            return Some(None);
+        };
+        let value = Value::new(member.ty(), frame.addr + member.offset(), bytes);
+        if IO_RESOURCES
+            .iter()
+            .any(|(name, ..)| *name == value.ty.name())
+        {
+            return Some(Some(value));
+        }
+        if let Some(target) = value.ty.pointer_target()
+            && IO_RESOURCES.iter().any(|(name, ..)| *name == target.name())
+            && let Ok(ptr) = value.parse::<u64>(self.proc)
+            && self.mappings.contains_addr(ptr)
+            && let Ok(pointee) = Value::read(self.proc, target, ptr)
+        {
+            return Some(Some(pointee));
+        }
+        Some(None)
     }
 
     /// `tokio::time::Sleep`: the deadline its timer entry registered.

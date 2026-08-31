@@ -1384,6 +1384,18 @@ walk_roles! {
     TimerSharedState = "TimerShared.state",
     ScheduledIoReadiness = "ScheduledIo.readiness",
     IoWaiterInterest = "io::Waiter.interest",
+    TcpStreamShared = "net::TcpStream.shared",
+    TcpStreamFd = "net::TcpStream.fd",
+    TcpListenerShared = "net::TcpListener.shared",
+    TcpListenerFd = "net::TcpListener.fd",
+    UdpSocketShared = "net::UdpSocket.shared",
+    UdpSocketFd = "net::UdpSocket.fd",
+    UnixStreamShared = "net::UnixStream.shared",
+    UnixStreamFd = "net::UnixStream.fd",
+    UnixListenerShared = "net::UnixListener.shared",
+    UnixListenerFd = "net::UnixListener.fd",
+    UnixDatagramShared = "net::UnixDatagram.shared",
+    UnixDatagramFd = "net::UnixDatagram.fd",
 }
 
 /// What binding one walk role against the target's DWARF concluded.

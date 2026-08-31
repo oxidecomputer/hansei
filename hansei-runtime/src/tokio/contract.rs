@@ -176,6 +176,13 @@ pub fn classify(role: WalkRole) -> Class {
         // queued io waiter's interest. Enrichment only — a bundle
         // without them still lists and discovers.
         TimerSharedState | ScheduledIoReadiness | IoWaiterInterest => Class::Optional,
+        // The net resources' registration and fd, for spelling an io
+        // wait as the fd the reader knows. Each roots at its resource
+        // type, absent wherever the target reaches none — and an io
+        // row without one still spells the ScheduledIo address.
+        TcpStreamShared | TcpStreamFd | TcpListenerShared | TcpListenerFd | UdpSocketShared
+        | UdpSocketFd | UnixStreamShared | UnixStreamFd | UnixListenerShared | UnixListenerFd
+        | UnixDatagramShared | UnixDatagramFd => Class::Optional,
     }
 }
 
