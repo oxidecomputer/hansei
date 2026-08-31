@@ -132,7 +132,7 @@ pub(crate) fn select_task<T: proc::Target>(
         _ => (0, task.addr.0),
     };
     *session.cursor.borrow_mut() = Cursor {
-        lwp: running_lwp(session, task),
+        lwp: polling_worker(&session.workers, task),
         root: Some(root),
         frame,
         last_addr: Some(last_addr),
@@ -150,15 +150,15 @@ fn task_root(task: &bundle::Task) -> TraceTarget {
     }
 }
 
-/// The lwp mid-poll on a task, believed only for a task the runtime
-/// still calls running.
-fn running_lwp<T: proc::Target>(session: &Session<'_, T>, task: &bundle::Task) -> Option<u32> {
+/// The worker whose `current_task_id` names a still-running task —
+/// apart from the session for the suites, since no fixture capture
+/// holds a mid-poll task.
+fn polling_worker(workers: &[bundle::Worker], task: &bundle::Task) -> Option<u32> {
     if task.state.lifecycle() != Lifecycle::Running {
         return None;
     }
     let id = task.task_id?;
-    session
-        .workers
+    workers
         .iter()
         .find(|w| w.current_task_id == Some(id))
         .map(|w| w.tid)
@@ -185,33 +185,26 @@ pub(crate) fn exec_future<T: proc::Target>(
     theme: output::Theme,
     out: &mut dyn io::Write,
 ) -> Result<()> {
-    let addr = match addr {
-        Some(addr) => {
-            select_future(session, addr, out)?;
-            match session.cursor.borrow().root {
-                Some(TraceTarget::Future(root)) => root,
-                // The address collapsed to the task holding it; the
-                // selection line above said so.
-                _ => {
-                    if verbose {
-                        return print_root_chain(session, theme, out);
-                    }
-                    return Ok(());
-                }
-            }
-        }
-        None => match session.cursor.borrow().root {
-            // A `Future` root inside a task's allocation is a task
-            // cursor in address clothing (an id-less task), not a
-            // lone future.
+    let Some(addr) = addr else {
+        // Bare `future` reprints the cursor's lone future. A `Future`
+        // root inside a task's allocation is a task cursor in address
+        // clothing (an id-less task), not a lone future.
+        let addr = match session.cursor.borrow().root {
             Some(TraceTarget::Future(addr)) if session.extents().locate(addr).is_none() => addr,
             _ => return Err(anyhow!("no future selected")),
-        },
+        };
+        if verbose {
+            return print_root_chain(session, theme, out);
+        }
+        writeln!(out, "{}", future_line(session, addr)?)?;
+        return Ok(());
     };
+    // The selection line is the one line either way — whether the
+    // address stayed a lone root or collapsed to the task holding it.
+    select_future(session, addr, out)?;
     if verbose {
         return print_root_chain(session, theme, out);
     }
-    writeln!(out, "{}", future_line(session, addr)?)?;
     Ok(())
 }
 
@@ -250,7 +243,7 @@ pub(crate) fn select_future<T: proc::Target>(
             // future's: the cursor stands on the frame.
             let last_addr = frame_base(session, task, h.frame).unwrap_or(h.addr);
             *session.cursor.borrow_mut() = Cursor {
-                lwp: running_lwp(session, task),
+                lwp: polling_worker(&session.workers, task),
                 root: Some(task_root(task)),
                 frame: h.frame,
                 last_addr: Some(last_addr),
@@ -309,7 +302,7 @@ pub(crate) fn scope_to<T: proc::Target>(session: &Session<'_, T>, index: usize) 
     let task = &session.tasks.tasks[index];
     let last_addr = frame_base(session, task, 0).unwrap_or(task.addr.0);
     *session.cursor.borrow_mut() = Cursor {
-        lwp: running_lwp(session, task),
+        lwp: polling_worker(&session.workers, task),
         root: Some(task_root(task)),
         frame: 0,
         last_addr: Some(last_addr),
@@ -454,7 +447,11 @@ pub(crate) fn exec_frame<T: proc::Target>(
         return Err(refuse_frame(
             n,
             resolved.chain.frames.len(),
-            mid_poll(session, &resolved),
+            mid_poll(
+                &session.tasks.tasks[resolved.owner],
+                resolved.origin,
+                &session.workers,
+            ),
         ));
     }
     if index.is_some() {
@@ -584,13 +581,15 @@ fn chain_of<'b, T: proc::Target>(
 /// Whether the chain's owner is mid-poll — the case where an index
 /// past the chain lands in the native continuation `trace` numbers on
 /// from it — and, if so, the lwp whose stack shows it.
-fn mid_poll<T: proc::Target>(
-    session: &Session<'_, T>,
-    resolved: &ResolvedChain<'_>,
+/// Apart from the session for the suites, since no fixture capture
+/// holds a mid-poll task.
+fn mid_poll(
+    task: &bundle::Task,
+    origin: Option<census::Via>,
+    workers: &[bundle::Worker],
 ) -> Option<Option<u32>> {
-    let task = &session.tasks.tasks[resolved.owner];
-    (resolved.origin.is_none() && task.state.lifecycle() == Lifecycle::Running)
-        .then(|| running_lwp(session, task))
+    (origin.is_none() && task.state.lifecycle() == Lifecycle::Running)
+        .then(|| polling_worker(workers, task))
 }
 
 /// The refusal an out-of-range frame index earns: a running task's
@@ -884,6 +883,9 @@ mod tests {
         let err = exec_frame(&session, Some(99), theme, &mut Vec::new()).expect_err("out of range");
         assert!(err.to_string().starts_with("no frame #99: "), "{err}");
         assert_eq!(session.cursor.borrow().frame, 0, "a refusal moves nothing");
+
+        exec_down(&session, theme, &mut Vec::new()).expect("down moves toward the leaf");
+        assert_eq!(session.cursor.borrow().frame, 1);
     }
 
     /// A held future collapses to the task holding it, positioned at
@@ -917,6 +919,17 @@ mod tests {
             (Some(TraceTarget::Task(a)), TraceTarget::Task(b)) => assert_eq!(a, b),
             (Some(TraceTarget::Future(a)), TraceTarget::Future(b)) => assert_eq!(a, b),
             other => panic!("the cursor did not collapse to the task: {other:?}"),
+        }
+        // `$_` is the holding frame's own base — the cursor stands on
+        // the frame, not on the held future. Computed here from the
+        // chain itself so nothing under test corroborates itself.
+        let task = &session.tasks.tasks[owner];
+        let stage = session.ctx.task_stage(task).expect("the stage reads");
+        if let hansei_runtime::tokio::bundle::TaskStage::Running(future) = stage {
+            let chain = session.ctx.await_chain(future);
+            if let Some(f) = chain.frames.get(frame) {
+                assert_eq!(c.last_addr, Some(f.future.addr));
+            }
         }
     }
 
@@ -991,5 +1004,351 @@ mod tests {
         assert!(text.contains(", 0 failed"), "{text}");
         // And the loop leaves no cursor behind.
         assert!(session.cursor.borrow().root.is_none());
+    }
+
+    /// `task 0x…` lands on the frame that claims the address: each
+    /// chain frame's own base selects that frame, and a byte the
+    /// inner frame's span has ended before belongs to the outer one.
+    #[test]
+    fn test_an_interior_address_lands_on_the_claiming_frame() {
+        let (bundle, snapshot) = testkit::load("linux", "nested-await");
+        let args = session_args("linux", "nested-await");
+        let session = Session::attach(&snapshot, &bundle, &args).expect("the pair attaches");
+        let task = &session.tasks.tasks[0];
+        let stage = session.ctx.task_stage(task).expect("the stage reads");
+        let hansei_runtime::tokio::bundle::TaskStage::Running(future) = stage else {
+            panic!("the fixture's task is suspended mid-chain");
+        };
+        let chain = session.ctx.await_chain(future);
+        assert!(chain.frames.len() >= 2, "nested-await nests");
+        let f0 = chain.frames[0].future.addr;
+        let f0_end = f0 + chain.frames[0].future.ty.size();
+        let f1 = chain.frames[1].future.addr;
+        let f1_end = f1 + chain.frames[1].future.ty.size();
+
+        exec_task(
+            &session,
+            Some(TraceTarget::Future(f1)),
+            false,
+            &mut Vec::new(),
+        )
+        .expect("an inner frame's base selects");
+        {
+            let c = session.cursor.borrow();
+            assert_eq!(c.frame, 1, "the inner frame claims its own base");
+            assert_eq!(c.last_addr, Some(f1));
+        }
+        exec_task(
+            &session,
+            Some(TraceTarget::Future(f0)),
+            false,
+            &mut Vec::new(),
+        )
+        .expect("the root frame's base selects");
+        {
+            let c = session.cursor.borrow();
+            assert_eq!(c.frame, 0);
+            assert_eq!(c.last_addr, Some(f0), "$_ is the stage, not the header");
+        }
+        // A byte past the inner frame but inside the outer one is the
+        // outer frame's.
+        if f1_end < f0_end {
+            exec_task(
+                &session,
+                Some(TraceTarget::Future(f1_end)),
+                false,
+                &mut Vec::new(),
+            )
+            .expect("a byte past the inner frame selects");
+            assert_eq!(session.cursor.borrow().frame, 0);
+        }
+    }
+
+    /// Bare `task` prints the task the cursor stands on — whichever
+    /// one was selected, not a fixed row.
+    #[test]
+    fn test_bare_task_prints_the_cursor_task() {
+        let (bundle, snapshot) = testkit::load("linux", "sleep-join");
+        let args = session_args("linux", "sleep-join");
+        let session = Session::attach(&snapshot, &bundle, &args).expect("the pair attaches");
+        let ids: Vec<u64> = session
+            .tasks
+            .tasks
+            .iter()
+            .filter_map(|t| t.task_id)
+            .collect();
+        assert!(ids.len() >= 2, "sleep-join spawns a second task");
+        for &id in ids.iter().take(2) {
+            exec_task(
+                &session,
+                Some(TraceTarget::Task(id)),
+                false,
+                &mut Vec::new(),
+            )
+            .expect("the task selects");
+            let mut out = Vec::new();
+            exec_task(&session, None, false, &mut out).expect("bare task prints the cursor's");
+            let line = String::from_utf8(out).expect("the row is UTF-8");
+            assert!(line.starts_with(&id.to_string()), "{id}: {line}");
+            // The row's five cells, double-space joined: a
+            // single-group target carries no RT cell.
+            assert_eq!(line.trim_end().split("  ").count(), 5, "{line}");
+        }
+
+        // `-v` prints the cursor task's full block.
+        let mut out = Vec::new();
+        exec_task(&session, None, true, &mut out).expect("bare task -v prints the block");
+        let block = String::from_utf8(out).expect("the block is UTF-8");
+        assert!(block.contains("Task "), "{block}");
+    }
+
+    /// A set child roots as a lone future: its selection line prints
+    /// once, bare `future` reprints it, and a task cursor answers `no
+    /// future selected`.
+    #[test]
+    fn test_bare_future_prints_only_a_lone_root() {
+        let (bundle, snapshot) = testkit::load("linux", "unordered");
+        let args = session_args("linux", "unordered");
+        let session = Session::attach(&snapshot, &bundle, &args).expect("the pair attaches");
+        let theme = crate::output::Theme::plain();
+        let addr = {
+            let census = session.census();
+            let set = census.sets.first().expect("unordered drives a set");
+            let child = set
+                .children
+                .iter()
+                .find(|c| c.root.is_some())
+                .expect("a child is in flight");
+            child.root.expect("checked above").addr
+        };
+
+        let mut out = Vec::new();
+        exec_future(&session, Some(addr), false, theme, &mut out).expect("a set child selects");
+        let sel = String::from_utf8(out).expect("the selection line is UTF-8");
+        assert!(sel.contains("child of"), "{sel}");
+        assert_eq!(sel.lines().count(), 1, "one selection line only: {sel}");
+
+        let mut out = Vec::new();
+        exec_future(&session, None, false, theme, &mut out).expect("bare future reprints it");
+        let line = String::from_utf8(out).expect("the line is UTF-8");
+        assert!(line.starts_with(&format!("future {addr:#x}:")), "{line}");
+
+        // `-v` prints the chain rather than the one line.
+        let mut out = Vec::new();
+        exec_future(&session, None, true, theme, &mut out).expect("future -v prints the chain");
+        assert!(!out.is_empty(), "the chain prints");
+
+        let id = session
+            .tasks
+            .tasks
+            .iter()
+            .find_map(|t| t.task_id)
+            .expect("ids are recorded");
+        exec_task(
+            &session,
+            Some(TraceTarget::Task(id)),
+            false,
+            &mut Vec::new(),
+        )
+        .expect("a task selects");
+        let err = exec_future(&session, None, false, theme, &mut Vec::new())
+            .expect_err("a task cursor holds no lone future");
+        assert_eq!(err.to_string(), "no future selected");
+    }
+
+    /// The polling join, apart from a session: only a task the
+    /// runtime still calls running names an lwp, and only through the
+    /// worker whose current word matches its id.
+    #[test]
+    fn test_only_a_running_task_names_the_lwp_polling_it() {
+        use hansei_runtime::tokio::bundle::{FutureInfo, Task, Worker};
+        use hansei_runtime::tokio::{TaskAddr, TaskState};
+
+        let task = |state: u64, task_id: Option<u64>| Task {
+            addr: TaskAddr(0x2000),
+            state: TaskState(state),
+            owner_id: None,
+            task_id,
+            spawn_location: None,
+            future: FutureInfo::Unknown { poll_symbol: None },
+            group: 0,
+        };
+        let worker = |tid, current_task_id| Worker {
+            tid,
+            context_addr: 0,
+            current_task_id,
+        };
+        let workers = [worker(7, Some(41)), worker(9, Some(42))];
+        // RUNNING is bit 0 of the state word.
+        assert_eq!(polling_worker(&workers, &task(0b1, Some(42))), Some(9));
+        // Idle: a stale current word is not a poll in progress.
+        assert_eq!(polling_worker(&workers, &task(0, Some(42))), None);
+        // Running with no recorded id: unknowable.
+        assert_eq!(polling_worker(&workers, &task(0b1, None)), None);
+        // Running but on no worker's current word.
+        assert_eq!(polling_worker(&workers, &task(0b1, Some(1))), None);
+
+        // The native-continuation question rides the same join: only a
+        // task's own chain (no census origin) continues natively, and
+        // only while the owner is mid-poll.
+        assert_eq!(
+            mid_poll(&task(0b1, Some(42)), None, &workers),
+            Some(Some(9))
+        );
+        assert_eq!(
+            mid_poll(&task(0b1, Some(42)), Some(census::Via::Held(0)), &workers),
+            None,
+            "a lone root's chain is never continued natively"
+        );
+        assert_eq!(mid_poll(&task(0, Some(42)), None, &workers), None);
+        assert_eq!(
+            mid_poll(&task(0b1, Some(1)), None, &workers),
+            Some(None),
+            "mid-poll on no known lwp still refuses as native"
+        );
+    }
+
+    /// The thread selector: an unknown lwp refuses, the row names the
+    /// selected lwp in the table's cells, `$_` is exactly its stack
+    /// pointer, and each block-form flag asks for the block.
+    #[test]
+    fn test_thread_rows_and_blocks_spell_the_selected_lwp() {
+        let (bundle, snapshot) = testkit::load("linux", "nested-await");
+        let args = session_args("linux", "nested-await");
+        let session = Session::attach(&snapshot, &bundle, &args).expect("the pair attaches");
+        let lwp = session.lwps.first().expect("the fixture has lwps");
+        let (tid, rsp) = (lwp.tid, lwp.regs.rsp);
+        let render = RenderFlags::default().resolve(&session.settings.borrow());
+
+        let err = exec_thread(
+            &session,
+            Some(999_999),
+            false,
+            None,
+            false,
+            render,
+            &mut Vec::new(),
+        )
+        .expect_err("an unknown lwp refuses");
+        assert!(err.to_string().starts_with("no lwp 999999"), "{err}");
+
+        let mut out = Vec::new();
+        exec_thread(&session, Some(tid), false, None, false, render, &mut out)
+            .expect("the lwp selects");
+        let line = String::from_utf8(out).expect("the row is UTF-8");
+        assert!(line.starts_with(&tid.to_string()), "{line}");
+        assert_eq!(line.trim_end().split("  ").count(), 5, "{line}");
+        assert_eq!(session.cursor.borrow().last_addr, Some(rsp));
+
+        for (verbose, frames, registers) in [
+            (true, None, false),
+            (false, Some(3), false),
+            (false, None, true),
+        ] {
+            let mut out = Vec::new();
+            exec_thread(
+                &session,
+                Some(tid),
+                verbose,
+                frames,
+                registers,
+                render,
+                &mut out,
+            )
+            .expect("the block form answers");
+            let text = String::from_utf8(out).expect("the block is UTF-8");
+            assert!(text.contains("stack"), "{text}");
+        }
+    }
+
+    /// `frame` prints the selected frame the way `trace -v` prints it:
+    /// numbered, and — on the leaf — carrying the decoded wait target.
+    #[test]
+    fn test_frame_prints_like_trace() {
+        let (bundle, snapshot) = testkit::load("linux", "sleep-join");
+        let args = session_args("linux", "sleep-join");
+        let session = Session::attach(&snapshot, &bundle, &args).expect("the pair attaches");
+        let theme = crate::output::Theme::plain();
+        // A task whose chain nests and bottoms out in a decoded wait.
+        let mut picked = None;
+        for t in &session.tasks.tasks {
+            let Some(id) = t.task_id else { continue };
+            let Ok(resolved) = chain_of(&session, TraceTarget::Task(id)) else {
+                continue;
+            };
+            if resolved.chain.frames.len() >= 2
+                && trace::wait_line(&session.ctx, &resolved.chain, &session.tasks)
+                    .ok()
+                    .flatten()
+                    .is_some()
+            {
+                picked = Some((id, resolved.chain.frames.len()));
+                break;
+            }
+        }
+        let (id, len) = picked.expect("sleep-join parks a chain on a decoded wait");
+        exec_task(
+            &session,
+            Some(TraceTarget::Task(id)),
+            false,
+            &mut Vec::new(),
+        )
+        .expect("the task selects");
+
+        let mut out = Vec::new();
+        exec_frame(&session, Some(len - 1), theme, &mut out).expect("the leaf prints");
+        let leaf = String::from_utf8(out).expect("the frame is UTF-8");
+        assert!(leaf.starts_with(&format!("#{}", len - 1)), "{leaf}");
+        assert!(leaf.contains("waiting on"), "{leaf}");
+
+        let mut out = Vec::new();
+        exec_frame(&session, Some(0), theme, &mut out).expect("the root prints");
+        let root = String::from_utf8(out).expect("the frame is UTF-8");
+        assert!(root.starts_with("#0"), "{root}");
+        assert!(!root.contains("waiting on"), "{root}");
+    }
+
+    /// `print` renders the named type's bytes; a snapshot recorded the
+    /// task header, so the read answers offline.
+    #[test]
+    fn test_print_renders_memory_as_the_named_type() {
+        let (bundle, snapshot) = testkit::load("linux", "nested-await");
+        let args = session_args("linux", "nested-await");
+        let session = Session::attach(&snapshot, &bundle, &args).expect("the pair attaches");
+        let addr = session.tasks.tasks[0].addr.0;
+        let command = repl::parse_line(&format!("print {addr:#x} u64")).expect("print parses");
+        let mut out = Vec::new();
+        dispatch(&session, command, crate::output::Theme::plain(), &mut out)
+            .expect("print answers");
+        assert!(!out.is_empty(), "print writes the value");
+    }
+
+    /// A scope that does not select fails the command rather than
+    /// silently running it under whatever cursor stood before.
+    #[test]
+    fn test_a_scope_that_does_not_select_fails_the_command() {
+        let (bundle, snapshot) = testkit::load("linux", "sleep-join");
+        let args = session_args("linux", "sleep-join");
+        let session = Session::attach(&snapshot, &bundle, &args).expect("the pair attaches");
+        let id = session
+            .tasks
+            .tasks
+            .iter()
+            .find_map(|t| t.task_id)
+            .expect("ids are recorded");
+        exec_task(
+            &session,
+            Some(TraceTarget::Task(id)),
+            false,
+            &mut Vec::new(),
+        )
+        .expect("a cursor stands");
+        let err = repl::execute(
+            &session,
+            repl::Mode::Scripted,
+            "task 999999 trace ! head -c 0",
+        )
+        .expect_err("a bad scope fails the command");
+        assert!(err.to_string().contains("no task 999999"), "{err}");
     }
 }

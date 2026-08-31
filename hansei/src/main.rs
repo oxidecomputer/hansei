@@ -2081,6 +2081,52 @@ fn version_ceiling_line(meta: &hansei_bundle::Meta, noticed: &Cell<bool>) -> Opt
 }
 
 #[cfg(test)]
+mod render_flag_tests {
+    use super::RenderFlags;
+    use crate::settings::Settings;
+
+    /// Each flag given on the line overrides; each one absent falls
+    /// back to the session's value. `--ugly` only ever turns the raw
+    /// view on — a session with `set ugly on` stays raw without the
+    /// flag, and the flag turns it on over a session with it off.
+    #[test]
+    fn test_render_flags_resolve_against_the_session() {
+        let session = Settings {
+            depth: 6,
+            ugly: true,
+            max_string_len: 10,
+            max_array_values: 3,
+            limit: None,
+        };
+        let fell_back = RenderFlags::default().resolve(&session);
+        assert_eq!(fell_back.depth, 6);
+        assert!(fell_back.ugly);
+        assert_eq!(fell_back.max_string_len, 10);
+        assert_eq!(fell_back.max_array_values, 3);
+
+        let flags = RenderFlags {
+            depth: Some(2),
+            ugly: false,
+            max_string_len: Some(1),
+            max_array_values: Some(9),
+        };
+        let overridden = flags.resolve(&session);
+        assert_eq!(overridden.depth, 2);
+        assert!(overridden.ugly, "set ugly on holds without the flag");
+        assert_eq!(overridden.max_string_len, 1);
+        assert_eq!(overridden.max_array_values, 9);
+
+        let plain = Settings::default();
+        let flags = RenderFlags {
+            ugly: true,
+            ..Default::default()
+        };
+        assert!(flags.resolve(&plain).ugly, "the flag turns the raw view on");
+        assert!(!RenderFlags::default().resolve(&plain).ugly);
+    }
+}
+
+#[cfg(test)]
 mod session_gate_tests {
     use super::first_audit;
     use std::cell::Cell;
