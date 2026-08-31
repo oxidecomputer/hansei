@@ -608,6 +608,7 @@ mod tests {
             code_name: Some("SEGV_MAPERR"),
             fault_addr: Some(0),
             lwp,
+            sender: None,
         }
     }
 

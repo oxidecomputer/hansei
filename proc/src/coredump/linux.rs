@@ -1013,6 +1013,9 @@ fn decode_fatal_signal(
         _ => (0, 0),
     };
     let code_name = fault_code_name(name, code);
+    // A non-positive code is a sent signal, whose union leads with
+    // `si_pid` where a fault's holds the address the read took whole.
+    let pid = addr as i32;
     Some(FatalSignal {
         name,
         signo,
@@ -1020,6 +1023,7 @@ fn decode_fatal_signal(
         code_name,
         fault_addr: code_name.is_some().then_some(addr),
         lwp: Some(tid),
+        sender: (code <= 0 && pid != 0).then_some(pid),
     })
 }
 
@@ -1944,6 +1948,7 @@ mod tests {
                 code_name: Some("SEGV_MAPERR"),
                 fault_addr: Some(0xdead_b000),
                 lwp: Some(42),
+                sender: None,
             })
         );
     }
@@ -1988,6 +1993,7 @@ mod tests {
                 code_name: None,
                 fault_addr: None,
                 lwp: Some(42),
+                sender: None,
             })
         );
     }
@@ -2045,6 +2051,9 @@ mod tests {
                 code_name: None,
                 fault_addr: None,
                 lwp: Some(42),
+                // The union that would hold a fault's address holds
+                // the sender's pid for a user-sent signal.
+                sender: Some(0x1234),
             })
         );
     }

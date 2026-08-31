@@ -621,6 +621,10 @@ pub struct FatalSignal {
     pub fault_addr: Option<u64>,
     /// The lwp that took the signal, where the core identifies one.
     pub lwp: Option<u32>,
+    /// The sending pid, present only for a user-sent signal — a
+    /// non-positive `si_code`, whose `siginfo` union leads with
+    /// `si_pid` where a fault's holds the address.
+    pub sender: Option<i32>,
 }
 
 /// The fault codes whose `siginfo` union holds the faulting address.
