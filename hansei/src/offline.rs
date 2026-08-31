@@ -17,7 +17,7 @@ use crate::output::Theme;
 use crate::{Session, SessionArgs, dispatch, repl};
 
 use hansei_runtime::testkit::{self, FIXTURE_SETS, PROGRAMS, mask};
-use hansei_runtime::tokio::census;
+use hansei_runtime::tokio::{bundle, census};
 
 use std::path::Path;
 
@@ -82,8 +82,42 @@ fn commands(session: &Session<'_, proc::snapshot::Snapshot>) -> Vec<(&'static st
             list.push(("trace-first", format!("trace {id}")));
         }
         list.push(("whatis-first", format!("whatis {:#x}", task.addr.0)));
+        // The cursor commands: select the first task, then drive
+        // `print`'s cursor root — the frame itself, one member path,
+        // and the missing-member refusal. The selection persists for
+        // the commands after it, so these stay in this order.
+        if let Some(id) = task.task_id {
+            list.push(("task-first", format!("task {id}")));
+            list.push(("print-frame", "print".to_owned()));
+            if let Some(member) = first_frame_member(session, task) {
+                list.push(("print-path", format!("print .{member}")));
+            }
+            list.push(("print-missing", "print .no_such_member".to_owned()));
+        }
     }
     list
+}
+
+/// The first sized member of the first task's frame-0 payload — a
+/// path target every fixture has, whatever its futures hold.
+fn first_frame_member(
+    session: &Session<'_, proc::snapshot::Snapshot>,
+    task: &hansei_runtime::tokio::bundle::Task,
+) -> Option<String> {
+    let bundle::TaskStage::Running(future) = session.ctx.task_stage(task).ok()? else {
+        return None;
+    };
+    let chain = session.ctx.await_chain(future);
+    let frame = chain.frames.first()?;
+    let payload = match &frame.state {
+        Some(state) => state.payload,
+        None => frame.future,
+    };
+    payload
+        .ty
+        .members()
+        .find(|m| m.ty().size() > 0)
+        .map(|m| m.name().to_string())
 }
 
 /// Attach a session over one pair and golden every command's output,

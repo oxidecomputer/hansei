@@ -300,8 +300,18 @@ fn answer_words<T: proc::Target>(
     words: &[String],
     shell: Option<&str>,
 ) -> Result<Flow> {
-    let words = substitute_last_addr(words, session.cursor.borrow().last_addr)?;
-    let parsed = match parse_words(&words)? {
+    // `print` resolves `$_` itself: its bare-`$_` form defaults the
+    // type from the cursor frame, which a pre-substituted hex address
+    // could no longer ask for.
+    let substituted;
+    let words = match words.first().is_some_and(|w| names_print(w)) {
+        true => words,
+        false => {
+            substituted = substitute_last_addr(words, session.cursor.borrow().last_addr)?;
+            &substituted
+        }
+    };
+    let parsed = match parse_words(words)? {
         Some(parsed) => parsed,
         None => return Ok(Flow::Continue),
     };
@@ -410,6 +420,19 @@ fn apply_scope<T: proc::Target>(session: &Session<'_, T>, scope: Scope) -> Resul
         Scope::Future(addr) => crate::cursor::select_future(session, addr, &mut io::sink()),
         Scope::Thread(lwp) => crate::cursor::select_thread(session, lwp),
     }
+}
+
+/// Whether `word` names the `print` command, exactly or by the
+/// unique-prefix rule the grammar's `infer_subcommands` applies. The
+/// one command whose `$_` stays a token: see [`answer_words`].
+fn names_print(word: &str) -> bool {
+    !word.is_empty()
+        && "print".starts_with(word)
+        && Line::command()
+            .get_subcommands()
+            .filter(|c| c.get_name().starts_with(word))
+            .count()
+            == 1
 }
 
 /// Substitute `$_` — the cursor's current-frame address — wherever it
@@ -736,27 +759,29 @@ mod tests {
         assert_eq!(depth, 2);
     }
 
-    /// `print`'s type is the rest of the line: the words are joined
-    /// back into one name, so a name whose generic arguments hold
-    /// spaces pastes in whole, with the render flags still parsed out
-    /// from among them.
+    /// `print`'s positionals are one root spelling plus path tokens,
+    /// split apart by the command itself — clap only collects them —
+    /// with the render flags still parsed out from among them.
     #[test]
-    fn test_print_takes_the_rest_of_the_line_as_one_type() {
-        let Command::Print { addr, ty, render } =
-            Line::try_parse_from(["print", "0x7f10", "Vec<(u64,", "u64)>", "-u"])
-                .expect("print takes an address and a type")
+    fn test_print_collects_root_and_path_tokens() {
+        let Command::Print { args, render } =
+            Line::try_parse_from(["print", "0x7f10", "Vec<(u64, u64)>", ".a", "-u"])
+                .expect("print takes a root and path tokens")
                 .command
         else {
             panic!("print parsed as another command");
         };
-        assert_eq!(addr, 0x7f10);
-        assert_eq!(ty.join(" "), "Vec<(u64, u64)>");
+        assert_eq!(args, ["0x7f10", "Vec<(u64, u64)>", ".a"]);
         assert!(render.ugly);
 
-        // The address keeps its required prefix, so it can never be
-        // read as the leading word of a type name.
-        assert!(Line::try_parse_from(["print", "7f10", "u64"]).is_err());
-        assert!(Line::try_parse_from(["print", "0x7f10"]).is_err());
+        // Bare `print` is the cursor frame: nothing is required.
+        let Command::Print { args, .. } = Line::try_parse_from(["print"])
+            .expect("bare print parses")
+            .command
+        else {
+            panic!("print parsed as another command");
+        };
+        assert!(args.is_empty());
     }
 
     /// The runtimes' sections are flags rather than a value, the way
@@ -1008,6 +1033,18 @@ mod tests {
             parse_exec_command(&w(&["census"])).expect("parses"),
             Command::Census { .. }
         ));
+    }
+
+    /// `print` — under any prefix that names it alone — is exempt
+    /// from `$_` substitution; everything else is not.
+    #[test]
+    fn test_print_alone_keeps_its_last_addr_token() {
+        for word in ["print", "prin", "pri", "pr", "p"] {
+            assert!(names_print(word), "{word}");
+        }
+        for word in ["", "tasks", "printx", "trace", "t"] {
+            assert!(!names_print(word), "{word}");
+        }
     }
 
     /// `$_` substitutes only where it stands as a whole word, spells

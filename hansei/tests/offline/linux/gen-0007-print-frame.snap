@@ -1,0 +1,44 @@
+---
+source: hansei/src/offline.rs
+description: "`print` over linux/gen-0007"
+---
+gen_0007::driver_00::{async_fn_env#0}::Suspend0 {
+    started: tokio::sync::mpsc::unbounded::UnboundedSender<()> {
+        chan: tokio::sync::mpsc::chan::Tx<(), tokio::sync::mpsc::unbounded::Semaphore> {
+            inner: alloc::sync::Arc<tokio::sync::mpsc::chan::Chan<(), tokio::sync::mpsc::unbounded::Semaphore>, alloc::alloc::Global> {
+                ptr: ...,
+            },
+        },
+    },
+    notify: alloc::sync::Arc<tokio::sync::notify::Notify, alloc::alloc::Global> {
+        ptr: 0xADDR -> alloc::sync::ArcInner<tokio::sync::notify::Notify> {
+                strong: ...,
+                weak: ...,
+                data: ...,
+            },
+    },
+    sem: alloc::sync::Arc<tokio::sync::semaphore::Semaphore, alloc::alloc::Global> {
+        ptr: 0xADDR -> alloc::sync::ArcInner<tokio::sync::semaphore::Semaphore> {
+                strong: ...,
+                weak: ...,
+                data: ...,
+            },
+    },
+    v0: futures_util::stream::futures_unordered::FuturesUnordered<gen_0007::leaf_01::{async_fn_env#0}> {
+        ready_to_run_queue: alloc::sync::Arc<futures_util::stream::futures_unordered::ready_to_run_queue::ReadyToRunQueue<gen_0007::leaf_01::{async_fn_env#0}>, alloc::alloc::Global> {
+            ptr: 0xADDR -> ...,
+        },
+        head_all: 0xADDR,
+        is_terminated: core::sync::atomic::Atomic<bool> {
+            v: 0,
+        },
+    },
+    v1: core::option::Option<tokio::task::join_set::JoinSet<u64>>::Some {
+        lists: alloc::sync::Arc<tokio::loom::std::parking_lot::Mutex<tokio::util::idle_notified_set::ListsInner<tokio::runtime::task::join::JoinHandle<u64>>>, alloc::alloc::Global> {
+            ptr: 0xADDR -> ...,
+        },
+        length: 2,
+    },
+    __6: true,
+    __7: true,
+}

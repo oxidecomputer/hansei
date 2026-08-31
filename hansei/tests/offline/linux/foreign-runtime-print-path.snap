@@ -1,0 +1,27 @@
+---
+source: hansei/src/offline.rs
+description: "`print .__awaitee` over linux/foreign-runtime"
+---
+tokio::sync::semaphore::{impl#0}::acquire::{async_fn_env#0}::3 {
+    self: 0xADDR -> tokio::sync::semaphore::Semaphore {
+            ll_sem: tokio::sync::batch_semaphore::Semaphore {
+                waiters: ...,
+                permits: closed=false, permits=0,
+            },
+        },
+    __awaitee: tokio::sync::batch_semaphore::Acquire {
+        node: tokio::sync::batch_semaphore::Waiter {
+            state: 1,
+            waker: core::option::Option<core::task::wake::Waker>::Some(0xADDR),
+            pointers: tokio::util::linked_list::Pointers<tokio::sync::batch_semaphore::Waiter> {
+                inner: ...,
+            },
+        },
+        semaphore: 0xADDR -> tokio::sync::batch_semaphore::Semaphore {
+                waiters: ...,
+                permits: closed=false, permits=0,
+            },
+        num_permits: 1,
+        queued: true,
+    },
+}

@@ -1,0 +1,5 @@
+---
+source: hansei/src/offline.rs
+description: "`task 3` over illumos/unordered"
+---
+3  idle  src/bin/unordered.rs:115  future futures_util::stream::futures_unordered::FuturesUnordered<unordered::set_member>  async fn unordered::driver

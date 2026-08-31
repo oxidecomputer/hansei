@@ -424,28 +424,40 @@ pub enum Command {
         dump: Option<umem::Dump>,
     },
 
-    /// Render the memory at an address as a value of a named type: the
-    /// inverse of `whatis`, for reading a structure the listings only
-    /// point at. The address says where and the type says how, and
-    /// nothing checks one against the other — printing the wrong type
-    /// at an address renders that memory as the type asked for.
+    /// Render memory as a typed value, and navigate into it: every
+    /// `...` the renderer elides is reachable by a path.
+    ///
+    /// The root is `0xaddr "<Type>"` — the inverse of `whatis`, with
+    /// the type one token (quote a generic holding spaces): the
+    /// address says where and the type says how, and nothing checks
+    /// one against the other, so printing the wrong type at an
+    /// address renders that memory as the type asked for. The type is
+    /// the exact fully-qualified name `find-types` lists, or a type
+    /// id — the `type 4821` a listing prints where a name alone is
+    /// not a handle; the kind-worded display spelling is refused with
+    /// the recorded name to use instead. `$_` roots at the cursor
+    /// frame's base, its type defaulting to that frame's future; bare
+    /// `print` is the cursor's current frame itself — the active
+    /// variant of its future, whose locals are members.
+    ///
+    /// Everything after the root is a path: `.member` navigates the
+    /// way Rust's dot does (through references, `Box`, `Arc`/`Rc`,
+    /// `Pin`, `NonNull`, and into an enum's active variant — an
+    /// inactive one refuses with the active variant's name), `[3]`
+    /// indexes a sequence (on a map, the Nth entry in display order,
+    /// a pair `.0`/`.1` take apart), `[a..b]`/`[a..=b]`/`[..b]`/
+    /// `[a..]` select a run of elements, and `*` dereferences
+    /// explicitly — the only way through a raw pointer. A range fans
+    /// out: every later step applies per element, each printed under
+    /// its `[i]` heading and exempt from --max-array-values, since a
+    /// range is the reader saying how many. Depth counts from the end
+    /// of the path.
     Print {
-        /// The address to read, written in hex with a required leading
-        /// `0x` (e.g. `0x7fffb1c26100`).
-        #[arg(value_parser = parse_hex_addr)]
-        addr: u64,
-
-        /// The type to render the memory as: the exact fully-qualified
-        /// name as `find-types` lists it (several words are joined back
-        /// into one name, so generics holding spaces paste in whole),
-        /// or a type id — the `type 4821` a listing prints where
-        /// a name alone is not a handle. The kind-joined spelling the
-        /// listings display (`async fn app::work`) names a function
-        /// rather than the type its memory holds, so it is refused with
-        /// the recorded name to use instead; a name with several
-        /// recorded definitions is refused with the ids that pick one.
-        #[arg(value_name = "TYPE", required = true, num_args = 1..)]
-        ty: Vec<String>,
+        /// The root — `0xaddr "<Type>"`, `$_ ["<Type>"]`, or nothing
+        /// for the cursor frame — then path steps, each starting with
+        /// `.`, `[` or `*`.
+        #[arg(value_name = "ROOT|PATH")]
+        args: Vec<String>,
 
         #[command(flatten)]
         render: RenderFlags,
@@ -1500,9 +1512,9 @@ pub fn dispatch<T: Target>(
         // have a history; it never reaches here.
         Command::History { .. } => unreachable!("history is answered by the repl"),
         Command::Info => exec_info(session, out)?,
-        Command::Print { addr, ty, render } => {
+        Command::Print { args, render } => {
             let render = render.resolve(&session.settings.borrow());
-            print::exec_print(session, addr, &ty.join(" "), render, out)?
+            print::exec_print(session, &args, render, out)?
         }
         Command::Runtimes {
             list,

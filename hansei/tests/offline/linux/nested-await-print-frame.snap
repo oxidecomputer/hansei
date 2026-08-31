@@ -1,0 +1,15 @@
+---
+source: hansei/src/offline.rs
+description: "`print` over linux/nested-await"
+---
+nested_await::outer::{async_fn_env#0}::Suspend0 {
+    __awaitee: nested_await::middle::{async_fn_env#0}::3 {
+        __awaitee: nested_await::leaf::{async_fn_env#0}::3 {
+            __awaitee: tokio::sync::oneshot::Receiver<u32> {
+                inner: ...,
+            },
+        },
+    },
+    __1: false,
+    __2: false,
+}

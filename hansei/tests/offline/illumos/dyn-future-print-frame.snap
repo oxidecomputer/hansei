@@ -1,0 +1,29 @@
+---
+source: hansei/src/offline.rs
+description: "`print` over illumos/dyn-future"
+---
+dyn_future::driver::{async_fn_env#0}::Suspend0 {
+    set: tokio::task::join_set::JoinSet<u32> {
+        inner: tokio::util::idle_notified_set::IdleNotifiedSet<tokio::runtime::task::join::JoinHandle<u32>> {
+            lists: alloc::sync::Arc<tokio::loom::std::parking_lot::Mutex<tokio::util::idle_notified_set::ListsInner<tokio::runtime::task::join::JoinHandle<u32>>>, alloc::alloc::Global> {
+                ptr: ...,
+            },
+            length: 1,
+        },
+    },
+    __awaitee: core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output=u32> + core::marker::Send), alloc::alloc::Global>> {
+        pointer: alloc::boxed::Box<(dyn core::future::future::Future<Output=u32> + core::marker::Send), alloc::alloc::Global> {
+            pointer: 0xADDR,
+            concrete type: dyn_future::boxed_leaf::{closure#0},
+            vtable: {
+                drop_in_place: 0xADDR -> core::ptr::drop_glue::<dyn_future::boxed_leaf::{closure#0}>,
+                size: 24,
+                align: 8,
+                method[3]: 0xADDR -> dyn_future::boxed_leaf::{closure#0},
+            },
+        },
+    },
+    __2: false,
+    __3: false,
+    __4: false,
+}

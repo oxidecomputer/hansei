@@ -1,0 +1,5 @@
+---
+source: hansei/src/offline.rs
+description: "`task 3` over linux/simple-await"
+---
+3  idle  src/bin/simple-await.rs:40  future tokio::sync::oneshot::Receiver<u32>  async fn simple_await::work

@@ -1,0 +1,5 @@
+---
+source: hansei/src/offline.rs
+description: "`print .count` over illumos/simple-await"
+---
+3

@@ -1,0 +1,15 @@
+---
+source: hansei/src/offline.rs
+description: "`print .notify` over illumos/channels"
+---
+0xADDR -> alloc::sync::ArcInner<tokio::sync::notify::Notify> {
+        strong: 2,
+        weak: 1,
+        data: tokio::sync::notify::Notify {
+            state: state=waiting, generation=0,
+            mutex: locked=false, parked=false,
+            queue: [
+                tokio::sync::notify::Waiter { notification: kind=none, order=fifo, waker: ... },
+            ],
+        },
+    }

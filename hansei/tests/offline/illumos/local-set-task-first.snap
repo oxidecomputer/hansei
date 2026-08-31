@@ -1,0 +1,5 @@
+---
+source: hansei/src/offline.rs
+description: "`task 1` over illumos/local-set"
+---
+1  idle  1  src/bin/local-set.rs:16  the timer: deadline TS  async fn local_set::local_sleeper
