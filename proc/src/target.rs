@@ -108,6 +108,21 @@ impl Target for Proc {
         }
     }
 
+    fn process_facts(&self) -> Option<crate::ProcessFacts> {
+        match self {
+            Proc::LinuxCore(c) => Target::process_facts(c),
+            Proc::IllumosCore(c) => Target::process_facts(c),
+        }
+    }
+
+    fn fds(&self) -> Option<&[crate::FdInfo]> {
+        match self {
+            // A Linux core records no fd table at all.
+            Proc::LinuxCore(_) => None,
+            Proc::IllumosCore(c) => Target::fds(c),
+        }
+    }
+
     fn lookup_symbol_by_addr(&self, addr: u64) -> Option<SymbolBuf> {
         dispatch!(self, lookup_symbol_by_addr(addr))
     }

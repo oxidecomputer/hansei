@@ -224,6 +224,20 @@ pub trait Target: Sync {
         None
     }
 
+    /// The process-identity facts the target records — pid, ids, the
+    /// command line, and whatever else its system wrote down. `None`
+    /// for a target that carries none (a snapshot).
+    fn process_facts(&self) -> Option<ProcessFacts> {
+        None
+    }
+
+    /// The open-fd table the target records, in fd order. `None` for
+    /// a target that carries none: a Linux core, a snapshot, or an
+    /// illumos core old enough to predate `NT_FDINFO`.
+    fn fds(&self) -> Option<&[FdInfo]> {
+        None
+    }
+
     /// The target's memory mappings.
     fn mappings(&self) -> Result<Mappings>;
 
@@ -668,6 +682,66 @@ impl BuildIds {
     pub fn disagree(&self) -> bool {
         matches!((&self.core, &self.binary), (Some(a), Some(b)) if a != b)
     }
+}
+
+/// One open file descriptor as an illumos core's `NT_FDINFO` notes
+/// record it — the fixed `prfdinfo_core_t`, which unlike the variable
+/// `prfdinfo_t` of `/proc/<pid>/fdinfo` carries no `pr_misc` items:
+/// a socket has no local or peer name here, only its mode. A Linux
+/// core records no fd table at all.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct FdInfo {
+    pub fd: i32,
+    /// `st_mode`: the file type in the `S_IFMT` bits plus permissions.
+    pub mode: u32,
+    pub ino: u64,
+    pub offset: i64,
+    pub size: u64,
+    /// The `O_*` flags the fd was opened with (`pr_fileflags`).
+    pub fileflags: i32,
+    /// The path, empty where the kernel recorded none (a socket).
+    pub path: String,
+}
+
+/// The process-identity facts a core records about its target: who it
+/// was, whose child it was, and what it was started as.
+///
+/// Every field past the ids is `Option` or empty where a core does not
+/// record it — the two systems record very different amounts. An
+/// illumos core carries the whole `psinfo_t` plus pointers into the
+/// dumped stack for argv and the environment; a Linux one carries only
+/// the 136-byte `prpsinfo` (ids, `pr_fname`, the 80-byte `pr_psargs`)
+/// and `AT_EXECFN` in the auxv. Locating argv on a Linux initial stack
+/// would be a heuristic, so it is not attempted.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct ProcessFacts {
+    pub pid: i32,
+    pub ppid: i32,
+    pub uid: u32,
+    pub gid: u32,
+    /// Effective ids, where the core distinguishes them (illumos).
+    pub euid: Option<u32>,
+    pub egid: Option<u32>,
+    /// The data model (`"LP64"` / `"ILP32"`), from illumos `pr_dmodel`;
+    /// a Linux core does not say.
+    pub model: Option<&'static str>,
+    /// When the process started, on the realtime clock — illumos
+    /// `pr_start`. A Linux core records no start time.
+    pub start: Option<Timespec>,
+    /// The executable's short name (`pr_fname`).
+    pub fname: String,
+    /// The command line as the fixed-width `pr_psargs` records it:
+    /// whole only when it fit in 80 bytes.
+    pub psargs: String,
+    /// The full argv, read out of the target's own memory through the
+    /// `pr_argv` pointer (illumos). `None` where the core records no
+    /// pointer or the array is not in the dump.
+    pub argv: Option<Vec<String>>,
+    /// The environment, likewise through `pr_envp` (illumos).
+    pub env: Option<Vec<String>>,
+    /// The path the executable was invoked as, from `AT_EXECFN`
+    /// (Linux); illumos has no auxv spelling for it.
+    pub execfn: Option<String>,
 }
 
 #[derive(Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
