@@ -1147,6 +1147,7 @@ mod tests {
             code_name: Some("SEGV_MAPERR"),
             fault_addr: Some(0),
             lwp: Some(3950440),
+            sender: None,
         });
         let page = census(&facts, 5);
         assert!(
@@ -1171,6 +1172,7 @@ mod tests {
             code_name: None,
             fault_addr: None,
             lwp: Some(7),
+            sender: None,
         });
         let page = sections(&facts, Sections::select(false, true, false), 5);
         assert!(
@@ -1192,6 +1194,7 @@ mod tests {
             code_name: None,
             fault_addr: None,
             lwp: None,
+            sender: None,
         };
         assert_eq!(fatal_signal_line(&sig), "SIGSEGV (code 128)");
     }

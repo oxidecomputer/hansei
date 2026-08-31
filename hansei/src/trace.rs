@@ -1448,6 +1448,7 @@ mod native_section_tests {
             code_name: Some("SEGV_MAPERR"),
             fault_addr: Some(0),
             lwp: Some(115),
+            sender: None,
         }
     }
 
@@ -1459,6 +1460,7 @@ mod native_section_tests {
             code_name: None,
             fault_addr: None,
             lwp: Some(7),
+            sender: None,
         }
     }
 

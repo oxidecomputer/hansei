@@ -1244,6 +1244,9 @@ fn decode_fatal_signal(desc: &[u8]) -> Option<FatalSignal> {
         false => (0, 0),
     };
     let code_name = fault_code_name(name, code);
+    // A non-positive code is a sent signal, whose union leads with
+    // `si_pid` where a fault's holds the address the read took whole.
+    let pid = addr as i32;
     Some(FatalSignal {
         name,
         signo,
@@ -1251,6 +1254,7 @@ fn decode_fatal_signal(desc: &[u8]) -> Option<FatalSignal> {
         code_name,
         fault_addr: code_name.is_some().then_some(addr),
         lwp: Some(tid),
+        sender: (code <= 0 && pid != 0).then_some(pid),
     })
 }
 
@@ -2079,6 +2083,7 @@ mod tests {
                 code_name: Some("BUS_ADRERR"),
                 fault_addr: Some(0xdead_b000),
                 lwp: Some(2),
+                sender: None,
             })
         );
         let status = p.status();
@@ -2315,6 +2320,21 @@ mod tests {
         out[FDINFO_PR_FILEFLAGS..FDINFO_PR_FILEFLAGS + 4].copy_from_slice(&2i32.to_le_bytes());
         out[FDINFO_PR_PATH..FDINFO_PR_PATH + path.len()].copy_from_slice(path.as_bytes());
         out
+    }
+
+    /// A user-sent signal's `siginfo` union holds the sender's pid
+    /// where a fault's holds the address, and the decoder tells the
+    /// two apart by the code.
+    #[test]
+    fn test_a_user_sent_signal_names_its_sender() {
+        let (_dir, p) = CoreBuilder::default()
+            .crashed(1, regs_at(0, 0x9000), 15, 0, 4141)
+            .dumped(0x9000, PF_R | PF_W, vec![0; PAGE as usize])
+            .proc();
+        let fatal = p.fatal_signal().expect("a cursig is a death");
+        assert_eq!(fatal.name, "SIGTERM");
+        assert_eq!(fatal.fault_addr, None);
+        assert_eq!(fatal.sender, Some(4141));
     }
 
     /// Every `NT_FDINFO` note decodes into the fd table, in fd order
