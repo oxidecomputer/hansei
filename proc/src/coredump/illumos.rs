@@ -2314,6 +2314,21 @@ mod tests {
             Some(&["HOME=/root".to_string(), "TZ=UTC".to_string()][..])
         );
         assert_eq!(facts.execfn, None);
+        assert_eq!(
+            crate::Target::exec_path(&p),
+            Some(PathBuf::from("/opt/prog"))
+        );
+
+        // The Proc facade serves the same identity.
+        let target = crate::Proc::IllumosCore(p);
+        assert_eq!(
+            crate::Target::process_facts(&target).map(|f| f.pid),
+            Some(4242)
+        );
+        assert_eq!(
+            crate::Target::exec_path(&target),
+            Some(PathBuf::from("/opt/prog"))
+        );
     }
 
     /// One `prfdinfo_core_t` for the test's builder: fd, mode, size,
@@ -2355,6 +2370,9 @@ mod tests {
             .thread(1, regs_at(0, 0x9000))
             .note(NT_FDINFO, fdinfo(4, 0o140666, 0, ""))
             .note(NT_FDINFO, fdinfo(1, 0o100644, 4096, "/var/log/x.log"))
+            // Shorter than the ABI struct: another system's bytes,
+            // ignored whole rather than sliced.
+            .note(NT_FDINFO, vec![0; 100])
             .dumped(0x9000, PF_R | PF_W, vec![0; PAGE as usize])
             .proc();
 
@@ -2371,6 +2389,10 @@ mod tests {
         assert_eq!(fds[1].mode, 0o140666);
         assert_eq!(fds[1].path, "");
 
+        // The Proc facade serves the same table.
+        let target = crate::Proc::IllumosCore(p);
+        assert_eq!(crate::Target::fds(&target).map(<[FdInfo]>::len), Some(2));
+
         let (_dir, p) = CoreBuilder::default()
             .thread(1, regs_at(0, 0x9000))
             .dumped(0x9000, PF_R | PF_W, vec![0; PAGE as usize])
@@ -2386,14 +2408,16 @@ mod tests {
     fn test_process_facts_survive_an_unreadable_argv() {
         let (_dir, p) = CoreBuilder::default()
             .thread(1, regs_at(0, 0x9000))
-            .note(
-                NT_PSINFO,
-                psinfo_ident("/opt/prog", "prog", 1, 0xdead_0000, 0),
-            )
+            .note(NT_PSINFO, {
+                let mut ident = psinfo_ident("/opt/prog", "prog", 1, 0xdead_0000, 0);
+                ident[PSINFO_PR_DMODEL] = PR_MODEL_ILP32;
+                ident
+            })
             .dumped(0x9000, PF_R | PF_W, vec![0; PAGE as usize])
             .proc();
         let facts = crate::Target::process_facts(&p).expect("psinfo decodes");
         assert_eq!(facts.pid, 4242);
+        assert_eq!(facts.model, Some("ILP32"));
         assert_eq!(facts.argv, None);
         assert_eq!(facts.env, None);
 
@@ -2537,6 +2561,12 @@ mod tests {
         assert!(p.lookup_symbol_by_addr(0x40_0140).is_none());
         assert!(p.lookup_symbol_by_addr(0x40_0500).is_none());
         assert!(p.lookup_symbol_by_addr(0x1000).is_none());
+
+        // The whole-object attribution the objects listing reads,
+        // through the core and through the Proc facade alike.
+        assert_eq!(crate::Target::symbol_object_bases(&p), vec![0x40_0000]);
+        let target = crate::Proc::IllumosCore(p);
+        assert_eq!(crate::Target::symbol_object_bases(&target), vec![0x40_0000]);
     }
 
     /// A shared object's table holds link-time offsets; `sh_addr` is

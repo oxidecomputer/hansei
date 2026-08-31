@@ -85,6 +85,7 @@ fn commands(
         ("info-signal", "info signal".to_owned()),
         ("info-objects", "info objects".to_owned()),
         ("info-fds", "info fds".to_owned()),
+        ("info-v", "info -v".to_owned()),
     ];
     if let Some(lwp) = session.lwps.first() {
         list.push(("threads-one", format!("threads {}", lwp.tid)));

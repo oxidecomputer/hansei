@@ -35,12 +35,15 @@ pub fn exec_info<T: Target>(
                 Section::Objects,
                 Section::Fds,
             ];
-            for (i, section) in all.into_iter().enumerate() {
-                if i > 0 {
-                    writeln!(out)?;
-                }
-                print_section(session, section, out)?;
+            // Each section rendered whole, then joined — so the
+            // blank-line seams cannot drift from the section count.
+            let mut sections = Vec::new();
+            for section in all {
+                let mut buf = Vec::new();
+                print_section(session, section, &mut buf)?;
+                sections.push(String::from_utf8(buf).expect("section output is UTF-8"));
             }
+            write!(out, "{}", sections.join("\n"))?;
             Ok(())
         }
         None => attach_summary(session, out),
@@ -190,11 +193,7 @@ fn process<T: Target>(session: &Session<'_, T>, out: &mut dyn io::Write) -> Resu
                 writeln!(out, "  {arg}")?;
             }
         }
-        None if linux => writeln!(
-            out,
-            "argv: not recorded in a Linux core (psargs is its 80-byte spelling)"
-        )?,
-        None => writeln!(out, "argv: not readable from this core")?,
+        None => writeln!(out, "argv: {}", argv_absence(linux))?,
     }
     match &facts.env {
         Some(env) => {
@@ -203,10 +202,36 @@ fn process<T: Target>(session: &Session<'_, T>, out: &mut dyn io::Write) -> Resu
                 writeln!(out, "  {var}")?;
             }
         }
-        None if linux => writeln!(out, "environment: not recorded in a Linux core")?,
-        None => writeln!(out, "environment: not readable from this core")?,
+        None => writeln!(out, "environment: {}", env_absence(linux))?,
     }
     Ok(())
+}
+
+/// The absence spellings, split by which core cannot answer: a Linux
+/// core records neither argv nor the environment at all, while an
+/// illumos core records pointers this dump happens not to serve.
+fn argv_absence(linux: bool) -> &'static str {
+    match linux {
+        true => "not recorded in a Linux core (psargs is its 80-byte spelling)",
+        false => "not readable from this core",
+    }
+}
+
+fn env_absence(linux: bool) -> &'static str {
+    match linux {
+        true => "not recorded in a Linux core",
+        false => "not readable from this core",
+    }
+}
+
+/// The fd table's: `Some(true)` is a Linux core — process facts with
+/// no data model — whose system records no fd table; anything else is
+/// a target with no fd story at all.
+fn fds_absence(linux: Option<bool>) -> &'static str {
+    match linux {
+        Some(true) => "not recorded in a Linux core",
+        _ => "not recorded by this target",
+    }
 }
 
 /// Both build ids and whether they agree, for the targets where the
@@ -240,14 +265,31 @@ fn signal<T: Target>(session: &Session<'_, T>, out: &mut dyn io::Write) -> Resul
         writeln!(out, "sender: pid {pid}")?;
     }
     if let Some(lwp) = sig.lwp {
-        let pc = session
-            .lwps
-            .iter()
-            .find(|l| l.tid == lwp)
-            .map(|l| l.regs.rip);
-        writeln!(out, "{}", taken_on(lwp, pc, |pc| symbolize(session, pc)))?;
+        let pc = pc_of(&session.lwps, lwp);
+        let sym = |pc: u64| {
+            session
+                .proc
+                .lookup_symbol_by_addr(pc)
+                .map(|sym| symbol_label(&sym.name, sym.st_value, pc))
+        };
+        writeln!(out, "{}", taken_on(lwp, pc, sym))?;
     }
     Ok(())
+}
+
+/// The taking lwp's pc, where the target still lists that lwp.
+fn pc_of(lwps: &[proc::LwpInfo], lwp: u32) -> Option<u64> {
+    lwps.iter().find(|l| l.tid == lwp).map(|l| l.regs.rip)
+}
+
+/// `symbol+0xoff`, demangled without the hash; the bare name at its
+/// own address.
+fn symbol_label(name: &str, value: u64, pc: u64) -> String {
+    let name = format!("{:#}", rustc_demangle::demangle(name));
+    match pc - value {
+        0 => name,
+        off => format!("{name}+{off:#x}"),
+    }
 }
 
 /// `taken on: lwp N, pc 0x… <symbol+0x…>`, with each part present
@@ -261,15 +303,6 @@ fn taken_on(lwp: u32, pc: Option<u64>, sym: impl Fn(u64) -> Option<String>) -> S
         }
     }
     line
-}
-
-fn symbolize<T: Target>(session: &Session<'_, T>, pc: u64) -> Option<String> {
-    let sym = session.proc.lookup_symbol_by_addr(pc)?;
-    let name = format!("{:#}", rustc_demangle::demangle(&sym.name));
-    match pc - sym.st_value {
-        0 => Some(name),
-        off => Some(format!("{name}+{off:#x}")),
-    }
 }
 
 /// `info objects`: every file-backed object, with whether this target
@@ -328,13 +361,8 @@ fn objects<T: Target>(session: &Session<'_, T>, out: &mut dyn io::Write) -> Resu
 /// count first, since a busy target records tens of thousands.
 fn fds<T: Target>(session: &Session<'_, T>, out: &mut dyn io::Write) -> Result<()> {
     let Some(fds) = session.proc.fds() else {
-        let why = match session.proc.process_facts() {
-            // Only a Linux core has process facts with no data model;
-            // its system records no fd table at all.
-            Some(facts) if facts.model.is_none() => "not recorded in a Linux core",
-            _ => "not recorded by this target",
-        };
-        writeln!(out, "fds: {why}")?;
+        let linux = session.proc.process_facts().map(|f| f.model.is_none());
+        writeln!(out, "fds: {}", fds_absence(linux))?;
         return Ok(());
     };
     writeln!(out, "{} fds recorded", fds.len())?;
@@ -399,10 +427,10 @@ fn table<const N: usize>(header: &[&str; N], rows: &[[String; N]]) -> String {
                 text.push_str("  ");
             }
             text.push_str(cell);
-            if i < N - 1 {
-                for _ in width(cell)..w {
-                    text.push(' ');
-                }
+            // The last column's padding is trailing space, trimmed
+            // below — so every column can pad alike.
+            for _ in width(cell)..w {
+                text.push(' ');
             }
         }
         out.push_str(text.trim_end());
@@ -472,7 +500,64 @@ mod tests {
         assert_eq!(kind(0o020620), "chr");
         assert_eq!(kind(0o040755), "dir");
         assert_eq!(kind(0o150000), "door");
+        assert_eq!(kind(0o010644), "fifo");
+        assert_eq!(kind(0o060640), "blk");
+        assert_eq!(kind(0o120777), "lnk");
+        assert_eq!(kind(0o160000), "port");
         assert_eq!(kind(0), "?");
+    }
+
+    #[test]
+    fn test_utc_survives_the_2100_century() {
+        // 2100 is not a leap year: the Gregorian century correction's
+        // one observable seam inside the epoch's useful range.
+        assert_eq!(utc(&ts(4_107_542_399)), "2100-02-28 23:59:59 UTC");
+        assert_eq!(utc(&ts(4_107_542_400)), "2100-03-01 00:00:00 UTC");
+    }
+
+    #[test]
+    fn test_pc_of_reads_exactly_the_named_lwp() {
+        let lwp = |tid: u32, rip: u64| proc::LwpInfo {
+            tid,
+            regs: proc::Regs {
+                rip,
+                ..Default::default()
+            },
+            stack_range: 0..0,
+            altstack: 0..0,
+            tstamp: Timespec {
+                tv_sec: 0,
+                tv_nsec: 0,
+            },
+        };
+        let lwps = [lwp(3, 0x30), lwp(7, 0x70)];
+        assert_eq!(pc_of(&lwps, 7), Some(0x70));
+        assert_eq!(pc_of(&lwps, 3), Some(0x30));
+        assert_eq!(pc_of(&lwps, 9), None);
+    }
+
+    #[test]
+    fn test_symbol_label_demangles_and_offsets() {
+        assert_eq!(symbol_label("abort", 0x1000, 0x1000), "abort");
+        assert_eq!(symbol_label("abort", 0x1000, 0x1008), "abort+0x8");
+        assert_eq!(
+            symbol_label("_ZN3std9panicking11begin_panic17h1234567890abcdefE", 0, 0),
+            "std::panicking::begin_panic"
+        );
+    }
+
+    #[test]
+    fn test_absence_spellings() {
+        assert_eq!(
+            argv_absence(true),
+            "not recorded in a Linux core (psargs is its 80-byte spelling)"
+        );
+        assert_eq!(argv_absence(false), "not readable from this core");
+        assert_eq!(env_absence(true), "not recorded in a Linux core");
+        assert_eq!(env_absence(false), "not readable from this core");
+        assert_eq!(fds_absence(Some(true)), "not recorded in a Linux core");
+        assert_eq!(fds_absence(Some(false)), "not recorded by this target");
+        assert_eq!(fds_absence(None), "not recorded by this target");
     }
 
     #[test]
