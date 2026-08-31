@@ -1,0 +1,5 @@
+---
+source: hansei/src/offline.rs
+description: "`info fds` over linux-floor/simple-await"
+---
+fds: not recorded by this target

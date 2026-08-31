@@ -1,0 +1,11 @@
+---
+source: hansei/src/offline.rs
+description: "`info` over illumos/unordered"
+---
+core:       <snapshot>
+tokio info: <tokio info>
+symbols resolved: 15/15
+signal: none recorded (a live capture, not a crash)
+objects: 10 loaded (see `info objects`)
+3 worker thread(s), 1 task(s)
+1 runtime (see `runtimes --list`)

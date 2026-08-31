@@ -600,6 +600,41 @@ mod tests {
         Line::command().debug_assert();
     }
 
+    /// `info` takes one section, or `-v` for all of them — never both,
+    /// which would leave it ambiguous how much was asked for.
+    #[test]
+    fn test_info_takes_a_section_or_verbose() {
+        let Command::Info { section, verbose } = Line::try_parse_from(["info"])
+            .expect("bare info parses")
+            .command
+        else {
+            panic!("info parsed as another command");
+        };
+        assert_eq!(section, None);
+        assert!(!verbose);
+
+        let Command::Info { section, verbose } = Line::try_parse_from(["info", "fds"])
+            .expect("info takes a section")
+            .command
+        else {
+            panic!("info parsed as another command");
+        };
+        assert_eq!(section, Some(crate::info::Section::Fds));
+        assert!(!verbose);
+
+        let Command::Info { section, verbose } = Line::try_parse_from(["info", "-v"])
+            .expect("info takes -v")
+            .command
+        else {
+            panic!("info parsed as another command");
+        };
+        assert_eq!(section, None);
+        assert!(verbose);
+
+        assert!(Line::try_parse_from(["info", "fds", "-v"]).is_err());
+        assert!(Line::try_parse_from(["info", "panic"]).is_err());
+    }
+
     /// The census sections are flags rather than a value, so several of
     /// them can be asked for at once — including bundled behind one `-`.
     #[test]

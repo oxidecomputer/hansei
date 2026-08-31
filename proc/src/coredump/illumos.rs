@@ -1364,6 +1364,14 @@ impl Target for Core {
         self.fds.as_deref()
     }
 
+    fn exec_path(&self) -> Option<PathBuf> {
+        Core::exec_name(self).ok()
+    }
+
+    fn symbol_object_bases(&self) -> Vec<u64> {
+        self.symbols.keys().copied().collect()
+    }
+
     fn readable_len(&self, addr: u64, max: u64) -> u64 {
         Core::readable_len(self, addr, max)
     }

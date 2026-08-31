@@ -1,0 +1,11 @@
+---
+source: hansei/src/offline.rs
+description: "`info` over linux-floor/ct-runtime"
+---
+core:       <snapshot>
+tokio info: <tokio info>
+symbols resolved: 5/5
+signal: none recorded (a live capture, not a crash)
+objects: 5 loaded (see `info objects`)
+1 worker thread(s), 2 task(s)
+1 runtime (see `runtimes --list`)
