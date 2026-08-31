@@ -76,6 +76,15 @@ mod note {
 const LINUX_PRSTATUS_LEN: usize = 336;
 const ILLUMOS_PRSTATUS_LEN: usize = 824;
 
+/// A fixed-width, NUL-padded field (`pr_fname`, `pr_psargs`) as a
+/// string: up to the first NUL, lossily — a truncated `pr_psargs` can
+/// end mid-UTF-8-sequence, which is the field's doing, not a reason to
+/// drop the whole line.
+pub(crate) fn fixed_str(raw: &[u8]) -> String {
+    let end = raw.iter().position(|b| *b == 0).unwrap_or(raw.len());
+    String::from_utf8_lossy(&raw[..end]).into_owned()
+}
+
 /// Identify a core without committing to reading it.
 ///
 /// Reads only the ELF and note headers, so it costs a few pages however

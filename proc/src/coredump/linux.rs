@@ -21,7 +21,7 @@
 use super::common::{Segment, Symbols};
 use crate::{
     BuildIds, Error, FatalSignal, LoadedObject, LoadedObjectWithPath, LwpInfo, MapFlags, Mappings,
-    Regs, Result, Status, SymbolBuf, Target, Timespec, fault_code_name,
+    ProcessFacts, Regs, Result, Status, SymbolBuf, Target, Timespec, fault_code_name,
 };
 
 use goblin::elf::Elf;
@@ -46,6 +46,25 @@ const NT_AUXV: u32 = 6;
 /// executable is told apart from every other mapped file.
 const AT_NULL: u64 = 0;
 const AT_PHDR: u64 = 3;
+/// The path the executable was invoked as: the auxv's one string,
+/// pointing into the initial stack.
+const AT_EXECFN: u64 = 31;
+
+/// `struct elf_prpsinfo` for x86-64, fixed ABI like the prstatus: the
+/// ids, the executable's short name, and the 80-byte command line.
+/// That is the whole process identity a Linux core records — argv and
+/// the environment live only on the initial stack, and locating them
+/// there is a heuristic this reader does not attempt.
+const NT_PRPSINFO: u32 = 3;
+const PRPSINFO_LEN: usize = 136;
+const PRPSINFO_PR_UID: usize = 16;
+const PRPSINFO_PR_GID: usize = 20;
+const PRPSINFO_PR_PID: usize = 24;
+const PRPSINFO_PR_PPID: usize = 28;
+const PRPSINFO_PR_FNAME: usize = 40;
+const PRPSINFO_FNAME_LEN: usize = 16;
+const PRPSINFO_PR_PSARGS: usize = 56;
+const PRPSINFO_PSARGS_LEN: usize = 80;
 
 /// Field offsets into `struct elf_prstatus` for x86-64, which is fixed
 /// ABI: `pr_pid` is the thread id, `pr_reg` a `user_regs_struct`, and
@@ -237,6 +256,9 @@ pub struct Core {
     fatal: Option<FatalSignal>,
     /// The executable's path and load bias, found via `AT_PHDR`.
     exec: Option<ExecInfo>,
+    /// The process identity out of the `prpsinfo` and `AT_EXECFN`;
+    /// `None` for a core carrying no prpsinfo note.
+    facts: Option<ProcessFacts>,
 }
 
 impl std::fmt::Debug for Core {
@@ -309,6 +331,7 @@ impl Core {
         let mut auxv = BTreeMap::new();
         let mut cursig = 0i16;
         let mut siginfo = None;
+        let mut prpsinfo: Option<Vec<u8>> = None;
         for note in elf.iter_note_headers(&core).into_iter().flatten() {
             let note = note.map_err(|_| Error::bad_core("malformed note"))?;
             match note.n_type {
@@ -337,6 +360,9 @@ impl Core {
                         field(SI_CODE),
                         u64::from_le_bytes(note.desc[SI_ADDR..SI_ADDR + 8].try_into().unwrap()),
                     ));
+                }
+                NT_PRPSINFO if note.desc.len() >= PRPSINFO_LEN && prpsinfo.is_none() => {
+                    prpsinfo = Some(note.desc.to_vec());
                 }
                 NT_FILE => parse_nt_file(note.desc, &mut files)?,
                 NT_AUXV => {
@@ -413,10 +439,14 @@ impl Core {
             lwps,
             fatal,
             exec: None,
+            facts: None,
         };
         core_file.mappings = core_file.build_mappings();
         core_file.exec = core_file.find_exec(auxv.get(&AT_PHDR).copied());
         core_file.fill_stack_ranges();
+        core_file.facts = prpsinfo
+            .as_deref()
+            .map(|desc| core_file.process_facts_from(desc, auxv.get(&AT_EXECFN).copied()));
         Ok(core_file)
     }
 
@@ -613,6 +643,51 @@ impl Core {
     /// between a core and a companion binary: the symbol fingerprint
     /// compares *names*, which a differently hashed build of the same
     /// source satisfies in full while every address in it is wrong.
+    /// Decode the `prpsinfo` into [`ProcessFacts`]. A Linux core
+    /// records no effective ids, no data model, no start time, and no
+    /// argv/environment pointers; `AT_EXECFN` is the one string the
+    /// auxv adds, read out of the dumped stack when that page made it
+    /// into the core.
+    fn process_facts_from(&self, desc: &[u8], execfn: Option<u64>) -> ProcessFacts {
+        let int = |at: usize| i32::from_le_bytes(desc[at..at + 4].try_into().unwrap());
+        let uint = |at: usize| u32::from_le_bytes(desc[at..at + 4].try_into().unwrap());
+        ProcessFacts {
+            pid: int(PRPSINFO_PR_PID),
+            ppid: int(PRPSINFO_PR_PPID),
+            uid: uint(PRPSINFO_PR_UID),
+            gid: uint(PRPSINFO_PR_GID),
+            euid: None,
+            egid: None,
+            model: None,
+            start: None,
+            fname: super::fixed_str(
+                &desc[PRPSINFO_PR_FNAME..PRPSINFO_PR_FNAME + PRPSINFO_FNAME_LEN],
+            ),
+            psargs: super::fixed_str(
+                &desc[PRPSINFO_PR_PSARGS..PRPSINFO_PR_PSARGS + PRPSINFO_PSARGS_LEN],
+            ),
+            argv: None,
+            env: None,
+            execfn: execfn.and_then(|at| self.read_cstr(at)),
+        }
+    }
+
+    /// A NUL-terminated string out of the target's memory, `None` when
+    /// any byte of it is not in the dump.
+    fn read_cstr(&self, at: u64) -> Option<String> {
+        if at == 0 {
+            return None;
+        }
+        let mut out = Vec::new();
+        for i in 0..4096 {
+            match self.read_u8(at + i).ok()? {
+                0 => return String::from_utf8(out).ok(),
+                b => out.push(b),
+            }
+        }
+        None
+    }
+
     pub fn build_ids(&self) -> BuildIds {
         BuildIds {
             core: self.core_build_id(),
@@ -1029,6 +1104,10 @@ impl Target for Core {
         self.fatal.clone()
     }
 
+    fn process_facts(&self) -> Option<ProcessFacts> {
+        self.facts.clone()
+    }
+
     fn readable_len(&self, addr: u64, max: u64) -> u64 {
         Core::readable_len(self, addr, max)
     }
@@ -1138,6 +1217,8 @@ mod tests {
         /// An `NT_SIGINFO` note among the first thread's notes:
         /// `(si_signo, si_code, si_addr)`.
         siginfo: Option<(i32, i32, u64)>,
+        /// An `NT_PRPSINFO` note among the process-wide notes.
+        prpsinfo: Option<Vec<u8>>,
         /// Emitted verbatim in place of the real notes, for the
         /// malformed-core tests.
         raw_notes: Option<Vec<u8>>,
@@ -1179,6 +1260,11 @@ mod tests {
 
         fn auxv(mut self, tag: u64, val: u64) -> Self {
             self.auxv.push((tag, val));
+            self
+        }
+
+        fn prpsinfo(mut self, desc: Vec<u8>) -> Self {
+            self.prpsinfo = Some(desc);
             self
         }
 
@@ -1231,6 +1317,9 @@ mod tests {
                         desc[SI_ADDR..SI_ADDR + 8].copy_from_slice(&addr.to_le_bytes());
                         out.extend(note(NT_SIGINFO, "CORE", &desc));
                     }
+                    if let Some(desc) = &self.prpsinfo {
+                        out.extend(note(NT_PRPSINFO, "CORE", desc));
+                    }
                     if !self.files.is_empty() {
                         out.extend(note(NT_FILE, "CORE", &nt_file(&self.files)));
                     }
@@ -1274,6 +1363,78 @@ mod tests {
             std::fs::write(&path, self.build()).expect("failed to write the core");
             path
         }
+    }
+
+    /// A `prpsinfo` carrying the identity a Linux core records.
+    fn prpsinfo_desc(
+        pid: i32,
+        ppid: i32,
+        uid: u32,
+        gid: u32,
+        fname: &str,
+        psargs: &str,
+    ) -> Vec<u8> {
+        let mut out = vec![0u8; PRPSINFO_LEN];
+        out[PRPSINFO_PR_UID..PRPSINFO_PR_UID + 4].copy_from_slice(&uid.to_le_bytes());
+        out[PRPSINFO_PR_GID..PRPSINFO_PR_GID + 4].copy_from_slice(&gid.to_le_bytes());
+        out[PRPSINFO_PR_PID..PRPSINFO_PR_PID + 4].copy_from_slice(&pid.to_le_bytes());
+        out[PRPSINFO_PR_PPID..PRPSINFO_PR_PPID + 4].copy_from_slice(&ppid.to_le_bytes());
+        out[PRPSINFO_PR_FNAME..PRPSINFO_PR_FNAME + fname.len()].copy_from_slice(fname.as_bytes());
+        out[PRPSINFO_PR_PSARGS..PRPSINFO_PR_PSARGS + psargs.len()]
+            .copy_from_slice(psargs.as_bytes());
+        out
+    }
+
+    /// The prpsinfo's ids and names decode, `AT_EXECFN` is read out of
+    /// the dumped stack, and what a Linux core does not record — the
+    /// environment, the model, the start time — stays `None` rather
+    /// than being guessed at.
+    #[test]
+    fn test_prpsinfo_decodes_the_process_identity() {
+        let mut stack = vec![0u8; 64];
+        stack[16..30].copy_from_slice(b"/opt/prog.bin\0");
+        let (_dir, p) = CoreBuilder::default()
+            .thread(1, regs_at(0, 0x9000))
+            .prpsinfo(prpsinfo_desc(4242, 41, 1000, 1000, "prog", "./prog --flag"))
+            .auxv(AT_EXECFN, 0x8010)
+            .dumped(0x8000, PF_R | PF_W, stack)
+            .dumped(0x9000, PF_R | PF_W, vec![0; PAGE as usize])
+            .proc();
+
+        let facts = Target::process_facts(&p).expect("prpsinfo decodes");
+        assert_eq!(facts.pid, 4242);
+        assert_eq!(facts.ppid, 41);
+        assert_eq!(facts.uid, 1000);
+        assert_eq!(facts.gid, 1000);
+        assert_eq!(facts.euid, None);
+        assert_eq!(facts.egid, None);
+        assert_eq!(facts.model, None);
+        assert_eq!(facts.start, None);
+        assert_eq!(facts.fname, "prog");
+        assert_eq!(facts.psargs, "./prog --flag");
+        assert_eq!(facts.argv, None);
+        assert_eq!(facts.env, None);
+        assert_eq!(facts.execfn.as_deref(), Some("/opt/prog.bin"));
+    }
+
+    /// An execfn pointer whose page the dump left out yields no path,
+    /// and a core with no prpsinfo yields no facts at all.
+    #[test]
+    fn test_missing_process_notes_degrade() {
+        let (_dir, p) = CoreBuilder::default()
+            .thread(1, regs_at(0, 0x9000))
+            .prpsinfo(prpsinfo_desc(1, 0, 0, 0, "prog", "./prog"))
+            .auxv(AT_EXECFN, 0xdead_0000)
+            .dumped(0x9000, PF_R | PF_W, vec![0; PAGE as usize])
+            .proc();
+        let facts = Target::process_facts(&p).expect("prpsinfo decodes");
+        assert_eq!(facts.execfn, None);
+
+        let (_dir, p) = CoreBuilder::default()
+            .thread(1, regs_at(0, 0x9000))
+            .dumped(0x9000, PF_R | PF_W, vec![0; PAGE as usize])
+            .proc();
+        assert_eq!(Target::process_facts(&p), None);
     }
 
     /// An `ET_CORE` header for `phnum` program headers following it.

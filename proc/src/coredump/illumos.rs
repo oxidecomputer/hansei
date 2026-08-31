@@ -23,8 +23,8 @@
 
 use super::common::{Segment, Symbols, elf_ctx};
 use crate::{
-    Error, FatalSignal, LoadedObject, LoadedObjectWithPath, LwpInfo, MapFlags, Mappings, Regs,
-    Result, Status, SymbolBuf, Target, Timespec, fault_code_name,
+    Error, FatalSignal, FdInfo, LoadedObject, LoadedObjectWithPath, LwpInfo, MapFlags, Mappings,
+    ProcessFacts, Regs, Result, Status, SymbolBuf, Target, Timespec, fault_code_name,
 };
 
 use goblin::elf::Elf;
@@ -139,10 +139,48 @@ const PSTATUS_PR_BRKBASE: usize = 48;
 const PSTATUS_PR_BRKSIZE: usize = 56;
 
 /// `psinfo_t`: the command line is what names the executable, since an
-/// illumos core has no equivalent of Linux's `NT_FILE`.
+/// illumos core has no equivalent of Linux's `NT_FILE` — and the rest
+/// of the process identity lives here too. `pr_argv`/`pr_envp` are
+/// pointers into the target's own stack, which the dump carries, so
+/// the full argv and environment are readable once the segments are.
 const PSINFO_LEN: usize = 416;
+const PSINFO_PR_PID: usize = 8;
+const PSINFO_PR_PPID: usize = 12;
+const PSINFO_PR_UID: usize = 24;
+const PSINFO_PR_EUID: usize = 28;
+const PSINFO_PR_GID: usize = 32;
+const PSINFO_PR_EGID: usize = 36;
+/// `pr_start`, a `timestruc_t` on the realtime clock.
+const PSINFO_PR_START: usize = 88;
+const PSINFO_PR_FNAME: usize = 136;
+const PSINFO_FNAME_LEN: usize = 16;
 const PSINFO_PR_PSARGS: usize = 152;
 const PSINFO_PSARGS_LEN: usize = 80;
+const PSINFO_PR_ARGC: usize = 236;
+const PSINFO_PR_ARGV: usize = 240;
+const PSINFO_PR_ENVP: usize = 248;
+/// `pr_dmodel`: `PR_MODEL_ILP32` (1) or `PR_MODEL_LP64` (2), from
+/// `<sys/procfs_isa.h>`.
+const PSINFO_PR_DMODEL: usize = 256;
+const PR_MODEL_ILP32: u8 = 1;
+const PR_MODEL_LP64: u8 = 2;
+/// Where a pointer-array walk gives up: past any real argv or
+/// environment, short of chasing a corrupt array across the dump.
+const STRING_TABLE_MAX: u64 = 4096;
+
+/// `prfdinfo_core_t`, the fixed form the kernel writes into a core's
+/// `NT_FDINFO` notes — one per open fd. Unlike the variable
+/// `prfdinfo_t` of `/proc/<pid>/fdinfo` it carries no `pr_misc`
+/// items, so a socket has no local or peer name here.
+const NT_FDINFO: u32 = 22;
+const FDINFO_LEN: usize = 1088;
+const FDINFO_PR_MODE: usize = 4;
+const FDINFO_PR_INO: usize = 32;
+const FDINFO_PR_OFFSET: usize = 40;
+const FDINFO_PR_SIZE: usize = 48;
+const FDINFO_PR_FILEFLAGS: usize = 56;
+const FDINFO_PR_PATH: usize = 64;
+const FDINFO_PATH_LEN: usize = 1024;
 
 /// `prlwpname`: a thread id and the name that thread was given.
 const LWPNAME_LEN: usize = 40;
@@ -328,6 +366,12 @@ pub struct Core {
     /// region `pmap` calls `[ heap ]`. `None` for a core whose pstatus
     /// is absent or predates the field, which falls back to a guess.
     brk: Option<Range<u64>>,
+    /// The process identity out of the `psinfo_t`, argv and environment
+    /// included; `None` for a core carrying no psinfo note.
+    facts: Option<ProcessFacts>,
+    /// The open-fd table out of the `NT_FDINFO` notes, in fd order;
+    /// `None` for a core carrying none of them.
+    fds: Option<Vec<FdInfo>>,
 }
 
 impl std::fmt::Debug for Core {
@@ -372,6 +416,8 @@ impl Core {
         let mut lwp_names = BTreeMap::new();
         let mut auxv = BTreeMap::new();
         let mut exec = None;
+        let mut psinfo: Option<Vec<u8>> = None;
+        let mut fds: Option<Vec<FdInfo>> = None;
         let mut fatal = None;
         let mut brk: Option<Range<u64>> = None;
         for note in elf.iter_note_headers(&core).into_iter().flatten() {
@@ -417,8 +463,14 @@ impl Core {
                         lwp_names.insert(tid, name);
                     }
                 }
-                NT_PSINFO if desc.len() >= PSINFO_LEN && exec.is_none() => {
+                NT_PSINFO if desc.len() >= PSINFO_LEN && psinfo.is_none() => {
                     exec = parse_psinfo_exec(desc);
+                    // Kept whole: the argv/envp pointers it holds can
+                    // only be followed once the segments are readable.
+                    psinfo = Some(desc.to_vec());
+                }
+                NT_FDINFO if desc.len() >= FDINFO_LEN => {
+                    fds.get_or_insert_with(Vec::new).push(parse_fdinfo(desc));
                 }
                 NT_AUXV => {
                     for pair in desc.chunks_exact(16) {
@@ -456,8 +508,16 @@ impl Core {
             exec_base: None,
             exec_bias: None,
             brk,
+            facts: None,
+            fds: fds.map(|mut fds| {
+                fds.sort_by_key(|f| f.fd);
+                fds
+            }),
         };
         core_file.fill_stack_ranges();
+        core_file.facts = psinfo
+            .as_deref()
+            .map(|desc| core_file.process_facts_from(desc));
 
         // The link map lives in the target's memory, so it can only be
         // walked once the segments are readable. So are the program
@@ -642,6 +702,61 @@ impl Core {
             .collect::<Option<Vec<_>>>()?
             .concat();
         ProgramHeader::parse(&bytes, 0, phnum as usize, elf_ctx()).ok()
+    }
+
+    /// Decode the `psinfo_t` into [`ProcessFacts`], following the
+    /// `pr_argv`/`pr_envp` pointers into the dumped image for the full
+    /// argv and environment. Runs after the segments are readable,
+    /// because that is what the pointers aim into.
+    fn process_facts_from(&self, desc: &[u8]) -> ProcessFacts {
+        let int = |at: usize| i32::from_le_bytes(desc[at..at + 4].try_into().unwrap());
+        let uint = |at: usize| u32::from_le_bytes(desc[at..at + 4].try_into().unwrap());
+        let long = |at: usize| i64::from_le_bytes(desc[at..at + 8].try_into().unwrap());
+        let ptr = |at: usize| u64::from_le_bytes(desc[at..at + 8].try_into().unwrap());
+        let start = Timespec {
+            tv_sec: long(PSINFO_PR_START),
+            tv_nsec: long(PSINFO_PR_START + 8),
+        };
+        let argc = u64::from(uint(PSINFO_PR_ARGC));
+        ProcessFacts {
+            pid: int(PSINFO_PR_PID),
+            ppid: int(PSINFO_PR_PPID),
+            uid: uint(PSINFO_PR_UID),
+            gid: uint(PSINFO_PR_GID),
+            euid: Some(uint(PSINFO_PR_EUID)),
+            egid: Some(uint(PSINFO_PR_EGID)),
+            model: match desc[PSINFO_PR_DMODEL] {
+                PR_MODEL_ILP32 => Some("ILP32"),
+                PR_MODEL_LP64 => Some("LP64"),
+                _ => None,
+            },
+            start: (start.tv_sec != 0).then_some(start),
+            fname: super::fixed_str(&desc[PSINFO_PR_FNAME..PSINFO_PR_FNAME + PSINFO_FNAME_LEN]),
+            psargs: super::fixed_str(&desc[PSINFO_PR_PSARGS..PSINFO_PR_PSARGS + PSINFO_PSARGS_LEN]),
+            argv: self.read_string_table(ptr(PSINFO_PR_ARGV), argc.min(STRING_TABLE_MAX)),
+            env: self.read_string_table(ptr(PSINFO_PR_ENVP), STRING_TABLE_MAX),
+            execfn: None,
+        }
+    }
+
+    /// The strings behind an array of pointers in the target: up to
+    /// `limit` of them, stopping at a terminating null pointer. `None`
+    /// when the array or any string it points at is not in the dump —
+    /// a partial answer would read as the whole argv, which is worse
+    /// than saying the dump does not carry it.
+    fn read_string_table(&self, at: u64, limit: u64) -> Option<Vec<String>> {
+        if at == 0 {
+            return None;
+        }
+        let mut out = Vec::new();
+        for i in 0..limit {
+            let entry = self.read_u64(at + i * 8).ok()?;
+            if entry == 0 {
+                break;
+            }
+            out.push(self.read_cstr(entry)?);
+        }
+        Some(out)
     }
 
     fn read_cstr(&self, at: u64) -> Option<String> {
@@ -1194,6 +1309,21 @@ fn parse_lwpname(desc: &[u8]) -> (u32, String) {
     (tid, String::from_utf8_lossy(&raw[..end]).into_owned())
 }
 
+/// One `prfdinfo_core_t` out of an `NT_FDINFO` note.
+fn parse_fdinfo(desc: &[u8]) -> FdInfo {
+    let int = |at: usize| i32::from_le_bytes(desc[at..at + 4].try_into().unwrap());
+    let word = |at: usize| u64::from_le_bytes(desc[at..at + 8].try_into().unwrap());
+    FdInfo {
+        fd: int(0),
+        mode: u32::from_le_bytes(desc[FDINFO_PR_MODE..FDINFO_PR_MODE + 4].try_into().unwrap()),
+        ino: word(FDINFO_PR_INO),
+        offset: word(FDINFO_PR_OFFSET) as i64,
+        size: word(FDINFO_PR_SIZE),
+        fileflags: int(FDINFO_PR_FILEFLAGS),
+        path: super::fixed_str(&desc[FDINFO_PR_PATH..FDINFO_PR_PATH + FDINFO_PATH_LEN]),
+    }
+}
+
 /// The executable's path, from the command line the process was given.
 /// `pr_psargs` is the whole line, so the first word is the path — the
 /// nearest an illumos core comes to naming its own executable.
@@ -1220,6 +1350,14 @@ impl Target for Core {
 
     fn fatal_signal(&self) -> Option<FatalSignal> {
         self.fatal.clone()
+    }
+
+    fn process_facts(&self) -> Option<ProcessFacts> {
+        self.facts.clone()
+    }
+
+    fn fds(&self) -> Option<&[FdInfo]> {
+        self.fds.as_deref()
     }
 
     fn readable_len(&self, addr: u64, max: u64) -> u64 {
@@ -1609,6 +1747,28 @@ mod tests {
         let bytes = psargs.as_bytes();
         let len = bytes.len().min(PSINFO_PSARGS_LEN);
         out[PSINFO_PR_PSARGS..PSINFO_PR_PSARGS + len].copy_from_slice(&bytes[..len]);
+        out
+    }
+
+    /// A psinfo carrying the whole identity the decoder reads: fixed
+    /// ids, an LP64 model, a start time, and the argv/envp pointers a
+    /// test lays into a dumped region (zero to record none).
+    fn psinfo_ident(psargs: &str, fname: &str, argc: u32, argv: u64, envp: u64) -> Vec<u8> {
+        let mut out = psinfo(psargs);
+        out[PSINFO_PR_PID..PSINFO_PR_PID + 4].copy_from_slice(&4242i32.to_le_bytes());
+        out[PSINFO_PR_PPID..PSINFO_PR_PPID + 4].copy_from_slice(&41i32.to_le_bytes());
+        out[PSINFO_PR_UID..PSINFO_PR_UID + 4].copy_from_slice(&100u32.to_le_bytes());
+        out[PSINFO_PR_EUID..PSINFO_PR_EUID + 4].copy_from_slice(&0u32.to_le_bytes());
+        out[PSINFO_PR_GID..PSINFO_PR_GID + 4].copy_from_slice(&10u32.to_le_bytes());
+        out[PSINFO_PR_EGID..PSINFO_PR_EGID + 4].copy_from_slice(&0u32.to_le_bytes());
+        out[PSINFO_PR_START..PSINFO_PR_START + 8].copy_from_slice(&1_785_706_353i64.to_le_bytes());
+        out[PSINFO_PR_START + 8..PSINFO_PR_START + 16].copy_from_slice(&5i64.to_le_bytes());
+        let name = fname.as_bytes();
+        out[PSINFO_PR_FNAME..PSINFO_PR_FNAME + name.len()].copy_from_slice(name);
+        out[PSINFO_PR_ARGC..PSINFO_PR_ARGC + 4].copy_from_slice(&argc.to_le_bytes());
+        out[PSINFO_PR_ARGV..PSINFO_PR_ARGV + 8].copy_from_slice(&argv.to_le_bytes());
+        out[PSINFO_PR_ENVP..PSINFO_PR_ENVP + 8].copy_from_slice(&envp.to_le_bytes());
+        out[PSINFO_PR_DMODEL] = PR_MODEL_LP64;
         out
     }
 
@@ -2086,6 +2246,134 @@ mod tests {
             .dumped(0x9000, PF_R | PF_W, vec![0; PAGE as usize])
             .proc();
         assert!(p.exec_name().is_err());
+    }
+
+    /// The psinfo's identity fields decode whole, and the argv/envp
+    /// pointers are followed into the dumped image for the full
+    /// command line and environment.
+    #[test]
+    fn test_psinfo_decodes_the_process_identity() {
+        // Pointer arrays and their strings, laid into one dumped page.
+        let base = 0x8000u64;
+        let mut data = vec![0u8; PAGE as usize];
+        let mut put = |at: u64, bytes: &[u8]| {
+            let at = (at - base) as usize;
+            data[at..at + bytes.len()].copy_from_slice(bytes);
+        };
+        put(0x8100, b"/opt/prog\0");
+        put(0x8110, b"--flag\0");
+        put(0x8120, b"HOME=/root\0");
+        put(0x8130, b"TZ=UTC\0");
+        put(0x8000, &0x8100u64.to_le_bytes());
+        put(0x8008, &0x8110u64.to_le_bytes());
+        put(0x8040, &0x8120u64.to_le_bytes());
+        put(0x8048, &0x8130u64.to_le_bytes());
+        // 0x8050 stays zero: the environment's terminating null.
+
+        let (_dir, p) = CoreBuilder::default()
+            .thread(1, regs_at(0, 0x9000))
+            .note(
+                NT_PSINFO,
+                psinfo_ident("/opt/prog --flag", "prog", 2, 0x8000, 0x8040),
+            )
+            .dumped(base, PF_R | PF_W, data)
+            .dumped(0x9000, PF_R | PF_W, vec![0; PAGE as usize])
+            .proc();
+
+        let facts = crate::Target::process_facts(&p).expect("psinfo decodes");
+        assert_eq!(facts.pid, 4242);
+        assert_eq!(facts.ppid, 41);
+        assert_eq!(facts.uid, 100);
+        assert_eq!(facts.euid, Some(0));
+        assert_eq!(facts.gid, 10);
+        assert_eq!(facts.egid, Some(0));
+        assert_eq!(facts.model, Some("LP64"));
+        let start = facts.start.expect("pr_start is recorded");
+        assert_eq!((start.tv_sec, start.tv_nsec), (1_785_706_353, 5));
+        assert_eq!(facts.fname, "prog");
+        assert_eq!(facts.psargs, "/opt/prog --flag");
+        assert_eq!(
+            facts.argv.as_deref(),
+            Some(&["/opt/prog".to_string(), "--flag".to_string()][..])
+        );
+        assert_eq!(
+            facts.env.as_deref(),
+            Some(&["HOME=/root".to_string(), "TZ=UTC".to_string()][..])
+        );
+        assert_eq!(facts.execfn, None);
+    }
+
+    /// One `prfdinfo_core_t` for the test's builder: fd, mode, size,
+    /// and a path (empty for the fds the kernel names none for).
+    fn fdinfo(fd: i32, mode: u32, size: u64, path: &str) -> Vec<u8> {
+        let mut out = vec![0u8; FDINFO_LEN];
+        out[0..4].copy_from_slice(&fd.to_le_bytes());
+        out[FDINFO_PR_MODE..FDINFO_PR_MODE + 4].copy_from_slice(&mode.to_le_bytes());
+        out[FDINFO_PR_INO..FDINFO_PR_INO + 8].copy_from_slice(&77u64.to_le_bytes());
+        out[FDINFO_PR_OFFSET..FDINFO_PR_OFFSET + 8].copy_from_slice(&9i64.to_le_bytes());
+        out[FDINFO_PR_SIZE..FDINFO_PR_SIZE + 8].copy_from_slice(&size.to_le_bytes());
+        out[FDINFO_PR_FILEFLAGS..FDINFO_PR_FILEFLAGS + 4].copy_from_slice(&2i32.to_le_bytes());
+        out[FDINFO_PR_PATH..FDINFO_PR_PATH + path.len()].copy_from_slice(path.as_bytes());
+        out
+    }
+
+    /// Every `NT_FDINFO` note decodes into the fd table, in fd order
+    /// whatever order the notes came in; a socket's path is empty, the
+    /// way the kernel writes it. A core without the notes has no table
+    /// — a different answer from an empty one.
+    #[test]
+    fn test_fdinfo_notes_decode_into_the_fd_table() {
+        let (_dir, p) = CoreBuilder::default()
+            .thread(1, regs_at(0, 0x9000))
+            .note(NT_FDINFO, fdinfo(4, 0o140666, 0, ""))
+            .note(NT_FDINFO, fdinfo(1, 0o100644, 4096, "/var/log/x.log"))
+            .dumped(0x9000, PF_R | PF_W, vec![0; PAGE as usize])
+            .proc();
+
+        let fds = crate::Target::fds(&p).expect("the fd table decodes");
+        assert_eq!(fds.len(), 2);
+        assert_eq!(fds[0].fd, 1);
+        assert_eq!(fds[0].mode, 0o100644);
+        assert_eq!(fds[0].ino, 77);
+        assert_eq!(fds[0].offset, 9);
+        assert_eq!(fds[0].size, 4096);
+        assert_eq!(fds[0].fileflags, 2);
+        assert_eq!(fds[0].path, "/var/log/x.log");
+        assert_eq!(fds[1].fd, 4);
+        assert_eq!(fds[1].mode, 0o140666);
+        assert_eq!(fds[1].path, "");
+
+        let (_dir, p) = CoreBuilder::default()
+            .thread(1, regs_at(0, 0x9000))
+            .dumped(0x9000, PF_R | PF_W, vec![0; PAGE as usize])
+            .proc();
+        assert_eq!(crate::Target::fds(&p), None);
+    }
+
+    /// The ids survive an argv the dump does not carry — the pointers
+    /// are followed only as far as the dump allows, and a partial
+    /// answer is not invented — and a core with no psinfo at all has
+    /// no facts.
+    #[test]
+    fn test_process_facts_survive_an_unreadable_argv() {
+        let (_dir, p) = CoreBuilder::default()
+            .thread(1, regs_at(0, 0x9000))
+            .note(
+                NT_PSINFO,
+                psinfo_ident("/opt/prog", "prog", 1, 0xdead_0000, 0),
+            )
+            .dumped(0x9000, PF_R | PF_W, vec![0; PAGE as usize])
+            .proc();
+        let facts = crate::Target::process_facts(&p).expect("psinfo decodes");
+        assert_eq!(facts.pid, 4242);
+        assert_eq!(facts.argv, None);
+        assert_eq!(facts.env, None);
+
+        let (_dir, p) = CoreBuilder::default()
+            .thread(1, regs_at(0, 0x9000))
+            .dumped(0x9000, PF_R | PF_W, vec![0; PAGE as usize])
+            .proc();
+        assert_eq!(crate::Target::process_facts(&p), None);
     }
 
     // -----------------------------------------------------------------------
