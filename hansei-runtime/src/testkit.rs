@@ -4,7 +4,7 @@
 //! Nothing on a session's path calls this. See [`FIXTURE_SET`] for why
 //! there is more than one set.
 
-use crate::tokio::bundle::{Context, LocalSetRef, RuntimeRef, TaskList, Worker};
+use crate::tokio::bundle::{Context, LocalSetRef, Registries, RuntimeRef, TaskList, Worker};
 use crate::tokio::census::FutureCensus;
 
 use anyhow::Context as _;
@@ -123,6 +123,11 @@ pub struct Enumeration<'b> {
     pub workers: Vec<Worker>,
     pub runtimes: Vec<RuntimeRef<'b>>,
     pub list: TaskList,
+    /// What the registry harvests retained; empty until [`discover`]
+    /// runs them.
+    ///
+    /// [`discover`]: Enumeration::discover
+    pub registries: Registries,
 }
 
 /// Enumerate, stopping before discovery. Panics on a stage failure
@@ -155,6 +160,7 @@ pub fn try_enumerate<'b, T: Target>(
         workers,
         runtimes,
         list,
+        registries: Registries::default(),
     })
 }
 
@@ -167,13 +173,15 @@ impl<'b> Enumeration<'b> {
         ctx: &Context<'b, T>,
         exclude: &[u64],
     ) -> Vec<LocalSetRef<'b>> {
-        ctx.discover_hidden_tasks(
+        let (sets, registries) = ctx.discover_hidden_tasks(
             &self.lwps,
             &self.workers,
             &mut self.runtimes,
             exclude,
             &mut self.list,
-        )
+        );
+        self.registries = registries;
+        sets
     }
 }
 
@@ -663,7 +671,7 @@ pub fn io_candidates<T: Target>(ctx: &Context<'_, T>, snapshot: &Snapshot) -> Ve
     let list = ctx
         .enumerate_all_tasks(&runtimes)
         .expect("the owned-task walk");
-    let (found, errors) = ctx.io_task_pointers(&runtimes, &list);
+    let (found, errors) = ctx.io_task_pointers(&runtimes, &list, &mut Registries::default());
     assert!(errors.is_empty(), "{errors:?}");
     found.into_iter().map(|(addr, _)| addr).collect()
 }

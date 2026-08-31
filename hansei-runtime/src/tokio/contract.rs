@@ -171,6 +171,11 @@ pub fn classify(role: WalkRole) -> Class {
         // registration list, so these degrade the same way.
         IoRegistrations | ScheduledIoNext | ScheduledIoWaiters | IoWaiterHead | IoReaderWaker
         | IoWriterWaker | IoWaiterNext | IoWaiterWaker => Class::Optional,
+        // The registry detail the tasks listing joins to rows: a timer
+        // entry's registration word, an io resource's readiness and a
+        // queued io waiter's interest. Enrichment only — a bundle
+        // without them still lists and discovers.
+        TimerSharedState | ScheduledIoReadiness | IoWaiterInterest => Class::Optional,
     }
 }
 

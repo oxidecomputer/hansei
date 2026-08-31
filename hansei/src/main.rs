@@ -1195,6 +1195,9 @@ pub struct Session<'b, T: Target> {
     /// whose bundle shows no local-set machinery linked.
     local_sets: Vec<bundle::LocalSetRef<'b>>,
     tasks: bundle::TaskList,
+    /// What the registry harvests retained at attach: every wheel
+    /// entry and io waiter, joined to rows by task address.
+    registries: bundle::Registries,
     /// The bundle's impl-path substitutions, threaded into every
     /// display fold ([`hansei_bundle::names::fold_type_name`]).
     impl_fold: hansei_bundle::names::ImplFold,
@@ -1319,7 +1322,7 @@ impl<'b, T: Target> Session<'b, T> {
         // Runtimes nothing is currently inside, and local sets, merge
         // into the same population: the runtimes join the list above,
         // the sets are tagged as groups after every runtime.
-        let local_sets =
+        let (local_sets, registries) =
             ctx.discover_hidden_tasks(&lwps, &workers, &mut runtimes, &excluded, &mut tasks);
         print_warnings(&tasks.errors)?;
 
@@ -1336,6 +1339,7 @@ impl<'b, T: Target> Session<'b, T> {
             excluded,
             local_sets,
             tasks,
+            registries,
             impl_fold: hansei_bundle::names::ImplFold::for_bundle(bundle),
             extents: OnceCell::new(),
             census: OnceCell::new(),
@@ -1444,7 +1448,7 @@ impl<'b, T: Target> Session<'b, T> {
 
     fn analysis(&self) -> &Analysis {
         self.analysis
-            .get_or_init(|| rt_graph::analyze(&self.ctx, &self.tasks))
+            .get_or_init(|| rt_graph::analyze(&self.ctx, &self.tasks, &self.registries))
     }
 
     /// The runtime a worker thread belongs to, by the discovery

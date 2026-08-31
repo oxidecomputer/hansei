@@ -271,6 +271,218 @@ pub struct BlockingPool {
     pub queued: u64,
 }
 
+/// What the registry harvests keep beside their discovery candidates:
+/// every wheel entry and io waiter touched, joined to the task whose
+/// waker it holds. Built once at attach, while the wheel and
+/// registration walks run; the tasks listing joins it to rows by task
+/// address.
+#[derive(Debug, Default)]
+pub struct Registries {
+    /// Every entry linked in a walked wheel, armed or not.
+    pub timers: Vec<TimerEntryInfo>,
+    /// Every io resource in a walked registration list.
+    pub io: Vec<IoResourceInfo>,
+}
+
+impl Registries {
+    /// The wheel entries armed with `task`'s waker.
+    pub fn timers_of(&self, task: u64) -> impl Iterator<Item = &TimerEntryInfo> {
+        self.timers.iter().filter(move |t| t.task == Some(task))
+    }
+
+    /// The io waiters parked by `task`, each with the resource it is on.
+    pub fn io_of(&self, task: u64) -> impl Iterator<Item = (&IoResourceInfo, &IoWaiterInfo)> {
+        self.io.iter().flat_map(move |res| {
+            res.waiters
+                .iter()
+                .filter(move |w| w.task == Some(task))
+                .map(move |w| (res, w))
+        })
+    }
+}
+
+/// One `TimerShared` linked in a runtime's wheel.
+#[derive(Clone, Debug)]
+pub struct TimerEntryInfo {
+    /// The entry's address.
+    pub entry: u64,
+    /// The `StateCell` word — the deadline tick while registered, a
+    /// sentinel once fired or deregistered. `None` where the bundle
+    /// records no binding for it, or the word did not read.
+    pub state: Option<u64>,
+    /// The task the armed waker names, when it is a task's.
+    pub task: Option<u64>,
+}
+
+impl TimerEntryInfo {
+    /// The entry's decoded wheel state, where the word was readable.
+    pub fn wheel_state(&self) -> Option<WheelState> {
+        const DEREGISTERED: u64 = u64::MAX;
+        const PENDING_FIRE: u64 = DEREGISTERED - 1;
+        Some(match self.state? {
+            DEREGISTERED => WheelState::Deregistered,
+            PENDING_FIRE => WheelState::PendingFire,
+            _ => WheelState::Registered,
+        })
+    }
+}
+
+/// Where a wheel entry is in its life, decoded from its state word.
+/// The sentinels are tokio's own constants, folded into its code at
+/// compile time and so — as with [`TaskState`](super::TaskState) —
+/// knowable only from its source.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum WheelState {
+    /// The word is the deadline tick: parked, not yet due.
+    Registered,
+    /// Queued for delivery: the driver has marked it to fire.
+    PendingFire,
+    /// Fired or cancelled with the entry not yet reclaimed — a wakeup
+    /// delivered (or abandoned) and not yet consumed by a poll.
+    Deregistered,
+}
+
+impl fmt::Display for WheelState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Registered => f.write_str("registered"),
+            Self::PendingFire => f.write_str("pending fire"),
+            Self::Deregistered => f.write_str("fired, not yet polled"),
+        }
+    }
+}
+
+/// One `ScheduledIo` in a runtime's registration list.
+#[derive(Clone, Debug)]
+pub struct IoResourceInfo {
+    /// The `ScheduledIo`'s address — the driver's identity for the
+    /// resource.
+    pub addr: u64,
+    /// The packed readiness word (`Ready` in the low bits); `None`
+    /// where the bundle records no binding, or the word did not read.
+    pub readiness: Option<u64>,
+    /// Everything parked on the resource: armed wakers in the two
+    /// direction slots and on the readiness list.
+    pub waiters: Vec<IoWaiterInfo>,
+}
+
+impl IoResourceInfo {
+    /// The decoded delivered-readiness set, where the word was readable.
+    pub fn ready(&self) -> Option<Readiness> {
+        self.readiness.map(|word| Readiness((word & 0xffff) as u16))
+    }
+}
+
+/// One armed waker parked on an io resource.
+#[derive(Clone, Debug)]
+pub struct IoWaiterInfo {
+    /// Which of the resource's three waker sites holds it.
+    pub slot: IoSlot,
+    /// The task the waker names, when it is a task's.
+    pub task: Option<u64>,
+}
+
+/// The three waker sites of a `ScheduledIo`.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum IoSlot {
+    /// The `AsyncRead` direction slot.
+    Reader,
+    /// The `AsyncWrite` direction slot.
+    Writer,
+    /// A node on the readiness list, carrying the interest it parked
+    /// for — `None` where the interest did not read.
+    Listed { interest: Option<Interest> },
+}
+
+impl IoSlot {
+    /// The readiness the parked future waits for. The direction slots
+    /// imply theirs; a listed node carries its own.
+    pub fn interest(&self) -> Option<Interest> {
+        match self {
+            Self::Reader => Some(Interest(0b01)),
+            Self::Writer => Some(Interest(0b10)),
+            Self::Listed { interest } => *interest,
+        }
+    }
+}
+
+/// A parked waiter's interest set, in tokio's `Interest` bits.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub struct Interest(pub u64);
+
+impl Interest {
+    pub fn union(self, other: Interest) -> Interest {
+        Interest(self.0 | other.0)
+    }
+}
+
+impl fmt::Display for Interest {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        spell_bits(
+            f,
+            self.0,
+            &[
+                (0b01, "readable"),
+                (0b10, "writable"),
+                (0b100, "aio"),
+                (0b1000, "lio"),
+                (0b1_0000, "priority"),
+                (0b10_0000, "error"),
+            ],
+        )
+    }
+}
+
+/// A resource's delivered readiness, in tokio's `Ready` bits.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub struct Readiness(pub u16);
+
+impl fmt::Display for Readiness {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        spell_bits(
+            f,
+            self.0 as u64,
+            &[
+                (0b1, "readable"),
+                (0b10, "writable"),
+                (0b100, "read closed"),
+                (0b1000, "write closed"),
+                (0b1_0000, "priority"),
+                (0b10_0000, "error"),
+            ],
+        )
+    }
+}
+
+/// Spell a bit set as ` | `-joined names — unknown bits in binary, so
+/// a constant tokio moves is visible rather than silently dropped —
+/// and an empty set as `<none>`.
+fn spell_bits(f: &mut fmt::Formatter<'_>, word: u64, names: &[(u64, &str)]) -> fmt::Result {
+    let mut rest = word;
+    let mut first = true;
+    for (bit, name) in names {
+        if word & bit != 0 {
+            if !first {
+                f.write_str(" | ")?;
+            }
+            f.write_str(name)?;
+            first = false;
+            rest &= !bit;
+        }
+    }
+    if rest != 0 {
+        if !first {
+            f.write_str(" | ")?;
+        }
+        write!(f, "{rest:#b}")?;
+        first = false;
+    }
+    if first {
+        f.write_str("<none>")?;
+    }
+    Ok(())
+}
+
 /// The result of walking every owned-task shard.
 #[derive(Debug)]
 pub struct TaskList {
@@ -508,6 +720,18 @@ pub enum WaitTarget {
         /// Meaningful only when `listed` is false.
         kind: Option<UnlistedTaskKind>,
     },
+    /// Parked on an io resource: the driver's `ScheduledIo` holds the
+    /// task's waker until the awaited readiness arrives.
+    Io {
+        /// The `ScheduledIo`'s address.
+        addr: u64,
+        /// The fd, where a known resource type in the task's frames
+        /// owns the registration — the `ScheduledIo` records none
+        /// itself.
+        fd: Option<i32>,
+        /// The readiness awaited, where the parked slot spelled one.
+        interest: Option<Interest>,
+    },
     /// `batch_semaphore::Acquire`: queued on the semaphore that backs
     /// tokio's Mutex, RwLock, and Semaphore.
     Semaphore {
@@ -537,6 +761,8 @@ pub enum WaitKind {
     /// `Header` that identifies it — so a find that merely holds a
     /// handle still names the task on the other end of it.
     Task { addr: u64 },
+    /// An io resource, through the driver's registration.
+    Io,
     /// A semaphore, named by the primitive wrapping it where the frame
     /// awaiting it says which (`tokio::sync::Mutex`, …).
     Semaphore { owner: Option<&'static str> },
@@ -554,6 +780,7 @@ impl WaitTarget {
                 Some(id) => format!("task {id}"),
                 None => format!("the task at {addr:#x}"),
             },
+            Self::Io { .. } => "io".to_string(),
             Self::Semaphore { addr, owner, .. } => match owner {
                 Some(owner) => format!("a {owner} (semaphore {addr:#x})"),
                 None => format!("the semaphore at {addr:#x}"),
@@ -570,6 +797,7 @@ impl WaitTarget {
                 }),
             },
             Self::Task { addr, .. } => WaitKind::Task { addr: *addr },
+            Self::Io { .. } => WaitKind::Io,
             Self::Semaphore { owner, .. } => WaitKind::Semaphore { owner: *owner },
         }
     }
@@ -705,6 +933,16 @@ impl fmt::Display for WaitTarget {
                     write!(f, " — {}, {where_}", state.lifecycle())?;
                 }
                 Ok(())
+            }
+            Self::Io { addr, fd, interest } => {
+                match fd {
+                    Some(fd) => write!(f, "io fd {fd}")?,
+                    None => write!(f, "io {addr:#x}")?,
+                }
+                match interest {
+                    Some(interest) => write!(f, " ({interest})"),
+                    None => write!(f, " (readiness)"),
+                }
             }
             Self::Semaphore {
                 addr,
@@ -878,6 +1116,113 @@ mod tests {
             waiters: Vec::new(),
         };
         assert_eq!(unowned.group_label(), "the semaphore at 0x9000");
+
+        let io = |fd, interest| WaitTarget::Io {
+            addr: 0xa000,
+            fd,
+            interest,
+        };
+        assert_eq!(
+            io(None, Some(Interest(0b01))).to_string(),
+            "io 0xa000 (readable)"
+        );
+        assert_eq!(
+            io(Some(17), Some(Interest(0b11))).to_string(),
+            "io fd 17 (readable | writable)"
+        );
+        assert_eq!(io(None, None).to_string(), "io 0xa000 (readiness)");
+        assert_eq!(io(None, None).group_label(), "io");
+    }
+
+    /// The wheel-state sentinels and the bit spellings: what the `-v`
+    /// detail lines print, decoded from raw registry words.
+    #[test]
+    fn test_registry_words_decode() {
+        let entry = |state| TimerEntryInfo {
+            entry: 0x10,
+            state,
+            task: None,
+        };
+        assert_eq!(
+            entry(Some(1234)).wheel_state(),
+            Some(WheelState::Registered)
+        );
+        assert_eq!(
+            entry(Some(u64::MAX - 1)).wheel_state(),
+            Some(WheelState::PendingFire)
+        );
+        assert_eq!(
+            entry(Some(u64::MAX)).wheel_state(),
+            Some(WheelState::Deregistered)
+        );
+        assert_eq!(entry(None).wheel_state(), None);
+        assert_eq!(WheelState::Registered.to_string(), "registered");
+        assert_eq!(WheelState::PendingFire.to_string(), "pending fire");
+        assert_eq!(
+            WheelState::Deregistered.to_string(),
+            "fired, not yet polled"
+        );
+
+        assert_eq!(Readiness(0).to_string(), "<none>");
+        assert_eq!(Readiness(0b101).to_string(), "readable | read closed");
+        // An unknown bit prints in binary rather than vanishing.
+        assert_eq!(Readiness(0b100_0001).to_string(), "readable | 0b1000000");
+        assert_eq!(Interest(0b01).union(Interest(0b10)), Interest(0b11));
+        assert_eq!(IoSlot::Reader.interest(), Some(Interest(0b01)));
+        assert_eq!(IoSlot::Writer.interest(), Some(Interest(0b10)));
+        assert_eq!(IoSlot::Listed { interest: None }.interest(), None);
+
+        let res = IoResourceInfo {
+            addr: 0x20,
+            readiness: Some(0x7fff_0002),
+            waiters: Vec::new(),
+        };
+        // The packed word's high bits (the driver tick) are not
+        // readiness.
+        assert_eq!(res.ready(), Some(Readiness(0b10)));
+    }
+
+    /// The registry joins hand back exactly the entries armed with the
+    /// asked-for task's waker.
+    #[test]
+    fn test_registries_join_by_task() {
+        let registries = Registries {
+            timers: vec![
+                TimerEntryInfo {
+                    entry: 0x10,
+                    state: None,
+                    task: Some(0x1000),
+                },
+                TimerEntryInfo {
+                    entry: 0x20,
+                    state: None,
+                    task: None,
+                },
+            ],
+            io: vec![IoResourceInfo {
+                addr: 0x30,
+                readiness: None,
+                waiters: vec![
+                    IoWaiterInfo {
+                        slot: IoSlot::Reader,
+                        task: Some(0x1000),
+                    },
+                    IoWaiterInfo {
+                        slot: IoSlot::Writer,
+                        task: Some(0x2000),
+                    },
+                ],
+            }],
+        };
+        let timers: Vec<u64> = registries.timers_of(0x1000).map(|t| t.entry).collect();
+        assert_eq!(timers, [0x10]);
+        assert!(registries.timers_of(0x9999).next().is_none());
+        let io: Vec<(u64, IoSlot)> = registries
+            .io_of(0x1000)
+            .map(|(r, w)| (r.addr, w.slot))
+            .collect();
+        assert_eq!(io, [(0x30, IoSlot::Reader)]);
+        assert!(registries.io_of(0x9999).next().is_none());
     }
 
     /// Granted means nothing more is needed — the future holds the

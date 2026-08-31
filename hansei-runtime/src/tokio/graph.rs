@@ -15,8 +15,10 @@
 //! futurelocked (RFD 609), even when — especially when — the holder
 //! is the blocked task itself.
 
-use super::TaskAddr;
-use super::bundle::{AbandonedAcquire, Context, FutureInfo, TaskList, TaskStage, WaitTarget};
+use super::bundle::{
+    AbandonedAcquire, Context, FutureInfo, Interest, Registries, TaskList, TaskStage, WaitTarget,
+};
+use super::{Lifecycle, TaskAddr};
 
 use proc::Target;
 
@@ -95,7 +97,11 @@ pub struct Analysis {
 
 /// Walk every task's await chain and assemble the dependency edges and
 /// futurelock diagnoses.
-pub fn analyze<T: Target>(ctx: &Context<'_, T>, list: &TaskList) -> Analysis {
+pub fn analyze<T: Target>(
+    ctx: &Context<'_, T>,
+    list: &TaskList,
+    registries: &Registries,
+) -> Analysis {
     let mut waits = Vec::new();
     let mut errors = Vec::new();
     let mut abandoned: Vec<(TaskRef, AbandonedAcquire)> = Vec::new();
@@ -137,6 +143,34 @@ pub fn analyze<T: Target>(ctx: &Context<'_, T>, list: &TaskList) -> Analysis {
                 Err(e) => {
                     errors.push(e.context(format!("failed to read the stage of {tref}")));
                 }
+            }
+        }
+        // The registry join: a parked task whose chain decoded no
+        // primitive but whose waker sits on exactly one io resource is
+        // waiting on that resource — the driver's own registration
+        // list says so. A task also armed on a timer (a `select!` over
+        // both) keeps its leaf spelling, since naming one arm of a
+        // race as the wait would mislead; `-v` lists every entry.
+        if target.is_none()
+            && !matches!(
+                task.state.lifecycle(),
+                Lifecycle::Running | Lifecycle::Complete
+            )
+            && registries.timers_of(task.addr.0).next().is_none()
+        {
+            let io: Vec<_> = registries.io_of(task.addr.0).collect();
+            if let Some((first, _)) = io.first()
+                && io.iter().all(|(res, _)| res.addr == first.addr)
+            {
+                let interest = io
+                    .iter()
+                    .filter_map(|(_, waiter)| waiter.slot.interest())
+                    .reduce(Interest::union);
+                target = Some(WaitTarget::Io {
+                    addr: first.addr,
+                    fd: None,
+                    interest,
+                });
             }
         }
         waits.push(TaskWait {

@@ -110,3 +110,6 @@ ok      io::Waiters.reader
 ok      io::Waiters.writer
 ok      io::Waiter.next
 ok      io::Waiter.waker
+ok      TimerShared.state
+ok      ScheduledIo.readiness
+ok      io::Waiter.interest

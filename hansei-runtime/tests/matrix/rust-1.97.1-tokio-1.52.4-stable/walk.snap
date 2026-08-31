@@ -2,7 +2,7 @@
 source: hansei-runtime/tests/matrix.rs
 ---
 program: futurelock
-walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 91 entries, 0 broken, 16 absent
+walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 94 entries, 0 broken, 16 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -94,9 +94,12 @@ walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 91 entries, 0
   ok      io::Waiters.writer
   ok      io::Waiter.next
   ok      io::Waiter.waker
+  ok      TimerShared.state
+  ok      ScheduledIo.readiness
+  ok      io::Waiter.interest
 
 program: simple-await
-walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 91 entries, 0 broken, 29 absent
+walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 94 entries, 0 broken, 29 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -188,9 +191,12 @@ walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 91 entries, 0
   ok      io::Waiters.writer
   ok      io::Waiter.next
   ok      io::Waiter.waker
+  ok      TimerShared.state
+  ok      ScheduledIo.readiness
+  ok      io::Waiter.interest
 
 program: nested-await
-walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 91 entries, 0 broken, 29 absent
+walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 94 entries, 0 broken, 29 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -282,9 +288,12 @@ walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 91 entries, 0
   ok      io::Waiters.writer
   ok      io::Waiter.next
   ok      io::Waiter.waker
+  ok      TimerShared.state
+  ok      ScheduledIo.readiness
+  ok      io::Waiter.interest
 
 program: dyn-future
-walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 91 entries, 0 broken, 23 absent
+walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 94 entries, 0 broken, 23 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -376,9 +385,12 @@ walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 91 entries, 0
   ok      io::Waiters.writer
   ok      io::Waiter.next
   ok      io::Waiter.waker
+  ok      TimerShared.state
+  ok      ScheduledIo.readiness
+  ok      io::Waiter.interest
 
 program: select-combinator
-walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 91 entries, 0 broken, 29 absent
+walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 94 entries, 0 broken, 29 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -470,9 +482,12 @@ walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 91 entries, 0
   ok      io::Waiters.writer
   ok      io::Waiter.next
   ok      io::Waiter.waker
+  ok      TimerShared.state
+  ok      ScheduledIo.readiness
+  ok      io::Waiter.interest
 
 program: many-tasks
-walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 91 entries, 0 broken, 30 absent
+walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 94 entries, 0 broken, 30 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -564,9 +579,12 @@ walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 91 entries, 0
   ok      io::Waiters.writer
   ok      io::Waiter.next
   ok      io::Waiter.waker
+  ok      TimerShared.state
+  ok      ScheduledIo.readiness
+  ok      io::Waiter.interest
 
 program: sleep-join
-walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 91 entries, 0 broken, 26 absent
+walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 94 entries, 0 broken, 26 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -658,9 +676,12 @@ walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 91 entries, 0
   ok      io::Waiters.writer
   ok      io::Waiter.next
   ok      io::Waiter.waker
+  ok      TimerShared.state
+  ok      ScheduledIo.readiness
+  ok      io::Waiter.interest
 
 program: channels
-walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 91 entries, 0 broken, 19 absent
+walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 94 entries, 0 broken, 19 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -752,9 +773,12 @@ walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 91 entries, 0
   ok      io::Waiters.writer
   ok      io::Waiter.next
   ok      io::Waiter.waker
+  ok      TimerShared.state
+  ok      ScheduledIo.readiness
+  ok      io::Waiter.interest
 
 program: unordered
-walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 91 entries, 0 broken, 26 absent
+walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 94 entries, 0 broken, 26 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -846,9 +870,12 @@ walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 91 entries, 0
   ok      io::Waiters.writer
   ok      io::Waiter.next
   ok      io::Waiter.waker
+  ok      TimerShared.state
+  ok      ScheduledIo.readiness
+  ok      io::Waiter.interest
 
 program: joinset
-walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 91 entries, 0 broken, 13 absent
+walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 94 entries, 0 broken, 13 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -940,9 +967,12 @@ walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 91 entries, 0
   ok      io::Waiters.writer
   ok      io::Waiter.next
   ok      io::Waiter.waker
+  ok      TimerShared.state
+  ok      ScheduledIo.readiness
+  ok      io::Waiter.interest
 
 program: ct-runtime
-walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 91 entries, 0 broken, 16 absent
+walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 94 entries, 0 broken, 16 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -1034,9 +1064,12 @@ walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 91 entries, 0
   ok      io::Waiters.writer
   ok      io::Waiter.next
   ok      io::Waiter.waker
+  ok      TimerShared.state
+  ok      ScheduledIo.readiness
+  ok      io::Waiter.interest
 
 program: local-set
-walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 91 entries, 0 broken, 10 absent
+walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 94 entries, 0 broken, 10 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   ok      statics.tls_local_set_key
@@ -1128,9 +1161,12 @@ walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 91 entries, 0
   ok      io::Waiters.writer
   ok      io::Waiter.next
   ok      io::Waiter.waker
+  ok      TimerShared.state
+  ok      ScheduledIo.readiness
+  ok      io::Waiter.interest
 
 program: local-set-timer
-walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 91 entries, 0 broken, 10 absent
+walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 94 entries, 0 broken, 10 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   ok      statics.tls_local_set_key
@@ -1222,9 +1258,12 @@ walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 91 entries, 0
   ok      io::Waiters.writer
   ok      io::Waiter.next
   ok      io::Waiter.waker
+  ok      TimerShared.state
+  ok      ScheduledIo.readiness
+  ok      io::Waiter.interest
 
 program: local-set-io
-walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 91 entries, 0 broken, 23 absent
+walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 94 entries, 0 broken, 23 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   ok      statics.tls_local_set_key
@@ -1316,9 +1355,12 @@ walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 91 entries, 0
   ok      io::Waiters.writer
   ok      io::Waiter.next
   ok      io::Waiter.waker
+  ok      TimerShared.state
+  ok      ScheduledIo.readiness
+  ok      io::Waiter.interest
 
 program: foreign-runtime
-walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 91 entries, 0 broken, 10 absent
+walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 94 entries, 0 broken, 10 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   ok      statics.tls_local_set_key
@@ -1410,3 +1452,6 @@ walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 91 entries, 0
   ok      io::Waiters.writer
   ok      io::Waiter.next
   ok      io::Waiter.waker
+  ok      TimerShared.state
+  ok      ScheduledIo.readiness
+  ok      io::Waiter.interest

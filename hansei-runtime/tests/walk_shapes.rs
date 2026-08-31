@@ -111,7 +111,7 @@ fn test_a_by_value_abandoned_acquire_names_its_own_node() {
     let (bundle, snapshot) = pair();
     let ctx = testkit::context(&bundle, &snapshot);
     let list = tasks_of(&ctx, &snapshot);
-    let analysis = graph::analyze(&ctx, &list);
+    let analysis = graph::analyze(&ctx, &list, &Default::default());
     assert!(analysis.errors.is_empty(), "{:?}", analysis.errors);
     let fl = analysis
         .futurelocks

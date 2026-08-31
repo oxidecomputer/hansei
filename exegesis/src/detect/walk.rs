@@ -1209,6 +1209,35 @@ fn decls() -> Vec<WalkDecl> {
                 ]]
             },
         ),
+        // The entry's registration word, read beside the waker the
+        // harvest takes: the StateCell's atomic holds the deadline tick
+        // while the entry is registered in the wheel, and moves to the
+        // fired/deregistered sentinels once the driver takes it.
+        decl(
+            WalkRole::TimerSharedState,
+            Pointee(WalkRole::SlotHead),
+            Word,
+            || vec![reach![Named("state"), Named("state"), PeelTo(WORD)]],
+        ),
+        // The resource's packed readiness word: what the driver has
+        // delivered, against which the parked interests wait.
+        decl(
+            WalkRole::ScheduledIoReadiness,
+            Pointee(WalkRole::IoRegistrations),
+            Word,
+            || vec![reach![Named("readiness"), PeelTo(WORD)]],
+        ),
+        // A listed waiter's interest: which readiness it parked for.
+        // The direction slots need none — the reader slot waits
+        // readable, the writer writable — so only list nodes carry
+        // one. tokio's `Interest` is its own word of bits, not mio's
+        // byte, so the peel is to the word.
+        decl(
+            WalkRole::IoWaiterInterest,
+            Pointee(WalkRole::IoWaiterHead),
+            Word,
+            || vec![reach![Named("interest"), PeelTo(WORD)]],
+        ),
     ]
 }
 

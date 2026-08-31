@@ -1866,8 +1866,9 @@ impl<'b, T: Target> Context<'b, T> {
         runtimes: &mut Vec<RuntimeRef<'b>>,
         excluded: &[u64],
         list: &mut TaskList,
-    ) -> Vec<LocalSetRef<'b>> {
+    ) -> (Vec<LocalSetRef<'b>>, Registries) {
         let mut sets: Vec<LocalSetRef<'b>> = Vec::new();
+        let mut registries = Registries::default();
 
         // The owner → LWP join table: each worker's own thread id, as
         // tokio's counter numbers it.
@@ -1970,12 +1971,14 @@ impl<'b, T: Target> Context<'b, T> {
                 walked = list.tasks.len();
                 self.unlisted_task_pointers(list, range)
             } else if wheeled < runtimes.len() {
-                let (found, errors) = self.wheel_task_pointers(&runtimes[wheeled..], list);
+                let (found, errors) =
+                    self.wheel_task_pointers(&runtimes[wheeled..], list, &mut registries);
                 wheeled = runtimes.len();
                 list.errors.extend(errors);
                 found
             } else if ioed < runtimes.len() {
-                let (found, errors) = self.io_task_pointers(&runtimes[ioed..], list);
+                let (found, errors) =
+                    self.io_task_pointers(&runtimes[ioed..], list, &mut registries);
                 ioed = runtimes.len();
                 list.errors.extend(errors);
                 found
@@ -2004,7 +2007,7 @@ impl<'b, T: Target> Context<'b, T> {
             list.tasks
                 .sort_by_key(|t| (t.task_id.is_none(), t.task_id, t.addr.0));
         }
-        sets
+        (sets, registries)
     }
 
     /// The tokio thread id a worker's `Context` records — what a
@@ -2148,6 +2151,7 @@ impl<'b, T: Target> Context<'b, T> {
         &self,
         runtimes: &[RuntimeRef<'b>],
         list: &TaskList,
+        registries: &mut Registries,
     ) -> (Vec<(u64, DiscoveryRoute)>, Vec<anyhow::Error>) {
         let mut found = Vec::new();
         let mut errors = Vec::new();
@@ -2155,8 +2159,14 @@ impl<'b, T: Target> Context<'b, T> {
         // slot, so a repeat is corrupt memory, not a second sighting.
         let mut visited = HashSet::default();
         for runtime in runtimes {
-            if let Err(e) = self.harvest_wheel(runtime, list, &mut visited, &mut found, &mut errors)
-            {
+            if let Err(e) = self.harvest_wheel(
+                runtime,
+                list,
+                &mut visited,
+                &mut found,
+                &mut errors,
+                registries,
+            ) {
                 errors.push(e.context(format!(
                     "failed to walk the timer wheel of the runtime at {:#x}",
                     runtime.handle.addr
@@ -2169,6 +2179,7 @@ impl<'b, T: Target> Context<'b, T> {
     /// Walk one runtime's wheel: six levels of 64 slots, each slot an
     /// intrusive list of `TimerShared`s. The levels and slots are plain
     /// arrays, read whole and iterated; only the lists are walked.
+    #[allow(clippy::too_many_arguments)]
     fn harvest_wheel(
         &self,
         runtime: &RuntimeRef<'b>,
@@ -2176,6 +2187,7 @@ impl<'b, T: Target> Context<'b, T> {
         visited: &mut HashSet<u64>,
         found: &mut Vec<(u64, DiscoveryRoute)>,
         errors: &mut Vec<anyhow::Error>,
+        registries: &mut Registries,
     ) -> Result<()> {
         // `driver.time` is an `Option`: a runtime built without the time
         // driver has no wheel, which is a runtime state, not a failure.
@@ -2197,7 +2209,9 @@ impl<'b, T: Target> Context<'b, T> {
                     .ty
                     .pointer_target()
                     .ok_or_else(|| anyhow!("a wheel slot's head is not pointer-shaped"))?;
-                if let Err(e) = self.walk_wheel_slot(addr, entry_ty, list, visited, found) {
+                if let Err(e) =
+                    self.walk_wheel_slot(addr, entry_ty, list, visited, found, registries)
+                {
                     errors.push(e.context(format!("failed to walk the wheel slot at {addr:#x}")));
                 }
             }
@@ -2214,6 +2228,7 @@ impl<'b, T: Target> Context<'b, T> {
         list: &TaskList,
         visited: &mut HashSet<u64>,
         found: &mut Vec<(u64, DiscoveryRoute)>,
+        registries: &mut Registries,
     ) -> Result<()> {
         let mut cur = Some(head);
         while let Some(addr) = cur {
@@ -2226,13 +2241,26 @@ impl<'b, T: Target> Context<'b, T> {
                 .with_context(|| format!("failed to read the TimerShared at {addr:#x}"))?;
             // An entry in the wheel with no waker registered has simply
             // not been polled since it was armed.
-            if let Some(raw) = self
+            let task = match self
                 .walk(WalkRole::TimerSharedWaker)
                 .walk(entry)?
                 .optional()
             {
-                self.registry_candidate(raw, DiscoveryRoute::Wheel, list, found)?;
-            }
+                Some(raw) => self.registry_waker(raw, DiscoveryRoute::Wheel, list, found)?,
+                None => None,
+            };
+            // Enrichment beside the harvest's real business: a torn or
+            // unbound word costs the state, never the entry.
+            let state = self
+                .walk(WalkRole::TimerSharedState)
+                .try_read(entry)
+                .ok()
+                .flatten();
+            registries.timers.push(TimerEntryInfo {
+                entry: addr,
+                state,
+                task,
+            });
             cur = self
                 .walk(WalkRole::TimerSharedNext)
                 .walk(entry)?
@@ -2263,6 +2291,7 @@ impl<'b, T: Target> Context<'b, T> {
         &self,
         runtimes: &[RuntimeRef<'b>],
         list: &TaskList,
+        registries: &mut Registries,
     ) -> (Vec<(u64, DiscoveryRoute)>, Vec<anyhow::Error>) {
         let mut found = Vec::new();
         let mut errors = Vec::new();
@@ -2271,7 +2300,14 @@ impl<'b, T: Target> Context<'b, T> {
         // so a repeat is corrupt memory, not a second sighting.
         let mut visited = HashSet::default();
         for runtime in runtimes {
-            if let Err(e) = self.harvest_io(runtime, list, &mut visited, &mut found, &mut errors) {
+            if let Err(e) = self.harvest_io(
+                runtime,
+                list,
+                &mut visited,
+                &mut found,
+                &mut errors,
+                registries,
+            ) {
                 errors.push(e.context(format!(
                     "failed to walk the io registrations of the runtime at {:#x}",
                     runtime.handle.addr
@@ -2283,6 +2319,7 @@ impl<'b, T: Target> Context<'b, T> {
 
     /// Walk one runtime's registration list, taking each resource's
     /// waiters as they come.
+    #[allow(clippy::too_many_arguments)]
     fn harvest_io(
         &self,
         runtime: &RuntimeRef<'b>,
@@ -2290,6 +2327,7 @@ impl<'b, T: Target> Context<'b, T> {
         visited: &mut HashSet<u64>,
         found: &mut Vec<(u64, DiscoveryRoute)>,
         errors: &mut Vec<anyhow::Error>,
+        registries: &mut Registries,
     ) -> Result<()> {
         // `driver.io` is the driver's flavor enum: a runtime built
         // without the io driver holds `Disabled` and registers nothing,
@@ -2317,11 +2355,25 @@ impl<'b, T: Target> Context<'b, T> {
             );
             let registration = Value::read(self.proc, io_ty, addr)
                 .with_context(|| format!("failed to read the ScheduledIo at {addr:#x}"))?;
-            if let Err(e) = self.harvest_io_waiters(registration, list, visited, found) {
+            // Enrichment beside the harvest's real business: a torn or
+            // unbound word costs the readiness, never the resource.
+            let mut resource = IoResourceInfo {
+                addr,
+                readiness: self
+                    .walk(WalkRole::ScheduledIoReadiness)
+                    .try_read(registration)
+                    .ok()
+                    .flatten(),
+                waiters: Vec::new(),
+            };
+            if let Err(e) =
+                self.harvest_io_waiters(registration, list, visited, found, &mut resource)
+            {
                 errors.push(e.context(format!(
                     "failed to walk the waiters of the io registration at {addr:#x}"
                 )));
             }
+            registries.io.push(resource);
             cur = self
                 .walk(WalkRole::ScheduledIoNext)
                 .walk(registration)?
@@ -2344,14 +2396,19 @@ impl<'b, T: Target> Context<'b, T> {
         list: &TaskList,
         visited: &mut HashSet<u64>,
         found: &mut Vec<(u64, DiscoveryRoute)>,
+        resource: &mut IoResourceInfo,
     ) -> Result<()> {
         let waiters = self
             .walk(WalkRole::ScheduledIoWaiters)
             .walk_at(registration)?;
-        for role in [WalkRole::IoReaderWaker, WalkRole::IoWriterWaker] {
+        for (role, slot) in [
+            (WalkRole::IoReaderWaker, IoSlot::Reader),
+            (WalkRole::IoWriterWaker, IoSlot::Writer),
+        ] {
             // A direction nobody is awaiting holds no waker.
             if let Some(raw) = self.walk(role).walk(waiters)?.optional() {
-                self.registry_candidate(raw, DiscoveryRoute::Io, list, found)?;
+                let task = self.registry_waker(raw, DiscoveryRoute::Io, list, found)?;
+                resource.waiters.push(IoWaiterInfo { slot, task });
             }
         }
         let Some(head) = self.walk(WalkRole::IoWaiterHead).walk(waiters)?.optional() else {
@@ -2373,7 +2430,17 @@ impl<'b, T: Target> Context<'b, T> {
             // A node whose future has not been polled since it was
             // linked carries no waker yet.
             if let Some(raw) = self.walk(WalkRole::IoWaiterWaker).walk(node)?.optional() {
-                self.registry_candidate(raw, DiscoveryRoute::Io, list, found)?;
+                let task = self.registry_waker(raw, DiscoveryRoute::Io, list, found)?;
+                let interest = self
+                    .walk(WalkRole::IoWaiterInterest)
+                    .try_read::<u64>(node)
+                    .ok()
+                    .flatten()
+                    .map(Interest);
+                resource.waiters.push(IoWaiterInfo {
+                    slot: IoSlot::Listed { interest },
+                    task,
+                });
             }
             cur = self
                 .walk(WalkRole::IoWaiterNext)
@@ -2385,23 +2452,25 @@ impl<'b, T: Target> Context<'b, T> {
         Ok(())
     }
 
-    /// One waker a registry holds, as a discovery candidate: a task's,
-    /// and a task no list already claims. Anything else — a `block_on`
-    /// thread's parker waker, a task the scheduler already owns — is
-    /// simply not one.
-    fn registry_candidate(
+    /// Decode one waker a registry holds and file its discovery
+    /// candidate: a task's waker on a task no list claims is route 2's
+    /// find. The task it names — listed or not — is returned either
+    /// way, for the registries' retention; anything that is not a task
+    /// waker (a `block_on` thread's parker waker, say) is `None`.
+    fn registry_waker(
         &self,
         raw: Value<'b>,
         route: DiscoveryRoute,
         list: &TaskList,
         found: &mut Vec<(u64, DiscoveryRoute)>,
-    ) -> Result<()> {
-        if let QueuedWaker::Task { addr, .. } = self.raw_waker(raw)?
-            && !list.contains(addr)
-        {
+    ) -> Result<Option<u64>> {
+        let QueuedWaker::Task { addr, .. } = self.raw_waker(raw)? else {
+            return Ok(None);
+        };
+        if !list.contains(addr) {
             found.push((addr, route));
         }
-        Ok(())
+        Ok(Some(addr))
     }
 
     /// Route 1's tail: follow one unlisted Header home through its
