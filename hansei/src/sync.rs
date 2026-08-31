@@ -1,26 +1,472 @@
-//! The `sync` command: the contended synchronization primitives, one
-//! block per semaphore — `graph` turned resource-centric.
+//! The `sync` command: the resource-centric view of every relation
+//! hansei knows — `graph` turned inside out. One block per contended
+//! semaphore (the primitive backing tokio's Mutex, RwLock and
+//! Semaphore), per joined task (a task as the resource a `JoinHandle`
+//! names), and per driven task set; an address no primitive owns falls
+//! through to the tasks whose frames hold it by value.
 
+use crate::relations::Relations;
 use crate::summary::counted;
+use crate::tasks::{future_name, task_label};
 use crate::{Session, print_warnings};
 
 use anyhow::{Result, bail};
 use hansei_bundle::names;
 use hansei_runtime::tokio::bundle::{QueuedWaker, SemaphoreWaiter, WaitTarget};
 use hansei_runtime::tokio::graph::{Analysis, Futurelock, TaskRef};
+use hansei_runtime::tokio::{Lifecycle, bundle, census};
 
 use std::collections::BTreeMap;
 use std::io;
 
+/// The block kinds `--kind` narrows to.
+#[derive(Copy, Clone, PartialEq, Eq, Debug, clap::ValueEnum)]
+pub enum Kind {
+    /// Contended semaphores: permits, holders, blocked tasks, the
+    /// wake queue.
+    Semaphore,
+    /// Tasks as join resources: waited on, their handles held, or
+    /// members of a set.
+    Join,
+    /// `JoinSet`s and `FuturesUnordered`s: the driver and the members.
+    Set,
+    /// The by-value fallback: tasks whose frames hold an address.
+    Address,
+}
+
+/// Everything the printers read, taken apart from the session so the
+/// tests can lay out a population no fixture holds.
+struct View<'a> {
+    list: &'a bundle::TaskList,
+    analysis: &'a Analysis,
+    relations: &'a Relations,
+    sets: &'a [census::FutureSet],
+    join_sets: &'a [census::JoinSet],
+    impls: &'a names::ImplFold,
+}
+
 pub(crate) fn exec_sync<T: proc::Target>(
     session: &Session<'_, T>,
     addr: Option<u64>,
+    kind: Option<Kind>,
     out: &mut dyn io::Write,
 ) -> Result<()> {
     let analysis = session.analysis();
     print_warnings(&analysis.errors)?;
-    print_sync(analysis, addr, &session.impl_fold, out)
+    let relations = session.relations();
+    let census = session.census();
+    let view = View {
+        list: &session.tasks,
+        analysis,
+        relations,
+        sets: &census.sets,
+        join_sets: &census.join_sets,
+        impls: &session.impl_fold,
+    };
+    if let Some(addr) = addr {
+        let task_at = |addr: u64| session.extents().locate(addr).map(|(index, _)| index);
+        let references = |addr: u64| collect_references(session, view.impls, addr);
+        return print_addressed(&view, addr, kind, &task_at, &references, out);
+    }
+    if kind == Some(Kind::Address) {
+        bail!("--kind address narrows an address lookup; `sync 0x…` names one");
+    }
+    // The omitted-target rule: a task cursor scopes the listing to the
+    // relations that task is party to; without one, everything.
+    if let Some(index) = crate::cursor::cursor_task(session) {
+        return print_task_scoped(&view, index, kind, out);
+    }
+    print_listing(&view, kind, out)
 }
+
+/// The bare listing: every contended resource, one block each —
+/// semaphores in address order, then joined tasks in task order, then
+/// nonempty sets in address order.
+fn print_listing(view: &View<'_>, kind: Option<Kind>, out: &mut dyn io::Write) -> Result<()> {
+    let mut printed = 0usize;
+    let mut sep = |out: &mut dyn io::Write| -> Result<()> {
+        if printed > 0 {
+            writeln!(out)?;
+        }
+        printed += 1;
+        Ok(())
+    };
+    if kind.is_none_or(|k| k == Kind::Semaphore) {
+        for block in blocks(view.analysis).values() {
+            sep(out)?;
+            print_semaphore(block, view.impls, out)?;
+        }
+    }
+    if kind.is_none_or(|k| k == Kind::Join) {
+        for index in 0..view.list.tasks.len() {
+            if view.relations.joined(index) {
+                sep(out)?;
+                print_join(view, index, out)?;
+            }
+        }
+    }
+    if kind.is_none_or(|k| k == Kind::Set) {
+        for &(addr, _, _) in &set_index(view) {
+            sep(out)?;
+            print_set(view, addr, out)?;
+        }
+    }
+    Ok(())
+}
+
+/// One address, resolved against everything `sync` lists — the
+/// semaphores, the sets, the tasks themselves — and, when no primitive
+/// owns it, against the frames that hold it by value. `--kind` skips
+/// the resolution order and asks for one reading.
+fn print_addressed(
+    view: &View<'_>,
+    addr: u64,
+    kind: Option<Kind>,
+    task_at: &dyn Fn(u64) -> Option<usize>,
+    references: &dyn Fn(u64) -> Vec<String>,
+    out: &mut dyn io::Write,
+) -> Result<()> {
+    let semaphores = blocks(view.analysis);
+    let semaphore = semaphores.get(&addr);
+    let set = set_index(view).iter().any(|&(a, ..)| a == addr);
+    let task = task_at(addr);
+    match kind {
+        Some(Kind::Semaphore) => match semaphore {
+            Some(block) => print_semaphore(block, view.impls, out),
+            None => bail!(
+                "no decoded semaphore at {addr:#x}; `sync` lists the ones \
+                 the tasks' await chains reach"
+            ),
+        },
+        Some(Kind::Join) => match task {
+            Some(index) => print_join(view, index, out),
+            None => bail!("{addr:#x} is in no task's allocation"),
+        },
+        Some(Kind::Set) => match set {
+            true => print_set(view, addr, out),
+            false => bail!("no decoded JoinSet or FuturesUnordered at {addr:#x}"),
+        },
+        Some(Kind::Address) => print_references(addr, &references(addr), out),
+        None => {
+            if let Some(block) = semaphore {
+                return print_semaphore(block, view.impls, out);
+            }
+            if set {
+                return print_set(view, addr, out);
+            }
+            if let Some(index) = task {
+                return print_join(view, index, out);
+            }
+            print_references(addr, &references(addr), out)
+        }
+    }
+}
+
+/// The cursor's task: every relation it is party to — the semaphores
+/// it is blocked on or holds, its own join block, the join blocks of
+/// the tasks it awaits, and the sets it drives.
+fn print_task_scoped(
+    view: &View<'_>,
+    index: usize,
+    kind: Option<Kind>,
+    out: &mut dyn io::Write,
+) -> Result<()> {
+    let addr = view.list.tasks[index].addr.0;
+    let mut printed = 0usize;
+    let mut sep = |out: &mut dyn io::Write| -> Result<()> {
+        if printed > 0 {
+            writeln!(out)?;
+        }
+        printed += 1;
+        Ok(())
+    };
+    if kind.is_none_or(|k| k == Kind::Semaphore) {
+        for block in blocks(view.analysis).values() {
+            let blocked = block.blocked.iter().any(|(t, _)| t.addr.0 == addr);
+            let holds = block.locks.iter().any(|fl| fl.holder.addr.0 == addr);
+            if blocked || holds {
+                sep(out)?;
+                print_semaphore(block, view.impls, out)?;
+            }
+        }
+    }
+    if kind.is_none_or(|k| k == Kind::Join) {
+        let awaits = view.relations.edges[index]
+            .iter()
+            .filter(|e| e.kind == crate::relations::EdgeKind::Waiting)
+            .map(|e| e.to);
+        let mut joins: Vec<usize> = [index]
+            .into_iter()
+            .filter(|&i| view.relations.joined(i))
+            .chain(awaits)
+            .collect();
+        joins.sort_unstable();
+        joins.dedup();
+        for join in joins {
+            // A semaphore holder is a Waiting edge too, but its
+            // relation is the semaphore block above, not a join.
+            if join != index && !view.relations.waited_by[join].contains(&index) {
+                continue;
+            }
+            sep(out)?;
+            print_join(view, join, out)?;
+        }
+    }
+    if kind.is_none_or(|k| k == Kind::Set) {
+        for &(set_addr, owner, _) in &set_index(view) {
+            let member = view.relations.member_of[index].is_some_and(|(a, _)| a == set_addr);
+            if owner == index || member {
+                sep(out)?;
+                print_set(view, set_addr, out)?;
+            }
+        }
+    }
+    if printed == 0 {
+        writeln!(
+            out,
+            "{} is party to no decoded relation: nothing waits to join \
+             it, and it blocks on no semaphore and drives no set",
+            task_label(view.list, index)
+        )?;
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Join blocks: a task as a resource.
+// ---------------------------------------------------------------------------
+
+/// One task as the resource a `JoinHandle` names: who waits to join
+/// it, who holds its handle without awaiting, and the set that will
+/// collect it.
+fn print_join(view: &View<'_>, index: usize, out: &mut dyn io::Write) -> Result<()> {
+    let task = &view.list.tasks[index];
+    let state = match task.state.is_cancelled() {
+        true => format!("{} (cancelled)", task.state.lifecycle()),
+        false => task.state.lifecycle().to_string(),
+    };
+    writeln!(
+        out,
+        "{} ({}): {state}",
+        task_label(view.list, index),
+        future_name(&task.future, view.impls)
+    )?;
+    let named = |tasks: &[usize]| {
+        tasks
+            .iter()
+            .map(|&i| task_label(view.list, i))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let waited = &view.relations.waited_by[index];
+    if !waited.is_empty() {
+        writeln!(out, "    Waited by: {}", named(waited))?;
+    }
+    let held = &view.relations.held_by[index];
+    if !held.is_empty() {
+        writeln!(out, "    Handle held by: {}, unawaited", named(held))?;
+    }
+    if let Some((set_addr, owner)) = view.relations.member_of[index] {
+        writeln!(
+            out,
+            "    Member of: {}, driven by {}",
+            set_name(view, set_addr),
+            task_label(view.list, owner)
+        )?;
+    }
+    if waited.is_empty() && held.is_empty() && view.relations.member_of[index].is_none() {
+        writeln!(
+            out,
+            "    No task waits to join it, holds its handle, or drives \
+             it in a set"
+        )?;
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Set blocks: a JoinSet or FuturesUnordered as a resource.
+// ---------------------------------------------------------------------------
+
+/// Every set the census found, `(address, owner index, is_join_set)`,
+/// in address order, empties left out — a set with no members contends
+/// with nothing.
+fn set_index(view: &View<'_>) -> Vec<(u64, usize, bool)> {
+    let mut sets: Vec<(u64, usize, bool)> = view
+        .sets
+        .iter()
+        .filter(|s| !s.children.is_empty())
+        .map(|s| (s.addr, s.owner, false))
+        .chain(
+            view.join_sets
+                .iter()
+                .filter(|s| !s.children.is_empty())
+                .map(|s| (s.addr, s.owner, true)),
+        )
+        .collect();
+    sets.sort_unstable();
+    sets
+}
+
+/// The heading spelling of the set at `addr`, folded like every other
+/// type the listings print.
+fn set_name(view: &View<'_>, addr: u64) -> String {
+    let ty = view
+        .join_sets
+        .iter()
+        .find(|s| s.addr == addr)
+        .map(|s| &s.ty)
+        .or_else(|| view.sets.iter().find(|s| s.addr == addr).map(|s| &s.ty));
+    match ty {
+        Some(ty) => format!(
+            "a {} (set {addr:#x})",
+            names::fold_type_name(ty, view.impls)
+        ),
+        None => format!("the set at {addr:#x}"),
+    }
+}
+
+/// `counted` pluralizes with an `s`; a set's futures are children.
+fn children(n: usize) -> String {
+    match n {
+        1 => "1 child".to_string(),
+        n => format!("{n} children"),
+    }
+}
+
+/// One set's block: who drives it and what it holds, members grouped
+/// by state — a `JoinSet`'s members are listed tasks, a
+/// `FuturesUnordered`'s are resident futures only its own nodes hold.
+fn print_set(view: &View<'_>, addr: u64, out: &mut dyn io::Write) -> Result<()> {
+    if let Some(set) = view.join_sets.iter().find(|s| s.addr == addr) {
+        writeln!(
+            out,
+            "{}: {}, driven by {} (`{}`)",
+            set_name(view, addr),
+            counted(set.children.len(), "member"),
+            task_label(view.list, set.owner),
+            set.local,
+        )?;
+        // Members grouped by state, listed tasks by their ids; a
+        // complete member has left the owned list and only the set's
+        // entry keeps it alive, which is worth its own words.
+        let mut by_state: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        for child in &set.children {
+            let who = match child.id {
+                Some(id) => format!("task {id}"),
+                None => format!("the task at {:#x}", child.task),
+            };
+            let state = match child.state.lifecycle() {
+                Lifecycle::Complete => "complete, awaiting join".to_string(),
+                state if !child.listed => format!("{state}, unlisted"),
+                state => state.to_string(),
+            };
+            by_state.entry(state).or_default().push(who);
+        }
+        for (state, members) in by_state {
+            writeln!(out, "    Members ({state}): {}", members.join(", "))?;
+        }
+        return Ok(());
+    }
+    let Some(set) = view.sets.iter().find(|s| s.addr == addr) else {
+        bail!("no decoded JoinSet or FuturesUnordered at {addr:#x}");
+    };
+    writeln!(
+        out,
+        "{}: {}, driven by {} (`{}`)",
+        set_name(view, addr),
+        children(set.children.len()),
+        task_label(view.list, set.owner),
+        set.local,
+    )?;
+    let in_flight = set.children.iter().filter(|c| c.future.is_some()).count();
+    let completed = set.children.len() - in_flight;
+    if in_flight > 0 {
+        writeln!(out, "    In flight: {in_flight}")?;
+    }
+    if completed > 0 {
+        writeln!(out, "    Completed, not yet reaped: {completed}")?;
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// The address fallback: referenced by value.
+// ---------------------------------------------------------------------------
+
+/// The tasks whose await-chain frames hold `addr` by value — the
+/// census's answer turned around: `whatis` names the task an address
+/// is *in*, this names the tasks that *point at* it. The frames are
+/// the ones the analysis already walks; nothing is swept.
+fn collect_references<T: proc::Target>(
+    session: &Session<'_, T>,
+    impls: &names::ImplFold,
+    addr: u64,
+) -> Vec<String> {
+    let mut lines = Vec::new();
+    // An unmapped word is no address at all: scanning frames for it
+    // would report every integer that happens to share its value
+    // (`sync 0x1` matching a discriminant), so the fallback answers
+    // only for addresses the target actually maps.
+    if !session.ctx.is_mapped(addr) {
+        return lines;
+    }
+    for (index, task) in session.tasks.tasks.iter().enumerate() {
+        if !matches!(task.future, bundle::FutureInfo::Known(_)) {
+            continue;
+        }
+        let Ok(bundle::TaskStage::Running(future)) = session.ctx.task_stage(task) else {
+            continue;
+        };
+        let chain = session.ctx.await_chain(future);
+        for (n, frame) in chain.frames.iter().enumerate() {
+            let value = match &frame.state {
+                Some(state) => state.payload,
+                None => frame.future,
+            };
+            let Some(offset) = value
+                .bytes
+                .chunks_exact(8)
+                .position(|w| u64::from_le_bytes(w.try_into().unwrap()) == addr)
+                .map(|i| i as u64 * 8)
+            else {
+                continue;
+            };
+            // The member covering the hit, where one does — the name a
+            // reader can hand to `print`.
+            let member = value
+                .ty
+                .members()
+                .find(|m| m.offset() <= offset && offset < m.offset() + m.ty().size().max(1))
+                .map(|m| format!(", in `{}`", m.name()));
+            lines.push(format!(
+                "{} (frame #{n} {}{})",
+                task_label(&session.tasks, index),
+                names::display_future_name(value.ty.name(), impls),
+                member.unwrap_or_default(),
+            ));
+        }
+    }
+    lines
+}
+
+/// The fallback block those references print as — refused when there
+/// are none, so a miss is an error naming what `sync` does list.
+fn print_references(addr: u64, lines: &[String], out: &mut dyn io::Write) -> Result<()> {
+    if lines.is_empty() {
+        bail!(
+            "no decoded resource at {addr:#x}, and no task's frames hold \
+             it by value; `sync` lists semaphores, joined tasks and sets"
+        );
+    }
+    writeln!(out, "{addr:#x}: no decoded resource owns this address")?;
+    writeln!(out, "    Referenced by value: {}", lines.join(", "))?;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Semaphore blocks (the original `sync`).
+// ---------------------------------------------------------------------------
 
 /// One contended semaphore, assembled from every place the analysis
 /// mentions it: the tasks whose active chains are blocked on it (each
@@ -97,38 +543,10 @@ fn blocks(analysis: &Analysis) -> BTreeMap<u64, SemaphoreBlock<'_>> {
     blocks
 }
 
-/// Print one block per contended semaphore, or just the one `select`
-/// names. It takes what it prints rather than a session so the offline
-/// tests can drive it.
-fn print_sync(
-    analysis: &Analysis,
-    select: Option<u64>,
-    impls: &names::ImplFold,
-    out: &mut dyn io::Write,
-) -> Result<()> {
-    let blocks = blocks(analysis);
-    if let Some(addr) = select {
-        let Some(block) = blocks.get(&addr) else {
-            bail!(
-                "no decoded semaphore at {addr:#x}; `sync` lists the ones \
-                 the tasks' await chains reach"
-            );
-        };
-        return print_block(block, impls, out);
-    }
-    for (i, block) in blocks.values().enumerate() {
-        if i > 0 {
-            writeln!(out)?;
-        }
-        print_block(block, impls, out)?;
-    }
-    Ok(())
-}
-
 /// One semaphore's block: what it is, what its permit word says, who
 /// holds it where that is knowable at all, who is blocked on it, and
 /// its wake queue in wake order.
-fn print_block(
+fn print_semaphore(
     block: &SemaphoreBlock<'_>,
     impls: &names::ImplFold,
     out: &mut dyn io::Write,
@@ -242,15 +660,19 @@ fn waiter_name(w: &SemaphoreWaiter, abandoned: bool) -> String {
 
 #[cfg(test)]
 mod sync_tests {
-    use super::print_sync;
+    use super::{Kind, View, print_addressed, print_listing};
+
+    use crate::relations::Relations;
 
     use hansei_bundle::names;
-    use hansei_runtime::tokio::TaskAddr;
     use hansei_runtime::tokio::bundle::{
-        AbandonedAcquire, QueuedWaker, SemaphoreWaiter, WaitTarget,
+        AbandonedAcquire, FutureInfo, QueuedWaker, SemaphoreWaiter, Task, TaskList, WaitTarget,
     };
+    use hansei_runtime::tokio::census;
     use hansei_runtime::tokio::graph::{Analysis, Futurelock, TaskRef, TaskWait};
+    use hansei_runtime::tokio::{TaskAddr, TaskState};
 
+    const REF_ONE: u64 = 1 << 6;
     const SEMAPHORE: u64 = 0x9000;
 
     fn addr(id: u64) -> TaskAddr {
@@ -261,6 +683,19 @@ mod sync_tests {
         TaskRef {
             addr: addr(id),
             task_id: Some(id),
+        }
+    }
+
+    fn task(id: u64) -> Task {
+        Task {
+            addr: addr(id),
+            state: TaskState(REF_ONE),
+            owner_id: Some(1),
+            task_id: Some(id),
+            spawn_location: None,
+            future: FutureInfo::Unknown { poll_symbol: None },
+            group: 0,
+            blocking: false,
         }
     }
 
@@ -297,6 +732,17 @@ mod sync_tests {
         }
     }
 
+    /// Waiting to join the task with this id.
+    fn joining(id: u64) -> WaitTarget {
+        WaitTarget::Task {
+            addr: addr(id).0,
+            task_id: Some(id),
+            state: TaskState(REF_ONE),
+            listed: true,
+            kind: None,
+        }
+    }
+
     /// The task holding an acquire on the semaphore, granted or not,
     /// in a future it stopped polling.
     fn futurelock(holder: u64, node: u64, needed: u64) -> Futurelock {
@@ -318,20 +764,68 @@ mod sync_tests {
         }
     }
 
+    /// The default population behind the semaphore tests: one task per
+    /// wait, so the relation index has rows to land on.
+    fn list_for(waits: &[TaskWait]) -> TaskList {
+        TaskList {
+            tasks: waits
+                .iter()
+                .map(|w| task(w.task.task_id.unwrap()))
+                .collect(),
+            errors: Vec::new(),
+        }
+    }
+
+    struct Fixture {
+        list: TaskList,
+        analysis: Analysis,
+        sets: Vec<census::FutureSet>,
+        join_sets: Vec<census::JoinSet>,
+    }
+
+    impl Fixture {
+        fn new(waits: Vec<TaskWait>, futurelocks: Vec<Futurelock>) -> Fixture {
+            let list = list_for(&waits);
+            Fixture {
+                list,
+                analysis: Analysis {
+                    waits,
+                    futurelocks,
+                    join_wakers: Vec::new(),
+                    errors: Vec::new(),
+                },
+                sets: Vec::new(),
+                join_sets: Vec::new(),
+            }
+        }
+
+        fn print(&self, select: Option<u64>, kind: Option<Kind>) -> anyhow::Result<String> {
+            let relations = Relations::build(&self.list, &self.analysis, &[], &self.join_sets);
+            let view = View {
+                list: &self.list,
+                analysis: &self.analysis,
+                relations: &relations,
+                sets: &self.sets,
+                join_sets: &self.join_sets,
+                impls: &names::ImplFold::default(),
+            };
+            let mut out = Vec::new();
+            let task_at = |addr: u64| self.list.tasks.iter().position(|t| t.addr.0 == addr);
+            let references = |_: u64| Vec::new();
+            match select {
+                Some(addr) => print_addressed(&view, addr, kind, &task_at, &references, &mut out)?,
+                None => print_listing(&view, kind, &mut out)?,
+            }
+            Ok(String::from_utf8(out).unwrap())
+        }
+    }
+
     fn sync(
         waits: Vec<TaskWait>,
         futurelocks: Vec<Futurelock>,
         select: Option<u64>,
     ) -> anyhow::Result<String> {
-        let analysis = Analysis {
-            waits,
-            futurelocks,
-            join_wakers: Vec::new(),
-            errors: Vec::new(),
-        };
-        let mut out = Vec::new();
-        print_sync(&analysis, select, &names::ImplFold::default(), &mut out)?;
-        Ok(String::from_utf8(out).unwrap())
+        Fixture::new(waits, futurelocks).print(select, Some(Kind::Semaphore))
     }
 
     /// The whole block of a contended, futurelocked Mutex: the holder
@@ -451,11 +945,171 @@ mod sync_tests {
         );
     }
 
-    /// Nothing prints when the analysis reached no semaphore: an empty
-    /// answer is "none found here", the same claim `graph` makes.
+    /// Nothing prints when the analysis reached no relation at all: an
+    /// empty answer is "none found here", the same claim `graph` makes.
     #[test]
     fn test_no_contention_prints_nothing() {
-        let out = sync(vec![wait(9, None)], Vec::new(), None).unwrap();
+        let out = Fixture::new(vec![wait(9, None)], Vec::new())
+            .print(None, None)
+            .unwrap();
         assert_eq!(out, "");
+    }
+
+    /// A joined task earns one block naming every join relation it is
+    /// on the resource end of: who waits on it, who holds its handle,
+    /// and the set that will collect it — and only joined tasks get
+    /// one, never one block per task.
+    #[test]
+    fn test_a_joined_task_gets_a_join_block() {
+        let mut fixture = Fixture::new(
+            vec![wait(7, Some(joining(8))), wait(8, None), wait(9, None)],
+            Vec::new(),
+        );
+        fixture.join_sets = vec![census::JoinSet {
+            owner: 2,
+            frame: 0,
+            local: "tasks".to_string(),
+            via: None,
+            addr: 0xb000,
+            ty: "tokio::task::join_set::JoinSet<()>".to_string(),
+            length: 1,
+            children: vec![census::JoinedTask {
+                entry: 0xc000,
+                task: addr(8).0,
+                id: Some(8),
+                state: TaskState(REF_ONE),
+                listed: true,
+            }],
+        }];
+        let out = fixture.print(None, Some(Kind::Join)).unwrap();
+        assert_eq!(
+            out,
+            "task 8 (<unknown>): idle\n    \
+             Waited by: task 7\n    \
+             Member of: a tokio::task::join_set::JoinSet<()> (set 0xb000), \
+             driven by task 9\n"
+        );
+    }
+
+    /// The set view: a JoinSet's members grouped by state under the
+    /// task driving it, and `--kind set` narrowing the listing to it.
+    #[test]
+    fn test_a_join_set_block_groups_members_by_state() {
+        let mut fixture = Fixture::new(vec![wait(9, None)], Vec::new());
+        fixture.join_sets = vec![census::JoinSet {
+            owner: 0,
+            frame: 0,
+            local: "tasks".to_string(),
+            via: None,
+            addr: 0xb000,
+            ty: "tokio::task::join_set::JoinSet<()>".to_string(),
+            length: 2,
+            children: vec![
+                census::JoinedTask {
+                    entry: 0xc000,
+                    task: 0x7000,
+                    id: Some(21),
+                    state: TaskState(REF_ONE),
+                    listed: true,
+                },
+                census::JoinedTask {
+                    entry: 0xc100,
+                    task: 0x7100,
+                    id: Some(22),
+                    state: TaskState(REF_ONE | 1),
+                    listed: false,
+                },
+            ],
+        }];
+        let out = fixture.print(None, Some(Kind::Set)).unwrap();
+        assert_eq!(
+            out,
+            "a tokio::task::join_set::JoinSet<()> (set 0xb000): 2 members, \
+             driven by task 9 (`tasks`)\n    \
+             Members (idle): task 21\n    \
+             Members (running, unlisted): task 22\n"
+        );
+    }
+
+    /// A FuturesUnordered's children are futures, not listed tasks:
+    /// the block counts what is resident against what has completed
+    /// unreaped, and an addressed ask prints the same block.
+    #[test]
+    fn test_a_future_set_block_counts_children() {
+        let mut fixture = Fixture::new(vec![wait(9, None)], Vec::new());
+        fixture.sets = vec![census::FutureSet {
+            owner: 0,
+            frame: 0,
+            local: "work".to_string(),
+            via: None,
+            addr: 0xb000,
+            ty: "futures_util::stream::futures_unordered::FuturesUnordered<()>".to_string(),
+            children: vec![
+                census::SetChild {
+                    node: 0xc000,
+                    depth: 1,
+                    future: Some("app::poll::{async_fn_env#0}".to_string()),
+                    root: None,
+                    state: None,
+                    waiting_on: None,
+                    wait: None,
+                    leaf: None,
+                },
+                census::SetChild {
+                    node: 0xc100,
+                    depth: 0,
+                    future: None,
+                    root: None,
+                    state: None,
+                    waiting_on: None,
+                    wait: None,
+                    leaf: None,
+                },
+            ],
+        }];
+        let listed = fixture.print(None, None).unwrap();
+        let addressed = fixture.print(Some(0xb000), None).unwrap();
+        assert_eq!(listed, addressed);
+        assert_eq!(
+            listed,
+            "a futures_util::stream::futures_unordered::FuturesUnordered<()> (set 0xb000): \
+             2 children, driven by task 9 (`work`)\n    \
+             In flight: 1\n    \
+             Completed, not yet reaped: 1\n"
+        );
+    }
+
+    /// `--kind` narrows the listing to one block family: the join
+    /// blocks alone, with the contended semaphore left out.
+    #[test]
+    fn test_kind_narrows_the_listing() {
+        let waits = vec![
+            wait(40, Some(semaphore(Vec::new()))),
+            wait(7, Some(joining(40))),
+        ];
+        let fixture = Fixture::new(waits, Vec::new());
+        let joins = fixture.print(None, Some(Kind::Join)).unwrap();
+        assert!(joins.starts_with("task 40 ("), "{joins}");
+        assert!(!joins.contains("semaphore"), "{joins}");
+        let semaphores = fixture.print(None, Some(Kind::Semaphore)).unwrap();
+        assert!(
+            semaphores.starts_with("a tokio::sync::Mutex"),
+            "{semaphores}"
+        );
+        assert!(!semaphores.contains("Waited by"), "{semaphores}");
+    }
+
+    /// An addressed ask resolves a task header to that task's join
+    /// block, an un-joined task included — the addressed form answers
+    /// the address it was given.
+    #[test]
+    fn test_an_addressed_task_prints_its_join_block() {
+        let fixture = Fixture::new(vec![wait(9, None)], Vec::new());
+        let out = fixture.print(Some(addr(9).0), None).unwrap();
+        assert_eq!(
+            out,
+            "task 9 (<unknown>): idle\n    \
+             No task waits to join it, holds its handle, or drives it in a set\n"
+        );
     }
 }

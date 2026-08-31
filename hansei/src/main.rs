@@ -27,6 +27,7 @@ mod output;
 mod pattern;
 mod print;
 mod registers;
+mod relations;
 pub mod repl;
 mod runtimes;
 mod settings;
@@ -595,17 +596,36 @@ pub enum Command {
     /// acquire holding permits (RFD 609) — the one case a holder is
     /// knowable at all.
     ///
+    /// Beside the semaphores, a *joined* task is a resource too — its
+    /// block lists who waits to join it, who holds its `JoinHandle`
+    /// unawaited, and the `JoinSet` that will collect it — and so is a
+    /// driven task set, whose block lists its members by state. Only a
+    /// task some other task waits on, holds, or drives earns a join
+    /// block in the bare listing; `--kind semaphore|join|set` narrows
+    /// to one family.
+    ///
     /// The address heading each block is the one `trace` prints in its
     /// `waiting on … (semaphore 0x…)` line, and the one this command
-    /// takes to narrow to a single block. Discovery runs through the
-    /// tasks' await chains and the futurelock scan, not a sweep of
-    /// memory: a semaphore nothing waits on is not listed, and nothing
-    /// at all prints on a target with no contention.
+    /// takes to narrow to a single block: a semaphore, a set, or a
+    /// task's allocation. An address none of those own falls through
+    /// to the tasks whose frames hold it by value (`--kind address`
+    /// asks for that reading outright). With a task cursor standing
+    /// (`task 129`, or the `task 129 sync` prefix) and no address, the
+    /// listing narrows to every relation that task is party to.
+    /// Discovery runs through the tasks' await chains, the census and
+    /// the futurelock scan, not a sweep of memory: a resource nothing
+    /// touches is not listed, and nothing at all prints on a target
+    /// with no contention.
     Sync {
-        /// One semaphore to show, by the address the listings print,
+        /// One resource to show, by the address the listings print,
         /// in hex with a required leading `0x`. Every one by default.
         #[arg(value_parser = parse_hex_addr)]
         addr: Option<u64>,
+
+        /// Show one block family only: semaphore, join, set — or
+        /// address, the by-value fallback, which needs the address.
+        #[arg(long, value_enum)]
+        kind: Option<sync::Kind>,
     },
 
     /// Select a task as the cursor: the position `trace`, `whatis` and
@@ -1237,6 +1257,10 @@ pub struct Session<'b, T: Target> {
     /// walk commands raise it once per session, not once per line.
     ceiling_noticed: Cell<bool>,
     analysis: OnceCell<Analysis>,
+    /// The relation index over the analysis and the census — forward
+    /// for `graph`, reversed for `sync` and the waker slots — built on
+    /// first use beside them.
+    relations: OnceCell<relations::Relations>,
     /// The `tasks` table's rows, built from the analysis on first use
     /// and shared with the filters and the JSON printer.
     task_rows: OnceCell<Vec<tasks::TaskRow>>,
@@ -1360,6 +1384,7 @@ impl<'b, T: Target> Session<'b, T> {
             audit: args.audit,
             ceiling_noticed: Cell::new(false),
             analysis: OnceCell::new(),
+            relations: OnceCell::new(),
             task_rows: OnceCell::new(),
             thread_rows: OnceCell::new(),
             settings: RefCell::new(settings::Settings::default()),
@@ -1455,6 +1480,21 @@ impl<'b, T: Target> Session<'b, T> {
     fn analysis(&self) -> &Analysis {
         self.analysis
             .get_or_init(|| rt_graph::analyze(&self.ctx, &self.tasks, &self.registries))
+    }
+
+    /// The relation index, built from the analysis and the census on
+    /// first use — so the first `graph` or `sync` pays the census walk
+    /// and every later one pays nothing.
+    fn relations(&self) -> &relations::Relations {
+        self.relations.get_or_init(|| {
+            let census = self.census();
+            relations::Relations::build(
+                &self.tasks,
+                self.analysis(),
+                &census.held,
+                &census.join_sets,
+            )
+        })
     }
 
     /// The runtime a worker thread belongs to, by the discovery
@@ -1564,7 +1604,7 @@ pub fn dispatch<T: Target>(
         }
         #[cfg(feature = "snapshot")]
         Command::Snapshot { output } => snapshot_cmd::exec_snapshot(session, &output, out)?,
-        Command::Sync { addr } => sync::exec_sync(session, addr, out)?,
+        Command::Sync { addr, kind } => sync::exec_sync(session, addr, kind, out)?,
         Command::Task { target, verbose } => cursor::exec_task(session, target, verbose, out)?,
         Command::Tasks {
             verbose,
