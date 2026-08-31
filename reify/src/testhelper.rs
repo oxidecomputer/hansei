@@ -593,6 +593,10 @@ fixture_ids! {
     // A CString: STR's shape, but the length counts a trailing NUL that is
     // not part of the string.
     C_STRING,
+    // The path resolver's fixtures: Rc's heap header behind a raw
+    // pointer, a wrapper whose one sized member sits past a zero-sized
+    // field, and a niche pointer enum an explicit `*` must cross.
+    RC_BOX, RC_BOX_PTR, PAD_WRAP, OPT_PTR,
 }
 
 /// A hand-built mini-bundle exercising every TypeDef kind reify touches:
@@ -1807,6 +1811,65 @@ pub fn test_bundle() -> Bundle {
             members: vec![m(data_ptrn, U8_PTR, 0), m(length2n, U64, 8)],
         },
     );
+    // RcBox { strong, weak, value: Point } behind a raw pointer — the
+    // Rc spelling of the heap header the member step hops past.
+    let rc_boxn = s("alloc::rc::RcBox<Point>");
+    types.add(
+        RC_BOX,
+        TypeDef::Struct {
+            name: rc_boxn,
+            size: 24,
+            members: vec![m(strongn, U64, 0), m(weakn, U64, 8), m(valuen, POINT, 16)],
+        },
+    );
+    types.add(
+        RC_BOX_PTR,
+        TypeDef::Pointer {
+            name: None,
+            target: RC_BOX,
+        },
+    );
+    // PadWrap { pad: Unit @0, point: Point @4 } — one sized member
+    // beside a zero-sized one, at an offset the wrapper descent must
+    // add to the base address.
+    let (pad_wrapn, point_membern) = (s("PadWrap"), s("point"));
+    types.add(
+        PAD_WRAP,
+        TypeDef::Struct {
+            name: pad_wrapn,
+            size: 12,
+            members: vec![m(padn, UNIT, 0), m(point_membern, POINT, 4)],
+        },
+    );
+    // Option<*Point> — niche on the pointer word, `None` = 0.
+    let opt_ptrn = s("Option<*Point>");
+    types.add(
+        OPT_PTR,
+        TypeDef::Enum {
+            name: opt_ptrn,
+            size: 8,
+            shape: VariantShape {
+                discr: Some(DiscrDef { offset: 0, ty: U64 }),
+                variants: vec![
+                    VariantDef {
+                        name: nonen,
+                        discr_values: tag(0),
+                        payload: m(nonen, UNIT, 0),
+                        decl: None,
+                        await_site: None,
+                    },
+                    VariantDef {
+                        name: somen,
+                        discr_values: None,
+                        payload: m(somen, PTR, 0),
+                        decl: None,
+                        await_site: None,
+                    },
+                ],
+            },
+        },
+    );
+
     let types = types.finish();
 
     // Field labels for the node-based `BoundedSemaphore` formatter (deduped

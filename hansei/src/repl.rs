@@ -1028,11 +1028,13 @@ mod tests {
             parse_exec_command(&w(&["trace", "-v"])).expect("parses"),
             Command::Trace { .. }
         ));
-        // A single word without whitespace is not re-split.
+        // A single word without whitespace is not re-split — quote
+        // characters inside one are somebody's name, not grouping.
         assert!(matches!(
             parse_exec_command(&w(&["census"])).expect("parses"),
             Command::Census { .. }
         ));
+        assert!(parse_exec_command(&w(&["cen\"sus\""])).is_err());
     }
 
     /// `print` — under any prefix that names it alone — is exempt

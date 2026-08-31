@@ -1,0 +1,5 @@
+---
+source: hansei/src/offline.rs
+description: "`print .values[1..2]` over linux/simple-await"
+---
+[1] 8

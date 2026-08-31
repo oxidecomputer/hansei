@@ -41,7 +41,10 @@ pub(crate) fn session_args(set: &str, program: &str) -> SessionArgs {
 /// aim at the first task — the listing is sorted by id, so the target
 /// is as stable as the fixture — and each entry carries the label its
 /// golden file is named with.
-fn commands(session: &Session<'_, proc::snapshot::Snapshot>) -> Vec<(&'static str, String)> {
+fn commands(
+    session: &Session<'_, proc::snapshot::Snapshot>,
+    program: &str,
+) -> Vec<(&'static str, String)> {
     let mut list = vec![
         ("tasks", "tasks".to_owned()),
         ("tasks-v", "tasks -v".to_owned()),
@@ -93,6 +96,14 @@ fn commands(session: &Session<'_, proc::snapshot::Snapshot>) -> Vec<(&'static st
                 list.push(("print-path", format!("print .{member}")));
             }
             list.push(("print-missing", "print .no_such_member".to_owned()));
+            // The fixture whose frame carries containers drives the
+            // element steps: a range keeps its [i] heading even one
+            // element wide, and a step after a range applies to each
+            // map entry.
+            if program == "simple-await" {
+                list.push(("print-range", "print .values[1..2]".to_owned()));
+                list.push(("print-map-values", "print .labels[..2].1".to_owned()));
+            }
         }
     }
     list
@@ -132,7 +143,7 @@ fn golden(program: &str) {
         settings.set_snapshot_path(Path::new("../tests/offline").join(set));
         settings.set_prepend_module_to_snapshot(false);
         settings.set_omit_expression(true);
-        for (label, line) in commands(&session) {
+        for (label, line) in commands(&session, program) {
             let command = repl::parse_line(&line)
                 .unwrap_or_else(|e| panic!("`{line}` does not parse: {e:#}"));
             let mut out = Vec::new();

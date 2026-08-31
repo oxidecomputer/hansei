@@ -1,0 +1,6 @@
+---
+source: hansei/src/offline.rs
+description: "`print .labels[..2].1` over linux/simple-await"
+---
+[0] 10
+[1] 20
