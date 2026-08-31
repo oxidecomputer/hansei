@@ -21,6 +21,7 @@ mod graph;
 #[cfg(test)]
 mod offline;
 mod output;
+mod pattern;
 mod print;
 mod registers;
 pub mod repl;
@@ -292,9 +293,11 @@ pub enum Command {
         top: usize,
     },
 
-    /// List the types whose name contains a substring.
+    /// List the types whose name matches a pattern.
     FindTypes {
-        /// The substring to look for.
+        /// The pattern to look for: a case-insensitive regex, so a
+        /// plain substring types as itself and regex metacharacters
+        /// in a type name are escaped with a backslash.
         needle: String,
     },
 
@@ -745,7 +748,7 @@ pub enum Command {
     },
 
     /// List the trait-object vtables whose trait or concrete type
-    /// contains a substring: which pair each implements, where it is in
+    /// matches a pattern: which pair each implements, where it is in
     /// the target, and how many slots it has.
     ///
     /// This is the answer to "what implements this trait", and to the
@@ -765,12 +768,12 @@ pub enum Command {
     /// one match is the end of a search, and the slots are what the
     /// search was for.
     Vtables {
-        /// A substring of the trait or of the concrete type, matched
-        /// case-sensitively the way `find-types` matches (several words
-        /// are joined back into one, so a name holding spaces pastes in
-        /// whole). Naming none reports how many there are, since a
-        /// target instantiates far too many to list.
-        #[arg(value_name = "SUBSTRING", num_args = 0..)]
+        /// A pattern matched against the trait and the concrete type:
+        /// a case-insensitive regex, as `find-types` takes (several
+        /// words are joined back into one, so a name holding spaces
+        /// pastes in whole). Naming none reports how many there are,
+        /// since a target instantiates far too many to list.
+        #[arg(value_name = "PATTERN", num_args = 0..)]
         needle: Vec<String>,
 
         /// Print every vtable's slots: the drop glue, size and align
@@ -1284,7 +1287,10 @@ pub fn dispatch<T: Target>(
             let sections = summary::Sections::select(threads, tasks, futures);
             tasks::exec_census(session, sections, top, out)?
         }
-        Command::FindTypes { needle } => types::find(&session.ctx.view, &needle, out)?,
+        Command::FindTypes { needle } => {
+            let pattern = pattern::Pattern::new(&needle).context("find-types")?;
+            types::find(&session.ctx.view, &pattern, out)?
+        }
         Command::Graph { limit } => graph::exec_graph(session, limit, out)?,
         // Answered in `repl`, which knows whether there is a prompt to
         // have a history; it never reaches here.

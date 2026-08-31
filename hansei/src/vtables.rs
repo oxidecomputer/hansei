@@ -37,7 +37,7 @@ use crate::Session;
 use crate::output::Table;
 use crate::summary::counted;
 
-use anyhow::Result;
+use anyhow::{Context as _, Result};
 use hansei_bundle::{BundleView, VTABLE_HEADER_SLOTS, VtableEntry, names};
 use proc::{Mappings, Target};
 
@@ -61,18 +61,22 @@ pub(crate) fn exec_vtables<T: proc::Target>(
     out: &mut dyn io::Write,
 ) -> Result<()> {
     let image = Image::of(session);
+    let pattern = match needle(words) {
+        Some(needle) => Some(crate::pattern::Pattern::new(&needle).context("vtables")?),
+        None => None,
+    };
     report_vtables(
         &session.ctx.view,
         &image,
         &session.impl_fold,
-        needle(words).as_deref(),
+        pattern.as_ref(),
         verbose,
         out,
     )
 }
 
-/// The substring a typed line asked for: the words joined back into the
-/// one name they were split from, so a spelling holding spaces pastes in
+/// The pattern a typed line asked for: the words joined back into the
+/// one spelling they were split from, so a name holding spaces pastes in
 /// whole — and nothing at all where no word was typed, which is the
 /// question "how many are there" rather than a match on everything.
 fn needle(words: &[String]) -> Option<String> {
@@ -696,7 +700,7 @@ fn stands(image: &Image<'_>, entry: &VtableEntry, words: &[Option<u64>]) -> bool
     })
 }
 
-/// List the vtables whose trait or concrete type contains `needle`,
+/// List the vtables whose trait or concrete type matches `needle`,
 /// grouped under the trait they implement.
 ///
 /// Apart from the session so the offline tests can drive it.
@@ -704,7 +708,7 @@ fn report_vtables(
     view: &BundleView<'_>,
     image: &Image<'_>,
     impls: &names::ImplFold,
-    needle: Option<&str>,
+    needle: Option<&crate::pattern::Pattern>,
     verbose: bool,
     out: &mut dyn io::Write,
 ) -> Result<()> {
@@ -754,7 +758,7 @@ fn report_vtables(
         .filter_map(|(index, entry)| {
             let trait_ = view.str(entry.trait_)?;
             let concrete = view.str(entry.concrete)?;
-            let hit = trait_.contains(needle) || concrete.contains(needle);
+            let hit = needle.is_match(trait_) || needle.is_match(concrete);
             hit.then(|| {
                 let addr = match &scan {
                     Some(scan) => scan.at(index),
@@ -1112,7 +1116,13 @@ pub(crate) mod vtable_tests {
         (table, fake)
     }
 
+    /// A test needle, compiled the way `exec_vtables` compiles one.
+    fn pattern(needle: &str) -> crate::pattern::Pattern {
+        crate::pattern::Pattern::new(needle).expect("the test needle compiles")
+    }
+
     fn listing(bundle: &Bundle, fake: &Fake, needle: Option<&str>, verbose: bool) -> String {
+        let needle = needle.map(|n| pattern(n));
         let mappings = mappings();
         let image = Image {
             target: fake,
@@ -1124,7 +1134,7 @@ pub(crate) mod vtable_tests {
             &BundleView::new(bundle),
             &image,
             &names::ImplFold::default(),
-            needle,
+            needle.as_ref(),
             verbose,
             &mut out,
         )
@@ -1309,7 +1319,7 @@ pub(crate) mod vtable_tests {
             &BundleView::new(&bundle),
             &image,
             &names::ImplFold::default(),
-            Some("a::Dyn"),
+            Some(&pattern("a::Dyn")),
             true,
             &mut out,
         )
@@ -1598,7 +1608,7 @@ pub(crate) mod vtable_tests {
             &BundleView::new(&bundle),
             &image,
             &names::ImplFold::default(),
-            Some("a::One"),
+            Some(&pattern("a::One")),
             false,
             &mut out,
         )
