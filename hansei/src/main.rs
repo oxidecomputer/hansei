@@ -26,6 +26,7 @@ mod print;
 mod registers;
 pub mod repl;
 mod runtimes;
+mod settings;
 #[cfg(feature = "snapshot")]
 mod snapshot_cmd;
 pub mod summary;
@@ -413,7 +414,7 @@ pub enum Command {
         ty: Vec<String>,
 
         #[command(flatten)]
-        render: RenderOpts,
+        render: RenderFlags,
     },
 
     /// Show each runtime's own state, read straight through the tokio
@@ -470,7 +471,7 @@ pub enum Command {
         scope: Vec<RuntimeScope>,
 
         #[command(flatten)]
-        render: RenderOpts,
+        render: RenderFlags,
     },
 
     /// Write this session's tokio info to a file `--tokio-info` can
@@ -482,6 +483,24 @@ pub enum Command {
     SaveTokioInfo {
         /// Where to write it (`.tinfo` by convention).
         output: PathBuf,
+    },
+
+    /// Show or change the session's defaults: the values the
+    /// per-command flags fall back to when not given. A key is
+    /// spelled exactly like the flag it defaults — depth, ugly,
+    /// max-string-len, max-array-values, limit — so `set depth 6` is
+    /// a standing `--depth 6`, governing `trace -v` locals and every
+    /// other render. A flag given on a command overrides the session
+    /// value for that command only, and the values live for the
+    /// session only.
+    Set {
+        /// The key to show or change. Naming none prints them all.
+        key: Option<String>,
+
+        /// The new value. Naming none prints the key's current value.
+        /// `ugly` takes on or off; `limit` takes a count, or `off`
+        /// for no limit.
+        value: Option<String>,
     },
 
     /// Capture a replayable snapshot of everything the analysis reads
@@ -644,7 +663,8 @@ pub enum Command {
 
         /// Show at most this many tasks — or, under --group, this
         /// many buckets; a footer counts what the cut left out.
-        /// Everything is listed when the flag is absent.
+        /// Everything is listed when the flag is absent and no
+        /// `set limit` stands.
         #[arg(long, value_name = "N")]
         limit: Option<usize>,
 
@@ -726,7 +746,7 @@ pub enum Command {
         lwp: Vec<u32>,
 
         #[command(flatten)]
-        render: RenderOpts,
+        render: RenderFlags,
     },
 
     /// Print an await chain: a task's, selected by its decimal id
@@ -758,7 +778,7 @@ pub enum Command {
         verbose: bool,
 
         #[command(flatten)]
-        render: RenderOpts,
+        render: RenderFlags,
 
         /// Show the values rendered as `<elided>` (runtime
         /// handles, loggers) instead of hiding them.
@@ -872,17 +892,19 @@ pub enum Command {
     Exit,
 }
 
-/// How values read from the target are rendered. Shared by every
-/// command that formats target memory, so the flags spell the same and
-/// thread through the render path as one value.
-#[derive(clap::Args, Copy, Clone)]
-pub struct RenderOpts {
+/// How values read from the target are rendered — the per-command
+/// flags. Shared by every command that formats target memory, so the
+/// flags spell the same everywhere; each one left off the line falls
+/// back to the session default of the same name (`set`).
+#[derive(clap::Args, Copy, Clone, Default)]
+pub struct RenderFlags {
     /// Maximum depth to recurse when formatting values.
-    #[arg(long, short, default_value_t = 4)]
-    depth: usize,
+    #[arg(long, short)]
+    depth: Option<usize>,
 
     /// Disable every type's custom formatter and show the raw
-    /// structural view of values instead.
+    /// structural view of values instead. The flag only ever turns
+    /// the raw view on; `set ugly off` is the way back.
     #[arg(long, short)]
     ugly: bool,
 
@@ -891,15 +913,39 @@ pub struct RenderOpts {
     /// ceiling at all is not offered, because a length read out of a
     /// corrupt header claims whatever its bits say and the target
     /// serves every mapped page under the claim.
-    #[arg(long, value_name = "BYTES", default_value_t = reify::DEFAULT_MAX_STRING_LEN)]
-    max_string_len: u64,
+    #[arg(long, value_name = "BYTES")]
+    max_string_len: Option<u64>,
 
     /// Show at most this many elements of any one sequence, and say how
     /// many are left. Counted in elements rather than bytes, because a
     /// wide element is a value with a line of its own; byte sequences
     /// answer to `--max-string-len` instead, being strings in all but
     /// type.
-    #[arg(long, value_name = "ELEMENTS", default_value_t = reify::DEFAULT_MAX_ARRAY_VALUES)]
+    #[arg(long, value_name = "ELEMENTS")]
+    max_array_values: Option<u64>,
+}
+
+impl RenderFlags {
+    /// The values a command renders with: each flag given on the
+    /// line, else the session default of the same name.
+    fn resolve(&self, s: &settings::Settings) -> RenderOpts {
+        RenderOpts {
+            depth: self.depth.unwrap_or(s.depth),
+            ugly: self.ugly || s.ugly,
+            max_string_len: self.max_string_len.unwrap_or(s.max_string_len),
+            max_array_values: self.max_array_values.unwrap_or(s.max_array_values),
+        }
+    }
+}
+
+/// How values read from the target are rendered, the flags resolved
+/// against the session's defaults: what threads through the render
+/// path as one value.
+#[derive(Copy, Clone)]
+pub struct RenderOpts {
+    depth: usize,
+    ugly: bool,
+    max_string_len: u64,
     max_array_values: u64,
 }
 
@@ -1071,6 +1117,9 @@ pub struct Session<'b, T: Target> {
     /// The `threads` table's rows, likewise; building them pays for
     /// the one unwind of every stack.
     thread_rows: OnceCell<Vec<threads::ThreadRow>>,
+    /// The session's standing defaults (`set`): what the per-command
+    /// flags resolve against.
+    settings: RefCell<settings::Settings>,
 }
 
 impl<'b, T: Target> Session<'b, T> {
@@ -1181,6 +1230,7 @@ impl<'b, T: Target> Session<'b, T> {
             analysis: OnceCell::new(),
             task_rows: OnceCell::new(),
             thread_rows: OnceCell::new(),
+            settings: RefCell::new(settings::Settings::default()),
         })
     }
 
@@ -1343,12 +1393,16 @@ pub fn dispatch<T: Target>(
             let pattern = pattern::Pattern::new(&needle).context("find-types")?;
             types::find(&session.ctx.view, &pattern, out)?
         }
-        Command::Graph { limit } => graph::exec_graph(session, limit, out)?,
+        Command::Graph { limit } => {
+            let limit = limit.or(session.settings.borrow().limit);
+            graph::exec_graph(session, limit, out)?
+        }
         // Answered in `repl`, which knows whether there is a prompt to
         // have a history; it never reaches here.
         Command::History { .. } => unreachable!("history is answered by the repl"),
         Command::Info => exec_info(session, out)?,
         Command::Print { addr, ty, render } => {
+            let render = render.resolve(&session.settings.borrow());
             print::exec_print(session, addr, &ty.join(" "), render, out)?
         }
         Command::Runtimes {
@@ -1362,10 +1416,14 @@ pub fn dispatch<T: Target>(
                 runtimes::exec_list(session, out)?
             } else {
                 let fields = runtimes::Fields::select(drivers, shared);
+                let render = render.resolve(&session.settings.borrow());
                 runtimes::exec_runtimes(session, &scope, fields, render, out)?
             }
         }
         Command::SaveTokioInfo { output } => exec_save_tokio_info(session, &output, out)?,
+        Command::Set { key, value } => {
+            settings::exec_set(&session.settings, key.as_deref(), value.as_deref(), out)?
+        }
         #[cfg(feature = "snapshot")]
         Command::Snapshot { output } => snapshot_cmd::exec_snapshot(session, &output, out)?,
         Command::Sync { addr } => sync::exec_sync(session, addr, out)?,
@@ -1383,7 +1441,7 @@ pub fn dispatch<T: Target>(
             let cmd = tasks::TasksCmd {
                 verbose,
                 futures,
-                limit,
+                limit: limit.or(session.settings.borrow().limit),
                 with,
                 without,
                 group,
@@ -1398,7 +1456,10 @@ pub fn dispatch<T: Target>(
             registers,
             lwp,
             render,
-        } => threads::exec_threads(session, verbose, frames, &lwp, registers, render, out)?,
+        } => {
+            let render = render.resolve(&session.settings.borrow());
+            threads::exec_threads(session, verbose, frames, &lwp, registers, render, out)?
+        }
         Command::Trace {
             target,
             verbose,
@@ -1407,6 +1468,7 @@ pub fn dispatch<T: Target>(
             elide,
         } => {
             session.note_version_ceiling();
+            let render = render.resolve(&session.settings.borrow());
             let Some(target) = target else {
                 anyhow::bail!(
                     "no task selected; trace takes a decimal task id or a 0x future address"
