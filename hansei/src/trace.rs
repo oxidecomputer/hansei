@@ -2138,6 +2138,7 @@ mod future_trace_tests {
         let rows = crate::tasks::build_rows(
             list,
             &[],
+            &[],
             &HashMap::new(),
             &hansei_bundle::names::ImplFold::default(),
             &Default::default(),

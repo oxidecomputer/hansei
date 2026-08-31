@@ -661,10 +661,23 @@ pub enum Command {
     /// `--without FIELD ARG` clauses AND together, `--group FIELD`
     /// tallies the survivors, and one task's block is `tasks -v
     /// --with id 129`. The string fields — type, awaiting,
-    /// waiting-on, spawned, defined, state — are case-insensitive
-    /// regexes over the spelled value; rt (an index or `@0x` handle),
-    /// lwp and id are exact; holds and sets compare the census's
-    /// counts, spelled '>N', '<N' or '=N' (quote them from a shell).
+    /// waiting-on, waker, spawned, defined, state — are
+    /// case-insensitive regexes over the spelled value; rt (an index
+    /// or `@0x` handle), lwp and id are exact; holds and sets compare
+    /// the census's counts, spelled '>N', '<N' or '=N' (quote them
+    /// from a shell).
+    ///
+    /// The waker field is the wakeup answer: every slot hansei
+    /// decodes holding this task's waker — `timer 0x…`, `io 0x…
+    /// read`, `semaphore 0x…`, `join task N` — sorted and
+    /// comma-joined. `--group waker` is the overview, bucketing the
+    /// same slots at the kind level — `io read`, `timer`, with
+    /// identity kept where it groups usefully (`semaphore 0x…`,
+    /// `join task N`) — a `select!` over several buckets by the
+    /// combination; a task with no armed slot lands in `<empty>`,
+    /// which is the "nothing can wake it" answer. `-v` places each
+    /// slot (the wake-queue node, the trailer) under the block's
+    /// `Waker:` line.
     ///
     /// `--exec COMMAND` takes the rest of the line as one session
     /// command and runs it once per surviving task, the command's
@@ -775,9 +788,9 @@ pub enum Command {
 
         /// Keep only the tasks whose FIELD matches ARG; repeat for
         /// more clauses, which AND. Fields: type, awaiting,
-        /// waiting-on, spawned, defined, state (case-insensitive
-        /// regexes); rt, lwp, id (exact); holds, sets ('>N', '<N',
-        /// '=N').
+        /// waiting-on, waker, spawned, defined, state
+        /// (case-insensitive regexes); rt, lwp, id (exact); holds,
+        /// sets ('>N', '<N', '=N').
         #[arg(long, num_args = 2, value_names = ["FIELD", "ARG"])]
         with: Vec<String>,
 
