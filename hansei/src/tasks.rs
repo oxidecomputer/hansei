@@ -976,11 +976,11 @@ fn member_sample(rows: &[TaskRow], members: &[usize]) -> String {
 }
 
 /// The refusal a positional id earns: the grammar that took ids is
-/// gone, and the way to one task's block is a filter.
+/// gone, and one task is the singular selector's business.
 fn refuse_positional_ids(task: &[String]) -> Result<()> {
     match task.first() {
         Some(first) => Err(anyhow::anyhow!(
-            "tasks takes no task ids; `tasks -v --with id {first}` shows one task's block"
+            "tasks takes no task ids; `task {first}` selects that one task (-v for its block)"
         )),
         None => Ok(()),
     }
@@ -1200,10 +1200,14 @@ fn exec_exec<T: proc::Target>(
     let shown = cmd.limit.unwrap_or(survivors.len()).min(survivors.len());
     let groups = !session.group_tags().is_empty();
     let mut failed = 0usize;
+    // Each run goes under a cursor scoped to its task — the command's
+    // omitted target and `$_` are that task's — and the session's own
+    // cursor comes back once the loop is done.
+    let saved = *session.cursor.borrow();
     for (n, &index) in survivors[..shown].iter().enumerate() {
         write!(out, "{}", exec_heading(n, &rows[index], groups))?;
         let command = repl::parse_exec_command(&cmd.exec).expect("parsed above");
-        let command = scope_to_task(command, &session.tasks.tasks[index]);
+        crate::cursor::scope_to(session, index);
         // `quit` is not a per-task answer, so a Quit flow is ignored
         // and the loop runs on.
         if let Err(e) = crate::dispatch(session, command, theme, out) {
@@ -1211,6 +1215,7 @@ fn exec_exec<T: proc::Target>(
             writeln!(out, "error: {e:#}")?;
         }
     }
+    *session.cursor.borrow_mut() = saved;
     writeln!(out, "Executed against {shown} tasks, {failed} failed")?;
     if failed > 0 {
         anyhow::bail!("--exec failed against {failed} of {shown} tasks");
@@ -1223,33 +1228,6 @@ fn exec_exec<T: proc::Target>(
 fn exec_heading(n: usize, row: &TaskRow, groups: bool) -> String {
     let sep = if n > 0 { "\n" } else { "" };
     format!("{sep}{}\n", row_cells(row, groups).join("  "))
-}
-
-/// Fill a command's omitted target with the task an `--exec` loop is
-/// on. `trace` is the one command whose target may be omitted; the
-/// rest run as written.
-fn scope_to_task(command: crate::Command, task: &bundle::Task) -> crate::Command {
-    match command {
-        crate::Command::Trace {
-            target: None,
-            verbose,
-            render,
-            no_elide,
-            elide,
-        } => crate::Command::Trace {
-            // A task with no recorded id is still traceable by any
-            // address inside it, and its Header address is one.
-            target: Some(match task.task_id {
-                Some(id) => crate::TraceTarget::Task(id),
-                None => crate::TraceTarget::Future(task.addr.0),
-            }),
-            verbose,
-            render,
-            no_elide,
-            elide,
-        },
-        other => other,
-    }
 }
 
 /// Print the task listing: a block per task, and — under `futures` —
@@ -1985,63 +1963,15 @@ mod filter_tests {
         );
     }
 
-    /// `--exec` fills only an omitted trace target: a task with an id
-    /// scopes by id, one without by its header address, and a target
-    /// given in the command is left alone.
-    #[test]
-    fn test_exec_scopes_an_omitted_trace_target() {
-        use super::scope_to_task;
-        use crate::{Command, RenderFlags, TraceTarget};
-        use hansei_runtime::tokio::bundle::{FutureInfo, Task};
-        use hansei_runtime::tokio::{TaskAddr, TaskState};
-
-        let task = |task_id: Option<u64>| Task {
-            addr: TaskAddr(0x2000),
-            state: TaskState(0),
-            owner_id: None,
-            task_id,
-            spawn_location: None,
-            future: FutureInfo::Unknown { poll_symbol: None },
-            group: 0,
-        };
-        let trace = |target: Option<TraceTarget>| Command::Trace {
-            target,
-            verbose: false,
-            render: RenderFlags::default(),
-            no_elide: false,
-            elide: Vec::new(),
-        };
-
-        let Command::Trace { target, .. } = scope_to_task(trace(None), &task(Some(42))) else {
-            panic!("trace scoped as another command");
-        };
-        assert!(matches!(target, Some(TraceTarget::Task(42))));
-
-        let Command::Trace { target, .. } = scope_to_task(trace(None), &task(None)) else {
-            panic!("trace scoped as another command");
-        };
-        assert!(matches!(target, Some(TraceTarget::Future(0x2000))));
-
-        let given = trace(Some(TraceTarget::Task(7)));
-        let Command::Trace { target, .. } = scope_to_task(given, &task(Some(42))) else {
-            panic!("trace scoped as another command");
-        };
-        assert!(matches!(target, Some(TraceTarget::Task(7))));
-
-        // Any other command runs as written.
-        let quit = scope_to_task(Command::Quit, &task(Some(42)));
-        assert!(matches!(quit, Command::Quit));
-    }
-
-    /// A positional id is refused with the filter spelling that took
-    /// its place.
+    /// A positional id is refused with the selector spelling that
+    /// took its place.
     #[test]
     fn test_positional_ids_are_refused_with_the_filter_spelling() {
         assert!(refuse_positional_ids(&[]).is_ok());
         let err = refuse_positional_ids(&["129".to_string()]).unwrap_err();
         assert_eq!(
             err.to_string(),
-            "tasks takes no task ids; `tasks -v --with id 129` shows one task's block"
+            "tasks takes no task ids; `task 129` selects that one task (-v for its block)"
         );
     }
 }
