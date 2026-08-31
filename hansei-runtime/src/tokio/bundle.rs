@@ -1066,6 +1066,13 @@ impl<'b, T: Target> Context<'b, T> {
             .transpose()
     }
 
+    /// Whether `addr` falls in any of the target's mapped regions —
+    /// the cheap screen for an address argument before anything walks
+    /// or scans for it.
+    pub fn is_mapped(&self, addr: u64) -> bool {
+        self.mappings.contains_addr(addr)
+    }
+
     /// The waker parked in a task's `Trailer`: armed by the first poll
     /// of a `JoinHandle` awaiting the task — task completion wakes it —
     /// and [`QueuedWaker::Unarmed`] where nothing has polled one. The

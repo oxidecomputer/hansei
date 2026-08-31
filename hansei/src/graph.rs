@@ -1,14 +1,14 @@
 //! The `graph` command: the waker-based dependency graph and the
 //! futurelock diagnosis.
 
+use crate::relations::{Edge, EdgeKind, Relations};
 use crate::tasks::task_id;
 use crate::{Session, output, print_warnings};
 
 use anyhow::Result;
 use hansei_bundle::names;
-use hansei_runtime::tokio::{bundle, census, graph};
+use hansei_runtime::tokio::{bundle, graph};
 
-use std::collections::HashMap;
 use std::io;
 
 pub(crate) fn exec_graph<T: proc::Target>(
@@ -18,12 +18,10 @@ pub(crate) fn exec_graph<T: proc::Target>(
 ) -> Result<()> {
     let analysis = session.analysis();
     print_warnings(&analysis.errors)?;
-    let census = session.census();
     print_graph(
         &session.tasks,
         analysis,
-        &census.held,
-        &census.join_sets,
+        session.relations(),
         &session.impl_fold,
         limit,
         out,
@@ -39,113 +37,6 @@ pub(crate) fn exec_graph<T: proc::Target>(
         print_futurelock(fl, &session.impl_fold, out)?;
     }
     Ok(())
-}
-
-/// Why one task's row hangs under another's.
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-enum EdgeKind {
-    /// The task is awaiting it right now — the row's own `WAITING ON`
-    /// says how, so the edge needs no mark of its own.
-    Waiting,
-    /// It is a member of a `JoinSet` the task holds. The task will join
-    /// it, though its own wait says whether it is doing so yet.
-    JoinSet,
-    /// The task holds a `JoinHandle` to it in one of its frames, off
-    /// its await chain: it can join or abort it, and may be doing
-    /// neither.
-    Handle,
-    // Both marks say "above" rather than "its": the mark is printed on
-    // the row of the task being waited *for*, so a possessive there
-    // reads as that task's own set or handle — the opposite of what it
-    // means, and in opposite directions for the two of them.
-}
-
-impl EdgeKind {
-    fn mark(self) -> &'static str {
-        match self {
-            Self::Waiting => "",
-            Self::JoinSet => " [in the JoinSet above]",
-            Self::Handle => " [its handle held above]",
-        }
-    }
-}
-
-/// One task's row, and why it hangs where it does.
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-struct Edge {
-    to: usize,
-    kind: EdgeKind,
-}
-
-/// Which tasks each task is waiting for, by index into the task list.
-///
-/// Three things name a task. Two are the task's own wait: a
-/// `JoinHandle` names the task being joined outright, and a contended
-/// semaphore names whoever the futurelock analysis found holding an
-/// acquire on it — the only case where a holder is knowable at all,
-/// since a tokio `Mutex` records no owner. A timer names nobody, and
-/// neither does a leaf hansei does not decode.
-///
-/// The third is what the census found in the task's frames: the members
-/// of a `JoinSet` it drives, and the tasks it holds a `JoinHandle` to
-/// without awaiting. Those are the edges a real target mostly has —
-/// `join_next` on a set is not a `JoinHandle` await, so nothing about
-/// the task's own wait mentions the tasks it is there to collect — and
-/// leaving them out made the graph of a runtime running dozens of
-/// parallel task sets look like a runtime with no structure at all.
-fn wait_edges(
-    list: &bundle::TaskList,
-    analysis: &graph::Analysis,
-    held: &[census::HeldFuture],
-    join_sets: &[census::JoinSet],
-) -> Vec<Vec<Edge>> {
-    let index: HashMap<u64, usize> = list
-        .tasks
-        .iter()
-        .enumerate()
-        .map(|(i, t)| (t.addr.0, i))
-        .collect();
-    let mut edges: Vec<Vec<Edge>> = vec![Vec::new(); list.tasks.len()];
-    let mut add = |from: usize, addr: u64, kind: EdgeKind| {
-        // A task the runtime no longer owns has no row to point at; the
-        // wait's own text says as much where it came from a wait.
-        if let Some(&to) = index.get(&addr) {
-            edges[from].push(Edge { to, kind });
-        }
-    };
-    for (from, wait) in analysis.waits.iter().enumerate() {
-        match &wait.target {
-            Some(bundle::WaitTarget::Task { addr, .. }) => add(from, *addr, EdgeKind::Waiting),
-            Some(bundle::WaitTarget::Semaphore { addr, .. }) => {
-                for fl in analysis
-                    .futurelocks
-                    .iter()
-                    .filter(|fl| fl.acquire.semaphore == *addr)
-                {
-                    add(from, fl.holder.addr.0, EdgeKind::Waiting);
-                }
-            }
-            _ => {}
-        }
-    }
-    for set in join_sets {
-        for child in &set.children {
-            add(set.owner, child.task, EdgeKind::JoinSet);
-        }
-    }
-    for future in held {
-        if let Some(bundle::WaitKind::Task { addr }) = future.wait {
-            add(future.owner, addr, EdgeKind::Handle);
-        }
-    }
-    for from in &mut edges {
-        // By task, then by kind, so a task named twice keeps the most
-        // direct claim: an await it is actually in, over a set it is
-        // merely a member of, over a handle someone merely holds.
-        from.sort_unstable();
-        from.dedup_by_key(|edge| edge.to);
-    }
-    edges
 }
 
 /// Print the wait graph: one row per task, nested under whatever is
@@ -166,13 +57,12 @@ fn wait_edges(
 fn print_graph(
     list: &bundle::TaskList,
     analysis: &graph::Analysis,
-    held: &[census::HeldFuture],
-    join_sets: &[census::JoinSet],
+    relations: &Relations,
     impls: &names::ImplFold,
     limit: Option<usize>,
     out: &mut dyn io::Write,
 ) -> Result<()> {
-    let edges = wait_edges(list, analysis, held, join_sets);
+    let edges = &relations.edges;
     let mut waited_for = vec![false; list.tasks.len()];
     for edge in edges.iter().flatten() {
         waited_for[edge.to] = true;
@@ -188,7 +78,7 @@ fn print_graph(
     let mut walk = GraphWalk {
         list,
         analysis,
-        edges: &edges,
+        edges,
         printed: vec![false; list.tasks.len()],
         path: Vec::new(),
         rows: &mut rows,
@@ -525,12 +415,12 @@ mod graph_tests {
             join_wakers: Vec::new(),
             errors: Vec::new(),
         };
+        let relations = crate::relations::Relations::build(&list, &analysis, held, join_sets);
         let mut out = Vec::new();
         print_graph(
             &list,
             &analysis,
-            held,
-            join_sets,
+            &relations,
             &names::ImplFold::default(),
             limit,
             &mut out,

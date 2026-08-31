@@ -73,7 +73,7 @@ pub(crate) fn exec_task<T: proc::Target>(
 /// The task the cursor stands on, if its root is one: a `Task` root,
 /// or a `Future` root that is really a task's allocation (an id-less
 /// task is rooted by its header address).
-fn cursor_task<T: proc::Target>(session: &Session<'_, T>) -> Option<usize> {
+pub(crate) fn cursor_task<T: proc::Target>(session: &Session<'_, T>) -> Option<usize> {
     match session.cursor.borrow().root? {
         TraceTarget::Task(id) => task_index(session, id).ok(),
         TraceTarget::Future(addr) => session.extents().locate(addr).map(|(index, _)| index),
