@@ -16,7 +16,8 @@
 //! is the blocked task itself.
 
 use super::bundle::{
-    AbandonedAcquire, Context, FutureInfo, Interest, Registries, TaskList, TaskStage, WaitTarget,
+    AbandonedAcquire, Context, FutureInfo, Interest, QueuedWaker, Registries, TaskList, TaskStage,
+    WaitTarget,
 };
 use super::{Lifecycle, TaskAddr};
 
@@ -84,12 +85,24 @@ pub struct Futurelock {
     pub blocked: Vec<TaskRef>,
 }
 
+/// A waker parked in a task's `Trailer`: the join edge read from the
+/// awaited side. `task` is the task whose trailer holds the waker —
+/// the one being awaited — and `waiter` is the task the armed waker
+/// schedules when the join completes.
+#[derive(Copy, Clone, Debug)]
+pub struct JoinWaker {
+    pub task: TaskRef,
+    pub waiter: TaskRef,
+}
+
 /// The runtime-wide analysis.
 #[derive(Debug)]
 pub struct Analysis {
     /// One entry per task, in [`TaskList`] order.
     pub waits: Vec<TaskWait>,
     pub futurelocks: Vec<Futurelock>,
+    /// Every armed task waker parked in a listed task's `Trailer`.
+    pub join_wakers: Vec<JoinWaker>,
     /// Per-task analysis failures; the entries above are unaffected
     /// by them.
     pub errors: Vec<anyhow::Error>,
@@ -105,6 +118,7 @@ pub fn analyze<T: Target>(
     let mut waits = Vec::new();
     let mut errors = Vec::new();
     let mut abandoned: Vec<(TaskRef, AbandonedAcquire)> = Vec::new();
+    let mut join_wakers = Vec::new();
 
     for task in &list.tasks {
         let tref = TaskRef {
@@ -182,6 +196,22 @@ pub fn analyze<T: Target>(
                 });
             }
         }
+        // The join edge from the awaited side: whatever the task's own
+        // chain says, its Trailer holds the waker of any task awaiting
+        // its `JoinHandle` — armed by that task's first poll of the
+        // handle, so the slot answers "what would wake the joiner"
+        // even when the joiner's chain did not decode.
+        match ctx.trailer_waker(task) {
+            Ok(QueuedWaker::Task { addr, task_id }) => join_wakers.push(JoinWaker {
+                task: tref,
+                waiter: TaskRef {
+                    addr: TaskAddr(addr),
+                    task_id,
+                },
+            }),
+            Ok(_) => {}
+            Err(e) => errors.push(e.context(format!("failed to read {tref}'s trailer waker"))),
+        }
         waits.push(TaskWait {
             task: tref,
             target,
@@ -218,6 +248,7 @@ pub fn analyze<T: Target>(
     Analysis {
         waits,
         futurelocks,
+        join_wakers,
         errors,
     }
 }

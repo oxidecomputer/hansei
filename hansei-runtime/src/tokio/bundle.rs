@@ -1066,6 +1066,29 @@ impl<'b, T: Target> Context<'b, T> {
             .transpose()
     }
 
+    /// The waker parked in a task's `Trailer`: armed by the first poll
+    /// of a `JoinHandle` awaiting the task — task completion wakes it —
+    /// and [`QueuedWaker::Unarmed`] where nothing has polled one. The
+    /// Trailer's place is read from the task's own vtable, the way
+    /// [`Context::task_extent`] places it.
+    pub fn trailer_waker(&self, task: &Task) -> Result<QueuedWaker> {
+        let header_ty = self.infra_ty(self.view.bundle().infra.header, "task Header")?;
+        let header = Value::read(self.proc, header_ty, task.addr.0)
+            .with_context(|| format!("failed to read the task Header at {:?}", task.addr))?;
+        let vtable_addr: u64 = self.walk(WalkRole::HeaderVtable).read(header)?;
+        let vtable = self
+            .task_vtable(vtable_addr)
+            .with_context(|| format!("failed to read task vtable at {vtable_addr:#x}"))?;
+        let trailer_addr = task.addr.0 + vtable.trailer_offset;
+        let ty = self.infra_ty(self.view.bundle().infra.trailer, "task Trailer")?;
+        let trailer = Value::read(self.proc, ty, trailer_addr)
+            .with_context(|| format!("failed to read Trailer at {trailer_addr:#x}"))?;
+        let Some(raw) = self.walk(WalkRole::TrailerWaker).walk(trailer)?.optional() else {
+            return Ok(QueuedWaker::Unarmed);
+        };
+        self.raw_waker(raw)
+    }
+
     // -----------------------------------------------------------------------
     // Task tracing
     // -----------------------------------------------------------------------

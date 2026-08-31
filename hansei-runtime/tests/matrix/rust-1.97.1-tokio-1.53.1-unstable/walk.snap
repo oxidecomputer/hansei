@@ -2,7 +2,7 @@
 source: hansei-runtime/tests/matrix.rs
 ---
 program: futurelock
-walk contract (tokio 1.53.1, rustc 1.97.1 (8bab26f4f 2026-07-14)): 112 entries, 0 broken, 27 absent
+walk contract (tokio 1.53.1, rustc 1.97.1 (8bab26f4f 2026-07-14)): 113 entries, 0 broken, 27 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -115,9 +115,10 @@ walk contract (tokio 1.53.1, rustc 1.97.1 (8bab26f4f 2026-07-14)): 112 entries, 
   ok      blocking::queue.buf
   ok      blocking::queue.cap
   ok      blocking::Task.header
+  ok      Trailer.waker
 
 program: simple-await
-walk contract (tokio 1.53.1, rustc 1.97.1 (8bab26f4f 2026-07-14)): 112 entries, 0 broken, 40 absent
+walk contract (tokio 1.53.1, rustc 1.97.1 (8bab26f4f 2026-07-14)): 113 entries, 0 broken, 40 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -230,9 +231,10 @@ walk contract (tokio 1.53.1, rustc 1.97.1 (8bab26f4f 2026-07-14)): 112 entries, 
   ok      blocking::queue.buf
   ok      blocking::queue.cap
   ok      blocking::Task.header
+  ok      Trailer.waker
 
 program: nested-await
-walk contract (tokio 1.53.1, rustc 1.97.1 (8bab26f4f 2026-07-14)): 112 entries, 0 broken, 40 absent
+walk contract (tokio 1.53.1, rustc 1.97.1 (8bab26f4f 2026-07-14)): 113 entries, 0 broken, 40 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -345,9 +347,10 @@ walk contract (tokio 1.53.1, rustc 1.97.1 (8bab26f4f 2026-07-14)): 112 entries, 
   ok      blocking::queue.buf
   ok      blocking::queue.cap
   ok      blocking::Task.header
+  ok      Trailer.waker
 
 program: dyn-future
-walk contract (tokio 1.53.1, rustc 1.97.1 (8bab26f4f 2026-07-14)): 112 entries, 0 broken, 34 absent
+walk contract (tokio 1.53.1, rustc 1.97.1 (8bab26f4f 2026-07-14)): 113 entries, 0 broken, 34 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -460,9 +463,10 @@ walk contract (tokio 1.53.1, rustc 1.97.1 (8bab26f4f 2026-07-14)): 112 entries, 
   ok      blocking::queue.buf
   ok      blocking::queue.cap
   ok      blocking::Task.header
+  ok      Trailer.waker
 
 program: select-combinator
-walk contract (tokio 1.53.1, rustc 1.97.1 (8bab26f4f 2026-07-14)): 112 entries, 0 broken, 40 absent
+walk contract (tokio 1.53.1, rustc 1.97.1 (8bab26f4f 2026-07-14)): 113 entries, 0 broken, 40 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -575,9 +579,10 @@ walk contract (tokio 1.53.1, rustc 1.97.1 (8bab26f4f 2026-07-14)): 112 entries, 
   ok      blocking::queue.buf
   ok      blocking::queue.cap
   ok      blocking::Task.header
+  ok      Trailer.waker
 
 program: many-tasks
-walk contract (tokio 1.53.1, rustc 1.97.1 (8bab26f4f 2026-07-14)): 112 entries, 0 broken, 41 absent
+walk contract (tokio 1.53.1, rustc 1.97.1 (8bab26f4f 2026-07-14)): 113 entries, 0 broken, 41 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -690,9 +695,10 @@ walk contract (tokio 1.53.1, rustc 1.97.1 (8bab26f4f 2026-07-14)): 112 entries, 
   ok      blocking::queue.buf
   ok      blocking::queue.cap
   ok      blocking::Task.header
+  ok      Trailer.waker
 
 program: sleep-join
-walk contract (tokio 1.53.1, rustc 1.97.1 (8bab26f4f 2026-07-14)): 112 entries, 0 broken, 37 absent
+walk contract (tokio 1.53.1, rustc 1.97.1 (8bab26f4f 2026-07-14)): 113 entries, 0 broken, 37 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -805,9 +811,10 @@ walk contract (tokio 1.53.1, rustc 1.97.1 (8bab26f4f 2026-07-14)): 112 entries, 
   ok      blocking::queue.buf
   ok      blocking::queue.cap
   ok      blocking::Task.header
+  ok      Trailer.waker
 
 program: channels
-walk contract (tokio 1.53.1, rustc 1.97.1 (8bab26f4f 2026-07-14)): 112 entries, 0 broken, 30 absent
+walk contract (tokio 1.53.1, rustc 1.97.1 (8bab26f4f 2026-07-14)): 113 entries, 0 broken, 30 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -920,9 +927,10 @@ walk contract (tokio 1.53.1, rustc 1.97.1 (8bab26f4f 2026-07-14)): 112 entries, 
   ok      blocking::queue.buf
   ok      blocking::queue.cap
   ok      blocking::Task.header
+  ok      Trailer.waker
 
 program: unordered
-walk contract (tokio 1.53.1, rustc 1.97.1 (8bab26f4f 2026-07-14)): 112 entries, 0 broken, 37 absent
+walk contract (tokio 1.53.1, rustc 1.97.1 (8bab26f4f 2026-07-14)): 113 entries, 0 broken, 37 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -1035,9 +1043,10 @@ walk contract (tokio 1.53.1, rustc 1.97.1 (8bab26f4f 2026-07-14)): 112 entries, 
   ok      blocking::queue.buf
   ok      blocking::queue.cap
   ok      blocking::Task.header
+  ok      Trailer.waker
 
 program: joinset
-walk contract (tokio 1.53.1, rustc 1.97.1 (8bab26f4f 2026-07-14)): 112 entries, 0 broken, 24 absent
+walk contract (tokio 1.53.1, rustc 1.97.1 (8bab26f4f 2026-07-14)): 113 entries, 0 broken, 24 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -1150,9 +1159,10 @@ walk contract (tokio 1.53.1, rustc 1.97.1 (8bab26f4f 2026-07-14)): 112 entries, 
   ok      blocking::queue.buf
   ok      blocking::queue.cap
   ok      blocking::Task.header
+  ok      Trailer.waker
 
 program: ct-runtime
-walk contract (tokio 1.53.1, rustc 1.97.1 (8bab26f4f 2026-07-14)): 112 entries, 0 broken, 27 absent
+walk contract (tokio 1.53.1, rustc 1.97.1 (8bab26f4f 2026-07-14)): 113 entries, 0 broken, 27 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -1265,9 +1275,10 @@ walk contract (tokio 1.53.1, rustc 1.97.1 (8bab26f4f 2026-07-14)): 112 entries, 
   ok      blocking::queue.buf
   ok      blocking::queue.cap
   ok      blocking::Task.header
+  ok      Trailer.waker
 
 program: local-set
-walk contract (tokio 1.53.1, rustc 1.97.1 (8bab26f4f 2026-07-14)): 112 entries, 0 broken, 21 absent
+walk contract (tokio 1.53.1, rustc 1.97.1 (8bab26f4f 2026-07-14)): 113 entries, 0 broken, 21 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   ok      statics.tls_local_set_key
@@ -1380,9 +1391,10 @@ walk contract (tokio 1.53.1, rustc 1.97.1 (8bab26f4f 2026-07-14)): 112 entries, 
   ok      blocking::queue.buf
   ok      blocking::queue.cap
   ok      blocking::Task.header
+  ok      Trailer.waker
 
 program: local-set-timer
-walk contract (tokio 1.53.1, rustc 1.97.1 (8bab26f4f 2026-07-14)): 112 entries, 0 broken, 21 absent
+walk contract (tokio 1.53.1, rustc 1.97.1 (8bab26f4f 2026-07-14)): 113 entries, 0 broken, 21 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   ok      statics.tls_local_set_key
@@ -1495,9 +1507,10 @@ walk contract (tokio 1.53.1, rustc 1.97.1 (8bab26f4f 2026-07-14)): 112 entries, 
   ok      blocking::queue.buf
   ok      blocking::queue.cap
   ok      blocking::Task.header
+  ok      Trailer.waker
 
 program: local-set-io
-walk contract (tokio 1.53.1, rustc 1.97.1 (8bab26f4f 2026-07-14)): 112 entries, 0 broken, 32 absent
+walk contract (tokio 1.53.1, rustc 1.97.1 (8bab26f4f 2026-07-14)): 113 entries, 0 broken, 32 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   ok      statics.tls_local_set_key
@@ -1610,9 +1623,10 @@ walk contract (tokio 1.53.1, rustc 1.97.1 (8bab26f4f 2026-07-14)): 112 entries, 
   ok      blocking::queue.buf
   ok      blocking::queue.cap
   ok      blocking::Task.header
+  ok      Trailer.waker
 
 program: foreign-runtime
-walk contract (tokio 1.53.1, rustc 1.97.1 (8bab26f4f 2026-07-14)): 112 entries, 0 broken, 21 absent
+walk contract (tokio 1.53.1, rustc 1.97.1 (8bab26f4f 2026-07-14)): 113 entries, 0 broken, 21 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   ok      statics.tls_local_set_key
@@ -1725,9 +1739,10 @@ walk contract (tokio 1.53.1, rustc 1.97.1 (8bab26f4f 2026-07-14)): 112 entries, 
   ok      blocking::queue.buf
   ok      blocking::queue.cap
   ok      blocking::Task.header
+  ok      Trailer.waker
 
 program: blocking-pool
-walk contract (tokio 1.53.1, rustc 1.97.1 (8bab26f4f 2026-07-14)): 112 entries, 0 broken, 40 absent
+walk contract (tokio 1.53.1, rustc 1.97.1 (8bab26f4f 2026-07-14)): 113 entries, 0 broken, 40 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -1840,3 +1855,4 @@ walk contract (tokio 1.53.1, rustc 1.97.1 (8bab26f4f 2026-07-14)): 112 entries, 
   ok      blocking::queue.buf
   ok      blocking::queue.cap
   ok      blocking::Task.header
+  ok      Trailer.waker
