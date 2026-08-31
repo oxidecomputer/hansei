@@ -543,6 +543,24 @@ pub enum WaitKind {
 }
 
 impl WaitTarget {
+    /// The kind-level spelling `tasks --group waiting-on` buckets rows
+    /// by: the identity that groups usefully — which task, which
+    /// semaphore — with the per-row detail (deadlines, permit counts,
+    /// wake queues) dropped, so one bucket collects every waiter.
+    pub fn group_label(&self) -> String {
+        match self {
+            Self::Timer { .. } => "timer".to_string(),
+            Self::Task { addr, task_id, .. } => match task_id {
+                Some(id) => format!("task {id}"),
+                None => format!("the task at {addr:#x}"),
+            },
+            Self::Semaphore { addr, owner, .. } => match owner {
+                Some(owner) => format!("a {owner} (semaphore {addr:#x})"),
+                None => format!("the semaphore at {addr:#x}"),
+            },
+        }
+    }
+
     /// This wait as a tally counts it.
     pub fn kind(&self) -> WaitKind {
         match self {
@@ -625,23 +643,27 @@ impl fmt::Display for WaitTarget {
             Self::Timer { deadline, stopped } => {
                 // Relative to the stop instant when the lwps stamp one — the
                 // wait remaining as of the moment the target was observed
-                // (negative once the deadline has passed) — else the absolute
+                // (overdue once the deadline has passed) — else the absolute
                 // point, which is all there is to say.
                 if let Some(stopped) = stopped {
                     let ns = |i: &RawInstant| i.tv_sec as i128 * 1_000_000_000 + i.tv_nsec as i128;
                     let delta = ns(deadline) - ns(stopped);
-                    let sign = if delta < 0 { "-" } else { "" };
+                    let word = if delta < 0 {
+                        "overdue by "
+                    } else {
+                        "deadline +"
+                    };
                     let delta = delta.unsigned_abs();
                     write!(
                         f,
-                        "the timer: deadline {sign}{}.{:03}s",
+                        "timer ({word}{}.{:03}s)",
                         delta / 1_000_000_000,
                         (delta % 1_000_000_000) / 1_000_000
                     )
                 } else {
                     write!(
                         f,
-                        "the timer: deadline {}.{:03}s on the target's monotonic clock",
+                        "timer (deadline {}.{:03}s on the target's monotonic clock)",
                         deadline.tv_sec,
                         deadline.tv_nsec / 1_000_000
                     )
@@ -655,8 +677,8 @@ impl fmt::Display for WaitTarget {
                 kind,
             } => {
                 match task_id {
-                    Some(id) => write!(f, "task {id} (JoinHandle)")?,
-                    None => write!(f, "the task at {addr:#x} (JoinHandle)")?,
+                    Some(id) => write!(f, "task {id}")?,
+                    None => write!(f, "the task at {addr:#x}")?,
                 }
                 // Either way the listings cannot show it: complete
                 // means off the owned list, alive only through this
@@ -789,6 +811,73 @@ mod tests {
         );
         assert_eq!(kind(at(10, 1), Some(at(10, 0))), past_due(Some(false)));
         assert_eq!(kind(at(10, 0), None), past_due(None));
+    }
+
+    /// The compact wait spellings every surface shares — the row, the
+    /// trace's `waiting on`, the graph — and the kind-level labels
+    /// grouping buckets by.
+    #[test]
+    fn test_wait_target_spellings() {
+        let at = |tv_sec, tv_nsec| RawInstant { tv_sec, tv_nsec };
+        let timer = |deadline, stopped| WaitTarget::Timer { deadline, stopped };
+        assert_eq!(
+            timer(at(12, 0), Some(at(2, 0))).to_string(),
+            "timer (deadline +10.000s)"
+        );
+        assert_eq!(
+            timer(at(2, 641_000_000), Some(at(12, 0))).to_string(),
+            "timer (overdue by 9.359s)"
+        );
+        assert_eq!(
+            timer(at(12, 500_000_000), None).to_string(),
+            "timer (deadline 12.500s on the target's monotonic clock)"
+        );
+        assert_eq!(timer(at(12, 0), Some(at(2, 0))).group_label(), "timer");
+
+        let task = WaitTarget::Task {
+            addr: 0x5000,
+            task_id: Some(42),
+            state: TaskState(1 << 6),
+            listed: true,
+            kind: None,
+        };
+        assert_eq!(task.to_string(), "task 42");
+        assert_eq!(task.group_label(), "task 42");
+        let anonymous = WaitTarget::Task {
+            addr: 0x5000,
+            task_id: None,
+            state: TaskState(1 << 6),
+            listed: true,
+            kind: None,
+        };
+        assert_eq!(anonymous.to_string(), "the task at 0x5000");
+        assert_eq!(anonymous.group_label(), "the task at 0x5000");
+
+        let semaphore = WaitTarget::Semaphore {
+            addr: 0x9000,
+            owner: Some("tokio::sync::Mutex"),
+            num_permits: 1,
+            available: 0,
+            closed: false,
+            waiters: Vec::new(),
+        };
+        assert_eq!(
+            semaphore.to_string(),
+            "a tokio::sync::Mutex (semaphore 0x9000): 1 permit requested, 0 available"
+        );
+        assert_eq!(
+            semaphore.group_label(),
+            "a tokio::sync::Mutex (semaphore 0x9000)"
+        );
+        let unowned = WaitTarget::Semaphore {
+            addr: 0x9000,
+            owner: None,
+            num_permits: 1,
+            available: 0,
+            closed: false,
+            waiters: Vec::new(),
+        };
+        assert_eq!(unowned.group_label(), "the semaphore at 0x9000");
     }
 
     /// Granted means nothing more is needed — the future holds the

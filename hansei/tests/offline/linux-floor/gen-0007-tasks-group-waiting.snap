@@ -6,5 +6,5 @@ COUNT  WAITING ON                                                               
     2  future gen_0007::GfSel2<core::future::pending::Pending<u64>, core::future::pending::Pending<u64>>                                       6, 7
     1  future gen_0007::GfSel3<core::future::pending::Pending<u64>, core::future::pending::Pending<u64>, core::future::pending::Pending<u64>>  3
     1  future tokio::sync::notify::Notified                                                                                                    4
-    1  the timer: deadline TS on the target's monotonic clock                                                                        5
+    1  timer                                                                                                                                   5
 4 groups

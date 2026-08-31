@@ -2,4 +2,4 @@
 source: hansei/src/offline.rs
 description: "`task 3` over linux-floor/sleep-join"
 ---
-3  idle  src/bin/sleep-join.rs:12  the timer: deadline TS on the target's monotonic clock  async fn sleep_join::sleeper
+3  idle  src/bin/sleep-join.rs:12  timer (deadline TS on the target's monotonic clock)  async fn sleep_join::sleeper

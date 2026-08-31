@@ -2,27 +2,27 @@
 source: hansei/src/offline.rs
 description: "`tasks --exec trace` over linux-floor/sleep-join"
 ---
-3  idle  src/bin/sleep-join.rs:12  the timer: deadline TS on the target's monotonic clock  async fn sleep_join::sleeper
+3  idle  src/bin/sleep-join.rs:12  timer (deadline TS on the target's monotonic clock)  async fn sleep_join::sleeper
 Task 3: async fn sleep_join::sleeper (idle)
 Spawned at: src/bin/sleep-join.rs:30:22
 Defined at: src/bin/sleep-join.rs:9
 
-Waiting on: the timer: deadline TS on the target's monotonic clock
+Waiting on: timer (deadline TS on the target's monotonic clock)
 
 #0  async fn      sleep_join::sleeper
       awaiting at src/bin/sleep-join.rs:12 (Suspend0)
 #1  future        tokio::time::sleep::Sleep
-      waiting on the timer: deadline TS on the target's monotonic clock
+      waiting on timer (deadline TS on the target's monotonic clock)
 
-4  idle  src/bin/sleep-join.rs:19  task 3 (JoinHandle)  async fn sleep_join::joiner
+4  idle  src/bin/sleep-join.rs:19  task 3  async fn sleep_join::joiner
 Task 4: async fn sleep_join::joiner (idle)
 Spawned at: src/bin/sleep-join.rs:31:23
 Defined at: src/bin/sleep-join.rs:16
 
-Waiting on: task 3 (JoinHandle)
+Waiting on: task 3
 
 #0  async fn      sleep_join::joiner
       awaiting at src/bin/sleep-join.rs:19 (Suspend0)
 #1  future        tokio::runtime::task::join::JoinHandle<u32>
-      waiting on task 3 (JoinHandle)
+      waiting on task 3
 Executed against 2 tasks, 0 failed

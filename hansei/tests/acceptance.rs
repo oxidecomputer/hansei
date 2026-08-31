@@ -686,11 +686,13 @@ fn normalize(trace: &str) -> String {
 /// inside tokio's own tree, the leaf type an instrumented trace ends on.
 fn mask(out: &str) -> String {
     let deadlines =
-        regex::Regex::new(r"deadline -?\d+\.\d{3}s( on the target's monotonic clock)?").unwrap();
+        regex::Regex::new(r"deadline \+?\d+\.\d{3}s( on the target's monotonic clock)?").unwrap();
+    let overdue = regex::Regex::new(r"overdue by \d+\.\d{3}s").unwrap();
     let tokio_sites = regex::Regex::new(r"tokio-\d+\.\d+\.\d+(/[^ :]+):\d+").unwrap();
     let trace_leaf =
         regex::Regex::new(r"(async fn |future )?tokio::trace::async_trace_leaf(::\S+)?").unwrap();
     let masked = deadlines.replace_all(out, "deadline TS");
+    let masked = overdue.replace_all(&masked, "overdue by TS");
     let masked = tokio_sites.replace_all(&masked, "tokio$1:LINE");
     trace_leaf
         .replace_all(&masked, "tokio::trace::async_trace_leaf::TY")
@@ -1735,7 +1737,7 @@ fn test_local_set_acceptance() {
         // scheduler's owned tasks" caveat: it is simply listed now.
         let out = trace(&bundle, core, &joiner.id, false);
         assert!(
-            out.contains(&format!("waiting on task {} (JoinHandle)\n", sleeper.id)),
+            out.contains(&format!("waiting on task {}\n", sleeper.id)),
             "{out}"
         );
 
@@ -1744,7 +1746,7 @@ fn test_local_set_acceptance() {
         // queued waker as the task it would wake.
         let out = normalize(&trace(&bundle, core, &sleeper.id, false));
         assert!(out.contains("tokio::time::sleep::Sleep"), "{out}");
-        assert!(out.contains("waiting on the timer: deadline TS"), "{out}");
+        assert!(out.contains("waiting on timer (deadline TS"), "{out}");
         let out = normalize(&trace(&bundle, core, &acquirer.id, false));
         assert!(
             out.contains(&format!("wake queue: task {}", acquirer.id)),
@@ -1789,7 +1791,7 @@ fn test_local_set_timer_acceptance() {
         // Both members read like any listed task — including the one no
         // route ever named, which the set brought with it.
         let out = normalize(&trace(&bundle, core, &sleeper.id, false));
-        assert!(out.contains("waiting on the timer: deadline TS"), "{out}");
+        assert!(out.contains("waiting on timer (deadline TS"), "{out}");
         let out = normalize(&trace(&bundle, core, &acquirer.id, false));
         assert!(
             out.contains(&format!("wake queue: task {}", acquirer.id)),
@@ -1886,7 +1888,7 @@ fn test_foreign_runtime_acceptance() {
         // listed, rather than naming a runtime the session cannot show.
         let out = normalize(&trace(&bundle, core, &joiner.id, false));
         assert!(
-            out.contains(&format!("task {} (JoinHandle)", joined.id)),
+            out.contains(&format!("waiting on task {}\n", joined.id)),
             "{out}"
         );
         assert!(!out.contains("does not list"), "{out}");

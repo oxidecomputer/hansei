@@ -6,9 +6,9 @@ Task 1: async fn local_set::local_sleeper (idle)
 Spawned at: src/bin/local-set.rs:46:29
 Defined at: src/bin/local-set.rs:13
 
-Waiting on: the timer: deadline TS on the target's monotonic clock
+Waiting on: timer (deadline TS on the target's monotonic clock)
 
 #0  async fn      local_set::local_sleeper
       awaiting at src/bin/local-set.rs:16 (Suspend0)
 #1  future        tokio::time::sleep::Sleep
-      waiting on the timer: deadline TS on the target's monotonic clock
+      waiting on timer (deadline TS on the target's monotonic clock)

@@ -2,17 +2,17 @@
 source: hansei/src/offline.rs
 description: "`tasks --exec trace` over linux-floor/ct-runtime"
 ---
-1  idle  src/bin/ct-runtime.rs:13  the timer: deadline TS on the target's monotonic clock  async fn ct_runtime::sleeper
+1  idle  src/bin/ct-runtime.rs:13  timer (deadline TS on the target's monotonic clock)  async fn ct_runtime::sleeper
 Task 1: async fn ct_runtime::sleeper (idle)
 Spawned at: src/bin/ct-runtime.rs:33:24
 Defined at: src/bin/ct-runtime.rs:10
 
-Waiting on: the timer: deadline TS on the target's monotonic clock
+Waiting on: timer (deadline TS on the target's monotonic clock)
 
 #0  async fn      ct_runtime::sleeper
       awaiting at src/bin/ct-runtime.rs:13 (Suspend0)
 #1  future        tokio::time::sleep::Sleep
-      waiting on the timer: deadline TS on the target's monotonic clock
+      waiting on timer (deadline TS on the target's monotonic clock)
 
 2  idle  src/bin/ct-runtime.rs:20  a tokio::sync::Semaphore (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 2  async fn ct_runtime::acquirer
 Task 2: async fn ct_runtime::acquirer (idle)

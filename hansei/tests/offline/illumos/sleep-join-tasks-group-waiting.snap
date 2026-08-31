@@ -2,7 +2,7 @@
 source: hansei/src/offline.rs
 description: "`tasks --group waiting-on` over illumos/sleep-join"
 ---
-COUNT  WAITING ON                       TASKS
-    1  task 3 (JoinHandle)              4
-    1  the timer: deadline TS  3
+COUNT  WAITING ON  TASKS
+    1  task 3      4
+    1  timer       3
 2 groups

@@ -80,9 +80,13 @@ pub const PROGRAMS: &[&str] = &[
 /// pairs compare exactly.
 pub fn mask(s: &str) -> String {
     let addrs = regex::Regex::new(r"0x[0-9a-f]+").unwrap();
-    let deadlines = regex::Regex::new(r"deadline -?\d+\.\d{3}s").unwrap();
-    deadlines
-        .replace_all(&addrs.replace_all(s, "0xADDR"), "deadline TS")
+    let deadlines = regex::Regex::new(r"deadline \+?\d+\.\d{3}s").unwrap();
+    let overdue = regex::Regex::new(r"overdue by \d+\.\d{3}s").unwrap();
+    overdue
+        .replace_all(
+            &deadlines.replace_all(&addrs.replace_all(s, "0xADDR"), "deadline TS"),
+            "overdue by TS",
+        )
         .into_owned()
 }
 

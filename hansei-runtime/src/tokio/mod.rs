@@ -313,24 +313,24 @@ mod tests {
         // target was observed.
         assert_eq!(
             timer(at(1_042, 500_000_000), Some(at(1_030, 0))),
-            "the timer: deadline 12.500s"
+            "timer (deadline +12.500s)"
         );
-        // A deadline already passed reads as a small negative duration,
+        // A deadline already passed reads as a small overdue duration,
         // never as a wrapped unsigned one.
         assert_eq!(
             timer(at(1_030, 0), Some(at(1_031, 250_000_000))),
-            "the timer: deadline -1.250s"
+            "timer (overdue by 1.250s)"
         );
-        // A deadline exactly at the stop is zero, not negative zero.
+        // A deadline exactly at the stop is zero remaining, not overdue.
         assert_eq!(
             timer(at(1_030, 0), Some(at(1_030, 0))),
-            "the timer: deadline 0.000s"
+            "timer (deadline +0.000s)"
         );
         // With no stop time there is nothing to be relative to, so the
         // absolute point is reported with its clock spelled out.
         assert_eq!(
             timer(at(42, 7_000_000), None),
-            "the timer: deadline 42.007s on the target's monotonic clock"
+            "timer (deadline 42.007s on the target's monotonic clock)"
         );
     }
 }

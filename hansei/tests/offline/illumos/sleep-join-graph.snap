@@ -3,5 +3,5 @@ source: hansei/src/offline.rs
 description: "`graph` over illumos/sleep-join"
 ---
 TASK  STATE  WAITING ON
-4     idle   task 3 (JoinHandle)
-└─ 3  idle   the timer: deadline TS
+4     idle   task 3
+└─ 3  idle   timer (deadline TS)

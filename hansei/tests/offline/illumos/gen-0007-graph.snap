@@ -5,6 +5,6 @@ description: "`graph` over illumos/gen-0007"
 TASK                            STATE  WAITING ON
 3                               idle   future gen_0007::GfSel3<core::future::pending::Pending<u64>, core::future::pending::Pending<u64>, core::future::pending::Pending<u64>>
 ├─ 4 [in the JoinSet above]     idle   future tokio::sync::notify::Notified
-└─ 5 [in the JoinSet above]     idle   the timer: deadline TS
+└─ 5 [in the JoinSet above]     idle   timer (deadline TS)
    ├─ 6 [in the JoinSet above]  idle   future gen_0007::GfSel2<core::future::pending::Pending<u64>, core::future::pending::Pending<u64>>
    └─ 7 [in the JoinSet above]  idle   future gen_0007::GfSel2<core::future::pending::Pending<u64>, core::future::pending::Pending<u64>>

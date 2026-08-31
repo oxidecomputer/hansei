@@ -781,7 +781,7 @@ fn test_ct_runtime_offline() {
         "{leaves:#?}"
     );
     assert!(sleeper.contains("sleeper"), "{leaves:#?}");
-    assert!(sleeper_wait.contains("the timer"), "{leaves:#?}");
+    assert!(sleeper_wait.contains("timer (deadline"), "{leaves:#?}");
 }
 
 /// The `LocalSet` pair: tasks bound into a set's own list are found and
@@ -880,7 +880,7 @@ fn test_local_set_offline() {
         semaphore.contains("semaphore") && semaphore.contains("1 permit requested"),
         "{leaves:#?}"
     );
-    assert!(timer.contains("the timer"), "{leaves:#?}");
+    assert!(timer.contains("timer (deadline"), "{leaves:#?}");
 
     // The joined task is now simply listed — the third `listed: false`
     // case the plan called for, closed by discovery rather than worded.
@@ -979,7 +979,7 @@ fn test_local_set_timer_offline() {
         panic!("expected the set's two leaves, got {leaves:#?}");
     };
     assert!(semaphore.contains("semaphore"), "{leaves:#?}");
-    assert!(timer.contains("the timer"), "{leaves:#?}");
+    assert!(timer.contains("timer (deadline"), "{leaves:#?}");
 }
 
 /// The io harvest: a `LocalSet` nothing points at, found through the

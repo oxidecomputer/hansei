@@ -599,9 +599,9 @@ mod graph_tests {
             page,
             "\
 TASK      STATE  WAITING ON
-12        idle   task 40 (JoinHandle)
+12        idle   task 40
 └─ 40     idle   a tokio::sync::Mutex (semaphore 0x9000): 1 permit requested, 0 available
-   └─ 51  idle   the timer: deadline 10.000s
+   └─ 51  idle   timer (deadline +10.000s)
 "
         );
     }
@@ -620,7 +620,7 @@ TASK      STATE  WAITING ON
             page,
             "\
 TASK           STATE  WAITING ON
-88             idle   task 88 (JoinHandle)
+88             idle   task 88
 └─ 88 ← cycle  idle   
 "
         );
@@ -645,7 +645,7 @@ TASK           STATE  WAITING ON
             "\
 TASK           STATE  WAITING ON
 40             idle   a tokio::sync::Mutex (semaphore 0x9000): 1 permit requested, 0 available
-└─ 51          idle   the timer: deadline 10.000s
+└─ 51          idle   timer (deadline +10.000s)
 41             idle   a tokio::sync::Mutex (semaphore 0x9000): 1 permit requested, 0 available
 └─ 51 (above)  idle   
 "
@@ -693,7 +693,7 @@ TASK                         STATE  WAITING ON
             "\
 TASK                          STATE  WAITING ON
 7                             idle   -
-└─ 8 [its handle held above]  idle   the timer: deadline 10.000s
+└─ 8 [its handle held above]  idle   timer (deadline +10.000s)
 "
         );
     }
@@ -719,7 +719,7 @@ TASK                          STATE  WAITING ON
             "\
 TASK                          STATE  WAITING ON
 7                             idle   -
-└─ 8 [its handle held above]  idle   the timer: deadline 10.000s
+└─ 8 [its handle held above]  idle   timer (deadline +10.000s)
 "
         );
     }

@@ -2,10 +2,10 @@
 source: hansei/src/offline.rs
 description: "`tasks --exec type no::such::Type` over linux-floor/sleep-join"
 ---
-3  idle  src/bin/sleep-join.rs:12  the timer: deadline TS on the target's monotonic clock  async fn sleep_join::sleeper
+3  idle  src/bin/sleep-join.rs:12  timer (deadline TS on the target's monotonic clock)  async fn sleep_join::sleeper
 error: the tokio info records no type named no::such::Type; try `find-types no::such::Type`
 
-4  idle  src/bin/sleep-join.rs:19  task 3 (JoinHandle)  async fn sleep_join::joiner
+4  idle  src/bin/sleep-join.rs:19  task 3  async fn sleep_join::joiner
 error: the tokio info records no type named no::such::Type; try `find-types no::such::Type`
 Executed against 2 tasks, 2 failed
 error: --exec failed against 2 of 2 tasks
