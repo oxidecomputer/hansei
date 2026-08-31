@@ -2,7 +2,7 @@
 source: hansei/src/offline.rs
 description: "`threads -v` over linux/joinset"
 ---
-lwp 2347113  polling no task
+lwp 2954015  polling no task
   thread_id: core::option::Option<tokio::runtime::thread_id::ThreadId>::None
   runtime:
     tokio::runtime::context::runtime::EnterRuntime::Entered {
@@ -14,7 +14,7 @@ lwp 2347113  polling no task
     0xADDR 
     (walk ended: no CFI for /usr/lib64/libc.so.6 (none of its pages are in the core, and the backing file is not on this machine); the frame-pointer walk found nothing below 0xADDR)
 
-lwp 2347118  last polled task 1
+lwp 2954017  last polled task 1
   thread_id: core::option::Option<tokio::runtime::thread_id::ThreadId>::None
   runtime:
     tokio::runtime::context::runtime::EnterRuntime::Entered {
@@ -69,7 +69,7 @@ lwp 2347118  last polled task 1
         park: core::option::Option<tokio::runtime::scheduler::multi_thread::park::Parker>::None,
         stats: tokio::runtime::scheduler::multi_thread::stats::Stats {
             batch: tokio::runtime::metrics::batch::MetricsBatch {
-                busy_duration_total: 11041,
+                busy_duration_total: 20689,
                 processing_scheduled_tasks_started_at: core::option::Option<std::time::Instant>::Some {
                     tv_sec: ...,
                     tv_nsec: ...,
@@ -86,25 +86,23 @@ lwp 2347118  last polled task 1
                 poll_timer: core::option::Option<tokio::runtime::metrics::batch::PollTimer>::None,
             },
             processing_scheduled_tasks_started_at: std::sys::pal::unix::time::Timespec {
-                tv_sec: 1321691,
-                tv_nsec: 840308370,
+                tv_sec: 1402273,
+                tv_nsec: 177149365,
             },
             tasks_polled_in_batch: 8,
-            task_poll_time_ewma: 2196.6824274505943,
+            task_poll_time_ewma: 2889.946216078094,
         },
         global_queue_interval: 61,
         rand: tokio::util::rand::FastRand {
-            one: 4280680069,
-            two: 2849280347,
+            one: 1931769494,
+            two: 3298819865,
         },
     }
   stack:
     0xADDR 
-    0xADDR   (frame-pointer walk)
-    0xADDR   (frame-pointer walk)
     (walk ended: no CFI for /usr/lib64/libc.so.6 (none of its pages are in the core, and the backing file is not on this machine); the frame-pointer walk found nothing below 0xADDR)
 
-lwp 2347119  last polled task 2
+lwp 2954018  last polled task 2
   thread_id: core::option::Option<tokio::runtime::thread_id::ThreadId>::None
   runtime:
     tokio::runtime::context::runtime::EnterRuntime::Entered {
@@ -159,7 +157,7 @@ lwp 2347119  last polled task 2
         park: core::option::Option<tokio::runtime::scheduler::multi_thread::park::Parker>::None,
         stats: tokio::runtime::scheduler::multi_thread::stats::Stats {
             batch: tokio::runtime::metrics::batch::MetricsBatch {
-                busy_duration_total: 230,
+                busy_duration_total: 90,
                 processing_scheduled_tasks_started_at: core::option::Option<std::time::Instant>::Some {
                     tv_sec: ...,
                     tv_nsec: ...,
@@ -176,18 +174,20 @@ lwp 2347119  last polled task 2
                 poll_timer: core::option::Option<tokio::runtime::metrics::batch::PollTimer>::None,
             },
             processing_scheduled_tasks_started_at: std::sys::pal::unix::time::Timespec {
-                tv_sec: 1321691,
-                tv_nsec: 840335522,
+                tv_sec: 1402273,
+                tv_nsec: 177169513,
             },
             tasks_polled_in_batch: 0,
             task_poll_time_ewma: 3278.688524590164,
         },
         global_queue_interval: 61,
         rand: tokio::util::rand::FastRand {
-            one: 3129902898,
-            two: 461450206,
+            one: 1553109770,
+            two: 2707170855,
         },
     }
   stack:
     0xADDR 
+    0xADDR   (frame-pointer walk)
+    0xADDR   (frame-pointer walk)
     (walk ended: no CFI for /usr/lib64/libc.so.6 (none of its pages are in the core, and the backing file is not on this machine); the frame-pointer walk found nothing below 0xADDR)

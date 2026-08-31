@@ -8,10 +8,10 @@ error: the tokio info records no type named no::such::Type; try `find-types no::
 2  idle  1  src/bin/foreign-runtime.rs:51  future core::future::pending::Pending<()>  async fn foreign_runtime::detached
 error: the tokio info records no type named no::such::Type; try `find-types no::such::Type`
 
-3  idle  0  src/bin/foreign-runtime.rs:26  task 1  async fn foreign_runtime::joiner
+3  idle  2  src/bin/foreign-runtime.rs:63  timer (deadline TS)  async fn foreign_runtime::local_sleeper
 error: the tokio info records no type named no::such::Type; try `find-types no::such::Type`
 
-4  idle  2  src/bin/foreign-runtime.rs:63  timer (deadline TS)  async fn foreign_runtime::local_sleeper
+4  idle  0  src/bin/foreign-runtime.rs:26  task 1  async fn foreign_runtime::joiner
 error: the tokio info records no type named no::such::Type; try `find-types no::such::Type`
 Executed against 4 tasks, 4 failed
 error: --exec failed against 4 of 4 tasks

@@ -1,0 +1,51 @@
+---
+source: hansei/src/offline.rs
+description: "`tasks --exec trace` over linux-floor/blocking-pool"
+---
+3  blocking (running)  —  —  future tokio::runtime::blocking::task::BlockingTask<blocking_pool::main::{async_block#0}::{closure_env#0}>
+Task 3: future tokio::runtime::blocking::task::BlockingTask<blocking_pool::main::{async_block#0}::{closure_env#0}> (running)
+Spawned at: src/bin/blocking-pool.rs:35:23
+
+#0  future        Option<blocking_pool::main::{async_block#0}::{closure_env#0}>
+      state: None
+
+mid-poll, but lwp 3053597's walked stack holds no frame in the task's poll symbol (its walk ended: no CFI for /usr/lib64/libc.so.6 (none of its pages are in the core, and the backing file is not on this machine); the frame-pointer walk found nothing below 0xADDR); `threads 3053597` shows the raw stack
+
+4  blocking (queued)  —  —  future tokio::runtime::blocking::task::BlockingTask<blocking_pool::main::{async_block#0}::{closure_env#1}>
+Task 4: future tokio::runtime::blocking::task::BlockingTask<blocking_pool::main::{async_block#0}::{closure_env#1}> (queued)
+Spawned at: src/bin/blocking-pool.rs:43:22
+
+#0  future        Option<blocking_pool::main::{async_block#0}::{closure_env#1}>
+      state: Some
+
+5  blocking (queued)  —  —  future tokio::runtime::blocking::task::BlockingTask<blocking_pool::main::{async_block#0}::{closure_env#2}>
+Task 5: future tokio::runtime::blocking::task::BlockingTask<blocking_pool::main::{async_block#0}::{closure_env#2}> (queued)
+Spawned at: src/bin/blocking-pool.rs:47:14
+
+#0  future        Option<blocking_pool::main::{async_block#0}::{closure_env#2}>
+      state: Some
+
+6  idle  src/bin/blocking-pool.rs:18  task 3  async fn blocking_pool::running_waiter
+Task 6: async fn blocking_pool::running_waiter (idle)
+Spawned at: src/bin/blocking-pool.rs:51:24
+Defined at: src/bin/blocking-pool.rs:15
+
+Waiting on: task 3
+
+#0  async fn      blocking_pool::running_waiter
+      awaiting at src/bin/blocking-pool.rs:18 (Suspend0)
+#1  future        tokio::runtime::task::join::JoinHandle<u32>
+      waiting on task 3
+
+7  idle  src/bin/blocking-pool.rs:24  task 4  async fn blocking_pool::queued_waiter
+Task 7: async fn blocking_pool::queued_waiter (idle)
+Spawned at: src/bin/blocking-pool.rs:52:23
+Defined at: src/bin/blocking-pool.rs:21
+
+Waiting on: task 4
+
+#0  async fn      blocking_pool::queued_waiter
+      awaiting at src/bin/blocking-pool.rs:24 (Suspend0)
+#1  future        tokio::runtime::task::join::JoinHandle<u32>
+      waiting on task 4
+Executed against 5 tasks, 0 failed

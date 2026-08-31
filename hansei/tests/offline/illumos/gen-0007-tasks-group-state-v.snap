@@ -7,6 +7,7 @@ Task 3: async fn gen_0007::driver_00
     State: idle
     Spawned at: src/bin/gen-0007.rs:219:19
     Defined at: src/bin/gen-0007.rs:111
+    Waiting on: future gen_0007::GfSel3<core::future::pending::Pending<u64>, core::future::pending::Pending<u64>, core::future::pending::Pending<u64>>
     Held futures: 0
     Join sets: 2 (2 tasks and 3 futures)
 
@@ -14,6 +15,7 @@ Task 4: async fn gen_0007::member_02
     State: idle
     Spawned at: src/bin/gen-0007.rs:117:12
     Defined at: src/bin/gen-0007.rs:141
+    Waiting on: future tokio::sync::notify::Notified
     Held futures: 0
     Join sets: 0
 
@@ -21,6 +23,8 @@ Task 5: async fn gen_0007::member_03
     State: idle
     Spawned at: src/bin/gen-0007.rs:118:12
     Defined at: src/bin/gen-0007.rs:153
+    Waiting on: timer (deadline TS)
+        timer entry 0xADDR in the wheel, registered
     Held futures: 1
     Join sets: 1 (2 tasks)
 
@@ -28,6 +32,7 @@ Task 6: async fn gen_0007::member_06
     State: idle
     Spawned at: src/bin/gen-0007.rs:157:12
     Defined at: src/bin/gen-0007.rs:177
+    Waiting on: future gen_0007::GfSel2<core::future::pending::Pending<u64>, core::future::pending::Pending<u64>>
     Held futures: 0
     Join sets: 0
 
@@ -35,6 +40,7 @@ Task 7: async fn gen_0007::member_07
     State: idle
     Spawned at: src/bin/gen-0007.rs:158:12
     Defined at: src/bin/gen-0007.rs:192
+    Waiting on: future gen_0007::GfSel2<core::future::pending::Pending<u64>, core::future::pending::Pending<u64>>
     Held futures: 1
     Join sets: 0
 

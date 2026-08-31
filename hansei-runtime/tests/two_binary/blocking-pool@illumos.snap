@@ -1,0 +1,21 @@
+---
+source: hansei-runtime/tests/two_binary.rs
+---
+fingerprint 20/20
+workers 4
+task 6 idle blocking_pool::running_waiter::{async_fn_env#0}
+  spawned src/bin/blocking-pool.rs:51:24
+  defined src/bin/blocking-pool.rs:15
+  await blocking_pool::running_waiter::{async_fn_env#0} Suspend0 @ src/bin/blocking-pool.rs:18
+  await tokio::runtime::task::join::JoinHandle<u32>
+  end leaf
+  site src/bin/blocking-pool.rs:18
+  waiting on task 3 — running, a spawn_blocking task (no task list carries those)
+task 7 idle blocking_pool::queued_waiter::{async_fn_env#0}
+  spawned src/bin/blocking-pool.rs:52:23
+  defined src/bin/blocking-pool.rs:21
+  await blocking_pool::queued_waiter::{async_fn_env#0} Suspend0 @ src/bin/blocking-pool.rs:24
+  await tokio::runtime::task::join::JoinHandle<u32>
+  end leaf
+  site src/bin/blocking-pool.rs:24
+  waiting on task 4 — queued, a spawn_blocking task (no task list carries those)

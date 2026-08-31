@@ -7,6 +7,7 @@ Task 3: async fn channels::notify_waiter
     State: idle
     Spawned at: src/bin/channels.rs:75:23
     Defined at: src/bin/channels.rs:17
+    Waiting on: future tokio::sync::notify::Notified
     Held futures: 1
     Join sets: 0
 
@@ -14,6 +15,7 @@ Task 4: async fn channels::hold
     State: idle
     Spawned at: src/bin/channels.rs:83:23
     Defined at: src/bin/channels.rs:45
+    Waiting on: future tokio::sync::oneshot::Receiver<u32>
     Held futures: 0
     Join sets: 0
 

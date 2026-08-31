@@ -1173,6 +1173,8 @@ mod tests {
         // An unknown bit prints in binary rather than vanishing.
         assert_eq!(Readiness(0b100_0001).to_string(), "readable | 0b1000000");
         assert_eq!(Interest(0b01).union(Interest(0b10)), Interest(0b11));
+        // Overlapping bits stay set: a union, not a toggle.
+        assert_eq!(Interest(0b01).union(Interest(0b01)), Interest(0b01));
         assert_eq!(IoSlot::Reader.interest(), Some(Interest(0b01)));
         assert_eq!(IoSlot::Writer.interest(), Some(Interest(0b10)));
         assert_eq!(IoSlot::Listed { interest: None }.interest(), None);

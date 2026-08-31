@@ -5,7 +5,7 @@ description: "`census` over linux/unordered"
 Threads: 3 lwps, 3 in runtime 0 @0xADDR
     2 in the scheduler's run loop
         1 parked in the io driver
-            worker 0, lwp 2346933
+            worker 0, lwp 2953838
         1 parked
     1 in runtime 0 @0xADDR, outside the run loop
         0 in the blocking pool (0 idle, 0 tasks queued)

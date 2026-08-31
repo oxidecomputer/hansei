@@ -70,33 +70,33 @@ lwp 2  last polled task 1
         park: core::option::Option<tokio::runtime::scheduler::multi_thread::park::Parker>::None,
         stats: tokio::runtime::scheduler::multi_thread::stats::Stats {
             batch: tokio::runtime::metrics::batch::MetricsBatch {
-                busy_duration_total: 627,
+                busy_duration_total: 118497,
                 processing_scheduled_tasks_started_at: core::option::Option<std::time::Instant>::Some {
                     tv_sec: ...,
                     tv_nsec: ...,
                 },
-                park_count: 3,
-                park_unpark_count: 5,
-                noop_count: 3,
+                park_count: 2,
+                park_unpark_count: 3,
+                noop_count: 1,
                 steal_count: 0,
                 steal_operations: 0,
-                poll_count: 0,
-                poll_count_on_last_park: 0,
+                poll_count: 1,
+                poll_count_on_last_park: 1,
                 local_schedule_count: 0,
                 overflow_count: 0,
                 poll_timer: core::option::Option<tokio::runtime::metrics::batch::PollTimer>::None,
             },
             processing_scheduled_tasks_started_at: std::sys::pal::unix::time::Timespec {
-                tv_sec: 4925348,
-                tv_nsec: 240665201,
+                tv_sec: 5005950,
+                tv_nsec: 708622614,
             },
             tasks_polled_in_batch: 0,
-            task_poll_time_ewma: 3278.688524590164,
+            task_poll_time_ewma: 14781.919672131145,
         },
         global_queue_interval: 61,
         rand: tokio::util::rand::FastRand {
-            one: 1679542079,
-            two: 502029855,
+            one: 3035945472,
+            two: 3689245634,
         },
     }
   stack:
@@ -121,7 +121,7 @@ lwp 3  last polled task 2
     }
   core:
     tokio::runtime::scheduler::multi_thread::worker::Core {
-        tick: 5,
+        tick: 3,
         lifo_slot: core::option::Option<tokio::runtime::task::Notified<alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle, alloc::alloc::Global>>>::None,
         lifo_enabled: false,
         run_queue: tokio::runtime::scheduler::multi_thread::queue::Local<alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle, alloc::alloc::Global>> {
@@ -159,33 +159,33 @@ lwp 3  last polled task 2
         park: core::option::Option<tokio::runtime::scheduler::multi_thread::park::Parker>::None,
         stats: tokio::runtime::scheduler::multi_thread::stats::Stats {
             batch: tokio::runtime::metrics::batch::MetricsBatch {
-                busy_duration_total: 135673,
+                busy_duration_total: 39848,
                 processing_scheduled_tasks_started_at: core::option::Option<std::time::Instant>::Some {
                     tv_sec: ...,
                     tv_nsec: ...,
                 },
-                park_count: 3,
-                park_unpark_count: 5,
+                park_count: 2,
+                park_unpark_count: 3,
                 noop_count: 1,
                 steal_count: 0,
                 steal_operations: 0,
-                poll_count: 2,
-                poll_count_on_last_park: 2,
+                poll_count: 1,
+                poll_count_on_last_park: 1,
                 local_schedule_count: 0,
                 overflow_count: 0,
                 poll_timer: core::option::Option<tokio::runtime::metrics::batch::PollTimer>::None,
             },
             processing_scheduled_tasks_started_at: std::sys::pal::unix::time::Timespec {
-                tv_sec: 4925348,
-                tv_nsec: 240639659,
+                tv_sec: 5005950,
+                tv_nsec: 708597206,
             },
             tasks_polled_in_batch: 1,
-            task_poll_time_ewma: 15225.75770491803,
+            task_poll_time_ewma: 6874.119672131147,
         },
         global_queue_interval: 61,
         rand: tokio::util::rand::FastRand {
-            one: 3432628969,
-            two: 4174993633,
+            one: 1383935917,
+            two: 3129592367,
         },
     }
   stack:

@@ -212,6 +212,7 @@ offline_commands! {
     test_foreign_runtime_commands: "foreign-runtime",
     test_gen_0007_commands: "gen-0007",
     test_walk_shapes_commands: "walk-shapes",
+    test_blocking_pool_commands: "blocking-pool",
 }
 
 /// The macro above and [`testkit::PROGRAMS`] name the same population:
@@ -235,6 +236,7 @@ fn test_every_program_has_a_command_golden() {
         "foreign-runtime",
         "gen-0007",
         "walk-shapes",
+        "blocking-pool",
     ];
     assert_eq!(COVERED, PROGRAMS);
 }

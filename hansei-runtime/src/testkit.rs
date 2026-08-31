@@ -72,6 +72,7 @@ pub const PROGRAMS: &[&str] = &[
     "foreign-runtime",
     "gen-0007",
     "walk-shapes",
+    "blocking-pool",
 ];
 
 /// Mask the run-varying values analysis output carries — heap

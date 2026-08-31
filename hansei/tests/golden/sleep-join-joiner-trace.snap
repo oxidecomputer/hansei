@@ -5,9 +5,9 @@ expression: actual
 Task #joiner: async fn sleep_join::joiner (idle)
 Defined at: src/bin/sleep-join.rs:16
 
-Waiting on: task #sleeper (JoinHandle)
+Waiting on: task #sleeper
 
 #0  async fn      sleep_join::joiner
       awaiting at src/bin/sleep-join.rs:19 (Suspend0)
 #1  future        tokio::runtime::task::join::JoinHandle<u32>
-      waiting on task #sleeper (JoinHandle)
+      waiting on task #sleeper

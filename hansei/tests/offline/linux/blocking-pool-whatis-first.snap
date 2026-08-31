@@ -1,0 +1,8 @@
+---
+source: hansei/src/offline.rs
+description: "`whatis 0x55a34afb9e80` over linux/blocking-pool"
+---
+Task 3: future tokio::runtime::blocking::task::BlockingTask<blocking_pool::main::{async_block#0}::{closure_env#0}>
+    At: offset 0xADDR in the task's allocation (header 0xADDR)
+    State: running
+    Spawned at: src/bin/blocking-pool.rs:35:23

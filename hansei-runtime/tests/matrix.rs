@@ -85,6 +85,7 @@ const PROGRAMS: &[&str] = &[
     "local-set-timer",
     "local-set-io",
     "foreign-runtime",
+    "blocking-pool",
 ];
 
 fn test_programs_dir() -> PathBuf {

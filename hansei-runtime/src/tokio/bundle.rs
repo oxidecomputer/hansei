@@ -100,6 +100,36 @@ const IO_RESOURCES: &[(&str, WalkRole, WalkRole)] = &[
     ),
 ];
 
+/// Whether a blocking cell is the runtime's own machinery riding its
+/// pool — a worker being launched — rather than target work. The
+/// parameter names what the closure is: everything the runtime
+/// spawns onto its own pool lives under `tokio::runtime::`.
+fn runtime_internal_blocking(display_name: &str) -> bool {
+    display_name.starts_with("tokio::runtime::blocking::task::BlockingTask<tokio::runtime::")
+}
+
+#[cfg(test)]
+mod blocking_filter_tests {
+    /// The pool lists target work and skips the runtime launching its
+    /// own workers through itself — the one cell whose presence is
+    /// capture timing rather than target state.
+    #[test]
+    fn test_runtime_internal_blocking_screens_on_the_parameter() {
+        assert!(super::runtime_internal_blocking(
+            "tokio::runtime::blocking::task::BlockingTask<\
+             tokio::runtime::scheduler::multi_thread::worker::Launch::launch::{closure_env#0}>"
+        ));
+        assert!(!super::runtime_internal_blocking(
+            "tokio::runtime::blocking::task::BlockingTask<\
+             blocking_pool::main::{async_block#0}::{closure_env#0}>"
+        ));
+        // Only a blocking cell's spelling is screened at all.
+        assert!(!super::runtime_internal_blocking(
+            "tokio::runtime::whatever"
+        ));
+    }
+}
+
 #[derive(Copy, Clone, Debug)]
 pub(crate) enum LeafKind {
     Sleep,
@@ -2649,7 +2679,10 @@ impl<'b, T: Target> Context<'b, T> {
     /// List one blocking cell as a row, wherever it was found: parse
     /// its Header like any task's and mark it. A complete cell is left
     /// to the join edge that found it — off the pool, alive only
-    /// through its handle — and a listed one is already a row.
+    /// through its handle — and a listed one is already a row. The
+    /// runtime's own cells are skipped: tokio launches its worker
+    /// threads through the pool, and whether a capture catches one of
+    /// those mid-launch is pure timing, not target work.
     fn list_blocking(&self, addr: u64, group: usize, list: &mut TaskList) {
         if list.contains(addr) {
             return;
@@ -2657,6 +2690,11 @@ impl<'b, T: Target> Context<'b, T> {
         match self.parse_task(addr) {
             Ok((mut task, _)) => {
                 if task.state.lifecycle() == Lifecycle::Complete {
+                    return;
+                }
+                if let FutureInfo::Known(known) = &task.future
+                    && runtime_internal_blocking(&known.display_name)
+                {
                     return;
                 }
                 task.blocking = true;

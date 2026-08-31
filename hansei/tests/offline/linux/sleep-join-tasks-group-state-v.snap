@@ -7,6 +7,8 @@ Task 3: async fn sleep_join::sleeper
     State: idle
     Spawned at: src/bin/sleep-join.rs:30:22
     Defined at: src/bin/sleep-join.rs:9
+    Waiting on: timer (deadline TS on the target's monotonic clock)
+        timer entry 0xADDR in the wheel, registered
     Held futures: 0
     Join sets: 0
 
@@ -14,6 +16,7 @@ Task 4: async fn sleep_join::joiner
     State: idle
     Spawned at: src/bin/sleep-join.rs:31:23
     Defined at: src/bin/sleep-join.rs:16
+    Waiting on: task 3
     Held futures: 0
     Join sets: 0
 

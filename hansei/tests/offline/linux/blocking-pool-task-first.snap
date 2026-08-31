@@ -1,0 +1,5 @@
+---
+source: hansei/src/offline.rs
+description: "`task 3` over linux/blocking-pool"
+---
+3  blocking (running)  —  —  future tokio::runtime::blocking::task::BlockingTask<blocking_pool::main::{async_block#0}::{closure_env#0}>

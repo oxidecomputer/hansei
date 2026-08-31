@@ -1148,6 +1148,29 @@ fn run_golden(program: &str) {
 
     assert_clean(program, &bundle, &stats);
 
+    // The type-rooted walks are deliberately absent from the portable
+    // summary — which resources a build links is the target's call —
+    // so their binding is pinned here, on the fixtures that provably
+    // link them on every platform. A spelling regression (the peel
+    // shape, the Arc route, the queue-element path) breaks these
+    // without moving any golden.
+    {
+        use exegesis::bundle::{WalkOutcome, WalkRole};
+        let bound = |role: WalkRole| {
+            matches!(
+                bundle.walks.entries[&role].outcome,
+                WalkOutcome::Bound { .. }
+            )
+        };
+        if program == "local-set-io" {
+            assert!(bound(WalkRole::UnixStreamShared), "{program}");
+            assert!(bound(WalkRole::UnixStreamFd), "{program}");
+        }
+        if program == "blocking-pool" {
+            assert!(bound(WalkRole::BlockingTaskHeader), "{program}");
+        }
+    }
+
     let crate_str = program.replace('-', "_");
     let summary = portable_summary(&bundle, program, &crate_str);
 
@@ -1223,6 +1246,11 @@ fn test_golden_local_set_io() {
 #[test]
 fn test_golden_foreign_runtime() {
     run_golden("foreign-runtime");
+}
+
+#[test]
+fn test_golden_blocking_pool() {
+    run_golden("blocking-pool");
 }
 
 /// Two extractions of one binary agree byte for byte.
