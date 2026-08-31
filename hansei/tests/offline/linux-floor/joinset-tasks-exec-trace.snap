@@ -1,0 +1,60 @@
+---
+source: hansei/src/offline.rs
+description: "`tasks --exec trace` over linux-floor/joinset"
+---
+3  idle  src/bin/joinset.rs:79  future tokio::util::idle_notified_set::IdleNotifiedSet<tokio::runtime::task::join::JoinHandle<u32>>  async fn joinset::driver
+Task 3: async fn joinset::driver (idle)
+Spawned at: src/bin/joinset.rs:96:21
+Defined at: src/bin/joinset.rs:44
+
+#0  async fn      joinset::driver
+      awaiting at src/bin/joinset.rs:79 (Suspend1, 6 locals)
+#1  async fn      tokio::task::join_set::JoinSet::join_next<u32>
+      awaiting at tokio-1.47.5/src/task/join_set.rs:283 (Suspend0)
+#2  future        tokio::util::idle_notified_set::IdleNotifiedSet<tokio::runtime::task::join::JoinHandle<u32>>
+
+4  idle  src/bin/joinset.rs:30  future tokio::sync::notify::Notified  async fn joinset::member
+Task 4: async fn joinset::member (idle)
+Spawned at: src/bin/joinset.rs:50:13
+Defined at: src/bin/joinset.rs:27
+
+#0  async fn      joinset::member
+      awaiting at src/bin/joinset.rs:30 (Suspend1, 2 locals)
+#1  future        tokio::sync::notify::Notified
+
+5  idle  src/bin/joinset.rs:30  future tokio::sync::notify::Notified  async fn joinset::member
+Task 5: async fn joinset::member (idle)
+Spawned at: src/bin/joinset.rs:50:13
+Defined at: src/bin/joinset.rs:27
+
+#0  async fn      joinset::member
+      awaiting at src/bin/joinset.rs:30 (Suspend1, 2 locals)
+#1  future        tokio::sync::notify::Notified
+
+6  idle  src/bin/joinset.rs:30  future tokio::sync::notify::Notified  async fn joinset::member
+Task 6: async fn joinset::member (idle)
+Spawned at: src/bin/joinset.rs:50:13
+Defined at: src/bin/joinset.rs:27
+
+#0  async fn      joinset::member
+      awaiting at src/bin/joinset.rs:30 (Suspend1, 2 locals)
+#1  future        tokio::sync::notify::Notified
+
+7  idle  src/bin/joinset.rs:30  future tokio::sync::notify::Notified  async fn joinset::member
+Task 7: async fn joinset::member (idle)
+Spawned at: src/bin/joinset.rs:58:14
+Defined at: src/bin/joinset.rs:27
+
+#0  async fn      joinset::member
+      awaiting at src/bin/joinset.rs:30 (Suspend1, 2 locals)
+#1  future        tokio::sync::notify::Notified
+
+8  idle  src/bin/joinset.rs:30  future tokio::sync::notify::Notified  async fn joinset::member
+Task 8: async fn joinset::member (idle)
+Spawned at: src/bin/joinset.rs:58:14
+Defined at: src/bin/joinset.rs:27
+
+#0  async fn      joinset::member
+      awaiting at src/bin/joinset.rs:30 (Suspend1, 2 locals)
+#1  future        tokio::sync::notify::Notified
+Executed against 6 tasks, 0 failed

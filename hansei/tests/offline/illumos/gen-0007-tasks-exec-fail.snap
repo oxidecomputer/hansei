@@ -1,0 +1,20 @@
+---
+source: hansei/src/offline.rs
+description: "`tasks --exec type no::such::Type` over illumos/gen-0007"
+---
+3  idle  src/bin/gen-0007.rs:125  future gen_0007::GfSel3<core::future::pending::Pending<u64>, core::future::pending::Pending<u64>, core::future::pending::Pending<u64>>  async fn gen_0007::driver_00
+error: the tokio info records no type named no::such::Type; try `find-types no::such::Type`
+
+4  idle  src/bin/gen-0007.rs:144  future tokio::sync::notify::Notified  async fn gen_0007::member_02
+error: the tokio info records no type named no::such::Type; try `find-types no::such::Type`
+
+5  idle  src/bin/gen-0007.rs:166  the timer: deadline TS  async fn gen_0007::member_03
+error: the tokio info records no type named no::such::Type; try `find-types no::such::Type`
+
+6  idle  src/bin/gen-0007.rs:180  future gen_0007::GfSel2<core::future::pending::Pending<u64>, core::future::pending::Pending<u64>>  async fn gen_0007::member_06
+error: the tokio info records no type named no::such::Type; try `find-types no::such::Type`
+
+7  idle  src/bin/gen-0007.rs:198  future gen_0007::GfSel2<core::future::pending::Pending<u64>, core::future::pending::Pending<u64>>  async fn gen_0007::member_07
+error: the tokio info records no type named no::such::Type; try `find-types no::such::Type`
+Executed against 5 tasks, 5 failed
+error: --exec failed against 5 of 5 tasks

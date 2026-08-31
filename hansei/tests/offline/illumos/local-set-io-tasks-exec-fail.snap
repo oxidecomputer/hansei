@@ -1,0 +1,17 @@
+---
+source: hansei/src/offline.rs
+description: "`tasks --exec type no::such::Type` over illumos/local-set-io"
+---
+1  idle  1  src/bin/local-set-io.rs:28  future tokio::io::util::read::Read<tokio::net::unix::stream::UnixStream>  async fn local_set_io::local_reader
+error: the tokio info records no type named no::such::Type; try `find-types no::such::Type`
+
+2  idle  1  src/bin/local-set-io.rs:36  future tokio::runtime::io::scheduled_io::Readiness  async fn local_set_io::local_watcher
+error: the tokio info records no type named no::such::Type; try `find-types no::such::Type`
+
+3  idle  1  src/bin/local-set-io.rs:56  future tokio::io::util::write_all::WriteAll<tokio::net::unix::stream::UnixStream>  async fn local_set_io::local_writer
+error: the tokio info records no type named no::such::Type; try `find-types no::such::Type`
+
+4  idle  0  src/bin/local-set-io.rs:71  future tokio::io::util::read::Read<tokio::net::unix::stream::UnixStream>  async fn local_set_io::reader
+error: the tokio info records no type named no::such::Type; try `find-types no::such::Type`
+Executed against 4 tasks, 4 failed
+error: --exec failed against 4 of 4 tasks

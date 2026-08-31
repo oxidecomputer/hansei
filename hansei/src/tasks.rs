@@ -2,7 +2,7 @@
 //! over it, plus the naming helpers every listing shares.
 
 use crate::summary;
-use crate::{Session, print_warnings};
+use crate::{Session, print_warnings, repl};
 
 use anyhow::{Context as _, Result};
 use hansei_bundle::names;
@@ -611,6 +611,19 @@ fn waiting_on(
     }
 }
 
+/// One row's table cells, in column order — the table's rows, and the
+/// heading `--exec` opens each task's output with.
+fn row_cells(row: &TaskRow, groups: bool) -> Vec<String> {
+    let mut cells = vec![row.id.clone(), row.state.clone()];
+    if groups {
+        cells.push(row.rt.to_string());
+    }
+    cells.push(row.awaiting_at.clone().unwrap_or_else(|| "—".to_string()));
+    cells.push(row.waiting_on.clone());
+    cells.push(row.future.clone());
+    cells
+}
+
 /// Print the table: one row per task, in the listing's own id order,
 /// the `RT` column only when the target holds more than one group.
 fn print_task_table(
@@ -627,14 +640,7 @@ fn print_task_table(
     header.extend(["AWAITING AT", "WAITING ON", "FUTURE"]);
     let mut table = crate::output::Table::new(header.len()).header(header);
     for row in &rows[..shown] {
-        let mut cells = vec![row.id.clone(), row.state.clone()];
-        if groups {
-            cells.push(row.rt.to_string());
-        }
-        cells.push(row.awaiting_at.clone().unwrap_or_else(|| "—".to_string()));
-        cells.push(row.waiting_on.clone());
-        cells.push(row.future.clone());
-        table.row(cells);
+        table.row(row_cells(row, groups));
     }
     if !table.is_empty() {
         table.write(out)?;
@@ -662,6 +668,7 @@ pub(crate) struct TasksCmd {
     pub(crate) with: Vec<String>,
     pub(crate) without: Vec<String>,
     pub(crate) group: Option<String>,
+    pub(crate) exec: Vec<String>,
     pub(crate) task: Vec<String>,
 }
 
@@ -944,6 +951,7 @@ fn refuse_positional_ids(task: &[String]) -> Result<()> {
 pub(crate) fn exec_tasks<T: proc::Target>(
     session: &Session<'_, T>,
     cmd: TasksCmd,
+    theme: crate::output::Theme,
     out: &mut dyn io::Write,
 ) -> Result<()> {
     let list = &session.tasks;
@@ -980,6 +988,12 @@ pub(crate) fn exec_tasks<T: proc::Target>(
             })
             .collect()
     });
+
+    if !cmd.exec.is_empty() {
+        // clap refuses `--group` beside `--exec`; the filters and
+        // `--limit` have already chosen who the command runs against.
+        return exec_exec(session, &cmd, survivors, theme, out);
+    }
 
     if let Some(field) = group {
         return exec_group(session, &cmd, field, survivors, counts, out);
@@ -1123,6 +1137,81 @@ fn exec_group<T: proc::Target>(
     writeln!(out, "{}", listing_footer(buckets.len(), shown, "group"))?;
     print_warnings(&session.tasks.errors)?;
     Ok(())
+}
+
+/// `--exec COMMAND`: run the command once per surviving task, its
+/// omitted target filled with that task, each run's output under the
+/// task's table row. One task's failure never stops the loop — the
+/// failed run shows its error in place, the summary line counts them,
+/// and the command fails after the loop when any run did, so a script
+/// sees one failure with nothing skipped.
+fn exec_exec<T: proc::Target>(
+    session: &Session<'_, T>,
+    cmd: &TasksCmd,
+    survivors: Option<Vec<usize>>,
+    theme: crate::output::Theme,
+    out: &mut dyn io::Write,
+) -> Result<()> {
+    // Parse once up front: a command that does not parse is the
+    // command line's mistake, not any task's, and fails before the
+    // loop prints a heading.
+    repl::parse_exec_command(&cmd.exec).context("--exec")?;
+    print_warnings(&session.analysis().errors)?;
+    let rows = rows(session);
+    let survivors = survivors.unwrap_or_else(|| (0..rows.len()).collect());
+    let shown = cmd.limit.unwrap_or(survivors.len()).min(survivors.len());
+    let groups = !session.group_tags().is_empty();
+    let mut failed = 0usize;
+    for (n, &index) in survivors[..shown].iter().enumerate() {
+        write!(out, "{}", exec_heading(n, &rows[index], groups))?;
+        let command = repl::parse_exec_command(&cmd.exec).expect("parsed above");
+        let command = scope_to_task(command, &session.tasks.tasks[index]);
+        // `quit` is not a per-task answer, so a Quit flow is ignored
+        // and the loop runs on.
+        if let Err(e) = crate::dispatch(session, command, theme, out) {
+            failed += 1;
+            writeln!(out, "error: {e:#}")?;
+        }
+    }
+    writeln!(out, "Executed against {shown} tasks, {failed} failed")?;
+    if failed > 0 {
+        anyhow::bail!("--exec failed against {failed} of {shown} tasks");
+    }
+    Ok(())
+}
+
+/// The heading `--exec` opens task `n`'s output with: a blank line
+/// between one task's output and the next, then the task's table row.
+fn exec_heading(n: usize, row: &TaskRow, groups: bool) -> String {
+    let sep = if n > 0 { "\n" } else { "" };
+    format!("{sep}{}\n", row_cells(row, groups).join("  "))
+}
+
+/// Fill a command's omitted target with the task an `--exec` loop is
+/// on. `trace` is the one command whose target may be omitted; the
+/// rest run as written.
+fn scope_to_task(command: crate::Command, task: &bundle::Task) -> crate::Command {
+    match command {
+        crate::Command::Trace {
+            target: None,
+            verbose,
+            render,
+            no_elide,
+            elide,
+        } => crate::Command::Trace {
+            // A task with no recorded id is still traceable by any
+            // address inside it, and its Header address is one.
+            target: Some(match task.task_id {
+                Some(id) => crate::TraceTarget::Task(id),
+                None => crate::TraceTarget::Future(task.addr.0),
+            }),
+            verbose,
+            render,
+            no_elide,
+            elide,
+        },
+        other => other,
+    }
 }
 
 /// Print the task listing: a block per task, and — under `futures` —
@@ -1522,6 +1611,27 @@ mod table_tests {
         assert_eq!(rows[1].awaiting_at, None);
 
         assert_eq!(rows[2].waiting_on, "—");
+
+        // The columns only the filters read: nothing recorded is
+        // nothing to match, and a Known future's decl is the
+        // `defined` value.
+        assert_eq!(rows[0].spawned, None);
+        assert_eq!(rows[0].defined, None);
+        let known = rows_of(
+            vec![Task {
+                future: FutureInfo::Known(hansei_runtime::tokio::bundle::KnownFuture {
+                    entry: hansei_bundle::TaskEntryId(0),
+                    display_name: "app::work::{async_fn_env#0}".to_string(),
+                    kind: hansei_bundle::FutureKind::AsyncFn,
+                    decl: Some(("src/app.rs".to_string(), 7)),
+                    symbol: String::new(),
+                }),
+                ..task(9, 0)
+            }],
+            vec![wait(9, None)],
+            HashMap::new(),
+        );
+        assert_eq!(known[0].defined.as_deref(), Some("src/app.rs:7"));
     }
 
     /// A running task waits on nothing: its cell names the lwp polling
@@ -1530,12 +1640,18 @@ mod table_tests {
     #[test]
     fn test_a_running_row_names_its_lwp() {
         let rows = rows_of(
-            vec![task(1, RUNNING), task(2, RUNNING)],
-            vec![wait(1, None), wait(2, None)],
-            HashMap::from([(1, 115)]),
+            vec![task(1, RUNNING), task(2, RUNNING), task(3, 0)],
+            vec![wait(1, None), wait(2, None), wait(3, None)],
+            HashMap::from([(1, 115), (3, 116)]),
         );
         assert_eq!(rows[0].waiting_on, "— (mid-poll on lwp 115)");
         assert_eq!(rows[1].waiting_on, "— (mid-poll)");
+        // The `lwp` column is the same belief: the polling word is a
+        // running task's, so an idle task the map still names gets
+        // none.
+        assert_eq!(rows[0].lwp, Some(115));
+        assert_eq!(rows[1].lwp, None);
+        assert_eq!(rows[2].lwp, None);
     }
 
     /// The footer is the only truncation: the plain count when
@@ -1799,6 +1915,89 @@ mod filter_tests {
         assert_eq!(member_sample(&rows, &[0, 1]), "0, 1");
         assert_eq!(member_sample(&rows, &[0, 1, 2]), "0, 1, 2");
         assert_eq!(member_sample(&rows, &[0, 1, 2, 3]), "0, 1, 2, …");
+    }
+
+    /// Exactly the count fields cost the census; a census built for a
+    /// field that does not need it is a walk paid for nothing, and one
+    /// not built for a field that does is a panic downstream.
+    #[test]
+    fn test_only_the_count_fields_need_the_census() {
+        for (name, field) in Field::NAMES {
+            assert_eq!(
+                field.needs_census(),
+                matches!(field, Field::Holds | Field::Sets),
+                "{name}"
+            );
+        }
+    }
+
+    /// The first task's heading opens the output; every later one is
+    /// set off by one blank line.
+    #[test]
+    fn test_exec_headings_separate_tasks_with_one_blank_line() {
+        use super::exec_heading;
+        let r = row("129");
+        assert_eq!(
+            exec_heading(0, &r, false),
+            "129  idle  —  —  async fn app::work\n"
+        );
+        assert_eq!(
+            exec_heading(1, &r, false),
+            "\n129  idle  —  —  async fn app::work\n"
+        );
+    }
+
+    /// `--exec` fills only an omitted trace target: a task with an id
+    /// scopes by id, one without by its header address, and a target
+    /// given in the command is left alone.
+    #[test]
+    fn test_exec_scopes_an_omitted_trace_target() {
+        use super::scope_to_task;
+        use crate::{Command, RenderOpts, TraceTarget};
+        use hansei_runtime::tokio::bundle::{FutureInfo, Task};
+        use hansei_runtime::tokio::{TaskAddr, TaskState};
+
+        let task = |task_id: Option<u64>| Task {
+            addr: TaskAddr(0x2000),
+            state: TaskState(0),
+            owner_id: None,
+            task_id,
+            spawn_location: None,
+            future: FutureInfo::Unknown { poll_symbol: None },
+            group: 0,
+        };
+        let trace = |target: Option<TraceTarget>| Command::Trace {
+            target,
+            verbose: false,
+            render: RenderOpts {
+                depth: 4,
+                ugly: false,
+                max_str_len: reify::DEFAULT_MAX_STR_LEN,
+                max_array_len: reify::DEFAULT_MAX_ARRAY_LEN,
+            },
+            no_elide: false,
+            elide: Vec::new(),
+        };
+
+        let Command::Trace { target, .. } = scope_to_task(trace(None), &task(Some(42))) else {
+            panic!("trace scoped as another command");
+        };
+        assert!(matches!(target, Some(TraceTarget::Task(42))));
+
+        let Command::Trace { target, .. } = scope_to_task(trace(None), &task(None)) else {
+            panic!("trace scoped as another command");
+        };
+        assert!(matches!(target, Some(TraceTarget::Future(0x2000))));
+
+        let given = trace(Some(TraceTarget::Task(7)));
+        let Command::Trace { target, .. } = scope_to_task(given, &task(Some(42))) else {
+            panic!("trace scoped as another command");
+        };
+        assert!(matches!(target, Some(TraceTarget::Task(7))));
+
+        // Any other command runs as written.
+        let quit = scope_to_task(Command::Quit, &task(Some(42)));
+        assert!(matches!(quit, Command::Quit));
     }
 
     /// A positional id is refused with the filter spelling that took

@@ -1,0 +1,20 @@
+---
+source: hansei/src/offline.rs
+description: "`tasks --group state -v` over linux-floor/channels"
+---
+2  idle
+Task 3: async fn channels::notify_waiter
+    State: idle
+    Spawned at: src/bin/channels.rs:75:23
+    Defined at: src/bin/channels.rs:17
+    Held futures: 1
+    Join sets: 0
+
+Task 4: async fn channels::hold
+    State: idle
+    Spawned at: src/bin/channels.rs:83:23
+    Defined at: src/bin/channels.rs:45
+    Held futures: 0
+    Join sets: 0
+
+1 group

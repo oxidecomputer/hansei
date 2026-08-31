@@ -52,6 +52,18 @@ fn commands(session: &Session<'_, proc::snapshot::Snapshot>) -> Vec<(&'static st
         ("tasks-with-state", "tasks --with state idle".to_owned()),
         ("tasks-group-waiting", "tasks --group waiting-on".to_owned()),
         ("tasks-group-lwp", "tasks --group lwp".to_owned()),
+        // A count field pays the census on the table path; the grouped
+        // block form prints each bucket's blocks under its line.
+        ("tasks-with-holds", "tasks --with holds >0".to_owned()),
+        ("tasks-group-state-v", "tasks --group state -v".to_owned()),
+        // The exec loop: each task's heading over the scoped command's
+        // output, and — with a command that fails per task — the error
+        // in place, the summary line, and the loop's own failure.
+        ("tasks-exec-trace", "tasks --exec trace".to_owned()),
+        (
+            "tasks-exec-fail",
+            "tasks --exec type no::such::Type".to_owned(),
+        ),
         ("threads", "threads".to_owned()),
         ("threads-v", "threads -v".to_owned()),
         // A frame budget alone implies the block form; both spellings
@@ -92,11 +104,14 @@ fn golden(program: &str) {
             let mut out = Vec::new();
             // A command that fails over a snapshot is a fact about
             // what a snapshot can answer, not a broken test: the
-            // error text is the golden.
-            let text = match dispatch(&session, command, Theme::plain(), &mut out) {
-                Ok(_) => String::from_utf8(out).expect("command output is UTF-8"),
-                Err(e) => format!("error: {e:#}"),
-            };
+            // error text joins whatever the command printed first
+            // (`--exec` prints its loop before failing), and the
+            // whole is the golden.
+            let error = dispatch(&session, command, Theme::plain(), &mut out).err();
+            let mut text = String::from_utf8(out).expect("command output is UTF-8");
+            if let Some(e) = error {
+                text.push_str(&format!("error: {e:#}\n"));
+            }
             settings.set_description(format!("`{line}` over {set}/{program}"));
             settings.bind(|| {
                 insta::assert_snapshot!(format!("{program}-{label}"), mask(text.trim_end()));

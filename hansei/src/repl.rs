@@ -731,6 +731,36 @@ mod tests {
         assert!(Line::try_parse_from(["tasks", "--group"]).is_err());
     }
 
+    /// `--exec` takes the rest of the line as one command, flags and
+    /// all, and refuses to share the line with `--group`.
+    #[test]
+    fn test_tasks_exec_takes_the_rest_of_the_line() {
+        let Command::Tasks { exec, with, .. } =
+            Line::try_parse_from(["tasks", "--with", "state", "idle", "--exec", "trace", "-v"])
+                .expect("the exec grammar parses")
+                .command
+        else {
+            panic!("tasks parsed as another command");
+        };
+        assert_eq!(with, ["state", "idle"]);
+        assert_eq!(exec, ["trace", "-v"]);
+        assert!(Line::try_parse_from(["tasks", "--group", "state", "--exec", "trace"]).is_err());
+        assert!(Line::try_parse_from(["tasks", "--exec"]).is_err());
+    }
+
+    /// A bare `trace` parses without a target: the refusal is the
+    /// dispatch's, where an `--exec` scope can fill the target first.
+    #[test]
+    fn test_trace_target_is_optional_in_the_grammar() {
+        let Command::Trace { target, .. } = Line::try_parse_from(["trace"])
+            .expect("a bare trace parses")
+            .command
+        else {
+            panic!("trace parsed as another command");
+        };
+        assert!(target.is_none());
+    }
+
     /// A positional id still parses — the refusal that teaches the
     /// filter spelling is the command's own, not clap's bare
     /// "unexpected argument".
@@ -804,6 +834,17 @@ mod tests {
         let err = print_history(Mode::Scripted, None, &mut out).unwrap_err();
         assert_eq!(err.to_string(), "no history in a scripted session");
         assert!(out.is_empty());
+    }
+}
+
+/// Parse one command from the words `tasks --exec` carries — already
+/// split, so nothing here re-splits — for running it under a per-task
+/// scope. Output-only parses (`help`) are errors here: an exec loop
+/// wants a command to run.
+pub(crate) fn parse_exec_command(words: &[String]) -> Result<Command> {
+    match Line::try_parse_from(words) {
+        Ok(line) => Ok(line.command),
+        Err(e) => Err(anyhow!("{}", clap_message(e))),
     }
 }
 

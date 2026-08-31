@@ -542,6 +542,16 @@ pub enum Command {
     /// lwp and id are exact; holds and sets compare the census's
     /// counts, spelled '>N', '<N' or '=N' (quote them from a shell).
     ///
+    /// `--exec COMMAND` takes the rest of the line as one session
+    /// command and runs it once per surviving task, the command's
+    /// omitted target filled with that task — `tasks --with type
+    /// qorb --exec trace -v` traces every match, each run under the
+    /// task's table row. One task's failure never stops the loop:
+    /// the failed run shows its error in place, the listing closes
+    /// with `Executed against N tasks, M failed`, and the command
+    /// itself fails after the loop when M is not zero — a script
+    /// sees one failure, with nothing skipped.
+    ///
     /// `-v` prints each task's full block instead: state, owner,
     /// spawn location, where the future is defined, how many futures
     /// it holds in its own frames beside its await chain, and how
@@ -659,6 +669,18 @@ pub enum Command {
         #[arg(long, value_name = "FIELD")]
         group: Option<String>,
 
+        /// Run a session command once per surviving task, under that
+        /// task as its omitted target. Takes the rest of the line —
+        /// so it comes last — and runs after --limit.
+        #[arg(
+            long,
+            num_args = 1..,
+            allow_hyphen_values = true,
+            value_name = "COMMAND",
+            conflicts_with = "group"
+        )]
+        exec: Vec<String>,
+
         // The ids the old grammar took, kept so the refusal can name
         // the way forward rather than clap's bare "unexpected
         // argument".
@@ -724,9 +746,11 @@ pub enum Command {
     Trace {
         /// What to trace: a decimal task id from `tasks`, or a future
         /// address from `tasks --futures`, in hex with a required
-        /// leading `0x`.
+        /// leading `0x`. May be omitted only where something fills it
+        /// in — `tasks --exec trace` runs it under each surviving
+        /// task.
         #[arg(value_parser = parse_trace_target)]
-        target: TraceTarget,
+        target: Option<TraceTarget>,
 
         /// Show the variables present at each await point, and print
         /// a folded panic-plumbing run frame by frame.
@@ -1352,6 +1376,7 @@ pub fn dispatch<T: Target>(
             with,
             without,
             group,
+            exec,
             task,
         } => {
             session.note_version_ceiling();
@@ -1362,9 +1387,10 @@ pub fn dispatch<T: Target>(
                 with,
                 without,
                 group,
+                exec,
                 task,
             };
-            tasks::exec_tasks(session, cmd, out)?
+            tasks::exec_tasks(session, cmd, theme, out)?
         }
         Command::Threads {
             verbose,
@@ -1381,6 +1407,11 @@ pub fn dispatch<T: Target>(
             elide,
         } => {
             session.note_version_ceiling();
+            let Some(target) = target else {
+                anyhow::bail!(
+                    "no task selected; trace takes a decimal task id or a 0x future address"
+                );
+            };
             let elide = reify::ElideOverride {
                 no_elide,
                 types: types::elide_matches(&session.ctx.view, &session.impl_fold, &elide)?,

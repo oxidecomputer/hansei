@@ -1,0 +1,8 @@
+---
+source: hansei/src/offline.rs
+description: "`tasks --exec type no::such::Type` over illumos/nested-await"
+---
+3  idle  src/bin/nested-await.rs:19  future tokio::sync::oneshot::Receiver<u32>  async fn nested_await::outer
+error: the tokio info records no type named no::such::Type; try `find-types no::such::Type`
+Executed against 1 tasks, 1 failed
+error: --exec failed against 1 of 1 tasks
