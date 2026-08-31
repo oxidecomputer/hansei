@@ -710,15 +710,11 @@ pub enum Command {
         no_elide: bool,
 
         /// Render matching types as `<elided>`; repeat the flag to add
-        /// more. `*` matches any run of characters (quote the pattern
-        /// from the shell), a name without a `*` covers every
-        /// instantiation, a matched type stays elided under --no-elide,
-        /// and a name may be spelled the way the listings display it
-        /// (folded, kind word and all), the way the debug info records
-        /// it, or as a type id — the `type 4821` a listing
-        /// prints where a name alone is not a handle — which elides
-        /// that exact instantiation.
-        #[arg(long, short = 'e', value_name = "TYPE")]
+        /// more. A pattern is a case-insensitive regex matched against
+        /// the displayed name — the folded spelling the listings
+        /// print, kind word and all (`async fn app::work`) — and a
+        /// matched type stays elided under --no-elide.
+        #[arg(long, short = 'e', value_name = "PATTERN")]
         elide: Vec<String>,
     },
 
@@ -1343,11 +1339,7 @@ pub fn dispatch<T: Target>(
             session.note_version_ceiling();
             let elide = reify::ElideOverride {
                 no_elide,
-                types: elide
-                    .into_iter()
-                    .map(|spec| types::resolve_elide_spec(&session.ctx.view, spec))
-                    .collect::<Result<_>>()?,
-                impls: session.impl_fold.clone(),
+                types: types::elide_matches(&session.ctx.view, &session.impl_fold, &elide)?,
             };
             let heap = session.heap_view();
             let opts = TraceOpts {
