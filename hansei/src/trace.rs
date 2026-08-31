@@ -2141,6 +2141,7 @@ mod future_trace_tests {
             &HashMap::new(),
             &hansei_bundle::names::ImplFold::default(),
             &Default::default(),
+            &Default::default(),
         );
         let mut out: Vec<u8> = Vec::new();
         print_tasks(
@@ -2148,6 +2149,7 @@ mod future_trace_tests {
             &rows,
             &hansei_bundle::names::ImplFold::default(),
             &[],
+            &HashMap::new(),
             &HashMap::new(),
             held,
             sets,

@@ -12,6 +12,7 @@ use mimalloc::MiMalloc;
 use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
 use std::cell::{Cell, OnceCell, RefCell};
+use std::collections::HashMap;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
@@ -1198,6 +1199,10 @@ pub struct Session<'b, T: Target> {
     /// What the registry harvests retained at attach: every wheel
     /// entry and io waiter, joined to rows by task address.
     registries: bundle::Registries,
+    /// Which lwp runs each claimed blocking task, by Header address —
+    /// an unwind of every stack, paid only when a blocking row is
+    /// running and cached for the listings that spell it.
+    blocking_lwps: OnceCell<HashMap<u64, u32>>,
     /// The bundle's impl-path substitutions, threaded into every
     /// display fold ([`hansei_bundle::names::fold_type_name`]).
     impl_fold: hansei_bundle::names::ImplFold,
@@ -1340,6 +1345,7 @@ impl<'b, T: Target> Session<'b, T> {
             local_sets,
             tasks,
             registries,
+            blocking_lwps: OnceCell::new(),
             impl_fold: hansei_bundle::names::ImplFold::for_bundle(bundle),
             extents: OnceCell::new(),
             census: OnceCell::new(),

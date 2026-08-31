@@ -2,7 +2,7 @@
 source: hansei-runtime/tests/matrix.rs
 ---
 program: futurelock
-walk contract (tokio 1.49.0, rustc 1.97.1 (8bab26f4f 2026-07-14)): 106 entries, 0 broken, 27 absent
+walk contract (tokio 1.49.0, rustc 1.97.1 (8bab26f4f 2026-07-14)): 112 entries, 0 broken, 27 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -109,9 +109,15 @@ walk contract (tokio 1.49.0, rustc 1.97.1 (8bab26f4f 2026-07-14)): 106 entries, 
   absent  net::UnixListener.fd — no tokio::net::unix::listener::UnixListener type in the tokio info (the target does not reach one)
   absent  net::UnixDatagram.shared — no tokio::net::unix::datagram::socket::UnixDatagram type in the tokio info (the target does not reach one)
   absent  net::UnixDatagram.fd — no tokio::net::unix::datagram::socket::UnixDatagram type in the tokio info (the target does not reach one)
+  ok      blocking::Shared.queue (spelling 1 of 3)
+  ok      blocking::queue.head
+  ok      blocking::queue.len
+  ok      blocking::queue.buf
+  ok      blocking::queue.cap
+  ok      blocking::Task.header
 
 program: simple-await
-walk contract (tokio 1.49.0, rustc 1.97.1 (8bab26f4f 2026-07-14)): 106 entries, 0 broken, 40 absent
+walk contract (tokio 1.49.0, rustc 1.97.1 (8bab26f4f 2026-07-14)): 112 entries, 0 broken, 40 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -218,9 +224,15 @@ walk contract (tokio 1.49.0, rustc 1.97.1 (8bab26f4f 2026-07-14)): 106 entries, 
   absent  net::UnixListener.fd — no tokio::net::unix::listener::UnixListener type in the tokio info (the target does not reach one)
   absent  net::UnixDatagram.shared — no tokio::net::unix::datagram::socket::UnixDatagram type in the tokio info (the target does not reach one)
   absent  net::UnixDatagram.fd — no tokio::net::unix::datagram::socket::UnixDatagram type in the tokio info (the target does not reach one)
+  ok      blocking::Shared.queue (spelling 1 of 3)
+  ok      blocking::queue.head
+  ok      blocking::queue.len
+  ok      blocking::queue.buf
+  ok      blocking::queue.cap
+  ok      blocking::Task.header
 
 program: nested-await
-walk contract (tokio 1.49.0, rustc 1.97.1 (8bab26f4f 2026-07-14)): 106 entries, 0 broken, 40 absent
+walk contract (tokio 1.49.0, rustc 1.97.1 (8bab26f4f 2026-07-14)): 112 entries, 0 broken, 40 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -327,9 +339,15 @@ walk contract (tokio 1.49.0, rustc 1.97.1 (8bab26f4f 2026-07-14)): 106 entries, 
   absent  net::UnixListener.fd — no tokio::net::unix::listener::UnixListener type in the tokio info (the target does not reach one)
   absent  net::UnixDatagram.shared — no tokio::net::unix::datagram::socket::UnixDatagram type in the tokio info (the target does not reach one)
   absent  net::UnixDatagram.fd — no tokio::net::unix::datagram::socket::UnixDatagram type in the tokio info (the target does not reach one)
+  ok      blocking::Shared.queue (spelling 1 of 3)
+  ok      blocking::queue.head
+  ok      blocking::queue.len
+  ok      blocking::queue.buf
+  ok      blocking::queue.cap
+  ok      blocking::Task.header
 
 program: dyn-future
-walk contract (tokio 1.49.0, rustc 1.97.1 (8bab26f4f 2026-07-14)): 106 entries, 0 broken, 34 absent
+walk contract (tokio 1.49.0, rustc 1.97.1 (8bab26f4f 2026-07-14)): 112 entries, 0 broken, 34 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -436,9 +454,15 @@ walk contract (tokio 1.49.0, rustc 1.97.1 (8bab26f4f 2026-07-14)): 106 entries, 
   absent  net::UnixListener.fd — no tokio::net::unix::listener::UnixListener type in the tokio info (the target does not reach one)
   absent  net::UnixDatagram.shared — no tokio::net::unix::datagram::socket::UnixDatagram type in the tokio info (the target does not reach one)
   absent  net::UnixDatagram.fd — no tokio::net::unix::datagram::socket::UnixDatagram type in the tokio info (the target does not reach one)
+  ok      blocking::Shared.queue (spelling 1 of 3)
+  ok      blocking::queue.head
+  ok      blocking::queue.len
+  ok      blocking::queue.buf
+  ok      blocking::queue.cap
+  ok      blocking::Task.header
 
 program: select-combinator
-walk contract (tokio 1.49.0, rustc 1.97.1 (8bab26f4f 2026-07-14)): 106 entries, 0 broken, 40 absent
+walk contract (tokio 1.49.0, rustc 1.97.1 (8bab26f4f 2026-07-14)): 112 entries, 0 broken, 40 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -545,9 +569,15 @@ walk contract (tokio 1.49.0, rustc 1.97.1 (8bab26f4f 2026-07-14)): 106 entries, 
   absent  net::UnixListener.fd — no tokio::net::unix::listener::UnixListener type in the tokio info (the target does not reach one)
   absent  net::UnixDatagram.shared — no tokio::net::unix::datagram::socket::UnixDatagram type in the tokio info (the target does not reach one)
   absent  net::UnixDatagram.fd — no tokio::net::unix::datagram::socket::UnixDatagram type in the tokio info (the target does not reach one)
+  ok      blocking::Shared.queue (spelling 1 of 3)
+  ok      blocking::queue.head
+  ok      blocking::queue.len
+  ok      blocking::queue.buf
+  ok      blocking::queue.cap
+  ok      blocking::Task.header
 
 program: many-tasks
-walk contract (tokio 1.49.0, rustc 1.97.1 (8bab26f4f 2026-07-14)): 106 entries, 0 broken, 41 absent
+walk contract (tokio 1.49.0, rustc 1.97.1 (8bab26f4f 2026-07-14)): 112 entries, 0 broken, 41 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -654,9 +684,15 @@ walk contract (tokio 1.49.0, rustc 1.97.1 (8bab26f4f 2026-07-14)): 106 entries, 
   absent  net::UnixListener.fd — no tokio::net::unix::listener::UnixListener type in the tokio info (the target does not reach one)
   absent  net::UnixDatagram.shared — no tokio::net::unix::datagram::socket::UnixDatagram type in the tokio info (the target does not reach one)
   absent  net::UnixDatagram.fd — no tokio::net::unix::datagram::socket::UnixDatagram type in the tokio info (the target does not reach one)
+  ok      blocking::Shared.queue (spelling 1 of 3)
+  ok      blocking::queue.head
+  ok      blocking::queue.len
+  ok      blocking::queue.buf
+  ok      blocking::queue.cap
+  ok      blocking::Task.header
 
 program: sleep-join
-walk contract (tokio 1.49.0, rustc 1.97.1 (8bab26f4f 2026-07-14)): 106 entries, 0 broken, 37 absent
+walk contract (tokio 1.49.0, rustc 1.97.1 (8bab26f4f 2026-07-14)): 112 entries, 0 broken, 37 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -763,9 +799,15 @@ walk contract (tokio 1.49.0, rustc 1.97.1 (8bab26f4f 2026-07-14)): 106 entries, 
   absent  net::UnixListener.fd — no tokio::net::unix::listener::UnixListener type in the tokio info (the target does not reach one)
   absent  net::UnixDatagram.shared — no tokio::net::unix::datagram::socket::UnixDatagram type in the tokio info (the target does not reach one)
   absent  net::UnixDatagram.fd — no tokio::net::unix::datagram::socket::UnixDatagram type in the tokio info (the target does not reach one)
+  ok      blocking::Shared.queue (spelling 1 of 3)
+  ok      blocking::queue.head
+  ok      blocking::queue.len
+  ok      blocking::queue.buf
+  ok      blocking::queue.cap
+  ok      blocking::Task.header
 
 program: channels
-walk contract (tokio 1.49.0, rustc 1.97.1 (8bab26f4f 2026-07-14)): 106 entries, 0 broken, 30 absent
+walk contract (tokio 1.49.0, rustc 1.97.1 (8bab26f4f 2026-07-14)): 112 entries, 0 broken, 30 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -872,9 +914,15 @@ walk contract (tokio 1.49.0, rustc 1.97.1 (8bab26f4f 2026-07-14)): 106 entries, 
   absent  net::UnixListener.fd — no tokio::net::unix::listener::UnixListener type in the tokio info (the target does not reach one)
   absent  net::UnixDatagram.shared — no tokio::net::unix::datagram::socket::UnixDatagram type in the tokio info (the target does not reach one)
   absent  net::UnixDatagram.fd — no tokio::net::unix::datagram::socket::UnixDatagram type in the tokio info (the target does not reach one)
+  ok      blocking::Shared.queue (spelling 1 of 3)
+  ok      blocking::queue.head
+  ok      blocking::queue.len
+  ok      blocking::queue.buf
+  ok      blocking::queue.cap
+  ok      blocking::Task.header
 
 program: unordered
-walk contract (tokio 1.49.0, rustc 1.97.1 (8bab26f4f 2026-07-14)): 106 entries, 0 broken, 37 absent
+walk contract (tokio 1.49.0, rustc 1.97.1 (8bab26f4f 2026-07-14)): 112 entries, 0 broken, 37 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -981,9 +1029,15 @@ walk contract (tokio 1.49.0, rustc 1.97.1 (8bab26f4f 2026-07-14)): 106 entries, 
   absent  net::UnixListener.fd — no tokio::net::unix::listener::UnixListener type in the tokio info (the target does not reach one)
   absent  net::UnixDatagram.shared — no tokio::net::unix::datagram::socket::UnixDatagram type in the tokio info (the target does not reach one)
   absent  net::UnixDatagram.fd — no tokio::net::unix::datagram::socket::UnixDatagram type in the tokio info (the target does not reach one)
+  ok      blocking::Shared.queue (spelling 1 of 3)
+  ok      blocking::queue.head
+  ok      blocking::queue.len
+  ok      blocking::queue.buf
+  ok      blocking::queue.cap
+  ok      blocking::Task.header
 
 program: joinset
-walk contract (tokio 1.49.0, rustc 1.97.1 (8bab26f4f 2026-07-14)): 106 entries, 0 broken, 24 absent
+walk contract (tokio 1.49.0, rustc 1.97.1 (8bab26f4f 2026-07-14)): 112 entries, 0 broken, 24 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -1090,9 +1144,15 @@ walk contract (tokio 1.49.0, rustc 1.97.1 (8bab26f4f 2026-07-14)): 106 entries, 
   absent  net::UnixListener.fd — no tokio::net::unix::listener::UnixListener type in the tokio info (the target does not reach one)
   absent  net::UnixDatagram.shared — no tokio::net::unix::datagram::socket::UnixDatagram type in the tokio info (the target does not reach one)
   absent  net::UnixDatagram.fd — no tokio::net::unix::datagram::socket::UnixDatagram type in the tokio info (the target does not reach one)
+  ok      blocking::Shared.queue (spelling 1 of 3)
+  ok      blocking::queue.head
+  ok      blocking::queue.len
+  ok      blocking::queue.buf
+  ok      blocking::queue.cap
+  ok      blocking::Task.header
 
 program: ct-runtime
-walk contract (tokio 1.49.0, rustc 1.97.1 (8bab26f4f 2026-07-14)): 106 entries, 0 broken, 27 absent
+walk contract (tokio 1.49.0, rustc 1.97.1 (8bab26f4f 2026-07-14)): 112 entries, 0 broken, 27 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -1199,9 +1259,15 @@ walk contract (tokio 1.49.0, rustc 1.97.1 (8bab26f4f 2026-07-14)): 106 entries, 
   absent  net::UnixListener.fd — no tokio::net::unix::listener::UnixListener type in the tokio info (the target does not reach one)
   absent  net::UnixDatagram.shared — no tokio::net::unix::datagram::socket::UnixDatagram type in the tokio info (the target does not reach one)
   absent  net::UnixDatagram.fd — no tokio::net::unix::datagram::socket::UnixDatagram type in the tokio info (the target does not reach one)
+  ok      blocking::Shared.queue (spelling 1 of 3)
+  ok      blocking::queue.head
+  ok      blocking::queue.len
+  ok      blocking::queue.buf
+  ok      blocking::queue.cap
+  ok      blocking::Task.header
 
 program: local-set
-walk contract (tokio 1.49.0, rustc 1.97.1 (8bab26f4f 2026-07-14)): 106 entries, 0 broken, 21 absent
+walk contract (tokio 1.49.0, rustc 1.97.1 (8bab26f4f 2026-07-14)): 112 entries, 0 broken, 21 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   ok      statics.tls_local_set_key
@@ -1308,9 +1374,15 @@ walk contract (tokio 1.49.0, rustc 1.97.1 (8bab26f4f 2026-07-14)): 106 entries, 
   absent  net::UnixListener.fd — no tokio::net::unix::listener::UnixListener type in the tokio info (the target does not reach one)
   absent  net::UnixDatagram.shared — no tokio::net::unix::datagram::socket::UnixDatagram type in the tokio info (the target does not reach one)
   absent  net::UnixDatagram.fd — no tokio::net::unix::datagram::socket::UnixDatagram type in the tokio info (the target does not reach one)
+  ok      blocking::Shared.queue (spelling 1 of 3)
+  ok      blocking::queue.head
+  ok      blocking::queue.len
+  ok      blocking::queue.buf
+  ok      blocking::queue.cap
+  ok      blocking::Task.header
 
 program: local-set-timer
-walk contract (tokio 1.49.0, rustc 1.97.1 (8bab26f4f 2026-07-14)): 106 entries, 0 broken, 21 absent
+walk contract (tokio 1.49.0, rustc 1.97.1 (8bab26f4f 2026-07-14)): 112 entries, 0 broken, 21 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   ok      statics.tls_local_set_key
@@ -1417,9 +1489,15 @@ walk contract (tokio 1.49.0, rustc 1.97.1 (8bab26f4f 2026-07-14)): 106 entries, 
   absent  net::UnixListener.fd — no tokio::net::unix::listener::UnixListener type in the tokio info (the target does not reach one)
   absent  net::UnixDatagram.shared — no tokio::net::unix::datagram::socket::UnixDatagram type in the tokio info (the target does not reach one)
   absent  net::UnixDatagram.fd — no tokio::net::unix::datagram::socket::UnixDatagram type in the tokio info (the target does not reach one)
+  ok      blocking::Shared.queue (spelling 1 of 3)
+  ok      blocking::queue.head
+  ok      blocking::queue.len
+  ok      blocking::queue.buf
+  ok      blocking::queue.cap
+  ok      blocking::Task.header
 
 program: local-set-io
-walk contract (tokio 1.49.0, rustc 1.97.1 (8bab26f4f 2026-07-14)): 106 entries, 0 broken, 32 absent
+walk contract (tokio 1.49.0, rustc 1.97.1 (8bab26f4f 2026-07-14)): 112 entries, 0 broken, 32 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   ok      statics.tls_local_set_key
@@ -1526,9 +1604,15 @@ walk contract (tokio 1.49.0, rustc 1.97.1 (8bab26f4f 2026-07-14)): 106 entries, 
   absent  net::UnixListener.fd — no tokio::net::unix::listener::UnixListener type in the tokio info (the target does not reach one)
   absent  net::UnixDatagram.shared — no tokio::net::unix::datagram::socket::UnixDatagram type in the tokio info (the target does not reach one)
   absent  net::UnixDatagram.fd — no tokio::net::unix::datagram::socket::UnixDatagram type in the tokio info (the target does not reach one)
+  ok      blocking::Shared.queue (spelling 1 of 3)
+  ok      blocking::queue.head
+  ok      blocking::queue.len
+  ok      blocking::queue.buf
+  ok      blocking::queue.cap
+  ok      blocking::Task.header
 
 program: foreign-runtime
-walk contract (tokio 1.49.0, rustc 1.97.1 (8bab26f4f 2026-07-14)): 106 entries, 0 broken, 21 absent
+walk contract (tokio 1.49.0, rustc 1.97.1 (8bab26f4f 2026-07-14)): 112 entries, 0 broken, 21 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   ok      statics.tls_local_set_key
@@ -1635,3 +1719,9 @@ walk contract (tokio 1.49.0, rustc 1.97.1 (8bab26f4f 2026-07-14)): 106 entries, 
   absent  net::UnixListener.fd — no tokio::net::unix::listener::UnixListener type in the tokio info (the target does not reach one)
   absent  net::UnixDatagram.shared — no tokio::net::unix::datagram::socket::UnixDatagram type in the tokio info (the target does not reach one)
   absent  net::UnixDatagram.fd — no tokio::net::unix::datagram::socket::UnixDatagram type in the tokio info (the target does not reach one)
+  ok      blocking::Shared.queue (spelling 1 of 3)
+  ok      blocking::queue.head
+  ok      blocking::queue.len
+  ok      blocking::queue.buf
+  ok      blocking::queue.cap
+  ok      blocking::Task.header

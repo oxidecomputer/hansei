@@ -983,6 +983,11 @@ fn extract_from_view(
             include_ids.extend(ids.iter().map(|&id| reader.canonicalize(id)));
         }
     }
+    // Types the walk contract roots at that nothing a task holds
+    // reaches: the blocking pool's queue element. Quietly absent where
+    // the DWARF has none — the walk then records its own absence.
+    let pool_task = view.find_all_ids("tokio::runtime::blocking::pool::Task");
+    include_ids.extend(pool_task.iter().map(|&id| reader.canonicalize(id)));
 
     let vtable_type_ids = resolve_vtable_type_hints(reader, vtable_types, &mut stats);
 

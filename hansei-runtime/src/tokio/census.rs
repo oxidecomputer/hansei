@@ -2599,6 +2599,7 @@ mod tests {
                     spawn_location: None,
                     future: FutureInfo::Unknown { poll_symbol: None },
                     group: 0,
+                    blocking: false,
                 })
                 .collect(),
             errors: Vec::new(),
@@ -3101,6 +3102,7 @@ mod tests {
                 symbol: String::new(),
             }),
             group: 0,
+            blocking: false,
         }
     }
 

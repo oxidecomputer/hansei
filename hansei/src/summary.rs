@@ -993,6 +993,7 @@ mod tests {
                 symbol: "_ZN1x".to_string(),
             }),
             group: 0,
+            blocking: false,
         }
     }
 

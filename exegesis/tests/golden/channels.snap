@@ -111,3 +111,8 @@ ok      io::Waiter.waker
 ok      TimerShared.state
 ok      ScheduledIo.readiness
 ok      io::Waiter.interest
+ok      blocking::Shared.queue (spelling 1 of 3)
+ok      blocking::queue.head
+ok      blocking::queue.len
+ok      blocking::queue.buf
+ok      blocking::queue.cap

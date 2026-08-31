@@ -71,7 +71,9 @@ fn build_rows<T: proc::Target>(session: &Session<'_, T>) -> Vec<ThreadRow> {
 /// Unwind every stack, once; a target that cannot be walked still has
 /// runtime state worth listing, so a failure costs the stack columns
 /// and a warning, nothing else.
-fn load_stacks<T: proc::Target>(session: &Session<'_, T>) -> BTreeMap<u32, unwind::Backtrace> {
+pub(crate) fn load_stacks<T: proc::Target>(
+    session: &Session<'_, T>,
+) -> BTreeMap<u32, unwind::Backtrace> {
     match unwind::load_frames(session.proc) {
         Ok(unwound) => unwound.stacks,
         Err(e) => {
