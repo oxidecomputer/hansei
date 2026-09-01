@@ -37,7 +37,7 @@ impl Default for Settings {
 }
 
 /// The keys, in the order the listing prints them.
-const KEYS: [&str; 5] = [
+pub(crate) const KEYS: [&str; 5] = [
     "depth",
     "limit",
     "max-array-values",
@@ -70,6 +70,17 @@ pub(crate) fn exec_config(
         return Ok(());
     };
     store(&mut settings.borrow_mut(), key, value)
+}
+
+/// The values a key accepts that are words rather than numbers — what
+/// the prompt can offer after `config KEY`. A key that takes only a
+/// count has none.
+pub(crate) fn word_values(key: &str) -> &'static [&'static str] {
+    match key {
+        "limit" => &["off"],
+        "ugly" => &["on", "off"],
+        _ => &[],
+    }
 }
 
 /// One key's current value, spelled the way `config` accepts it back.

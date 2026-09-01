@@ -963,7 +963,7 @@ pub(crate) struct TasksCmd {
 /// One filterable field of the task population — what `--with`,
 /// `--without` and `--group` name.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Field {
+pub(crate) enum Field {
     /// The root future name, as the table prints it.
     Type,
     /// The leaf await site, `file:line`.
@@ -1005,6 +1005,12 @@ impl Field {
         ("sets", Field::Sets),
         ("id", Field::Id),
     ];
+
+    /// Every field name, in the order the errors list them — what the
+    /// prompt offers after `--group`, `--with` and `--without`.
+    pub(crate) fn names() -> impl Iterator<Item = &'static str> {
+        Self::NAMES.iter().map(|(n, _)| *n)
+    }
 
     /// The field a flag named, or an error listing what it could have.
     fn parse(name: &str) -> Result<Field> {
