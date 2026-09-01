@@ -12,7 +12,7 @@ Threads: 3 lwps, 3 in runtime 0 @0xADDR
         1 that entered the runtime another way (a block_on caller)
 
 Tasks: 1 owned by runtime 0 @0xADDR
-    Lifecycle: 1 idle
+    State: 1 idle
     Future types and what they await:
         1  async fn nested_await::outer
            └─ 1  future tokio::sync::oneshot::Receiver<u32>

@@ -486,7 +486,7 @@ fn tasks(facts: &Facts<'_>, top: usize, out: &mut dyn io::Write) -> Result<()> {
         facts.whole()
     )?;
 
-    // Lifecycle first: every task is in exactly one of these, so it is
+    // State first: every task is in exactly one of these, so it is
     // the one row that adds up to the total above it.
     let mut lifecycle: BTreeMap<&'static str, usize> = BTreeMap::new();
     let mut aborting = 0;
@@ -510,7 +510,7 @@ fn tasks(facts: &Facts<'_>, top: usize, out: &mut dyn io::Write) -> Result<()> {
         .filter_map(|name| Some(format!("{} {name}", lifecycle.get(name)?)))
         .collect::<Vec<_>>();
     if !ordered.is_empty() {
-        writeln!(out, "    Lifecycle: {}", ordered.join(", "))?;
+        writeln!(out, "    State: {}", ordered.join(", "))?;
     }
 
     // Only what is out of the ordinary. Every other state word bit is
@@ -1632,7 +1632,7 @@ mod tests {
             "{page}"
         );
         assert!(
-            page.contains("    Lifecycle: 1 running, 1 queued, 5 idle\n"),
+            page.contains("    State: 1 running, 1 queued, 5 idle\n"),
             "{page}"
         );
         // Only the anomaly: that six of the seven are detached is the

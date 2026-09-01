@@ -8,7 +8,7 @@ Threads: 1 lwp, 1 in runtime 0 @0xADDR
             block_on thread, lwp 4037721
 
 Tasks: 2 owned by runtime 0 @0xADDR
-    Lifecycle: 2 idle
+    State: 2 idle
     Future types and what they await:
         1  async fn ct_runtime::acquirer
            └─ 1  a tokio::sync::Semaphore
