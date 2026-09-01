@@ -381,6 +381,14 @@ fn parse_words(words: &[String]) -> Result<Option<Line>> {
     }
 }
 
+/// Parse the words a frame move carries after it (`up locals`), for
+/// dispatch at the new frame. The words arrive already tokenized by
+/// the line they came in on; `None` means they were answered in print
+/// (`help`) rather than parsed into something to dispatch.
+pub(crate) fn parse_trailing(words: &[String]) -> Result<Option<crate::Command>> {
+    Ok(parse_words(words)?.map(|line| line.command))
+}
+
 /// What a scoped prefix selects: `task 129 trace -v` runs `trace -v`
 /// under a cursor on task 129 without moving the session's own —
 /// delve's `goroutine 42 bt`. This is also what `tasks --exec` runs
@@ -1177,12 +1185,28 @@ mod tests {
         ));
         assert!(matches!(
             Line::try_parse_from(["up"]).expect("up parses").command,
-            Command::Up
+            Command::Up { then } if then.is_empty()
         ));
         assert!(matches!(
             Line::try_parse_from(["down"]).expect("down parses").command,
-            Command::Down
+            Command::Down { then } if then.is_empty()
         ));
+        // A frame move carries the rest of the line as the command to
+        // run after it, flags and all.
+        let Command::Down { then } = Line::try_parse_from(["down", "locals"])
+            .expect("down carries a trailing command")
+            .command
+        else {
+            panic!("down parses");
+        };
+        assert_eq!(then, ["locals"]);
+        let Command::Up { then } = Line::try_parse_from(["up", "print", ".count", "--ugly"])
+            .expect("the trailing command keeps its own flags")
+            .command
+        else {
+            panic!("up parses");
+        };
+        assert_eq!(then, ["print", ".count", "--ugly"]);
         assert!(matches!(
             Line::try_parse_from(["locals"])
                 .expect("locals parses")

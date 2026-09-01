@@ -1,0 +1,5 @@
+---
+source: hansei/src/offline.rs
+description: "`up locals` over linux-floor/simple-await"
+---
+error: already at frame #0, the chain's root
