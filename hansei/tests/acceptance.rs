@@ -2932,7 +2932,7 @@ fn test_scripts_may_hold_comments_and_blank_lines() {
 
 /// The census counts the same target every other listing walks: the
 /// threads by what their parkers say — including the one asleep in the
-/// driver on the whole runtime's behalf — the tasks by lifecycle and by
+/// driver on the whole runtime's behalf — the tasks by state and by
 /// what each waits on, and the futures on their await chains.
 #[test]
 fn test_census_counts_the_target() {
@@ -2969,7 +2969,7 @@ fn test_census_counts_the_target() {
         ))
         .unwrap();
         assert!(owned.is_match(&out), "{out}");
-        assert!(out.contains("    Lifecycle: 2 idle\n"), "{out}");
+        assert!(out.contains("    State: 2 idle\n"), "{out}");
         assert!(
             out.contains(
                 "        1  async fn sleep_join::sleeper\n           \

@@ -12,7 +12,7 @@ Threads: 3 lwps, 3 in runtime 0 @0xADDR
         1 that entered the runtime another way (a block_on caller)
 
 Tasks: 2 owned by runtime 0 @0xADDR
-    Lifecycle: 2 idle
+    State: 2 idle
     Future types and what they await:
         1  async fn sleep_join::joiner
            └─ 1  another task (JoinHandle)
