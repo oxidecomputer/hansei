@@ -21,7 +21,7 @@ exclude = ["test-programs"]
 anyhow = "1.0"
 bindgen = { version = "0.72", default-features = false }
 blake3 = { version = "1", features = ["pure"] }
-clap = { version = "4.5.51", features = ["derive"] }
+clap = { version = "4.5.51", features = ["derive", "wrap_help"] }
 exegesis = { path = "exegesis", version = "0.1.0" }
 insta = "1.48"
 # Test scaffolding, dev-dependency only: see testrun/src/lib.rs.
