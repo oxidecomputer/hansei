@@ -565,8 +565,7 @@ fn print_frame_verbose<'b, T: proc::Target>(
             Some(state) => state.payload,
             None => frame.future,
         };
-        let locals = state_locals(payload.ty);
-        if !locals.is_empty() {
+        if !state_locals(payload.ty).is_empty() {
             let heading = if frame.state.is_some() {
                 "locals:"
             } else {
@@ -574,35 +573,7 @@ fn print_frame_verbose<'b, T: proc::Target>(
             };
             writeln!(out, "{DETAIL_INDENT}{heading}")?;
         }
-        // print_variable's contract: the value's lines after the first
-        // open with the variable's indent plus two spaces.
-        let value_prefix = format!("{ENTRY_INDENT}  ");
-        for m in locals {
-            let start = m.offset() as usize;
-            let end = start + m.ty().size() as usize;
-            match payload.bytes.get(start..end) {
-                Some(bytes) => {
-                    let v = reify::Value::new(m.ty(), payload.addr + m.offset(), bytes).peel();
-                    let mut disp = v
-                        .display_from_target(ctx.proc, opts.render.depth)
-                        .max_str_len(Some(opts.render.max_string_len))
-                        .max_array_len(Some(opts.render.max_array_values))
-                        .elide_override(opts.elide)
-                        .line_prefix(&value_prefix);
-                    if let Some(heap) = opts.heap {
-                        disp = disp.heap(heap);
-                    }
-                    if let Some(annotate) = annotate {
-                        disp = disp.annotate_addrs(annotate);
-                    }
-                    if opts.render.ugly {
-                        disp = disp.ugly();
-                    }
-                    print_variable(out, ENTRY_INDENT, m.name(), &format_args!("{disp:#}"))?;
-                }
-                None => writeln!(out, "{ENTRY_INDENT}{}: <unreadable>", m.name())?,
-            }
-        }
+        print_locals(ctx, payload, ENTRY_INDENT, opts, annotate, out)?;
     }
 
     let rows: Vec<SuspendRow<'_>> = suspend_rows(frame)
@@ -636,6 +607,65 @@ fn print_frame_verbose<'b, T: proc::Target>(
         writeln!(out, "{ENTRY_INDENT}{}", theme.dim(&line))?;
     }
     Ok(())
+}
+
+/// Print the source-level locals a frame's payload — its live state,
+/// or a plain leaf future itself — holds, one `print_variable` per
+/// local at `indent`, returning how many there were. Each opens
+/// `name: declared type`, Rust-declaration style, so a frame reads
+/// like the source that produced it. Factored from
+/// the verbose frame block so the cursor's `locals` command lists the
+/// same variables rendered the same way.
+pub(crate) fn print_locals<'b, T: proc::Target>(
+    ctx: &bundle::Context<'b, T>,
+    payload: reify::Value<'b>,
+    indent: &str,
+    opts: &TraceOpts<'_>,
+    annotate: Option<&reify::AddrAnnotator<'_>>,
+    out: &mut dyn io::Write,
+) -> Result<usize> {
+    let locals = state_locals(payload.ty);
+    // print_variable's contract: the value's lines after the first
+    // open with the variable's indent plus two spaces.
+    let value_prefix = format!("{indent}  ");
+    for m in &locals {
+        let start = m.offset() as usize;
+        let end = start + m.ty().size() as usize;
+        match payload.bytes.get(start..end) {
+            Some(bytes) => {
+                let v = reify::Value::new(m.ty(), payload.addr + m.offset(), bytes).peel();
+                let mut disp = v
+                    .display_from_target(ctx.proc, opts.render.depth)
+                    .max_str_len(Some(opts.render.max_string_len))
+                    .max_array_len(Some(opts.render.max_array_values))
+                    .elide_override(opts.elide)
+                    .line_prefix(&value_prefix);
+                if let Some(heap) = opts.heap {
+                    disp = disp.heap(heap);
+                }
+                if let Some(annotate) = annotate {
+                    disp = disp.annotate_addrs(annotate);
+                }
+                if opts.render.ugly {
+                    disp = disp.ugly();
+                }
+                print_variable(
+                    out,
+                    indent,
+                    m.name(),
+                    Some(m.ty().name()),
+                    &format_args!("{disp:#}"),
+                )?;
+            }
+            None => writeln!(
+                out,
+                "{indent}{}: {} = <unreadable>",
+                m.name(),
+                m.ty().name()
+            )?,
+        }
+    }
+    Ok(locals.len())
 }
 
 /// Why the chain stopped, printed after the last frame — nothing for a
@@ -1061,6 +1091,12 @@ fn async_kind(name: &str, state: Option<&str>) -> &'static str {
 /// `name:` heading with the value's lines beneath it when the value is
 /// multi-line.
 ///
+/// With a declared type, the layout is Rust-declaration style instead:
+/// `name: ty = value`, with the type elided when the value's first
+/// line already opens with it (a struct render's `Type { … }`), and a
+/// multi-line value's first line joining the heading rather than
+/// dropping below it.
+///
 /// The value's own lines arrive final-form: a multi-line value must be
 /// rendered with a reify line prefix of this `indent` plus two spaces
 /// (see [`reify::DisplayValue::line_prefix`]), so this function
@@ -1071,8 +1107,20 @@ pub(crate) fn print_variable(
     out: &mut dyn io::Write,
     indent: &str,
     name: &str,
+    ty: Option<&str>,
     value: &dyn fmt::Display,
 ) -> Result<()> {
+    /// Whether the value's first line opens with the declared type name
+    /// itself — followed by nothing, or by a delimiter a render puts
+    /// after a type name (` {`, `(`, `::Variant`), never mid-word.
+    fn opens_with(ty: &str, first: &str) -> bool {
+        first.strip_prefix(ty).is_some_and(|rest| {
+            matches!(
+                rest.as_bytes().first(),
+                None | Some(b' ' | b'{' | b'(' | b':')
+            )
+        })
+    }
     /// Small pieces batch up to this much before a sink write. The
     /// renderer writes a few bytes at a time — a member name, a brace —
     /// so accepting one must cost what a `String` append does.
@@ -1088,6 +1136,9 @@ pub(crate) fn print_variable(
         staged: String,
         indent: &'w str,
         name: &'w str,
+        /// The declared type printed after the name, elided when the
+        /// value's own first line already opens with it.
+        ty: Option<&'w str>,
         /// The first line so far; `None` once a newline committed the
         /// heading layout.
         first: Option<String>,
@@ -1107,14 +1158,23 @@ pub(crate) fn print_variable(
                     // lines after it open with the renderer's prefix, so
                     // only this one needs its margin laid in here.
                     Some((head, rest)) => {
-                        let first = self.first.take().unwrap();
-                        self.staged.push_str(self.indent);
-                        self.staged.push_str(self.name);
-                        self.staged.push_str(":\n");
-                        self.staged.push_str(self.indent);
-                        self.staged.push_str("  ");
-                        self.staged.push_str(&first);
-                        self.staged.push_str(head);
+                        let mut first = self.first.take().unwrap();
+                        first.push_str(head);
+                        match self.ty {
+                            // Typed: the first line joins the heading,
+                            // Rust-declaration style.
+                            Some(_) => self.heading(&first),
+                            // Untyped: the value opens on its own line
+                            // beneath the `name:` heading.
+                            None => {
+                                self.staged.push_str(self.indent);
+                                self.staged.push_str(self.name);
+                                self.staged.push_str(":\n");
+                                self.staged.push_str(self.indent);
+                                self.staged.push_str("  ");
+                                self.staged.push_str(&first);
+                            }
+                        }
                         self.staged.push('\n');
                         text = rest;
                     }
@@ -1131,6 +1191,24 @@ pub(crate) fn print_variable(
             Ok(())
         }
 
+        /// Lay in `indent name: ` and the value's first line, with
+        /// the declared type between them — `name: ty = value` —
+        /// unless the value already opens with that type name, as a
+        /// struct or enum render does; repeating it would say
+        /// everything twice.
+        fn heading(&mut self, first: &str) {
+            self.staged.push_str(self.indent);
+            self.staged.push_str(self.name);
+            self.staged.push_str(": ");
+            if let Some(ty) = self.ty {
+                if !opens_with(ty, first) {
+                    self.staged.push_str(ty);
+                    self.staged.push_str(" = ");
+                }
+            }
+            self.staged.push_str(first);
+        }
+
         fn flush(&mut self) -> io::Result<()> {
             self.sink.write_all(self.staged.as_bytes())?;
             self.staged.clear();
@@ -1140,10 +1218,7 @@ pub(crate) fn print_variable(
         fn finish(&mut self) -> io::Result<()> {
             // No newline ever came: the single-line layout.
             if let Some(value) = self.first.take() {
-                self.staged.push_str(self.indent);
-                self.staged.push_str(self.name);
-                self.staged.push_str(": ");
-                self.staged.push_str(&value);
+                self.heading(&value);
             }
             self.staged.push('\n');
             self.flush()
@@ -1164,6 +1239,7 @@ pub(crate) fn print_variable(
         staged: String::new(),
         indent,
         name,
+        ty,
         first: Some(String::new()),
         error: None,
     };
@@ -1736,7 +1812,7 @@ mod variable_format_tests {
     #[test]
     fn scalar_stays_on_the_name_line() {
         let mut out = Vec::new();
-        print_variable(&mut out, "  ", "count", &"42").unwrap();
+        print_variable(&mut out, "  ", "count", None, &"42").unwrap();
         assert_eq!(String::from_utf8(out).unwrap(), "  count: 42\n");
     }
 
@@ -1751,6 +1827,7 @@ mod variable_format_tests {
             &mut out,
             "  ",
             "point",
+            None,
             &"Point {\n        x: 1,\n        y: 2,\n    }",
         )
         .unwrap();
@@ -1758,6 +1835,67 @@ mod variable_format_tests {
             String::from_utf8(out).unwrap(),
             "  point:\n    Point {\n        x: 1,\n        y: 2,\n    }\n"
         );
+    }
+
+    /// With a declared type, a scalar prints Rust-declaration style:
+    /// `name: type = value`.
+    #[test]
+    fn typed_scalar_reads_like_a_declaration() {
+        let mut out = Vec::new();
+        print_variable(&mut out, "  ", "count", Some("u32"), &"3").unwrap();
+        assert_eq!(String::from_utf8(out).unwrap(), "  count: u32 = 3\n");
+    }
+
+    /// A render that already opens with the declared type — a struct
+    /// literal — joins the heading instead of repeating the type, and
+    /// its later lines pass through untouched.
+    #[test]
+    fn typed_aggregate_joins_the_heading_without_repeating() {
+        let mut out = Vec::new();
+        print_variable(
+            &mut out,
+            "  ",
+            "point",
+            Some("foo::bar::Point"),
+            &"foo::bar::Point {\n        x: 1,\n    }",
+        )
+        .unwrap();
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            "  point: foo::bar::Point {\n        x: 1,\n    }\n"
+        );
+    }
+
+    /// A multi-line render that does not lead with the type — a
+    /// list — carries the annotation and the `=` on the heading line.
+    #[test]
+    fn typed_list_keeps_the_annotation() {
+        let mut out = Vec::new();
+        print_variable(
+            &mut out,
+            "  ",
+            "values",
+            Some("alloc::vec::Vec<u32>"),
+            &"[\n        5,\n    ]",
+        )
+        .unwrap();
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            "  values: alloc::vec::Vec<u32> = [\n        5,\n    ]\n"
+        );
+    }
+
+    /// An enum render opens with the type followed by `::Variant`;
+    /// that still counts as leading with the type. A mere word prefix
+    /// of the first line does not.
+    #[test]
+    fn typed_prefix_must_end_at_a_delimiter() {
+        let mut out = Vec::new();
+        print_variable(&mut out, "", "w", Some("Option<W>"), &"Option<W>::Some(1)").unwrap();
+        assert_eq!(String::from_utf8(out).unwrap(), "w: Option<W>::Some(1)\n");
+        let mut out = Vec::new();
+        print_variable(&mut out, "", "n", Some("u3"), &"u32max").unwrap();
+        assert_eq!(String::from_utf8(out).unwrap(), "n: u3 = u32max\n");
     }
 
     /// Streaming decides the layout at the first newline however the text
@@ -1775,9 +1913,9 @@ mod variable_format_tests {
         let big = format!("    x: {},", "9".repeat(8 << 10));
         let pieces = ["Point {", "\n    x", ": 1,", "\n", &big, "\n", "}"];
         let mut chunked = Vec::new();
-        print_variable(&mut chunked, "  ", "v", &Chunked(&pieces)).unwrap();
+        print_variable(&mut chunked, "  ", "v", None, &Chunked(&pieces)).unwrap();
         let mut whole = Vec::new();
-        print_variable(&mut whole, "  ", "v", &pieces.concat().as_str()).unwrap();
+        print_variable(&mut whole, "  ", "v", None, &pieces.concat().as_str()).unwrap();
         assert_eq!(chunked, whole);
         assert_eq!(
             String::from_utf8(whole).unwrap(),
@@ -2685,7 +2823,7 @@ Waiting on: a tokio::sync::Mutex (semaphore 0xADDR): 1 permit requested, 0 avail
         assert!(
             rendered.contains(
                 "      awaiting at src/bin/simple-await.rs:40 (Suspend1, 12 locals)\
-                 \n      locals:\n        count: 3\n"
+                 \n      locals:\n        count: u32 = 3\n"
             ),
             "{rendered}"
         );

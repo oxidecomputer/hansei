@@ -1,0 +1,23 @@
+---
+source: hansei/src/offline.rs
+description: "`locals` over linux/local-set-io"
+---
+stream: tokio::net::unix::stream::UnixStream = tokio::io::poll_evented::PollEvented<mio::net::uds::stream::UnixStream> {
+      io: core::option::Option<mio::net::uds::stream::UnixStream>::Some(9),
+      registration: tokio::runtime::io::registration::Registration {
+          handle: <elided>,
+          shared: alloc::sync::Arc<tokio::runtime::io::scheduled_io::ScheduledIo, alloc::alloc::Global> {
+              ptr: 0xADDR -> ...,
+          },
+      },
+  }
+buf: <anon> = [
+      0xADDR,
+      0xADDR,
+      0xADDR,
+      0xADDR,
+      0xADDR,
+      0xADDR,
+      0xADDR,
+      0xADDR,
+  ]

@@ -1183,6 +1183,12 @@ mod tests {
             Line::try_parse_from(["down"]).expect("down parses").command,
             Command::Down
         ));
+        assert!(matches!(
+            Line::try_parse_from(["locals"])
+                .expect("locals parses")
+                .command,
+            Command::Locals
+        ));
         // `whatis` still takes an address, and now none at all.
         assert!(matches!(
             Line::try_parse_from(["whatis"])

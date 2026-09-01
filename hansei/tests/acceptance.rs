@@ -1375,8 +1375,8 @@ fn test_local_values_come_back_from_the_target() {
 
         // Scalars, including one the task computed after its first
         // await rather than one it was handed.
-        assert!(verbose.contains("count: 3"), "{verbose}");
-        assert!(verbose.contains("first: 41"), "{verbose}");
+        assert!(verbose.contains("count: u32 = 3"), "{verbose}");
+        assert!(verbose.contains("first: u32 = 41"), "{verbose}");
 
         // The map's entries, in key order.
         for entry in ["1: 10", "2: 20", "3: 30"] {
@@ -1408,9 +1408,18 @@ fn test_ugly_locals_acceptance() {
         // Normal verbose rendering: each local reads as its decoded value,
         // through its own formatter.
         let pretty = trace_opts(&bundle, core, &task.id, true, false);
-        assert!(pretty.contains("ipv4: 192.0.2.1"), "{pretty}");
-        assert!(pretty.contains(r#"borrowed: "borrowed\ntext""#), "{pretty}");
-        assert!(pretty.contains(r#"owned: "owned\ttext""#), "{pretty}");
+        assert!(
+            pretty.contains("ipv4: core::net::ip_addr::Ipv4Addr = 192.0.2.1"),
+            "{pretty}"
+        );
+        assert!(
+            pretty.contains(r#"borrowed: &str = "borrowed\ntext""#),
+            "{pretty}"
+        );
+        assert!(
+            pretty.contains(r#"owned: alloc::string::String = "owned\ttext""#),
+            "{pretty}"
+        );
 
         // --ugly: the very same locals render through their structure, and the
         // formatted forms are gone entirely.
@@ -3408,7 +3417,10 @@ fn test_the_allocator_index_answers_for_what_it_can_read() {
         // Every container the task holds still renders whole: no read
         // was refused and no extent cut anywhere in the chain, which is
         // what the tally then says in numbers.
-        assert!(out.contains(r#"owned: "owned\ttext""#), "{out}");
+        assert!(
+            out.contains(r#"owned: alloc::string::String = "owned\ttext""#),
+            "{out}"
+        );
         assert!(!out.contains("past its allocation"), "{out}");
         assert!(!out.contains("<freed"), "{out}");
         assert!(

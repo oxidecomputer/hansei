@@ -459,6 +459,7 @@ fn print_rendered<T: proc::Target>(
         out,
         "  ",
         name,
+        None,
         &format_args!(
             "{:#}",
             render(session, value, opts, heap).line_prefix("    ")

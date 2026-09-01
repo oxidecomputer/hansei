@@ -39,16 +39,17 @@ pub struct Cursor {
     pub last_addr: Option<u64>,
 }
 
-/// The prompt's account of the cursor: `hansei task 129 #1`,
-/// `hansei future 0xf7d9670 #0`, `hansei lwp 115` (only when no root
-/// stands), bare `hansei` with no cursor.
+/// The prompt's account of the cursor: `hansei : task 129 #1`,
+/// `hansei : future 0xf7d9670 #0`, `hansei : lwp 115` (only when no
+/// root stands), bare `hansei` with no cursor — the separator marks
+/// where the tool's name ends and the position begins.
 pub(crate) fn prompt_label(c: &Cursor) -> String {
     match (c.root, c.lwp) {
-        (Some(TraceTarget::Task(id)), _) => format!("hansei task {id} #{}", c.frame),
+        (Some(TraceTarget::Task(id)), _) => format!("hansei : task {id} #{}", c.frame),
         (Some(TraceTarget::Future(addr)), _) => {
-            format!("hansei future {addr:#x} #{}", c.frame)
+            format!("hansei : future {addr:#x} #{}", c.frame)
         }
-        (None, Some(lwp)) => format!("hansei lwp {lwp}"),
+        (None, Some(lwp)) => format!("hansei : lwp {lwp}"),
         (None, None) => "hansei".to_string(),
     }
 }
@@ -485,6 +486,74 @@ pub(crate) fn exec_down<T: proc::Target>(
     exec_frame(session, Some(frame + 1), theme, out)
 }
 
+/// `locals`: list the variables the cursor frame holds live — the
+/// live state's locals, or a plain leaf future's own fields — each
+/// rendered the way a verbose `trace` renders it, flat at the margin.
+pub(crate) fn exec_locals<T: proc::Target>(
+    session: &Session<'_, T>,
+    theme: output::Theme,
+    out: &mut dyn io::Write,
+) -> Result<()> {
+    let cursor = *session.cursor.borrow();
+    let root = cursor.root.ok_or_else(|| anyhow!("no task selected"))?;
+    let resolved = chain_of(session, root)?;
+    let frames = &resolved.chain.frames;
+    let n = cursor.frame;
+    let Some(frame) = frames.get(n) else {
+        return Err(refuse_frame(
+            n,
+            frames.len(),
+            mid_poll(
+                &session.tasks.tasks[resolved.owner],
+                resolved.origin,
+                &session.workers,
+            ),
+        ));
+    };
+    // What the frame can be read as: the active variant of its future,
+    // whose members are the locals, or the future itself where no
+    // state decodes.
+    let payload = match &frame.state {
+        Some(state) => state.payload,
+        None => frame.future,
+    };
+    let render = RenderFlags::default().resolve(&session.settings.borrow());
+    let elide = reify::ElideOverride::default();
+    let heap = session.heap_view();
+    let opts = TraceOpts {
+        verbose: false,
+        render,
+        elide: &elide,
+        theme,
+        heap: heap.as_ref().map(|view| view as &dyn reify::Heap),
+    };
+    let extents = session.extents();
+    let census = session.census();
+    let list = &session.tasks;
+    let annotate = move |ptr: u64| {
+        if let Some((index, _)) = extents.locate(ptr) {
+            return Some(tasks::task_label(list, index));
+        }
+        let (set, _, _) = census.locate(ptr)?;
+        Some(format!(
+            "{} via FuturesUnordered",
+            tasks::task_label(list, census.sets[set].owner)
+        ))
+    };
+    let count = trace::print_locals(
+        &session.ctx,
+        payload,
+        "",
+        &opts,
+        Some(&annotate as &reify::AddrAnnotator<'_>),
+        out,
+    )?;
+    if count == 0 {
+        writeln!(out, "no locals")?;
+    }
+    Ok(())
+}
+
 fn cursor_frame<T: proc::Target>(session: &Session<'_, T>) -> Result<usize> {
     let cursor = session.cursor.borrow();
     match cursor.root {
@@ -685,20 +754,20 @@ mod tests {
             last_addr: None,
         };
         assert_eq!(prompt_label(&c(None, None, 0)), "hansei");
-        assert_eq!(prompt_label(&c(Some(115), None, 0)), "hansei lwp 115");
+        assert_eq!(prompt_label(&c(Some(115), None, 0)), "hansei : lwp 115");
         assert_eq!(
             prompt_label(&c(None, Some(TraceTarget::Task(129)), 1)),
-            "hansei task 129 #1"
+            "hansei : task 129 #1"
         );
         // A thread cursor that also holds a task shows the task; the
         // lwp is not lost, merely not the headline.
         assert_eq!(
             prompt_label(&c(Some(115), Some(TraceTarget::Task(129)), 0)),
-            "hansei task 129 #0"
+            "hansei : task 129 #0"
         );
         assert_eq!(
             prompt_label(&c(None, Some(TraceTarget::Future(0xf7d9670)), 0)),
-            "hansei future 0xf7d9670 #0"
+            "hansei : future 0xf7d9670 #0"
         );
     }
 
@@ -1349,6 +1418,55 @@ mod tests {
         let root = String::from_utf8(out).expect("the frame is UTF-8");
         assert!(root.starts_with("#0"), "{root}");
         assert!(!root.contains("waiting on"), "{root}");
+    }
+
+    /// `locals` lists the cursor frame's live variables and only
+    /// them — the values a verbose trace nests under the frame line,
+    /// flat at the margin, with no frame line and no heading.
+    #[test]
+    fn test_locals_lists_the_cursor_frames_variables() {
+        let (bundle, snapshot) = testkit::load("linux", "simple-await");
+        let args = session_args("linux", "simple-await");
+        let session = Session::attach(&snapshot, &bundle, &args).expect("the pair attaches");
+        let theme = crate::output::Theme::plain();
+
+        let err = exec_locals(&session, theme, &mut Vec::new())
+            .expect_err("no cursor stands, so there is no frame to list");
+        assert_eq!(err.to_string(), "no task selected");
+
+        // The frame the verbose-trace test pins the same locals under:
+        // work's coroutine, parked in Suspend1 with `count` live.
+        let mut found = None;
+        for t in &session.tasks.tasks {
+            let Some(id) = t.task_id else { continue };
+            let Ok(resolved) = chain_of(&session, TraceTarget::Task(id)) else {
+                continue;
+            };
+            for (i, f) in resolved.chain.frames.iter().enumerate() {
+                if f.future.ty.name().contains("simple_await::work") {
+                    found = Some((id, i));
+                }
+            }
+        }
+        let (id, i) = found.expect("the capture parks work's frame");
+        exec_task(
+            &session,
+            Some(TraceTarget::Task(id)),
+            false,
+            &mut Vec::new(),
+        )
+        .expect("the task selects");
+        exec_frame(&session, Some(i), theme, &mut Vec::new()).expect("the frame selects");
+
+        let mut out = Vec::new();
+        exec_locals(&session, theme, &mut out).expect("the locals list");
+        let text = String::from_utf8(out).expect("the listing is UTF-8");
+        assert!(text.contains("count: u32 = 3"), "{text}");
+        assert!(!text.contains("no locals"), "{text}");
+        assert!(!text.contains("locals:"), "{text}");
+        assert!(!text.contains('#'), "{text}");
+        let first = text.lines().next().expect("at least one local");
+        assert!(!first.starts_with(' '), "{text}");
     }
 
     /// `print` renders the named type's bytes; a snapshot recorded the

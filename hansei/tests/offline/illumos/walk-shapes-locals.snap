@@ -1,0 +1,13 @@
+---
+source: hansei/src/offline.rs
+description: "`locals` over illumos/walk-shapes"
+---
+wz: walk_shapes::WrapZ<walk_shapes::deep::{async_fn_env#0}> = walk_shapes::deep::{async_fn_env#0}::0 {
+      park: alloc::sync::Arc<tokio::sync::notify::Notify, alloc::alloc::Global> {
+          ptr: 0xADDR -> alloc::sync::ArcInner<tokio::sync::notify::Notify> {
+                  strong: ...,
+                  weak: ...,
+                  data: ...,
+              },
+      },
+  }
