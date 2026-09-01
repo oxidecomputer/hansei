@@ -144,6 +144,12 @@ fn commands(
             if program == "simple-await" {
                 list.push(("print-range", "print .values[1..2]".to_owned()));
                 list.push(("print-map-values", "print .labels[..2].1".to_owned()));
+                // Frame moves carrying a trailing command: `up` at #0
+                // is refused, so its command must not run; `down`
+                // lands on #1 and runs it there. Last in the list, as
+                // `down` moves the cursor the commands above share.
+                list.push(("up-locals", "up locals".to_owned()));
+                list.push(("down-locals", "down locals".to_owned()));
             }
         }
     }

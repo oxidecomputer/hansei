@@ -299,8 +299,18 @@ pub enum Command {
     },
 
     /// Move the cursor one await frame inward — toward the leaf the
-    /// chain bottoms out in — and print the frame it lands on.
-    Down,
+    /// chain bottoms out in — and print the frame line it lands on.
+    /// Any words after it are a command to run at the new frame
+    /// (`down locals`); a refused move runs nothing.
+    Down {
+        /// The command to run after a successful move.
+        #[arg(
+            value_name = "COMMAND",
+            trailing_var_arg = true,
+            allow_hyphen_values = true
+        )]
+        then: Vec<String>,
+    },
 
     /// List the types whose name matches a pattern.
     FindTypes {
@@ -972,8 +982,18 @@ pub enum Command {
     },
 
     /// Move the cursor one await frame outward — toward #0, the
-    /// chain's root — and print the frame it lands on.
-    Up,
+    /// chain's root — and print the frame line it lands on. Any words
+    /// after it are a command to run at the new frame (`up locals`);
+    /// a refused move runs nothing.
+    Up {
+        /// The command to run after a successful move.
+        #[arg(
+            value_name = "COMMAND",
+            trailing_var_arg = true,
+            allow_hyphen_values = true
+        )]
+        then: Vec<String>,
+    },
 
     /// List the trait-object vtables whose trait or concrete type
     /// matches a pattern: which pair each implements, where it is in
@@ -1198,6 +1218,31 @@ fn parse_trace_target(s: &str) -> std::result::Result<TraceTarget, String> {
 pub enum Flow {
     Continue,
     Quit,
+}
+
+/// Run the command a frame move carried after it (`up locals`). This
+/// is reached only after the move succeeded — a refused `up`/`down`
+/// errors out of dispatch first, so its trailing command never runs.
+fn after_move<T: Target>(
+    session: &Session<'_, T>,
+    then: &[String],
+    theme: output::Theme,
+    out: &mut dyn io::Write,
+) -> Result<Flow> {
+    if then.is_empty() {
+        return Ok(Flow::Continue);
+    }
+    match repl::parse_trailing(then)? {
+        // `history` belongs to the repl loop, which answers it before
+        // dispatch ever sees it; refuse it rather than panic in the
+        // unreachable dispatch arm.
+        Some(Command::History { .. }) => {
+            anyhow::bail!("history is a repl command; run it on its own")
+        }
+        Some(command) => dispatch(session, command, theme, out),
+        // Already answered in print (`help`).
+        None => Ok(Flow::Continue),
+    }
 }
 
 /// One target, opened once. A core does not change while we read it, so
@@ -1581,12 +1626,15 @@ pub fn dispatch<T: Target>(
             let sections = summary::Sections::select(threads, tasks, futures);
             tasks::exec_census(session, sections, top, out)?
         }
-        Command::Down => cursor::exec_down(session, theme, out)?,
+        Command::Down { then } => {
+            cursor::exec_down(session, theme, out)?;
+            return after_move(session, &then, theme, out);
+        }
         Command::FindTypes { needle } => {
             let pattern = pattern::Pattern::new(&needle).context("find-types")?;
             types::find(&session.ctx.view, &pattern, out)?
         }
-        Command::Frame { index } => cursor::exec_frame(session, index, theme, out)?,
+        Command::Frame { index } => cursor::exec_frame(session, index, true, theme, out)?,
         Command::Future { addr, verbose } => {
             cursor::exec_future(session, addr, verbose, theme, out)?
         }
@@ -1710,7 +1758,10 @@ pub fn dispatch<T: Target>(
             out,
         )?,
         Command::UmemAudit { addrs, dump } => umem::exec_umem_audit(session, &addrs, dump, out)?,
-        Command::Up => cursor::exec_up(session, theme, out)?,
+        Command::Up { then } => {
+            cursor::exec_up(session, theme, out)?;
+            return after_move(session, &then, theme, out);
+        }
         Command::Vtables { needle, verbose } => {
             vtables::exec_vtables(session, &needle, verbose, out)?
         }

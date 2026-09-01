@@ -433,10 +433,13 @@ pub(crate) fn select_thread<T: proc::Target>(session: &Session<'_, T>, tid: u32)
 }
 
 /// `frame`: move within the root's await chain, or — with no index —
-/// print the current frame the way `trace -v` prints one.
+/// print the current frame the way `trace -v` prints one. `verbose`
+/// selects between that full block and the bare frame line `up` and
+/// `down` land with.
 pub(crate) fn exec_frame<T: proc::Target>(
     session: &Session<'_, T>,
     index: Option<usize>,
+    verbose: bool,
     theme: output::Theme,
     out: &mut dyn io::Write,
 ) -> Result<()> {
@@ -460,10 +463,11 @@ pub(crate) fn exec_frame<T: proc::Target>(
         c.frame = n;
         c.last_addr = Some(resolved.chain.frames[n].future.addr);
     }
-    print_cursor_frame(session, &resolved, n, theme, out)
+    print_cursor_frame(session, &resolved, n, verbose, theme, out)
 }
 
-/// `up`: one frame outward, toward #0, the chain's root.
+/// `up`: one frame outward, toward #0, the chain's root, landing with
+/// the frame line alone — `up locals` asks for more.
 pub(crate) fn exec_up<T: proc::Target>(
     session: &Session<'_, T>,
     theme: output::Theme,
@@ -473,17 +477,18 @@ pub(crate) fn exec_up<T: proc::Target>(
     if frame == 0 {
         return Err(anyhow!("already at frame #0, the chain's root"));
     }
-    exec_frame(session, Some(frame - 1), theme, out)
+    exec_frame(session, Some(frame - 1), false, theme, out)
 }
 
-/// `down`: one frame inward, toward the leaf.
+/// `down`: one frame inward, toward the leaf, landing with the frame
+/// line alone — `down locals` asks for more.
 pub(crate) fn exec_down<T: proc::Target>(
     session: &Session<'_, T>,
     theme: output::Theme,
     out: &mut dyn io::Write,
 ) -> Result<()> {
     let frame = cursor_frame(session)?;
-    exec_frame(session, Some(frame + 1), theme, out)
+    exec_frame(session, Some(frame + 1), false, theme, out)
 }
 
 /// `locals`: list the variables the cursor frame holds live — the
@@ -684,6 +689,7 @@ fn print_cursor_frame<T: proc::Target>(
     session: &Session<'_, T>,
     resolved: &ResolvedChain<'_>,
     n: usize,
+    verbose: bool,
     theme: output::Theme,
     out: &mut dyn io::Write,
 ) -> Result<()> {
@@ -692,7 +698,7 @@ fn print_cursor_frame<T: proc::Target>(
     let elide = reify::ElideOverride::default();
     let heap = session.heap_view();
     let opts = TraceOpts {
-        verbose: true,
+        verbose,
         render,
         elide: &elide,
         theme,
@@ -980,7 +986,7 @@ mod tests {
         let at_zero = session.cursor.borrow().last_addr;
 
         let theme = crate::output::Theme::plain();
-        exec_frame(&session, Some(1), theme, &mut Vec::new()).expect("the chain nests");
+        exec_frame(&session, Some(1), true, theme, &mut Vec::new()).expect("the chain nests");
         {
             let c = session.cursor.borrow();
             assert_eq!(c.frame, 1);
@@ -991,7 +997,8 @@ mod tests {
         let err = exec_up(&session, theme, &mut Vec::new()).expect_err("the root is the top");
         assert_eq!(err.to_string(), "already at frame #0, the chain's root");
 
-        let err = exec_frame(&session, Some(99), theme, &mut Vec::new()).expect_err("out of range");
+        let err =
+            exec_frame(&session, Some(99), true, theme, &mut Vec::new()).expect_err("out of range");
         assert!(err.to_string().starts_with("no frame #99: "), "{err}");
         assert_eq!(session.cursor.borrow().frame, 0, "a refusal moves nothing");
 
@@ -1408,13 +1415,13 @@ mod tests {
         .expect("the task selects");
 
         let mut out = Vec::new();
-        exec_frame(&session, Some(len - 1), theme, &mut out).expect("the leaf prints");
+        exec_frame(&session, Some(len - 1), true, theme, &mut out).expect("the leaf prints");
         let leaf = String::from_utf8(out).expect("the frame is UTF-8");
         assert!(leaf.starts_with(&format!("#{}", len - 1)), "{leaf}");
         assert!(leaf.contains("waiting on"), "{leaf}");
 
         let mut out = Vec::new();
-        exec_frame(&session, Some(0), theme, &mut out).expect("the root prints");
+        exec_frame(&session, Some(0), true, theme, &mut out).expect("the root prints");
         let root = String::from_utf8(out).expect("the frame is UTF-8");
         assert!(root.starts_with("#0"), "{root}");
         assert!(!root.contains("waiting on"), "{root}");
@@ -1456,7 +1463,7 @@ mod tests {
             &mut Vec::new(),
         )
         .expect("the task selects");
-        exec_frame(&session, Some(i), theme, &mut Vec::new()).expect("the frame selects");
+        exec_frame(&session, Some(i), true, theme, &mut Vec::new()).expect("the frame selects");
 
         let mut out = Vec::new();
         exec_locals(&session, theme, &mut out).expect("the locals list");

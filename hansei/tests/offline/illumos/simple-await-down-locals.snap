@@ -1,0 +1,15 @@
+---
+source: hansei/src/offline.rs
+description: "`down locals` over illumos/simple-await"
+---
+#1  future        tokio::sync::oneshot::Receiver<u32>
+inner: core::option::Option<alloc::sync::Arc<tokio::sync::oneshot::Inner<u32>, alloc::alloc::Global>>::Some(0xADDR -> alloc::sync::ArcInner<tokio::sync::oneshot::Inner<u32>> {
+              strong: 2,
+              weak: 1,
+              data: tokio::sync::oneshot::Inner<u32> {
+                  state: 1,
+                  value: tokio::loom::std::unsafe_cell::UnsafeCell<core::option::Option<u32>> { .. } @ 0xADDR,
+                  tx_task: tokio::sync::oneshot::Task (..) @ 0xADDR,
+                  rx_task: tokio::sync::oneshot::Task (..) @ 0xADDR,
+              },
+          })
