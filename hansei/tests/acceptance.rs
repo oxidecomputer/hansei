@@ -2382,7 +2382,7 @@ fn test_futures_acceptance() {
         let out = hansei_ok(&bundle, core, &format!("trace {}", nodes[0]));
         assert!(
             out.contains(&format!(
-                "Future {}: async fn unordered::set_member",
+                "future {}: async fn unordered::set_member",
                 nodes[0]
             )),
             "{out}"

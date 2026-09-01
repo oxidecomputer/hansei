@@ -154,7 +154,7 @@ fn exec_trace_future<T: proc::Target>(
             let via = via_suffix(census, h.via);
             writeln!(
                 out,
-                "Future {:#x}: {}",
+                "future {:#x}: {}",
                 h.addr,
                 opts.theme
                     .type_name(&names::display_future_name(&h.future, &session.impl_fold))
@@ -186,7 +186,7 @@ fn exec_trace_future<T: proc::Target>(
             };
             writeln!(
                 out,
-                "Future {:#x}: {}",
+                "future {:#x}: {}",
                 c.node,
                 opts.theme.type_name(&future)
             )?;
