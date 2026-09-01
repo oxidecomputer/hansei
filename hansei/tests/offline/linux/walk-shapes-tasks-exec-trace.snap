@@ -44,11 +44,11 @@ Waiting on: a tokio::sync::Mutex (semaphore 0xADDR): 1 permit requested, 0 avail
 #0  async fn      walk_shapes::victim
       awaiting at src/bin/walk-shapes.rs:155 (Suspend1, 1 local)
 #1  async fn      tokio::sync::mutex::Mutex::lock<()>
-      awaiting at tokio-1.52.4/src/sync/mutex.rs:455 (Suspend0)
+      awaiting at tokio-1.52.4/src/sync/mutex.rs:455 (Suspend0, 0 locals)
 #2  async block   tokio::sync::mutex::Mutex::lock::{async_fn#0}<()>
-      awaiting at tokio-1.52.4/src/sync/mutex.rs:436 (Suspend0)
+      awaiting at tokio-1.52.4/src/sync/mutex.rs:436 (Suspend0, 0 locals)
 #3  async fn      tokio::sync::mutex::Mutex::acquire<()>
-      awaiting at tokio-1.52.4/src/sync/mutex.rs:658 (Suspend1)
+      awaiting at tokio-1.52.4/src/sync/mutex.rs:658 (Suspend1, 0 locals)
 #4  future        tokio::sync::batch_semaphore::Acquire
       waiting on a tokio::sync::Mutex (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: a non-task waiter, task 4
 
@@ -97,7 +97,7 @@ Defined at: src/bin/walk-shapes.rs:198
 Waiting on: task 7
 
 #0  async fn      walk_shapes::joiner
-      awaiting at src/bin/walk-shapes.rs:201 (Suspend0)
+      awaiting at src/bin/walk-shapes.rs:201 (Suspend0, 0 locals)
 #1  future        tokio::runtime::task::join::JoinHandle<u32>
       waiting on task 7
 

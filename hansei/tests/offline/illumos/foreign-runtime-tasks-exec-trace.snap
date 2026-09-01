@@ -10,7 +10,7 @@ Defined at: src/bin/foreign-runtime.rs:31
 Waiting on: a tokio::sync::Semaphore (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 1
 
 #0  async fn      foreign_runtime::joined
-      awaiting at src/bin/foreign-runtime.rs:36 (Suspend0)
+      awaiting at src/bin/foreign-runtime.rs:36 (Suspend0, 0 locals)
 #1  async fn      tokio::sync::semaphore::Semaphore::acquire
       awaiting at tokio-1.52.4/src/sync/semaphore.rs:597 (Suspend0, 1 local)
 #2  future        tokio::sync::batch_semaphore::Acquire
@@ -33,7 +33,7 @@ Defined at: src/bin/foreign-runtime.rs:23
 Waiting on: task 1
 
 #0  async fn      foreign_runtime::joiner
-      awaiting at src/bin/foreign-runtime.rs:26 (Suspend0)
+      awaiting at src/bin/foreign-runtime.rs:26 (Suspend0, 0 locals)
 #1  future        tokio::runtime::task::join::JoinHandle<u32>
       waiting on task 1
 
@@ -45,7 +45,7 @@ Defined at: src/bin/foreign-runtime.rs:58
 Waiting on: timer (deadline TS)
 
 #0  async fn      foreign_runtime::local_sleeper
-      awaiting at src/bin/foreign-runtime.rs:63 (Suspend0)
+      awaiting at src/bin/foreign-runtime.rs:63 (Suspend0, 0 locals)
 #1  future        tokio::time::sleep::Sleep
       waiting on timer (deadline TS)
 Executed against 4 tasks, 0 failed

@@ -8,6 +8,6 @@ Defined at: src/bin/sleep-join.rs:16
 Waiting on: task #sleeper
 
 #0  async fn      sleep_join::joiner
-      awaiting at src/bin/sleep-join.rs:19 (Suspend0)
+      awaiting at src/bin/sleep-join.rs:19 (Suspend0, 0 locals)
 #1  future        tokio::runtime::task::join::JoinHandle<u32>
       waiting on task #sleeper

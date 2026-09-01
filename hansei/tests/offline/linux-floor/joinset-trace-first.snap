@@ -9,5 +9,5 @@ Defined at: src/bin/joinset.rs:44
 #0  async fn      joinset::driver
       awaiting at src/bin/joinset.rs:79 (Suspend1, 6 locals)
 #1  async fn      tokio::task::join_set::JoinSet::join_next<u32>
-      awaiting at tokio-1.47.5/src/task/join_set.rs:283 (Suspend0)
+      awaiting at tokio-1.47.5/src/task/join_set.rs:283 (Suspend0, 0 locals)
 #2  future        tokio::util::idle_notified_set::IdleNotifiedSet<tokio::runtime::task::join::JoinHandle<u32>>

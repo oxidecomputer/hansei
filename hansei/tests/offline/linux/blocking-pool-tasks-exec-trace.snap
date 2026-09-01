@@ -33,7 +33,7 @@ Defined at: src/bin/blocking-pool.rs:15
 Waiting on: task 3
 
 #0  async fn      blocking_pool::running_waiter
-      awaiting at src/bin/blocking-pool.rs:18 (Suspend0)
+      awaiting at src/bin/blocking-pool.rs:18 (Suspend0, 0 locals)
 #1  future        tokio::runtime::task::join::JoinHandle<u32>
       waiting on task 3
 
@@ -45,7 +45,7 @@ Defined at: src/bin/blocking-pool.rs:21
 Waiting on: task 4
 
 #0  async fn      blocking_pool::queued_waiter
-      awaiting at src/bin/blocking-pool.rs:24 (Suspend0)
+      awaiting at src/bin/blocking-pool.rs:24 (Suspend0, 0 locals)
 #1  future        tokio::runtime::task::join::JoinHandle<u32>
       waiting on task 4
 Executed against 5 tasks, 0 failed

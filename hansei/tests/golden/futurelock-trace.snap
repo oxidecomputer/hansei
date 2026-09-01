@@ -14,10 +14,10 @@ Waiting on: a tokio::sync::Mutex (semaphore ADDR1): 1 permit requested, 0 availa
 #2  async fn      futurelock::do_async_thing
       awaiting at src/bin/futurelock.rs:78 (Suspend0, 2 locals)
 #3  async fn      tokio::sync::mutex::Mutex::lock<()>
-      awaiting at tokio/src/sync/mutex.rs:LINE (Suspend0)
+      awaiting at tokio/src/sync/mutex.rs:LINE (Suspend0, 0 locals)
 #4  async block   tokio::sync::mutex::Mutex::lock::{async_fn#0}<()>
-      awaiting at tokio/src/sync/mutex.rs:LINE (Suspend0)
+      awaiting at tokio/src/sync/mutex.rs:LINE (Suspend0, 0 locals)
 #5  async fn      tokio::sync::mutex::Mutex::acquire<()>
-      awaiting at tokio/src/sync/mutex.rs:LINE (Suspend1)
+      awaiting at tokio/src/sync/mutex.rs:LINE (Suspend1, 0 locals)
 #6  future        tokio::sync::batch_semaphore::Acquire
       waiting on a tokio::sync::Mutex (semaphore ADDR1): 1 permit requested, 0 available; wake queue: task #blocked
