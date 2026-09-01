@@ -1,0 +1,13 @@
+---
+source: hansei/src/offline.rs
+description: "`futures -v` over illumos/channels"
+---
+Future 0xADDR: future tokio::sync::notify::Notified
+    Held by: task 3 (frame 1, `notified`)
+    State: -
+    Depth: 1 frame
+    Waiting on: —
+    Held futures: 0
+    Join sets: 0
+
+1 future

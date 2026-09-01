@@ -1,0 +1,5 @@
+---
+source: hansei/src/offline.rs
+description: "`futures --with kind child` over illumos/local-set-io"
+---
+0 futures

@@ -1,0 +1,8 @@
+---
+source: hansei/src/offline.rs
+description: "`futures -l 1 --exec type no::such::Type` over linux-floor/unordered"
+---
+0xADDR  3  frame 1, `held`  Unresumed — src/bin/unordered.rs:56  —  async fn unordered::set_member
+error: the tokio info records no type named no::such::Type; try `find-types no::such::Type`
+Executed against 1 futures, 1 failed
+error: --exec failed against 1 of 1 futures

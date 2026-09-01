@@ -1,0 +1,5 @@
+---
+source: hansei/src/offline.rs
+description: "`futures -l 1 --exec type no::such::Type` over illumos/blocking-pool"
+---
+Executed against 0 futures, 0 failed

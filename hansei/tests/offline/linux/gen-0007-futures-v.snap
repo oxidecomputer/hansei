@@ -1,0 +1,63 @@
+---
+source: hansei/src/offline.rs
+description: "`futures -v` over linux/gen-0007"
+---
+Future 0xADDR: async fn gen_0007::leaf_01
+    Child of: futures_util::stream::futures_unordered::FuturesUnordered<gen_0007::leaf_01> at 0xADDR, polled by task 3
+    State: Unresumed — src/bin/gen-0007.rs:76
+    Depth: 1 frame
+    Waiting on: —
+    Held futures: 0
+    Join sets: 0
+
+Future 0xADDR: async fn gen_0007::leaf_01
+    Child of: futures_util::stream::futures_unordered::FuturesUnordered<gen_0007::leaf_01> at 0xADDR, polled by task 3
+    State: Unresumed — src/bin/gen-0007.rs:76
+    Depth: 1 frame
+    Waiting on: —
+    Held futures: 0
+    Join sets: 0
+
+Future 0xADDR: async fn gen_0007::leaf_01
+    Child of: futures_util::stream::futures_unordered::FuturesUnordered<gen_0007::leaf_01> at 0xADDR, polled by task 3
+    State: Unresumed — src/bin/gen-0007.rs:76
+    Depth: 1 frame
+    Waiting on: —
+    Held futures: 0
+    Join sets: 0
+
+Future 0xADDR: async fn gen_0007::holder_04<gen_0007::leaf_05>
+    Held by: task 5 (frame 1, `v0`)
+    State: Unresumed — src/bin/gen-0007.rs:95
+    Depth: 1 frame
+    Waiting on: —
+    Held futures: 1
+        (frame 0, `inner`): 0xADDR  async fn gen_0007::leaf_05  Unresumed — src/bin/gen-0007.rs:81
+    Join sets: 0
+
+Future 0xADDR: async fn gen_0007::leaf_05
+    Held by: task 5 (frame 0, `inner`), via held future at 0xADDR
+    State: Unresumed — src/bin/gen-0007.rs:81
+    Depth: 1 frame
+    Waiting on: —
+    Held futures: 0
+    Join sets: 0
+
+Future 0xADDR: async fn gen_0007::holder_08<gen_0007::leaf_09>
+    Held by: task 7 (frame 1, `v0`)
+    State: Unresumed — src/bin/gen-0007.rs:102
+    Depth: 1 frame
+    Waiting on: —
+    Held futures: 1
+        (frame 0, `inner`): 0xADDR  async fn gen_0007::leaf_09  Unresumed — src/bin/gen-0007.rs:86
+    Join sets: 0
+
+Future 0xADDR: async fn gen_0007::leaf_09
+    Held by: task 7 (frame 0, `inner`), via held future at 0xADDR
+    State: Unresumed — src/bin/gen-0007.rs:86
+    Depth: 1 frame
+    Waiting on: —
+    Held futures: 0
+    Join sets: 0
+
+7 futures

@@ -1,0 +1,11 @@
+---
+source: hansei/src/offline.rs
+description: "`futures --group waiting-on` over linux-floor/gen-0007"
+---
+COUNT  WAITING ON                                       FUTURES
+    3  async fn gen_0007::leaf_01                       0xADDR, 0xADDR, 0xADDR
+    1  async fn gen_0007::holder_04<gen_0007::leaf_05>  0xADDR
+    1  async fn gen_0007::holder_08<gen_0007::leaf_09>  0xADDR
+    1  async fn gen_0007::leaf_05                       0xADDR
+    1  async fn gen_0007::leaf_09                       0xADDR
+5 groups

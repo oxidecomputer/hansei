@@ -19,6 +19,7 @@ use std::sync::mpsc;
 
 mod bundle_cmd;
 mod cursor;
+mod futures;
 mod graph;
 mod info;
 #[cfg(test)]
@@ -361,6 +362,105 @@ pub enum Command {
         /// Print the future's await chain rather than one line.
         #[arg(long, short)]
         verbose: bool,
+    },
+
+    /// List every future the census found in flight beside the tasks'
+    /// own await chains — one table row per find: its address, the
+    /// task whose frames it was found in, where it sits (the holding
+    /// frame and local, or the set whose child node it is), its own
+    /// suspend state, what it waits on, and its concrete type, never
+    /// truncated. `--limit` is the only cut, and cutting earns a
+    /// footer counting what was left out.
+    ///
+    /// This is the population `tasks --futures` lists under each task,
+    /// as one listing: every future sitting in a frame's local off the
+    /// await chain — a `select!`/`join!` arm mid-flight, one stored
+    /// across an await, a futurelock's abandoned lock — and every
+    /// child a FuturesUnordered polls, in its heap node. A JoinSet's
+    /// members are tasks, with rows in `tasks`, so they are not here.
+    /// Each address is what `trace <0xaddr>` follows, `whatis
+    /// <0xaddr>` locates, and `future <0xaddr>` selects. The listing
+    /// is a lower bound for the reasons `help tasks` gives: a future
+    /// behind an unrecognized pointer is not found, and a stopped scan
+    /// says so on stderr.
+    ///
+    /// Filters are the selection: repeatable `--with FIELD ARG` /
+    /// `--without FIELD ARG` clauses AND together, and `--group FIELD`
+    /// tallies the survivors. The string fields — type, state,
+    /// waiting-on, local — are case-insensitive regexes over the
+    /// spelled value; kind (`held` or `child`), task (the id as
+    /// `tasks` prints it), rt (an index or `@0x` handle), frame and
+    /// addr are exact; depth, holds and sets compare counts, spelled
+    /// '>N', '<N' or '=N' (quote them from a shell). `--group type` is
+    /// the overview of a target with thirty thousand of these.
+    ///
+    /// `--exec COMMAND` takes the rest of the line as one session
+    /// command and runs it once per surviving future, the command's
+    /// omitted target filled with that future — `futures --with type
+    /// acquire --exec trace -v` traces every match, each run under the
+    /// future's table row. The target is the future itself, even one a
+    /// task holds: `trace` follows its own chain, `print` and `locals`
+    /// its own frames, where `future 0x…` would have selected the
+    /// holding task. One future's failure never stops the loop, the
+    /// listing closes with `Executed against N futures, M failed`, and
+    /// the command itself fails after the loop when M is not zero.
+    ///
+    /// `-v` prints each future's full block instead: who holds it and
+    /// where, its state and how deep its own chain runs, what it waits
+    /// on, and — listed under the same two counts a task's block
+    /// carries — what the census found inside it: the futures held in
+    /// its frames and the sets driven from them.
+    Futures {
+        /// Print each future's full block — where it sits, state,
+        /// depth, wait, and the finds inside it — rather than one
+        /// table row.
+        #[arg(long, short)]
+        verbose: bool,
+
+        /// Show at most this many futures — or, under --group, this
+        /// many buckets; a footer counts what the cut left out.
+        /// Everything is listed when the flag is absent and no
+        /// `set limit` stands.
+        #[arg(long, short = 'l', value_name = "N")]
+        limit: Option<usize>,
+
+        /// Keep only the futures whose FIELD matches ARG; repeat for
+        /// more clauses, which AND. Fields: type, state, waiting-on,
+        /// local (case-insensitive regexes); kind, task, rt, frame,
+        /// addr (exact); depth, holds, sets ('>N', '<N', '=N').
+        #[arg(long, num_args = 2, value_names = ["FIELD", "ARG"])]
+        with: Vec<String>,
+
+        /// Drop the futures whose FIELD matches ARG; the same fields
+        /// as --with.
+        #[arg(long, num_args = 2, value_names = ["FIELD", "ARG"])]
+        without: Vec<String>,
+
+        /// Bucket the surviving futures by FIELD's spelled value: one
+        /// `COUNT VALUE` row per bucket, most numerous first, each
+        /// with a few member addresses; a future with nothing in the
+        /// field lands in `<empty>`. With -v, every member's block
+        /// prints under its bucket.
+        #[arg(long, value_name = "FIELD")]
+        group: Option<String>,
+
+        /// Run a session command once per surviving future, under
+        /// that future as its omitted target. Takes the rest of the
+        /// line — so it comes last — and runs after --limit.
+        #[arg(
+            long,
+            num_args = 1..,
+            allow_hyphen_values = true,
+            value_name = "COMMAND",
+            conflicts_with = "group"
+        )]
+        exec: Vec<String>,
+
+        // Addresses are the singular selector's; kept so the refusal
+        // can name the way forward rather than clap's bare
+        // "unexpected argument".
+        #[arg(value_name = "ADDR", hide = true)]
+        addr: Vec<String>,
     },
 
     /// Print the waker-based task dependency graph: what every task is
@@ -1322,6 +1422,9 @@ pub struct Session<'b, T: Target> {
     /// The `tasks` table's rows, built from the analysis on first use
     /// and shared with the filters and the JSON printer.
     task_rows: OnceCell<Vec<tasks::TaskRow>>,
+    /// The `futures` table's rows, likewise; building them reads the
+    /// census and nothing more.
+    future_rows: OnceCell<Vec<futures::FutureRow>>,
     /// The `threads` table's rows, likewise; building them pays for
     /// the one unwind of every stack.
     thread_rows: OnceCell<Vec<threads::ThreadRow>>,
@@ -1444,6 +1547,7 @@ impl<'b, T: Target> Session<'b, T> {
             analysis: OnceCell::new(),
             relations: OnceCell::new(),
             task_rows: OnceCell::new(),
+            future_rows: OnceCell::new(),
             thread_rows: OnceCell::new(),
             settings: RefCell::new(settings::Settings::default()),
             cursor: RefCell::new(cursor::Cursor::default()),
@@ -1634,6 +1738,27 @@ pub fn dispatch<T: Target>(
         }
         Command::Future { addr, verbose } => {
             cursor::exec_future(session, addr, verbose, theme, out)?
+        }
+        Command::Futures {
+            verbose,
+            limit,
+            with,
+            without,
+            group,
+            exec,
+            addr,
+        } => {
+            session.note_version_ceiling();
+            let cmd = futures::FuturesCmd {
+                verbose,
+                limit: limit.or(session.settings.borrow().limit),
+                with,
+                without,
+                group,
+                exec,
+                addr,
+            };
+            futures::exec_futures(session, cmd, theme, out)?
         }
         Command::Graph { limit } => {
             let limit = limit.or(session.settings.borrow().limit);

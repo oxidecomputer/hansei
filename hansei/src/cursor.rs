@@ -219,7 +219,7 @@ pub(crate) fn exec_future<T: proc::Target>(
         // root inside a task's allocation is a task cursor in address
         // clothing (an id-less task), not a lone future.
         let addr = match session.cursor.borrow().root {
-            Some(TraceTarget::Future(addr)) if session.extents().locate(addr).is_none() => addr,
+            Some(TraceTarget::Future(addr)) if !task_rooted(session, addr) => addr,
             _ => return Err(anyhow!("no future selected")),
         };
         if verbose {
@@ -337,6 +337,43 @@ pub(crate) fn scope_to<T: proc::Target>(session: &Session<'_, T>, index: usize) 
         frame: 0,
         last_addr: Some(last_addr),
     };
+}
+
+/// Scope the cursor to one census future at frame #0 of its own chain
+/// — what `futures --exec` sets before each surviving future's run.
+/// The root is the future itself even when a task holds it, where
+/// `future 0x…` would collapse to that task at the holding frame: the
+/// loop runs commands against futures, so `trace` under it follows
+/// the future's own chain and `$_` is its own address. The lwp is the
+/// holding task's, mid-poll or not, the way `future` selects it.
+pub(crate) fn scope_to_future<T: proc::Target>(session: &Session<'_, T>, at: trace::FutureAt) {
+    let census = session.census();
+    let (addr, lwp) = match at {
+        trace::FutureAt::Held(i) => {
+            let h = &census.held[i];
+            (
+                h.addr,
+                polling_worker(&session.workers, &session.tasks.tasks[h.owner]),
+            )
+        }
+        trace::FutureAt::Child { set, child } => (census.sets[set].children[child].node, None),
+    };
+    *session.cursor.borrow_mut() = Cursor {
+        lwp,
+        root: Some(TraceTarget::Future(addr)),
+        frame: 0,
+        last_addr: Some(addr),
+    };
+}
+
+/// Whether a `Future` root is a task's in address clothing: rooted at
+/// the task's header, the way an id-less task roots and a `future`
+/// selection collapses. Anything else — a set child's node, or a held
+/// future's own address under `futures --exec` — is a chain the
+/// census answers for, even where its bytes sit inside a task's
+/// allocation.
+fn task_rooted<T: proc::Target>(session: &Session<'_, T>, addr: u64) -> bool {
+    matches!(session.extents().locate(addr), Some((_, 0)))
 }
 
 /// The one-line spelling of a lone future, by asking the census what
@@ -584,10 +621,10 @@ pub(crate) struct ResolvedChain<'b> {
     origin: Option<census::Via>,
 }
 
-/// Resolve the cursor root to its await chain. A `Future` root inside
-/// a task's allocation is that task's chain (an id-less task roots by
-/// its header address); one outside every task is asked of the census
-/// the way `trace 0x…` asks.
+/// Resolve the cursor root to its await chain. A `Future` root at a
+/// task's header address is that task's chain (an id-less task roots
+/// there); any other is asked of the census the way `trace 0x…` asks
+/// — a held future's own chain, inside its task's allocation or not.
 pub(crate) fn chain_of<'b, T: proc::Target>(
     session: &Session<'b, T>,
     root: TraceTarget,
@@ -608,7 +645,7 @@ pub(crate) fn chain_of<'b, T: proc::Target>(
     match root {
         TraceTarget::Task(id) => task_chain(task_index(session, id)?),
         TraceTarget::Future(addr) => {
-            if let Some((index, _)) = session.extents().locate(addr) {
+            if let Some((index, 0)) = session.extents().locate(addr) {
                 return task_chain(index);
             }
             let census = session.census();
@@ -1284,6 +1321,25 @@ mod tests {
         .expect("a task selects");
         let err = exec_future(&session, None, false, theme, &mut Vec::new())
             .expect_err("a task cursor holds no lone future");
+        assert_eq!(err.to_string(), "no future selected");
+
+        // A task rooted by its header address — the id-less spelling —
+        // is a task cursor too, refused with the same words rather
+        // than asked of the census.
+        let header = session
+            .tasks
+            .tasks
+            .iter()
+            .find(|t| t.task_id == Some(id))
+            .expect("the selected task is listed")
+            .addr
+            .0;
+        *session.cursor.borrow_mut() = Cursor {
+            root: Some(TraceTarget::Future(header)),
+            ..Cursor::default()
+        };
+        let err = exec_future(&session, None, false, theme, &mut Vec::new())
+            .expect_err("a header-rooted cursor holds no lone future");
         assert_eq!(err.to_string(), "no future selected");
     }
 

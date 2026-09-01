@@ -1,0 +1,53 @@
+---
+source: hansei/src/offline.rs
+description: "`futures --exec trace -l 1` over linux/gen-0007"
+---
+0xADDR  3  set 0xADDR  Unresumed — src/bin/gen-0007.rs:76  —  async fn gen_0007::leaf_01
+future 0xADDR: async fn gen_0007::leaf_01
+Child of: futures_util::stream::futures_unordered::FuturesUnordered<gen_0007::leaf_01> at 0xADDR (frame 1, `v0`), polled by task 3 — async fn gen_0007::driver_00
+
+#0  async fn      gen_0007::leaf_01
+      state Unresumed — src/bin/gen-0007.rs:76
+
+0xADDR  3  set 0xADDR  Unresumed — src/bin/gen-0007.rs:76  —  async fn gen_0007::leaf_01
+future 0xADDR: async fn gen_0007::leaf_01
+Child of: futures_util::stream::futures_unordered::FuturesUnordered<gen_0007::leaf_01> at 0xADDR (frame 1, `v0`), polled by task 3 — async fn gen_0007::driver_00
+
+#0  async fn      gen_0007::leaf_01
+      state Unresumed — src/bin/gen-0007.rs:76
+
+0xADDR  3  set 0xADDR  Unresumed — src/bin/gen-0007.rs:76  —  async fn gen_0007::leaf_01
+future 0xADDR: async fn gen_0007::leaf_01
+Child of: futures_util::stream::futures_unordered::FuturesUnordered<gen_0007::leaf_01> at 0xADDR (frame 1, `v0`), polled by task 3 — async fn gen_0007::driver_00
+
+#0  async fn      gen_0007::leaf_01
+      state Unresumed — src/bin/gen-0007.rs:76
+
+0xADDR  5  frame 1, `v0`  Unresumed — src/bin/gen-0007.rs:95  —  async fn gen_0007::holder_04<gen_0007::leaf_05>
+future 0xADDR: async fn gen_0007::leaf_05
+Held by: task 5 — async fn gen_0007::member_03 (frame 0, `inner`, via held future at 0xADDR)
+
+#0  async fn      gen_0007::leaf_05
+      state Unresumed — src/bin/gen-0007.rs:81
+
+0xADDR  5  frame 0, `inner`, via held future at 0xADDR  Unresumed — src/bin/gen-0007.rs:81  —  async fn gen_0007::leaf_05
+future 0xADDR: async fn gen_0007::leaf_05
+Held by: task 5 — async fn gen_0007::member_03 (frame 0, `inner`, via held future at 0xADDR)
+
+#0  async fn      gen_0007::leaf_05
+      state Unresumed — src/bin/gen-0007.rs:81
+
+0xADDR  7  frame 1, `v0`  Unresumed — src/bin/gen-0007.rs:102  —  async fn gen_0007::holder_08<gen_0007::leaf_09>
+future 0xADDR: async fn gen_0007::leaf_09
+Held by: task 7 — async fn gen_0007::member_07 (frame 0, `inner`, via held future at 0xADDR)
+
+#0  async fn      gen_0007::leaf_09
+      state Unresumed — src/bin/gen-0007.rs:86
+
+0xADDR  7  frame 0, `inner`, via held future at 0xADDR  Unresumed — src/bin/gen-0007.rs:86  —  async fn gen_0007::leaf_09
+future 0xADDR: async fn gen_0007::leaf_09
+Held by: task 7 — async fn gen_0007::member_07 (frame 0, `inner`, via held future at 0xADDR)
+
+#0  async fn      gen_0007::leaf_09
+      state Unresumed — src/bin/gen-0007.rs:86
+Executed against 7 futures, 0 failed

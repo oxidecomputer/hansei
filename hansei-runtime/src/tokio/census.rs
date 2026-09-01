@@ -311,6 +311,27 @@ pub struct HeldFuture {
 }
 
 impl FutureCensus {
+    /// A census over finds laid out by hand — what a listing test
+    /// builds when no fixture holds the shape it wants. Nothing was
+    /// walked, so nothing is spanned: [`Self::locate`] answers no
+    /// address, and the walk's own accounts are all zero.
+    pub fn from_finds(
+        held: Vec<HeldFuture>,
+        sets: Vec<FutureSet>,
+        join_sets: Vec<JoinSet>,
+    ) -> Self {
+        FutureCensus {
+            sets,
+            join_sets,
+            held,
+            spans: Vec::new(),
+            errors: Vec::new(),
+            capped: Capped::default(),
+            refused: 0,
+            stats: Stats::default(),
+        }
+    }
+
     /// How a find was reached, spelled for a reader: what the parent is
     /// and the address whose row prints it.
     pub fn describe(&self, via: Via) -> String {

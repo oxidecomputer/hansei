@@ -313,6 +313,12 @@ exclude_re = [
     # captured-stdout test can see — the same gap as
     # note_version_ceiling above.
     "replace print_warnings",
+    # The same stderr glue over the census: the per-find errors and the
+    # capped/refused notices `futures` opens with all go to stderr, and
+    # each spelling is pinned one call in (warning_lines, the
+    # census_warning_tests) — a captured-stdout test cannot see whether
+    # the call happened, the same gap as print_warnings above.
+    "replace print_census_warnings",
     # The interactive REPL loop wants a terminal on stdin, which no
     # automated test has: every scripted path through the same dispatch
     # is exercised through stdin scripts, and what this adds — reedline,

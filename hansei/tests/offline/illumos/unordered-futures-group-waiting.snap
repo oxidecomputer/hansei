@@ -1,0 +1,10 @@
+---
+source: hansei/src/offline.rs
+description: "`futures --group waiting-on` over illumos/unordered"
+---
+COUNT  WAITING ON                                   FUTURES
+    8  async fn unordered::leaf                     0xADDR, 0xADDR, 0xADDR, …
+    3  future tokio::sync::notify::Notified         0xADDR, 0xADDR, 0xADDR
+    2  async fn unordered::set_member               0xADDR, 0xADDR
+    1  async fn unordered::holder<unordered::leaf>  0xADDR
+4 groups
