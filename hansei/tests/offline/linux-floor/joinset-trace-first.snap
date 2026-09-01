@@ -1,6 +1,6 @@
 ---
 source: hansei/src/offline.rs
-description: "`trace 3` over linux-floor/joinset"
+description: "`trace 3 -n` over linux-floor/joinset"
 ---
 Task 3: async fn joinset::driver (idle)
 Spawned at: src/bin/joinset.rs:96:21

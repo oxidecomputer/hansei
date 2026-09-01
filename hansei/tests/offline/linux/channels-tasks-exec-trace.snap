@@ -1,6 +1,6 @@
 ---
 source: hansei/src/offline.rs
-description: "`tasks --exec trace` over linux/channels"
+description: "`tasks --exec trace -n` over linux/channels"
 ---
 3  idle  src/bin/channels.rs:30  future tokio::sync::notify::Notified  async fn channels::notify_waiter
 Task 3: async fn channels::notify_waiter (idle)

@@ -1,6 +1,6 @@
 ---
 source: hansei/src/offline.rs
-description: "`tasks --exec trace` over linux/local-set-timer"
+description: "`tasks --exec trace -n` over linux/local-set-timer"
 ---
 1  idle  1  src/bin/local-set-timer.rs:18  timer (deadline TS on the target's monotonic clock)  async fn local_set_timer::local_sleeper
 Task 1: async fn local_set_timer::local_sleeper (idle)

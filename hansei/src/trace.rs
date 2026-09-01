@@ -99,8 +99,10 @@ fn exec_trace_task<T: proc::Target>(
             print_trace_chain(session, &chain, index, None, opts, out)?;
             // A mid-poll task's chain stops at the last *committed*
             // await; the truth of what the poll is doing right now is
-            // on the polling thread's native stack, joined below.
-            if task.state.lifecycle() == Lifecycle::Running {
+            // on the polling thread's native stack, joined on under
+            // `-n` — and without it left to `threads` whole, heading
+            // and refusal spellings included.
+            if task.state.lifecycle() == Lifecycle::Running && opts.native {
                 print_native_continuation(session, task, task_id, &chain, opts, out)?;
             }
         }
@@ -1527,6 +1529,7 @@ mod native_section_tests {
         let mut out = Vec::new();
         let opts = TraceOpts {
             verbose,
+            native: true,
             render: RenderOpts {
                 depth: 4,
                 ugly: false,
@@ -2222,6 +2225,7 @@ mod future_trace_tests {
             let mut out = Vec::new();
             let opts = TraceOpts {
                 verbose: false,
+                native: false,
                 render: RenderOpts {
                     depth: 4,
                     ugly: false,
@@ -2643,6 +2647,7 @@ mod trace_render_tests {
         let mut out = Vec::new();
         let opts = TraceOpts {
             verbose,
+            native: false,
             render: RenderOpts {
                 depth: 4,
                 ugly: false,
@@ -2827,6 +2832,7 @@ Waiting on: a tokio::sync::Mutex (semaphore 0xADDR): 1 permit requested, 0 avail
         let mut out = Vec::new();
         let opts = TraceOpts {
             verbose: true,
+            native: false,
             render: RenderOpts {
                 depth: 4,
                 ugly: false,

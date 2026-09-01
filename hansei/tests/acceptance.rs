@@ -1983,7 +1983,8 @@ fn test_foreign_runtime_acceptance() {
 }
 
 /// A task cored mid-poll — spinning in a synchronous section of its
-/// poll — gets its native continuation joined onto the trace: the
+/// poll — gets its native continuation joined onto the trace under
+/// `-n`: the
 /// committed chain stops at the yield the fixture long since moved
 /// past, and the section below it names the spin frame the poll is
 /// actually in, numbered on from the chain, with the provenance footer
@@ -2006,7 +2007,7 @@ fn test_spin_poll_acceptance() {
 
         // Not [`hansei_ok`]: tracing a running task warns that its
         // state may be torn, and that warning is part of the assertion.
-        let out = hansei(&bundle, core, &format!("trace {}", task.id));
+        let out = hansei(&bundle, core, &format!("trace {} -n", task.id));
         assert!(
             out.status.success(),
             "hansei trace failed:\n{}",
@@ -2058,6 +2059,19 @@ fn test_spin_poll_acceptance() {
 
         // The provenance footer is gone: the section ends at its rows.
         assert!(!out.contains("scheduler frames above it omitted"), "{out}");
+
+        // Without --native the section is elided whole: the chain ends
+        // at its last committed frame, no mid-poll heading and no
+        // refusal spelling either.
+        let bare = hansei(&bundle, core, &format!("trace {}", task.id));
+        assert!(
+            bare.status.success(),
+            "hansei trace failed:\n{}",
+            String::from_utf8_lossy(&bare.stderr)
+        );
+        let bare = String::from_utf8(bare.stdout).expect("hansei output is UTF-8");
+        assert!(!bare.contains("mid-poll"), "{bare}");
+        assert!(!bare.contains(" native "), "{bare}");
 
         // The chain carries no register block of its own — that moved
         // to `regs` — which answers for this task because selecting a

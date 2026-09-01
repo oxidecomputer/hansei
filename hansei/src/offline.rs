@@ -66,7 +66,7 @@ fn commands(
         // The exec loop: each task's heading over the scoped command's
         // output, and — with a command that fails per task — the error
         // in place, the summary line, and the loop's own failure.
-        ("tasks-exec-trace", "tasks --exec trace".to_owned()),
+        ("tasks-exec-trace", "tasks --exec trace -n".to_owned()),
         (
             "tasks-exec-fail",
             "tasks --exec type no::such::Type".to_owned(),
@@ -116,7 +116,7 @@ fn commands(
     }
     if let Some(task) = session.tasks.tasks.first() {
         if let Some(id) = task.task_id {
-            list.push(("trace-first", format!("trace {id}")));
+            list.push(("trace-first", format!("trace {id} -n")));
         }
         list.push(("whatis-first", format!("whatis {:#x}", task.addr.0)));
         // The cursor commands: select the first task, then drive

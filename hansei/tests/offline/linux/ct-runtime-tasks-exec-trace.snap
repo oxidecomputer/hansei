@@ -1,6 +1,6 @@
 ---
 source: hansei/src/offline.rs
-description: "`tasks --exec trace` over linux/ct-runtime"
+description: "`tasks --exec trace -n` over linux/ct-runtime"
 ---
 1  idle  src/bin/ct-runtime.rs:13  timer (deadline TS on the target's monotonic clock)  async fn ct_runtime::sleeper
 Task 1: async fn ct_runtime::sleeper (idle)

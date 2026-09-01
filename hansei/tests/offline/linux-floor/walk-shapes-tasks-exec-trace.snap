@@ -1,6 +1,6 @@
 ---
 source: hansei/src/offline.rs
-description: "`tasks --exec trace` over linux-floor/walk-shapes"
+description: "`tasks --exec trace -n` over linux-floor/walk-shapes"
 ---
 1  idle  0  src/bin/walk-shapes.rs:103  future tokio::sync::notify::Notified  async fn walk_shapes::chained
 Task 1: async fn walk_shapes::chained (idle)

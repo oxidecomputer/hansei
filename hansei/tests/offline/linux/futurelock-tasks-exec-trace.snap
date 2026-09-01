@@ -1,6 +1,6 @@
 ---
 source: hansei/src/offline.rs
-description: "`tasks --exec trace` over linux/futurelock"
+description: "`tasks --exec trace -n` over linux/futurelock"
 ---
 5  idle  src/bin/futurelock.rs:28  a tokio::sync::Mutex (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 5  async block futurelock::main::{async_block#0}
 Task 5: async block futurelock::main::{async_block#0} (idle)

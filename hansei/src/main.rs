@@ -938,12 +938,14 @@ pub enum Command {
     /// Either way the future type is resolved automatically, via the
     /// symbol join for a task and via the census for an address.
     ///
-    /// A task that is mid-poll continues past its last committed
-    /// await into the polling thread's native stack: the frames below
-    /// the task's own poll fn, numbered on from the chain, with panic
-    /// plumbing folded and the fatal signal attributed when this
-    /// thread took it. `threads` shows the same stack raw, and
-    /// `regs` the thread's registers.
+    /// A task that is mid-poll continues, under -n/--native, past
+    /// its last committed await into the polling thread's native
+    /// stack: the frames below the task's own poll fn, numbered on
+    /// from the chain, with panic plumbing folded and the fatal
+    /// signal attributed when this thread took it. Without the flag
+    /// the chain ends at its last committed await, nothing native
+    /// under it. `threads` shows the same stack raw, and `regs` the
+    /// thread's registers.
     ///
     /// Under a thread cursor whose lwp polls no task, a bare `trace`
     /// prints that lwp's native backtrace instead.
@@ -961,6 +963,13 @@ pub enum Command {
         /// a folded panic-plumbing run frame by frame.
         #[arg(long, short)]
         verbose: bool,
+
+        /// Continue a mid-poll task's chain into the polling thread's
+        /// native stack — the frames below the task's own poll fn.
+        /// Without the flag the trace ends at the last committed
+        /// await, the native section elided whole.
+        #[arg(long, short = 'n')]
+        native: bool,
 
         /// Disable every type's custom formatter and show the raw
         /// structural view of values instead. The flag only ever turns
@@ -1178,6 +1187,9 @@ fn parse_runtime_scope(s: &str) -> std::result::Result<RuntimeScope, String> {
 /// render options plus the flags only tracing takes.
 struct TraceOpts<'a> {
     verbose: bool,
+    /// Join a mid-poll task's native continuation onto the chain
+    /// (`-n`); without it the trace ends at the last committed await.
+    native: bool,
     render: RenderOpts,
     theme: output::Theme,
     /// The allocator to corroborate every printed value against, where
@@ -1740,6 +1752,7 @@ pub fn dispatch<T: Target>(
         Command::Trace {
             target,
             verbose,
+            native,
             ugly,
         } => {
             session.note_version_ceiling();
@@ -1763,6 +1776,7 @@ pub fn dispatch<T: Target>(
             let heap = session.heap_view();
             let opts = TraceOpts {
                 verbose,
+                native,
                 render,
                 theme,
                 heap: heap.as_ref().map(|view| view as &dyn reify::Heap),
