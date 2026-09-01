@@ -2056,13 +2056,8 @@ fn test_spin_poll_acceptance() {
             .collect();
         assert_eq!(numbers, (0..numbers.len()).collect::<Vec<_>>(), "{out}");
 
-        // The provenance footer routes back to the raw stack.
-        assert!(
-            out.contains(&format!(
-                "scheduler frames above it omitted — `threads {lwp}` shows the raw stack)"
-            )),
-            "{out}"
-        );
+        // The provenance footer is gone: the section ends at its rows.
+        assert!(!out.contains("scheduler frames above it omitted"), "{out}");
 
         // The chain carries no register block of its own — that moved
         // to `regs` — which answers for this task because selecting a

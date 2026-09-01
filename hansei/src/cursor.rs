@@ -396,38 +396,20 @@ pub(crate) fn exec_thread<T: proc::Target>(
     Ok(())
 }
 
-/// Move the cursor to an lwp: the thread, and the task it is polling
-/// if any — a thread polling nothing leaves no root, and the
-/// task-taking commands answer `no task selected` until `task` moves
-/// on. `$_` becomes the polled task's stage, else the lwp's stack
-/// pointer.
+/// Move the cursor to an lwp: the thread alone. No task root comes
+/// with it — even for a thread mid-poll — so the task-taking commands
+/// answer `no task selected` until `task` moves on, and a bare
+/// `trace` walks the native stack; the hybrid trace is the task
+/// cursor's. `$_` becomes the lwp's stack pointer.
 pub(crate) fn select_thread<T: proc::Target>(session: &Session<'_, T>, tid: u32) -> Result<()> {
-    if !session.lwps.iter().any(|l| l.tid == tid) {
+    let Some(lwp) = session.lwps.iter().find(|l| l.tid == tid) else {
         return Err(threads::no_such_thread(session.lwps.len(), tid));
-    }
-    let worker = session.workers.iter().find(|w| w.tid == tid);
-    let polled = worker.and_then(|w| tasks::polled_task(w.current_task_id, &session.tasks));
-    let (root, last_addr) = match polled {
-        Some(id) => {
-            let index = task_index(session, id).expect("polled_task returns owned ids");
-            let task = &session.tasks.tasks[index];
-            let base = frame_base(session, task, 0).unwrap_or(task.addr.0);
-            (Some(TraceTarget::Task(id)), Some(base))
-        }
-        None => (
-            None,
-            session
-                .lwps
-                .iter()
-                .find(|l| l.tid == tid)
-                .map(|l| l.regs.rsp),
-        ),
     };
     *session.cursor.borrow_mut() = Cursor {
         lwp: Some(tid),
-        root,
+        root: None,
         frame: 0,
-        last_addr,
+        last_addr: Some(lwp.regs.rsp),
     };
     Ok(())
 }

@@ -14,11 +14,11 @@ use reify::Value;
 use std::fmt;
 use std::io::{self, Write};
 
-/// A bare `trace` under a thread cursor whose lwp polls no task: the
-/// lwp's native backtrace, the same walk `threads` shows, without the
-/// runtime state around it. A thread mid-poll never lands here — its
-/// polled task roots the cursor, and the task trace glues the native
-/// continuation on itself.
+/// A bare `trace` under a thread cursor: the lwp's native backtrace,
+/// the same walk `threads` shows, without the runtime state around
+/// it. The hybrid trace — the await chain with the native
+/// continuation glued on — belongs to the task cursor: `task` selects
+/// one, mid-poll or not.
 pub(crate) fn exec_trace_lwp<T: proc::Target>(
     session: &Session<'_, T>,
     tid: u32,
@@ -995,17 +995,6 @@ fn print_native_section(
             }
         }
     }
-    // The provenance footer: what anchored the join, and that the
-    // scheduler frames outward of it never print.
-    writeln!(
-        out,
-        "{}",
-        opts.theme.dim(&format!(
-            "(below {}; scheduler frames above it omitted — \
-             `threads {lwp}` shows the raw stack)",
-            frames[joined.anchor].name
-        ))
-    )?;
     Ok(())
 }
 
@@ -1583,8 +1572,6 @@ mid-poll on lwp 115 — the poll is currently at:
 #5  native        vmem_xalloc
 #6  native        mutex_lock
 #7  native        __lwp_park
-(below tokio::runtime::task::raw::poll; scheduler frames above it omitted \
-— `threads 115` shows the raw stack)
 "
         );
     }
@@ -1621,8 +1608,6 @@ mid-poll on lwp 7 — the poll is currently at:
 #2  native        panic plumbing: core::panicking::panic_fmt … _lwp_kill \
 (10 frames; -v shows each)
 #3  signal        SIGABRT — raised by the panic above
-(below tokio::runtime::task::raw::poll; scheduler frames above it omitted \
-— `threads 7` shows the raw stack)
 "
         );
 
@@ -1668,8 +1653,6 @@ mid-poll on lwp 115 — the poll is currently at:
 #3  native        rama::stream::next
 #4  native        rama::service::dispatch
 #5  signal        SIGSEGV (SEGV_MAPERR) — the call from #4 landed at 0x0, unmapped
-(below tokio::runtime::task::raw::poll; scheduler frames above it omitted \
-— `threads 115` shows the raw stack)
 "
         );
     }
@@ -1723,8 +1706,6 @@ mid-poll on lwp 115 — the poll is currently at:
             "
 mid-poll on lwp 12 — the poll is at the chain's leaf frame; \
 nothing deeper is on the native stack
-(below task::raw::poll; scheduler frames above it omitted \
-— `threads 12` shows the raw stack)
 "
         );
     }

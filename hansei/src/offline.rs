@@ -162,9 +162,8 @@ fn commands(
         if let Some(lwp) = session.lwps.first() {
             list.push(("thread-select", format!("thread {}", lwp.tid)));
             list.push(("regs-thread", "regs".to_owned()));
-            // A bare `trace` under the same thread cursor: the lwp
-            // polls no task in this capture, so the answer is its
-            // native backtrace.
+            // A bare `trace` under the same thread cursor answers
+            // with the lwp's native backtrace.
             list.push(("trace-thread", "trace".to_owned()));
         }
     }

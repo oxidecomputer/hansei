@@ -849,11 +849,12 @@ pub enum Command {
         task: Vec<String>,
     },
 
-    /// Select a thread as the cursor, by its lwp id. Selecting one
-    /// also selects the task it is polling, if any; with no task, the
-    /// task-taking commands answer `no task selected` until `task`
-    /// moves on. Bare `thread` prints the cursor's thread as its table
-    /// row; `-v`, `--frames` or `--registers` its full block.
+    /// Select a thread as the cursor, by its lwp id. No task root
+    /// comes with it — the task-taking commands answer `no task
+    /// selected` until `task` moves on — and a bare `trace` walks the
+    /// thread's native stack; the hybrid trace is the task cursor's.
+    /// Bare `thread` prints the cursor's thread as its table row;
+    /// `-v`, `--frames` or `--registers` its full block.
     Thread {
         /// The lwp id (see `threads`). Naming none prints the
         /// cursor's thread.
@@ -1737,9 +1738,9 @@ pub fn dispatch<T: Target>(
             session.note_version_ceiling();
             let render = render.resolve(&session.settings.borrow());
             let Some(target) = target.or(session.cursor.borrow().root) else {
-                // A thread cursor polling no task still has a stack
-                // worth walking: trace answers with the native
-                // backtrace rather than refusing.
+                // A thread cursor has a stack worth walking: trace
+                // answers with the native backtrace rather than
+                // refusing. The hybrid trace is the task cursor's.
                 if let Some(tid) = session.cursor.borrow().lwp {
                     trace::exec_trace_lwp(session, tid, out)?;
                     return Ok(Flow::Continue);
