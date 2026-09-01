@@ -930,6 +930,9 @@ pub enum Command {
     /// plumbing folded and the fatal signal attributed when this
     /// thread took it. `threads` shows the same stack raw, and
     /// `regs` the thread's registers.
+    ///
+    /// Under a thread cursor whose lwp polls no task, a bare `trace`
+    /// prints that lwp's native backtrace instead.
     Trace {
         /// What to trace: a decimal task id from `tasks`, or a future
         /// address from `tasks --futures`, in hex with a required
@@ -1734,6 +1737,13 @@ pub fn dispatch<T: Target>(
             session.note_version_ceiling();
             let render = render.resolve(&session.settings.borrow());
             let Some(target) = target.or(session.cursor.borrow().root) else {
+                // A thread cursor polling no task still has a stack
+                // worth walking: trace answers with the native
+                // backtrace rather than refusing.
+                if let Some(tid) = session.cursor.borrow().lwp {
+                    trace::exec_trace_lwp(session, tid, out)?;
+                    return Ok(Flow::Continue);
+                }
                 anyhow::bail!(
                     "no task selected; trace takes a decimal task id or a 0x future address"
                 );
