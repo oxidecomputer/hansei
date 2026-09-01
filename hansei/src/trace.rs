@@ -245,9 +245,12 @@ pub(crate) enum FutureAt {
 /// Resolve `addr` to the census future it names: a held future's
 /// address, a set child's node address, or any pointer into either —
 /// an interior pointer picks the tightest containing future, since a
-/// by-value awaitee sits inside the future holding it. A miss says
-/// what the address *is* whenever that can be said: a set itself, a
-/// completed child, a task's own allocation.
+/// by-value awaitee sits inside the future holding it. So does an
+/// address two held futures print: a future held as another's first
+/// member starts where its holder starts, and the address names the
+/// inner one, the way an interior pointer would. A miss says what the
+/// address *is* whenever that can be said: a set itself, a completed
+/// child, a task's own allocation.
 pub(crate) fn future_at(
     view: &BundleView<'_>,
     list: &bundle::TaskList,
@@ -256,7 +259,14 @@ pub(crate) fn future_at(
     impls: &names::ImplFold,
     addr: u64,
 ) -> Result<FutureAt> {
-    if let Some(index) = census.held.iter().position(|h| h.addr == addr) {
+    let size_of = |h: &census::HeldFuture| view.ty(h.ty).map_or(u64::MAX, |ty| ty.size());
+    let exact = census
+        .held
+        .iter()
+        .enumerate()
+        .filter(|(_, h)| h.addr == addr)
+        .min_by_key(|(_, h)| size_of(h));
+    if let Some((index, _)) = exact {
         return Ok(FutureAt::Held(index));
     }
     if let Some((set_index, child_index, _)) = census.locate(addr) {
@@ -2142,6 +2152,45 @@ mod future_trace_tests {
                 "resolved to {:#x} (size {size:#x}), which does not contain {:#x}",
                 h.addr,
                 future1.addr + 1
+            );
+        });
+    }
+
+    /// Two held futures can print one address — a future held as the
+    /// first member of another starts where its holder starts — and
+    /// it resolves to the inner one, the way an interior pointer picks
+    /// the tightest containing future.
+    #[test]
+    fn test_a_shared_address_resolves_to_the_inner_future() {
+        with_target("unordered", |ctx, list, extents, census| {
+            let (holder, h) = census
+                .held
+                .iter()
+                .enumerate()
+                .find(|(_, h)| h.local == "nested_hold")
+                .unwrap_or_else(|| panic!("no held `nested_hold` in {:#?}", census.held));
+            let (inner, i) = census
+                .held
+                .iter()
+                .enumerate()
+                .find(|(_, i)| i.via == Some(census::Via::Held(holder)))
+                .unwrap_or_else(|| {
+                    panic!("nothing held inside `nested_hold` in {:#?}", census.held)
+                });
+            assert_eq!(i.addr, h.addr, "the fixture no longer shares the address");
+
+            let found = future_at(
+                &ctx.view,
+                list,
+                extents,
+                census,
+                &hansei_bundle::names::ImplFold::default(),
+                h.addr,
+            )
+            .expect("the shared address resolves");
+            assert!(
+                matches!(found, FutureAt::Held(index) if index == inner),
+                "resolved to {found:?}, not the inner future {inner}"
             );
         });
     }
