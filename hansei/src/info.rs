@@ -307,8 +307,8 @@ fn taken_on(lwp: u32, pc: Option<u64>, sym: impl Fn(u64) -> Option<String>) -> S
 
 /// `info objects`: every file-backed object, with whether this target
 /// can source its symbols and its CFI — asked of the symbolizer's and
-/// the unwinder's own lookups, so a `(walk ended: no CFI …)` note in a
-/// stack has its reason surfaced here upfront.
+/// the unwinder's own lookups, so a stack cut short by missing CFI
+/// has its reason surfaced here.
 fn objects<T: Target>(session: &Session<'_, T>, out: &mut dyn io::Write) -> Result<()> {
     let survey = unwind::cfi_survey(session.proc)?;
     if survey.is_empty() {

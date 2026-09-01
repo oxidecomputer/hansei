@@ -12,7 +12,6 @@ lwp 3178027  polling no task
   not in the scheduler's run loop
   stack:
     0xADDR 
-    (walk ended: no CFI for /usr/lib64/libc.so.6 (none of its pages are in the core, and the backing file is not on this machine); the frame-pointer walk found nothing below 0xADDR)
 
 lwp 3178029  last polled task 2
   thread_id: core::option::Option<tokio::runtime::thread_id::ThreadId>::None
@@ -102,7 +101,6 @@ lwp 3178029  last polled task 2
     0xADDR 
     0xADDR   (frame-pointer walk)
     0xADDR   (frame-pointer walk)
-    (walk ended: no CFI for /usr/lib64/libc.so.6 (none of its pages are in the core, and the backing file is not on this machine); the frame-pointer walk found nothing below 0xADDR)
 
 lwp 3178030  last polled task 1
   thread_id: core::option::Option<tokio::runtime::thread_id::ThreadId>::None
@@ -189,5 +187,4 @@ lwp 3178030  last polled task 1
         },
     }
   stack:
-    0xADDR 
-    (walk ended: no CFI for /usr/lib64/libc.so.6 (none of its pages are in the core, and the backing file is not on this machine); the frame-pointer walk found nothing below 0xADDR)
+    0xADDR

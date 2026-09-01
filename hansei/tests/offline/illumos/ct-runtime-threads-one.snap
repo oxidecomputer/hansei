@@ -70,4 +70,3 @@ lwp 1  polling no task
     0xADDR main  (frame-pointer walk)
     0xADDR _start_crt  (frame-pointer walk)
     0xADDR _start  (frame-pointer walk)
-    (walk ended: no CFI for /data/durin/test-programs/fixtures/bin-a/ct-runtime (failed to parse the ELF header: Invalid magic number: 0xADDR); the frame-pointer walk found nothing below 0xADDR)
