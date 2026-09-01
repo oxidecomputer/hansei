@@ -657,15 +657,15 @@ fn trace(bundle: &Path, core: &Path, task_id: &str, verbose: bool) -> String {
     trace_opts(bundle, core, task_id, verbose, false)
 }
 
-/// Like [`trace`], but also toggles `--ugly` (the raw structural view, with
-/// every type's custom formatter suppressed).
+/// Like [`trace`], but under `set ugly on` (the raw structural view,
+/// with every type's custom formatter suppressed).
 fn trace_opts(bundle: &Path, core: &Path, task_id: &str, verbose: bool, ugly: bool) -> String {
     let mut command = format!("trace {task_id}");
     if verbose {
         command.push_str(" --verbose");
     }
     if ugly {
-        command.push_str(" --ugly");
+        command = format!("set ugly on; {command}");
     }
     hansei_ok(bundle, core, &command)
 }
@@ -1397,11 +1397,11 @@ fn test_local_values_come_back_from_the_target() {
     });
 }
 
-/// `--ugly` suppresses every type's custom formatter and falls back to the
+/// `set ugly on` suppresses every type's custom formatter and falls back to the
 /// raw structural view. The simple-await task keeps a spread of
 /// custom-formatted locals live across its park — an IP address, a borrowed
 /// `&str`, an owned `String` — each of which reads as its decoded value
-/// normally and as its underlying representation under `--ugly`.
+/// normally and as its underlying representation under `set ugly on`.
 #[test]
 fn test_ugly_locals_acceptance() {
     let bundle = fixtures().bundle("simple-await");
@@ -1424,28 +1424,28 @@ fn test_ugly_locals_acceptance() {
             "{pretty}"
         );
 
-        // --ugly: the very same locals render through their structure, and the
+        // The raw view: the very same locals render through their structure, and the
         // formatted forms are gone entirely.
         let ugly = trace_opts(&bundle, core, &task.id, true, true);
         assert!(
             !ugly.contains("192.0.2.1"),
-            "--ugly still formatted the IP:\n{ugly}"
+            "the raw view still formatted the IP:\n{ugly}"
         );
         assert!(
             !ugly.contains(r#""borrowed\ntext""#),
-            "--ugly still formatted the &str:\n{ugly}"
+            "the raw view still formatted the &str:\n{ugly}"
         );
         assert!(
             ugly.contains("core::net::ip_addr::Ipv4Addr {"),
-            "--ugly IP is not structural:\n{ugly}"
+            "the raw-view IP is not structural:\n{ugly}"
         );
         assert!(
             ugly.contains("&str {") && ugly.contains("length: 13"),
-            "--ugly &str is not structural:\n{ugly}"
+            "the raw-view &str is not structural:\n{ugly}"
         );
         assert!(
             ugly.contains("alloc::string::String {"),
-            "--ugly String is not structural:\n{ugly}"
+            "the raw-view String is not structural:\n{ugly}"
         );
     });
 }
@@ -1603,13 +1603,13 @@ fn test_print_renders_an_address_as_a_type() {
         assert!(printed.contains("closed=false"), "{printed}");
         assert!(printed.contains("permits=0"), "{printed}");
 
-        // `--ugly` falls back to the raw structural view: the decoded
+        // `set ugly on` falls back to the raw structural view: the decoded
         // permit word is gone and the underlying members show as
         // themselves.
         let ugly = hansei_ok(
             &bundle,
             core,
-            &format!("print {addr} tokio::sync::batch_semaphore::Semaphore --ugly"),
+            &format!("set ugly on; print {addr} tokio::sync::batch_semaphore::Semaphore"),
         );
         assert!(!ugly.contains("closed=false"), "{ugly}");
         assert!(ugly.contains("permits"), "{ugly}");

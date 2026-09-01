@@ -835,18 +835,18 @@ mod tests {
 
     /// `print`'s positionals are one root spelling plus path tokens,
     /// split apart by the command itself — clap only collects them —
-    /// with the render flags still parsed out from among them.
+    /// and nothing else — the retired render flags are refused.
     #[test]
     fn test_print_collects_root_and_path_tokens() {
-        let Command::Print { args, render } =
-            Line::try_parse_from(["print", "0x7f10", "Vec<(u64, u64)>", ".a", "-u"])
+        let Command::Print { args } =
+            Line::try_parse_from(["print", "0x7f10", "Vec<(u64, u64)>", ".a"])
                 .expect("print takes a root and path tokens")
                 .command
         else {
             panic!("print parsed as another command");
         };
         assert_eq!(args, ["0x7f10", "Vec<(u64, u64)>", ".a"]);
-        assert!(render.ugly);
+        assert!(Line::try_parse_from(["print", "0x7f10", "-u"]).is_err());
 
         // Bare `print` is the cursor frame: nothing is required.
         let Command::Print { args, .. } = Line::try_parse_from(["print"])
@@ -1242,13 +1242,13 @@ mod tests {
             panic!("down parses");
         };
         assert_eq!(then, ["locals"]);
-        let Command::Up { then } = Line::try_parse_from(["up", "print", ".count", "--ugly"])
+        let Command::Up { then } = Line::try_parse_from(["up", "trace", "-n"])
             .expect("the trailing command keeps its own flags")
             .command
         else {
             panic!("up parses");
         };
-        assert_eq!(then, ["print", ".count", "--ugly"]);
+        assert_eq!(then, ["trace", "-n"]);
         assert!(matches!(
             Line::try_parse_from(["locals"])
                 .expect("locals parses")
@@ -1289,20 +1289,20 @@ mod tests {
         assert!(Line::try_parse_from(["set", "depth", "4", "5"]).is_err());
     }
 
-    /// The one render flag left: `--ugly` is carried when given, and
-    /// the retired render knobs are refused — `set` owns them now.
+    /// The render knobs are the session's (`set`): the retired flags
+    /// are refused wherever they used to parse.
     #[test]
-    fn test_render_flags_carry_only_what_was_given() {
-        let Command::Print { render, .. } = Line::try_parse_from(["print", "--ugly"])
-            .expect("print takes render flags")
-            .command
-        else {
-            panic!("print parsed as another command");
-        };
-        assert!(render.ugly);
-        assert!(Line::try_parse_from(["print", "-d", "6"]).is_err());
-        assert!(Line::try_parse_from(["print", "--max-string-len", "4"]).is_err());
-        assert!(Line::try_parse_from(["print", "--max-array-values", "4"]).is_err());
+    fn test_render_flags_are_refused() {
+        for line in [
+            ["print", "-d", "6"].as_slice(),
+            &["print", "--ugly"],
+            &["print", "--max-string-len", "4"],
+            &["print", "--max-array-values", "4"],
+            &["trace", "-u"],
+            &["threads", "--ugly"],
+        ] {
+            assert!(Line::try_parse_from(line).is_err(), "{line:?}");
+        }
     }
 
     /// `history` takes an optional count and nothing else.
