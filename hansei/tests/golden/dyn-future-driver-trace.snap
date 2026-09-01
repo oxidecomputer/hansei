@@ -2,12 +2,9 @@
 source: hansei/tests/acceptance.rs
 expression: actual
 ---
-Task #driver: async fn dyn_future::driver (idle)
-Defined at: src/bin/dyn-future.rs:24
-
-#0  async fn      dyn_future::driver
-      awaiting at src/bin/dyn-future.rs:36 (Suspend0, 1 local)
+#0  future        tokio::sync::oneshot::Receiver<u32>
+      (<no_state>, 1 local)
 #1  async fn      dyn_future::boxed_leaf [dyn]
       awaiting at src/bin/dyn-future.rs:12 (Suspend0, 0 locals)
-#2  future        tokio::sync::oneshot::Receiver<u32>
-      (<no_state>, 1 local)
+#2  async fn      dyn_future::driver
+      awaiting at src/bin/dyn-future.rs:36 (Suspend0, 1 local)

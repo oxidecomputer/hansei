@@ -11,9 +11,9 @@ lwp 1  polling no task
   budget: core::option::Option<u8>::None
   not in the scheduler's run loop
   stack:
-    0xADDR 
-    0xADDR   (frame-pointer walk)
-    0xADDR   (frame-pointer walk)
+    0xADDR  
+    0xADDR    (frame-pointer walk)
+    0xADDR    (frame-pointer walk)
 
 lwp 2  last polled task 1
   thread_id: core::option::Option<tokio::runtime::thread_id::ThreadId>::None
@@ -100,9 +100,9 @@ lwp 2  last polled task 1
         },
     }
   stack:
-    0xADDR 
-    0xADDR   (frame-pointer walk)
-    0xADDR   (frame-pointer walk)
+    0xADDR  
+    0xADDR    (frame-pointer walk)
+    0xADDR    (frame-pointer walk)
 
 lwp 3  last polled task 2
   thread_id: core::option::Option<tokio::runtime::thread_id::ThreadId>::None
@@ -189,9 +189,9 @@ lwp 3  last polled task 2
         },
     }
   stack:
-    0xADDR 
-    0xADDR <mio::poll::Poll>::poll  (frame-pointer walk)
-    0xADDR <tokio::runtime::io::driver::Driver>::turn  (frame-pointer walk)
+    0xADDR  
+    0xADDR  <mio::poll::Poll>::poll  (frame-pointer walk)
+    0xADDR  <tokio::runtime::io::driver::Driver>::turn  (frame-pointer walk)
 
 lwp 4  last polled task 3
   thread_id: core::option::Option<tokio::runtime::thread_id::ThreadId>::None
@@ -278,9 +278,9 @@ lwp 4  last polled task 3
         },
     }
   stack:
-    0xADDR 
-    0xADDR   (frame-pointer walk)
-    0xADDR   (frame-pointer walk)
+    0xADDR  
+    0xADDR    (frame-pointer walk)
+    0xADDR    (frame-pointer walk)
 
 lwp 5  last polled task 4
   thread_id: core::option::Option<tokio::runtime::thread_id::ThreadId>::None
@@ -367,6 +367,6 @@ lwp 5  last polled task 4
         },
     }
   stack:
-    0xADDR 
-    0xADDR   (frame-pointer walk)
-    0xADDR   (frame-pointer walk)
+    0xADDR  
+    0xADDR    (frame-pointer walk)
+    0xADDR    (frame-pointer walk)

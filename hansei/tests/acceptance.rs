@@ -1040,8 +1040,8 @@ fn drop_spawn_line(out: &str) -> String {
         })
 }
 
-/// The trace header's `Spawned at` line, which a target carries only
-/// under `tokio_unstable` instrumentation.
+/// The `task` selection's `Spawned at` line, which a target carries
+/// only under `tokio_unstable` instrumentation.
 ///
 /// Held out of a golden rather than in it: whether the line is there at
 /// all is the cell's, not hansei's, and one golden serves every cell.
@@ -1050,8 +1050,8 @@ fn spawn_line(loc: &str) -> Option<String> {
     cell().unstable.then(|| format!("Spawned at: {loc}"))
 }
 
-/// Assert a trace header records `loc` as the spawn site — or records
-/// no site at all, on a cell whose target could not.
+/// Assert a `task` selection records `loc` as the spawn site — or
+/// records no site at all, on a cell whose target could not.
 fn assert_spawned_at(trace: &str, loc: &str) {
     let line = trace
         .lines()
@@ -1289,7 +1289,10 @@ fn test_simple_await_acceptance() {
         assert_eq!(task.defined, "src/bin/simple-await.rs:17");
 
         let out = trace(&bundle, core, &task.id, false);
-        assert_spawned_at(&out, "src/bin/simple-await.rs:75:21");
+        assert_spawned_at(
+            &hansei_ok(&bundle, core, &format!("task {}", task.id)),
+            "src/bin/simple-await.rs:75:21",
+        );
         golden(
             "simple-await-trace",
             &Symbols::new().task(&task.id, "work").apply(&out),
@@ -1461,7 +1464,10 @@ fn test_nested_await_acceptance() {
         assert_eq!(task.defined, "src/bin/nested-await.rs:16");
 
         let out = trace(&bundle, core, &task.id, false);
-        assert_spawned_at(&out, "src/bin/nested-await.rs:33:21");
+        assert_spawned_at(
+            &hansei_ok(&bundle, core, &format!("task {}", task.id)),
+            "src/bin/nested-await.rs:33:21",
+        );
         golden(
             "nested-await-trace",
             &Symbols::new().task(&task.id, "outer").apply(&out),
@@ -1485,7 +1491,10 @@ fn test_dyn_future_acceptance() {
         assert_eq!(driver.spawned, spawned("src/bin/dyn-future.rs:53:21"));
         assert_eq!(driver.defined, "src/bin/dyn-future.rs:24");
         let out = trace(&bundle, core, &driver.id, false);
-        assert_spawned_at(&out, "src/bin/dyn-future.rs:53:21");
+        assert_spawned_at(
+            &hansei_ok(&bundle, core, &format!("task {}", driver.id)),
+            "src/bin/dyn-future.rs:53:21",
+        );
         golden(
             "dyn-future-driver-trace",
             &Symbols::new().task(&driver.id, "driver").apply(&out),
@@ -1496,7 +1505,10 @@ fn test_dyn_future_acceptance() {
         assert_eq!(member.spawned, spawned("src/bin/dyn-future.rs:28:9"));
         assert_eq!(member.defined, "src/bin/dyn-future.rs:15");
         let out = trace(&bundle, core, &member.id, false);
-        assert_spawned_at(&out, "src/bin/dyn-future.rs:28:9");
+        assert_spawned_at(
+            &hansei_ok(&bundle, core, &format!("task {}", member.id)),
+            "src/bin/dyn-future.rs:28:9",
+        );
         golden(
             "dyn-future-member-trace",
             &Symbols::new().task(&member.id, "member").apply(&out),
@@ -1527,7 +1539,10 @@ fn test_futurelock_acceptance() {
         // task is waiting for a lock it holds itself, spelled once
         // rather than masked into two anonymous ids.
         let out = trace(&bundle, core, &task.id, false);
-        assert_spawned_at(&out, "src/bin/futurelock.rs:16:17");
+        assert_spawned_at(
+            &hansei_ok(&bundle, core, &format!("task {}", task.id)),
+            "src/bin/futurelock.rs:16:17",
+        );
         golden(
             "futurelock-trace",
             &Symbols::new().task(&task.id, "blocked").apply(&out),
@@ -1635,7 +1650,10 @@ fn test_many_tasks_acceptance() {
         // the one thing symbolized out of it.
         let task = &rows[0];
         let out = trace(&bundle, core, &task.id, false);
-        assert_spawned_at(&out, "src/bin/many-tasks.rs:27:13");
+        assert_spawned_at(
+            &hansei_ok(&bundle, core, &format!("task {}", task.id)),
+            "src/bin/many-tasks.rs:27:13",
+        );
         golden(
             "many-tasks-trace",
             &Symbols::new().task(&task.id, "park").apply(&out),
@@ -1668,11 +1686,17 @@ fn test_sleep_join_acceptance() {
         };
 
         let out = trace(&bundle, core, &sleeper.id, false);
-        assert_spawned_at(&out, "src/bin/sleep-join.rs:30:22");
+        assert_spawned_at(
+            &hansei_ok(&bundle, core, &format!("task {}", sleeper.id)),
+            "src/bin/sleep-join.rs:30:22",
+        );
         golden("sleep-join-sleeper-trace", &symbols().apply(&out));
 
         let out = trace(&bundle, core, &joiner.id, false);
-        assert_spawned_at(&out, "src/bin/sleep-join.rs:31:23");
+        assert_spawned_at(
+            &hansei_ok(&bundle, core, &format!("task {}", joiner.id)),
+            "src/bin/sleep-join.rs:31:23",
+        );
         golden("sleep-join-joiner-trace", &symbols().apply(&out));
     });
 }
@@ -1694,7 +1718,10 @@ fn test_ct_runtime_acceptance() {
         assert_eq!(acquirer.state, "idle");
 
         let out = trace(&bundle, core, &sleeper.id, false);
-        assert_spawned_at(&out, "src/bin/ct-runtime.rs:33:24");
+        assert_spawned_at(
+            &hansei_ok(&bundle, core, &format!("task {}", sleeper.id)),
+            "src/bin/ct-runtime.rs:33:24",
+        );
         golden(
             "ct-runtime-sleeper-trace",
             &Symbols::new().task(&sleeper.id, "sleeper").apply(&out),
@@ -1984,11 +2011,9 @@ fn test_foreign_runtime_acceptance() {
 
 /// A task cored mid-poll — spinning in a synchronous section of its
 /// poll — gets its native continuation joined onto the trace under
-/// `-n`: the
-/// committed chain stops at the yield the fixture long since moved
-/// past, and the section below it names the spin frame the poll is
-/// actually in, numbered on from the chain, with the provenance footer
-/// naming what anchored the join.
+/// `-n`: the committed chain stops at the yield the fixture long
+/// since moved past, and the section above it names the spin frame
+/// the poll is actually in — unnumbered, most recent first.
 #[test]
 fn test_spin_poll_acceptance() {
     let bundle = fixtures().bundle("spin-poll");
@@ -2024,13 +2049,14 @@ fn test_spin_poll_acceptance() {
 
         // The join, never the refusal: the section opens on the claimed
         // lwp.
-        assert!(
-            out.contains(&format!(
-                "mid-poll on lwp {lwp} — the poll is currently at:"
-            )),
-            "{out}"
-        );
+        assert!(out.contains(&format!("mid-poll on lwp {lwp}")), "{out}");
         assert!(!out.contains("mid-poll, but"), "{out}");
+
+        // The section sits above the chain: the heading comes before
+        // the first numbered frame.
+        let heading = out.find("mid-poll on lwp").expect("the heading prints");
+        let first_frame = out.find("\n#0").expect("the chain prints");
+        assert!(heading < first_frame, "{out}");
 
         // At least one native row, and it is the synchronous frame the
         // fixture parked its pc in.
@@ -2038,13 +2064,12 @@ fn test_spin_poll_acceptance() {
             .lines()
             .find(|line| line.trim_end().ends_with("spin_poll::grind"))
             .unwrap_or_else(|| panic!("no row names the spin frame:\n{out}"));
-        assert!(
-            grind.starts_with('#') && grind.contains(" native "),
-            "{out}"
-        );
+        assert!(grind.starts_with("0x"), "{out}");
+        assert!(grind.contains("  spin_poll::grind"), "{out}");
 
-        // One numbering: the native rows continue the chain's, so the
-        // frame rows count 0.. across the seam with no reset or gap.
+        // The chain's rows alone carry numbers — the native rows have
+        // none — counting 0.. from the most recent frame down to the
+        // root with no reset or gap.
         let numbers: Vec<usize> = out
             .lines()
             .filter_map(|line| line.strip_prefix('#'))
@@ -2230,7 +2255,7 @@ fn test_futures_acceptance() {
         // carrying a future of its own.
         for local in ["held", "boxed", "pair", "maybe", "nested_hold"] {
             assert!(
-                futures.contains(&format!("\n        (frame 0, `{local}`)")),
+                futures.contains(&format!("\n        (frame 1, `{local}`)")),
                 "{futures}"
             );
         }
@@ -2244,7 +2269,7 @@ fn test_futures_acceptance() {
         // one indent step deeper than the child, and one of them holds
         // a whole set of its own, whose children are deeper again. The
         // tree is the census's attribution, drawn.
-        let held_row = r"held \(frame 0, `held`\): 0x[0-9a-f]+  async fn unordered::leaf";
+        let held_row = r"held \(frame 1, `held`\): 0x[0-9a-f]+  async fn unordered::leaf";
         let under_child =
             regex::Regex::new(&format!(r"\n                {held_row}  Unresumed")).unwrap();
         assert_eq!(under_child.find_iter(&futures).count(), 3, "{futures}");
@@ -2256,7 +2281,7 @@ fn test_futures_acceptance() {
             "{futures}"
         );
         assert!(
-            futures.contains("(frame 0, `inner`): 2 children in flight"),
+            futures.contains("(frame 1, `inner`): 2 children in flight"),
             "{futures}"
         );
         let under_set = regex::Regex::new(
@@ -2371,12 +2396,12 @@ fn test_futures_acceptance() {
             "{out}"
         );
         assert!(
-            out.contains("0  async fn      unordered::set_member"),
+            out.contains("  async fn      unordered::set_member"),
             "{out}"
         );
 
         // And so is a held future, by the address its row prints.
-        let held = regex::Regex::new(r"\n        \(frame 0, `held`\): (0x[0-9a-f]+)")
+        let held = regex::Regex::new(r"\n        \(frame 1, `held`\): (0x[0-9a-f]+)")
             .unwrap()
             .captures(&futures)
             .map(|c| c[1].to_string())
@@ -2384,7 +2409,7 @@ fn test_futures_acceptance() {
         let out = hansei_ok(&bundle, core, &format!("trace {held}"));
         assert!(
             out.contains(&format!(
-                "Held by: task {} — async fn unordered::driver (frame 0, `held`)",
+                "Held by: task {} — async fn unordered::driver (frame 1, `held`)",
                 driver.id
             )),
             "{out}"
@@ -2406,7 +2431,7 @@ fn test_futures_acceptance() {
         assert!(task_block < future_block, "{out}");
         assert!(
             out.contains(&format!(
-                "    Held by: task {} — async fn unordered::driver (frame 0, `held`)",
+                "    Held by: task {} — async fn unordered::driver (frame 1, `held`)",
                 driver.id
             )),
             "{out}"
@@ -2445,16 +2470,16 @@ fn test_search_depth_acceptance() {
         assert!(listed.contains("    Held futures: 3\n"), "{listed}");
         for local in ["held", "boxed", "nested_hold"] {
             assert!(
-                listed.contains(&format!("\n        (frame 0, `{local}`)")),
+                listed.contains(&format!("\n        (frame 1, `{local}`)")),
                 "{listed}"
             );
         }
         for local in ["pair", "maybe"] {
             assert!(
-                !listed.contains(&format!("(frame 0, `{local}`)")),
+                !listed.contains(&format!("(frame 1, `{local}`)")),
                 "{listed}"
             );
-            assert!(full.contains(&format!("(frame 0, `{local}`)")), "{full}");
+            assert!(full.contains(&format!("(frame 1, `{local}`)")), "{full}");
         }
         // A set is a local in its own right, so its children are
         // walked as ever: the depth limit is a bound on one value's
@@ -2518,7 +2543,10 @@ fn test_join_set_acceptance() {
         for id in &ids {
             assert!(rows.iter().any(|row| &row.id == id), "{rows:?}");
             let traced = hansei_ok(&bundle, core, &format!("trace {id}"));
-            assert!(traced.contains("async fn joinset::member"), "{traced}");
+            assert!(
+                traced.contains("async fn      joinset::member"),
+                "{traced}"
+            );
         }
 
         // Except the member of the unjoined set that has run to

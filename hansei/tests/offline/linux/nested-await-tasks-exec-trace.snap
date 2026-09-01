@@ -3,16 +3,12 @@ source: hansei/src/offline.rs
 description: "`tasks --exec trace -n` over linux/nested-await"
 ---
 3  idle  src/bin/nested-await.rs:19  future tokio::sync::oneshot::Receiver<u32>  async fn nested_await::outer
-Task 3: async fn nested_await::outer (idle)
-Spawned at: src/bin/nested-await.rs:33:21
-Defined at: src/bin/nested-await.rs:16
-
-#0  async fn      nested_await::outer
-      awaiting at src/bin/nested-await.rs:19 (Suspend0, 0 locals)
-#1  async fn      nested_await::middle
-      awaiting at src/bin/nested-await.rs:12 (Suspend0, 0 locals)
-#2  async fn      nested_await::leaf
-      awaiting at src/bin/nested-await.rs:8 (Suspend0, 0 locals)
-#3  future        tokio::sync::oneshot::Receiver<u32>
+#0  future        tokio::sync::oneshot::Receiver<u32>
       (<no_state>, 1 local)
+#1  async fn      nested_await::leaf
+      awaiting at src/bin/nested-await.rs:8 (Suspend0, 0 locals)
+#2  async fn      nested_await::middle
+      awaiting at src/bin/nested-await.rs:12 (Suspend0, 0 locals)
+#3  async fn      nested_await::outer
+      awaiting at src/bin/nested-await.rs:19 (Suspend0, 0 locals)
 Executed against 1 tasks, 0 failed

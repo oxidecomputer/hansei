@@ -3,40 +3,28 @@ source: hansei/src/offline.rs
 description: "`tasks --exec trace -n` over illumos/local-set-timer"
 ---
 1  idle  1  src/bin/local-set-timer.rs:18  timer (deadline TS)  async fn local_set_timer::local_sleeper
-Task 1: async fn local_set_timer::local_sleeper (idle)
-Spawned at: src/bin/local-set-timer.rs:58:20
-Defined at: src/bin/local-set-timer.rs:15
-
 Waiting on: timer (deadline TS)
 
-#0  async fn      local_set_timer::local_sleeper
-      awaiting at src/bin/local-set-timer.rs:18 (Suspend0, 0 locals)
-#1  future        tokio::time::sleep::Sleep
+#0  future        tokio::time::sleep::Sleep
       waiting on timer (deadline TS)
+#1  async fn      local_set_timer::local_sleeper
+      awaiting at src/bin/local-set-timer.rs:18 (Suspend0, 0 locals)
 
 2  idle  1  src/bin/local-set-timer.rs:25  a tokio::sync::Semaphore (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 2  async fn local_set_timer::local_acquirer
-Task 2: async fn local_set_timer::local_acquirer (idle)
-Spawned at: src/bin/local-set-timer.rs:59:20
-Defined at: src/bin/local-set-timer.rs:22
-
 Waiting on: a tokio::sync::Semaphore (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 2
 
-#0  async fn      local_set_timer::local_acquirer
-      awaiting at src/bin/local-set-timer.rs:25 (Suspend0, 0 locals)
+#0  future        tokio::sync::batch_semaphore::Acquire
+      waiting on a tokio::sync::Semaphore (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 2
 #1  async fn      tokio::sync::semaphore::Semaphore::acquire
       awaiting at tokio-1.52.4/src/sync/semaphore.rs:597 (Suspend0, 1 local)
-#2  future        tokio::sync::batch_semaphore::Acquire
-      waiting on a tokio::sync::Semaphore (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 2
+#2  async fn      local_set_timer::local_acquirer
+      awaiting at src/bin/local-set-timer.rs:25 (Suspend0, 0 locals)
 
 3  idle  0  src/bin/local-set-timer.rs:38  timer (deadline TS)  async fn local_set_timer::sleeper
-Task 3: async fn local_set_timer::sleeper (idle)
-Spawned at: src/bin/local-set-timer.rs:64:24
-Defined at: src/bin/local-set-timer.rs:35
-
 Waiting on: timer (deadline TS)
 
-#0  async fn      local_set_timer::sleeper
-      awaiting at src/bin/local-set-timer.rs:38 (Suspend0, 1 local)
-#1  future        tokio::time::sleep::Sleep
+#0  future        tokio::time::sleep::Sleep
       waiting on timer (deadline TS)
+#1  async fn      local_set_timer::sleeper
+      awaiting at src/bin/local-set-timer.rs:38 (Suspend0, 1 local)
 Executed against 3 tasks, 0 failed

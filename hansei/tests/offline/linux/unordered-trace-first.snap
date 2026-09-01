@@ -2,11 +2,7 @@
 source: hansei/src/offline.rs
 description: "`trace 3 -n` over linux/unordered"
 ---
-Task 3: async fn unordered::driver (idle)
-Spawned at: src/bin/unordered.rs:137:21
-Defined at: src/bin/unordered.rs:78
-
-#0  async fn      unordered::driver
-      awaiting at src/bin/unordered.rs:115 (Suspend0, 8 locals; holds 5 pending futures)
-#1  future        futures_util::stream::futures_unordered::FuturesUnordered<unordered::set_member>
+#0  future        futures_util::stream::futures_unordered::FuturesUnordered<unordered::set_member>
       (<no_state>, 3 locals)
+#1  async fn      unordered::driver
+      awaiting at src/bin/unordered.rs:115 (Suspend0, 8 locals; holds 5 pending futures)

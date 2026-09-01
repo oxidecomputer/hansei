@@ -3,28 +3,20 @@ source: hansei/src/offline.rs
 description: "`tasks --exec trace -n` over linux-floor/ct-runtime"
 ---
 1  idle  src/bin/ct-runtime.rs:13  timer (deadline TS on the target's monotonic clock)  async fn ct_runtime::sleeper
-Task 1: async fn ct_runtime::sleeper (idle)
-Spawned at: src/bin/ct-runtime.rs:33:24
-Defined at: src/bin/ct-runtime.rs:10
-
 Waiting on: timer (deadline TS on the target's monotonic clock)
 
-#0  async fn      ct_runtime::sleeper
-      awaiting at src/bin/ct-runtime.rs:13 (Suspend0, 0 locals)
-#1  future        tokio::time::sleep::Sleep
+#0  future        tokio::time::sleep::Sleep
       waiting on timer (deadline TS on the target's monotonic clock)
+#1  async fn      ct_runtime::sleeper
+      awaiting at src/bin/ct-runtime.rs:13 (Suspend0, 0 locals)
 
 2  idle  src/bin/ct-runtime.rs:20  a tokio::sync::Semaphore (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 2  async fn ct_runtime::acquirer
-Task 2: async fn ct_runtime::acquirer (idle)
-Spawned at: src/bin/ct-runtime.rs:34:25
-Defined at: src/bin/ct-runtime.rs:17
-
 Waiting on: a tokio::sync::Semaphore (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 2
 
-#0  async fn      ct_runtime::acquirer
-      awaiting at src/bin/ct-runtime.rs:20 (Suspend0, 0 locals)
+#0  future        tokio::sync::batch_semaphore::Acquire
+      waiting on a tokio::sync::Semaphore (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 2
 #1  async fn      tokio::sync::semaphore::Semaphore::acquire
       awaiting at tokio-1.47.5/src/sync/semaphore.rs:591 (Suspend0, 1 local)
-#2  future        tokio::sync::batch_semaphore::Acquire
-      waiting on a tokio::sync::Semaphore (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 2
+#2  async fn      ct_runtime::acquirer
+      awaiting at src/bin/ct-runtime.rs:20 (Suspend0, 0 locals)
 Executed against 2 tasks, 0 failed

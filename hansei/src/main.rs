@@ -298,8 +298,8 @@ pub enum Command {
         top: usize,
     },
 
-    /// Move the cursor one await frame inward — toward the leaf the
-    /// chain bottoms out in — and print the frame line it lands on.
+    /// Move the cursor one await frame inward — toward #0, the most
+    /// recently polled frame — and print the frame line it lands on.
     /// Any words after it are a command to run at the new frame
     /// (`down locals`); a refused move runs nothing.
     Down {
@@ -321,7 +321,8 @@ pub enum Command {
     },
 
     /// Move the cursor within the selected chain — the await frames
-    /// `trace` numbers — and print the frame line it lands on; with
+    /// `trace` numbers, #0 the most recently polled — and print the
+    /// frame line it lands on; with
     /// no index, the current frame's. Words after the index are a
     /// command to run at that frame (`frame 7 locals`, `frame 7
     /// print .self`); a refused move runs nothing. Only the await
@@ -938,14 +939,15 @@ pub enum Command {
     /// Either way the future type is resolved automatically, via the
     /// symbol join for a task and via the census for an address.
     ///
-    /// A task that is mid-poll continues, under -n/--native, past
-    /// its last committed await into the polling thread's native
-    /// stack: the frames below the task's own poll fn, numbered on
-    /// from the chain, with panic plumbing folded and the fatal
-    /// signal attributed when this thread took it. Without the flag
-    /// the chain ends at its last committed await, nothing native
-    /// under it. `threads` shows the same stack raw, and `regs` the
-    /// thread's registers.
+    /// Frames print most recent first: #0 is the most recently
+    /// polled future, and the root sits at the bottom. A task that
+    /// is mid-poll shows, under -n/--native, the polling thread's
+    /// native stack above the chain — the frames below the task's
+    /// own poll fn, most recent first and unnumbered, with panic
+    /// plumbing folded and the fatal signal attributed when this
+    /// thread took it. Without the flag nothing native prints.
+    /// `threads` shows the same stack raw, and `regs` the thread's
+    /// registers.
     ///
     /// Under a thread cursor whose lwp polls no task, a bare `trace`
     /// prints that lwp's native backtrace instead.
@@ -964,10 +966,10 @@ pub enum Command {
         #[arg(long, short)]
         verbose: bool,
 
-        /// Continue a mid-poll task's chain into the polling thread's
-        /// native stack — the frames below the task's own poll fn.
-        /// Without the flag the trace ends at the last committed
-        /// await, the native section elided whole.
+        /// Show a mid-poll task's native continuation above the
+        /// chain: the polling thread's frames below the task's own
+        /// poll fn, most recent first, unnumbered. Without the flag
+        /// the native section is elided whole.
         #[arg(long, short = 'n')]
         native: bool,
 
@@ -1003,10 +1005,10 @@ pub enum Command {
         depth: usize,
     },
 
-    /// Move the cursor one await frame outward — toward #0, the
-    /// chain's root — and print the frame line it lands on. Any words
-    /// after it are a command to run at the new frame (`up locals`);
-    /// a refused move runs nothing.
+    /// Move the cursor one await frame outward — toward the chain's
+    /// root, the bottom of the listing — and print the frame line it
+    /// lands on. Any words after it are a command to run at the new
+    /// frame (`up locals`); a refused move runs nothing.
     Up {
         /// The command to run after a successful move.
         #[arg(

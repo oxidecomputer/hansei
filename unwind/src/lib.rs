@@ -73,7 +73,7 @@ impl Backtrace {
                     ""
                 };
                 format!(
-                    "{:#018x} {:#}{mark}",
+                    "{:#018x}  {:#}{mark}",
                     frame.regs.rip,
                     rustc_demangle::demangle(mangled)
                 )

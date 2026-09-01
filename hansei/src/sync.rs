@@ -440,8 +440,9 @@ fn collect_references<T: proc::Target>(
                 .find(|m| member_covers(m.offset(), m.ty().size(), offset))
                 .map(|m| format!(", in `{}`", m.name()));
             lines.push(format!(
-                "{} (frame #{n} {}{})",
+                "{} (frame #{} {}{})",
                 task_label(&session.tasks, index),
+                chain.frames.len() - 1 - n,
                 names::display_future_name(value.ty.name(), impls),
                 member.unwrap_or_default(),
             ));

@@ -2,13 +2,9 @@
 source: hansei/src/offline.rs
 description: "`trace 1 -n` over illumos/local-set"
 ---
-Task 1: async fn local_set::local_sleeper (idle)
-Spawned at: src/bin/local-set.rs:46:29
-Defined at: src/bin/local-set.rs:13
-
 Waiting on: timer (deadline TS)
 
-#0  async fn      local_set::local_sleeper
-      awaiting at src/bin/local-set.rs:16 (Suspend0, 0 locals)
-#1  future        tokio::time::sleep::Sleep
+#0  future        tokio::time::sleep::Sleep
       waiting on timer (deadline TS)
+#1  async fn      local_set::local_sleeper
+      awaiting at src/bin/local-set.rs:16 (Suspend0, 0 locals)

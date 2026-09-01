@@ -53,6 +53,6 @@ lwp 4033740  polling no task
         unhandled_panic: false,
     }
   stack:
-    0xADDR 
-    0xADDR   (frame-pointer walk)
-    0xADDR   (frame-pointer walk)
+    0xADDR  
+    0xADDR    (frame-pointer walk)
+    0xADDR    (frame-pointer walk)

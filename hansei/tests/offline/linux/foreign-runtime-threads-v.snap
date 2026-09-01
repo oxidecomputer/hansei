@@ -53,9 +53,9 @@ lwp 4034454  polling no task  runtime 0 @0xADDR
         unhandled_panic: false,
     }
   stack:
-    0xADDR 
-    0xADDR   (frame-pointer walk)
-    0xADDR   (frame-pointer walk)
+    0xADDR  
+    0xADDR    (frame-pointer walk)
+    0xADDR    (frame-pointer walk)
 
 lwp 4034456  polling no task
   thread_id: core::option::Option<tokio::runtime::thread_id::ThreadId>::Some(1)

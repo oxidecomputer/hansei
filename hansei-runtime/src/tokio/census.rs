@@ -163,8 +163,10 @@ pub enum Via {
 pub struct FutureSet {
     /// Index into the [`TaskList`] the census was built from.
     pub owner: usize,
-    /// The await-chain frame the set was found in, and the local (the
-    /// frame member the scan entered through) that holds it.
+    /// The await-chain frame the set was found in — numbered the way
+    /// the listings display frames, #0 the most recently polled — and
+    /// the local (the frame member the scan entered through) that
+    /// holds it.
     pub frame: usize,
     pub local: String,
     /// How the census reached the frame when it is not one of the
@@ -188,8 +190,10 @@ pub struct FutureSet {
 pub struct JoinSet {
     /// Index into the [`TaskList`] the census was built from.
     pub owner: usize,
-    /// The await-chain frame the set was found in, and the local (the
-    /// frame member the scan entered through) that holds it.
+    /// The await-chain frame the set was found in — numbered the way
+    /// the listings display frames, #0 the most recently polled — and
+    /// the local (the frame member the scan entered through) that
+    /// holds it.
     pub frame: usize,
     pub local: String,
     /// How the census reached the frame when it is not one of the
@@ -271,8 +275,9 @@ pub struct SetChild {
 pub struct HeldFuture {
     /// Index into the [`TaskList`] the census was built from.
     pub owner: usize,
-    /// The await-chain frame it was found in, and the local (the frame
-    /// member the scan entered through) that holds it.
+    /// The await-chain frame it was found in — numbered the way the
+    /// listings display frames, #0 the most recently polled — and the
+    /// local (the frame member the scan entered through) that holds it.
     pub frame: usize,
     pub local: String,
     /// How the census reached the frame when it is not one of the
@@ -857,7 +862,10 @@ impl<'b, T: Target> Walker<'_, 'b, T> {
                     &mut self.stats,
                 );
                 for find in found {
-                    self.record(owner, frame_index, m.name(), via, find, nesting);
+                    // Recorded display-numbered — #0 the most recently
+                    // polled frame — the way every listing prints it.
+                    let frame = chain.frames.len() - 1 - frame_index;
+                    self.record(owner, frame, m.name(), via, find, nesting);
                 }
             }
         }
@@ -2544,7 +2552,7 @@ mod tests {
             panic!("the owner task is running");
         };
         let chain = ctx.await_chain(root);
-        let frame = &chain.frames[held.frame];
+        let frame = &chain.frames[chain.frames.len() - 1 - held.frame];
         let payload = match &frame.state {
             Some(state) => &state.payload,
             None => &frame.future,

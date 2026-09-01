@@ -3,3 +3,5 @@ source: hansei/src/offline.rs
 description: "`task 1` over illumos/ct-runtime"
 ---
 1  idle  src/bin/ct-runtime.rs:13  timer (deadline TS)  async fn ct_runtime::sleeper
+Spawned at: src/bin/ct-runtime.rs:33:24
+Defined at: src/bin/ct-runtime.rs:10

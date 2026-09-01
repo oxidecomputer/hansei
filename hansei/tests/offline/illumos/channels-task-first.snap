@@ -3,3 +3,5 @@ source: hansei/src/offline.rs
 description: "`task 3` over illumos/channels"
 ---
 3  idle  src/bin/channels.rs:30  future tokio::sync::notify::Notified  async fn channels::notify_waiter
+Spawned at: src/bin/channels.rs:75:23
+Defined at: src/bin/channels.rs:17

@@ -2,4 +2,7 @@
 source: hansei/src/offline.rs
 description: "`locals` over linux-floor/local-set"
 ---
-no locals
+entry: tokio::runtime::time::entry::TimerEntry {
+      deadline: 1000000.001s,
+      state: registered,
+  }
