@@ -5,9 +5,9 @@ description: "`print .wz` over linux-floor/walk-shapes"
 walk_shapes::deep::{async_fn_env#0}::0 {
     park: alloc::sync::Arc<tokio::sync::notify::Notify, alloc::alloc::Global> {
         ptr: 0xADDR -> alloc::sync::ArcInner<tokio::sync::notify::Notify> {
-                strong: ...,
-                weak: ...,
-                data: ...,
+                strong: 2,
+                weak: 1,
+                data: tokio::sync::notify::Notify { .. } @ 0xADDR,
             },
     },
 }

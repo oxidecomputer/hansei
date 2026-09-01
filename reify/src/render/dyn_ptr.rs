@@ -110,7 +110,15 @@ pub(crate) fn eval_dyn_pointer<'a, T: Target>(
                         bytes: pointee_bytes,
                     };
                     write!(f, " -> ")?;
-                    write_display_value(f, &pointee, ctx.deeper(), pretty)?;
+                    write_display_value(
+                        f,
+                        &pointee,
+                        RenderCtx {
+                            suppress_addr: true,
+                            ..ctx.deeper()
+                        },
+                        pretty,
+                    )?;
                 }
                 Err(marker) => write!(f, " -> {marker}")?,
             }
@@ -178,7 +186,7 @@ pub(crate) fn eval_dyn_pointer<'a, T: Target>(
         }
         Some(_) => {
             write_hex_u64(f, vtable_address)?;
-            f.write_str(" -> ...,")?;
+            f.write_str(" -> { .. },")?;
         }
         None if vtable_address == 0 => f.write_str("0x0,")?,
         None => {
@@ -429,6 +437,33 @@ mod tests {
         );
     }
 
+    /// A pointee elided at the depth budget keeps its typed placeholder
+    /// but not the `@` address suffix: the pointer render just printed
+    /// that address ahead of its `->`, and saying it twice on one line
+    /// says nothing new.
+    #[test]
+    fn test_elided_pointee_does_not_repeat_the_pointer_address() {
+        let mem = FakeMem::new()
+            .at(0x1000, u32s(&[1, 2]))
+            .at(0x3000, u64s(&[0x4000, 8, 8]))
+            .symbol(0x4000, "<Point as app::Trait>::drop");
+
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+        let bytes = u64s(&[0x1000, 0x3000]);
+        let value = Value::new(v.ty(FAT_PTR).unwrap(), 0, &bytes);
+        assert_eq!(
+            format!("{:#}", value.display_from_target(&mem, 1)),
+            concat!(
+                "FatPtr {\n",
+                "    pointer: 0x1000 -> Point { .. },\n",
+                "    concrete type: Point,\n",
+                "    vtable: 0x3000 -> { .. },\n",
+                "}"
+            )
+        );
+    }
+
     /// One depth step below the budget the vtable is elided to its address,
     /// not expanded — the boundary is `depth + 1`, the level its record
     /// would render at.
@@ -446,7 +481,7 @@ mod tests {
                 "FatPtr {\n",
                 "    pointer: 0x1234,\n",
                 "    concrete type: <unknown>,\n",
-                "    vtable: 0x3000 -> ...,\n",
+                "    vtable: 0x3000 -> { .. },\n",
                 "}"
             )
         );

@@ -37,28 +37,28 @@ lwp 2  last polled task 1
         lifo_enabled: false,
         run_queue: tokio::runtime::scheduler::multi_thread::queue::Local<alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle, alloc::alloc::Global>> {
             inner: alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::queue::Inner<alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle, alloc::alloc::Global>>, alloc::alloc::Global> {
-                ptr: 0xADDR -> ...,
+                ptr: 0xADDR -> alloc::sync::ArcInner<tokio::runtime::scheduler::multi_thread::queue::Inner<alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle, alloc::alloc::Global>>> { .. },
             },
         },
         time_context: tokio::runtime::time_alt::context::LocalContext {
             wheel: tokio::runtime::time_alt::wheel::Wheel {
                 elapsed: 0,
-                levels: 0xADDR -> ...,
+                levels: 0xADDR -> <anon> [..],
             },
             registration_queue: tokio::runtime::time_alt::registration_queue::RegistrationQueue {
                 list: tokio::util::linked_list::LinkedList<tokio::runtime::time_alt::entry::RegistrationQueueEntry, tokio::runtime::time_alt::entry::Entry> {
-                    head: ...,
-                    tail: ...,
+                    head: core::option::Option<core::ptr::non_null::NonNull<tokio::runtime::time_alt::entry::Entry>> { .. } @ 0xADDR,
+                    tail: core::option::Option<core::ptr::non_null::NonNull<tokio::runtime::time_alt::entry::Entry>> { .. } @ 0xADDR,
                 },
             },
             canc_tx: tokio::runtime::time_alt::cancellation_queue::Sender {
                 inner: alloc::sync::Arc<tokio::loom::std::parking_lot::Mutex<tokio::runtime::time_alt::cancellation_queue::Inner>, alloc::alloc::Global> {
-                    ptr: ...,
+                    ptr: 0xADDR -> alloc::sync::ArcInner<tokio::loom::std::parking_lot::Mutex<tokio::runtime::time_alt::cancellation_queue::Inner>> { .. },
                 },
             },
             canc_rx: tokio::runtime::time_alt::cancellation_queue::Receiver {
                 inner: alloc::sync::Arc<tokio::loom::std::parking_lot::Mutex<tokio::runtime::time_alt::cancellation_queue::Inner>, alloc::alloc::Global> {
-                    ptr: ...,
+                    ptr: 0xADDR -> alloc::sync::ArcInner<tokio::loom::std::parking_lot::Mutex<tokio::runtime::time_alt::cancellation_queue::Inner>> { .. },
                 },
             },
         },
@@ -72,8 +72,8 @@ lwp 2  last polled task 1
             batch: tokio::runtime::metrics::batch::MetricsBatch {
                 busy_duration_total: 138333,
                 processing_scheduled_tasks_started_at: core::option::Option<std::time::Instant>::Some {
-                    tv_sec: ...,
-                    tv_nsec: ...,
+                    tv_sec: 5016693,
+                    tv_nsec: 634433403,
                 },
                 park_count: 2,
                 park_unpark_count: 3,
@@ -126,28 +126,28 @@ lwp 3  last polled task 2
         lifo_enabled: false,
         run_queue: tokio::runtime::scheduler::multi_thread::queue::Local<alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle, alloc::alloc::Global>> {
             inner: alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::queue::Inner<alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle, alloc::alloc::Global>>, alloc::alloc::Global> {
-                ptr: 0xADDR -> ...,
+                ptr: 0xADDR -> alloc::sync::ArcInner<tokio::runtime::scheduler::multi_thread::queue::Inner<alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle, alloc::alloc::Global>>> { .. },
             },
         },
         time_context: tokio::runtime::time_alt::context::LocalContext {
             wheel: tokio::runtime::time_alt::wheel::Wheel {
                 elapsed: 0,
-                levels: 0xADDR -> ...,
+                levels: 0xADDR -> <anon> [..],
             },
             registration_queue: tokio::runtime::time_alt::registration_queue::RegistrationQueue {
                 list: tokio::util::linked_list::LinkedList<tokio::runtime::time_alt::entry::RegistrationQueueEntry, tokio::runtime::time_alt::entry::Entry> {
-                    head: ...,
-                    tail: ...,
+                    head: core::option::Option<core::ptr::non_null::NonNull<tokio::runtime::time_alt::entry::Entry>> { .. } @ 0xADDR,
+                    tail: core::option::Option<core::ptr::non_null::NonNull<tokio::runtime::time_alt::entry::Entry>> { .. } @ 0xADDR,
                 },
             },
             canc_tx: tokio::runtime::time_alt::cancellation_queue::Sender {
                 inner: alloc::sync::Arc<tokio::loom::std::parking_lot::Mutex<tokio::runtime::time_alt::cancellation_queue::Inner>, alloc::alloc::Global> {
-                    ptr: ...,
+                    ptr: 0xADDR -> alloc::sync::ArcInner<tokio::loom::std::parking_lot::Mutex<tokio::runtime::time_alt::cancellation_queue::Inner>> { .. },
                 },
             },
             canc_rx: tokio::runtime::time_alt::cancellation_queue::Receiver {
                 inner: alloc::sync::Arc<tokio::loom::std::parking_lot::Mutex<tokio::runtime::time_alt::cancellation_queue::Inner>, alloc::alloc::Global> {
-                    ptr: ...,
+                    ptr: 0xADDR -> alloc::sync::ArcInner<tokio::loom::std::parking_lot::Mutex<tokio::runtime::time_alt::cancellation_queue::Inner>> { .. },
                 },
             },
         },
@@ -161,8 +161,8 @@ lwp 3  last polled task 2
             batch: tokio::runtime::metrics::batch::MetricsBatch {
                 busy_duration_total: 60990,
                 processing_scheduled_tasks_started_at: core::option::Option<std::time::Instant>::Some {
-                    tv_sec: ...,
-                    tv_nsec: ...,
+                    tv_sec: 5016693,
+                    tv_nsec: 634565792,
                 },
                 park_count: 2,
                 park_unpark_count: 3,

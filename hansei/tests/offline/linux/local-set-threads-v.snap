@@ -25,8 +25,8 @@ lwp 3178569  polling no task  runtime 0 @0xADDR
             len: 0,
             buf: alloc::raw_vec::RawVec<tokio::runtime::task::Notified<alloc::sync::Arc<tokio::runtime::scheduler::current_thread::Handle, alloc::alloc::Global>>, alloc::alloc::Global> {
                 inner: alloc::raw_vec::RawVecInner<alloc::alloc::Global> {
-                    ptr: ...,
-                    cap: ...,
+                    ptr: 0xADDR -> 0,
+                    cap: 64,
                 },
             },
         },

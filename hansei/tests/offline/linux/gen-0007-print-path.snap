@@ -8,12 +8,12 @@ description: "`print .started` over linux/gen-0007"
         data: tokio::sync::mpsc::chan::Chan<(), tokio::sync::mpsc::unbounded::Semaphore> {
             queued: [],
             tx: tokio::sync::mpsc::list::Tx<()> {
-                block_tail: ...,
-                tail_position: ...,
+                block_tail: 0xADDR,
+                tail_position: 5,
             },
             rx_waker: tokio::sync::task::atomic_waker::AtomicWaker {
-                state: ...,
-                waker: ...,
+                state: 0,
+                waker: tokio::loom::std::unsafe_cell::UnsafeCell<core::option::Option<core::task::wake::Waker>> { .. } @ 0xADDR,
             },
             notify_rx_closed: tokio::sync::notify::Notify {
                 state: state=idle, generation=0,
@@ -21,13 +21,13 @@ description: "`print .started` over linux/gen-0007"
                 queue: [],
             },
             semaphore: tokio::sync::mpsc::unbounded::Semaphore(
-                ...,
+                0,
             ),
             tx_count: 5,
             tx_weak_count: 0,
             rx_fields: tokio::sync::mpsc::chan::RxFields<()> {
-                list: ...,
-                rx_closed: ...,
+                list: tokio::sync::mpsc::list::Rx<()> { .. } @ 0xADDR,
+                rx_closed: false,
             },
         },
     }

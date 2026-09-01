@@ -5,9 +5,9 @@ description: "`print` over linux/channels"
 channels::notify_waiter::{async_fn_env#0}::Suspend0 {
     notify: alloc::sync::Arc<tokio::sync::notify::Notify, alloc::alloc::Global> {
         ptr: 0xADDR -> alloc::sync::ArcInner<tokio::sync::notify::Notify> {
-                strong: ...,
-                weak: ...,
-                data: ...,
+                strong: 2,
+                weak: 1,
+                data: tokio::sync::notify::Notify { .. } @ 0xADDR,
             },
     },
     notified: tokio::sync::notify::Notified {
@@ -15,27 +15,27 @@ channels::notify_waiter::{async_fn_env#0}::Suspend0 {
                 state: state=waiting, generation=0,
                 mutex: locked=false, parked=false,
                 queue: [
-                    tokio::sync::notify::Waiter { notification: kind=none, order=fifo, waker: ... },
+                    tokio::sync::notify::Waiter { notification: kind=none, order=fifo, waker: tokio::loom::std::unsafe_cell::UnsafeCell<core::option::Option<core::task::wake::Waker>> { .. } @ 0xADDR },
                 ],
             },
         state: [0xADDR],
         notify_waiters_calls: 0,
         waiter: tokio::sync::notify::Waiter {
             pointers: tokio::util::linked_list::Pointers<tokio::sync::notify::Waiter> {
-                inner: ...,
+                inner: core::cell::UnsafeCell<tokio::util::linked_list::PointersInner<tokio::sync::notify::Waiter>> { .. } @ 0xADDR,
             },
             waker: core::option::Option<core::task::wake::Waker>::Some(0xADDR),
             notification: tokio::sync::notify::AtomicNotification(
-                ...,
+                0,
             ),
         },
     },
     __awaitee: core::pin::Pin<&mut tokio::sync::notify::Notified> {
         pointer: 0xADDR -> tokio::sync::notify::Notified {
-                notify: ...,
-                state: ...,
-                notify_waiters_calls: ...,
-                waiter: ...,
+                notify: 0xADDR -> tokio::sync::notify::Notify { .. },
+                state: [0xADDR],
+                notify_waiters_calls: 0,
+                waiter: tokio::sync::notify::Waiter { .. } @ 0xADDR,
             },
     },
     __4: false,

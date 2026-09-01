@@ -23,7 +23,7 @@ use super::{
 /// field something other than `__i`, so one non-matching member rules it out.
 /// Detection runs on the *full* member list so a `(ZST, T)` tuple is still
 /// recognized even though the ZST is not displayed.
-fn is_tuple<'a>(members: impl Iterator<Item = BundleMember<'a>>) -> bool {
+pub(crate) fn is_tuple<'a>(members: impl Iterator<Item = BundleMember<'a>>) -> bool {
     let mut any = false;
     for (i, m) in members.enumerate() {
         if tuple_field_index(m.name()) != Some(i) {

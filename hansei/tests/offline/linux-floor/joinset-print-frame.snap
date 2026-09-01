@@ -5,9 +5,9 @@ description: "`print` over linux-floor/joinset"
 joinset::driver::{async_fn_env#0}::Suspend1 {
     notify: alloc::sync::Arc<tokio::sync::notify::Notify, alloc::alloc::Global> {
         ptr: 0xADDR -> alloc::sync::ArcInner<tokio::sync::notify::Notify> {
-                strong: ...,
-                weak: ...,
-                data: ...,
+                strong: 6,
+                weak: 1,
+                data: tokio::sync::notify::Notify { .. } @ 0xADDR,
             },
     },
     started_tx: tokio::sync::mpsc::bounded::Sender<()> {
@@ -38,9 +38,9 @@ joinset::driver::{async_fn_env#0}::Suspend1 {
         tx_weak_count: 0,
         rx_fields: tokio::sync::mpsc::chan::RxFields<()> {
             list: tokio::sync::mpsc::list::Rx<()> {
-                head: ...,
-                index: ...,
-                free_head: ...,
+                head: 0xADDR -> tokio::sync::mpsc::block::Block<()> { .. },
+                index: 6,
+                free_head: 0xADDR -> tokio::sync::mpsc::block::Block<()> { .. },
             },
             rx_closed: false,
         },
@@ -73,9 +73,9 @@ joinset::driver::{async_fn_env#0}::Suspend1 {
         tx_weak_count: 0,
         rx_fields: tokio::sync::mpsc::chan::RxFields<()> {
             list: tokio::sync::mpsc::list::Rx<()> {
-                head: ...,
-                index: ...,
-                free_head: ...,
+                head: 0xADDR -> tokio::sync::mpsc::block::Block<()> { .. },
+                index: 6,
+                free_head: 0xADDR -> tokio::sync::mpsc::block::Block<()> { .. },
             },
             rx_closed: false,
         },
@@ -83,7 +83,7 @@ joinset::driver::{async_fn_env#0}::Suspend1 {
     set: tokio::task::join_set::JoinSet<u32> {
         inner: tokio::util::idle_notified_set::IdleNotifiedSet<tokio::runtime::task::join::JoinHandle<u32>> {
             lists: alloc::sync::Arc<tokio::loom::std::parking_lot::Mutex<tokio::util::idle_notified_set::ListsInner<tokio::runtime::task::join::JoinHandle<u32>>>, alloc::alloc::Global> {
-                ptr: ...,
+                ptr: 0xADDR -> alloc::sync::ArcInner<tokio::loom::std::parking_lot::Mutex<tokio::util::idle_notified_set::ListsInner<tokio::runtime::task::join::JoinHandle<u32>>>> { .. },
             },
             length: 3,
         },
@@ -91,7 +91,7 @@ joinset::driver::{async_fn_env#0}::Suspend1 {
     kept: tokio::task::join_set::JoinSet<u32> {
         inner: tokio::util::idle_notified_set::IdleNotifiedSet<tokio::runtime::task::join::JoinHandle<u32>> {
             lists: alloc::sync::Arc<tokio::loom::std::parking_lot::Mutex<tokio::util::idle_notified_set::ListsInner<tokio::runtime::task::join::JoinHandle<u32>>>, alloc::alloc::Global> {
-                ptr: ...,
+                ptr: 0xADDR -> alloc::sync::ArcInner<tokio::loom::std::parking_lot::Mutex<tokio::util::idle_notified_set::ListsInner<tokio::runtime::task::join::JoinHandle<u32>>>> { .. },
             },
             length: 3,
         },
@@ -100,7 +100,7 @@ joinset::driver::{async_fn_env#0}::Suspend1 {
     __awaitee: tokio::task::join_set::{impl#1}::join_next::{async_fn_env#0}<u32>::3 {
         __awaitee: core::future::poll_fn::PollFn<tokio::task::join_set::{impl#1}::join_next::{async_fn#0}::{closure_env#0}<u32>> {
             f: tokio::task::join_set::{impl#1}::join_next::{async_fn#0}::{closure_env#0}<u32> {
-                _ref__self: ...,
+                _ref__self: 0xADDR -> tokio::task::join_set::JoinSet<u32> { .. },
             },
         },
     },
