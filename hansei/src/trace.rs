@@ -814,15 +814,7 @@ fn print_native_continuation<T: proc::Target>(
         &|pc| ctx.mappings.contains_addr(pc),
         opts,
         out,
-    )?;
-
-    // The registers are the innermost printed frame's live state —
-    // "the poll is currently at" made concrete — and they print only
-    // under the corroborated join above: on a refusal the regs may
-    // belong to some other poll, and `threads <lwp> --registers`
-    // shows them without the task attribution.
-    writeln!(out)?;
-    crate::registers::print_lwp_registers(session, lwp, "", out)
+    )
 }
 
 /// The refusal path: the joined section's place says why there is

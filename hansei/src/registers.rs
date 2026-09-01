@@ -7,7 +7,7 @@
 use crate::Session;
 use crate::tasks::task_label;
 
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use hansei_runtime::heap::umem::Liveness;
 use hansei_runtime::tokio::registers::{LwpStack, RegClass, RegClassifier};
 
@@ -37,6 +37,27 @@ fn gprs(regs: &proc::Regs) -> [(&'static str, u64); 17] {
         ("r14", regs.r14),
         ("r15", regs.r15),
     ]
+}
+
+/// `regs`: the cursor lwp's annotated register block — a thread
+/// cursor, or a task cursor whose task is mid-poll on one (selecting
+/// a running task selects the lwp polling it). A task off every
+/// thread has no trap state to show, which the refusal says.
+pub(crate) fn exec_regs<T: proc::Target>(
+    session: &Session<'_, T>,
+    out: &mut dyn io::Write,
+) -> Result<()> {
+    let cursor = *session.cursor.borrow();
+    if let Some(lwp) = cursor.lwp {
+        return print_lwp_registers(session, lwp, "", out);
+    }
+    if cursor.root.is_some() {
+        writeln!(out, "registers not available, task is not on a thread")?;
+        return Ok(());
+    }
+    Err(anyhow!(
+        "no task or thread selected; `task`, `future` or `thread` selects one"
+    ))
 }
 
 /// Print one lwp's annotated register block, indented for the caller's

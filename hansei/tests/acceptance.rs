@@ -2064,13 +2064,33 @@ fn test_spin_poll_acceptance() {
             "{out}"
         );
 
-        // The joined section carries the polling thread's registers:
-        // frame-0 state, annotated from the recorded joins — the
-        // stack pointer lands in a recorded thread stack, named the
-        // way `pmap` names one.
+        // The chain carries no register block of its own — that moved
+        // to `regs` — which answers for this task because selecting a
+        // running task selects the lwp polling it: frame-0 state,
+        // annotated from the recorded joins — the stack pointer lands
+        // in a recorded thread stack, named the way `pmap` names one.
+        assert!(!out.contains("registers:"), "{out}");
+        let out = hansei_ok(&bundle, core, &format!("task {} ; regs", task.id));
         assert!(out.contains("registers:"), "{out}");
         let rsp = regex::Regex::new(r"(?m)^  rsp  0x[0-9a-f]{16}  — \[ stack tid=\d+ \]$").unwrap();
         assert!(rsp.is_match(&out), "{out}");
+    });
+}
+
+/// `regs` under a cursor on a task no thread is polling: an idle task
+/// has no trap state anywhere to show, and the refusal says whose
+/// fault that is — the task's, not the reader's.
+#[test]
+fn test_regs_refuses_a_task_off_every_thread() {
+    let bundle = fixtures().bundle("simple-await");
+    with_core("simple-await", |core| {
+        let rows = list_tasks(&bundle, core);
+        let task = task_with_future(&rows, "async fn simple_await::work");
+        let out = hansei_ok(&bundle, core, &format!("task {} ; regs", task.id));
+        assert!(
+            out.contains("registers not available, task is not on a thread"),
+            "{out}"
+        );
     });
 }
 
@@ -3580,11 +3600,21 @@ fn test_a_unique_prefix_names_a_command() {
     with_core("simple-await", |core| {
         assert!(hansei_ok(&bundle, core, "i").contains("symbols resolved:"));
         // The prefix names the command; its arguments are never
-        // inferred. `runtimes` is the only command starting with an
-        // `r`, so every prefix of it fits.
+        // inferred. `regs` sits beside `runtimes`, so `r` fits both
+        // and only `ru` and longer are runtimes' alone.
         assert!(hansei_ok(&bundle, core, "runtime -D -d 1").contains("runtime::driver::Handle"));
-        assert!(hansei_ok(&bundle, core, "r -s").contains("multi_thread::worker::Shared"));
+        assert!(hansei_ok(&bundle, core, "ru -s").contains("multi_thread::worker::Shared"));
         assert!(hansei_ok(&bundle, core, "runtimes -l").contains("multi_thread"));
+        let out = hansei(&bundle, core, "r -s");
+        assert!(
+            !out.status.success(),
+            "a prefix of two commands must be refused:\n{}",
+            String::from_utf8_lossy(&out.stdout)
+        );
+        let err = String::from_utf8_lossy(&out.stderr);
+        for candidate in ["regs", "runtimes"] {
+            assert!(err.contains(candidate), "{candidate} missing from {err}");
+        }
 
         // The singular selectors sit beside their plurals, so every
         // proper prefix of `threads` fits `thread` too: only the full

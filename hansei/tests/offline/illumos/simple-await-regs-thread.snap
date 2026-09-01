@@ -1,0 +1,22 @@
+---
+source: hansei/src/offline.rs
+description: "`regs` over illumos/simple-await"
+---
+registers:
+  rip  0xADDR  — in libc.so.1 text
+  rsp  0xADDR  — [ stack tid=1 ]
+  rbp  0xADDR  — [ stack tid=1 ]
+  rax  0xADDR
+  rbx  0xADDR  — [ anon ]
+  rcx  0xADDR  — [ anon ]
+  rdx  0xADDR
+  rsi  0xADDR
+  rdi  0xADDR
+  r8   0xADDR  — [ heap ]
+  r9   0xADDR  — [ anon ]
+  r10  0xADDR  — [ anon ]
+  r11  0xADDR  — in libc.so.1 text
+  r12  0xADDR
+  r13  0xADDR
+  r14  0xADDR  — [ heap ]
+  r15  0xADDR  — [ anon ]

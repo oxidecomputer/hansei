@@ -1,0 +1,5 @@
+---
+source: hansei/src/offline.rs
+description: "`regs` over linux/simple-await"
+---
+registers not available, task is not on a thread

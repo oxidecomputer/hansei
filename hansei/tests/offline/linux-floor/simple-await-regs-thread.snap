@@ -1,0 +1,22 @@
+---
+source: hansei/src/offline.rs
+description: "`regs` over linux-floor/simple-await"
+---
+registers:
+  rip  0xADDR  — in libc.so.6 text
+  rsp  0xADDR  — [ stack tid=3180861 ]
+  rbp  0xADDR
+  rax  0xADDR  — unmapped
+  rbx  0xADDR  — in libc.so.6 text
+  rcx  0xADDR  — in libc.so.6 text
+  rdx  0xADDR
+  rsi  0xADDR
+  rdi  0xADDR  — [ anon ]
+  r8   0xADDR
+  r9   0xADDR
+  r10  0xADDR
+  r11  0xADDR
+  r12  0xADDR  — unmapped
+  r13  0xADDR  — [ anon ]
+  r14  0xADDR  — [ anon ]
+  r15  0xADDR  — [ anon ]
