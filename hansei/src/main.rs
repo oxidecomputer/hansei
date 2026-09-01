@@ -639,6 +639,9 @@ pub enum Command {
     /// the futurelock scan, not a sweep of memory: a resource nothing
     /// touches is not listed, and nothing at all prints on a target
     /// with no contention.
+    // Hidden from `help` while its usefulness is reconsidered — not
+    // yet removed: it still parses and runs.
+    #[command(hide = true)]
     Sync {
         /// One resource to show, by the address the listings print,
         /// in hex with a required leading `0x`. Every one by default.
@@ -1025,6 +1028,9 @@ pub enum Command {
     /// A single match prints its slots as though `-v` had been given:
     /// one match is the end of a search, and the slots are what the
     /// search was for.
+    // Hidden from `help` while its usefulness is reconsidered — not
+    // yet removed: it still parses and runs.
+    #[command(hide = true)]
     Vtables {
         /// A pattern matched against the trait and the concrete type:
         /// a case-insensitive regex, as `find-types` takes (several
