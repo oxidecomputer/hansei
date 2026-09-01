@@ -16,10 +16,6 @@ Tasks: 1 owned by runtime 0 @0xADDR
     Future types and what they await:
         1  async fn unordered::driver
            └─ 1  future futures_util::stream::futures_unordered::FuturesUnordered<unordered::set_member>
-    Awaiting at:
-        1  src/bin/unordered.rs:115
-    Spawned at:
-        1  src/bin/unordered.rs:137:21
 
 Futures: 15 in flight, on 19 await-chain frames (up to 2 deep)
     Location:

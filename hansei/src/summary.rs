@@ -530,14 +530,15 @@ fn tasks(facts: &Facts<'_>, top: usize, out: &mut dyn io::Write) -> Result<()> {
         writeln!(out, "    Of note: {}", notable.join(", "))?;
     }
 
-    // What the runtime is full of, by the two names a reader can act
-    // on: the future a task runs, and the line that spawned it. What
-    // the tasks of a type are blocked on hangs off the type rather than
+    // What the runtime is full of, by the future a task runs. What the
+    // tasks of a type are blocked on hangs off the type rather than
     // being tallied beside it: a thousand tasks on one semaphore is a
     // different target from a thousand types with one waiter each, and
-    // only the breakdown under the type tells them apart.
+    // only the breakdown under the type tells them apart. Where they
+    // are parked and where they were spawned are `tasks --group
+    // awaiting` and `tasks --group spawned`, which rank the same sites
+    // with the tasks behind each.
     let mut types: BTreeMap<String, (usize, Waits)> = BTreeMap::new();
-    let mut sites: BTreeMap<String, usize> = BTreeMap::new();
     for (index, task) in list.tasks.iter().enumerate() {
         let (count, waits) = types
             .entry(future_name(&task.future, facts.impls))
@@ -546,52 +547,11 @@ fn tasks(facts: &Facts<'_>, top: usize, out: &mut dyn io::Write) -> Result<()> {
         if let Some(wait) = facts.waits.get(index) {
             waits.add_task(task, wait, facts.impls);
         }
-        let site = match &task.spawn_location {
-            Some(loc) => loc.to_string(),
-            None => "<no spawn location recorded>".to_string(),
-        };
-        *sites.entry(site).or_default() += 1;
     }
     let futures = types
         .into_iter()
         .map(|(name, (count, waits))| chained(name, count, &waits, top));
-    rows(FUTURE_TYPES, ranked(futures, top, "type"), out)?;
-    rows("Awaiting at", awaiting_rows(facts.waits, top), out)?;
-    rows("Spawned at", ranked(tally(sites), top, "site"), out)
-}
-
-/// Where the tasks are suspended, keyed by each task's own live await
-/// site — its chain's outermost `awaiting at` line, the line of the
-/// reader's code the task is parked behind rather than of the
-/// libraries it awaits through. The complement of the type ranking
-/// above, and often the direct answer: the type tally says what most
-/// tasks are, this says which line most of them are stopped on.
-///
-/// Tasks with no site to name share one row saying so, so the section
-/// still adds up to the task total: a task lacks one by being mid-poll,
-/// finished, never polled, or suspended in a chain no frame of which
-/// records a line — plain futures end to end.
-fn awaiting_rows(waits: &[TaskWait], top: usize) -> Vec<Row> {
-    let mut sites: BTreeMap<String, usize> = BTreeMap::new();
-    let mut unsited = 0usize;
-    for wait in waits {
-        match &wait.site {
-            Some((file, line)) => *sites.entry(format!("{file}:{line}")).or_default() += 1,
-            None => unsited += 1,
-        }
-    }
-    let total = sites.len();
-    let mut rows = ranked(tally(sites), top, "site");
-    // The `across N more` row ranking left last stays last, under the
-    // rows it summarizes rather than sorted in among the rest.
-    let rest = (total > top).then(|| rows.pop()).flatten();
-    rows.push(Row::new(
-        unsited,
-        "no live await site (mid-poll, finished, never polled, or unrecorded)",
-    ));
-    let mut rows = rank(rows);
-    rows.extend(rest);
-    rows
+    rows(FUTURE_TYPES, ranked(futures, top, "type"), out)
 }
 
 /// The wait tally: one bucket per thing a task or a future can be
@@ -1018,15 +978,6 @@ mod tests {
             depth,
             leaf: leaf.map(str::to_string),
             site: None,
-        }
-    }
-
-    /// The same wait suspended at a live await site, for the tally that
-    /// groups tasks by where their own code parked them.
-    fn sited_wait(id: u64, site: &str, line: u32) -> TaskWait {
-        TaskWait {
-            site: Some((site.to_string(), line)),
-            ..wait(id, None, 1)
         }
     }
 
@@ -1706,130 +1657,6 @@ mod tests {
         );
     }
 
-    /// The await-site tally groups tasks by the root frame's live await
-    /// site — where the reader's own code is parked — with the tasks
-    /// that have no site to name sharing one row, so the section still
-    /// adds up to the task total. It sits between the type ranking it
-    /// complements and the spawn sites.
-    #[test]
-    fn test_awaiting_at_groups_tasks_by_their_live_site() {
-        let list = TaskList {
-            tasks: (0..5)
-                .map(|id| task(id, JOIN_INTEREST, "f", "f.rs"))
-                .collect(),
-            errors: Vec::new(),
-        };
-        let waits = vec![
-            sited_wait(0, "a.rs", 10),
-            sited_wait(1, "a.rs", 10),
-            sited_wait(2, "a.rs", 10),
-            sited_wait(3, "b.rs", 20),
-            wait(4, None, 1),
-        ];
-        let page = census(&facts(&list, &waits), 5);
-        assert!(
-            page.contains(
-                "    Awaiting at:\n        \
-                 3  a.rs:10\n        \
-                 1  b.rs:20\n        \
-                 1  no live await site (mid-poll, finished, never polled, or unrecorded)\n    \
-                 Spawned at:\n"
-            ),
-            "{page}"
-        );
-    }
-
-    /// The sites past `--top` are summed rather than dropped, under the
-    /// rows they summarize; with every task suspended at a site there
-    /// is no absence to report, and no row claiming one.
-    #[test]
-    fn test_awaiting_sites_past_top_are_summed() {
-        let list = TaskList {
-            tasks: (0..6)
-                .map(|id| task(id, JOIN_INTEREST, "f", "f.rs"))
-                .collect(),
-            errors: Vec::new(),
-        };
-        let waits = vec![
-            sited_wait(0, "a.rs", 1),
-            sited_wait(1, "a.rs", 1),
-            sited_wait(2, "a.rs", 1),
-            sited_wait(3, "b.rs", 2),
-            sited_wait(4, "b.rs", 2),
-            sited_wait(5, "c.rs", 3),
-        ];
-        let page = census(&facts(&list, &waits), 2);
-        assert!(
-            page.contains(
-                "    Awaiting at:\n        \
-                 3  a.rs:1\n        \
-                 2  b.rs:2\n        \
-                 1  across 1 more site\n"
-            ),
-            "{page}"
-        );
-        assert!(!page.contains("no live await site"), "{page}");
-    }
-
-    /// The summary row alone is pinned last; every real row ranks. At
-    /// exactly `--top` sites nothing is summarized, so no row may be
-    /// pulled out of the ranking — and past it, the `across` row stays
-    /// under the rows it summarizes even when its sum would rank it
-    /// first.
-    #[test]
-    fn test_awaiting_rows_keep_only_the_summary_row_last() {
-        let list = |n: u64| TaskList {
-            tasks: (0..n)
-                .map(|id| task(id, JOIN_INTEREST, "f", "f.rs"))
-                .collect(),
-            errors: Vec::new(),
-        };
-
-        // Exactly top sites: the catch-all ranks among them, and the
-        // last-ranked site is not mistaken for a summary to reposition.
-        let tasks = list(4);
-        let waits = vec![
-            sited_wait(0, "a.rs", 1),
-            sited_wait(1, "a.rs", 1),
-            sited_wait(2, "b.rs", 2),
-            wait(3, None, 1),
-        ];
-        let page = census(&facts(&tasks, &waits), 2);
-        assert!(
-            page.contains(
-                "    Awaiting at:\n        \
-                 2  a.rs:1\n        \
-                 1  b.rs:2\n        \
-                 1  no live await site (mid-poll, finished, never polled, or unrecorded)\n"
-            ),
-            "{page}"
-        );
-
-        // Past top, with the summarized tail outweighing every ranked
-        // row: the `across` row still prints last.
-        let tasks = list(8);
-        let waits = vec![
-            sited_wait(0, "a.rs", 1),
-            sited_wait(1, "a.rs", 1),
-            sited_wait(2, "a.rs", 1),
-            sited_wait(3, "b.rs", 2),
-            sited_wait(4, "b.rs", 2),
-            sited_wait(5, "c.rs", 3),
-            sited_wait(6, "c.rs", 3),
-            wait(7, None, 1),
-        ];
-        let page = census(&facts(&tasks, &waits), 1);
-        assert!(
-            page.contains(
-                "    Awaiting at:\n        \
-                 3  a.rs:1\n        \
-                 1  no live await site (mid-poll, finished, never polled, or unrecorded)\n        \
-                 4  across 2 more sites\n"
-            ),
-            "{page}"
-        );
-    }
-
     /// The leaf rows are the ones `--top` bounds: the primitives and
     /// the three reasons there is nothing to say are a closed set, so
     /// cutting one would drop a fact rather than a long tail.
@@ -1934,7 +1761,6 @@ mod tests {
             ),
             "{page}"
         );
-        assert!(page.contains("10  across 4 more sites\n"), "{page}");
     }
 
     /// The three future populations are disjoint, so the headline is

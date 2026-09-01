@@ -16,10 +16,6 @@ Tasks: 1 owned by runtime 0 @0xADDR
     Future types and what they await:
         1  async block futurelock::main::{async_block#0}
            └─ 1  a tokio::sync::Mutex
-    Awaiting at:
-        1  src/bin/futurelock.rs:28
-    Spawned at:
-        1  src/bin/futurelock.rs:16:17
 
 Futures: 2 in flight, on 12 await-chain frames (up to 7 deep)
     Location:

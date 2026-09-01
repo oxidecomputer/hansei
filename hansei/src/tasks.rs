@@ -527,8 +527,7 @@ pub(crate) struct TaskRow {
     /// holding more than one group.
     pub(crate) rt: usize,
     /// The leaf await site — the line of the reader's own code the
-    /// task is parked behind, the site `census`'s "Awaiting at"
-    /// counts.
+    /// task is parked behind.
     pub(crate) awaiting_at: Option<String>,
     /// What the task waits on, spelled the way `graph` spells it.
     pub(crate) waiting_on: String,

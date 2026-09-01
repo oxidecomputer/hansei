@@ -21,16 +21,6 @@ Tasks: 4 owned by 2 runtimes and 1 local set
            └─ 1  another task (JoinHandle)
         1  async fn foreign_runtime::local_sleeper
            └─ 1  a timer
-    Awaiting at:
-        1  src/bin/foreign-runtime.rs:26
-        1  src/bin/foreign-runtime.rs:36
-        1  src/bin/foreign-runtime.rs:51
-        1  src/bin/foreign-runtime.rs:63
-    Spawned at:
-        1  src/bin/foreign-runtime.rs:129:23
-        1  src/bin/foreign-runtime.rs:83:23
-        1  src/bin/foreign-runtime.rs:85:18
-        1  src/bin/foreign-runtime.rs:87:16
 
 Futures: 4 in flight, on 9 await-chain frames (up to 3 deep)
     Location:

@@ -18,12 +18,6 @@ Tasks: 2 owned by runtime 0 @0xADDR
            └─ 1  future tokio::sync::oneshot::Receiver<u32>
         1  async fn dyn_future::set_member
            └─ 1  future tokio::sync::oneshot::Receiver<u32>
-    Awaiting at:
-        1  src/bin/dyn-future.rs:17
-        1  src/bin/dyn-future.rs:36
-    Spawned at:
-        1  src/bin/dyn-future.rs:28:9
-        1  src/bin/dyn-future.rs:53:21
 
 Futures: 2 in flight, on 5 await-chain frames (up to 3 deep)
     Location:

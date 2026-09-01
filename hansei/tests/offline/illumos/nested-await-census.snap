@@ -16,10 +16,6 @@ Tasks: 1 owned by runtime 0 @0xADDR
     Future types and what they await:
         1  async fn nested_await::outer
            └─ 1  future tokio::sync::oneshot::Receiver<u32>
-    Awaiting at:
-        1  src/bin/nested-await.rs:19
-    Spawned at:
-        1  src/bin/nested-await.rs:33:21
 
 Futures: 1 in flight, on 4 await-chain frames (up to 4 deep)
     Location:
