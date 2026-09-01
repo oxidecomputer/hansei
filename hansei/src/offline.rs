@@ -150,6 +150,9 @@ fn commands(
                 // `down` moves the cursor the commands above share.
                 list.push(("up-locals", "up locals".to_owned()));
                 list.push(("down-locals", "down locals".to_owned()));
+                // `frame` composes the same way, and the move back to
+                // #0 restores the cursor for the commands below.
+                list.push(("frame-locals", "frame 0 locals".to_owned()));
             }
         }
     }

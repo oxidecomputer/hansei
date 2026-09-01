@@ -1175,14 +1175,25 @@ mod tests {
             Line::try_parse_from(["frame", "2"])
                 .expect("frame moves")
                 .command,
-            Command::Frame { index: Some(2) }
+            Command::Frame {
+                index: Some(2),
+                then
+            } if then.is_empty()
         ));
         assert!(matches!(
             Line::try_parse_from(["frame"])
                 .expect("bare frame prints")
                 .command,
-            Command::Frame { index: None }
+            Command::Frame { index: None, then } if then.is_empty()
         ));
+        let Command::Frame { index, then } = Line::try_parse_from(["frame", "7", "print", ".self"])
+            .expect("frame carries a trailing command")
+            .command
+        else {
+            panic!("frame parses");
+        };
+        assert_eq!(index, Some(7));
+        assert_eq!(then, ["print", ".self"]);
         assert!(matches!(
             Line::try_parse_from(["up"]).expect("up parses").command,
             Command::Up { then } if then.is_empty()
