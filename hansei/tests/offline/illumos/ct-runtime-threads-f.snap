@@ -53,6 +53,6 @@ lwp 1  polling no task
         unhandled_panic: false,
     }
   stack:
-    0xADDR 
-    0xADDR <mio::poll::Poll>::poll  (frame-pointer walk)
-    0xADDR <tokio::runtime::io::driver::Driver>::turn  (frame-pointer walk)
+    0xADDR  
+    0xADDR  <mio::poll::Poll>::poll  (frame-pointer walk)
+    0xADDR  <tokio::runtime::io::driver::Driver>::turn  (frame-pointer walk)

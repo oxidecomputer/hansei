@@ -2,13 +2,13 @@
 source: hansei/src/offline.rs
 description: "`locals` over illumos/dyn-future"
 ---
-set: tokio::task::join_set::JoinSet<u32> = tokio::util::idle_notified_set::IdleNotifiedSet<tokio::runtime::task::join::JoinHandle<u32>> {
-      lists: alloc::sync::Arc<tokio::loom::std::parking_lot::Mutex<tokio::util::idle_notified_set::ListsInner<tokio::runtime::task::join::JoinHandle<u32>>>, alloc::alloc::Global> {
-          ptr: 0xADDR -> alloc::sync::ArcInner<tokio::loom::std::parking_lot::Mutex<tokio::util::idle_notified_set::ListsInner<tokio::runtime::task::join::JoinHandle<u32>>>> {
-                  strong: 2,
-                  weak: 1,
-                  data: tokio::loom::std::parking_lot::Mutex<tokio::util::idle_notified_set::ListsInner<tokio::runtime::task::join::JoinHandle<u32>>> { .. } @ 0xADDR,
+inner: core::option::Option<alloc::sync::Arc<tokio::sync::oneshot::Inner<u32>, alloc::alloc::Global>>::Some(0xADDR -> alloc::sync::ArcInner<tokio::sync::oneshot::Inner<u32>> {
+              strong: 2,
+              weak: 1,
+              data: tokio::sync::oneshot::Inner<u32> {
+                  state: 1,
+                  value: tokio::loom::std::unsafe_cell::UnsafeCell<core::option::Option<u32>> { .. } @ 0xADDR,
+                  tx_task: tokio::sync::oneshot::Task (..) @ 0xADDR,
+                  rx_task: tokio::sync::oneshot::Task (..) @ 0xADDR,
               },
-      },
-      length: 1,
-  }
+          })

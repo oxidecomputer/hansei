@@ -2,4 +2,25 @@
 source: hansei/src/offline.rs
 description: "`locals` over linux-floor/foreign-runtime"
 ---
-no locals
+node: tokio::sync::batch_semaphore::Waiter {
+      state: 1,
+      waker: core::option::Option<core::task::wake::Waker>::Some(task 1),
+      pointers: tokio::util::linked_list::Pointers<tokio::sync::batch_semaphore::Waiter> {
+          inner: tokio::util::linked_list::PointersInner<tokio::sync::batch_semaphore::Waiter> {
+              prev: core::option::Option<core::ptr::non_null::NonNull<tokio::sync::batch_semaphore::Waiter>>::None,
+              next: core::option::Option<core::ptr::non_null::NonNull<tokio::sync::batch_semaphore::Waiter>>::None,
+          },
+      },
+  }
+semaphore: &tokio::sync::batch_semaphore::Semaphore = 0xADDR -> tokio::sync::batch_semaphore::Semaphore {
+          waiters: lock_api::mutex::Mutex<parking_lot::raw_mutex::RawMutex, tokio::sync::batch_semaphore::Waitlist> {
+              raw: parking_lot::raw_mutex::RawMutex: locked=false, parked=false,
+              data: tokio::sync::batch_semaphore::Waitlist {
+                  queue: tokio::util::linked_list::LinkedList<tokio::sync::batch_semaphore::Waiter, tokio::sync::batch_semaphore::Waiter> { .. } @ 0xADDR,
+                  closed: false,
+              },
+          },
+          permits: closed=false, permits=0,
+      }
+num_permits: usize = 1
+queued: bool = true

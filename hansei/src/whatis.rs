@@ -1285,7 +1285,7 @@ mod whatis_tests {
                     shown.contains(&format!("    Held by: task {owner} — ")),
                     "{shown}"
                 );
-                assert!(shown.contains("(frame 1, `future1`)"), "{shown}");
+                assert!(shown.contains("(frame 5, `future1`)"), "{shown}");
             }
 
             // Past its end it is somebody else's memory, and this

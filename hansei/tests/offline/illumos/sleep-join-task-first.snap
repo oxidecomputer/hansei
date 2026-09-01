@@ -3,3 +3,5 @@ source: hansei/src/offline.rs
 description: "`task 3` over illumos/sleep-join"
 ---
 3  idle  src/bin/sleep-join.rs:12  timer (deadline TS)  async fn sleep_join::sleeper
+Spawned at: src/bin/sleep-join.rs:30:22
+Defined at: src/bin/sleep-join.rs:9

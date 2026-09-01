@@ -32,7 +32,7 @@ pub(crate) fn exec_trace_lwp<T: proc::Target>(
     };
     writeln!(out, "lwp {tid} native stack:")?;
     for line in backtrace.stack_trace(50) {
-        writeln!(out, "  {line}")?;
+        writeln!(out, "{line}")?;
     }
     Ok(())
 }
@@ -67,22 +67,6 @@ fn exec_trace_task<T: proc::Target>(
         return Err(no_such_task(list, task_id));
     };
 
-    let name = future_name(&task.future, &session.impl_fold);
-    writeln!(
-        out,
-        "Task {task_id}: {} ({})",
-        opts.theme.type_name(&name),
-        task.state.lifecycle()
-    )?;
-    if let Some(loc) = &task.spawn_location {
-        writeln!(out, "Spawned at: {loc}")?;
-    }
-    if let bundle::FutureInfo::Known(known) = &task.future
-        && let Some((file, line)) = &known.decl
-    {
-        writeln!(out, "Defined at: {file}:{line}")?;
-    }
-
     // A mid-poll task is being mutated while we read it; anything below
     // may be torn.
     if task.state.lifecycle() == Lifecycle::Running {
@@ -96,20 +80,20 @@ fn exec_trace_task<T: proc::Target>(
     match ctx.task_stage(task)? {
         bundle::TaskStage::Running(future) => {
             let chain = ctx.await_chain(future);
-            print_trace_chain(session, &chain, index, None, opts, out)?;
             // A mid-poll task's chain stops at the last *committed*
             // await; the truth of what the poll is doing right now is
-            // on the polling thread's native stack, joined on under
-            // `-n` — and without it left to `threads` whole, heading
-            // and refusal spellings included.
+            // on the polling thread's native stack, joined on above
+            // the chain under `-n` — and without it left to `threads`
+            // whole, heading and refusal spellings included.
             if task.state.lifecycle() == Lifecycle::Running && opts.native {
                 print_native_continuation(session, task, task_id, &chain, opts, out)?;
+                writeln!(out)?;
             }
+            print_trace_chain(session, &chain, index, None, opts, out)?;
         }
         bundle::TaskStage::Finished(result) => {
             // Result<T::Output, JoinError>: Ok is a normal return, Err a
             // panic or cancellation.
-            writeln!(out)?;
             writeln!(
                 out,
                 "The task has finished; its output has not been consumed:"
@@ -127,7 +111,6 @@ fn exec_trace_task<T: proc::Target>(
             writeln!(out, "  {:#}", value)?;
         }
         bundle::TaskStage::Consumed => {
-            writeln!(out)?;
             writeln!(out, "The task has finished and its output was consumed.")?;
         }
     }
@@ -234,6 +217,7 @@ fn exec_trace_future<T: proc::Target>(
         .with_context(|| format!("failed to read the future at {:#x}", root.addr))?;
 
     let chain = ctx.await_chain(value);
+    writeln!(out)?;
     print_trace_chain(session, &chain, owner, Some(origin), opts, out)
 }
 
@@ -394,7 +378,10 @@ pub(crate) fn wait_line<T: proc::Target>(
 /// it: futures parked in a frame's live state that the chain does not
 /// run through — the shape a futurelock grows from. `origin` matches
 /// [`census::HeldFuture::via`]: `None` counts the finds in `owner`'s
-/// own frames, an origin those in the chain it names.
+/// own frames, an origin those in the chain it names. The census
+/// records display-numbered frames (#0 the most recently polled); the
+/// returned vector is chain-indexed, root first, so the flip happens
+/// here.
 pub(crate) fn frame_holds(
     census: &census::FutureCensus,
     owner: usize,
@@ -405,7 +392,9 @@ pub(crate) fn frame_holds(
     for h in &census.held {
         if h.owner == owner
             && h.via == origin
-            && let Some(count) = holds.get_mut(h.frame)
+            && let Some(count) = frames
+                .checked_sub(h.frame + 1)
+                .and_then(|i| holds.get_mut(i))
         {
             *count += 1;
         }
@@ -413,15 +402,18 @@ pub(crate) fn frame_holds(
     holds
 }
 
-/// Render an await chain flat, root-first: a blank line, the decoded
-/// wait target as a `Waiting on:` summary when there is one, then one
-/// `#N` frame line per future with a detail line under each saying what
+/// Render an await chain flat, most recent first: a blank line, the
+/// decoded wait target as a `Waiting on:` summary when there is one,
+/// then one `#N` frame line per future — #0 the most recently polled,
+/// the root at the bottom — with a detail line under each saying what
 /// the target's memory says about that frame — its live state, or the
 /// wait target again on the leaf. Under `--verbose` each frame also
-/// lists its live locals and its other suspend points.
+/// lists its live locals and its other suspend points. A note about
+/// where the walk cut (an unresolved dyn, a bound) prints above the
+/// frames: it describes what lies deeper than the leaf.
 ///
-/// Reading convention: frame N is the future stored in frame N−1's live
-/// state. The frame line ends with the type name, so a terminal
+/// Reading convention: frame N is the future stored in frame N+1's
+/// live state. The frame line ends with the type name, so a terminal
 /// soft-wrap belongs to the name and triple-click still copies the
 /// whole logical line.
 #[allow(clippy::too_many_arguments)]
@@ -435,22 +427,22 @@ fn print_await_chain<'b, T: proc::Target>(
     annotate: Option<&reify::AddrAnnotator<'_>>,
     out: &mut dyn io::Write,
 ) -> Result<()> {
-    writeln!(out)?;
     if let Some(wait) = wait {
         writeln!(out, "Waiting on: {}", opts.theme.bold(wait))?;
         writeln!(out)?;
     }
 
+    print_chain_end(chain, impls, out)?;
     let num_width = chain_num_width(chain);
-    for i in 0..chain.frames.len() {
+    for i in (0..chain.frames.len()).rev() {
         print_frame(
             ctx, chain, i, num_width, wait, holds, opts, impls, annotate, out,
         )?;
     }
-    print_chain_end(chain, impls, out)
+    Ok(())
 }
 
-/// The width the chain's frame numbers align at: that of the last —
+/// The width the chain's frame numbers align at: that of the root's —
 /// the widest — `#N`.
 pub(crate) fn chain_num_width(chain: &bundle::AwaitChain<'_>) -> usize {
     format!("#{}", chain.frames.len().saturating_sub(1)).len()
@@ -486,7 +478,7 @@ pub(crate) fn print_frame<'b, T: proc::Target>(
         ""
     };
     let name = names::fold_type_name(frame.future.ty.name(), impls);
-    let number = format!("#{i}");
+    let number = format!("#{}", chain.frames.len() - 1 - i);
     writeln!(
         out,
         "{number:<num_width$}  {kind:<13} {}",
@@ -782,13 +774,13 @@ fn print_chain_end(
     Ok(())
 }
 
-/// Append a mid-poll task's native continuation to its printed chain:
-/// find the thread polling it (the corroborated claim `threads`
-/// makes), unwind it, and classify its stack against the task's
-/// resolved poll symbol and the committed chain's future types. When
-/// any join fails — no claim, no unwind, no resolved poll symbol, no
-/// frame inside it — nothing native is glued on: the section says why
-/// and names `threads` for the raw stack.
+/// Print a mid-poll task's native continuation above its chain: find
+/// the thread polling it (the corroborated claim `threads` makes),
+/// unwind it, and classify its stack against the task's resolved poll
+/// symbol and the committed chain's future types. When any join fails
+/// — no claim, no unwind, no resolved poll symbol, no frame inside it
+/// — nothing native is glued on: the section says why and names
+/// `threads` for the raw stack.
 fn print_native_continuation<T: proc::Target>(
     session: &Session<'_, T>,
     task: &bundle::Task,
@@ -858,7 +850,6 @@ fn print_native_continuation<T: proc::Target>(
         &frames,
         &joined,
         lwp,
-        chain.frames.len(),
         fatal.as_ref(),
         &|pc| ctx.mappings.contains_addr(pc),
         opts,
@@ -873,7 +864,6 @@ fn refuse_join(out: &mut dyn io::Write, why: &str, lwp: Option<u32>) -> Result<(
         Some(tid) => format!("threads {tid}"),
         None => "threads".to_string(),
     };
-    writeln!(out)?;
     writeln!(out, "mid-poll, but {why}; `{threads}` shows the raw stack")?;
     Ok(())
 }
@@ -918,21 +908,21 @@ enum NativeLine {
     Signal(String),
 }
 
-/// Render the native continuation: the section below the seam, in
-/// chain order, numbered on from `start` (the count of chain frames
-/// already printed) with the kind words `native` and `signal`.
-/// `fatal` is the target's fatal signal — only when *this* lwp took
-/// it does the section end with the signal row, since another
-/// thread's signal has nothing to do with this poll. `mapped` says
-/// whether an address falls inside any mapping, which is what turns
-/// the wild frame a bad call pushes into the signal attribution
-/// instead of a frame row.
-#[allow(clippy::too_many_arguments)]
+/// Render the native continuation: the section above the chain, most
+/// recent frame first and unnumbered — a native frame cannot be
+/// selected, so a number would only claim it can. A frame row is the
+/// frame's pc and symbol, the spelling the thread trace uses; a
+/// folded plumbing run and the signal row carry their text alone.
+/// `fatal` is the target's fatal signal
+/// — only when *this* lwp took it does the section open with the
+/// signal row, since another thread's signal has nothing to do with
+/// this poll. `mapped` says whether an address falls inside any
+/// mapping, which is what turns the wild frame a bad call pushes into
+/// the signal attribution instead of a frame row.
 fn print_native_section(
     frames: &[stackjoin::NativeFrame],
     joined: &stackjoin::Continuation,
     lwp: u32,
-    start: usize,
     fatal: Option<&proc::FatalSignal>,
     mapped: &dyn Fn(u64) -> bool,
     opts: &TraceOpts<'_>,
@@ -944,7 +934,8 @@ fn print_native_section(
             stackjoin::Row::Frame(i) => lines.push(NativeLine::Frame(*i)),
             stackjoin::Row::Fold(r) => {
                 if opts.verbose {
-                    // The run whole, outermost first: descending index.
+                    // The run whole; the section-wide flip below turns
+                    // this innermost-first for the reader.
                     lines.extend(r.clone().rev().map(NativeLine::Frame));
                 } else {
                     lines.push(NativeLine::Fold(r.clone()));
@@ -964,14 +955,23 @@ fn print_native_section(
         };
         let text = if let Some(pc) = wild {
             lines.pop();
-            let caller = start + lines.len() - 1;
+            // The caller is the row printed directly below the
+            // attribution once the section is reversed; numbers are
+            // gone from native rows, so it is named by symbol.
+            let caller = match lines.last() {
+                Some(NativeLine::Frame(i)) if !frames[*i].name.is_empty() => {
+                    frames[*i].name.clone()
+                }
+                Some(NativeLine::Fold(r)) => frames[r.start].name.clone(),
+                _ => "the chain's leaf frame".to_string(),
+            };
             format!(
-                "{} — the call from #{caller} landed at {pc:#x}, unmapped",
+                "{} — the call from {caller} landed at {pc:#x}, unmapped",
                 crate::summary::signal_name(sig)
             )
         } else if matches!(joined.rows.last(), Some(stackjoin::Row::Fold(_))) {
             format!(
-                "{} — raised by the panic above",
+                "{} — raised by the panic below",
                 crate::summary::signal_name(sig)
             )
         } else {
@@ -980,7 +980,11 @@ fn print_native_section(
         lines.push(NativeLine::Signal(text));
     }
 
-    writeln!(out)?;
+    // Most recent first: the chain-order rows flipped whole, so the
+    // signal — the last thing that happened — sits on top and the
+    // frame nearest the committed chain sits just above it.
+    lines.reverse();
+
     if lines.is_empty() {
         // The seam sat at the innermost frame: execution is exactly at
         // the committed leaf, and there is nothing novel to print.
@@ -990,33 +994,29 @@ fn print_native_section(
              nothing deeper is on the native stack"
         )?;
     } else {
-        writeln!(out, "mid-poll on lwp {lwp} — the poll is currently at:")?;
-        let num_width = format!("#{}", start + lines.len() - 1).len();
-        for (n, line) in lines.iter().enumerate() {
-            let number = format!("#{}", start + n);
+        writeln!(out, "mid-poll on lwp {lwp}")?;
+        for line in &lines {
             match line {
                 NativeLine::Frame(i) => {
                     let f = &frames[*i];
                     let text = if f.name.is_empty() {
-                        format!("<no symbol> at {:#x}", f.pc)
+                        "<no symbol>"
                     } else {
-                        f.name.clone()
+                        f.name.as_str()
                     };
-                    writeln!(out, "{number:<num_width$}  {:<13} {text}", "native")?;
+                    writeln!(out, "{:#018x}  {text}", f.pc)?;
                 }
                 NativeLine::Fold(r) => {
                     writeln!(
                         out,
-                        "{number:<num_width$}  {:<13} panic plumbing: {} … {} \
-                         ({} frames; -v shows each)",
-                        "native",
-                        frames[r.end - 1].name,
+                        "panic plumbing: {} … {} ({} frames; -v shows each)",
                         frames[r.start].name,
+                        frames[r.end - 1].name,
                         r.len(),
                     )?;
                 }
                 NativeLine::Signal(text) => {
-                    writeln!(out, "{number:<num_width$}  {:<13} {text}", "signal")?;
+                    writeln!(out, "{text}")?;
                 }
             }
         }
@@ -1520,7 +1520,6 @@ mod native_section_tests {
         frames: &[NativeFrame],
         chain: &[BundleTypeId],
         lwp: u32,
-        start: usize,
         fatal: Option<&proc::FatalSignal>,
         mapped: &dyn Fn(u64) -> bool,
         verbose: bool,
@@ -1539,7 +1538,7 @@ mod native_section_tests {
             theme: output::Theme::plain(),
             heap: None,
         };
-        print_native_section(frames, &joined, lwp, start, fatal, mapped, &opts, &mut out)
+        print_native_section(frames, &joined, lwp, fatal, mapped, &opts, &mut out)
             .expect("the section renders");
         String::from_utf8(out).expect("rendered output is UTF-8")
     }
@@ -1569,12 +1568,11 @@ mod native_section_tests {
     }
 
     /// The healthy-capture shape: every novel frame below the seam
-    /// prints as a `native` row, numbered on from the chain's frames,
-    /// under the neutral header and over the provenance footer — and a
-    /// capture that took no signal ends at its innermost frame with no
-    /// signal row.
+    /// prints as an unnumbered `native` row, most recent first, under
+    /// the neutral header — and a capture that took no signal opens
+    /// with its innermost frame and no signal row.
     #[test]
-    fn test_the_section_numbers_on_from_the_chain() {
+    fn test_the_section_reads_most_recent_first_unnumbered() {
         let chain = [BundleTypeId(10), BundleTypeId(11), BundleTypeId(12)];
         let frames = [
             frame(0x9000, "__lwp_park"),
@@ -1589,21 +1587,20 @@ mod native_section_tests {
             frame(0x9090, "tokio::runtime::scheduler::run"),
         ];
         assert_eq!(
-            section(&frames, &chain, 115, 3, None, &|_| true, false),
-            "
-mid-poll on lwp 115 — the poll is currently at:
-#3  native        reqwest::connect::{closure#0}
-#4  native        memalign
-#5  native        vmem_xalloc
-#6  native        mutex_lock
-#7  native        __lwp_park
+            section(&frames, &chain, 115, None, &|_| true, false),
+            "mid-poll on lwp 115
+0x0000000000009000  __lwp_park
+0x0000000000009010  mutex_lock
+0x0000000000009020  vmem_xalloc
+0x0000000000009030  memalign
+0x0000000000009040  reqwest::connect::{closure#0}
 "
         );
     }
 
     /// The panic-abort shape: the plumbing run folds to one counted
-    /// line, and the fatal signal — this lwp's — ends the section
-    /// attributed to the panic above it.
+    /// line, and the fatal signal — this lwp's — opens the section
+    /// attributed to the panic below it.
     #[test]
     fn test_a_panic_abort_folds_and_ends_with_the_signal_row() {
         let chain = [BundleTypeId(20)];
@@ -1626,38 +1623,43 @@ mid-poll on lwp 115 — the poll is currently at:
         ];
         let sig = abrt();
         assert_eq!(
-            section(&frames, &chain, 7, 1, Some(&sig), &|_| true, false),
-            "
-mid-poll on lwp 7 — the poll is currently at:
-#1  native        panic_join::boom
-#2  native        panic plumbing: core::panicking::panic_fmt … _lwp_kill \
-(10 frames; -v shows each)
-#3  signal        SIGABRT — raised by the panic above
+            section(&frames, &chain, 7, Some(&sig), &|_| true, false),
+            "mid-poll on lwp 7
+SIGABRT — raised by the panic below
+panic plumbing: _lwp_kill … core::panicking::panic_fmt (10 frames; -v shows each)
+0x00000000000090a0  panic_join::boom
 "
         );
 
-        // -v prints the run whole, outermost first, each frame taking
-        // its own number; the signal row keeps its attribution.
-        let verbose = section(&frames, &chain, 7, 1, Some(&sig), &|_| true, true);
-        assert_eq!(verbose.matches(" native ").count(), 11, "{verbose}");
+        // -v prints the run whole, most recent first, still
+        // unnumbered; the signal row keeps its attribution.
+        let verbose = section(&frames, &chain, 7, Some(&sig), &|_| true, true);
+        assert_eq!(verbose.matches("\n0x").count(), 11, "{verbose}");
         assert!(!verbose.contains("panic plumbing:"), "{verbose}");
         assert!(
-            verbose.contains("#2   native        core::panicking::panic_fmt\n"),
+            verbose.contains("0x0000000000009090  core::panicking::panic_fmt\n"),
             "{verbose}"
         );
         assert!(
-            verbose.contains("#11  native        _lwp_kill\n"),
+            verbose.contains("0x0000000000009000  _lwp_kill\n"),
             "{verbose}"
         );
+        let kill = verbose
+            .find("_lwp_kill")
+            .expect("the innermost frame prints");
+        let fmt = verbose
+            .find("panic_fmt")
+            .expect("the outermost frame prints");
+        assert!(kill < fmt, "most recent first:\n{verbose}");
         assert!(
-            verbose.contains("#12  signal        SIGABRT — raised by the panic above\n"),
+            verbose.contains("\nSIGABRT — raised by the panic below\n"),
             "{verbose}"
         );
     }
 
     /// The release-crash shape: the wild frame a bad call pushes — an
     /// unmapped pc with no symbol — prints as the signal attribution
-    /// naming its caller, not as a frame row.
+    /// naming its caller by symbol, not as a frame row.
     #[test]
     fn test_a_wild_pc_becomes_the_signal_attribution() {
         let chain = [BundleTypeId(30), BundleTypeId(31)];
@@ -1669,15 +1671,12 @@ mid-poll on lwp 7 — the poll is currently at:
             poll_frame(0x9040, "other::task::{closure#0}", &[30]),
         ];
         let sig = segv();
-        // `start` deliberately differs from the section's row count, so
-        // the caller's number is wrong unless computed as start + rows.
         assert_eq!(
-            section(&frames, &chain, 115, 3, Some(&sig), &|pc| pc != 0, false),
-            "
-mid-poll on lwp 115 — the poll is currently at:
-#3  native        rama::stream::next
-#4  native        rama::service::dispatch
-#5  signal        SIGSEGV (SEGV_MAPERR) — the call from #4 landed at 0x0, unmapped
+            section(&frames, &chain, 115, Some(&sig), &|pc| pc != 0, false),
+            "mid-poll on lwp 115
+SIGSEGV (SEGV_MAPERR) — the call from rama::service::dispatch landed at 0x0, unmapped
+0x0000000000009010  rama::service::dispatch
+0x0000000000009020  rama::stream::next
 "
         );
     }
@@ -1692,10 +1691,10 @@ mid-poll on lwp 115 — the poll is currently at:
         ];
         let mut sig = segv();
         sig.lwp = Some(116);
-        let rendered = section(&frames, &[], 115, 1, Some(&sig), &|_| true, false);
+        let rendered = section(&frames, &[], 115, Some(&sig), &|_| true, false);
         assert!(!rendered.contains("signal"), "{rendered}");
         sig.lwp = None;
-        let rendered = section(&frames, &[], 115, 1, Some(&sig), &|_| true, false);
+        let rendered = section(&frames, &[], 115, Some(&sig), &|_| true, false);
         assert!(!rendered.contains("signal"), "{rendered}");
     }
 
@@ -1709,9 +1708,9 @@ mid-poll on lwp 115 — the poll is currently at:
             frame(0x5000, "tokio::runtime::task::raw::poll"),
         ];
         let sig = segv();
-        let rendered = section(&frames, &[], 115, 1, Some(&sig), &|_| true, false);
+        let rendered = section(&frames, &[], 115, Some(&sig), &|_| true, false);
         assert!(
-            rendered.contains("#2  signal        SIGSEGV (SEGV_MAPERR), fault address 0x0\n"),
+            rendered.contains("\nSIGSEGV (SEGV_MAPERR), fault address 0x0\n"),
             "{rendered}"
         );
     }
@@ -1727,9 +1726,8 @@ mid-poll on lwp 115 — the poll is currently at:
             frame(0x5000, "task::raw::poll"),
         ];
         assert_eq!(
-            section(&frames, &chain, 12, 2, None, &|_| true, false),
-            "
-mid-poll on lwp 12 — the poll is at the chain's leaf frame; \
+            section(&frames, &chain, 12, None, &|_| true, false),
+            "mid-poll on lwp 12 — the poll is at the chain's leaf frame; \
 nothing deeper is on the native stack
 "
         );
@@ -1744,9 +1742,9 @@ nothing deeper is on the native stack
             frame(0x4242, ""),
             frame(0x5000, "tokio::runtime::task::raw::poll"),
         ];
-        let rendered = section(&frames, &[], 3, 1, None, &|_| true, false);
+        let rendered = section(&frames, &[], 3, None, &|_| true, false);
         assert!(
-            rendered.contains("#1  native        <no symbol> at 0x4242\n"),
+            rendered.contains("0x0000000000004242  <no symbol>\n"),
             "{rendered}"
         );
     }
@@ -1811,7 +1809,7 @@ nothing deeper is on the native stack
             .expect("the refusal renders");
         assert_eq!(
             String::from_utf8(out).expect("rendered output is UTF-8"),
-            "\nmid-poll, but no thread's context claims the task; \
+            "mid-poll, but no thread's context claims the task; \
              `threads` shows the raw stack\n"
         );
 
@@ -1820,7 +1818,7 @@ nothing deeper is on the native stack
             .expect("the refusal renders");
         assert_eq!(
             String::from_utf8(out).expect("rendered output is UTF-8"),
-            "\nmid-poll, but lwp 9's stack was not unwound; `threads 9` shows the raw stack\n"
+            "mid-poll, but lwp 9's stack was not unwound; `threads 9` shows the raw stack\n"
         );
     }
 }
@@ -2689,8 +2687,7 @@ mod trace_render_tests {
                 "walk_shapes::side_parker::{async_fn_env#0}",
                 false
             ),
-            "
-#0  async fn      walk_shapes::side_parker
+            "#0  async fn      walk_shapes::side_parker
       state Unresumed — src/bin/walk-shapes.rs:204
 "
         );
@@ -2699,7 +2696,7 @@ mod trace_render_tests {
     /// The three detail spellings in one chain: a coroutine's live
     /// state is `awaiting at` its resume point, a wrapper frame with no
     /// decoded state has no detail at all — the reading convention
-    /// (frame N sits in frame N−1's live state) carries the chain — and
+    /// (frame N sits in frame N+1's live state) carries the chain — and
     /// a plain enum's decoded variant is `state:`, which claims no
     /// resume point. Frame 0 also holds `wz` — a future the chain does
     /// not run through — which its detail line tallies.
@@ -2711,17 +2708,16 @@ mod trace_render_tests {
                 "walk_shapes::chained::{async_fn_env#0}",
                 false
             ),
-            "
-#0  async fn      walk_shapes::chained
-      awaiting at src/bin/walk-shapes.rs:103 (Suspend0, 1 local; holds 1 pending future)
-#1  future        walk_shapes::WrapS<walk_shapes::WrapE<walk_shapes::deep>>
-      (<no_state>, 2 locals)
+            "#0  future        tokio::sync::notify::Notified
+      (<no_state>, 4 locals)
+#1  async fn      walk_shapes::deep
+      awaiting at src/bin/walk-shapes.rs:88 (Suspend0, 1 local)
 #2  future        walk_shapes::WrapE<walk_shapes::deep>
       (Running, 2 locals)
-#3  async fn      walk_shapes::deep
-      awaiting at src/bin/walk-shapes.rs:88 (Suspend0, 1 local)
-#4  future        tokio::sync::notify::Notified
-      (<no_state>, 4 locals)
+#3  future        walk_shapes::WrapS<walk_shapes::WrapE<walk_shapes::deep>>
+      (<no_state>, 2 locals)
+#4  async fn      walk_shapes::chained
+      awaiting at src/bin/walk-shapes.rs:103 (Suspend0, 1 local; holds 1 pending future)
 "
         );
     }
@@ -2737,21 +2733,20 @@ mod trace_render_tests {
                 "simple_await::work::{async_fn_env#0}",
                 false
             ),
-            "
-#0  async fn      simple_await::work
-      awaiting at src/bin/simple-await.rs:40 (Suspend1, 12 locals)
-#1  future        tokio::sync::oneshot::Receiver<u32>
+            "#0  future        tokio::sync::oneshot::Receiver<u32>
       (<no_state>, 1 local)
+#1  async fn      simple_await::work
+      awaiting at src/bin/simple-await.rs:40 (Suspend1, 12 locals)
 "
         );
     }
 
     /// The whole flat layout on a deep chain: the decoded wait target
     /// leads as the `Waiting on:` summary and lands again on the leaf
-    /// frame, every frame keeps the same two-line shape at the same
-    /// indent, and the frame holding a future the chain does not run
-    /// through — the futurelock tell — carries the tally on its detail
-    /// line.
+    /// frame — #0, printed first — every frame keeps the same two-line
+    /// shape at the same indent, and the frame holding a future the
+    /// chain does not run through — the futurelock tell — carries the
+    /// tally on its detail line.
     #[test]
     fn test_the_wait_target_leads_and_the_leaf_repeats_it() {
         let rendered = trace(
@@ -2761,23 +2756,22 @@ mod trace_render_tests {
         );
         assert_eq!(
             rendered,
-            "
-Waiting on: a tokio::sync::Mutex (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 5
+            "Waiting on: a tokio::sync::Mutex (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 5
 
-#0  async block   futurelock::main::{async_block#0}
-      awaiting at src/bin/futurelock.rs:28 (Suspend1, 1 local)
-#1  async fn      futurelock::do_stuff
-      awaiting at src/bin/futurelock.rs:70 (Suspend1, 3 locals; holds 1 pending future)
-#2  async fn      futurelock::do_async_thing
-      awaiting at src/bin/futurelock.rs:78 (Suspend0, 2 locals)
+#0  future        tokio::sync::batch_semaphore::Acquire
+      waiting on a tokio::sync::Mutex (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 5
+#1  async fn      tokio::sync::mutex::Mutex::acquire<()>
+      awaiting at tokio-1.52.4/src/sync/mutex.rs:658 (Suspend1, 0 locals)
+#2  async block   tokio::sync::mutex::Mutex::lock::{async_fn#0}<()>
+      awaiting at tokio-1.52.4/src/sync/mutex.rs:436 (Suspend0, 0 locals)
 #3  async fn      tokio::sync::mutex::Mutex::lock<()>
       awaiting at tokio-1.52.4/src/sync/mutex.rs:455 (Suspend0, 0 locals)
-#4  async block   tokio::sync::mutex::Mutex::lock::{async_fn#0}<()>
-      awaiting at tokio-1.52.4/src/sync/mutex.rs:436 (Suspend0, 0 locals)
-#5  async fn      tokio::sync::mutex::Mutex::acquire<()>
-      awaiting at tokio-1.52.4/src/sync/mutex.rs:658 (Suspend1, 0 locals)
-#6  future        tokio::sync::batch_semaphore::Acquire
-      waiting on a tokio::sync::Mutex (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 5
+#4  async fn      futurelock::do_async_thing
+      awaiting at src/bin/futurelock.rs:78 (Suspend0, 2 locals)
+#5  async fn      futurelock::do_stuff
+      awaiting at src/bin/futurelock.rs:70 (Suspend1, 3 locals; holds 1 pending future)
+#6  async block   futurelock::main::{async_block#0}
+      awaiting at src/bin/futurelock.rs:28 (Suspend1, 1 local)
 "
         );
     }
@@ -2790,13 +2784,12 @@ Waiting on: a tokio::sync::Mutex (semaphore 0xADDR): 1 permit requested, 0 avail
     fn test_dyn_frames_keep_their_marker() {
         assert_eq!(
             trace("dyn-future", "dyn_future::driver::{async_fn_env#0}", false),
-            "
-#0  async fn      dyn_future::driver
-      awaiting at src/bin/dyn-future.rs:36 (Suspend0, 1 local)
+            "#0  future        tokio::sync::oneshot::Receiver<u32>
+      (<no_state>, 1 local)
 #1  async fn      dyn_future::boxed_leaf [dyn]
       awaiting at src/bin/dyn-future.rs:12 (Suspend0, 0 locals)
-#2  future        tokio::sync::oneshot::Receiver<u32>
-      (<no_state>, 1 local)
+#2  async fn      dyn_future::driver
+      awaiting at src/bin/dyn-future.rs:36 (Suspend0, 1 local)
 "
         );
     }
@@ -2908,7 +2901,7 @@ Waiting on: a tokio::sync::Mutex (semaphore 0xADDR): 1 permit requested, 0 avail
             "{styled}"
         );
         assert!(
-            styled.contains("#0  async block   \x1b[36mfuturelock::main::{async_block#0}\x1b[0m\n"),
+            styled.contains("#6  async block   \x1b[36mfuturelock::main::{async_block#0}\x1b[0m\n"),
             "{styled}"
         );
         assert!(

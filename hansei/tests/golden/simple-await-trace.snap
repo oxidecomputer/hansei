@@ -2,10 +2,7 @@
 source: hansei/tests/acceptance.rs
 expression: actual
 ---
-Task #work: async fn simple_await::work (idle)
-Defined at: src/bin/simple-await.rs:17
-
-#0  async fn      simple_await::work
-      awaiting at src/bin/simple-await.rs:40 (Suspend1, 12 locals)
-#1  future        tokio::sync::oneshot::Receiver<u32>
+#0  future        tokio::sync::oneshot::Receiver<u32>
       (<no_state>, 1 local)
+#1  async fn      simple_await::work
+      awaiting at src/bin/simple-await.rs:40 (Suspend1, 12 locals)

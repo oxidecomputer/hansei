@@ -408,7 +408,7 @@ fn held_slot(bundle: &Bundle, snapshot: &Snapshot, local: &str) -> (u64, u64) {
         panic!("the holder is parked");
     };
     let chain = ctx.await_chain(root);
-    let frame = &chain.frames[held.frame];
+    let frame = &chain.frames[chain.frames.len() - 1 - held.frame];
     let payload = match &frame.state {
         Some(state) => &state.payload,
         None => &frame.future,
@@ -1151,7 +1151,7 @@ fn test_an_unjoined_dyn_reports_the_poll_slots_symbol() {
         panic!("the holder is parked");
     };
     let chain = ctx.await_chain(root);
-    let frame = &chain.frames[held.frame];
+    let frame = &chain.frames[chain.frames.len() - 1 - held.frame];
     let payload = match &frame.state {
         Some(state) => &state.payload,
         None => &frame.future,

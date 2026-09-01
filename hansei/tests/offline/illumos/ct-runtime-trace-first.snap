@@ -2,13 +2,9 @@
 source: hansei/src/offline.rs
 description: "`trace 1 -n` over illumos/ct-runtime"
 ---
-Task 1: async fn ct_runtime::sleeper (idle)
-Spawned at: src/bin/ct-runtime.rs:33:24
-Defined at: src/bin/ct-runtime.rs:10
-
 Waiting on: timer (deadline TS)
 
-#0  async fn      ct_runtime::sleeper
-      awaiting at src/bin/ct-runtime.rs:13 (Suspend0, 0 locals)
-#1  future        tokio::time::sleep::Sleep
+#0  future        tokio::time::sleep::Sleep
       waiting on timer (deadline TS)
+#1  async fn      ct_runtime::sleeper
+      awaiting at src/bin/ct-runtime.rs:13 (Suspend0, 0 locals)

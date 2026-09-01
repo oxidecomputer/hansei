@@ -31,11 +31,13 @@ pub struct Cursor {
     pub lwp: Option<u32>,
     /// The chain root: the task, or the lone future no task contains.
     pub root: Option<TraceTarget>,
-    /// The frame within the root's await chain.
+    /// The frame within the root's await chain, numbered the way the
+    /// listings display frames: #0 the most recently polled, counting
+    /// outward to the root.
     pub frame: usize,
     /// `$_`: the base address of the current frame's future — the
-    /// task's stage at frame #0, a lone root's own address, the lwp's
-    /// stack pointer for a thread cursor with no task.
+    /// chain's leaf at selection (#0), a lone root's own address, the
+    /// lwp's stack pointer for a thread cursor with no task.
     pub last_addr: Option<u64>,
 }
 
@@ -67,7 +69,21 @@ pub(crate) fn exec_task<T: proc::Target>(
     };
     match verbose {
         true => tasks::print_task_block(session, index, out),
-        false => Ok(writeln!(out, "{}", tasks::row_line(session, index))?),
+        false => {
+            writeln!(out, "{}", tasks::row_line(session, index))?;
+            // The task's two source anchors follow the row: where it
+            // was spawned, and where its root future is defined.
+            let task = &session.tasks.tasks[index];
+            if let Some(loc) = &task.spawn_location {
+                writeln!(out, "Spawned at: {loc}")?;
+            }
+            if let bundle::FutureInfo::Known(known) = &task.future
+                && let Some((file, line)) = &known.decl
+            {
+                writeln!(out, "Defined at: {file}:{line}")?;
+            }
+            Ok(())
+        }
     }
 }
 
@@ -90,10 +106,11 @@ fn task_index<T: proc::Target>(session: &Session<'_, T>, id: u64) -> Result<usiz
         .ok_or_else(|| no_such_task(&session.tasks, id))
 }
 
-/// Move the cursor to a task: by id at frame #0, or by an address
-/// inside its allocation at the frame that claims the address
-/// (`whatis` semantics). Selecting a running task selects the lwp
-/// polling it; selecting an idle one clears any thread cursor.
+/// Move the cursor to a task: by id at frame #0 — the most recently
+/// polled frame — or by an address inside its allocation at the frame
+/// that claims the address (`whatis` semantics). Selecting a running
+/// task selects the lwp polling it; selecting an idle one clears any
+/// thread cursor.
 pub(crate) fn select_task<T: proc::Target>(
     session: &Session<'_, T>,
     target: TraceTarget,
@@ -115,19 +132,30 @@ pub(crate) fn select_task<T: proc::Target>(
     let task = &list.tasks[index];
     let root = task_root(task);
     let (frame, last_addr) = match session.ctx.task_stage(task).ok() {
-        Some(bundle::TaskStage::Running(future)) => match target {
-            // An address deeper than the header lands on the deepest
-            // chain frame containing it, the way `whatis` attributes
-            // it; the header (and anything no frame claims) is #0.
-            TraceTarget::Future(addr) if addr != task.addr.0 => {
-                let chain = session.ctx.await_chain(future);
-                match claiming_frame(&chain, addr) {
-                    Some(i) => (i, chain.frames[i].future.addr),
-                    None => (0, future.addr),
+        Some(bundle::TaskStage::Running(future)) => {
+            let chain = session.ctx.await_chain(future);
+            // Selection lands on the leaf — displayed #0, the most
+            // recently polled frame. An address deeper than the header
+            // lands on the deepest chain frame containing it, the way
+            // `whatis` attributes it; anything no frame claims is #0.
+            let leaf = (
+                0,
+                chain
+                    .frames
+                    .last()
+                    .map(|f| f.future.addr)
+                    .unwrap_or(future.addr),
+            );
+            match target {
+                TraceTarget::Future(addr) if addr != task.addr.0 => {
+                    match claiming_frame(&chain, addr) {
+                        Some(i) => (chain.frames.len() - 1 - i, chain.frames[i].future.addr),
+                        None => leaf,
+                    }
                 }
+                _ => leaf,
             }
-            _ => (0, future.addr),
-        },
+        }
         // A complete task has no stage to stand on; its allocation is
         // still an address worth having in hand.
         _ => (0, task.addr.0),
@@ -279,26 +307,26 @@ pub(crate) fn select_future<T: proc::Target>(
 }
 
 /// Frame `n`'s base address in a task's chain, where the task has
-/// one. Frame #0 is the stage itself, no chain walk needed — what
-/// keeps a per-task scope (`tasks --exec`) cheap.
+/// one. `n` is display-numbered: #0 the most recently polled frame.
 fn frame_base<T: proc::Target>(
     session: &Session<'_, T>,
     task: &bundle::Task,
     n: usize,
 ) -> Option<u64> {
     match session.ctx.task_stage(task).ok()? {
-        bundle::TaskStage::Running(future) if n == 0 => Some(future.addr),
         bundle::TaskStage::Running(future) => {
             let chain = session.ctx.await_chain(future);
-            chain.frames.get(n).map(|f| f.future.addr)
+            let i = chain.frames.len().checked_sub(n + 1)?;
+            chain.frames.get(i).map(|f| f.future.addr)
         }
         _ => None,
     }
 }
 
-/// Scope the cursor to one task at frame #0 — what `tasks --exec`
-/// sets before each surviving task's run, so the command's omitted
-/// target and `$_` are that task's.
+/// Scope the cursor to one task at frame #0 — the most recently
+/// polled frame — what `tasks --exec` sets before each surviving
+/// task's run, so the command's omitted target and `$_` are that
+/// task's.
 pub(crate) fn scope_to<T: proc::Target>(session: &Session<'_, T>, index: usize) {
     let task = &session.tasks.tasks[index];
     let last_addr = frame_base(session, task, 0).unwrap_or(task.addr.0);
@@ -427,48 +455,52 @@ pub(crate) fn exec_frame<T: proc::Target>(
     let root = cursor.root.ok_or_else(|| anyhow!("no task selected"))?;
     let resolved = chain_of(session, root)?;
     let n = index.unwrap_or(cursor.frame);
-    if n >= resolved.chain.frames.len() {
-        return Err(refuse_frame(
-            n,
-            resolved.chain.frames.len(),
-            mid_poll(
-                &session.tasks.tasks[resolved.owner],
-                resolved.origin,
-                &session.workers,
-            ),
-        ));
-    }
+    // The number is the displayed one — #0 the most recently polled —
+    // and the chain is stored root first, so the index flips here.
+    let Some(i) = resolved.chain.frames.len().checked_sub(n + 1) else {
+        return Err(refuse_frame(n, resolved.chain.frames.len()));
+    };
     if index.is_some() {
         let mut c = session.cursor.borrow_mut();
         c.frame = n;
-        c.last_addr = Some(resolved.chain.frames[n].future.addr);
+        c.last_addr = Some(resolved.chain.frames[i].future.addr);
     }
-    print_cursor_frame(session, &resolved, n, theme, out)
+    print_cursor_frame(session, &resolved, i, theme, out)
 }
 
-/// `up`: one frame outward, toward #0, the chain's root, landing with
-/// the frame line alone — `up locals` asks for more.
+/// `up`: one frame outward, toward the chain's root — the bottom of
+/// the listing — landing with the frame line alone; `up locals` asks
+/// for more.
 pub(crate) fn exec_up<T: proc::Target>(
     session: &Session<'_, T>,
     theme: output::Theme,
     out: &mut dyn io::Write,
 ) -> Result<()> {
     let frame = cursor_frame(session)?;
-    if frame == 0 {
-        return Err(anyhow!("already at frame #0, the chain's root"));
+    let root = session.cursor.borrow().root;
+    let root = root.ok_or_else(|| anyhow!("no task selected"))?;
+    let resolved = chain_of(session, root)?;
+    if frame + 1 >= resolved.chain.frames.len() {
+        return Err(anyhow!("already at frame #{frame}, the chain's root"));
     }
-    exec_frame(session, Some(frame - 1), theme, out)
+    exec_frame(session, Some(frame + 1), theme, out)
 }
 
-/// `down`: one frame inward, toward the leaf, landing with the frame
-/// line alone — `down locals` asks for more.
+/// `down`: one frame inward, toward #0, the most recently polled
+/// frame, landing with the frame line alone — `down locals` asks for
+/// more.
 pub(crate) fn exec_down<T: proc::Target>(
     session: &Session<'_, T>,
     theme: output::Theme,
     out: &mut dyn io::Write,
 ) -> Result<()> {
     let frame = cursor_frame(session)?;
-    exec_frame(session, Some(frame + 1), theme, out)
+    if frame == 0 {
+        return Err(anyhow!(
+            "already at frame #0, the most recently polled frame"
+        ));
+    }
+    exec_frame(session, Some(frame - 1), theme, out)
 }
 
 /// `locals`: list the variables the cursor frame holds live — the
@@ -484,16 +516,8 @@ pub(crate) fn exec_locals<T: proc::Target>(
     let resolved = chain_of(session, root)?;
     let frames = &resolved.chain.frames;
     let n = cursor.frame;
-    let Some(frame) = frames.get(n) else {
-        return Err(refuse_frame(
-            n,
-            frames.len(),
-            mid_poll(
-                &session.tasks.tasks[resolved.owner],
-                resolved.origin,
-                &session.workers,
-            ),
-        ));
+    let Some(frame) = frames.len().checked_sub(n + 1).and_then(|i| frames.get(i)) else {
+        return Err(refuse_frame(n, frames.len()));
     };
     // What the frame can be read as: the active variant of its future,
     // whose members are the locals, or the future itself where no
@@ -631,31 +655,10 @@ pub(crate) fn chain_of<'b, T: proc::Target>(
     }
 }
 
-/// Whether the chain's owner is mid-poll — the case where an index
-/// past the chain lands in the native continuation `trace` numbers on
-/// from it — and, if so, the lwp whose stack shows it.
-/// Apart from the session for the suites, since no fixture capture
-/// holds a mid-poll task.
-fn mid_poll(
-    task: &bundle::Task,
-    origin: Option<census::Via>,
-    workers: &[bundle::Worker],
-) -> Option<Option<u32>> {
-    (origin.is_none() && task.state.lifecycle() == Lifecycle::Running)
-        .then(|| polling_worker(workers, task))
-}
-
-/// The refusal an out-of-range frame index earns: a running task's
-/// native continuation is a traditional debugger's territory and is
-/// named as such; anything else is measured against the chain.
-fn refuse_frame(n: usize, len: usize, mid_poll: Option<Option<u32>>) -> anyhow::Error {
-    if let Some(lwp) = mid_poll {
-        let threads = match lwp {
-            Some(lwp) => format!("threads {lwp}"),
-            None => "threads".to_string(),
-        };
-        return anyhow!("frame #{n} is a native frame; `{threads}` shows it");
-    }
+/// The refusal an out-of-range frame number earns, measured against
+/// the chain. The native continuation is unnumbered, so no number a
+/// listing printed can land past the chain.
+fn refuse_frame(n: usize, len: usize) -> anyhow::Error {
     anyhow!(
         "no frame #{n}: the chain has {}",
         crate::summary::counted(len, "frame")
@@ -754,22 +757,18 @@ mod tests {
         );
     }
 
-    /// The out-of-range refusals: a running task's native continuation
-    /// is named as native (with the lwp where one is known), anything
-    /// else is measured against the chain.
+    /// The out-of-range refusal is measured against the chain: the
+    /// native continuation is unnumbered, so no number a listing
+    /// printed can land past it.
     #[test]
     fn test_the_frame_refusals_name_what_stands_past_the_chain() {
         assert_eq!(
-            refuse_frame(6, 3, Some(Some(115))).to_string(),
-            "frame #6 is a native frame; `threads 115` shows it"
-        );
-        assert_eq!(
-            refuse_frame(6, 3, Some(None)).to_string(),
-            "frame #6 is a native frame; `threads` shows it"
-        );
-        assert_eq!(
-            refuse_frame(9, 4, None).to_string(),
+            refuse_frame(9, 4).to_string(),
             "no frame #9: the chain has 4 frames"
+        );
+        assert_eq!(
+            refuse_frame(1, 1).to_string(),
+            "no frame #1: the chain has 1 frame"
         );
     }
 
@@ -893,7 +892,10 @@ mod tests {
         )
         .expect("a bare trace answers under a cursor");
         let traced = String::from_utf8(traced).expect("trace output is UTF-8");
-        assert!(traced.starts_with(&format!("Task {id}:")), "{traced}");
+        assert!(
+            traced.lines().any(|line| line.starts_with("#0")),
+            "{traced}"
+        );
 
         // `whatis` falls back to `$_`.
         let command = repl::parse_line("whatis").expect("whatis parses");
@@ -968,6 +970,12 @@ mod tests {
         )
         .expect("the task selects");
         let at_zero = session.cursor.borrow().last_addr;
+        let len = chain_of(&session, TraceTarget::Task(id))
+            .expect("the chain resolves")
+            .chain
+            .frames
+            .len();
+        assert!(len >= 2, "nested-await nests");
 
         let theme = crate::output::Theme::plain();
         exec_frame(&session, Some(1), theme, &mut Vec::new()).expect("the chain nests");
@@ -976,17 +984,26 @@ mod tests {
             assert_eq!(c.frame, 1);
             assert_ne!(c.last_addr, at_zero, "$_ moved with the frame");
         }
-        exec_up(&session, theme, &mut Vec::new()).expect("up moves toward the root");
+        exec_down(&session, theme, &mut Vec::new()).expect("down moves toward the leaf");
         assert_eq!(session.cursor.borrow().frame, 0);
-        let err = exec_up(&session, theme, &mut Vec::new()).expect_err("the root is the top");
-        assert_eq!(err.to_string(), "already at frame #0, the chain's root");
+        let err = exec_down(&session, theme, &mut Vec::new()).expect_err("the leaf is the front");
+        assert_eq!(
+            err.to_string(),
+            "already at frame #0, the most recently polled frame"
+        );
 
         let err = exec_frame(&session, Some(99), theme, &mut Vec::new()).expect_err("out of range");
         assert!(err.to_string().starts_with("no frame #99: "), "{err}");
         assert_eq!(session.cursor.borrow().frame, 0, "a refusal moves nothing");
 
-        exec_down(&session, theme, &mut Vec::new()).expect("down moves toward the leaf");
+        exec_up(&session, theme, &mut Vec::new()).expect("up moves toward the root");
         assert_eq!(session.cursor.borrow().frame, 1);
+        exec_frame(&session, Some(len - 1), theme, &mut Vec::new()).expect("the root selects");
+        let err = exec_up(&session, theme, &mut Vec::new()).expect_err("the root is the bottom");
+        assert_eq!(
+            err.to_string(),
+            format!("already at frame #{}, the chain's root", len - 1)
+        );
     }
 
     /// A held future collapses to the task holding it, positioned at
@@ -1028,7 +1045,8 @@ mod tests {
         let stage = session.ctx.task_stage(task).expect("the stage reads");
         if let hansei_runtime::tokio::bundle::TaskStage::Running(future) = stage {
             let chain = session.ctx.await_chain(future);
-            if let Some(f) = chain.frames.get(frame) {
+            let inner = chain.frames.len().checked_sub(frame + 1);
+            if let Some(f) = inner.and_then(|i| chain.frames.get(i)) {
                 assert_eq!(c.last_addr, Some(f.future.addr));
             }
         }
@@ -1136,7 +1154,11 @@ mod tests {
         .expect("an inner frame's base selects");
         {
             let c = session.cursor.borrow();
-            assert_eq!(c.frame, 1, "the inner frame claims its own base");
+            assert_eq!(
+                c.frame,
+                chain.frames.len() - 2,
+                "the inner frame claims its own base"
+            );
             assert_eq!(c.last_addr, Some(f1));
         }
         exec_task(
@@ -1148,7 +1170,7 @@ mod tests {
         .expect("the root frame's base selects");
         {
             let c = session.cursor.borrow();
-            assert_eq!(c.frame, 0);
+            assert_eq!(c.frame, chain.frames.len() - 1);
             assert_eq!(c.last_addr, Some(f0), "$_ is the stage, not the header");
         }
         // A byte past the inner frame but inside the outer one is the
@@ -1161,7 +1183,7 @@ mod tests {
                 &mut Vec::new(),
             )
             .expect("a byte past the inner frame selects");
-            assert_eq!(session.cursor.borrow().frame, 0);
+            assert_eq!(session.cursor.borrow().frame, chain.frames.len() - 1);
         }
     }
 
@@ -1193,7 +1215,10 @@ mod tests {
             assert!(line.starts_with(&id.to_string()), "{id}: {line}");
             // The row's five cells, double-space joined: a
             // single-group target carries no RT cell.
-            assert_eq!(line.trim_end().split("  ").count(), 5, "{line}");
+            let row = line.lines().next().unwrap_or_default();
+            assert_eq!(row.trim_end().split("  ").count(), 5, "{line}");
+            // The selection carries the task's source anchors.
+            assert!(line.contains("Spawned at: "), "{line}");
         }
 
         // `-v` prints the cursor task's full block.
@@ -1289,25 +1314,6 @@ mod tests {
         assert_eq!(polling_worker(&workers, &task(0b1, None)), None);
         // Running but on no worker's current word.
         assert_eq!(polling_worker(&workers, &task(0b1, Some(1))), None);
-
-        // The native-continuation question rides the same join: only a
-        // task's own chain (no census origin) continues natively, and
-        // only while the owner is mid-poll.
-        assert_eq!(
-            mid_poll(&task(0b1, Some(42)), None, &workers),
-            Some(Some(9))
-        );
-        assert_eq!(
-            mid_poll(&task(0b1, Some(42)), Some(census::Via::Held(0)), &workers),
-            None,
-            "a lone root's chain is never continued natively"
-        );
-        assert_eq!(mid_poll(&task(0, Some(42)), None, &workers), None);
-        assert_eq!(
-            mid_poll(&task(0b1, Some(1)), None, &workers),
-            Some(None),
-            "mid-poll on no known lwp still refuses as native"
-        );
     }
 
     /// The thread selector: an unknown lwp refuses, the row names the
@@ -1399,15 +1405,15 @@ mod tests {
         .expect("the task selects");
 
         let mut out = Vec::new();
-        exec_frame(&session, Some(len - 1), theme, &mut out).expect("the leaf prints");
+        exec_frame(&session, Some(0), theme, &mut out).expect("the leaf prints");
         let leaf = String::from_utf8(out).expect("the frame is UTF-8");
-        assert!(leaf.starts_with(&format!("#{}", len - 1)), "{leaf}");
+        assert!(leaf.starts_with("#0"), "{leaf}");
         assert!(leaf.contains("waiting on"), "{leaf}");
 
         let mut out = Vec::new();
-        exec_frame(&session, Some(0), theme, &mut out).expect("the root prints");
+        exec_frame(&session, Some(len - 1), theme, &mut out).expect("the root prints");
         let root = String::from_utf8(out).expect("the frame is UTF-8");
-        assert!(root.starts_with("#0"), "{root}");
+        assert!(root.starts_with(&format!("#{}", len - 1)), "{root}");
         assert!(!root.contains("waiting on"), "{root}");
     }
 
@@ -1435,7 +1441,7 @@ mod tests {
             };
             for (i, f) in resolved.chain.frames.iter().enumerate() {
                 if f.future.ty.name().contains("simple_await::work") {
-                    found = Some((id, i));
+                    found = Some((id, resolved.chain.frames.len() - 1 - i));
                 }
             }
         }

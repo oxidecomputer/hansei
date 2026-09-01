@@ -3,3 +3,5 @@ source: hansei/src/offline.rs
 description: "`task 3` over linux-floor/nested-await"
 ---
 3  idle  src/bin/nested-await.rs:19  future tokio::sync::oneshot::Receiver<u32>  async fn nested_await::outer
+Spawned at: src/bin/nested-await.rs:33:21
+Defined at: src/bin/nested-await.rs:16

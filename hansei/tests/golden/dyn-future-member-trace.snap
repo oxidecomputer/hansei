@@ -2,10 +2,7 @@
 source: hansei/tests/acceptance.rs
 expression: actual
 ---
-Task #member: async fn dyn_future::set_member (idle)
-Defined at: src/bin/dyn-future.rs:15
-
-#0  async fn      dyn_future::set_member
-      awaiting at src/bin/dyn-future.rs:17 (Suspend0, 0 locals)
-#1  future        tokio::sync::oneshot::Receiver<u32>
+#0  future        tokio::sync::oneshot::Receiver<u32>
       (<no_state>, 1 local)
+#1  async fn      dyn_future::set_member
+      awaiting at src/bin/dyn-future.rs:17 (Suspend0, 0 locals)

@@ -3,3 +3,5 @@ source: hansei/src/offline.rs
 description: "`task 1` over linux/foreign-runtime"
 ---
 1  idle  1  src/bin/foreign-runtime.rs:36  a tokio::sync::Semaphore (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 1  async fn foreign_runtime::joined
+Spawned at: src/bin/foreign-runtime.rs:83:23
+Defined at: src/bin/foreign-runtime.rs:31

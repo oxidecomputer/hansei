@@ -3,50 +3,34 @@ source: hansei/src/offline.rs
 description: "`tasks --exec trace -n` over linux-floor/foreign-runtime"
 ---
 1  idle  1  src/bin/foreign-runtime.rs:36  a tokio::sync::Semaphore (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 1  async fn foreign_runtime::joined
-Task 1: async fn foreign_runtime::joined (idle)
-Spawned at: src/bin/foreign-runtime.rs:83:23
-Defined at: src/bin/foreign-runtime.rs:31
-
 Waiting on: a tokio::sync::Semaphore (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 1
 
-#0  async fn      foreign_runtime::joined
-      awaiting at src/bin/foreign-runtime.rs:36 (Suspend0, 0 locals)
+#0  future        tokio::sync::batch_semaphore::Acquire
+      waiting on a tokio::sync::Semaphore (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 1
 #1  async fn      tokio::sync::semaphore::Semaphore::acquire
       awaiting at tokio-1.47.5/src/sync/semaphore.rs:591 (Suspend0, 1 local)
-#2  future        tokio::sync::batch_semaphore::Acquire
-      waiting on a tokio::sync::Semaphore (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 1
+#2  async fn      foreign_runtime::joined
+      awaiting at src/bin/foreign-runtime.rs:36 (Suspend0, 0 locals)
 
 2  idle  1  src/bin/foreign-runtime.rs:51  future core::future::pending::Pending<()>  async fn foreign_runtime::detached
-Task 2: async fn foreign_runtime::detached (idle)
-Spawned at: src/bin/foreign-runtime.rs:85:18
-Defined at: src/bin/foreign-runtime.rs:46
-
-#0  async fn      foreign_runtime::detached
-      awaiting at src/bin/foreign-runtime.rs:51 (Suspend0, 1 local)
-#1  future        core::future::pending::Pending<()>
+#0  future        core::future::pending::Pending<()>
       (<no_state>, 0 locals)
+#1  async fn      foreign_runtime::detached
+      awaiting at src/bin/foreign-runtime.rs:51 (Suspend0, 1 local)
 
 3  idle  2  src/bin/foreign-runtime.rs:63  timer (deadline TS on the target's monotonic clock)  async fn foreign_runtime::local_sleeper
-Task 3: async fn foreign_runtime::local_sleeper (idle)
-Spawned at: src/bin/foreign-runtime.rs:87:16
-Defined at: src/bin/foreign-runtime.rs:58
-
 Waiting on: timer (deadline TS on the target's monotonic clock)
 
-#0  async fn      foreign_runtime::local_sleeper
-      awaiting at src/bin/foreign-runtime.rs:63 (Suspend0, 0 locals)
-#1  future        tokio::time::sleep::Sleep
+#0  future        tokio::time::sleep::Sleep
       waiting on timer (deadline TS on the target's monotonic clock)
+#1  async fn      foreign_runtime::local_sleeper
+      awaiting at src/bin/foreign-runtime.rs:63 (Suspend0, 0 locals)
 
 4  idle  0  src/bin/foreign-runtime.rs:26  task 1  async fn foreign_runtime::joiner
-Task 4: async fn foreign_runtime::joiner (idle)
-Spawned at: src/bin/foreign-runtime.rs:129:23
-Defined at: src/bin/foreign-runtime.rs:23
-
 Waiting on: task 1
 
-#0  async fn      foreign_runtime::joiner
-      awaiting at src/bin/foreign-runtime.rs:26 (Suspend0, 0 locals)
-#1  future        tokio::runtime::task::join::JoinHandle<u32>
+#0  future        tokio::runtime::task::join::JoinHandle<u32>
       waiting on task 1
+#1  async fn      foreign_runtime::joiner
+      awaiting at src/bin/foreign-runtime.rs:26 (Suspend0, 0 locals)
 Executed against 4 tasks, 0 failed
