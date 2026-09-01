@@ -21,9 +21,9 @@ use crate::{Command, Flow, Session, dispatch};
 use anyhow::{Context as _, Result, anyhow};
 use clap::{CommandFactory, Parser};
 use reedline::{
-    ColumnarMenu, DefaultCompleter, DefaultPrompt, DefaultPromptSegment, Emacs, FileBackedHistory,
-    KeyCode, KeyModifiers, MenuBuilder, Reedline, ReedlineEvent, ReedlineMenu, Signal,
-    default_emacs_keybindings,
+    ColumnarMenu, Completer, DefaultPrompt, DefaultPromptSegment, Emacs, FileBackedHistory,
+    KeyCode, KeyModifiers, MenuBuilder, Reedline, ReedlineEvent, ReedlineMenu, Signal, Span,
+    Suggestion, default_emacs_keybindings,
 };
 use subprocess::Exec;
 
@@ -409,14 +409,19 @@ fn peel_scope(words: &[String]) -> Option<(Scope, &[String])> {
     if words.len() < 3 || words[2].starts_with('-') {
         return None;
     }
-    let arg = &words[1];
-    let scope = match words[0].as_str() {
+    Some((parse_scope(&words[0], &words[1])?, &words[2..]))
+}
+
+/// The scope a selector word and its argument name, if they parse as
+/// one. Shared with the completer, which sees the scope before the
+/// command it applies to has been typed.
+fn parse_scope(selector: &str, arg: &str) -> Option<Scope> {
+    Some(match selector {
         "task" => Scope::Task(crate::parse_trace_target(arg).ok()?),
         "future" => Scope::Future(crate::parse_hex_addr(arg).ok()?),
         "thread" => Scope::Thread(arg.parse().ok()?),
         _ => return None,
-    };
-    Some((scope, &words[2..]))
+    })
 }
 
 /// Point the cursor where a scope says, silently: the selection line
@@ -511,23 +516,244 @@ impl Write for ShellSink {
     }
 }
 
-/// The command names Tab completes: what `help` lists. A command
-/// hidden from help is hidden here too — it still parses, but the
-/// prompt does not advertise it.
-fn completion_names() -> Vec<String> {
-    Line::command()
-        .get_subcommands()
-        .filter(|sub| !sub.is_hide_set())
-        .map(|sub| sub.get_name().to_string())
-        .collect()
+/// Tab completion that knows where in the line the cursor stands: on
+/// the command word, on a flag, or on the value a flag or positional
+/// takes — so `tasks --group <Tab>` offers the field names and `info
+/// <Tab>` the sections, not the command list.
+///
+/// The grammar it reads is the command tree itself: subcommands and
+/// their flags come from [`Line`], a value's choices from the arg's
+/// declared possible values (every `ValueEnum`), and the few value
+/// sets clap cannot see — the `FIELD` of a `--with FIELD ARG` pair,
+/// whose second value is free-form, and `config`'s keys — from the
+/// modules that parse them. A word the grammar does not recognize
+/// completes to nothing rather than to a guess.
+struct LineCompleter;
+
+/// One thing the cursor's word could become, with the description the
+/// menu shows beside it.
+type Candidate = (String, Option<String>);
+
+impl Completer for LineCompleter {
+    fn complete(&mut self, line: &str, pos: usize) -> Vec<Suggestion> {
+        let Some(prefix) = line.get(..pos) else {
+            return Vec::new();
+        };
+        let Some((words, current, start)) = words_before(prefix) else {
+            return Vec::new();
+        };
+        // Built, so every arg's value count is filled in and clap's own
+        // `help` command stands beside the declared ones.
+        let mut root = Line::command();
+        root.build();
+        candidates(&root, &words, &current)
+            .into_iter()
+            .filter(|(value, _)| value.starts_with(&current))
+            .map(|(value, description)| Suggestion {
+                value,
+                description,
+                span: Span::new(start, pos),
+                append_whitespace: true,
+                ..Suggestion::default()
+            })
+            .collect()
+    }
+}
+
+/// The complete words before the cursor, the word under it (empty when
+/// the cursor follows a space), and the byte offset that word starts
+/// at. `None` when there is nothing to complete: the cursor stands on
+/// the shell's side of a `!`, inside an unclosed quote, or on a word a
+/// quote touched — nothing this completes contains a space, so a
+/// quoted word is somebody's name.
+fn words_before(prefix: &str) -> Option<(Vec<String>, String, usize)> {
+    if prefix.contains('!') {
+        return None;
+    }
+    let mut words = split_tokens(prefix).ok()?;
+    let start = prefix
+        .char_indices()
+        .rev()
+        .find(|(_, c)| c.is_whitespace())
+        .map_or(0, |(i, c)| i + c.len_utf8());
+    let raw = &prefix[start..];
+    if raw.contains(['"', '\'']) {
+        return None;
+    }
+    if raw.is_empty() {
+        return Some((words, String::new(), prefix.len()));
+    }
+    // Unquoted, so the raw text and the token it split to are the same.
+    let current = words.pop()?;
+    Some((words, current, start))
+}
+
+/// Everything that could stand at the cursor, before the typed prefix
+/// narrows it. `root` is the built grammar the line is read against.
+fn candidates(root: &clap::Command, words: &[String], current: &str) -> Vec<Candidate> {
+    // A scope prefix is peeled as `execute_one` peels it, except that
+    // the word after the selector's argument may be the one being
+    // typed. `task 129 -v` is the selector's own flag, not a scope.
+    let words = match words {
+        [selector, arg, rest @ ..]
+            if parse_scope(selector, arg).is_some()
+                && !rest
+                    .first()
+                    .map_or(current, String::as_str)
+                    .starts_with('-') =>
+        {
+            rest
+        }
+        _ => words,
+    };
+    let Some((word, rest)) = words.split_first() else {
+        return root
+            .get_subcommands()
+            .filter(|sub| !sub.is_hide_set())
+            .map(|sub| (sub.get_name().to_string(), None))
+            .collect();
+    };
+    let Some(cmd) = find_command(root, word) else {
+        return Vec::new();
+    };
+
+    // Walk the words to learn what the cursor's word is: the value of a
+    // flag still owed values, or the next positional.
+    let mut pending: Option<(&clap::Arg, usize)> = None;
+    let mut positional_words: Vec<&str> = Vec::new();
+    for word in rest {
+        // `pending` is cleared once its option has every value it can
+        // take, so a pending option is always owed this word — unless
+        // the word is a flag and the option does not take those.
+        if let Some((opt, taken)) = pending {
+            if !looks_like_flag(word) || opt.is_allow_hyphen_values_set() {
+                let max = opt.get_num_args().expect("built").max_values();
+                pending = (taken + 1 < max).then_some((opt, taken + 1));
+                continue;
+            }
+            pending = None;
+        }
+        if let Some(flag) = word.strip_prefix("--") {
+            let (name, inline) = match flag.split_once('=') {
+                Some((name, _)) => (name, true),
+                None => (flag, false),
+            };
+            pending = cmd
+                .get_arguments()
+                .find(|a| a.get_long() == Some(name))
+                .filter(|a| !inline && a.get_num_args().expect("built").takes_values())
+                .map(|a| (a, 0));
+        } else if looks_like_flag(word) {
+            // A cluster `-vl`: the first short that takes a value owns
+            // the rest of the word, or the words after it when there
+            // is no rest.
+            let mut chars = word[1..].chars();
+            while let Some(c) = chars.next() {
+                let Some(arg) = cmd.get_arguments().find(|a| a.get_short() == Some(c)) else {
+                    continue;
+                };
+                if arg.get_num_args().expect("built").takes_values() {
+                    pending = chars.next().is_none().then_some((arg, 0));
+                    break;
+                }
+            }
+        } else {
+            positional_words.push(word);
+        }
+    }
+
+    // A dash under the cursor, alone or not, is a flag being typed.
+    if let Some((opt, taken)) = pending
+        && (!current.starts_with('-') || opt.is_allow_hyphen_values_set())
+    {
+        return values_of(cmd, opt, taken, &positional_words);
+    }
+    if current.starts_with('-') {
+        // Only the long spellings: `-` alone expands to them, and a
+        // positional has none to offer.
+        return cmd
+            .get_arguments()
+            .filter(|a| !a.is_hide_set())
+            .filter_map(|a| a.get_long().map(|l| (format!("--{l}"), None)))
+            .collect();
+    }
+    // The positional the cursor's word would become: the next by
+    // index, or the trailing many-valued one when the index runs past
+    // the last.
+    let index = positional_words.len() + 1;
+    let positional = cmd
+        .get_positionals()
+        .find(|a| a.get_index() == Some(index))
+        .or_else(|| {
+            cmd.get_positionals()
+                .last()
+                .filter(|a| a.get_num_args().expect("built").max_values() > 1)
+        });
+    match positional {
+        Some(arg) => values_of(cmd, arg, positional_words.len(), &positional_words),
+        None => Vec::new(),
+    }
+}
+
+/// The subcommand `word` names, by the rule the grammar's
+/// `infer_subcommands` applies: its name exactly, else the one command
+/// it is a prefix of. The grammar declares no aliases, for commands or
+/// flags, so neither lookup here nor the flag lookup above reads them.
+fn find_command<'c>(root: &'c clap::Command, word: &str) -> Option<&'c clap::Command> {
+    root.get_subcommands()
+        .find(|c| c.get_name() == word)
+        .or_else(|| {
+            let mut prefixed = root
+                .get_subcommands()
+                .filter(|c| c.get_name().starts_with(word));
+            let one = prefixed.next()?;
+            prefixed.next().is_none().then_some(one)
+        })
+}
+
+/// Whether clap would read `word` as a flag rather than a value: a
+/// dash and something after it. A lone `-` is a value.
+fn looks_like_flag(word: &str) -> bool {
+    word.len() > 1 && word.starts_with('-')
+}
+
+/// The values `arg` accepts in its `slot`th position (`--with FIELD
+/// ARG` has two), with each value's help where the grammar declares
+/// one. `positional_words` are the positionals already typed, for a
+/// value whose choices depend on an earlier one (`config ugly <Tab>`).
+fn values_of(
+    cmd: &clap::Command,
+    arg: &clap::Arg,
+    slot: usize,
+    positional_words: &[&str],
+) -> Vec<Candidate> {
+    let declared = arg.get_possible_values();
+    if !declared.is_empty() {
+        return declared
+            .iter()
+            .filter(|v| !v.is_hide_set())
+            .map(|v| {
+                (
+                    v.get_name().to_string(),
+                    v.get_help().map(|h| h.to_string()),
+                )
+            })
+            .collect();
+    }
+    let names: Vec<&str> = match (cmd.get_name(), arg.get_id().as_str(), slot) {
+        ("tasks", "with" | "without" | "group", 0) => crate::tasks::Field::names().collect(),
+        ("futures", "with" | "without" | "group", 0) => crate::futures::Field::names().collect(),
+        ("config", "key", _) => crate::settings::KEYS.to_vec(),
+        ("config", "value", _) => positional_words
+            .first()
+            .map_or(&[][..], |key| crate::settings::word_values(key))
+            .to_vec(),
+        _ => Vec::new(),
+    };
+    names.into_iter().map(|n| (n.to_string(), None)).collect()
 }
 
 fn line_editor() -> Reedline {
-    // `-` counts as part of a word, so a half-typed `--val` is one token
-    // to complete against rather than two.
-    let mut completer = Box::new(DefaultCompleter::with_inclusions(&['-']));
-    completer.insert(completion_names());
-
     let mut keybindings = default_emacs_keybindings();
     keybindings.add_binding(
         KeyModifiers::NONE,
@@ -539,7 +765,7 @@ fn line_editor() -> Reedline {
     );
 
     let editor = Reedline::create()
-        .with_completer(completer)
+        .with_completer(Box::new(LineCompleter))
         .with_menu(ReedlineMenu::EngineCompleter(Box::new(
             ColumnarMenu::default().with_name("commands"),
         )))
@@ -784,17 +1010,303 @@ mod tests {
         assert!(sink.stdin.is_none(), "a failed flush ends the feed");
     }
 
+    /// What Tab offers for a line with the cursor at its end, as the
+    /// replacement texts in menu order.
+    fn completions(line: &str) -> Vec<String> {
+        LineCompleter
+            .complete(line, line.len())
+            .into_iter()
+            .map(|s| s.value)
+            .collect()
+    }
+
     /// Completion advertises what `help` lists: a hidden command —
     /// still parseable, still runnable — is offered by neither.
     #[test]
     fn test_completion_offers_only_the_help_listing() {
-        let names = completion_names();
+        let names = completions("");
         for visible in ["tasks", "trace", "print", "config"] {
             assert!(names.iter().any(|n| n == visible), "{names:?}");
         }
         for hidden in ["type", "find-types", "vtables", "exit"] {
             assert!(!names.iter().any(|n| n == hidden), "{names:?}");
         }
+        assert_eq!(completions("tas"), ["task", "tasks"]);
+        assert_eq!(completions("cen"), ["census"]);
+    }
+
+    /// The suggestion replaces the word under the cursor and nothing
+    /// before it, and closes with a space so the next word can start.
+    #[test]
+    fn test_completion_spans_the_word_under_the_cursor() {
+        let line = "tasks --group wa";
+        let suggestions = LineCompleter.complete(line, line.len());
+        let waker = suggestions
+            .iter()
+            .find(|s| s.value == "waker")
+            .expect("waker is a task field");
+        assert_eq!(waker.span, Span::new(line.len() - 2, line.len()));
+        assert!(waker.append_whitespace);
+    }
+
+    /// `--group`, `--with` and `--without` take a field name, and the
+    /// two commands have different fields: a task has an id and a
+    /// waker, a future a kind and a local.
+    #[test]
+    fn test_completion_offers_field_names_to_the_filters() {
+        let tasks: Vec<String> = crate::tasks::Field::names().map(String::from).collect();
+        let futures: Vec<String> = crate::futures::Field::names().map(String::from).collect();
+        assert_eq!(completions("tasks --group "), tasks);
+        assert_eq!(completions("tasks --with "), tasks);
+        assert_eq!(completions("tasks --without "), tasks);
+        assert_eq!(completions("futures --group "), futures);
+        assert_eq!(completions("futures --with "), futures);
+        assert_eq!(completions("tasks --group wa"), ["waiting-on", "waker"]);
+        assert_eq!(completions("futures --with k"), ["kind"]);
+        assert!(tasks.contains(&"id".to_string()) && !futures.contains(&"id".to_string()));
+    }
+
+    /// The second word of a `--with FIELD ARG` pair is the user's
+    /// pattern, so nothing is offered for it; once the pair is complete
+    /// the flags come back.
+    #[test]
+    fn test_completion_leaves_the_filter_argument_free() {
+        assert!(completions("tasks --with type ").is_empty());
+        assert!(completions("tasks --with type Ve").is_empty());
+        assert_eq!(completions("tasks --with type foo --gr"), ["--group"]);
+        assert_eq!(
+            completions("tasks --with type foo --with "),
+            completions("tasks --with ")
+        );
+    }
+
+    /// A dash starts a flag: the command's long flags are offered, the
+    /// hidden ones and the positionals left out.
+    #[test]
+    fn test_completion_offers_a_commands_flags() {
+        let flags = completions("tasks -");
+        for expected in [
+            "--group",
+            "--with",
+            "--without",
+            "--limit",
+            "--exec",
+            "--verbose",
+        ] {
+            assert!(flags.iter().any(|f| f == expected), "{flags:?}");
+        }
+        assert!(flags.iter().all(|f| f.starts_with("--")), "{flags:?}");
+        assert_eq!(completions("tasks --gr"), ["--group"]);
+        assert_eq!(completions("task 129 -"), completions("task -"));
+    }
+
+    /// A short flag that takes a value owes it as the next word (`-l
+    /// 10`) unless the value rides in the same word (`-l10`); either
+    /// way the walk lands on the right side of it.
+    #[test]
+    fn test_completion_follows_short_flags_that_take_values() {
+        assert!(completions("tasks -l ").is_empty());
+        assert_eq!(completions("tasks -l 10 --gr"), ["--group"]);
+        assert_eq!(completions("tasks -l10 --gr"), ["--group"]);
+        assert_eq!(completions("tasks -vl 10 --gr"), ["--group"]);
+        assert_eq!(completions("tasks --limit=10 --gr"), ["--group"]);
+    }
+
+    /// A `ValueEnum` positional offers its declared values, with the
+    /// declared help beside each.
+    #[test]
+    fn test_completion_offers_declared_value_enums() {
+        let sections = completions("info ");
+        for expected in ["process", "signal", "objects", "fds"] {
+            assert!(sections.iter().any(|s| s == expected), "{sections:?}");
+        }
+        assert_eq!(completions("info si"), ["signal"]);
+        assert_eq!(completions("sync --kind se"), ["semaphore", "set"]);
+        let line = "sync --kind sem";
+        let semaphore = LineCompleter.complete(line, line.len()).remove(0);
+        assert!(
+            semaphore
+                .description
+                .as_deref()
+                .is_some_and(|d| d.starts_with("Contended semaphores")),
+            "{semaphore:?}"
+        );
+    }
+
+    /// `config` offers its keys, then the word values the named key
+    /// takes; a key that takes only a count offers nothing.
+    #[test]
+    fn test_completion_offers_config_keys_and_word_values() {
+        assert_eq!(completions("config "), crate::settings::KEYS);
+        assert_eq!(
+            completions("config max-"),
+            ["max-array-values", "max-string-len"]
+        );
+        assert_eq!(completions("config ugly "), ["on", "off"]);
+        assert_eq!(completions("config limit "), ["off"]);
+        assert!(completions("config depth ").is_empty());
+        assert!(completions("config ugly on ").is_empty());
+    }
+
+    /// A scope prefix is peeled as `execute_one` peels it: what follows
+    /// `task 129` is a fresh command line, an abbreviated command word
+    /// resolves by the grammar's unique-prefix rule, and a word that
+    /// names no command completes to nothing.
+    #[test]
+    fn test_completion_sees_through_a_scope_and_an_abbreviation() {
+        assert_eq!(completions("task 129 futu"), ["future", "futures"]);
+        assert_eq!(
+            completions("task 129 tasks --group "),
+            completions("tasks --group ")
+        );
+        assert_eq!(
+            completions("future 0x10 tasks --group "),
+            completions("tasks --group ")
+        );
+        assert_eq!(completions("cen --"), completions("census --"));
+        assert!(!completions("census --").is_empty());
+        assert!(completions("nosuch --").is_empty());
+        assert!(
+            completions("futu --").is_empty(),
+            "`futu` names future and futures"
+        );
+    }
+
+    /// Nothing is offered on the shell's side of a `!`, inside an
+    /// unclosed quote, or on a word a quote touched; a closed quote
+    /// earlier in the line is one word like any other.
+    #[test]
+    fn test_completion_declines_where_the_grammar_is_not_its_own() {
+        assert!(completions("tasks ! gr").is_empty());
+        assert!(completions("print \"Vec<(u64").is_empty());
+        assert!(completions("print \"Vec<(u64, u64)>\"").is_empty());
+        assert_eq!(
+            completions("print 0x1 \"Vec<(u64, u64)>\" --"),
+            completions("print 0x1 T --")
+        );
+    }
+
+    /// A grammar with the shapes hansei's own lacks — a short flag with
+    /// declared values, a two-value option whose second slot has
+    /// values, a trailing many-valued positional, a hidden option, and
+    /// a command that is an exact name and another's prefix at once —
+    /// so the walk is pinned on every branch and not only the ones
+    /// today's commands reach.
+    fn toy_grammar() -> clap::Command {
+        use clap::{Arg, ArgAction, Command};
+        let mut root = Command::new("")
+            .no_binary_name(true)
+            .disable_help_flag(true)
+            .subcommand(
+                Command::new("paint")
+                    .arg(
+                        Arg::new("color")
+                            .long("color")
+                            .short('c')
+                            .value_parser(["red", "green"]),
+                    )
+                    .arg(
+                        Arg::new("pair")
+                            .long("pair")
+                            .num_args(2)
+                            .value_parser(["a", "b"]),
+                    )
+                    .arg(
+                        Arg::new("verbose")
+                            .long("verbose")
+                            .short('v')
+                            .action(ArgAction::SetTrue),
+                    )
+                    .arg(
+                        Arg::new("secret")
+                            .long("secret")
+                            .hide(true)
+                            .action(ArgAction::SetTrue),
+                    )
+                    .arg(Arg::new("shape").value_parser(["circle", "square"]))
+                    .arg(
+                        Arg::new("sizes")
+                            .num_args(1..)
+                            .value_parser(["s", "m", "l"]),
+                    ),
+            )
+            .subcommand(
+                Command::new("pain").arg(Arg::new("dull").long("dull").action(ArgAction::SetTrue)),
+            );
+        root.build();
+        root
+    }
+
+    /// What Tab offers on the toy grammar for a line ending at the
+    /// cursor.
+    fn toy(line: &str) -> Vec<String> {
+        let (words, current, _) = words_before(line).expect("the toy lines are plain words");
+        candidates(&toy_grammar(), &words, &current)
+            .into_iter()
+            .map(|(value, _)| value)
+            .filter(|value| value.starts_with(&current))
+            .collect()
+    }
+
+    /// An option owed values gets them until its count is met — one
+    /// for `--color`, two for `--pair` — and then the walk moves on to
+    /// the positionals. A value given inline (`--color=red`) is
+    /// already counted.
+    #[test]
+    fn test_toy_completion_counts_an_options_values() {
+        assert_eq!(toy("paint --color "), ["red", "green"]);
+        assert_eq!(toy("paint --color red "), ["circle", "square"]);
+        assert_eq!(toy("paint --color=red "), ["circle", "square"]);
+        assert_eq!(toy("paint --pair a "), ["a", "b"]);
+        assert_eq!(toy("paint --pair a b "), ["circle", "square"]);
+        assert_eq!(toy("paint --verbose "), ["circle", "square"]);
+        assert_eq!(
+            toy("paint --pair a --color "),
+            ["red", "green"],
+            "a flag ends the pair"
+        );
+    }
+
+    /// A short flag that takes a value owes it as the next word or
+    /// takes the rest of its own; a cluster's earlier shorts are
+    /// flags in passing. A lone `-` is a value, not a flag.
+    #[test]
+    fn test_toy_completion_reads_short_flags() {
+        assert_eq!(toy("paint -c "), ["red", "green"]);
+        assert_eq!(toy("paint -cred "), ["circle", "square"]);
+        assert_eq!(toy("paint -vc "), ["red", "green"]);
+        assert_eq!(toy("paint -v "), ["circle", "square"]);
+        assert_eq!(toy("paint - "), ["s", "m", "l"], "`-` filled the shape");
+        assert_eq!(toy("paint --color - "), ["circle", "square"]);
+    }
+
+    /// Positionals go by index, and past the last one the trailing
+    /// many-valued positional keeps taking words.
+    #[test]
+    fn test_toy_completion_follows_positionals() {
+        assert_eq!(toy("paint "), ["circle", "square"]);
+        assert_eq!(toy("paint circle "), ["s", "m", "l"]);
+        assert_eq!(toy("paint circle s m "), ["s", "m", "l"]);
+        assert_eq!(toy("paint circle s --"), ["--color", "--pair", "--verbose"]);
+    }
+
+    /// A dash under the cursor offers the long flags, the hidden one
+    /// left out — whether or not an option is still owed a value.
+    #[test]
+    fn test_toy_completion_offers_visible_long_flags() {
+        assert_eq!(toy("paint -"), ["--color", "--pair", "--verbose"]);
+        assert_eq!(toy("paint --color -"), ["--color", "--pair", "--verbose"]);
+        assert_eq!(toy("paint --p"), ["--pair"]);
+    }
+
+    /// An exact command name wins even when it is another's prefix;
+    /// a prefix of two commands names neither.
+    #[test]
+    fn test_toy_completion_resolves_the_command_word_exactly_first() {
+        assert_eq!(toy("pain -"), ["--dull"]);
+        assert_eq!(toy("paint -"), ["--color", "--pair", "--verbose"]);
+        assert!(toy("pai -").is_empty());
+        assert_eq!(toy("pai"), ["paint", "pain"]);
     }
 
     /// `help` is a successful command that clap renders as an error;
