@@ -2543,10 +2543,7 @@ fn test_join_set_acceptance() {
         for id in &ids {
             assert!(rows.iter().any(|row| &row.id == id), "{rows:?}");
             let traced = hansei_ok(&bundle, core, &format!("trace {id}"));
-            assert!(
-                traced.contains("async fn      joinset::member"),
-                "{traced}"
-            );
+            assert!(traced.contains("async fn      joinset::member"), "{traced}");
         }
 
         // Except the member of the unjoined set that has run to

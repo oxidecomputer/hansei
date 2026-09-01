@@ -1,0 +1,7 @@
+---
+source: hansei/src/offline.rs
+description: "`trace 3 -l 1` over linux-floor/nested-await"
+---
+#0  future        tokio::sync::oneshot::Receiver<u32>
+      (<no_state>, 1 local)
+[4 frames, 1 shown]

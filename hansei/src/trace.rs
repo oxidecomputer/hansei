@@ -22,6 +22,7 @@ use std::io::{self, Write};
 pub(crate) fn exec_trace_lwp<T: proc::Target>(
     session: &Session<'_, T>,
     tid: u32,
+    limit: Option<usize>,
     out: &mut dyn io::Write,
 ) -> Result<()> {
     let unwound =
@@ -31,8 +32,17 @@ pub(crate) fn exec_trace_lwp<T: proc::Target>(
         return Ok(());
     };
     writeln!(out, "lwp {tid} native stack:")?;
-    for line in backtrace.stack_trace(50) {
+    let max = limit.unwrap_or(50);
+    for line in backtrace.stack_trace(max) {
         writeln!(out, "{line}")?;
+    }
+    let total = backtrace.frames.len();
+    if max < total {
+        writeln!(
+            out,
+            "[{}, {max} shown]",
+            crate::summary::counted(total, "frame")
+        )?;
     }
     Ok(())
 }
@@ -433,10 +443,19 @@ fn print_await_chain<'b, T: proc::Target>(
     }
 
     print_chain_end(chain, impls, out)?;
-    let num_width = chain_num_width(chain);
-    for i in (0..chain.frames.len()).rev() {
+    let len = chain.frames.len();
+    let shown = opts.limit.unwrap_or(len).min(len);
+    let num_width = format!("#{}", shown.saturating_sub(1)).len();
+    for i in ((len - shown)..len).rev() {
         print_frame(
             ctx, chain, i, num_width, wait, holds, opts, impls, annotate, out,
+        )?;
+    }
+    if shown < len {
+        writeln!(
+            out,
+            "[{}, {shown} shown]",
+            crate::summary::counted(len, "frame")
         )?;
     }
     Ok(())
@@ -984,8 +1003,11 @@ fn print_native_section(
     // signal — the last thing that happened — sits on top and the
     // frame nearest the committed chain sits just above it.
     lines.reverse();
+    let total = lines.len();
+    let shown = opts.limit.unwrap_or(total).min(total);
+    lines.truncate(shown);
 
-    if lines.is_empty() {
+    if total == 0 {
         // The seam sat at the innermost frame: execution is exactly at
         // the committed leaf, and there is nothing novel to print.
         writeln!(
@@ -1019,6 +1041,13 @@ fn print_native_section(
                     writeln!(out, "{text}")?;
                 }
             }
+        }
+        if shown < total {
+            writeln!(
+                out,
+                "[{}, {shown} shown]",
+                crate::summary::counted(total, "row")
+            )?;
         }
     }
     Ok(())
@@ -1520,6 +1549,7 @@ mod native_section_tests {
         frames: &[NativeFrame],
         chain: &[BundleTypeId],
         lwp: u32,
+        limit: Option<usize>,
         fatal: Option<&proc::FatalSignal>,
         mapped: &dyn Fn(u64) -> bool,
         verbose: bool,
@@ -1529,6 +1559,7 @@ mod native_section_tests {
         let opts = TraceOpts {
             verbose,
             native: true,
+            limit,
             render: RenderOpts {
                 depth: 4,
                 ugly: false,
@@ -1567,6 +1598,32 @@ mod native_section_tests {
         }
     }
 
+    /// `--limit` applies to the section on its own: the most recent
+    /// rows stay, and a footer counts the cut.
+    #[test]
+    fn test_limit_cuts_the_native_section_separately() {
+        let chain = [BundleTypeId(10), BundleTypeId(11), BundleTypeId(12)];
+        let frames = [
+            frame(0x9000, "__lwp_park"),
+            frame(0x9010, "mutex_lock"),
+            frame(0x9020, "vmem_xalloc"),
+            frame(0x9030, "memalign"),
+            poll_frame(0x9040, "reqwest::connect::{closure#0}", &[77]),
+            poll_frame(0x9050, "<FuturesUnordered as Future>::poll_next", &[12]),
+            poll_frame(0x9060, "nexus::saga::{closure#0}", &[10]),
+            frame(0x5010, "tokio::runtime::task::raw::poll"),
+            frame(0x9090, "tokio::runtime::scheduler::run"),
+        ];
+        assert_eq!(
+            section(&frames, &chain, 115, Some(2), None, &|_| true, false),
+            "mid-poll on lwp 115
+0x0000000000009000  __lwp_park
+0x0000000000009010  mutex_lock
+[5 rows, 2 shown]
+"
+        );
+    }
+
     /// The healthy-capture shape: every novel frame below the seam
     /// prints as an unnumbered `native` row, most recent first, under
     /// the neutral header — and a capture that took no signal opens
@@ -1587,7 +1644,7 @@ mod native_section_tests {
             frame(0x9090, "tokio::runtime::scheduler::run"),
         ];
         assert_eq!(
-            section(&frames, &chain, 115, None, &|_| true, false),
+            section(&frames, &chain, 115, None, None, &|_| true, false),
             "mid-poll on lwp 115
 0x0000000000009000  __lwp_park
 0x0000000000009010  mutex_lock
@@ -1623,7 +1680,7 @@ mod native_section_tests {
         ];
         let sig = abrt();
         assert_eq!(
-            section(&frames, &chain, 7, Some(&sig), &|_| true, false),
+            section(&frames, &chain, 7, None, Some(&sig), &|_| true, false),
             "mid-poll on lwp 7
 SIGABRT — raised by the panic below
 panic plumbing: _lwp_kill … core::panicking::panic_fmt (10 frames; -v shows each)
@@ -1633,7 +1690,7 @@ panic plumbing: _lwp_kill … core::panicking::panic_fmt (10 frames; -v shows ea
 
         // -v prints the run whole, most recent first, still
         // unnumbered; the signal row keeps its attribution.
-        let verbose = section(&frames, &chain, 7, Some(&sig), &|_| true, true);
+        let verbose = section(&frames, &chain, 7, None, Some(&sig), &|_| true, true);
         assert_eq!(verbose.matches("\n0x").count(), 11, "{verbose}");
         assert!(!verbose.contains("panic plumbing:"), "{verbose}");
         assert!(
@@ -1672,7 +1729,7 @@ panic plumbing: _lwp_kill … core::panicking::panic_fmt (10 frames; -v shows ea
         ];
         let sig = segv();
         assert_eq!(
-            section(&frames, &chain, 115, Some(&sig), &|pc| pc != 0, false),
+            section(&frames, &chain, 115, None, Some(&sig), &|pc| pc != 0, false),
             "mid-poll on lwp 115
 SIGSEGV (SEGV_MAPERR) — the call from rama::service::dispatch landed at 0x0, unmapped
 0x0000000000009010  rama::service::dispatch
@@ -1691,10 +1748,10 @@ SIGSEGV (SEGV_MAPERR) — the call from rama::service::dispatch landed at 0x0, u
         ];
         let mut sig = segv();
         sig.lwp = Some(116);
-        let rendered = section(&frames, &[], 115, Some(&sig), &|_| true, false);
+        let rendered = section(&frames, &[], 115, None, Some(&sig), &|_| true, false);
         assert!(!rendered.contains("signal"), "{rendered}");
         sig.lwp = None;
-        let rendered = section(&frames, &[], 115, Some(&sig), &|_| true, false);
+        let rendered = section(&frames, &[], 115, None, Some(&sig), &|_| true, false);
         assert!(!rendered.contains("signal"), "{rendered}");
     }
 
@@ -1708,7 +1765,7 @@ SIGSEGV (SEGV_MAPERR) — the call from rama::service::dispatch landed at 0x0, u
             frame(0x5000, "tokio::runtime::task::raw::poll"),
         ];
         let sig = segv();
-        let rendered = section(&frames, &[], 115, Some(&sig), &|_| true, false);
+        let rendered = section(&frames, &[], 115, None, Some(&sig), &|_| true, false);
         assert!(
             rendered.contains("\nSIGSEGV (SEGV_MAPERR), fault address 0x0\n"),
             "{rendered}"
@@ -1726,7 +1783,7 @@ SIGSEGV (SEGV_MAPERR) — the call from rama::service::dispatch landed at 0x0, u
             frame(0x5000, "task::raw::poll"),
         ];
         assert_eq!(
-            section(&frames, &chain, 12, None, &|_| true, false),
+            section(&frames, &chain, 12, None, None, &|_| true, false),
             "mid-poll on lwp 12 — the poll is at the chain's leaf frame; \
 nothing deeper is on the native stack
 "
@@ -1742,7 +1799,7 @@ nothing deeper is on the native stack
             frame(0x4242, ""),
             frame(0x5000, "tokio::runtime::task::raw::poll"),
         ];
-        let rendered = section(&frames, &[], 3, None, &|_| true, false);
+        let rendered = section(&frames, &[], 3, None, None, &|_| true, false);
         assert!(
             rendered.contains("0x0000000000004242  <no symbol>\n"),
             "{rendered}"
@@ -2224,6 +2281,7 @@ mod future_trace_tests {
             let opts = TraceOpts {
                 verbose: false,
                 native: false,
+                limit: None,
                 render: RenderOpts {
                     depth: 4,
                     ugly: false,
@@ -2614,10 +2672,16 @@ mod trace_render_tests {
     /// path — with heap addresses masked so expectations compare
     /// exactly.
     fn trace(program: &str, future: &str, verbose: bool) -> String {
-        trace_with(program, future, verbose, output::Theme::plain())
+        trace_with(program, future, verbose, output::Theme::plain(), None)
     }
 
-    fn trace_with(program: &str, future: &str, verbose: bool, theme: output::Theme) -> String {
+    fn trace_with(
+        program: &str,
+        future: &str,
+        verbose: bool,
+        theme: output::Theme,
+        limit: Option<usize>,
+    ) -> String {
         let (bundle, snapshot) = testkit::load_any(program);
         let ctx = testkit::context(&bundle, &snapshot);
         let list = testkit::tasks(&ctx, &snapshot);
@@ -2646,6 +2710,7 @@ mod trace_render_tests {
         let opts = TraceOpts {
             verbose,
             native: false,
+            limit,
             render: RenderOpts {
                 depth: 4,
                 ugly: false,
@@ -2776,6 +2841,30 @@ mod trace_render_tests {
         );
     }
 
+    /// `--limit` keeps the most recent frames: the cut falls at the
+    /// root side, and a footer counts what it left out.
+    #[test]
+    fn test_limit_cuts_the_root_side_and_counts() {
+        let rendered = trace_with(
+            "futurelock",
+            "futurelock::main::{async_block#0}::{async_block_env#0}",
+            false,
+            output::Theme::plain(),
+            Some(2),
+        );
+        assert_eq!(
+            rendered,
+            "Waiting on: a tokio::sync::Mutex (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 5
+
+#0  future        tokio::sync::batch_semaphore::Acquire
+      waiting on a tokio::sync::Mutex (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 5
+#1  async fn      tokio::sync::mutex::Mutex::acquire<()>
+      awaiting at tokio-1.52.4/src/sync/mutex.rs:658 (Suspend1, 0 locals)
+[7 frames, 2 shown]
+"
+        );
+    }
+
     /// A dyn frame keeps its ` [dyn]` marker as part of the name's
     /// identity — the one thing allowed after a type name — and a
     /// suspend point listed after the live one stays out of the default
@@ -2826,6 +2915,7 @@ mod trace_render_tests {
         let opts = TraceOpts {
             verbose: true,
             native: false,
+            limit: None,
             render: RenderOpts {
                 depth: 4,
                 ugly: false,
@@ -2889,7 +2979,7 @@ mod trace_render_tests {
     #[test]
     fn test_a_terminal_theme_styles_and_the_plain_one_stays_bytes() {
         let future = "futurelock::main::{async_block#0}::{async_block_env#0}";
-        let styled = trace_with("futurelock", future, false, output::Theme::forced());
+        let styled = trace_with("futurelock", future, false, output::Theme::forced(), None);
         let target = "a tokio::sync::Mutex (semaphore 0xADDR): \
                       1 permit requested, 0 available; wake queue: task 5";
         assert!(
@@ -2923,6 +3013,7 @@ mod trace_render_tests {
             "simple_await::work::{async_fn_env#0}",
             true,
             output::Theme::forced(),
+            None,
         );
         assert!(
             styled.contains(

@@ -13,7 +13,8 @@ use std::io;
 
 /// The session's standing defaults. [`crate::RenderOpts`] is filled
 /// from the render keys wherever a command's own flags left one out;
-/// `limit` fills the listing commands' `--limit` the same way.
+/// `limit` fills the listing commands' — and trace's — `--limit`
+/// the same way.
 pub(crate) struct Settings {
     pub(crate) depth: usize,
     pub(crate) ugly: bool,

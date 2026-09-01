@@ -1,0 +1,7 @@
+---
+source: hansei/src/offline.rs
+description: "`trace 1 -l 1` over linux-floor/local-set-io"
+---
+#0  future        tokio::io::util::read::Read<tokio::net::unix::stream::UnixStream>
+      (<no_state>, 2 locals)
+[2 frames, 1 shown]

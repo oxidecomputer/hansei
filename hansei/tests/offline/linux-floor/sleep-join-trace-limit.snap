@@ -1,0 +1,9 @@
+---
+source: hansei/src/offline.rs
+description: "`trace 3 -l 1` over linux-floor/sleep-join"
+---
+Waiting on: timer (deadline TS on the target's monotonic clock)
+
+#0  future        tokio::time::sleep::Sleep
+      waiting on timer (deadline TS on the target's monotonic clock)
+[2 frames, 1 shown]

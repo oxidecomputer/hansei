@@ -1,0 +1,7 @@
+---
+source: hansei/src/offline.rs
+description: "`trace 3 -l 1` over illumos/joinset"
+---
+#0  future        tokio::util::idle_notified_set::IdleNotifiedSet<tokio::runtime::task::join::JoinHandle<u32>>
+      (<no_state>, 2 locals)
+[3 frames, 1 shown]
