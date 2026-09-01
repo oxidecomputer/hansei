@@ -215,8 +215,10 @@ fn headline(names: &[String]) -> String {
 }
 
 /// One thread's table row as a single line, cells joined — the line
-/// the cursor's `thread` selector prints. `None` for an lwp the rows
-/// do not hold.
+/// the cursor's `thread` selector prints. The table's `FRAME 0`
+/// headline stays out of it: a bare `trace` under the fresh thread
+/// cursor walks the whole stack. `None` for an lwp the rows do not
+/// hold.
 pub(crate) fn row_line<T: proc::Target>(session: &Session<'_, T>, lwp: u32) -> Option<String> {
     let dash = || "—".to_string();
     let row = rows(session).iter().find(|row| row.lwp == lwp)?;
@@ -226,7 +228,6 @@ pub(crate) fn row_line<T: proc::Target>(session: &Session<'_, T>, lwp: u32) -> O
             row.name.clone().unwrap_or_else(dash),
             row.role.clone(),
             row.task.map(|id| id.to_string()).unwrap_or_else(dash),
-            row.frame0.clone(),
         ]
         .join("  "),
     )

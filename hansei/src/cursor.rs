@@ -1363,7 +1363,7 @@ mod tests {
             .expect("the lwp selects");
         let line = String::from_utf8(out).expect("the row is UTF-8");
         assert!(line.starts_with(&tid.to_string()), "{line}");
-        assert_eq!(line.trim_end().split("  ").count(), 5, "{line}");
+        assert_eq!(line.trim_end().split("  ").count(), 4, "{line}");
         assert_eq!(session.cursor.borrow().last_addr, Some(rsp));
 
         for (verbose, frames, registers) in [
