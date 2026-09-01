@@ -153,6 +153,17 @@ fn commands(
             }
         }
     }
+    // The register readout under whatever cursor the commands above
+    // left: a task no thread is polling refuses, and a thread cursor
+    // answers with the lwp's annotated block. One program pins the
+    // semantics; they do not vary by fixture.
+    if program == "simple-await" {
+        list.push(("regs-cursor", "regs".to_owned()));
+        if let Some(lwp) = session.lwps.first() {
+            list.push(("thread-select", format!("thread {}", lwp.tid)));
+            list.push(("regs-thread", "regs".to_owned()));
+        }
+    }
     list
 }
 

@@ -1,0 +1,5 @@
+---
+source: hansei/src/offline.rs
+description: "`thread 1` over illumos/simple-await"
+---
+1  —  entered runtime  —  0xADDR ← 0xADDR ← 0xADDR

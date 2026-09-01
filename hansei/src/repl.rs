@@ -1213,6 +1213,10 @@ mod tests {
                 .command,
             Command::Locals
         ));
+        assert!(matches!(
+            Line::try_parse_from(["regs"]).expect("regs parses").command,
+            Command::Regs
+        ));
         // `whatis` still takes an address, and now none at all.
         assert!(matches!(
             Line::try_parse_from(["whatis"])

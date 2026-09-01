@@ -498,6 +498,13 @@ pub enum Command {
         render: RenderFlags,
     },
 
+    /// Print the cursor lwp's registers, annotated with what each
+    /// value points into: a thread cursor, or a task cursor whose
+    /// task is running on a thread — selecting a running task selects
+    /// the lwp polling it. A task off every thread has no trap state
+    /// to show.
+    Regs,
+
     /// Show each runtime's own state, read straight through the tokio
     /// info's layouts: its drivers, and the scheduler state its workers
     /// share. Naming no section shows both, and naming no runtime shows
@@ -921,9 +928,8 @@ pub enum Command {
     /// await into the polling thread's native stack: the frames below
     /// the task's own poll fn, numbered on from the chain, with panic
     /// plumbing folded and the fatal signal attributed when this
-    /// thread took it — then that thread's registers, annotated with
-    /// what each value points into. `threads` shows the same stack
-    /// raw.
+    /// thread took it. `threads` shows the same stack raw, and
+    /// `regs` the thread's registers.
     Trace {
         /// What to trace: a decimal task id from `tasks`, or a future
         /// address from `tasks --futures`, in hex with a required
@@ -1651,6 +1657,7 @@ pub fn dispatch<T: Target>(
             let render = render.resolve(&session.settings.borrow());
             print::exec_print(session, &args, render, out)?
         }
+        Command::Regs => registers::exec_regs(session, out)?,
         Command::Runtimes {
             list,
             drivers,
