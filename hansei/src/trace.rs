@@ -14,6 +14,29 @@ use reify::Value;
 use std::fmt;
 use std::io::{self, Write};
 
+/// A bare `trace` under a thread cursor whose lwp polls no task: the
+/// lwp's native backtrace, the same walk `threads` shows, without the
+/// runtime state around it. A thread mid-poll never lands here — its
+/// polled task roots the cursor, and the task trace glues the native
+/// continuation on itself.
+pub(crate) fn exec_trace_lwp<T: proc::Target>(
+    session: &Session<'_, T>,
+    tid: u32,
+    out: &mut dyn io::Write,
+) -> Result<()> {
+    let unwound =
+        unwind::load_frames(session.proc).context("cannot unwind the target's threads")?;
+    let Some(backtrace) = unwound.stacks.get(&tid) else {
+        writeln!(out, "lwp {tid}: stack unavailable")?;
+        return Ok(());
+    };
+    writeln!(out, "lwp {tid} native stack:")?;
+    for line in backtrace.stack_trace(50) {
+        writeln!(out, "  {line}")?;
+    }
+    Ok(())
+}
+
 pub(crate) fn exec_trace<T: proc::Target>(
     session: &Session<'_, T>,
     target: TraceTarget,

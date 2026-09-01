@@ -947,15 +947,22 @@ mod tests {
             assert!(c.root.is_none(), "a parked lwp brings no task");
             assert!(c.last_addr.is_some(), "$_ is the lwp's stack pointer");
         }
+        // A bare `trace` under the taskless thread cursor answers
+        // with the lwp's native backtrace rather than refusing.
         let command = repl::parse_line("trace").expect("trace parses");
-        let err = dispatch(
+        let mut walked = Vec::new();
+        dispatch(
             &session,
             command,
             crate::output::Theme::plain(),
-            &mut Vec::new(),
+            &mut walked,
         )
-        .expect_err("a thread cursor with no task refuses the task commands");
-        assert!(err.to_string().contains("no task selected"), "{err}");
+        .expect("a bare trace answers under a thread cursor");
+        let walked = String::from_utf8(walked).expect("trace output is UTF-8");
+        assert!(
+            walked.starts_with(&format!("lwp {lwp} native stack:")),
+            "{walked}"
+        );
 
         // `task` moves back and replaces the thread.
         exec_task(
