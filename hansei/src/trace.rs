@@ -517,12 +517,11 @@ fn frame_detail(
         .map(|(file, line)| theme.loc(&format!("{file}:{line}")).into_owned());
     if frame.future.ty.is_coroutine() && state.name.starts_with("Suspend") {
         let mut quals = state.name.to_string();
+        // The count prints even at zero: its absence would read as "no
+        // answer", not as "nothing live", and the two differ.
         match state_locals(state.payload.ty).len() {
-            0 => {}
             1 => quals.push_str(", 1 local"),
-            n => {
-                quals.push_str(&format!(", {n} locals"));
-            }
+            n => quals.push_str(&format!(", {n} locals")),
         }
         if !holds.is_empty() {
             quals.push_str("; ");
@@ -2725,11 +2724,11 @@ Waiting on: a tokio::sync::Mutex (semaphore 0xADDR): 1 permit requested, 0 avail
 #2  async fn      futurelock::do_async_thing
       awaiting at src/bin/futurelock.rs:78 (Suspend0, 2 locals)
 #3  async fn      tokio::sync::mutex::Mutex::lock<()>
-      awaiting at tokio-1.52.4/src/sync/mutex.rs:455 (Suspend0)
+      awaiting at tokio-1.52.4/src/sync/mutex.rs:455 (Suspend0, 0 locals)
 #4  async block   tokio::sync::mutex::Mutex::lock::{async_fn#0}<()>
-      awaiting at tokio-1.52.4/src/sync/mutex.rs:436 (Suspend0)
+      awaiting at tokio-1.52.4/src/sync/mutex.rs:436 (Suspend0, 0 locals)
 #5  async fn      tokio::sync::mutex::Mutex::acquire<()>
-      awaiting at tokio-1.52.4/src/sync/mutex.rs:658 (Suspend1)
+      awaiting at tokio-1.52.4/src/sync/mutex.rs:658 (Suspend1, 0 locals)
 #6  future        tokio::sync::batch_semaphore::Acquire
       waiting on a tokio::sync::Mutex (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 5
 "
@@ -2748,7 +2747,7 @@ Waiting on: a tokio::sync::Mutex (semaphore 0xADDR): 1 permit requested, 0 avail
 #0  async fn      dyn_future::driver
       awaiting at src/bin/dyn-future.rs:36 (Suspend0, 1 local)
 #1  async fn      dyn_future::boxed_leaf [dyn]
-      awaiting at src/bin/dyn-future.rs:12 (Suspend0)
+      awaiting at src/bin/dyn-future.rs:12 (Suspend0, 0 locals)
 #2  future        tokio::sync::oneshot::Receiver<u32>
 "
         );

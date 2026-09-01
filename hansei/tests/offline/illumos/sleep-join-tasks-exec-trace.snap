@@ -10,7 +10,7 @@ Defined at: src/bin/sleep-join.rs:9
 Waiting on: timer (deadline TS)
 
 #0  async fn      sleep_join::sleeper
-      awaiting at src/bin/sleep-join.rs:12 (Suspend0)
+      awaiting at src/bin/sleep-join.rs:12 (Suspend0, 0 locals)
 #1  future        tokio::time::sleep::Sleep
       waiting on timer (deadline TS)
 
@@ -22,7 +22,7 @@ Defined at: src/bin/sleep-join.rs:16
 Waiting on: task 3
 
 #0  async fn      sleep_join::joiner
-      awaiting at src/bin/sleep-join.rs:19 (Suspend0)
+      awaiting at src/bin/sleep-join.rs:19 (Suspend0, 0 locals)
 #1  future        tokio::runtime::task::join::JoinHandle<u32>
       waiting on task 3
 Executed against 2 tasks, 0 failed

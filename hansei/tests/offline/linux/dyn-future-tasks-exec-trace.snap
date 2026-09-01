@@ -10,7 +10,7 @@ Defined at: src/bin/dyn-future.rs:24
 #0  async fn      dyn_future::driver
       awaiting at src/bin/dyn-future.rs:36 (Suspend0, 1 local)
 #1  async fn      dyn_future::boxed_leaf [dyn]
-      awaiting at src/bin/dyn-future.rs:12 (Suspend0)
+      awaiting at src/bin/dyn-future.rs:12 (Suspend0, 0 locals)
 #2  future        tokio::sync::oneshot::Receiver<u32>
 
 4  idle  src/bin/dyn-future.rs:17  future tokio::sync::oneshot::Receiver<u32>  async fn dyn_future::set_member
@@ -19,6 +19,6 @@ Spawned at: src/bin/dyn-future.rs:28:9
 Defined at: src/bin/dyn-future.rs:15
 
 #0  async fn      dyn_future::set_member
-      awaiting at src/bin/dyn-future.rs:17 (Suspend0)
+      awaiting at src/bin/dyn-future.rs:17 (Suspend0, 0 locals)
 #1  future        tokio::sync::oneshot::Receiver<u32>
 Executed against 2 tasks, 0 failed

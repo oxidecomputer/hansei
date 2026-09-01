@@ -10,7 +10,7 @@ Defined at: src/bin/local-set-timer.rs:15
 Waiting on: timer (deadline TS)
 
 #0  async fn      local_set_timer::local_sleeper
-      awaiting at src/bin/local-set-timer.rs:18 (Suspend0)
+      awaiting at src/bin/local-set-timer.rs:18 (Suspend0, 0 locals)
 #1  future        tokio::time::sleep::Sleep
       waiting on timer (deadline TS)
 
@@ -22,7 +22,7 @@ Defined at: src/bin/local-set-timer.rs:22
 Waiting on: a tokio::sync::Semaphore (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 2
 
 #0  async fn      local_set_timer::local_acquirer
-      awaiting at src/bin/local-set-timer.rs:25 (Suspend0)
+      awaiting at src/bin/local-set-timer.rs:25 (Suspend0, 0 locals)
 #1  async fn      tokio::sync::semaphore::Semaphore::acquire
       awaiting at tokio-1.52.4/src/sync/semaphore.rs:597 (Suspend0, 1 local)
 #2  future        tokio::sync::batch_semaphore::Acquire

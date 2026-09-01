@@ -10,7 +10,7 @@ Defined at: src/bin/local-set.rs:13
 Waiting on: timer (deadline TS on the target's monotonic clock)
 
 #0  async fn      local_set::local_sleeper
-      awaiting at src/bin/local-set.rs:16 (Suspend0)
+      awaiting at src/bin/local-set.rs:16 (Suspend0, 0 locals)
 #1  future        tokio::time::sleep::Sleep
       waiting on timer (deadline TS on the target's monotonic clock)
 
@@ -22,7 +22,7 @@ Defined at: src/bin/local-set.rs:20
 Waiting on: a tokio::sync::Semaphore (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 2
 
 #0  async fn      local_set::local_acquirer
-      awaiting at src/bin/local-set.rs:23 (Suspend0)
+      awaiting at src/bin/local-set.rs:23 (Suspend0, 0 locals)
 #1  async fn      tokio::sync::semaphore::Semaphore::acquire
       awaiting at tokio-1.47.5/src/sync/semaphore.rs:591 (Suspend0, 1 local)
 #2  future        tokio::sync::batch_semaphore::Acquire
@@ -36,7 +36,7 @@ Defined at: src/bin/local-set.rs:27
 Waiting on: task 1
 
 #0  async fn      local_set::joiner
-      awaiting at src/bin/local-set.rs:30 (Suspend0)
+      awaiting at src/bin/local-set.rs:30 (Suspend0, 0 locals)
 #1  future        tokio::runtime::task::join::JoinHandle<u32>
       waiting on task 1
 Executed against 3 tasks, 0 failed

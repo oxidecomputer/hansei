@@ -9,6 +9,6 @@ Defined at: src/bin/sleep-join.rs:9
 Waiting on: timer (deadline TS on the target's monotonic clock)
 
 #0  async fn      sleep_join::sleeper
-      awaiting at src/bin/sleep-join.rs:12 (Suspend0)
+      awaiting at src/bin/sleep-join.rs:12 (Suspend0, 0 locals)
 #1  future        tokio::time::sleep::Sleep
       waiting on timer (deadline TS on the target's monotonic clock)
