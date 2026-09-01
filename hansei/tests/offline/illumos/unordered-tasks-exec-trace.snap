@@ -1,6 +1,6 @@
 ---
 source: hansei/src/offline.rs
-description: "`tasks --exec trace` over illumos/unordered"
+description: "`tasks --exec trace -n` over illumos/unordered"
 ---
 3  idle  src/bin/unordered.rs:115  future futures_util::stream::futures_unordered::FuturesUnordered<unordered::set_member>  async fn unordered::driver
 Task 3: async fn unordered::driver (idle)

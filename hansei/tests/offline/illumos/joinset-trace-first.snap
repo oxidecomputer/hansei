@@ -1,6 +1,6 @@
 ---
 source: hansei/src/offline.rs
-description: "`trace 3` over illumos/joinset"
+description: "`trace 3 -n` over illumos/joinset"
 ---
 Task 3: async fn joinset::driver (idle)
 Spawned at: src/bin/joinset.rs:96:21

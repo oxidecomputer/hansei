@@ -1,6 +1,6 @@
 ---
 source: hansei/src/offline.rs
-description: "`trace 1` over illumos/local-set"
+description: "`trace 1 -n` over illumos/local-set"
 ---
 Task 1: async fn local_set::local_sleeper (idle)
 Spawned at: src/bin/local-set.rs:46:29

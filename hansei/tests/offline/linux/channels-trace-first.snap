@@ -1,6 +1,6 @@
 ---
 source: hansei/src/offline.rs
-description: "`trace 3` over linux/channels"
+description: "`trace 3 -n` over linux/channels"
 ---
 Task 3: async fn channels::notify_waiter (idle)
 Spawned at: src/bin/channels.rs:75:23

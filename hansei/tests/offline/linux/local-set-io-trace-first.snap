@@ -1,6 +1,6 @@
 ---
 source: hansei/src/offline.rs
-description: "`trace 1` over linux/local-set-io"
+description: "`trace 1 -n` over linux/local-set-io"
 ---
 Task 1: async fn local_set_io::local_reader (idle)
 Spawned at: src/bin/local-set-io.rs:98:20

@@ -1,6 +1,6 @@
 ---
 source: hansei/src/offline.rs
-description: "`tasks --exec trace` over illumos/local-set"
+description: "`tasks --exec trace -n` over illumos/local-set"
 ---
 1  idle  1  src/bin/local-set.rs:16  timer (deadline TS)  async fn local_set::local_sleeper
 Task 1: async fn local_set::local_sleeper (idle)

@@ -1,6 +1,6 @@
 ---
 source: hansei/src/offline.rs
-description: "`trace 3` over linux-floor/nested-await"
+description: "`trace 3 -n` over linux-floor/nested-await"
 ---
 Task 3: async fn nested_await::outer (idle)
 Spawned at: src/bin/nested-await.rs:33:21

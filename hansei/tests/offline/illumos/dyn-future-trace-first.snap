@@ -1,6 +1,6 @@
 ---
 source: hansei/src/offline.rs
-description: "`trace 3` over illumos/dyn-future"
+description: "`trace 3 -n` over illumos/dyn-future"
 ---
 Task 3: async fn dyn_future::driver (idle)
 Spawned at: src/bin/dyn-future.rs:53:21

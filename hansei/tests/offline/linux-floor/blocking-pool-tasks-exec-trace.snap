@@ -1,6 +1,6 @@
 ---
 source: hansei/src/offline.rs
-description: "`tasks --exec trace` over linux-floor/blocking-pool"
+description: "`tasks --exec trace -n` over linux-floor/blocking-pool"
 ---
 3  blocking (running)  —  —  future tokio::runtime::blocking::task::BlockingTask<blocking_pool::main::{async_block#0}::{closure_env#0}>
 Task 3: future tokio::runtime::blocking::task::BlockingTask<blocking_pool::main::{async_block#0}::{closure_env#0}> (running)

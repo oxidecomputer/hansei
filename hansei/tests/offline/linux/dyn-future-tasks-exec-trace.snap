@@ -1,6 +1,6 @@
 ---
 source: hansei/src/offline.rs
-description: "`tasks --exec trace` over linux/dyn-future"
+description: "`tasks --exec trace -n` over linux/dyn-future"
 ---
 3  idle  src/bin/dyn-future.rs:36  future tokio::sync::oneshot::Receiver<u32>  async fn dyn_future::driver
 Task 3: async fn dyn_future::driver (idle)

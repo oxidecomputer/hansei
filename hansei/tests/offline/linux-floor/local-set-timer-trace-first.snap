@@ -1,6 +1,6 @@
 ---
 source: hansei/src/offline.rs
-description: "`trace 1` over linux-floor/local-set-timer"
+description: "`trace 1 -n` over linux-floor/local-set-timer"
 ---
 Task 1: async fn local_set_timer::local_sleeper (idle)
 Spawned at: src/bin/local-set-timer.rs:58:20

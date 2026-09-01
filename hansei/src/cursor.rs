@@ -357,6 +357,7 @@ fn print_root_chain<T: proc::Target>(
     let heap = session.heap_view();
     let opts = TraceOpts {
         verbose: false,
+        native: false,
         render,
         theme,
         heap: heap.as_ref().map(|view| view as &dyn reify::Heap),
@@ -505,6 +506,7 @@ pub(crate) fn exec_locals<T: proc::Target>(
     let heap = session.heap_view();
     let opts = TraceOpts {
         verbose: false,
+        native: false,
         render,
         theme,
         heap: heap.as_ref().map(|view| view as &dyn reify::Heap),
@@ -674,6 +676,7 @@ fn print_cursor_frame<T: proc::Target>(
     let heap = session.heap_view();
     let opts = TraceOpts {
         verbose: false,
+        native: false,
         render,
         theme,
         heap: heap.as_ref().map(|view| view as &dyn reify::Heap),

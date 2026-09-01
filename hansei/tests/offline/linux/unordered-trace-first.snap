@@ -1,6 +1,6 @@
 ---
 source: hansei/src/offline.rs
-description: "`trace 3` over linux/unordered"
+description: "`trace 3 -n` over linux/unordered"
 ---
 Task 3: async fn unordered::driver (idle)
 Spawned at: src/bin/unordered.rs:137:21

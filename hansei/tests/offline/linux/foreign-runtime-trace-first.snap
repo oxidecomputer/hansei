@@ -1,6 +1,6 @@
 ---
 source: hansei/src/offline.rs
-description: "`trace 1` over linux/foreign-runtime"
+description: "`trace 1 -n` over linux/foreign-runtime"
 ---
 Task 1: async fn foreign_runtime::joined (idle)
 Spawned at: src/bin/foreign-runtime.rs:83:23

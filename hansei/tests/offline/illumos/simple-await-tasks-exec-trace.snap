@@ -1,6 +1,6 @@
 ---
 source: hansei/src/offline.rs
-description: "`tasks --exec trace` over illumos/simple-await"
+description: "`tasks --exec trace -n` over illumos/simple-await"
 ---
 3  idle  src/bin/simple-await.rs:40  future tokio::sync::oneshot::Receiver<u32>  async fn simple_await::work
 Task 3: async fn simple_await::work (idle)

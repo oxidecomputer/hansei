@@ -1,6 +1,6 @@
 ---
 source: hansei/src/offline.rs
-description: "`trace 3` over illumos/blocking-pool"
+description: "`trace 3 -n` over illumos/blocking-pool"
 ---
 Task 3: future tokio::runtime::blocking::task::BlockingTask<blocking_pool::main::{async_block#0}::{closure_env#0}> (running)
 Spawned at: src/bin/blocking-pool.rs:35:23

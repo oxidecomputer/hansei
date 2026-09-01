@@ -1,6 +1,6 @@
 ---
 source: hansei/src/offline.rs
-description: "`trace 3` over linux/simple-await"
+description: "`trace 3 -n` over linux/simple-await"
 ---
 Task 3: async fn simple_await::work (idle)
 Spawned at: src/bin/simple-await.rs:75:21

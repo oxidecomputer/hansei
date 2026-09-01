@@ -1,6 +1,6 @@
 ---
 source: hansei/src/offline.rs
-description: "`trace 1` over linux/walk-shapes"
+description: "`trace 1 -n` over linux/walk-shapes"
 ---
 Task 1: async fn walk_shapes::chained (idle)
 Spawned at: src/bin/walk-shapes.rs:245:9

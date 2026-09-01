@@ -1,6 +1,6 @@
 ---
 source: hansei/src/offline.rs
-description: "`trace 5` over linux/futurelock"
+description: "`trace 5 -n` over linux/futurelock"
 ---
 Task 5: async block futurelock::main::{async_block#0} (idle)
 Spawned at: src/bin/futurelock.rs:16:17
