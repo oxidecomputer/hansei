@@ -12,7 +12,7 @@ registers:
   rdx  0xADDR
   rsi  0xADDR
   rdi  0xADDR
-  r8   0xADDR  — [ heap ]
+  r8   0xADDR  — unmapped
   r9   0xADDR  — [ anon ]
   r10  0xADDR  — [ anon ]
   r11  0xADDR  — in libc.so.1 text

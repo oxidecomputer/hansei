@@ -2,7 +2,7 @@
 source: hansei/src/offline.rs
 description: "`tasks --group waiting-on` over illumos/local-set-timer"
 ---
-COUNT  WAITING ON                                     TASKS
-    2  timer                                          1, 3
+COUNT  WAITING ON                                      TASKS
+    2  timer                                           1, 3
     1  a tokio::sync::Semaphore (semaphore 0xADDR)  2
 2 groups

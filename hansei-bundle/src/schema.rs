@@ -175,6 +175,13 @@ pub struct TypeTable {
     /// (`by_normalized_symbol`), its contents ride on the format version:
     /// the hash function changing is a format change.
     pub by_normalized_name: Vec<(u64, u32)>,
+    /// Declaration sites for closure and coroutine *environment* types —
+    /// `{closure_env#N}`, `{async_fn_env#N}`, … — keyed by type id. An
+    /// environment is constructed where it is written, so its decl site
+    /// is the construction site of whatever holds it: the join behind a
+    /// combinator frame's `constructed at` line. Sparse — only env types
+    /// with a recorded declaration appear.
+    pub env_decls: BTreeMap<BundleTypeId, SourceLoc>,
     /// O(1) view of `debug_formats`, built on first use: a position per
     /// type id (`u32::MAX` for types without a format) into a flat list
     /// of the display nodes. A census-style walk asks for a type's

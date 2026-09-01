@@ -49,6 +49,9 @@ pub(crate) struct Emitter<'a> {
     pub(super) explanations: Vec<FormatExplanation>,
     ids: BTreeMap<TypeId, BundleTypeId>,
     defs: Vec<TypeDef>,
+    /// Declaration sites of closure/coroutine environment types, keyed
+    /// by their emitted id — the type table's `env_decls`.
+    env_decls: BTreeMap<BundleTypeId, SourceLoc>,
     debug_formats: BTreeMap<BundleTypeId, DisplayNode>,
     /// Fully-qualified names for the name index, parallel to `defs`.
     names: Vec<Option<String>>,
@@ -76,6 +79,7 @@ impl<'a> Emitter<'a> {
             explanations: Vec::new(),
             ids: BTreeMap::new(),
             defs: Vec::new(),
+            env_decls: BTreeMap::new(),
             debug_formats: BTreeMap::new(),
             names: Vec::new(),
             pending: VecDeque::new(),
@@ -236,7 +240,11 @@ impl<'a> Emitter<'a> {
     /// A variant member's declaration coordinates — for coroutines, the
     /// awaited expression's file and line.
     fn member_decl(&mut self, m: &crate::raw_types::RawMember<crate::StrId>) -> Option<SourceLoc> {
-        let loc = m.source_loc.as_deref()?;
+        self.bundle_loc(m.source_loc.as_deref()?)
+    }
+
+    /// Intern a raw DWARF source location as a bundle [`SourceLoc`].
+    fn bundle_loc(&mut self, loc: &crate::raw_types::SourceLoc<crate::StrId>) -> Option<SourceLoc> {
         let file = loc.file.map(|f| self.reader.strings.get(f))?;
         let line = loc.line?;
         let dir = loc.dir.map(|d| self.reader.strings.get(d));
@@ -246,6 +254,15 @@ impl<'a> Emitter<'a> {
             file,
             line: line.get() as u32,
         })
+    }
+
+    /// Record the declaration site recovered for a closure/coroutine
+    /// environment type — the type table's `env_decls`, the anchor
+    /// behind a combinator frame's `constructed at` line. The env DIEs
+    /// carry no coordinates of their own, so the caller recovers each
+    /// from the defining subprogram.
+    pub(super) fn record_env_decl(&mut self, bid: BundleTypeId, loc: SourceLoc) {
+        self.env_decls.insert(bid, loc);
     }
 
     /// The type a coroutine suspend variant awaits, from the `__awaitee`
@@ -528,6 +545,7 @@ impl<'a> Emitter<'a> {
             types: self.defs,
             debug_formats: self.debug_formats,
             name_index,
+            env_decls: self.env_decls,
             ..Default::default()
         };
         let demoted = demote_types_with_members_out_of_bounds(&mut types, &self.names);

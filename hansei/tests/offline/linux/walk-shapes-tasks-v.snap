@@ -67,7 +67,7 @@ Task 6: async fn walk_shapes::blocked
 
 Task 7: async fn walk_shapes::local_parker
     State: idle
-    Owner: local set 1 @0xADDR (lwp 3179474)
+    Owner: local set 1 @0xADDR (lwp 4034818)
     Spawned at: src/bin/walk-shapes.rs:268:28
     Defined at: src/bin/walk-shapes.rs:191
     Waiting on: future tokio::sync::notify::Notified
@@ -88,7 +88,7 @@ Task 8: async fn walk_shapes::joiner
 
 Task 9: async fn walk_shapes::side_parker
     State: queued
-    Owner: local set 0 @0xADDR (lwp 3179477)
+    Owner: local set 0 @0xADDR (lwp 4034821)
     Spawned at: src/bin/walk-shapes.rs:214:23
     Defined at: src/bin/walk-shapes.rs:204
     Waiting on: async fn walk_shapes::side_parker
