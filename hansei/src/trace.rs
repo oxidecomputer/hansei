@@ -1227,11 +1227,11 @@ pub(crate) fn print_variable(
             self.staged.push_str(self.indent);
             self.staged.push_str(self.name);
             self.staged.push_str(": ");
-            if let Some(ty) = self.ty {
-                if !opens_with(ty, first) {
-                    self.staged.push_str(ty);
-                    self.staged.push_str(" = ");
-                }
+            if let Some(ty) = self.ty
+                && !opens_with(ty, first)
+            {
+                self.staged.push_str(ty);
+                self.staged.push_str(" = ");
             }
             self.staged.push_str(first);
         }

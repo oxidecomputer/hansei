@@ -2292,11 +2292,15 @@ mod filter_tests {
     #[test]
     fn test_count_fields_compare_the_census() {
         let mut counts: BTreeMap<usize, Counts> = BTreeMap::new();
-        let mut c = Counts::default();
-        c.held = 2;
-        c.sets = 1;
-        c.join_sets = 1;
-        counts.insert(0, c);
+        counts.insert(
+            0,
+            Counts {
+                held: 2,
+                sets: 1,
+                join_sets: 1,
+                ..Default::default()
+            },
+        );
         let keeps =
             |field: &str, arg: &str| survives(&clause(field, arg), 0, &row("1"), Some(&counts));
 
