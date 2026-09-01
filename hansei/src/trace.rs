@@ -685,7 +685,6 @@ pub(crate) fn print_locals<'b, T: proc::Target>(
                     .display_from_target(ctx.proc, opts.render.depth)
                     .max_str_len(Some(opts.render.max_string_len))
                     .max_array_len(Some(opts.render.max_array_values))
-                    .elide_override(opts.elide)
                     .line_prefix(&value_prefix);
                 if let Some(heap) = opts.heap {
                     disp = disp.heap(heap);
@@ -1526,7 +1525,6 @@ mod native_section_tests {
     ) -> String {
         let joined = stackjoin::classify(frames, &POLL, chain).expect("the poll frame anchors");
         let mut out = Vec::new();
-        let elide = Default::default();
         let opts = TraceOpts {
             verbose,
             render: RenderOpts {
@@ -1535,7 +1533,6 @@ mod native_section_tests {
                 max_string_len: reify::DEFAULT_MAX_STRING_LEN,
                 max_array_values: reify::DEFAULT_MAX_ARRAY_VALUES,
             },
-            elide: &elide,
             theme: output::Theme::plain(),
             heap: None,
         };
@@ -2223,7 +2220,6 @@ mod future_trace_tests {
             let wait = wait_line(ctx, &chain, list).expect("the wait target reads");
 
             let mut out = Vec::new();
-            let elide = Default::default();
             let opts = TraceOpts {
                 verbose: false,
                 render: RenderOpts {
@@ -2232,7 +2228,6 @@ mod future_trace_tests {
                     max_string_len: reify::DEFAULT_MAX_STRING_LEN,
                     max_array_values: reify::DEFAULT_MAX_ARRAY_VALUES,
                 },
-                elide: &elide,
                 theme: output::Theme::plain(),
                 heap: None,
             };
@@ -2646,7 +2641,6 @@ mod trace_render_tests {
         let holds = frame_holds(&census, index, None, chain.frames.len());
         let wait = wait_line(&ctx, &chain, &list).expect("the wait target reads");
         let mut out = Vec::new();
-        let elide = Default::default();
         let opts = TraceOpts {
             verbose,
             render: RenderOpts {
@@ -2655,7 +2649,6 @@ mod trace_render_tests {
                 max_string_len: reify::DEFAULT_MAX_STRING_LEN,
                 max_array_values: reify::DEFAULT_MAX_ARRAY_VALUES,
             },
-            elide: &elide,
             theme,
             heap: None,
         };
@@ -2832,7 +2825,6 @@ Waiting on: a tokio::sync::Mutex (semaphore 0xADDR): 1 permit requested, 0 avail
         let chain = ctx.await_chain(root);
         let wait = wait_line(&ctx, &chain, &list).expect("the wait target reads");
         let mut out = Vec::new();
-        let elide = Default::default();
         let opts = TraceOpts {
             verbose: true,
             render: RenderOpts {
@@ -2841,7 +2833,6 @@ Waiting on: a tokio::sync::Mutex (semaphore 0xADDR): 1 permit requested, 0 avail
                 max_string_len: reify::DEFAULT_MAX_STRING_LEN,
                 max_array_values: reify::DEFAULT_MAX_ARRAY_VALUES,
             },
-            elide: &elide,
             theme: output::Theme::plain(),
             heap: None,
         };

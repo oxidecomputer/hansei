@@ -354,12 +354,10 @@ fn print_root_chain<T: proc::Target>(
         .root
         .ok_or_else(|| anyhow!("no future selected"))?;
     let render = RenderFlags::default().resolve(&session.settings.borrow());
-    let elide = reify::ElideOverride::default();
     let heap = session.heap_view();
     let opts = TraceOpts {
         verbose: false,
         render,
-        elide: &elide,
         theme,
         heap: heap.as_ref().map(|view| view as &dyn reify::Heap),
     };
@@ -504,12 +502,10 @@ pub(crate) fn exec_locals<T: proc::Target>(
         None => frame.future,
     };
     let render = RenderFlags::default().resolve(&session.settings.borrow());
-    let elide = reify::ElideOverride::default();
     let heap = session.heap_view();
     let opts = TraceOpts {
         verbose: false,
         render,
-        elide: &elide,
         theme,
         heap: heap.as_ref().map(|view| view as &dyn reify::Heap),
     };
@@ -675,12 +671,10 @@ fn print_cursor_frame<T: proc::Target>(
 ) -> Result<()> {
     let chain = &resolved.chain;
     let render = RenderFlags::default().resolve(&session.settings.borrow());
-    let elide = reify::ElideOverride::default();
     let heap = session.heap_view();
     let opts = TraceOpts {
         verbose: false,
         render,
-        elide: &elide,
         theme,
         heap: heap.as_ref().map(|view| view as &dyn reify::Heap),
     };

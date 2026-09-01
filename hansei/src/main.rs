@@ -962,21 +962,11 @@ pub enum Command {
         #[arg(long, short)]
         verbose: bool,
 
-        #[command(flatten)]
-        render: RenderFlags,
-
-        /// Show the values rendered as `<elided>` (runtime
-        /// handles, loggers) instead of hiding them.
-        #[arg(long, short = 'n')]
-        no_elide: bool,
-
-        /// Render matching types as `<elided>`; repeat the flag to add
-        /// more. A pattern is a case-insensitive regex matched against
-        /// the displayed name — the folded spelling the listings
-        /// print, kind word and all (`async fn app::work`) — and a
-        /// matched type stays elided under --no-elide.
-        #[arg(long, short = 'e', value_name = "PATTERN")]
-        elide: Vec<String>,
+        /// Disable every type's custom formatter and show the raw
+        /// structural view of values instead. The flag only ever turns
+        /// the raw view on; `set ugly off` is the way back.
+        #[arg(long, short)]
+        ugly: bool,
     },
 
     /// Print the layout the tokio info records for a type, by its
@@ -1189,7 +1179,6 @@ fn parse_runtime_scope(s: &str) -> std::result::Result<RuntimeScope, String> {
 struct TraceOpts<'a> {
     verbose: bool,
     render: RenderOpts,
-    elide: &'a reify::ElideOverride,
     theme: output::Theme,
     /// The allocator to corroborate every printed value against, where
     /// the target keeps one; see [`Session::heap_view`]. Carried here
@@ -1751,12 +1740,14 @@ pub fn dispatch<T: Target>(
         Command::Trace {
             target,
             verbose,
-            render,
-            no_elide,
-            elide,
+            ugly,
         } => {
             session.note_version_ceiling();
-            let render = render.resolve(&session.settings.borrow());
+            let render = RenderFlags {
+                ugly,
+                ..Default::default()
+            }
+            .resolve(&session.settings.borrow());
             let Some(target) = target.or(session.cursor.borrow().root) else {
                 // A thread cursor has a stack worth walking: trace
                 // answers with the native backtrace rather than
@@ -1769,15 +1760,10 @@ pub fn dispatch<T: Target>(
                     "no task selected; trace takes a decimal task id or a 0x future address"
                 );
             };
-            let elide = reify::ElideOverride {
-                no_elide,
-                types: types::elide_matches(&session.ctx.view, &session.impl_fold, &elide)?,
-            };
             let heap = session.heap_view();
             let opts = TraceOpts {
                 verbose,
                 render,
-                elide: &elide,
                 theme,
                 heap: heap.as_ref().map(|view| view as &dyn reify::Heap),
             };

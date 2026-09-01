@@ -295,32 +295,13 @@ pub(crate) struct RenderCtx<'buf, 'a, T> {
     suppress_addr: bool,
 }
 
-/// A render-time adjustment of which types render as `<elided>`, layered
-/// over the bundle's own choices.
-///
-/// `no_elide` ignores the `Elided` display formats the bundle carries, so
-/// the types under them render structurally; `types` names types that
-/// render `<elided>` regardless of what format they carry — including
-/// under `no_elide`, so "nothing but these" is `no_elide` plus a list,
-/// and including under the ugly view, where an explicit elision is the
-/// more specific of the user's two asks.
+/// A render-time adjustment of what renders as `<elided>`, layered
+/// over the bundle's own choices: ignore the `Elided` display formats
+/// the bundle carries, so the types under them render structurally.
 #[derive(Clone, Debug, Default)]
 pub struct ElideOverride {
     /// Ignore the `Elided` display formats carried by the bundle.
     pub no_elide: bool,
-    /// The exact raw names of the types forced to `<elided>`. The
-    /// caller resolves whatever spelling the user typed — hansei
-    /// matches its `--elide` patterns against the displayed names,
-    /// over the bundle it holds — so the renderer down here only
-    /// compares.
-    pub types: Vec<String>,
-}
-
-impl ElideOverride {
-    /// Whether the value type named `name` is forced to `<elided>`.
-    fn forces(&self, name: &str) -> bool {
-        self.types.iter().any(|forced| forced == name)
-    }
 }
 
 // Derived `Copy`/`Clone` would demand `T: Copy` even though only `&T` is
@@ -476,16 +457,8 @@ pub(crate) fn write_display_value<'a, T: Target>(
         return write!(f, "<truncated>");
     }
 
-    // A forced elision outranks everything, `--ugly` included: both flags
-    // are the user speaking, and the elision is the more specific ask.
-    if let Some(elide) = ctx.elide
-        && elide.forces(ty.name())
-    {
-        return write!(f, "<elided>");
-    }
-
     // `--ugly` mode skips every custom formatter and renders the type through
-    // its structural classification below; `--no-elide` skips only the
+    // its structural classification below; `no_elide` skips only the
     // bundle's `Elided` formats, leaving the types under them structural.
     if !ctx.ugly
         && let Some(node) = ctx.debug_format(&ty)
@@ -1485,23 +1458,6 @@ mod tests {
             ),
             "null"
         );
-    }
-
-    /// A forced type is named exactly: the caller resolved the user's
-    /// pattern to raw names, so the renderer compares and never
-    /// interprets.
-    #[test]
-    fn test_forces_compares_exact_raw_names() {
-        use super::ElideOverride;
-
-        let elide = ElideOverride {
-            no_elide: false,
-            types: vec!["slog::Logger<a::B>".to_owned()],
-        };
-        assert!(elide.forces("slog::Logger<a::B>"));
-        assert!(!elide.forces("slog::Logger<c::D>"));
-        assert!(!elide.forces("slog::Logger"));
-        assert!(!ElideOverride::default().forces("slog::Logger<a::B>"));
     }
 
     /// A pointer into memory the allocator has taken back is not

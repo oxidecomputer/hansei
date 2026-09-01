@@ -1232,11 +1232,10 @@ mod tests {
         );
     }
 
-    /// The render-time switches layer over the bundle's `Elided` formats:
-    /// `no_elide` peels them off, a forced type elides whatever format it
-    /// carries (or none) — under `no_elide` and under the ugly view too.
+    /// `no_elide` ignores the `Elided` display formats the bundle
+    /// carries, so the types under them render structurally.
     #[test]
-    fn test_elide_overrides_layer_over_the_bundle() {
+    fn test_no_elide_reveals_bundle_elided_types() {
         use crate::render::ElideOverride;
 
         let b = node_bundle();
@@ -1244,13 +1243,8 @@ mod tests {
         let mem = FakeMem::new().unreadable();
         let logger_bytes = 7_u64.to_le_bytes();
         let logger = Value::new(v.ty(N_LOGGER).unwrap(), 0, &logger_bytes);
-        let point_bytes = u32s(&[1, 2]);
-        let point = Value::new(v.ty(N_POINT).unwrap(), 0, &point_bytes);
 
-        let no_elide = ElideOverride {
-            no_elide: true,
-            ..Default::default()
-        };
+        let no_elide = ElideOverride { no_elide: true };
         assert_eq!(
             format!(
                 "{}",
@@ -1259,49 +1253,6 @@ mod tests {
                     .elide_override(&no_elide)
             ),
             "Logger { drain: 7 }"
-        );
-
-        // A forced type elides with no format of its own; the list
-        // names raw type names exactly.
-        let force_point = ElideOverride {
-            no_elide: false,
-            types: vec!["Point".to_owned()],
-            ..Default::default()
-        };
-        assert_eq!(
-            format!(
-                "{}",
-                point
-                    .display_from_target(&mem, 8)
-                    .elide_override(&force_point)
-            ),
-            "<elided>"
-        );
-
-        // Forced elision wins over both no_elide and ugly.
-        let force_logger = ElideOverride {
-            no_elide: true,
-            types: vec!["Logger".to_owned()],
-            ..Default::default()
-        };
-        assert_eq!(
-            format!(
-                "{}",
-                logger
-                    .display_from_target(&mem, 8)
-                    .elide_override(&force_logger)
-            ),
-            "<elided>"
-        );
-        assert_eq!(
-            format!(
-                "{}",
-                logger
-                    .display_from_target(&mem, 8)
-                    .elide_override(&force_logger)
-                    .ugly()
-            ),
-            "<elided>"
         );
     }
 
