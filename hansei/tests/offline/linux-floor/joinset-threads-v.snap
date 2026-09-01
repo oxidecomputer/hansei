@@ -36,7 +36,7 @@ lwp 3182201  last polled task 1
         lifo_enabled: false,
         run_queue: tokio::runtime::scheduler::multi_thread::queue::Local<alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle, alloc::alloc::Global>> {
             inner: alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::queue::Inner<alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle, alloc::alloc::Global>>, alloc::alloc::Global> {
-                ptr: 0xADDR -> ...,
+                ptr: 0xADDR -> alloc::sync::ArcInner<tokio::runtime::scheduler::multi_thread::queue::Inner<alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle, alloc::alloc::Global>>> { .. },
             },
         },
         is_searching: false,
@@ -47,8 +47,8 @@ lwp 3182201  last polled task 1
             batch: tokio::runtime::metrics::batch::MetricsBatch {
                 busy_duration_total: 15911,
                 processing_scheduled_tasks_started_at: core::option::Option<std::time::Instant>::Some {
-                    tv_sec: ...,
-                    tv_nsec: ...,
+                    tv_sec: 1413015,
+                    tv_nsec: 455109443,
                 },
                 park_count: 1,
                 park_unpark_count: 1,
@@ -100,7 +100,7 @@ lwp 3182202  last polled task 2
         lifo_enabled: false,
         run_queue: tokio::runtime::scheduler::multi_thread::queue::Local<alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle, alloc::alloc::Global>> {
             inner: alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::queue::Inner<alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle, alloc::alloc::Global>>, alloc::alloc::Global> {
-                ptr: 0xADDR -> ...,
+                ptr: 0xADDR -> alloc::sync::ArcInner<tokio::runtime::scheduler::multi_thread::queue::Inner<alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle, alloc::alloc::Global>>> { .. },
             },
         },
         is_searching: false,
@@ -111,8 +111,8 @@ lwp 3182202  last polled task 2
             batch: tokio::runtime::metrics::batch::MetricsBatch {
                 busy_duration_total: 1894,
                 processing_scheduled_tasks_started_at: core::option::Option<std::time::Instant>::Some {
-                    tv_sec: ...,
-                    tv_nsec: ...,
+                    tv_sec: 1413015,
+                    tv_nsec: 455115926,
                 },
                 park_count: 2,
                 park_unpark_count: 3,

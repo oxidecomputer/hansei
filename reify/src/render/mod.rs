@@ -100,7 +100,10 @@ pub struct DisplayValue<'r, 'a, T> {
 
 impl<'r, 'a, T> DisplayValue<'r, 'a, T> {
     /// Override the depth budget (default 8). Each level of nesting — a
-    /// member, an element, a followed pointer — spends one.
+    /// member, an element, a followed pointer — spends one. The budget
+    /// pays for structure: an aggregate past it elides to a
+    /// `Type { .. } @ 0x…` placeholder, while scalars and other leaves
+    /// render at any depth.
     pub fn depth(mut self, max_depth: usize) -> Self {
         self.max_depth = max_depth;
         self
@@ -172,6 +175,7 @@ impl<'a, T: Target> fmt::Display for DisplayValue<'_, 'a, T> {
             max_depth: self.max_depth,
             proc: self.proc,
             visited: Some(&self.visited),
+            suppress_addr: false,
             hex_integers: false,
             ugly: self.ugly,
             elide: self.elide,
@@ -285,6 +289,10 @@ pub(crate) struct RenderCtx<'buf, 'a, T> {
     /// [`write_indent`] ahead of the depth indentation; see
     /// [`DisplayValue::line_prefix`]. Empty for a bare display.
     prefix: &'buf str,
+    /// Suppress the `@ 0x…` suffix of a depth-elision placeholder: set
+    /// for the pointee of a pointer render that just wrote `0x… -> `,
+    /// whose address is already on the line.
+    suppress_addr: bool,
 }
 
 /// A render-time adjustment of which types render as `<elided>`, layered
@@ -335,6 +343,7 @@ impl<'buf, 'a, T> RenderCtx<'buf, 'a, T> {
             max_depth: 0,
             proc: Some(proc),
             visited: None,
+            suppress_addr: false,
             formats,
             parallel: false,
             hex_integers: false,
@@ -402,6 +411,7 @@ impl<'buf, 'a, T> RenderCtx<'buf, 'a, T> {
     fn deeper(self) -> Self {
         Self {
             depth: self.depth + 1,
+            suppress_addr: false,
             ..self
         }
     }
@@ -451,8 +461,15 @@ pub(crate) fn write_display_value<'a, T: Target>(
         return f.write_str(ty.name());
     }
 
-    if ctx.depth >= ctx.max_depth {
-        return write!(f, "...");
+    // The depth budget pays for structure, so a leaf — a scalar, a
+    // string, a decoded notation — renders whole at the limit, and an
+    // aggregate elides to a placeholder that says what stands here and
+    // where: its type, the rest-pattern brackets of its shape, and its
+    // address, ready for a `print <addr> "<type>"` to chase.
+    if ctx.depth >= ctx.max_depth
+        && let Some(brackets) = elision_brackets(&ty, ctx)
+    {
+        return write_elision(f, &ty, brackets, info.addr, ctx);
     }
 
     if (bytes.len() as u64) < ty.size() {
@@ -560,7 +577,17 @@ pub(crate) fn write_display_value<'a, T: Target>(
                     };
                     write_annotated_addr(f, addr, ctx.annotate)
                         .and_then(|()| f.write_str(" -> "))
-                        .and_then(|()| write_display_value(f, &pointee, ctx.deeper(), pretty))
+                        .and_then(|()| {
+                            write_display_value(
+                                f,
+                                &pointee,
+                                RenderCtx {
+                                    suppress_addr: true,
+                                    ..ctx.deeper()
+                                },
+                                pretty,
+                            )
+                        })
                 }
                 Err(marker) => write_annotated_addr(f, addr, ctx.annotate)
                     .and_then(|()| f.write_str(" -> "))
@@ -656,6 +683,80 @@ pub(crate) fn write_display_value<'a, T: Target>(
 
         TypeClass::Opaque => write_named_bytes(f, ty.name(), bytes),
     }
+}
+
+/// The rest-pattern brackets a value's depth-elision placeholder shows —
+/// `{ .. }` for records, enums and maps, `(..)` for tuples, `[..]` for
+/// sequences — or `None` for a leaf (a scalar, a string, a decoded
+/// notation, a pointer), which renders whole at the limit: the depth
+/// budget pays for structure, and a leaf has none to spend it on.
+fn elision_brackets<'a, T: Target>(
+    ty: &BundleType<'a>,
+    ctx: RenderCtx<'_, 'a, T>,
+) -> Option<&'static str> {
+    if !ctx.ugly
+        && let Some(node) = ctx.debug_format(ty)
+    {
+        return match &*node {
+            DisplayNode::Scalar { .. }
+            | DisplayNode::Computed { .. }
+            | DisplayNode::Symbol { .. }
+            | DisplayNode::Str { .. }
+            | DisplayNode::Bytes { .. }
+            | DisplayNode::SlotCount { .. }
+            | DisplayNode::Elided => None,
+            // A transparent wrapper elides with its payload's brackets,
+            // the same way it renders.
+            DisplayNode::Alias { target, .. } => elision_brackets(target, ctx),
+            DisplayNode::List { .. }
+            | DisplayNode::Slice { .. }
+            | DisplayNode::CustomList { .. } => Some("[..]"),
+            DisplayNode::Struct { .. }
+            | DisplayNode::Pointer { .. }
+            | DisplayNode::DynPointer { .. }
+            | DisplayNode::Map { .. }
+            | DisplayNode::Variant { .. } => Some("{ .. }"),
+        };
+    }
+    match ty.classify() {
+        TypeClass::Struct => Some(if aggregate::is_tuple(ty.members()) {
+            "(..)"
+        } else {
+            "{ .. }"
+        }),
+        TypeClass::Union | TypeClass::RustEnum => Some("{ .. }"),
+        TypeClass::Array { .. } => Some("[..]"),
+        TypeClass::Integer { .. }
+        | TypeClass::Float { .. }
+        | TypeClass::Pointer { .. }
+        | TypeClass::CEnum
+        | TypeClass::Opaque => None,
+    }
+}
+
+/// One depth-elision placeholder: `Type { .. } @ 0x…` — the type name,
+/// the brackets of its shape, and the value's address, annotated the
+/// way a pointer's is. The address is omitted when there is none to
+/// chase (a synthetic value) or when the caller just printed it as a
+/// `0x… -> ` prefix.
+fn write_elision<'a, T: Target>(
+    f: &mut fmt::Formatter<'_>,
+    ty: &BundleType<'a>,
+    brackets: &str,
+    addr: u64,
+    ctx: RenderCtx<'_, 'a, T>,
+) -> fmt::Result {
+    let name = ty.name();
+    if !name.is_empty() {
+        f.write_str(name)?;
+        f.write_str(" ")?;
+    }
+    f.write_str(brackets)?;
+    if addr != 0 && !ctx.suppress_addr {
+        f.write_str(" @ ")?;
+        write_annotated_addr(f, addr, ctx.annotate)?;
+    }
+    Ok(())
 }
 
 /// Open a pretty-mode line: the caller's line prefix, then four spaces
@@ -977,7 +1078,7 @@ mod tests {
         assert!(shown.contains("value: 2"), "{shown}");
 
         let shallow = format!("{:#}", root.display_from_target(&mem, 1));
-        assert_eq!(shallow, "0x1000 -> ...");
+        assert_eq!(shallow, "0x1000 -> Node { .. }");
     }
 
     /// Every `TypeClass` arm that no other test reaches: the float, signed and
@@ -1072,25 +1173,30 @@ mod tests {
         assert_eq!(format!("{}", arr.display()), "<truncated>");
     }
 
-    /// The depth budget stops recursion with `...` rather than rendering an
-    /// unbounded tree, and one more level of budget renders one more level.
+    /// The depth budget pays for structure, not leaves: an aggregate
+    /// past the limit elides to its typed rest-pattern placeholder —
+    /// with its address when it has one — while a scalar renders whole
+    /// at any depth.
     #[test]
-    fn test_depth_budget_truncates_with_ellipsis() {
+    fn test_depth_budget_elides_aggregates_to_placeholders() {
         let b = test_bundle();
         let v = BundleView::new(&b);
         let bytes: Vec<u8> = [1u32, 2u32].iter().flat_map(|x| x.to_le_bytes()).collect();
         let point = Value::new(v.ty(POINT).unwrap(), 0, &bytes);
 
-        // Depth 0 has no budget for the value itself.
-        assert_eq!(format!("{}", point.display().depth(0)), "...");
-        // Depth 1 renders the struct but not its fields.
+        // Depth 0 has no budget for the value itself; a synthetic value
+        // has no address worth chasing, so none is shown.
+        assert_eq!(format!("{}", point.display().depth(0)), "Point { .. }");
+        // A real address joins the placeholder, `@`-suffixed.
+        let placed = Value::new(v.ty(POINT).unwrap(), 0x5000, &bytes);
+        assert_eq!(
+            format!("{}", placed.display().depth(0)),
+            "Point { .. } @ 0x5000"
+        );
+        // Depth 1 renders the struct; its scalar fields are leaves, so
+        // the budget does not cut them.
         assert_eq!(
             format!("{}", point.display().depth(1)),
-            "Point { x: ..., y: ... }"
-        );
-        // Depth 2 reaches the leaves.
-        assert_eq!(
-            format!("{}", point.display().depth(2)),
             "Point { x: 1, y: 2 }"
         );
     }

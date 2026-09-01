@@ -9,11 +9,11 @@ description: "`print .notify` over linux/joinset"
             state: state=waiting, generation=0,
             mutex: locked=false, parked=false,
             queue: [
-                tokio::sync::notify::Waiter { notification: kind=none, order=fifo, waker: ... },
-                tokio::sync::notify::Waiter { notification: kind=none, order=fifo, waker: ... },
-                tokio::sync::notify::Waiter { notification: kind=none, order=fifo, waker: ... },
-                tokio::sync::notify::Waiter { notification: kind=none, order=fifo, waker: ... },
-                tokio::sync::notify::Waiter { notification: kind=none, order=fifo, waker: ... },
+                tokio::sync::notify::Waiter { notification: kind=none, order=fifo, waker: tokio::loom::std::unsafe_cell::UnsafeCell<core::option::Option<core::task::wake::Waker>> { .. } @ 0xADDR },
+                tokio::sync::notify::Waiter { notification: kind=none, order=fifo, waker: tokio::loom::std::unsafe_cell::UnsafeCell<core::option::Option<core::task::wake::Waker>> { .. } @ 0xADDR },
+                tokio::sync::notify::Waiter { notification: kind=none, order=fifo, waker: tokio::loom::std::unsafe_cell::UnsafeCell<core::option::Option<core::task::wake::Waker>> { .. } @ 0xADDR },
+                tokio::sync::notify::Waiter { notification: kind=none, order=fifo, waker: tokio::loom::std::unsafe_cell::UnsafeCell<core::option::Option<core::task::wake::Waker>> { .. } @ 0xADDR },
+                tokio::sync::notify::Waiter { notification: kind=none, order=fifo, waker: tokio::loom::std::unsafe_cell::UnsafeCell<core::option::Option<core::task::wake::Waker>> { .. } @ 0xADDR },
             ],
         },
     }

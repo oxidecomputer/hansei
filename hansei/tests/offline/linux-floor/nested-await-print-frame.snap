@@ -6,7 +6,7 @@ nested_await::outer::{async_fn_env#0}::Suspend0 {
     __awaitee: nested_await::middle::{async_fn_env#0}::3 {
         __awaitee: nested_await::leaf::{async_fn_env#0}::3 {
             __awaitee: tokio::sync::oneshot::Receiver<u32> {
-                inner: ...,
+                inner: core::option::Option<alloc::sync::Arc<tokio::sync::oneshot::Inner<u32>, alloc::alloc::Global>> { .. } @ 0xADDR,
             },
         },
     },

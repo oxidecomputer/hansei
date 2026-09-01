@@ -5,9 +5,9 @@ description: "`locals` over linux/walk-shapes"
 wz: walk_shapes::WrapZ<walk_shapes::deep::{async_fn_env#0}> = walk_shapes::deep::{async_fn_env#0}::0 {
       park: alloc::sync::Arc<tokio::sync::notify::Notify, alloc::alloc::Global> {
           ptr: 0xADDR -> alloc::sync::ArcInner<tokio::sync::notify::Notify> {
-                  strong: ...,
-                  weak: ...,
-                  data: ...,
+                  strong: 2,
+                  weak: 1,
+                  data: tokio::sync::notify::Notify { .. } @ 0xADDR,
               },
       },
   }

@@ -7,7 +7,7 @@ description: "`print .lock` over illumos/futurelock"
         weak: 1,
         data: tokio::sync::mutex::Mutex<()> {
             s: tokio::sync::batch_semaphore::Semaphore {
-                waiters: ...,
+                waiters: tokio::loom::std::parking_lot::Mutex<tokio::sync::batch_semaphore::Waitlist> { .. } @ 0xADDR,
                 permits: closed=false, permits=0,
             },
         },

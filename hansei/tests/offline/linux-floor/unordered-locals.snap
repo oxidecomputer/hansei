@@ -9,18 +9,18 @@ notify: alloc::sync::Arc<tokio::sync::notify::Notify, alloc::alloc::Global> = 0x
               state: state=waiting, generation=0,
               mutex: locked=false, parked=false,
               queue: [
-                  tokio::sync::notify::Waiter { notification: kind=none, order=fifo, waker: ... },
-                  tokio::sync::notify::Waiter { notification: kind=none, order=fifo, waker: ... },
-                  tokio::sync::notify::Waiter { notification: kind=none, order=fifo, waker: ... },
+                  tokio::sync::notify::Waiter { notification: kind=none, order=fifo, waker: tokio::loom::std::unsafe_cell::UnsafeCell<core::option::Option<core::task::wake::Waker>> { .. } @ 0xADDR (task 3 via FuturesUnordered) },
+                  tokio::sync::notify::Waiter { notification: kind=none, order=fifo, waker: tokio::loom::std::unsafe_cell::UnsafeCell<core::option::Option<core::task::wake::Waker>> { .. } @ 0xADDR (task 3 via FuturesUnordered) },
+                  tokio::sync::notify::Waiter { notification: kind=none, order=fifo, waker: tokio::loom::std::unsafe_cell::UnsafeCell<core::option::Option<core::task::wake::Waker>> { .. } @ 0xADDR (task 3 via FuturesUnordered) },
               ],
           },
       }
 set: futures_util::stream::futures_unordered::FuturesUnordered<unordered::set_member::{async_fn_env#0}> {
       ready_to_run_queue: alloc::sync::Arc<futures_util::stream::futures_unordered::ready_to_run_queue::ReadyToRunQueue<unordered::set_member::{async_fn_env#0}>, alloc::alloc::Global> {
           ptr: 0xADDR -> alloc::sync::ArcInner<futures_util::stream::futures_unordered::ready_to_run_queue::ReadyToRunQueue<unordered::set_member::{async_fn_env#0}>> {
-                  strong: ...,
-                  weak: ...,
-                  data: ...,
+                  strong: 1,
+                  weak: 4,
+                  data: futures_util::stream::futures_unordered::ready_to_run_queue::ReadyToRunQueue<unordered::set_member::{async_fn_env#0}> { .. } @ 0xADDR,
               },
       },
       head_all: task 3 via FuturesUnordered,
@@ -31,9 +31,9 @@ set: futures_util::stream::futures_unordered::FuturesUnordered<unordered::set_me
 held: unordered::set_member::{async_fn_env#0}::0 {
       notify: alloc::sync::Arc<tokio::sync::notify::Notify, alloc::alloc::Global> {
           ptr: 0xADDR -> alloc::sync::ArcInner<tokio::sync::notify::Notify> {
-                  strong: ...,
-                  weak: ...,
-                  data: ...,
+                  strong: 15,
+                  weak: 1,
+                  data: tokio::sync::notify::Notify { .. } @ 0xADDR,
               },
       },
       nest: false,
@@ -51,27 +51,27 @@ boxed: core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output
 pair: (unordered::leaf::{async_fn_env#0}, u32)(
       unordered::leaf::{async_fn_env#0}::0 {
           notify: alloc::sync::Arc<tokio::sync::notify::Notify, alloc::alloc::Global> {
-              ptr: 0xADDR -> ...,
+              ptr: 0xADDR -> alloc::sync::ArcInner<tokio::sync::notify::Notify> { .. },
           },
       },
       11,
   )
 maybe: core::option::Option<unordered::leaf::{async_fn_env#0}>::Some(unordered::leaf::{async_fn_env#0}::0 {
           notify: alloc::sync::Arc<tokio::sync::notify::Notify, alloc::alloc::Global> {
-              ptr: 0xADDR -> ...,
+              ptr: 0xADDR -> alloc::sync::ArcInner<tokio::sync::notify::Notify> { .. },
           },
       })
 nested_hold: unordered::holder::{async_fn_env#0}<unordered::leaf::{async_fn_env#0}>::0 {
       inner: unordered::leaf::{async_fn_env#0}::0 {
           notify: alloc::sync::Arc<tokio::sync::notify::Notify, alloc::alloc::Global> {
-              ptr: 0xADDR -> ...,
+              ptr: 0xADDR -> alloc::sync::ArcInner<tokio::sync::notify::Notify> { .. },
           },
       },
       notify: alloc::sync::Arc<tokio::sync::notify::Notify, alloc::alloc::Global> {
           ptr: 0xADDR -> alloc::sync::ArcInner<tokio::sync::notify::Notify> {
-                  strong: ...,
-                  weak: ...,
-                  data: ...,
+                  strong: 15,
+                  weak: 1,
+                  data: tokio::sync::notify::Notify { .. } @ 0xADDR,
               },
       },
   }

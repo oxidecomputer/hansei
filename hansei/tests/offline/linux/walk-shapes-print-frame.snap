@@ -6,7 +6,7 @@ walk_shapes::chained::{async_fn_env#0}::Suspend0 {
     wz: walk_shapes::WrapZ<walk_shapes::deep::{async_fn_env#0}> {
         inner: walk_shapes::deep::{async_fn_env#0}::0 {
             park: alloc::sync::Arc<tokio::sync::notify::Notify, alloc::alloc::Global> {
-                ptr: ...,
+                ptr: 0xADDR -> alloc::sync::ArcInner<tokio::sync::notify::Notify> { .. },
             },
         },
     },
@@ -15,8 +15,8 @@ walk_shapes::chained::{async_fn_env#0}::Suspend0 {
         inner: walk_shapes::WrapE<walk_shapes::deep::{async_fn_env#0}>::Running {
             tag: 9,
             inner: walk_shapes::deep::{async_fn_env#0}::3 {
-                park: ...,
-                __awaitee: ...,
+                park: alloc::sync::Arc<tokio::sync::notify::Notify, alloc::alloc::Global> { .. } @ 0xADDR,
+                __awaitee: tokio::sync::notify::Notified { .. } @ 0xADDR,
             },
         },
     },
