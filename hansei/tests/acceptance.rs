@@ -657,7 +657,7 @@ fn trace(bundle: &Path, core: &Path, task_id: &str, verbose: bool) -> String {
     trace_opts(bundle, core, task_id, verbose, false)
 }
 
-/// Like [`trace`], but under `set ugly on` (the raw structural view,
+/// Like [`trace`], but under `config ugly on` (the raw structural view,
 /// with every type's custom formatter suppressed).
 fn trace_opts(bundle: &Path, core: &Path, task_id: &str, verbose: bool, ugly: bool) -> String {
     let mut command = format!("trace {task_id}");
@@ -665,7 +665,7 @@ fn trace_opts(bundle: &Path, core: &Path, task_id: &str, verbose: bool, ugly: bo
         command.push_str(" --verbose");
     }
     if ugly {
-        command = format!("set ugly on; {command}");
+        command = format!("config ugly on; {command}");
     }
     hansei_ok(bundle, core, &command)
 }
@@ -1397,11 +1397,11 @@ fn test_local_values_come_back_from_the_target() {
     });
 }
 
-/// `set ugly on` suppresses every type's custom formatter and falls back to the
+/// `config ugly on` suppresses every type's custom formatter and falls back to the
 /// raw structural view. The simple-await task keeps a spread of
 /// custom-formatted locals live across its park — an IP address, a borrowed
 /// `&str`, an owned `String` — each of which reads as its decoded value
-/// normally and as its underlying representation under `set ugly on`.
+/// normally and as its underlying representation under `config ugly on`.
 #[test]
 fn test_ugly_locals_acceptance() {
     let bundle = fixtures().bundle("simple-await");
@@ -1560,7 +1560,7 @@ fn test_futurelock_acceptance() {
         let deep = hansei_ok(
             &bundle,
             core,
-            &format!("set depth 12; trace {} --verbose", task.id),
+            &format!("config depth 12; trace {} --verbose", task.id),
         );
         assert!(
             deep.contains(&format!(
@@ -1603,13 +1603,13 @@ fn test_print_renders_an_address_as_a_type() {
         assert!(printed.contains("closed=false"), "{printed}");
         assert!(printed.contains("permits=0"), "{printed}");
 
-        // `set ugly on` falls back to the raw structural view: the decoded
+        // `config ugly on` falls back to the raw structural view: the decoded
         // permit word is gone and the underlying members show as
         // themselves.
         let ugly = hansei_ok(
             &bundle,
             core,
-            &format!("set ugly on; print {addr} tokio::sync::batch_semaphore::Semaphore"),
+            &format!("config ugly on; print {addr} tokio::sync::batch_semaphore::Semaphore"),
         );
         assert!(!ugly.contains("closed=false"), "{ugly}");
         assert!(ugly.contains("permits"), "{ugly}");
@@ -2326,7 +2326,7 @@ fn test_futures_acceptance() {
         let verbose = hansei_ok(
             &bundle,
             core,
-            &format!("set depth 12; trace {} --verbose", driver.id),
+            &format!("config depth 12; trace {} --verbose", driver.id),
         );
         assert!(
             verbose.contains(&format!("task {} via FuturesUnordered", driver.id)),
@@ -3110,7 +3110,10 @@ fn test_shared_state_and_drivers() {
         // elisions never apply to them: however deep the sweep goes, no
         // subtree may come back `<elided>` — a regression here means a new
         // elided row leaked into runtime introspection.
-        for command in ["set depth 64; runtimes -s", "set depth 64; runtimes -D"] {
+        for command in [
+            "config depth 64; runtimes -s",
+            "config depth 64; runtimes -D",
+        ] {
             let deep = hansei_ok(&bundle, core, command);
             assert!(!deep.contains("<elided>"), "`{command}`: {deep}");
         }
@@ -3564,7 +3567,11 @@ fn test_exec_asks_from_the_command_line() {
     with_core("simple-await", |core| {
         // Two commands in one flag, and a second flag after it: both
         // spellings of "more than one question".
-        let out = hansei_exec(&bundle, core, &["info ; set depth 1; runtimes -D", "tasks"]);
+        let out = hansei_exec(
+            &bundle,
+            core,
+            &["info ; config depth 1; runtimes -D", "tasks"],
+        );
         let stdout = String::from_utf8_lossy(&out.stdout);
         assert!(
             out.status.success(),
@@ -3623,7 +3630,8 @@ fn test_a_unique_prefix_names_a_command() {
         // inferred. `regs` sits beside `runtimes`, so `r` fits both
         // and only `ru` and longer are runtimes' alone.
         assert!(
-            hansei_ok(&bundle, core, "set depth 1; runtime -D").contains("runtime::driver::Handle")
+            hansei_ok(&bundle, core, "config depth 1; runtime -D")
+                .contains("runtime::driver::Handle")
         );
         assert!(hansei_ok(&bundle, core, "ru -s").contains("multi_thread::worker::Shared"));
         assert!(hansei_ok(&bundle, core, "runtimes -l").contains("multi_thread"));

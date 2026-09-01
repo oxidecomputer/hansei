@@ -347,7 +347,7 @@ ssh illumos 'cd /data/durin && git pull origin main &&
     --core /data/aborts/core.sled-agent-v0'
 ```
 
-`set ugly on` disables every custom formatter for the session and prints
+`config ugly on` disables every custom formatter for the session and prints
 the raw structural view — the way to see what a formatter is hiding, and to
 check that it hides only what you meant. (`--ugly` is gone; the raw view is
 a session setting now.)

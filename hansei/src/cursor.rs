@@ -1111,7 +1111,7 @@ mod tests {
 
         // No cursor stands, and the `$_` sits after the `!`: it is the
         // shell's text, never substituted, so nothing refuses.
-        repl::execute(&session, repl::Mode::Scripted, "set ! head -c 0 # $_")
+        repl::execute(&session, repl::Mode::Scripted, "config ! head -c 0 # $_")
             .expect("the shell half is never substituted");
         // The same token in the command half refuses without a cursor.
         let err = repl::execute(&session, repl::Mode::Scripted, "whatis $_ ! head -c 0")

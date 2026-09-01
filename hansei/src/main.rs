@@ -420,7 +420,7 @@ pub enum Command {
         /// Show at most this many futures — or, under --group, this
         /// many buckets; a footer counts what the cut left out.
         /// Everything is listed when the flag is absent and no
-        /// `set limit` stands.
+        /// `config limit` stands.
         #[arg(long, short = 'l', value_name = "N")]
         limit: Option<usize>,
 
@@ -682,13 +682,14 @@ pub enum Command {
         output: PathBuf,
     },
 
-    /// Show or change the session's defaults. The render keys —
+    /// Show or change the session's settings. The render keys —
     /// depth, max-string-len, max-array-values, ugly — govern
     /// `trace -v` locals and every other render outright; `limit`
     /// also backs the `--limit` flags, which override the session
     /// value for that command only. The values live for the session
-    /// only.
-    Set {
+    /// only. Bare `config` prints every key at its current value;
+    /// `config KEY` prints one; `config KEY VALUE` changes it.
+    Config {
         /// The key to show or change. Naming none prints them all.
         key: Option<String>,
 
@@ -915,7 +916,7 @@ pub enum Command {
         /// Show at most this many tasks — or, under --group, this
         /// many buckets; a footer counts what the cut left out.
         /// Everything is listed when the flag is absent and no
-        /// `set limit` stands.
+        /// `config limit` stands.
         #[arg(long, short = 'l', value_name = "N")]
         limit: Option<usize>,
 
@@ -1067,7 +1068,7 @@ pub enum Command {
         /// most recent N of the await chain and, separately, of the
         /// native continuation under -n. A cut section ends with a
         /// footer counting what it left out. Falls back to
-        /// `set limit`.
+        /// `config limit`.
         #[arg(long, short = 'l', value_name = "N")]
         limit: Option<usize>,
     },
@@ -1192,7 +1193,7 @@ pub enum Command {
 }
 
 /// How values read from the target are rendered: the session's render
-/// defaults (`set`), resolved once into the value the render path
+/// defaults (`config`), resolved once into the value the render path
 /// threads through.
 #[derive(Copy, Clone)]
 pub struct RenderOpts {
@@ -1428,7 +1429,7 @@ pub struct Session<'b, T: Target> {
     /// The `threads` table's rows, likewise; building them pays for
     /// the one unwind of every stack.
     thread_rows: OnceCell<Vec<threads::ThreadRow>>,
-    /// The session's standing defaults (`set`): what the per-command
+    /// The session's standing defaults (`config`): what the per-command
     /// flags resolve against.
     settings: RefCell<settings::Settings>,
     /// The cursor (`task`/`future`/`thread`/`frame`): what the
@@ -1789,8 +1790,8 @@ pub fn dispatch<T: Target>(
             }
         }
         Command::SaveTokioInfo { output } => exec_save_tokio_info(session, &output, out)?,
-        Command::Set { key, value } => {
-            settings::exec_set(&session.settings, key.as_deref(), value.as_deref(), out)?
+        Command::Config { key, value } => {
+            settings::exec_config(&session.settings, key.as_deref(), value.as_deref(), out)?
         }
         #[cfg(feature = "snapshot")]
         Command::Snapshot { output } => snapshot_cmd::exec_snapshot(session, &output, out)?,
