@@ -8,3 +8,4 @@ Defined at: src/bin/many-tasks.rs:9
 #0  async fn      many_tasks::park_task
       awaiting at src/bin/many-tasks.rs:11 (Suspend0, 0 locals)
 #1  future        tokio::sync::oneshot::Receiver<u32>
+      (<no_state>, 1 local)

@@ -5,7 +5,7 @@ description: "`census` over linux/foreign-runtime"
 Threads: 2 lwps, 2 in 2 runtimes
     1 in the scheduler's run loop
         1 parked in the io driver
-            block_on thread, lwp 3179111
+            block_on thread, lwp 4034454
     1 in 2 runtimes, outside the run loop
         0 in the blocking pool of runtime 0 @0xADDR (0 idle, 0 tasks queued)
         0 in the blocking pool of runtime 1 @0xADDR (0 idle, 0 tasks queued)

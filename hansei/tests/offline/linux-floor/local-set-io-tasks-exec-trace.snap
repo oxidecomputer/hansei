@@ -10,6 +10,7 @@ Defined at: src/bin/local-set-io.rs:24
 #0  async fn      local_set_io::local_reader
       awaiting at src/bin/local-set-io.rs:28 (Suspend0, 2 locals)
 #1  future        tokio::io::util::read::Read<tokio::net::unix::stream::UnixStream>
+      (<no_state>, 2 locals)
 
 2  idle  1  src/bin/local-set-io.rs:36  io fd 11 (readable)  async fn local_set_io::local_watcher
 Task 2: async fn local_set_io::local_watcher (idle)
@@ -27,6 +28,7 @@ Defined at: src/bin/local-set-io.rs:33
 #4  async fn      tokio::runtime::io::scheduled_io::ScheduledIo::readiness
       awaiting at tokio-1.47.5/src/runtime/io/scheduled_io.rs:385 (Suspend0, 0 locals)
 #5  future        tokio::runtime::io::scheduled_io::Readiness
+      (<no_state>, 3 locals)
 
 3  idle  1  src/bin/local-set-io.rs:56  io fd 13 (writable)  async fn local_set_io::local_writer
 Task 3: async fn local_set_io::local_writer (idle)
@@ -36,6 +38,7 @@ Defined at: src/bin/local-set-io.rs:45
 #0  async fn      local_set_io::local_writer
       awaiting at src/bin/local-set-io.rs:56 (Suspend1, 2 locals)
 #1  future        tokio::io::util::write_all::WriteAll<tokio::net::unix::stream::UnixStream>
+      (<no_state>, 2 locals)
 
 4  idle  0  src/bin/local-set-io.rs:71  io fd 15 (readable)  async fn local_set_io::reader
 Task 4: async fn local_set_io::reader (idle)
@@ -45,4 +48,5 @@ Defined at: src/bin/local-set-io.rs:67
 #0  async fn      local_set_io::reader
       awaiting at src/bin/local-set-io.rs:71 (Suspend0, 2 locals)
 #1  future        tokio::io::util::read::Read<tokio::net::unix::stream::UnixStream>
+      (<no_state>, 2 locals)
 Executed against 4 tasks, 0 failed

@@ -514,14 +514,18 @@ pub(crate) fn print_frame<'b, T: proc::Target>(
 const DETAIL_INDENT: &str = "      ";
 const ENTRY_INDENT: &str = "        ";
 
-/// The detail line under a frame: the frame's target state, in one of
-/// three spellings making three distinct claims. `awaiting at <loc>
-/// (SuspendN…)` is a coroutine's resume point — the frame is awaiting
-/// the next one at that source line; `state <Name>[ — <loc>]` is a
-/// coroutine's terminal state; `state: <Name>` is a plain enum's
-/// decoded variant on a non-coroutine wrapper, which makes no
-/// resume-point claim. `held` futures the census found parked in the
-/// frame ride along as a tally. `None` when there is nothing to say.
+/// The detail line under a frame, in one of three spellings making
+/// three distinct claims. `awaiting at <loc> (SuspendN, …)` is a
+/// coroutine's resume point — the frame is awaiting the next one at
+/// that source line; `state <Name>[ — <loc>]` is a coroutine's
+/// terminal state; `constructed at <loc> (<State>, …)` is a
+/// hand-written future — its decoded state enum's variant, or
+/// `<no_state>` where it keeps none, with the same locals tally a
+/// coroutine's line carries, anchored at the declaration site of the
+/// closure or coroutine environment it holds. A future built from
+/// plain values has no such anchor and prints the parenthetical
+/// alone. `held` futures the census found parked in the frame ride
+/// along as a tally.
 fn frame_detail(
     frame: &bundle::AwaitFrame<'_>,
     held: usize,
@@ -532,39 +536,60 @@ fn frame_detail(
         1 => "holds 1 pending future".to_string(),
         n => format!("holds {n} pending futures"),
     };
-    let Some(state) = &frame.state else {
-        return (!holds.is_empty()).then_some(holds);
-    };
-    let loc = state
-        .await_loc
-        .map(|(file, line)| theme.loc(&format!("{file}:{line}")).into_owned());
-    if frame.future.ty.is_coroutine() && state.name.starts_with("Suspend") {
-        let mut quals = state.name.to_string();
-        // The count prints even at zero: its absence would read as "no
-        // answer", not as "nothing live", and the two differ.
-        match state_locals(state.payload.ty).len() {
-            1 => quals.push_str(", 1 local"),
-            n => quals.push_str(&format!(", {n} locals")),
+    if frame.future.ty.is_coroutine() {
+        let Some(state) = &frame.state else {
+            return (!holds.is_empty()).then_some(holds);
+        };
+        let loc = state
+            .await_loc
+            .map(|(file, line)| theme.loc(&format!("{file}:{line}")).into_owned());
+        if state.name.starts_with("Suspend") {
+            let mut quals = state.name.to_string();
+            // The count prints even at zero: its absence would read as
+            // "no answer", not as "nothing live", and the two differ.
+            match state_locals(state.payload.ty).len() {
+                1 => quals.push_str(", 1 local"),
+                n => quals.push_str(&format!(", {n} locals")),
+            }
+            if !holds.is_empty() {
+                quals.push_str("; ");
+                quals.push_str(&holds);
+            }
+            let at = loc.map(|loc| format!("at {loc} ")).unwrap_or_default();
+            return Some(format!("awaiting {at}({quals})"));
         }
-        if !holds.is_empty() {
-            quals.push_str("; ");
-            quals.push_str(&holds);
-        }
-        let at = loc.map(|loc| format!("at {loc} ")).unwrap_or_default();
-        return Some(format!("awaiting {at}({quals})"));
-    }
-    let mut detail = if frame.future.ty.is_coroutine() {
-        match loc {
+        let mut detail = match loc {
             Some(loc) => format!("state {} — {loc}", state.name),
             None => format!("state {}", state.name),
+        };
+        if !holds.is_empty() {
+            detail.push_str(&format!(" ({holds})"));
         }
-    } else {
-        format!("state: {}", state.name)
-    };
-    if !holds.is_empty() {
-        detail.push_str(&format!(" ({holds})"));
+        return Some(detail);
     }
-    Some(detail)
+    // A hand-written future: its state enum's live variant when it
+    // keeps one, `<no_state>` when it does not.
+    let (state_name, locals_ty) = match &frame.state {
+        Some(state) => (state.name, state.payload.ty),
+        None => ("<no_state>", frame.future.ty),
+    };
+    let mut quals = state_name.to_string();
+    match state_locals(locals_ty).len() {
+        1 => quals.push_str(", 1 local"),
+        n => quals.push_str(&format!(", {n} locals")),
+    }
+    if !holds.is_empty() {
+        quals.push_str("; ");
+        quals.push_str(&holds);
+    }
+    match frame.future.ty.construction_site() {
+        Some((file, line)) => {
+            let text = format!("{file}:{line}");
+            let loc = theme.loc(&text);
+            Some(format!("constructed at {loc} ({quals})"))
+        }
+        None => Some(format!("({quals})")),
+    }
 }
 
 /// The `--verbose` blocks under one frame, in order: the live state's
@@ -2562,6 +2587,31 @@ mod trace_render_tests {
     use hansei_runtime::tokio::bundle::TaskStage;
     use hansei_runtime::tokio::census;
 
+    /// A coroutine frame whose state did not decode says nothing about
+    /// state — only what the census parked in it, which is the one
+    /// fact that survives without one.
+    #[test]
+    fn test_a_stateless_coroutine_frame_says_only_what_it_holds() {
+        let (bundle, _snapshot) = testkit::load_any("simple-await");
+        let view = hansei_bundle::BundleView::new(&bundle);
+        let ty = view
+            .find_by_name("simple_await::work::{async_fn_env#0}")
+            .next()
+            .expect("the work coroutine is in the bundle");
+        let frame = hansei_runtime::tokio::bundle::AwaitFrame {
+            future: reify::Value::new(ty, 0, &[]),
+            state: None,
+            dyn_symbol: None,
+            inner: None,
+        };
+        let theme = output::Theme::plain();
+        assert_eq!(super::frame_detail(&frame, 0, &theme), None);
+        assert_eq!(
+            super::frame_detail(&frame, 1, &theme).as_deref(),
+            Some("holds 1 pending future")
+        );
+    }
+
     /// Render the named task's await chain the way `trace` prints it —
     /// wait target and per-frame holds computed like the command's own
     /// path — with heap addresses masked so expectations compare
@@ -2667,11 +2717,13 @@ mod trace_render_tests {
 #0  async fn      walk_shapes::chained
       awaiting at src/bin/walk-shapes.rs:103 (Suspend0, 1 local; holds 1 pending future)
 #1  future        walk_shapes::WrapS<walk_shapes::WrapE<walk_shapes::deep>>
+      (<no_state>, 2 locals)
 #2  future        walk_shapes::WrapE<walk_shapes::deep>
-      state: Running
+      (Running, 2 locals)
 #3  async fn      walk_shapes::deep
       awaiting at src/bin/walk-shapes.rs:88 (Suspend0, 1 local)
 #4  future        tokio::sync::notify::Notified
+      (<no_state>, 4 locals)
 "
         );
     }
@@ -2691,6 +2743,7 @@ mod trace_render_tests {
 #0  async fn      simple_await::work
       awaiting at src/bin/simple-await.rs:40 (Suspend1, 12 locals)
 #1  future        tokio::sync::oneshot::Receiver<u32>
+      (<no_state>, 1 local)
 "
         );
     }
@@ -2745,6 +2798,7 @@ Waiting on: a tokio::sync::Mutex (semaphore 0xADDR): 1 permit requested, 0 avail
 #1  async fn      dyn_future::boxed_leaf [dyn]
       awaiting at src/bin/dyn-future.rs:12 (Suspend0, 0 locals)
 #2  future        tokio::sync::oneshot::Receiver<u32>
+      (<no_state>, 1 local)
 "
         );
     }

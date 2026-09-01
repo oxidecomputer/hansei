@@ -1196,6 +1196,55 @@ fn extract_from_view(
     stats.format_explanations = std::mem::take(&mut em.explanations);
     stats.tokio_family_guessed = (em.versioned_dispatch && em.tokio_version.is_none())
         .then(|| Family::select(None).name().to_owned());
+    // Declaration sites for every emitted closure/coroutine environment
+    // type. The env DIEs carry no coordinates of their own, so each is
+    // recovered the way task provenance recovers one: the nearest
+    // enclosing subprogram up the namespace chain. For a closure env
+    // the innermost hit is usually the `{closure#N}` fn itself, whose
+    // decl is where the closure is written — the construction site of
+    // whatever combinator holds it.
+    const ENV_MARKERS: [&str; 5] = [
+        "{closure_env#",
+        "{async_fn_env#",
+        "{async_block_env#",
+        "{async_closure_env#",
+        "{coroutine_env#",
+    ];
+    let env_types: Vec<(TypeId, crate::bundle::BundleTypeId)> = em
+        .emitted_named()
+        .filter_map(|(tid, _)| {
+            let raw = reader.canonical_type(tid)?;
+            let name = reader.strings.get(raw.name()?);
+            if !ENV_MARKERS.iter().any(|m| name.starts_with(m)) {
+                return None;
+            }
+            Some((tid, em.bundle_id_of(tid)?))
+        })
+        .collect();
+    for (tid, bid) in env_types {
+        let Some(raw) = reader.canonical_type(tid) else {
+            continue;
+        };
+        let mut ns = raw.namespace();
+        while let Some(id) = ns {
+            let entry = reader.namespaces.get(id);
+            if let Some(func) = view.find_func(&ns_path(reader, id))
+                && let Some(loc) = func.source_loc()
+                && let (Some(file), Some(line)) = (loc.file(), loc.line())
+            {
+                let loc = SourceLoc {
+                    file: em
+                        .interner
+                        .intern(&display_path(loc.comp_dir(), loc.dir(), file)),
+                    line: line.get() as u32,
+                };
+                em.record_env_decl(bid, loc);
+                break;
+            }
+            ns = entry.parent;
+        }
+    }
+
     let (types, strings, impls, counts) = em.finish(&impl_selfs);
     stats.types_emitted = types.types.len();
     stats.opaque_types = counts.opaque;

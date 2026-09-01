@@ -605,6 +605,25 @@ fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
         "tokio::runtime::scheduler::Handle :: Node Elided",
     );
     if program == "simple-await" {
+        // The env-decl table: an async fn's environment is declared
+        // where the fn is written, and that recorded site is what
+        // anchors a combinator frame's `constructed at` line.
+        let work_env = bundle
+            .types
+            .env_decls
+            .iter()
+            .find_map(|(id, loc)| {
+                let TypeDef::Enum { name, .. } = &bundle.types.types[id.0 as usize] else {
+                    return None;
+                };
+                (bundle.strings.get(*name)? == "simple_await::work::{async_fn_env#0}")
+                    .then_some(loc)
+            })
+            .expect("the work coroutine's env records its declaration");
+        let file = bundle.strings.get(work_env.file).expect("interned file");
+        assert!(file.ends_with("src/bin/simple-await.rs"), "{file}");
+        assert_eq!(work_env.line, 17);
+
         for prefix in [
             "core::ptr::unique::Unique<",
             "core::num::niche_types::UsizeNoHighBit",

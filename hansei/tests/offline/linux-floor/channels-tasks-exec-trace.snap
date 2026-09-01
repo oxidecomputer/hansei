@@ -10,6 +10,7 @@ Defined at: src/bin/channels.rs:17
 #0  async fn      channels::notify_waiter
       awaiting at src/bin/channels.rs:30 (Suspend0, 2 locals; holds 1 pending future)
 #1  future        tokio::sync::notify::Notified
+      (<no_state>, 4 locals)
 
 4  idle  src/bin/channels.rs:48  future tokio::sync::oneshot::Receiver<u32>  async fn channels::hold
 Task 4: async fn channels::hold (idle)
@@ -19,4 +20,5 @@ Defined at: src/bin/channels.rs:45
 #0  async fn      channels::hold
       awaiting at src/bin/channels.rs:48 (Suspend0, 6 locals)
 #1  future        tokio::sync::oneshot::Receiver<u32>
+      (<no_state>, 1 local)
 Executed against 2 tasks, 0 failed

@@ -2,7 +2,7 @@
 source: hansei/src/offline.rs
 description: "`threads -v` over linux-floor/channels"
 ---
-lwp 3181836  polling no task
+lwp 4037178  polling no task
   thread_id: core::option::Option<tokio::runtime::thread_id::ThreadId>::None
   runtime:
     tokio::runtime::context::runtime::EnterRuntime::Entered {
@@ -13,7 +13,7 @@ lwp 3181836  polling no task
   stack:
     0xADDR 
 
-lwp 3181838  last polled task 1
+lwp 4037180  last polled task 1
   thread_id: core::option::Option<tokio::runtime::thread_id::ThreadId>::None
   runtime:
     tokio::runtime::context::runtime::EnterRuntime::Entered {
@@ -44,10 +44,10 @@ lwp 3181838  last polled task 1
         park: core::option::Option<tokio::runtime::scheduler::multi_thread::park::Parker>::None,
         stats: tokio::runtime::scheduler::multi_thread::stats::Stats {
             batch: tokio::runtime::metrics::batch::MetricsBatch {
-                busy_duration_total: 5179,
+                busy_duration_total: 5480,
                 processing_scheduled_tasks_started_at: core::option::Option<std::time::Instant>::Some {
-                    tv_sec: 1413012,
-                    tv_nsec: 900281185,
+                    tv_sec: 1474275,
+                    tv_nsec: 772044037,
                 },
                 park_count: 1,
                 park_unpark_count: 1,
@@ -61,16 +61,16 @@ lwp 3181838  last polled task 1
                 poll_timer: core::option::Option<tokio::runtime::metrics::batch::PollTimer>::None,
             },
             processing_scheduled_tasks_started_at: std::sys::pal::unix::time::Timespec {
-                tv_sec: 1413012,
-                tv_nsec: 900281275,
+                tv_sec: 1474275,
+                tv_nsec: 772044077,
             },
             tasks_polled_in_batch: 1,
-            task_poll_time_ewma: 3470.819672131148,
+            task_poll_time_ewma: 3504.9196721311478,
         },
         global_queue_interval: 61,
         rand: tokio::util::rand::FastRand {
-            one: 274898270,
-            two: 3172344534,
+            one: 405334959,
+            two: 4053666073,
         },
     }
   stack:
@@ -78,7 +78,7 @@ lwp 3181838  last polled task 1
     0xADDR   (frame-pointer walk)
     0xADDR   (frame-pointer walk)
 
-lwp 3181839  last polled task 2
+lwp 4037181  last polled task 2
   thread_id: core::option::Option<tokio::runtime::thread_id::ThreadId>::None
   runtime:
     tokio::runtime::context::runtime::EnterRuntime::Entered {
@@ -109,10 +109,10 @@ lwp 3181839  last polled task 2
         park: core::option::Option<tokio::runtime::scheduler::multi_thread::park::Parker>::None,
         stats: tokio::runtime::scheduler::multi_thread::stats::Stats {
             batch: tokio::runtime::metrics::batch::MetricsBatch {
-                busy_duration_total: 2775,
+                busy_duration_total: 2395,
                 processing_scheduled_tasks_started_at: core::option::Option<std::time::Instant>::Some {
-                    tv_sec: 1413012,
-                    tv_nsec: 900291845,
+                    tv_sec: 1474275,
+                    tv_nsec: 772053755,
                 },
                 park_count: 1,
                 park_unpark_count: 1,
@@ -126,16 +126,16 @@ lwp 3181839  last polled task 2
                 poll_timer: core::option::Option<tokio::runtime::metrics::batch::PollTimer>::None,
             },
             processing_scheduled_tasks_started_at: std::sys::pal::unix::time::Timespec {
-                tv_sec: 1413012,
-                tv_nsec: 900291875,
+                tv_sec: 1474275,
+                tv_nsec: 772053765,
             },
             tasks_polled_in_batch: 1,
-            task_poll_time_ewma: 3229.319672131148,
+            task_poll_time_ewma: 3178.319672131148,
         },
         global_queue_interval: 61,
         rand: tokio::util::rand::FastRand {
-            one: 4199431939,
-            two: 325402058,
+            one: 2905539861,
+            two: 2879017963,
         },
     }
   stack:

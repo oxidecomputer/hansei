@@ -448,6 +448,34 @@ impl<'a> BundleType<'a> {
             })
     }
 
+    /// Where a value of this type was built, when a member is a closure
+    /// or coroutine environment whose declaration the bundle recorded:
+    /// an environment is constructed where it is written, so its decl
+    /// site is the construction site of whatever holds it. Direct
+    /// members are checked first, then each enum variant's payload
+    /// members — futures_util's `map::Map` keeps its closure in the
+    /// `Incomplete` payload. `None` when no member is an environment,
+    /// the honest answer for a future built from plain values.
+    pub fn construction_site(&self) -> Option<(&'a str, u32)> {
+        let lookup = |id: BundleTypeId| -> Option<(&'a str, u32)> {
+            let loc = self.bundle.types.env_decls.get(&id)?;
+            Some((self.str(loc.file), loc.line))
+        };
+        if let Some(site) = self.members().find_map(|m| lookup(m.ty().id())) {
+            return Some(site);
+        }
+        self.variant_shape()?.variants.iter().find_map(|v| {
+            let payload = BundleType {
+                bundle: self.bundle,
+                id: v.payload.ty,
+            };
+            // The payload may be the environment itself — an
+            // Option<closure_env> stores it as the whole Some payload —
+            // or a struct holding one among its members.
+            lookup(payload.id()).or_else(|| payload.members().find_map(|m| lookup(m.ty().id())))
+        })
+    }
+
     fn variant_of(&self, def: &'a VariantDef) -> BundleVariant<'a> {
         BundleVariant {
             name: self.str(def.name),

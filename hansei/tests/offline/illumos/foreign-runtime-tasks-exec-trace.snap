@@ -24,6 +24,7 @@ Defined at: src/bin/foreign-runtime.rs:46
 #0  async fn      foreign_runtime::detached
       awaiting at src/bin/foreign-runtime.rs:51 (Suspend0, 1 local)
 #1  future        core::future::pending::Pending<()>
+      (<no_state>, 0 locals)
 
 3  idle  0  src/bin/foreign-runtime.rs:26  task 1  async fn foreign_runtime::joiner
 Task 3: async fn foreign_runtime::joiner (idle)

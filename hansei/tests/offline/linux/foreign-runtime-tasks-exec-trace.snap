@@ -24,6 +24,7 @@ Defined at: src/bin/foreign-runtime.rs:46
 #0  async fn      foreign_runtime::detached
       awaiting at src/bin/foreign-runtime.rs:51 (Suspend0, 1 local)
 #1  future        core::future::pending::Pending<()>
+      (<no_state>, 0 locals)
 
 3  idle  2  src/bin/foreign-runtime.rs:63  timer (deadline TS on the target's monotonic clock)  async fn foreign_runtime::local_sleeper
 Task 3: async fn foreign_runtime::local_sleeper (idle)

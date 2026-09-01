@@ -2,6 +2,6 @@
 source: hansei/src/offline.rs
 description: "`tasks --group waiting-on` over illumos/futurelock"
 ---
-COUNT  WAITING ON                                 TASKS
+COUNT  WAITING ON                                  TASKS
     1  a tokio::sync::Mutex (semaphore 0xADDR)  5
 1 group

@@ -70,10 +70,10 @@ lwp 2  last polled task 2
         park: core::option::Option<tokio::runtime::scheduler::multi_thread::park::Parker>::None,
         stats: tokio::runtime::scheduler::multi_thread::stats::Stats {
             batch: tokio::runtime::metrics::batch::MetricsBatch {
-                busy_duration_total: 127377,
+                busy_duration_total: 4753,
                 processing_scheduled_tasks_started_at: core::option::Option<std::time::Instant>::Some {
-                    tv_sec: 5016702,
-                    tv_nsec: 110379621,
+                    tv_sec: 5077973,
+                    tv_nsec: 89495096,
                 },
                 park_count: 2,
                 park_unpark_count: 3,
@@ -87,22 +87,22 @@ lwp 2  last polled task 2
                 poll_timer: core::option::Option<tokio::runtime::metrics::batch::PollTimer>::None,
             },
             processing_scheduled_tasks_started_at: std::sys::pal::unix::time::Timespec {
-                tv_sec: 5016702,
-                tv_nsec: 110379701,
+                tv_sec: 5077973,
+                tv_nsec: 89495126,
             },
             tasks_polled_in_batch: 1,
-            task_poll_time_ewma: 15646.319672131143,
+            task_poll_time_ewma: 3401.719672131148,
         },
         global_queue_interval: 61,
         rand: tokio::util::rand::FastRand {
-            one: 3310880503,
-            two: 4078826267,
+            one: 1927712177,
+            two: 4018179352,
         },
     }
   stack:
     0xADDR 
-    0xADDR   (frame-pointer walk)
-    0xADDR   (frame-pointer walk)
+    0xADDR <mio::poll::Poll>::poll  (frame-pointer walk)
+    0xADDR <tokio::runtime::io::driver::Driver>::turn  (frame-pointer walk)
 
 lwp 3  last polled task 1
   thread_id: core::option::Option<tokio::runtime::thread_id::ThreadId>::None
@@ -159,10 +159,10 @@ lwp 3  last polled task 1
         park: core::option::Option<tokio::runtime::scheduler::multi_thread::park::Parker>::None,
         stats: tokio::runtime::scheduler::multi_thread::stats::Stats {
             batch: tokio::runtime::metrics::batch::MetricsBatch {
-                busy_duration_total: 4406,
+                busy_duration_total: 132420,
                 processing_scheduled_tasks_started_at: core::option::Option<std::time::Instant>::Some {
-                    tv_sec: 5016702,
-                    tv_nsec: 110489642,
+                    tv_sec: 5077973,
+                    tv_nsec: 89378686,
                 },
                 park_count: 2,
                 park_unpark_count: 3,
@@ -176,22 +176,22 @@ lwp 3  last polled task 1
                 poll_timer: core::option::Option<tokio::runtime::metrics::batch::PollTimer>::None,
             },
             processing_scheduled_tasks_started_at: std::sys::pal::unix::time::Timespec {
-                tv_sec: 5016702,
-                tv_nsec: 110489666,
+                tv_sec: 5077973,
+                tv_nsec: 89378767,
             },
             tasks_polled_in_batch: 1,
-            task_poll_time_ewma: 3373.5196721311477,
+            task_poll_time_ewma: 16150.219672131145,
         },
         global_queue_interval: 61,
         rand: tokio::util::rand::FastRand {
-            one: 3630065692,
-            two: 432072577,
+            one: 3527061305,
+            two: 4253844182,
         },
     }
   stack:
     0xADDR 
-    0xADDR <mio::poll::Poll>::poll  (frame-pointer walk)
-    0xADDR <tokio::runtime::io::driver::Driver>::turn  (frame-pointer walk)
+    0xADDR   (frame-pointer walk)
+    0xADDR   (frame-pointer walk)
 
 lwp 4  polling task 3
   thread_id: core::option::Option<tokio::runtime::thread_id::ThreadId>::None

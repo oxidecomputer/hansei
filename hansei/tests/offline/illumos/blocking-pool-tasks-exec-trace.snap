@@ -7,7 +7,7 @@ Task 3: future tokio::runtime::blocking::task::BlockingTask<blocking_pool::main:
 Spawned at: src/bin/blocking-pool.rs:35:23
 
 #0  future        Option<blocking_pool::main::{async_block#0}::{closure_env#0}>
-      state: None
+      constructed at src/bin/blocking-pool.rs:32 (None, 0 locals)
 
 mid-poll, but lwp 4's walked stack holds no frame in the task's poll symbol (its walk ended: no CFI for /lib/amd64/libc.so.1 (none of its pages are in the core, and the backing file is not on this machine); the frame-pointer walk found nothing below 0xADDR); `threads 4` shows the raw stack
 
@@ -16,14 +16,14 @@ Task 4: future tokio::runtime::blocking::task::BlockingTask<blocking_pool::main:
 Spawned at: src/bin/blocking-pool.rs:43:22
 
 #0  future        Option<blocking_pool::main::{async_block#0}::{closure_env#1}>
-      state: Some
+      constructed at src/bin/blocking-pool.rs:32 (Some, 0 locals)
 
 5  blocking (queued)  —  —  future tokio::runtime::blocking::task::BlockingTask<blocking_pool::main::{async_block#0}::{closure_env#2}>
 Task 5: future tokio::runtime::blocking::task::BlockingTask<blocking_pool::main::{async_block#0}::{closure_env#2}> (queued)
 Spawned at: src/bin/blocking-pool.rs:47:14
 
 #0  future        Option<blocking_pool::main::{async_block#0}::{closure_env#2}>
-      state: Some
+      constructed at src/bin/blocking-pool.rs:32 (Some, 0 locals)
 
 6  idle  src/bin/blocking-pool.rs:18  task 3  async fn blocking_pool::running_waiter
 Task 6: async fn blocking_pool::running_waiter (idle)
