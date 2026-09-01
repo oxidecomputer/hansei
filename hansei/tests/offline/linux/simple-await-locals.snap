@@ -1,0 +1,31 @@
+---
+source: hansei/src/offline.rs
+description: "`locals` over linux/simple-await"
+---
+count: u32 = 3
+labels: alloc::collections::btree::map::BTreeMap<u64, u32, alloc::alloc::Global> {
+      1: 10,
+      2: 20,
+      3: 30,
+  }
+values: alloc::vec::Vec<u32, alloc::alloc::Global> = [
+      5,
+      8,
+      13,
+  ]
+boxed: alloc::boxed::Box<[u32], alloc::alloc::Global> = [
+      21,
+      34,
+  ]
+slice: &[u32] = [
+      5,
+      8,
+      13,
+  ]
+ipv4: core::net::ip_addr::Ipv4Addr = 192.0.2.1
+ipv6: core::net::ip_addr::Ipv6Addr = 2001:db8::1
+borrowed: &str = "borrowed\ntext"
+owned: alloc::string::String = "owned\ttext"
+c_owned: alloc::ffi::c_str::CString = "c\xfftext"
+c_borrowed: &core::ffi::c_str::CStr = "cstr"
+first: u32 = 41

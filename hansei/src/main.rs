@@ -421,6 +421,12 @@ pub enum Command {
         verbose: bool,
     },
 
+    /// List the variables the cursor's current frame holds live — the
+    /// locals a verbose `trace` or `frame` nests under the frame line,
+    /// flat and without the rest of the frame. The cursor must stand
+    /// on a frame: `task`, `future` or `frame` selects one.
+    Locals,
+
     /// Dump what libumem knows about the target's heap: every cache the
     /// walk believed, with its slabs and its live and freed chunk
     /// counts, the self-consistency check over the finished index, and
@@ -1592,6 +1598,7 @@ pub fn dispatch<T: Target>(
         // have a history; it never reaches here.
         Command::History { .. } => unreachable!("history is answered by the repl"),
         Command::Info { section, verbose } => info::exec_info(session, section, verbose, out)?,
+        Command::Locals => cursor::exec_locals(session, theme, out)?,
         Command::Print { args, render } => {
             let render = render.resolve(&session.settings.borrow());
             print::exec_print(session, &args, render, out)?

@@ -126,6 +126,9 @@ fn commands(
         if let Some(id) = task.task_id {
             list.push(("task-first", format!("task {id}")));
             list.push(("print-frame", "print".to_owned()));
+            // The same frame's variables, flat: what `locals` lists
+            // is what the print above nests as members.
+            list.push(("locals", "locals".to_owned()));
             if let Some(member) = first_frame_member(session, task) {
                 list.push(("print-path", format!("print .{member}")));
             }
