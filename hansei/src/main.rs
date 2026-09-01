@@ -321,14 +321,24 @@ pub enum Command {
     },
 
     /// Move the cursor within the selected chain — the await frames
-    /// `trace` numbers — or, with no index, print the current frame
-    /// the way `trace -v` prints one. Only the await chain is
-    /// addressable: a running task's native continuation belongs to
-    /// `threads`.
+    /// `trace` numbers — and print the frame line it lands on; with
+    /// no index, the current frame's. Words after the index are a
+    /// command to run at that frame (`frame 7 locals`, `frame 7
+    /// print .self`); a refused move runs nothing. Only the await
+    /// chain is addressable: a running task's native continuation
+    /// belongs to `threads`.
     Frame {
         /// The frame number to move to, as `trace` numbers them.
         /// Naming none prints the current frame.
         index: Option<usize>,
+
+        /// The command to run after a successful move.
+        #[arg(
+            value_name = "COMMAND",
+            trailing_var_arg = true,
+            allow_hyphen_values = true
+        )]
+        then: Vec<String>,
     },
 
     /// Select a lone future as the cursor, by the hex address the
@@ -1236,9 +1246,10 @@ pub enum Flow {
     Quit,
 }
 
-/// Run the command a frame move carried after it (`up locals`). This
-/// is reached only after the move succeeded — a refused `up`/`down`
-/// errors out of dispatch first, so its trailing command never runs.
+/// Run the command a frame move carried after it (`up locals`,
+/// `frame 7 locals`). This is reached only after the move succeeded —
+/// a refused move errors out of dispatch first, so its trailing
+/// command never runs.
 fn after_move<T: Target>(
     session: &Session<'_, T>,
     then: &[String],
@@ -1650,7 +1661,10 @@ pub fn dispatch<T: Target>(
             let pattern = pattern::Pattern::new(&needle).context("find-types")?;
             types::find(&session.ctx.view, &pattern, out)?
         }
-        Command::Frame { index } => cursor::exec_frame(session, index, true, theme, out)?,
+        Command::Frame { index, then } => {
+            cursor::exec_frame(session, index, theme, out)?;
+            return after_move(session, &then, theme, out);
+        }
         Command::Future { addr, verbose } => {
             cursor::exec_future(session, addr, verbose, theme, out)?
         }
