@@ -24,20 +24,6 @@ Tasks: 10 owned by 2 runtimes and 2 local sets
         1  async fn walk_shapes::holder
            └─ 1  future tokio::sync::notify::Notified
         4  across 4 more types
-    Awaiting at:
-        2  src/bin/walk-shapes.rs:161
-        1  src/bin/walk-shapes.rs:103
-        1  src/bin/walk-shapes.rs:125
-        1  src/bin/walk-shapes.rs:147
-        1  src/bin/walk-shapes.rs:155
-        4  across 4 more sites
-    Spawned at:
-        1  src/bin/walk-shapes.rs:181:18
-        1  src/bin/walk-shapes.rs:214:23
-        1  src/bin/walk-shapes.rs:245:9
-        1  src/bin/walk-shapes.rs:246:9
-        1  src/bin/walk-shapes.rs:252:9
-        5  across 5 more sites
 
 Futures: 12 in flight, on 33 await-chain frames (up to 5 deep)
     Location:

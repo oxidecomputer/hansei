@@ -250,8 +250,8 @@ pub enum Command {
     /// held it when the target stopped.
     ///
     /// The task section counts every task the target's executors own,
-    /// by lifecycle, by what it is waiting on, and by the future types and
-    /// spawn sites most of them share. A wait is named by the primitive
+    /// by lifecycle, by what it is waiting on, and by the future types
+    /// most of them share. A wait is named by the primitive
     /// it is where hansei decodes one — a timer, a `JoinHandle`, the
     /// semaphore behind a `Mutex` — and by the type its await chain
     /// bottoms out in otherwise, which is most of them on any real

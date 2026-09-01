@@ -24,16 +24,6 @@ Tasks: 5 owned by runtime 0 @0xADDR
            └─ 1  future Option<blocking_pool::main::{async_block#0}::{closure_env#1}>
         1  future tokio::runtime::blocking::task::BlockingTask<blocking_pool::main::{async_block#0}::{closure_env#2}>
            └─ 1  future Option<blocking_pool::main::{async_block#0}::{closure_env#2}>
-    Awaiting at:
-        3  no live await site (mid-poll, finished, never polled, or unrecorded)
-        1  src/bin/blocking-pool.rs:18
-        1  src/bin/blocking-pool.rs:24
-    Spawned at:
-        1  src/bin/blocking-pool.rs:35:23
-        1  src/bin/blocking-pool.rs:43:22
-        1  src/bin/blocking-pool.rs:47:14
-        1  src/bin/blocking-pool.rs:51:24
-        1  src/bin/blocking-pool.rs:52:23
 
 Futures: 5 in flight, on 7 await-chain frames (up to 2 deep)
     Location:

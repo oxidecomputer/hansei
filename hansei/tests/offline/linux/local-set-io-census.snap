@@ -18,16 +18,6 @@ Tasks: 4 owned by 1 runtime and 1 local set
            └─ 1  an io resource
         1  async fn local_set_io::reader
            └─ 1  an io resource
-    Awaiting at:
-        1  src/bin/local-set-io.rs:28
-        1  src/bin/local-set-io.rs:36
-        1  src/bin/local-set-io.rs:56
-        1  src/bin/local-set-io.rs:71
-    Spawned at:
-        1  src/bin/local-set-io.rs:100:20
-        1  src/bin/local-set-io.rs:101:23
-        1  src/bin/local-set-io.rs:98:20
-        1  src/bin/local-set-io.rs:99:20
 
 Futures: 4 in flight, on 12 await-chain frames (up to 6 deep)
     Location:

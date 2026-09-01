@@ -24,18 +24,6 @@ Tasks: 5 owned by runtime 0 @0xADDR
            └─ 1  future gen_0007::GfSel2<core::future::pending::Pending<u64>, core::future::pending::Pending<u64>>
         1  async fn gen_0007::member_07
            └─ 1  future gen_0007::GfSel2<core::future::pending::Pending<u64>, core::future::pending::Pending<u64>>
-    Awaiting at:
-        1  src/bin/gen-0007.rs:125
-        1  src/bin/gen-0007.rs:144
-        1  src/bin/gen-0007.rs:166
-        1  src/bin/gen-0007.rs:180
-        1  src/bin/gen-0007.rs:198
-    Spawned at:
-        1  src/bin/gen-0007.rs:117:12
-        1  src/bin/gen-0007.rs:118:12
-        1  src/bin/gen-0007.rs:157:12
-        1  src/bin/gen-0007.rs:158:12
-        1  src/bin/gen-0007.rs:219:19
 
 Futures: 12 in flight, on 17 await-chain frames (up to 2 deep)
     Location:
