@@ -1,0 +1,7 @@
+---
+source: hansei/src/offline.rs
+description: "`trace 3 -l 1` over linux/channels"
+---
+#0  future        tokio::sync::notify::Notified
+      (<no_state>, 4 locals)
+[2 frames, 1 shown]

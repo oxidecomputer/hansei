@@ -1,0 +1,9 @@
+---
+source: hansei/src/offline.rs
+description: "`trace 1 -l 1` over linux-floor/foreign-runtime"
+---
+Waiting on: a tokio::sync::Semaphore (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 1
+
+#0  future        tokio::sync::batch_semaphore::Acquire
+      waiting on a tokio::sync::Semaphore (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 1
+[3 frames, 1 shown]

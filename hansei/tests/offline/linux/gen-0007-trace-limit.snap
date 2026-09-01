@@ -1,0 +1,7 @@
+---
+source: hansei/src/offline.rs
+description: "`trace 3 -l 1` over linux/gen-0007"
+---
+#0  future        gen_0007::GfSel3<core::future::pending::Pending<u64>, core::future::pending::Pending<u64>, core::future::pending::Pending<u64>>
+      (<no_state>, 0 locals)
+[2 frames, 1 shown]

@@ -1,0 +1,7 @@
+---
+source: hansei/src/offline.rs
+description: "`trace 3 -l 1` over illumos/unordered"
+---
+#0  future        futures_util::stream::futures_unordered::FuturesUnordered<unordered::set_member>
+      (<no_state>, 3 locals)
+[2 frames, 1 shown]

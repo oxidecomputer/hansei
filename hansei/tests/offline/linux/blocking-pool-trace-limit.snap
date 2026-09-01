@@ -1,0 +1,6 @@
+---
+source: hansei/src/offline.rs
+description: "`trace 3 -l 1` over linux/blocking-pool"
+---
+#0  future        Option<blocking_pool::main::{async_block#0}::{closure_env#0}>
+      constructed at src/bin/blocking-pool.rs:32 (None, 0 locals)

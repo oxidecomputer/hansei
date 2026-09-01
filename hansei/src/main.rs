@@ -973,6 +973,14 @@ pub enum Command {
         #[arg(long, short = 'n')]
         native: bool,
 
+        /// Show at most this many frames of each printed stack — the
+        /// most recent N of the await chain and, separately, of the
+        /// native continuation under -n. A cut section ends with a
+        /// footer counting what it left out. Falls back to
+        /// `set limit`.
+        #[arg(long, short = 'l', value_name = "N")]
+        limit: Option<usize>,
+
         /// Disable every type's custom formatter and show the raw
         /// structural view of values instead. The flag only ever turns
         /// the raw view on; `set ugly off` is the way back.
@@ -1192,6 +1200,9 @@ struct TraceOpts<'a> {
     /// Join a mid-poll task's native continuation onto the chain
     /// (`-n`); without it the trace ends at the last committed await.
     native: bool,
+    /// Show at most this many frames of each printed stack (`-l`),
+    /// the chain and the native continuation counted separately.
+    limit: Option<usize>,
     render: RenderOpts,
     theme: output::Theme,
     /// The allocator to corroborate every printed value against, where
@@ -1755,6 +1766,7 @@ pub fn dispatch<T: Target>(
             target,
             verbose,
             native,
+            limit,
             ugly,
         } => {
             session.note_version_ceiling();
@@ -1763,12 +1775,13 @@ pub fn dispatch<T: Target>(
                 ..Default::default()
             }
             .resolve(&session.settings.borrow());
+            let limit = limit.or(session.settings.borrow().limit);
             let Some(target) = target.or(session.cursor.borrow().root) else {
                 // A thread cursor has a stack worth walking: trace
                 // answers with the native backtrace rather than
                 // refusing. The hybrid trace is the task cursor's.
                 if let Some(tid) = session.cursor.borrow().lwp {
-                    trace::exec_trace_lwp(session, tid, out)?;
+                    trace::exec_trace_lwp(session, tid, limit, out)?;
                     return Ok(Flow::Continue);
                 }
                 anyhow::bail!(
@@ -1779,6 +1792,7 @@ pub fn dispatch<T: Target>(
             let opts = TraceOpts {
                 verbose,
                 native,
+                limit,
                 render,
                 theme,
                 heap: heap.as_ref().map(|view| view as &dyn reify::Heap),

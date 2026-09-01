@@ -117,6 +117,9 @@ fn commands(
     if let Some(task) = session.tasks.tasks.first() {
         if let Some(id) = task.task_id {
             list.push(("trace-first", format!("trace {id} -n")));
+            // The cut keeps the most recent frame and earns the
+            // counting footer.
+            list.push(("trace-limit", format!("trace {id} -l 1")));
         }
         list.push(("whatis-first", format!("whatis {:#x}", task.addr.0)));
         // The cursor commands: select the first task, then drive

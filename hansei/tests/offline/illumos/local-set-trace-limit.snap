@@ -1,0 +1,9 @@
+---
+source: hansei/src/offline.rs
+description: "`trace 1 -l 1` over illumos/local-set"
+---
+Waiting on: timer (deadline TS)
+
+#0  future        tokio::time::sleep::Sleep
+      waiting on timer (deadline TS)
+[2 frames, 1 shown]

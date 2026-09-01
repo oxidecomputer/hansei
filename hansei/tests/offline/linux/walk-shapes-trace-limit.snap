@@ -1,0 +1,7 @@
+---
+source: hansei/src/offline.rs
+description: "`trace 1 -l 1` over linux/walk-shapes"
+---
+#0  future        tokio::sync::notify::Notified
+      (<no_state>, 4 locals)
+[5 frames, 1 shown]
