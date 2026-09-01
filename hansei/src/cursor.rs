@@ -240,7 +240,11 @@ pub(crate) fn exec_future<T: proc::Target>(
 /// Move the cursor to the future at `addr`, printing the one line of
 /// what was selected. An address some task holds collapses to that
 /// task at the holding frame — one cursor, never two; only a chain no
-/// task contains (a set child in its heap node) roots as a future.
+/// task contains (a set child in its heap node) roots as a future,
+/// and it roots at the node: that is the address every listing prints
+/// for the child and every address command resolves back to it,
+/// where the chain's own root — a boxed child's heap referent — sits
+/// in no allocation the census can name.
 pub(crate) fn select_future<T: proc::Target>(
     session: &Session<'_, T>,
     addr: u64,
@@ -281,9 +285,6 @@ pub(crate) fn select_future<T: proc::Target>(
         trace::FutureAt::Child { set, child } => {
             let s = &census.sets[set];
             let c = &s.children[child];
-            let root = c
-                .root
-                .expect("future_at returns only children still in flight");
             let future = match &c.future {
                 Some(future) => names::display_future_name(future, &session.impl_fold),
                 None => "<undecoded>".to_string(),
@@ -291,15 +292,15 @@ pub(crate) fn select_future<T: proc::Target>(
             writeln!(
                 out,
                 "future {:#x}: {future} — child of {} polled by {}",
-                root.addr,
+                c.node,
                 names::fold_type_name(&s.ty, &session.impl_fold),
                 tasks::task_label(list, s.owner),
             )?;
             *session.cursor.borrow_mut() = Cursor {
                 lwp: None,
-                root: Some(TraceTarget::Future(root.addr)),
+                root: Some(TraceTarget::Future(c.node)),
                 frame: 0,
-                last_addr: Some(root.addr),
+                last_addr: Some(c.node),
             };
         }
     }
@@ -1231,9 +1232,10 @@ mod tests {
         assert!(block.contains("Task "), "{block}");
     }
 
-    /// A set child roots as a lone future: its selection line prints
-    /// once, bare `future` reprints it, and a task cursor answers `no
-    /// future selected`.
+    /// A set child roots as a lone future, at the node address the
+    /// listings print for it: its selection line prints once, bare
+    /// `future` reprints it, and a task cursor answers `no future
+    /// selected`.
     #[test]
     fn test_bare_future_prints_only_a_lone_root() {
         let (bundle, snapshot) = testkit::load("linux", "unordered");
@@ -1248,7 +1250,7 @@ mod tests {
                 .iter()
                 .find(|c| c.root.is_some())
                 .expect("a child is in flight");
-            child.root.expect("checked above").addr
+            child.node
         };
 
         let mut out = Vec::new();
