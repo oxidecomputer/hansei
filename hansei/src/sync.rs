@@ -437,7 +437,7 @@ fn collect_references<T: proc::Target>(
             let member = value
                 .ty
                 .members()
-                .find(|m| m.offset() <= offset && offset < m.offset() + m.ty().size().max(1))
+                .find(|m| member_covers(m.offset(), m.ty().size(), offset))
                 .map(|m| format!(", in `{}`", m.name()));
             lines.push(format!(
                 "{} (frame #{n} {}{})",
@@ -448,6 +448,13 @@ fn collect_references<T: proc::Target>(
         }
     }
     lines
+}
+
+/// Whether the member laid out at `offset` for `size` bytes covers
+/// `hit` — half-open, so a hit at a member's end belongs to whatever
+/// follows, and a zero-sized member still claims its one address.
+fn member_covers(offset: u64, size: u64, hit: u64) -> bool {
+    offset <= hit && hit < offset + size.max(1)
 }
 
 /// The fallback block those references print as — refused when there
@@ -986,14 +993,23 @@ mod sync_tests {
         assert!(holder.starts_with("a tokio::sync::Mutex"), "{holder}");
         assert!(!holder.contains("No task waits"), "{holder}");
 
+        // The family filter answers with the family asked for, and a
+        // family the task is not party to answers the one-liner.
+        let fixture = Fixture::new(
+            vec![wait(40, Some(semaphore(Vec::new()))), wait(7, None)],
+            vec![futurelock(7, 0xa000, 0)],
+        );
+        let sem_only = fixture.print_scoped(0, Some(Kind::Semaphore)).unwrap();
+        assert!(sem_only.starts_with("a tokio::sync::Mutex"), "{sem_only}");
+        let join_only = fixture.print_scoped(0, Some(Kind::Join)).unwrap();
+        assert!(join_only.contains("party to no decoded"), "{join_only}");
+
         let fixture = Fixture::new(vec![wait(7, Some(joining(8))), wait(8, None)], Vec::new());
         let joiner = fixture.print_scoped(0, None).unwrap();
-        assert_eq!(
-            joiner,
-            "task 8 (<unknown>): idle
-    Waited by: task 7
-"
-        );
+        assert_eq!(joiner, "task 8 (<unknown>): idle\n    Waited by: task 7\n");
+        assert_eq!(fixture.print_scoped(0, Some(Kind::Join)).unwrap(), joiner);
+        let sem_only = fixture.print_scoped(0, Some(Kind::Semaphore)).unwrap();
+        assert!(sem_only.contains("party to no decoded"), "{sem_only}");
     }
 
     /// A set relates its driver and each member: the member's scope
@@ -1027,17 +1043,14 @@ mod sync_tests {
         let driver = fixture.print_scoped(0, None).unwrap();
         assert!(driver.starts_with("a tokio"), "{driver}");
         assert_eq!(driver.matches("(set 0x").count(), 2, "{driver}");
-        assert_eq!(
-            driver
-                .matches(
-                    "
-
-"
-                )
-                .count(),
-            1,
-            "{driver}"
-        );
+        assert_eq!(driver.matches("\n\n").count(), 1, "{driver}");
+        // The set family alone keeps the member's one set and answers
+        // the one-liner for a family it is not party to.
+        let set_only = fixture.print_scoped(1, Some(Kind::Set)).unwrap();
+        assert!(set_only.contains("(set 0xb000)"), "{set_only}");
+        assert!(!set_only.contains("(set 0xb100)"), "{set_only}");
+        let sem_only = fixture.print_scoped(1, Some(Kind::Semaphore)).unwrap();
+        assert!(sem_only.contains("party to no decoded"), "{sem_only}");
     }
 
     /// A set whose every child has completed unreaped counts no
@@ -1068,6 +1081,20 @@ mod sync_tests {
             fixture.print(None, None).unwrap(),
             "a futures_util::stream::futures_unordered::FuturesUnordered<()> (set 0xb000): 1 child, driven by task 9 (`work`)\n    Completed, not yet reaped: 1\n"
         );
+    }
+
+    /// Member coverage is half-open with a floor of one byte: the
+    /// start is in, the end is the next member's, and a zero-sized
+    /// member still claims its one address.
+    #[test]
+    fn test_member_coverage_is_half_open() {
+        use super::member_covers;
+        assert!(member_covers(0, 8, 0));
+        assert!(member_covers(0, 8, 7));
+        assert!(!member_covers(0, 8, 8));
+        assert!(!member_covers(8, 8, 7));
+        assert!(member_covers(8, 0, 8));
+        assert!(!member_covers(8, 0, 9));
     }
 
     /// The reference fallback's block: both lines when frames hold the
