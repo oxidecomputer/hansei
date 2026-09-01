@@ -1,0 +1,8 @@
+---
+source: hansei/src/offline.rs
+description: "`futures` over illumos/walk-shapes"
+---
+ADDR      TASK  RT  HELD IN         STATE                                          WAITING ON                                                                                                         FUTURE
+0xADDR  1     0   frame 4, `wz`   Unresumed — src/bin/walk-shapes.rs:87          —                                                                                                                  async fn walk_shapes::deep
+0xADDR  3     0   frame 1, `fut`  Suspend0 — tokio-1.52.4/src/sync/mutex.rs:455  a tokio::sync::Mutex (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: a non-task waiter, task 4  async fn tokio::sync::mutex::Mutex::lock<()>
+2 futures

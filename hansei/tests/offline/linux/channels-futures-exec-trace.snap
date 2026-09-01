@@ -1,0 +1,11 @@
+---
+source: hansei/src/offline.rs
+description: "`futures --exec trace -l 1` over linux/channels"
+---
+0xADDR  3  frame 1, `notified`  —  —  future tokio::sync::notify::Notified
+future 0xADDR: future tokio::sync::notify::Notified
+Held by: task 3 — async fn channels::notify_waiter (frame 1, `notified`)
+
+#0  future        tokio::sync::notify::Notified
+      (<no_state>, 4 locals)
+Executed against 1 futures, 0 failed

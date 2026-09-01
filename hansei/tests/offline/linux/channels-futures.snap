@@ -1,0 +1,7 @@
+---
+source: hansei/src/offline.rs
+description: "`futures` over linux/channels"
+---
+ADDR            TASK  HELD IN              STATE  WAITING ON  FUTURE
+0xADDR  3     frame 1, `notified`  —      —           future tokio::sync::notify::Notified
+1 future

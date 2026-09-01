@@ -71,6 +71,24 @@ fn commands(
             "tasks-exec-fail",
             "tasks --exec type no::such::Type".to_owned(),
         ),
+        // The future listing over the same census: the table, the
+        // blocks, a grouping at the wait's kind level, a filter on the
+        // exact field that splits the two populations, and the exec
+        // loop under a cursor scoped to each future's own chain.
+        ("futures", "futures".to_owned()),
+        ("futures-v", "futures -v".to_owned()),
+        (
+            "futures-group-waiting",
+            "futures --group waiting-on".to_owned(),
+        ),
+        ("futures-with-kind", "futures --with kind child".to_owned()),
+        ("futures-exec-trace", "futures --exec trace -l 1".to_owned()),
+        // A run that fails: the error in place, the counting summary,
+        // and the loop's own failure — one future is enough to pin it.
+        (
+            "futures-exec-fail",
+            "futures -l 1 --exec type no::such::Type".to_owned(),
+        ),
         ("threads", "threads".to_owned()),
         ("threads-v", "threads -v".to_owned()),
         // A frame budget alone implies the block form; both spellings

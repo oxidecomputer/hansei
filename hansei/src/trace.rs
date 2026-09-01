@@ -233,7 +233,7 @@ fn exec_trace_future<T: proc::Target>(
 
 /// What a future address resolved to: the census row that names it, as
 /// the indices the census records it under.
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum FutureAt {
     /// Index into [`census::FutureCensus::held`].
     Held(usize),

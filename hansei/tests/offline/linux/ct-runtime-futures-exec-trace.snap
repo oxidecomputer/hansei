@@ -1,0 +1,5 @@
+---
+source: hansei/src/offline.rs
+description: "`futures --exec trace -l 1` over linux/ct-runtime"
+---
+Executed against 0 futures, 0 failed

@@ -1198,6 +1198,12 @@ mod tests {
             Command::Tasks { .. }
         ));
         assert!(matches!(
+            Line::try_parse_from(["futures", "--with", "kind", "child"])
+                .expect("futures lists")
+                .command,
+            Command::Futures { .. }
+        ));
+        assert!(matches!(
             Line::try_parse_from(["thread", "3", "-v"])
                 .expect("thread selects")
                 .command,
