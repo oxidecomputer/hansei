@@ -409,7 +409,7 @@ pub enum Command {
         /// Show at most this many trees, counted by their roots — in
         /// task-id order, as always — with a footer counting what the
         /// cut left out.
-        #[arg(long, value_name = "N")]
+        #[arg(long, short = 'l', value_name = "N")]
         limit: Option<usize>,
     },
 
@@ -820,7 +820,7 @@ pub enum Command {
         /// many buckets; a footer counts what the cut left out.
         /// Everything is listed when the flag is absent and no
         /// `set limit` stands.
-        #[arg(long, value_name = "N")]
+        #[arg(long, short = 'l', value_name = "N")]
         limit: Option<usize>,
 
         /// Keep only the tasks whose FIELD matches ARG; repeat for
