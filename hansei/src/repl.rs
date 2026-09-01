@@ -789,7 +789,7 @@ mod tests {
     #[test]
     fn test_completion_offers_only_the_help_listing() {
         let names = completion_names();
-        for visible in ["tasks", "trace", "print", "set"] {
+        for visible in ["tasks", "trace", "print", "config"] {
             assert!(names.iter().any(|n| n == visible), "{names:?}");
         }
         for hidden in ["type", "find-types", "vtables", "exit"] {
@@ -1294,28 +1294,33 @@ mod tests {
         ));
     }
 
-    /// `set` takes a key alone, a key and a value, or nothing — and
-    /// the values are plain words, so `set limit off` parses whole.
+    /// `config` takes a key alone, a key and a value, or nothing — and
+    /// the values are plain words, so `config limit off` parses whole.
+    /// The old `set` spelling no longer parses.
     #[test]
-    fn test_set_takes_a_key_and_value_or_less() {
+    fn test_config_takes_a_key_and_value_or_less() {
         let parse = |line: &[&str]| {
-            let Command::Set { key, value } =
-                Line::try_parse_from(line).expect("set parses").command
+            let Command::Config { key, value } =
+                Line::try_parse_from(line).expect("config parses").command
             else {
-                panic!("set parsed as another command");
+                panic!("config parsed as another command");
             };
             (key, value)
         };
-        assert_eq!(parse(&["set"]), (None, None));
-        assert_eq!(parse(&["set", "depth"]), (Some("depth".to_string()), None));
+        assert_eq!(parse(&["config"]), (None, None));
         assert_eq!(
-            parse(&["set", "limit", "off"]),
+            parse(&["config", "depth"]),
+            (Some("depth".to_string()), None)
+        );
+        assert_eq!(
+            parse(&["config", "limit", "off"]),
             (Some("limit".to_string()), Some("off".to_string()))
         );
-        assert!(Line::try_parse_from(["set", "depth", "4", "5"]).is_err());
+        assert!(Line::try_parse_from(["config", "depth", "4", "5"]).is_err());
+        assert!(Line::try_parse_from(["set", "depth", "4"]).is_err());
     }
 
-    /// The render knobs are the session's (`set`): the retired flags
+    /// The render knobs are the session's (`config`): the retired flags
     /// are refused wherever they used to parse.
     #[test]
     fn test_render_flags_are_refused() {
