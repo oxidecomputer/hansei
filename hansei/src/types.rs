@@ -10,7 +10,7 @@
 
 use crate::output;
 
-use anyhow::{Context as _, Result, bail};
+use anyhow::{Result, bail};
 use hansei_bundle::{
     BundleType, BundleTypeId, BundleView, DiscrValue, TypeDef, VariantDef, names, symbols,
     variant_name,
@@ -243,43 +243,6 @@ fn split_hint(name: &str) -> &'static str {
         }
         false => "",
     }
-}
-
-/// Resolve the `--elide` patterns to the raw names they force: each is
-/// a case-insensitive regex matched against the displayed spelling —
-/// the folded name the listings print, kind word and all for a
-/// coroutine env — and every recorded type whose spelling matches is
-/// handed to the renderer by its exact raw name. Matching happens here,
-/// where the bundle is at hand, so the render path stays a comparison.
-pub fn elide_matches(
-    view: &BundleView<'_>,
-    impls: &names::ImplFold,
-    specs: &[String],
-) -> Result<Vec<String>> {
-    if specs.is_empty() {
-        return Ok(Vec::new());
-    }
-    let patterns = specs
-        .iter()
-        .map(|spec| crate::pattern::Pattern::new(spec).context("--elide"))
-        .collect::<Result<Vec<_>>>()?;
-    let mut forced: Vec<String> = Vec::new();
-    for (name, _) in view.named_types() {
-        // The index is sorted by name, so repeated definitions of one
-        // name arrive together and force it once.
-        if forced.last().is_some_and(|last| last == name) {
-            continue;
-        }
-        let folded = names::fold_type_name(name, impls);
-        let displayed = match names::coroutine_kind(name) {
-            Some(kind) => format!("{kind} {folded}"),
-            None => folded.into_owned(),
-        };
-        if patterns.iter().any(|p| p.is_match(&displayed)) {
-            forced.push(name.to_string());
-        }
-    }
-    Ok(forced)
 }
 
 /// List the names matching `needle`, one per line.
@@ -1001,33 +964,6 @@ mod tests {
         assert!(out.starts_with("(definition 1 of 2 — type 11)\n"), "{out}");
         assert!(out.contains("\n\n(definition 2 of 2 — type 12)\n"), "{out}");
         assert_eq!(out.matches("struct dup::Type").count(), 2, "{out}");
-    }
-
-    /// An `--elide` pattern is matched against the displayed spelling
-    /// — case-insensitively, kind word and all for a coroutine env —
-    /// and resolves to the exact raw names the renderer compares. A
-    /// broken pattern is a loud error naming the flag.
-    #[test]
-    fn test_elide_patterns_resolve_to_raw_names() {
-        let bundle = bundle();
-        let view = BundleView::new(&bundle);
-        let impls = names::ImplFold::default();
-        let matched = |spec: &str| elide_matches(&view, &impls, &[spec.to_string()]).unwrap();
-
-        // The kind-worded folded spelling reaches the raw recorded
-        // name; case does not matter.
-        assert_eq!(
-            matched("async fn app::work"),
-            ["app::work::{async_fn_env#0}"]
-        );
-        assert_eq!(matched("APP::WORK"), ["app::work::{async_fn_env#0}"]);
-        // Two definitions of one name force it once.
-        assert_eq!(matched("^dup::Type$"), ["dup::Type"]);
-        // A pattern nothing matches forces nothing, silently: the
-        // regex decides, not a name lookup.
-        assert!(matched("no::such::needle").is_empty());
-        let err = elide_matches(&view, &impls, &["(".to_string()]).unwrap_err();
-        assert!(format!("{err:#}").contains("--elide"), "{err:#}");
     }
 
     /// A type spec resolves to exactly one definition: by id — reaching

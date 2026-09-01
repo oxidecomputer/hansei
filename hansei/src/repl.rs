@@ -1262,11 +1262,11 @@ mod tests {
     /// values show through; a flag given on the line is carried.
     #[test]
     fn test_render_flags_carry_only_what_was_given() {
-        let Command::Trace { render, .. } = Line::try_parse_from(["trace", "42", "-d", "6"])
-            .expect("trace takes render flags")
+        let Command::Print { render, .. } = Line::try_parse_from(["print", "-d", "6"])
+            .expect("print takes render flags")
             .command
         else {
-            panic!("trace parsed as another command");
+            panic!("print parsed as another command");
         };
         assert_eq!(render.depth, Some(6));
         assert_eq!(render.max_string_len, None);

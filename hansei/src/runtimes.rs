@@ -261,10 +261,7 @@ pub(crate) fn exec_runtimes<T: proc::Target>(
     // values; this command exists to show the runtime's own insides, so
     // they must never apply here — a new elided row must not be able to
     // blank part of this output.
-    let no_elide = reify::ElideOverride {
-        no_elide: true,
-        types: Vec::new(),
-    };
+    let no_elide = reify::ElideOverride { no_elide: true };
 
     // A heading is only earned by an ambiguity it resolves: one runtime
     // and one section is the value alone, as it was before either could

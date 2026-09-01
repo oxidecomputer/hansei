@@ -1545,7 +1545,7 @@ fn test_futurelock_acceptance() {
         let deep = hansei_ok(
             &bundle,
             core,
-            &format!("trace {} --verbose --depth 12", task.id),
+            &format!("set depth 12; trace {} --verbose", task.id),
         );
         assert!(
             deep.contains(&format!(
@@ -2287,7 +2287,7 @@ fn test_futures_acceptance() {
         let verbose = hansei_ok(
             &bundle,
             core,
-            &format!("trace {} --verbose --depth 12", driver.id),
+            &format!("set depth 12; trace {} --verbose", driver.id),
         );
         assert!(
             verbose.contains(&format!("task {} via FuturesUnordered", driver.id)),
