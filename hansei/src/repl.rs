@@ -1289,20 +1289,20 @@ mod tests {
         assert!(Line::try_parse_from(["set", "depth", "4", "5"]).is_err());
     }
 
-    /// The render flags default to nothing so the session's own
-    /// values show through; a flag given on the line is carried.
+    /// The one render flag left: `--ugly` is carried when given, and
+    /// the retired render knobs are refused — `set` owns them now.
     #[test]
     fn test_render_flags_carry_only_what_was_given() {
-        let Command::Print { render, .. } = Line::try_parse_from(["print", "-d", "6"])
+        let Command::Print { render, .. } = Line::try_parse_from(["print", "--ugly"])
             .expect("print takes render flags")
             .command
         else {
             panic!("print parsed as another command");
         };
-        assert_eq!(render.depth, Some(6));
-        assert_eq!(render.max_string_len, None);
-        assert_eq!(render.max_array_values, None);
-        assert!(!render.ugly);
+        assert!(render.ugly);
+        assert!(Line::try_parse_from(["print", "-d", "6"]).is_err());
+        assert!(Line::try_parse_from(["print", "--max-string-len", "4"]).is_err());
+        assert!(Line::try_parse_from(["print", "--max-array-values", "4"]).is_err());
     }
 
     /// `history` takes an optional count and nothing else.

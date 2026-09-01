@@ -495,7 +495,8 @@ pub enum Command {
     /// `[a..]` select a run of elements, and `*` dereferences
     /// explicitly — the only way through a raw pointer. A range fans
     /// out: every later step applies per element, each printed under
-    /// its `[i]` heading and exempt from --max-array-values, since a
+    /// its `[i]` heading and exempt from the max-array-values cap,
+    /// since a
     /// range is the reader saying how many. Depth counts from the end
     /// of the path.
     Print {
@@ -584,14 +585,12 @@ pub enum Command {
         output: PathBuf,
     },
 
-    /// Show or change the session's defaults: the values the
-    /// per-command flags fall back to when not given. A key is
-    /// spelled exactly like the flag it defaults — depth, ugly,
-    /// max-string-len, max-array-values, limit — so `set depth 6` is
-    /// a standing `--depth 6`, governing `trace -v` locals and every
-    /// other render. A flag given on a command overrides the session
-    /// value for that command only, and the values live for the
-    /// session only.
+    /// Show or change the session's defaults. The render keys —
+    /// depth, max-string-len, max-array-values — govern `trace -v`
+    /// locals and every other render outright; `ugly` and `limit`
+    /// also back the per-command flags of those names, which
+    /// override the session value for that command only. The values
+    /// live for the session only.
     Set {
         /// The key to show or change. Naming none prints them all.
         key: Option<String>,
@@ -1104,48 +1103,28 @@ pub enum Command {
     Exit,
 }
 
-/// How values read from the target are rendered — the per-command
-/// flags. Shared by every command that formats target memory, so the
-/// flags spell the same everywhere; each one left off the line falls
-/// back to the session default of the same name (`set`).
+/// How values read from the target are rendered — the one per-command
+/// render flag left, shared so it spells the same everywhere. The
+/// other render knobs — depth, max-string-len, max-array-values —
+/// are the session's alone (`set`).
 #[derive(clap::Args, Copy, Clone, Default)]
 pub struct RenderFlags {
-    /// Maximum depth to recurse when formatting values.
-    #[arg(long, short)]
-    depth: Option<usize>,
-
     /// Disable every type's custom formatter and show the raw
     /// structural view of values instead. The flag only ever turns
     /// the raw view on; `set ugly off` is the way back.
     #[arg(long, short)]
     ugly: bool,
-
-    /// Show at most this many bytes of any one string, and say how
-    /// many are left. 0 shows none of it; `--max-string-len` with no
-    /// ceiling at all is not offered, because a length read out of a
-    /// corrupt header claims whatever its bits say and the target
-    /// serves every mapped page under the claim.
-    #[arg(long, value_name = "BYTES")]
-    max_string_len: Option<u64>,
-
-    /// Show at most this many elements of any one sequence, and say how
-    /// many are left. Counted in elements rather than bytes, because a
-    /// wide element is a value with a line of its own; byte sequences
-    /// answer to `--max-string-len` instead, being strings in all but
-    /// type.
-    #[arg(long, value_name = "ELEMENTS")]
-    max_array_values: Option<u64>,
 }
 
 impl RenderFlags {
-    /// The values a command renders with: each flag given on the
-    /// line, else the session default of the same name.
+    /// The values a command renders with: `--ugly` if given on the
+    /// line, everything else the session's (`set`).
     fn resolve(&self, s: &settings::Settings) -> RenderOpts {
         RenderOpts {
-            depth: self.depth.unwrap_or(s.depth),
+            depth: s.depth,
             ugly: self.ugly || s.ugly,
-            max_string_len: self.max_string_len.unwrap_or(s.max_string_len),
-            max_array_values: self.max_array_values.unwrap_or(s.max_array_values),
+            max_string_len: s.max_string_len,
+            max_array_values: s.max_array_values,
         }
     }
 }
@@ -1770,11 +1749,7 @@ pub fn dispatch<T: Target>(
             ugly,
         } => {
             session.note_version_ceiling();
-            let render = RenderFlags {
-                ugly,
-                ..Default::default()
-            }
-            .resolve(&session.settings.borrow());
+            let render = RenderFlags { ugly }.resolve(&session.settings.borrow());
             let limit = limit.or(session.settings.borrow().limit);
             let Some(target) = target.or(session.cursor.borrow().root) else {
                 // A thread cursor has a stack worth walking: trace
@@ -2227,10 +2202,10 @@ mod render_flag_tests {
     use super::RenderFlags;
     use crate::settings::Settings;
 
-    /// Each flag given on the line overrides; each one absent falls
-    /// back to the session's value. `--ugly` only ever turns the raw
-    /// view on — a session with `set ugly on` stays raw without the
-    /// flag, and the flag turns it on over a session with it off.
+    /// The render values are the session's alone; `--ugly` only ever
+    /// turns the raw view on — a session with `set ugly on` stays
+    /// raw without the flag, and the flag turns it on over a session
+    /// with it off.
     #[test]
     fn test_render_flags_resolve_against_the_session() {
         let session = Settings {
@@ -2240,29 +2215,14 @@ mod render_flag_tests {
             max_array_values: 3,
             limit: None,
         };
-        let fell_back = RenderFlags::default().resolve(&session);
-        assert_eq!(fell_back.depth, 6);
-        assert!(fell_back.ugly);
-        assert_eq!(fell_back.max_string_len, 10);
-        assert_eq!(fell_back.max_array_values, 3);
-
-        let flags = RenderFlags {
-            depth: Some(2),
-            ugly: false,
-            max_string_len: Some(1),
-            max_array_values: Some(9),
-        };
-        let overridden = flags.resolve(&session);
-        assert_eq!(overridden.depth, 2);
-        assert!(overridden.ugly, "set ugly on holds without the flag");
-        assert_eq!(overridden.max_string_len, 1);
-        assert_eq!(overridden.max_array_values, 9);
+        let resolved = RenderFlags::default().resolve(&session);
+        assert_eq!(resolved.depth, 6);
+        assert!(resolved.ugly);
+        assert_eq!(resolved.max_string_len, 10);
+        assert_eq!(resolved.max_array_values, 3);
 
         let plain = Settings::default();
-        let flags = RenderFlags {
-            ugly: true,
-            ..Default::default()
-        };
+        let flags = RenderFlags { ugly: true };
         assert!(flags.resolve(&plain).ugly, "the flag turns the raw view on");
         assert!(!RenderFlags::default().resolve(&plain).ugly);
     }

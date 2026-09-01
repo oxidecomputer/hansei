@@ -11,10 +11,10 @@ use anyhow::{Result, anyhow};
 use std::cell::RefCell;
 use std::io;
 
-/// The session's standing defaults. [`crate::RenderOpts`] is filled
-/// from the render keys wherever a command's own flags left one out;
-/// `limit` fills the listing commands' — and trace's — `--limit`
-/// the same way.
+/// The session's standing defaults. The render keys fill
+/// [`crate::RenderOpts`] outright — only `--ugly` still layers a
+/// per-command flag over its key — and `limit` backs the listing
+/// commands' and trace's `--limit`.
 pub(crate) struct Settings {
     pub(crate) depth: usize,
     pub(crate) ugly: bool,

@@ -3124,7 +3124,7 @@ fn test_shared_state_and_drivers() {
         // elisions never apply to them: however deep the sweep goes, no
         // subtree may come back `<elided>` — a regression here means a new
         // elided row leaked into runtime introspection.
-        for command in ["runtimes -s -d 64", "runtimes -D -d 64"] {
+        for command in ["set depth 64; runtimes -s", "set depth 64; runtimes -D"] {
             let deep = hansei_ok(&bundle, core, command);
             assert!(!deep.contains("<elided>"), "`{command}`: {deep}");
         }
@@ -3578,7 +3578,7 @@ fn test_exec_asks_from_the_command_line() {
     with_core("simple-await", |core| {
         // Two commands in one flag, and a second flag after it: both
         // spellings of "more than one question".
-        let out = hansei_exec(&bundle, core, &["info ; runtimes -D -d 1", "tasks"]);
+        let out = hansei_exec(&bundle, core, &["info ; set depth 1; runtimes -D", "tasks"]);
         let stdout = String::from_utf8_lossy(&out.stdout);
         assert!(
             out.status.success(),
@@ -3636,7 +3636,9 @@ fn test_a_unique_prefix_names_a_command() {
         // The prefix names the command; its arguments are never
         // inferred. `regs` sits beside `runtimes`, so `r` fits both
         // and only `ru` and longer are runtimes' alone.
-        assert!(hansei_ok(&bundle, core, "runtime -D -d 1").contains("runtime::driver::Handle"));
+        assert!(
+            hansei_ok(&bundle, core, "set depth 1; runtime -D").contains("runtime::driver::Handle")
+        );
         assert!(hansei_ok(&bundle, core, "ru -s").contains("multi_thread::worker::Shared"));
         assert!(hansei_ok(&bundle, core, "runtimes -l").contains("multi_thread"));
         let out = hansei(&bundle, core, "r -s");
