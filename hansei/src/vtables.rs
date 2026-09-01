@@ -1122,7 +1122,7 @@ pub(crate) mod vtable_tests {
     }
 
     fn listing(bundle: &Bundle, fake: &Fake, needle: Option<&str>, verbose: bool) -> String {
-        let needle = needle.map(|n| pattern(n));
+        let needle = needle.map(pattern);
         let mappings = mappings();
         let image = Image {
             target: fake,

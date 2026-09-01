@@ -3586,7 +3586,12 @@ pub(crate) mod tests {
                 OVERSIZE + 0x4800..OVERSIZE + 0x4c00,
             ]
         );
-        assert_eq!(extents(false), [OVERSIZE + 0x2000..OVERSIZE + 0x4000]);
+        // One freed extent, bounds and all — a list of one range, not a
+        // range of addresses collect()ed into a list.
+        #[allow(clippy::single_range_in_vec_init)]
+        {
+            assert_eq!(extents(false), [OVERSIZE + 0x2000..OVERSIZE + 0x4000]);
+        }
     }
 
     /// A static holding a pointer is worth what the thing it points at

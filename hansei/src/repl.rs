@@ -594,6 +594,37 @@ fn history_lines(text: &str, last: Option<usize>) -> Vec<String> {
         .collect()
 }
 
+/// Parse one command from the words `tasks --exec` carries, for
+/// running it under a per-task scope. The words usually arrive
+/// already split — `--exec` takes the rest of its line — but a
+/// quoted command (`--exec 'trace -v'`) lands as one word holding
+/// whitespace, and is split here the way the prompt would have split
+/// it unquoted. Output-only parses (`help`) are errors here: an exec
+/// loop wants a command to run.
+pub(crate) fn parse_exec_command(words: &[String]) -> Result<Command> {
+    let resplit;
+    let words = match words {
+        [one] if one.chars().any(char::is_whitespace) => {
+            resplit = split_tokens(one)?;
+            &resplit
+        }
+        words => words,
+    };
+    match Line::try_parse_from(words) {
+        Ok(line) => Ok(line.command),
+        Err(e) => Err(anyhow!("{}", clap_message(e))),
+    }
+}
+
+/// Parse one command line the way the prompt does, handing back the
+/// grammar's own `Command` for suites that drive `dispatch` directly.
+#[cfg(test)]
+pub(crate) fn parse_line(command: &str) -> Result<crate::Command> {
+    Ok(parse_command(command)?
+        .expect("the offline suites drive complete commands, not `help`")
+        .command)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1334,35 +1365,4 @@ mod tests {
         assert_eq!(err.to_string(), "no history in a scripted session");
         assert!(out.is_empty());
     }
-}
-
-/// Parse one command from the words `tasks --exec` carries, for
-/// running it under a per-task scope. The words usually arrive
-/// already split — `--exec` takes the rest of its line — but a
-/// quoted command (`--exec 'trace -v'`) lands as one word holding
-/// whitespace, and is split here the way the prompt would have split
-/// it unquoted. Output-only parses (`help`) are errors here: an exec
-/// loop wants a command to run.
-pub(crate) fn parse_exec_command(words: &[String]) -> Result<Command> {
-    let resplit;
-    let words = match words {
-        [one] if one.chars().any(char::is_whitespace) => {
-            resplit = split_tokens(one)?;
-            &resplit
-        }
-        words => words,
-    };
-    match Line::try_parse_from(words) {
-        Ok(line) => Ok(line.command),
-        Err(e) => Err(anyhow!("{}", clap_message(e))),
-    }
-}
-
-/// Parse one command line the way the prompt does, handing back the
-/// grammar's own `Command` for suites that drive `dispatch` directly.
-#[cfg(test)]
-pub(crate) fn parse_line(command: &str) -> Result<crate::Command> {
-    Ok(parse_command(command)?
-        .expect("the offline suites drive complete commands, not `help`")
-        .command)
 }
