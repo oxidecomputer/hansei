@@ -57,7 +57,7 @@ impl Backtrace {
     }
 
     pub fn stack_trace(&self, max_frames: usize) -> Vec<String> {
-        let mut lines: Vec<String> = self
+        let lines: Vec<String> = self
             .frames
             .iter()
             .take(max_frames)
@@ -79,14 +79,6 @@ impl Backtrace {
                 )
             })
             .collect();
-        // The reason binds to the walk's end, so it prints only when
-        // the end is in view — a listing cut short by `max_frames`
-        // already says less than the walk found.
-        if self.frames.len() <= max_frames
-            && let Some(why) = &self.truncated
-        {
-            lines.push(format!("(walk ended: {why})"));
-        }
         lines
     }
 }
@@ -928,11 +920,11 @@ mod fallback_tests {
         assert!(why.contains("none of its pages are in the core"), "{why}");
     }
 
-    /// The truncation reason prints only when the walk's end is in
-    /// view: a listing cut short by max_frames says less than the walk
-    /// found, and the guessed frames carry their mark.
+    /// The listing marks the guessed frames and stops at
+    /// `max_frames`; why the walk ended is [`Backtrace::truncated`]'s
+    /// to say, not the listing's.
     #[test]
-    fn test_stack_trace_binds_the_reason_to_the_visible_end() {
+    fn test_stack_trace_marks_guessed_frames_and_caps() {
         let frame = |pc, heuristic| super::Frame {
             pc,
             regs: Regs {
@@ -947,10 +939,9 @@ mod fallback_tests {
             truncated: Some("no CFI covers 0x20".to_string()),
         };
         let lines = bt.stack_trace(8);
-        assert_eq!(lines.len(), 3, "{lines:?}");
+        assert_eq!(lines.len(), 2, "{lines:?}");
         assert!(!lines[0].contains("frame-pointer walk"), "{}", lines[0]);
         assert!(lines[1].ends_with("(frame-pointer walk)"), "{}", lines[1]);
-        assert_eq!(lines[2], "(walk ended: no CFI covers 0x20)");
         let cut = bt.stack_trace(1);
         assert_eq!(cut.len(), 1, "{cut:?}");
     }

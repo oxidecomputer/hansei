@@ -388,8 +388,8 @@ What varies by target, and so must never be pinned in a portable test:
   mapped object's text, so library CFI is always on hand; a Linux core
   carries none, and the backing files its `NT_FILE` names exist only on
   the capture host. Read elsewhere, a walk is exact through the
-  `--binary` executable, then cuts at the first library frame with a
-  `(walk ended: no CFI for …)` note; any frame the frame-pointer
+  `--binary` executable, then cuts silently at the first library frame
+  (`info objects` says why); any frame the frame-pointer
   fallback bridges is marked `(frame-pointer walk)`. Only supplying the
   named libraries makes those frames exact.
 - **A timer's deadline spelling.** illumos lwps stamp a stop time and the

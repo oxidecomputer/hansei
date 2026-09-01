@@ -25,7 +25,6 @@ lwp 1  polling no task
     0xADDR main  (frame-pointer walk)
     0xADDR _start_crt  (frame-pointer walk)
     0xADDR _start  (frame-pointer walk)
-    (walk ended: no CFI for /data/durin/test-programs/fixtures/bin-a/nested-await (none of its pages are in the core, and the backing file is not on this machine); the frame-pointer walk found nothing below 0xADDR)
 
 lwp 2  last polled task 1
   thread_id: core::option::Option<tokio::runtime::thread_id::ThreadId>::None
@@ -132,7 +131,6 @@ lwp 2  last polled task 1
     0xADDR <std::sys::thread::unix::Thread>::new::thread_start  (frame-pointer walk)
     0xADDR   (frame-pointer walk)
     0xADDR   (frame-pointer walk)
-    (walk ended: no CFI for /lib/amd64/libc.so.1 (none of its pages are in the core, and the backing file is not on this machine); the frame-pointer walk found nothing below 0xADDR)
 
 lwp 3  last polled task 2
   thread_id: core::option::Option<tokio::runtime::thread_id::ThreadId>::None
@@ -236,4 +234,3 @@ lwp 3  last polled task 2
     0xADDR <std::sys::thread::unix::Thread>::new::thread_start  (frame-pointer walk)
     0xADDR   (frame-pointer walk)
     0xADDR   (frame-pointer walk)
-    (walk ended: no CFI for /lib/amd64/libc.so.1 (none of its pages are in the core, and the backing file is not on this machine); the frame-pointer walk found nothing below 0xADDR)
