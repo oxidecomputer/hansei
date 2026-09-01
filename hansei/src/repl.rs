@@ -511,15 +511,22 @@ impl Write for ShellSink {
     }
 }
 
-fn line_editor() -> Reedline {
-    let names: Vec<String> = Line::command()
+/// The command names Tab completes: what `help` lists. A command
+/// hidden from help is hidden here too — it still parses, but the
+/// prompt does not advertise it.
+fn completion_names() -> Vec<String> {
+    Line::command()
         .get_subcommands()
+        .filter(|sub| !sub.is_hide_set())
         .map(|sub| sub.get_name().to_string())
-        .collect();
+        .collect()
+}
+
+fn line_editor() -> Reedline {
     // `-` counts as part of a word, so a half-typed `--val` is one token
     // to complete against rather than two.
     let mut completer = Box::new(DefaultCompleter::with_inclusions(&['-']));
-    completer.insert(names);
+    completer.insert(completion_names());
 
     let mut keybindings = default_emacs_keybindings();
     keybindings.add_binding(
@@ -775,6 +782,19 @@ mod tests {
         };
         sink.flush().expect("the feed never errors");
         assert!(sink.stdin.is_none(), "a failed flush ends the feed");
+    }
+
+    /// Completion advertises what `help` lists: a hidden command —
+    /// still parseable, still runnable — is offered by neither.
+    #[test]
+    fn test_completion_offers_only_the_help_listing() {
+        let names = completion_names();
+        for visible in ["tasks", "trace", "print", "set"] {
+            assert!(names.iter().any(|n| n == visible), "{names:?}");
+        }
+        for hidden in ["type", "find-types", "vtables", "exit"] {
+            assert!(!names.iter().any(|n| n == hidden), "{names:?}");
+        }
     }
 
     /// `help` is a successful command that clap renders as an error;

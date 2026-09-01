@@ -313,6 +313,9 @@ pub enum Command {
     },
 
     /// List the types whose name matches a pattern.
+    // Hidden from `help` and completion while the type-inspection
+    // surface is reconsidered — not removed: it still parses and runs.
+    #[command(hide = true)]
     FindTypes {
         /// The pattern to look for: a case-insensitive regex, so a
         /// plain substring types as itself and regex metacharacters
@@ -972,6 +975,9 @@ pub enum Command {
     /// Print the layout the tokio info records for a type, by its
     /// exact fully-qualified name: members and their offsets, or an
     /// enum's variants and the discriminant that selects them.
+    // Hidden from `help` and completion while the type-inspection
+    // surface is reconsidered — not removed: it still parses and runs.
+    #[command(hide = true)]
     Type {
         /// The fully-qualified name, as `find-types` lists it (several
         /// words are joined back into one name, so generics holding
