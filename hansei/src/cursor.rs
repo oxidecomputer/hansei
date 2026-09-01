@@ -13,7 +13,7 @@
 //! address — moves with it and with nothing else.
 
 use crate::tasks::{self, no_such_task};
-use crate::{RenderFlags, Session, TraceOpts, TraceTarget, output, threads, trace};
+use crate::{RenderOpts, Session, TraceOpts, TraceTarget, output, threads, trace};
 
 use anyhow::{Result, anyhow};
 use hansei_bundle::names;
@@ -381,7 +381,7 @@ fn print_root_chain<T: proc::Target>(
         .borrow()
         .root
         .ok_or_else(|| anyhow!("no future selected"))?;
-    let render = RenderFlags::default().resolve(&session.settings.borrow());
+    let render = RenderOpts::from_settings(&session.settings.borrow());
     let heap = session.heap_view();
     let opts = TraceOpts {
         verbose: false,
@@ -527,7 +527,7 @@ pub(crate) fn exec_locals<T: proc::Target>(
         Some(state) => state.payload,
         None => frame.future,
     };
-    let render = RenderFlags::default().resolve(&session.settings.borrow());
+    let render = RenderOpts::from_settings(&session.settings.borrow());
     let heap = session.heap_view();
     let opts = TraceOpts {
         verbose: false,
@@ -677,7 +677,7 @@ fn print_cursor_frame<T: proc::Target>(
     out: &mut dyn io::Write,
 ) -> Result<()> {
     let chain = &resolved.chain;
-    let render = RenderFlags::default().resolve(&session.settings.borrow());
+    let render = RenderOpts::from_settings(&session.settings.borrow());
     let heap = session.heap_view();
     let opts = TraceOpts {
         verbose: false,
@@ -919,7 +919,7 @@ mod tests {
             false,
             None,
             false,
-            RenderFlags::default().resolve(&session.settings.borrow()),
+            RenderOpts::from_settings(&session.settings.borrow()),
             &mut Vec::new(),
         )
         .expect("an lwp selects");
@@ -1329,7 +1329,7 @@ mod tests {
         let session = Session::attach(&snapshot, &bundle, &args).expect("the pair attaches");
         let lwp = session.lwps.first().expect("the fixture has lwps");
         let (tid, rsp) = (lwp.tid, lwp.regs.rsp);
-        let render = RenderFlags::default().resolve(&session.settings.borrow());
+        let render = RenderOpts::from_settings(&session.settings.borrow());
 
         let err = exec_thread(
             &session,

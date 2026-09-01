@@ -505,9 +505,6 @@ pub enum Command {
         /// `.`, `[` or `*`.
         #[arg(value_name = "ROOT|PATH")]
         args: Vec<String>,
-
-        #[command(flatten)]
-        render: RenderFlags,
     },
 
     /// Print the cursor lwp's registers, annotated with what each
@@ -569,9 +566,6 @@ pub enum Command {
         /// named.
         #[arg(value_name = "RUNTIME", value_parser = parse_runtime_scope)]
         scope: Vec<RuntimeScope>,
-
-        #[command(flatten)]
-        render: RenderFlags,
     },
 
     /// Write this session's tokio info to a file `--tokio-info` can
@@ -586,11 +580,11 @@ pub enum Command {
     },
 
     /// Show or change the session's defaults. The render keys —
-    /// depth, max-string-len, max-array-values — govern `trace -v`
-    /// locals and every other render outright; `ugly` and `limit`
-    /// also back the per-command flags of those names, which
-    /// override the session value for that command only. The values
-    /// live for the session only.
+    /// depth, max-string-len, max-array-values, ugly — govern
+    /// `trace -v` locals and every other render outright; `limit`
+    /// also backs the `--limit` flags, which override the session
+    /// value for that command only. The values live for the session
+    /// only.
     Set {
         /// The key to show or change. Naming none prints them all.
         key: Option<String>,
@@ -885,9 +879,6 @@ pub enum Command {
         /// Show the thread's registers in the block. Implies -v.
         #[arg(long, short)]
         registers: bool,
-
-        #[command(flatten)]
-        render: RenderFlags,
     },
 
     /// List every thread in the target — one table row per lwp: its
@@ -926,9 +917,6 @@ pub enum Command {
         /// named.
         #[arg(value_name = "LWP")]
         lwp: Vec<u32>,
-
-        #[command(flatten)]
-        render: RenderFlags,
     },
 
     /// Print an await chain: a task's, selected by its decimal id
@@ -979,12 +967,6 @@ pub enum Command {
         /// `set limit`.
         #[arg(long, short = 'l', value_name = "N")]
         limit: Option<usize>,
-
-        /// Disable every type's custom formatter and show the raw
-        /// structural view of values instead. The flag only ever turns
-        /// the raw view on; `set ugly off` is the way back.
-        #[arg(long, short)]
-        ugly: bool,
     },
 
     /// Print the layout the tokio info records for a type, by its
@@ -1103,41 +1085,27 @@ pub enum Command {
     Exit,
 }
 
-/// How values read from the target are rendered — the one per-command
-/// render flag left, shared so it spells the same everywhere. The
-/// other render knobs — depth, max-string-len, max-array-values —
-/// are the session's alone (`set`).
-#[derive(clap::Args, Copy, Clone, Default)]
-pub struct RenderFlags {
-    /// Disable every type's custom formatter and show the raw
-    /// structural view of values instead. The flag only ever turns
-    /// the raw view on; `set ugly off` is the way back.
-    #[arg(long, short)]
-    ugly: bool,
-}
-
-impl RenderFlags {
-    /// The values a command renders with: `--ugly` if given on the
-    /// line, everything else the session's (`set`).
-    fn resolve(&self, s: &settings::Settings) -> RenderOpts {
-        RenderOpts {
-            depth: s.depth,
-            ugly: self.ugly || s.ugly,
-            max_string_len: s.max_string_len,
-            max_array_values: s.max_array_values,
-        }
-    }
-}
-
-/// How values read from the target are rendered, the flags resolved
-/// against the session's defaults: what threads through the render
-/// path as one value.
+/// How values read from the target are rendered: the session's render
+/// defaults (`set`), resolved once into the value the render path
+/// threads through.
 #[derive(Copy, Clone)]
 pub struct RenderOpts {
     depth: usize,
     ugly: bool,
     max_string_len: u64,
     max_array_values: u64,
+}
+
+impl RenderOpts {
+    /// The values a command renders with — the session's, wholesale.
+    fn from_settings(s: &settings::Settings) -> Self {
+        RenderOpts {
+            depth: s.depth,
+            ugly: s.ugly,
+            max_string_len: s.max_string_len,
+            max_array_values: s.max_array_values,
+        }
+    }
 }
 
 /// Which runtime a command was pointed at.
@@ -1670,8 +1638,8 @@ pub fn dispatch<T: Target>(
         Command::History { .. } => unreachable!("history is answered by the repl"),
         Command::Info { section, verbose } => info::exec_info(session, section, verbose, out)?,
         Command::Locals => cursor::exec_locals(session, theme, out)?,
-        Command::Print { args, render } => {
-            let render = render.resolve(&session.settings.borrow());
+        Command::Print { args } => {
+            let render = RenderOpts::from_settings(&session.settings.borrow());
             print::exec_print(session, &args, render, out)?
         }
         Command::Regs => registers::exec_regs(session, out)?,
@@ -1680,13 +1648,12 @@ pub fn dispatch<T: Target>(
             drivers,
             shared,
             scope,
-            render,
         } => {
             if list {
                 runtimes::exec_list(session, out)?
             } else {
                 let fields = runtimes::Fields::select(drivers, shared);
-                let render = render.resolve(&session.settings.borrow());
+                let render = RenderOpts::from_settings(&session.settings.borrow());
                 runtimes::exec_runtimes(session, &scope, fields, render, out)?
             }
         }
@@ -1726,9 +1693,8 @@ pub fn dispatch<T: Target>(
             verbose,
             frames,
             registers,
-            render,
         } => {
-            let render = render.resolve(&session.settings.borrow());
+            let render = RenderOpts::from_settings(&session.settings.borrow());
             cursor::exec_thread(session, lwp, verbose, frames, registers, render, out)?
         }
         Command::Threads {
@@ -1736,9 +1702,8 @@ pub fn dispatch<T: Target>(
             frames,
             registers,
             lwp,
-            render,
         } => {
-            let render = render.resolve(&session.settings.borrow());
+            let render = RenderOpts::from_settings(&session.settings.borrow());
             threads::exec_threads(session, verbose, frames, &lwp, registers, render, out)?
         }
         Command::Trace {
@@ -1746,10 +1711,9 @@ pub fn dispatch<T: Target>(
             verbose,
             native,
             limit,
-            ugly,
         } => {
             session.note_version_ceiling();
-            let render = RenderFlags { ugly }.resolve(&session.settings.borrow());
+            let render = RenderOpts::from_settings(&session.settings.borrow());
             let limit = limit.or(session.settings.borrow().limit);
             let Some(target) = target.or(session.cursor.borrow().root) else {
                 // A thread cursor has a stack worth walking: trace
@@ -2199,15 +2163,12 @@ fn version_ceiling_line(meta: &hansei_bundle::Meta, noticed: &Cell<bool>) -> Opt
 
 #[cfg(test)]
 mod render_flag_tests {
-    use super::RenderFlags;
+    use super::RenderOpts;
     use crate::settings::Settings;
 
-    /// The render values are the session's alone; `--ugly` only ever
-    /// turns the raw view on — a session with `set ugly on` stays
-    /// raw without the flag, and the flag turns it on over a session
-    /// with it off.
+    /// The render values are the session's, wholesale.
     #[test]
-    fn test_render_flags_resolve_against_the_session() {
+    fn test_render_opts_come_from_the_session() {
         let session = Settings {
             depth: 6,
             ugly: true,
@@ -2215,16 +2176,12 @@ mod render_flag_tests {
             max_array_values: 3,
             limit: None,
         };
-        let resolved = RenderFlags::default().resolve(&session);
+        let resolved = RenderOpts::from_settings(&session);
         assert_eq!(resolved.depth, 6);
         assert!(resolved.ugly);
         assert_eq!(resolved.max_string_len, 10);
         assert_eq!(resolved.max_array_values, 3);
-
-        let plain = Settings::default();
-        let flags = RenderFlags { ugly: true };
-        assert!(flags.resolve(&plain).ugly, "the flag turns the raw view on");
-        assert!(!RenderFlags::default().resolve(&plain).ugly);
+        assert!(!RenderOpts::from_settings(&Settings::default()).ugly);
     }
 }
 
