@@ -25,29 +25,47 @@ use std::io::{self, IsTerminal};
 #[derive(Clone, Copy)]
 pub struct Theme {
     enabled: bool,
+    /// The columns the output has, when it is a terminal: what a
+    /// listing fits its lines to. Anything else has no edge to fit —
+    /// a pipe, a golden — and gets every name whole.
+    width: Option<usize>,
 }
 
 impl Theme {
     /// No styling: the bytes are the text.
     pub fn plain() -> Self {
-        Self { enabled: false }
+        Self {
+            enabled: false,
+            width: None,
+        }
     }
 
     /// The theme for output going to stdout: styled when stdout is a
-    /// terminal that wants styles.
+    /// terminal that wants styles, and as wide as that terminal.
     pub fn for_stdout() -> Self {
+        let stdout = io::stdout();
+        let tty = stdout.is_terminal();
         Self {
-            enabled: stdout_styles(
-                io::stdout().is_terminal(),
-                std::env::var_os("NO_COLOR"),
-                std::env::var_os("TERM"),
-            ),
+            enabled: stdout_styles(tty, std::env::var_os("NO_COLOR"), std::env::var_os("TERM")),
+            width: tty
+                .then(|| terminal_size::terminal_size_of(&stdout))
+                .flatten()
+                .map(|(w, _)| usize::from(w.0)),
         }
     }
 
     #[cfg(test)]
     pub(crate) fn forced() -> Self {
-        Self { enabled: true }
+        Self {
+            enabled: true,
+            width: None,
+        }
+    }
+
+    /// The terminal's width in columns, or `None` where the output is
+    /// not a terminal.
+    pub fn width(&self) -> Option<usize> {
+        self.width
     }
 
     /// The one emphasis: what the reader came for — the wait target.
@@ -100,14 +118,25 @@ pub(crate) enum Align {
 }
 
 /// A columned listing on its way to being printed: rows are collected,
-/// then rendered with every column padded to its widest cell.
+/// then rendered with every column padded to its widest cell — or,
+/// when the table is told how wide the terminal is, with its name
+/// columns cut so that no line runs past the edge.
 pub(crate) struct Table {
     columns: usize,
     sep: &'static str,
     aligns: Vec<Align>,
+    /// Which columns hold names — type names, symbols — that may be
+    /// cut to make a line fit. Everything else keeps its width.
+    truncatable: Vec<bool>,
+    /// The width to fit lines within, when there is an edge to fit.
+    fit: Option<usize>,
     header: Option<Vec<String>>,
     rows: Vec<Vec<String>>,
 }
+
+/// The least of a name a cut leaves: this many of its characters, and
+/// the ellipsis after them. A line that overflows even so overflows.
+const MIN_NAME: usize = 10;
 
 impl Table {
     /// A table of `columns` columns, every cell left-aligned, columns
@@ -117,9 +146,24 @@ impl Table {
             columns,
             sep: "  ",
             aligns: (0..columns).map(|_| Align::Left).collect(),
+            truncatable: vec![false; columns],
+            fit: None,
             header: None,
             rows: Vec::new(),
         }
+    }
+
+    /// Mark one column as holding names that a fit may cut.
+    pub(crate) fn truncatable(mut self, column: usize) -> Self {
+        self.truncatable[column] = true;
+        self
+    }
+
+    /// Fit every line within `width` columns by cutting the truncatable
+    /// columns, or leave every cell whole for `None`.
+    pub(crate) fn fit(mut self, width: Option<usize>) -> Self {
+        self.fit = width;
+        self
     }
 
     /// Set what separates one column from the next.
@@ -174,30 +218,76 @@ impl Table {
             .unwrap_or(0)
     }
 
+    /// The width each column renders at: its widest cell, or — with a
+    /// fit and the column truncatable — as much of that as leaves the
+    /// line within the fit. The plain columns keep their widths, and
+    /// the truncatable ones share what is left evenly: a column narrow
+    /// enough to fit its share keeps its width and cedes the rest, so
+    /// the columns that overrun split the room between them, each
+    /// keeping at least a name's minimum.
+    fn fitted_widths(&self) -> Vec<usize> {
+        let mut widths: Vec<usize> = (0..self.columns).map(|c| self.width(c)).collect();
+        let Some(fit) = self.fit else {
+            return widths;
+        };
+        let seps = self.sep.chars().count() * self.columns.saturating_sub(1);
+        let plain: usize = (0..self.columns)
+            .filter(|&c| !self.truncatable[c])
+            .map(|c| widths[c])
+            .sum();
+        let mut room = fit.saturating_sub(seps + plain);
+        let mut narrowest_first: Vec<usize> =
+            (0..self.columns).filter(|&c| self.truncatable[c]).collect();
+        narrowest_first.sort_by_key(|&c| widths[c]);
+        for (i, column) in narrowest_first.iter().enumerate() {
+            let share = room / (narrowest_first.len() - i);
+            if widths[*column] > share {
+                widths[*column] = share.max(MIN_NAME + 1);
+            }
+            room = room.saturating_sub(widths[*column]);
+        }
+        widths
+    }
+
+    /// A cell as its column renders it: whole, or — in a truncatable
+    /// column it overruns — cut to the column's width, the last
+    /// character an ellipsis to say so.
+    fn clipped<'a>(&self, column: usize, cell: &'a str, width: usize) -> Cow<'a, str> {
+        match self.truncatable[column] && cell.chars().count() > width {
+            true => {
+                let mut cut: String = cell.chars().take(width - 1).collect();
+                cut.push('…');
+                Cow::Owned(cut)
+            }
+            false => Cow::Borrowed(cell),
+        }
+    }
+
     /// Render every line, the header's first when there is one. Each
     /// cell but the last is padded to its column's width; the last is
     /// appended as it is.
     pub(crate) fn render(&self) -> Vec<String> {
-        let widths: Vec<usize> = (0..self.columns).map(|c| self.width(c)).collect();
+        let widths = self.fitted_widths();
         self.header
             .iter()
             .chain(&self.rows)
             .map(|row| {
                 let mut line = String::new();
                 for (i, cell) in row.iter().enumerate() {
+                    let cell = self.clipped(i, cell, widths[i]);
                     if i + 1 == self.columns {
-                        line.push_str(cell);
+                        line.push_str(&cell);
                         break;
                     }
                     let pad = widths[i] - cell.chars().count();
                     match self.aligns[i] {
                         Align::Left => {
-                            line.push_str(cell);
+                            line.push_str(&cell);
                             line.extend(std::iter::repeat_n(' ', pad));
                         }
                         Align::Right => {
                             line.extend(std::iter::repeat_n(' ', pad));
-                            line.push_str(cell);
+                            line.push_str(&cell);
                         }
                     }
                     line.push_str(self.sep);
@@ -290,6 +380,93 @@ mod tests {
         t.row(["a", "b"]);
         t.row(["ccc", "d"]);
         assert_eq!(rendered(&t), ["a   b", "ccc d"]);
+    }
+
+    /// A fit cuts the truncatable columns and nothing else: a name that
+    /// overruns is cut to the room the other columns leave, an ellipsis
+    /// last, and a name that fits is left whole — as is every cell of a
+    /// column not marked, however long.
+    #[test]
+    fn test_a_fit_cuts_only_the_truncatable_columns() {
+        let mut t = Table::new(3)
+            .header(["ID", "STATE", "FUTURE"])
+            .truncatable(2);
+        t.row(["7", "idle", "a::very::long::future::type::name<T>"]);
+        t.row(["12", "running", "short"]);
+        assert_eq!(
+            t.fit(Some(30)).render(),
+            [
+                "ID  STATE    FUTURE",
+                "7   idle     a::very::long::f…",
+                "12  running  short",
+            ]
+        );
+        let mut t = Table::new(2);
+        t.row(["a plain column that is very long indeed", "b"]);
+        assert_eq!(
+            t.fit(Some(20)).render(),
+            ["a plain column that is very long indeed  b"]
+        );
+    }
+
+    /// Without a fit — a pipe, a golden — nothing is cut, marked or not.
+    #[test]
+    fn test_no_fit_cuts_nothing() {
+        let mut t = Table::new(2).truncatable(1);
+        t.row(["x", "a::very::long::future::type::name<T>"]);
+        assert_eq!(
+            t.fit(None).render(),
+            ["x  a::very::long::future::type::name<T>"]
+        );
+    }
+
+    /// A cut keeps at least ten characters of the name before its
+    /// ellipsis, even where that still overruns the fit.
+    #[test]
+    fn test_a_cut_keeps_at_least_ten_characters() {
+        let mut t = Table::new(2).truncatable(1);
+        t.row(["a wide plain cell", "abcdefghijklmnopqrstuvwxyz"]);
+        assert_eq!(t.fit(Some(20)).render(), ["a wide plain cell  abcdefghij…"]);
+        // Exactly at the fit, the name is whole; one past it, it is cut.
+        let mut t = Table::new(2).truncatable(1);
+        t.row(["ab", "cdefghijklmnop"]);
+        assert_eq!(t.fit(Some(18)).render(), ["ab  cdefghijklmnop"]);
+        let mut t = Table::new(2).truncatable(1);
+        t.row(["ab", "cdefghijklmnopq"]);
+        assert_eq!(t.fit(Some(18)).render(), ["ab  cdefghijklmno…"]);
+    }
+
+    /// Two truncatable columns that both overrun split the room
+    /// evenly, and a padded middle column is capped once for the whole
+    /// table, so the rows stay aligned under it.
+    #[test]
+    fn test_truncatable_columns_split_the_room_evenly() {
+        let mut t = Table::new(3).truncatable(1).truncatable(2);
+        t.row([
+            "1",
+            "waiting::on::a::long::type::name",
+            "future::type::name::that::is::long",
+        ]);
+        t.row(["2", "short", "tiny"]);
+        assert_eq!(
+            t.fit(Some(40)).render(),
+            [
+                "1  waiting::on::a::…  future::type::nam…",
+                "2  short              tiny",
+            ]
+        );
+    }
+
+    /// A truncatable column that fits its share keeps its width, and
+    /// what it does not use goes to the one that overruns.
+    #[test]
+    fn test_a_narrow_truncatable_column_cedes_its_room() {
+        let mut t = Table::new(3).truncatable(1).truncatable(2);
+        t.row(["1", "short", "future::type::name::that::is::long::indeed"]);
+        assert_eq!(
+            t.fit(Some(40)).render(),
+            ["1  short  future::type::name::that::is:…"]
+        );
     }
 
     /// Stdout gets styles only as a terminal that has not refused them:

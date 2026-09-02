@@ -272,6 +272,7 @@ fn print_future_table(
     rows: &[&FutureRow],
     groups: bool,
     limit: Option<usize>,
+    fit: Option<usize>,
     out: &mut dyn io::Write,
 ) -> Result<()> {
     let shown = limit.unwrap_or(rows.len()).min(rows.len());
@@ -280,7 +281,14 @@ fn print_future_table(
         header.push("RT");
     }
     header.extend(["HELD IN", "STATE", "WAITING ON", "FUTURE"]);
-    let mut table = crate::output::Table::new(header.len()).header(header);
+    let columns = header.len();
+    // The wait and the future are type names: what a terminal cuts
+    // to keep a row on one line.
+    let mut table = crate::output::Table::new(columns)
+        .header(header)
+        .truncatable(columns - 2)
+        .truncatable(columns - 1)
+        .fit(fit);
     for row in &rows[..shown] {
         table.row(row_cells(row, groups));
     }
@@ -698,13 +706,20 @@ pub(crate) fn exec_futures<T: proc::Target>(
     }
 
     if let Some(field) = group {
-        return exec_group(session, &cmd, field, &survivors, out);
+        return exec_group(
+            session,
+            &cmd,
+            field,
+            &survivors,
+            session.fit_width(theme),
+            out,
+        );
     }
 
     let groups = !session.group_tags().is_empty();
     if !cmd.verbose {
         let selected: Vec<&FutureRow> = survivors.iter().map(|&i| &rows[i]).collect();
-        print_future_table(&selected, groups, cmd.limit, out)?;
+        print_future_table(&selected, groups, cmd.limit, session.fit_width(theme), out)?;
         print_warnings(&session.tasks.errors)?;
         return Ok(());
     }
@@ -744,6 +759,7 @@ fn exec_group<T: proc::Target>(
     cmd: &FuturesCmd,
     field: Field,
     survivors: &[usize],
+    fit: Option<usize>,
     out: &mut dyn io::Write,
 ) -> Result<()> {
     let rows = rows(session);
@@ -768,11 +784,11 @@ fn exec_group<T: proc::Target>(
         }
     } else {
         let heading = field.name().replace('-', " ").to_uppercase();
-        let mut table = crate::output::Table::new(3).align_right(0).header([
-            "COUNT".to_string(),
-            heading,
-            "FUTURES".to_string(),
-        ]);
+        let mut table = crate::output::Table::new(3)
+            .align_right(0)
+            .header(["COUNT".to_string(), heading, "FUTURES".to_string()])
+            .truncatable(1)
+            .fit(fit);
         for (value, members) in &buckets[..shown] {
             table.row([
                 members.len().to_string(),

@@ -538,6 +538,7 @@ dependencies = [
  "serde",
  "subprocess",
  "tempfile",
+ "terminal_size",
  "testrun",
  "tracing-subscriber",
  "unwind",

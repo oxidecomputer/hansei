@@ -45,6 +45,7 @@ proptest = { version = "1", default-features = false, features = ["std"] }
 rayon = "1.12"
 proc = { path = "proc", version = "0.1.0" }
 reedline = "0.38"
+terminal_size = "0.4"
 reify = { path = "reify", version = "0.1.0" }
 regex = "1.12"
 rustc-demangle = "0.1.27"

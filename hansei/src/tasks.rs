@@ -948,6 +948,7 @@ fn print_task_table(
     rows: &[TaskRow],
     groups: bool,
     limit: Option<usize>,
+    fit: Option<usize>,
     out: &mut dyn io::Write,
 ) -> Result<()> {
     let shown = limit.unwrap_or(rows.len()).min(rows.len());
@@ -956,7 +957,14 @@ fn print_task_table(
         header.push("RT");
     }
     header.extend(["AWAITING AT", "WAITING ON", "FUTURE"]);
-    let mut table = crate::output::Table::new(header.len()).header(header);
+    let columns = header.len();
+    // The wait and the future are type names: what a terminal cuts
+    // to keep a row on one line.
+    let mut table = crate::output::Table::new(columns)
+        .header(header)
+        .truncatable(columns - 2)
+        .truncatable(columns - 1)
+        .fit(fit);
     for row in &rows[..shown] {
         table.row(row_cells(row, groups));
     }
@@ -1382,7 +1390,15 @@ pub(crate) fn exec_tasks<T: proc::Target>(
     }
 
     if let Some(field) = group {
-        return exec_group(session, &cmd, field, survivors, counts, out);
+        return exec_group(
+            session,
+            &cmd,
+            field,
+            survivors,
+            counts,
+            session.fit_width(theme),
+            out,
+        );
     }
 
     // The bare command is the table; -v or --futures ask for the block
@@ -1391,12 +1407,13 @@ pub(crate) fn exec_tasks<T: proc::Target>(
     if !cmd.verbose && !cmd.futures {
         print_warnings(&session.analysis().errors)?;
         let groups = !session.group_tags().is_empty();
+        let fit = session.fit_width(theme);
         match &survivors {
-            None => print_task_table(rows(session), groups, cmd.limit, out)?,
+            None => print_task_table(rows(session), groups, cmd.limit, fit, out)?,
             Some(indices) => {
                 let rows = rows(session);
                 let filtered: Vec<TaskRow> = indices.iter().map(|&i| rows[i].clone()).collect();
-                print_task_table(&filtered, groups, cmd.limit, out)?;
+                print_task_table(&filtered, groups, cmd.limit, fit, out)?;
             }
         }
         print_warnings(&list.errors)?;
@@ -1452,6 +1469,7 @@ fn exec_group<T: proc::Target>(
     field: Field,
     survivors: Option<Vec<usize>>,
     counts: Option<CountsByTask>,
+    fit: Option<usize>,
     out: &mut dyn io::Write,
 ) -> Result<()> {
     print_warnings(&session.analysis().errors)?;
@@ -1499,11 +1517,11 @@ fn exec_group<T: proc::Target>(
         }
     } else {
         let heading = field.name().replace('-', " ").to_uppercase();
-        let mut table = crate::output::Table::new(3).align_right(0).header([
-            "COUNT".to_string(),
-            heading,
-            "TASKS".to_string(),
-        ]);
+        let mut table = crate::output::Table::new(3)
+            .align_right(0)
+            .header(["COUNT".to_string(), heading, "TASKS".to_string()])
+            .truncatable(1)
+            .fit(fit);
         for (value, members) in &buckets[..shown] {
             table.row([
                 members.len().to_string(),
@@ -2223,7 +2241,7 @@ mod table_tests {
         let rows = rows_of(vec![task(1, 0)], vec![wait(1, None)], HashMap::new());
         let print = |groups: bool| {
             let mut out = Vec::new();
-            print_task_table(&rows, groups, None, &mut out).expect("table prints");
+            print_task_table(&rows, groups, None, None, &mut out).expect("table prints");
             String::from_utf8(out).expect("utf8")
         };
         assert!(print(true).contains("RT"), "{}", print(true));
@@ -2282,7 +2300,7 @@ mod table_tests {
             HashMap::new(),
         );
         let mut out = Vec::new();
-        print_task_table(&rows, false, Some(2), &mut out).expect("table prints");
+        print_task_table(&rows, false, Some(2), None, &mut out).expect("table prints");
         let out = String::from_utf8(out).expect("utf8");
         assert!(out.contains("\n1 "), "{out}");
         assert!(out.contains("\n2 "), "{out}");
