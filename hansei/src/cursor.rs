@@ -413,6 +413,7 @@ fn print_root_chain<T: proc::Target>(
         limit: None,
         render,
         theme,
+        fit: session.fit_width(theme),
         heap: heap.as_ref().map(|view| view as &dyn reify::Heap),
     };
     trace::exec_trace(session, root, &opts, out)
@@ -557,6 +558,7 @@ pub(crate) fn exec_locals<T: proc::Target>(
         limit: None,
         render,
         theme,
+        fit: session.fit_width(theme),
         heap: heap.as_ref().map(|view| view as &dyn reify::Heap),
     };
     let extents = session.extents();
@@ -728,6 +730,7 @@ fn print_cursor_frame<T: proc::Target>(
         limit: None,
         render,
         theme,
+        fit: session.fit_width(theme),
         heap: heap.as_ref().map(|view| view as &dyn reify::Heap),
     };
     let wait = match Some(n) == chain.frames.len().checked_sub(1) {

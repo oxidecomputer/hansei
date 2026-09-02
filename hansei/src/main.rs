@@ -687,7 +687,8 @@ pub enum Command {
     /// `trace -v` locals and every other render outright; `limit`
     /// also backs the `--limit` flags, which override the session
     /// value for that command only; `truncate-names` cuts the
-    /// listings' name columns to the terminal's width, an ellipsis
+    /// listings' name columns, and the names ending `trace`'s frame
+    /// lines, to the terminal's width, an ellipsis
     /// marking each cut — a `!` pipeline's output included, since its
     /// last command writes to the same terminal — and never touches
     /// output that is not headed for one. The values live for the
@@ -1312,6 +1313,10 @@ struct TraceOpts<'a> {
     limit: Option<usize>,
     render: RenderOpts,
     theme: output::Theme,
+    /// The width to fit a frame line within by cutting the name that
+    /// ends it — the future's, or a native frame's symbol — from
+    /// [`Session::fit_width`]; `None` leaves every name whole.
+    fit: Option<usize>,
     /// The allocator to corroborate every printed value against, where
     /// the target keeps one; see [`Session::heap_view`]. Carried here
     /// because the render happens deep inside the chain walk, which
@@ -1671,9 +1676,10 @@ impl<'b, T: Target> Session<'b, T> {
         &self.gates
     }
 
-    /// The width a listing fits its name columns within: the
-    /// terminal's, when the output is one and `config truncate-names`
-    /// is on; `None` leaves every name whole.
+    /// The width a listing fits its name columns — and a trace its
+    /// frame lines — within: the terminal's, when the output is one
+    /// and `config truncate-names` is on; `None` leaves every name
+    /// whole.
     pub(crate) fn fit_width(&self, theme: output::Theme) -> Option<usize> {
         match self.settings.borrow().truncate_names {
             true => theme.width(),
@@ -1927,6 +1933,7 @@ pub fn dispatch<T: Target>(
                 limit,
                 render,
                 theme,
+                fit: session.fit_width(theme),
                 heap: heap.as_ref().map(|view| view as &dyn reify::Heap),
             };
             trace::exec_trace(session, target, &opts, out)?

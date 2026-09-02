@@ -435,7 +435,9 @@ pub(crate) fn frame_holds(
 /// Reading convention: frame N is the future stored in frame N+1's
 /// live state. The frame line ends with the type name, so a terminal
 /// soft-wrap belongs to the name and triple-click still copies the
-/// whole logical line.
+/// whole logical line — or, with a fit, the name is cut to the
+/// terminal's edge the way a listing's name column is, and nothing
+/// wraps.
 #[allow(clippy::too_many_arguments)]
 fn print_await_chain<'b, T: proc::Target>(
     ctx: &bundle::Context<'b, T>,
@@ -508,9 +510,13 @@ pub(crate) fn print_frame<'b, T: proc::Target>(
     };
     let name = names::fold_type_name(frame.future.ty.name(), impls);
     let number = format!("#{}", chain.frames.len() - 1 - i);
+    // The line's columns before the name, and the marker after it:
+    // a cut takes from the name alone, so a dyn frame stays marked.
+    let taken = num_width + 2 + KIND_WIDTH + 1 + dyn_marker.len();
+    let name = output::fit_name(&name, taken, opts.fit);
     writeln!(
         out,
-        "{number:<num_width$}  {kind:<13} {}",
+        "{number:<num_width$}  {kind:<KIND_WIDTH$} {}",
         opts.theme.type_name(&format!("{name}{dyn_marker}"))
     )?;
 
@@ -531,6 +537,9 @@ pub(crate) fn print_frame<'b, T: proc::Target>(
     }
     Ok(())
 }
+
+/// The width a frame line's kind column pads to.
+const KIND_WIDTH: usize = 13;
 
 /// Everything under a frame line sits at this indent; entries in a
 /// sub-block one step deeper, their values one more.
@@ -940,8 +949,9 @@ enum NativeLine {
 /// Render the native continuation: the section above the chain, most
 /// recent frame first and unnumbered — a native frame cannot be
 /// selected, so a number would only claim it can. A frame row is the
-/// frame's pc and symbol, the spelling the thread trace uses; a
-/// folded plumbing run and the signal row carry their text alone.
+/// frame's pc and symbol, the spelling the thread trace uses, the
+/// symbol cut to the fit like a chain frame's name; a folded plumbing
+/// run and the signal row carry their text alone.
 /// `fatal` is the target's fatal signal
 /// — only when *this* lwp took it does the section open with the
 /// signal row, since another thread's signal has nothing to do with
@@ -1036,6 +1046,8 @@ fn print_native_section(
                     } else {
                         f.name.as_str()
                     };
+                    // The pc column and the gap after it.
+                    let text = output::fit_name(text, 18 + 2, opts.fit);
                     writeln!(out, "{:#018x}  {text}", f.pc)?;
                 }
                 NativeLine::Fold(r) => {
@@ -1564,6 +1576,20 @@ mod native_section_tests {
         mapped: &dyn Fn(u64) -> bool,
         verbose: bool,
     ) -> String {
+        section_fit(frames, chain, lwp, limit, fatal, mapped, verbose, None)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn section_fit(
+        frames: &[NativeFrame],
+        chain: &[BundleTypeId],
+        lwp: u32,
+        limit: Option<usize>,
+        fatal: Option<&proc::FatalSignal>,
+        mapped: &dyn Fn(u64) -> bool,
+        verbose: bool,
+        fit: Option<usize>,
+    ) -> String {
         let joined = stackjoin::classify(frames, &POLL, chain).expect("the poll frame anchors");
         let mut out = Vec::new();
         let opts = TraceOpts {
@@ -1577,6 +1603,7 @@ mod native_section_tests {
                 max_array_values: reify::DEFAULT_MAX_ARRAY_VALUES,
             },
             theme: output::Theme::plain(),
+            fit,
             heap: None,
         };
         print_native_section(frames, &joined, lwp, fatal, mapped, &opts, &mut out)
@@ -1630,6 +1657,27 @@ mod native_section_tests {
 0x0000000000009000  __lwp_park
 0x0000000000009010  mutex_lock
 [5 rows, 2 shown]
+"
+        );
+    }
+
+    /// With a fit, a frame row's symbol is cut to the edge after the
+    /// pc column like a chain frame's name; the header, a folded run
+    /// and a signal row are sentences, not names, and print whole.
+    #[test]
+    fn test_a_fit_cuts_native_symbols_to_the_edge() {
+        let chain = [BundleTypeId(10)];
+        let frames = [
+            frame(0x9000, "__lwp_park"),
+            frame(0x9010, "std::sync::poison::mutex::Mutex<T>::lock"),
+            poll_frame(0x9060, "nexus::saga::{closure#0}", &[10]),
+            frame(0x5010, "tokio::runtime::task::raw::poll"),
+        ];
+        assert_eq!(
+            section_fit(&frames, &chain, 115, None, None, &|_| true, false, Some(40)),
+            "mid-poll on lwp 115
+0x0000000000009000  __lwp_park
+0x0000000000009010  std::sync::poison::…
 "
         );
     }
@@ -2338,6 +2386,7 @@ mod future_trace_tests {
                     max_array_values: reify::DEFAULT_MAX_ARRAY_VALUES,
                 },
                 theme: output::Theme::plain(),
+                fit: None,
                 heap: None,
             };
             print_await_chain(
@@ -2721,7 +2770,7 @@ mod trace_render_tests {
     /// path — with heap addresses masked so expectations compare
     /// exactly.
     fn trace(program: &str, future: &str, verbose: bool) -> String {
-        trace_with(program, future, verbose, output::Theme::plain(), None)
+        trace_with(program, future, verbose, output::Theme::plain(), None, None)
     }
 
     fn trace_with(
@@ -2730,6 +2779,7 @@ mod trace_render_tests {
         verbose: bool,
         theme: output::Theme,
         limit: Option<usize>,
+        fit: Option<usize>,
     ) -> String {
         let (bundle, snapshot) = testkit::load_any(program);
         let ctx = testkit::context(&bundle, &snapshot);
@@ -2767,6 +2817,7 @@ mod trace_render_tests {
                 max_array_values: reify::DEFAULT_MAX_ARRAY_VALUES,
             },
             theme,
+            fit,
             heap: None,
         };
         print_await_chain(
@@ -2900,6 +2951,7 @@ mod trace_render_tests {
             false,
             output::Theme::plain(),
             Some(2),
+            None,
         );
         assert_eq!(
             rendered,
@@ -2925,6 +2977,32 @@ mod trace_render_tests {
             "#0  future        tokio::sync::oneshot::Receiver<u32>
       (<no_state>, 1 local)
 #1  async fn      dyn_future::boxed_leaf [dyn]
+      awaiting at src/bin/dyn-future.rs:12 (Suspend0, 0 locals)
+#2  async fn      dyn_future::driver
+      awaiting at src/bin/dyn-future.rs:36 (Suspend0, 1 local)
+"
+        );
+    }
+
+    /// With a fit — a terminal's width — a frame line's name is cut to
+    /// the edge, an ellipsis last, the way a listing's name column is:
+    /// the number and kind columns keep their widths, a dyn frame's
+    /// marker survives the cut, a name that fits stays whole, and the
+    /// detail lines under the frames are not names and are never cut.
+    #[test]
+    fn test_a_fit_cuts_frame_names_to_the_edge() {
+        assert_eq!(
+            trace_with(
+                "dyn-future",
+                "dyn_future::driver::{async_fn_env#0}",
+                false,
+                output::Theme::plain(),
+                None,
+                Some(40),
+            ),
+            "#0  future        tokio::sync::oneshot:…
+      (<no_state>, 1 local)
+#1  async fn      dyn_future::box… [dyn]
       awaiting at src/bin/dyn-future.rs:12 (Suspend0, 0 locals)
 #2  async fn      dyn_future::driver
       awaiting at src/bin/dyn-future.rs:36 (Suspend0, 1 local)
@@ -2972,6 +3050,7 @@ mod trace_render_tests {
                 max_array_values: reify::DEFAULT_MAX_ARRAY_VALUES,
             },
             theme: output::Theme::plain(),
+            fit: None,
             heap: None,
         };
         print_await_chain(
@@ -3028,7 +3107,14 @@ mod trace_render_tests {
     #[test]
     fn test_a_terminal_theme_styles_and_the_plain_one_stays_bytes() {
         let future = "futurelock::main::{async_block#0}::{async_block_env#0}";
-        let styled = trace_with("futurelock", future, false, output::Theme::forced(), None);
+        let styled = trace_with(
+            "futurelock",
+            future,
+            false,
+            output::Theme::forced(),
+            None,
+            None,
+        );
         let target = "a tokio::sync::Mutex (semaphore 0xADDR): \
                       1 permit requested, 0 available; wake queue: task 5";
         assert!(
@@ -3062,6 +3148,7 @@ mod trace_render_tests {
             "simple_await::work::{async_fn_env#0}",
             true,
             output::Theme::forced(),
+            None,
             None,
         );
         assert!(
