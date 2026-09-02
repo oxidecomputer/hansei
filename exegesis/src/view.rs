@@ -3,8 +3,6 @@ use crate::reader::DwReader;
 use crate::string_table::StrId;
 use crate::{FuncId, TypeId};
 
-use foldhash::{HashMap, HashMapExt};
-
 use std::num::NonZero;
 
 /// An indexed, read-only view into the deduplicated DWARF type data.
@@ -14,52 +12,13 @@ use std::num::NonZero;
 /// functions.
 pub struct DwView<'a> {
     collector: &'a DwReader<'a>,
-    by_name: HashMap<&'a str, Vec<TypeId>>,
-    funcs_by_name: HashMap<&'a str, Vec<FuncId>>,
 }
 
 impl<'a> DwView<'a> {
-    /// Build an indexed view from a collector.
+    /// The name indexes are the reader's own, built while it finalized;
+    /// a view costs nothing to make.
     pub fn new(collector: &'a DwReader<'a>) -> Self {
-        // The two name indexes are independent and each scans a different
-        // (large) table, so build them concurrently. `collector` is only read
-        // here, and the type index — which walks every type — dominates, so it
-        // gets its own thread while the function index runs on the caller's.
-        let (by_name, funcs_by_name) = std::thread::scope(|scope| {
-            let types = scope.spawn(|| {
-                let mut by_name: HashMap<&'a str, Vec<TypeId>> = HashMap::new();
-                for (id, raw_ty) in collector.canonical_types() {
-                    if let Some(str_id) = raw_ty.name() {
-                        by_name
-                            .entry(collector.strings.get(str_id))
-                            .or_default()
-                            .push(id);
-                    }
-                }
-                by_name
-            });
-
-            let mut funcs_by_name: HashMap<&'a str, Vec<FuncId>> = HashMap::new();
-            for (&id, func) in &collector.functions {
-                if let Some(str_id) = func.name {
-                    funcs_by_name
-                        .entry(collector.strings.get(str_id))
-                        .or_default()
-                        .push(id);
-                }
-            }
-
-            (
-                types.join().expect("type-index thread panicked"),
-                funcs_by_name,
-            )
-        });
-
-        Self {
-            collector,
-            by_name,
-            funcs_by_name,
-        }
+        Self { collector }
     }
 
     // --- Types ---
@@ -72,14 +31,18 @@ impl<'a> DwView<'a> {
         let Some((ns_id, type_name)) = self.resolve_path(path) else {
             return Vec::new();
         };
-        self.by_name
-            .get(type_name)
+        self.collector
+            .strings
+            .find(type_name)
+            .and_then(|name| self.collector.types_by_name.get(&name))
             .map(|ids| {
                 ids.iter()
                     .filter(|&&id| {
-                        self.collector
-                            .canonical_type(id)
-                            .is_some_and(|raw| raw.namespace() == ns_id)
+                        self.collector.is_canonical(id)
+                            && self
+                                .collector
+                                .canonical_type(id)
+                                .is_some_and(|raw| raw.namespace() == ns_id)
                     })
                     .copied()
                     .collect()
@@ -105,8 +68,9 @@ impl<'a> DwView<'a> {
     /// (`"foo::bar"`).
     pub fn find_func(&self, path: &str) -> Option<Func<'a>> {
         let (ns_id, func_name) = self.resolve_path(path)?;
-        self.funcs_by_name
-            .get(func_name)?
+        self.collector
+            .funcs_by_name
+            .get(&self.collector.strings.find(func_name)?)?
             .iter()
             .map(|&id| self.get_func(id))
             .find(|f| f.namespace_id() == ns_id)

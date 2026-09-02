@@ -752,7 +752,6 @@ fn extract_parsed<R>(
     };
 
     let (bundle, stats) = extract_from_view(&view, &symbols, ident, opts, &vtable_types, &image)?;
-    drop(view);
     // The bundle owns everything it carries, so the parse is dead
     // weight from here on. Freeing it is a second or more of serial
     // deallocation the continuation would otherwise wait behind.
@@ -1862,7 +1861,8 @@ mod tests {
         fx
     }
 
-    fn run(fx: &Fx, allow_missing_infra: bool) -> Result<(Bundle, ExtractStats)> {
+    fn run(fx: &mut Fx, allow_missing_infra: bool) -> Result<(Bundle, ExtractStats)> {
+        fx.reader.index_names();
         let view = DwView::new(&fx.reader);
         let opts = ExtractOptions {
             allow_missing_infra,
@@ -1882,8 +1882,8 @@ mod tests {
 
     #[test]
     fn test_extraction_counts_what_it_skipped_and_bound() {
-        let fx = world(false, false);
-        let (_bundle, stats) = run(&fx, true).expect("a permissive extraction succeeds");
+        let mut fx = world(false, false);
+        let (_bundle, stats) = run(&mut fx, true).expect("a permissive extraction succeeds");
 
         assert_eq!(stats.vtable_missing_linkage, 1);
         assert_eq!(stats.dyn_decl_only_self, 1);
@@ -1908,8 +1908,8 @@ mod tests {
 
     #[test]
     fn test_missing_statics_alone_refuse_a_strict_extraction() {
-        let fx = world(true, false);
-        let err = match run(&fx, false) {
+        let mut fx = world(true, false);
+        let err = match run(&mut fx, false) {
             Err(Error::MissingInfra(missing)) => missing,
             other => panic!("expected MissingInfra, got {other:?}"),
         };
@@ -1917,23 +1917,23 @@ mod tests {
         // what refuses the extraction is the statics alone.
         assert!(err.iter().all(|path| !path.contains("Handle")), "{err:?}");
 
-        let (_bundle, stats) = run(&fx, true).expect("the permissive form proceeds");
+        let (_bundle, stats) = run(&mut fx, true).expect("the permissive form proceeds");
         assert_eq!(stats.infra_missing, Vec::<String>::new());
         assert!(!stats.statics_missing.is_empty());
     }
 
     #[test]
     fn test_tokio_unstable_is_read_from_the_vtable_layout() {
-        let fx = world(true, true);
-        let (bundle, _) = run(&fx, true).expect("a permissive extraction succeeds");
+        let mut fx = world(true, true);
+        let (bundle, _) = run(&mut fx, true).expect("a permissive extraction succeeds");
         assert_eq!(bundle.meta.tokio_unstable, Some(true));
 
-        let fx = world(true, false);
-        let (bundle, _) = run(&fx, true).expect("a permissive extraction succeeds");
+        let mut fx = world(true, false);
+        let (bundle, _) = run(&mut fx, true).expect("a permissive extraction succeeds");
         assert_eq!(bundle.meta.tokio_unstable, Some(false));
 
-        let fx = world(false, false);
-        let (bundle, _) = run(&fx, true).expect("a permissive extraction succeeds");
+        let mut fx = world(false, false);
+        let (bundle, _) = run(&mut fx, true).expect("a permissive extraction succeeds");
         assert_eq!(bundle.meta.tokio_unstable, None);
     }
 
@@ -1947,6 +1947,7 @@ mod tests {
         fx.strukt(join_all, Some(combinators), "JoinAll<F>", &[], &[]);
         fx.strukt(my_fut, Some(app), "MyFut", &[], &[]);
 
+        fx.reader.index_names();
         let view = DwView::new(&fx.reader);
         let mut em = Emitter::new(&fx.reader, BTreeMap::new(), None, None);
         let mut stats = ExtractStats::default();
@@ -1976,6 +1977,7 @@ mod tests {
             Some(42),
         );
 
+        fx.reader.index_names();
         let view = DwView::new(&fx.reader);
         let mut em = Emitter::new(&fx.reader, BTreeMap::new(), None, None);
         let mut stats = ExtractStats::default();
