@@ -3,7 +3,7 @@
 //! than under the tasks that hold them.
 
 use crate::tasks::{
-    self, CensusTree, Cmp, EMPTY_BUCKET, Entry, Listing, census_tree, listing_footer,
+    self, CensusTree, Cmp, EMPTY_BUCKET, Entry, Listing, alternatives, census_tree, listing_footer,
     print_future_entry, resolve_rt, task_id,
 };
 use crate::trace::FutureAt;
@@ -537,7 +537,9 @@ enum Matcher {
 #[derive(Debug)]
 struct Clause {
     field: Field,
-    matcher: Matcher,
+    /// The argument's alternatives (`0x10,0x20`): the clause matches
+    /// a row when any one of them does.
+    matchers: Vec<Matcher>,
     /// `--without`: the clause keeps the rows it does *not* match.
     negate: bool,
 }
@@ -550,11 +552,16 @@ fn parse_clauses(with: &[String], without: &[String], handles: &[u64]) -> Result
         let flag = if negate { "--without" } else { "--with" };
         for pair in specs.chunks_exact(2) {
             let field = Field::parse(&pair[0]).with_context(|| flag.to_string())?;
-            let matcher = matcher(field, &pair[1], handles)
+            let matchers = alternatives(&pair[1])
+                .and_then(|alts| {
+                    alts.iter()
+                        .map(|alt| matcher(field, alt, handles))
+                        .collect()
+                })
                 .with_context(|| format!("{flag} {}", field.name()))?;
             clauses.push(Clause {
                 field,
-                matcher,
+                matchers,
                 negate,
             });
         }
@@ -581,16 +588,17 @@ fn matcher(field: Field, arg: &str, handles: &[u64]) -> Result<Matcher> {
     })
 }
 
-/// Whether one row survives one clause.
+/// Whether one row survives one clause: any alternative matching is
+/// a hit, and `--without` keeps the misses.
 fn survives(clause: &Clause, row: &FutureRow) -> bool {
-    let hit = match &clause.matcher {
+    let hit = clause.matchers.iter().any(|matcher| match matcher {
         Matcher::Pattern(p) => field_text(clause.field, row).is_some_and(|t| p.is_match(t)),
         Matcher::Exact(value) => field_text(clause.field, row) == Some(value.as_str()),
         Matcher::Addr(addr) => row.addr == *addr,
         Matcher::Frame(frame) => row.frame == Some(*frame),
         Matcher::Rt(rt) => row.rt == *rt,
         Matcher::Cmp(cmp) => cmp.matches(field_count(clause.field, row)),
-    };
+    });
     hit != clause.negate
 }
 
@@ -859,7 +867,8 @@ fn exec_heading(n: usize, row: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        Clause, Field, FutureRow, Kind, build_rows, exec_heading, group_value, matcher, survives,
+        Clause, Field, FutureRow, Kind, build_rows, exec_heading, group_value, matcher,
+        parse_clauses, survives,
     };
 
     use crate::trace::FutureAt;
@@ -1032,7 +1041,7 @@ mod tests {
         let field = Field::parse(field).expect("a named field");
         Clause {
             field,
-            matcher: matcher(field, arg, &[]).expect("a valid argument"),
+            matchers: vec![matcher(field, arg, &[]).expect("a valid argument")],
             negate,
         }
     }
@@ -1076,6 +1085,39 @@ mod tests {
         assert!(matcher(Field::Kind, "set", &[]).is_err());
         assert!(matcher(Field::Addr, "4000", &[]).is_err());
         assert!(Field::parse("lwp").is_err());
+    }
+
+    /// A clause argument lists alternatives, exact fields included:
+    /// `addr 0x3000,0x4000` keeps either address, and `--without`
+    /// drops both.
+    #[test]
+    fn test_alternatives_or_within_a_clause() {
+        let census = census(
+            vec![held(0, 0x3000, None), held(1, 0x5000, None)],
+            vec![set(0, vec![child(0x4000, Some("app::child"))])],
+        );
+        let rows = rows_of(&census);
+        let addrs = |with: &[&str], without: &[&str]| -> Vec<u64> {
+            let with: Vec<String> = with.iter().map(|s| s.to_string()).collect();
+            let without: Vec<String> = without.iter().map(|s| s.to_string()).collect();
+            let clauses = parse_clauses(&with, &without, &[]).expect("the clauses parse");
+            rows.iter()
+                .filter(|r| clauses.iter().all(|c| survives(c, r)))
+                .map(|r| r.addr)
+                .collect()
+        };
+        assert_eq!(addrs(&["addr", "0x3000,0x4000"], &[]), [0x3000, 0x4000]);
+        assert_eq!(addrs(&[], &["addr", "0x3000,0x4000"]), [0x5000]);
+        assert_eq!(
+            addrs(&["kind", "held,child"], &[]),
+            [0x3000, 0x4000, 0x5000]
+        );
+        assert_eq!(
+            addrs(&["kind", "held,child"], &["addr", "0x5000"]),
+            [0x3000, 0x4000]
+        );
+        let err = parse_clauses(&["kind".into(), "held,set".into()], &[], &[]).unwrap_err();
+        assert!(format!("{err:#}").contains("--with kind"), "{err:#}");
     }
 
     /// Only the first heading goes without a blank line above it.

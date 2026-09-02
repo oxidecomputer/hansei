@@ -269,10 +269,22 @@ fn target_values<T: proc::Target>(
     values
         .into_iter()
         .map(|spelled| TargetValue {
-            insert: line_spelling(&spelled, pattern),
+            insert: clause_spelling(&spelled, pattern),
             spelled,
         })
         .collect()
+}
+
+/// How a value is spelled into a `--with FIELD ARG` word: as
+/// [`line_spelling`] has it, with a comma the value holds escaped,
+/// since ARG reads an unescaped one as separating alternatives.
+fn clause_spelling(value: &str, pattern: bool) -> String {
+    let text = if pattern {
+        regex::escape(value)
+    } else {
+        value.to_string()
+    };
+    quoted_for_line(text.replace(',', "\\,"))
 }
 
 /// How a value is spelled back into the line: see [`TargetValue`].
@@ -282,6 +294,12 @@ fn line_spelling(value: &str, pattern: bool) -> String {
     } else {
         value.to_string()
     };
+    quoted_for_line(text)
+}
+
+/// `text` as one word of the line: quoted where the tokenizer would
+/// otherwise split it or read a quote of its own.
+fn quoted_for_line(text: String) -> String {
     if !text
         .chars()
         .any(|c| c.is_whitespace() || c == ';' || c == '"' || c == '\'')
@@ -905,7 +923,7 @@ fn candidates(
     if let Some((opt, taken)) = &pending
         && (!current.starts_with('-') || opt.is_allow_hyphen_values_set())
     {
-        return values_of(cmd, opt, taken, &positional_words, answer);
+        return values_of(cmd, opt, taken, &positional_words, current, answer);
     }
     if current.starts_with('-') {
         // Only the long spellings: `-` alone expands to them, and a
@@ -932,7 +950,14 @@ fn candidates(
                 .filter(|a| a.get_num_args().expect("built").max_values() > 1)
         });
     match positional {
-        Some(arg) => values_of(cmd, arg, &positional_words, &positional_words, answer),
+        Some(arg) => values_of(
+            cmd,
+            arg,
+            &positional_words,
+            &positional_words,
+            current,
+            answer,
+        ),
         None => Vec::new(),
     }
 }
@@ -1021,6 +1046,7 @@ fn values_of(
     arg: &clap::Arg,
     taken: &[&str],
     positional_words: &[&str],
+    current: &str,
     answer: &mut dyn FnMut(Ask) -> Vec<TargetValue>,
 ) -> Vec<Candidate> {
     let declared = arg.get_possible_values();
@@ -1037,17 +1063,21 @@ fn values_of(
         ("futures", "with" | "without" | "group", []) => crate::futures::Field::names().collect(),
         ("threads", "with" | "without" | "group", []) => crate::threads::Field::names().collect(),
         // The clause's argument: what the target holds for the field
-        // the first word named.
+        // the first word named. The argument is a comma list of
+        // alternatives, so the word completes at its last unescaped
+        // comma — the alternatives before it kept, the one being
+        // typed offered.
         ("tasks" | "futures" | "threads", "with" | "without", [field]) => {
             let ask = Ask::Values {
                 command: command.to_string(),
                 field: field.to_string(),
             };
+            let (head, _) = current.split_at(last_alternative(current));
             return answer(ask)
                 .into_iter()
                 .map(|v| Candidate {
-                    spelled: v.spelled,
-                    insert: v.insert,
+                    spelled: format!("{head}{}", v.spelled),
+                    insert: format!("{head}{}", v.insert),
                     description: None,
                     space: true,
                 })
@@ -1064,6 +1094,22 @@ fn values_of(
         .into_iter()
         .map(|n| Candidate::word(n, None))
         .collect()
+}
+
+/// Where the alternative under the cursor starts in a clause argument:
+/// just past the last comma no backslash escapes, or 0 for a word
+/// with none — the split `tasks::alternatives` makes.
+fn last_alternative(word: &str) -> usize {
+    let mut start = 0;
+    let mut escaped = false;
+    for (i, c) in word.char_indices() {
+        match c {
+            '\\' => escaped = !escaped,
+            ',' if !escaped => start = i + 1,
+            _ => escaped = false,
+        }
+    }
+    start
 }
 
 /// readline's word motions, over reedline's own: a word is a run of
@@ -1479,7 +1525,7 @@ mod tests {
                 .into_iter()
                 .map(|v| TargetValue {
                     spelled: v.to_string(),
-                    insert: line_spelling(v, pattern),
+                    insert: clause_spelling(v, pattern),
                 })
                 .collect()
         }));
@@ -1510,9 +1556,11 @@ mod tests {
             complete_with(&mut c, "tasks --without state ru"),
             ["running"]
         );
+        // A comma in the value is escaped: ARG reads a bare one as
+        // separating alternatives.
         assert_eq!(
             complete_with(&mut c, "tasks --with type Vec<("),
-            ["\"Vec<\\(u64, u64\\)>\""]
+            ["\"Vec<\\(u64\\, u64\\)>\""]
         );
         assert_eq!(complete_with(&mut c, "tasks --with lwp "), ["7"]);
         assert_eq!(complete_with(&mut c, "threads --with has-task y"), ["yes"]);
@@ -1524,6 +1572,35 @@ mod tests {
             ["--group"]
         );
         assert!(complete_with(&mut c, "tasks --group state ").is_empty());
+    }
+
+    /// A clause argument completes at its last unescaped comma: the
+    /// alternatives already typed stay, and the one under the cursor
+    /// is offered from the field's values — quoted on its own where
+    /// it needs to be, which the tokenizer joins to what precedes it.
+    #[test]
+    fn test_completion_continues_a_clauses_alternatives() {
+        let (mut c, _) = stateful_completer();
+        assert_eq!(
+            complete_with(&mut c, "tasks --with state idle,ru"),
+            ["idle,running"]
+        );
+        assert_eq!(
+            complete_with(&mut c, "tasks --without state idle,"),
+            ["idle,idle", "idle,\"idle \\(cancelled\\)\"", "idle,running"]
+        );
+        assert_eq!(
+            complete_with(&mut c, "tasks --with state running,idle,ru"),
+            ["running,idle,running"]
+        );
+        // An escaped comma is part of the alternative, so nothing
+        // starts over after it.
+        assert!(complete_with(&mut c, "tasks --with state a\\,ru").is_empty());
+        assert_eq!(last_alternative("a,b"), 2);
+        assert_eq!(last_alternative("a\\,b"), 0);
+        assert_eq!(last_alternative("a\\\\,b"), 4);
+        assert_eq!(last_alternative("abc"), 0);
+        assert_eq!(last_alternative("a,"), 2);
     }
 
     /// Each (command, field) is asked of the target once; a second

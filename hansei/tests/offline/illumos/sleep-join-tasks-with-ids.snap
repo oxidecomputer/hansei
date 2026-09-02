@@ -1,0 +1,7 @@
+---
+source: hansei/src/offline.rs
+description: "`tasks --with id 3,6` over illumos/sleep-join"
+---
+ID  STATE  AWAITING AT               WAITING ON                     FUTURE
+3   idle   src/bin/sleep-join.rs:12  timer (deadline TS)  async fn sleep_join::sleeper
+1 task
