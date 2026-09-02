@@ -1079,24 +1079,40 @@ fn bind_readline_words(kb: &mut Keybindings) {
     );
 }
 
+/// Tab opens the completion menu and then walks it forward; Shift+Tab
+/// walks it back. The terminal reports Shift+Tab as `BackTab` with the
+/// shift modifier still set, so that is the key it binds.
+fn bind_completion_menu(kb: &mut Keybindings) {
+    kb.add_binding(
+        KeyModifiers::NONE,
+        KeyCode::Tab,
+        ReedlineEvent::UntilFound(vec![
+            ReedlineEvent::Menu(COMPLETION_MENU.to_string()),
+            ReedlineEvent::MenuNext,
+        ]),
+    );
+    kb.add_binding(
+        KeyModifiers::SHIFT,
+        KeyCode::BackTab,
+        ReedlineEvent::MenuPrevious,
+    );
+}
+
+/// The name the completion menu is registered under, which is how the
+/// Tab binding refers to it.
+const COMPLETION_MENU: &str = "commands";
+
 /// The editor: Tab completes through [`LineCompleter`], whose target
 /// values come from `source`.
 fn line_editor(source: ValueSource) -> Reedline {
     let mut keybindings = default_emacs_keybindings();
     bind_readline_words(&mut keybindings);
-    keybindings.add_binding(
-        KeyModifiers::NONE,
-        KeyCode::Tab,
-        ReedlineEvent::UntilFound(vec![
-            ReedlineEvent::Menu("commands".to_string()),
-            ReedlineEvent::MenuNext,
-        ]),
-    );
+    bind_completion_menu(&mut keybindings);
 
     let editor = Reedline::create()
         .with_completer(Box::new(LineCompleter::new(source)))
         .with_menu(ReedlineMenu::EngineCompleter(Box::new(
-            ColumnarMenu::default().with_name("commands"),
+            ColumnarMenu::default().with_name(COMPLETION_MENU),
         )))
         .with_edit_mode(Box::new(Emacs::new(keybindings)));
 
@@ -1684,6 +1700,25 @@ mod tests {
         }
         assert_eq!(completions("tas"), ["task", "tasks"]);
         assert_eq!(completions("cen"), ["census"]);
+    }
+
+    /// Tab opens the menu (or steps forward through it) and Shift+Tab
+    /// steps back.
+    #[test]
+    fn test_tab_and_shift_tab_walk_the_completion_menu() {
+        let mut kb = default_emacs_keybindings();
+        bind_completion_menu(&mut kb);
+        assert_eq!(
+            kb.find_binding(KeyModifiers::NONE, KeyCode::Tab),
+            Some(ReedlineEvent::UntilFound(vec![
+                ReedlineEvent::Menu(COMPLETION_MENU.to_string()),
+                ReedlineEvent::MenuNext,
+            ]))
+        );
+        assert_eq!(
+            kb.find_binding(KeyModifiers::SHIFT, KeyCode::BackTab),
+            Some(ReedlineEvent::MenuPrevious)
+        );
     }
 
     /// The word motions stop where readline's do: `M-b` from the end
