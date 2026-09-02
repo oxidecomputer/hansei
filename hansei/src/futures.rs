@@ -14,7 +14,9 @@ use anyhow::{Context as _, Result};
 use hansei_bundle::names;
 use hansei_runtime::tokio::{bundle, census};
 
+use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use std::collections::{BTreeMap, HashMap};
+
 use std::io;
 
 /// Which of the census's two populations a row came from.
@@ -106,15 +108,30 @@ pub(crate) fn build_rows(
         census,
         tree: &tree,
         impls,
+        task_at: list
+            .tasks
+            .iter()
+            .enumerate()
+            .map(|(i, t)| (t.addr.0, i))
+            .collect(),
     };
-    let mut out = Vec::new();
-    for roots in tree.roots.values() {
-        for entry in roots {
-            rows.push(*entry, &mut out);
-        }
-    }
-    out
+    // Each root's rows are independent of every other's, and inside a
+    // root the fan-out continues wherever a find has many siblings —
+    // the census's biggest finds are sets with tens of thousands of
+    // children — so the build is parallel at every level and the rows
+    // still come out in the listing's order.
+    let roots: Vec<&Vec<Entry<'_>>> = tree.roots.values().collect();
+    roots
+        .par_iter()
+        .map(|entries| rows.rows_of_all(entries))
+        .flatten_iter()
+        .collect()
 }
+
+/// Below this many siblings a find's rows are built on the calling
+/// thread; splitting a handful across the pool costs more than the
+/// rows do.
+const PARALLEL_ROWS: usize = 64;
 
 /// What building a row reads: the census the finds are in, the tree
 /// that says what is inside each, and the task listing the owner is
@@ -124,34 +141,62 @@ struct Rows<'a> {
     census: &'a census::FutureCensus,
     tree: &'a CensusTree<'a>,
     impls: &'a names::ImplFold,
+    /// Task index by address, for the rows that wait on a task: a
+    /// scan of the listing per row is a scan of megabytes per row.
+    task_at: HashMap<u64, usize>,
 }
 
 impl Rows<'_> {
-    /// Push one find's rows — a held future's own, or one per live
-    /// child of a set — each followed by the rows of what the census
-    /// found inside it. A join set holds tasks, which have rows of
-    /// their own in `tasks`, so it contributes none here.
-    fn push(&self, entry: Entry<'_>, out: &mut Vec<FutureRow>) {
-        let inside = |via: census::Via, out: &mut Vec<FutureRow>| {
-            for entry in self.tree.nested.get(&via).into_iter().flatten() {
-                self.push(*entry, out);
-            }
-        };
+    /// The rows of several finds in order, built side by side once
+    /// there are enough of them for the split to pay for itself.
+    fn rows_of_all(&self, entries: &[Entry<'_>]) -> Vec<FutureRow> {
+        if entries.len() < PARALLEL_ROWS {
+            return entries.iter().flat_map(|e| self.rows_of(*e)).collect();
+        }
+        entries
+            .par_iter()
+            .map(|e| self.rows_of(*e))
+            .flatten_iter()
+            .collect()
+    }
+
+    /// The rows the census found inside one find.
+    fn rows_under(&self, via: census::Via) -> Vec<FutureRow> {
+        match self.tree.nested.get(&via) {
+            Some(entries) => self.rows_of_all(entries),
+            None => Vec::new(),
+        }
+    }
+
+    /// One find's rows — a held future's own, or one per live child
+    /// of a set — each followed by the rows of what the census found
+    /// inside it. A join set holds tasks, which have rows of their own
+    /// in `tasks`, so it contributes none here.
+    fn rows_of(&self, entry: Entry<'_>) -> Vec<FutureRow> {
         match entry {
             Entry::Held(i, h) => {
-                out.push(self.held(i, h));
-                inside(census::Via::Held(i), out);
+                let mut out = vec![self.held(i, h)];
+                out.extend(self.rows_under(census::Via::Held(i)));
+                out
             }
             Entry::Set(set, s) => {
-                for (child, c) in s.children.iter().enumerate() {
-                    let Some(future) = &c.future else {
-                        continue;
-                    };
-                    out.push(self.child(set, child, s, c, future));
-                    inside(census::Via::SetChild { set, child }, out);
+                let live: Vec<(usize, &census::SetChild, &str)> = s
+                    .children
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(child, c)| Some((child, c, c.future.as_deref()?)))
+                    .collect();
+                let child_rows = |&(child, c, future): &(usize, &census::SetChild, &str)| {
+                    let mut out = vec![self.child(set, child, s, c, future)];
+                    out.extend(self.rows_under(census::Via::SetChild { set, child }));
+                    out
+                };
+                if live.len() < PARALLEL_ROWS {
+                    return live.iter().flat_map(child_rows).collect();
                 }
+                live.par_iter().map(child_rows).flatten_iter().collect()
             }
-            Entry::JoinSet(_) => {}
+            Entry::JoinSet(_) => Vec::new(),
         }
     }
 
@@ -175,7 +220,13 @@ impl Rows<'_> {
             via: h.via,
             state: h.state.clone(),
             waiting_on: h.waiting_on.clone(),
-            waiting_kind: waiting_kind(h.wait, h.leaf.as_deref(), self.list, self.impls),
+            waiting_kind: waiting_kind(
+                h.wait,
+                h.leaf.as_deref(),
+                self.list,
+                &self.task_at,
+                self.impls,
+            ),
             future: names::display_future_name(&h.future, self.impls),
             depth: h.depth,
             holds: inside.held,
@@ -206,7 +257,13 @@ impl Rows<'_> {
             via: s.via,
             state: c.state.clone(),
             waiting_on: c.waiting_on.clone(),
-            waiting_kind: waiting_kind(c.wait, c.leaf.as_deref(), self.list, self.impls),
+            waiting_kind: waiting_kind(
+                c.wait,
+                c.leaf.as_deref(),
+                self.list,
+                &self.task_at,
+                self.impls,
+            ),
             future: names::display_future_name(future, self.impls),
             depth: c.depth,
             holds: inside.held,
@@ -224,16 +281,15 @@ fn waiting_kind(
     wait: Option<bundle::WaitKind>,
     leaf: Option<&str>,
     list: &bundle::TaskList,
+    task_at: &HashMap<u64, usize>,
     impls: &names::ImplFold,
 ) -> Option<String> {
     match (wait, leaf) {
         (Some(bundle::WaitKind::Timer { .. }), _) => Some("timer".to_string()),
-        (Some(bundle::WaitKind::Task { addr }), _) => {
-            Some(match list.tasks.iter().position(|t| t.addr.0 == addr) {
-                Some(index) => tasks::task_label(list, index),
-                None => format!("the task at {addr:#x}"),
-            })
-        }
+        (Some(bundle::WaitKind::Task { addr }), _) => Some(match task_at.get(&addr) {
+            Some(&index) => tasks::task_label(list, index),
+            None => format!("the task at {addr:#x}"),
+        }),
         (Some(bundle::WaitKind::Io), _) => Some("io".to_string()),
         (Some(bundle::WaitKind::Semaphore { owner }), _) => Some(match owner {
             Some(owner) => format!("a {owner} (semaphore)"),
