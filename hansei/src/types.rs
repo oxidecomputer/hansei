@@ -9,6 +9,7 @@
 //! line that names it.
 
 use crate::output;
+use crate::summary;
 
 use anyhow::{Result, bail};
 use hansei_bundle::{
@@ -285,10 +286,7 @@ pub fn find(
     if let Some((seen, definitions)) = previous {
         write_name(out, seen, &definitions)?;
     }
-    match count {
-        1 => writeln!(out, "\n1 type")?,
-        n => writeln!(out, "\n{n} types")?,
-    }
+    writeln!(out, "\n[{}]", summary::counted(count, "type"))?;
     Ok(())
 }
 
@@ -875,7 +873,7 @@ mod tests {
         // the session cannot take in a name (an array type's `;`).
         let out = found("Node");
         assert!(out.contains("Node  (type 1)\n"), "{out}");
-        assert!(out.ends_with("1 type\n"), "{out}");
+        assert!(out.ends_with("[1 type]\n"), "{out}");
 
         // Repeated definitions of one name collapse into one line,
         // which carries the ids the shared name cannot tell apart.
@@ -884,10 +882,10 @@ mod tests {
             out.contains("dup::Type  (2 definitions: type 11, type 12)"),
             "{out}"
         );
-        assert!(out.ends_with("1 type\n"), "{out}");
+        assert!(out.ends_with("[1 type]\n"), "{out}");
 
         let out = found("no_such_needle");
-        assert!(out.ends_with("0 types\n"), "{out}");
+        assert!(out.ends_with("[0 types]\n"), "{out}");
 
         // An empty needle matches every named type.
         let out = found("");

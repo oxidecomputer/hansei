@@ -5,4 +5,4 @@ description: "`threads --group role` over linux-floor/unordered"
 COUNT  ROLE             LWPS
     2  worker           1149388, 1149389
     1  entered runtime  1149386
-2 groups
+[2 groups]

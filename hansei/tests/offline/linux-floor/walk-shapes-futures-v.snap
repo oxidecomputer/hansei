@@ -20,4 +20,4 @@ Future 0xADDR: async fn tokio::sync::mutex::Mutex::lock<()>
     Held futures: 0
     Join sets: 0
 
-2 futures
+[2 futures]

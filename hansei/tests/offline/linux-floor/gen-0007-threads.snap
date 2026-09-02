@@ -6,4 +6,4 @@ LWP      NAME  ROLE                 TASK  FRAME 0
 1150654  —     entered runtime      —     0xADDR
 1150656  —     worker 0, in driver  —     0xADDR
 1150657  —     worker 1, parked     —     0xADDR
-3 threads
+[3 threads]

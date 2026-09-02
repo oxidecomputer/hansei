@@ -45,4 +45,4 @@ Task 4: async fn foreign_runtime::local_sleeper
     Held futures: 0
     Join sets: 0
 
-4 tasks
+[4 tasks]

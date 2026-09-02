@@ -4,4 +4,4 @@ description: "`futures --group waiting-on` over linux/futurelock"
 ---
 COUNT  WAITING ON                        FUTURES
     1  a tokio::sync::Mutex (semaphore)  0xADDR
-1 group
+[1 group]

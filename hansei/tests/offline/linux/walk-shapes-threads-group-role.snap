@@ -5,4 +5,4 @@ description: "`threads --group role` over linux/walk-shapes"
 COUNT  ROLE             LWPS
     2  entered runtime  1146698, 1146699
     1  block_on caller  1146696
-2 groups
+[2 groups]

@@ -975,12 +975,13 @@ fn print_task_table(
     Ok(())
 }
 
-/// The line under a listing: the plain count when everything printed,
-/// both numbers when a limit cut it — the only truncation there is.
+/// The line under a listing, bracketed to stand apart from the rows:
+/// the count when everything printed, both numbers when a limit cut
+/// it — the only truncation there is.
 pub(crate) fn listing_footer(total: usize, shown: usize, noun: &str) -> String {
     match shown < total {
         true => format!("[{}, {shown} shown]", summary::counted(total, noun)),
-        false => summary::counted(total, noun),
+        false => format!("[{}]", summary::counted(total, noun)),
     }
 }
 
@@ -2264,17 +2265,18 @@ mod table_tests {
         assert_eq!(rows[2].lwp, None);
     }
 
-    /// The footer is the only truncation: the plain count when
-    /// everything printed, both numbers when a limit cut the listing.
+    /// The footer is the only truncation: the count alone when
+    /// everything printed, both numbers when a limit cut the listing,
+    /// and brackets either way.
     #[test]
     fn test_the_footer_counts_the_cut() {
         assert_eq!(
             listing_footer(22498, 100, "task"),
             "[22498 tasks, 100 shown]"
         );
-        assert_eq!(listing_footer(2, 2, "task"), "2 tasks");
-        assert_eq!(listing_footer(1, 1, "task"), "1 task");
-        assert_eq!(listing_footer(0, 0, "task"), "0 tasks");
+        assert_eq!(listing_footer(2, 2, "task"), "[2 tasks]");
+        assert_eq!(listing_footer(1, 1, "task"), "[1 task]");
+        assert_eq!(listing_footer(0, 0, "task"), "[0 tasks]");
         assert_eq!(listing_footer(2, 1, "root"), "[2 roots, 1 shown]");
     }
 

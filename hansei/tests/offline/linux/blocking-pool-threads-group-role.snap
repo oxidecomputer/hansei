@@ -5,4 +5,4 @@ description: "`threads --group role` over linux/blocking-pool"
 COUNT  ROLE             LWPS
     2  entered runtime  1146883, 1146887
     2  worker           1146885, 1146886
-2 groups
+[2 groups]

@@ -5,4 +5,4 @@ description: "`threads --group role` over linux-floor/nested-await"
 COUNT  ROLE             LWPS
     2  worker           1148443, 1148444
     1  entered runtime  1148441
-2 groups
+[2 groups]

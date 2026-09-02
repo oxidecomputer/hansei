@@ -4,4 +4,4 @@ description: "`tasks --group waker` over linux-floor/dyn-future"
 ---
 COUNT  WAKER    TASKS
     2  <empty>  3, 4
-1 group
+[1 group]

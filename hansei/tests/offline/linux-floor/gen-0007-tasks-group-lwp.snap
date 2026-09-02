@@ -4,4 +4,4 @@ description: "`tasks --group lwp` over linux-floor/gen-0007"
 ---
 COUNT  LWP      TASKS
     5  <empty>  3, 4, 5, …
-1 group
+[1 group]

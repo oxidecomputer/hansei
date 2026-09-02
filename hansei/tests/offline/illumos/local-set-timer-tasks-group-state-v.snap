@@ -36,4 +36,4 @@ Task 3: async fn local_set_timer::sleeper
     Held futures: 0
     Join sets: 0
 
-1 group
+[1 group]

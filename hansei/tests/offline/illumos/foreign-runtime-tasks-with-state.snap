@@ -7,4 +7,4 @@ ID  STATE  RT  AWAITING AT                    WAITING ON                        
 2   idle   1   src/bin/foreign-runtime.rs:51  future core::future::pending::Pending<()>                                                            async fn foreign_runtime::detached
 3   idle   0   src/bin/foreign-runtime.rs:26  task 1                                                                                               async fn foreign_runtime::joiner
 4   idle   2   src/bin/foreign-runtime.rs:63  timer (deadline TS)                                                                        async fn foreign_runtime::local_sleeper
-4 tasks
+[4 tasks]

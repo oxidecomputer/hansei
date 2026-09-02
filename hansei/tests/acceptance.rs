@@ -604,7 +604,7 @@ fn list_tasks(bundle: &Path, core: &Path) -> Vec<TaskRow> {
     let plural = if rows.len() == 1 { "" } else { "s" };
     assert_eq!(
         footer,
-        format!("{} task{plural}", rows.len()),
+        format!("[{} task{plural}]", rows.len()),
         "footer disagrees with the task count"
     );
     rows
@@ -641,7 +641,7 @@ fn test_tasks_lists_a_table_row_per_task() {
         }
         let rest: Vec<&str> = lines.collect();
         let (footer, rows) = rest.split_last().expect("the listing has a footer");
-        assert_eq!(*footer, format!("{} task", rows.len()), "{out}");
+        assert_eq!(*footer, format!("[{} task]", rows.len()), "{out}");
         assert!(rows[0].contains("async fn simple_await::work"), "{out}");
 
         // A limit of zero prints no table at all — a header over
@@ -2300,7 +2300,7 @@ fn test_futures_acceptance() {
             narrowed.starts_with(&format!("Task {}: ", driver.id)),
             "{narrowed}"
         );
-        assert!(narrowed.ends_with("\n1 task\n"), "{narrowed}");
+        assert!(narrowed.ends_with("\n[1 task]\n"), "{narrowed}");
         assert!(narrowed.contains("3 children in flight"), "{narrowed}");
         assert!(
             narrowed.contains("    Join sets: 1 (3 futures)\n"),
@@ -2748,7 +2748,7 @@ fn test_threads_lists_a_table_row_per_lwp() {
         // The table closes with its count; one row per block the -v
         // form prints, so the two listings cover the same population.
         let footer = rows.pop().expect("the listing has a footer");
-        assert_eq!(footer, format!("{} threads", rows.len()), "{out}");
+        assert_eq!(footer, format!("[{} threads]", rows.len()), "{out}");
         let blocks = hansei_ok(&bundle, core, "threads -v");
         assert_eq!(rows.len(), blocks.split("\n\n").count(), "{out}");
         // A worker's row names its place in the run loop; the main
@@ -3151,7 +3151,7 @@ fn test_type_and_find_types() {
 
         let out = hansei_ok(&bundle, core, "find-types simple_await::");
         assert!(out.contains(future), "{out}");
-        assert!(out.trim_end().ends_with(" types"), "{out}");
+        assert!(out.trim_end().ends_with(" types]"), "{out}");
     });
 }
 
@@ -3262,7 +3262,7 @@ fn test_vtables_acceptance() {
         assert!(!out.contains("no entry recorded"), "{out}");
         let count = out.trim_end().lines().last().unwrap_or_default();
         assert!(
-            count.ends_with(" vtable") || count.ends_with(" vtables"),
+            count.ends_with(" vtable]") || count.ends_with(" vtables]"),
             "{out}"
         );
 
@@ -3278,7 +3278,7 @@ fn test_vtables_acceptance() {
             assert!(!out.contains("0x"), "{out}");
             assert!(!out.contains("slot 0"), "{out}");
             let none = hansei_ok(&bundle, core, "vtables no::such::trait");
-            assert!(none.trim_end().ends_with("0 vtables"), "{none}");
+            assert!(none.trim_end().ends_with("[0 vtables]"), "{none}");
             return;
         }
 
@@ -3335,7 +3335,7 @@ fn test_vtables_acceptance() {
 
         // A needle nothing matches is an empty answer, not a failure.
         let none = hansei_ok(&bundle, core, "vtables no::such::trait");
-        assert_eq!(none.trim(), "0 vtables");
+        assert_eq!(none.trim(), "[0 vtables]");
     });
 }
 
@@ -3375,7 +3375,7 @@ fn test_the_allocator_index_answers_for_what_it_can_read() {
             // allocation rather than saying it does not know.
             let out = hansei_ok(&bundle, core, "umem-audit 0x1000 ; tasks");
             assert!(out.contains("no umem metadata in this target"), "{out}");
-            assert!(out.contains("\n1 task\n"), "{out}");
+            assert!(out.contains("\n[1 task]\n"), "{out}");
             let out = hansei_ok(&bundle, core, "whatis 0x1000");
             assert!(!out.contains("Status:"), "{out}");
             return;
@@ -3564,7 +3564,7 @@ fn test_exec_asks_from_the_command_line() {
         );
         assert!(stdout.contains("symbols resolved:"), "{stdout}");
         assert!(stdout.contains("runtime::driver::Handle"), "{stdout}");
-        assert!(stdout.contains("\n1 task\n"), "{stdout}");
+        assert!(stdout.contains("\n[1 task]\n"), "{stdout}");
 
         // A failure is fatal, as it is in a script.
         let out = hansei_exec(&bundle, core, &["trace 99999"]);

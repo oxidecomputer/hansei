@@ -7,4 +7,4 @@ COUNT  WAITING ON                                                               
     1  future gen_0007::GfSel3<core::future::pending::Pending<u64>, core::future::pending::Pending<u64>, core::future::pending::Pending<u64>>  3
     1  future tokio::sync::notify::Notified                                                                                                    4
     1  timer                                                                                                                                   5
-4 groups
+[4 groups]

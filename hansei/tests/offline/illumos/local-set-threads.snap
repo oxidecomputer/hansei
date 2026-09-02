@@ -4,4 +4,4 @@ description: "`threads` over illumos/local-set"
 ---
 LWP  NAME  ROLE             TASK  FRAME 0
 1    —     block_on caller  —     0xADDR
-1 thread
+[1 thread]

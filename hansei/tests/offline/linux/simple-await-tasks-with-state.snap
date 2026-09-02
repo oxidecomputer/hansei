@@ -4,4 +4,4 @@ description: "`tasks --with state idle` over linux/simple-await"
 ---
 ID  STATE  AWAITING AT                 WAITING ON                                  FUTURE
 3   idle   src/bin/simple-await.rs:40  future tokio::sync::oneshot::Receiver<u32>  async fn simple_await::work
-1 task
+[1 task]

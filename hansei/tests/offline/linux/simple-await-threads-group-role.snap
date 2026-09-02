@@ -5,4 +5,4 @@ description: "`threads --group role` over linux/simple-await"
 COUNT  ROLE             LWPS
     2  worker           1144104, 1144105
     1  entered runtime  1144102
-2 groups
+[2 groups]

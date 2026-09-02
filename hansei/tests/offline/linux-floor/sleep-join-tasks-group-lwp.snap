@@ -4,4 +4,4 @@ description: "`tasks --group lwp` over linux-floor/sleep-join"
 ---
 COUNT  LWP      TASKS
     2  <empty>  3, 4
-1 group
+[1 group]

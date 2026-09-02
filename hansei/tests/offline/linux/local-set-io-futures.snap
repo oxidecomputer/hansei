@@ -2,4 +2,4 @@
 source: hansei/src/offline.rs
 description: "`futures` over linux/local-set-io"
 ---
-0 futures
+[0 futures]

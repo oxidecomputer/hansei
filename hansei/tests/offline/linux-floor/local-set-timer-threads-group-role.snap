@@ -4,4 +4,4 @@ description: "`threads --group role` over linux-floor/local-set-timer"
 ---
 COUNT  ROLE             LWPS
     1  block_on caller  1150109
-1 group
+[1 group]

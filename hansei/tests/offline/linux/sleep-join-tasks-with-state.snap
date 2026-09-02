@@ -5,4 +5,4 @@ description: "`tasks --with state idle` over linux/sleep-join"
 ID  STATE  AWAITING AT               WAITING ON                                                     FUTURE
 3   idle   src/bin/sleep-join.rs:12  timer (deadline TS on the target's monotonic clock)  async fn sleep_join::sleeper
 4   idle   src/bin/sleep-join.rs:19  task 3                                                         async fn sleep_join::joiner
-2 tasks
+[2 tasks]

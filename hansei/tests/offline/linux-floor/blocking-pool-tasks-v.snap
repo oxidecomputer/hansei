@@ -49,4 +49,4 @@ Task 7: async fn blocking_pool::queued_waiter
     Held futures: 0
     Join sets: 0
 
-5 tasks
+[5 tasks]

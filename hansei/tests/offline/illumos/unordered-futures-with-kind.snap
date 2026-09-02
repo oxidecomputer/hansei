@@ -8,4 +8,4 @@ ADDR       TASK  HELD IN                                    STATE               
 0xADDR  3     set 0xADDR                              Suspend0 — src/bin/unordered.rs:69   —           async fn unordered::set_member
 0xADDR  3     set 0xADDR, via set child at 0xADDR  Unresumed — src/bin/unordered.rs:36  —           async fn unordered::leaf
 0xADDR  3     set 0xADDR, via set child at 0xADDR  Unresumed — src/bin/unordered.rs:36  —           async fn unordered::leaf
-5 futures
+[5 futures]

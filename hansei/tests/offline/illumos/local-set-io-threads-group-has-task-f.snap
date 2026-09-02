@@ -47,4 +47,4 @@ lwp 1  polling no task  runtime 0 @ 0xADDR
     }
   stack:
     0xADDR  
-1 group
+[1 group]

@@ -5,4 +5,4 @@ description: "`futures --group waiting-on` over linux-floor/walk-shapes"
 COUNT  WAITING ON                        FUTURES
     1  a tokio::sync::Mutex (semaphore)  0xADDR
     1  async fn walk_shapes::deep        0xADDR
-2 groups
+[2 groups]

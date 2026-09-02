@@ -4,4 +4,4 @@ description: "`tasks --group lwp` over linux/joinset"
 ---
 COUNT  LWP      TASKS
     6  <empty>  3, 4, 5, …
-1 group
+[1 group]

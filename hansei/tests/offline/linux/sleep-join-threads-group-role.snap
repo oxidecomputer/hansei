@@ -5,4 +5,4 @@ description: "`threads --group role` over linux/sleep-join"
 COUNT  ROLE             LWPS
     2  worker           1144856, 1144857
     1  entered runtime  1144854
-2 groups
+[2 groups]
