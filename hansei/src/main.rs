@@ -299,10 +299,11 @@ pub enum Command {
         top: usize,
     },
 
-    /// Move the cursor one await frame inward — toward #0, the most
-    /// recently polled frame — and print the frame line it lands on.
-    /// Any words after it are a command to run at the new frame
-    /// (`down locals`); a refused move runs nothing.
+    /// Move the cursor one await frame down the listing — toward the
+    /// chain's root, the frame `trace` prints last — and print the
+    /// frame line it lands on. Any words after it are a command to
+    /// run at the new frame (`down locals`); a refused move runs
+    /// nothing.
     Down {
         /// The command to run after a successful move.
         #[arg(
@@ -1142,10 +1143,11 @@ pub enum Command {
         depth: usize,
     },
 
-    /// Move the cursor one await frame outward — toward the chain's
-    /// root, the bottom of the listing — and print the frame line it
-    /// lands on. Any words after it are a command to run at the new
-    /// frame (`up locals`); a refused move runs nothing.
+    /// Move the cursor one await frame up the listing — toward #0,
+    /// the most recently polled frame, which `trace` prints first —
+    /// and print the frame line it lands on. Any words after it are a
+    /// command to run at the new frame (`up locals`); a refused move
+    /// runs nothing.
     Up {
         /// The command to run after a successful move.
         #[arg(
