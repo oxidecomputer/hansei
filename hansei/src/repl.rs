@@ -164,6 +164,9 @@ enum Ask {
     /// `print`'s arguments up to and including the `.` under the
     /// cursor, or none for the local being typed.
     Members { args: Vec<String> },
+    /// Which recorded type names start with `prefix`: what can stand
+    /// after `print`'s address.
+    Types { prefix: String },
 }
 
 /// The session's answer to a question.
@@ -177,6 +180,13 @@ fn answer<T: proc::Target>(session: &Session<'_, T>, ask: &Ask) -> Vec<TargetVal
             .into_iter()
             .map(|name| TargetValue {
                 insert: name.clone(),
+                spelled: name,
+            })
+            .collect(),
+        Ask::Types { prefix } => crate::types::names_with_prefix(&session.ctx.view, prefix)
+            .into_iter()
+            .map(|name| TargetValue {
+                insert: line_spelling(&name, false),
                 spelled: name,
             })
             .collect(),
@@ -224,12 +234,13 @@ fn edit_loop(events: mpsc::Sender<Event>, prompts: mpsc::Receiver<String>) {
     }
 }
 
-/// One value the target holds for a listing's field: as the listing
-/// spells it, which is what a typed prefix is matched against, and as
-/// the line must carry it — regex-escaped where the field reads a
-/// pattern, so the metacharacters a type name is full of match
-/// themselves, and quoted where it holds a space, so the tokenizer
-/// keeps it one word.
+/// One value the target holds — for a listing's field, or a type name
+/// it records: as the listing spells it, which is what a typed prefix
+/// is matched against, and as the line must carry it — regex-escaped
+/// where the field reads a pattern, so the metacharacters a type name
+/// is full of match themselves, and quoted where it holds a space or
+/// a `;`, so the tokenizer keeps it one word and the command split
+/// leaves it whole.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct TargetValue {
     spelled: String,
@@ -273,7 +284,7 @@ fn line_spelling(value: &str, pattern: bool) -> String {
     };
     if !text
         .chars()
-        .any(|c| c.is_whitespace() || c == '"' || c == '\'')
+        .any(|c| c.is_whitespace() || c == ';' || c == '"' || c == '\'')
     {
         text
     } else if !text.contains('"') {
@@ -312,9 +323,10 @@ fn scripted<T: proc::Target>(session: &Session<'_, T>) -> Result<()> {
 /// asks two questions of one target and a failure part-way through does
 /// not go on to ask the rest. The separator binds looser than anything
 /// else — a `;` ends the command it follows even inside the shell text
-/// after a `!` — with one way out: `\;` is a literal `;`, which is how
-/// an array type (`[usize\; 4]`) crosses the split. That pair is the
-/// whole escape grammar; every other backslash is itself.
+/// after a `!` — with two ways out: double quotes, which is how an
+/// array type (`"[usize; 4]"`) crosses the split, and `\;` for a
+/// literal `;`. That pair is the whole escape grammar; every other
+/// backslash is itself.
 pub(crate) fn execute<T: proc::Target>(
     session: &Session<'_, T>,
     mode: Mode,
@@ -333,13 +345,19 @@ pub(crate) fn execute<T: proc::Target>(
     Ok(Flow::Continue)
 }
 
-/// Split a line at every unescaped `;`, unescaping `\;` to a literal
-/// `;` in each piece. Exactly the two-character sequence `\;` is
-/// special; any other backslash passes through untouched, so nothing
-/// else needs escaping and no name grows a second spelling.
+/// Split a line at every bare `;`. A `;` inside double quotes is part
+/// of the word, the way an array type's name (`"[usize; 4]"`) needs —
+/// the quotes are kept for the tokenizer, which is what drops them —
+/// and `\;` is a literal `;` too, unescaped here. Exactly that
+/// two-character sequence is special; any other backslash passes
+/// through untouched, so nothing else needs escaping and no name grows
+/// a second spelling. Only double quotes shelter a `;`: a single quote
+/// is a lifetime's mark in a type name, and treating it as a quote
+/// would swallow the rest of the line.
 fn split_commands(line: &str) -> Vec<String> {
     let mut commands = Vec::new();
     let mut current = String::new();
+    let mut quoted = false;
     let mut chars = line.chars();
     while let Some(c) = chars.next() {
         match c {
@@ -351,7 +369,11 @@ fn split_commands(line: &str) -> Vec<String> {
                 }
                 None => current.push('\\'),
             },
-            ';' => commands.push(std::mem::take(&mut current)),
+            '"' => {
+                quoted = !quoted;
+                current.push(c);
+            }
+            ';' if !quoted => commands.push(std::mem::take(&mut current)),
             c => current.push(c),
         }
     }
@@ -669,10 +691,11 @@ struct LineCompleter {
     /// asked over a channel while the prompt waits. Tests pass a
     /// closure over fixed rows.
     source: ValueSource,
-    /// Each field's values asked once. A core does not change under a
-    /// session, and the first answer may have cost the census or an
-    /// unwind of every stack. Member names are not cached: they depend
-    /// on where the cursor stands, and cost one frame read.
+    /// Each field's values, and each type prefix's names, asked once.
+    /// A core does not change under a session, and the first answer
+    /// may have cost the census or an unwind of every stack. Member
+    /// names are not cached: they depend on where the cursor stands,
+    /// and cost one frame read.
     cache: HashMap<Ask, Vec<TargetValue>>,
 }
 
@@ -692,7 +715,7 @@ impl LineCompleter {
             return values.clone();
         }
         let values = (self.source)(ask.clone());
-        if matches!(ask, Ask::Values { .. }) {
+        if !matches!(ask, Ask::Members { .. }) {
             self.cache.insert(ask, values.clone());
         }
         values
@@ -917,14 +940,31 @@ fn candidates(
 /// The names a `print` path could continue with. The word under the
 /// cursor completes at its last `.` — the member being typed, the
 /// steps before it kept — and a first word with no `.` is the local
-/// being typed, offered from the frame's own members. An index or a
-/// dereference under the cursor, or a later word with no `.`,
-/// completes nothing.
+/// being typed, offered from the frame's own members. The word after
+/// an address is the type to read it as, offered from the recorded
+/// names with the typed prefix and quoted where the line needs. An
+/// index or a dereference under the cursor, or a later word with no
+/// `.`, completes nothing.
 fn path_candidates(
     rest: &[String],
     current: &str,
     answer: &mut dyn FnMut(Ask) -> Vec<TargetValue>,
 ) -> Vec<Candidate> {
+    if let [addr] = rest
+        && crate::print::is_address(addr)
+    {
+        return answer(Ask::Types {
+            prefix: current.to_string(),
+        })
+        .into_iter()
+        .map(|t| Candidate {
+            spelled: t.spelled,
+            insert: t.insert,
+            description: None,
+            space: true,
+        })
+        .collect();
+    }
     let (stem, partial) = match current.rfind('.') {
         Some(dot) => current.split_at(dot + 1),
         None if rest.is_empty() => ("", current),
@@ -1315,9 +1355,9 @@ mod tests {
     }
 
     /// The split honors exactly one escape: `\;` is a literal `;` and
-    /// never a separator, an unescaped `;` always is one, and every
-    /// other backslash — mid-name, before another character, ending
-    /// the line — passes through untouched.
+    /// never a separator, a bare `;` always is one, and every other
+    /// backslash — mid-name, before another character, ending the
+    /// line — passes through untouched.
     #[test]
     fn test_the_split_honors_the_escaped_separator() {
         assert_eq!(split_commands("tasks ; graph"), ["tasks ", " graph"]);
@@ -1330,6 +1370,24 @@ mod tests {
         assert_eq!(split_commands(r"a \"), [r"a \"]);
         assert_eq!(split_commands("tasks"), ["tasks"]);
         assert_eq!(split_commands("a;;b"), ["a", "", "b"]);
+    }
+
+    /// A `;` inside double quotes is part of the word, quotes kept for
+    /// the tokenizer; a single quote shelters nothing, since a type
+    /// name holds one for a lifetime; an unclosed double quote runs to
+    /// the end of the line.
+    #[test]
+    fn test_the_split_leaves_a_double_quoted_separator_alone() {
+        assert_eq!(
+            split_commands(r#"print 0x10 "[usize; 4]"; graph"#),
+            [r#"print 0x10 "[usize; 4]""#, " graph"]
+        );
+        assert_eq!(
+            split_commands(r#"print 0x10 "Foo<&'a [u8; 2]>" .x; tasks"#),
+            [r#"print 0x10 "Foo<&'a [u8; 2]>" .x"#, " tasks"]
+        );
+        assert_eq!(split_commands("a '[u8; 2]'; b"), ["a '[u8", " 2]'", " b"]);
+        assert_eq!(split_commands(r#"a "b; c"#), [r#"a "b; c"#]);
     }
 
     /// A shared sink that remembers what reached it, for standing in
@@ -1495,8 +1553,25 @@ mod tests {
         let asked = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let log = asked.clone();
         let completer = LineCompleter::new(Box::new(move |ask: Ask| {
-            let Ask::Members { args } = ask else {
-                return Vec::new();
+            let args = match ask {
+                Ask::Members { args } => args,
+                // The types recorded, spelled for the line.
+                Ask::Types { prefix } => {
+                    return [
+                        "alloc::string::String",
+                        "alloc::vec::Vec<(u64, u64)>",
+                        "core::option::Option<&'static str>",
+                        "[u8; 4]",
+                    ]
+                    .into_iter()
+                    .filter(|n| n.starts_with(&prefix))
+                    .map(|n| TargetValue {
+                        spelled: n.to_string(),
+                        insert: line_spelling(n, false),
+                    })
+                    .collect();
+                }
+                Ask::Values { .. } => return Vec::new(),
             };
             log.lock().unwrap().push(args.clone());
             // The path is the words joined, from the frame.
@@ -1577,6 +1652,55 @@ mod tests {
         assert_eq!(asked.lock().unwrap().len(), 2);
     }
 
+    /// After an address the word being typed is a type, offered from
+    /// the recorded names with that prefix — a space after, and quoted
+    /// where a space or a `;` would otherwise split it — and the steps
+    /// behind the type ask the address's value what it holds. An
+    /// address being typed is offered no local, since none starts
+    /// with `0x`, and asks nothing else.
+    #[test]
+    fn test_completion_offers_types_after_an_address() {
+        let (mut c, asked) = frame_completer();
+        let suggest = |c: &mut LineCompleter, line: &str| -> Vec<(String, bool)> {
+            c.suggest(line, line.len())
+                .into_iter()
+                .map(|s| (s.value, s.append_whitespace))
+                .collect()
+        };
+        assert!(complete_with(&mut c, "print 0x").is_empty());
+        assert_eq!(
+            suggest(&mut c, "print 0x7f10 "),
+            [
+                ("alloc::string::String".to_string(), true),
+                ("\"alloc::vec::Vec<(u64, u64)>\"".to_string(), true),
+                ("\"core::option::Option<&'static str>\"".to_string(), true),
+                ("\"[u8; 4]\"".to_string(), true),
+            ]
+        );
+        assert_eq!(
+            complete_with(&mut c, "print 0x7f10 alloc::"),
+            ["alloc::string::String", "\"alloc::vec::Vec<(u64, u64)>\""]
+        );
+        assert_eq!(
+            complete_with(&mut c, "print 0x7f10 core::o"),
+            ["\"core::option::Option<&'static str>\""]
+        );
+        assert!(complete_with(&mut c, "print 0x7f10 std::").is_empty());
+        // A later word with no `.` is no type: nothing is offered.
+        assert!(complete_with(&mut c, "print 0x7f10 u64 foo").is_empty());
+        // The steps ask with the address and type kept.
+        complete_with(&mut c, "print 0x7f10 u64 .");
+        complete_with(&mut c, "print 0x7f10 u64 .x.");
+        assert_eq!(
+            *asked.lock().unwrap(),
+            [
+                Vec::new(),
+                vec!["0x7f10".to_string(), "u64".to_string(), ".".to_string()],
+                vec!["0x7f10".to_string(), "u64".to_string(), ".x.".to_string()],
+            ]
+        );
+    }
+
     /// A value goes back into the line escaped where the field would
     /// read it as a regex, and quoted where the tokenizer would split
     /// it; a plain word goes back as it is.
@@ -1595,6 +1719,7 @@ mod tests {
             line_spelling("io 0xf9c3d00 (readable)", false),
             "\"io 0xf9c3d00 (readable)\""
         );
+        assert_eq!(line_spelling("[u8;4]", false), "\"[u8;4]\"");
         assert_eq!(line_spelling("say \"hi\"", false), "'say \"hi\"'");
         assert_eq!(line_spelling("a\"b", false), "'a\"b'");
         assert_eq!(line_spelling("a'b", false), "\"a'b\"");
