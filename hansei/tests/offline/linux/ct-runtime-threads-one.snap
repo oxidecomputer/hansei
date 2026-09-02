@@ -46,5 +46,5 @@ lwp 1145581  polling no task
     }
   stack:
     0xADDR  
-    0xADDR    (frame-pointer walk)
-    0xADDR    (frame-pointer walk)
+    0xADDR  
+    0xADDR

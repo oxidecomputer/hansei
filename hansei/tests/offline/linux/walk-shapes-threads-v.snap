@@ -46,8 +46,8 @@ lwp 1146696  polling no task  runtime 0 @ 0xADDR
     }
   stack:
     0xADDR  
-    0xADDR    (frame-pointer walk)
-    0xADDR    (frame-pointer walk)
+    0xADDR  
+    0xADDR  
 
 lwp 1146698  polling no task
   thread_id: core::option::Option<tokio::runtime::thread_id::ThreadId>::None

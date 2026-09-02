@@ -404,9 +404,9 @@ What varies by target, and so must never be pinned in a portable test:
   carries none, and the backing files its `NT_FILE` names exist only on
   the capture host. Read elsewhere, a walk is exact through the
   `--binary` executable, then cuts silently at the first library frame
-  (`info objects` says why); any frame the frame-pointer
-  fallback bridges is marked `(frame-pointer walk)`. Only supplying the
-  named libraries makes those frames exact.
+  (`info objects` says why); the frames the frame-pointer fallback
+  bridges print like any other. Only supplying the named libraries
+  makes those frames exact.
 - **A timer's deadline spelling.** illumos lwps stamp a stop time and the
   deadline is reported relative to it; a Linux core records none, so the
   absolute point on the monotonic clock is printed instead. Both spellings are

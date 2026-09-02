@@ -67,13 +67,8 @@ impl Backtrace {
                     .as_ref()
                     .map(|s| s.name.as_str())
                     .unwrap_or_default();
-                let mark = if frame.heuristic {
-                    "  (frame-pointer walk)"
-                } else {
-                    ""
-                };
                 format!(
-                    "{:#018x}  {:#}{mark}",
+                    "{:#018x}  {:#}",
                     frame.regs.rip,
                     rustc_demangle::demangle(mangled)
                 )
@@ -90,8 +85,9 @@ pub struct Frame {
     pub symbol: Option<SymbolBuf>,
     /// Whether the frame-pointer walk produced this frame rather than
     /// CFI. Such a frame is a validated guess — the return address
-    /// landed in mapped text — not a fact the unwind tables state, and
-    /// a rendering may want to say so.
+    /// landed in mapped text — not a fact the unwind tables state. The
+    /// listing does not mark it: [`Backtrace::truncated`] and `info
+    /// objects` already say which objects the walk could not source.
     pub heuristic: bool,
 }
 
@@ -920,11 +916,11 @@ mod fallback_tests {
         assert!(why.contains("none of its pages are in the core"), "{why}");
     }
 
-    /// The listing marks the guessed frames and stops at
+    /// The listing prints guessed frames like any other and stops at
     /// `max_frames`; why the walk ended is [`Backtrace::truncated`]'s
     /// to say, not the listing's.
     #[test]
-    fn test_stack_trace_marks_guessed_frames_and_caps() {
+    fn test_stack_trace_leaves_guessed_frames_unmarked_and_caps() {
         let frame = |pc, heuristic| super::Frame {
             pc,
             regs: Regs {
@@ -940,8 +936,8 @@ mod fallback_tests {
         };
         let lines = bt.stack_trace(8);
         assert_eq!(lines.len(), 2, "{lines:?}");
-        assert!(!lines[0].contains("frame-pointer walk"), "{}", lines[0]);
-        assert!(lines[1].ends_with("(frame-pointer walk)"), "{}", lines[1]);
+        assert_eq!(lines[0], "0x0000000000000010  ");
+        assert_eq!(lines[1], "0x0000000000000020  ");
         let cut = bt.stack_trace(1);
         assert_eq!(cut.len(), 1, "{cut:?}");
     }

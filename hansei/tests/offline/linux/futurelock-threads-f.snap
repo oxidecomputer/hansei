@@ -162,8 +162,8 @@ lwp 1144655  last polled task 3
     }
   stack:
     0xADDR  
-    0xADDR    (frame-pointer walk)
-    0xADDR    (frame-pointer walk)
+    0xADDR  
+    0xADDR  
 
 lwp 1144656  last polled task 4
   thread_id: core::option::Option<tokio::runtime::thread_id::ThreadId>::None

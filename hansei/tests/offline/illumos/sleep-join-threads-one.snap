@@ -12,18 +12,18 @@ lwp 1  polling no task
   not in the scheduler's run loop
   stack:
     0xADDR  
-    0xADDR    (frame-pointer walk)
-    0xADDR    (frame-pointer walk)
-    0xADDR    (frame-pointer walk)
-    0xADDR    (frame-pointer walk)
-    0xADDR  <parking_lot::condvar::Condvar>::wait_until_internal  (frame-pointer walk)
-    0xADDR  <tokio::runtime::park::Inner>::park  (frame-pointer walk)
-    0xADDR  <tokio::runtime::park::CachedParkThread>::block_on::<sleep_join::main::{closure#0}>  (frame-pointer walk)
-    0xADDR  tokio::runtime::context::runtime::enter_runtime::<<tokio::runtime::scheduler::multi_thread::MultiThread>::block_on<sleep_join::main::{closure#0}>::{closure#0}, ()>  (frame-pointer walk)
-    0xADDR  sleep_join::main  (frame-pointer walk)
-    0xADDR  std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>  (frame-pointer walk)
-    0xADDR  std::rt::lang_start::<()>::{closure#0}  (frame-pointer walk)
-    0xADDR  std::rt::lang_start_internal  (frame-pointer walk)
-    0xADDR  main  (frame-pointer walk)
-    0xADDR  _start_crt  (frame-pointer walk)
-    0xADDR  _start  (frame-pointer walk)
+    0xADDR  
+    0xADDR  
+    0xADDR  
+    0xADDR  
+    0xADDR  <parking_lot::condvar::Condvar>::wait_until_internal
+    0xADDR  <tokio::runtime::park::Inner>::park
+    0xADDR  <tokio::runtime::park::CachedParkThread>::block_on::<sleep_join::main::{closure#0}>
+    0xADDR  tokio::runtime::context::runtime::enter_runtime::<<tokio::runtime::scheduler::multi_thread::MultiThread>::block_on<sleep_join::main::{closure#0}>::{closure#0}, ()>
+    0xADDR  sleep_join::main
+    0xADDR  std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+    0xADDR  std::rt::lang_start::<()>::{closure#0}
+    0xADDR  std::rt::lang_start_internal
+    0xADDR  main
+    0xADDR  _start_crt
+    0xADDR  _start
