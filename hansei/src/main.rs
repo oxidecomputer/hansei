@@ -446,7 +446,9 @@ pub enum Command {
 
         /// Run a session command once per surviving future, under
         /// that future as its omitted target. Takes the rest of the
-        /// line — so it comes last — and runs after --limit.
+        /// line, the command's own flags included, so it must be the
+        /// last flag: `futures --with kind set --exec trace -l 3`.
+        /// Runs after --limit.
         #[arg(
             long,
             num_args = 1..,
@@ -942,8 +944,10 @@ pub enum Command {
         group: Option<String>,
 
         /// Run a session command once per surviving task, under that
-        /// task as its omitted target. Takes the rest of the line —
-        /// so it comes last — and runs after --limit.
+        /// task as its omitted target. Takes the rest of the line,
+        /// the command's own flags included, so it must be the last
+        /// flag: `tasks --with state running --exec trace -l 3`.
+        /// Runs after --limit.
         #[arg(
             long,
             num_args = 1..,
@@ -1052,8 +1056,10 @@ pub enum Command {
         group: Option<String>,
 
         /// Run COMMAND once per surviving thread, under a cursor on
-        /// that thread, each run's output under the thread's row. The
-        /// rest of the line is the command.
+        /// that thread, each run's output under the thread's row.
+        /// Takes the rest of the line, the command's own flags
+        /// included, so it must be the last flag:
+        /// `threads --with has-task yes --exec trace -l 3`.
         #[arg(
             long,
             num_args = 1..,
