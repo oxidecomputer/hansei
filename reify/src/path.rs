@@ -246,6 +246,66 @@ fn member_step<'a, T: Target>(proc: &'a T, node: Node<'a>, name: &str) -> Result
     ))
 }
 
+/// The names a `.name` step could take next from `node` — what a
+/// prompt offers after a trailing `.`. They are the members
+/// [`member_step`] would find: the value's own, and, wherever its
+/// auto-deref would look further, the ones it would find there — an
+/// enum's variants and its active payload's members, a pointer's
+/// target's, the data behind a heap header, a transparent wrapper's
+/// inner — in that order, each name once. Compiler slots (`__…`) are
+/// left out, except a tuple's fields, offered as the `.0` the grammar
+/// reads. A value that cannot be followed (an unreadable pointer, an
+/// undecodable variant) ends the listing with what was found so far.
+pub fn member_names<T: Target>(proc: &T, node: &Node<'_>) -> Vec<String> {
+    let mut v = match node {
+        Node::Entry { .. } => return vec!["0".to_string(), "1".to_string()],
+        Node::Value(v) => *v,
+    };
+    let mut names: Vec<String> = Vec::new();
+    let offer = |names: &mut Vec<String>, name: String| {
+        if !names.contains(&name) {
+            names.push(name);
+        }
+    };
+    for _ in 0..32 {
+        let tuple = v.ty.name().starts_with('(');
+        for m in v.ty.members() {
+            match m.name().strip_prefix("__") {
+                None => offer(&mut names, m.name().to_string()),
+                Some(index) if tuple && index.chars().all(|c| c.is_ascii_digit()) => {
+                    offer(&mut names, index.to_string())
+                }
+                Some(_) => {}
+            }
+        }
+        match v.ty.kind() {
+            TypeKind::Enum => {
+                for variant in v.ty.variants() {
+                    offer(&mut names, variant.name.to_string());
+                }
+                match v.active_variant() {
+                    Ok((_, payload)) => v = payload,
+                    Err(_) => break,
+                }
+            }
+            TypeKind::Pointer => match v.deref_ptr(proc) {
+                Ok(target) => v = target,
+                Err(_) => break,
+            },
+            _ => {
+                if let Ok(Some(data)) = heap_header_data(&v) {
+                    v = data;
+                } else if let Some(inner) = single_sized_member(&v) {
+                    v = inner;
+                } else {
+                    break;
+                }
+            }
+        }
+    }
+    names
+}
+
 /// `.name` against the members the type declares, with the tuple
 /// spelling: `.0` reads the `__0` DWARF gives a tuple field.
 fn try_member_spellings<'a>(v: &Value<'a>, name: &str) -> Result<Option<Value<'a>>> {
@@ -637,6 +697,69 @@ mod tests {
             shown(resolve(&mem, ptr, &parse(".strong").unwrap()).unwrap()),
             "1"
         );
+    }
+
+    /// The names offered after a `.` are the ones `.name` would then
+    /// accept: a struct's own; a wrapper's own and then its inner's; an
+    /// enum's variants and its active payload's; a pointer's target's;
+    /// a heap header's own and the data's behind it. Compiler slots
+    /// are left out, a tuple's fields offered as digits, a map entry's
+    /// halves as `0` and `1`.
+    #[test]
+    fn test_member_names_follow_the_auto_deref() {
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+        let names = |mem: &FakeMem, value: Value<'_>| -> Vec<String> {
+            member_names(mem, &Node::Value(value))
+        };
+
+        let mem = FakeMem::new();
+        let bytes = u32s(&[3, 4]);
+        let point = Value::new(v.ty(POINT).unwrap(), 0x100, &bytes);
+        assert_eq!(names(&mem, point), ["x", "y"]);
+        let wrap = Value::new(v.ty(WRAP).unwrap(), 0x100, &bytes);
+        assert_eq!(names(&mem, wrap), ["inner", "x", "y"]);
+        // `Pair(u32, u32)` is a tuple struct with a name, so its `__0`
+        // is a compiler spelling and stays out; a bare tuple's is `.0`.
+        let pair = Value::new(v.ty(PAIR).unwrap(), 0x100, &bytes);
+        assert!(names(&mem, pair).is_empty(), "{:?}", names(&mem, pair));
+        let tuple = Value::new(v.ty(TUPLE2).unwrap(), 0x100, &bytes);
+        assert_eq!(names(&mem, tuple), ["0", "1"]);
+
+        // Msg::A(Point { 7, 9 }): the variants, then the payload's.
+        let mut bytes = vec![0u8; 16];
+        bytes[8..12].copy_from_slice(&7u32.to_le_bytes());
+        bytes[12..16].copy_from_slice(&9u32.to_le_bytes());
+        let msg = Value::new(v.ty(MSG).unwrap(), 0x100, &bytes);
+        assert_eq!(names(&mem, msg), ["A", "B", "C", "x", "y"]);
+
+        let mem = FakeMem::new()
+            .at(0x1000, u64s(&[0x2000]))
+            .at(0x2000, u32s(&[7, 9]));
+        let ptr = Value::read(&mem, v.ty(PTR).unwrap(), 0x1000).unwrap();
+        assert_eq!(names(&mem, ptr), ["x", "y"]);
+        // An unreadable target ends the listing with nothing.
+        let dangling = u64s(&[0x9000]);
+        let ptr = Value::new(v.ty(PTR).unwrap(), 0x100, &dangling);
+        assert!(names(&mem, ptr).is_empty());
+
+        // ArcInner { strong, weak, data: Shared { state, value } }.
+        let mut inner = u64s(&[1, 1, 5]);
+        inner.extend_from_slice(&u32s(&[9]));
+        inner.extend_from_slice(&[0u8; 4]);
+        let mem = FakeMem::new().at(0x4000, inner);
+        let ptr_bytes = u64s(&[0x4000]);
+        let arc = Value::new(v.ty(WATCH_ARC_INNER_PTR).unwrap(), 0x100, &ptr_bytes);
+        assert_eq!(
+            names(&mem, arc),
+            ["strong", "weak", "data", "state", "value"]
+        );
+
+        let entry = Node::Entry {
+            key: point,
+            value: point,
+        };
+        assert_eq!(member_names(&mem, &entry), ["0", "1"]);
     }
 
     /// `[N]` and every range form over a `Vec`, mirroring Rust

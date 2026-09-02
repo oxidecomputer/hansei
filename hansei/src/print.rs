@@ -29,7 +29,27 @@ pub(crate) fn exec_print<T: proc::Target>(
 ) -> Result<()> {
     let (root, path) = parse_args(args)?;
     let steps = reify::path::parse(&path)?;
-    let root = match root {
+    let root = root_value(session, root)?;
+    let results = reify::path::resolve(session.ctx.proc, root, &steps)?;
+    match results.as_slice() {
+        [] => writeln!(out, "0 values")?,
+        [one] if one.label.is_empty() => write_result(session, one, render, out)?,
+        many => {
+            for r in many {
+                write!(out, "{} ", r.label)?;
+                write_result(session, r, render, out)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The value the root spelling names.
+fn root_value<'b, T: proc::Target>(
+    session: &Session<'b, T>,
+    root: Root<'_>,
+) -> Result<reify::Value<'b>> {
+    Ok(match root {
         Root::Cursor => cursor::frame_value(session)?,
         Root::Addr(addr, spec) => read_at(session, addr, spec)?,
         Root::LastAddr(spec) => {
@@ -47,19 +67,41 @@ pub(crate) fn exec_print<T: proc::Target>(
                 None => cursor::frame_value(session)?,
             }
         }
-    };
-    let results = reify::path::resolve(session.ctx.proc, root, &steps)?;
-    match results.as_slice() {
-        [] => writeln!(out, "0 values")?,
-        [one] if one.label.is_empty() => write_result(session, one, render, out)?,
-        many => {
-            for r in many {
-                write!(out, "{} ", r.label)?;
-                write_result(session, r, render, out)?;
+    })
+}
+
+/// The member names a `.` step could take next, for the prompt: `args`
+/// are `print`'s arguments up to and including the `.` under the
+/// cursor, so the root they name is resolved through the path before
+/// it and asked what it has. A path that fans out over a range offers
+/// the union of what each element has.
+pub(crate) fn path_members<T: proc::Target>(
+    session: &Session<'_, T>,
+    args: &[String],
+) -> Result<Vec<String>> {
+    // The trailing `.` opens the step being typed; the path before it
+    // is what resolves.
+    let mut args = args.to_vec();
+    if let Some(last) = args.last_mut()
+        && let Some(before) = last.strip_suffix('.')
+    {
+        *last = before.to_string();
+        if last.is_empty() {
+            args.pop();
+        }
+    }
+    let (root, path) = parse_args(&args)?;
+    let steps = reify::path::parse(&path)?;
+    let root = root_value(session, root)?;
+    let mut names = Vec::new();
+    for r in reify::path::resolve(session.ctx.proc, root, &steps)? {
+        for name in reify::path::member_names(session.ctx.proc, &r.node) {
+            if !names.contains(&name) {
+                names.push(name);
             }
         }
     }
-    Ok(())
+    Ok(names)
 }
 
 /// Read one value of `spec`'s type at `addr`. The address says where
@@ -213,5 +255,57 @@ mod tests {
         assert!(err.to_string().contains("takes an address"), "{err}");
         let err = parse_args(&w(&["0x7f10", "u64", "stray"])).unwrap_err();
         assert!(err.to_string().contains("path step"), "{err}");
+    }
+
+    /// Over a fixture pair, the names offered after a `.` are the
+    /// cursor frame's locals as `locals` lists them — no compiler
+    /// slots — and, one step down, the members of the local named,
+    /// followed through its pointers. What no path reaches is an
+    /// error, as `print` would say.
+    #[test]
+    fn test_path_members_list_the_frame_and_its_locals_members() {
+        use crate::offline::session_args;
+        use crate::{Session, TraceTarget};
+        use hansei_runtime::testkit;
+        let (bundle, snapshot) = testkit::load("illumos", "simple-await");
+        let args = session_args("illumos", "simple-await");
+        let session = Session::attach(&snapshot, &bundle, &args).expect("the pair attaches");
+        let id = session.tasks.tasks[0]
+            .task_id
+            .expect("the fixture's tasks carry ids");
+        cursor::select_task(&session, TraceTarget::Task(id)).expect("the task selects");
+        let members = |args: &[&str]| path_members(&session, &w(args));
+
+        // #0 is the leaf, a oneshot receiver: its one member, and —
+        // since `.strong` resolves at the root through that single
+        // member, the Option and the Arc — everything reachable that
+        // way, which is exactly what one step in offers.
+        let root = members(&["."]).unwrap();
+        assert_eq!(root[0], "inner", "{root:?}");
+        for expected in ["None", "Some", "strong", "weak", "data", "state", "value"] {
+            assert!(root.iter().any(|n| n == expected), "{root:?}");
+        }
+        assert_eq!(members(&[".inner."]).unwrap(), root[1..]);
+
+        // #1 holds the source-level locals `locals` lists: the
+        // awaitee and the liveness slots stay out.
+        session.cursor.borrow_mut().frame = 1;
+        let locals = members(&["."]).unwrap();
+        for expected in ["count", "labels", "values", "boxed", "first"] {
+            assert!(locals.iter().any(|n| n == expected), "{locals:?}");
+        }
+        assert!(!locals.iter().any(|n| n.starts_with("__")), "{locals:?}");
+        assert_eq!(
+            members(&[".values."]).unwrap(),
+            members(&[".values", "."]).unwrap()
+        );
+        assert!(members(&[".values."]).unwrap().iter().any(|n| n == "len"));
+        // A `$_` root reads the same frame.
+        assert_eq!(members(&["$_", "."]).unwrap(), locals);
+
+        let err = members(&[".no_such."]).expect_err("no such local");
+        assert!(err.to_string().contains("no_such"), "{err}");
+        let err = members(&["[0]."]).expect_err("the frame is not a sequence");
+        assert!(!err.to_string().is_empty());
     }
 }
