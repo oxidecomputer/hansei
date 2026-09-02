@@ -4,11 +4,7 @@ description: "`print` over linux/unordered"
 ---
 futures_util::stream::futures_unordered::FuturesUnordered<unordered::set_member::{async_fn_env#0}> {
     ready_to_run_queue: alloc::sync::Arc<futures_util::stream::futures_unordered::ready_to_run_queue::ReadyToRunQueue<unordered::set_member::{async_fn_env#0}>, alloc::alloc::Global> {
-        ptr: 0xADDR -> alloc::sync::ArcInner<futures_util::stream::futures_unordered::ready_to_run_queue::ReadyToRunQueue<unordered::set_member::{async_fn_env#0}>> {
-                strong: 1,
-                weak: 4,
-                data: futures_util::stream::futures_unordered::ready_to_run_queue::ReadyToRunQueue<unordered::set_member::{async_fn_env#0}> { .. } @ 0xADDR,
-            },
+        ptr: 0xADDR -> alloc::sync::ArcInner<futures_util::stream::futures_unordered::ready_to_run_queue::ReadyToRunQueue<unordered::set_member::{async_fn_env#0}>> { .. },
     },
     head_all: 0xADDR,
     is_terminated: core::sync::atomic::Atomic<bool> {

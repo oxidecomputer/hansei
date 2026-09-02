@@ -31,7 +31,7 @@ pub(crate) struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Settings {
-            depth: 4,
+            depth: 2,
             ugly: false,
             max_string_len: reify::DEFAULT_MAX_STRING_LEN,
             max_array_values: reify::DEFAULT_MAX_ARRAY_VALUES,
@@ -174,7 +174,7 @@ mod tests {
         let listing = run(&settings, None, None);
         assert_eq!(
             listing,
-            "depth             4\n\
+            "depth             2\n\
              limit             off\n\
              max-array-values  128\n\
              max-string-len    131072\n\

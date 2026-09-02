@@ -5,39 +5,16 @@ description: "`locals` over linux/unordered"
 ready_to_run_queue: alloc::sync::Arc<futures_util::stream::futures_unordered::ready_to_run_queue::ReadyToRunQueue<unordered::set_member::{async_fn_env#0}>, alloc::alloc::Global> = 0xADDR -> alloc::sync::ArcInner<futures_util::stream::futures_unordered::ready_to_run_queue::ReadyToRunQueue<unordered::set_member::{async_fn_env#0}>> {
           strong: 1,
           weak: 4,
-          data: futures_util::stream::futures_unordered::ready_to_run_queue::ReadyToRunQueue<unordered::set_member::{async_fn_env#0}> {
-              waker: futures_core::task::__internal::atomic_waker::AtomicWaker {
-                  state: 0,
-                  waker: core::cell::UnsafeCell<core::option::Option<core::task::wake::Waker>> { .. } @ 0xADDR,
-              },
-              head: 0xADDR,
-              tail: 0xADDR -> futures_util::stream::futures_unordered::task::Task<unordered::set_member::{async_fn_env#0}> { .. },
-              stub: alloc::sync::Arc<futures_util::stream::futures_unordered::task::Task<unordered::set_member::{async_fn_env#0}>, alloc::alloc::Global> {
-                  ptr: 0xADDR -> alloc::sync::ArcInner<futures_util::stream::futures_unordered::task::Task<unordered::set_member::{async_fn_env#0}>> { .. },
-              },
-          },
+          data: futures_util::stream::futures_unordered::ready_to_run_queue::ReadyToRunQueue<unordered::set_member::{async_fn_env#0}> { .. } @ 0xADDR,
       }
 head_all: core::sync::atomic::Atomic<*mut futures_util::stream::futures_unordered::task::Task<unordered::set_member::{async_fn_env#0}>> = 0xADDR (task 3 via FuturesUnordered) -> futures_util::stream::futures_unordered::task::Task<unordered::set_member::{async_fn_env#0}> {
-          future: core::option::Option<unordered::set_member::{async_fn_env#0}>::Some(unordered::set_member::{async_fn_env#0}::3 {
-                  notify: alloc::sync::Arc<tokio::sync::notify::Notify, alloc::alloc::Global> { .. } @ 0xADDR (task 3 via FuturesUnordered),
-                  inner: core::option::Option<futures_util::stream::futures_unordered::FuturesUnordered<unordered::leaf::{async_fn_env#0}>> { .. } @ 0xADDR (task 3 via FuturesUnordered),
-                  held: unordered::leaf::{async_fn_env#0} { .. } @ 0xADDR (task 3 via FuturesUnordered),
-                  __awaitee: tokio::sync::notify::Notified { .. } @ 0xADDR (task 3 via FuturesUnordered),
-                  __4: true,
-                  __5: true,
-              }),
+          future: core::cell::UnsafeCell<core::option::Option<unordered::set_member::{async_fn_env#0}>> { .. } @ 0xADDR (task 3 via FuturesUnordered),
           next_all: task 3 via FuturesUnordered,
           prev_all: null,
           len_all: 3,
           next_ready_to_run: 0xADDR,
-          ready_to_run_queue: alloc::sync::Weak<futures_util::stream::futures_unordered::ready_to_run_queue::ReadyToRunQueue<unordered::set_member::{async_fn_env#0}>, alloc::alloc::Global> {
-              ptr: 0xADDR -> alloc::sync::ArcInner<futures_util::stream::futures_unordered::ready_to_run_queue::ReadyToRunQueue<unordered::set_member::{async_fn_env#0}>> { .. },
-          },
-          queued: core::sync::atomic::Atomic<bool> {
-              v: 0,
-          },
-          woken: core::sync::atomic::Atomic<bool> {
-              v: 0,
-          },
+          ready_to_run_queue: alloc::sync::Weak<futures_util::stream::futures_unordered::ready_to_run_queue::ReadyToRunQueue<unordered::set_member::{async_fn_env#0}>, alloc::alloc::Global> { .. } @ 0xADDR (task 3 via FuturesUnordered),
+          queued: core::sync::atomic::Atomic<bool> { .. } @ 0xADDR (task 3 via FuturesUnordered),
+          woken: core::sync::atomic::Atomic<bool> { .. } @ 0xADDR (task 3 via FuturesUnordered),
       }
 is_terminated: core::sync::atomic::Atomic<bool> = 0

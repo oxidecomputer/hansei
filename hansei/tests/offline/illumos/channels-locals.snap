@@ -13,10 +13,7 @@ state: tokio::sync::notify::State = [0xADDR]
 notify_waiters_calls: usize = 0
 waiter: tokio::sync::notify::Waiter {
       pointers: tokio::util::linked_list::Pointers<tokio::sync::notify::Waiter> {
-          inner: tokio::util::linked_list::PointersInner<tokio::sync::notify::Waiter> {
-              prev: core::option::Option<core::ptr::non_null::NonNull<tokio::sync::notify::Waiter>>::None,
-              next: core::option::Option<core::ptr::non_null::NonNull<tokio::sync::notify::Waiter>>::None,
-          },
+          inner: core::cell::UnsafeCell<tokio::util::linked_list::PointersInner<tokio::sync::notify::Waiter>> { .. } @ 0xADDR (task 3),
       },
       waker: core::option::Option<core::task::wake::Waker>::Some(task 3),
       notification: tokio::sync::notify::AtomicNotification(
