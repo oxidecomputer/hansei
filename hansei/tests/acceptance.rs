@@ -1572,30 +1572,23 @@ fn test_futurelock_acceptance() {
     });
 }
 
-/// `print` renders memory at an address as a named type: the semaphore
-/// address the trace names, pasted back with the type's name, decodes
-/// to the same contended state the wait line reported — one permit
-/// outstanding, none available, not closed.
+/// `print` renders a local of the cursor frame: the semaphore the
+/// trace names, reached as the `semaphore` local of the task's leaf
+/// frame, decodes through its own formatter to the same contended
+/// state the wait line reported — one permit outstanding, none
+/// available, not closed.
 #[test]
-fn test_print_renders_an_address_as_a_type() {
+fn test_print_renders_a_local_through_its_formatter() {
     let bundle = fixtures().bundle("futurelock");
     with_core("futurelock", |core| {
         let rows = list_tasks(&bundle, core);
         let task = task_with_future(&rows, "async block futurelock::main::{async_block#0}");
         let out = trace(&bundle, core, &task.id, false);
-        let addr = regex::Regex::new(r"semaphore (0x[0-9a-f]+)")
-            .unwrap()
-            .captures(&out)
-            .unwrap_or_else(|| panic!("no semaphore address in {out}"))[1]
-            .to_string();
+        assert!(out.contains("semaphore 0x"), "{out}");
 
-        // The name path, through the semaphore's own formatter: the
-        // permit word decodes in place.
-        let printed = hansei_ok(
-            &bundle,
-            core,
-            &format!("print {addr} tokio::sync::batch_semaphore::Semaphore"),
-        );
+        // The name, through the semaphore's own formatter: the permit
+        // word decodes in place.
+        let printed = hansei_ok(&bundle, core, &format!("task {}; print semaphore", task.id));
         assert!(
             printed.contains("tokio::sync::batch_semaphore::Semaphore"),
             "{printed}"
@@ -1603,26 +1596,27 @@ fn test_print_renders_an_address_as_a_type() {
         assert!(printed.contains("closed=false"), "{printed}");
         assert!(printed.contains("permits=0"), "{printed}");
 
-        // `config ugly on` falls back to the raw structural view: the decoded
-        // permit word is gone and the underlying members show as
-        // themselves.
+        // `config ugly on` falls back to the raw structural view: the
+        // decoded permit word is gone and the underlying members show
+        // as themselves.
         let ugly = hansei_ok(
             &bundle,
             core,
-            &format!("config ugly on; print {addr} tokio::sync::batch_semaphore::Semaphore"),
+            &format!("config ugly on; task {}; print semaphore", task.id),
         );
         assert!(!ugly.contains("closed=false"), "{ugly}");
         assert!(ugly.contains("permits"), "{ugly}");
 
-        // A type the bundle does not record is refused with the way to
-        // find one that it does.
-        let missing = hansei(&bundle, core, &format!("print {addr} no::such::Type"));
-        assert!(!missing.status.success());
-        assert!(
-            String::from_utf8_lossy(&missing.stderr).contains("find-types"),
-            "{}",
-            String::from_utf8_lossy(&missing.stderr)
-        );
+        // An address is not a local: the refusal points at `whatis`.
+        let addr = regex::Regex::new(r"semaphore (0x[0-9a-f]+)")
+            .unwrap()
+            .captures(&out)
+            .unwrap_or_else(|| panic!("no semaphore address in {out}"))[1]
+            .to_string();
+        let refused = hansei(&bundle, core, &format!("task {}; print {addr}", task.id));
+        assert!(!refused.status.success());
+        let stderr = String::from_utf8_lossy(&refused.stderr);
+        assert!(stderr.contains("whatis"), "{stderr}");
     });
 }
 

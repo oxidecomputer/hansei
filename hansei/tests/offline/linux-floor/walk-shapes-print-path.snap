@@ -1,6 +1,6 @@
 ---
 source: hansei/src/offline.rs
-description: "`print .notify` over linux-floor/walk-shapes"
+description: "`print notify` over linux-floor/walk-shapes"
 ---
 0xADDR -> tokio::sync::notify::Notify {
         state: state=waiting, generation=0,

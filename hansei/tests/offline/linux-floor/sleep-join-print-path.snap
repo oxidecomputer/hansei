@@ -1,5 +1,5 @@
 ---
 source: hansei/src/offline.rs
-description: "`print .inner` over linux-floor/sleep-join"
+description: "`print inner` over linux-floor/sleep-join"
 ---
 tokio::time::sleep::Inner

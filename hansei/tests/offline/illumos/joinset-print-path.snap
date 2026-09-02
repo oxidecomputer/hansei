@@ -1,6 +1,6 @@
 ---
 source: hansei/src/offline.rs
-description: "`print .lists` over illumos/joinset"
+description: "`print lists` over illumos/joinset"
 ---
 0xADDR -> alloc::sync::ArcInner<tokio::loom::std::parking_lot::Mutex<tokio::util::idle_notified_set::ListsInner<tokio::runtime::task::join::JoinHandle<u32>>>> {
         strong: 4,

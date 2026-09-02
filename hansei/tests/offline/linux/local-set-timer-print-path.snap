@@ -1,5 +1,5 @@
 ---
 source: hansei/src/offline.rs
-description: "`print .inner` over linux/local-set-timer"
+description: "`print inner` over linux/local-set-timer"
 ---
 tokio::time::sleep::Inner

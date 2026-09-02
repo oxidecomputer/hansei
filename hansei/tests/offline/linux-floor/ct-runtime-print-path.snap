@@ -1,5 +1,5 @@
 ---
 source: hansei/src/offline.rs
-description: "`print .inner` over linux-floor/ct-runtime"
+description: "`print inner` over linux-floor/ct-runtime"
 ---
 tokio::time::sleep::Inner

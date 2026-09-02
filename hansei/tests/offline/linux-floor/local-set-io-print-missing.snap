@@ -1,5 +1,5 @@
 ---
 source: hansei/src/offline.rs
-description: "`print .no_such_member` over linux-floor/local-set-io"
+description: "`print no_such_member` over linux-floor/local-set-io"
 ---
 error: type tokio::io::util::read::Read<tokio::net::unix::stream::UnixStream> has no member named no_such_member (members: reader, buf, _pin)

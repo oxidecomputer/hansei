@@ -161,8 +161,8 @@ fn commands(
         }
         list.push(("whatis-first", format!("whatis {:#x}", task.addr.0)));
         // The cursor commands: select the first task, then drive
-        // `print`'s cursor root — the frame itself, one member path,
-        // and the missing-member refusal. The selection persists for
+        // `print` over its frame — the frame itself, one local, and
+        // the missing-local refusal. The selection persists for
         // the commands after it, so these stay in this order.
         if let Some(id) = task.task_id {
             list.push(("task-first", format!("task {id}")));
@@ -171,9 +171,9 @@ fn commands(
             // is what the print above nests as members.
             list.push(("locals", "locals".to_owned()));
             if let Some(member) = first_frame_member(session, task) {
-                list.push(("print-path", format!("print .{member}")));
+                list.push(("print-path", format!("print {member}")));
             }
-            list.push(("print-missing", "print .no_such_member".to_owned()));
+            list.push(("print-missing", "print no_such_member".to_owned()));
             // The cursor-scoped sync: every relation the selected
             // task is party to, under the cursor the commands above
             // set.
@@ -190,8 +190,8 @@ fn commands(
                 // drive the element steps: a range keeps its [i]
                 // heading even one element wide, and a step after a
                 // range applies to each map entry.
-                list.push(("print-range", "print .values[1..2]".to_owned()));
-                list.push(("print-map-values", "print .labels[..2].1".to_owned()));
+                list.push(("print-range", "print values[1..2]".to_owned()));
+                list.push(("print-map-values", "print labels[..2].1".to_owned()));
                 // `frame` composes the same way, and the move back to
                 // #0 restores the cursor for the commands below.
                 list.push(("frame-locals", "frame 0 locals".to_owned()));
