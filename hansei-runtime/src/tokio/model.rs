@@ -12,7 +12,9 @@ use super::{Lifecycle, Location, RawInstant, TaskAddr, TaskState};
 use hansei_bundle::{BundleTypeId, FutureKind, TaskEntryId};
 use reify::Value;
 
+use std::collections::HashMap;
 use std::fmt;
+use std::sync::OnceLock;
 
 /// Result of resolving the bundle's symbol fingerprint against the target.
 #[derive(Clone, Debug)]
@@ -282,22 +284,74 @@ pub struct Registries {
     pub timers: Vec<TimerEntryInfo>,
     /// Every io resource in a walked registration list.
     pub io: Vec<IoResourceInfo>,
+    /// The joins' index, built on the first lookup — so after the
+    /// harvest has pushed its last entry, which is the only order the
+    /// attach runs them in. A production target has tens of thousands
+    /// of entries and as many tasks asking after them, and scanning
+    /// the lists per task made every listing quadratic.
+    by_task: OnceLock<TaskIndex>,
+}
+
+/// Where each task's entries sit: positions into `timers`, and
+/// (resource, waiter) positions into `io`.
+#[derive(Debug, Default)]
+struct TaskIndex {
+    timers: HashMap<u64, Vec<usize>>,
+    io: HashMap<u64, Vec<(usize, usize)>>,
 }
 
 impl Registries {
-    /// The wheel entries armed with `task`'s waker.
-    pub fn timers_of(&self, task: u64) -> impl Iterator<Item = &TimerEntryInfo> {
-        self.timers.iter().filter(move |t| t.task == Some(task))
+    /// Registries over the given harvests, for a caller that has them
+    /// whole; the attach fills the fields as it walks instead.
+    pub fn new(timers: Vec<TimerEntryInfo>, io: Vec<IoResourceInfo>) -> Registries {
+        Registries {
+            timers,
+            io,
+            by_task: OnceLock::new(),
+        }
     }
 
-    /// The io waiters parked by `task`, each with the resource it is on.
-    pub fn io_of(&self, task: u64) -> impl Iterator<Item = (&IoResourceInfo, &IoWaiterInfo)> {
-        self.io.iter().flat_map(move |res| {
-            res.waiters
-                .iter()
-                .filter(move |w| w.task == Some(task))
-                .map(move |w| (res, w))
+    fn index(&self) -> &TaskIndex {
+        self.by_task.get_or_init(|| {
+            let mut index = TaskIndex::default();
+            for (i, timer) in self.timers.iter().enumerate() {
+                if let Some(task) = timer.task {
+                    index.timers.entry(task).or_default().push(i);
+                }
+            }
+            for (r, res) in self.io.iter().enumerate() {
+                for (w, waiter) in res.waiters.iter().enumerate() {
+                    if let Some(task) = waiter.task {
+                        index.io.entry(task).or_default().push((r, w));
+                    }
+                }
+            }
+            index
         })
+    }
+
+    /// The wheel entries armed with `task`'s waker, in wheel order.
+    pub fn timers_of(&self, task: u64) -> impl Iterator<Item = &TimerEntryInfo> {
+        self.index()
+            .timers
+            .get(&task)
+            .into_iter()
+            .flatten()
+            .map(|&i| &self.timers[i])
+    }
+
+    /// The io waiters parked by `task`, each with the resource it is
+    /// on, in registration order.
+    pub fn io_of(&self, task: u64) -> impl Iterator<Item = (&IoResourceInfo, &IoWaiterInfo)> {
+        self.index()
+            .io
+            .get(&task)
+            .into_iter()
+            .flatten()
+            .map(|&(r, w)| {
+                let res = &self.io[r];
+                (res, &res.waiters[w])
+            })
     }
 }
 
@@ -1193,8 +1247,8 @@ mod tests {
     /// asked-for task's waker.
     #[test]
     fn test_registries_join_by_task() {
-        let registries = Registries {
-            timers: vec![
+        let registries = Registries::new(
+            vec![
                 TimerEntryInfo {
                     entry: 0x10,
                     state: None,
@@ -1206,7 +1260,7 @@ mod tests {
                     task: None,
                 },
             ],
-            io: vec![IoResourceInfo {
+            vec![IoResourceInfo {
                 addr: 0x30,
                 readiness: None,
                 waiters: vec![
@@ -1220,7 +1274,7 @@ mod tests {
                     },
                 ],
             }],
-        };
+        );
         let timers: Vec<u64> = registries.timers_of(0x1000).map(|t| t.entry).collect();
         assert_eq!(timers, [0x10]);
         assert!(registries.timers_of(0x9999).next().is_none());

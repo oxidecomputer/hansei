@@ -607,12 +607,12 @@ pub(crate) fn build_rows(
     registries: &bundle::Registries,
     blocking_lwps: &HashMap<u64, u32>,
 ) -> Vec<TaskRow> {
+    let slots = QueuedSlots::index(waits, joins);
     list.tasks
         .iter()
         .enumerate()
         .map(|(index, task)| {
-            let (waker, waker_kind, waker_detail) =
-                waker_slots(task.addr.0, waits, joins, registries);
+            let (waker, waker_kind, waker_detail) = waker_slots(task.addr.0, &slots, registries);
             TaskRow {
                 id: task_id(list, index),
                 state: row_state(task, blocking_lwps.get(&task.addr.0).copied()),
@@ -645,6 +645,50 @@ pub(crate) fn build_rows(
         .collect()
 }
 
+/// The waker slots the analysis found queued, by the task whose waker
+/// they hold: the wake-queue nodes of every decoded semaphore, and
+/// the trailers awaited through a `JoinHandle`. Built once per
+/// listing, since every row asks after its own address and the
+/// population is the same size as the rows.
+#[derive(Default)]
+struct QueuedSlots {
+    /// `(semaphore, queue node)` per waiting task.
+    semaphores: HashMap<u64, Vec<(u64, u64)>>,
+    /// The awaited task per joining task.
+    joins: HashMap<u64, Vec<rt_graph::TaskRef>>,
+}
+
+impl QueuedSlots {
+    fn index(waits: &[rt_graph::TaskWait], joins: &[rt_graph::JoinWaker]) -> QueuedSlots {
+        let mut slots = QueuedSlots::default();
+        for wait in waits {
+            let Some(bundle::WaitTarget::Semaphore {
+                addr: sem, waiters, ..
+            }) = &wait.target
+            else {
+                continue;
+            };
+            for w in waiters {
+                if let bundle::QueuedWaker::Task { addr, .. } = w.waker {
+                    slots
+                        .semaphores
+                        .entry(addr)
+                        .or_default()
+                        .push((*sem, w.addr));
+                }
+            }
+        }
+        for join in joins {
+            slots
+                .joins
+                .entry(join.waiter.addr.0)
+                .or_default()
+                .push(join.task);
+        }
+        slots
+    }
+}
+
 /// The waker slots armed with the task at `addr`'s waker: the wheel
 /// entries and io slots the registries keep, the wake-queue nodes the
 /// decoded semaphores carry, and the trailer of any task it awaits
@@ -653,8 +697,7 @@ pub(crate) fn build_rows(
 /// lines place the slots the wait detail does not.
 fn waker_slots(
     addr: u64,
-    waits: &[rt_graph::TaskWait],
-    joins: &[rt_graph::JoinWaker],
+    queued: &QueuedSlots,
     registries: &bundle::Registries,
 ) -> (Option<String>, Option<String>, Vec<String>) {
     let mut slots = Vec::new();
@@ -676,30 +719,17 @@ fn waker_slots(
         slots.push(format!("io {:#x}{side}", resource.addr));
         kinds.push(format!("io{side}"));
     }
-    for wait in waits {
-        let Some(bundle::WaitTarget::Semaphore {
-            addr: sem, waiters, ..
-        }) = &wait.target
-        else {
-            continue;
-        };
-        for w in waiters {
-            if matches!(w.waker, bundle::QueuedWaker::Task { addr: a, .. } if a == addr) {
-                slots.push(format!("semaphore {sem:#x}"));
-                kinds.push(format!("semaphore {sem:#x}"));
-                detail.push(format!(
-                    "semaphore {sem:#x}: waker in its wake-queue node {:#x}",
-                    w.addr
-                ));
-            }
-        }
+    for (sem, node) in queued.semaphores.get(&addr).into_iter().flatten() {
+        slots.push(format!("semaphore {sem:#x}"));
+        kinds.push(format!("semaphore {sem:#x}"));
+        detail.push(format!(
+            "semaphore {sem:#x}: waker in its wake-queue node {node:#x}"
+        ));
     }
-    for join in joins {
-        if join.waiter.addr.0 == addr {
-            slots.push(format!("join {}", join.task));
-            kinds.push(format!("join {}", join.task));
-            detail.push(format!("join {}: waker in its trailer", join.task));
-        }
+    for task in queued.joins.get(&addr).into_iter().flatten() {
+        slots.push(format!("join {task}"));
+        kinds.push(format!("join {task}"));
+        detail.push(format!("join {task}: waker in its trailer"));
     }
     slots.sort();
     slots.dedup();
@@ -2064,13 +2094,13 @@ mod table_tests {
         use hansei_runtime::tokio::graph::JoinWaker;
 
         let t1 = 0x1000 + 0x100;
-        let registries = Registries {
-            timers: vec![TimerEntryInfo {
+        let registries = Registries::new(
+            vec![TimerEntryInfo {
                 entry: 0xdd00,
                 state: None,
                 task: Some(t1),
             }],
-            io: vec![IoResourceInfo {
+            vec![IoResourceInfo {
                 addr: 0xaa00,
                 readiness: None,
                 waiters: vec![IoWaiterInfo {
@@ -2078,7 +2108,7 @@ mod table_tests {
                     task: Some(t1),
                 }],
             }],
-        };
+        );
         let semaphore = WaitTarget::Semaphore {
             addr: 0x9000,
             owner: None,
