@@ -1,0 +1,5 @@
+---
+source: hansei/src/offline.rs
+description: "`threads --with has-task yes --exec trace -l 1` over illumos/local-set"
+---
+Executed against 0 threads, 0 failed

@@ -1,0 +1,7 @@
+---
+source: hansei/src/offline.rs
+description: "`threads --group role` over linux-floor/local-set-io"
+---
+COUNT  ROLE             LWPS
+    1  block_on caller  4038262
+1 group

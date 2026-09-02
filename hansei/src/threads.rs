@@ -1,24 +1,17 @@
 //! The `threads` command: every thread the runtime is running on, as
 //! the runtime sees it and as the stack sees it.
 
-use crate::summary;
+use crate::tasks::{EMPTY_BUCKET, listing_footer};
 use crate::trace::print_variable;
-use crate::{RenderOpts, Session};
+use crate::{RenderOpts, Session, repl, summary};
 
-use anyhow::Result;
+use anyhow::{Context as _, Result};
 use hansei_runtime::tokio::bundle::{self, ParkState};
 use reify::Value;
 
 use std::collections::{BTreeMap, HashMap};
 use std::io::{self, Write};
 
-/// Every thread the runtime is running on, as the runtime sees it and
-/// as the stack sees it: the task it is polling, the worker core it
-/// holds while it runs, and the frames it is parked in.
-/// `lwps` narrows the listing to the named threads' blocks, and is
-/// empty for the whole listing. The lwp that took the fatal signal
-/// prints its registers unasked — that is exactly when they matter —
-/// and `registers` asks the same of every listed thread.
 /// One row of the `threads` table: the compact per-lwp answer, built
 /// once — with the one unwind of every stack — and cached beside the
 /// task rows.
@@ -33,10 +26,17 @@ pub(crate) struct ThreadRow {
     /// stack — the runtime side cannot tell a blocking thread apart),
     /// `entered runtime`, or `no runtime`.
     pub(crate) role: String,
+    /// The kind of that role — what `--group role` buckets by: every
+    /// worker one `worker` whatever its index and park state, the
+    /// pool's threads `blocking` idle or running, the rest their own
+    /// spelling.
+    pub(crate) role_kind: &'static str,
     /// The task it is polling, believed only when the listing agrees.
     pub(crate) task: Option<u64>,
-    /// The function at the top of the unwound stack, per [`headline`].
-    pub(crate) frame0: String,
+    /// The function at the top of the unwound stack — the symbol, or
+    /// the pc where there is none — and `None` where no stack could be
+    /// walked.
+    pub(crate) frame0: Option<String>,
 }
 
 /// The table's rows, built on first use and cached on the session.
@@ -54,13 +54,16 @@ fn build_rows<T: proc::Target>(session: &Session<'_, T>) -> Vec<ThreadRow> {
         .map(|lwp| {
             let worker = session.workers.iter().find(|w| w.tid == lwp.tid);
             let stack = stacks.get(&lwp.tid);
+            let names = stack_names(stack);
+            let role = role_of(session, lwp.tid, worker, &names, &mut parks);
             ThreadRow {
                 lwp: lwp.tid,
                 name: session.proc.lwp_name(lwp.tid),
-                role: role_of(session, lwp.tid, worker, stack, &mut parks),
+                role: role.spelled,
+                role_kind: role.kind,
                 task: worker
                     .and_then(|w| crate::tasks::polled_task(w.current_task_id, &session.tasks)),
-                frame0: headline(&stack_names(stack)),
+                frame0: names.into_iter().next(),
             }
         })
         .collect();
@@ -86,17 +89,35 @@ pub(crate) fn load_stacks<T: proc::Target>(
     }
 }
 
-/// The `ROLE` cell for one lwp.
+/// A thread's place in a runtime: the `ROLE` cell as spelled, and the
+/// kind it is one of.
+struct Role {
+    spelled: String,
+    kind: &'static str,
+}
+
+impl Role {
+    /// A role whose spelling is its kind: nothing varies within it.
+    fn plain(word: &'static str) -> Role {
+        Role {
+            spelled: word.to_string(),
+            kind: word,
+        }
+    }
+}
+
+/// The `ROLE` cell for one lwp, and its kind. `frames` is the unwound
+/// stack's symbols, the only witness to a blocking-pool thread.
 fn role_of<T: proc::Target>(
     session: &Session<'_, T>,
     tid: u32,
     worker: Option<&bundle::Worker>,
-    stack: Option<&unwind::Backtrace>,
+    frames: &[String],
     parks: &mut HashMap<usize, Option<bundle::ParkStates>>,
-) -> String {
+) -> Role {
     // No tokio context at all: nothing of the runtime's to say.
     let Some(worker) = worker else {
-        return "no runtime".to_string();
+        return Role::plain("no runtime");
     };
     match scheduler_state(session, worker) {
         Ok(SchedulerState::Worker(worker_ctx)) => {
@@ -122,19 +143,26 @@ fn role_of<T: proc::Target>(
                 session.runtimes.len() > 1,
                 session.runtime_of(tid).map(|(rt_index, _)| rt_index),
             );
-            format!("{scoped}, {}", park_word(park, polling))
+            Role {
+                spelled: format!("{scoped}, {}", park_word(park, polling)),
+                kind: "worker",
+            }
         }
-        Ok(SchedulerState::BlockOn(_)) => "block_on caller".to_string(),
+        Ok(SchedulerState::BlockOn(_)) => Role::plain("block_on caller"),
         // A thread inside the runtime without a scheduler context:
         // the blocking pool's, if its stack says so — the runtime
         // keeps only counters about the pool, so the stack is the
         // only witness — else a thread that merely entered.
-        Ok(SchedulerState::None) => blocking_role(&stack_names(stack))
-            .unwrap_or("entered runtime")
-            .to_string(),
+        Ok(SchedulerState::None) => match blocking_role(frames) {
+            Some(spelled) => Role {
+                spelled: spelled.to_string(),
+                kind: "blocking",
+            },
+            None => Role::plain("entered runtime"),
+        },
         // A context that could not be read is not a thread that
         // merely entered; say what happened instead of guessing.
-        Err(_) => "context unreadable".to_string(),
+        Err(_) => Role::plain("context unreadable"),
     }
 }
 
@@ -205,77 +233,430 @@ fn stack_names(stack: Option<&unwind::Backtrace>) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// The `FRAME 0` cell: the function at the top of the stack — the
-/// symbol, or the pc where there is none — or `—` where no stack
-/// could be walked.
-fn headline(names: &[String]) -> String {
-    names.first().cloned().unwrap_or_else(|| "—".to_string())
+/// The row's cells short of `FRAME 0`: the line the cursor's `thread`
+/// selector prints and the heading `--exec` opens each thread's output
+/// with. The top frame stays out of it: a bare `trace` under the
+/// thread cursor walks the whole stack.
+fn row_cells(row: &ThreadRow) -> [String; 4] {
+    let dash = || "—".to_string();
+    [
+        row.lwp.to_string(),
+        row.name.clone().unwrap_or_else(dash),
+        row.role.clone(),
+        row.task.map(|id| id.to_string()).unwrap_or_else(dash),
+    ]
 }
 
 /// One thread's table row as a single line, cells joined — the line
-/// the cursor's `thread` selector prints. The table's `FRAME 0`
-/// headline stays out of it: a bare `trace` under the fresh thread
-/// cursor walks the whole stack. `None` for an lwp the rows do not
-/// hold.
+/// the cursor's `thread` selector prints. `None` for an lwp the rows
+/// do not hold.
 pub(crate) fn row_line<T: proc::Target>(session: &Session<'_, T>, lwp: u32) -> Option<String> {
-    let dash = || "—".to_string();
     let row = rows(session).iter().find(|row| row.lwp == lwp)?;
-    Some(
-        [
-            row.lwp.to_string(),
-            row.name.clone().unwrap_or_else(dash),
-            row.role.clone(),
-            row.task.map(|id| id.to_string()).unwrap_or_else(dash),
-        ]
-        .join("  "),
-    )
+    Some(row_cells(row).join("  "))
 }
 
-/// Print the table: one row per lwp, in lwp order, nothing truncated,
-/// and the count under it.
-fn print_thread_table(rows: &[ThreadRow], out: &mut dyn io::Write) -> Result<()> {
+/// Print the table: one row per selected lwp, in lwp order, nothing
+/// truncated, and the count under it.
+fn print_thread_table<'r>(
+    rows: impl ExactSizeIterator<Item = &'r ThreadRow>,
+    out: &mut dyn io::Write,
+) -> Result<()> {
+    let total = rows.len();
     let mut table = crate::output::Table::new(5).header(["LWP", "NAME", "ROLE", "TASK", "FRAME 0"]);
-    let dash = || "—".to_string();
     for row in rows {
+        let [lwp, name, role, task] = row_cells(row);
         table.row([
-            row.lwp.to_string(),
-            row.name.clone().unwrap_or_else(dash),
-            row.role.clone(),
-            row.task.map(|id| id.to_string()).unwrap_or_else(dash),
-            row.frame0.clone(),
+            lwp,
+            name,
+            role,
+            task,
+            row.frame0.clone().unwrap_or_else(|| "—".to_string()),
         ]);
     }
     if !table.is_empty() {
         table.write(out)?;
     }
-    writeln!(out, "{}", summary::counted(rows.len(), "thread"))?;
+    writeln!(out, "{}", summary::counted(total, "thread"))?;
     Ok(())
 }
 
+/// Everything the `threads` command was asked. The filter grammar
+/// rides in as the raw flag values and is parsed here, so the errors
+/// name the flag they came from.
+pub(crate) struct ThreadsCmd {
+    pub(crate) verbose: bool,
+    pub(crate) frames: Option<usize>,
+    pub(crate) registers: bool,
+    pub(crate) lwp: Vec<u32>,
+    pub(crate) with: Vec<String>,
+    pub(crate) without: Vec<String>,
+    pub(crate) group: Option<String>,
+    pub(crate) exec: Vec<String>,
+}
+
+impl ThreadsCmd {
+    /// The block form, as opposed to the table: asked for outright, or
+    /// by anything that asks after one thread's insides — a named
+    /// lwp, a frame budget, registers.
+    fn blocks(&self) -> bool {
+        self.verbose || self.registers || self.frames.is_some() || !self.lwp.is_empty()
+    }
+}
+
+/// One filterable field of the thread population — what `--with`,
+/// `--without` and `--group` name.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Field {
+    /// The recorded thread name.
+    Name,
+    /// The `ROLE` cell as spelled; grouped by its kind.
+    Role,
+    /// The id of the task being polled — exact.
+    Task,
+    /// Whether a task is being polled: `yes` or `no`.
+    HasTask,
+    /// The function at the top of the stack.
+    Function,
+    /// The lwp id — exact.
+    Lwp,
+}
+
+impl Field {
+    const NAMES: [(&'static str, Field); 6] = [
+        ("name", Field::Name),
+        ("role", Field::Role),
+        ("task", Field::Task),
+        ("has-task", Field::HasTask),
+        ("function", Field::Function),
+        ("lwp", Field::Lwp),
+    ];
+
+    /// Every field name, in the order the errors list them — what the
+    /// prompt offers after `--group`, `--with` and `--without`.
+    pub(crate) fn names() -> impl Iterator<Item = &'static str> {
+        Self::NAMES.iter().map(|(n, _)| *n)
+    }
+
+    /// The field a flag named, or an error listing what it could have.
+    fn parse(name: &str) -> Result<Field> {
+        Self::NAMES
+            .iter()
+            .find(|(n, _)| *n == name)
+            .map(|(_, f)| *f)
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "no field {name:?}; the fields are {}",
+                    Self::NAMES.map(|(n, _)| n).join(", ")
+                )
+            })
+    }
+
+    fn name(self) -> &'static str {
+        Self::NAMES
+            .iter()
+            .find(|(_, f)| *f == self)
+            .map(|(n, _)| *n)
+            .expect("every field is named")
+    }
+}
+
+/// How one clause matches its field's value.
+#[derive(Debug)]
+enum Matcher {
+    /// A case-insensitive regex over the spelled value.
+    Pattern(crate::pattern::Pattern),
+    /// Exact task id: `task`.
+    Task(u64),
+    /// Exact lwp: `lwp`.
+    Lwp(u32),
+    /// Whether a task is polled: `has-task`.
+    HasTask(bool),
+}
+
+/// One `--with`/`--without` clause.
+#[derive(Debug)]
+struct Clause {
+    field: Field,
+    matcher: Matcher,
+    /// `--without`: the clause keeps the rows it does *not* match.
+    negate: bool,
+}
+
+/// Parse the flag pairs into clauses. clap delivered FIELD/ARG pairs
+/// (`num_args = 2`), so the chunks are exact.
+fn parse_clauses(with: &[String], without: &[String]) -> Result<Vec<Clause>> {
+    let mut clauses = Vec::new();
+    for (specs, negate) in [(with, false), (without, true)] {
+        let flag = if negate { "--without" } else { "--with" };
+        for pair in specs.chunks_exact(2) {
+            let field = Field::parse(&pair[0]).with_context(|| flag.to_string())?;
+            let matcher =
+                matcher(field, &pair[1]).with_context(|| format!("{flag} {}", field.name()))?;
+            clauses.push(Clause {
+                field,
+                matcher,
+                negate,
+            });
+        }
+    }
+    Ok(clauses)
+}
+
+/// The matcher one field's argument compiles to.
+fn matcher(field: Field, arg: &str) -> Result<Matcher> {
+    Ok(match field {
+        Field::Task => Matcher::Task(
+            arg.parse()
+                .map_err(|_| anyhow::anyhow!("a task is a decimal id, got {arg:?}"))?,
+        ),
+        Field::Lwp => Matcher::Lwp(
+            arg.parse()
+                .map_err(|_| anyhow::anyhow!("an lwp is a decimal id, got {arg:?}"))?,
+        ),
+        Field::HasTask => Matcher::HasTask(match arg {
+            "yes" => true,
+            "no" => false,
+            _ => anyhow::bail!("has-task is yes or no, got {arg:?}"),
+        }),
+        Field::Name | Field::Role | Field::Function => {
+            Matcher::Pattern(crate::pattern::Pattern::new(arg)?)
+        }
+    })
+}
+
+/// Whether one row survives one clause.
+fn survives(clause: &Clause, row: &ThreadRow) -> bool {
+    let hit = match &clause.matcher {
+        Matcher::Pattern(p) => field_text(clause.field, row).is_some_and(|t| p.is_match(t)),
+        Matcher::Task(id) => row.task == Some(*id),
+        Matcher::Lwp(lwp) => row.lwp == *lwp,
+        Matcher::HasTask(has) => row.task.is_some() == *has,
+    };
+    hit != clause.negate
+}
+
+/// The spelled value a regex field matches — `None`, nothing to
+/// match, where the row has nothing to say.
+fn field_text(field: Field, row: &ThreadRow) -> Option<&str> {
+    match field {
+        Field::Name => row.name.as_deref(),
+        Field::Role => Some(&row.role),
+        Field::Function => row.frame0.as_deref(),
+        _ => unreachable!("{field:?} is not a regex field"),
+    }
+}
+
+/// What a bucket is named for one row: the field's spelled value, or
+/// `None` for [`EMPTY_BUCKET`]. A role is grouped by its kind — every
+/// worker one bucket, not one per index and park state.
+fn group_value(field: Field, row: &ThreadRow) -> Option<String> {
+    match field {
+        Field::Name => row.name.clone(),
+        Field::Role => Some(row.role_kind.to_string()),
+        Field::Task => row.task.map(|id| id.to_string()),
+        Field::HasTask => Some(if row.task.is_some() { "yes" } else { "no" }.to_string()),
+        Field::Function => row.frame0.clone(),
+        Field::Lwp => Some(row.lwp.to_string()),
+    }
+}
+
+/// Up to three member lwps and `…` — the sample a bucket row carries.
+fn member_sample(rows: &[ThreadRow], members: &[usize]) -> String {
+    let lwps: Vec<String> = members
+        .iter()
+        .take(3)
+        .map(|&i| rows[i].lwp.to_string())
+        .collect();
+    match members.len() > lwps.len() {
+        true => format!("{}, …", lwps.join(", ")),
+        false => lwps.join(", "),
+    }
+}
+
+/// Every thread the runtime is running on, as the runtime sees it and
+/// as the stack sees it: the task it is polling, the worker core it
+/// holds while it runs, and the frames it is parked in. The named
+/// lwps and the filter clauses narrow the listing; the block form is
+/// [`ThreadsCmd::blocks`]'s call. The lwp that took the fatal signal
+/// prints its registers unasked — that is exactly when they matter —
+/// and `registers` asks the same of every listed thread.
 pub(crate) fn exec_threads<T: proc::Target>(
     session: &Session<'_, T>,
-    verbose: bool,
-    frames: Option<usize>,
-    lwps: &[u32],
-    registers: bool,
+    cmd: ThreadsCmd,
+    theme: crate::output::Theme,
     opts: RenderOpts,
     out: &mut dyn io::Write,
 ) -> Result<()> {
     // Resolve the selection before any work, so an lwp the target does
     // not hold says so rather than printing nothing — and without first
     // paying for (or warning about) the unwind below.
-    for &tid in lwps {
+    for &tid in &cmd.lwp {
         if !session.lwps.iter().any(|l| l.tid == tid) {
             return Err(no_such_thread(session.lwps.len(), tid));
         }
     }
+    let group = cmd
+        .group
+        .as_deref()
+        .map(Field::parse)
+        .transpose()
+        .context("--group")?;
+    let clauses = parse_clauses(&cmd.with, &cmd.without)?;
 
-    // The bare command is the table; anything that asks after one
-    // thread's insides — a named lwp, a frame budget, registers —
-    // asks for the block form.
-    if !(verbose || registers || frames.is_some() || !lwps.is_empty()) {
-        return print_thread_table(rows(session), out);
+    // The selection, as indices into the rows: the named lwps, or every
+    // thread, narrowed by the clauses.
+    let rows = rows(session);
+    let survivors: Vec<usize> = (0..rows.len())
+        .filter(|&i| {
+            (cmd.lwp.is_empty() || cmd.lwp.contains(&rows[i].lwp))
+                && clauses.iter().all(|c| survives(c, &rows[i]))
+        })
+        .collect();
+
+    if !cmd.exec.is_empty() {
+        // clap refuses `--group` beside `--exec`; the filters have
+        // already chosen who the command runs against.
+        return exec_exec(session, &cmd, &survivors, theme, out);
     }
+    if let Some(field) = group {
+        return exec_group(session, &cmd, field, &survivors, opts, out);
+    }
+    if !cmd.blocks() {
+        return print_thread_table(survivors.iter().map(|&i| &rows[i]), out);
+    }
+    let tids: Vec<u32> = survivors.iter().map(|&i| rows[i].lwp).collect();
+    print_blocks(session, &tids, cmd.frames, cmd.registers, opts, out)
+}
+
+/// `--group FIELD`: bucket the surviving rows by the field's spelled
+/// value and print `COUNT VALUE` rows, most numerous first (ties in
+/// value order), each with up to three member lwps — or, under the
+/// block form, every member's block under its bucket.
+fn exec_group<T: proc::Target>(
+    session: &Session<'_, T>,
+    cmd: &ThreadsCmd,
+    field: Field,
+    survivors: &[usize],
+    opts: RenderOpts,
+    out: &mut dyn io::Write,
+) -> Result<()> {
+    let rows = rows(session);
+    let mut grouped: BTreeMap<String, Vec<usize>> = BTreeMap::new();
+    for &index in survivors {
+        let value = group_value(field, &rows[index]).unwrap_or_else(|| EMPTY_BUCKET.to_string());
+        grouped.entry(value).or_default().push(index);
+    }
+    let mut buckets: Vec<(String, Vec<usize>)> = grouped.into_iter().collect();
+    // Count descending; the map already ordered ties by value, and the
+    // sort is stable.
+    buckets.sort_by_key(|(_, members)| std::cmp::Reverse(members.len()));
+
+    if cmd.blocks() {
+        for (n, (value, members)) in buckets.iter().enumerate() {
+            write!(out, "{}", bucket_heading(n, members.len(), value))?;
+            let tids: Vec<u32> = members.iter().map(|&i| rows[i].lwp).collect();
+            print_blocks(session, &tids, cmd.frames, cmd.registers, opts, out)?;
+        }
+    } else {
+        let heading = field.name().replace('-', " ").to_uppercase();
+        let mut table = crate::output::Table::new(3).align_right(0).header([
+            "COUNT".to_string(),
+            heading,
+            "LWPS".to_string(),
+        ]);
+        for (value, members) in &buckets {
+            table.row([
+                members.len().to_string(),
+                value.clone(),
+                member_sample(rows, members),
+            ]);
+        }
+        if !table.is_empty() {
+            table.write(out)?;
+        }
+    }
+    writeln!(
+        out,
+        "{}",
+        listing_footer(buckets.len(), buckets.len(), "group")
+    )?;
+    Ok(())
+}
+
+/// The line bucket `n`'s blocks print under: a blank line between one
+/// bucket's blocks and the next bucket, then its count and value.
+fn bucket_heading(n: usize, count: usize, value: &str) -> String {
+    let sep = if n > 0 { "\n" } else { "" };
+    format!("{sep}{count}  {value}\n")
+}
+
+/// `--exec COMMAND`: run the command once per surviving thread under a
+/// cursor on that thread, each run's output under the thread's table
+/// row. One thread's failure never stops the loop — the failed run
+/// shows its error in place, the summary line counts them, and the
+/// command fails after the loop when any run did, so a script sees one
+/// failure with nothing skipped.
+fn exec_exec<T: proc::Target>(
+    session: &Session<'_, T>,
+    cmd: &ThreadsCmd,
+    survivors: &[usize],
+    theme: crate::output::Theme,
+    out: &mut dyn io::Write,
+) -> Result<()> {
+    // Parse once up front: a command that does not parse is the
+    // command line's mistake, not any thread's, and fails before the
+    // loop prints a heading.
+    repl::parse_exec_command(&cmd.exec).context("--exec")?;
+    let rows = rows(session);
+    let mut failed = 0usize;
+    // Each run goes under a cursor on its thread — the command's
+    // omitted target and `$_` are that thread's — and the session's
+    // own cursor comes back once the loop is done.
+    let saved = *session.cursor.borrow();
+    for (n, &index) in survivors.iter().enumerate() {
+        write!(out, "{}", exec_heading(n, &rows[index]))?;
+        let command = repl::parse_exec_command(&cmd.exec).expect("parsed above");
+        // `quit` is not a per-thread answer, so a Quit flow is ignored
+        // and the loop runs on.
+        let run = crate::cursor::select_thread(session, rows[index].lwp)
+            .and_then(|()| crate::dispatch(session, command, theme, out));
+        if let Err(e) = run {
+            failed += 1;
+            writeln!(out, "error: {e:#}")?;
+        }
+    }
+    *session.cursor.borrow_mut() = saved;
+    writeln!(
+        out,
+        "Executed against {}, {failed} failed",
+        summary::counted(survivors.len(), "thread")
+    )?;
+    if failed > 0 {
+        anyhow::bail!(
+            "--exec failed against {failed} of {}",
+            summary::counted(survivors.len(), "thread")
+        );
+    }
+    Ok(())
+}
+
+/// The heading `--exec` opens thread `n`'s output with: a blank line
+/// between one thread's output and the next, then the thread's row.
+fn exec_heading(n: usize, row: &ThreadRow) -> String {
+    let sep = if n > 0 { "\n" } else { "" };
+    format!("{sep}{}\n", row_cells(row).join("  "))
+}
+
+/// The block form: each named lwp's tokio context, scheduler state,
+/// registers where earned or asked, and stack, in lwp order.
+fn print_blocks<T: proc::Target>(
+    session: &Session<'_, T>,
+    lwps: &[u32],
+    frames: Option<usize>,
+    registers: bool,
+    opts: RenderOpts,
+    out: &mut dyn io::Write,
+) -> Result<()> {
     let frames = frames.unwrap_or(50);
 
     // Unwinding reads the CFI of every mapped object, so it is done once
@@ -297,7 +678,7 @@ pub(crate) fn exec_threads<T: proc::Target>(
     let mut selected: Vec<&proc::LwpInfo> = session
         .lwps
         .iter()
-        .filter(|l| lwps.is_empty() || lwps.contains(&l.tid))
+        .filter(|l| lwps.contains(&l.tid))
         .collect();
     selected.sort_by_key(|l| l.tid);
     for (i, lwp) in selected.into_iter().enumerate() {
@@ -591,7 +972,9 @@ pub(crate) fn render<'r, 'b, T: proc::Target>(
 #[cfg(test)]
 mod tests {
     use super::{
-        ParkState, blocking_role, fatal_tag, headline, no_such_thread, park_word, polling_line,
+        Clause, Field, ParkState, ThreadRow, blocking_role, bucket_heading, exec_heading,
+        fatal_tag, group_value, matcher, member_sample, no_such_thread, park_word, parse_clauses,
+        polling_line, survives,
     };
 
     /// The three spellings of the heading's claim: believed, stale,
@@ -727,12 +1110,217 @@ mod tests {
         }
     }
 
-    /// The headline is the top frame alone; a stack that could not
-    /// be walked is a `—`, not an empty cell.
+    /// A row as the table would build it, with the fields the filters
+    /// read.
+    fn row(
+        lwp: u32,
+        name: Option<&str>,
+        role: &str,
+        role_kind: &'static str,
+        task: Option<u64>,
+        frame0: Option<&str>,
+    ) -> ThreadRow {
+        ThreadRow {
+            lwp,
+            name: name.map(String::from),
+            role: role.to_string(),
+            role_kind,
+            task,
+            frame0: frame0.map(String::from),
+        }
+    }
+
+    /// A worker mid-poll, a parked worker, an idle pool thread, and a
+    /// thread outside any runtime with no stack to show.
+    fn population() -> Vec<ThreadRow> {
+        vec![
+            row(
+                2,
+                Some("tokio-rt-worker"),
+                "worker 0, polling",
+                "worker",
+                Some(129),
+                Some("app::handle"),
+            ),
+            row(
+                3,
+                Some("tokio-rt-worker"),
+                "worker 1, parked",
+                "worker",
+                None,
+                Some("__lwp_park"),
+            ),
+            row(
+                4,
+                Some("tokio-blocking"),
+                "blocking, idle",
+                "blocking",
+                None,
+                Some("__lwp_park"),
+            ),
+            row(9, None, "no runtime", "no runtime", None, None),
+        ]
+    }
+
+    fn clause(field: &str, arg: &str, negate: bool) -> Clause {
+        let field = Field::parse(field).expect("a field name");
+        Clause {
+            field,
+            matcher: matcher(field, arg).expect("a valid argument"),
+            negate,
+        }
+    }
+
+    /// The lwps a clause keeps from the population.
+    fn kept(field: &str, arg: &str, negate: bool) -> Vec<u32> {
+        let clause = clause(field, arg, negate);
+        population()
+            .iter()
+            .filter(|row| survives(&clause, row))
+            .map(|row| row.lwp)
+            .collect()
+    }
+
+    /// Each string field reads its own column, as a case-insensitive
+    /// regex; a row with nothing in the column matches nothing.
     #[test]
-    fn test_the_headline_is_the_top_frame() {
-        let names: Vec<String> = ["a", "b", "c"].iter().map(|s| s.to_string()).collect();
-        assert_eq!(headline(&names), "a");
-        assert_eq!(headline(&[]), "—");
+    fn test_each_string_field_reads_its_own_column() {
+        assert_eq!(kept("name", "RT-WORKER", false), [2, 3]);
+        assert_eq!(kept("name", ".", false), [2, 3, 4]);
+        assert_eq!(kept("role", "^worker", false), [2, 3]);
+        assert_eq!(kept("role", "idle|polling", false), [2, 4]);
+        assert_eq!(kept("function", "park", false), [3, 4]);
+        assert_eq!(kept("function", ".", false), [2, 3, 4]);
+    }
+
+    /// The ids are exact — a prefix is not a match — and has-task is
+    /// the yes/no of the TASK column.
+    #[test]
+    fn test_the_exact_fields_are_exact() {
+        assert_eq!(kept("task", "129", false), [2]);
+        assert_eq!(kept("task", "12", false), Vec::<u32>::new());
+        assert_eq!(kept("lwp", "3", false), [3]);
+        assert_eq!(kept("has-task", "yes", false), [2]);
+        assert_eq!(kept("has-task", "no", false), [3, 4, 9]);
+    }
+
+    /// `--without` keeps what does not match, and clauses AND.
+    #[test]
+    fn test_without_negates_and_clauses_and() {
+        assert_eq!(kept("role", "^worker", true), [4, 9]);
+        assert_eq!(kept("function", ".", true), [9]);
+        let clauses = parse_clauses(
+            &["name".into(), "worker".into()],
+            &["has-task".into(), "yes".into()],
+        )
+        .expect("both pairs parse");
+        let kept: Vec<u32> = population()
+            .iter()
+            .filter(|row| clauses.iter().all(|c| survives(c, row)))
+            .map(|row| row.lwp)
+            .collect();
+        assert_eq!(kept, [3]);
+    }
+
+    /// A bad field or argument names the flag it came from and what
+    /// it could have been.
+    #[test]
+    fn test_filter_errors_name_their_flag() {
+        let err = parse_clauses(&["colour".into(), "x".into()], &[])
+            .expect_err("no such field")
+            .to_string();
+        assert!(err.contains("--with"), "{err}");
+        let err = format!(
+            "{:#}",
+            parse_clauses(&[], &["has-task".into(), "maybe".into()]).expect_err("yes or no")
+        );
+        assert!(err.contains("--without has-task"), "{err}");
+        assert!(err.contains("yes or no"), "{err}");
+        let err = format!(
+            "{:#}",
+            parse_clauses(&["task".into(), "0x10".into()], &[]).expect_err("decimal")
+        );
+        assert!(err.contains("--with task"), "{err}");
+        let err = format!(
+            "{:#}",
+            parse_clauses(&["lwp".into(), "three".into()], &[]).expect_err("decimal")
+        );
+        assert!(err.contains("--with lwp"), "{err}");
+        let err = Field::parse("colour")
+            .expect_err("no such field")
+            .to_string();
+        assert!(
+            err.contains("name, role, task, has-task, function, lwp"),
+            "{err}"
+        );
+    }
+
+    /// A bucket is the field's spelled value — a role by its kind, so
+    /// every worker lands together — and a row with nothing in the
+    /// field is the empty bucket.
+    #[test]
+    fn test_group_values_and_the_empty_bucket() {
+        let rows = population();
+        let values = |field: &str| -> Vec<Option<String>> {
+            let field = Field::parse(field).expect("a field name");
+            rows.iter().map(|row| group_value(field, row)).collect()
+        };
+        let some = |list: &[&str]| -> Vec<Option<String>> {
+            list.iter().map(|s| Some(s.to_string())).collect()
+        };
+        assert_eq!(
+            values("name"),
+            [
+                Some("tokio-rt-worker".to_string()),
+                Some("tokio-rt-worker".to_string()),
+                Some("tokio-blocking".to_string()),
+                None
+            ]
+        );
+        assert_eq!(
+            values("role"),
+            some(&["worker", "worker", "blocking", "no runtime"])
+        );
+        assert_eq!(values("task"), [Some("129".to_string()), None, None, None]);
+        assert_eq!(values("has-task"), some(&["yes", "no", "no", "no"]));
+        assert_eq!(
+            values("function"),
+            [
+                Some("app::handle".to_string()),
+                Some("__lwp_park".to_string()),
+                Some("__lwp_park".to_string()),
+                None
+            ]
+        );
+        assert_eq!(values("lwp"), some(&["2", "3", "4", "9"]));
+    }
+
+    /// A bucket's sample is three lwps and an ellipsis for the rest.
+    #[test]
+    fn test_a_bucket_samples_three_members() {
+        let rows = population();
+        assert_eq!(member_sample(&rows, &[0, 1]), "2, 3");
+        assert_eq!(member_sample(&rows, &[0, 1, 2]), "2, 3, 4");
+        assert_eq!(member_sample(&rows, &[0, 1, 2, 3]), "2, 3, 4, …");
+    }
+
+    /// The exec heading is the row without its frame, and a blank line
+    /// separates one thread's output from the next but not the first.
+    #[test]
+    fn test_exec_headings_separate_threads_with_one_blank_line() {
+        let rows = population();
+        assert_eq!(
+            exec_heading(0, &rows[0]),
+            "2  tokio-rt-worker  worker 0, polling  129\n"
+        );
+        assert_eq!(exec_heading(1, &rows[3]), "\n9  —  no runtime  —\n");
+    }
+
+    /// A bucket's blocks print under its count and value, with a blank
+    /// line before every bucket but the first.
+    #[test]
+    fn test_bucket_headings_separate_buckets_with_one_blank_line() {
+        assert_eq!(bucket_heading(0, 3, "worker"), "3  worker\n");
+        assert_eq!(bucket_heading(1, 1, "no runtime"), "\n1  no runtime\n");
     }
 }
