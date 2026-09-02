@@ -16,6 +16,9 @@ use crate::detect::{Family, FormatExplanation, trace, unique_member};
 use crate::raw_types::{RawType, VariantShape as RawVariantShape};
 use crate::{DwReader, Encoding, TypeId};
 
+use rayon::iter::ParallelIterator;
+use rayon::slice::ParallelSliceMut;
+
 use std::collections::{BTreeMap, VecDeque};
 
 /// Placeholder name for type references that do not resolve to a parsed
@@ -535,7 +538,7 @@ impl<'a> Emitter<'a> {
             .enumerate()
             .filter_map(|(i, n)| n.as_ref().map(|n| (n.clone(), BundleTypeId(i as u32))))
             .collect();
-        index.sort();
+        index.par_sort();
         let name_index = index
             .into_iter()
             .map(|(n, id)| (self.interner.intern(&n), id))
@@ -569,8 +572,8 @@ impl<'a> Emitter<'a> {
         // sorted, which is the order the validator requires.
         let mentioned: std::collections::BTreeSet<String> = self
             .interner
-            .iter()
-            .flat_map(|s| crate::bundle::names::impl_paths(s))
+            .par_iter()
+            .flat_map_iter(|s| crate::bundle::names::impl_paths(s))
             .filter(|path| impl_selfs.contains_key(*path))
             .map(str::to_owned)
             .collect();
