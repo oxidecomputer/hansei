@@ -1,6 +1,6 @@
 ---
 source: hansei/src/offline.rs
-description: "`print .node` over linux-floor/futurelock"
+description: "`print node` over linux-floor/futurelock"
 ---
 tokio::sync::batch_semaphore::Waiter {
     state: 1,

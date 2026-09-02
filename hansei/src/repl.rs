@@ -159,8 +159,9 @@ enum Ask {
     /// Which values the target holds for a listing's field: what can
     /// stand after `--with FIELD`.
     Values { command: String, field: String },
-    /// Which member names a `.` step in a `print` path could take:
-    /// `args` are `print`'s arguments up to and including that `.`.
+    /// Which names a `print` path could take next: `args` are
+    /// `print`'s arguments up to and including the `.` under the
+    /// cursor, or none for the local being typed.
     Members { args: Vec<String> },
 }
 
@@ -454,18 +455,8 @@ fn answer_words<T: proc::Target>(
     words: &[String],
     shell: Option<&str>,
 ) -> Result<Flow> {
-    // `print` resolves `$_` itself: its bare-`$_` form defaults the
-    // type from the cursor frame, which a pre-substituted hex address
-    // could no longer ask for.
-    let substituted;
-    let words = match words.first().is_some_and(|w| names_print(w)) {
-        true => words,
-        false => {
-            substituted = substitute_last_addr(words, session.cursor.borrow().last_addr)?;
-            &substituted
-        }
-    };
-    let parsed = match parse_words(words)? {
+    let words = substitute_last_addr(words, session.cursor.borrow().last_addr)?;
+    let parsed = match parse_words(&words)? {
         Some(parsed) => parsed,
         None => return Ok(Flow::Continue),
     };
@@ -587,19 +578,6 @@ fn apply_scope<T: proc::Target>(session: &Session<'_, T>, scope: Scope) -> Resul
         Scope::Future(addr) => crate::cursor::select_future(session, addr, &mut io::sink()),
         Scope::Thread(lwp) => crate::cursor::select_thread(session, lwp),
     }
-}
-
-/// Whether `word` names the `print` command, exactly or by the
-/// unique-prefix rule the grammar's `infer_subcommands` applies. The
-/// one command whose `$_` stays a token: see [`answer_words`].
-fn names_print(word: &str) -> bool {
-    !word.is_empty()
-        && "print".starts_with(word)
-        && Line::command()
-            .get_subcommands()
-            .filter(|c| c.get_name().starts_with(word))
-            .count()
-            == 1
 }
 
 /// Substitute `$_` — the cursor's current-frame address — wherever it
@@ -832,8 +810,8 @@ fn candidates(
     let Some(cmd) = find_command(root, word) else {
         return Vec::new();
     };
-    // `print`'s arguments are a grammar of their own: a root, then path
-    // steps, of which the member step completes.
+    // `print`'s arguments are a grammar of their own: a local, then
+    // path steps, of which the name steps complete.
     if cmd.get_name() == "print" {
         return path_candidates(rest, current, answer);
     }
@@ -923,29 +901,29 @@ fn candidates(
     }
 }
 
-/// The member names a `print` path could continue with. The word
-/// under the cursor completes when it is a path token whose last step
-/// is a member step — `.`, `.fo`, `.foo.`, `.foo[0].` — and the
-/// session is asked what the root and the path before that step
-/// reach. The word is completed whole, its steps so far kept, with no
-/// space after: the next step continues it.
+/// The names a `print` path could continue with. The word under the
+/// cursor completes at its last `.` — the member being typed, the
+/// steps before it kept — and a first word with no `.` is the local
+/// being typed, offered from the frame's own members. An index or a
+/// dereference under the cursor, or a later word with no `.`,
+/// completes nothing.
 fn path_candidates(
     rest: &[String],
     current: &str,
     answer: &mut dyn FnMut(Ask) -> Vec<TargetValue>,
 ) -> Vec<Candidate> {
-    if !current.starts_with(['.', '[', '*']) {
-        return Vec::new();
-    }
-    let Some(dot) = current.rfind('.') else {
-        return Vec::new();
+    let (stem, partial) = match current.rfind('.') {
+        Some(dot) => current.split_at(dot + 1),
+        None if rest.is_empty() => ("", current),
+        None => return Vec::new(),
     };
-    let (stem, partial) = current.split_at(dot + 1);
     if partial.contains(['[', '*']) {
         return Vec::new();
     }
     let mut args: Vec<String> = rest.to_vec();
-    args.push(stem.to_string());
+    if !stem.is_empty() {
+        args.push(stem.to_string());
+    }
     answer(Ask::Members { args })
         .into_iter()
         .map(|name| Candidate {
@@ -1261,8 +1239,8 @@ mod tests {
     fn test_the_split_honors_the_escaped_separator() {
         assert_eq!(split_commands("tasks ; graph"), ["tasks ", " graph"]);
         assert_eq!(
-            split_commands(r"print 0x10 [usize\; 4]; graph"),
-            ["print 0x10 [usize; 4]", " graph"]
+            split_commands(r"type [usize\; 4]; graph"),
+            ["type [usize; 4]", " graph"]
         );
         assert_eq!(split_commands(r"type [u8\; 2]"), ["type [u8; 2]"]);
         assert_eq!(split_commands(r"a \x b"), [r"a \x b"]);
@@ -1438,16 +1416,12 @@ mod tests {
                 return Vec::new();
             };
             log.lock().unwrap().push(args.clone());
-            // The root words aside, the path is the tokens joined.
-            let path: String = args
-                .iter()
-                .filter(|a| a.starts_with(['.', '[', '*']))
-                .cloned()
-                .collect();
-            let names: &[&str] = match path.as_str() {
-                "." => &["baz", "foo"],
-                ".foo." => &["x", "y"],
-                ".foo.x." => &["a", "b"],
+            // The path is the words joined, from the frame.
+            let path: String = args.concat();
+            let names: &[&str] = match path.trim_start_matches('.') {
+                "" => &["baz", "foo"],
+                "foo." => &["x", "y"],
+                "foo.x." => &["a", "b"],
                 _ => &[],
             };
             names
@@ -1461,10 +1435,10 @@ mod tests {
         (completer, asked)
     }
 
-    /// A `.` in a `print` path offers what the frame holds there, the
-    /// steps so far kept and no space after: the locals at the root,
-    /// then each local's members, then theirs. A typed prefix narrows
-    /// the names; a separate path word continues the path.
+    /// An empty `print` offers the frame's locals, and a `.` what the
+    /// path holds there, the steps so far kept and no space after: the
+    /// locals, then each local's members, then theirs. A typed prefix
+    /// narrows the names; a separate path word continues the path.
     #[test]
     fn test_completion_walks_a_print_path() {
         let (mut c, asked) = frame_completer();
@@ -1475,57 +1449,48 @@ mod tests {
                 .collect()
         };
         assert_eq!(
-            suggest(&mut c, "print ."),
-            [(".baz".to_string(), false), (".foo".to_string(), false)]
+            suggest(&mut c, "print "),
+            [("baz".to_string(), false), ("foo".to_string(), false)]
         );
-        assert_eq!(complete_with(&mut c, "print .f"), [".foo"]);
-        assert_eq!(complete_with(&mut c, "print .foo."), [".foo.x", ".foo.y"]);
+        assert_eq!(complete_with(&mut c, "print f"), ["foo"]);
+        assert_eq!(complete_with(&mut c, "print foo."), ["foo.x", "foo.y"]);
         assert_eq!(
-            complete_with(&mut c, "print .foo.x."),
-            [".foo.x.a", ".foo.x.b"]
+            complete_with(&mut c, "print foo.x."),
+            ["foo.x.a", "foo.x.b"]
         );
-        assert_eq!(complete_with(&mut c, "print .foo.x.b"), [".foo.x.b"]);
-        assert_eq!(complete_with(&mut c, "print .foo .x."), [".x.a", ".x.b"]);
-        // The root words travel with the question.
-        complete_with(&mut c, "print $_ .");
-        complete_with(&mut c, "print 0x10 T .foo.");
+        assert_eq!(complete_with(&mut c, "print foo.x.b"), ["foo.x.b"]);
+        assert_eq!(complete_with(&mut c, "print foo .x."), [".x.a", ".x.b"]);
+        // The spelled-out `.` roots at the frame the same way.
+        assert_eq!(complete_with(&mut c, "print ."), [".baz", ".foo"]);
+        assert_eq!(complete_with(&mut c, "print .foo."), [".foo.x", ".foo.y"]);
         let asked = asked.lock().unwrap();
-        assert!(
-            asked.contains(&vec!["$_".to_string(), ".".to_string()]),
-            "{asked:?}"
-        );
-        assert!(
-            asked.contains(&vec![
-                "0x10".to_string(),
-                "T".to_string(),
-                ".foo.".to_string()
-            ]),
-            "{asked:?}"
-        );
+        // The local being typed asks with no path at all.
+        assert!(asked.contains(&Vec::new()), "{asked:?}");
         // The step before the cursor's is sent as typed, the partial
         // name left off.
         assert!(
-            asked.contains(&vec![".foo".to_string(), ".x.".to_string()]),
+            asked.contains(&vec!["foo".to_string(), ".x.".to_string()]),
             "{asked:?}"
         );
     }
 
-    /// Only a member step completes: an index or a dereference under
-    /// the cursor, or no path at all, asks nothing.
+    /// Only a name completes: an index or a dereference under the
+    /// cursor, or a later word with no `.`, asks nothing.
     #[test]
     fn test_completion_leaves_the_other_print_steps_alone() {
         let (mut c, asked) = frame_completer();
-        assert!(complete_with(&mut c, "print ").is_empty());
-        assert!(complete_with(&mut c, "print 0x").is_empty());
-        assert!(complete_with(&mut c, "print .foo[").is_empty());
-        assert!(complete_with(&mut c, "print .foo[0]").is_empty());
-        assert!(complete_with(&mut c, "print .foo*").is_empty());
+        assert!(complete_with(&mut c, "print foo[").is_empty());
+        assert!(complete_with(&mut c, "print foo[0]").is_empty());
+        assert!(complete_with(&mut c, "print foo*").is_empty());
+        assert!(complete_with(&mut c, "print [").is_empty());
+        assert!(complete_with(&mut c, "print foo [0").is_empty());
+        assert!(complete_with(&mut c, "print foo bar").is_empty());
         assert!(asked.lock().unwrap().is_empty());
         // A member step after an index asks with the index kept.
-        complete_with(&mut c, "print .foo[0].");
-        assert_eq!(*asked.lock().unwrap(), [vec![".foo[0].".to_string()]]);
+        complete_with(&mut c, "print foo[0].");
+        assert_eq!(*asked.lock().unwrap(), [vec!["foo[0].".to_string()]]);
         // Member names are not cached: the cursor may have moved.
-        complete_with(&mut c, "print .foo[0].");
+        complete_with(&mut c, "print foo[0].");
         assert_eq!(asked.lock().unwrap().len(), 2);
     }
 
@@ -1997,20 +1962,19 @@ mod tests {
         assert_eq!(depth, 2);
     }
 
-    /// `print`'s positionals are one root spelling plus path tokens,
-    /// split apart by the command itself — clap only collects them —
-    /// and nothing else — the retired render flags are refused.
+    /// `print`'s positionals are a local plus path tokens, split
+    /// apart by the command itself — clap only collects them — and
+    /// nothing else — the retired render flags are refused.
     #[test]
-    fn test_print_collects_root_and_path_tokens() {
-        let Command::Print { args } =
-            Line::try_parse_from(["print", "0x7f10", "Vec<(u64, u64)>", ".a"])
-                .expect("print takes a root and path tokens")
-                .command
+    fn test_print_collects_local_and_path_tokens() {
+        let Command::Print { args } = Line::try_parse_from(["print", "values[..10]", ".a"])
+            .expect("print takes a local and path tokens")
+            .command
         else {
             panic!("print parsed as another command");
         };
-        assert_eq!(args, ["0x7f10", "Vec<(u64, u64)>", ".a"]);
-        assert!(Line::try_parse_from(["print", "0x7f10", "-u"]).is_err());
+        assert_eq!(args, ["values[..10]", ".a"]);
+        assert!(Line::try_parse_from(["print", "values", "-u"]).is_err());
 
         // Bare `print` is the cursor frame: nothing is required.
         let Command::Print { args, .. } = Line::try_parse_from(["print"])
@@ -2251,7 +2215,7 @@ mod tests {
         ));
         let words = w("future 0x10 trace");
         assert!(matches!(peel_scope(&words), Some((Scope::Future(0x10), _))));
-        let words = w("thread 3 print $_");
+        let words = w("thread 3 print self");
         assert!(matches!(peel_scope(&words), Some((Scope::Thread(3), _))));
 
         assert!(peel_scope(&w("task 129")).is_none());
@@ -2268,8 +2232,8 @@ mod tests {
     fn test_split_tokens_quotes_join_and_backslash_is_literal() {
         let split = |line| split_tokens(line).expect("splits");
         assert_eq!(
-            split(r#"print 0x1 "Vec<(u64, u64)>" .a"#),
-            ["print", "0x1", "Vec<(u64, u64)>", ".a"]
+            split(r#"whatis 0x1 "Vec<(u64, u64)>" .a"#),
+            ["whatis", "0x1", "Vec<(u64, u64)>", ".a"]
         );
         assert_eq!(
             split("tasks --with type 'a b' --limit 3"),
@@ -2348,18 +2312,6 @@ mod tests {
         // An exec command's own failure carries no such note.
         let err = refusal(&["trace", "--bogus"]);
         assert!(!err.contains("must be the last flag"), "{err}");
-    }
-
-    /// `print` — under any prefix that names it alone — is exempt
-    /// from `$_` substitution; everything else is not.
-    #[test]
-    fn test_print_alone_keeps_its_last_addr_token() {
-        for word in ["print", "prin", "pri", "pr", "p"] {
-            assert!(names_print(word), "{word}");
-        }
-        for word in ["", "tasks", "printx", "trace", "t"] {
-            assert!(!names_print(word), "{word}");
-        }
     }
 
     /// `$_` substitutes only where it stands as a whole word, spells
@@ -2462,14 +2414,14 @@ mod tests {
                 .command,
             Command::Frame { index: None, then } if then.is_empty()
         ));
-        let Command::Frame { index, then } = Line::try_parse_from(["frame", "7", "print", ".self"])
+        let Command::Frame { index, then } = Line::try_parse_from(["frame", "7", "print", "self"])
             .expect("frame carries a trailing command")
             .command
         else {
             panic!("frame parses");
         };
         assert_eq!(index, Some(7));
-        assert_eq!(then, ["print", ".self"]);
+        assert_eq!(then, ["print", "self"]);
         assert!(matches!(
             Line::try_parse_from(["up"]).expect("up parses").command,
             Command::Up { then } if then.is_empty()

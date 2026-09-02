@@ -1,5 +1,5 @@
 ---
 source: hansei/src/offline.rs
-description: "`print .no_such_member` over linux/sleep-join"
+description: "`print no_such_member` over linux/sleep-join"
 ---
 error: type tokio::runtime::time::entry::TimerEntry has no member named no_such_member (members: driver, inner, deadline, registered)

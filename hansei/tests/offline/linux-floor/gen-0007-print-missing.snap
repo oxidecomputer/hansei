@@ -1,5 +1,5 @@
 ---
 source: hansei/src/offline.rs
-description: "`print .no_such_member` over linux-floor/gen-0007"
+description: "`print no_such_member` over linux-floor/gen-0007"
 ---
 error: type gen_0007::GfSel3<core::future::pending::Pending<u64>, core::future::pending::Pending<u64>, core::future::pending::Pending<u64>> has no member named no_such_member (members: a, b, c)

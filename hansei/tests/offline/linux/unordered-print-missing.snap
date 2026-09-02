@@ -1,5 +1,5 @@
 ---
 source: hansei/src/offline.rs
-description: "`print .no_such_member` over linux/unordered"
+description: "`print no_such_member` over linux/unordered"
 ---
 error: type futures_util::stream::futures_unordered::FuturesUnordered<unordered::set_member::{async_fn_env#0}> has no member named no_such_member (members: ready_to_run_queue, head_all, is_terminated)

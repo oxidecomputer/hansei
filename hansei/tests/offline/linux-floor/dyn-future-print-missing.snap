@@ -1,5 +1,5 @@
 ---
 source: hansei/src/offline.rs
-description: "`print .no_such_member` over linux-floor/dyn-future"
+description: "`print no_such_member` over linux-floor/dyn-future"
 ---
 error: type tokio::sync::oneshot::Inner<u32> has no member named no_such_member (members: state, value, tx_task, rx_task)

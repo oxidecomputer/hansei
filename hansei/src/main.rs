@@ -575,40 +575,33 @@ pub enum Command {
         dump: Option<umem::Dump>,
     },
 
-    /// Render memory as a typed value, and navigate into it: every
+    /// Render a local of the cursor frame, and navigate into it: every
     /// `...` the renderer elides is reachable by a path.
     ///
-    /// The root is `0xaddr "<Type>"` — the inverse of `whatis`, with
-    /// the type one token (quote a generic holding spaces): the
-    /// address says where and the type says how, and nothing checks
-    /// one against the other, so printing the wrong type at an
-    /// address renders that memory as the type asked for. The type is
-    /// the exact fully-qualified name `find-types` lists, or a type
-    /// id — the `type 4821` a listing prints where a name alone is
-    /// not a handle; the kind-worded display spelling is refused with
-    /// the recorded name to use instead. `$_` roots at the cursor
-    /// frame's base, its type defaulting to that frame's future; bare
-    /// `print` is the cursor's current frame itself — the active
-    /// variant of its future, whose locals are members.
+    /// The first word names a local — one of the names `locals`
+    /// lists, a member of the frame's future — and bare `print` is
+    /// the frame itself: the active variant of that future, whose
+    /// locals are its members. Nothing else roots a `print`: an
+    /// address is `whatis`'s question.
     ///
-    /// Everything after the root is a path: `.member` navigates the
-    /// way Rust's dot does (through references, `Box`, `Arc`/`Rc`,
-    /// `Pin`, `NonNull`, and into an enum's active variant — an
-    /// inactive one refuses with the active variant's name), `[3]`
-    /// indexes a sequence (on a map, the Nth entry in display order,
-    /// a pair `.0`/`.1` take apart), `[a..b]`/`[a..=b]`/`[..b]`/
-    /// `[a..]` select a run of elements, and `*` dereferences
-    /// explicitly — the only way through a raw pointer. A range fans
-    /// out: every later step applies per element, each printed under
-    /// its `[i]` heading and exempt from the max-array-values cap,
-    /// since a
-    /// range is the reader saying how many. Depth counts from the end
-    /// of the path.
+    /// Everything after the name is a path, in the same word or the
+    /// next ones: `.member` navigates the way Rust's dot does (through
+    /// references, `Box`, `Arc`/`Rc`, `Pin`, `NonNull`, and into an
+    /// enum's active variant — an inactive one refuses with the
+    /// active variant's name), `[3]` indexes a sequence (on a map, the
+    /// Nth entry in display order, a pair `.0`/`.1` take apart),
+    /// `[a..b]`/`[a..=b]`/`[..b]`/`[a..]` select a run of elements,
+    /// and `*` dereferences explicitly — the only way through a raw
+    /// pointer. A range fans out: every later step applies per
+    /// element, each printed under its `[i]` heading and exempt from
+    /// the max-array-values cap, since a range is the reader saying
+    /// how many. Depth counts from the end of the path.
     Print {
-        /// The root — `0xaddr "<Type>"`, `$_ ["<Type>"]`, or nothing
-        /// for the cursor frame — then path steps, each starting with
-        /// `.`, `[` or `*`.
-        #[arg(value_name = "ROOT|PATH")]
+        /// The local's name, with any path steps behind it
+        /// (`values[..10]`, `foo.bar`), or nothing for the frame;
+        /// later words are further steps, each starting with `.`,
+        /// `[` or `*`.
+        #[arg(value_name = "LOCAL[PATH]")]
         args: Vec<String>,
     },
 

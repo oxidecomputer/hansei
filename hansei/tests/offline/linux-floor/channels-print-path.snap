@@ -1,6 +1,6 @@
 ---
 source: hansei/src/offline.rs
-description: "`print .notify` over linux-floor/channels"
+description: "`print notify` over linux-floor/channels"
 ---
 0xADDR -> tokio::sync::notify::Notify {
         state: state=waiting, generation=0,

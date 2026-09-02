@@ -832,48 +832,6 @@ mod tests {
         );
     }
 
-    /// `print $_` with no type defaults to the cursor frame; a thread
-    /// cursor has no frame, and the refusal says what `$_` is there.
-    #[test]
-    fn test_print_last_addr_defaults_only_at_a_frame() {
-        let (bundle, snapshot) = testkit::load("linux", "nested-await");
-        let args = session_args("linux", "nested-await");
-        let session = Session::attach(&snapshot, &bundle, &args).expect("the pair attaches");
-        let render = || crate::RenderOpts {
-            depth: 3,
-            ugly: false,
-            max_string_len: 64,
-            max_array_values: 8,
-        };
-
-        let lwp = session.lwps.first().expect("lwps recorded").tid;
-        select_thread(&session, lwp).expect("the lwp selects");
-        assert!(
-            session.cursor.borrow().root.is_none(),
-            "a parked capture polls nothing"
-        );
-        let dollar = || vec!["$_".to_string()];
-        let err = crate::print::exec_print(&session, &dollar(), render(), &mut Vec::new())
-            .expect_err("no frame, no default type");
-        assert!(err.to_string().contains("stack pointer"), "{err}");
-
-        let id = session
-            .tasks
-            .tasks
-            .first()
-            .and_then(|t| t.task_id)
-            .expect("the fixture's tasks carry ids");
-        select_task(&session, TraceTarget::Task(id)).expect("the task selects");
-        let mut out = Vec::new();
-        crate::print::exec_print(&session, &dollar(), render(), &mut out)
-            .expect("the frame is the default");
-        assert!(!out.is_empty());
-        // The default is the frame itself: identical to bare `print`.
-        let mut bare = Vec::new();
-        crate::print::exec_print(&session, &[], render(), &mut bare).expect("bare print");
-        assert_eq!(out, bare);
-    }
-
     /// The selectors over a fixture pair: `task` roots the cursor and
     /// stamps `$_`, an address inside the task selects the same task,
     /// one outside every task points at `future`, `thread` selects the
@@ -1557,21 +1515,6 @@ mod tests {
         assert!(!text.contains('#'), "{text}");
         let first = text.lines().next().expect("at least one local");
         assert!(!first.starts_with(' '), "{text}");
-    }
-
-    /// `print` renders the named type's bytes; a snapshot recorded the
-    /// task header, so the read answers offline.
-    #[test]
-    fn test_print_renders_memory_as_the_named_type() {
-        let (bundle, snapshot) = testkit::load("linux", "nested-await");
-        let args = session_args("linux", "nested-await");
-        let session = Session::attach(&snapshot, &bundle, &args).expect("the pair attaches");
-        let addr = session.tasks.tasks[0].addr.0;
-        let command = repl::parse_line(&format!("print {addr:#x} u64")).expect("print parses");
-        let mut out = Vec::new();
-        dispatch(&session, command, crate::output::Theme::plain(), &mut out)
-            .expect("print answers");
-        assert!(!out.is_empty(), "print writes the value");
     }
 
     /// A scope that does not select fails the command rather than

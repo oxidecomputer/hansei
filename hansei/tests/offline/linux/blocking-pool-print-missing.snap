@@ -1,5 +1,5 @@
 ---
 source: hansei/src/offline.rs
-description: "`print .no_such_member` over linux/blocking-pool"
+description: "`print no_such_member` over linux/blocking-pool"
 ---
 error: type core::option::Option<blocking_pool::main::{async_block#0}::{closure_env#0}>::None has no member named no_such_member

@@ -1,5 +1,5 @@
 ---
 source: hansei/src/offline.rs
-description: "`print .a` over linux-floor/gen-0007"
+description: "`print a` over linux-floor/gen-0007"
 ---
 core::future::pending::Pending<u64>

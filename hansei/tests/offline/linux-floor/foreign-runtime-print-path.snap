@@ -1,6 +1,6 @@
 ---
 source: hansei/src/offline.rs
-description: "`print .node` over linux-floor/foreign-runtime"
+description: "`print node` over linux-floor/foreign-runtime"
 ---
 tokio::sync::batch_semaphore::Waiter {
     state: 1,

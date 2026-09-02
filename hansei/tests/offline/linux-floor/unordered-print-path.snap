@@ -1,6 +1,6 @@
 ---
 source: hansei/src/offline.rs
-description: "`print .ready_to_run_queue` over linux-floor/unordered"
+description: "`print ready_to_run_queue` over linux-floor/unordered"
 ---
 0xADDR -> alloc::sync::ArcInner<futures_util::stream::futures_unordered::ready_to_run_queue::ReadyToRunQueue<unordered::set_member::{async_fn_env#0}>> {
         strong: 1,

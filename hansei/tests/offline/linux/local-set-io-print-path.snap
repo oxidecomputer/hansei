@@ -1,6 +1,6 @@
 ---
 source: hansei/src/offline.rs
-description: "`print .reader` over linux/local-set-io"
+description: "`print reader` over linux/local-set-io"
 ---
 0xADDR -> tokio::net::unix::stream::UnixStream {
         io: tokio::io::poll_evented::PollEvented<mio::net::uds::stream::UnixStream> { .. } @ 0xADDR,
