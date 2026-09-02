@@ -1118,6 +1118,13 @@ fn history_lines(text: &str, last: Option<usize>) -> Vec<String> {
 /// whitespace, and is split here the way the prompt would have split
 /// it unquoted. Output-only parses (`help`) are errors here: an exec
 /// loop wants a command to run.
+///
+/// Because `--exec` takes the rest of the line, it has to be the
+/// listing's last flag: a `--with` typed after it is handed to the
+/// exec command, which does not know it. That misplacement is
+/// refused here in the rule's own words, whether the command was
+/// quoted (so the listing's flag follows a whitespace-holding word)
+/// or not (so the exec command's parse trips over it).
 pub(crate) fn parse_exec_command(words: &[String]) -> Result<Command> {
     let resplit;
     let words = match words {
@@ -1125,13 +1132,41 @@ pub(crate) fn parse_exec_command(words: &[String]) -> Result<Command> {
             resplit = split_tokens(one)?;
             &resplit
         }
+        [one, rest @ ..] if one.chars().any(char::is_whitespace) => {
+            anyhow::bail!(
+                "{}: `{}` follows the quoted command; --exec takes the rest of the line, so \
+                 the listing's other flags go before it",
+                EXEC_COMES_LAST,
+                rest.join(" ")
+            );
+        }
         words => words,
     };
     match Line::try_parse_from(words) {
         Ok(line) => Ok(line.command),
-        Err(e) => Err(anyhow!("{}", clap_message(e))),
+        Err(e) => {
+            let message = clap_message(e);
+            match words
+                .iter()
+                .skip(1)
+                .find(|w| LISTING_FLAGS.contains(&w.as_str()))
+            {
+                Some(flag) => Err(anyhow!(
+                    "{message}\n\n  {EXEC_COMES_LAST}: `{flag}` was handed to the exec command; \
+                     the listing's other flags go before --exec"
+                )),
+                None => Err(anyhow!("{message}")),
+            }
+        }
     }
 }
+
+/// The rule a misplaced `--exec` is refused with.
+const EXEC_COMES_LAST: &str = "--exec must be the last flag";
+
+/// The flags the listing commands own that an exec command does not:
+/// one of these among the exec words means `--exec` was not last.
+const LISTING_FLAGS: &[&str] = &["--with", "--without", "--group"];
 
 /// Parse one command line the way the prompt does, handing back the
 /// grammar's own `Command` for suites that drive `dispatch` directly.
@@ -2231,6 +2266,37 @@ mod tests {
             Command::Census { .. }
         ));
         assert!(parse_exec_command(&w(&["cen\"sus\""])).is_err());
+    }
+
+    /// `--exec` takes the rest of the line, so a listing flag typed
+    /// after it is refused with the rule rather than the exec
+    /// command's bare "unexpected argument" — whether the command was
+    /// quoted, so the flag follows the whitespace-holding word, or
+    /// split, so the flag sits among the command's own words.
+    #[test]
+    fn test_exec_command_refuses_a_listing_flag_after_it() {
+        let w = |words: &[&str]| words.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let refusal = |words: &[&str]| match parse_exec_command(&w(words)) {
+            Ok(_) => panic!("{words:?} parsed"),
+            Err(e) => e.to_string(),
+        };
+        let err = refusal(&["trace -l 3", "--with", "state", "running"]);
+        assert!(err.starts_with("--exec must be the last flag"), "{err}");
+        assert!(
+            err.contains("`--with state running` follows the quoted command"),
+            "{err}"
+        );
+
+        let err = refusal(&["trace", "-l", "3", "--with", "state", "running"]);
+        assert!(err.contains("unexpected argument '--with'"), "{err}");
+        assert!(
+            err.contains("--exec must be the last flag: `--with`"),
+            "{err}"
+        );
+
+        // An exec command's own failure carries no such note.
+        let err = refusal(&["trace", "--bogus"]);
+        assert!(!err.contains("must be the last flag"), "{err}");
     }
 
     /// `print` — under any prefix that names it alone — is exempt
