@@ -2450,7 +2450,7 @@ mod future_trace_tests {
             // futures — and the footer counts the survivors, since a
             // filter's population is not the command line's to know.
             assert_eq!(narrowed.matches("\nTask ").count() + 1, 1, "{narrowed}");
-            assert!(narrowed.ends_with("\n1 task\n"), "{narrowed}");
+            assert!(narrowed.ends_with("\n[1 task]\n"), "{narrowed}");
             assert!(narrowed.contains("    Held futures: 1\n"), "{narrowed}");
 
             // The whole listing carries every task, and the same find
@@ -2495,7 +2495,7 @@ mod future_trace_tests {
                 "{rendered}"
             );
             // The footer counts the narrowed listing's own population.
-            assert!(rendered.ends_with("\n2 tasks\n"), "{rendered}");
+            assert!(rendered.ends_with("\n[2 tasks]\n"), "{rendered}");
         });
     }
 

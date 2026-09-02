@@ -11,4 +11,4 @@ Task 3: async fn unordered::driver
     Held futures: 5
     Join sets: 1 (3 futures)
 
-1 task
+[1 task]

@@ -4,4 +4,4 @@ description: "`tasks --group lwp` over linux-floor/local-set"
 ---
 COUNT  LWP      TASKS
     3  <empty>  1, 2, 3
-1 group
+[1 group]

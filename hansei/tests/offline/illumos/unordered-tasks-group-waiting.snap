@@ -4,4 +4,4 @@ description: "`tasks --group waiting-on` over illumos/unordered"
 ---
 COUNT  WAITING ON                                                                               TASKS
     1  future futures_util::stream::futures_unordered::FuturesUnordered<unordered::set_member>  3
-1 group
+[1 group]

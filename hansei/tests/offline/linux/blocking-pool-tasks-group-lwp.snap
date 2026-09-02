@@ -5,4 +5,4 @@ description: "`tasks --group lwp` over linux/blocking-pool"
 COUNT  LWP      TASKS
     4  <empty>  4, 5, 6, …
     1  1146887  3
-2 groups
+[2 groups]

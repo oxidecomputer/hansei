@@ -121,4 +121,4 @@ Future 0xADDR: async fn unordered::leaf
     Held futures: 0
     Join sets: 0
 
-14 futures
+[14 futures]

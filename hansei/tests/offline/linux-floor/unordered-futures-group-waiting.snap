@@ -7,4 +7,4 @@ COUNT  WAITING ON                                   FUTURES
     3  future tokio::sync::notify::Notified         0xADDR, 0xADDR, 0xADDR
     2  async fn unordered::set_member               0xADDR, 0xADDR
     1  async fn unordered::holder<unordered::leaf>  0xADDR
-4 groups
+[4 groups]

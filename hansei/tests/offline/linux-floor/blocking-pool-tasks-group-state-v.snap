@@ -52,4 +52,4 @@ Task 3: future tokio::runtime::blocking::task::BlockingTask<blocking_pool::main:
     Held futures: 0
     Join sets: 0
 
-3 groups
+[3 groups]

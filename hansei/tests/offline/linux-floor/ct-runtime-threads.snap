@@ -4,4 +4,4 @@ description: "`threads` over linux-floor/ct-runtime"
 ---
 LWP      NAME  ROLE             TASK  FRAME 0
 1149751  —     block_on caller  —     0xADDR
-1 thread
+[1 thread]

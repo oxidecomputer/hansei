@@ -4,4 +4,4 @@ description: "`tasks --group waker` over linux/joinset"
 ---
 COUNT  WAKER    TASKS
     6  <empty>  3, 4, 5, …
-1 group
+[1 group]

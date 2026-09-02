@@ -4,4 +4,4 @@ description: "`tasks --group lwp` over linux/foreign-runtime"
 ---
 COUNT  LWP      TASKS
     4  <empty>  1, 2, 3, …
-1 group
+[1 group]

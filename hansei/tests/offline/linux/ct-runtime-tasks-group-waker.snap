@@ -5,4 +5,4 @@ description: "`tasks --group waker` over linux/ct-runtime"
 COUNT  WAKER                     TASKS
     1  semaphore 0xADDR  2
     1  timer                     1
-2 groups
+[2 groups]

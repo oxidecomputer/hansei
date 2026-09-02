@@ -4,4 +4,4 @@ description: "`tasks --with id 3,6` over linux-floor/dyn-future"
 ---
 ID  STATE  AWAITING AT               WAITING ON                                  FUTURE
 3   idle   src/bin/dyn-future.rs:36  future tokio::sync::oneshot::Receiver<u32>  async fn dyn_future::driver
-1 task
+[1 task]

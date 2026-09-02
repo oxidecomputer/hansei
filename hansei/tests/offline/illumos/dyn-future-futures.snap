@@ -2,4 +2,4 @@
 source: hansei/src/offline.rs
 description: "`futures` over illumos/dyn-future"
 ---
-0 futures
+[0 futures]

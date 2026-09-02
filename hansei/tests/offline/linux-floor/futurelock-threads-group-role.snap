@@ -5,4 +5,4 @@ description: "`threads --group role` over linux-floor/futurelock"
 COUNT  ROLE             LWPS
     4  worker           1148809, 1148810, 1148811, …
     1  entered runtime  1148807
-2 groups
+[2 groups]

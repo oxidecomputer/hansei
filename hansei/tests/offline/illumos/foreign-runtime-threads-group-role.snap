@@ -5,4 +5,4 @@ description: "`threads --group role` over illumos/foreign-runtime"
 COUNT  ROLE             LWPS
     1  block_on caller  1
     1  entered runtime  2
-2 groups
+[2 groups]

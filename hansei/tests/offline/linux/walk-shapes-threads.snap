@@ -6,4 +6,4 @@ LWP      NAME  ROLE             TASK  FRAME 0
 1146696  —     block_on caller  —     0xADDR
 1146698  —     entered runtime  —     0xADDR
 1146699  —     entered runtime  —     0xADDR
-3 threads
+[3 threads]

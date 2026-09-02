@@ -10,4 +10,4 @@ Future 0xADDR: future tokio::sync::notify::Notified
     Held futures: 0
     Join sets: 0
 
-1 future
+[1 future]

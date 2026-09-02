@@ -4,4 +4,4 @@ description: "`tasks --group waiting-on` over linux-floor/dyn-future"
 ---
 COUNT  WAITING ON                                  TASKS
     2  future tokio::sync::oneshot::Receiver<u32>  3, 4
-1 group
+[1 group]

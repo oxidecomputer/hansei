@@ -5,4 +5,4 @@ description: "`threads --group role` over illumos/simple-await"
 COUNT  ROLE             LWPS
     2  worker           2, 3
     1  entered runtime  1
-2 groups
+[2 groups]

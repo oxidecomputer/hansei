@@ -6,4 +6,4 @@ COUNT  WAKER        TASKS
     2  io read      1, 4
     1  io readable  2
     1  io write     3
-3 groups
+[3 groups]

@@ -5,4 +5,4 @@ description: "`threads --group role` over linux-floor/joinset"
 COUNT  ROLE             LWPS
     2  worker           1149569, 1149570
     1  entered runtime  1149567
-2 groups
+[2 groups]

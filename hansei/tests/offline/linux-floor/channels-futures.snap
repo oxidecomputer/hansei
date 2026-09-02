@@ -4,4 +4,4 @@ description: "`futures` over linux-floor/channels"
 ---
 ADDR            TASK  HELD IN              STATE  WAITING ON  FUTURE
 0xADDR  3     frame 1, `notified`  —      —           future tokio::sync::notify::Notified
-1 future
+[1 future]

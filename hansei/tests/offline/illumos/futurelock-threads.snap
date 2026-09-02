@@ -8,4 +8,4 @@ LWP  NAME  ROLE                 TASK  FRAME 0
 3    —     worker 1, in driver  —     0xADDR
 4    —     worker 2, parked     —     0xADDR
 5    —     worker 3, parked     —     0xADDR
-5 threads
+[5 threads]

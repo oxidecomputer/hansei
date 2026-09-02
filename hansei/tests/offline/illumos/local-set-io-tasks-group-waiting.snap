@@ -4,4 +4,4 @@ description: "`tasks --group waiting-on` over illumos/local-set-io"
 ---
 COUNT  WAITING ON  TASKS
     4  io          1, 2, 3, …
-1 group
+[1 group]

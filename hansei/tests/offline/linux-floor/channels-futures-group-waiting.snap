@@ -4,4 +4,4 @@ description: "`futures --group waiting-on` over linux-floor/channels"
 ---
 COUNT  WAITING ON                            FUTURES
     1  future tokio::sync::notify::Notified  0xADDR
-1 group
+[1 group]

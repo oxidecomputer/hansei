@@ -820,7 +820,7 @@ fn report_vtables(
         0 | 1 => String::new(),
         n => format!(", {}", counted(n, "trait")),
     };
-    writeln!(out, "\n{}{across}", counted(matches.len(), "vtable"))?;
+    writeln!(out, "\n[{}{across}]", counted(matches.len(), "vtable"))?;
     Ok(())
 }
 
@@ -1171,7 +1171,7 @@ pub(crate) mod vtable_tests {
              \x20   0x401060 (unverified)  4 slots  a::Rubbish\n\
              \x20   0x4010a0 (unverified)  4 slots  a::Skewed\n\
              \n\
-             8 vtables, 2 traits\n"
+             [8 vtables, 2 traits]\n"
         );
     }
 
@@ -1189,7 +1189,7 @@ pub(crate) mod vtable_tests {
              \x20       slot 2  0x8       align: 8\n\
              \x20       slot 3  0x500200  a::One::call\n\
              \n\
-             1 vtable\n"
+             [1 vtable]\n"
         );
     }
 
@@ -1340,7 +1340,7 @@ pub(crate) mod vtable_tests {
                  \x20   4 slots  a::One\n\
                  \x20   4 slots  a::Two\n\
                  \n\
-                 3 vtables\n"
+                 [3 vtables]\n"
             ),
             "{shown}"
         );
@@ -1639,7 +1639,7 @@ pub(crate) mod vtable_tests {
         let (bundle, fake) = fixture();
         assert_eq!(
             listing(&bundle, &fake, Some("nothing"), false),
-            "\n0 vtables\n"
+            "\n[0 vtables]\n"
         );
     }
 }

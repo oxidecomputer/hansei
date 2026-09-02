@@ -7,4 +7,4 @@ COUNT  WAKER                     TASKS
     1  join task 1               4
     1  semaphore 0xADDR  1
     1  timer                     3
-4 groups
+[4 groups]

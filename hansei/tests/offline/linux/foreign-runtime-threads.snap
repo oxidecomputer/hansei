@@ -5,4 +5,4 @@ description: "`threads` over linux/foreign-runtime"
 LWP      NAME  ROLE             TASK  FRAME 0
 1146298  —     block_on caller  —     0xADDR
 1146300  —     entered runtime  —     0xADDR
-2 threads
+[2 threads]

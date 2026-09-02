@@ -6,4 +6,4 @@ ID  STATE  RT  AWAITING AT                    WAITING ON                        
 1   idle   1   src/bin/local-set-timer.rs:18  timer (deadline TS on the target's monotonic clock)                                             async fn local_set_timer::local_sleeper
 2   idle   1   src/bin/local-set-timer.rs:25  a tokio::sync::Semaphore (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 2  async fn local_set_timer::local_acquirer
 3   idle   0   src/bin/local-set-timer.rs:38  timer (deadline TS on the target's monotonic clock)                                             async fn local_set_timer::sleeper
-3 tasks
+[3 tasks]

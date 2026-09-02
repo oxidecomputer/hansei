@@ -4,4 +4,4 @@ description: "`tasks --group lwp` over illumos/dyn-future"
 ---
 COUNT  LWP      TASKS
     2  <empty>  3, 4
-1 group
+[1 group]

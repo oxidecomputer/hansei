@@ -8,4 +8,4 @@ COUNT  WAITING ON                                      TASKS
     1  a tokio::sync::Mutex (semaphore 0xADDR)      4
     1  async fn walk_shapes::side_parker               9
     1  task 7                                          8
-5 groups
+[5 groups]

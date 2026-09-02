@@ -9,4 +9,4 @@ ID  STATE  AWAITING AT            WAITING ON                                    
 6   idle   src/bin/joinset.rs:30  future tokio::sync::notify::Notified                                                                 async fn joinset::member
 7   idle   src/bin/joinset.rs:30  future tokio::sync::notify::Notified                                                                 async fn joinset::member
 8   idle   src/bin/joinset.rs:30  future tokio::sync::notify::Notified                                                                 async fn joinset::member
-6 tasks
+[6 tasks]

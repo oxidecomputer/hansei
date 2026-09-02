@@ -5,4 +5,4 @@ description: "`threads` over illumos/foreign-runtime"
 LWP  NAME  ROLE             TASK  FRAME 0
 1    —     block_on caller  —     0xADDR
 2    —     entered runtime  —     0xADDR
-2 threads
+[2 threads]

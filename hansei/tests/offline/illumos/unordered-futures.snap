@@ -17,4 +17,4 @@ ADDR       TASK  HELD IN                                         STATE          
 0xADDR  3     frame 1, `held`, via set child at 0xADDR     Unresumed — src/bin/unordered.rs:36  —           async fn unordered::leaf
 0xADDR  3     set 0xADDR, via set child at 0xADDR       Unresumed — src/bin/unordered.rs:36  —           async fn unordered::leaf
 0xADDR  3     set 0xADDR, via set child at 0xADDR       Unresumed — src/bin/unordered.rs:36  —           async fn unordered::leaf
-14 futures
+[14 futures]

@@ -5,4 +5,4 @@ description: "`threads --group role` over linux-floor/dyn-future"
 COUNT  ROLE             LWPS
     2  worker           1148624, 1148625
     1  entered runtime  1148622
-2 groups
+[2 groups]

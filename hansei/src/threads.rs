@@ -282,7 +282,7 @@ fn print_thread_table<'r>(
     if !table.is_empty() {
         table.write(out)?;
     }
-    writeln!(out, "{}", summary::counted(total, "thread"))?;
+    writeln!(out, "[{}]", summary::counted(total, "thread"))?;
     Ok(())
 }
 

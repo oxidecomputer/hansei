@@ -5,4 +5,4 @@ description: "`threads --group role` over linux-floor/foreign-runtime"
 COUNT  ROLE             LWPS
     1  block_on caller  1150469
     1  entered runtime  1150471
-2 groups
+[2 groups]

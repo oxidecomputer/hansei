@@ -4,4 +4,4 @@ description: "`tasks --group lwp` over linux-floor/walk-shapes"
 ---
 COUNT  LWP      TASKS
    10  <empty>  1, 2, 3, …
-1 group
+[1 group]

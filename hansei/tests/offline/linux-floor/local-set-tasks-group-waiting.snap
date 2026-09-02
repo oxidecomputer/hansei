@@ -6,4 +6,4 @@ COUNT  WAITING ON                                           TASKS
     1  a tokio::sync::Semaphore (semaphore 0xADDR)  2
     1  task 1                                               3
     1  timer                                                1
-3 groups
+[3 groups]

@@ -4,4 +4,4 @@ description: "`tasks --with id 3,6` over illumos/nested-await"
 ---
 ID  STATE  AWAITING AT                 WAITING ON                                  FUTURE
 3   idle   src/bin/nested-await.rs:19  future tokio::sync::oneshot::Receiver<u32>  async fn nested_await::outer
-1 task
+[1 task]
