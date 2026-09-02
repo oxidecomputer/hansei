@@ -27,8 +27,11 @@ use reedline::{
 };
 use subprocess::Exec;
 
+use std::collections::HashMap;
 use std::io::{self, BufRead, IsTerminal, Write};
 use std::path::{Path, PathBuf};
+use std::sync::mpsc;
+use std::thread;
 
 // One line of input. `no_binary_name` is what lets a clap grammar read a
 // typed line: without it clap would take the first word for the
@@ -88,17 +91,96 @@ fn from_command_line<T: proc::Target>(session: &Session<'_, T>, exec: &[String])
 /// fails is reported and the session carries on: at a prompt the useful
 /// response to a typo is another prompt.
 fn interactive<T: proc::Target>(session: &Session<'_, T>) -> Result<()> {
-    let mut editor = line_editor();
+    // The editor reads the terminal on a thread of its own, so the
+    // session — which cannot leave this one — is free to answer the
+    // completer while a line is still being typed: `tasks --with state
+    // <Tab>` asks which states the target holds, and the rows that
+    // answer are the session's, built once and cached on it.
+    let (events_tx, events) = mpsc::channel();
+    let (prompts_tx, prompts) = mpsc::channel::<String>();
+    let editor = thread::spawn(move || edit_loop(events_tx, prompts));
+    let prompt = || crate::cursor::prompt_label(&session.cursor.borrow());
 
+    // A prompt the editor cannot take is an editor that has stopped,
+    // and the events channel says why.
+    let _ = prompts_tx.send(prompt());
     loop {
+        match events.recv() {
+            // The completer's question, asked mid-line: answer it and
+            // leave the editor on the line it is reading.
+            Ok(Event::Values {
+                command,
+                field,
+                reply,
+            }) => {
+                let _ = reply.send(target_values(session, &command, &field));
+                continue;
+            }
+            Ok(Event::Line(line)) => match execute(session, Mode::Interactive, &line) {
+                Ok(Flow::Continue) => {}
+                Ok(Flow::Quit) => break,
+                Err(e) => eprintln!("error: {e:#}"),
+            },
+            Ok(Event::Interrupt) => {}
+            Ok(Event::Eof) | Err(_) => break,
+            Ok(Event::Failed(e)) => {
+                eprintln!("input error: {e}");
+                break;
+            }
+        }
         // Rebuilt per line: the prompt is the cursor's account of
         // where the session stands, and the last command may have
         // moved it.
+        if prompts_tx.send(prompt()).is_err() {
+            break;
+        }
+    }
+    // No more prompts ends the editor's loop, and joining it drops the
+    // editor — which is when reedline writes the history file.
+    drop(prompts_tx);
+    let _ = editor.join();
+    Ok(())
+}
+
+/// What the editor's thread tells the session's: a line to run, the
+/// signal that ended one, a terminal that failed, or the completer's
+/// question — which values the target holds for a listing's field —
+/// with the channel its answer goes back on.
+enum Event {
+    Line(String),
+    Interrupt,
+    Eof,
+    Failed(String),
+    Values {
+        command: String,
+        field: String,
+        reply: mpsc::Sender<Vec<TargetValue>>,
+    },
+}
+
+/// The editor's thread: one `read_line` per prompt the session sends,
+/// each answered with what was read. It ends when the session stops
+/// sending prompts.
+fn edit_loop(events: mpsc::Sender<Event>, prompts: mpsc::Receiver<String>) {
+    let asker = events.clone();
+    let mut editor = line_editor(Box::new(move |command: &str, field: &str| {
+        let (reply, answer) = mpsc::channel();
+        let question = Event::Values {
+            command: command.to_string(),
+            field: field.to_string(),
+            reply,
+        };
+        if asker.send(question).is_err() {
+            return Vec::new();
+        }
+        answer.recv().unwrap_or_default()
+    }));
+    while let Ok(label) = prompts.recv() {
         let prompt = DefaultPrompt::new(
-            DefaultPromptSegment::Basic(crate::cursor::prompt_label(&session.cursor.borrow())),
+            DefaultPromptSegment::Basic(label),
             DefaultPromptSegment::Empty,
         );
-        match editor.read_line(&prompt) {
+        let event = match editor.read_line(&prompt) {
             Ok(Signal::Success(line)) => {
                 // reedline writes the file only when the editor is
                 // dropped; writing it per line is what lets `history`
@@ -107,21 +189,75 @@ fn interactive<T: proc::Target>(session: &Session<'_, T>) -> Result<()> {
                 if let Err(e) = editor.sync_history() {
                     eprintln!("warning: command history not saved: {e}");
                 }
-                match execute(session, Mode::Interactive, &line) {
-                    Ok(Flow::Continue) => continue,
-                    Ok(Flow::Quit) => break,
-                    Err(e) => eprintln!("error: {e:#}"),
-                }
+                Event::Line(line)
             }
-            Ok(Signal::CtrlC) => continue,
-            Ok(Signal::CtrlD) => break,
-            Err(e) => {
-                eprintln!("input error: {e}");
-                break;
-            }
+            Ok(Signal::CtrlC) => Event::Interrupt,
+            Ok(Signal::CtrlD) => Event::Eof,
+            Err(e) => Event::Failed(e.to_string()),
+        };
+        if events.send(event).is_err() {
+            break;
         }
     }
-    Ok(())
+}
+
+/// One value the target holds for a listing's field: as the listing
+/// spells it, which is what a typed prefix is matched against, and as
+/// the line must carry it — regex-escaped where the field reads a
+/// pattern, so the metacharacters a type name is full of match
+/// themselves, and quoted where it holds a space, so the tokenizer
+/// keeps it one word.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TargetValue {
+    spelled: String,
+    insert: String,
+}
+
+/// The values the target holds for one field of a listing — what can
+/// stand after `--with FIELD` — or nothing for a command or field that
+/// enumerates none. The rows this reads are cached on the session, so
+/// the first question may pay for the census or an unwind of every
+/// stack and the rest are free.
+fn target_values<T: proc::Target>(
+    session: &Session<'_, T>,
+    command: &str,
+    field: &str,
+) -> Vec<TargetValue> {
+    let found = match command {
+        "tasks" => crate::tasks::field_values(session, field),
+        "futures" => crate::futures::field_values(session, field),
+        "threads" => crate::threads::field_values(session, field),
+        _ => None,
+    };
+    let Some((values, pattern)) = found else {
+        return Vec::new();
+    };
+    values
+        .into_iter()
+        .map(|spelled| TargetValue {
+            insert: line_spelling(&spelled, pattern),
+            spelled,
+        })
+        .collect()
+}
+
+/// How a value is spelled back into the line: see [`TargetValue`].
+fn line_spelling(value: &str, pattern: bool) -> String {
+    let text = if pattern {
+        regex::escape(value)
+    } else {
+        value.to_string()
+    };
+    if !text
+        .chars()
+        .any(|c| c.is_whitespace() || c == '"' || c == '\'')
+    {
+        text
+    } else if !text.contains('"') {
+        format!("\"{text}\"")
+    } else {
+        format!("'{text}'")
+    }
 }
 
 /// Read commands from a pipe or a file, one per line, and stop at the
@@ -528,11 +664,60 @@ impl Write for ShellSink {
 /// whose second value is free-form, and `config`'s keys — from the
 /// modules that parse them. A word the grammar does not recognize
 /// completes to nothing rather than to a guess.
-struct LineCompleter;
+struct LineCompleter {
+    /// Where the values a target holds come from: the session's
+    /// thread, asked over a channel while the prompt waits. Tests pass
+    /// a closure over fixed rows.
+    source: ValueSource,
+    /// Each (command, field) asked once. A core does not change under
+    /// a session, and the first answer may have cost the census or an
+    /// unwind of every stack.
+    cache: HashMap<(String, String), Vec<TargetValue>>,
+}
 
-/// One thing the cursor's word could become, with the description the
-/// menu shows beside it.
-type Candidate = (String, Option<String>);
+type ValueSource = Box<dyn FnMut(&str, &str) -> Vec<TargetValue> + Send>;
+
+impl LineCompleter {
+    fn new(source: ValueSource) -> Self {
+        LineCompleter {
+            source,
+            cache: HashMap::new(),
+        }
+    }
+
+    /// The target's values for one field, asked for once.
+    fn target_values(&mut self, command: &str, field: &str) -> Vec<TargetValue> {
+        let key = (command.to_string(), field.to_string());
+        if let Some(values) = self.cache.get(&key) {
+            return values.clone();
+        }
+        let values = (self.source)(command, field);
+        self.cache.insert(key, values.clone());
+        values
+    }
+}
+
+/// One thing the cursor's word could become: as spelled, which the
+/// typed prefix is matched against; as inserted, which differs only
+/// for a target's value that needs escaping or quoting; and with the
+/// description the menu shows beside it.
+struct Candidate {
+    spelled: String,
+    insert: String,
+    description: Option<String>,
+}
+
+impl Candidate {
+    /// A word of the grammar's own: inserted as spelled.
+    fn word(spelled: impl Into<String>, description: Option<String>) -> Candidate {
+        let spelled = spelled.into();
+        Candidate {
+            insert: spelled.clone(),
+            spelled,
+            description,
+        }
+    }
+}
 
 impl Completer for LineCompleter {
     fn complete(&mut self, line: &str, pos: usize) -> Vec<Suggestion> {
@@ -546,12 +731,13 @@ impl Completer for LineCompleter {
         // `help` command stands beside the declared ones.
         let mut root = Line::command();
         root.build();
-        candidates(&root, &words, &current)
+        let mut values = |command: &str, field: &str| self.target_values(command, field);
+        candidates(&root, &words, &current, &mut values)
             .into_iter()
-            .filter(|(value, _)| value.starts_with(&current))
-            .map(|(value, description)| Suggestion {
-                value,
-                description,
+            .filter(|c| c.spelled.starts_with(&current))
+            .map(|c| Suggestion {
+                value: c.insert,
+                description: c.description,
                 span: Span::new(start, pos),
                 append_whitespace: true,
                 ..Suggestion::default()
@@ -589,8 +775,14 @@ fn words_before(prefix: &str) -> Option<(Vec<String>, String, usize)> {
 }
 
 /// Everything that could stand at the cursor, before the typed prefix
-/// narrows it. `root` is the built grammar the line is read against.
-fn candidates(root: &clap::Command, words: &[String], current: &str) -> Vec<Candidate> {
+/// narrows it. `root` is the built grammar the line is read against;
+/// `values` answers what the target holds for a listing's field.
+fn candidates(
+    root: &clap::Command,
+    words: &[String],
+    current: &str,
+    values: &mut dyn FnMut(&str, &str) -> Vec<TargetValue>,
+) -> Vec<Candidate> {
     // A scope prefix is peeled as `execute_one` peels it, except that
     // the word after the selector's argument may be the one being
     // typed. `task 129 -v` is the selector's own flag, not a scope.
@@ -610,7 +802,7 @@ fn candidates(root: &clap::Command, words: &[String], current: &str) -> Vec<Cand
         return root
             .get_subcommands()
             .filter(|sub| !sub.is_hide_set())
-            .map(|sub| (sub.get_name().to_string(), None))
+            .map(|sub| Candidate::word(sub.get_name(), None))
             .collect();
     };
     let Some(cmd) = find_command(root, word) else {
@@ -618,17 +810,21 @@ fn candidates(root: &clap::Command, words: &[String], current: &str) -> Vec<Cand
     };
 
     // Walk the words to learn what the cursor's word is: the value of a
-    // flag still owed values, or the next positional.
-    let mut pending: Option<(&clap::Arg, usize)> = None;
+    // flag still owed values (with the values it has so far, since the
+    // second word of a `--with FIELD ARG` pair depends on the first),
+    // or the next positional.
+    let mut pending: Option<(&clap::Arg, Vec<&str>)> = None;
     let mut positional_words: Vec<&str> = Vec::new();
     for word in rest {
         // `pending` is cleared once its option has every value it can
         // take, so a pending option is always owed this word — unless
         // the word is a flag and the option does not take those.
-        if let Some((opt, taken)) = pending {
+        if let Some((opt, taken)) = &mut pending {
             if !looks_like_flag(word) || opt.is_allow_hyphen_values_set() {
-                let max = opt.get_num_args().expect("built").max_values();
-                pending = (taken + 1 < max).then_some((opt, taken + 1));
+                taken.push(word);
+                if taken.len() >= opt.get_num_args().expect("built").max_values() {
+                    pending = None;
+                }
                 continue;
             }
             pending = None;
@@ -642,7 +838,7 @@ fn candidates(root: &clap::Command, words: &[String], current: &str) -> Vec<Cand
                 .get_arguments()
                 .find(|a| a.get_long() == Some(name))
                 .filter(|a| !inline && a.get_num_args().expect("built").takes_values())
-                .map(|a| (a, 0));
+                .map(|a| (a, Vec::new()));
         } else if looks_like_flag(word) {
             // A cluster `-vl`: the first short that takes a value owns
             // the rest of the word, or the words after it when there
@@ -653,7 +849,7 @@ fn candidates(root: &clap::Command, words: &[String], current: &str) -> Vec<Cand
                     continue;
                 };
                 if arg.get_num_args().expect("built").takes_values() {
-                    pending = chars.next().is_none().then_some((arg, 0));
+                    pending = chars.next().is_none().then_some((arg, Vec::new()));
                     break;
                 }
             }
@@ -663,10 +859,10 @@ fn candidates(root: &clap::Command, words: &[String], current: &str) -> Vec<Cand
     }
 
     // A dash under the cursor, alone or not, is a flag being typed.
-    if let Some((opt, taken)) = pending
+    if let Some((opt, taken)) = &pending
         && (!current.starts_with('-') || opt.is_allow_hyphen_values_set())
     {
-        return values_of(cmd, opt, taken, &positional_words);
+        return values_of(cmd, opt, taken, &positional_words, values);
     }
     if current.starts_with('-') {
         // Only the long spellings: `-` alone expands to them, and a
@@ -674,7 +870,10 @@ fn candidates(root: &clap::Command, words: &[String], current: &str) -> Vec<Cand
         return cmd
             .get_arguments()
             .filter(|a| !a.is_hide_set())
-            .filter_map(|a| a.get_long().map(|l| (format!("--{l}"), None)))
+            .filter_map(|a| {
+                a.get_long()
+                    .map(|l| Candidate::word(format!("--{l}"), None))
+            })
             .collect();
     }
     // The positional the cursor's word would become: the next by
@@ -690,7 +889,7 @@ fn candidates(root: &clap::Command, words: &[String], current: &str) -> Vec<Cand
                 .filter(|a| a.get_num_args().expect("built").max_values() > 1)
         });
     match positional {
-        Some(arg) => values_of(cmd, arg, positional_words.len(), &positional_words),
+        Some(arg) => values_of(cmd, arg, &positional_words, &positional_words, values),
         None => Vec::new(),
     }
 }
@@ -717,33 +916,44 @@ fn looks_like_flag(word: &str) -> bool {
     word.len() > 1 && word.starts_with('-')
 }
 
-/// The values `arg` accepts in its `slot`th position (`--with FIELD
-/// ARG` has two), with each value's help where the grammar declares
-/// one. `positional_words` are the positionals already typed, for a
-/// value whose choices depend on an earlier one (`config ugly <Tab>`).
+/// The values `arg` accepts next, given the values it has so far
+/// (`taken`: `--with FIELD ARG` has two, and the second depends on
+/// the first), with each value's help where the grammar declares one.
+/// `positional_words` are the positionals already typed, for a value
+/// whose choices depend on an earlier one (`config ugly <Tab>`);
+/// `values` answers what the target holds for a listing's field.
 fn values_of(
     cmd: &clap::Command,
     arg: &clap::Arg,
-    slot: usize,
+    taken: &[&str],
     positional_words: &[&str],
+    values: &mut dyn FnMut(&str, &str) -> Vec<TargetValue>,
 ) -> Vec<Candidate> {
     let declared = arg.get_possible_values();
     if !declared.is_empty() {
         return declared
             .iter()
             .filter(|v| !v.is_hide_set())
-            .map(|v| {
-                (
-                    v.get_name().to_string(),
-                    v.get_help().map(|h| h.to_string()),
-                )
-            })
+            .map(|v| Candidate::word(v.get_name(), v.get_help().map(|h| h.to_string())))
             .collect();
     }
-    let names: Vec<&str> = match (cmd.get_name(), arg.get_id().as_str(), slot) {
-        ("tasks", "with" | "without" | "group", 0) => crate::tasks::Field::names().collect(),
-        ("futures", "with" | "without" | "group", 0) => crate::futures::Field::names().collect(),
-        ("threads", "with" | "without" | "group", 0) => crate::threads::Field::names().collect(),
+    let command = cmd.get_name();
+    let names: Vec<&str> = match (command, arg.get_id().as_str(), taken) {
+        ("tasks", "with" | "without" | "group", []) => crate::tasks::Field::names().collect(),
+        ("futures", "with" | "without" | "group", []) => crate::futures::Field::names().collect(),
+        ("threads", "with" | "without" | "group", []) => crate::threads::Field::names().collect(),
+        // The clause's argument: what the target holds for the field
+        // the first word named.
+        ("tasks" | "futures" | "threads", "with" | "without", [field]) => {
+            return values(command, field)
+                .into_iter()
+                .map(|v| Candidate {
+                    spelled: v.spelled,
+                    insert: v.insert,
+                    description: None,
+                })
+                .collect();
+        }
         ("config", "key", _) => crate::settings::KEYS.to_vec(),
         ("config", "value", _) => positional_words
             .first()
@@ -751,10 +961,15 @@ fn values_of(
             .to_vec(),
         _ => Vec::new(),
     };
-    names.into_iter().map(|n| (n.to_string(), None)).collect()
+    names
+        .into_iter()
+        .map(|n| Candidate::word(n, None))
+        .collect()
 }
 
-fn line_editor() -> Reedline {
+/// The editor: Tab completes through [`LineCompleter`], whose target
+/// values come from `source`.
+fn line_editor(source: ValueSource) -> Reedline {
     let mut keybindings = default_emacs_keybindings();
     keybindings.add_binding(
         KeyModifiers::NONE,
@@ -766,7 +981,7 @@ fn line_editor() -> Reedline {
     );
 
     let editor = Reedline::create()
-        .with_completer(Box::new(LineCompleter))
+        .with_completer(Box::new(LineCompleter::new(source)))
         .with_menu(ReedlineMenu::EngineCompleter(Box::new(
             ColumnarMenu::default().with_name("commands"),
         )))
@@ -1014,11 +1229,174 @@ mod tests {
     /// What Tab offers for a line with the cursor at its end, as the
     /// replacement texts in menu order.
     fn completions(line: &str) -> Vec<String> {
-        LineCompleter
+        LineCompleter::new(Box::new(|_, _| Vec::new()))
             .complete(line, line.len())
             .into_iter()
             .map(|s| s.value)
             .collect()
+    }
+
+    /// A completer over a target whose `tasks` rows hold two states
+    /// and one lwp, counting how often it is asked.
+    fn stateful_completer() -> (LineCompleter, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+        let asked = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let log = asked.clone();
+        let completer = LineCompleter::new(Box::new(move |command: &str, field: &str| {
+            log.lock().unwrap().push(format!("{command} {field}"));
+            let (values, pattern) = match (command, field) {
+                ("tasks", "state") => (vec!["idle", "idle (cancelled)", "running"], true),
+                ("tasks", "type") => (vec!["Vec<(u64, u64)>"], true),
+                ("tasks", "lwp") => (vec!["7"], false),
+                ("threads", "has-task") => (vec!["yes", "no"], false),
+                _ => (Vec::new(), false),
+            };
+            values
+                .into_iter()
+                .map(|v| TargetValue {
+                    spelled: v.to_string(),
+                    insert: line_spelling(v, pattern),
+                })
+                .collect()
+        }));
+        (completer, asked)
+    }
+
+    fn complete_with(completer: &mut LineCompleter, line: &str) -> Vec<String> {
+        completer
+            .complete(line, line.len())
+            .into_iter()
+            .map(|s| s.value)
+            .collect()
+    }
+
+    /// The second word of a `--with FIELD ARG` pair is what the target
+    /// holds for FIELD, spelled for the line: a pattern field's values
+    /// escaped and, holding a space, quoted; an exact field's as they
+    /// are. A typed prefix is matched against the listing's spelling,
+    /// not the escaped one.
+    #[test]
+    fn test_completion_offers_the_targets_values_for_a_filter() {
+        let (mut c, _) = stateful_completer();
+        assert_eq!(
+            complete_with(&mut c, "tasks --with state "),
+            ["idle", "\"idle \\(cancelled\\)\"", "running"]
+        );
+        assert_eq!(
+            complete_with(&mut c, "tasks --without state ru"),
+            ["running"]
+        );
+        assert_eq!(
+            complete_with(&mut c, "tasks --with type Vec<("),
+            ["\"Vec<\\(u64, u64\\)>\""]
+        );
+        assert_eq!(complete_with(&mut c, "tasks --with lwp "), ["7"]);
+        assert_eq!(complete_with(&mut c, "threads --with has-task y"), ["yes"]);
+        assert!(complete_with(&mut c, "tasks --with holds ").is_empty());
+        // The pair complete, the flags come back, and `--group` takes
+        // no second word.
+        assert_eq!(
+            complete_with(&mut c, "tasks --with state idle --gr"),
+            ["--group"]
+        );
+        assert!(complete_with(&mut c, "tasks --group state ").is_empty());
+    }
+
+    /// Each (command, field) is asked of the target once; a second
+    /// Tab, or a different prefix, reads the cached answer.
+    #[test]
+    fn test_completion_caches_the_targets_values_per_field() {
+        let (mut c, asked) = stateful_completer();
+        complete_with(&mut c, "tasks --with state ");
+        complete_with(&mut c, "tasks --with state ru");
+        complete_with(&mut c, "tasks --without state ");
+        complete_with(&mut c, "tasks --with lwp ");
+        complete_with(&mut c, "tasks --with state ");
+        assert_eq!(*asked.lock().unwrap(), ["tasks state", "tasks lwp"]);
+        // Field names and flags never ask.
+        complete_with(&mut c, "tasks --with ");
+        complete_with(&mut c, "tasks --group ");
+        complete_with(&mut c, "tasks -");
+        assert_eq!(asked.lock().unwrap().len(), 2);
+    }
+
+    /// A value goes back into the line escaped where the field would
+    /// read it as a regex, and quoted where the tokenizer would split
+    /// it; a plain word goes back as it is.
+    #[test]
+    fn test_line_spelling_escapes_patterns_and_quotes_spaces() {
+        assert_eq!(line_spelling("idle", true), "idle");
+        assert_eq!(
+            line_spelling("Vec<(u64, u64)>", true),
+            "\"Vec<\\(u64, u64\\)>\""
+        );
+        assert_eq!(
+            line_spelling("dyn Future + Send", true),
+            "\"dyn Future \\+ Send\""
+        );
+        assert_eq!(
+            line_spelling("io 0xf9c3d00 (readable)", false),
+            "\"io 0xf9c3d00 (readable)\""
+        );
+        assert_eq!(line_spelling("say \"hi\"", false), "'say \"hi\"'");
+        assert_eq!(line_spelling("a\"b", false), "'a\"b'");
+        assert_eq!(line_spelling("a'b", false), "\"a'b\"");
+        assert_eq!(line_spelling("7", false), "7");
+    }
+
+    /// Over a fixture pair, each listing answers for its own fields —
+    /// the states the tasks are in, the kinds of role the threads
+    /// hold, the fixed kinds a future can be — spelled for the line,
+    /// and nothing for a count field, an unknown field, or a command
+    /// without a population.
+    #[test]
+    fn test_target_values_read_each_listings_rows() {
+        use crate::offline::session_args;
+        use hansei_runtime::testkit;
+        let (bundle, snapshot) = testkit::load("illumos", "blocking-pool");
+        let args = session_args("illumos", "blocking-pool");
+        let session = Session::attach(&snapshot, &bundle, &args).expect("the pair attaches");
+        let spelled = |command: &str, field: &str| -> Vec<(String, String)> {
+            target_values(&session, command, field)
+                .into_iter()
+                .map(|v| (v.spelled, v.insert))
+                .collect()
+        };
+        let plain = |list: &[&str]| -> Vec<(String, String)> {
+            list.iter()
+                .map(|s| (s.to_string(), s.to_string()))
+                .collect()
+        };
+
+        let states = spelled("tasks", "state");
+        assert!(states.iter().any(|(s, _)| s == "idle"), "{states:?}");
+        assert!(
+            states.iter().any(|(s, _)| s.starts_with("blocking")),
+            "{states:?}"
+        );
+        // A pattern field's value with a space goes back quoted and
+        // escaped; the parenthesised lwp is the escaping's witness.
+        let blocking = states
+            .iter()
+            .find(|(s, _)| s.starts_with("blocking"))
+            .expect("a task is blocking");
+        assert!(blocking.1.starts_with("\"blocking"), "{blocking:?}");
+        assert!(blocking.1.contains("\\("), "{blocking:?}");
+        assert_eq!(
+            spelled("threads", "role"),
+            [
+                (
+                    "entered runtime".to_string(),
+                    "\"entered runtime\"".to_string()
+                ),
+                ("worker".to_string(), "worker".to_string()),
+            ]
+        );
+        assert_eq!(spelled("threads", "has-task"), plain(&["yes", "no"]));
+        assert_eq!(spelled("threads", "task"), plain(&["3"]));
+        assert_eq!(spelled("futures", "kind"), plain(&["held", "child"]));
+        assert!(spelled("tasks", "holds").is_empty());
+        assert!(spelled("tasks", "colour").is_empty());
+        assert!(spelled("config", "key").is_empty());
     }
 
     /// Completion advertises what `help` lists: a hidden command —
@@ -1041,7 +1419,8 @@ mod tests {
     #[test]
     fn test_completion_spans_the_word_under_the_cursor() {
         let line = "tasks --group wa";
-        let suggestions = LineCompleter.complete(line, line.len());
+        let suggestions =
+            LineCompleter::new(Box::new(|_, _| Vec::new())).complete(line, line.len());
         let waker = suggestions
             .iter()
             .find(|s| s.value == "waker")
@@ -1128,7 +1507,9 @@ mod tests {
         assert_eq!(completions("info si"), ["signal"]);
         assert_eq!(completions("sync --kind se"), ["semaphore", "set"]);
         let line = "sync --kind sem";
-        let semaphore = LineCompleter.complete(line, line.len()).remove(0);
+        let semaphore = LineCompleter::new(Box::new(|_, _| Vec::new()))
+            .complete(line, line.len())
+            .remove(0);
         assert!(
             semaphore
                 .description
@@ -1246,10 +1627,10 @@ mod tests {
     /// cursor.
     fn toy(line: &str) -> Vec<String> {
         let (words, current, _) = words_before(line).expect("the toy lines are plain words");
-        candidates(&toy_grammar(), &words, &current)
+        candidates(&toy_grammar(), &words, &current, &mut |_, _| Vec::new())
             .into_iter()
-            .map(|(value, _)| value)
-            .filter(|value| value.starts_with(&current))
+            .filter(|c| c.spelled.starts_with(&current))
+            .map(|c| c.insert)
             .collect()
     }
 

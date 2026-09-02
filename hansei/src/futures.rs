@@ -467,6 +467,45 @@ impl Field {
             .map(|(n, _)| *n)
             .expect("every field is named")
     }
+
+    /// Whether the field's argument is a pattern rather than an exact
+    /// or compared value.
+    fn is_pattern(self) -> bool {
+        matches!(
+            self,
+            Field::Type | Field::State | Field::WaitingOn | Field::Local
+        )
+    }
+
+    /// The distinct values the rows hold for the field — the kind
+    /// level for the wait column, as `--group` buckets it — or `None`
+    /// for an address or a count the argument compares against.
+    fn values(self, rows: &[FutureRow]) -> Option<Vec<String>> {
+        let column =
+            |f: fn(&FutureRow) -> Option<String>| crate::tasks::distinct_values(rows.iter().map(f));
+        Some(match self {
+            Field::Type => column(|r| Some(r.future.clone())),
+            Field::State => column(|r| r.state.clone()),
+            Field::WaitingOn => column(|r| r.waiting_kind.clone()),
+            Field::Local => column(|r| r.local.clone()),
+            Field::Kind => vec!["held".to_string(), "child".to_string()],
+            Field::Task => column(|r| Some(r.task.clone())),
+            Field::Rt => column(|r| Some(r.rt.to_string())),
+            Field::Frame => column(|r| r.frame.map(|frame| frame.to_string())),
+            Field::Addr | Field::Depth | Field::Holds | Field::Sets => return None,
+        })
+    }
+}
+
+/// The values the target holds for `field`, for the prompt to offer
+/// after `--with FIELD` (see `tasks::field_values`).
+pub(crate) fn field_values<T: proc::Target>(
+    session: &Session<'_, T>,
+    field: &str,
+) -> Option<(Vec<String>, bool)> {
+    let field = Field::parse(field).ok()?;
+    let values = field.values(rows(session))?;
+    Some((values, field.is_pattern()))
 }
 
 /// How one clause matches its field's value.
@@ -1068,5 +1107,64 @@ mod tests {
         assert_eq!(group_value(Field::State, c), None);
         assert_eq!(group_value(Field::Addr, c).as_deref(), Some("0x4000"));
         assert_eq!(group_value(Field::Depth, h).as_deref(), Some("2"));
+    }
+
+    /// Each field's values are its column's distinct spellings — the
+    /// wait at its kind level, the fixed held/child for kind — and
+    /// `None` for an address or a compared count. The pattern fields
+    /// are the four string columns.
+    #[test]
+    fn test_field_values_are_the_columns_distinct_spellings() {
+        let census = census(
+            vec![held(0, 0x3000, None)],
+            vec![set(0, vec![child(0x4000, Some("app::child"))])],
+        );
+        let rows = rows_of(&census);
+        let values = |field: Field| field.values(&rows);
+        assert_eq!(
+            values(Field::Kind),
+            Some(vec!["held".into(), "child".into()])
+        );
+        assert_eq!(
+            values(Field::WaitingOn),
+            Some(vec!["task 12".into(), "timer".into()])
+        );
+        assert_eq!(values(Field::Task), Some(vec![rows[0].task.clone()]));
+        assert_eq!(values(Field::Rt), Some(vec!["0".into()]));
+        assert_eq!(
+            values(Field::Frame),
+            Some(vec![rows[0].frame.unwrap().to_string()])
+        );
+        assert_eq!(
+            values(Field::Type),
+            Some(vec![rows[0].future.clone(), rows[1].future.clone()])
+        );
+        assert_eq!(
+            values(Field::Local),
+            Some(vec![rows[0].local.clone().unwrap()])
+        );
+        assert_eq!(
+            values(Field::State),
+            Some(vec![rows[0].state.clone().unwrap()])
+        );
+        assert_eq!(values(Field::Addr), None);
+        assert_eq!(values(Field::Depth), None);
+        assert_eq!(values(Field::Holds), None);
+        assert_eq!(values(Field::Sets), None);
+        for pattern in [Field::Type, Field::State, Field::WaitingOn, Field::Local] {
+            assert!(pattern.is_pattern(), "{pattern:?}");
+        }
+        for exact in [
+            Field::Kind,
+            Field::Task,
+            Field::Rt,
+            Field::Frame,
+            Field::Addr,
+            Field::Depth,
+            Field::Holds,
+            Field::Sets,
+        ] {
+            assert!(!exact.is_pattern(), "{exact:?}");
+        }
     }
 }

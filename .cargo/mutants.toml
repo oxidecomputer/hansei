@@ -324,6 +324,10 @@ exclude_re = [
     # is exercised through stdin scripts, and what this adds — reedline,
     # the prompt, ctrl-c/ctrl-d handling — only a person can drive.
     "replace interactive ",
+    # The editor's half of that loop: it owns reedline and the terminal,
+    # and the session's half is what a test can drive — the value
+    # requests it answers are pinned over a fixture pair in repl.rs.
+    "replace edit_loop",
     # A 32-bit guard, unobservable anywhere this suite runs. On 64-bit
     # every recorded frame size converts, so the guard is always true;
     # forcing it false only routes the decode through the reallocating

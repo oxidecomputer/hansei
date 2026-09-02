@@ -358,6 +358,39 @@ impl Field {
             .map(|(n, _)| *n)
             .expect("every field is named")
     }
+
+    /// Whether the field's argument is a pattern rather than an exact
+    /// value.
+    fn is_pattern(self) -> bool {
+        matches!(self, Field::Name | Field::Role | Field::Function)
+    }
+
+    /// The distinct values the rows hold for the field — the role at
+    /// its kind level, as `--group` buckets it, since every spelled
+    /// role starts with its kind and a target has as many spellings
+    /// as it has workers.
+    fn values(self, rows: &[ThreadRow]) -> Vec<String> {
+        let column =
+            |f: fn(&ThreadRow) -> Option<String>| crate::tasks::distinct_values(rows.iter().map(f));
+        match self {
+            Field::Name => column(|r| r.name.clone()),
+            Field::Role => column(|r| Some(r.role_kind.to_string())),
+            Field::Task => column(|r| r.task.map(|id| id.to_string())),
+            Field::HasTask => vec!["yes".to_string(), "no".to_string()],
+            Field::Function => column(|r| r.frame0.clone()),
+            Field::Lwp => column(|r| Some(r.lwp.to_string())),
+        }
+    }
+}
+
+/// The values the target holds for `field`, for the prompt to offer
+/// after `--with FIELD` (see `tasks::field_values`).
+pub(crate) fn field_values<T: proc::Target>(
+    session: &Session<'_, T>,
+    field: &str,
+) -> Option<(Vec<String>, bool)> {
+    let field = Field::parse(field).ok()?;
+    Some((field.values(rows(session)), field.is_pattern()))
 }
 
 /// How one clause matches its field's value.
@@ -1293,6 +1326,23 @@ mod tests {
             ]
         );
         assert_eq!(values("lwp"), some(&["2", "3", "4", "9"]));
+    }
+
+    /// Each field's values are its column's distinct spellings, most
+    /// frequent first, the fixed yes/no for has-task; a thread with
+    /// nothing in the column contributes nothing.
+    #[test]
+    fn test_field_values_are_the_columns_distinct_spellings() {
+        let rows = population();
+        let values = |field: &str| Field::parse(field).expect("a field name").values(&rows);
+        assert_eq!(values("name"), ["tokio-rt-worker", "tokio-blocking"]);
+        assert_eq!(values("role"), ["worker", "blocking", "no runtime"]);
+        assert_eq!(values("task"), ["129"]);
+        assert_eq!(values("has-task"), ["yes", "no"]);
+        assert_eq!(values("function"), ["__lwp_park", "app::handle"]);
+        assert_eq!(values("lwp"), ["2", "3", "4", "9"]);
+        assert!(Field::Role.is_pattern() && Field::Function.is_pattern());
+        assert!(!Field::Task.is_pattern() && !Field::HasTask.is_pattern());
     }
 
     /// A bucket's sample is three lwps and an ellipsis for the rest.
