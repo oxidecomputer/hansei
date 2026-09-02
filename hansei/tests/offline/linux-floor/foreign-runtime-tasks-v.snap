@@ -4,7 +4,7 @@ description: "`tasks -v` over linux-floor/foreign-runtime"
 ---
 Task 1: async fn foreign_runtime::joined
     State: idle
-    Owner: runtime 1 @0xADDR (current_thread, no thread inside it)
+    Owner: runtime 1 @ 0xADDR (current_thread, no thread inside it)
     Spawned at: src/bin/foreign-runtime.rs:83:23
     Defined at: src/bin/foreign-runtime.rs:31
     Waiting on: a tokio::sync::Semaphore (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 1
@@ -15,7 +15,7 @@ Task 1: async fn foreign_runtime::joined
 
 Task 2: async fn foreign_runtime::detached
     State: idle
-    Owner: runtime 1 @0xADDR (current_thread, no thread inside it)
+    Owner: runtime 1 @ 0xADDR (current_thread, no thread inside it)
     Spawned at: src/bin/foreign-runtime.rs:85:18
     Defined at: src/bin/foreign-runtime.rs:46
     Waiting on: future core::future::pending::Pending<()>
@@ -25,7 +25,7 @@ Task 2: async fn foreign_runtime::detached
 
 Task 3: async fn foreign_runtime::local_sleeper
     State: idle
-    Owner: local set 0 @0xADDR (lwp 1150471)
+    Owner: local set 0 @ 0xADDR (lwp 1150471)
     Spawned at: src/bin/foreign-runtime.rs:87:16
     Defined at: src/bin/foreign-runtime.rs:58
     Waiting on: timer (deadline TS on the target's monotonic clock)
@@ -36,7 +36,7 @@ Task 3: async fn foreign_runtime::local_sleeper
 
 Task 4: async fn foreign_runtime::joiner
     State: idle
-    Owner: runtime 0 @0xADDR (current_thread)
+    Owner: runtime 0 @ 0xADDR (current_thread)
     Spawned at: src/bin/foreign-runtime.rs:129:23
     Defined at: src/bin/foreign-runtime.rs:23
     Waiting on: task 1

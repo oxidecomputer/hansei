@@ -1221,10 +1221,10 @@ fn matcher(field: Field, arg: &str, handles: &[u64]) -> Result<Matcher> {
     })
 }
 
-/// Resolve an `rt` argument — a group index, or a runtime's `@0x`
-/// handle as `runtimes --list` prints it — to the group index rows
-/// carry. Exact, and an unknown handle is an error rather than an
-/// empty match.
+/// Resolve an `rt` argument — a group index, or a runtime's `0x`
+/// handle as `runtimes --list` prints it, with or without a leading
+/// `@` — to the group index rows carry. Exact, and an unknown handle
+/// is an error rather than an empty match.
 pub(crate) fn resolve_rt(arg: &str, handles: &[u64]) -> Result<usize> {
     let addr = arg.strip_prefix('@').unwrap_or(arg);
     if let Some(digits) = addr.strip_prefix("0x").or_else(|| addr.strip_prefix("0X")) {

@@ -46,18 +46,19 @@ pub(crate) struct Group {
 /// `runtimes --list` listing lists it under, and the handle address
 /// printed beside it there.
 ///
-/// Both halves identify it on their own — `runtimes` takes either, `@`
-/// included, and `--runtime` the index — so a name printed anywhere in
-/// a session pastes straight back in, and an index that shifts under
-/// `--runtime` is still pinned by the address next to it.
+/// Both halves identify it on their own — `runtimes` takes either, the
+/// address with or without a leading `@`, and `--runtime` the index —
+/// so a name printed anywhere in a session pastes straight back in,
+/// and an index that shifts under `--runtime` is still pinned by the
+/// address next to it.
 pub(crate) fn runtime_label(index: usize, rt: &bundle::RuntimeRef<'_>) -> String {
-    format!("runtime {index} @{:#x}", rt.handle.addr)
+    format!("runtime {index} @ {:#x}", rt.handle.addr)
 }
 
 /// The same for a local set, which is named by the `Shared` its tasks
 /// hang off — the address every discovery route converges on.
 pub(crate) fn local_set_label(index: usize, set: &bundle::LocalSetRef<'_>) -> String {
-    format!("local set {index} @{:#x}", set.shared.addr)
+    format!("local set {index} @ {:#x}", set.shared.addr)
 }
 
 /// Every group in the target, in the order tasks are stamped with.
@@ -173,7 +174,7 @@ pub(crate) fn print_groups(
             g.kind.to_string(),
             g.index.to_string(),
             g.flavor.clone(),
-            format!("@{:#x}", g.addr),
+            format!("{:#x}", g.addr),
             format!(
                 "{}, {}",
                 counted(g.tasks, "task"),
@@ -496,7 +497,7 @@ mod runtimes_tests {
             assert!(lines[0].contains(label), "{shown}");
         }
         assert!(
-            lines[1].starts_with("runtime    0   current_thread  @0x"),
+            lines[1].starts_with("runtime    0   current_thread  0x"),
             "{shown}"
         );
         assert!(lines[1].contains("  on 1 lwp"), "{shown}");
@@ -506,7 +507,7 @@ mod runtimes_tests {
         assert!(lines[2].contains("  2 tasks, 2 futures  "), "{shown}");
         assert!(lines[3].contains("  1 task, 1 future "), "{shown}");
         assert!(
-            lines[2].starts_with("runtime    1   current_thread  @0x"),
+            lines[2].starts_with("runtime    1   current_thread  0x"),
             "{shown}"
         );
         assert!(
@@ -518,7 +519,7 @@ mod runtimes_tests {
         // The set has no flavor to print, and its index still lands in
         // the column the runtimes' indices are in.
         assert!(lines[3].starts_with("local set  0   "), "{shown}");
-        assert!(lines[3].contains("  @0x"), "{shown}");
+        assert!(lines[3].contains("  0x"), "{shown}");
         assert!(
             lines[3].ends_with("found via a task waker on a timer parked in a runtime's wheel"),
             "{shown}"

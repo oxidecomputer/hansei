@@ -2,7 +2,7 @@
 source: hansei/src/offline.rs
 description: "`census` over linux-floor/local-set"
 ---
-Threads: 1 lwp, 1 in runtime 0 @0xADDR
+Threads: 1 lwp, 1 in runtime 0 @ 0xADDR
     1 in the scheduler's run loop
         1 parked in the io driver
             block_on thread, lwp 1149932

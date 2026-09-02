@@ -2,16 +2,16 @@
 source: hansei/src/offline.rs
 description: "`census` over illumos/futurelock"
 ---
-Threads: 5 lwps, 5 in runtime 0 @0xADDR
+Threads: 5 lwps, 5 in runtime 0 @ 0xADDR
     4 in the scheduler's run loop
         1 parked in the io driver
             worker 1, lwp 3
         3 parked
-    1 in runtime 0 @0xADDR, outside the run loop
+    1 in runtime 0 @ 0xADDR, outside the run loop
         0 in the blocking pool (0 idle, 0 tasks queued)
         1 that entered the runtime another way (a block_on caller)
 
-Tasks: 1 owned by runtime 0 @0xADDR
+Tasks: 1 owned by runtime 0 @ 0xADDR
     State: 1 idle
     Future types and what they await:
         1  async block futurelock::main::{async_block#0}

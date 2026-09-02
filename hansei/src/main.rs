@@ -237,7 +237,7 @@ pub enum Command {
     /// pool's row is the threads doing blocking work and nothing else.
     ///
     /// Every number that is one runtime's says which: the section names
-    /// the runtime the way `runtimes` lists it — `runtime 0 @0x7f11c0`
+    /// the runtime the way `runtimes` lists it — `runtime 0 @ 0x7f11c0`
     /// — where the target holds one, and counts them where it holds
     /// several, each row that belongs to one of them naming it.
     ///
@@ -388,7 +388,7 @@ pub enum Command {
     /// tallies the survivors. The string fields — type, state,
     /// waiting-on, local — are case-insensitive regexes over the
     /// spelled value; kind (`held` or `child`), task (the id as
-    /// `tasks` prints it), rt (an index or `@0x` handle), frame and
+    /// `tasks` prints it), rt (an index or `0x` handle), frame and
     /// addr are exact; depth, holds and sets compare counts, spelled
     /// '>N', '<N' or '=N' (quote them from a shell). `--group type` is
     /// the overview of a target with thirty thousand of these.
@@ -798,7 +798,7 @@ pub enum Command {
     /// --with id 129`. The string fields — type, awaiting,
     /// waiting-on, waker, spawned, defined, state — are
     /// case-insensitive regexes over the spelled value; rt (an index
-    /// or `@0x` handle), lwp and id are exact; holds and sets compare
+    /// or `0x` handle), lwp and id are exact; holds and sets compare
     /// the census's counts, spelled '>N', '<N' or '=N' (quote them
     /// from a shell).
     ///
@@ -1277,9 +1277,9 @@ pub enum RuntimeScope {
 /// Parse a runtime scope. The split is the one `parse_trace_target`
 /// makes for the same reason: the listing prints indices in decimal and
 /// addresses in `0x` hex, so neither spelling can be mistaken for the
-/// other. The listing prints the handle as `@0x…`, so that exact
-/// spelling pastes back in; the `@` is its dress, not its identity,
-/// and a bare address means the same handle.
+/// other. The listing prints the handle bare, and a label spells it
+/// `@ 0x…`; either address pastes back in, with or without the `@`,
+/// since the `@` is its dress, not its identity.
 fn parse_runtime_scope(s: &str) -> std::result::Result<RuntimeScope, String> {
     let addr = s.strip_prefix('@').unwrap_or(s);
     if addr.starts_with("0x") || addr.starts_with("0X") {

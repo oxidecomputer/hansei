@@ -4,7 +4,7 @@ description: "`tasks -v` over linux/walk-shapes"
 ---
 Task 1: async fn walk_shapes::chained
     State: idle
-    Owner: runtime 0 @0xADDR (current_thread)
+    Owner: runtime 0 @ 0xADDR (current_thread)
     Spawned at: src/bin/walk-shapes.rs:245:9
     Defined at: src/bin/walk-shapes.rs:92
     Waiting on: future tokio::sync::notify::Notified
@@ -14,7 +14,7 @@ Task 1: async fn walk_shapes::chained
 
 Task 2: async fn walk_shapes::holder
     State: idle
-    Owner: runtime 0 @0xADDR (current_thread)
+    Owner: runtime 0 @ 0xADDR (current_thread)
     Spawned at: src/bin/walk-shapes.rs:246:9
     Defined at: src/bin/walk-shapes.rs:120
     Waiting on: future tokio::sync::notify::Notified
@@ -24,7 +24,7 @@ Task 2: async fn walk_shapes::holder
 
 Task 3: async fn walk_shapes::abandoner
     State: idle
-    Owner: runtime 0 @0xADDR (current_thread)
+    Owner: runtime 0 @ 0xADDR (current_thread)
     Spawned at: src/bin/walk-shapes.rs:252:9
     Defined at: src/bin/walk-shapes.rs:133
     Waiting on: future tokio::sync::notify::Notified
@@ -34,7 +34,7 @@ Task 3: async fn walk_shapes::abandoner
 
 Task 4: async fn walk_shapes::victim
     State: idle
-    Owner: runtime 0 @0xADDR (current_thread)
+    Owner: runtime 0 @ 0xADDR (current_thread)
     Spawned at: src/bin/walk-shapes.rs:258:9
     Defined at: src/bin/walk-shapes.rs:151
     Waiting on: a tokio::sync::Mutex (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: a non-task waiter, task 4
@@ -45,7 +45,7 @@ Task 4: async fn walk_shapes::victim
 
 Task 5: async fn walk_shapes::blocked
     State: idle
-    Owner: runtime 0 @0xADDR (current_thread)
+    Owner: runtime 0 @ 0xADDR (current_thread)
     Spawned at: src/bin/walk-shapes.rs:259:9
     Defined at: src/bin/walk-shapes.rs:158
     Waiting on: a tokio::sync::Semaphore (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 5, task 6, task 9
@@ -56,7 +56,7 @@ Task 5: async fn walk_shapes::blocked
 
 Task 6: async fn walk_shapes::blocked
     State: idle
-    Owner: runtime 0 @0xADDR (current_thread)
+    Owner: runtime 0 @ 0xADDR (current_thread)
     Spawned at: src/bin/walk-shapes.rs:260:9
     Defined at: src/bin/walk-shapes.rs:158
     Waiting on: a tokio::sync::Semaphore (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 5, task 6, task 9
@@ -67,7 +67,7 @@ Task 6: async fn walk_shapes::blocked
 
 Task 7: async fn walk_shapes::local_parker
     State: idle
-    Owner: local set 1 @0xADDR (lwp 1146696)
+    Owner: local set 1 @ 0xADDR (lwp 1146696)
     Spawned at: src/bin/walk-shapes.rs:268:28
     Defined at: src/bin/walk-shapes.rs:191
     Waiting on: future tokio::sync::notify::Notified
@@ -77,7 +77,7 @@ Task 7: async fn walk_shapes::local_parker
 
 Task 8: async fn walk_shapes::joiner
     State: idle
-    Owner: runtime 0 @0xADDR (current_thread)
+    Owner: runtime 0 @ 0xADDR (current_thread)
     Spawned at: src/bin/walk-shapes.rs:269:9
     Defined at: src/bin/walk-shapes.rs:198
     Waiting on: task 7
@@ -88,7 +88,7 @@ Task 8: async fn walk_shapes::joiner
 
 Task 9: async fn walk_shapes::hidden_blocked
     State: idle
-    Owner: runtime 1 @0xADDR (current_thread, no thread inside it)
+    Owner: runtime 1 @ 0xADDR (current_thread, no thread inside it)
     Spawned at: src/bin/walk-shapes.rs:181:18
     Defined at: src/bin/walk-shapes.rs:164
     Waiting on: a tokio::sync::Semaphore (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 5, task 6, task 9
@@ -99,7 +99,7 @@ Task 9: async fn walk_shapes::hidden_blocked
 
 Task 10: async fn walk_shapes::side_parker
     State: queued
-    Owner: local set 0 @0xADDR (lwp 1146699)
+    Owner: local set 0 @ 0xADDR (lwp 1146699)
     Spawned at: src/bin/walk-shapes.rs:214:23
     Defined at: src/bin/walk-shapes.rs:204
     Waiting on: async fn walk_shapes::side_parker

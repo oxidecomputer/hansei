@@ -2,7 +2,7 @@
 source: hansei/src/offline.rs
 description: "`threads -v` over linux/foreign-runtime"
 ---
-lwp 1146298  polling no task  runtime 0 @0xADDR
+lwp 1146298  polling no task  runtime 0 @ 0xADDR
   thread_id: core::option::Option<tokio::runtime::thread_id::ThreadId>::None
   runtime:
     tokio::runtime::context::runtime::EnterRuntime::Entered {

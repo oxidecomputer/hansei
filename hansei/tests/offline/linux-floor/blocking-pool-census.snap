@@ -2,16 +2,16 @@
 source: hansei/src/offline.rs
 description: "`census` over linux-floor/blocking-pool"
 ---
-Threads: 4 lwps, 4 in runtime 0 @0xADDR
+Threads: 4 lwps, 4 in runtime 0 @ 0xADDR
     2 in the scheduler's run loop
         1 parked in the io driver
             worker 0, lwp 1151049
         1 parked
-    2 in runtime 0 @0xADDR, outside the run loop
+    2 in runtime 0 @ 0xADDR, outside the run loop
         1 in the blocking pool (0 idle, 2 tasks queued)
         1 that entered the runtime another way (a block_on caller)
 
-Tasks: 5 owned by runtime 0 @0xADDR
+Tasks: 5 owned by runtime 0 @ 0xADDR
     State: 1 running, 2 queued, 2 idle
     Future types and what they await:
         1  async fn blocking_pool::queued_waiter

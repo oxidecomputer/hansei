@@ -2323,8 +2323,8 @@ mod tests {
             scope(&["runtimes", "0x7f11c0"]),
             [RuntimeScope::Handle(0x7f11c0)]
         );
-        // The listing spells the handle `@0x…`, so a pasted cell works
-        // with the `@` still on it.
+        // A label spells the handle `@ 0x…`, so the address still works
+        // with the `@` stuck to it.
         assert_eq!(
             scope(&["runtimes", "@0x7f11c0"]),
             [RuntimeScope::Handle(0x7f11c0)]

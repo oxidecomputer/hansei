@@ -3,5 +3,5 @@ source: hansei/tests/acceptance.rs
 expression: actual
 ---
 KIND       ID  FLAVOR          HANDLE  HOLDS               WHERE
-runtime    0   current_thread  @ADDR1  1 task, 1 future    on 1 lwp
-local set  0                   @ADDR2  2 tasks, 2 futures  on lwp L1, found via a task waker on a timer parked in a runtime's wheel
+runtime    0   current_thread  ADDR1   1 task, 1 future    on 1 lwp
+local set  0                   ADDR2   2 tasks, 2 futures  on lwp L1, found via a task waker on a timer parked in a runtime's wheel
