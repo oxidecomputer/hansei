@@ -4,7 +4,7 @@ description: "`task 1` over linux/local-set"
 ---
 task 1
 state: idle
-owner: local set 0 @ 0xADDR (lwp 1145762)
+owner: local set 0 @ 0xADDR (lwp 1609246)
 type: async fn local_set::local_sleeper
 awaiting at: src/bin/local-set.rs:16
 waiting on: timer (deadline TS on the target's monotonic clock)

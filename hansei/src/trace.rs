@@ -1448,7 +1448,6 @@ mod state_locals_tests {
             },
             provenance: Default::default(),
             impls: Default::default(),
-            vtables: Default::default(),
         };
         let view = BundleView::new(&bundle);
         let state = view.ty(BundleTypeId(2)).expect("the state type resolves");

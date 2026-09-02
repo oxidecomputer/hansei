@@ -2,6 +2,6 @@
 source: hansei/src/offline.rs
 description: "`tasks --with id 3,6` over linux/foreign-runtime"
 ---
-ID  STATE  RT  AWAITING AT                    WAITING ON  FUTURE
-3   idle   0   src/bin/foreign-runtime.rs:26  task 1      async fn foreign_runtime::joiner
+ID  STATE  RT  AWAITING AT                    WAITING ON                                                     FUTURE
+3   idle   2   src/bin/foreign-runtime.rs:63  timer (deadline TS on the target's monotonic clock)  async fn foreign_runtime::local_sleeper
 [1 task]

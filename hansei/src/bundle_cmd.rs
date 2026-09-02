@@ -365,7 +365,6 @@ fn stats(path: &Path) -> Result<()> {
         bundle.provenance.entries.len()
     );
     println!("  impls:           {}", bundle.impls.entries.len());
-    println!("  vtables:         {}", bundle.vtables.entries.len());
     Ok(())
 }
 

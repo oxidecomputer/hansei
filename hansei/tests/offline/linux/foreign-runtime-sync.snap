@@ -7,4 +7,4 @@ a tokio::sync::Semaphore (semaphore 0xADDR): 0 permits available
     Wake queue: task 1
 
 task 1 (async fn foreign_runtime::joined): idle
-    Waited by: task 3
+    Waited by: task 4

@@ -5,7 +5,7 @@
 //! `::status`, `::pargs`, `::penv`, `::pfiles` and `::objects` answer
 //! — and `info -v` prints every section.
 
-use crate::{Session, summary, vtables};
+use crate::{Session, summary};
 
 use anyhow::Result;
 use proc::Target;
@@ -77,20 +77,6 @@ fn attach_summary<T: Target>(session: &Session<'_, T>, out: &mut dyn io::Write) 
         fp.total,
         if fp.is_complete() { "" } else { " (forced)" }
     )?;
-    // A symbol resolves by *name*, so that line stays complete across a
-    // rebuild and says nothing about whether the tokio info's recorded
-    // addresses are this target's. Only the vtable table carries any —
-    // statics all arrive through symbols — so this is the one place a
-    // build mismatch shows, and it is worth saying at the attach rather
-    // than leaving `vtables` to say it later.
-    if let Some(note) = vtables::Placement::of(
-        &vtables::Image::of(session),
-        &session.bundle.vtables.entries,
-    )
-    .note()
-    {
-        writeln!(out, "vtable addresses: {note}")?;
-    }
     if let Some(facts) = session.proc.process_facts() {
         writeln!(
             out,
@@ -345,14 +331,6 @@ fn objects<T: Target>(session: &Session<'_, T>, out: &mut dyn io::Write) -> Resu
             out,
             "warning: the substituted binary's build id disagrees with the core's"
         )?;
-    }
-    if let Some(note) = vtables::Placement::of(
-        &vtables::Image::of(session),
-        &session.bundle.vtables.entries,
-    )
-    .note()
-    {
-        writeln!(out, "vtable addresses: {note}")?;
     }
     Ok(())
 }

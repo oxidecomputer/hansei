@@ -2,11 +2,10 @@
 
 use crate::Session;
 use crate::tasks::{future_name, task_id, task_label};
-use crate::vtables::{Image, Placement, Standing};
 
 use anyhow::Result;
 use hansei_bundle::BundleView;
-use hansei_bundle::{VtableEntry, names};
+use hansei_bundle::names;
 use hansei_runtime::heap::umem::{Allocation, Size};
 use hansei_runtime::tokio::{bundle, census};
 
@@ -17,8 +16,7 @@ pub(crate) fn exec_whatis<T: proc::Target>(
     addr: u64,
     out: &mut dyn io::Write,
 ) -> Result<()> {
-    let image = Image::of(session);
-    let vtable = vtable_at(&session.ctx.view, &image, addr);
+    let vtable = vtable_at(session.proc(), addr);
     report_whatis(
         &session.ctx.view,
         &session.runtimes,
@@ -72,158 +70,42 @@ fn region_of<T: proc::Target>(session: &Session<'_, T>, addr: u64) -> Option<Str
     })
 }
 
-/// What a static vtable at an address is, by whichever of the two
-/// routes could say — the table rustc's debug info recorded, and the
-/// shape of the memory itself.
+/// What a static vtable holds, populated only when the memory at `addr`
+/// proves to be one.
 pub(crate) struct VtableAt {
     /// The erased concrete type the vtable dispatches for.
     concrete: String,
-    /// The trait it dispatches, which only the recorded table names:
-    /// a vtable's memory holds no trace of which trait it is for.
-    trait_: Option<String>,
-    /// Other `<Concrete as Trait>` pairs the table records at this same
-    /// address — identical vtables the linker folded into one.
-    folded: Vec<String>,
-    /// The drop function's demangled symbol — the memory route's
-    /// evidence, absent where no symbol resolved.
-    drop_symbol: Option<String>,
-    /// The erased type's size and alignment, out of the vtable's own
-    /// header words.
-    layout: Option<(u64, u64)>,
-    /// What reading the address proved about the recorded entry, where
-    /// one was believed. `None` where the memory answered alone — the
-    /// drop-glue join is that route's own gate.
-    standing: Option<Standing>,
-}
-
-/// What the memory at an address says it is, on its own.
-struct FromMemory {
-    concrete: String,
+    /// The drop function's demangled symbol — the join's evidence.
     drop_symbol: String,
     size: u64,
     align: u64,
 }
 
-/// What is at `addr`, by the two routes that can say.
-///
-/// The bundle carries the table rustc recorded — every `<Concrete as
-/// Trait>` pair it instantiated, and where the vtable was linked — so
-/// an address that unbiases to one of those is named outright, the
-/// trait included, which no amount of reading the memory could yield.
-/// That route needs no symbols, which is what keeps it answering on a
-/// stripped target.
-///
-/// The memory route is the other, and the only one for a vtable
-/// nothing recorded: read the words and believe them on the join that
-/// cannot be coincidence — the first slot resolving to a
-/// `drop_in_place`/`drop_glue` symbol whose generic argument names the
-/// erased type, the same join `print` uses to name a trait object. The
-/// size and align words ride along once that holds; an align that is
-/// not a power of two says this is not a vtable after all.
-///
-/// Both routes are about the same bytes, so they make one block: the
-/// recorded pair names the types, in the debug info's own spelling
-/// rather than the mangler's, and the memory supplies the drop symbol
-/// and the erased layout.
-///
-/// Which is to say the table is believed only where the memory does
-/// not contradict it. `vtables` marks a contradicted entry and prints
-/// it, because there it is the answer to the question asked; here the
-/// question is about an arbitrary address, so an entry the words at it
-/// deny is dropped outright rather than offered as a lead. That is
-/// every entry, everywhere, when the tokio info came from a build this
-/// target did not run — the addresses are fiction and the memory says
-/// so. An address the target holds no word of is the case neither can
-/// settle: the recorded pair is all there is, and it is marked.
-fn vtable_at(view: &BundleView<'_>, image: &Image<'_>, addr: u64) -> Option<VtableAt> {
-    let memory = from_memory(image, addr);
-    let recorded = recorded_at(view, image, addr);
-    let names = |entry: &VtableEntry| Some((view.str(entry.concrete)?, view.str(entry.trait_)?));
-    let believed = recorded.first().and_then(|entry| {
-        let words = image.words(addr, entry.slot_count);
-        let standing = Standing::of(image, entry, &words);
-        let (concrete, trait_) = names(entry)?;
-        (standing != Standing::Unverified)
-            .then(|| (concrete.to_string(), trait_.to_string(), standing))
-    });
-
-    let (concrete, trait_, standing) = match believed {
-        Some((concrete, trait_, standing)) => (concrete, Some(trait_), Some(standing)),
-        None => (memory.as_ref()?.concrete.clone(), None, None),
-    };
-    Some(VtableAt {
-        concrete,
-        trait_,
-        folded: match standing {
-            None => Vec::new(),
-            Some(_) => recorded
-                .iter()
-                .skip(1)
-                .filter_map(|entry| names(entry).map(|(c, t)| format!("{c} as {t}")))
-                .collect(),
-        },
-        drop_symbol: memory.as_ref().map(|m| m.drop_symbol.clone()),
-        layout: memory.map(|m| (m.size, m.align)),
-        standing,
-    })
-}
-
-/// The pairs the bundle's table has for `addr`, by whichever of the two
-/// routes to the table this target allows.
-///
-/// Where the recorded addresses are this target's, the lookup is by
-/// address: unbias `addr` to the one the vtable was linked at and take
-/// the entries recorded there. Several is legal — identical vtables the
-/// linker folded share an address, and the table keeps every name it
-/// recorded for them. None where the target cannot say where its
-/// executable landed, since then there is no link-time address to ask
-/// by.
-///
-/// Where they are some other build's, an address hit would be a
-/// coincidence between two layouts rather than a fact about this one,
-/// so the lookup is by *content* instead: read the words here and take
-/// the pair the first method slot's symbol names, which is
-/// [`vtables::identify`] — the same join the listing's sweep makes,
-/// made at one address. That is what keeps `whatis` able to name an
-/// address the listing just printed.
-///
-/// [`vtables::identify`]: crate::vtables
-fn recorded_at<'a>(view: &BundleView<'a>, image: &Image<'_>, addr: u64) -> Vec<&'a VtableEntry> {
-    let entries = &view.bundle().vtables.entries;
-    if !Placement::of(image, entries).applies() {
-        return crate::vtables::identify_at(image, view, addr)
-            .map(|index| &entries[index])
-            .into_iter()
-            .collect();
-    }
-    let Some(linked) = image.unbias(addr) else {
-        return Vec::new();
-    };
-    entries
-        .iter()
-        .filter(|entry| entry.address == linked)
-        .collect()
-}
-
-/// Read the memory at `addr` as a Rust vtable, on the drop-glue join
-/// described above. It works where the vtable static itself has no
-/// symbol, as a stripped binary's does not — but not where the drop
-/// glue has none either, and that is when the recorded table is all
-/// there is.
-fn from_memory(image: &Image<'_>, addr: u64) -> Option<FromMemory> {
-    let drop_fn = image.target.read_u64(addr).ok()?;
+/// Read the memory at `addr` as a Rust vtable, believed only on the
+/// join that cannot be coincidence: the first slot must resolve to a
+/// `drop_in_place`/`drop_glue` function symbol, whose generic argument
+/// names the erased concrete type — the same join `print` uses to name
+/// a trait object, so it works even where the vtable static itself has
+/// no symbol, as a stripped binary's does not. The size and align
+/// words ride along once that holds; an align that is not a nonzero
+/// power of two says this is not a vtable after all.
+fn vtable_at<T: proc::Target>(proc: &T, addr: u64) -> Option<VtableAt> {
+    let drop_fn = proc.read_u64(addr).ok()?;
     if drop_fn == 0 {
         return None;
     }
-    let size = image.target.read_u64(addr + 8).ok()?;
-    let align = image.target.read_u64(addr + 16).ok()?;
+    let size = proc.read_u64(addr + 8).ok()?;
+    let align = proc.read_u64(addr + 16).ok()?;
     if !align.is_power_of_two() {
         return None;
     }
-    let drop_symbol = image.symbol(drop_fn)?;
+    let symbol = proc.lookup_symbol_by_addr(drop_fn)?;
+    let stripped = hansei_bundle::strip_llvm_suffix(&symbol.name);
+    let demangled = rustc_demangle::try_demangle(stripped).ok()?;
+    let drop_symbol = format!("{demangled:#}");
     let concrete =
         hansei_bundle::symbols::concrete_type_from_vtable_symbol(&drop_symbol)?.to_string();
-    Some(FromMemory {
+    Some(VtableAt {
         concrete,
         drop_symbol,
         size,
@@ -361,38 +243,19 @@ fn report_whatis(
     // A vtable is a static, outside every allocation the blocks below
     // nest through — the coarse answer for the second word of a trait
     // object, which is the pointer a reader most often has in hand.
-    //
-    // The mark on the address is the recorded route's, and says the
-    // one thing that route can be unsure of: the table has the vtable
-    // linked here and the target holds no word of it, so neither is
-    // wrong and nothing bears the other out.
     if let Some(vtable) = vtable {
         separate(&mut blocks, out)?;
         writeln!(
             out,
-            "Vtable {addr:#x}{}: erases {}",
-            vtable.standing.map_or("", Standing::mark),
+            "Vtable {addr:#x}: erases {}",
             names::fold_type_name(&vtable.concrete, impls)
         )?;
-        if let Some(trait_) = &vtable.trait_ {
-            writeln!(
-                out,
-                "    Implements: {}",
-                names::fold_type_name(trait_, impls)
-            )?;
-        }
-        // Distinct pairs at one address are identical vtables the
-        // linker folded, and any of them is as much what is here as
-        // the one the heading names.
-        for pair in &vtable.folded {
-            writeln!(out, "    Folded with: {pair}")?;
-        }
-        if let Some(drop_symbol) = &vtable.drop_symbol {
-            writeln!(out, "    Drop: {drop_symbol}")?;
-        }
-        if let Some((size, align)) = vtable.layout {
-            writeln!(out, "    Erased size: {size} bytes, align {align}")?;
-        }
+        writeln!(out, "    Drop: {}", vtable.drop_symbol)?;
+        writeln!(
+            out,
+            "    Erased size: {} bytes, align {}",
+            vtable.size, vtable.align
+        )?;
     }
 
     if let Some((index, offset)) = extents.locate(addr) {
@@ -585,9 +448,8 @@ pub(crate) fn via_suffix(census: &census::FutureCensus, via: Option<census::Via>
 /// extracted bundle joined against a real captured snapshot.
 #[cfg(test)]
 mod whatis_tests {
-    use super::{Allocation, Size, VtableAt, from_memory, report_whatis, separate, vtable_at};
+    use super::{Allocation, Size, VtableAt, report_whatis, separate, vtable_at};
     use crate::parse_hex_addr;
-    use crate::vtables::{Image, Placement, Standing};
     use hansei_bundle::BundleView;
     use hansei_runtime::testkit;
     use hansei_runtime::tokio::bundle::{LocalSetRef, RuntimeRef, TaskExtents, TaskList};
@@ -658,136 +520,36 @@ mod whatis_tests {
 
     /// A vtable block names what the vtable erases, the drop symbol
     /// that proved it, and the erased layout — and counts as an
-    /// answer, so the miss line stays away. What only the recorded
-    /// table can say it says on lines of its own: the trait, and every
-    /// other pair folded onto the same address.
+    /// answer, so the miss line stays away.
     #[test]
     fn test_a_vtable_reports_what_it_erases() {
         with_tasks("sleep-join", |target| {
-            let vtable = |trait_: Option<&str>, standing| VtableAt {
+            let vtable = VtableAt {
                 concrete: "app::Thing<u64>".to_string(),
-                trait_: trait_.map(str::to_owned),
-                folded: Vec::new(),
-                drop_symbol: Some("core::ptr::drop_glue::<app::Thing<u64>>".to_string()),
-                layout: Some((48, 8)),
-                standing,
+                drop_symbol: "core::ptr::drop_glue::<app::Thing<u64>>".to_string(),
+                size: 48,
+                align: 8,
             };
-
-            // The memory route alone: no table entry, so no trait to
-            // name and nothing qualifying the address.
-            let out = reported(target, None, None, Some(&vtable(None, None)), 0x9000_0000);
+            let out = reported(target, None, None, Some(&vtable), 0x9000_0000);
             assert!(
                 out.contains("Vtable 0x90000000: erases app::Thing<u64>"),
                 "{out}"
             );
-            assert!(!out.contains("Implements:"), "{out}");
             assert!(
                 out.contains("Drop: core::ptr::drop_glue::<app::Thing<u64>>"),
                 "{out}"
             );
             assert!(out.contains("Erased size: 48 bytes, align 8"), "{out}");
             assert!(!out.contains("no task's allocation"), "{out}");
-
-            // With the table behind it, the trait as well — and the
-            // mark where the target holds no word of what it records.
-            let named = vtable(Some("app::Dyn"), Some(Standing::Unreadable));
-            let out = reported(target, None, None, Some(&named), 0x9000_0000);
-            assert!(
-                out.contains("Vtable 0x90000000 (unreadable): erases app::Thing<u64>"),
-                "{out}"
-            );
-            assert!(out.contains("    Implements: app::Dyn\n"), "{out}");
-
-            // A folded address owns up to every pair recorded at it.
-            let folded = VtableAt {
-                folded: vec!["app::Other as app::Dyn".to_string()],
-                ..vtable(Some("app::Dyn"), Some(Standing::Confirmed))
-            };
-            let out = reported(target, None, None, Some(&folded), 0x9000_0000);
-            assert!(out.contains("Vtable 0x90000000: erases"), "{out}");
-            assert!(
-                out.contains("    Folded with: app::Other as app::Dyn\n"),
-                "{out}"
-            );
         });
     }
 
-    /// Where the executable landed, so the address the table records
-    /// and the address the vtable has in the target are not the same
-    /// number and the lookup has to move one to the other.
-    const BIAS: u64 = 0x400;
-    /// Where `VtableMem` serves its words: the vtable's address in the
-    /// target, which the table therefore records `BIAS` below.
-    const AT: u64 = 0x1000;
-    /// The target's text, where every function a vtable dispatches
-    /// through has to be — and where the drop glue's symbol is.
-    const TEXT: u64 = 0x5000;
-
-    /// The same v0 mangling as `DROP` below for `a::One`, which is the
-    /// concrete type the recorded fixture names: the two routes reach
-    /// one type by two different means, which is the point of them.
-    const DROP_ONE: &str = "_RINvNtCs4gTh5wWLWvJ_4core3ptr9drop_glueNtCs1dINKnBl13J_1a3OneEB1_";
-    /// And v0 manglings of `<a::One as a::Dyn>::call` and its sibling
-    /// for `a::Two` — a method symbol being the one place a symbol
-    /// names a trait, and so the only way to the pair without an
-    /// address.
-    const ONE_CALL: &str = "_RNvXCs1dINKnBl13J_1aNtCs1dINKnBl13J_1a3OneNtCs1dINKnBl13J_1a3Dyn4call";
-    const TWO_CALL: &str = "_RNvXCs1dINKnBl13J_1aNtCs1dINKnBl13J_1a3TwoNtCs1dINKnBl13J_1a3Dyn4call";
-
-    /// A fake serving a vtable's words and one function symbol, for
-    /// driving both routes' joins without a core.
+    /// A fake serving three vtable words and one function symbol, for
+    /// driving the probe's joins without a core.
     struct VtableMem {
         words: Vec<u8>,
-        symbols: Vec<(u64, &'static str)>,
-        /// What the target says about where its executable landed, on
-        /// which the whole recorded route turns.
-        bias: Option<u64>,
+        symbol: Option<(u64, String)>,
     }
-
-    /// A target holding one vtable's words at `AT`, with the drop-glue
-    /// symbol behind its first slot unless it has been stripped of it.
-    fn target(words: &[u64], symbol: Option<&'static str>) -> VtableMem {
-        VtableMem {
-            words: words.iter().flat_map(|w| w.to_le_bytes()).collect(),
-            symbols: symbol.map(|name| (TEXT, name)).into_iter().collect(),
-            bias: Some(BIAS),
-        }
-    }
-
-    /// The two mappings the checks read: the text everything a vtable
-    /// dispatches to has to be in, and the image the vtable itself sits
-    /// in — which is what says the recorded addresses are this
-    /// target's rather than another build's.
-    fn mappings() -> proc::Mappings {
-        let map = |vaddr, flags| proc::LoadedObjectWithPath {
-            path: Some("/bin/fake".to_string()),
-            vaddr,
-            size: 0x1000,
-            flags: proc::MapFlags(flags),
-        };
-        proc::Mappings::from_iter([map(AT, 0x04), map(TEXT, 0x05)])
-    }
-
-    /// The target as both routes read it. The mappings have to outlive
-    /// the borrow the image takes of them, which is what the closure
-    /// is for.
-    fn with_image(mem: &VtableMem, check: impl FnOnce(&Image<'_>)) {
-        let mappings = mappings();
-        check(&Image {
-            target: mem,
-            mappings: &mappings,
-            bias: mem.bias,
-        });
-    }
-
-    /// One entry, recorded at the address `AT` unbiases to.
-    fn recorded() -> hansei_bundle::Bundle {
-        crate::vtables::vtable_tests::bundle(&[("a::Dyn", "a::One", AT - BIAS, 4, &[])])
-    }
-
-    /// A whole vtable of the shape that entry describes: glue, size,
-    /// align, and one method, everything callable in text.
-    const WHOLE: [u64; 4] = [TEXT, 48, 8, TEXT + 0x10];
 
     impl proc::Target for VtableMem {
         fn read_bytes(&self, addr: u64, len: u64) -> proc::Result<&[u8]> {
@@ -798,9 +560,9 @@ mod whatis_tests {
             Ok(&self.words[start as usize..(start + len) as usize])
         }
         fn lookup_symbol_by_addr(&self, addr: u64) -> Option<proc::SymbolBuf> {
-            let &(at, name) = self.symbols.iter().find(|&&(at, _)| at == addr)?;
-            (at == addr).then(|| proc::SymbolBuf {
-                name: name.to_string(),
+            let (at, name) = self.symbol.as_ref()?;
+            (*at == addr).then(|| proc::SymbolBuf {
+                name: name.clone(),
                 st_name: 0,
                 st_info: 0,
                 st_other: 0,
@@ -824,25 +586,9 @@ mod whatis_tests {
         fn tls_var_addr(&self, _: &proc::Regs, _: &proc::SymbolBuf) -> proc::Result<Option<u64>> {
             Ok(None)
         }
-        fn exec_bias(&self) -> Option<u64> {
-            self.bias
-        }
     }
 
-    /// The memory route over one arrangement of words.
-    fn probe(mem: &VtableMem, addr: u64) -> Option<super::FromMemory> {
-        let mappings = mappings();
-        from_memory(
-            &Image {
-                target: mem,
-                mappings: &mappings,
-                bias: mem.bias,
-            },
-            addr,
-        )
-    }
-
-    /// The memory route believes only the full join: a drop-glue symbol
+    /// The probe believes only the full join: a drop-glue symbol
     /// behind the first slot and a plausible align word. A slot
     /// resolving to no symbol, to a symbol that is not drop glue, or
     /// riding an align that is no power of two proves nothing.
@@ -852,266 +598,25 @@ mod whatis_tests {
         // a real symtab, demangling to
         // `core::ptr::drop_glue::<[reedline::enums::EditCommand; 1]>`.
         const DROP: &str = "_RINvNtCs4gTh5wWLWvJ_4core3ptr9drop_glueANtNtCs1dINKnBl13J_8reedline5enums11EditCommandj1_EBG_";
-        let mem = |drop_fn: u64, align: u64, symbol: Option<&'static str>| VtableMem {
+        let mem = |drop_fn: u64, align: u64, symbol: Option<(u64, &str)>| VtableMem {
             words: [drop_fn, 48, align]
                 .iter()
                 .flat_map(|w| w.to_le_bytes())
                 .collect(),
-            symbols: symbol.map(|name| (TEXT, name)).into_iter().collect(),
-            bias: None,
+            symbol: symbol.map(|(at, name)| (at, name.to_string())),
         };
 
-        let found = probe(&mem(TEXT, 8, Some(DROP)), AT).expect("the full join is believed");
+        let found = vtable_at(&mem(0x5000, 8, Some((0x5000, DROP))), 0x1000)
+            .expect("the full join is believed");
         assert_eq!(found.concrete, "[reedline::enums::EditCommand; 1]");
         assert_eq!((found.size, found.align), (48, 8));
 
-        assert!(probe(&mem(TEXT, 8, None), AT).is_none());
-        assert!(probe(&mem(TEXT, 8, Some("malloc")), AT).is_none());
-        assert!(probe(&mem(TEXT, 7, Some(DROP)), AT).is_none());
-        assert!(probe(&mem(0, 8, Some(DROP)), AT).is_none());
+        assert!(vtable_at(&mem(0x5000, 8, None), 0x1000).is_none());
+        assert!(vtable_at(&mem(0x5000, 8, Some((0x5000, "malloc"))), 0x1000).is_none());
+        assert!(vtable_at(&mem(0x5000, 7, Some((0x5000, DROP))), 0x1000).is_none());
+        assert!(vtable_at(&mem(0, 8, Some((0x5000, DROP))), 0x1000).is_none());
         // Unreadable memory is no vtable either.
-        assert!(probe(&mem(TEXT, 8, Some(DROP)), 0x9999).is_none());
-    }
-
-    /// The bundle records every `<Concrete as Trait>` pair rustc
-    /// instantiated and where it linked the vtable, so an address that
-    /// unbiases to one of them is named outright — the trait included,
-    /// which reading the memory could never yield, since a vtable's
-    /// words hold no trace of which trait it is for.
-    ///
-    /// The memory route is about the same bytes, and where both speak
-    /// they name the same concrete type. That agreement is what makes
-    /// one block of the two.
-    #[test]
-    fn test_both_routes_name_the_same_vtable() {
-        let bundle = recorded();
-        let view = BundleView::new(&bundle);
-        let mem = target(&WHOLE, Some(DROP_ONE));
-        with_image(&mem, |image| {
-            let found = vtable_at(&view, image, AT).expect("the recorded address is a vtable");
-            assert_eq!(found.concrete, "a::One");
-            assert_eq!(found.trait_.as_deref(), Some("a::Dyn"));
-            assert_eq!(
-                found.drop_symbol.as_deref(),
-                Some("core::ptr::drop_glue::<a::One>")
-            );
-            assert_eq!(found.layout, Some((48, 8)));
-            assert_eq!(found.standing, Some(Standing::Confirmed));
-            assert!(found.folded.is_empty(), "{:?}", found.folded);
-
-            let memory = from_memory(image, AT).expect("the memory route reads it too");
-            assert_eq!(memory.concrete, found.concrete);
-        });
-    }
-
-    /// A stripped target resolves no symbol behind the drop slot, so
-    /// the memory route has nothing to join and says nothing. The
-    /// recorded table needs no symbol and names the pair anyway, which
-    /// is the whole reason for looking it up.
-    #[test]
-    fn test_the_table_answers_where_no_symbol_does() {
-        let bundle = recorded();
-        let view = BundleView::new(&bundle);
-        let mem = target(&WHOLE, None);
-        with_image(&mem, |image| {
-            assert!(from_memory(image, AT).is_none(), "no symbol to join");
-            let found = vtable_at(&view, image, AT).expect("the table names it regardless");
-            assert_eq!(found.concrete, "a::One");
-            assert_eq!(found.trait_.as_deref(), Some("a::Dyn"));
-            assert_eq!(found.drop_symbol, None);
-            assert_eq!(found.layout, None);
-            // The shape check reads words, not names, so it still
-            // bears the entry out.
-            assert_eq!(found.standing, Some(Standing::Confirmed));
-        });
-    }
-
-    /// A recorded address is where the vtable is only when the tokio
-    /// info came from the build that ran, and the words at it are what
-    /// says which. Where they deny the entry — the case a mismatched
-    /// pair puts hansei in everywhere — it is dropped rather than
-    /// offered as a lead, and only what the memory itself proved is
-    /// reported. Where the target holds no word of it neither can
-    /// settle it, so the pair stands and the address is marked.
-    #[test]
-    fn test_a_recorded_vtable_the_memory_denies_is_dropped() {
-        let bundle = recorded();
-        let view = BundleView::new(&bundle);
-
-        // A method slot pointing outside text: not the words the
-        // entry describes, whatever else they are. The drop-glue join
-        // still holds, so the memory answers for itself and names no
-        // trait, because memory never can.
-        let mem = target(&[TEXT, 48, 8, 0x99], Some(DROP_ONE));
-        with_image(&mem, |image| {
-            let found = vtable_at(&view, image, AT).expect("the memory route still answers");
-            assert_eq!(found.concrete, "a::One");
-            assert_eq!(found.trait_, None);
-            assert_eq!(found.standing, None);
-        });
-
-        // Denied with nothing else to say: no block at all rather than
-        // a pair the address does not hold.
-        let mem = target(&[0, 48, 8, 0x99], Some(DROP_ONE));
-        with_image(&mem, |image| {
-            assert!(vtable_at(&view, image, AT).is_none());
-        });
-
-        // And a target holding not one word of it.
-        let mem = target(&[], Some(DROP_ONE));
-        with_image(&mem, |image| {
-            let found = vtable_at(&view, image, AT).expect("the table still names it");
-            assert_eq!(found.trait_.as_deref(), Some("a::Dyn"));
-            assert_eq!(found.standing, Some(Standing::Unreadable));
-            assert_eq!(found.layout, None);
-        });
-    }
-
-    /// An address the table records nothing at is the memory route's
-    /// alone, and names no trait because nothing can. So is every
-    /// address in a target that cannot say where its executable landed:
-    /// there is no link-time address to look one up by.
-    #[test]
-    fn test_an_unrecorded_address_is_the_memory_routes_alone() {
-        let alone = |bundle: &hansei_bundle::Bundle, mem: &VtableMem| {
-            let view = BundleView::new(bundle);
-            with_image(mem, |image| {
-                let found = vtable_at(&view, image, AT).expect("the memory route answers");
-                assert_eq!(found.concrete, "a::One");
-                assert_eq!(found.trait_, None);
-                assert_eq!(found.standing, None);
-                assert_eq!(found.layout, Some((48, 8)));
-            });
-        };
-
-        alone(
-            &recorded(),
-            &VtableMem {
-                bias: None,
-                ..target(&WHOLE, Some(DROP_ONE))
-            },
-        );
-        // The second table's one entry is placed where this target's
-        // image is — a word along from the address asked about — so
-        // what leaves the memory route alone here is the address
-        // missing the table, not the table missing the target.
-        alone(
-            &crate::vtables::vtable_tests::bundle(&[("a::Dyn", "a::One", AT - BIAS + 8, 4, &[])]),
-            &target(&WHOLE, Some(DROP_ONE)),
-        );
-    }
-
-    /// A table whose addresses land nowhere an image is mapped is some
-    /// other build's, and is not consulted at all — not even for the
-    /// address it appears to name, which on a mismatched pair is a
-    /// coincidence between two layouts rather than a fact about this
-    /// one. Without that gate the memory-denied case would still be
-    /// caught per row, but the unreadable one would name a pair the
-    /// target never held.
-    #[test]
-    fn test_a_table_from_another_build_is_not_consulted() {
-        let bundle = recorded();
-        let view = BundleView::new(&bundle);
-        // The vtable's words are exactly what the entry describes, so
-        // only the placement of the table as a whole can refuse it.
-        let mem = target(&WHOLE, Some(DROP_ONE));
-        with_image(&mem, |image| {
-            assert_eq!(
-                Placement::of(image, &bundle.vtables.entries),
-                Placement::Placed
-            );
-            let found = vtable_at(&view, image, AT).expect("a placed table names it");
-            assert_eq!(found.trait_.as_deref(), Some("a::Dyn"));
-        });
-
-        // The same table and the same words, against a target whose
-        // mappings are elsewhere: nothing recorded is believed, and
-        // only what the memory proved is left.
-        let mappings = proc::Mappings::from_iter([proc::LoadedObjectWithPath {
-            path: Some("/bin/fake".to_string()),
-            vaddr: TEXT,
-            size: 0x1000,
-            flags: proc::MapFlags(0x05),
-        }]);
-        let image = Image {
-            target: &mem,
-            mappings: &mappings,
-            bias: mem.bias,
-        };
-        assert_eq!(
-            Placement::of(&image, &bundle.vtables.entries),
-            Placement::OtherBuild {
-                placed: 0,
-                checked: 1
-            }
-        );
-        let found = vtable_at(&view, &image, AT).expect("the memory route answers");
-        assert_eq!(found.trait_, None);
-        assert_eq!(found.standing, None);
-
-        // And with no symbol to fall back on, nothing is claimed at all
-        // — the case that used to name a pair under `(unreadable)`.
-        let stripped = target(&[], None);
-        let image = Image {
-            target: &stripped,
-            mappings: &mappings,
-            bias: stripped.bias,
-        };
-        assert!(vtable_at(&view, &image, AT).is_none());
-    }
-
-    /// A table whose addresses are another build's can still name this
-    /// one, by content instead of by address: the words here are read
-    /// and the pair the first method slot's symbol spells is looked up.
-    /// That is what keeps `whatis` able to name an address the listing
-    /// just printed, which on such a target is a swept address rather
-    /// than a recorded one.
-    #[test]
-    fn test_another_builds_table_still_names_a_vtable_by_its_method() {
-        // Recorded a long way from anything this target maps, so the
-        // address route is closed and only the method symbol is left.
-        let bundle =
-            crate::vtables::vtable_tests::bundle(&[("a::Dyn", "a::One", 0x9_0000, 4, &[])]);
-        let view = BundleView::new(&bundle);
-        let mut mem = target(&[0, 24, 8, TEXT + 0x40], None);
-        mem.symbols.push((TEXT + 0x40, ONE_CALL));
-        with_image(&mem, |image| {
-            assert!(
-                !Placement::of(image, &bundle.vtables.entries).applies(),
-                "the fixture is meant to be another build's"
-            );
-            let found = vtable_at(&view, image, AT).expect("the method symbol names it");
-            assert_eq!(found.concrete, "a::One");
-            assert_eq!(found.trait_.as_deref(), Some("a::Dyn"));
-            assert_eq!(found.standing, Some(Standing::Confirmed));
-        });
-
-        // A vtable whose method names a pair the table does not record
-        // is not one of the table's, and nothing is claimed for it.
-        let mut mem = target(&[0, 24, 8, TEXT + 0x40], None);
-        mem.symbols.push((TEXT + 0x40, TWO_CALL));
-        with_image(&mem, |image| {
-            assert!(vtable_at(&view, image, AT).is_none());
-        });
-    }
-
-    /// Identical vtables the linker folded share one address, and the
-    /// table keeps every pair it recorded for them: the heading names
-    /// the first and the block owns up to the rest.
-    #[test]
-    fn test_folded_pairs_are_all_named() {
-        let bundle = crate::vtables::vtable_tests::bundle(&[
-            ("a::Dyn", "a::One", AT - BIAS, 4, &[]),
-            ("b::Other", "a::Two", AT - BIAS, 4, &[]),
-        ]);
-        let view = BundleView::new(&bundle);
-        let mem = target(&WHOLE, Some(DROP_ONE));
-        with_image(&mem, |image| {
-            let found = vtable_at(&view, image, AT).expect("the folded address is named");
-            assert_eq!(found.concrete, "a::One");
-            assert_eq!(found.trait_.as_deref(), Some("a::Dyn"));
-            assert_eq!(found.folded, ["a::Two as b::Other"]);
-        });
+        assert!(vtable_at(&mem(0x5000, 8, Some((0x5000, DROP))), 0x9999).is_none());
     }
 
     /// What the allocator says leads the report, in the allocation's

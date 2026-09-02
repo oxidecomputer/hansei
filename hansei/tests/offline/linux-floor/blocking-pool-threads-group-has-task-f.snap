@@ -3,7 +3,7 @@ source: hansei/src/offline.rs
 description: "`threads --without role ^worker --group has-task -f 1` over linux-floor/blocking-pool"
 ---
 1  no
-lwp 1151047  polling no task
+lwp 1614545  polling no task
   thread_id: core::option::Option<tokio::runtime::thread_id::ThreadId>::None
   runtime:
     tokio::runtime::context::runtime::EnterRuntime::Entered {
@@ -15,7 +15,7 @@ lwp 1151047  polling no task
     0xADDR  
 
 1  yes
-lwp 1151051  polling task 3
+lwp 1614549  polling task 3
   thread_id: core::option::Option<tokio::runtime::thread_id::ThreadId>::None
   runtime: tokio::runtime::context::runtime::EnterRuntime::NotEntered
   budget: core::option::Option<u8>::None

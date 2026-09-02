@@ -2,7 +2,7 @@
 source: hansei/src/offline.rs
 description: "`threads -f 3` over linux-floor/joinset"
 ---
-lwp 1149567  polling no task
+lwp 1613089  polling no task
   thread_id: core::option::Option<tokio::runtime::thread_id::ThreadId>::None
   runtime:
     tokio::runtime::context::runtime::EnterRuntime::Entered {
@@ -13,7 +13,7 @@ lwp 1149567  polling no task
   stack:
     0xADDR  
 
-lwp 1149569  last polled task 1
+lwp 1613091  last polled task 1
   thread_id: core::option::Option<tokio::runtime::thread_id::ThreadId>::None
   runtime:
     tokio::runtime::context::runtime::EnterRuntime::Entered {
@@ -30,7 +30,7 @@ lwp 1149569  last polled task 1
     }
   core:
     tokio::runtime::scheduler::multi_thread::worker::Core {
-        tick: 6,
+        tick: 7,
         lifo_slot: core::option::Option<tokio::runtime::task::Notified<alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle, alloc::alloc::Global>>>::None,
         lifo_enabled: false,
         run_queue: tokio::runtime::scheduler::multi_thread::queue::Local<alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle, alloc::alloc::Global>> {
@@ -43,13 +43,13 @@ lwp 1149569  last polled task 1
         stats: tokio::runtime::scheduler::multi_thread::stats::Stats {
             batch: tokio::runtime::metrics::batch::MetricsBatch { .. } @ 0xADDR,
             processing_scheduled_tasks_started_at: std::time::Instant { .. } @ 0xADDR,
-            tasks_polled_in_batch: 5,
-            task_poll_time_ewma: 4069.4979848852463,
+            tasks_polled_in_batch: 6,
+            task_poll_time_ewma: 3370.6720331967217,
         },
         global_queue_interval: 61,
         rand: tokio::util::rand::FastRand {
-            one: 3187263902,
-            two: 3899045844,
+            one: 2771370392,
+            two: 3323367277,
         },
     }
   stack:
@@ -57,7 +57,7 @@ lwp 1149569  last polled task 1
     0xADDR  
     0xADDR  
 
-lwp 1149570  last polled task 2
+lwp 1613092  last polled task 2
   thread_id: core::option::Option<tokio::runtime::thread_id::ThreadId>::None
   runtime:
     tokio::runtime::context::runtime::EnterRuntime::Entered {
@@ -88,12 +88,12 @@ lwp 1149570  last polled task 2
             batch: tokio::runtime::metrics::batch::MetricsBatch { .. } @ 0xADDR,
             processing_scheduled_tasks_started_at: std::time::Instant { .. } @ 0xADDR,
             tasks_polled_in_batch: 3,
-            task_poll_time_ewma: 2511.4816010928967,
+            task_poll_time_ewma: 2860.8006010928966,
         },
         global_queue_interval: 61,
         rand: tokio::util::rand::FastRand {
-            one: 190336584,
-            two: 2364841591,
+            one: 4131855029,
+            two: 2985725697,
         },
     }
   stack:

@@ -4,7 +4,7 @@ description: "`tasks -v` over linux-floor/local-set-timer"
 ---
 Task 1: async fn local_set_timer::local_sleeper
     State: idle
-    Owner: local set 0 @ 0xADDR (lwp 1150109)
+    Owner: local set 0 @ 0xADDR (lwp 1613639)
     Spawned at: src/bin/local-set-timer.rs:58:20
     Defined at: src/bin/local-set-timer.rs:15
     Waiting on: timer (deadline TS on the target's monotonic clock)
@@ -15,7 +15,7 @@ Task 1: async fn local_set_timer::local_sleeper
 
 Task 2: async fn local_set_timer::local_acquirer
     State: idle
-    Owner: local set 0 @ 0xADDR (lwp 1150109)
+    Owner: local set 0 @ 0xADDR (lwp 1613639)
     Spawned at: src/bin/local-set-timer.rs:59:20
     Defined at: src/bin/local-set-timer.rs:22
     Waiting on: a tokio::sync::Semaphore (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 2

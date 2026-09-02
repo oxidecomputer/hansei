@@ -2,7 +2,7 @@
 source: hansei/src/offline.rs
 description: "`threads -v` over linux-floor/simple-await"
 ---
-lwp 1148262  polling no task
+lwp 1611767  polling no task
   thread_id: core::option::Option<tokio::runtime::thread_id::ThreadId>::None
   runtime:
     tokio::runtime::context::runtime::EnterRuntime::Entered {
@@ -13,7 +13,7 @@ lwp 1148262  polling no task
   stack:
     0xADDR  
 
-lwp 1148264  last polled task 1
+lwp 1611769  last polled task 1
   thread_id: core::option::Option<tokio::runtime::thread_id::ThreadId>::None
   runtime:
     tokio::runtime::context::runtime::EnterRuntime::Entered {
@@ -44,18 +44,20 @@ lwp 1148264  last polled task 1
             batch: tokio::runtime::metrics::batch::MetricsBatch { .. } @ 0xADDR,
             processing_scheduled_tasks_started_at: std::time::Instant { .. } @ 0xADDR,
             tasks_polled_in_batch: 1,
-            task_poll_time_ewma: 3540.9196721311478,
+            task_poll_time_ewma: 3541.9196721311478,
         },
         global_queue_interval: 61,
         rand: tokio::util::rand::FastRand {
-            one: 3285697776,
-            two: 2804116944,
+            one: 670766742,
+            two: 2049559389,
         },
     }
   stack:
     0xADDR  
+    0xADDR  
+    0xADDR  
 
-lwp 1148265  last polled task 2
+lwp 1611770  last polled task 2
   thread_id: core::option::Option<tokio::runtime::thread_id::ThreadId>::None
   runtime:
     tokio::runtime::context::runtime::EnterRuntime::Entered {
@@ -90,11 +92,9 @@ lwp 1148265  last polled task 2
         },
         global_queue_interval: 61,
         rand: tokio::util::rand::FastRand {
-            one: 2499922404,
-            two: 1477078161,
+            one: 573825388,
+            two: 3812818567,
         },
     }
   stack:
-    0xADDR  
-    0xADDR  
     0xADDR

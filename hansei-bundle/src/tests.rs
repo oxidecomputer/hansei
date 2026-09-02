@@ -72,7 +72,6 @@ fn tiny_bundle() -> Bundle {
         },
         provenance: ProvenanceTable::default(),
         impls: ImplTable::default(),
-        vtables: VtableTable::default(),
     }
 }
 
@@ -326,7 +325,6 @@ fn random_bundle(seed: u64) -> Bundle {
         },
         provenance,
         impls: ImplTable::default(),
-        vtables: VtableTable::default(),
     }
 }
 
@@ -526,92 +524,6 @@ fn test_validate_rejects_broken_impl_tables() {
     }
 }
 
-/// [`tiny_bundle`] with a vtable table holding `entries`, spelled
-/// `(trait, concrete, address, slot_count, vacant slots)`.
-fn with_vtables(entries: &[(&str, &str, u64, u16, &[u16])]) -> Bundle {
-    let mut b = tiny_bundle();
-    let mut strings = StringInterner::new();
-    for s in b.strings.iter() {
-        strings.intern(s);
-    }
-    b.vtables.entries = entries
-        .iter()
-        .map(
-            |&(trait_, concrete, address, slot_count, vacant)| VtableEntry {
-                trait_: strings.intern(trait_),
-                concrete: strings.intern(concrete),
-                address,
-                slot_count,
-                undescribed_slots: vacant.to_vec(),
-                type_id: None,
-            },
-        )
-        .collect();
-    b.strings = strings.finish();
-    b
-}
-
-#[test]
-fn test_vtable_table_roundtrips() {
-    // Two names at one address (a fold) and one pair at two addresses
-    // are both legal, and both sort; so are several vacant slots, as
-    // long as they ascend.
-    let mut b = with_vtables(&[
-        ("a::Dyn", "a::One", 0x1000, 7, &[3, 5, 6]),
-        ("a::Dyn", "a::Two", 0x1000, 4, &[]),
-        ("b::Dyn", "a::One", 0x2000, 3, &[]),
-        ("b::Dyn", "a::One", 0x3000, 3, &[]),
-    ]);
-    b.vtables.entries[0].type_id = Some(BundleTypeId(0));
-    b.validate().expect("a sorted vtable table validates");
-    let loaded = Bundle::read_from(encode(&b).as_slice()).expect("well-framed bundle must load");
-    assert_eq!(loaded, b);
-}
-
-#[test]
-fn test_validate_rejects_broken_vtable_tables() {
-    // Out of order by trait, by concrete, and by address; an exact
-    // duplicate; a vtable with no room for the header; a vacant slot
-    // inside the header; a vacant slot past the end; vacancies out of
-    // order and vacancies naming one slot twice; a dangling string ref;
-    // and a dangling type id.
-    for broken in [
-        with_vtables(&[
-            ("b::Dyn", "a::One", 0x1000, 3, &[]),
-            ("a::Dyn", "a::One", 0x1000, 3, &[]),
-        ]),
-        with_vtables(&[
-            ("a::Dyn", "a::Two", 0x1000, 3, &[]),
-            ("a::Dyn", "a::One", 0x1000, 3, &[]),
-        ]),
-        with_vtables(&[
-            ("a::Dyn", "a::One", 0x2000, 3, &[]),
-            ("a::Dyn", "a::One", 0x1000, 3, &[]),
-        ]),
-        with_vtables(&[
-            ("a::Dyn", "a::One", 0x1000, 3, &[]),
-            ("a::Dyn", "a::One", 0x1000, 3, &[]),
-        ]),
-        with_vtables(&[("a::Dyn", "a::One", 0x1000, 2, &[])]),
-        with_vtables(&[("a::Dyn", "a::One", 0x1000, 4, &[2])]),
-        with_vtables(&[("a::Dyn", "a::One", 0x1000, 4, &[4])]),
-        with_vtables(&[("a::Dyn", "a::One", 0x1000, 6, &[4, 3])]),
-        with_vtables(&[("a::Dyn", "a::One", 0x1000, 6, &[3, 3])]),
-        {
-            let mut b = with_vtables(&[("a::Dyn", "a::One", 0x1000, 3, &[])]);
-            b.vtables.entries[0].concrete = StrRef(999);
-            b
-        },
-        {
-            let mut b = with_vtables(&[("a::Dyn", "a::One", 0x1000, 3, &[])]);
-            b.vtables.entries[0].type_id = Some(BundleTypeId(999));
-            b
-        },
-    ] {
-        assert!(matches!(broken.validate(), Err(Error::Corrupt(_))));
-    }
-}
-
 #[test]
 fn test_validate_rejects_bad_debug_format_path() {
     let mut b = tiny_bundle();
@@ -709,7 +621,6 @@ fn test_validate_accepts_selector_through_deref() {
         },
         provenance: ProvenanceTable::default(),
         impls: ImplTable::default(),
-        vtables: VtableTable::default(),
     };
     assert!(b.validate().is_ok());
     // Round-trips: validation runs on save and load too.
@@ -814,7 +725,6 @@ fn test_validate_rejects_out_of_range_member() {
         },
         provenance: ProvenanceTable::default(),
         impls: ImplTable::default(),
-        vtables: VtableTable::default(),
     };
     let err = b
         .validate()
@@ -919,7 +829,6 @@ fn test_validate_requires_a_named_member_to_be_unique() {
         },
         provenance: ProvenanceTable::default(),
         impls: ImplTable::default(),
-        vtables: VtableTable::default(),
     };
 
     let point = BundleTypeId(1);
@@ -1046,7 +955,6 @@ fn walk_bundle(broken_b: bool) -> Bundle {
         },
         provenance: ProvenanceTable::default(),
         impls: ImplTable::default(),
-        vtables: VtableTable::default(),
     };
     b.walks.entries.insert(
         WalkRole::SleepDeadline,

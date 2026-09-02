@@ -14,10 +14,10 @@ error: the tokio info records no type named no::such::Type; try `find-types no::
 4  idle  0  src/bin/walk-shapes.rs:155  a tokio::sync::Mutex (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: a non-task waiter, task 4  async fn walk_shapes::victim
 error: the tokio info records no type named no::such::Type; try `find-types no::such::Type`
 
-5  idle  0  src/bin/walk-shapes.rs:161  a tokio::sync::Semaphore (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 5, task 6, task 9  async fn walk_shapes::blocked
+5  idle  0  src/bin/walk-shapes.rs:161  a tokio::sync::Semaphore (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 5, task 6, task 10  async fn walk_shapes::blocked
 error: the tokio info records no type named no::such::Type; try `find-types no::such::Type`
 
-6  idle  0  src/bin/walk-shapes.rs:161  a tokio::sync::Semaphore (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 5, task 6, task 9  async fn walk_shapes::blocked
+6  idle  0  src/bin/walk-shapes.rs:161  a tokio::sync::Semaphore (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 5, task 6, task 10  async fn walk_shapes::blocked
 error: the tokio info records no type named no::such::Type; try `find-types no::such::Type`
 
 7  idle  3  src/bin/walk-shapes.rs:194  future tokio::sync::notify::Notified  async fn walk_shapes::local_parker
@@ -26,10 +26,10 @@ error: the tokio info records no type named no::such::Type; try `find-types no::
 8  idle  0  src/bin/walk-shapes.rs:201  task 7  async fn walk_shapes::joiner
 error: the tokio info records no type named no::such::Type; try `find-types no::such::Type`
 
-9  idle  1  src/bin/walk-shapes.rs:167  a tokio::sync::Semaphore (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 5, task 6, task 9  async fn walk_shapes::hidden_blocked
+9  queued  2  src/bin/walk-shapes.rs:204  async fn walk_shapes::side_parker  async fn walk_shapes::side_parker
 error: the tokio info records no type named no::such::Type; try `find-types no::such::Type`
 
-10  queued  2  src/bin/walk-shapes.rs:204  async fn walk_shapes::side_parker  async fn walk_shapes::side_parker
+10  idle  1  src/bin/walk-shapes.rs:167  a tokio::sync::Semaphore (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 5, task 6, task 10  async fn walk_shapes::hidden_blocked
 error: the tokio info records no type named no::such::Type; try `find-types no::such::Type`
 Executed against 10 tasks, 10 failed
 error: --exec failed against 10 of 10 tasks

@@ -8,8 +8,8 @@ a tokio::sync::Mutex (semaphore 0xADDR): 0 permits available
     Wake queue: a non-task waiter (abandoned), task 4
 
 a tokio::sync::Semaphore (semaphore 0xADDR): 0 permits available
-    Blocked on it: task 5 (1 permit requested), task 6 (1 permit requested), task 9 (1 permit requested)
-    Wake queue: task 5, task 6, task 9
+    Blocked on it: task 5 (1 permit requested), task 6 (1 permit requested), task 10 (1 permit requested)
+    Wake queue: task 5, task 6, task 10
 
 task 7 (async fn walk_shapes::local_parker): idle
     Waited by: task 8
