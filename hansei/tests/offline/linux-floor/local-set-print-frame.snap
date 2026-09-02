@@ -2,10 +2,7 @@
 source: hansei/src/offline.rs
 description: "`print` over linux-floor/local-set"
 ---
-local_set::local_sleeper::{async_fn_env#0}::Suspend0 {
-    __awaitee: tokio::time::sleep::Sleep {
-        deadline: 1000000.001s,
-        state: registered,
-    },
-    __1: false,
+tokio::time::sleep::Sleep {
+    deadline: 1000000.001s,
+    state: registered,
 }

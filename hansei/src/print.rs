@@ -30,7 +30,7 @@ pub(crate) fn exec_print<T: proc::Target>(
     let (root, path) = parse_args(args)?;
     let steps = reify::path::parse(&path)?;
     let root = match root {
-        Root::Cursor => cursor_frame_value(session)?,
+        Root::Cursor => cursor::frame_value(session)?,
         Root::Addr(addr, spec) => read_at(session, addr, spec)?,
         Root::LastAddr(spec) => {
             let addr = session.cursor.borrow().last_addr.ok_or_else(|| {
@@ -44,7 +44,7 @@ pub(crate) fn exec_print<T: proc::Target>(
                     "$_ here is the lwp's stack pointer, with no default type; \
                      name one: `print $_ \"<Type>\"`"
                 ),
-                None => cursor_frame_value(session)?,
+                None => cursor::frame_value(session)?,
             }
         }
     };
@@ -60,27 +60,6 @@ pub(crate) fn exec_print<T: proc::Target>(
         }
     }
     Ok(())
-}
-
-/// The value at the cursor's current frame: the active variant of the
-/// frame's future — the state whose locals are the frame's members —
-/// or the future itself for a plain (leaf) frame.
-fn cursor_frame_value<'b, T: proc::Target>(session: &Session<'b, T>) -> Result<reify::Value<'b>> {
-    let c = *session.cursor.borrow();
-    let root = c.root.ok_or_else(|| anyhow!("no task selected"))?;
-    let resolved = cursor::chain_of(session, root)?;
-    let frames = &resolved.chain.frames;
-    let frame = frames.get(c.frame).ok_or_else(|| {
-        anyhow!(
-            "frame {} is out of range ({} frame(s) in the chain)",
-            c.frame,
-            frames.len()
-        )
-    })?;
-    Ok(match &frame.state {
-        Some(state) => state.payload,
-        None => frame.future,
-    })
 }
 
 /// Read one value of `spec`'s type at `addr`. The address says where

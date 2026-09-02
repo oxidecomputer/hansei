@@ -2,34 +2,15 @@
 source: hansei/src/offline.rs
 description: "`print` over linux/local-set-io"
 ---
-local_set_io::local_reader::{async_fn_env#0}::Suspend0 {
-    stream: tokio::net::unix::stream::UnixStream {
-        io: tokio::io::poll_evented::PollEvented<mio::net::uds::stream::UnixStream> {
-            io: core::option::Option<mio::net::uds::stream::UnixStream>::Some(9),
-            registration: tokio::runtime::io::registration::Registration {
-                handle: <elided>,
-                shared: alloc::sync::Arc<tokio::runtime::io::scheduled_io::ScheduledIo, alloc::alloc::Global> { .. } @ 0xADDR,
+tokio::io::util::read::Read<tokio::net::unix::stream::UnixStream> {
+    reader: 0xADDR -> tokio::net::unix::stream::UnixStream {
+            io: tokio::io::poll_evented::PollEvented<mio::net::uds::stream::UnixStream> {
+                io: core::option::Option<mio::net::uds::stream::UnixStream> { .. } @ 0xADDR,
+                registration: tokio::runtime::io::registration::Registration { .. } @ 0xADDR,
             },
         },
+    buf: &mut [u8] {
+        data_ptr: 0xADDR -> 0,
+        length: 8,
     },
-    buf: [
-        0xADDR,
-        0xADDR,
-        0xADDR,
-        0xADDR,
-        0xADDR,
-        0xADDR,
-        0xADDR,
-        0xADDR,
-    ],
-    __awaitee: tokio::io::util::read::Read<tokio::net::unix::stream::UnixStream> {
-        reader: 0xADDR -> tokio::net::unix::stream::UnixStream {
-                io: tokio::io::poll_evented::PollEvented<mio::net::uds::stream::UnixStream> { .. } @ 0xADDR,
-            },
-        buf: &mut [u8] {
-            data_ptr: 0xADDR -> 0,
-            length: 8,
-        },
-    },
-    __3: false,
 }

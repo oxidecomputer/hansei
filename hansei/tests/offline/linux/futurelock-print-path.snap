@@ -1,14 +1,14 @@
 ---
 source: hansei/src/offline.rs
-description: "`print .lock` over linux/futurelock"
+description: "`print .node` over linux/futurelock"
 ---
-0xADDR -> alloc::sync::ArcInner<tokio::sync::mutex::Mutex<()>> {
-        strong: 4,
-        weak: 1,
-        data: tokio::sync::mutex::Mutex<()> {
-            s: tokio::sync::batch_semaphore::Semaphore {
-                waiters: tokio::loom::std::parking_lot::Mutex<tokio::sync::batch_semaphore::Waitlist> { .. } @ 0xADDR,
-                permits: closed=false, permits=0,
-            },
+tokio::sync::batch_semaphore::Waiter {
+    state: 1,
+    waker: core::option::Option<core::task::wake::Waker>::Some(0xADDR),
+    pointers: tokio::util::linked_list::Pointers<tokio::sync::batch_semaphore::Waiter> {
+        inner: tokio::util::linked_list::PointersInner<tokio::sync::batch_semaphore::Waiter> {
+            prev: core::option::Option<core::ptr::non_null::NonNull<tokio::sync::batch_semaphore::Waiter>>::None,
+            next: core::option::Option<core::ptr::non_null::NonNull<tokio::sync::batch_semaphore::Waiter>>::None,
         },
-    }
+    },
+}

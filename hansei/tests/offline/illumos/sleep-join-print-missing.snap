@@ -2,4 +2,4 @@
 source: hansei/src/offline.rs
 description: "`print .no_such_member` over illumos/sleep-join"
 ---
-error: type sleep_join::sleeper::{async_fn_env#0}::Suspend0 has no member named no_such_member (members: __awaitee, __1)
+error: type tokio::runtime::time::entry::TimerEntry has no member named no_such_member (members: driver, inner, deadline, registered)

@@ -1,19 +1,16 @@
 ---
 source: hansei/src/offline.rs
-description: "`print .notify` over linux-floor/joinset"
+description: "`print .lists` over linux-floor/joinset"
 ---
-0xADDR -> alloc::sync::ArcInner<tokio::sync::notify::Notify> {
-        strong: 6,
+0xADDR -> alloc::sync::ArcInner<tokio::loom::std::parking_lot::Mutex<tokio::util::idle_notified_set::ListsInner<tokio::runtime::task::join::JoinHandle<u32>>>> {
+        strong: 4,
         weak: 1,
-        data: tokio::sync::notify::Notify {
-            state: state=waiting, generation=0,
-            mutex: locked=false, parked=false,
-            queue: [
-                tokio::sync::notify::Waiter { notification: kind=none, order=fifo, waker: tokio::loom::std::unsafe_cell::UnsafeCell<core::option::Option<core::task::wake::Waker>> { .. } @ 0xADDR },
-                tokio::sync::notify::Waiter { notification: kind=none, order=fifo, waker: tokio::loom::std::unsafe_cell::UnsafeCell<core::option::Option<core::task::wake::Waker>> { .. } @ 0xADDR },
-                tokio::sync::notify::Waiter { notification: kind=none, order=fifo, waker: tokio::loom::std::unsafe_cell::UnsafeCell<core::option::Option<core::task::wake::Waker>> { .. } @ 0xADDR },
-                tokio::sync::notify::Waiter { notification: kind=none, order=fifo, waker: tokio::loom::std::unsafe_cell::UnsafeCell<core::option::Option<core::task::wake::Waker>> { .. } @ 0xADDR },
-                tokio::sync::notify::Waiter { notification: kind=none, order=fifo, waker: tokio::loom::std::unsafe_cell::UnsafeCell<core::option::Option<core::task::wake::Waker>> { .. } @ 0xADDR },
-            ],
+        data: lock_api::mutex::Mutex<parking_lot::raw_mutex::RawMutex, tokio::util::idle_notified_set::ListsInner<tokio::runtime::task::join::JoinHandle<u32>>> {
+            raw: parking_lot::raw_mutex::RawMutex: locked=false, parked=false,
+            data: tokio::util::idle_notified_set::ListsInner<tokio::runtime::task::join::JoinHandle<u32>> {
+                notified: tokio::util::linked_list::LinkedList<tokio::util::idle_notified_set::ListEntry<tokio::runtime::task::join::JoinHandle<u32>>, tokio::util::idle_notified_set::ListEntry<tokio::runtime::task::join::JoinHandle<u32>>> { .. } @ 0xADDR,
+                idle: tokio::util::linked_list::LinkedList<tokio::util::idle_notified_set::ListEntry<tokio::runtime::task::join::JoinHandle<u32>>, tokio::util::idle_notified_set::ListEntry<tokio::runtime::task::join::JoinHandle<u32>>> { .. } @ 0xADDR,
+                waker: core::option::Option<core::task::wake::Waker> { .. } @ 0xADDR,
+            },
         },
     }

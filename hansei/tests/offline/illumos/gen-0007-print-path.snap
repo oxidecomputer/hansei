@@ -1,33 +1,5 @@
 ---
 source: hansei/src/offline.rs
-description: "`print .started` over illumos/gen-0007"
+description: "`print .a` over illumos/gen-0007"
 ---
-0xADDR -> alloc::sync::ArcInner<tokio::sync::mpsc::chan::Chan<(), tokio::sync::mpsc::unbounded::Semaphore>> {
-        strong: 6,
-        weak: 1,
-        data: tokio::sync::mpsc::chan::Chan<(), tokio::sync::mpsc::unbounded::Semaphore> {
-            queued: [],
-            tx: tokio::sync::mpsc::list::Tx<()> {
-                block_tail: 0xADDR,
-                tail_position: 5,
-            },
-            rx_waker: tokio::sync::task::atomic_waker::AtomicWaker {
-                state: 0,
-                waker: tokio::loom::std::unsafe_cell::UnsafeCell<core::option::Option<core::task::wake::Waker>> { .. } @ 0xADDR,
-            },
-            notify_rx_closed: tokio::sync::notify::Notify {
-                state: state=idle, generation=0,
-                mutex: locked=false, parked=false,
-                queue: [],
-            },
-            semaphore: tokio::sync::mpsc::unbounded::Semaphore(
-                0,
-            ),
-            tx_count: 5,
-            tx_weak_count: 0,
-            rx_fields: tokio::sync::mpsc::chan::RxFields<()> {
-                list: tokio::sync::mpsc::list::Rx<()> { .. } @ 0xADDR,
-                rx_closed: false,
-            },
-        },
-    }
+core::future::pending::Pending<u64>

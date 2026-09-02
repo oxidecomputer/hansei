@@ -1,17 +1,19 @@
 ---
 source: hansei/src/offline.rs
-description: "`print .notify` over linux-floor/unordered"
+description: "`print .ready_to_run_queue` over linux-floor/unordered"
 ---
-0xADDR -> alloc::sync::ArcInner<tokio::sync::notify::Notify> {
-        strong: 15,
-        weak: 1,
-        data: tokio::sync::notify::Notify {
-            state: state=waiting, generation=0,
-            mutex: locked=false, parked=false,
-            queue: [
-                tokio::sync::notify::Waiter { notification: kind=none, order=fifo, waker: tokio::loom::std::unsafe_cell::UnsafeCell<core::option::Option<core::task::wake::Waker>> { .. } @ 0xADDR },
-                tokio::sync::notify::Waiter { notification: kind=none, order=fifo, waker: tokio::loom::std::unsafe_cell::UnsafeCell<core::option::Option<core::task::wake::Waker>> { .. } @ 0xADDR },
-                tokio::sync::notify::Waiter { notification: kind=none, order=fifo, waker: tokio::loom::std::unsafe_cell::UnsafeCell<core::option::Option<core::task::wake::Waker>> { .. } @ 0xADDR },
-            ],
+0xADDR -> alloc::sync::ArcInner<futures_util::stream::futures_unordered::ready_to_run_queue::ReadyToRunQueue<unordered::set_member::{async_fn_env#0}>> {
+        strong: 1,
+        weak: 4,
+        data: futures_util::stream::futures_unordered::ready_to_run_queue::ReadyToRunQueue<unordered::set_member::{async_fn_env#0}> {
+            waker: futures_core::task::__internal::atomic_waker::AtomicWaker {
+                state: 0,
+                waker: core::cell::UnsafeCell<core::option::Option<core::task::wake::Waker>> { .. } @ 0xADDR,
+            },
+            head: 0xADDR,
+            tail: 0xADDR -> futures_util::stream::futures_unordered::task::Task<unordered::set_member::{async_fn_env#0}> { .. },
+            stub: alloc::sync::Arc<futures_util::stream::futures_unordered::task::Task<unordered::set_member::{async_fn_env#0}>, alloc::alloc::Global> {
+                ptr: 0xADDR -> alloc::sync::ArcInner<futures_util::stream::futures_unordered::task::Task<unordered::set_member::{async_fn_env#0}>> { .. },
+            },
         },
     }
