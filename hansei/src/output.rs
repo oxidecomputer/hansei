@@ -25,9 +25,10 @@ use std::io::{self, IsTerminal};
 #[derive(Clone, Copy)]
 pub struct Theme {
     enabled: bool,
-    /// The columns the output has, when it is a terminal: what a
-    /// listing fits its lines to. Anything else has no edge to fit —
-    /// a pipe, a golden — and gets every name whole.
+    /// The columns the output has, when it ends on a terminal: what a
+    /// listing fits its lines to. A `!` pipeline's last command
+    /// writes to the session's terminal, so its output has that edge
+    /// too; a script or a golden has none and gets every name whole.
     width: Option<usize>,
 }
 
@@ -47,10 +48,22 @@ impl Theme {
         let tty = stdout.is_terminal();
         Self {
             enabled: stdout_styles(tty, std::env::var_os("NO_COLOR"), std::env::var_os("TERM")),
-            width: tty
-                .then(|| terminal_size::terminal_size_of(&stdout))
-                .flatten()
-                .map(|(w, _)| usize::from(w.0)),
+            width: stdout_width(&stdout, tty),
+        }
+    }
+
+    /// The theme for output feeding a `!` pipeline: never styled,
+    /// since the bytes are a program's input and an escape sequence
+    /// inside a name would break its matching, but as wide as the
+    /// terminal when stdout is one. The pipeline inherits stdout, so
+    /// `tasks ! head` still lands on the same terminal `tasks` does,
+    /// and a name that would wrap there wraps there.
+    pub fn for_pipe() -> Self {
+        let stdout = io::stdout();
+        let tty = stdout.is_terminal();
+        Self {
+            enabled: false,
+            width: stdout_width(&stdout, tty),
         }
     }
 
@@ -94,6 +107,14 @@ impl Theme {
             false => Cow::Borrowed(text),
         }
     }
+}
+
+/// The columns stdout has, when it is a terminal whose size can be
+/// read; `None` for anything else.
+fn stdout_width(stdout: &io::Stdout, tty: bool) -> Option<usize> {
+    tty.then(|| terminal_size::terminal_size_of(stdout))
+        .flatten()
+        .map(|(w, _)| usize::from(w.0))
 }
 
 /// Whether stdout with these facts about it gets styles: only a
@@ -409,7 +430,7 @@ mod tests {
         );
     }
 
-    /// Without a fit — a pipe, a golden — nothing is cut, marked or not.
+    /// Without a fit — a script, a golden — nothing is cut, marked or not.
     #[test]
     fn test_no_fit_cuts_nothing() {
         let mut t = Table::new(2).truncatable(1);
@@ -467,6 +488,13 @@ mod tests {
             t.fit(Some(40)).render(),
             ["1  short  future::type::name::that::is:…"]
         );
+    }
+
+    /// A `!` pipeline's theme is never styled: its bytes are a
+    /// program's input, whatever stdout is.
+    #[test]
+    fn test_a_pipe_is_never_styled() {
+        assert!(!Theme::for_pipe().enabled);
     }
 
     /// Stdout gets styles only as a terminal that has not refused them:
