@@ -9,8 +9,8 @@
 use anyhow::{Context as _, Result};
 use clap::Subcommand;
 use exegesis::extract::{
-    DebugSources, ExtractOptions, ExtractStats, RUSTC_FLOOR, classify_file, dwarf_summary,
-    extract_sources,
+    DebugSources, ExtractOptions, ExtractStats, ParsedDwarf, RUSTC_FLOOR, classify_file,
+    dwarf_summary, extract_sources_with,
 };
 use hansei_bundle::{Bundle, BundleTypeId, MemberRef, StaticRole, Step, TypeDef, VtableDataSource};
 
@@ -118,10 +118,11 @@ fn load(path: &Path) -> Result<Bundle> {
 /// The warnings come back as text for the caller to print when it
 /// suits; nothing here writes to stderr, because this runs on the
 /// thread overlapping the attach.
-pub fn extract_for_session(
+pub fn extract_for_session_with<R>(
     debug_info: &Path,
     binary: Option<&Path>,
-) -> Result<(Bundle, Vec<String>, bool)> {
+    then: impl FnOnce(Bundle, Vec<String>, bool) -> R,
+) -> Result<R> {
     let flavor = classify_file(debug_info)
         .with_context(|| format!("failed to read {}", debug_info.display()))?;
     let sources = match (flavor.is_split(), binary) {
@@ -139,15 +140,15 @@ pub fn extract_for_session(
             debug_info.display()
         ),
     };
-    let (bundle, stats) = extract_sources(&sources, &ExtractOptions::default())
-        .with_context(|| format!("failed to extract from {}", debug_info.display()))?;
-    Ok((bundle, warnings(&stats), flavor.is_split()))
+    extract_sources_with(
+        &sources,
+        &ExtractOptions::default(),
+        ParsedDwarf::Free,
+        |bundle, stats| then(bundle, warnings(&stats), flavor.is_split()),
+    )
+    .with_context(|| format!("failed to extract from {}", debug_info.display()))
 }
 
-/// What extraction leaves uncertain about the bundle it produced: the
-/// facts about the binary that decide which layouts were assumed.
-/// Empty for a binary whose toolchain and tokio version were both
-/// recovered and both supported, which is nearly every one.
 fn warnings(stats: &ExtractStats) -> Vec<String> {
     let mut out = Vec::new();
     if let Some(v) = &stats.rustc_below_floor {
@@ -188,14 +189,37 @@ fn extract(
         explain_walk,
     };
     let sources = DebugSources { binary, debug_info };
-    let (bundle, stats) = extract_sources(&sources, &opts).with_context(|| match debug_info {
+    // The parse is leaked rather than freed: this process exits as soon
+    // as the file is written, and exit reclaims it in one stroke.
+    extract_sources_with(&sources, &opts, ParsedDwarf::Leak, |bundle, stats| {
+        write_extracted(
+            bundle,
+            stats,
+            output,
+            print_stats,
+            explaining,
+            explaining_walk,
+        )
+    })
+    .with_context(|| match debug_info {
         Some(d) => format!(
             "failed to extract from {} with debug info {}",
             binary.display(),
             d.display()
         ),
         None => format!("failed to extract from {}", binary.display()),
-    })?;
+    })?
+}
+
+/// The extract verb's second half: report, write, and say what was written.
+fn write_extracted(
+    bundle: Bundle,
+    stats: ExtractStats,
+    output: &Path,
+    print_stats: bool,
+    explaining: Option<String>,
+    explaining_walk: Option<String>,
+) -> Result<()> {
     for warning in warnings(&stats) {
         eprintln!("{warning}");
     }
