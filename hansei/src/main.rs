@@ -688,10 +688,11 @@ pub enum Command {
     /// also backs the `--limit` flags, which override the session
     /// value for that command only; `truncate-names` cuts the
     /// listings' name columns to the terminal's width, an ellipsis
-    /// marking each cut, and never touches output that is not a
-    /// terminal. The values live for the session only. Bare `config`
-    /// prints every key at its current value; `config KEY` prints
-    /// one; `config KEY VALUE` changes it.
+    /// marking each cut — a `!` pipeline's output included, since its
+    /// last command writes to the same terminal — and never touches
+    /// output that is not headed for one. The values live for the
+    /// session only. Bare `config` prints every key at its current
+    /// value; `config KEY` prints one; `config KEY VALUE` changes it.
     Config {
         /// The key to show or change. Naming none prints them all.
         key: Option<String>,

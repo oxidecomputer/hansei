@@ -521,16 +521,18 @@ fn answer_words<T: proc::Target>(
     // traffic and the resident set. The writer buffers small pieces (a
     // heading line) and passes big ones through; a command that fails
     // mid-answer has printed what it printed.
-    // The theme is where the output is going: a `!` pipe is a script's
+    // The theme is where the output is going: a `!` pipe is a program's
     // input however the session was started, so only the plain stdout
-    // path may style.
+    // path may style — but the pipeline inherits stdout, so its last
+    // command writes to the same terminal, and the pipe's theme keeps
+    // that terminal's width.
     match shell {
         Some(shell) => {
             let sink = ShellSink {
                 stdin: Some(Box::new(Exec::shell(shell.trim()).stream_stdin()?)),
             };
             let mut out = io::BufWriter::new(sink);
-            let flow = answer(Theme::plain(), &mut out)?;
+            let flow = answer(Theme::for_pipe(), &mut out)?;
             out.flush()?;
             Ok(flow)
         }
