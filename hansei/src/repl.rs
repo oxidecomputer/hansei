@@ -743,6 +743,7 @@ fn values_of(
     let names: Vec<&str> = match (cmd.get_name(), arg.get_id().as_str(), slot) {
         ("tasks", "with" | "without" | "group", 0) => crate::tasks::Field::names().collect(),
         ("futures", "with" | "without" | "group", 0) => crate::futures::Field::names().collect(),
+        ("threads", "with" | "without" | "group", 0) => crate::threads::Field::names().collect(),
         ("config", "key", _) => crate::settings::KEYS.to_vec(),
         ("config", "value", _) => positional_words
             .first()
@@ -1061,8 +1062,12 @@ mod tests {
         assert_eq!(completions("tasks --without "), tasks);
         assert_eq!(completions("futures --group "), futures);
         assert_eq!(completions("futures --with "), futures);
+        let threads: Vec<String> = crate::threads::Field::names().map(String::from).collect();
+        assert_eq!(completions("threads --group "), threads);
+        assert_eq!(completions("threads --without "), threads);
         assert_eq!(completions("tasks --group wa"), ["waiting-on", "waker"]);
         assert_eq!(completions("futures --with k"), ["kind"]);
+        assert_eq!(completions("threads --with has"), ["has-task"]);
         assert!(tasks.contains(&"id".to_string()) && !futures.contains(&"id".to_string()));
     }
 

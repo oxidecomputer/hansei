@@ -94,6 +94,26 @@ fn commands(
         // A frame budget alone implies the block form; both spellings
         // pin the flag plumbing the table/block split rides on.
         ("threads-f", "threads -f 3".to_owned()),
+        // The thread filters: a grouping at the role's kind level, the
+        // grouped block form (a frame budget asks for it) with the
+        // yes/no split of the polling threads — the workers left out,
+        // since a worker's block is its whole core and the grouping is
+        // the point — and the exec loop under a cursor on each
+        // surviving thread: succeeding, and failing per thread with
+        // the error in place and the counting summary.
+        ("threads-group-role", "threads --group role".to_owned()),
+        (
+            "threads-group-has-task-f",
+            "threads --without role ^worker --group has-task -f 1".to_owned(),
+        ),
+        (
+            "threads-exec-trace",
+            "threads --with has-task yes --exec trace -l 1".to_owned(),
+        ),
+        (
+            "threads-exec-fail",
+            "threads --with has-task yes --exec type no::such::Type".to_owned(),
+        ),
         ("graph", "graph".to_owned()),
         ("sync", "sync".to_owned()),
         // One block family alone: the join view of the same listing.

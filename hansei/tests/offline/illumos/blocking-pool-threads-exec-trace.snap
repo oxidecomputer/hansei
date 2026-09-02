@@ -1,0 +1,9 @@
+---
+source: hansei/src/offline.rs
+description: "`threads --with has-task yes --exec trace -l 1` over illumos/blocking-pool"
+---
+4  —  entered runtime  3
+lwp 4 native stack:
+0xADDR  
+[17 frames, 1 shown]
+Executed against 1 thread, 0 failed

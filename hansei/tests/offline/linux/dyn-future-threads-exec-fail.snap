@@ -1,0 +1,5 @@
+---
+source: hansei/src/offline.rs
+description: "`threads --with has-task yes --exec type no::such::Type` over linux/dyn-future"
+---
+Executed against 0 threads, 0 failed

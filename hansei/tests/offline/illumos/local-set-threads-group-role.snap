@@ -1,0 +1,7 @@
+---
+source: hansei/src/offline.rs
+description: "`threads --group role` over illumos/local-set"
+---
+COUNT  ROLE             LWPS
+    1  block_on caller  1
+1 group

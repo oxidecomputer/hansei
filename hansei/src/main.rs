@@ -997,6 +997,17 @@ pub enum Command {
     /// what each value points into; --registers asks that of every
     /// listed thread. Naming lwps, --frames, or --registers implies
     /// -v.
+    ///
+    /// Filters are the selection: repeatable `--with FIELD ARG` /
+    /// `--without FIELD ARG` clauses AND together, and `--group FIELD`
+    /// tallies the survivors. The string fields — name, role,
+    /// function — are case-insensitive regexes over the spelled
+    /// value; task and lwp are exact ids; has-task is yes or no.
+    /// `--group role` buckets by kind — worker, blocking, block_on
+    /// caller, entered runtime, no runtime — not by worker index or
+    /// park state. `--exec COMMAND` runs a command once per surviving
+    /// thread under a cursor on it: `threads --with has-task yes
+    /// --exec trace` walks every polling thread's stack.
     Threads {
         /// Print each selected thread's full block rather than one
         /// table row.
@@ -1021,6 +1032,36 @@ pub enum Command {
         /// named.
         #[arg(value_name = "LWP")]
         lwp: Vec<u32>,
+
+        /// Keep the threads whose FIELD matches ARG. Repeatable; every
+        /// clause must hold. The fields are name, role, task,
+        /// has-task, function and lwp.
+        #[arg(long, num_args = 2, value_names = ["FIELD", "ARG"])]
+        with: Vec<String>,
+
+        /// Drop the threads whose FIELD matches ARG. Repeatable, and
+        /// ANDed with every other clause; the fields are the same as
+        /// --with.
+        #[arg(long, num_args = 2, value_names = ["FIELD", "ARG"])]
+        without: Vec<String>,
+
+        /// Tally the surviving threads by FIELD: one row per distinct
+        /// value, most numerous first, with a few member lwps; under
+        /// -v, every member's block under its bucket.
+        #[arg(long, value_name = "FIELD")]
+        group: Option<String>,
+
+        /// Run COMMAND once per surviving thread, under a cursor on
+        /// that thread, each run's output under the thread's row. The
+        /// rest of the line is the command.
+        #[arg(
+            long,
+            num_args = 1..,
+            allow_hyphen_values = true,
+            value_name = "COMMAND",
+            conflicts_with = "group"
+        )]
+        exec: Vec<String>,
     },
 
     /// Print an await chain: a task's, selected by its decimal id
@@ -1827,16 +1868,30 @@ pub fn dispatch<T: Target>(
             registers,
         } => {
             let render = RenderOpts::from_settings(&session.settings.borrow());
-            cursor::exec_thread(session, lwp, verbose, frames, registers, render, out)?
+            cursor::exec_thread(session, lwp, verbose, frames, registers, theme, render, out)?
         }
         Command::Threads {
             verbose,
             frames,
             registers,
             lwp,
+            with,
+            without,
+            group,
+            exec,
         } => {
             let render = RenderOpts::from_settings(&session.settings.borrow());
-            threads::exec_threads(session, verbose, frames, &lwp, registers, render, out)?
+            let cmd = threads::ThreadsCmd {
+                verbose,
+                frames,
+                registers,
+                lwp,
+                with,
+                without,
+                group,
+                exec,
+            };
+            threads::exec_threads(session, cmd, theme, render, out)?
         }
         Command::Trace {
             target,

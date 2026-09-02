@@ -433,12 +433,14 @@ fn print_root_chain<T: proc::Target>(
 }
 
 /// `thread`: select an lwp, or print the cursor's.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn exec_thread<T: proc::Target>(
     session: &Session<'_, T>,
     lwp: Option<u32>,
     verbose: bool,
     frames: Option<usize>,
     registers: bool,
+    theme: crate::output::Theme,
     render: crate::RenderOpts,
     out: &mut dyn io::Write,
 ) -> Result<()> {
@@ -454,7 +456,17 @@ pub(crate) fn exec_thread<T: proc::Target>(
             .ok_or_else(|| anyhow!("no thread selected"))?,
     };
     if verbose || registers || frames.is_some() {
-        return threads::exec_threads(session, true, frames, &[tid], registers, render, out);
+        let cmd = threads::ThreadsCmd {
+            verbose: true,
+            frames,
+            registers,
+            lwp: vec![tid],
+            with: Vec::new(),
+            without: Vec::new(),
+            group: None,
+            exec: Vec::new(),
+        };
+        return threads::exec_threads(session, cmd, theme, render, out);
     }
     let line = threads::row_line(session, tid)
         .ok_or_else(|| threads::no_such_thread(session.lwps.len(), tid))?;
@@ -957,6 +969,7 @@ mod tests {
             false,
             None,
             false,
+            crate::output::Theme::plain(),
             RenderOpts::from_settings(&session.settings.borrow()),
             &mut Vec::new(),
         )
@@ -1389,12 +1402,14 @@ mod tests {
         let (tid, rsp) = (lwp.tid, lwp.regs.rsp);
         let render = RenderOpts::from_settings(&session.settings.borrow());
 
+        let theme = crate::output::Theme::plain();
         let err = exec_thread(
             &session,
             Some(999_999),
             false,
             None,
             false,
+            theme,
             render,
             &mut Vec::new(),
         )
@@ -1402,8 +1417,17 @@ mod tests {
         assert!(err.to_string().starts_with("no lwp 999999"), "{err}");
 
         let mut out = Vec::new();
-        exec_thread(&session, Some(tid), false, None, false, render, &mut out)
-            .expect("the lwp selects");
+        exec_thread(
+            &session,
+            Some(tid),
+            false,
+            None,
+            false,
+            theme,
+            render,
+            &mut out,
+        )
+        .expect("the lwp selects");
         let line = String::from_utf8(out).expect("the row is UTF-8");
         assert!(line.starts_with(&tid.to_string()), "{line}");
         assert_eq!(line.trim_end().split("  ").count(), 4, "{line}");
@@ -1421,6 +1445,7 @@ mod tests {
                 verbose,
                 frames,
                 registers,
+                theme,
                 render,
                 &mut out,
             )
