@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-blake3.workspace = true
+blake3 = { workspace = true, features = ["rayon"] }
 foldhash.workspace = true
 gimli.workspace = true
 hansei-bundle.workspace = true

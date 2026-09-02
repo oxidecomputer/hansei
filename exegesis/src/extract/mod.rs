@@ -459,8 +459,10 @@ impl Input {
     }
 
     /// Hash the whole file for the bundle's identity on a background
-    /// thread. BLAKE3 over a multi-gigabyte binary is pure overhead on
-    /// the critical path, but it overlaps entirely with the DWARF parse.
+    /// thread, over the pool: BLAKE3 over a multi-gigabyte binary is
+    /// pure overhead on the critical path, and one thread's pass takes
+    /// longer than the parse it was meant to hide behind, whose own
+    /// workers mostly wait on the collector anyway.
     ///
     /// The mapping is advised first that all of it is wanted. Warm, that
     /// is free; cold, it turns the parse's random faults into read-ahead
@@ -471,7 +473,7 @@ impl Input {
         let bytes = std::sync::Arc::clone(&self.bytes);
         std::thread::spawn(move || {
             let _ = bytes.advise(memmap2::Advice::WillNeed);
-            blake3::hash(&bytes[..])
+            blake3::Hasher::new().update_rayon(&bytes[..]).finalize()
         })
     }
 }
