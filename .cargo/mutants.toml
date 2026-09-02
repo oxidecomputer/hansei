@@ -212,7 +212,7 @@ exclude_re = [
     # call in: the once-per-session guard and the warning line in
     # version_ceiling_line's tests, the drift predicate and wording in
     # hansei-runtime's version_ceiling_notice tests.
-    "replace Session<'b>::note_version_ceiling",
+    "replace Session<'b, T>::note_version_ceiling",
     # A println loop over `outcomes` (whose list the corpus coverage
     # test pins). Its output is for the soak scripts' coverage
     # parsers, which run on a capture host, not in any sweep's judging
@@ -299,8 +299,8 @@ exclude_re = [
     # note_version_ceiling above, judged by a human against a broken
     # target rather than by any sweep's suite.
     "match guard !args\\.best_effort",
-    "replace && with \\|\\| in Session<'b>::attach",
-    "delete ! in Session<'b>::attach",
+    "replace && with \\|\\| in Session<'b, T>::attach",
+    "delete ! in Session<'b, T>::attach",
     # The suspend table's empty-column screens. The locals half is
     # pinned (the side_parker exact render has no locals column and an
     # awaitee right after the location cell); the location half cannot
@@ -346,14 +346,16 @@ exclude_re = [
     # spelled as its own constructor to say "no allocator to ask" at
     # the call sites, which is a different claim from "the default".
     "replace HeapGate<'h>::none",
-    # The launch worker and its adoption are transparent by design:
-    # every accessor that would adopt its state falls back to computing
-    # the same state in place when the handoff never happened, so a
-    # worker (or an adoption) replaced with () changes only when the
-    # work runs, never any answer. The state itself — the census and the
-    # task extents — is what the rest of the suites pin.
-    "replace warm_worker with \\(\\)",
-    "replace Session<'b>::adopt_warm with \\(\\)",
+    # The launch warm-up is transparent by design: every accessor whose
+    # state it builds falls back to computing the same state in place
+    # when nothing was adopted, and the listing rows are built on first
+    # use by the same cells, so the worker answering None, the adoption
+    # or the whole warm-up replaced with () changes only when the work
+    # runs, never any answer. The state itself — the census, the task
+    # extents, the rows — is what the rest of the suites pin.
+    "replace warm_worker ",
+    "replace warm_listings with \\(\\)",
+    "replace Session<'b, T>::adopt with \\(\\)",
     # A throughput knob and a thread name, the same shape as
     # default_parallelism above: skipping the global pool build entirely
     # leaves rayon to install its own on first use, so every fan-out
