@@ -35,12 +35,12 @@ use self::paths::{OwnedLoc, display_path, rustc_below_floor, rustc_version_of, t
 use self::statics::find_statics;
 use self::sweep::{Sweep, cell_from_dealloc_param, find_stage, sweep_functions};
 use self::vtables::{
-    VtableImage, VtableTypeHint, discover_vtable_types, harvest_vtables, resolve_vtable_type_hints,
+    VtableImage, VtableTypeHint, discover_vtable_types, resolve_vtable_type_hints,
 };
 use crate::bundle::{
     BinaryIdent, Bundle, BundleTypeId, DebugSourceIdent, DynFutureTable, FamilyCeiling, FutureKind,
     InfraTypes, Meta, Provenance, ProvenanceTable, SourceLoc, StaticsTable, TaskEntryId,
-    TaskFutureEntry, TaskTable, VtableDataSource, VtableEntry, VtableTable,
+    TaskFutureEntry, TaskTable, VtableDataSource,
 };
 use crate::detect::{Family, FormatExplanation, struct_of};
 use crate::raw_types::{NsId, RawType};
@@ -148,29 +148,6 @@ pub struct ExtractStats {
     pub vtable_types_missing: usize,
     /// Vtable type hints that matched multiple distinct DWARF layouts.
     pub vtable_types_ambiguous: usize,
-    /// Distinct `<C as T>::{vtable}` DIEs harvested from the DWARF.
-    pub vtables_harvested: usize,
-    /// Vtable DIEs whose `{vtable_type}` is missing or is not a whole
-    /// number of words with room for the drop-glue/size/align header.
-    pub vtables_unshaped: usize,
-    /// Vtable DIEs whose name did not split into a concrete type and a
-    /// trait around the type `DW_AT_containing_type` names.
-    pub vtables_unsplit: usize,
-    /// Vtable DIEs with no statically resolvable address.
-    pub vtables_no_location: usize,
-    /// Vtable DIEs the debug executable's own bytes contradict: no data
-    /// at the address at all, an alignment word no Rust type could have,
-    /// or a size word disagreeing with the concrete type's DWARF size.
-    pub vtables_contradicted: usize,
-    /// Vtable DIEs dropped as an exact repeat of one already harvested
-    /// (embedded DWARF describes a vtable once per referencing CGU).
-    pub vtables_duplicate: usize,
-    /// Addresses carrying more than one `<C as T>` name — vtables the
-    /// linker folded together, and so the pairs a lookup cannot separate.
-    pub vtables_folded: usize,
-    /// Harvested vtables with at least one method slot the debug info
-    /// describes no member for.
-    pub vtables_vacant: usize,
     /// Total types emitted into the bundle.
     pub types_emitted: usize,
     /// Emitted `Opaque` entries (placeholders included).
@@ -268,15 +245,6 @@ impl fmt::Display for ExtractStats {
             "  ambiguous:              {}",
             self.vtable_types_ambiguous
         )?;
-        writeln!(f, "vtables:")?;
-        writeln!(f, "  harvested:              {}", self.vtables_harvested)?;
-        writeln!(f, "  unshaped:               {}", self.vtables_unshaped)?;
-        writeln!(f, "  unsplit names:          {}", self.vtables_unsplit)?;
-        writeln!(f, "  no location:            {}", self.vtables_no_location)?;
-        writeln!(f, "  image disagrees:        {}", self.vtables_contradicted)?;
-        writeln!(f, "  duplicate DIEs:         {}", self.vtables_duplicate)?;
-        writeln!(f, "  folded addresses:       {}", self.vtables_folded)?;
-        writeln!(f, "  with vacant slots:      {}", self.vtables_vacant)?;
         writeln!(
             f,
             "include roots:            {} resolved",
@@ -700,7 +668,7 @@ fn extract_parsed<R>(
     // thread that overlaps the (parallel) parse. Serially it is ~0.4s of
     // scanning `.symtab`/`.dynsym` after the read has already finished;
     // overlapped, it is free.
-    let (reader, symbols, vtable_types, image) = std::thread::scope(|scope| {
+    let (reader, symbols, vtable_types) = std::thread::scope(|scope| {
         let aux = scope.spawn(|| {
             // The named statics are recovered from the symbol table alone
             // (see `find_statics`), and a symbol can live in either table —
@@ -712,22 +680,21 @@ fn extract_parsed<R>(
                 merged.extend(object_symbols(debug_obj));
             }
             let symbols: Vec<&str> = merged.into_iter().collect();
-            let (image, vtable_types) = match vtable_source {
-                VtableDataSource::None => (VtableImage::default(), Vec::new()),
+            let vtable_types = match vtable_source {
+                VtableDataSource::None => Vec::new(),
                 VtableDataSource::File(_) => {
                     let image = VtableImage::read(binary_obj);
-                    let hints = discover_vtable_types(binary_obj, &image);
-                    (image, hints)
+                    discover_vtable_types(binary_obj, &image)
                 }
             };
-            (symbols, vtable_types, image)
+            (symbols, vtable_types)
         });
         let reader = match package.as_ref() {
             Some(package) => DwReader::read_types_package(&dwarf, package, Default::default())?,
             None => DwReader::read_types(&dwarf, Default::default())?,
         };
-        let (symbols, vtable_types, image) = aux.join().expect("symbol-gathering thread panicked");
-        Ok::<_, Error>((reader, symbols, vtable_types, image))
+        let (symbols, vtable_types) = aux.join().expect("symbol-gathering thread panicked");
+        Ok::<_, Error>((reader, symbols, vtable_types))
     })?;
 
     let view = reader.view();
@@ -751,7 +718,7 @@ fn extract_parsed<R>(
         vtable_data: vtable_source,
     };
 
-    let (bundle, stats) = extract_from_view(&view, &symbols, ident, opts, &vtable_types, &image)?;
+    let (bundle, stats) = extract_from_view(&view, &symbols, ident, opts, &vtable_types)?;
     // The bundle owns everything it carries, so the parse is dead
     // weight from here on. Freeing it is a second or more of serial
     // deallocation the continuation would otherwise wait behind.
@@ -870,7 +837,6 @@ fn extract_from_view(
     ident: Identity,
     opts: &ExtractOptions,
     vtable_types: &[VtableTypeHint],
-    image: &VtableImage<'_>,
 ) -> Result<(Bundle, ExtractStats)> {
     let mut stats = ExtractStats::default();
     let reader = view.collector();
@@ -1058,10 +1024,6 @@ fn extract_from_view(
 
     let vtable_type_ids = resolve_vtable_type_hints(reader, vtable_types, &mut stats);
 
-    // The trait-object vtable table. Building the bundle's copy waits on
-    // emission, which decides which concrete types the bundle describes.
-    let harvested = harvest_vtables(reader, image, &mut stats);
-
     // --- Phase 3: transitive closure and emission. ---
 
     // The recovered tokio version selects the detector family before any
@@ -1211,26 +1173,6 @@ fn extract_from_view(
         crate::detect::walk::bind_walks(&mut em, &walk_roots, opts.explain_walk.as_deref());
     stats.walk_explanations = walk_explanations;
 
-    // The vtable table, interned last: every root is emitted by now, so
-    // `bundle_id_of` answers for the concrete types this bundle happens
-    // to describe and declines for the rest. It never emits one — a
-    // target instantiates tens of thousands of vtables, and rooting
-    // their concrete types would be the size explosion the table exists
-    // to avoid.
-    let vtables = VtableTable {
-        entries: harvested
-            .iter()
-            .map(|h| VtableEntry {
-                trait_: em.intern(&h.record.trait_),
-                concrete: em.intern(&h.record.concrete),
-                address: h.record.address,
-                slot_count: h.record.slot_count,
-                undescribed_slots: h.record.undescribed_slots.clone(),
-                type_id: em.bundle_id_of(h.concrete_id),
-            })
-            .collect(),
-    };
-
     // Meta.
     let producer = reader
         .producer
@@ -1343,7 +1285,6 @@ fn extract_from_view(
             entries: provenance,
         },
         impls,
-        vtables,
     };
 
     Ok((bundle, stats))
@@ -1877,7 +1818,7 @@ mod tests {
             debug_info: None,
             vtable_data: VtableDataSource::None,
         };
-        extract_from_view(&view, &[], ident, &opts, &[], &Default::default())
+        extract_from_view(&view, &[], ident, &opts, &[])
     }
 
     #[test]

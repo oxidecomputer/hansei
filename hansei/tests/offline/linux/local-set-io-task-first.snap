@@ -4,7 +4,7 @@ description: "`task 1` over linux/local-set-io"
 ---
 task 1
 state: idle
-owner: local set 0 @ 0xADDR (lwp 1146121)
+owner: local set 0 @ 0xADDR (lwp 1609606)
 type: async fn local_set_io::local_reader
 awaiting at: src/bin/local-set-io.rs:28
 waiting on: io fd 9 (readable)

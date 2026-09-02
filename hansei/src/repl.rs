@@ -1899,7 +1899,7 @@ mod tests {
         for visible in ["tasks", "trace", "print", "config"] {
             assert!(names.iter().any(|n| n == visible), "{names:?}");
         }
-        for hidden in ["type", "find-types", "vtables", "exit"] {
+        for hidden in ["type", "find-types", "exit"] {
             assert!(!names.iter().any(|n| n == hidden), "{names:?}");
         }
         assert_eq!(completions("tas"), ["task", "tasks"]);

@@ -2,7 +2,7 @@
 source: hansei/src/offline.rs
 description: "`threads -f 3` over linux/joinset"
 ---
-lwp 1145397  polling no task
+lwp 1608876  polling no task
   thread_id: core::option::Option<tokio::runtime::thread_id::ThreadId>::None
   runtime:
     tokio::runtime::context::runtime::EnterRuntime::Entered {
@@ -13,7 +13,7 @@ lwp 1145397  polling no task
   stack:
     0xADDR  
 
-lwp 1145399  last polled task 1
+lwp 1608878  last polled task 1
   thread_id: core::option::Option<tokio::runtime::thread_id::ThreadId>::None
   runtime:
     tokio::runtime::context::runtime::EnterRuntime::Entered {
@@ -52,18 +52,20 @@ lwp 1145399  last polled task 1
             batch: tokio::runtime::metrics::batch::MetricsBatch { .. } @ 0xADDR,
             processing_scheduled_tasks_started_at: std::time::Instant { .. } @ 0xADDR,
             tasks_polled_in_batch: 5,
-            task_poll_time_ewma: 4007.989582885246,
+            task_poll_time_ewma: 2994.5342348852464,
         },
         global_queue_interval: 61,
         rand: tokio::util::rand::FastRand {
-            one: 1674201767,
-            two: 4119978142,
+            one: 3374648698,
+            two: 4102677527,
         },
     }
   stack:
     0xADDR  
+    0xADDR  
+    0xADDR  
 
-lwp 1145400  last polled task 2
+lwp 1608879  last polled task 2
   thread_id: core::option::Option<tokio::runtime::thread_id::ThreadId>::None
   runtime:
     tokio::runtime::context::runtime::EnterRuntime::Entered {
@@ -102,15 +104,13 @@ lwp 1145400  last polled task 2
             batch: tokio::runtime::metrics::batch::MetricsBatch { .. } @ 0xADDR,
             processing_scheduled_tasks_started_at: std::time::Instant { .. } @ 0xADDR,
             tasks_polled_in_batch: 4,
-            task_poll_time_ewma: 2477.6805909836066,
+            task_poll_time_ewma: 2582.742040983607,
         },
         global_queue_interval: 61,
         rand: tokio::util::rand::FastRand {
-            one: 2336891355,
-            two: 878313,
+            one: 86933018,
+            two: 744764597,
         },
     }
   stack:
-    0xADDR  
-    0xADDR  
     0xADDR

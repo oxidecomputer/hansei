@@ -2,15 +2,15 @@
 source: hansei/src/offline.rs
 description: "`tasks` over linux/walk-shapes"
 ---
-ID  STATE   RT  AWAITING AT                 WAITING ON                                                                                                                FUTURE
-1   idle    0   src/bin/walk-shapes.rs:103  future tokio::sync::notify::Notified                                                                                      async fn walk_shapes::chained
-2   idle    0   src/bin/walk-shapes.rs:125  future tokio::sync::notify::Notified                                                                                      async fn walk_shapes::holder
-3   idle    0   src/bin/walk-shapes.rs:147  future tokio::sync::notify::Notified                                                                                      async fn walk_shapes::abandoner
-4   idle    0   src/bin/walk-shapes.rs:155  a tokio::sync::Mutex (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: a non-task waiter, task 4   async fn walk_shapes::victim
-5   idle    0   src/bin/walk-shapes.rs:161  a tokio::sync::Semaphore (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 5, task 6, task 9  async fn walk_shapes::blocked
-6   idle    0   src/bin/walk-shapes.rs:161  a tokio::sync::Semaphore (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 5, task 6, task 9  async fn walk_shapes::blocked
-7   idle    3   src/bin/walk-shapes.rs:194  future tokio::sync::notify::Notified                                                                                      async fn walk_shapes::local_parker
-8   idle    0   src/bin/walk-shapes.rs:201  task 7                                                                                                                    async fn walk_shapes::joiner
-9   idle    1   src/bin/walk-shapes.rs:167  a tokio::sync::Semaphore (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 5, task 6, task 9  async fn walk_shapes::hidden_blocked
-10  queued  2   src/bin/walk-shapes.rs:204  async fn walk_shapes::side_parker                                                                                         async fn walk_shapes::side_parker
+ID  STATE   RT  AWAITING AT                 WAITING ON                                                                                                                 FUTURE
+1   idle    0   src/bin/walk-shapes.rs:103  future tokio::sync::notify::Notified                                                                                       async fn walk_shapes::chained
+2   idle    0   src/bin/walk-shapes.rs:125  future tokio::sync::notify::Notified                                                                                       async fn walk_shapes::holder
+3   idle    0   src/bin/walk-shapes.rs:147  future tokio::sync::notify::Notified                                                                                       async fn walk_shapes::abandoner
+4   idle    0   src/bin/walk-shapes.rs:155  a tokio::sync::Mutex (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: a non-task waiter, task 4    async fn walk_shapes::victim
+5   idle    0   src/bin/walk-shapes.rs:161  a tokio::sync::Semaphore (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 5, task 6, task 10  async fn walk_shapes::blocked
+6   idle    0   src/bin/walk-shapes.rs:161  a tokio::sync::Semaphore (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 5, task 6, task 10  async fn walk_shapes::blocked
+7   idle    3   src/bin/walk-shapes.rs:194  future tokio::sync::notify::Notified                                                                                       async fn walk_shapes::local_parker
+8   idle    0   src/bin/walk-shapes.rs:201  task 7                                                                                                                     async fn walk_shapes::joiner
+9   queued  2   src/bin/walk-shapes.rs:204  async fn walk_shapes::side_parker                                                                                          async fn walk_shapes::side_parker
+10  idle    1   src/bin/walk-shapes.rs:167  a tokio::sync::Semaphore (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 5, task 6, task 10  async fn walk_shapes::hidden_blocked
 [10 tasks]
