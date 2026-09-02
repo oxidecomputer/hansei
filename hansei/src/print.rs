@@ -1,25 +1,34 @@
-//! The `print` command: a local of the cursor frame rendered as a
-//! typed value, and paths into it — the answer to every `...` the
-//! renderer elides.
+//! The `print` command: a local of the cursor frame, or memory at an
+//! address read as a named type, rendered as a typed value, and paths
+//! into it — the answer to every `...` the renderer elides.
 
-use crate::{RenderOpts, Session, cursor};
+use crate::{RenderOpts, Session, cursor, types};
 
-use anyhow::{Result, bail};
+use anyhow::{Context as _, Result, anyhow, bail};
 use reify::path::{Node, Resolved};
 
 use std::io;
 
-/// Resolve the path the arguments name against the cursor frame, and
-/// render what it reaches the way every other value is rendered.
+/// Where a `print` starts.
+#[derive(Debug, PartialEq, Eq)]
+enum Root<'w> {
+    /// The cursor frame, whose locals the path names.
+    Frame,
+    /// Memory at an address, read as the type named.
+    Addr(u64, &'w str),
+}
+
+/// Resolve the root and path the arguments name, and render what they
+/// reach the way every other value is rendered.
 pub(crate) fn exec_print<T: proc::Target>(
     session: &Session<'_, T>,
     args: &[String],
     render: RenderOpts,
     out: &mut dyn io::Write,
 ) -> Result<()> {
-    let path = parse_path(args)?;
+    let (root, path) = parse_args(args)?;
     let steps = reify::path::parse(&path)?;
-    let root = cursor::frame_value(session)?;
+    let root = root_value(session, root)?;
     let results = reify::path::resolve(session.ctx.proc, root, &steps)?;
     match results.as_slice() {
         [] => writeln!(out, "0 values")?,
@@ -34,12 +43,42 @@ pub(crate) fn exec_print<T: proc::Target>(
     Ok(())
 }
 
+/// The value the root spelling names.
+fn root_value<'b, T: proc::Target>(
+    session: &Session<'b, T>,
+    root: Root<'_>,
+) -> Result<reify::Value<'b>> {
+    match root {
+        Root::Frame => cursor::frame_value(session),
+        Root::Addr(addr, spec) => read_at(session, addr, spec),
+    }
+}
+
+/// Read one value of `spec`'s type at `addr`. The address says where
+/// and the type says how, and nothing checks one against the other:
+/// printing the wrong type at an address renders that memory as the
+/// type asked for, which is sometimes exactly the point.
+fn read_at<'b, T: proc::Target>(
+    session: &Session<'b, T>,
+    addr: u64,
+    spec: &str,
+) -> Result<reify::Value<'b>> {
+    let ctx = &session.ctx;
+    let ty = types::resolve_type_spec(&ctx.view, &session.impl_fold, spec)?;
+    reify::Value::read(ctx.proc, ty, addr).with_context(|| {
+        format!(
+            "failed to read the {} byte(s) of {} at {addr:#x}",
+            ty.size(),
+            ty.name()
+        )
+    })
+}
+
 /// The names a step could take next, for the prompt: `args` are
 /// `print`'s arguments up to and including the `.` under the cursor —
-/// none at all for the local being typed — so the path before it is
-/// resolved against the cursor frame and asked what it has. A path
-/// that fans out over a range offers the union of what each element
-/// has.
+/// none at all for the local being typed — so the root and the path
+/// before it are resolved and asked what they have. A path that fans
+/// out over a range offers the union of what each element has.
 pub(crate) fn path_members<T: proc::Target>(
     session: &Session<'_, T>,
     args: &[String],
@@ -55,9 +94,9 @@ pub(crate) fn path_members<T: proc::Target>(
             args.pop();
         }
     }
-    let path = parse_path(&args)?;
+    let (root, path) = parse_args(&args)?;
     let steps = reify::path::parse(&path)?;
-    let root = cursor::frame_value(session)?;
+    let root = root_value(session, root)?;
     let mut names = Vec::new();
     for r in reify::path::resolve(session.ctx.proc, root, &steps)? {
         for name in reify::path::member_names(session.ctx.proc, &r.node) {
@@ -69,25 +108,43 @@ pub(crate) fn path_members<T: proc::Target>(
     Ok(names)
 }
 
-/// Join the arguments into one path from the cursor frame. The first
-/// word names a local — the frame's member of that name, which a
-/// leading `.` may spell out — and may carry steps behind it
-/// (`values[..10]`); every later word is a step, starting with `.`,
-/// `[` or `*`. No word is an address: the frame is the only root.
-fn parse_path(args: &[String]) -> Result<String> {
+/// Whether a word is an address rather than a local's name: a `0x`
+/// prefix, which no Rust identifier starts with.
+pub(crate) fn is_address(word: &str) -> bool {
+    word.starts_with("0x") || word.starts_with("0X")
+}
+
+/// Split the arguments into the root and one concatenated path. An
+/// address first is followed by the type to read it as, one word —
+/// quoted where the name holds a space or a `;` — and then steps. A
+/// type may itself start with `[` or `*` (an array, a raw pointer),
+/// so only a `.` word, which no type starts with, is a step where
+/// the type should stand. Otherwise the first word names a local — the frame's member of
+/// that name, which a leading `.` may spell out — and may carry steps
+/// behind it (`values[..10]`). Every later word is a step, starting
+/// with `.`, `[` or `*`.
+fn parse_args(args: &[String]) -> Result<(Root<'_>, String)> {
     let is_step = |s: &str| s.starts_with(['.', '[', '*']);
     let Some((first, rest)) = args.split_first() else {
-        return Ok(String::new());
+        return Ok((Root::Frame, String::new()));
     };
-    let mut path = match first.as_str() {
-        f if f.starts_with('.') => f.to_string(),
-        f if f.starts_with("0x") || f.starts_with("0X") => bail!(
-            "`print` renders the cursor frame's locals, not an address: \
-             `locals` lists them, `whatis {f}` says what stands at the address"
-        ),
+    let (root, mut path, rest) = match first.as_str() {
+        f if f.starts_with('.') => (Root::Frame, f.to_string(), rest),
+        f if is_address(f) => {
+            let addr = crate::parse_hex_addr(f).map_err(|e| anyhow!(e))?;
+            match rest.split_first() {
+                Some((ty, rest)) if !ty.is_empty() && !ty.starts_with('.') => {
+                    (Root::Addr(addr, ty), String::new(), rest)
+                }
+                _ => bail!(
+                    "an address needs a type: `print {f} \"<Type>\"` (quote a name \
+                     holding spaces or `;`); `whatis {f}` says what stands there"
+                ),
+            }
+        }
         f if is_step(f) => bail!("`print` starts at a local's name; `{f}` is a step with none"),
         "" => bail!("`print` starts at a local's name; got an empty word"),
-        f => format!(".{f}"),
+        f => (Root::Frame, format!(".{f}"), rest),
     };
     for t in rest {
         if !is_step(t) {
@@ -95,7 +152,7 @@ fn parse_path(args: &[String]) -> Result<String> {
         }
         path.push_str(t);
     }
-    Ok(path)
+    Ok((root, path))
 }
 
 /// Render one resolved node: a value as `print` always rendered one,
@@ -148,28 +205,56 @@ mod tests {
 
     /// The first word is the local, with or without its `.`, and the
     /// steps behind it — in the same word or the next ones — join it;
-    /// an address, a step with no local before it, or a word that is
-    /// no step refuses naming the grammar.
+    /// a step with no local before it, or a word that is no step,
+    /// refuses naming the grammar.
     #[test]
-    fn test_parse_path_roots_at_a_local() {
-        assert_eq!(parse_path(&[]).unwrap(), "");
-        assert_eq!(parse_path(&w(&["my_vec[..10]"])).unwrap(), ".my_vec[..10]");
-        assert_eq!(
-            parse_path(&w(&["foo", "[0..2]", "*"])).unwrap(),
-            ".foo[0..2]*"
-        );
-        assert_eq!(parse_path(&w(&["foo.x", ".y"])).unwrap(), ".foo.x.y");
-        assert_eq!(parse_path(&w(&[".foo", ".x"])).unwrap(), ".foo.x");
+    fn test_parse_args_roots_at_a_local() {
+        let local = |args: &[&str]| {
+            let args = w(args);
+            let (root, path) = parse_args(&args).unwrap();
+            assert_eq!(root, Root::Frame);
+            path
+        };
+        assert_eq!(local(&[]), "");
+        assert_eq!(local(&["my_vec[..10]"]), ".my_vec[..10]");
+        assert_eq!(local(&["foo", "[0..2]", "*"]), ".foo[0..2]*");
+        assert_eq!(local(&["foo.x", ".y"]), ".foo.x.y");
+        assert_eq!(local(&[".foo", ".x"]), ".foo.x");
 
-        let err = parse_path(&w(&["0x7f10"])).unwrap_err();
-        assert!(err.to_string().contains("not an address"), "{err}");
-        let err = parse_path(&w(&["0x7f10", "u64"])).unwrap_err();
-        assert!(err.to_string().contains("not an address"), "{err}");
-        let err = parse_path(&w(&["[0]"])).unwrap_err();
+        let err = parse_args(&w(&["[0]"])).unwrap_err();
         assert!(err.to_string().contains("local's name"), "{err}");
-        let err = parse_path(&w(&["*"])).unwrap_err();
+        let err = parse_args(&w(&["*"])).unwrap_err();
         assert!(err.to_string().contains("local's name"), "{err}");
-        let err = parse_path(&w(&["foo", "stray"])).unwrap_err();
+        let err = parse_args(&w(&["foo", "stray"])).unwrap_err();
+        assert!(err.to_string().contains("path step"), "{err}");
+    }
+
+    /// An address roots the print at memory, and the word after it is
+    /// the type — whole, however many spaces the tokenizer let
+    /// through — with the steps behind; an address with no type, or
+    /// with a step where the type should stand, is refused.
+    #[test]
+    fn test_parse_args_roots_at_an_address_with_its_type() {
+        assert_eq!(
+            parse_args(&w(&["0x7f10", "Vec<(u64, u64)>", ".a", "[3]"])).unwrap(),
+            (Root::Addr(0x7f10, "Vec<(u64, u64)>"), ".a[3]".to_string())
+        );
+        assert_eq!(
+            parse_args(&w(&["0X10", "[u8; 4]"])).unwrap(),
+            (Root::Addr(0x10, "[u8; 4]"), String::new())
+        );
+        assert_eq!(
+            parse_args(&w(&["0x10", "*const u8", "*"])).unwrap(),
+            (Root::Addr(0x10, "*const u8"), "*".to_string())
+        );
+
+        let err = parse_args(&w(&["0x7f10"])).unwrap_err();
+        assert!(err.to_string().contains("needs a type"), "{err}");
+        let err = parse_args(&w(&["0x7f10", ".a"])).unwrap_err();
+        assert!(err.to_string().contains("needs a type"), "{err}");
+        let err = parse_args(&w(&["0xzz", "u64"])).unwrap_err();
+        assert!(err.to_string().contains("invalid hex"), "{err}");
+        let err = parse_args(&w(&["0x7f10", "u64", "stray"])).unwrap_err();
         assert!(err.to_string().contains("path step"), "{err}");
     }
 
@@ -214,6 +299,51 @@ mod tests {
         let mut dotted = Vec::new();
         exec_print(&session, &w(&[".inner"]), render(), &mut dotted).expect("the path renders");
         assert_eq!(bare, dotted);
+    }
+
+    /// An address and a type read the same memory the local does —
+    /// the local's own address and type name, spelled by hand, render
+    /// its value — a type id serves as the type, and memory the target
+    /// does not hold, or a type it does not record, refuses saying so.
+    #[test]
+    fn test_print_reads_an_address_as_a_named_type() {
+        use crate::offline::session_args;
+        use crate::{Session, TraceTarget};
+        use hansei_runtime::testkit;
+        let (bundle, snapshot) = testkit::load("linux", "nested-await");
+        let args = session_args("linux", "nested-await");
+        let session = Session::attach(&snapshot, &bundle, &args).expect("the pair attaches");
+        let render = || RenderOpts {
+            depth: 3,
+            ugly: false,
+            max_string_len: 64,
+            max_array_values: 8,
+        };
+        let id = session
+            .tasks
+            .tasks
+            .first()
+            .and_then(|t| t.task_id)
+            .expect("the fixture's tasks carry ids");
+        cursor::select_task(&session, TraceTarget::Task(id)).expect("the task selects");
+        let print = |args: &[&str]| {
+            let mut out = Vec::new();
+            exec_print(&session, &w(args), render(), &mut out).map(|()| out)
+        };
+
+        let frame = cursor::frame_value(&session).expect("the frame reads");
+        let inner = frame.member("inner").expect("the local reads");
+        let addr = format!("{:#x}", inner.addr);
+        let by_local = print(&["inner"]).expect("the local renders");
+        let by_name = print(&[&addr, inner.ty.name()]).expect("the address renders");
+        assert_eq!(by_local, by_name);
+        let by_id = print(&[&addr, &inner.ty.id().0.to_string()]).expect("the id renders");
+        assert_eq!(by_local, by_id);
+
+        let err = print(&["0x10", inner.ty.name()]).expect_err("nothing is mapped at 0x10");
+        assert!(err.to_string().contains("failed to read"), "{err}");
+        let err = print(&[&addr, "no::such::Type"]).expect_err("no such type");
+        assert!(err.to_string().contains("no type named"), "{err}");
     }
 
     /// Over a fixture pair, the names offered for the first word are

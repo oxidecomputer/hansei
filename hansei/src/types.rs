@@ -233,16 +233,31 @@ pub fn resolve_type_spec<'a>(
 /// The hint appended to a name-lookup miss whose name looks cut off at
 /// a `;`: its square brackets are unbalanced, which no recorded type
 /// name has and every fragment of a split array type does. The session
-/// splits commands at unescaped `;`, so the reader is told the way
+/// splits commands at a bare `;`, so the reader is told the way
 /// through rather than sent to `find-types` with the same fragment.
 fn split_hint(name: &str) -> &'static str {
     match name.matches('[').count() != name.matches(']').count() {
         true => {
-            "\n(a `;` in a type name must be escaped as `\\;` — \
-             the session splits commands at unescaped `;`)"
+            "\n(a type name holding a `;` must be double-quoted — \
+             the session splits commands at a bare `;`)"
         }
         false => "",
     }
+}
+
+/// The recorded type names starting with `prefix`, each once, in name
+/// order: what the prompt offers for a type being typed.
+pub fn names_with_prefix(view: &BundleView<'_>, prefix: &str) -> Vec<String> {
+    // The index is sorted by name, so a name's repeated definitions
+    // arrive together and `dedup` collapses them.
+    let mut names: Vec<String> = view
+        .named_types()
+        .map(|(name, _)| name)
+        .filter(|name| name.starts_with(prefix))
+        .map(String::from)
+        .collect();
+    names.dedup();
+    names
 }
 
 /// List the names matching `needle`, one per line.
@@ -926,13 +941,9 @@ mod tests {
                 .unwrap_err()
                 .to_string()
         };
+        assert!(err("[usize").contains("double-quoted"), "{}", err("[usize"));
         assert!(
-            err("[usize").contains("escaped as `\\;`"),
-            "{}",
-            err("[usize")
-        );
-        assert!(
-            !err("no::such::Type").contains("escaped"),
+            !err("no::such::Type").contains("double-quoted"),
             "{}",
             err("no::such::Type")
         );

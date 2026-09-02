@@ -84,10 +84,10 @@ struct Cli {
     #[command(flatten)]
     session: Option<SessionArgs>,
 
-    /// Commands to run instead of reading stdin, `;` between them —
-    /// `\;` for a literal `;`, as an array type's name needs. Repeat
-    /// the flag to add more; the session exits when they are answered,
-    /// or at the first one that fails.
+    /// Commands to run instead of reading stdin, `;` between them — a
+    /// `;` inside double quotes, as an array type's name needs, does
+    /// not separate. Repeat the flag to add more; the session exits
+    /// when they are answered, or at the first one that fails.
     #[arg(long, short, value_name = "COMMANDS")]
     exec: Vec<String>,
 }
@@ -575,16 +575,22 @@ pub enum Command {
         dump: Option<umem::Dump>,
     },
 
-    /// Render a local of the cursor frame, and navigate into it: every
-    /// `...` the renderer elides is reachable by a path.
+    /// Render a local of the cursor frame, or memory at an address as
+    /// a named type, and navigate into it: every `...` the renderer
+    /// elides is reachable by a path.
     ///
     /// The first word names a local — one of the names `locals`
     /// lists, a member of the frame's future — and bare `print` is
     /// the frame itself: the active variant of that future, whose
-    /// locals are its members. Nothing else roots a `print`: an
-    /// address is `whatis`'s question.
+    /// locals are its members. An address instead (`print 0x7f10
+    /// "Vec<(u64, u64)>"`) reads that memory as the type the next
+    /// word names, spelled as `find-types` lists it — double-quoted
+    /// when it holds a space or a `;` — or as a type id. Nothing
+    /// checks the type against the address: the memory renders as
+    /// whatever was asked for. `whatis` says what actually stands
+    /// there.
     ///
-    /// Everything after the name is a path, in the same word or the
+    /// Everything after the root is a path, in the same word or the
     /// next ones: `.member` navigates the way Rust's dot does (through
     /// references, `Box`, `Arc`/`Rc`, `Pin`, `NonNull`, and into an
     /// enum's active variant — an inactive one refuses with the
@@ -598,10 +604,10 @@ pub enum Command {
     /// how many. Depth counts from the end of the path.
     Print {
         /// The local's name, with any path steps behind it
-        /// (`values[..10]`, `foo.bar`), or nothing for the frame;
-        /// later words are further steps, each starting with `.`,
-        /// `[` or `*`.
-        #[arg(value_name = "LOCAL[PATH]")]
+        /// (`values[..10]`, `foo.bar`), or nothing for the frame, or
+        /// an address followed by the type to read it as; later words
+        /// are further steps, each starting with `.`, `[` or `*`.
+        #[arg(value_name = "LOCAL[PATH] | ADDR TYPE")]
         args: Vec<String>,
     },
 
