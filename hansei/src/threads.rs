@@ -1,7 +1,7 @@
 //! The `threads` command: every thread the runtime is running on, as
 //! the runtime sees it and as the stack sees it.
 
-use crate::tasks::{EMPTY_BUCKET, listing_footer};
+use crate::tasks::{EMPTY_BUCKET, alternatives, listing_footer};
 use crate::trace::print_variable;
 use crate::{RenderOpts, Session, repl, summary};
 
@@ -416,7 +416,9 @@ enum Matcher {
 #[derive(Debug)]
 struct Clause {
     field: Field,
-    matcher: Matcher,
+    /// The argument's alternatives (`2,3`): the clause matches a row
+    /// when any one of them does.
+    matchers: Vec<Matcher>,
     /// `--without`: the clause keeps the rows it does *not* match.
     negate: bool,
 }
@@ -429,11 +431,12 @@ fn parse_clauses(with: &[String], without: &[String]) -> Result<Vec<Clause>> {
         let flag = if negate { "--without" } else { "--with" };
         for pair in specs.chunks_exact(2) {
             let field = Field::parse(&pair[0]).with_context(|| flag.to_string())?;
-            let matcher =
-                matcher(field, &pair[1]).with_context(|| format!("{flag} {}", field.name()))?;
+            let matchers = alternatives(&pair[1])
+                .and_then(|alts| alts.iter().map(|alt| matcher(field, alt)).collect())
+                .with_context(|| format!("{flag} {}", field.name()))?;
             clauses.push(Clause {
                 field,
-                matcher,
+                matchers,
                 negate,
             });
         }
@@ -463,14 +466,15 @@ fn matcher(field: Field, arg: &str) -> Result<Matcher> {
     })
 }
 
-/// Whether one row survives one clause.
+/// Whether one row survives one clause: any alternative matching is
+/// a hit, and `--without` keeps the misses.
 fn survives(clause: &Clause, row: &ThreadRow) -> bool {
-    let hit = match &clause.matcher {
+    let hit = clause.matchers.iter().any(|matcher| match matcher {
         Matcher::Pattern(p) => field_text(clause.field, row).is_some_and(|t| p.is_match(t)),
         Matcher::Task(id) => row.task == Some(*id),
         Matcher::Lwp(lwp) => row.lwp == *lwp,
         Matcher::HasTask(has) => row.task.is_some() == *has,
-    };
+    });
     hit != clause.negate
 }
 
@@ -1218,7 +1222,7 @@ mod tests {
         let field = Field::parse(field).expect("a field name");
         Clause {
             field,
-            matcher: matcher(field, arg).expect("a valid argument"),
+            matchers: vec![matcher(field, arg).expect("a valid argument")],
             negate,
         }
     }
@@ -1272,6 +1276,33 @@ mod tests {
             .map(|row| row.lwp)
             .collect();
         assert_eq!(kept, [3]);
+    }
+
+    /// A clause argument lists alternatives: `lwp 2,3` keeps either,
+    /// `--without` drops both, and each alternative of a string field
+    /// is a regex of its own.
+    #[test]
+    fn test_alternatives_or_within_a_clause() {
+        let lwps = |with: &[&str], without: &[&str]| -> Vec<u32> {
+            let with: Vec<String> = with.iter().map(|s| s.to_string()).collect();
+            let without: Vec<String> = without.iter().map(|s| s.to_string()).collect();
+            let clauses = parse_clauses(&with, &without).expect("the clauses parse");
+            population()
+                .iter()
+                .filter(|row| clauses.iter().all(|c| survives(c, row)))
+                .map(|row| row.lwp)
+                .collect()
+        };
+        assert_eq!(lwps(&["lwp", "2,3"], &[]), [2, 3]);
+        assert_eq!(lwps(&[], &["lwp", "2,3"]), [4, 9]);
+        assert_eq!(lwps(&["has-task", "yes,no"], &[]), [2, 3, 4, 9]);
+        assert_eq!(lwps(&["role", "^worker,idle$"], &[]), [2, 3, 4]);
+        assert_eq!(lwps(&["role", "^worker,idle$"], &["lwp", "3"]), [2, 4]);
+        let err = format!(
+            "{:#}",
+            parse_clauses(&["has-task".into(), "yes,maybe".into()], &[]).expect_err("yes or no")
+        );
+        assert!(err.contains("--with has-task"), "{err}");
     }
 
     /// A bad field or argument names the flag it came from and what

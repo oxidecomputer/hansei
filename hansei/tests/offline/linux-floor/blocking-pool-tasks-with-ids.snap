@@ -1,0 +1,8 @@
+---
+source: hansei/src/offline.rs
+description: "`tasks --with id 3,6` over linux-floor/blocking-pool"
+---
+ID  STATE               AWAITING AT                  WAITING ON  FUTURE
+3   blocking (running)  —                            —           future tokio::runtime::blocking::task::BlockingTask<blocking_pool::main::{async_block#0}::{closure_env#0}>
+6   idle                src/bin/blocking-pool.rs:18  task 3      async fn blocking_pool::running_waiter
+2 tasks

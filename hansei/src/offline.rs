@@ -53,6 +53,9 @@ fn commands(
         // in `<empty>` (a parked capture polls nothing, so no task
         // has an lwp).
         ("tasks-with-state", "tasks --with state idle".to_owned()),
+        // A clause whose argument lists alternatives: either id keeps
+        // its row.
+        ("tasks-with-ids", "tasks --with id 3,6".to_owned()),
         ("tasks-group-waiting", "tasks --group waiting-on".to_owned()),
         ("tasks-group-lwp", "tasks --group lwp".to_owned()),
         // The waker field: the wakeup overview, with the slot

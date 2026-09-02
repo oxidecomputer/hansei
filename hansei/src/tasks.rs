@@ -1182,7 +1182,9 @@ impl Cmp {
 #[derive(Debug)]
 struct Clause {
     field: Field,
-    matcher: Matcher,
+    /// The argument's alternatives (`1,2,3`): the clause matches a
+    /// row when any one of them does.
+    matchers: Vec<Matcher>,
     /// `--without`: the clause keeps the rows it does *not* match.
     negate: bool,
 }
@@ -1195,16 +1197,58 @@ fn parse_clauses(with: &[String], without: &[String], handles: &[u64]) -> Result
         let flag = if negate { "--without" } else { "--with" };
         for pair in specs.chunks_exact(2) {
             let field = Field::parse(&pair[0]).with_context(|| flag.to_string())?;
-            let matcher = matcher(field, &pair[1], handles)
+            let matchers = alternatives(&pair[1])
+                .and_then(|alts| {
+                    alts.iter()
+                        .map(|alt| matcher(field, alt, handles))
+                        .collect()
+                })
                 .with_context(|| format!("{flag} {}", field.name()))?;
             clauses.push(Clause {
                 field,
-                matcher,
+                matchers,
                 negate,
             });
         }
     }
     Ok(clauses)
+}
+
+/// The alternatives one clause argument spells: `1,2,3` is three,
+/// and the clause matches when any one does. The comma separates
+/// everywhere, so a literal one — a regex's `{1,3}`, a type's
+/// `(u8, u16)` — is written `\,`; a backslash before anything else
+/// passes through untouched, so the regex grammar's own escapes
+/// keep their meaning. An empty alternative (`1,,2`, a trailing
+/// comma) is refused rather than matching nothing.
+pub(crate) fn alternatives(arg: &str) -> Result<Vec<String>> {
+    let mut items = vec![String::new()];
+    let mut chars = arg.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' if chars.peek() == Some(&',') => {
+                chars.next();
+                items.last_mut().expect("never empty").push(',');
+            }
+            '\\' => {
+                let item = items.last_mut().expect("never empty");
+                item.push(c);
+                item.extend(chars.next());
+            }
+            ',' => items.push(String::new()),
+            c => items.last_mut().expect("never empty").push(c),
+        }
+    }
+    if arg.is_empty() {
+        anyhow::bail!("an empty argument matches nothing");
+    }
+    if items.iter().any(String::is_empty) {
+        anyhow::bail!(
+            "empty alternative in {arg:?}: a list is spelled `A,B` with nothing \
+             between, and a literal comma is `\\,`"
+        );
+    }
+    Ok(items)
 }
 
 /// The matcher one field's argument compiles to.
@@ -1248,15 +1292,16 @@ pub(crate) fn resolve_rt(arg: &str, handles: &[u64]) -> Result<usize> {
 /// they cost the census walk.
 type CountsByTask = BTreeMap<usize, Counts>;
 
-/// Whether one row survives one clause.
+/// Whether one row survives one clause: any alternative matching is
+/// a hit, and `--without` keeps the misses.
 fn survives(clause: &Clause, index: usize, row: &TaskRow, counts: Option<&CountsByTask>) -> bool {
-    let hit = match &clause.matcher {
+    let hit = clause.matchers.iter().any(|matcher| match matcher {
         Matcher::Pattern(p) => field_text(clause.field, row).is_some_and(|t| p.is_match(t)),
         Matcher::Exact(id) => row.id == *id,
         Matcher::Lwp(lwp) => row.lwp == Some(*lwp),
         Matcher::Rt(rt) => row.rt == *rt,
         Matcher::Cmp(cmp) => cmp.matches(field_count(clause.field, index, counts)),
-    };
+    });
     hit != clause.negate
 }
 
@@ -2312,8 +2357,8 @@ mod table_tests {
 #[cfg(test)]
 mod filter_tests {
     use super::{
-        Clause, Cmp, Counts, EMPTY_BUCKET, Field, TaskRow, group_value, matcher, member_sample,
-        parse_clauses, refuse_positional_ids, resolve_rt, survives,
+        Clause, Cmp, Counts, EMPTY_BUCKET, Field, TaskRow, alternatives, group_value, matcher,
+        member_sample, parse_clauses, refuse_positional_ids, resolve_rt, survives,
     };
 
     use std::collections::BTreeMap;
@@ -2341,7 +2386,7 @@ mod filter_tests {
         let field = Field::parse(field).expect("a test field parses");
         Clause {
             field,
-            matcher: matcher(field, arg, &[0x7f11c0]).expect("a test matcher compiles"),
+            matchers: vec![matcher(field, arg, &[0x7f11c0]).expect("a test matcher compiles")],
             negate: false,
         }
     }
@@ -2457,6 +2502,59 @@ mod filter_tests {
             .collect();
         // idle AND not id 1: row 1 is excluded by id, row 2 by state.
         assert_eq!(survivors, ["3"]);
+    }
+
+    /// A clause argument lists alternatives: `1,3` keeps either id,
+    /// `--without` drops both, and the OR stays inside its clause —
+    /// clauses still AND.
+    #[test]
+    fn test_alternatives_or_within_a_clause() {
+        let rows = [row("1"), row("2"), row("3")];
+        let ids = |with: &[&str], without: &[&str]| -> Vec<&str> {
+            let with: Vec<String> = with.iter().map(|s| s.to_string()).collect();
+            let without: Vec<String> = without.iter().map(|s| s.to_string()).collect();
+            let clauses = parse_clauses(&with, &without, &[]).expect("the clauses parse");
+            rows.iter()
+                .enumerate()
+                .filter(|(i, r)| clauses.iter().all(|c| survives(c, *i, r, None)))
+                .map(|(_, r)| r.id.as_str())
+                .collect()
+        };
+        assert_eq!(ids(&["id", "1,3"], &[]), ["1", "3"]);
+        assert_eq!(ids(&[], &["id", "1,3"]), ["2"]);
+        assert_eq!(ids(&["id", "1,3"], &["id", "3"]), ["1"]);
+        // A pattern field's alternatives are each a regex of their
+        // own, and `\,` puts a literal comma in one.
+        let mut ready = row("4");
+        ready.state = "ready, queued".to_string();
+        let rows = [row("1"), ready];
+        let clauses =
+            parse_clauses(&["state".into(), "^idle$,ready\\, q".into()], &[], &[]).unwrap();
+        assert!(
+            rows.iter()
+                .all(|r| clauses.iter().all(|c| survives(c, 0, r, None)))
+        );
+        let clauses = parse_clauses(&["state".into(), "ready,q".into()], &[], &[]).unwrap();
+        assert!(!survives(&clauses[0], 0, &rows[0], None));
+        // One bad alternative fails the clause, naming its flag.
+        let err = parse_clauses(&["lwp".into(), "1,x".into()], &[], &[]).unwrap_err();
+        assert!(format!("{err:#}").contains("--with lwp"), "{err:#}");
+    }
+
+    /// The split behind every listing's clauses: unescaped commas
+    /// separate, `\,` is a comma, any other backslash pair is left
+    /// for the regex, and an empty alternative is refused.
+    #[test]
+    fn test_alternatives_split_at_unescaped_commas() {
+        assert_eq!(alternatives("1").unwrap(), ["1"]);
+        assert_eq!(alternatives("1,2,3").unwrap(), ["1", "2", "3"]);
+        assert_eq!(alternatives("a\\,b,c{1\\,3}").unwrap(), ["a,b", "c{1,3}"]);
+        assert_eq!(alternatives("\\d+,\\\\").unwrap(), ["\\d+", "\\\\"]);
+        assert_eq!(alternatives("\\\\,x").unwrap(), ["\\\\", "x"]);
+        for bad in ["", "1,,2", "1,", ",1"] {
+            let err = alternatives(bad).expect_err(bad).to_string();
+            assert!(err.contains("empty"), "{bad:?}: {err}");
+        }
     }
 
     /// An unknown field lists the fields there are; a broken argument

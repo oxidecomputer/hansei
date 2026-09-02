@@ -426,7 +426,9 @@ pub enum Command {
         /// Keep only the futures whose FIELD matches ARG; repeat for
         /// more clauses, which AND. Fields: type, state, waiting-on,
         /// local (case-insensitive regexes); kind, task, rt, frame,
-        /// addr (exact); depth, holds, sets ('>N', '<N', '=N').
+        /// addr (exact); depth, holds, sets ('>N', '<N', '=N'). ARG
+        /// may list alternatives, `held,child`, of which any matches;
+        /// a literal comma is `\,`.
         #[arg(long, short = 'w', num_args = 2, value_names = ["FIELD", "ARG"])]
         with: Vec<String>,
 
@@ -925,7 +927,8 @@ pub enum Command {
         /// more clauses, which AND. Fields: type, awaiting,
         /// waiting-on, waker, spawned, defined, state
         /// (case-insensitive regexes); rt, lwp, id (exact); holds,
-        /// sets ('>N', '<N', '=N').
+        /// sets ('>N', '<N', '=N'). ARG may list alternatives,
+        /// `1,2,3`, of which any matches; a literal comma is `\,`.
         #[arg(long, short = 'w', num_args = 2, value_names = ["FIELD", "ARG"])]
         with: Vec<String>,
 
@@ -1039,7 +1042,8 @@ pub enum Command {
 
         /// Keep the threads whose FIELD matches ARG. Repeatable; every
         /// clause must hold. The fields are name, role, task,
-        /// has-task, function and lwp.
+        /// has-task, function and lwp. ARG may list alternatives,
+        /// `2,3`, of which any matches; a literal comma is `\,`.
         #[arg(long, short = 'w', num_args = 2, value_names = ["FIELD", "ARG"])]
         with: Vec<String>,
 
