@@ -179,16 +179,15 @@ fn commands(
             // set.
             list.push(("sync-scoped", "sync".to_owned()));
             if program == "simple-await" {
-                // Frame moves carrying a trailing command: `up` at
-                // #0 — the top of the listing, where selection lands —
-                // is refused, so its command must not run; `down`
-                // lands on #1 and runs it there. `down` moves the
-                // cursor the commands above share, so these come after
-                // them.
-                list.push(("up-locals", "up locals".to_owned()));
+                // Frame moves carrying a trailing command: `down` at
+                // #0 — the leaf, where selection lands — is refused,
+                // so its command must not run; `up` lands on #1 and
+                // runs it there. `up` moves the cursor the commands
+                // above share, so these come after them.
                 list.push(("down-locals", "down locals".to_owned()));
-                // The frame `down` landed on carries the containers
-                // that drive the element steps: a range keeps its [i]
+                list.push(("up-locals", "up locals".to_owned()));
+                // The frame `up` landed on carries the containers that
+                // drive the element steps: a range keeps its [i]
                 // heading even one element wide, and a step after a
                 // range applies to each map entry.
                 list.push(("print-range", "print .values[1..2]".to_owned()));
