@@ -946,6 +946,34 @@ pub(crate) fn listing_footer(total: usize, shown: usize, noun: &str) -> String {
     }
 }
 
+/// The distinct spelled values of one column, most frequent first and
+/// ties in value order — the order `--group` prints its buckets — with
+/// the rows that have nothing in the column left out. What the prompt
+/// offers as the argument of a `--with FIELD` clause.
+pub(crate) fn distinct_values(values: impl Iterator<Item = Option<String>>) -> Vec<String> {
+    let mut counts: BTreeMap<String, usize> = BTreeMap::new();
+    for value in values.flatten() {
+        *counts.entry(value).or_default() += 1;
+    }
+    let mut list: Vec<(String, usize)> = counts.into_iter().collect();
+    list.sort_by_key(|(_, n)| std::cmp::Reverse(*n));
+    list.into_iter().map(|(value, _)| value).collect()
+}
+
+/// The values the target holds for `field`, for the prompt to offer
+/// after `--with FIELD`: `None` for a field the population does not
+/// enumerate — the count comparisons — and whether the field reads
+/// its argument as a pattern, which decides how a value is spelled
+/// back into the line.
+pub(crate) fn field_values<T: proc::Target>(
+    session: &Session<'_, T>,
+    field: &str,
+) -> Option<(Vec<String>, bool)> {
+    let field = Field::parse(field).ok()?;
+    let values = field.values(rows(session))?;
+    Some((values, field.is_pattern()))
+}
+
 /// Everything the `tasks` command was asked. The filter grammar rides
 /// in as the raw flag values and is parsed here, so the errors name
 /// the flag they came from.
@@ -1037,6 +1065,36 @@ impl Field {
     /// Whether evaluating this field costs the future census.
     fn needs_census(self) -> bool {
         matches!(self, Field::Holds | Field::Sets)
+    }
+
+    /// Whether the field's argument is a pattern rather than an exact
+    /// or compared value.
+    fn is_pattern(self) -> bool {
+        !matches!(
+            self,
+            Field::Id | Field::Lwp | Field::Rt | Field::Holds | Field::Sets
+        )
+    }
+
+    /// The distinct values the rows hold for the field — the kind
+    /// level for the wait and waker columns, as `--group` buckets
+    /// them, since the kind is a prefix of every spelled cell — or
+    /// `None` for a count the argument compares against.
+    fn values(self, rows: &[TaskRow]) -> Option<Vec<String>> {
+        let column = |f: fn(&TaskRow) -> Option<String>| distinct_values(rows.iter().map(f));
+        Some(match self {
+            Field::Type => column(|r| Some(r.future.clone())),
+            Field::Awaiting => column(|r| r.awaiting_at.clone()),
+            Field::WaitingOn => column(|r| r.waiting_kind.clone()),
+            Field::Waker => column(|r| r.waker_kind.clone()),
+            Field::Spawned => column(|r| r.spawned.clone()),
+            Field::Defined => column(|r| r.defined.clone()),
+            Field::State => column(|r| Some(r.state.clone())),
+            Field::Rt => column(|r| Some(r.rt.to_string())),
+            Field::Lwp => column(|r| r.lwp.map(|lwp| lwp.to_string())),
+            Field::Id => column(|r| Some(r.id.clone())),
+            Field::Holds | Field::Sets => return None,
+        })
     }
 }
 
@@ -2423,6 +2481,63 @@ mod filter_tests {
     /// Exactly the count fields cost the census; a census built for a
     /// field that does not need it is a walk paid for nothing, and one
     /// not built for a field that does is a panic downstream.
+    #[test]
+    fn test_field_values_are_the_columns_distinct_spellings() {
+        let mut a = row("129");
+        a.waiting_on = "io 0xf9c3d00 (readable)".to_string();
+        a.waiting_kind = Some("io".to_string());
+        a.waker_kind = Some("io read".to_string());
+        a.lwp = Some(7);
+        let mut b = row("130");
+        b.state = "running".to_string();
+        b.waiting_kind = Some("timer".to_string());
+        b.future = "async fn app::serve".to_string();
+        let mut c = row("131");
+        c.waiting_kind = Some("timer".to_string());
+        let rows = [a, b, c];
+        let values = |field: &str| Field::parse(field).expect("a field name").values(&rows);
+        // Most frequent first, ties in value order; a row with nothing
+        // in the column contributes nothing.
+        assert_eq!(values("state"), Some(vec!["idle".into(), "running".into()]));
+        assert_eq!(
+            values("waiting-on"),
+            Some(vec!["timer".into(), "io".into()])
+        );
+        assert_eq!(values("waker"), Some(vec!["io read".into()]));
+        assert_eq!(values("lwp"), Some(vec!["7".into()]));
+        assert_eq!(values("rt"), Some(vec!["0".into()]));
+        assert_eq!(
+            values("id"),
+            Some(vec!["129".into(), "130".into(), "131".into()])
+        );
+        assert_eq!(
+            values("type"),
+            Some(vec![
+                "async fn app::work".into(),
+                "async fn app::serve".into()
+            ])
+        );
+        assert_eq!(values("awaiting"), Some(Vec::new()));
+        assert_eq!(values("holds"), None);
+        assert_eq!(values("sets"), None);
+        // Pattern fields escape their values on the way back into the
+        // line; the exact and compared ones do not.
+        for exact in ["id", "lwp", "rt", "holds", "sets"] {
+            assert!(!Field::parse(exact).unwrap().is_pattern(), "{exact}");
+        }
+        for pattern in [
+            "type",
+            "state",
+            "waiting-on",
+            "waker",
+            "awaiting",
+            "spawned",
+            "defined",
+        ] {
+            assert!(Field::parse(pattern).unwrap().is_pattern(), "{pattern}");
+        }
+    }
+
     #[test]
     fn test_only_the_count_fields_need_the_census() {
         for (name, field) in Field::NAMES {
