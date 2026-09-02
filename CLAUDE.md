@@ -162,7 +162,10 @@ weigh the bump itself in a design trade-off; the loop is its only cost.
 
 **Run tests with `cargo nextest run --no-fail-fast`.** nextest stops at the
 first failure by default, so that flag is not optional — the point of a sweep
-is every failure at once. Otherwise every invocation this file spells `cargo
+is every failure at once. On this macOS host use `cargo test --no-fail-fast`
+instead: nextest's one-process-per-test bursts wedge syspolicyd here, and
+`CHECK_ALL_LOCAL_TEST="cargo test" ./check-all.sh` swaps only the local
+leg. Otherwise every invocation this file spells `cargo
 test …` translates directly: `cargo nextest run -p exegesis --test golden`,
 `INSTA_UPDATE=always cargo nextest run …`, `HANSEI_MATRIX=1 cargo nextest run
 -p hansei-runtime --test matrix`. It cannot run doctests (the tree has none —
@@ -263,25 +266,36 @@ is what tells a test that *pins* behavior from one that merely runs the
 code. Nearly every suite here asserts over a frozen capture, so nearly
 every test executes the same lines and line coverage says almost
 nothing. The per-change loop is the diff — `git diff origin/main >
-/tmp/change.diff && cargo mutants --in-diff /tmp/change.diff`, well
-under a minute for an ordinary commit — and it replaces hand-writing
-mutations to check a new test actually bites. A whole-crate sweep
-(`cargo mutants -p hansei-runtime -j 6`) is ~25 minutes; triage its
-`missed.txt` into tests, or into an `exclude_re` entry with a comment
-where the mutant is equivalent. Two caveats particular to this tree:
+/tmp/change.diff && cargo mutants --in-diff /tmp/change.diff` — and it
+replaces hand-writing mutations to check a new test actually bites. A
+whole-crate sweep (`cargo mutants -p hansei-runtime -j 4`) is ~25
+minutes; triage its `missed.txt` into tests, or into an `exclude_re`
+entry with a comment where the mutant is equivalent.
+
+Every `cargo mutants` run, `--in-diff` included, goes to the Linux host
+under a memory cap. A mutant that breaks a write loop's exit appends
+output without bound, and macOS has no enforceable per-process memory
+cap: such runs have crashed this machine before the test timeout could
+reap them. The remotes test `HEAD`, so commit and push first, then:
+
+```
+ulimit -v 16777216 && systemd-run --user --scope -p MemoryMax=48G \
+  -p OOMPolicy=continue env HANSEI_REUSE_FIXTURES=1 cargo mutants -p <crate> -j 4
+```
+
+`ulimit -v` is the limit doing the work (a bomb's own allocation fails,
+so the mutant is caught with no cross-fire on sibling jobs);
+`OOMPolicy=continue` keeps one OOM kill from tearing down the sweep.
 `test_package` in the config widens the judging suite past the mutated
-crate, because hansei-runtime is a library its consumers assert; and a
-macOS sweep is a *lower bound*, since hansei's acceptance suite
-compiles to zero tests here — a survivor worth chasing gets confirmed
-by applying it by hand on a remote and running the suite there.
-exegesis is excluded outright: its goldens rebuild the fixture programs
-once per test run, and a sweep is one run per mutant.
+crate, because hansei-runtime is a library its consumers assert, and it
+includes exegesis, the only thing that writes a bundle. A survivor worth
+chasing is confirmed with a rerun before triage.
 
 Then: `cargo nextest run -p reify -p exegesis -p hansei-bundle`, `cargo clippy -p
 exegesis -p reify -p hansei-bundle`, and `cargo fmt --all` (see *Before every
 commit*). Do not drop `-p hansei-bundle` from that loop: the bundle
-round-trip and validation tests live in the wire crate now, so a
-`-p exegesis` run alone no longer touches them.
+round-trip and validation tests live in the wire crate, and a
+`-p exegesis` run alone does not reach them.
 
 ### Golden tests
 
@@ -313,7 +327,7 @@ canary because every fixture is rebuilt from source.
   review surface for "did I change only what I meant to."
 - **Adding coverage for a new formatter** — and debugging a detector that
   does not fire (`--explain-format`), and discovering a layout from real
-  DWARF (`--include-type` + `dump` against `cru-down.debug`) — are §§3–4
+  DWARF (`--include-type` + `dump` against `sled-agent.debug`) — are §§3–4
   of the `add-formatter` skill. The one fact worth repeating here: **debug
   formats are not in the `.golden` files at all**, so a new formatter
   changes no golden and re-blessing tells you nothing about it — its
@@ -333,7 +347,8 @@ and the acceptance suite live.
 
 The `illumos` host, accessible over SSH (`ssh illumos`), is where the *rendered*
 output can be exercised against a real cored target, and where detection can
-be run against large production binaries — hansei/proc don't build on macOS.
+be run against large production binaries; hansei builds here, but its
+acceptance suite compiles to zero tests on macOS.
 (Detection itself is covered portably by the golden tests above; illumos is for
 the render side and for real cores.) The repository is at `/data/durin`; a debug
 `sled-agent` is at `/tmp/sled-agent.debug`; a core with live channels/semaphores
@@ -349,8 +364,7 @@ ssh illumos 'cd /data/durin && git pull origin main &&
 
 `config ugly on` disables every custom formatter for the session and prints
 the raw structural view — the way to see what a formatter is hiding, and to
-check that it hides only what you meant. (`--ugly` is gone; the raw view is
-a session setting now.)
+check that it hides only what you meant.
 
 Note illumos `grep` lacks `\s`/`-P`; use `[[:space:]]` in patterns there.
 
