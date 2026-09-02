@@ -2,5 +2,7 @@
 source: hansei/src/offline.rs
 description: "`task 3` over illumos/blocking-pool"
 ---
-3  blocking (running)  —  —  future tokio::runtime::blocking::task::BlockingTask<blocking_pool::main::{async_block#0}::{closure_env#0}>
-Spawned at: src/bin/blocking-pool.rs:35:23
+task 3
+state: blocking (running)
+type: future tokio::runtime::blocking::task::BlockingTask<blocking_pool::main::{async_block#0}::{closure_env#0}>
+spawned at: src/bin/blocking-pool.rs:35:23

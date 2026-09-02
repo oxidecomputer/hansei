@@ -1032,7 +1032,7 @@ fn rejoin_columns(out: &str) -> String {
 /// [`spawn_line`] for why a golden does not hold it.
 fn drop_spawn_line(out: &str) -> String {
     out.lines()
-        .filter(|line| !line.starts_with("Spawned at: "))
+        .filter(|line| !line.starts_with("Spawned at: ") && !line.starts_with("spawned at: "))
         .fold(String::new(), |mut text, line| {
             text.push_str(line);
             text.push('\n');
@@ -1040,14 +1040,14 @@ fn drop_spawn_line(out: &str) -> String {
         })
 }
 
-/// The `task` selection's `Spawned at` line, which a target carries
+/// The `task` selection's `spawned at` line, which a target carries
 /// only under `tokio_unstable` instrumentation.
 ///
 /// Held out of a golden rather than in it: whether the line is there at
 /// all is the cell's, not hansei's, and one golden serves every cell.
 /// What it says where it is there is [`assert_spawned_at`]'s to check.
 fn spawn_line(loc: &str) -> Option<String> {
-    cell().unstable.then(|| format!("Spawned at: {loc}"))
+    cell().unstable.then(|| format!("spawned at: {loc}"))
 }
 
 /// Assert a `task` selection records `loc` as the spawn site — or
@@ -1055,7 +1055,7 @@ fn spawn_line(loc: &str) -> Option<String> {
 fn assert_spawned_at(trace: &str, loc: &str) {
     let line = trace
         .lines()
-        .find(|line| line.starts_with("Spawned at: "))
+        .find(|line| line.starts_with("spawned at: "))
         .map(str::to_owned);
     assert_eq!(line, spawn_line(loc), "in:\n{trace}");
 }

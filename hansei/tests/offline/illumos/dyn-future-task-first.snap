@@ -2,6 +2,10 @@
 source: hansei/src/offline.rs
 description: "`task 3` over illumos/dyn-future"
 ---
-3  idle  src/bin/dyn-future.rs:36  future tokio::sync::oneshot::Receiver<u32>  async fn dyn_future::driver
-Spawned at: src/bin/dyn-future.rs:53:21
-Defined at: src/bin/dyn-future.rs:24
+task 3
+state: idle
+type: async fn dyn_future::driver
+awaiting at: src/bin/dyn-future.rs:36
+waiting on: future tokio::sync::oneshot::Receiver<u32>
+spawned at: src/bin/dyn-future.rs:53:21
+defined at: src/bin/dyn-future.rs:24
