@@ -24,21 +24,13 @@ lwp 1  polling no task
         tasks: alloc::collections::vec_deque::VecDeque<tokio::runtime::task::Notified<alloc::sync::Arc<tokio::runtime::scheduler::current_thread::Handle, alloc::alloc::Global>>, alloc::alloc::Global> {
             head: 2,
             len: 0,
-            buf: alloc::raw_vec::RawVec<tokio::runtime::task::Notified<alloc::sync::Arc<tokio::runtime::scheduler::current_thread::Handle, alloc::alloc::Global>>, alloc::alloc::Global> {
-                inner: alloc::raw_vec::RawVecInner<alloc::alloc::Global> {
-                    ptr: 0xADDR -> 128,
-                    cap: 64,
-                },
-            },
+            buf: alloc::raw_vec::RawVec<tokio::runtime::task::Notified<alloc::sync::Arc<tokio::runtime::scheduler::current_thread::Handle, alloc::alloc::Global>>, alloc::alloc::Global> { .. } @ 0xADDR,
         },
         tick: 4,
         driver: core::option::Option<tokio::runtime::driver::Driver>::None,
         metrics: tokio::runtime::metrics::batch::MetricsBatch {
             busy_duration_total: 125132,
-            processing_scheduled_tasks_started_at: core::option::Option<std::time::Instant>::Some {
-                tv_sec: 5077943,
-                tv_nsec: 539328795,
-            },
+            processing_scheduled_tasks_started_at: core::option::Option<std::time::Instant> { .. } @ 0xADDR,
             park_count: 1,
             park_unpark_count: 1,
             noop_count: 0,
@@ -48,7 +40,7 @@ lwp 1  polling no task
             poll_count_on_last_park: 2,
             local_schedule_count: 2,
             overflow_count: 0,
-            poll_timer: core::option::Option<tokio::runtime::metrics::batch::PollTimer>::None,
+            poll_timer: core::option::Option<tokio::runtime::metrics::batch::PollTimer> { .. } @ 0xADDR,
         },
         global_queue_interval: 31,
         unhandled_panic: false,

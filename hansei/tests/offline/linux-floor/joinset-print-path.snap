@@ -5,12 +5,5 @@ description: "`print .lists` over linux-floor/joinset"
 0xADDR -> alloc::sync::ArcInner<tokio::loom::std::parking_lot::Mutex<tokio::util::idle_notified_set::ListsInner<tokio::runtime::task::join::JoinHandle<u32>>>> {
         strong: 4,
         weak: 1,
-        data: lock_api::mutex::Mutex<parking_lot::raw_mutex::RawMutex, tokio::util::idle_notified_set::ListsInner<tokio::runtime::task::join::JoinHandle<u32>>> {
-            raw: parking_lot::raw_mutex::RawMutex: locked=false, parked=false,
-            data: tokio::util::idle_notified_set::ListsInner<tokio::runtime::task::join::JoinHandle<u32>> {
-                notified: tokio::util::linked_list::LinkedList<tokio::util::idle_notified_set::ListEntry<tokio::runtime::task::join::JoinHandle<u32>>, tokio::util::idle_notified_set::ListEntry<tokio::runtime::task::join::JoinHandle<u32>>> { .. } @ 0xADDR,
-                idle: tokio::util::linked_list::LinkedList<tokio::util::idle_notified_set::ListEntry<tokio::runtime::task::join::JoinHandle<u32>>, tokio::util::idle_notified_set::ListEntry<tokio::runtime::task::join::JoinHandle<u32>>> { .. } @ 0xADDR,
-                waker: core::option::Option<core::task::wake::Waker> { .. } @ 0xADDR,
-            },
-        },
+        data: tokio::loom::std::parking_lot::Mutex<tokio::util::idle_notified_set::ListsInner<tokio::runtime::task::join::JoinHandle<u32>>> { .. } @ 0xADDR,
     }

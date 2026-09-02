@@ -3,12 +3,7 @@ source: hansei/src/offline.rs
 description: "`print` over linux-floor/local-set-io"
 ---
 tokio::io::util::read::Read<tokio::net::unix::stream::UnixStream> {
-    reader: 0xADDR -> tokio::net::unix::stream::UnixStream {
-            io: tokio::io::poll_evented::PollEvented<mio::net::uds::stream::UnixStream> {
-                io: core::option::Option<mio::net::uds::stream::UnixStream> { .. } @ 0xADDR,
-                registration: tokio::runtime::io::registration::Registration { .. } @ 0xADDR,
-            },
-        },
+    reader: 0xADDR -> tokio::net::unix::stream::UnixStream { .. },
     buf: &mut [u8] {
         data_ptr: 0xADDR -> 0,
         length: 8,

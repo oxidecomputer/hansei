@@ -3,25 +3,12 @@ source: hansei/src/offline.rs
 description: "`print` over linux-floor/walk-shapes"
 ---
 tokio::sync::notify::Notified {
-    notify: 0xADDR -> tokio::sync::notify::Notify {
-            state: state=waiting, generation=0,
-            mutex: locked=false, parked=false,
-            queue: [
-                tokio::sync::notify::Waiter { notification: kind=none, order=fifo, waker: tokio::loom::std::unsafe_cell::UnsafeCell<core::option::Option<core::task::wake::Waker>> { .. } @ 0xADDR },
-            ],
-        },
+    notify: 0xADDR -> tokio::sync::notify::Notify { .. },
     state: [0xADDR],
     notify_waiters_calls: 0,
     waiter: tokio::sync::notify::Waiter {
-        pointers: tokio::util::linked_list::Pointers<tokio::sync::notify::Waiter> {
-            inner: tokio::util::linked_list::PointersInner<tokio::sync::notify::Waiter> {
-                prev: core::option::Option<core::ptr::non_null::NonNull<tokio::sync::notify::Waiter>> { .. } @ 0xADDR,
-                next: core::option::Option<core::ptr::non_null::NonNull<tokio::sync::notify::Waiter>> { .. } @ 0xADDR,
-            },
-        },
-        waker: core::option::Option<core::task::wake::Waker>::Some(0xADDR),
-        notification: tokio::sync::notify::AtomicNotification(
-            0,
-        ),
+        pointers: tokio::util::linked_list::Pointers<tokio::sync::notify::Waiter> { .. } @ 0xADDR,
+        waker: tokio::loom::std::unsafe_cell::UnsafeCell<core::option::Option<core::task::wake::Waker>> { .. } @ 0xADDR,
+        notification: tokio::sync::notify::AtomicNotification (..) @ 0xADDR,
     },
 }

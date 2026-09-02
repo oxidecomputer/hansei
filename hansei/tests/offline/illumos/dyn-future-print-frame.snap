@@ -3,9 +3,5 @@ source: hansei/src/offline.rs
 description: "`print` over illumos/dyn-future"
 ---
 tokio::sync::oneshot::Receiver<u32> {
-    inner: core::option::Option<alloc::sync::Arc<tokio::sync::oneshot::Inner<u32>, alloc::alloc::Global>>::Some(0xADDR -> alloc::sync::ArcInner<tokio::sync::oneshot::Inner<u32>> {
-                strong: 2,
-                weak: 1,
-                data: tokio::sync::oneshot::Inner<u32> { .. } @ 0xADDR,
-            }),
+    inner: core::option::Option<alloc::sync::Arc<tokio::sync::oneshot::Inner<u32>, alloc::alloc::Global>>::Some(0xADDR -> alloc::sync::ArcInner<tokio::sync::oneshot::Inner<u32>> { .. }),
 }
