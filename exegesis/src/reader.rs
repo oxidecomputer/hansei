@@ -66,6 +66,14 @@ pub struct DwReader<'dw> {
     /// The `DW_AT_producer` of the first compile unit that carries one
     /// (compiler identification, e.g. the rustc version).
     pub producer: Option<StrId>,
+    /// Every type by name, canonical or not — a lookup filters through
+    /// [`Self::is_canonical`]. Built beside finalization's alias passes,
+    /// once identity inheritance has settled the names. Keyed by the
+    /// interned id rather than the text: the names are long, and a
+    /// lookup hashes its query once through the string table instead.
+    pub(crate) types_by_name: HashMap<StrId, Vec<TypeId>>,
+    /// Every function by name, built with the type index.
+    pub(crate) funcs_by_name: HashMap<StrId, Vec<FuncId>>,
 }
 
 /// Configuration for [`DwarfReader::read_types`].
@@ -305,6 +313,8 @@ impl<'dw> DwReader<'dw> {
             namespaces: NamespaceTable::new(),
             strings: FrozenStrings::default(),
             producer: None,
+            types_by_name: HashMap::new(),
+            funcs_by_name: HashMap::new(),
         }
     }
 
@@ -395,6 +405,37 @@ impl<'dw> DwReader<'dw> {
             self.subs.insert(duplicate, canonical);
         }
 
+        // Identity inheritance above was the last write to the types,
+        // so the names are final: the name indexes are built here, on
+        // threads of their own, while the alias passes run on this one.
+        // The passes work on a copy of the substitutions and hand it
+        // back, so that nothing writes to the reader until all three
+        // are done.
+        let (subs, types_by_name, funcs_by_name) = {
+            let this: &Self = self;
+            std::thread::scope(|scope| {
+                let types = scope.spawn(|| this.index_type_names());
+                let funcs = scope.spawn(|| this.index_func_names());
+                let subs = this.alias_substitutions();
+                (
+                    subs,
+                    types.join().expect("type-index thread panicked"),
+                    funcs.join().expect("function-index thread panicked"),
+                )
+            })
+        };
+        self.subs = subs;
+        self.types_by_name = types_by_name;
+        self.funcs_by_name = funcs_by_name;
+    }
+
+    /// The substitutions the alias passes add on top of the
+    /// specification ones already in `self.subs`: same-named types
+    /// with compatible layouts, then unnamed pointers and arrays over
+    /// the same target, to a fixed point.
+    fn alias_substitutions(&self) -> HashMap<TypeId, TypeId> {
+        let mut subs = self.subs.clone();
+
         // Grouping key order does not matter: each type id lands in exactly one
         // group, and every group's canonical is chosen independently (by layout
         // detail then lowest id), so a hash map is both correct and faster than
@@ -410,35 +451,74 @@ impl<'dw> DwReader<'dw> {
         }
         let groups: Vec<&[TypeId]> = named.values().map(Vec::as_slice).collect();
         for (duplicate, canonical) in self.named_aliases(&groups) {
-            self.subs.insert(duplicate, canonical);
+            subs.insert(duplicate, canonical);
         }
 
         loop {
-            let old_len = self.subs.len();
+            let old_len = subs.len();
             let mut pointers: HashMap<TypeId, Vec<TypeId>> = HashMap::new();
             let mut arrays: HashMap<(TypeId, u64), Vec<TypeId>> = HashMap::new();
 
             for (&id, ty) in &self.types {
                 match ty {
                     RawType::Pointer(p) if p.name.is_none() => pointers
-                        .entry(self.canonicalize(p.target_type_id))
+                        .entry(canonicalize_in(&subs, p.target_type_id))
                         .or_default()
                         .push(id),
                     RawType::Array(a) => arrays
-                        .entry((self.canonicalize(a.elem_type_id), a.count))
+                        .entry((canonicalize_in(&subs, a.elem_type_id), a.count))
                         .or_default()
                         .push(id),
                     _ => {}
                 }
             }
             for ids in pointers.values().chain(arrays.values()) {
-                self.alias_to_lowest(ids);
+                alias_to_lowest(&mut subs, ids);
             }
 
-            if self.subs.len() == old_len {
+            if subs.len() == old_len {
                 break;
             }
         }
+        subs
+    }
+
+    /// Build the name indexes for a reader assembled by hand, which
+    /// never finalizes; a read one builds them as it finalizes.
+    #[cfg(test)]
+    pub(crate) fn index_names(&mut self) {
+        self.types_by_name = self.index_type_names();
+        self.funcs_by_name = self.index_func_names();
+    }
+
+    /// Every type under its name, ids ascending. Duplicates are
+    /// included — which of them is canonical is not known until the
+    /// alias passes this runs beside have finished.
+    fn index_type_names(&self) -> HashMap<StrId, Vec<TypeId>> {
+        let mut by_name: HashMap<StrId, Vec<TypeId>> = HashMap::new();
+        for (&id, ty) in &self.types {
+            if let Some(name) = ty.name() {
+                by_name.entry(name).or_default().push(id);
+            }
+        }
+        for ids in by_name.values_mut() {
+            ids.sort_unstable();
+        }
+        by_name
+    }
+
+    /// Every function under its name, ids ascending.
+    fn index_func_names(&self) -> HashMap<StrId, Vec<FuncId>> {
+        let mut by_name: HashMap<StrId, Vec<FuncId>> = HashMap::new();
+        for (&id, func) in &self.functions {
+            if let Some(name) = func.name {
+                by_name.entry(name).or_default().push(id);
+            }
+        }
+        for ids in by_name.values_mut() {
+            ids.sort_unstable();
+        }
+        by_name
     }
 
     /// Partition every named-type group into layout-compatible classes and
@@ -467,17 +547,6 @@ impl<'dw> DwReader<'dw> {
             .with_max_len(ALIAS_BATCH)
             .flat_map_iter(|ids| self.compatible_named_aliases(ids))
             .collect()
-    }
-
-    fn alias_to_lowest(&mut self, ids: &[TypeId]) {
-        let Some(&canonical) = ids.iter().min() else {
-            return;
-        };
-        for &id in ids {
-            if id != canonical {
-                self.subs.insert(id, canonical);
-            }
-        }
     }
 
     /// Partition one named-type group by its own layout and the identities of
@@ -816,11 +885,13 @@ impl<'dw> DwReader<'dw> {
     /// Resolve a [`TypeId`] to its canonical form by following the
     /// substitution chain.
     pub fn canonicalize(&self, id: TypeId) -> TypeId {
-        let mut result = id;
-        while let Some(&next) = self.subs.get(&result) {
-            result = next;
-        }
-        result
+        canonicalize_in(&self.subs, id)
+    }
+
+    /// Whether `id` is its own canonical type — the one of its
+    /// duplicates that lookups and emission speak of.
+    pub(crate) fn is_canonical(&self, id: TypeId) -> bool {
+        !self.subs.contains_key(&id)
     }
 
     /// Returns the canonical type for a given [`TypeId`].
@@ -843,6 +914,26 @@ impl<'dw> DwReader<'dw> {
 }
 
 /// One unit's worth of parse work for the worker pool.
+fn canonicalize_in(subs: &HashMap<TypeId, TypeId>, id: TypeId) -> TypeId {
+    let mut result = id;
+    while let Some(&next) = subs.get(&result) {
+        result = next;
+    }
+    result
+}
+
+/// Alias every id in `ids` to the lowest among them.
+fn alias_to_lowest(subs: &mut HashMap<TypeId, TypeId>, ids: &[TypeId]) {
+    let Some(&canonical) = ids.iter().min() else {
+        return;
+    };
+    for &id in ids {
+        if id != canonical {
+            subs.insert(id, canonical);
+        }
+    }
+}
+
 enum UnitJob<'dw> {
     /// A unit whose DIEs are where its header is — the main file's
     /// `.debug_info` — parsed with no id bias.
