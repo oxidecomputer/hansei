@@ -1,8 +1,5 @@
 ---
 source: hansei/src/offline.rs
-description: "`print .__awaitee` over illumos/local-set-timer"
+description: "`print .inner` over illumos/local-set-timer"
 ---
-tokio::time::sleep::Sleep {
-    deadline: 1000000.001s,
-    state: registered,
-}
+tokio::time::sleep::Inner

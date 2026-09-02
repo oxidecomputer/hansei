@@ -2,4 +2,4 @@
 source: hansei/src/offline.rs
 description: "`print .no_such_member` over linux/futurelock"
 ---
-error: type futurelock::main::{async_block#0}::{async_block_env#0}::Suspend1 has no member named no_such_member (members: lock, __awaitee)
+error: type tokio::sync::batch_semaphore::Acquire has no member named no_such_member (members: node, semaphore, num_permits, queued)

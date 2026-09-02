@@ -2,4 +2,4 @@
 source: hansei/src/offline.rs
 description: "`print .no_such_member` over linux-floor/simple-await"
 ---
-error: type simple_await::work::{async_fn_env#0}::Suspend1 has no member named no_such_member (members: count, labels, values, boxed, slice, ipv4, ipv6, borrowed, owned, c_owned, c_borrowed, first, __awaitee, __13, __14)
+error: type tokio::sync::oneshot::Inner<u32> has no member named no_such_member (members: state, value, tx_task, rx_task)

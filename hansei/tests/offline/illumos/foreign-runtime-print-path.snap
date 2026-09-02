@@ -1,27 +1,14 @@
 ---
 source: hansei/src/offline.rs
-description: "`print .__awaitee` over illumos/foreign-runtime"
+description: "`print .node` over illumos/foreign-runtime"
 ---
-tokio::sync::semaphore::{impl#0}::acquire::{async_fn_env#0}::3 {
-    self: 0xADDR -> tokio::sync::semaphore::Semaphore {
-            ll_sem: tokio::sync::batch_semaphore::Semaphore {
-                waiters: tokio::loom::std::parking_lot::Mutex<tokio::sync::batch_semaphore::Waitlist> { .. } @ 0xADDR,
-                permits: closed=false, permits=0,
-            },
+tokio::sync::batch_semaphore::Waiter {
+    state: 1,
+    waker: core::option::Option<core::task::wake::Waker>::Some(0xADDR),
+    pointers: tokio::util::linked_list::Pointers<tokio::sync::batch_semaphore::Waiter> {
+        inner: tokio::util::linked_list::PointersInner<tokio::sync::batch_semaphore::Waiter> {
+            prev: core::option::Option<core::ptr::non_null::NonNull<tokio::sync::batch_semaphore::Waiter>>::None,
+            next: core::option::Option<core::ptr::non_null::NonNull<tokio::sync::batch_semaphore::Waiter>>::None,
         },
-    __awaitee: tokio::sync::batch_semaphore::Acquire {
-        node: tokio::sync::batch_semaphore::Waiter {
-            state: 1,
-            waker: core::option::Option<core::task::wake::Waker>::Some(0xADDR),
-            pointers: tokio::util::linked_list::Pointers<tokio::sync::batch_semaphore::Waiter> {
-                inner: core::cell::UnsafeCell<tokio::util::linked_list::PointersInner<tokio::sync::batch_semaphore::Waiter>> { .. } @ 0xADDR,
-            },
-        },
-        semaphore: 0xADDR -> tokio::sync::batch_semaphore::Semaphore {
-                waiters: tokio::loom::std::parking_lot::Mutex<tokio::sync::batch_semaphore::Waitlist> { .. } @ 0xADDR,
-                permits: closed=false, permits=0,
-            },
-        num_permits: 1,
-        queued: true,
     },
 }

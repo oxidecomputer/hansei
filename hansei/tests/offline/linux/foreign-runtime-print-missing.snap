@@ -2,4 +2,4 @@
 source: hansei/src/offline.rs
 description: "`print .no_such_member` over linux/foreign-runtime"
 ---
-error: type foreign_runtime::joined::{async_fn_env#0}::Suspend0 has no member named no_such_member (members: __awaitee, __1)
+error: type tokio::sync::batch_semaphore::Acquire has no member named no_such_member (members: node, semaphore, num_permits, queued)

@@ -2,76 +2,16 @@
 source: hansei/src/offline.rs
 description: "`print` over illumos/unordered"
 ---
-unordered::driver::{async_fn_env#0}::Suspend0 {
-    notify: alloc::sync::Arc<tokio::sync::notify::Notify, alloc::alloc::Global> {
-        ptr: 0xADDR -> alloc::sync::ArcInner<tokio::sync::notify::Notify> {
-                strong: 15,
-                weak: 1,
-                data: tokio::sync::notify::Notify { .. } @ 0xADDR,
+futures_util::stream::futures_unordered::FuturesUnordered<unordered::set_member::{async_fn_env#0}> {
+    ready_to_run_queue: alloc::sync::Arc<futures_util::stream::futures_unordered::ready_to_run_queue::ReadyToRunQueue<unordered::set_member::{async_fn_env#0}>, alloc::alloc::Global> {
+        ptr: 0xADDR -> alloc::sync::ArcInner<futures_util::stream::futures_unordered::ready_to_run_queue::ReadyToRunQueue<unordered::set_member::{async_fn_env#0}>> {
+                strong: 1,
+                weak: 4,
+                data: futures_util::stream::futures_unordered::ready_to_run_queue::ReadyToRunQueue<unordered::set_member::{async_fn_env#0}> { .. } @ 0xADDR,
             },
     },
-    set: futures_util::stream::futures_unordered::FuturesUnordered<unordered::set_member::{async_fn_env#0}> {
-        ready_to_run_queue: alloc::sync::Arc<futures_util::stream::futures_unordered::ready_to_run_queue::ReadyToRunQueue<unordered::set_member::{async_fn_env#0}>, alloc::alloc::Global> {
-            ptr: 0xADDR -> alloc::sync::ArcInner<futures_util::stream::futures_unordered::ready_to_run_queue::ReadyToRunQueue<unordered::set_member::{async_fn_env#0}>> { .. },
-        },
-        head_all: 0xADDR,
-        is_terminated: core::sync::atomic::Atomic<bool> {
-            v: 0,
-        },
+    head_all: 0xADDR,
+    is_terminated: core::sync::atomic::Atomic<bool> {
+        v: 0,
     },
-    held: unordered::set_member::{async_fn_env#0}::0 {
-        notify: alloc::sync::Arc<tokio::sync::notify::Notify, alloc::alloc::Global> {
-            ptr: 0xADDR -> alloc::sync::ArcInner<tokio::sync::notify::Notify> { .. },
-        },
-        nest: false,
-    },
-    boxed: core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output=u32> + core::marker::Send), alloc::alloc::Global>> {
-        pointer: alloc::boxed::Box<(dyn core::future::future::Future<Output=u32> + core::marker::Send), alloc::alloc::Global> {
-            pointer: 0xADDR,
-            concrete type: unordered::set_member::{closure#0},
-            vtable: {
-                drop_in_place: 0xADDR -> core::ptr::drop_glue::<unordered::set_member::{closure#0}>,
-                size: 232,
-                align: 8,
-                method[3]: 0xADDR -> unordered::set_member::{closure#0},
-            },
-        },
-    },
-    pair: (unordered::leaf::{async_fn_env#0}, u32)(
-        unordered::leaf::{async_fn_env#0}::0 {
-            notify: alloc::sync::Arc<tokio::sync::notify::Notify, alloc::alloc::Global> {
-                ptr: 0xADDR -> alloc::sync::ArcInner<tokio::sync::notify::Notify> { .. },
-            },
-        },
-        11,
-    ),
-    maybe: core::option::Option<unordered::leaf::{async_fn_env#0}>::Some(unordered::leaf::{async_fn_env#0}::0 {
-            notify: alloc::sync::Arc<tokio::sync::notify::Notify, alloc::alloc::Global> {
-                ptr: 0xADDR -> alloc::sync::ArcInner<tokio::sync::notify::Notify> { .. },
-            },
-        }),
-    nested_hold: unordered::holder::{async_fn_env#0}<unordered::leaf::{async_fn_env#0}>::0 {
-        inner: unordered::leaf::{async_fn_env#0}::0 {
-            notify: alloc::sync::Arc<tokio::sync::notify::Notify, alloc::alloc::Global> {
-                ptr: 0xADDR -> alloc::sync::ArcInner<tokio::sync::notify::Notify> { .. },
-            },
-        },
-        notify: alloc::sync::Arc<tokio::sync::notify::Notify, alloc::alloc::Global> {
-            ptr: 0xADDR -> alloc::sync::ArcInner<tokio::sync::notify::Notify> { .. },
-        },
-    },
-    sum: 0,
-    __awaitee: futures_util::stream::stream::next::Next<futures_util::stream::futures_unordered::FuturesUnordered<unordered::set_member::{async_fn_env#0}>> {
-        stream: 0xADDR -> futures_util::stream::futures_unordered::FuturesUnordered<unordered::set_member::{async_fn_env#0}> {
-                ready_to_run_queue: alloc::sync::Arc<futures_util::stream::futures_unordered::ready_to_run_queue::ReadyToRunQueue<unordered::set_member::{async_fn_env#0}>, alloc::alloc::Global> { .. } @ 0xADDR,
-                head_all: 0xADDR,
-                is_terminated: core::sync::atomic::Atomic<bool> { .. } @ 0xADDR,
-            },
-    },
-    __9: true,
-    __10: true,
-    __11: true,
-    __12: true,
-    __13: true,
-    __14: false,
 }

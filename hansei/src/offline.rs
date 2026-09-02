@@ -178,20 +178,20 @@ fn commands(
             // task is party to, under the cursor the commands above
             // set.
             list.push(("sync-scoped", "sync".to_owned()));
-            // The fixture whose frame carries containers drives the
-            // element steps: a range keeps its [i] heading even one
-            // element wide, and a step after a range applies to each
-            // map entry.
             if program == "simple-await" {
-                list.push(("print-range", "print .values[1..2]".to_owned()));
-                list.push(("print-map-values", "print .labels[..2].1".to_owned()));
                 // Frame moves carrying a trailing command: `down` at
                 // #0 — the leaf, where selection lands — is refused,
                 // so its command must not run; `up` lands on #1 and
-                // runs it there. Last in the list, as `up` moves the
-                // cursor the commands above share.
+                // runs it there. `up` moves the cursor the commands
+                // above share, so these come after them.
                 list.push(("down-locals", "down locals".to_owned()));
                 list.push(("up-locals", "up locals".to_owned()));
+                // The frame `up` landed on carries the containers that
+                // drive the element steps: a range keeps its [i]
+                // heading even one element wide, and a step after a
+                // range applies to each map entry.
+                list.push(("print-range", "print .values[1..2]".to_owned()));
+                list.push(("print-map-values", "print .labels[..2].1".to_owned()));
                 // `frame` composes the same way, and the move back to
                 // #0 restores the cursor for the commands below.
                 list.push(("frame-locals", "frame 0 locals".to_owned()));
@@ -215,8 +215,10 @@ fn commands(
     list
 }
 
-/// The first sized member of the first task's frame-0 payload — a
-/// path target every fixture has, whatever its futures hold.
+/// The first member of the first task's frame-0 payload — the leaf,
+/// where a fresh task cursor stands — a path target every fixture has,
+/// whatever its futures hold. Any member will do, a zero-sized one
+/// included: the golden pins that the step lands, not what it finds.
 fn first_frame_member(
     session: &Session<'_, proc::snapshot::Snapshot>,
     task: &hansei_runtime::tokio::bundle::Task,
@@ -225,16 +227,12 @@ fn first_frame_member(
         return None;
     };
     let chain = session.ctx.await_chain(future);
-    let frame = chain.frames.first()?;
+    let frame = chain.frames.last()?;
     let payload = match &frame.state {
         Some(state) => state.payload,
         None => frame.future,
     };
-    payload
-        .ty
-        .members()
-        .find(|m| m.ty().size() > 0)
-        .map(|m| m.name().to_string())
+    payload.ty.members().next().map(|m| m.name().to_string())
 }
 
 /// Attach a session over one pair and golden every command's output,

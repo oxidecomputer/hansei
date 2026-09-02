@@ -1,8 +1,5 @@
 ---
 source: hansei/src/offline.rs
-description: "`print .__awaitee` over linux/sleep-join"
+description: "`print .inner` over linux/sleep-join"
 ---
-tokio::time::sleep::Sleep {
-    deadline: 1000000.001s,
-    state: registered,
-}
+tokio::time::sleep::Inner

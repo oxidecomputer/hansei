@@ -2,21 +2,24 @@
 source: hansei/src/offline.rs
 description: "`print` over illumos/foreign-runtime"
 ---
-foreign_runtime::joined::{async_fn_env#0}::Suspend0 {
-    __awaitee: tokio::sync::semaphore::{impl#0}::acquire::{async_fn_env#0}::3 {
-        self: 0xADDR -> tokio::sync::semaphore::Semaphore {
-                ll_sem: tokio::sync::batch_semaphore::Semaphore { .. } @ 0xADDR,
+tokio::sync::batch_semaphore::Acquire {
+    node: tokio::sync::batch_semaphore::Waiter {
+        state: 1,
+        waker: core::option::Option<core::task::wake::Waker>::Some(0xADDR),
+        pointers: tokio::util::linked_list::Pointers<tokio::sync::batch_semaphore::Waiter> {
+            inner: tokio::util::linked_list::PointersInner<tokio::sync::batch_semaphore::Waiter> {
+                prev: core::option::Option<core::ptr::non_null::NonNull<tokio::sync::batch_semaphore::Waiter>> { .. } @ 0xADDR,
+                next: core::option::Option<core::ptr::non_null::NonNull<tokio::sync::batch_semaphore::Waiter>> { .. } @ 0xADDR,
             },
-        __awaitee: tokio::sync::batch_semaphore::Acquire {
-            node: tokio::sync::batch_semaphore::Waiter {
-                state: 1,
-                waker: tokio::loom::std::unsafe_cell::UnsafeCell<core::option::Option<core::task::wake::Waker>> { .. } @ 0xADDR,
-                pointers: tokio::util::linked_list::Pointers<tokio::sync::batch_semaphore::Waiter> { .. } @ 0xADDR,
-            },
-            semaphore: 0xADDR -> tokio::sync::batch_semaphore::Semaphore { .. },
-            num_permits: 1,
-            queued: true,
         },
     },
-    __1: false,
+    semaphore: 0xADDR -> tokio::sync::batch_semaphore::Semaphore {
+            waiters: lock_api::mutex::Mutex<parking_lot::raw_mutex::RawMutex, tokio::sync::batch_semaphore::Waitlist> {
+                raw: parking_lot::raw_mutex::RawMutex: locked=false, parked=false,
+                data: core::cell::UnsafeCell<tokio::sync::batch_semaphore::Waitlist> { .. } @ 0xADDR,
+            },
+            permits: closed=false, permits=0,
+        },
+    num_permits: 1,
+    queued: true,
 }

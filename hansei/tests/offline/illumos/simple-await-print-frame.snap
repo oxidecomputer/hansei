@@ -2,37 +2,10 @@
 source: hansei/src/offline.rs
 description: "`print` over illumos/simple-await"
 ---
-simple_await::work::{async_fn_env#0}::Suspend1 {
-    count: 3,
-    labels: alloc::collections::btree::map::BTreeMap<u64, u32, alloc::alloc::Global> {
-        1: 10,
-        2: 20,
-        3: 30,
-    },
-    values: [
-        5,
-        8,
-        13,
-    ],
-    boxed: [
-        21,
-        34,
-    ],
-    slice: [
-        5,
-        8,
-        13,
-    ],
-    ipv4: 192.0.2.1,
-    ipv6: 2001:db8::1,
-    borrowed: "borrowed\ntext",
-    owned: "owned\ttext",
-    c_owned: "c\xfftext",
-    c_borrowed: "cstr",
-    first: 41,
-    __awaitee: tokio::sync::oneshot::Receiver<u32> {
-        inner: core::option::Option<alloc::sync::Arc<tokio::sync::oneshot::Inner<u32>, alloc::alloc::Global>>::Some(0xADDR -> alloc::sync::ArcInner<tokio::sync::oneshot::Inner<u32>> { .. }),
-    },
-    __13: false,
-    __14: false,
+tokio::sync::oneshot::Receiver<u32> {
+    inner: core::option::Option<alloc::sync::Arc<tokio::sync::oneshot::Inner<u32>, alloc::alloc::Global>>::Some(0xADDR -> alloc::sync::ArcInner<tokio::sync::oneshot::Inner<u32>> {
+                strong: 2,
+                weak: 1,
+                data: tokio::sync::oneshot::Inner<u32> { .. } @ 0xADDR,
+            }),
 }

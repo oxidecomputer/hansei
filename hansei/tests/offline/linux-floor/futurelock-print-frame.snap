@@ -2,34 +2,24 @@
 source: hansei/src/offline.rs
 description: "`print` over linux-floor/futurelock"
 ---
-futurelock::main::{async_block#0}::{async_block_env#0}::Suspend1 {
-    lock: alloc::sync::Arc<tokio::sync::mutex::Mutex<()>, alloc::alloc::Global> {
-        ptr: 0xADDR -> alloc::sync::ArcInner<tokio::sync::mutex::Mutex<()>> {
-                strong: 4,
-                weak: 1,
-                data: tokio::sync::mutex::Mutex<()> { .. } @ 0xADDR,
-            },
-    },
-    __awaitee: futurelock::do_stuff::{async_fn_env#0}::4 {
-        lock: alloc::sync::Arc<tokio::sync::mutex::Mutex<()>, alloc::alloc::Global> {
-            ptr: 0xADDR -> alloc::sync::ArcInner<tokio::sync::mutex::Mutex<()>> { .. },
-        },
-        future1: core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output=()> + core::marker::Send), alloc::alloc::Global>> {
-            pointer: alloc::boxed::Box<(dyn core::future::future::Future<Output=()> + core::marker::Send), alloc::alloc::Global> {
-                pointer: 0xADDR,
-                concrete type: futurelock::do_async_thing::{closure#0},
-                vtable: 0xADDR -> { .. },
-            },
-        },
-        disabled: 2,
-        __awaitee: futurelock::do_async_thing::{async_fn_env#0}::3 {
-            label: "op2",
-            lock: alloc::sync::Arc<tokio::sync::mutex::Mutex<()>, alloc::alloc::Global> {
-                ptr: 0xADDR -> alloc::sync::ArcInner<tokio::sync::mutex::Mutex<()>> { .. },
-            },
-            __awaitee: tokio::sync::mutex::{impl#10}::lock::{async_fn_env#0}<()>::3 {
-                __awaitee: tokio::sync::mutex::{impl#10}::lock::{async_fn#0}::{async_block_env#0}<()> { .. } @ 0xADDR,
+tokio::sync::batch_semaphore::Acquire {
+    node: tokio::sync::batch_semaphore::Waiter {
+        state: 1,
+        waker: core::option::Option<core::task::wake::Waker>::Some(0xADDR),
+        pointers: tokio::util::linked_list::Pointers<tokio::sync::batch_semaphore::Waiter> {
+            inner: tokio::util::linked_list::PointersInner<tokio::sync::batch_semaphore::Waiter> {
+                prev: core::option::Option<core::ptr::non_null::NonNull<tokio::sync::batch_semaphore::Waiter>> { .. } @ 0xADDR,
+                next: core::option::Option<core::ptr::non_null::NonNull<tokio::sync::batch_semaphore::Waiter>> { .. } @ 0xADDR,
             },
         },
     },
+    semaphore: 0xADDR -> tokio::sync::batch_semaphore::Semaphore {
+            waiters: lock_api::mutex::Mutex<parking_lot::raw_mutex::RawMutex, tokio::sync::batch_semaphore::Waitlist> {
+                raw: parking_lot::raw_mutex::RawMutex: locked=false, parked=false,
+                data: core::cell::UnsafeCell<tokio::sync::batch_semaphore::Waitlist> { .. } @ 0xADDR,
+            },
+            permits: closed=false, permits=0,
+        },
+    num_permits: 1,
+    queued: true,
 }

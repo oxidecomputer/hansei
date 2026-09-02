@@ -2,108 +2,13 @@
 source: hansei/src/offline.rs
 description: "`print` over illumos/joinset"
 ---
-joinset::driver::{async_fn_env#0}::Suspend1 {
-    notify: alloc::sync::Arc<tokio::sync::notify::Notify, alloc::alloc::Global> {
-        ptr: 0xADDR -> alloc::sync::ArcInner<tokio::sync::notify::Notify> {
-                strong: 6,
+tokio::util::idle_notified_set::IdleNotifiedSet<tokio::runtime::task::join::JoinHandle<u32>> {
+    lists: alloc::sync::Arc<tokio::loom::std::parking_lot::Mutex<tokio::util::idle_notified_set::ListsInner<tokio::runtime::task::join::JoinHandle<u32>>>, alloc::alloc::Global> {
+        ptr: 0xADDR -> alloc::sync::ArcInner<tokio::loom::std::parking_lot::Mutex<tokio::util::idle_notified_set::ListsInner<tokio::runtime::task::join::JoinHandle<u32>>>> {
+                strong: 4,
                 weak: 1,
-                data: tokio::sync::notify::Notify { .. } @ 0xADDR,
+                data: tokio::loom::std::parking_lot::Mutex<tokio::util::idle_notified_set::ListsInner<tokio::runtime::task::join::JoinHandle<u32>>> { .. } @ 0xADDR,
             },
     },
-    started_tx: tokio::sync::mpsc::bounded::Sender<()> {
-        capacity: 6,
-        free: closed=false, permits=6,
-        queued: [],
-        tx: tokio::sync::mpsc::list::Tx<()> {
-            block_tail: 0xADDR,
-            tail_position: 6,
-        },
-        rx_waker: tokio::sync::task::atomic_waker::AtomicWaker {
-            state: 0,
-            waker: core::option::Option<core::task::wake::Waker>::None,
-        },
-        notify_rx_closed: tokio::sync::notify::Notify {
-            state: state=idle, generation=0,
-            mutex: locked=false, parked=false,
-            queue: [],
-        },
-        semaphore: tokio::sync::mpsc::bounded::Semaphore {
-            mutex: locked=false, parked=false,
-            closed: false,
-            permits: closed=false, permits=6,
-            bound: 6,
-            queue: [],
-        },
-        tx_count: 5,
-        tx_weak_count: 0,
-        rx_fields: tokio::sync::mpsc::chan::RxFields<()> {
-            list: tokio::sync::mpsc::list::Rx<()> {
-                head: 0xADDR -> tokio::sync::mpsc::block::Block<()> { .. },
-                index: 6,
-                free_head: 0xADDR -> tokio::sync::mpsc::block::Block<()> { .. },
-            },
-            rx_closed: false,
-        },
-    },
-    started_rx: tokio::sync::mpsc::bounded::Receiver<()> {
-        capacity: 6,
-        free: closed=false, permits=6,
-        queued: [],
-        tx: tokio::sync::mpsc::list::Tx<()> {
-            block_tail: 0xADDR,
-            tail_position: 6,
-        },
-        rx_waker: tokio::sync::task::atomic_waker::AtomicWaker {
-            state: 0,
-            waker: core::option::Option<core::task::wake::Waker>::None,
-        },
-        notify_rx_closed: tokio::sync::notify::Notify {
-            state: state=idle, generation=0,
-            mutex: locked=false, parked=false,
-            queue: [],
-        },
-        semaphore: tokio::sync::mpsc::bounded::Semaphore {
-            mutex: locked=false, parked=false,
-            closed: false,
-            permits: closed=false, permits=6,
-            bound: 6,
-            queue: [],
-        },
-        tx_count: 5,
-        tx_weak_count: 0,
-        rx_fields: tokio::sync::mpsc::chan::RxFields<()> {
-            list: tokio::sync::mpsc::list::Rx<()> {
-                head: 0xADDR -> tokio::sync::mpsc::block::Block<()> { .. },
-                index: 6,
-                free_head: 0xADDR -> tokio::sync::mpsc::block::Block<()> { .. },
-            },
-            rx_closed: false,
-        },
-    },
-    set: tokio::task::join_set::JoinSet<u32> {
-        inner: tokio::util::idle_notified_set::IdleNotifiedSet<tokio::runtime::task::join::JoinHandle<u32>> {
-            lists: alloc::sync::Arc<tokio::loom::std::parking_lot::Mutex<tokio::util::idle_notified_set::ListsInner<tokio::runtime::task::join::JoinHandle<u32>>>, alloc::alloc::Global> {
-                ptr: 0xADDR -> alloc::sync::ArcInner<tokio::loom::std::parking_lot::Mutex<tokio::util::idle_notified_set::ListsInner<tokio::runtime::task::join::JoinHandle<u32>>>> { .. },
-            },
-            length: 3,
-        },
-    },
-    kept: tokio::task::join_set::JoinSet<u32> {
-        inner: tokio::util::idle_notified_set::IdleNotifiedSet<tokio::runtime::task::join::JoinHandle<u32>> {
-            lists: alloc::sync::Arc<tokio::loom::std::parking_lot::Mutex<tokio::util::idle_notified_set::ListsInner<tokio::runtime::task::join::JoinHandle<u32>>>, alloc::alloc::Global> {
-                ptr: 0xADDR -> alloc::sync::ArcInner<tokio::loom::std::parking_lot::Mutex<tokio::util::idle_notified_set::ListsInner<tokio::runtime::task::join::JoinHandle<u32>>>> { .. },
-            },
-            length: 3,
-        },
-    },
-    sum: 0,
-    __awaitee: tokio::task::join_set::{impl#1}::join_next::{async_fn_env#0}<u32>::3 {
-        __awaitee: core::future::poll_fn::PollFn<tokio::task::join_set::{impl#1}::join_next::{async_fn#0}::{closure_env#0}<u32>> {
-            f: tokio::task::join_set::{impl#1}::join_next::{async_fn#0}::{closure_env#0}<u32> {
-                _ref__self: 0xADDR -> tokio::task::join_set::JoinSet<u32> { .. },
-            },
-        },
-    },
-    __7: false,
-    __8: false,
+    length: 3,
 }

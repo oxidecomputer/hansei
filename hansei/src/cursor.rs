@@ -562,21 +562,7 @@ pub(crate) fn exec_locals<T: proc::Target>(
     theme: output::Theme,
     out: &mut dyn io::Write,
 ) -> Result<()> {
-    let cursor = *session.cursor.borrow();
-    let root = cursor.root.ok_or_else(|| anyhow!("no task selected"))?;
-    let resolved = chain_of(session, root)?;
-    let frames = &resolved.chain.frames;
-    let n = cursor.frame;
-    let Some(frame) = frames.len().checked_sub(n + 1).and_then(|i| frames.get(i)) else {
-        return Err(refuse_frame(n, frames.len()));
-    };
-    // What the frame can be read as: the active variant of its future,
-    // whose members are the locals, or the future itself where no
-    // state decodes.
-    let payload = match &frame.state {
-        Some(state) => state.payload,
-        None => frame.future,
-    };
+    let payload = frame_value(session)?;
     let render = RenderOpts::from_settings(&session.settings.borrow());
     let heap = session.heap_view();
     let opts = TraceOpts {
@@ -710,6 +696,27 @@ pub(crate) fn chain_of<'b, T: proc::Target>(
 /// The refusal an out-of-range frame number earns, measured against
 /// the chain. The native continuation is unnumbered, so no number a
 /// listing printed can land past the chain.
+/// What the cursor frame can be read as: the active variant of its
+/// future, whose members are the locals, or the future itself where no
+/// state decodes. Frame `#n` counts from the leaf, as `trace` numbers
+/// them and `frame` selects them.
+pub(crate) fn frame_value<'b, T: proc::Target>(
+    session: &Session<'b, T>,
+) -> Result<reify::Value<'b>> {
+    let cursor = *session.cursor.borrow();
+    let root = cursor.root.ok_or_else(|| anyhow!("no task selected"))?;
+    let resolved = chain_of(session, root)?;
+    let frames = &resolved.chain.frames;
+    let n = cursor.frame;
+    let Some(frame) = frames.len().checked_sub(n + 1).and_then(|i| frames.get(i)) else {
+        return Err(refuse_frame(n, frames.len()));
+    };
+    Ok(match &frame.state {
+        Some(state) => state.payload,
+        None => frame.future,
+    })
+}
+
 fn refuse_frame(n: usize, len: usize) -> anyhow::Error {
     anyhow!(
         "no frame #{n}: the chain has {}",

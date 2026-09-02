@@ -2,4 +2,4 @@
 source: hansei/src/offline.rs
 description: "`print .no_such_member` over linux/joinset"
 ---
-error: type joinset::driver::{async_fn_env#0}::Suspend1 has no member named no_such_member (members: notify, started_tx, started_rx, set, kept, sum, __awaitee, __7, __8)
+error: type tokio::util::idle_notified_set::IdleNotifiedSet<tokio::runtime::task::join::JoinHandle<u32>> has no member named no_such_member (members: lists, length)
