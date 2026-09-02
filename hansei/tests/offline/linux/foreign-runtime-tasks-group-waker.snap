@@ -4,7 +4,7 @@ description: "`tasks --group waker` over linux/foreign-runtime"
 ---
 COUNT  WAKER                     TASKS
     1  <empty>                   2
-    1  join task 1               4
+    1  join task 1               3
     1  semaphore 0xADDR  1
-    1  timer                     3
+    1  timer                     4
 4 groups

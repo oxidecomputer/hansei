@@ -26,7 +26,7 @@ pub const MAGIC: [u8; 8] = *b"exegesis";
 
 /// The current bundle format version. Bump on any schema change, including
 /// indirect ones (e.g. new [`crate::Encoding`] variants).
-pub const FORMAT_VERSION: u32 = 46;
+pub const FORMAT_VERSION: u32 = 47;
 
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -784,9 +784,6 @@ fn check_node(bundle: &Bundle, scope: BundleTypeId, node: &DisplayNode, what: &s
                 ));
             }
         }
-        // Reads nothing, references nothing: nothing the shape table
-        // could not already say, which is nothing at all.
-        DisplayNode::Elided => {}
     }
     Ok(())
 }

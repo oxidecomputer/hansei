@@ -447,7 +447,6 @@ pub fn describe_node(bundle: &Bundle, root: BundleTypeId, node: &DisplayNode) ->
                 fq_name(bundle, *element),
             )
         }
-        DisplayNode::Elided => "Elided".to_owned(),
     }
 }
 

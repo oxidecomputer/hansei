@@ -54,12 +54,12 @@ lwp 2  last polled task 1
             batch: tokio::runtime::metrics::batch::MetricsBatch { .. } @ 0xADDR,
             processing_scheduled_tasks_started_at: std::time::Instant { .. } @ 0xADDR,
             tasks_polled_in_batch: 2,
-            task_poll_time_ewma: 24098.757704918025,
+            task_poll_time_ewma: 15421.45770491803,
         },
         global_queue_interval: 61,
         rand: tokio::util::rand::FastRand {
-            one: 832701144,
-            two: 2525068980,
+            one: 4151139429,
+            two: 1675033120,
         },
     }
   stack:
@@ -110,8 +110,8 @@ lwp 3  last polled task 2
         },
         global_queue_interval: 61,
         rand: tokio::util::rand::FastRand {
-            one: 3076377447,
-            two: 329175657,
+            one: 3513304442,
+            two: 1757485265,
         },
     }
   stack:

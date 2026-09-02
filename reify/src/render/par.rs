@@ -11,7 +11,7 @@
 //! boundary.
 
 use crate::heap::Heap;
-use crate::render::{AddrAnnotator, ElideOverride};
+use crate::render::AddrAnnotator;
 
 use super::{FormatCache, RenderCtx};
 
@@ -44,7 +44,6 @@ pub(crate) struct WorkerCtx<'buf, 'a, T> {
     pub(super) proc: Option<&'a T>,
     pub(super) hex_integers: bool,
     pub(super) ugly: bool,
-    pub(super) elide: Option<&'buf ElideOverride>,
     pub(super) annotate: Option<&'buf AddrAnnotator<'buf>>,
     pub(super) heap: Option<&'buf dyn Heap>,
     pub(super) max_str_len: Option<u64>,
@@ -84,7 +83,6 @@ impl<'buf, 'a, T> WorkerCtx<'buf, 'a, T> {
             parallel: false,
             hex_integers: self.hex_integers,
             ugly: self.ugly,
-            elide: self.elide,
             annotate: self.annotate,
             heap: self.heap,
             max_str_len: self.max_str_len,

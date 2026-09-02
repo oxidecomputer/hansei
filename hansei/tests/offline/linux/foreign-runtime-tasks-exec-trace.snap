@@ -18,19 +18,19 @@ Waiting on: a tokio::sync::Semaphore (semaphore 0xADDR): 1 permit requested, 0 a
 #1  async fn      foreign_runtime::detached
       awaiting at src/bin/foreign-runtime.rs:51 (Suspend0, 1 local)
 
-3  idle  2  src/bin/foreign-runtime.rs:63  timer (deadline TS on the target's monotonic clock)  async fn foreign_runtime::local_sleeper
-Waiting on: timer (deadline TS on the target's monotonic clock)
-
-#0  future        tokio::time::sleep::Sleep
-      waiting on timer (deadline TS on the target's monotonic clock)
-#1  async fn      foreign_runtime::local_sleeper
-      awaiting at src/bin/foreign-runtime.rs:63 (Suspend0, 0 locals)
-
-4  idle  0  src/bin/foreign-runtime.rs:26  task 1  async fn foreign_runtime::joiner
+3  idle  0  src/bin/foreign-runtime.rs:26  task 1  async fn foreign_runtime::joiner
 Waiting on: task 1
 
 #0  future        tokio::runtime::task::join::JoinHandle<u32>
       waiting on task 1
 #1  async fn      foreign_runtime::joiner
       awaiting at src/bin/foreign-runtime.rs:26 (Suspend0, 0 locals)
+
+4  idle  2  src/bin/foreign-runtime.rs:63  timer (deadline TS on the target's monotonic clock)  async fn foreign_runtime::local_sleeper
+Waiting on: timer (deadline TS on the target's monotonic clock)
+
+#0  future        tokio::time::sleep::Sleep
+      waiting on timer (deadline TS on the target's monotonic clock)
+#1  async fn      foreign_runtime::local_sleeper
+      awaiting at src/bin/foreign-runtime.rs:63 (Suspend0, 0 locals)
 Executed against 4 tasks, 0 failed

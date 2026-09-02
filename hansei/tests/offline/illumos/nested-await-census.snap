@@ -5,7 +5,7 @@ description: "`census` over illumos/nested-await"
 Threads: 3 lwps, 3 in runtime 0 @0xADDR
     2 in the scheduler's run loop
         1 parked in the io driver
-            worker 1, lwp 2
+            worker 1, lwp 3
         1 parked
     1 in runtime 0 @0xADDR, outside the run loop
         0 in the blocking pool (0 idle, 0 tasks queued)

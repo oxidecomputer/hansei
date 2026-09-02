@@ -3,7 +3,7 @@ source: hansei/src/offline.rs
 description: "`threads --without role ^worker --group has-task -f 1` over linux/local-set-timer"
 ---
 1  no
-lwp 4034095  polling no task  runtime 0 @0xADDR
+lwp 1145944  polling no task  runtime 0 @0xADDR
   thread_id: core::option::Option<tokio::runtime::thread_id::ThreadId>::Some(1)
   runtime:
     tokio::runtime::context::runtime::EnterRuntime::Entered {
@@ -29,7 +29,7 @@ lwp 4034095  polling no task  runtime 0 @0xADDR
         tick: 3,
         driver: core::option::Option<tokio::runtime::driver::Driver>::None,
         metrics: tokio::runtime::metrics::batch::MetricsBatch {
-            busy_duration_total: 10230,
+            busy_duration_total: 9108,
             processing_scheduled_tasks_started_at: core::option::Option<std::time::Instant> { .. } @ 0xADDR,
             park_count: 1,
             park_unpark_count: 1,

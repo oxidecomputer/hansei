@@ -3,7 +3,7 @@ source: hansei/src/offline.rs
 description: "`threads --without role ^worker --group has-task -f 1` over linux/simple-await"
 ---
 1  no
-lwp 4032259  polling no task
+lwp 1144102  polling no task
   thread_id: core::option::Option<tokio::runtime::thread_id::ThreadId>::None
   runtime:
     tokio::runtime::context::runtime::EnterRuntime::Entered {

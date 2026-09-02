@@ -662,16 +662,6 @@ pub enum DisplayNode {
         body: Vec<Stmt>,
         element: BundleTypeId,
     },
-    /// Render the value as the single token `<elided>`, reading nothing.
-    ///
-    /// The limit case of a formatter's job of hiding internal detail: for a
-    /// type whose insides are never what a debugging session is after (a
-    /// tokio runtime handle, a logger), the whole value is suppressed. The
-    /// program carries no selectors, addresses no data and cannot decline,
-    /// and reify renders it without touching the target. `--ugly` disables
-    /// it along with every other custom formatter, which is the way to see
-    /// the structure it hides.
-    Elided,
 }
 
 /// One statement in a [`DisplayNode::CustomList`] body. The body is a flat

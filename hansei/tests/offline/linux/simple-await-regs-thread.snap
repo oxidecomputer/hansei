@@ -4,7 +4,7 @@ description: "`regs` over linux/simple-await"
 ---
 registers:
   rip  0xADDR  — in libc.so.6 text
-  rsp  0xADDR  — [ stack tid=4032259 ]
+  rsp  0xADDR  — [ stack tid=1144102 ]
   rbp  0xADDR
   rax  0xADDR  — unmapped
   rbx  0xADDR  — in libc.so.6 text

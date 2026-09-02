@@ -53,19 +53,19 @@ lwp 2  last polled task 1
         stats: tokio::runtime::scheduler::multi_thread::stats::Stats {
             batch: tokio::runtime::metrics::batch::MetricsBatch { .. } @ 0xADDR,
             processing_scheduled_tasks_started_at: std::time::Instant { .. } @ 0xADDR,
-            tasks_polled_in_batch: 0,
-            task_poll_time_ewma: 3278.688524590164,
+            tasks_polled_in_batch: 1,
+            task_poll_time_ewma: 22423.119672131143,
         },
         global_queue_interval: 61,
         rand: tokio::util::rand::FastRand {
-            one: 3574738688,
-            two: 3709378959,
+            one: 748370687,
+            two: 4052019273,
         },
     }
   stack:
     0xADDR  
-    0xADDR  <mio::poll::Poll>::poll  (frame-pointer walk)
-    0xADDR  <tokio::runtime::io::driver::Driver>::turn  (frame-pointer walk)
+    0xADDR    (frame-pointer walk)
+    0xADDR    (frame-pointer walk)
 
 lwp 3  last polled task 2
   thread_id: core::option::Option<tokio::runtime::thread_id::ThreadId>::None
@@ -84,7 +84,7 @@ lwp 3  last polled task 2
     }
   core:
     tokio::runtime::scheduler::multi_thread::worker::Core {
-        tick: 2,
+        tick: 1,
         lifo_slot: core::option::Option<tokio::runtime::task::Notified<alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle, alloc::alloc::Global>>>::None,
         lifo_enabled: false,
         run_queue: tokio::runtime::scheduler::multi_thread::queue::Local<alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle, alloc::alloc::Global>> {
@@ -105,16 +105,16 @@ lwp 3  last polled task 2
         stats: tokio::runtime::scheduler::multi_thread::stats::Stats {
             batch: tokio::runtime::metrics::batch::MetricsBatch { .. } @ 0xADDR,
             processing_scheduled_tasks_started_at: std::time::Instant { .. } @ 0xADDR,
-            tasks_polled_in_batch: 1,
-            task_poll_time_ewma: 16974.719672131145,
+            tasks_polled_in_batch: 0,
+            task_poll_time_ewma: 3278.688524590164,
         },
         global_queue_interval: 61,
         rand: tokio::util::rand::FastRand {
-            one: 3844960795,
-            two: 921458818,
+            one: 4086792448,
+            two: 2376208372,
         },
     }
   stack:
     0xADDR  
-    0xADDR    (frame-pointer walk)
-    0xADDR    (frame-pointer walk)
+    0xADDR  <mio::poll::Poll>::poll  (frame-pointer walk)
+    0xADDR  <tokio::runtime::io::driver::Driver>::turn  (frame-pointer walk)

@@ -26,7 +26,76 @@ lwp 1  polling no task
     0xADDR  _start_crt  (frame-pointer walk)
     0xADDR  _start  (frame-pointer walk)
 
-lwp 2  last polled task 2
+lwp 2  last polled task 1
+  thread_id: core::option::Option<tokio::runtime::thread_id::ThreadId>::None
+  runtime:
+    tokio::runtime::context::runtime::EnterRuntime::Entered {
+        allow_block_in_place: true,
+    }
+  budget: core::option::Option<u8>::None
+  worker 0
+  defer:
+    core::cell::RefCell<alloc::vec::Vec<core::task::wake::Waker, alloc::alloc::Global>> {
+        borrow: core::cell::Cell<isize> {
+            value: 0,
+        },
+        value: [],
+    }
+  core:
+    tokio::runtime::scheduler::multi_thread::worker::Core {
+        tick: 2,
+        lifo_slot: core::option::Option<tokio::runtime::task::Notified<alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle, alloc::alloc::Global>>>::None,
+        lifo_enabled: false,
+        run_queue: tokio::runtime::scheduler::multi_thread::queue::Local<alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle, alloc::alloc::Global>> {
+            inner: alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::queue::Inner<alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle, alloc::alloc::Global>>, alloc::alloc::Global> { .. } @ 0xADDR,
+        },
+        time_context: tokio::runtime::time_alt::context::LocalContext {
+            wheel: tokio::runtime::time_alt::wheel::Wheel { .. } @ 0xADDR,
+            registration_queue: tokio::runtime::time_alt::registration_queue::RegistrationQueue { .. } @ 0xADDR,
+            canc_tx: tokio::runtime::time_alt::cancellation_queue::Sender { .. } @ 0xADDR,
+            canc_rx: tokio::runtime::time_alt::cancellation_queue::Receiver { .. } @ 0xADDR,
+        },
+        is_searching: false,
+        is_shutdown: false,
+        is_traced: false,
+        had_driver: [0xADDR],
+        enable_eager_driver_handoff: false,
+        park: core::option::Option<tokio::runtime::scheduler::multi_thread::park::Parker>::None,
+        stats: tokio::runtime::scheduler::multi_thread::stats::Stats {
+            batch: tokio::runtime::metrics::batch::MetricsBatch { .. } @ 0xADDR,
+            processing_scheduled_tasks_started_at: std::time::Instant { .. } @ 0xADDR,
+            tasks_polled_in_batch: 1,
+            task_poll_time_ewma: 15731.919672131145,
+        },
+        global_queue_interval: 61,
+        rand: tokio::util::rand::FastRand {
+            one: 229045876,
+            two: 1895503013,
+        },
+    }
+  stack:
+    0xADDR  
+    0xADDR    (frame-pointer walk)
+    0xADDR    (frame-pointer walk)
+    0xADDR    (frame-pointer walk)
+    0xADDR    (frame-pointer walk)
+    0xADDR  <parking_lot::condvar::Condvar>::wait_until_internal  (frame-pointer walk)
+    0xADDR  <tokio::runtime::scheduler::multi_thread::park::Inner>::park_condvar  (frame-pointer walk)
+    0xADDR  <tokio::runtime::scheduler::multi_thread::worker::Context>::park_internal  (frame-pointer walk)
+    0xADDR  <tokio::runtime::scheduler::multi_thread::worker::Context>::run  (frame-pointer walk)
+    0xADDR  <tokio::runtime::context::scoped::Scoped<tokio::runtime::scheduler::Context>>::set::<tokio::runtime::scheduler::multi_thread::worker::run::{closure#0}::{closure#0}, ()>  (frame-pointer walk)
+    0xADDR  tokio::runtime::context::runtime::enter_runtime::<tokio::runtime::scheduler::multi_thread::worker::run::{closure#0}, ()>  (frame-pointer walk)
+    0xADDR  tokio::runtime::scheduler::multi_thread::worker::run  (frame-pointer walk)
+    0xADDR  <tokio::runtime::task::core::Core<tokio::runtime::blocking::task::BlockingTask<<tokio::runtime::scheduler::multi_thread::worker::Launch>::launch::{closure#0}>, tokio::runtime::blocking::schedule::BlockingSchedule>>::poll  (frame-pointer walk)
+    0xADDR  <tokio::runtime::task::harness::Harness<tokio::runtime::blocking::task::BlockingTask<<tokio::runtime::scheduler::multi_thread::worker::Launch>::launch::{closure#0}>, tokio::runtime::blocking::schedule::BlockingSchedule>>::poll  (frame-pointer walk)
+    0xADDR  <tokio::runtime::blocking::pool::Inner>::run  (frame-pointer walk)
+    0xADDR  std::sys::backtrace::__rust_begin_short_backtrace::<<tokio::runtime::blocking::pool::Spawner>::spawn_thread::{closure#0}, ()>  (frame-pointer walk)
+    0xADDR  <std::thread::lifecycle::spawn_unchecked<<tokio::runtime::blocking::pool::Spawner>::spawn_thread::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}  (frame-pointer walk)
+    0xADDR  <std::sys::thread::unix::Thread>::new::thread_start  (frame-pointer walk)
+    0xADDR    (frame-pointer walk)
+    0xADDR    (frame-pointer walk)
+
+lwp 3  last polled task 2
   thread_id: core::option::Option<tokio::runtime::thread_id::ThreadId>::None
   runtime:
     tokio::runtime::context::runtime::EnterRuntime::Entered {
@@ -69,8 +138,8 @@ lwp 2  last polled task 2
         },
         global_queue_interval: 61,
         rand: tokio::util::rand::FastRand {
-            one: 2760605224,
-            two: 4270710949,
+            one: 2153611519,
+            two: 2540698080,
         },
     }
   stack:
@@ -78,75 +147,6 @@ lwp 2  last polled task 2
     0xADDR  <mio::poll::Poll>::poll  (frame-pointer walk)
     0xADDR  <tokio::runtime::io::driver::Driver>::turn  (frame-pointer walk)
     0xADDR  <tokio::runtime::time::Driver>::park_internal  (frame-pointer walk)
-    0xADDR  <tokio::runtime::scheduler::multi_thread::worker::Context>::park_internal  (frame-pointer walk)
-    0xADDR  <tokio::runtime::scheduler::multi_thread::worker::Context>::run  (frame-pointer walk)
-    0xADDR  <tokio::runtime::context::scoped::Scoped<tokio::runtime::scheduler::Context>>::set::<tokio::runtime::scheduler::multi_thread::worker::run::{closure#0}::{closure#0}, ()>  (frame-pointer walk)
-    0xADDR  tokio::runtime::context::runtime::enter_runtime::<tokio::runtime::scheduler::multi_thread::worker::run::{closure#0}, ()>  (frame-pointer walk)
-    0xADDR  tokio::runtime::scheduler::multi_thread::worker::run  (frame-pointer walk)
-    0xADDR  <tokio::runtime::task::core::Core<tokio::runtime::blocking::task::BlockingTask<<tokio::runtime::scheduler::multi_thread::worker::Launch>::launch::{closure#0}>, tokio::runtime::blocking::schedule::BlockingSchedule>>::poll  (frame-pointer walk)
-    0xADDR  <tokio::runtime::task::harness::Harness<tokio::runtime::blocking::task::BlockingTask<<tokio::runtime::scheduler::multi_thread::worker::Launch>::launch::{closure#0}>, tokio::runtime::blocking::schedule::BlockingSchedule>>::poll  (frame-pointer walk)
-    0xADDR  <tokio::runtime::blocking::pool::Inner>::run  (frame-pointer walk)
-    0xADDR  std::sys::backtrace::__rust_begin_short_backtrace::<<tokio::runtime::blocking::pool::Spawner>::spawn_thread::{closure#0}, ()>  (frame-pointer walk)
-    0xADDR  <std::thread::lifecycle::spawn_unchecked<<tokio::runtime::blocking::pool::Spawner>::spawn_thread::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}  (frame-pointer walk)
-    0xADDR  <std::sys::thread::unix::Thread>::new::thread_start  (frame-pointer walk)
-    0xADDR    (frame-pointer walk)
-    0xADDR    (frame-pointer walk)
-
-lwp 3  last polled task 1
-  thread_id: core::option::Option<tokio::runtime::thread_id::ThreadId>::None
-  runtime:
-    tokio::runtime::context::runtime::EnterRuntime::Entered {
-        allow_block_in_place: true,
-    }
-  budget: core::option::Option<u8>::None
-  worker 0
-  defer:
-    core::cell::RefCell<alloc::vec::Vec<core::task::wake::Waker, alloc::alloc::Global>> {
-        borrow: core::cell::Cell<isize> {
-            value: 0,
-        },
-        value: [],
-    }
-  core:
-    tokio::runtime::scheduler::multi_thread::worker::Core {
-        tick: 2,
-        lifo_slot: core::option::Option<tokio::runtime::task::Notified<alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle, alloc::alloc::Global>>>::None,
-        lifo_enabled: false,
-        run_queue: tokio::runtime::scheduler::multi_thread::queue::Local<alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle, alloc::alloc::Global>> {
-            inner: alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::queue::Inner<alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle, alloc::alloc::Global>>, alloc::alloc::Global> { .. } @ 0xADDR,
-        },
-        time_context: tokio::runtime::time_alt::context::LocalContext {
-            wheel: tokio::runtime::time_alt::wheel::Wheel { .. } @ 0xADDR,
-            registration_queue: tokio::runtime::time_alt::registration_queue::RegistrationQueue { .. } @ 0xADDR,
-            canc_tx: tokio::runtime::time_alt::cancellation_queue::Sender { .. } @ 0xADDR,
-            canc_rx: tokio::runtime::time_alt::cancellation_queue::Receiver { .. } @ 0xADDR,
-        },
-        is_searching: false,
-        is_shutdown: false,
-        is_traced: false,
-        had_driver: [0xADDR],
-        enable_eager_driver_handoff: false,
-        park: core::option::Option<tokio::runtime::scheduler::multi_thread::park::Parker>::None,
-        stats: tokio::runtime::scheduler::multi_thread::stats::Stats {
-            batch: tokio::runtime::metrics::batch::MetricsBatch { .. } @ 0xADDR,
-            processing_scheduled_tasks_started_at: std::time::Instant { .. } @ 0xADDR,
-            tasks_polled_in_batch: 1,
-            task_poll_time_ewma: 9489.819672131147,
-        },
-        global_queue_interval: 61,
-        rand: tokio::util::rand::FastRand {
-            one: 4204308243,
-            two: 560957472,
-        },
-    }
-  stack:
-    0xADDR  
-    0xADDR    (frame-pointer walk)
-    0xADDR    (frame-pointer walk)
-    0xADDR    (frame-pointer walk)
-    0xADDR    (frame-pointer walk)
-    0xADDR  <parking_lot::condvar::Condvar>::wait_until_internal  (frame-pointer walk)
-    0xADDR  <tokio::runtime::scheduler::multi_thread::park::Inner>::park_condvar  (frame-pointer walk)
     0xADDR  <tokio::runtime::scheduler::multi_thread::worker::Context>::park_internal  (frame-pointer walk)
     0xADDR  <tokio::runtime::scheduler::multi_thread::worker::Context>::run  (frame-pointer walk)
     0xADDR  <tokio::runtime::context::scoped::Scoped<tokio::runtime::scheduler::Context>>::set::<tokio::runtime::scheduler::multi_thread::worker::run::{closure#0}::{closure#0}, ()>  (frame-pointer walk)

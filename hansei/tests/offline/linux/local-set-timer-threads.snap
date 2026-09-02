@@ -3,5 +3,5 @@ source: hansei/src/offline.rs
 description: "`threads` over linux/local-set-timer"
 ---
 LWP      NAME  ROLE             TASK  FRAME 0
-4034095  —     block_on caller  —     0xADDR
+1145944  —     block_on caller  —     0xADDR
 1 thread

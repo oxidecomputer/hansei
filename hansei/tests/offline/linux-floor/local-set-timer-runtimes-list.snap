@@ -4,4 +4,4 @@ description: "`runtimes --list` over linux-floor/local-set-timer"
 ---
 KIND       ID  FLAVOR          HANDLE           HOLDS               WHERE
 runtime    0   current_thread  @0xADDR  1 task, 1 future    on 1 lwp
-local set  0                   @0xADDR  2 tasks, 2 futures  on lwp 4038085, found via a task waker on a timer parked in a runtime's wheel
+local set  0                   @0xADDR  2 tasks, 2 futures  on lwp 1150109, found via a task waker on a timer parked in a runtime's wheel

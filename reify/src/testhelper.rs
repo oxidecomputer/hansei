@@ -2421,10 +2421,6 @@ fixture_ids! {
     // 1 and no default -- the only way to reach an unmatched discriminant,
     // which every other `Variant` in these fixtures computes a boolean for.
     N_CHOICE,
-    // A struct whose whole format is `Elided`: it has a real member so the
-    // ugly path has structure to show, and the formatted path must not
-    // read it.
-    N_LOGGER,
 }
 
 /// A self-contained bundle whose sole formatter is a [`BundleNode`] tree,
@@ -2468,7 +2464,6 @@ pub fn node_bundle() -> Bundle {
     );
     let queuel = s("queue");
     let (choicen, tagn) = (s("Choice"), s("tag"));
-    let (loggern, drainn) = (s("Logger"), s("drain"));
 
     let m = |name, ty, offset| MemberDef { name, ty, offset };
 
@@ -2540,14 +2535,6 @@ pub fn node_bundle() -> Bundle {
             name: choicen,
             size: 1,
             members: vec![m(tagn, N_U8, 0)],
-        },
-    );
-    types.add(
-        N_LOGGER,
-        TypeDef::Struct {
-            name: loggern,
-            size: 8,
-            members: vec![m(drainn, N_U64, 0)],
         },
     );
     let types = types.finish();
@@ -2635,7 +2622,6 @@ pub fn node_bundle() -> Bundle {
             debug_formats: std::collections::BTreeMap::from([
                 (N_THING, thing_node),
                 (N_CHOICE, choice_node),
-                (N_LOGGER, BundleNode::Elided),
             ]),
             name_index: vec![],
             ..Default::default()
