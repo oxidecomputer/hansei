@@ -1166,7 +1166,7 @@ const EXEC_COMES_LAST: &str = "--exec must be the last flag";
 
 /// The flags the listing commands own that an exec command does not:
 /// one of these among the exec words means `--exec` was not last.
-const LISTING_FLAGS: &[&str] = &["--with", "--without", "--group"];
+const LISTING_FLAGS: &[&str] = &["--with", "-w", "--without", "-W", "--group", "-g"];
 
 /// Parse one command line the way the prompt does, handing back the
 /// grammar's own `Command` for suites that drive `dispatch` directly.
@@ -1686,6 +1686,11 @@ mod tests {
         assert_eq!(completions("tasks --group wa"), ["waiting-on", "waker"]);
         assert_eq!(completions("futures --with k"), ["kind"]);
         assert_eq!(completions("threads --with has"), ["has-task"]);
+        // The short spellings reach the same fields.
+        assert_eq!(completions("tasks -g "), tasks);
+        assert_eq!(completions("tasks -w "), tasks);
+        assert_eq!(completions("futures -W "), futures);
+        assert_eq!(completions("threads -w has"), ["has-task"]);
         assert!(tasks.contains(&"id".to_string()) && !futures.contains(&"id".to_string()));
     }
 
@@ -1733,6 +1738,8 @@ mod tests {
         assert_eq!(completions("tasks -l10 --gr"), ["--group"]);
         assert_eq!(completions("tasks -vl 10 --gr"), ["--group"]);
         assert_eq!(completions("tasks --limit=10 --gr"), ["--group"]);
+        assert!(completions("tasks -w type ").is_empty());
+        assert_eq!(completions("tasks -w type foo --gr"), ["--group"]);
     }
 
     /// A `ValueEnum` positional offers its declared values, with the
@@ -2134,6 +2141,37 @@ mod tests {
         assert!(task.is_empty());
         assert!(Line::try_parse_from(["tasks", "--with", "state"]).is_err());
         assert!(Line::try_parse_from(["tasks", "--group"]).is_err());
+
+        // The short spellings: `-w`/`-W` for the pairs, `-g` for the
+        // field, on every listing command.
+        for listing in ["tasks", "futures", "threads"] {
+            let words = [listing, "-w", "a", "b", "-W", "c", "d", "-g", "e"];
+            let line = Line::try_parse_from(words).expect("the short filter spellings parse");
+            let (with, without, group) = match line.command {
+                Command::Tasks {
+                    with,
+                    without,
+                    group,
+                    ..
+                }
+                | Command::Futures {
+                    with,
+                    without,
+                    group,
+                    ..
+                }
+                | Command::Threads {
+                    with,
+                    without,
+                    group,
+                    ..
+                } => (with, without, group),
+                _ => panic!("{listing} parsed as another command"),
+            };
+            assert_eq!(with, ["a", "b"]);
+            assert_eq!(without, ["c", "d"]);
+            assert_eq!(group.as_deref(), Some("e"));
+        }
     }
 
     /// `--exec` takes the rest of the line as one command, flags and
@@ -2151,6 +2189,19 @@ mod tests {
         assert_eq!(exec, ["trace", "-v"]);
         assert!(Line::try_parse_from(["tasks", "--group", "state", "--exec", "trace"]).is_err());
         assert!(Line::try_parse_from(["tasks", "--exec"]).is_err());
+        // `-e` is the same flag, on every listing command.
+        for listing in ["tasks", "futures", "threads"] {
+            let line = Line::try_parse_from([listing, "-e", "trace", "-l", "3"])
+                .expect("the short exec spelling parses");
+            let exec = match line.command {
+                Command::Tasks { exec, .. }
+                | Command::Futures { exec, .. }
+                | Command::Threads { exec, .. } => exec,
+                _ => panic!("{listing} parsed as another command"),
+            };
+            assert_eq!(exec, ["trace", "-l", "3"]);
+            assert!(Line::try_parse_from([listing, "-g", "state", "-e", "trace"]).is_err());
+        }
     }
 
     /// A bare `trace` parses without a target: the refusal is the

@@ -428,12 +428,12 @@ pub enum Command {
         /// more clauses, which AND. Fields: type, state, waiting-on,
         /// local (case-insensitive regexes); kind, task, rt, frame,
         /// addr (exact); depth, holds, sets ('>N', '<N', '=N').
-        #[arg(long, num_args = 2, value_names = ["FIELD", "ARG"])]
+        #[arg(long, short = 'w', num_args = 2, value_names = ["FIELD", "ARG"])]
         with: Vec<String>,
 
         /// Drop the futures whose FIELD matches ARG; the same fields
         /// as --with.
-        #[arg(long, num_args = 2, value_names = ["FIELD", "ARG"])]
+        #[arg(long, short = 'W', num_args = 2, value_names = ["FIELD", "ARG"])]
         without: Vec<String>,
 
         /// Bucket the surviving futures by FIELD's spelled value: one
@@ -441,7 +441,7 @@ pub enum Command {
         /// with a few member addresses; a future with nothing in the
         /// field lands in `<empty>`. With -v, every member's block
         /// prints under its bucket.
-        #[arg(long, value_name = "FIELD")]
+        #[arg(long, short = 'g', value_name = "FIELD")]
         group: Option<String>,
 
         /// Run a session command once per surviving future, under
@@ -451,6 +451,7 @@ pub enum Command {
         /// Runs after --limit.
         #[arg(
             long,
+            short = 'e',
             num_args = 1..,
             allow_hyphen_values = true,
             value_name = "COMMAND",
@@ -927,12 +928,12 @@ pub enum Command {
         /// waiting-on, waker, spawned, defined, state
         /// (case-insensitive regexes); rt, lwp, id (exact); holds,
         /// sets ('>N', '<N', '=N').
-        #[arg(long, num_args = 2, value_names = ["FIELD", "ARG"])]
+        #[arg(long, short = 'w', num_args = 2, value_names = ["FIELD", "ARG"])]
         with: Vec<String>,
 
         /// Drop the tasks whose FIELD matches ARG; the same fields as
         /// --with.
-        #[arg(long, num_args = 2, value_names = ["FIELD", "ARG"])]
+        #[arg(long, short = 'W', num_args = 2, value_names = ["FIELD", "ARG"])]
         without: Vec<String>,
 
         /// Bucket the surviving tasks by FIELD's spelled value: one
@@ -940,7 +941,7 @@ pub enum Command {
         /// with a few member ids; a task with nothing in the field
         /// lands in `<empty>`. With -v, every member's block prints
         /// under its bucket.
-        #[arg(long, value_name = "FIELD")]
+        #[arg(long, short = 'g', value_name = "FIELD")]
         group: Option<String>,
 
         /// Run a session command once per surviving task, under that
@@ -950,6 +951,7 @@ pub enum Command {
         /// Runs after --limit.
         #[arg(
             long,
+            short = 'e',
             num_args = 1..,
             allow_hyphen_values = true,
             value_name = "COMMAND",
@@ -1040,19 +1042,19 @@ pub enum Command {
         /// Keep the threads whose FIELD matches ARG. Repeatable; every
         /// clause must hold. The fields are name, role, task,
         /// has-task, function and lwp.
-        #[arg(long, num_args = 2, value_names = ["FIELD", "ARG"])]
+        #[arg(long, short = 'w', num_args = 2, value_names = ["FIELD", "ARG"])]
         with: Vec<String>,
 
         /// Drop the threads whose FIELD matches ARG. Repeatable, and
         /// ANDed with every other clause; the fields are the same as
         /// --with.
-        #[arg(long, num_args = 2, value_names = ["FIELD", "ARG"])]
+        #[arg(long, short = 'W', num_args = 2, value_names = ["FIELD", "ARG"])]
         without: Vec<String>,
 
         /// Tally the surviving threads by FIELD: one row per distinct
         /// value, most numerous first, with a few member lwps; under
         /// -v, every member's block under its bucket.
-        #[arg(long, value_name = "FIELD")]
+        #[arg(long, short = 'g', value_name = "FIELD")]
         group: Option<String>,
 
         /// Run COMMAND once per surviving thread, under a cursor on
@@ -1062,6 +1064,7 @@ pub enum Command {
         /// `threads --with has-task yes --exec trace -l 3`.
         #[arg(
             long,
+            short = 'e',
             num_args = 1..,
             allow_hyphen_values = true,
             value_name = "COMMAND",
