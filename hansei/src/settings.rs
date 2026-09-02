@@ -22,6 +22,10 @@ pub(crate) struct Settings {
     /// `None` is no limit — the default, and what `config limit off`
     /// returns to.
     pub(crate) limit: Option<usize>,
+    /// Whether a listing on a terminal cuts its name columns to the
+    /// terminal's width, an ellipsis marking each cut. Output that is
+    /// not a terminal is never cut, whatever this says.
+    pub(crate) truncate_names: bool,
 }
 
 impl Default for Settings {
@@ -32,16 +36,18 @@ impl Default for Settings {
             max_string_len: reify::DEFAULT_MAX_STRING_LEN,
             max_array_values: reify::DEFAULT_MAX_ARRAY_VALUES,
             limit: None,
+            truncate_names: true,
         }
     }
 }
 
 /// The keys, in the order the listing prints them.
-pub(crate) const KEYS: [&str; 5] = [
+pub(crate) const KEYS: [&str; 6] = [
     "depth",
     "limit",
     "max-array-values",
     "max-string-len",
+    "truncate-names",
     "ugly",
 ];
 
@@ -78,7 +84,7 @@ pub(crate) fn exec_config(
 pub(crate) fn word_values(key: &str) -> &'static [&'static str] {
     match key {
         "limit" => &["off"],
-        "ugly" => &["on", "off"],
+        "truncate-names" | "ugly" => &["on", "off"],
         _ => &[],
     }
 }
@@ -93,6 +99,7 @@ fn spell(s: &Settings, key: &str) -> String {
         },
         "max-array-values" => s.max_array_values.to_string(),
         "max-string-len" => s.max_string_len.to_string(),
+        "truncate-names" => on_off(s.truncate_names).to_string(),
         "ugly" => on_off(s.ugly).to_string(),
         _ => unreachable!("spell is called with keys from KEYS"),
     }
@@ -128,16 +135,19 @@ fn store(s: &mut Settings, key: &str, value: &str) -> Result<()> {
         }
         "max-array-values" => s.max_array_values = number(key, value)?,
         "max-string-len" => s.max_string_len = number(key, value)?,
-        "ugly" => {
-            s.ugly = match value {
-                "on" => true,
-                "off" => false,
-                other => return Err(anyhow!("config ugly takes on or off, got {other:?}")),
-            }
-        }
+        "truncate-names" => s.truncate_names = switch(key, value)?,
+        "ugly" => s.ugly = switch(key, value)?,
         _ => unreachable!("store is called with keys from KEYS"),
     }
     Ok(())
+}
+
+fn switch(key: &str, value: &str) -> Result<bool> {
+    match value {
+        "on" => Ok(true),
+        "off" => Ok(false),
+        other => Err(anyhow!("config {key} takes on or off, got {other:?}")),
+    }
 }
 
 fn number<N: std::str::FromStr>(key: &str, value: &str) -> Result<N> {
@@ -168,6 +178,7 @@ mod tests {
              limit             off\n\
              max-array-values  128\n\
              max-string-len    131072\n\
+             truncate-names    on\n\
              ugly              off\n"
         );
 
@@ -176,6 +187,7 @@ mod tests {
             ("limit", "100", "100"),
             ("max-array-values", "3", "3"),
             ("max-string-len", "64", "64"),
+            ("truncate-names", "off", "off"),
             ("ugly", "on", "on"),
         ] {
             assert_eq!(run(&settings, Some(key), Some(value)), "");
@@ -186,6 +198,7 @@ mod tests {
         assert_eq!(settings.borrow().limit, Some(100));
         assert_eq!(settings.borrow().max_array_values, 3);
         assert_eq!(settings.borrow().max_string_len, 64);
+        assert!(!settings.borrow().truncate_names);
         assert!(settings.borrow().ugly);
     }
 
@@ -220,7 +233,7 @@ mod tests {
         assert_eq!(
             err("no-such-key", None),
             "no setting \"no-such-key\"; the keys are depth, limit, \
-             max-array-values, max-string-len, ugly"
+             max-array-values, max-string-len, truncate-names, ugly"
         );
         assert_eq!(
             err("depth", Some("x")),
@@ -229,6 +242,10 @@ mod tests {
         assert_eq!(
             err("ugly", Some("yes")),
             "config ugly takes on or off, got \"yes\""
+        );
+        assert_eq!(
+            err("truncate-names", Some("1")),
+            "config truncate-names takes on or off, got \"1\""
         );
     }
 }

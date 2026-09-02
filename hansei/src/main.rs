@@ -688,16 +688,19 @@ pub enum Command {
     /// depth, max-string-len, max-array-values, ugly — govern
     /// `trace -v` locals and every other render outright; `limit`
     /// also backs the `--limit` flags, which override the session
-    /// value for that command only. The values live for the session
-    /// only. Bare `config` prints every key at its current value;
-    /// `config KEY` prints one; `config KEY VALUE` changes it.
+    /// value for that command only; `truncate-names` cuts the
+    /// listings' name columns to the terminal's width, an ellipsis
+    /// marking each cut, and never touches output that is not a
+    /// terminal. The values live for the session only. Bare `config`
+    /// prints every key at its current value; `config KEY` prints
+    /// one; `config KEY VALUE` changes it.
     Config {
         /// The key to show or change. Naming none prints them all.
         key: Option<String>,
 
         /// The new value. Naming none prints the key's current value.
-        /// `ugly` takes on or off; `limit` takes a count, or `off`
-        /// for no limit.
+        /// `ugly` and `truncate-names` take on or off; `limit` takes
+        /// a count, or `off` for no limit.
         value: Option<String>,
     },
 
@@ -1667,6 +1670,16 @@ impl<'b, T: Target> Session<'b, T> {
         &self.gates
     }
 
+    /// The width a listing fits its name columns within: the
+    /// terminal's, when the output is one and `config truncate-names`
+    /// is on; `None` leaves every name whole.
+    pub(crate) fn fit_width(&self, theme: output::Theme) -> Option<usize> {
+        match self.settings.borrow().truncate_names {
+            true => theme.width(),
+            false => None,
+        }
+    }
+
     /// The target itself, for the reads that go straight to it rather
     /// than through a bundle type.
     pub fn proc(&self) -> &T {
@@ -2345,6 +2358,7 @@ mod render_flag_tests {
             max_string_len: 10,
             max_array_values: 3,
             limit: None,
+            truncate_names: true,
         };
         let resolved = RenderOpts::from_settings(&session);
         assert_eq!(resolved.depth, 6);
