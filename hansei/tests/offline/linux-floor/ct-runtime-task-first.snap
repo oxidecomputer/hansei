@@ -2,6 +2,10 @@
 source: hansei/src/offline.rs
 description: "`task 1` over linux-floor/ct-runtime"
 ---
-1  idle  src/bin/ct-runtime.rs:13  timer (deadline TS on the target's monotonic clock)  async fn ct_runtime::sleeper
-Spawned at: src/bin/ct-runtime.rs:33:24
-Defined at: src/bin/ct-runtime.rs:10
+task 1
+state: idle
+type: async fn ct_runtime::sleeper
+awaiting at: src/bin/ct-runtime.rs:13
+waiting on: timer (deadline TS on the target's monotonic clock)
+spawned at: src/bin/ct-runtime.rs:33:24
+defined at: src/bin/ct-runtime.rs:10

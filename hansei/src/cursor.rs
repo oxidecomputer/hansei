@@ -69,21 +69,7 @@ pub(crate) fn exec_task<T: proc::Target>(
     };
     match verbose {
         true => tasks::print_task_block(session, index, out),
-        false => {
-            writeln!(out, "{}", tasks::row_line(session, index))?;
-            // The task's two source anchors follow the row: where it
-            // was spawned, and where its root future is defined.
-            let task = &session.tasks.tasks[index];
-            if let Some(loc) = &task.spawn_location {
-                writeln!(out, "Spawned at: {loc}")?;
-            }
-            if let bundle::FutureInfo::Known(known) = &task.future
-                && let Some((file, line)) = &known.decl
-            {
-                writeln!(out, "Defined at: {file}:{line}")?;
-            }
-            Ok(())
-        }
+        false => tasks::print_task_summary(session, index, out),
     }
 }
 
@@ -1230,14 +1216,21 @@ mod tests {
             .expect("the task selects");
             let mut out = Vec::new();
             exec_task(&session, None, false, &mut out).expect("bare task prints the cursor's");
-            let line = String::from_utf8(out).expect("the row is UTF-8");
-            assert!(line.starts_with(&id.to_string()), "{id}: {line}");
-            // The row's five cells, double-space joined: a
-            // single-group target carries no RT cell.
-            let row = line.lines().next().unwrap_or_default();
-            assert_eq!(row.trim_end().split("  ").count(), 5, "{line}");
+            let text = String::from_utf8(out).expect("the summary is UTF-8");
+            assert!(text.starts_with(&format!("task {id}\n")), "{id}: {text}");
+            // Under the heading, one labelled line per field, the state
+            // and type always there; a single-group target carries no
+            // owner line.
+            let labels: Vec<&str> = text
+                .lines()
+                .skip(1)
+                .map(|line| line.split_once(": ").map(|(l, _)| l).unwrap_or(line))
+                .collect();
+            assert!(labels.starts_with(&["state", "type"]), "{text}");
+            assert!(!labels.contains(&"owner"), "{text}");
             // The selection carries the task's source anchors.
-            assert!(line.contains("Spawned at: "), "{line}");
+            assert!(text.contains("\nspawned at: "), "{text}");
+            assert!(text.contains("\ndefined at: "), "{text}");
         }
 
         // `-v` prints the cursor task's full block.

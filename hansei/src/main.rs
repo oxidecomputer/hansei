@@ -773,8 +773,8 @@ pub enum Command {
     /// claims the address (`whatis` semantics), and refuses when no
     /// task contains it. Selecting a running task also selects the lwp
     /// polling it; selecting an idle one clears any thread cursor.
-    /// Bare `task` prints the cursor's task as its table row; `-v` its
-    /// full block.
+    /// Bare `task` prints the cursor's task as one labelled line per
+    /// field; `-v` its full block.
     Task {
         /// A decimal task id (see `tasks`), or a 0x address inside
         /// the task's allocation. Naming none prints the cursor's
@@ -782,7 +782,7 @@ pub enum Command {
         #[arg(value_parser = parse_trace_target, value_name = "ID|0xADDR")]
         target: Option<TraceTarget>,
 
-        /// Print the cursor task's full block rather than one row.
+        /// Print the cursor task's full block rather than its summary.
         #[arg(long, short)]
         verbose: bool,
     },

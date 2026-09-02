@@ -2,6 +2,10 @@
 source: hansei/src/offline.rs
 description: "`task 3` over linux/simple-await"
 ---
-3  idle  src/bin/simple-await.rs:40  future tokio::sync::oneshot::Receiver<u32>  async fn simple_await::work
-Spawned at: src/bin/simple-await.rs:75:21
-Defined at: src/bin/simple-await.rs:17
+task 3
+state: idle
+type: async fn simple_await::work
+awaiting at: src/bin/simple-await.rs:40
+waiting on: future tokio::sync::oneshot::Receiver<u32>
+spawned at: src/bin/simple-await.rs:75:21
+defined at: src/bin/simple-await.rs:17

@@ -906,12 +906,51 @@ fn row_cells(row: &TaskRow, groups: bool) -> Vec<String> {
     cells
 }
 
-/// One task's table row as a single line, cells joined — the spelling
-/// `--exec` heads each task's output with, and the line the cursor's
-/// `task` selector prints.
-pub(crate) fn row_line<T: proc::Target>(session: &Session<'_, T>, index: usize) -> String {
-    let groups = !session.group_tags().is_empty();
-    row_cells(&rows(session)[index], groups).join("  ")
+/// One task as labelled lines — what the cursor's `task` selector
+/// prints. A row's cells stacked rather than joined: the future type
+/// alone outruns a terminal, and stacked, the id and state stay
+/// readable at its left. A line prints only where the target has
+/// something for it — no `—` placeholders — so a missing source
+/// anchor is a shorter block, the way the table's `-v` block is not.
+pub(crate) fn print_task_summary<T: proc::Target>(
+    session: &Session<'_, T>,
+    index: usize,
+    out: &mut dyn io::Write,
+) -> Result<()> {
+    let task = &session.tasks.tasks[index];
+    let row = &rows(session)[index];
+    writeln!(out, "task {}", row.id)?;
+    // A mid-poll task waits on nothing, so the lwp polling it goes on
+    // the state rather than on a wait line, where the table's wait cell
+    // carries it.
+    let polled = !task.blocking && task.state.lifecycle() == Lifecycle::Running;
+    let mut state = row.state.clone();
+    if polled {
+        state.push_str(&match row.lwp {
+            Some(lwp) => format!(" (mid-poll on lwp {lwp})"),
+            None => " (mid-poll)".to_string(),
+        });
+    }
+    writeln!(out, "state: {state}")?;
+    if let Some(tag) = session.group_tags().get(task.group) {
+        writeln!(out, "owner: {tag}")?;
+    }
+    writeln!(out, "type: {}", row.future)?;
+    if let Some(loc) = &row.awaiting_at {
+        writeln!(out, "awaiting at: {loc}")?;
+    }
+    if !polled && row.waiting_on != "—" {
+        writeln!(out, "waiting on: {}", row.waiting_on)?;
+    }
+    if let Some(loc) = &task.spawn_location {
+        writeln!(out, "spawned at: {loc}")?;
+    }
+    if let bundle::FutureInfo::Known(known) = &task.future
+        && let Some((file, line)) = &known.decl
+    {
+        writeln!(out, "defined at: {file}:{line}")?;
+    }
+    Ok(())
 }
 
 /// One task's full block — what `tasks -v` prints for it — for the

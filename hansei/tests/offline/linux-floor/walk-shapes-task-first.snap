@@ -2,6 +2,11 @@
 source: hansei/src/offline.rs
 description: "`task 1` over linux-floor/walk-shapes"
 ---
-1  idle  0  src/bin/walk-shapes.rs:103  future tokio::sync::notify::Notified  async fn walk_shapes::chained
-Spawned at: src/bin/walk-shapes.rs:245:9
-Defined at: src/bin/walk-shapes.rs:92
+task 1
+state: idle
+owner: runtime 0 @ 0xADDR (current_thread)
+type: async fn walk_shapes::chained
+awaiting at: src/bin/walk-shapes.rs:103
+waiting on: future tokio::sync::notify::Notified
+spawned at: src/bin/walk-shapes.rs:245:9
+defined at: src/bin/walk-shapes.rs:92

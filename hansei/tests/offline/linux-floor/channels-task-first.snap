@@ -2,6 +2,10 @@
 source: hansei/src/offline.rs
 description: "`task 3` over linux-floor/channels"
 ---
-3  idle  src/bin/channels.rs:30  future tokio::sync::notify::Notified  async fn channels::notify_waiter
-Spawned at: src/bin/channels.rs:75:23
-Defined at: src/bin/channels.rs:17
+task 3
+state: idle
+type: async fn channels::notify_waiter
+awaiting at: src/bin/channels.rs:30
+waiting on: future tokio::sync::notify::Notified
+spawned at: src/bin/channels.rs:75:23
+defined at: src/bin/channels.rs:17

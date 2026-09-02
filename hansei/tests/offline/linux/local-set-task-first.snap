@@ -2,6 +2,11 @@
 source: hansei/src/offline.rs
 description: "`task 1` over linux/local-set"
 ---
-1  idle  1  src/bin/local-set.rs:16  timer (deadline TS on the target's monotonic clock)  async fn local_set::local_sleeper
-Spawned at: src/bin/local-set.rs:46:29
-Defined at: src/bin/local-set.rs:13
+task 1
+state: idle
+owner: local set 0 @ 0xADDR (lwp 1145762)
+type: async fn local_set::local_sleeper
+awaiting at: src/bin/local-set.rs:16
+waiting on: timer (deadline TS on the target's monotonic clock)
+spawned at: src/bin/local-set.rs:46:29
+defined at: src/bin/local-set.rs:13
