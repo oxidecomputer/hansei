@@ -35,7 +35,7 @@ pub(crate) struct ThreadRow {
     pub(crate) role: String,
     /// The task it is polling, believed only when the listing agrees.
     pub(crate) task: Option<u64>,
-    /// The top of the unwound stack, [`headline`]-joined.
+    /// The function at the top of the unwound stack, per [`headline`].
     pub(crate) frame0: String,
 }
 
@@ -190,7 +190,7 @@ fn blocking_role(frames: &[String]) -> Option<&'static str> {
 }
 
 /// Every frame's symbol, demangled without the hash — the spelling the
-/// role classifier matches on and the headline prints.
+/// role classifier matches on and the `FRAME 0` cell prints.
 fn stack_names(stack: Option<&unwind::Backtrace>) -> Vec<String> {
     stack
         .map(|bt| {
@@ -205,13 +205,11 @@ fn stack_names(stack: Option<&unwind::Backtrace>) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// The `FRAME 0` cell: the top three symbols `←`-joined — the mdb
-/// `::stacks` headline — or `—` where no stack could be walked.
+/// The `FRAME 0` cell: the function at the top of the stack — the
+/// symbol, or the pc where there is none — or `—` where no stack
+/// could be walked.
 fn headline(names: &[String]) -> String {
-    match names.is_empty() {
-        true => "—".to_string(),
-        false => names[..names.len().min(3)].join(" \u{2190} "),
-    }
+    names.first().cloned().unwrap_or_else(|| "—".to_string())
 }
 
 /// One thread's table row as a single line, cells joined — the line
@@ -233,7 +231,8 @@ pub(crate) fn row_line<T: proc::Target>(session: &Session<'_, T>, lwp: u32) -> O
     )
 }
 
-/// Print the table: one row per lwp, in lwp order, nothing truncated.
+/// Print the table: one row per lwp, in lwp order, nothing truncated,
+/// and the count under it.
 fn print_thread_table(rows: &[ThreadRow], out: &mut dyn io::Write) -> Result<()> {
     let mut table = crate::output::Table::new(5).header(["LWP", "NAME", "ROLE", "TASK", "FRAME 0"]);
     let dash = || "—".to_string();
@@ -249,6 +248,7 @@ fn print_thread_table(rows: &[ThreadRow], out: &mut dyn io::Write) -> Result<()>
     if !table.is_empty() {
         table.write(out)?;
     }
+    writeln!(out, "{}", summary::counted(rows.len(), "thread"))?;
     Ok(())
 }
 
@@ -727,13 +727,12 @@ mod tests {
         }
     }
 
-    /// The headline is the top three symbols and no more; a stack
-    /// that could not be walked is a `—`, not an empty cell.
+    /// The headline is the top frame alone; a stack that could not
+    /// be walked is a `—`, not an empty cell.
     #[test]
-    fn test_the_headline_takes_three_frames() {
-        let names: Vec<String> = ["a", "b", "c", "d"].iter().map(|s| s.to_string()).collect();
-        assert_eq!(headline(&names), "a \u{2190} b \u{2190} c");
-        assert_eq!(headline(&names[..1]), "a");
+    fn test_the_headline_is_the_top_frame() {
+        let names: Vec<String> = ["a", "b", "c"].iter().map(|s| s.to_string()).collect();
+        assert_eq!(headline(&names), "a");
         assert_eq!(headline(&[]), "—");
     }
 }

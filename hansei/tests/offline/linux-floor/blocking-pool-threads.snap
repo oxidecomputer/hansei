@@ -4,6 +4,7 @@ description: "`threads` over linux-floor/blocking-pool"
 ---
 LWP      NAME  ROLE                 TASK  FRAME 0
 4038988  —     entered runtime      —     0xADDR
-4038990  —     worker 0, in driver  —     0xADDR ← 0xADDR ← 0xADDR
+4038990  —     worker 0, in driver  —     0xADDR
 4038991  —     worker 1, parked     —     0xADDR
 4038992  —     entered runtime      3     0xADDR
+4 threads

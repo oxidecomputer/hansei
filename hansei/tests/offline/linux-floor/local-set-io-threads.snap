@@ -3,4 +3,5 @@ source: hansei/src/offline.rs
 description: "`threads` over linux-floor/local-set-io"
 ---
 LWP      NAME  ROLE             TASK  FRAME 0
-4038262  —     block_on caller  —     0xADDR ← 0xADDR ← 0xADDR
+4038262  —     block_on caller  —     0xADDR
+1 thread

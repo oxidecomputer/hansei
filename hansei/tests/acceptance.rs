@@ -2750,9 +2750,11 @@ fn test_threads_lists_a_table_row_per_lwp() {
         for column in ["NAME", "ROLE", "TASK", "FRAME 0"] {
             assert!(header.contains(column), "{out}");
         }
-        let rows: Vec<&str> = lines.collect();
-        // One row per block the -v form prints: the two listings
-        // cover the same population.
+        let mut rows: Vec<&str> = lines.collect();
+        // The table closes with its count; one row per block the -v
+        // form prints, so the two listings cover the same population.
+        let footer = rows.pop().expect("the listing has a footer");
+        assert_eq!(footer, format!("{} threads", rows.len()), "{out}");
         let blocks = hansei_ok(&bundle, core, "threads -v");
         assert_eq!(rows.len(), blocks.split("\n\n").count(), "{out}");
         // A worker's row names its place in the run loop; the main
