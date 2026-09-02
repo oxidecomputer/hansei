@@ -22,9 +22,10 @@ pub(crate) struct Settings {
     /// `None` is no limit — the default, and what `config limit off`
     /// returns to.
     pub(crate) limit: Option<usize>,
-    /// Whether a listing on a terminal cuts its name columns to the
-    /// terminal's width, an ellipsis marking each cut. Output that is
-    /// not a terminal is never cut, whatever this says.
+    /// Whether a listing on a terminal cuts its name columns — and a
+    /// trace the names ending its frame lines — to the terminal's
+    /// width, an ellipsis marking each cut. Output that is not a
+    /// terminal is never cut, whatever this says.
     pub(crate) truncate_names: bool,
 }
 

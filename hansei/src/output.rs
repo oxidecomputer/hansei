@@ -159,6 +159,31 @@ pub(crate) struct Table {
 /// the ellipsis after them. A line that overflows even so overflows.
 const MIN_NAME: usize = 10;
 
+/// A name cut to `width` characters when it overruns them, the last
+/// character an ellipsis to say so; whole otherwise.
+fn clip(name: &str, width: usize) -> Cow<'_, str> {
+    match name.chars().count() > width {
+        true => {
+            let mut cut: String = name.chars().take(width - 1).collect();
+            cut.push('…');
+            Cow::Owned(cut)
+        }
+        false => Cow::Borrowed(name),
+    }
+}
+
+/// A name that ends a line whose other columns take `taken`
+/// characters, as a fit renders it: whole when there is no edge to
+/// fit or it fits the room those columns leave, else cut to that
+/// room — the rule a `Table` applies to its one overrunning name
+/// column, for the listings whose lines are not rows of a table.
+pub(crate) fn fit_name(name: &str, taken: usize, fit: Option<usize>) -> Cow<'_, str> {
+    match fit {
+        Some(fit) => clip(name, fit.saturating_sub(taken).max(MIN_NAME + 1)),
+        None => Cow::Borrowed(name),
+    }
+}
+
 impl Table {
     /// A table of `columns` columns, every cell left-aligned, columns
     /// two spaces apart.
@@ -274,12 +299,8 @@ impl Table {
     /// column it overruns — cut to the column's width, the last
     /// character an ellipsis to say so.
     fn clipped<'a>(&self, column: usize, cell: &'a str, width: usize) -> Cow<'a, str> {
-        match self.truncatable[column] && cell.chars().count() > width {
-            true => {
-                let mut cut: String = cell.chars().take(width - 1).collect();
-                cut.push('…');
-                Cow::Owned(cut)
-            }
+        match self.truncatable[column] {
+            true => clip(cell, width),
             false => Cow::Borrowed(cell),
         }
     }
@@ -487,6 +508,25 @@ mod tests {
         assert_eq!(
             t.fit(Some(40)).render(),
             ["1  short  future::type::name::that::is:…"]
+        );
+    }
+
+    /// A line that is not a table row fits its name the same way: the
+    /// name is cut to what its line's other columns leave of the fit,
+    /// keeps its ten characters even where that overruns, and is whole
+    /// where it fits or where there is no fit.
+    #[test]
+    fn test_a_lone_name_fits_like_a_column() {
+        assert_eq!(
+            fit_name("a::very::long::future::type::name<T>", 6, Some(20)),
+            "a::very::long…"
+        );
+        assert_eq!(fit_name("abcdefghijklmnop", 18, Some(20)), "abcdefghij…");
+        assert_eq!(fit_name("cdefghijklmnop", 4, Some(18)), "cdefghijklmnop");
+        assert_eq!(fit_name("cdefghijklmnopq", 4, Some(18)), "cdefghijklmno…");
+        assert_eq!(
+            fit_name("a::very::long::future::type::name<T>", 6, None),
+            "a::very::long::future::type::name<T>"
         );
     }
 
