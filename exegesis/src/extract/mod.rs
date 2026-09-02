@@ -461,9 +461,18 @@ impl Input {
     /// Hash the whole file for the bundle's identity on a background
     /// thread. BLAKE3 over a multi-gigabyte binary is pure overhead on
     /// the critical path, but it overlaps entirely with the DWARF parse.
+    ///
+    /// The mapping is advised first that all of it is wanted. Warm, that
+    /// is free; cold, it turns the parse's random faults into read-ahead
+    /// the kernel runs beside them — a page the parse reaches is then
+    /// already on its way — and the hash's own sequential pass follows
+    /// behind. Advice is advice: a system that ignores it loses nothing.
     fn hash(&self) -> std::thread::JoinHandle<blake3::Hash> {
         let bytes = std::sync::Arc::clone(&self.bytes);
-        std::thread::spawn(move || blake3::hash(&bytes[..]))
+        std::thread::spawn(move || {
+            let _ = bytes.advise(memmap2::Advice::WillNeed);
+            blake3::hash(&bytes[..])
+        })
     }
 }
 
