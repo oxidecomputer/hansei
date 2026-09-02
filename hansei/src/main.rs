@@ -15,7 +15,6 @@ use std::cell::{Cell, OnceCell, RefCell};
 use std::collections::HashMap;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use std::sync::mpsc;
 
 mod bundle_cmd;
 mod cursor;
@@ -1435,12 +1434,12 @@ pub struct Session<'b, T: Target> {
     /// The bundle's impl-path substitutions, threaded into every
     /// display fold ([`hansei_bundle::names::fold_type_name`]).
     impl_fold: hansei_bundle::names::ImplFold,
-    /// Task extents, the sub-executor census and the wait analysis,
-    /// built on first use: a core does not change, so the address→task
-    /// answers never do either, and the two walks cover every chain —
-    /// worth paying once.
-    /// Normally adopted from the launch-time worker; the `get_or_init`
-    /// fallbacks compute in place if that worker died.
+    /// Task extents, the sub-executor census and the wait analysis:
+    /// a core does not change, so the address→task answers never do
+    /// either, and the two walks cover every chain — worth paying
+    /// once. Built at launch, before the first prompt (see
+    /// [`warm_listings`]); the `get_or_init` fallbacks compute in
+    /// place for a session nothing warmed, or whose worker died.
     extents: OnceCell<bundle::TaskExtents>,
     census: OnceCell<census::FutureCensus>,
     /// What the target's allocator says is live, where its allocator is
@@ -1451,9 +1450,6 @@ pub struct Session<'b, T: Target> {
     /// would have allowed, over the whole session. A gate that fires
     /// prints nothing, so this is the only account of what it did.
     gates: GateCounts,
-    /// The launch-time worker's handoff, present until adopted (or
-    /// until quit drops it to stop the worker). See [`warm_worker`].
-    warm: RefCell<Option<mpsc::Receiver<Warm>>>,
     /// Whether `--audit` has run against the census, wherever the
     /// census itself was built.
     audited: Cell<bool>,
@@ -1470,7 +1466,7 @@ pub struct Session<'b, T: Target> {
     /// for `graph`, reversed for `sync` and the waker slots — built on
     /// first use beside them.
     relations: OnceCell<relations::Relations>,
-    /// The `tasks` table's rows, built from the analysis on first use
+    /// The `tasks` table's rows, built from the analysis at launch
     /// and shared with the filters and the JSON printer.
     task_rows: OnceCell<Vec<tasks::TaskRow>>,
     /// The `futures` table's rows, likewise; building them reads the
@@ -1587,7 +1583,6 @@ impl<'b, T: Target> Session<'b, T> {
             census: OnceCell::new(),
             umem: OnceCell::new(),
             gates: GateCounts::default(),
-            warm: RefCell::new(None),
             audited: Cell::new(false),
             bounds: census::Bounds {
                 scan_depth: args.search_depth,
@@ -1615,32 +1610,21 @@ impl<'b, T: Target> Session<'b, T> {
         }
     }
 
-    /// Adopt what the launch-time worker built, blocking until it is
-    /// done. Called by each accessor below before its fallback: once
-    /// the receiver is taken — the handoff landed, or the worker died —
-    /// this is free, and the fallbacks compute in place.
-    fn adopt_warm(&self) {
-        let Some(rx) = self.warm.borrow_mut().take() else {
-            return;
-        };
-        while let Ok(msg) = rx.recv() {
-            if let Warm::Ready(warmed) = msg {
-                let _ = self.extents.set(warmed.extents);
-                let _ = self.census.set(warmed.census);
-                let _ = self.umem.set(warmed.umem);
-                break;
-            }
-        }
+    /// Adopt what the launch-time worker built. Nothing has asked for
+    /// any of it yet — the worker is joined before the first command
+    /// runs — so the cells are empty and the sets land.
+    fn adopt(&self, warmed: Warmed) {
+        let _ = self.extents.set(warmed.extents);
+        let _ = self.census.set(warmed.census);
+        let _ = self.umem.set(warmed.umem);
     }
 
     fn extents(&self) -> &bundle::TaskExtents {
-        self.adopt_warm();
         self.extents
             .get_or_init(|| self.ctx.task_extents(&self.tasks))
     }
 
     fn census(&self) -> &census::FutureCensus {
-        self.adopt_warm();
         let census = self.census.get_or_init(|| {
             census::census_bounded(&self.ctx, &self.tasks, self.bounds, self.umem())
         });
@@ -1665,7 +1649,6 @@ impl<'b, T: Target> Session<'b, T> {
     /// it is being written, while the tally it counts into is the
     /// session's and outlives every one of them.
     pub fn heap_view(&self) -> Option<HeapView<'_, T>> {
-        self.adopt_warm();
         let umem = self
             .umem
             .get_or_init(|| UmemHeap::build(self.proc))
@@ -2057,26 +2040,33 @@ fn run(args: &SessionArgs, exec: &[String]) -> Result<()> {
     }
     check_binary(&proc, args, binary_extracted_from)?;
     let session = Session::attach(&proc, &bundle, args)?;
+    warm_listings(&session, &proc, &bundle);
+    repl::run(&session, exec)
+}
 
-    // The joint state every deep command reads — task extents and the
-    // census — starts building immediately on its own thread, so it is
-    // warm (or well under way) by the time the first command that wants
-    // it is typed. Commands that need it block on the handoff; a
-    // session that quits first is noticed at the worker's next probe
-    // and the rest of the build is skipped.
+/// Build what the listings read before the first command runs, so
+/// `tasks`, `futures` and `threads` — where a session starts — answer
+/// at once rather than the first of each paying for its walk at the
+/// prompt. Two threads share the wait: the joint state every deep
+/// command reads (the allocator index, the task extents and the
+/// census) builds on a worker, while this thread — the only one the
+/// session's own context can run on — builds the wait analysis and
+/// the rows that need only it. The future rows, which read the
+/// census, come last, once the worker is joined.
+fn warm_listings(session: &Session<'_, Proc>, proc: &Proc, bundle: &Bundle) {
     std::thread::scope(|scope| {
-        let (tx, rx) = mpsc::channel();
-        *session.warm.borrow_mut() = Some(rx);
         let tasks = &session.tasks;
         let (policy, bounds) = (session.policy, session.bounds);
-        let (proc, bundle) = (&proc, &bundle);
-        scope.spawn(move || warm_worker(proc, bundle, policy, tasks, bounds, tx));
-        let res = repl::run(&session, exec);
-        // Quitting drops the unadopted receiver so the worker stops at
-        // its next probe instead of finishing a build nobody reads.
-        session.warm.borrow_mut().take();
-        res
-    })
+        let worker = scope.spawn(move || warm_worker(proc, bundle, policy, tasks, bounds));
+        tasks::rows(session);
+        threads::rows(session);
+        // A worker that panicked has left the cells empty, and the
+        // accessors' fallbacks compute in place.
+        if let Ok(Some(warmed)) = worker.join() {
+            session.adopt(*warmed);
+        }
+    });
+    futures::rows(session);
 }
 
 /// The types this session reads: the file `--tokio-info` names, or
@@ -2111,19 +2101,12 @@ fn first_audit(audit: bool, audited: &Cell<bool>) -> bool {
 /// What the launch-time worker hands the session, both built over the
 /// worker's own [`bundle::Context`] (the session's holds interior
 /// caches and stays on its thread) and the session's shared task list.
+/// Boxed for the join: the census is large, and cannot be cloned
+/// piecemeal (it carries its walk errors).
 struct Warmed {
     extents: bundle::TaskExtents,
     census: census::FutureCensus,
     umem: Option<UmemHeap>,
-}
-
-/// The worker-to-session channel: probes carry nothing and exist so a
-/// dropped receiver — a session that quit — ends the worker between
-/// its stages; the finished state arrives whole, by move, because the
-/// census cannot be cloned piecemeal (it carries its walk errors).
-enum Warm {
-    Probe,
-    Ready(Box<Warmed>),
 }
 
 fn warm_worker(
@@ -2132,32 +2115,23 @@ fn warm_worker(
     policy: contract::WalkPolicy,
     tasks: &bundle::TaskList,
     bounds: census::Bounds,
-    tx: mpsc::Sender<Warm>,
-) {
+) -> Option<Box<Warmed>> {
     // The attach already proved this constructor over the same inputs;
     // a failure here means the session is degraded in a way its own
     // accessors will report, so the worker just stands down.
-    let Ok(ctx) = bundle::Context::with_policy(proc, BundleView::new(bundle), policy) else {
-        return;
-    };
-    // The allocator index first: it is the cheapest of the three, the
-    // only one that reads nothing the bundle describes — so a target
-    // whose layouts have drifted still gets it — and what the census
-    // below corroborates its finds against.
+    let ctx = bundle::Context::with_policy(proc, BundleView::new(bundle), policy).ok()?;
+    // The allocator index first: it is the only one of the three that
+    // reads nothing the bundle describes — so a target whose layouts
+    // have drifted still gets it — and what the census below
+    // corroborates its finds against.
     let umem = UmemHeap::build(proc);
-    if tx.send(Warm::Probe).is_err() {
-        return;
-    }
     let extents = ctx.task_extents(tasks);
-    if tx.send(Warm::Probe).is_err() {
-        return;
-    }
     let census = census::census_bounded(&ctx, tasks, bounds, umem.as_ref());
-    let _ = tx.send(Warm::Ready(Box::new(Warmed {
+    Some(Box::new(Warmed {
         extents,
         census,
         umem,
-    })));
+    }))
 }
 
 /// The attach summary: what is being read, and how well the two files
