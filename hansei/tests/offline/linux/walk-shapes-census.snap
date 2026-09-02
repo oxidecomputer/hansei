@@ -7,8 +7,8 @@ Threads: 3 lwps, 3 in 2 runtimes
         1 parked in the io driver
             block_on thread, lwp 1146696
     2 in 2 runtimes, outside the run loop
-        0 in the blocking pool of runtime 0 @0xADDR (0 idle, 0 tasks queued)
-        0 in the blocking pool of runtime 1 @0xADDR (0 idle, 0 tasks queued)
+        0 in the blocking pool of runtime 0 @ 0xADDR (0 idle, 0 tasks queued)
+        0 in the blocking pool of runtime 1 @ 0xADDR (0 idle, 0 tasks queued)
 
 Tasks: 10 owned by 2 runtimes and 2 local sets
     State: 1 queued, 9 idle

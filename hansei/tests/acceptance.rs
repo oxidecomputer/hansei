@@ -1774,9 +1774,9 @@ fn test_local_set_acceptance() {
 
         // Groups: the scheduler task carries the runtime's tag, the two
         // local tasks the set's, with the owner lwp joined on.
-        let rt_tag = regex::Regex::new(r"^runtime 0 @0x[0-9a-f]+ \(current_thread\)$").unwrap();
+        let rt_tag = regex::Regex::new(r"^runtime 0 @ 0x[0-9a-f]+ \(current_thread\)$").unwrap();
         assert!(rt_tag.is_match(&joiner.owner), "{rows:#?}");
-        let set_tag = regex::Regex::new(r"^local set 0 @0x[0-9a-f]+ \(lwp \d+\)$").unwrap();
+        let set_tag = regex::Regex::new(r"^local set 0 @ 0x[0-9a-f]+ \(lwp \d+\)$").unwrap();
         assert!(set_tag.is_match(&sleeper.owner), "{rows:#?}");
         assert_eq!(sleeper.owner, acquirer.owner, "{rows:#?}");
 
@@ -1871,9 +1871,9 @@ fn test_local_set_timer_acceptance() {
         // The spawned task keeps its runtime's tag — its own entry is in
         // the same wheel, and being listed is what keeps it out of the
         // harvest's candidates.
-        let rt_tag = regex::Regex::new(r"^runtime 0 @0x[0-9a-f]+ \(current_thread\)$").unwrap();
+        let rt_tag = regex::Regex::new(r"^runtime 0 @ 0x[0-9a-f]+ \(current_thread\)$").unwrap();
         assert!(rt_tag.is_match(&spawned.owner), "{rows:#?}");
-        let set_tag = regex::Regex::new(r"^local set 0 @0x[0-9a-f]+ \(lwp \d+\)$").unwrap();
+        let set_tag = regex::Regex::new(r"^local set 0 @ 0x[0-9a-f]+ \(lwp \d+\)$").unwrap();
         assert!(set_tag.is_match(&sleeper.owner), "{rows:#?}");
         assert_eq!(sleeper.owner, acquirer.owner, "{rows:#?}");
 
@@ -1916,9 +1916,9 @@ fn test_local_set_io_acceptance() {
         // The spawned task keeps its runtime's tag — its own waker is on
         // a registration the harvest walks, and being listed is what
         // keeps it out of the candidates.
-        let rt_tag = regex::Regex::new(r"^runtime 0 @0x[0-9a-f]+ \(current_thread\)$").unwrap();
+        let rt_tag = regex::Regex::new(r"^runtime 0 @ 0x[0-9a-f]+ \(current_thread\)$").unwrap();
         assert!(rt_tag.is_match(&spawned.owner), "{rows:#?}");
-        let set_tag = regex::Regex::new(r"^local set 0 @0x[0-9a-f]+ \(lwp \d+\)$").unwrap();
+        let set_tag = regex::Regex::new(r"^local set 0 @ 0x[0-9a-f]+ \(lwp \d+\)$").unwrap();
         for member in &members {
             assert!(set_tag.is_match(&member.owner), "{rows:#?}");
             assert_eq!(member.owner, members[0].owner, "{rows:#?}");
@@ -1960,17 +1960,17 @@ fn test_foreign_runtime_acceptance() {
         let detached = task_with_future(&rows, "async fn foreign_runtime::detached");
         let sleeper = task_with_future(&rows, "async fn foreign_runtime::local_sleeper");
 
-        let rt_tag = regex::Regex::new(r"^runtime 0 @0x[0-9a-f]+ \(current_thread\)$").unwrap();
+        let rt_tag = regex::Regex::new(r"^runtime 0 @ 0x[0-9a-f]+ \(current_thread\)$").unwrap();
         assert!(rt_tag.is_match(&joiner.owner), "{rows:#?}");
         // Both of the hidden runtime's tasks carry its tag: the one the
         // joiner named, and the one nothing outside its list points at.
         let hidden_tag =
-            regex::Regex::new(r"^runtime 1 @0x[0-9a-f]+ \(current_thread, no thread inside it\)$")
+            regex::Regex::new(r"^runtime 1 @ 0x[0-9a-f]+ \(current_thread, no thread inside it\)$")
                 .unwrap();
         for task in [joined, detached] {
             assert!(hidden_tag.is_match(&task.owner), "{rows:#?}");
         }
-        let set_tag = regex::Regex::new(r"^local set 0 @0x[0-9a-f]+ \(lwp \d+\)$").unwrap();
+        let set_tag = regex::Regex::new(r"^local set 0 @ 0x[0-9a-f]+ \(lwp \d+\)$").unwrap();
         assert!(set_tag.is_match(&sleeper.owner), "{rows:#?}");
 
         // The join edge reads like any other now that its target is
@@ -2853,7 +2853,7 @@ fn test_runtimes_selects_by_index_and_address() {
         assert_eq!(out, by_index, "index 0 selects the one runtime");
 
         let listed = hansei_ok(&bundle, core, "runtimes -l");
-        let addr = regex::Regex::new(r"@(0x[0-9a-f]+)")
+        let addr = regex::Regex::new(r"\b(0x[0-9a-f]+)\b")
             .unwrap()
             .captures(&listed)
             .expect("the listing prints a handle address")[1]
@@ -2941,7 +2941,7 @@ fn test_census_counts_the_target() {
         // The section names the one runtime the target holds, the way
         // `runtimes` lists it.
         let inside =
-            regex::Regex::new(r"Threads: \d+ lwps, \d+ in runtime 0 @0x[0-9a-f]+\n").unwrap();
+            regex::Regex::new(r"Threads: \d+ lwps, \d+ in runtime 0 @ 0x[0-9a-f]+\n").unwrap();
         assert!(inside.is_match(&out), "{out}");
         // The `block_on` thread is in the runtime without running the
         // worker loop, as `threads` says of it too — and it is counted
@@ -2960,7 +2960,7 @@ fn test_census_counts_the_target() {
         // whose task waits that way rather than tallied on its own.
         let rows = list_tasks(&bundle, core);
         let owned = regex::Regex::new(&format!(
-            r"Tasks: {} owned by runtime 0 @0x[0-9a-f]+\n",
+            r"Tasks: {} owned by runtime 0 @ 0x[0-9a-f]+\n",
             rows.len()
         ))
         .unwrap();

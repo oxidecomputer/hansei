@@ -2,7 +2,7 @@
 source: hansei/src/offline.rs
 description: "`threads 1` over illumos/local-set-io"
 ---
-lwp 1  polling no task  runtime 0 @0xADDR
+lwp 1  polling no task  runtime 0 @ 0xADDR
   thread_id: core::option::Option<tokio::runtime::thread_id::ThreadId>::Some(1)
   runtime:
     tokio::runtime::context::runtime::EnterRuntime::Entered {

@@ -1316,7 +1316,7 @@ mod whatis_tests {
 
             let shown = report(t, handle);
             assert!(
-                shown.contains(&format!("Runtime {hidden} @{handle:#x}: current_thread")),
+                shown.contains(&format!("Runtime {hidden} @ {handle:#x}: current_thread")),
                 "{shown}"
             );
             assert!(
@@ -1331,7 +1331,7 @@ mod whatis_tests {
 
             let inside = report(t, handle + 0x8);
             assert!(
-                inside.contains(&format!("Runtime {hidden} @{handle:#x}: ")),
+                inside.contains(&format!("Runtime {hidden} @ {handle:#x}: ")),
                 "{inside}"
             );
             assert!(
@@ -1343,7 +1343,7 @@ mod whatis_tests {
             let shared = set.shared.addr;
             let shown = report(t, shared);
             assert!(
-                shown.contains(&format!("Local set 0 @{shared:#x}:")),
+                shown.contains(&format!("Local set 0 @ {shared:#x}:")),
                 "{shown}"
             );
             assert!(shown.contains("    Tasks: 1"), "{shown}");

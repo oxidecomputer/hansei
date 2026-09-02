@@ -62,7 +62,7 @@ pub enum ThreadRole {
 
 /// One discovered runtime, with the readings that are its alone.
 pub struct Runtime {
-    /// How every listing names it: `runtime 0 @0x7f11c0`.
+    /// How every listing names it: `runtime 0 @ 0x7f11c0`.
     pub label: String,
     /// What its workers' parkers say. `None` for a current_thread
     /// runtime, which has no parker array, and for one whose parkers
@@ -1058,7 +1058,7 @@ mod tests {
     /// the readings a test gives it.
     fn runtime(parks: Option<ParkStates>, pool: Option<BlockingPool>) -> Runtime {
         Runtime {
-            label: "runtime 0 @0x1000".to_string(),
+            label: "runtime 0 @ 0x1000".to_string(),
             parks,
             pool,
         }
@@ -1215,14 +1215,14 @@ mod tests {
         let threads = page.split("\n\n").next().unwrap();
         assert_eq!(
             threads,
-            "Threads: 6 lwps, 4 in runtime 0 @0x1000\n    \
+            "Threads: 6 lwps, 4 in runtime 0 @ 0x1000\n    \
              3 in the scheduler's run loop\n        \
              1 parked in the io driver\n            \
              worker 0, lwp 11\n        \
              1 polling a task\n            \
              worker 1, lwp 12  task 42\n        \
              1 parked\n    \
-             1 in runtime 0 @0x1000, outside the run loop\n        \
+             1 in runtime 0 @ 0x1000, outside the run loop\n        \
              1 in the blocking pool (1 idle, 1 task queued)\n    \
              2 holding no runtime context"
         );
@@ -1265,7 +1265,7 @@ mod tests {
         let page = census(&facts, 5);
         assert!(
             page.contains(
-                "    1 in runtime 0 @0x1000, outside the run loop\n        \
+                "    1 in runtime 0 @ 0x1000, outside the run loop\n        \
                  the blocking pool counts 9 threads of its own, the workers \
                  above among them (4 idle, 0 tasks queued)\n"
             ),
@@ -1314,12 +1314,12 @@ mod tests {
         let threads = page.split("\n\n").next().unwrap();
         assert_eq!(
             threads,
-            "Threads: 3 lwps, 2 in runtime 0 @0x1000\n    \
+            "Threads: 3 lwps, 2 in runtime 0 @ 0x1000\n    \
              1 in the scheduler's run loop\n        \
              1 parked in the io driver\n            \
              block_on thread, lwp 11\n        \
              the block_on future of lwp 11 was woken and not yet polled\n    \
-             1 in runtime 0 @0x1000, outside the run loop\n        \
+             1 in runtime 0 @ 0x1000, outside the run loop\n        \
              1 in the blocking pool (1 idle, 0 tasks queued)\n    \
              1 holding no runtime context"
         );
@@ -1440,7 +1440,7 @@ mod tests {
         assert_eq!(facts.whose(0), "");
 
         facts.runtimes = vec![runtime(None, None), runtime(None, None)];
-        assert_eq!(facts.whose(0), " of runtime 0 @0x1000");
+        assert_eq!(facts.whose(0), " of runtime 0 @ 0x1000");
         assert_eq!(facts.whose(9), "", "an index past the list names nothing");
     }
 
@@ -1544,7 +1544,7 @@ mod tests {
                 None,
             ),
             Runtime {
-                label: "runtime 1 @0x2000".to_string(),
+                label: "runtime 1 @ 0x2000".to_string(),
                 parks: Some(ParkStates {
                     workers: vec![ParkState::Condvar],
                     driver_held: false,
@@ -1628,7 +1628,7 @@ mod tests {
         let page = census(&facts(&list, &waits), 5);
 
         assert!(
-            page.contains("Tasks: 7 owned by runtime 0 @0x1000\n"),
+            page.contains("Tasks: 7 owned by runtime 0 @ 0x1000\n"),
             "{page}"
         );
         assert!(
@@ -1884,7 +1884,7 @@ mod tests {
 
         let only_tasks = sections(&facts, Sections::select(false, true, false), 5);
         assert!(
-            only_tasks.starts_with("Tasks: 1 owned by runtime 0 @0x1000\n"),
+            only_tasks.starts_with("Tasks: 1 owned by runtime 0 @ 0x1000\n"),
             "{only_tasks}"
         );
         assert!(!only_tasks.contains("Threads:"), "{only_tasks}");

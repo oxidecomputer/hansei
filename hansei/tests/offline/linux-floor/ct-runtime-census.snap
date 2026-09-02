@@ -2,12 +2,12 @@
 source: hansei/src/offline.rs
 description: "`census` over linux-floor/ct-runtime"
 ---
-Threads: 1 lwp, 1 in runtime 0 @0xADDR
+Threads: 1 lwp, 1 in runtime 0 @ 0xADDR
     1 in the scheduler's run loop
         1 parked in the io driver
             block_on thread, lwp 1149751
 
-Tasks: 2 owned by runtime 0 @0xADDR
+Tasks: 2 owned by runtime 0 @ 0xADDR
     State: 2 idle
     Future types and what they await:
         1  async fn ct_runtime::acquirer
