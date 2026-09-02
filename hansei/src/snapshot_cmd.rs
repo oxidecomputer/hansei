@@ -61,10 +61,9 @@ fn warm_frame_values<T: proc::Target>(
 /// against the few tens of kilobytes everything else records. With
 /// the stack bytes in hand the offline walk bridges by frame pointer
 /// instead — validated against mapping metadata and symbolized from
-/// the function table, both of which every snapshot already carries —
-/// and its frames golden marked as the heuristic walk they are. The
-/// exact CFI walk stays covered where real cores are: the acceptance
-/// suite.
+/// the function table, both of which every snapshot already carries.
+/// The exact CFI walk stays covered where real cores are: the
+/// acceptance suite.
 fn warm_threads<T: proc::Target>(
     ctx: &bundle::Context<'_, T>,
     lwps: &[proc::LwpInfo],

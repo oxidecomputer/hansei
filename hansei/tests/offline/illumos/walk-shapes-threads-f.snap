@@ -46,8 +46,8 @@ lwp 1  polling no task  runtime 0 @ 0xADDR
     }
   stack:
     0xADDR  
-    0xADDR  <mio::poll::Poll>::poll  (frame-pointer walk)
-    0xADDR  <tokio::runtime::io::driver::Driver>::turn  (frame-pointer walk)
+    0xADDR  <mio::poll::Poll>::poll
+    0xADDR  <tokio::runtime::io::driver::Driver>::turn
 
 lwp 2  polling no task
   thread_id: core::option::Option<tokio::runtime::thread_id::ThreadId>::None
@@ -56,8 +56,8 @@ lwp 2  polling no task
   not in the scheduler's run loop
   stack:
     0xADDR  
-    0xADDR    (frame-pointer walk)
-    0xADDR    (frame-pointer walk)
+    0xADDR  
+    0xADDR  
 
 lwp 3  polling no task
   thread_id: core::option::Option<tokio::runtime::thread_id::ThreadId>::Some(2)
@@ -66,5 +66,5 @@ lwp 3  polling no task
   not in the scheduler's run loop
   stack:
     0xADDR  
-    0xADDR    (frame-pointer walk)
-    0xADDR    (frame-pointer walk)
+    0xADDR  
+    0xADDR

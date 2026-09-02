@@ -96,5 +96,5 @@ lwp 1148444  last polled task 1
     }
   stack:
     0xADDR  
-    0xADDR    (frame-pointer walk)
-    0xADDR    (frame-pointer walk)
+    0xADDR  
+    0xADDR
