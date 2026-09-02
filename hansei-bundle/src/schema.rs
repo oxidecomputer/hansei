@@ -965,16 +965,22 @@ impl TypeTable {
     /// mutation; a bundle whose index disagrees with its names fails
     /// validation.
     pub fn build_normalized_index(&mut self, strings: &StringTable) {
+        use rayon::iter::{IndexedParallelIterator, IntoParallelRefIterator, ParallelIterator};
+        use rayon::slice::ParallelSliceMut;
+
+        // Normalizing and hashing every name is the one costly step;
+        // it is per-name work, and the sort makes the result the same
+        // however it was split.
         self.by_normalized_name = self
             .name_index
-            .iter()
+            .par_iter()
             .enumerate()
             .filter_map(|(position, &(r, _))| {
                 let name = strings.get(r)?;
                 Some((crate::symbols::rust_type_name_hash(name), position as u32))
             })
             .collect();
-        self.by_normalized_name.sort_unstable();
+        self.by_normalized_name.par_sort_unstable();
     }
 }
 

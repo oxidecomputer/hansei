@@ -1,5 +1,6 @@
 use foldhash::HashMap;
 
+use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use serde::{Deserialize, Serialize};
 
 /// An index into a bundle's [`StringTable`].
@@ -57,6 +58,14 @@ impl StringTable {
         (0..self.ends.len()).map(|i| self.get(StrRef(i as u32)).unwrap())
     }
 
+    /// Every string, for a pass over the whole table that rayon may
+    /// split however it likes.
+    pub fn par_iter(&self) -> impl ParallelIterator<Item = &str> {
+        (0..self.ends.len())
+            .into_par_iter()
+            .map(|i| self.get(StrRef(i as u32)).unwrap())
+    }
+
     /// Check structural invariants: offsets monotonically non-decreasing,
     /// in-bounds, and on UTF-8 boundaries.
     pub(crate) fn is_well_formed(&self) -> bool {
@@ -111,6 +120,10 @@ impl StringInterner {
     /// Iterate the strings interned so far, in interning order.
     pub fn iter(&self) -> impl Iterator<Item = &str> {
         self.table.iter()
+    }
+
+    pub fn par_iter(&self) -> impl ParallelIterator<Item = &str> {
+        self.table.par_iter()
     }
 
     /// Consume the interner, returning the finished table.
