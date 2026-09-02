@@ -519,29 +519,10 @@ pub(crate) fn exec_frame<T: proc::Target>(
     print_cursor_frame(session, &resolved, i, theme, out)
 }
 
-/// `up`: one frame up the listing, toward #0 — the most recently
-/// polled frame, printed first — landing with the frame line alone;
-/// `up locals` asks for more. The moves follow the listing's order,
-/// not a native stack's: `trace` prints #0 at the top, so `up` is
-/// the line above.
+/// `up`: one frame outward, toward the chain's root — the bottom of
+/// the listing — landing with the frame line alone; `up locals` asks
+/// for more.
 pub(crate) fn exec_up<T: proc::Target>(
-    session: &Session<'_, T>,
-    theme: output::Theme,
-    out: &mut dyn io::Write,
-) -> Result<()> {
-    let frame = cursor_frame(session)?;
-    if frame == 0 {
-        return Err(anyhow!(
-            "already at frame #0, the most recently polled frame"
-        ));
-    }
-    exec_frame(session, Some(frame - 1), theme, out)
-}
-
-/// `down`: one frame down the listing, toward the chain's root —
-/// printed last — landing with the frame line alone; `down locals`
-/// asks for more.
-pub(crate) fn exec_down<T: proc::Target>(
     session: &Session<'_, T>,
     theme: output::Theme,
     out: &mut dyn io::Write,
@@ -554,6 +535,23 @@ pub(crate) fn exec_down<T: proc::Target>(
         return Err(anyhow!("already at frame #{frame}, the chain's root"));
     }
     exec_frame(session, Some(frame + 1), theme, out)
+}
+
+/// `down`: one frame inward, toward #0, the most recently polled
+/// frame, landing with the frame line alone — `down locals` asks for
+/// more.
+pub(crate) fn exec_down<T: proc::Target>(
+    session: &Session<'_, T>,
+    theme: output::Theme,
+    out: &mut dyn io::Write,
+) -> Result<()> {
+    let frame = cursor_frame(session)?;
+    if frame == 0 {
+        return Err(anyhow!(
+            "already at frame #0, the most recently polled frame"
+        ));
+    }
+    exec_frame(session, Some(frame - 1), theme, out)
 }
 
 /// `locals`: list the variables the cursor frame holds live — the
@@ -1047,9 +1045,9 @@ mod tests {
             assert_eq!(c.frame, 1);
             assert_ne!(c.last_addr, at_zero, "$_ moved with the frame");
         }
-        exec_up(&session, theme, &mut Vec::new()).expect("up moves toward #0, the top line");
+        exec_down(&session, theme, &mut Vec::new()).expect("down moves toward the leaf");
         assert_eq!(session.cursor.borrow().frame, 0);
-        let err = exec_up(&session, theme, &mut Vec::new()).expect_err("#0 is the top");
+        let err = exec_down(&session, theme, &mut Vec::new()).expect_err("the leaf is the front");
         assert_eq!(
             err.to_string(),
             "already at frame #0, the most recently polled frame"
@@ -1059,10 +1057,10 @@ mod tests {
         assert!(err.to_string().starts_with("no frame #99: "), "{err}");
         assert_eq!(session.cursor.borrow().frame, 0, "a refusal moves nothing");
 
-        exec_down(&session, theme, &mut Vec::new()).expect("down moves toward the root");
+        exec_up(&session, theme, &mut Vec::new()).expect("up moves toward the root");
         assert_eq!(session.cursor.borrow().frame, 1);
         exec_frame(&session, Some(len - 1), theme, &mut Vec::new()).expect("the root selects");
-        let err = exec_down(&session, theme, &mut Vec::new()).expect_err("the root is the bottom");
+        let err = exec_up(&session, theme, &mut Vec::new()).expect_err("the root is the bottom");
         assert_eq!(
             err.to_string(),
             format!("already at frame #{}, the chain's root", len - 1)
