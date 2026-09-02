@@ -21,9 +21,9 @@ use crate::{Command, Flow, Session, dispatch};
 use anyhow::{Context as _, Result, anyhow};
 use clap::{CommandFactory, Parser};
 use reedline::{
-    ColumnarMenu, Completer, DefaultPrompt, DefaultPromptSegment, Emacs, FileBackedHistory,
-    KeyCode, KeyModifiers, MenuBuilder, Reedline, ReedlineEvent, ReedlineMenu, Signal, Span,
-    Suggestion, default_emacs_keybindings,
+    ColumnarMenu, Completer, CompletionResult, DefaultPrompt, DefaultPromptSegment, Emacs,
+    FileBackedHistory, KeyCode, KeyModifiers, MenuBuilder, Reedline, ReedlineEvent, ReedlineMenu,
+    Signal, Span, Suggestion, default_emacs_keybindings,
 };
 use subprocess::Exec;
 
@@ -212,6 +212,9 @@ fn edit_loop(events: mpsc::Sender<Event>, prompts: mpsc::Receiver<String>) {
             }
             Ok(Signal::CtrlC) => Event::Interrupt,
             Ok(Signal::CtrlD) => Event::Eof,
+            // Nothing here binds a host command or a break signal,
+            // so neither arrives.
+            Ok(_) => continue,
             Err(e) => Event::Failed(e.to_string()),
         };
         if events.send(event).is_err() {
@@ -722,7 +725,16 @@ impl Candidate {
 }
 
 impl Completer for LineCompleter {
-    fn complete(&mut self, line: &str, pos: usize) -> Vec<Suggestion> {
+    fn complete(&mut self, line: &str, pos: usize) -> CompletionResult {
+        CompletionResult::fresh(self.suggest(line, pos))
+    }
+}
+
+impl LineCompleter {
+    /// The suggestions for the word under the cursor at `pos`: what
+    /// the grammar and the session offer there, narrowed to the
+    /// prefix typed.
+    fn suggest(&mut self, line: &str, pos: usize) -> Vec<Suggestion> {
         let Some(prefix) = line.get(..pos) else {
             return Vec::new();
         };
@@ -1311,7 +1323,7 @@ mod tests {
     /// replacement texts in menu order.
     fn completions(line: &str) -> Vec<String> {
         LineCompleter::new(Box::new(|_| Vec::new()))
-            .complete(line, line.len())
+            .suggest(line, line.len())
             .into_iter()
             .map(|s| s.value)
             .collect()
@@ -1347,7 +1359,7 @@ mod tests {
 
     fn complete_with(completer: &mut LineCompleter, line: &str) -> Vec<String> {
         completer
-            .complete(line, line.len())
+            .suggest(line, line.len())
             .into_iter()
             .map(|s| s.value)
             .collect()
@@ -1443,7 +1455,7 @@ mod tests {
     fn test_completion_walks_a_print_path() {
         let (mut c, asked) = frame_completer();
         let suggest = |c: &mut LineCompleter, line: &str| -> Vec<(String, bool)> {
-            c.complete(line, line.len())
+            c.suggest(line, line.len())
                 .into_iter()
                 .map(|s| (s.value, s.append_whitespace))
                 .collect()
@@ -1624,7 +1636,7 @@ mod tests {
     #[test]
     fn test_completion_spans_the_word_under_the_cursor() {
         let line = "tasks --group wa";
-        let suggestions = LineCompleter::new(Box::new(|_| Vec::new())).complete(line, line.len());
+        let suggestions = LineCompleter::new(Box::new(|_| Vec::new())).suggest(line, line.len());
         let waker = suggestions
             .iter()
             .find(|s| s.value == "waker")
@@ -1719,7 +1731,7 @@ mod tests {
         assert_eq!(completions("sync --kind se"), ["semaphore", "set"]);
         let line = "sync --kind sem";
         let semaphore = LineCompleter::new(Box::new(|_| Vec::new()))
-            .complete(line, line.len())
+            .suggest(line, line.len())
             .remove(0);
         assert!(
             semaphore
