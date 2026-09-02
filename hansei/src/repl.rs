@@ -21,9 +21,10 @@ use crate::{Command, Flow, Session, dispatch};
 use anyhow::{Context as _, Result, anyhow};
 use clap::{CommandFactory, Parser};
 use reedline::{
-    ColumnarMenu, Completer, CompletionResult, DefaultPrompt, DefaultPromptSegment, Emacs,
-    FileBackedHistory, KeyCode, KeyModifiers, MenuBuilder, Reedline, ReedlineEvent, ReedlineMenu,
-    Signal, Span, Suggestion, default_emacs_keybindings,
+    ColumnarMenu, Completer, CompletionResult, DefaultPrompt, DefaultPromptSegment, Direction,
+    EditCommand, Emacs, FileBackedHistory, Granularity, KeyCode, KeyModifiers, Keybindings,
+    MenuBuilder, MotionTarget, Reedline, ReedlineEvent, ReedlineMenu, Signal, Span, Suggestion,
+    WordEdge, WordKind, default_emacs_keybindings,
 };
 use subprocess::Exec;
 
@@ -1025,10 +1026,64 @@ fn values_of(
         .collect()
 }
 
+/// readline's word motions, over reedline's own: a word is a run of
+/// alphanumerics and `_`, so `sled.time_deleted` is two words with
+/// the `.` a word of its own between them, and `M-b` from its end
+/// stops at `time`. reedline's emacs bindings segment by the Unicode
+/// rules instead, which keep a `.` between letters inside the word
+/// and carry `M-b` back to `sled`. `C-w` stays whitespace-delimited,
+/// as readline's unix-word-rubout is.
+fn bind_readline_words(kb: &mut Keybindings) {
+    use KeyCode::{Backspace, Char, Delete, Left, Right};
+    const ALT: KeyModifiers = KeyModifiers::ALT;
+    const CONTROL: KeyModifiers = KeyModifiers::CONTROL;
+    let word = |edge, direction| MotionTarget::Word {
+        kind: WordKind::Word,
+        edge,
+        direction,
+    };
+    let go = |target| ReedlineEvent::Edit(vec![EditCommand::Move(target)]);
+    let cut = |target| {
+        ReedlineEvent::Edit(vec![EditCommand::Cut {
+            target,
+            granularity: Granularity::CharWise,
+        }])
+    };
+    let back = word(WordEdge::Start, Direction::Backward);
+    let ahead = word(WordEdge::End, Direction::Forward);
+    for (modifiers, key) in [(ALT, Char('b')), (ALT, Left), (CONTROL, Left)] {
+        kb.add_binding(modifiers, key, go(back));
+    }
+    for (modifiers, key) in [(ALT, Char('f')), (ALT, Right), (CONTROL, Right)] {
+        // The history hint completes a word first, as the default does.
+        kb.add_binding(
+            modifiers,
+            key,
+            ReedlineEvent::UntilFound(vec![ReedlineEvent::HistoryHintWordComplete, go(ahead)]),
+        );
+    }
+    for (modifiers, key) in [(ALT, Char('d')), (ALT, Delete), (CONTROL, Delete)] {
+        kb.add_binding(modifiers, key, cut(ahead));
+    }
+    for (modifiers, key) in [(ALT, Backspace), (CONTROL, Backspace)] {
+        kb.add_binding(modifiers, key, cut(back));
+    }
+    kb.add_binding(
+        CONTROL,
+        Char('w'),
+        cut(MotionTarget::Word {
+            kind: WordKind::LongWord,
+            edge: WordEdge::Start,
+            direction: Direction::Backward,
+        }),
+    );
+}
+
 /// The editor: Tab completes through [`LineCompleter`], whose target
 /// values come from `source`.
 fn line_editor(source: ValueSource) -> Reedline {
     let mut keybindings = default_emacs_keybindings();
+    bind_readline_words(&mut keybindings);
     keybindings.add_binding(
         KeyModifiers::NONE,
         KeyCode::Tab,
@@ -1629,6 +1684,76 @@ mod tests {
         }
         assert_eq!(completions("tas"), ["task", "tasks"]);
         assert_eq!(completions("cen"), ["census"]);
+    }
+
+    /// The word motions stop where readline's do: `M-b` from the end
+    /// of `sled.time_deleted` lands on `time`, then on the `.`, then
+    /// on `sled`; `M-f` walks the same stops forward; `M-d` cuts one
+    /// such word and `C-w` cuts back to whitespace.
+    #[test]
+    fn test_word_motions_break_at_punctuation() {
+        let mut kb = default_emacs_keybindings();
+        bind_readline_words(&mut kb);
+        let commands = |modifiers, key| -> Vec<EditCommand> {
+            let mut event = kb.find_binding(modifiers, key).expect("bound");
+            // A forward move first offers the history hint a word,
+            // which no editor here has; the edit is the fallback.
+            while let ReedlineEvent::UntilFound(events) = event {
+                event = events.into_iter().last().expect("a fallback");
+            }
+            match event {
+                ReedlineEvent::Edit(commands) => commands,
+                other => panic!("{other:?} is not an edit"),
+            }
+        };
+        let mut editor = Reedline::create();
+        editor.run_edit_commands(&[EditCommand::InsertString(
+            "print sled.time_deleted".to_string(),
+        )]);
+        let mut at = |modifiers, key| {
+            editor.run_edit_commands(&commands(modifiers, key));
+            editor.current_insertion_point()
+        };
+        let back = |at: &mut dyn FnMut(KeyModifiers, KeyCode) -> usize| {
+            at(KeyModifiers::ALT, KeyCode::Char('b'))
+        };
+        assert_eq!(back(&mut at), "print sled.".len());
+        assert_eq!(back(&mut at), "print sled".len());
+        assert_eq!(back(&mut at), "print ".len());
+        assert_eq!(back(&mut at), 0);
+        let forward = |at: &mut dyn FnMut(KeyModifiers, KeyCode) -> usize| {
+            at(KeyModifiers::ALT, KeyCode::Char('f'))
+        };
+        assert_eq!(forward(&mut at), "print".len());
+        assert_eq!(forward(&mut at), "print sled".len());
+        assert_eq!(forward(&mut at), "print sled.".len());
+        assert_eq!(forward(&mut at), "print sled.time_deleted".len());
+        // The arrow spellings are the same motions.
+        assert_eq!(
+            at(KeyModifiers::CONTROL, KeyCode::Left),
+            "print sled.".len()
+        );
+        assert_eq!(at(KeyModifiers::ALT, KeyCode::Left), "print sled".len());
+        assert_eq!(at(KeyModifiers::ALT, KeyCode::Right), "print sled.".len());
+        assert_eq!(
+            at(KeyModifiers::CONTROL, KeyCode::Right),
+            "print sled.time_deleted".len()
+        );
+
+        // `M-d` after `print ` eats `sled` alone; `C-w` at the end eats
+        // back to the space.
+        editor.run_edit_commands(&[EditCommand::MoveToPosition {
+            position: "print ".len(),
+            select: false,
+        }]);
+        editor.run_edit_commands(&commands(KeyModifiers::ALT, KeyCode::Char('d')));
+        assert_eq!(editor.current_buffer_contents(), "print .time_deleted");
+        editor.run_edit_commands(&[EditCommand::MoveToEnd { select: false }]);
+        editor.run_edit_commands(&commands(KeyModifiers::CONTROL, KeyCode::Char('w')));
+        assert_eq!(editor.current_buffer_contents(), "print ");
+        editor.run_edit_commands(&[EditCommand::InsertString("a.b".to_string())]);
+        editor.run_edit_commands(&commands(KeyModifiers::ALT, KeyCode::Backspace));
+        assert_eq!(editor.current_buffer_contents(), "print a.");
     }
 
     /// The suggestion replaces the word under the cursor and nothing
