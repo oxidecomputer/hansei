@@ -2044,16 +2044,51 @@ fn run(args: &SessionArgs, exec: &[String]) -> Result<()> {
     // The two files are independent and each costs real time to read
     // (the core indexes its symbol tables, the bundle decompresses and
     // decodes — or, from a debug binary, is extracted outright), so one
-    // is opened on a second thread.
-    let (proc, bundle) = std::thread::scope(|scope| {
-        let bundle = scope.spawn(|| bundle_for(args));
-        // Named for the attach rather than for the core: either file
-        // can be the one that failed, and the cause says which.
-        let proc = Proc::open_core_with_binary(&args.core, args.binary.as_deref())
-            .with_context(|| format!("failed to attach to {}", args.core.display()));
-        (proc, bundle.join().expect("bundle loader panicked"))
-    });
-    let (proc, (bundle, warnings, binary_extracted_from)) = (proc?, bundle?);
+    // is opened on a second thread. Named for the attach rather than
+    // for the core: either file can be the one that failed, and the
+    // cause says which.
+    let open_core = || {
+        Proc::open_core_with_binary(&args.core, args.binary.as_deref())
+            .with_context(|| format!("failed to attach to {}", args.core.display()))
+    };
+    match args.bundle_source() {
+        BundleSource::File(path) => {
+            let (proc, bundle) = std::thread::scope(|scope| {
+                let bundle = scope.spawn(|| {
+                    Bundle::load(path)
+                        .with_context(|| format!("failed to load tokio info {}", path.display()))
+                });
+                (open_core(), bundle.join().expect("bundle loader panicked"))
+            });
+            session(proc?, bundle?, Vec::new(), false, args, exec)
+        }
+        // Extraction leaves the parsed DWARF to free, which takes
+        // seconds; the session runs inside its continuation so that
+        // freeing overlaps the attach and everything after it.
+        BundleSource::Extracted(path) => std::thread::scope(|scope| {
+            let proc = scope.spawn(open_core);
+            bundle_cmd::extract_for_session_with(
+                path,
+                args.binary.as_deref(),
+                |bundle, warnings, binary_extracted_from| {
+                    let proc = proc.join().expect("core opener panicked")?;
+                    session(proc, bundle, warnings, binary_extracted_from, args, exec)
+                },
+            )?
+        }),
+    }
+}
+
+/// Attach to an opened target with its bundle, warm the listings, and
+/// run the REPL over them.
+fn session(
+    proc: Proc,
+    bundle: Bundle,
+    warnings: Vec<String>,
+    binary_extracted_from: bool,
+    args: &SessionArgs,
+    exec: &[String],
+) -> Result<()> {
     // Held back until here rather than printed by the worker, whose
     // stderr the attach's own warnings are interleaved with.
     for warning in &warnings {
@@ -2088,28 +2123,6 @@ fn warm_listings(session: &Session<'_, Proc>, proc: &Proc, bundle: &Bundle) {
         }
     });
     futures::rows(session);
-}
-
-/// The types this session reads: the file `--tokio-info` names, or
-/// tokio info extracted on the spot from what `--debug-info` names.
-/// The returned flag says extraction consumed `--binary` — split debug
-/// info needs the sibling binary it was split from — so the flag is
-/// not surplus even on a core that carries its own symbols.
-///
-/// Extraction's warnings come back rather than being printed, because
-/// this runs beside the attach and its stderr is not this thread's to
-/// write to.
-fn bundle_for(args: &SessionArgs) -> Result<(Bundle, Vec<String>, bool)> {
-    match args.bundle_source() {
-        BundleSource::File(path) => {
-            let bundle = Bundle::load(path)
-                .with_context(|| format!("failed to load tokio info {}", path.display()))?;
-            Ok((bundle, Vec::new(), false))
-        }
-        BundleSource::Extracted(path) => {
-            bundle_cmd::extract_for_session(path, args.binary.as_deref())
-        }
-    }
 }
 
 /// Whether this `census()` call is the one that runs `--audit`'s

@@ -520,6 +520,37 @@ pub fn extract_sources(
     sources: &DebugSources<'_>,
     opts: &ExtractOptions,
 ) -> Result<(Bundle, ExtractStats)> {
+    extract_sources_with(sources, opts, ParsedDwarf::Free, |bundle, stats| {
+        (bundle, stats)
+    })
+}
+
+/// What becomes of the parsed DWARF once the bundle is built from it.
+///
+/// Freeing it is not cheap: the parse leaves millions of small
+/// allocations behind, and dropping them serially takes a second on a
+/// fast allocator and several on a slow one — time the bundle's
+/// consumer need not wait for, because nothing of the bundle borrows
+/// from the parse.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ParsedDwarf {
+    /// Freed on a helper thread while the continuation runs; the call
+    /// returns once both are done.
+    Free,
+    /// Never freed. For a process that exits as soon as the continuation
+    /// returns, whose exit reclaims the whole address space at once.
+    Leak,
+}
+
+/// [`extract_sources`], with what happens next overlapped with freeing
+/// the parsed DWARF: `then` runs with the bundle as soon as it is built,
+/// and the parse's memory is disposed of per `parsed` in the meantime.
+pub fn extract_sources_with<R>(
+    sources: &DebugSources<'_>,
+    opts: &ExtractOptions,
+    parsed: ParsedDwarf,
+    then: impl FnOnce(Bundle, ExtractStats) -> R,
+) -> Result<R> {
     let binary = Input::open(sources.binary)?;
     let binary_obj = object::File::parse(&binary.bytes[..])?;
     let flavor = sources::classify(&binary_obj);
@@ -535,7 +566,7 @@ pub fn extract_sources(
 
     let Some(debug_path) = sources.debug_info else {
         return match flavor {
-            DebugFlavor::Full => extract_parsed(&binary, &binary_obj, None, opts),
+            DebugFlavor::Full => extract_parsed(&binary, &binary_obj, None, opts, parsed, then),
             DebugFlavor::NoDebugInfo => Err(Error::NoDebugInfo {
                 path: binary.display.clone(),
             }),
@@ -551,7 +582,14 @@ pub fn extract_sources(
         }),
         // A dwp carries no build-id and no placed sections to compare;
         // the dwo-id join inside the read is the pairing check.
-        DebugFlavor::Dwp => extract_parsed(&binary, &binary_obj, Some((&debug, &debug_obj)), opts),
+        DebugFlavor::Dwp => extract_parsed(
+            &binary,
+            &binary_obj,
+            Some((&debug, &debug_obj)),
+            opts,
+            parsed,
+            then,
+        ),
         DebugFlavor::Full | DebugFlavor::Companion => {
             if let Some(reason) = sources::sibling_mismatch(&binary_obj, &debug_obj) {
                 return Err(Error::SiblingMismatch {
@@ -560,7 +598,14 @@ pub fn extract_sources(
                     reason,
                 });
             }
-            extract_parsed(&binary, &binary_obj, Some((&debug, &debug_obj)), opts)
+            extract_parsed(
+                &binary,
+                &binary_obj,
+                Some((&debug, &debug_obj)),
+                opts,
+                parsed,
+                then,
+            )
         }
     }
 }
@@ -582,18 +627,27 @@ pub fn classify_file(path: &Path) -> Result<DebugFlavor> {
 pub fn extract_file(path: &Path, opts: &ExtractOptions) -> Result<(Bundle, ExtractStats)> {
     let input = Input::open(path)?;
     let obj = object::File::parse(&input.bytes[..])?;
-    extract_parsed(&input, &obj, None, opts)
+    extract_parsed(
+        &input,
+        &obj,
+        None,
+        opts,
+        ParsedDwarf::Free,
+        |bundle, stats| (bundle, stats),
+    )
 }
 
 /// The pipeline behind both entry points: DWARF from the debug-info
 /// file when given (else the binary), symbols from every input, data
 /// sections and identity from the binary.
-fn extract_parsed(
+fn extract_parsed<R>(
     binary: &Input,
     binary_obj: &object::File<'_>,
     debug: Option<(&Input, &object::File<'_>)>,
     opts: &ExtractOptions,
-) -> Result<(Bundle, ExtractStats)> {
+    parsed: ParsedDwarf,
+    then: impl FnOnce(Bundle, ExtractStats) -> R,
+) -> Result<R> {
     let binary_hash = binary.hash();
     let debug_hash = debug.map(|(input, _)| input.hash());
 
@@ -697,7 +751,21 @@ fn extract_parsed(
         vtable_data: vtable_source,
     };
 
-    extract_from_view(&view, &symbols, ident, opts, &vtable_types, &image)
+    let (bundle, stats) = extract_from_view(&view, &symbols, ident, opts, &vtable_types, &image)?;
+    drop(view);
+    // The bundle owns everything it carries, so the parse is dead
+    // weight from here on. Freeing it is a second or more of serial
+    // deallocation the continuation would otherwise wait behind.
+    Ok(match parsed {
+        ParsedDwarf::Leak => {
+            std::mem::forget(reader);
+            then(bundle, stats)
+        }
+        ParsedDwarf::Free => std::thread::scope(|scope| {
+            scope.spawn(move || drop(reader));
+            then(bundle, stats)
+        }),
+    })
 }
 
 /// Every symbol-table name in an object, spelled the way DWARF linkage
