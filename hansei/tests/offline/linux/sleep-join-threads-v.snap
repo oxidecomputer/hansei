@@ -2,7 +2,7 @@
 source: hansei/src/offline.rs
 description: "`threads -v` over linux/sleep-join"
 ---
-lwp 4033008  polling no task
+lwp 1144854  polling no task
   thread_id: core::option::Option<tokio::runtime::thread_id::ThreadId>::None
   runtime:
     tokio::runtime::context::runtime::EnterRuntime::Entered {
@@ -13,7 +13,7 @@ lwp 4033008  polling no task
   stack:
     0xADDR  
 
-lwp 4033010  last polled task 1
+lwp 1144856  last polled task 1
   thread_id: core::option::Option<tokio::runtime::thread_id::ThreadId>::None
   runtime:
     tokio::runtime::context::runtime::EnterRuntime::Entered {
@@ -52,18 +52,20 @@ lwp 4033010  last polled task 1
             batch: tokio::runtime::metrics::batch::MetricsBatch { .. } @ 0xADDR,
             processing_scheduled_tasks_started_at: std::time::Instant { .. } @ 0xADDR,
             tasks_polled_in_batch: 1,
-            task_poll_time_ewma: 3222.4196721311478,
+            task_poll_time_ewma: 3670.1196721311476,
         },
         global_queue_interval: 61,
         rand: tokio::util::rand::FastRand {
-            one: 3210068636,
-            two: 913837084,
+            one: 3260914162,
+            two: 2620349182,
         },
     }
   stack:
     0xADDR  
+    0xADDR    (frame-pointer walk)
+    0xADDR    (frame-pointer walk)
 
-lwp 4033011  last polled task 2
+lwp 1144857  last polled task 2
   thread_id: core::option::Option<tokio::runtime::thread_id::ThreadId>::None
   runtime:
     tokio::runtime::context::runtime::EnterRuntime::Entered {
@@ -102,15 +104,13 @@ lwp 4033011  last polled task 2
             batch: tokio::runtime::metrics::batch::MetricsBatch { .. } @ 0xADDR,
             processing_scheduled_tasks_started_at: std::time::Instant { .. } @ 0xADDR,
             tasks_polled_in_batch: 1,
-            task_poll_time_ewma: 3289.4196721311478,
+            task_poll_time_ewma: 4205.2196721311475,
         },
         global_queue_interval: 61,
         rand: tokio::util::rand::FastRand {
-            one: 2388010464,
-            two: 3116642971,
+            one: 2702431216,
+            two: 2658686991,
         },
     }
   stack:
-    0xADDR  
-    0xADDR    (frame-pointer walk)
-    0xADDR    (frame-pointer walk)
+    0xADDR

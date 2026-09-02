@@ -176,8 +176,6 @@ pub enum DisplayNode<'a> {
         body: Vec<Stmt>,
         element: BundleType<'a>,
     },
-    /// Render the value as the single token `<elided>`, reading nothing.
-    Elided,
 }
 
 /// The resolved `(pointer, length[, capacity])` header a [`DisplayNode::Str`]
@@ -926,7 +924,6 @@ impl<'a> DisplayNode<'a> {
                         element: scope.related_type(*element),
                     })
                 }
-                BundleNode::Elided => Some(DisplayNode::Elided),
             }
         }
 

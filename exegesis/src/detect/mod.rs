@@ -387,16 +387,12 @@ static BY_NAME: &[(&str, Row<Detector>)] = &[
     ),
     ("core::task::wake::Waker", All(waker_node)),
     ("parking_lot::raw_mutex::RawMutex", All(raw_mutex_node)),
-    ("slog::Logger", All(elided_node)),
     ("std::sys::time::unix::Instant", All(instant_alias_node)),
     ("std::time::Instant", All(instant_alias_node)),
     (
         "tokio::loom::std::unsafe_cell::UnsafeCell",
         All(loom_unsafe_cell_node),
     ),
-    ("tokio::runtime::handle::Handle", All(elided_node)),
-    ("tokio::runtime::runtime::Runtime", All(elided_node)),
-    ("tokio::runtime::scheduler::Handle", All(elided_node)),
     (
         "tokio::runtime::time::entry::TimerEntry",
         Versioned(&[
@@ -1349,26 +1345,6 @@ fn is_byte_array(
         if count.unwrap_or(array.count) == array.count
             && array.count > 0
             && is_unsigned_integer(reader, array.elem_type_id, 1))
-}
-
-/// The types worth less than the space their insides take: a runtime handle
-/// or an owned runtime drags the whole scheduler graph into every value that
-/// stores one, and a logger is an `Arc<dyn Drain>` chain of sinks. Neither is
-/// ever what a debugging session is reading a value for, so they render as
-/// `<elided>`; `--ugly` shows them structurally like everything else.
-///
-/// The `scheduler::Handle` enum is here for the same reason as the outer
-/// `handle::Handle` it sits inside: tokio's timer entries and io registrations
-/// embed one directly, so any future holding a `Sleep` or a registered socket
-/// would otherwise render the whole runtime.
-///
-/// Deliberately *not* here: the handles *inside* the per-scheduler handle
-/// (`tokio::runtime::driver::Handle`, `multi_thread::worker::Shared`), which
-/// the `drivers` and `shared-state` commands render on purpose. Eliding the
-/// wrappers embedded in user futures does not touch them, since hansei reaches
-/// them by member navigation, never by rendering a wrapper value.
-fn elided_node(_emitter: &mut Emitter<'_>, _id: TypeId) -> Option<DisplayNode> {
-    Some(DisplayNode::Elided)
 }
 
 /// The index of the unique member at offset zero named `name` — or of whatever

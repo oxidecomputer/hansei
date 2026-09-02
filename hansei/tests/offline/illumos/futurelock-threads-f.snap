@@ -54,12 +54,12 @@ lwp 2  last polled task 1
             batch: tokio::runtime::metrics::batch::MetricsBatch { .. } @ 0xADDR,
             processing_scheduled_tasks_started_at: std::time::Instant { .. } @ 0xADDR,
             tasks_polled_in_batch: 2,
-            task_poll_time_ewma: 22119.43270491803,
+            task_poll_time_ewma: 22848.272704918025,
         },
         global_queue_interval: 61,
         rand: tokio::util::rand::FastRand {
-            one: 1787726415,
-            two: 1449218117,
+            one: 1647897033,
+            two: 2915472971,
         },
     }
   stack:
@@ -84,7 +84,7 @@ lwp 3  last polled task 2
     }
   core:
     tokio::runtime::scheduler::multi_thread::worker::Core {
-        tick: 7,
+        tick: 6,
         lifo_slot: core::option::Option<tokio::runtime::task::Notified<alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle, alloc::alloc::Global>>>::None,
         lifo_enabled: false,
         run_queue: tokio::runtime::scheduler::multi_thread::queue::Local<alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle, alloc::alloc::Global>> {
@@ -106,12 +106,12 @@ lwp 3  last polled task 2
             batch: tokio::runtime::metrics::batch::MetricsBatch { .. } @ 0xADDR,
             processing_scheduled_tasks_started_at: std::time::Instant { .. } @ 0xADDR,
             tasks_polled_in_batch: 2,
-            task_poll_time_ewma: 16812.247934426225,
+            task_poll_time_ewma: 14403.164934426228,
         },
         global_queue_interval: 61,
         rand: tokio::util::rand::FastRand {
-            one: 698696838,
-            two: 3399781363,
+            one: 1400555146,
+            two: 2545172689,
         },
     }
   stack:
@@ -136,59 +136,7 @@ lwp 4  last polled task 3
     }
   core:
     tokio::runtime::scheduler::multi_thread::worker::Core {
-        tick: 3,
-        lifo_slot: core::option::Option<tokio::runtime::task::Notified<alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle, alloc::alloc::Global>>>::None,
-        lifo_enabled: false,
-        run_queue: tokio::runtime::scheduler::multi_thread::queue::Local<alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle, alloc::alloc::Global>> {
-            inner: alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::queue::Inner<alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle, alloc::alloc::Global>>, alloc::alloc::Global> { .. } @ 0xADDR,
-        },
-        time_context: tokio::runtime::time_alt::context::LocalContext {
-            wheel: tokio::runtime::time_alt::wheel::Wheel { .. } @ 0xADDR,
-            registration_queue: tokio::runtime::time_alt::registration_queue::RegistrationQueue { .. } @ 0xADDR,
-            canc_tx: tokio::runtime::time_alt::cancellation_queue::Sender { .. } @ 0xADDR,
-            canc_rx: tokio::runtime::time_alt::cancellation_queue::Receiver { .. } @ 0xADDR,
-        },
-        is_searching: false,
-        is_shutdown: false,
-        is_traced: false,
-        had_driver: [0xADDR],
-        enable_eager_driver_handoff: false,
-        park: core::option::Option<tokio::runtime::scheduler::multi_thread::park::Parker>::None,
-        stats: tokio::runtime::scheduler::multi_thread::stats::Stats {
-            batch: tokio::runtime::metrics::batch::MetricsBatch { .. } @ 0xADDR,
-            processing_scheduled_tasks_started_at: std::time::Instant { .. } @ 0xADDR,
-            tasks_polled_in_batch: 0,
-            task_poll_time_ewma: 17635.419672131145,
-        },
-        global_queue_interval: 61,
-        rand: tokio::util::rand::FastRand {
-            one: 2990653962,
-            two: 3475474325,
-        },
-    }
-  stack:
-    0xADDR  
-    0xADDR    (frame-pointer walk)
-    0xADDR    (frame-pointer walk)
-
-lwp 5  last polled task 4
-  thread_id: core::option::Option<tokio::runtime::thread_id::ThreadId>::None
-  runtime:
-    tokio::runtime::context::runtime::EnterRuntime::Entered {
-        allow_block_in_place: true,
-    }
-  budget: core::option::Option<u8>::None
-  worker 3
-  defer:
-    core::cell::RefCell<alloc::vec::Vec<core::task::wake::Waker, alloc::alloc::Global>> {
-        borrow: core::cell::Cell<isize> {
-            value: 0,
-        },
-        value: [],
-    }
-  core:
-    tokio::runtime::scheduler::multi_thread::worker::Core {
-        tick: 1,
+        tick: 2,
         lifo_slot: core::option::Option<tokio::runtime::task::Notified<alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle, alloc::alloc::Global>>>::None,
         lifo_enabled: false,
         run_queue: tokio::runtime::scheduler::multi_thread::queue::Local<alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle, alloc::alloc::Global>> {
@@ -214,8 +162,60 @@ lwp 5  last polled task 4
         },
         global_queue_interval: 61,
         rand: tokio::util::rand::FastRand {
-            one: 3196068356,
-            two: 1429362375,
+            one: 1915673990,
+            two: 2666986118,
+        },
+    }
+  stack:
+    0xADDR  
+    0xADDR    (frame-pointer walk)
+    0xADDR    (frame-pointer walk)
+
+lwp 5  last polled task 4
+  thread_id: core::option::Option<tokio::runtime::thread_id::ThreadId>::None
+  runtime:
+    tokio::runtime::context::runtime::EnterRuntime::Entered {
+        allow_block_in_place: true,
+    }
+  budget: core::option::Option<u8>::None
+  worker 3
+  defer:
+    core::cell::RefCell<alloc::vec::Vec<core::task::wake::Waker, alloc::alloc::Global>> {
+        borrow: core::cell::Cell<isize> {
+            value: 0,
+        },
+        value: [],
+    }
+  core:
+    tokio::runtime::scheduler::multi_thread::worker::Core {
+        tick: 4,
+        lifo_slot: core::option::Option<tokio::runtime::task::Notified<alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle, alloc::alloc::Global>>>::None,
+        lifo_enabled: false,
+        run_queue: tokio::runtime::scheduler::multi_thread::queue::Local<alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle, alloc::alloc::Global>> {
+            inner: alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::queue::Inner<alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle, alloc::alloc::Global>>, alloc::alloc::Global> { .. } @ 0xADDR,
+        },
+        time_context: tokio::runtime::time_alt::context::LocalContext {
+            wheel: tokio::runtime::time_alt::wheel::Wheel { .. } @ 0xADDR,
+            registration_queue: tokio::runtime::time_alt::registration_queue::RegistrationQueue { .. } @ 0xADDR,
+            canc_tx: tokio::runtime::time_alt::cancellation_queue::Sender { .. } @ 0xADDR,
+            canc_rx: tokio::runtime::time_alt::cancellation_queue::Receiver { .. } @ 0xADDR,
+        },
+        is_searching: false,
+        is_shutdown: false,
+        is_traced: false,
+        had_driver: [0xADDR],
+        enable_eager_driver_handoff: false,
+        park: core::option::Option<tokio::runtime::scheduler::multi_thread::park::Parker>::None,
+        stats: tokio::runtime::scheduler::multi_thread::stats::Stats {
+            batch: tokio::runtime::metrics::batch::MetricsBatch { .. } @ 0xADDR,
+            processing_scheduled_tasks_started_at: std::time::Instant { .. } @ 0xADDR,
+            tasks_polled_in_batch: 0,
+            task_poll_time_ewma: 8687.019672131148,
+        },
+        global_queue_interval: 61,
+        rand: tokio::util::rand::FastRand {
+            one: 2920327747,
+            two: 798962092,
         },
     }
   stack:

@@ -88,7 +88,6 @@ pub struct DisplayValue<'r, 'a, T> {
     proc: Option<&'a T>,
     max_depth: usize,
     ugly: bool,
-    elide: Option<&'r ElideOverride>,
     annotate: Option<&'r AddrAnnotator<'r>>,
     heap: Option<&'r dyn Heap>,
     max_str_len: Option<u64>,
@@ -112,12 +111,6 @@ impl<'r, 'a, T> DisplayValue<'r, 'a, T> {
     /// Suppress custom formatters and render the base structural view.
     pub fn ugly(mut self) -> Self {
         self.ugly = true;
-        self
-    }
-
-    /// Adjust which types render as `<elided>`; see [`ElideOverride`].
-    pub fn elide_override(mut self, elide: &'r ElideOverride) -> Self {
-        self.elide = Some(elide);
         self
     }
 
@@ -178,7 +171,6 @@ impl<'a, T: Target> fmt::Display for DisplayValue<'_, 'a, T> {
             suppress_addr: false,
             hex_integers: false,
             ugly: self.ugly,
-            elide: self.elide,
             annotate: self.annotate,
             heap: self.heap,
             max_str_len: self.max_str_len,
@@ -206,7 +198,6 @@ impl<'a> Value<'a> {
             proc: None,
             max_depth: DEFAULT_DEPTH,
             ugly: false,
-            elide: None,
             annotate: None,
             heap: None,
             max_str_len: Some(DEFAULT_MAX_STRING_LEN),
@@ -229,7 +220,6 @@ impl<'a> Value<'a> {
             proc: Some(proc),
             max_depth,
             ugly: false,
-            elide: None,
             annotate: None,
             heap: None,
             max_str_len: Some(DEFAULT_MAX_STRING_LEN),
@@ -271,9 +261,6 @@ pub(crate) struct RenderCtx<'buf, 'a, T> {
     /// structural view. Propagates to nested values, so a whole subtree
     /// renders without custom formatters once set.
     ugly: bool,
-    /// Render-time adjustment of what renders as `<elided>`; `None` leaves
-    /// the bundle's choices alone.
-    elide: Option<&'buf ElideOverride>,
     /// Labels for pointer addresses; see
     /// [`DisplayValue::annotate_addrs`].
     annotate: Option<&'buf AddrAnnotator<'buf>>,
@@ -293,15 +280,6 @@ pub(crate) struct RenderCtx<'buf, 'a, T> {
     /// for the pointee of a pointer render that just wrote `0x… -> `,
     /// whose address is already on the line.
     suppress_addr: bool,
-}
-
-/// A render-time adjustment of what renders as `<elided>`, layered
-/// over the bundle's own choices: ignore the `Elided` display formats
-/// the bundle carries, so the types under them render structurally.
-#[derive(Clone, Debug, Default)]
-pub struct ElideOverride {
-    /// Ignore the `Elided` display formats carried by the bundle.
-    pub no_elide: bool,
 }
 
 // Derived `Copy`/`Clone` would demand `T: Copy` even though only `&T` is
@@ -329,7 +307,6 @@ impl<'buf, 'a, T> RenderCtx<'buf, 'a, T> {
             parallel: false,
             hex_integers: false,
             ugly: false,
-            elide: None,
             annotate: None,
             heap: None,
             max_str_len: None,
@@ -347,7 +324,6 @@ impl<'buf, 'a, T> RenderCtx<'buf, 'a, T> {
             proc: self.proc,
             hex_integers: self.hex_integers,
             ugly: self.ugly,
-            elide: self.elide,
             annotate: self.annotate,
             heap: self.heap,
             max_str_len: self.max_str_len,
@@ -458,16 +434,14 @@ pub(crate) fn write_display_value<'a, T: Target>(
     }
 
     // `--ugly` mode skips every custom formatter and renders the type through
-    // its structural classification below; `no_elide` skips only the
-    // bundle's `Elided` formats, leaving the types under them structural.
+    // its structural classification below.
     if !ctx.ugly
         && let Some(node) = ctx.debug_format(&ty)
-        && !(matches!(*node, DisplayNode::Elided) && ctx.elide.is_some_and(|e| e.no_elide))
     {
         // A top-level `Scalar` formatter (e.g. a parking_lot `RawMutex`)
         // has no enclosing field label to give it context, so it is prefixed
-        // with the type name — `<name>: <decoded>`. Other nodes name (or
-        // elide) themselves as they render.
+        // with the type name — `<name>: <decoded>`. Other nodes name
+        // themselves as they render.
         if let DisplayNode::Scalar { .. } = *node {
             f.write_str(ty.name())?;
             f.write_str(": ")?;
@@ -676,8 +650,7 @@ fn elision_brackets<'a, T: Target>(
             | DisplayNode::Symbol { .. }
             | DisplayNode::Str { .. }
             | DisplayNode::Bytes { .. }
-            | DisplayNode::SlotCount { .. }
-            | DisplayNode::Elided => None,
+            | DisplayNode::SlotCount { .. } => None,
             // A transparent wrapper elides with its payload's brackets,
             // the same way it renders.
             DisplayNode::Alias { target, .. } => elision_brackets(target, ctx),

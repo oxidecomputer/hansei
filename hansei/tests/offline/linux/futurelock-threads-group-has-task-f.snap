@@ -3,7 +3,7 @@ source: hansei/src/offline.rs
 description: "`threads --without role ^worker --group has-task -f 1` over linux/futurelock"
 ---
 1  no
-lwp 4032808  polling no task
+lwp 1144651  polling no task
   thread_id: core::option::Option<tokio::runtime::thread_id::ThreadId>::None
   runtime:
     tokio::runtime::context::runtime::EnterRuntime::Entered {

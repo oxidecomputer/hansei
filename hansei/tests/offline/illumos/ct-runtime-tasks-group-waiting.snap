@@ -2,7 +2,7 @@
 source: hansei/src/offline.rs
 description: "`tasks --group waiting-on` over illumos/ct-runtime"
 ---
-COUNT  WAITING ON                                      TASKS
+COUNT  WAITING ON                                     TASKS
     1  a tokio::sync::Semaphore (semaphore 0xADDR)  2
-    1  timer                                           1
+    1  timer                                          1
 2 groups

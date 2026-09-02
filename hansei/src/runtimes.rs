@@ -257,12 +257,6 @@ pub(crate) fn exec_runtimes<T: proc::Target>(
 ) -> Result<()> {
     let selected = select(session, scopes)?;
     let members = fields.members();
-    // The bundle's `Elided` formats hide the runtime graph from *user*
-    // values; this command exists to show the runtime's own insides, so
-    // they must never apply here — a new elided row must not be able to
-    // blank part of this output.
-    let no_elide = reify::ElideOverride { no_elide: true };
-
     // A heading is only earned by an ambiguity it resolves: one runtime
     // and one section is the value alone, as it was before either could
     // be more than one.
@@ -287,11 +281,7 @@ pub(crate) fn exec_runtimes<T: proc::Target>(
             let value = rt.handle.member(member)?;
             let heap = session.heap_view();
             let heap = heap.as_ref().map(|view| view as &dyn reify::Heap);
-            writeln!(
-                out,
-                "{:#}",
-                render(session, &value, opts, heap).elide_override(&no_elide)
-            )?;
+            writeln!(out, "{:#}", render(session, &value, opts, heap))?;
             printed = true;
         }
     }

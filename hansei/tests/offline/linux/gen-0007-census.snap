@@ -5,7 +5,7 @@ description: "`census` over linux/gen-0007"
 Threads: 3 lwps, 3 in runtime 0 @0xADDR
     2 in the scheduler's run loop
         1 parked in the io driver
-            worker 1, lwp 4034642
+            worker 1, lwp 1146490
         1 parked
     1 in runtime 0 @0xADDR, outside the run loop
         0 in the blocking pool (0 idle, 0 tasks queued)

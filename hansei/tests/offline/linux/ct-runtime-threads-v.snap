@@ -2,7 +2,7 @@
 source: hansei/src/offline.rs
 description: "`threads -v` over linux/ct-runtime"
 ---
-lwp 4033740  polling no task
+lwp 1145581  polling no task
   thread_id: core::option::Option<tokio::runtime::thread_id::ThreadId>::None
   runtime:
     tokio::runtime::context::runtime::EnterRuntime::Entered {
@@ -28,7 +28,7 @@ lwp 4033740  polling no task
         tick: 4,
         driver: core::option::Option<tokio::runtime::driver::Driver>::None,
         metrics: tokio::runtime::metrics::batch::MetricsBatch {
-            busy_duration_total: 7143,
+            busy_duration_total: 9358,
             processing_scheduled_tasks_started_at: core::option::Option<std::time::Instant> { .. } @ 0xADDR,
             park_count: 1,
             park_unpark_count: 1,

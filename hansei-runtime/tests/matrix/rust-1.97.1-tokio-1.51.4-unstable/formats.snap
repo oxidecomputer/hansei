@@ -328,8 +328,6 @@ tokio::loom::std::unsafe_cell::UnsafeCell<tokio::sync::mpsc::chan::RxFields<()>>
 tokio::loom::std::unsafe_cell::UnsafeCell<tokio::sync::mpsc::chan::RxFields<u32>> :: Node Alias { __0, follow }
 tokio::loom::std::unsafe_cell::UnsafeCell<tokio::util::idle_notified_set::List> :: Node Alias { __0, follow }
 tokio::loom::std::unsafe_cell::UnsafeCell<usize> :: Node Alias { __0, follow }
-tokio::runtime::handle::Handle :: Node Elided
-tokio::runtime::scheduler::Handle :: Node Elided
 tokio::runtime::time::entry::TimerEntry :: Node Struct { deadline: Variant { discr=Read(registered), arms=[0=>(Alias { deadline, follow })], default=Variant { discr=(Read(inner.{Some}.__0.state.state.v.value.__0) != 0xffffffffffffffff), arms=[0=>(Alias { deadline, follow }), 1=>(Computed((Read(inner.{Some}.__0.state.state.v.value.__0) - Read(driver.{CurrentThread}.__0.ptr.pointer.*.data.driver.time.{Some}.__0.inner.{Traditional}.state.__1.data.value.wheel.elapsed | driver.{MultiThread}.__0.ptr.pointer.*.data.driver.time.{Some}.__0.inner.{Traditional}.state.__1.data.value.wheel.elapsed))))] } }, state: Variant { discr=Read(registered), arms=[0=>unregistered], default=Variant { discr=(Read(inner.{Some}.__0.state.state.v.value.__0) != 0xffffffffffffffff), arms=[0=>elapsed, 1=>registered] } } }
 tokio::sync::batch_semaphore::Semaphore :: Node Struct { waiters: <structural>, permits: permits.inner.value.v.value.__0 }
 tokio::sync::mpsc::block::Block<u32> :: Node Struct { header: <structural>, values: SlotCount { bitmap=header.ready_slots.inner.value.v.value.__0, slots=values.__0 } }

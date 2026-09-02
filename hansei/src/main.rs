@@ -617,9 +617,6 @@ pub enum Command {
     /// share. Naming no section shows both, and naming no runtime shows
     /// every one of them, each under a heading.
     ///
-    /// The tokio info's elisions (which hide runtime internals inside
-    /// user values) never apply to this view.
-    ///
     /// `--list` asks the other question instead: not what one runtime
     /// holds, but which executors there are at all — one row per
     /// discovered runtime, then one per discovered `LocalSet`, with the

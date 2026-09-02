@@ -2,7 +2,7 @@
 source: hansei/src/offline.rs
 description: "`threads -v` over linux-floor/blocking-pool"
 ---
-lwp 4038988  polling no task
+lwp 1151047  polling no task
   thread_id: core::option::Option<tokio::runtime::thread_id::ThreadId>::None
   runtime:
     tokio::runtime::context::runtime::EnterRuntime::Entered {
@@ -13,7 +13,7 @@ lwp 4038988  polling no task
   stack:
     0xADDR  
 
-lwp 4038990  last polled task 1
+lwp 1151049  last polled task 1
   thread_id: core::option::Option<tokio::runtime::thread_id::ThreadId>::None
   runtime:
     tokio::runtime::context::runtime::EnterRuntime::Entered {
@@ -48,8 +48,8 @@ lwp 4038990  last polled task 1
         },
         global_queue_interval: 61,
         rand: tokio::util::rand::FastRand {
-            one: 3096717458,
-            two: 2369916061,
+            one: 2370365500,
+            two: 3138096796,
         },
     }
   stack:
@@ -57,7 +57,7 @@ lwp 4038990  last polled task 1
     0xADDR    (frame-pointer walk)
     0xADDR    (frame-pointer walk)
 
-lwp 4038991  last polled task 2
+lwp 1151050  last polled task 2
   thread_id: core::option::Option<tokio::runtime::thread_id::ThreadId>::None
   runtime:
     tokio::runtime::context::runtime::EnterRuntime::Entered {
@@ -88,18 +88,18 @@ lwp 4038991  last polled task 2
             batch: tokio::runtime::metrics::batch::MetricsBatch { .. } @ 0xADDR,
             processing_scheduled_tasks_started_at: std::time::Instant { .. } @ 0xADDR,
             tasks_polled_in_batch: 2,
-            task_poll_time_ewma: 3090.7427049180333,
+            task_poll_time_ewma: 3457.157704918033,
         },
         global_queue_interval: 61,
         rand: tokio::util::rand::FastRand {
-            one: 177282272,
-            two: 3756378586,
+            one: 1048560498,
+            two: 1585127785,
         },
     }
   stack:
     0xADDR  
 
-lwp 4038992  polling task 3
+lwp 1151051  polling task 3
   thread_id: core::option::Option<tokio::runtime::thread_id::ThreadId>::None
   runtime: tokio::runtime::context::runtime::EnterRuntime::NotEntered
   budget: core::option::Option<u8>::None

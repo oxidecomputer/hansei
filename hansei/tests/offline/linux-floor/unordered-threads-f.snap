@@ -2,7 +2,7 @@
 source: hansei/src/offline.rs
 description: "`threads -f 3` over linux-floor/unordered"
 ---
-lwp 4037357  polling no task
+lwp 1149386  polling no task
   thread_id: core::option::Option<tokio::runtime::thread_id::ThreadId>::None
   runtime:
     tokio::runtime::context::runtime::EnterRuntime::Entered {
@@ -13,7 +13,7 @@ lwp 4037357  polling no task
   stack:
     0xADDR  
 
-lwp 4037359  last polled task 1
+lwp 1149388  last polled task 1
   thread_id: core::option::Option<tokio::runtime::thread_id::ThreadId>::None
   runtime:
     tokio::runtime::context::runtime::EnterRuntime::Entered {
@@ -44,18 +44,18 @@ lwp 4037359  last polled task 1
             batch: tokio::runtime::metrics::batch::MetricsBatch { .. } @ 0xADDR,
             processing_scheduled_tasks_started_at: std::time::Instant { .. } @ 0xADDR,
             tasks_polled_in_batch: 2,
-            task_poll_time_ewma: 3617.992704918033,
+            task_poll_time_ewma: 4004.452704918033,
         },
         global_queue_interval: 61,
         rand: tokio::util::rand::FastRand {
-            one: 795715440,
-            two: 265224233,
+            one: 3688427990,
+            two: 2855351165,
         },
     }
   stack:
     0xADDR  
 
-lwp 4037360  last polled task 2
+lwp 1149389  last polled task 2
   thread_id: core::option::Option<tokio::runtime::thread_id::ThreadId>::None
   runtime:
     tokio::runtime::context::runtime::EnterRuntime::Entered {
@@ -72,7 +72,7 @@ lwp 4037360  last polled task 2
     }
   core:
     tokio::runtime::scheduler::multi_thread::worker::Core {
-        tick: 1,
+        tick: 2,
         lifo_slot: core::option::Option<tokio::runtime::task::Notified<alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle, alloc::alloc::Global>>>::None,
         lifo_enabled: false,
         run_queue: tokio::runtime::scheduler::multi_thread::queue::Local<alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle, alloc::alloc::Global>> {
@@ -90,8 +90,8 @@ lwp 4037360  last polled task 2
         },
         global_queue_interval: 61,
         rand: tokio::util::rand::FastRand {
-            one: 1949642088,
-            two: 3695947382,
+            one: 1293294756,
+            two: 1631867286,
         },
     }
   stack:
