@@ -108,12 +108,8 @@ fn interactive<T: proc::Target>(session: &Session<'_, T>) -> Result<()> {
         match events.recv() {
             // The completer's question, asked mid-line: answer it and
             // leave the editor on the line it is reading.
-            Ok(Event::Values {
-                command,
-                field,
-                reply,
-            }) => {
-                let _ = reply.send(target_values(session, &command, &field));
+            Ok(Event::Ask { ask, reply }) => {
+                let _ = reply.send(answer(session, &ask));
                 continue;
             }
             Ok(Event::Line(line)) => match execute(session, Mode::Interactive, &line) {
@@ -144,18 +140,45 @@ fn interactive<T: proc::Target>(session: &Session<'_, T>) -> Result<()> {
 
 /// What the editor's thread tells the session's: a line to run, the
 /// signal that ended one, a terminal that failed, or the completer's
-/// question — which values the target holds for a listing's field —
-/// with the channel its answer goes back on.
+/// question with the channel its answer goes back on.
 enum Event {
     Line(String),
     Interrupt,
     Eof,
     Failed(String),
-    Values {
-        command: String,
-        field: String,
+    Ask {
+        ask: Ask,
         reply: mpsc::Sender<Vec<TargetValue>>,
     },
+}
+
+/// A question only the session can answer, asked by the completer
+/// mid-line.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+enum Ask {
+    /// Which values the target holds for a listing's field: what can
+    /// stand after `--with FIELD`.
+    Values { command: String, field: String },
+    /// Which member names a `.` step in a `print` path could take:
+    /// `args` are `print`'s arguments up to and including that `.`.
+    Members { args: Vec<String> },
+}
+
+/// The session's answer to a question.
+fn answer<T: proc::Target>(session: &Session<'_, T>, ask: &Ask) -> Vec<TargetValue> {
+    match ask {
+        Ask::Values { command, field } => target_values(session, command, field),
+        // A path that does not resolve offers nothing: the error is
+        // `print`'s to report once the line runs.
+        Ask::Members { args } => crate::print::path_members(session, args)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|name| TargetValue {
+                insert: name.clone(),
+                spelled: name,
+            })
+            .collect(),
+    }
 }
 
 /// The editor's thread: one `read_line` per prompt the session sends,
@@ -163,14 +186,9 @@ enum Event {
 /// sending prompts.
 fn edit_loop(events: mpsc::Sender<Event>, prompts: mpsc::Receiver<String>) {
     let asker = events.clone();
-    let mut editor = line_editor(Box::new(move |command: &str, field: &str| {
+    let mut editor = line_editor(Box::new(move |ask: Ask| {
         let (reply, answer) = mpsc::channel();
-        let question = Event::Values {
-            command: command.to_string(),
-            field: field.to_string(),
-            reply,
-        };
-        if asker.send(question).is_err() {
+        if asker.send(Event::Ask { ask, reply }).is_err() {
             return Vec::new();
         }
         answer.recv().unwrap_or_default()
@@ -665,17 +683,18 @@ impl Write for ShellSink {
 /// modules that parse them. A word the grammar does not recognize
 /// completes to nothing rather than to a guess.
 struct LineCompleter {
-    /// Where the values a target holds come from: the session's
-    /// thread, asked over a channel while the prompt waits. Tests pass
-    /// a closure over fixed rows.
+    /// Where the answers only the session has come from: its thread,
+    /// asked over a channel while the prompt waits. Tests pass a
+    /// closure over fixed rows.
     source: ValueSource,
-    /// Each (command, field) asked once. A core does not change under
-    /// a session, and the first answer may have cost the census or an
-    /// unwind of every stack.
-    cache: HashMap<(String, String), Vec<TargetValue>>,
+    /// Each field's values asked once. A core does not change under a
+    /// session, and the first answer may have cost the census or an
+    /// unwind of every stack. Member names are not cached: they depend
+    /// on where the cursor stands, and cost one frame read.
+    cache: HashMap<Ask, Vec<TargetValue>>,
 }
 
-type ValueSource = Box<dyn FnMut(&str, &str) -> Vec<TargetValue> + Send>;
+type ValueSource = Box<dyn FnMut(Ask) -> Vec<TargetValue> + Send>;
 
 impl LineCompleter {
     fn new(source: ValueSource) -> Self {
@@ -685,36 +704,41 @@ impl LineCompleter {
         }
     }
 
-    /// The target's values for one field, asked for once.
-    fn target_values(&mut self, command: &str, field: &str) -> Vec<TargetValue> {
-        let key = (command.to_string(), field.to_string());
-        if let Some(values) = self.cache.get(&key) {
+    /// The session's answer to `ask`, from the cache where it keeps.
+    fn answer(&mut self, ask: Ask) -> Vec<TargetValue> {
+        if let Some(values) = self.cache.get(&ask) {
             return values.clone();
         }
-        let values = (self.source)(command, field);
-        self.cache.insert(key, values.clone());
+        let values = (self.source)(ask.clone());
+        if matches!(ask, Ask::Values { .. }) {
+            self.cache.insert(ask, values.clone());
+        }
         values
     }
 }
 
 /// One thing the cursor's word could become: as spelled, which the
 /// typed prefix is matched against; as inserted, which differs only
-/// for a target's value that needs escaping or quoting; and with the
-/// description the menu shows beside it.
+/// for a target's value that needs escaping or quoting; with the
+/// description the menu shows beside it; and whether a space follows
+/// it — a path step does not end the word, since the next step
+/// continues it.
 struct Candidate {
     spelled: String,
     insert: String,
     description: Option<String>,
+    space: bool,
 }
 
 impl Candidate {
-    /// A word of the grammar's own: inserted as spelled.
+    /// A word of the grammar's own: inserted as spelled, a space after.
     fn word(spelled: impl Into<String>, description: Option<String>) -> Candidate {
         let spelled = spelled.into();
         Candidate {
             insert: spelled.clone(),
             spelled,
             description,
+            space: true,
         }
     }
 }
@@ -731,15 +755,15 @@ impl Completer for LineCompleter {
         // `help` command stands beside the declared ones.
         let mut root = Line::command();
         root.build();
-        let mut values = |command: &str, field: &str| self.target_values(command, field);
-        candidates(&root, &words, &current, &mut values)
+        let mut answer = |ask: Ask| self.answer(ask);
+        candidates(&root, &words, &current, &mut answer)
             .into_iter()
             .filter(|c| c.spelled.starts_with(&current))
             .map(|c| Suggestion {
                 value: c.insert,
                 description: c.description,
                 span: Span::new(start, pos),
-                append_whitespace: true,
+                append_whitespace: c.space,
                 ..Suggestion::default()
             })
             .collect()
@@ -776,12 +800,12 @@ fn words_before(prefix: &str) -> Option<(Vec<String>, String, usize)> {
 
 /// Everything that could stand at the cursor, before the typed prefix
 /// narrows it. `root` is the built grammar the line is read against;
-/// `values` answers what the target holds for a listing's field.
+/// `answer` is the session's, for what only it knows.
 fn candidates(
     root: &clap::Command,
     words: &[String],
     current: &str,
-    values: &mut dyn FnMut(&str, &str) -> Vec<TargetValue>,
+    answer: &mut dyn FnMut(Ask) -> Vec<TargetValue>,
 ) -> Vec<Candidate> {
     // A scope prefix is peeled as `execute_one` peels it, except that
     // the word after the selector's argument may be the one being
@@ -808,6 +832,11 @@ fn candidates(
     let Some(cmd) = find_command(root, word) else {
         return Vec::new();
     };
+    // `print`'s arguments are a grammar of their own: a root, then path
+    // steps, of which the member step completes.
+    if cmd.get_name() == "print" {
+        return path_candidates(rest, current, answer);
+    }
 
     // Walk the words to learn what the cursor's word is: the value of a
     // flag still owed values (with the values it has so far, since the
@@ -862,7 +891,7 @@ fn candidates(
     if let Some((opt, taken)) = &pending
         && (!current.starts_with('-') || opt.is_allow_hyphen_values_set())
     {
-        return values_of(cmd, opt, taken, &positional_words, values);
+        return values_of(cmd, opt, taken, &positional_words, answer);
     }
     if current.starts_with('-') {
         // Only the long spellings: `-` alone expands to them, and a
@@ -889,9 +918,43 @@ fn candidates(
                 .filter(|a| a.get_num_args().expect("built").max_values() > 1)
         });
     match positional {
-        Some(arg) => values_of(cmd, arg, &positional_words, &positional_words, values),
+        Some(arg) => values_of(cmd, arg, &positional_words, &positional_words, answer),
         None => Vec::new(),
     }
+}
+
+/// The member names a `print` path could continue with. The word
+/// under the cursor completes when it is a path token whose last step
+/// is a member step — `.`, `.fo`, `.foo.`, `.foo[0].` — and the
+/// session is asked what the root and the path before that step
+/// reach. The word is completed whole, its steps so far kept, with no
+/// space after: the next step continues it.
+fn path_candidates(
+    rest: &[String],
+    current: &str,
+    answer: &mut dyn FnMut(Ask) -> Vec<TargetValue>,
+) -> Vec<Candidate> {
+    if !current.starts_with(['.', '[', '*']) {
+        return Vec::new();
+    }
+    let Some(dot) = current.rfind('.') else {
+        return Vec::new();
+    };
+    let (stem, partial) = current.split_at(dot + 1);
+    if partial.contains(['[', '*']) {
+        return Vec::new();
+    }
+    let mut args: Vec<String> = rest.to_vec();
+    args.push(stem.to_string());
+    answer(Ask::Members { args })
+        .into_iter()
+        .map(|name| Candidate {
+            spelled: format!("{stem}{}", name.spelled),
+            insert: format!("{stem}{}", name.insert),
+            description: None,
+            space: false,
+        })
+        .collect()
 }
 
 /// The subcommand `word` names, by the rule the grammar's
@@ -921,13 +984,13 @@ fn looks_like_flag(word: &str) -> bool {
 /// the first), with each value's help where the grammar declares one.
 /// `positional_words` are the positionals already typed, for a value
 /// whose choices depend on an earlier one (`config ugly <Tab>`);
-/// `values` answers what the target holds for a listing's field.
+/// `answer` is the session's, for what the target holds.
 fn values_of(
     cmd: &clap::Command,
     arg: &clap::Arg,
     taken: &[&str],
     positional_words: &[&str],
-    values: &mut dyn FnMut(&str, &str) -> Vec<TargetValue>,
+    answer: &mut dyn FnMut(Ask) -> Vec<TargetValue>,
 ) -> Vec<Candidate> {
     let declared = arg.get_possible_values();
     if !declared.is_empty() {
@@ -945,12 +1008,17 @@ fn values_of(
         // The clause's argument: what the target holds for the field
         // the first word named.
         ("tasks" | "futures" | "threads", "with" | "without", [field]) => {
-            return values(command, field)
+            let ask = Ask::Values {
+                command: command.to_string(),
+                field: field.to_string(),
+            };
+            return answer(ask)
                 .into_iter()
                 .map(|v| Candidate {
                     spelled: v.spelled,
                     insert: v.insert,
                     description: None,
+                    space: true,
                 })
                 .collect();
         }
@@ -1229,7 +1297,7 @@ mod tests {
     /// What Tab offers for a line with the cursor at its end, as the
     /// replacement texts in menu order.
     fn completions(line: &str) -> Vec<String> {
-        LineCompleter::new(Box::new(|_, _| Vec::new()))
+        LineCompleter::new(Box::new(|_| Vec::new()))
             .complete(line, line.len())
             .into_iter()
             .map(|s| s.value)
@@ -1241,9 +1309,12 @@ mod tests {
     fn stateful_completer() -> (LineCompleter, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
         let asked = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let log = asked.clone();
-        let completer = LineCompleter::new(Box::new(move |command: &str, field: &str| {
+        let completer = LineCompleter::new(Box::new(move |ask: Ask| {
+            let Ask::Values { command, field } = ask else {
+                return Vec::new();
+            };
             log.lock().unwrap().push(format!("{command} {field}"));
-            let (values, pattern) = match (command, field) {
+            let (values, pattern) = match (command.as_str(), field.as_str()) {
                 ("tasks", "state") => (vec!["idle", "idle (cancelled)", "running"], true),
                 ("tasks", "type") => (vec!["Vec<(u64, u64)>"], true),
                 ("tasks", "lwp") => (vec!["7"], false),
@@ -1319,6 +1390,110 @@ mod tests {
         assert_eq!(asked.lock().unwrap().len(), 2);
     }
 
+    /// A completer over a frame holding `foo: Foo { x: Bar { a, b }, y }`
+    /// and `baz`, recording the arguments each question carries.
+    fn frame_completer() -> (
+        LineCompleter,
+        std::sync::Arc<std::sync::Mutex<Vec<Vec<String>>>>,
+    ) {
+        let asked = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let log = asked.clone();
+        let completer = LineCompleter::new(Box::new(move |ask: Ask| {
+            let Ask::Members { args } = ask else {
+                return Vec::new();
+            };
+            log.lock().unwrap().push(args.clone());
+            // The root words aside, the path is the tokens joined.
+            let path: String = args
+                .iter()
+                .filter(|a| a.starts_with(['.', '[', '*']))
+                .cloned()
+                .collect();
+            let names: &[&str] = match path.as_str() {
+                "." => &["baz", "foo"],
+                ".foo." => &["x", "y"],
+                ".foo.x." => &["a", "b"],
+                _ => &[],
+            };
+            names
+                .iter()
+                .map(|n| TargetValue {
+                    spelled: n.to_string(),
+                    insert: n.to_string(),
+                })
+                .collect()
+        }));
+        (completer, asked)
+    }
+
+    /// A `.` in a `print` path offers what the frame holds there, the
+    /// steps so far kept and no space after: the locals at the root,
+    /// then each local's members, then theirs. A typed prefix narrows
+    /// the names; a separate path word continues the path.
+    #[test]
+    fn test_completion_walks_a_print_path() {
+        let (mut c, asked) = frame_completer();
+        let suggest = |c: &mut LineCompleter, line: &str| -> Vec<(String, bool)> {
+            c.complete(line, line.len())
+                .into_iter()
+                .map(|s| (s.value, s.append_whitespace))
+                .collect()
+        };
+        assert_eq!(
+            suggest(&mut c, "print ."),
+            [(".baz".to_string(), false), (".foo".to_string(), false)]
+        );
+        assert_eq!(complete_with(&mut c, "print .f"), [".foo"]);
+        assert_eq!(complete_with(&mut c, "print .foo."), [".foo.x", ".foo.y"]);
+        assert_eq!(
+            complete_with(&mut c, "print .foo.x."),
+            [".foo.x.a", ".foo.x.b"]
+        );
+        assert_eq!(complete_with(&mut c, "print .foo.x.b"), [".foo.x.b"]);
+        assert_eq!(complete_with(&mut c, "print .foo .x."), [".x.a", ".x.b"]);
+        // The root words travel with the question.
+        complete_with(&mut c, "print $_ .");
+        complete_with(&mut c, "print 0x10 T .foo.");
+        let asked = asked.lock().unwrap();
+        assert!(
+            asked.contains(&vec!["$_".to_string(), ".".to_string()]),
+            "{asked:?}"
+        );
+        assert!(
+            asked.contains(&vec![
+                "0x10".to_string(),
+                "T".to_string(),
+                ".foo.".to_string()
+            ]),
+            "{asked:?}"
+        );
+        // The step before the cursor's is sent as typed, the partial
+        // name left off.
+        assert!(
+            asked.contains(&vec![".foo".to_string(), ".x.".to_string()]),
+            "{asked:?}"
+        );
+    }
+
+    /// Only a member step completes: an index or a dereference under
+    /// the cursor, or no path at all, asks nothing.
+    #[test]
+    fn test_completion_leaves_the_other_print_steps_alone() {
+        let (mut c, asked) = frame_completer();
+        assert!(complete_with(&mut c, "print ").is_empty());
+        assert!(complete_with(&mut c, "print 0x").is_empty());
+        assert!(complete_with(&mut c, "print .foo[").is_empty());
+        assert!(complete_with(&mut c, "print .foo[0]").is_empty());
+        assert!(complete_with(&mut c, "print .foo*").is_empty());
+        assert!(asked.lock().unwrap().is_empty());
+        // A member step after an index asks with the index kept.
+        complete_with(&mut c, "print .foo[0].");
+        assert_eq!(*asked.lock().unwrap(), [vec![".foo[0].".to_string()]]);
+        // Member names are not cached: the cursor may have moved.
+        complete_with(&mut c, "print .foo[0].");
+        assert_eq!(asked.lock().unwrap().len(), 2);
+    }
+
     /// A value goes back into the line escaped where the field would
     /// read it as a regex, and quoted where the tokenizer would split
     /// it; a plain word goes back as it is.
@@ -1356,7 +1531,11 @@ mod tests {
         let args = session_args("illumos", "blocking-pool");
         let session = Session::attach(&snapshot, &bundle, &args).expect("the pair attaches");
         let spelled = |command: &str, field: &str| -> Vec<(String, String)> {
-            target_values(&session, command, field)
+            let ask = Ask::Values {
+                command: command.to_string(),
+                field: field.to_string(),
+            };
+            answer(&session, &ask)
                 .into_iter()
                 .map(|v| (v.spelled, v.insert))
                 .collect()
@@ -1397,6 +1576,32 @@ mod tests {
         assert!(spelled("tasks", "holds").is_empty());
         assert!(spelled("tasks", "colour").is_empty());
         assert!(spelled("config", "key").is_empty());
+
+        // A member question is `print`'s: nothing without a cursor,
+        // what `print` itself would offer — as typed back — once a task
+        // is selected, and nothing for a path that does not resolve.
+        let members = |path: &str| -> Vec<String> {
+            let ask = Ask::Members {
+                args: vec![path.to_string()],
+            };
+            answer(&session, &ask)
+                .into_iter()
+                .map(|v| {
+                    assert_eq!(v.spelled, v.insert);
+                    v.spelled
+                })
+                .collect()
+        };
+        assert!(members(".").is_empty());
+        let id = session.tasks.tasks[0]
+            .task_id
+            .expect("the fixture's tasks carry ids");
+        crate::cursor::select_task(&session, crate::TraceTarget::Task(id)).expect("selects");
+        assert_eq!(
+            members("."),
+            crate::print::path_members(&session, &[".".to_string()]).expect("the frame resolves")
+        );
+        assert!(members(".no_such.").is_empty());
     }
 
     /// Completion advertises what `help` lists: a hidden command —
@@ -1419,8 +1624,7 @@ mod tests {
     #[test]
     fn test_completion_spans_the_word_under_the_cursor() {
         let line = "tasks --group wa";
-        let suggestions =
-            LineCompleter::new(Box::new(|_, _| Vec::new())).complete(line, line.len());
+        let suggestions = LineCompleter::new(Box::new(|_| Vec::new())).complete(line, line.len());
         let waker = suggestions
             .iter()
             .find(|s| s.value == "waker")
@@ -1507,7 +1711,7 @@ mod tests {
         assert_eq!(completions("info si"), ["signal"]);
         assert_eq!(completions("sync --kind se"), ["semaphore", "set"]);
         let line = "sync --kind sem";
-        let semaphore = LineCompleter::new(Box::new(|_, _| Vec::new()))
+        let semaphore = LineCompleter::new(Box::new(|_| Vec::new()))
             .complete(line, line.len())
             .remove(0);
         assert!(
@@ -1627,7 +1831,7 @@ mod tests {
     /// cursor.
     fn toy(line: &str) -> Vec<String> {
         let (words, current, _) = words_before(line).expect("the toy lines are plain words");
-        candidates(&toy_grammar(), &words, &current, &mut |_, _| Vec::new())
+        candidates(&toy_grammar(), &words, &current, &mut |_| Vec::new())
             .into_iter()
             .filter(|c| c.spelled.starts_with(&current))
             .map(|c| c.insert)

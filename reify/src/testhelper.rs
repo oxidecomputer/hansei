@@ -597,6 +597,9 @@ fixture_ids! {
     // pointer, a wrapper whose one sized member sits past a zero-sized
     // field, and a niche pointer enum an explicit `*` must cross.
     RC_BOX, RC_BOX_PTR, PAD_WRAP, OPT_PTR,
+    // A bare tuple `(u32, u32)`: the same `__0`/`__1` members as PAIR
+    // under the name that marks them as the `.0`/`.1` a path spells.
+    TUPLE2,
 }
 
 /// A hand-built mini-bundle exercising every TypeDef kind reify touches:
@@ -1867,6 +1870,15 @@ pub fn test_bundle() -> Bundle {
                     },
                 ],
             },
+        },
+    );
+
+    types.add(
+        TUPLE2,
+        TypeDef::Struct {
+            name: s("(u32, u32)"),
+            size: 8,
+            members: vec![m(tuple0n, U32, 0), m(tuple1n, U32, 4)],
         },
     );
 
