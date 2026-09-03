@@ -6,3 +6,6 @@
 # cargo-mutants scratch output.
 /mutants.out
 /mutants.out.old
+
+# The demo program builds in its own directory.
+/example/target

@@ -15,7 +15,9 @@ members = [
 # A fixture crate, not product code: it owns its Cargo.lock so the
 # fixture matrix can pin tokio per cell independently of the workspace
 # resolution. Built only through test-programs/regen.sh.
-exclude = ["test-programs"]
+# The demo program is not product code either: its own lockfile, its own
+# profiles, built on its own (README, "Trying it out").
+exclude = ["example", "test-programs"]
 
 [workspace.dependencies]
 anyhow = "1.0"
