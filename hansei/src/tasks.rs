@@ -1816,6 +1816,7 @@ pub(crate) fn exec_census<T: proc::Target>(
     session: &Session<'_, T>,
     sections: summary::Sections,
     top: usize,
+    theme: crate::output::Theme,
     out: &mut dyn io::Write,
 ) -> Result<()> {
     // The future section counts the depth of every chain the task
@@ -1853,7 +1854,7 @@ pub(crate) fn exec_census<T: proc::Target>(
         impls: &session.impl_fold,
         fatal: session.proc.fatal_signal(),
     };
-    summary::print(&facts, sections, top, out)
+    summary::print(&facts, sections, top, session.fit_width(theme), out)
 }
 
 /// Every discovered runtime with the readings that are its alone: what

@@ -189,11 +189,15 @@ impl Sections {
 /// Print the census.
 ///
 /// `top` bounds every "most of them are this" listing; the rows past it
-/// are counted rather than dropped silently.
+/// are counted rather than dropped silently. `fit` is the width the
+/// tallies keep their lines within by cutting the names in them, as
+/// [`Session::fit_width`](crate::Session::fit_width) gives it; `None`
+/// leaves every name whole.
 pub fn print(
     facts: &Facts<'_>,
     sections: Sections,
     top: usize,
+    fit: Option<usize>,
     out: &mut dyn io::Write,
 ) -> Result<()> {
     // The blank line goes *between* sections rather than after each, so
@@ -223,11 +227,11 @@ pub fn print(
     }
     if sections.tasks {
         separate(out)?;
-        tasks(facts, top, out)?;
+        tasks(facts, top, fit, out)?;
     }
     if sections.futures {
         separate(out)?;
-        futures(facts, top, out)?;
+        futures(facts, top, fit, out)?;
     }
     Ok(())
 }
@@ -477,7 +481,7 @@ fn kind(facts: &Facts<'_>, thread: &Thread) -> ThreadKind {
 // Tasks
 // ---------------------------------------------------------------------
 
-fn tasks(facts: &Facts<'_>, top: usize, out: &mut dyn io::Write) -> Result<()> {
+fn tasks(facts: &Facts<'_>, top: usize, fit: Option<usize>, out: &mut dyn io::Write) -> Result<()> {
     let list = facts.tasks;
     writeln!(
         out,
@@ -551,7 +555,7 @@ fn tasks(facts: &Facts<'_>, top: usize, out: &mut dyn io::Write) -> Result<()> {
     let futures = types
         .into_iter()
         .map(|(name, (count, waits))| chained(name, count, &waits, top));
-    rows(FUTURE_TYPES, ranked(futures, top, "type"), out)
+    rows(FUTURE_TYPES, ranked(futures, top, "type"), fit, out)
 }
 
 /// The wait tally: one bucket per thing a task or a future can be
@@ -682,7 +686,12 @@ impl Waits {
 // Futures
 // ---------------------------------------------------------------------
 
-fn futures(facts: &Facts<'_>, top: usize, out: &mut dyn io::Write) -> Result<()> {
+fn futures(
+    facts: &Facts<'_>,
+    top: usize,
+    fit: Option<usize>,
+    out: &mut dyn io::Write,
+) -> Result<()> {
     // Every count here is of *chains*, not of the frames they stand on:
     // a chain is one future making progress on its own, and the frames
     // under it are that one future's stack. Counting frames instead
@@ -737,7 +746,7 @@ fn futures(facts: &Facts<'_>, top: usize, out: &mut dyn io::Write) -> Result<()>
             format!("in {} FuturesUnordered{reaped}", facts.sets.len()),
         ),
     ];
-    rows("Location", places, out)?;
+    rows("Location", places, fit, out)?;
 
     // The same tally as the tasks', over the futures no task listing
     // shows: they park on the same things and are as worth naming, and
@@ -769,7 +778,7 @@ fn futures(facts: &Facts<'_>, top: usize, out: &mut dyn io::Write) -> Result<()>
     let futures = types
         .into_iter()
         .map(|(name, (count, waits))| chained(name, count, &waits, top));
-    rows(FUTURE_TYPES, ranked(futures, top, "type"), out)?;
+    rows(FUTURE_TYPES, ranked(futures, top, "type"), fit, out)?;
     Ok(())
 }
 
@@ -868,16 +877,21 @@ fn ranked(tally: impl IntoIterator<Item = Row>, top: usize, noun: &str) -> Vec<R
     rows
 }
 
-/// Print a labelled block of counted rows. A block with nothing in it
-/// is not printed: a heading over no rows reads as data missing rather
-/// than absent.
-fn rows(label: &str, rows: impl IntoIterator<Item = Row>, out: &mut dyn io::Write) -> Result<()> {
+/// Print a labelled block of counted rows, its lines fit within `fit`
+/// columns. A block with nothing in it is not printed: a heading over
+/// no rows reads as data missing rather than absent.
+fn rows(
+    label: &str,
+    rows: impl IntoIterator<Item = Row>,
+    fit: Option<usize>,
+    out: &mut dyn io::Write,
+) -> Result<()> {
     let rows: Vec<Row> = rows.into_iter().collect();
     if rows.is_empty() {
         return Ok(());
     }
     writeln!(out, "    {label}:")?;
-    level(&rows, "        ", false, out)
+    level(&rows, "        ", false, fit, out)
 }
 
 /// Print one level of a listing, the counts right-aligned within the
@@ -887,8 +901,23 @@ fn rows(label: &str, rows: impl IntoIterator<Item = Row>, out: &mut dyn io::Writ
 /// `branch` says whether these rows *are* a breakdown, and so are drawn
 /// as branches of the row they hang from rather than as a listing in
 /// their own right.
-fn level(rows: &[Row], indent: &str, branch: bool, out: &mut dyn io::Write) -> Result<()> {
-    let mut table = output::Table::new(2).align_right(0);
+///
+/// `fit` is the width of the whole line, so the indent and the stem
+/// come off it before the table fits what is left: a cut name leaves
+/// the line within the edge, not just the table's part of it.
+fn level(
+    rows: &[Row],
+    indent: &str,
+    branch: bool,
+    fit: Option<usize>,
+    out: &mut dyn io::Write,
+) -> Result<()> {
+    let stem = if branch { "├─ ".chars().count() } else { 0 };
+    let taken = indent.chars().count() + stem;
+    let mut table = output::Table::new(2)
+        .align_right(0)
+        .truncatable(1)
+        .fit(fit.map(|fit| fit.saturating_sub(taken)));
     for row in rows {
         table.row([row.count.to_string(), row.what.clone()]);
     }
@@ -905,7 +934,7 @@ fn level(rows: &[Row], indent: &str, branch: bool, out: &mut dyn io::Write) -> R
             // it down reads as hanging from the name and not from the
             // count.
             let under = format!("{indent}{run}{}", " ".repeat(width + 2));
-            level(&row.under, &under, true, out)?;
+            level(&row.under, &under, true, fit, out)?;
         }
     }
     Ok(())
@@ -1049,8 +1078,13 @@ mod tests {
 
     /// The same, narrowed to the sections named.
     fn sections(facts: &Facts<'_>, sections: Sections, top: usize) -> String {
+        fitted(facts, sections, top, None)
+    }
+
+    /// The same, its lines fit within `fit` columns.
+    fn fitted(facts: &Facts<'_>, sections: Sections, top: usize, fit: Option<usize>) -> String {
         let mut out = Vec::new();
-        print(facts, sections, top, &mut out).unwrap();
+        print(facts, sections, top, fit, &mut out).unwrap();
         String::from_utf8(out).unwrap()
     }
 
@@ -1861,6 +1895,32 @@ mod tests {
             ),
             "{page}"
         );
+    }
+
+    /// A fit cuts a tallied name to the room its line leaves it, the
+    /// indent and the count taken off first so the whole line lands
+    /// within the edge, with an ellipsis to say so; without a fit the
+    /// name prints whole however long.
+    #[test]
+    fn test_a_fit_cuts_the_tallied_names_to_the_line() {
+        const LONG: &str = "a::very::long::module::path::to::some::future_type";
+        let list = empty();
+        let held: Vec<HeldFuture> = (0..2).map(|_| held(LONG, None)).collect();
+        let mut facts = facts(&list, &[]);
+        facts.held = &held;
+        let futures = Sections::select(false, false, true);
+
+        let whole = fitted(&facts, futures, 2, None);
+        assert!(
+            whole.contains(&format!("\n        2  future {LONG}\n")),
+            "{whole}"
+        );
+
+        let cut = fitted(&facts, futures, 2, Some(40));
+        let line = cut.lines().find(|l| l.contains("future a::")).unwrap();
+        assert_eq!(line.chars().count(), 40, "{cut}");
+        assert!(line.ends_with('…'), "{cut}");
+        assert!(line.starts_with("        2  future a::very"), "{cut}");
     }
 
     /// A census names the sections it was asked for and nothing else,
