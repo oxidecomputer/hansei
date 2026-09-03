@@ -417,14 +417,12 @@ fn print_root_chain<T: proc::Target>(
     trace::exec_trace(session, root, &opts, out)
 }
 
-/// `thread`: select an lwp, or print the cursor's.
-#[allow(clippy::too_many_arguments)]
+/// `thread`: select an lwp, or print the cursor's — its table row, or
+/// under `verbose` the block `threads -v` prints for it.
 pub(crate) fn exec_thread<T: proc::Target>(
     session: &Session<'_, T>,
     lwp: Option<u32>,
     verbose: bool,
-    frames: Option<usize>,
-    registers: bool,
     theme: crate::output::Theme,
     render: crate::RenderOpts,
     out: &mut dyn io::Write,
@@ -440,11 +438,11 @@ pub(crate) fn exec_thread<T: proc::Target>(
             .lwp
             .ok_or_else(|| anyhow!("no thread selected"))?,
     };
-    if verbose || registers || frames.is_some() {
+    if verbose {
         let cmd = threads::ThreadsCmd {
             verbose: true,
-            frames,
-            registers,
+            frames: None,
+            registers: false,
             lwp: vec![tid],
             with: Vec::new(),
             without: Vec::new(),
@@ -919,8 +917,6 @@ mod tests {
             &session,
             Some(lwp),
             false,
-            None,
-            false,
             crate::output::Theme::plain(),
             RenderOpts::from_settings(&session.settings.borrow()),
             &mut Vec::new(),
@@ -1366,7 +1362,7 @@ mod tests {
 
     /// The thread selector: an unknown lwp refuses, the row names the
     /// selected lwp in the table's cells, `$_` is exactly its stack
-    /// pointer, and each block-form flag asks for the block.
+    /// pointer, and `-v` asks for the block.
     #[test]
     fn test_thread_rows_and_blocks_spell_the_selected_lwp() {
         let (bundle, snapshot) = testkit::load("linux", "nested-await");
@@ -1381,8 +1377,6 @@ mod tests {
             &session,
             Some(999_999),
             false,
-            None,
-            false,
             theme,
             render,
             &mut Vec::new(),
@@ -1391,42 +1385,18 @@ mod tests {
         assert!(err.to_string().starts_with("no lwp 999999"), "{err}");
 
         let mut out = Vec::new();
-        exec_thread(
-            &session,
-            Some(tid),
-            false,
-            None,
-            false,
-            theme,
-            render,
-            &mut out,
-        )
-        .expect("the lwp selects");
+        exec_thread(&session, Some(tid), false, theme, render, &mut out).expect("the lwp selects");
         let line = String::from_utf8(out).expect("the row is UTF-8");
         assert!(line.starts_with(&tid.to_string()), "{line}");
         assert_eq!(line.trim_end().split("  ").count(), 4, "{line}");
         assert_eq!(session.cursor.borrow().last_addr, Some(rsp));
 
-        for (verbose, frames, registers) in [
-            (true, None, false),
-            (false, Some(3), false),
-            (false, None, true),
-        ] {
-            let mut out = Vec::new();
-            exec_thread(
-                &session,
-                Some(tid),
-                verbose,
-                frames,
-                registers,
-                theme,
-                render,
-                &mut out,
-            )
+        // `-v` is the block: the stack under the row's fields.
+        let mut out = Vec::new();
+        exec_thread(&session, Some(tid), true, theme, render, &mut out)
             .expect("the block form answers");
-            let text = String::from_utf8(out).expect("the block is UTF-8");
-            assert!(text.contains("stack"), "{text}");
-        }
+        let text = String::from_utf8(out).expect("the block is UTF-8");
+        assert!(text.contains("stack"), "{text}");
     }
 
     /// `frame` prints the selected frame's line the way a plain trace
