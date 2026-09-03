@@ -5,6 +5,8 @@ use foldhash::{HashMap, HashMapExt};
 use gimli::{Attribute, AttributeValue, DebuggingInformationEntry, UnitRef, UnitSectionOffset};
 use tracing::debug;
 
+use crate::string_table::StrId;
+
 use std::num::NonZero;
 
 /// An index into a [`NamespaceTable`].
@@ -69,11 +71,6 @@ impl<S: Copy + Eq + std::hash::Hash> NamespaceTable<S> {
         Self::default()
     }
 
-    /// Look up a namespace by parent and name.
-    pub(crate) fn find(&self, parent: Option<NsId>, name: S) -> Option<NsId> {
-        self.index.get(&(parent, name)).copied()
-    }
-
     /// Insert a namespace, returning its [`NsId`]. If the same
     /// `(parent, name)` pair has been inserted before, the existing id is
     /// returned.
@@ -98,6 +95,158 @@ impl<S: Copy + Eq + std::hash::Hash> NamespaceTable<S> {
 /// The type parameter `S` represents the string storage: `&str` for
 /// borrowed strings during parsing, or [`StrId`] for interned strings
 /// in the collector.
+/// The program's namespaces, interned by the workers as they parse.
+///
+/// A unit's own table lists parents before children, so a worker can
+/// intern each entry parent-first and hand its types global ids on the
+/// spot; no collector has to remap them afterwards. Sharded by the
+/// hash of the pair, each shard behind its own lock; an id names its
+/// shard in its low bits, so a lookup goes straight to it.
+#[derive(Debug)]
+pub struct ShardedNamespaces {
+    shards: Box<[std::sync::Mutex<NsShard>]>,
+}
+
+const NS_SHARD_BITS: u32 = 8;
+const NS_SHARDS: usize = 1 << NS_SHARD_BITS;
+
+#[derive(Debug, Default)]
+struct NsShard {
+    entries: Vec<NsEntry<StrId>>,
+    index: HashMap<(Option<NsId>, StrId), NsId>,
+}
+
+fn ns_encode(shard: usize, local: usize) -> NsId {
+    let raw = ((local as u64) << NS_SHARD_BITS) | shard as u64;
+    NsId(NonZero::new(raw + 1).expect("+1 keeps the id non-zero"))
+}
+
+fn ns_decode(id: NsId) -> (usize, usize) {
+    let raw = id.0.get() - 1;
+    (
+        (raw & (NS_SHARDS as u64 - 1)) as usize,
+        (raw >> NS_SHARD_BITS) as usize,
+    )
+}
+
+fn ns_shard_of(parent: Option<NsId>, name: StrId) -> usize {
+    use std::hash::BuildHasher;
+    (foldhash::fast::FixedState::default().hash_one((parent, name)) as usize) & (NS_SHARDS - 1)
+}
+
+impl NsShard {
+    fn intern(&mut self, k: usize, parent: Option<NsId>, name: StrId, depth: u32) -> NsId {
+        *self.index.entry((parent, name)).or_insert_with(|| {
+            let id = ns_encode(k, self.entries.len());
+            self.entries.push(NsEntry {
+                name,
+                parent,
+                depth,
+            });
+            id
+        })
+    }
+}
+
+impl Default for ShardedNamespaces {
+    fn default() -> Self {
+        Self {
+            shards: (0..NS_SHARDS)
+                .map(|_| std::sync::Mutex::new(NsShard::default()))
+                .collect(),
+        }
+    }
+}
+
+impl ShardedNamespaces {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// The id of `name` under `parent`, which must already be interned.
+    pub fn intern(&self, parent: Option<NsId>, name: StrId) -> NsId {
+        let k = ns_shard_of(parent, name);
+        if let Some(&id) = self.shards[k].lock().unwrap().index.get(&(parent, name)) {
+            return id;
+        }
+        // A new entry needs its parent's depth, which lives in another
+        // shard: read it with no lock of our own held, then insert —
+        // the entry API settles a race with a worker interning the same
+        // pair meanwhile.
+        let depth = parent.map_or(1, |p| self.get(p).depth + 1);
+        self.shards[k]
+            .lock()
+            .unwrap()
+            .intern(k, parent, name, depth)
+    }
+
+    pub fn get(&self, id: NsId) -> NsEntry<StrId> {
+        let (k, i) = ns_decode(id);
+        self.shards[k].lock().unwrap().entries[i]
+    }
+
+    pub fn freeze(self) -> Namespaces {
+        Namespaces {
+            shards: self
+                .shards
+                .into_vec()
+                .into_iter()
+                .map(|m| m.into_inner().unwrap())
+                .collect(),
+        }
+    }
+}
+
+/// The program's namespaces once the parse is over: the same shards,
+/// read with no lock.
+#[derive(Debug)]
+pub struct Namespaces {
+    shards: Box<[NsShard]>,
+}
+
+impl Default for Namespaces {
+    fn default() -> Self {
+        Self {
+            shards: (0..NS_SHARDS).map(|_| NsShard::default()).collect(),
+        }
+    }
+}
+
+impl Namespaces {
+    pub fn get(&self, id: NsId) -> NsEntry<StrId> {
+        let (k, i) = ns_decode(id);
+        self.shards[k].entries[i]
+    }
+
+    pub fn depth(&self, id: NsId) -> u32 {
+        self.get(id).depth
+    }
+
+    pub(crate) fn find(&self, parent: Option<NsId>, name: StrId) -> Option<NsId> {
+        self.shards[ns_shard_of(parent, name)]
+            .index
+            .get(&(parent, name))
+            .copied()
+    }
+
+    /// Insert by hand, for a reader assembled without a parse.
+    pub fn insert(&mut self, parent: Option<NsId>, name: StrId) -> NsId {
+        let depth = parent.map_or(1, |p| self.get(p).depth + 1);
+        let k = ns_shard_of(parent, name);
+        self.shards[k].intern(k, parent, name, depth)
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (NsId, NsEntry<StrId>)> + '_ {
+        self.shards.iter().enumerate().flat_map(|(k, shard)| {
+            shard
+                .entries
+                .iter()
+                .enumerate()
+                .map(move |(i, &entry)| (ns_encode(k, i), entry))
+        })
+    }
+}
+
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub enum RawType<S> {
     Base(RawBase<S>),

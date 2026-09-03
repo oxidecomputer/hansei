@@ -1,8 +1,8 @@
 use crate::cgu::{CodegenUnit, UnitCtx};
 use crate::raw_types::{
-    NamespaceTable, NsId, RawAwaitee, RawBase, RawEnum, RawEnumerator, RawFunc,
-    RawGenericParameter, RawMember, RawPointer, RawStaticVariable, RawStruct, RawSubParameter,
-    RawType, RawUnion, RawVariant, SourceLoc, VariantShape,
+    Namespaces, NsId, RawAwaitee, RawBase, RawEnum, RawEnumerator, RawFunc, RawGenericParameter,
+    RawMember, RawPointer, RawStaticVariable, RawStruct, RawSubParameter, RawType, RawUnion,
+    RawVariant, ShardedNamespaces, SourceLoc, VariantShape,
 };
 use crate::string_table::{FrozenStrings, ShardedInterner, StrId};
 use crate::{Error, FuncId, Result, Slice};
@@ -56,7 +56,7 @@ pub struct DwReader<'dw> {
     /// All functions, keyed by their FuncId.
     pub functions: HashMap<FuncId, RawFunc<StrId>>,
     /// Global namespace table.
-    pub namespaces: NamespaceTable<StrId>,
+    pub namespaces: Namespaces,
     /// Interned string table for all strings found in types and variables.
     pub strings: FrozenStrings<'dw>,
     /// The `DW_AT_producer` of the first compile unit that carries one
@@ -225,9 +225,21 @@ impl<'dw> DwReader<'dw> {
     ) -> Result<DwReader<'dw>> {
         // Interning is the single most expensive part of collection (tens of
         // millions of strings), so it runs on the parallel workers via a
-        // sharded, lock-striped interner. Namespace assignment and type-map
-        // insertion stay on the serial collector, keyed by unique DIE ids.
+        // sharded, lock-striped interner, and so does naming the
+        // namespaces, through a sharded table of their own. Type-map
+        // insertion stays on the serial collector, keyed by unique DIE
+        // ids: one thread streaming into tables sized up front beats
+        // every worker building tables at once, which was measured and
+        // lost on every host — the memory traffic of fourteen tables
+        // growing together costs more than the collector's serial pass.
         let interner = ShardedInterner::new();
+        let namespaces = ShardedNamespaces::new();
+        // The collector's tables, sized once from the section: on a
+        // large debug build a type takes ~150 bytes of `.debug_info`
+        // and a function ~200, and a table sized about right never
+        // rehashes, while one sized from nothing moves every entry
+        // several times over.
+        let info_bytes = dwarf.debug_info.reader().len();
 
         let parallelism = args
             .cgu_parallelism
@@ -257,6 +269,8 @@ impl<'dw> DwReader<'dw> {
         let (mut collector, parsed) = std::thread::scope(|scope| {
             let collector = scope.spawn(move || {
                 let mut collector = DwReader::new();
+                collector.types.reserve(info_bytes / 150);
+                collector.functions.reserve(info_bytes / 200);
                 for cgu in rx {
                     collector.ingest(cgu);
                 }
@@ -276,7 +290,7 @@ impl<'dw> DwReader<'dw> {
                         // The collector hangs up only after every sender is
                         // dropped, so a failed send can only follow its panic —
                         // which the join below propagates.
-                        tx.send(intern_cgu(&interner, cgu)).ok();
+                        tx.send(intern_cgu(&interner, &namespaces, cgu)).ok();
                         Ok::<_, Error>(())
                     })
             });
@@ -292,6 +306,7 @@ impl<'dw> DwReader<'dw> {
         // Workers have released their borrows now that the parse is done;
         // take ownership of the interned strings.
         collector.strings = interner.freeze();
+        collector.namespaces = namespaces.freeze();
         pool.install(|| collector.finalize_types());
         Ok(collector)
     }
@@ -305,7 +320,7 @@ impl<'dw> DwReader<'dw> {
             type_specifications: HashMap::new(),
             variables: HashMap::new(),
             functions: HashMap::new(),
-            namespaces: NamespaceTable::new(),
+            namespaces: Namespaces::default(),
             strings: FrozenStrings::default(),
             producer: None,
             types_by_name: HashMap::new(),
@@ -314,21 +329,17 @@ impl<'dw> DwReader<'dw> {
     }
 
     /// Ingest an already-interned CGU into the global type space. The worker
-    /// (see [`intern_cgu`]) interned every string, but its namespaces and type
-    /// references still carry CGU-local ids; the collector remaps namespaces
-    /// into the global table here. CGUs may be ingested in any order: types,
+    /// (see [`intern_cgu`]) interned every string and named every namespace
+    /// globally. CGUs may be ingested in any order: types,
     /// statics, and functions are keyed by globally-unique DIE offsets, and
     /// deduplication is deferred to [`Self::finalize_types`], so neither
     /// forward references nor arrival order can affect the result.
     fn ingest(&mut self, cgu: InternedCgu) {
-        let ns_remap = self.remap_namespaces(&cgu.namespaces);
-
         if self.producer.is_none() {
             self.producer = cgu.producer;
         }
 
-        for (type_id, mut ty) in cgu.types {
-            remap_ns_in_place(&mut ty, &ns_remap);
+        for (type_id, ty) in cgu.types {
             self.types.insert(type_id, ty);
         }
 
@@ -339,31 +350,12 @@ impl<'dw> DwReader<'dw> {
         // Static variables are unique by address, functions by DIE — no dedup
         // needed. Type references are canonicalized on access after the final
         // alias map has been built.
-        for (var_id, mut var) in cgu.variables {
-            if let Some(id) = var.namespace {
-                var.namespace = Some(ns_remap[&id]);
-            }
+        for (var_id, var) in cgu.variables {
             self.variables.insert(var_id, var);
         }
-        for (func_id, mut func) in cgu.funcs {
-            if let Some(id) = func.namespace {
-                func.namespace = Some(ns_remap[&id]);
-            }
+        for (func_id, func) in cgu.funcs {
             self.functions.insert(func_id, func);
         }
-    }
-
-    /// Merge a CGU's local namespace table into the global one, returning a
-    /// map from each local [`NsId`] to its global id. Names are already
-    /// interned; the global table dedups by `(parent, name)`.
-    fn remap_namespaces(&mut self, local: &NamespaceTable<StrId>) -> HashMap<NsId, NsId> {
-        let mut ns_remap: HashMap<NsId, NsId> = HashMap::new();
-        for (local_id, entry) in local.iter() {
-            let global_parent = entry.parent.map(|p| ns_remap[&p]);
-            let global_id = self.namespaces.insert(global_parent, entry.name);
-            ns_remap.insert(local_id, global_id);
-        }
-        ns_remap
     }
 
     /// Build the global alias map after every CGU has been collected.
@@ -994,12 +986,11 @@ fn parse_job<'dw>(
 /// merged by the collector in [`DwReader::ingest`]. Every string has been
 /// replaced by a [`StrId`], so this carries no borrow of the DWARF and the
 /// fold's in-flight buffer no longer pins the underlying section pages. Type
-/// references and namespaces are still CGU-local; the collector remaps them.
+/// references are global DIE ids and namespaces carry their global ids.
 struct InternedCgu {
     producer: Option<StrId>,
     /// This CGU's namespace table with interned names, in the original local
     /// id order so the collector can remap references against it.
-    namespaces: NamespaceTable<StrId>,
     types: HashMap<TypeId, RawType<StrId>>,
     subroutine_types: HashSet<TypeId>,
     variables: HashMap<VarId, RawStaticVariable<StrId>>,
@@ -1014,35 +1005,55 @@ struct InternedCgu {
 /// pool instead of serializing it through the collector. Namespaces and type
 /// references keep their CGU-local ids; the collector remaps them in
 /// [`DwReader::ingest`].
-fn intern_cgu<'dw>(global: &ShardedInterner<'dw>, cgu: CodegenUnit<'dw>) -> InternedCgu {
+fn intern_cgu<'dw>(
+    global: &ShardedInterner<'dw>,
+    namespaces: &ShardedNamespaces,
+    cgu: CodegenUnit<'dw>,
+) -> InternedCgu {
     let interner = &CguInterner::new(global);
-    // Rebuild the CGU's namespace table with interned names. Namespaces are
-    // listed parent-first and interning is injective on name content, so the
-    // rebuilt table reproduces the original local ids one-for-one.
-    let mut namespaces = NamespaceTable::<StrId>::new();
-    for (_local_id, entry) in cgu.namespaces.iter() {
-        namespaces.insert(entry.parent, interner.intern(entry.name));
+
+    // A unit's table lists a namespace after its parent, so one pass in
+    // id order can name each parent's global id before its child's; the
+    // unit's types, statics and functions then leave here carrying
+    // global ids, and nothing has to remap them later.
+    let mut ns_remap: HashMap<NsId, NsId> = HashMap::new();
+    for (local, entry) in cgu.namespaces.iter() {
+        let parent = entry.parent.map(|p| ns_remap[&p]);
+        let global = namespaces.intern(parent, interner.intern(entry.name));
+        ns_remap.insert(local, global);
     }
+    let remap = |ns: Option<NsId>| ns.map(|id| ns_remap[&id]);
 
     let types = cgu
         .types
         .into_iter()
-        .map(|(id, ty)| (id, intern_type(interner, ty)))
+        .map(|(id, ty)| {
+            let mut ty = intern_type(interner, ty);
+            remap_ns_in_place(&mut ty, &ns_remap);
+            (id, ty)
+        })
         .collect();
     let variables = cgu
         .variables
         .into_iter()
-        .map(|(id, var)| (id, intern_var(interner, var)))
+        .map(|(id, var)| {
+            let mut var = intern_var(interner, var);
+            var.namespace = remap(var.namespace);
+            (id, var)
+        })
         .collect();
     let funcs = cgu
         .funcs
         .into_iter()
-        .map(|(id, func)| (id, intern_func(interner, func)))
+        .map(|(id, func)| {
+            let mut func = intern_func(interner, func);
+            func.namespace = remap(func.namespace);
+            (id, func)
+        })
         .collect();
 
     InternedCgu {
         producer: cgu.producer.map(|p| interner.intern(p)),
-        namespaces,
         types,
         subroutine_types: cgu.subroutine_types,
         variables,
