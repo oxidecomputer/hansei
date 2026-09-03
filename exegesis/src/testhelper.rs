@@ -16,7 +16,7 @@ use std::sync::OnceLock;
 // canary for DWARF-shape and mangling drift across toolchains.
 const TOOLCHAIN: &str = r#"
 [toolchain]
-channel = "1.97.1"
+channel = "1.98.0"
 profile = "default"
 "#;
 

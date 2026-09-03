@@ -473,7 +473,7 @@ impl Core {
                     fds.get_or_insert_with(Vec::new).push(parse_fdinfo(desc));
                 }
                 NT_AUXV => {
-                    for pair in desc.chunks_exact(16) {
+                    for pair in desc.as_chunks::<16>().0 {
                         let tag = u64::from_le_bytes(pair[0..8].try_into().unwrap());
                         let val = u64::from_le_bytes(pair[8..16].try_into().unwrap());
                         if tag == 0 {
@@ -1265,11 +1265,14 @@ fn parse_lwpstatus(desc: &[u8]) -> LwpInfo {
             .unwrap(),
     );
     let mut regs = [0u64; NGREG];
-    for (slot, chunk) in regs
-        .iter_mut()
-        .zip(desc[LWPSTATUS_PR_REG..].chunks_exact(8).take(NGREG))
-    {
-        *slot = u64::from_le_bytes(chunk.try_into().unwrap());
+    for (slot, chunk) in regs.iter_mut().zip(
+        desc[LWPSTATUS_PR_REG..]
+            .as_chunks::<8>()
+            .0
+            .iter()
+            .take(NGREG),
+    ) {
+        *slot = u64::from_le_bytes(*chunk);
     }
     let at = LWPSTATUS_PR_TSTAMP;
     let tstamp = Timespec {

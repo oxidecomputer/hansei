@@ -308,7 +308,7 @@ of the real detection path, and they double as a toolchain/DWARF-drift
 canary because every fixture is rebuilt from source.
 
 - **Running:** `cargo nextest run -p exegesis --test golden`. Fixtures are built on
-  demand by `test-programs/regen.sh` with the pinned toolchain (`1.97.1`).
+  demand by `test-programs/regen.sh` with the pinned toolchain (`1.98.0`).
   That default invocation builds the *primary* matrix cell — the tokio
   version pinned by `test-programs/Cargo.lock`; `regen.sh` can also build
   other cells (`--tokio`/`--toolchain`/`--no-unstable`, `--ct-only` for
@@ -318,7 +318,7 @@ canary because every fixture is rebuilt from source.
   lockfiles under `test-programs/locks/`. If
   that toolchain is not installed the affected cases **skip with a message**
   rather than fail — so a green run can mean "verified" *or* "skipped
-  everything." Install it (`rustup toolchain install 1.97.1`) before trusting a
+  everything." Install it (`rustup toolchain install 1.98.0`) before trusting a
   pass.
 - **Regenerating expectations:** after an intended change to extraction output,
   re-bless with `INSTA_UPDATE=always cargo nextest run -p exegesis --test golden`,

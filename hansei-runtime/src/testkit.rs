@@ -449,7 +449,7 @@ pub mod expect {
         let bytes = read_run(target, base + HEADER, committed * ENTRY)
             .context("failed to read the census registry entries")?;
         let mut expectations = Vec::new();
-        for entry in bytes.chunks_exact(ENTRY as usize) {
+        for entry in bytes.as_chunks::<{ ENTRY as usize }>().0 {
             let word = |at: usize| u64::from_le_bytes(entry[at..at + 8].try_into().unwrap());
             let kind = u32::from_le_bytes(entry[..4].try_into().unwrap());
             let (addr, count) = (word(8), word(16));

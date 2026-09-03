@@ -426,8 +426,10 @@ fn collect_references<T: proc::Target>(
             };
             let Some(offset) = value
                 .bytes
-                .chunks_exact(8)
-                .position(|w| u64::from_le_bytes(w.try_into().unwrap()) == addr)
+                .as_chunks::<8>()
+                .0
+                .iter()
+                .position(|w| u64::from_le_bytes(*w) == addr)
                 .map(|i| i as u64 * 8)
             else {
                 continue;
