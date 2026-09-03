@@ -2,7 +2,7 @@
 source: hansei/src/offline.rs
 description: "`futures -l 1 --exec type no::such::Type` over linux/gen-0007"
 ---
-0xADDR  3  set 0xADDR  Unresumed — src/bin/gen-0007.rs:76  —  async fn gen_0007::leaf_01
+future 0xADDR
 error: the tokio info records no type named no::such::Type; try `find-types no::such::Type`
 Executed against 1 future, 1 failed
 error: --exec failed against 1 of 1 future

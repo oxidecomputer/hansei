@@ -2,7 +2,7 @@
 source: hansei/src/offline.rs
 description: "`tasks --exec trace -n` over linux/walk-shapes"
 ---
-1  idle  0  src/bin/walk-shapes.rs:103  future tokio::sync::notify::Notified  async fn walk_shapes::chained
+task 1
 #0  future        tokio::sync::notify::Notified
       (<no_state>, 4 locals)
 #1  async fn      walk_shapes::deep
@@ -14,19 +14,19 @@ description: "`tasks --exec trace -n` over linux/walk-shapes"
 #4  async fn      walk_shapes::chained
       awaiting at src/bin/walk-shapes.rs:103 (Suspend0, 1 local; holds 1 pending future)
 
-2  idle  0  src/bin/walk-shapes.rs:125  future tokio::sync::notify::Notified  async fn walk_shapes::holder
+task 2
 #0  future        tokio::sync::notify::Notified
       (<no_state>, 4 locals)
 #1  async fn      walk_shapes::holder
       awaiting at src/bin/walk-shapes.rs:125 (Suspend1, 3 locals)
 
-3  idle  0  src/bin/walk-shapes.rs:147  future tokio::sync::notify::Notified  async fn walk_shapes::abandoner
+task 3
 #0  future        tokio::sync::notify::Notified
       (<no_state>, 4 locals)
 #1  async fn      walk_shapes::abandoner
       awaiting at src/bin/walk-shapes.rs:147 (Suspend1, 4 locals; holds 1 pending future)
 
-4  idle  0  src/bin/walk-shapes.rs:155  a tokio::sync::Mutex (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: a non-task waiter, task 4  async fn walk_shapes::victim
+task 4
 Waiting on: a tokio::sync::Mutex (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: a non-task waiter, task 4
 
 #0  future        tokio::sync::batch_semaphore::Acquire
@@ -40,7 +40,7 @@ Waiting on: a tokio::sync::Mutex (semaphore 0xADDR): 1 permit requested, 0 avail
 #4  async fn      walk_shapes::victim
       awaiting at src/bin/walk-shapes.rs:155 (Suspend1, 1 local)
 
-5  idle  0  src/bin/walk-shapes.rs:161  a tokio::sync::Semaphore (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 5, task 6, task 10  async fn walk_shapes::blocked
+task 5
 Waiting on: a tokio::sync::Semaphore (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 5, task 6, task 10
 
 #0  future        tokio::sync::batch_semaphore::Acquire
@@ -50,7 +50,7 @@ Waiting on: a tokio::sync::Semaphore (semaphore 0xADDR): 1 permit requested, 0 a
 #2  async fn      walk_shapes::blocked
       awaiting at src/bin/walk-shapes.rs:161 (Suspend0, 1 local)
 
-6  idle  0  src/bin/walk-shapes.rs:161  a tokio::sync::Semaphore (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 5, task 6, task 10  async fn walk_shapes::blocked
+task 6
 Waiting on: a tokio::sync::Semaphore (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 5, task 6, task 10
 
 #0  future        tokio::sync::batch_semaphore::Acquire
@@ -60,13 +60,13 @@ Waiting on: a tokio::sync::Semaphore (semaphore 0xADDR): 1 permit requested, 0 a
 #2  async fn      walk_shapes::blocked
       awaiting at src/bin/walk-shapes.rs:161 (Suspend0, 1 local)
 
-7  idle  3  src/bin/walk-shapes.rs:194  future tokio::sync::notify::Notified  async fn walk_shapes::local_parker
+task 7
 #0  future        tokio::sync::notify::Notified
       (<no_state>, 4 locals)
 #1  async fn      walk_shapes::local_parker
       awaiting at src/bin/walk-shapes.rs:194 (Suspend0, 1 local)
 
-8  idle  0  src/bin/walk-shapes.rs:201  task 7  async fn walk_shapes::joiner
+task 8
 Waiting on: task 7
 
 #0  future        tokio::runtime::task::join::JoinHandle<u32>
@@ -74,11 +74,11 @@ Waiting on: task 7
 #1  async fn      walk_shapes::joiner
       awaiting at src/bin/walk-shapes.rs:201 (Suspend0, 0 locals)
 
-9  queued  2  src/bin/walk-shapes.rs:204  async fn walk_shapes::side_parker  async fn walk_shapes::side_parker
+task 9
 #0  async fn      walk_shapes::side_parker
       state Unresumed — src/bin/walk-shapes.rs:204
 
-10  idle  1  src/bin/walk-shapes.rs:167  a tokio::sync::Semaphore (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 5, task 6, task 10  async fn walk_shapes::hidden_blocked
+task 10
 Waiting on: a tokio::sync::Semaphore (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 5, task 6, task 10
 
 #0  future        tokio::sync::batch_semaphore::Acquire

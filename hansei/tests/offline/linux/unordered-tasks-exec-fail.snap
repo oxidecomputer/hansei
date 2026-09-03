@@ -2,7 +2,7 @@
 source: hansei/src/offline.rs
 description: "`tasks --exec type no::such::Type` over linux/unordered"
 ---
-3  idle  src/bin/unordered.rs:115  future futures_util::stream::futures_unordered::FuturesUnordered<unordered::set_member>  async fn unordered::driver
+task 3
 error: the tokio info records no type named no::such::Type; try `find-types no::such::Type`
 Executed against 1 task, 1 failed
 error: --exec failed against 1 of 1 task

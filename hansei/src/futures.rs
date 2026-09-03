@@ -320,13 +320,6 @@ fn row_cells(row: &FutureRow, groups: bool) -> Vec<String> {
     cells
 }
 
-/// One future's table row as a single line, cells joined — the
-/// spelling `--exec` heads each future's output with.
-pub(crate) fn row_line<T: proc::Target>(session: &Session<'_, T>, index: usize) -> String {
-    let groups = !session.group_tags().is_empty();
-    row_cells(&rows(session)[index], groups).join("  ")
-}
-
 /// Print the table: one row per future, the `RT` column only when the
 /// target holds more than one group.
 fn print_future_table(
@@ -874,8 +867,9 @@ fn exec_group<T: proc::Target>(
 }
 
 /// `--exec COMMAND`: run the command once per surviving future, its
-/// omitted target filled with that future, each run's output under
-/// the future's table row. One future's failure never stops the loop —
+/// omitted target filled with that future, each run's output under a
+/// `future 0x…` heading — unless the command is `future` itself,
+/// whose block opens with that line. One future's failure never stops the loop —
 /// the failed run shows its error in place, the summary line counts
 /// them, and the command fails after the loop when any run did, so a
 /// script sees one failure with nothing skipped.
@@ -889,7 +883,8 @@ fn exec_exec<T: proc::Target>(
     // Parse once up front: a command that does not parse is the
     // command line's mistake, not any future's, and fails before the
     // loop prints a heading.
-    repl::parse_exec_command(&cmd.exec).context("--exec")?;
+    let parsed = repl::parse_exec_command(&cmd.exec).context("--exec")?;
+    let headed = !matches!(parsed, crate::Command::Future { addr: None, .. });
     let rows = rows(session);
     let shown = cmd.limit.unwrap_or(survivors.len()).min(survivors.len());
     let mut failed = 0usize;
@@ -898,7 +893,8 @@ fn exec_exec<T: proc::Target>(
     // session's own cursor comes back once the loop is done.
     let saved = *session.cursor.borrow();
     for (n, &index) in survivors[..shown].iter().enumerate() {
-        write!(out, "{}", exec_heading(n, &row_line(session, index)))?;
+        let label = format!("future {:#x}", rows[index].addr);
+        write!(out, "{}", exec_heading(n, headed.then_some(&label)))?;
         let command = repl::parse_exec_command(&cmd.exec).expect("parsed above");
         crate::cursor::scope_to_future(session, rows[index].at);
         // `quit` is not a per-future answer, so a Quit flow is ignored
@@ -924,11 +920,15 @@ fn exec_exec<T: proc::Target>(
 }
 
 /// The heading `--exec` opens future `n`'s output with: a blank line
-/// between one future's output and the next, then the future's table
-/// row.
-fn exec_heading(n: usize, row: &str) -> String {
+/// between one future's output and the next, then the future's
+/// address the way `future` spells its own heading — or no address,
+/// when the command is `future` and prints that line itself.
+fn exec_heading(n: usize, label: Option<&str>) -> String {
     let sep = if n > 0 { "\n" } else { "" };
-    format!("{sep}{row}\n")
+    match label {
+        Some(label) => format!("{sep}{label}\n"),
+        None => sep.to_string(),
+    }
 }
 
 #[cfg(test)]
@@ -1187,17 +1187,15 @@ mod tests {
         assert!(format!("{err:#}").contains("--with kind"), "{err:#}");
     }
 
-    /// Only the first heading goes without a blank line above it.
+    /// Only the first heading goes without a blank line above it —
+    /// and a command that prints its own heading gets the blank line
+    /// alone.
     #[test]
     fn test_exec_headings_are_separated_after_the_first() {
-        assert_eq!(
-            exec_heading(0, "0x4000  1  set 0x2000"),
-            "0x4000  1  set 0x2000\n"
-        );
-        assert_eq!(
-            exec_heading(1, "0x4000  1  set 0x2000"),
-            "\n0x4000  1  set 0x2000\n"
-        );
+        assert_eq!(exec_heading(0, Some("future 0x4000")), "future 0x4000\n");
+        assert_eq!(exec_heading(1, Some("future 0x4000")), "\nfuture 0x4000\n");
+        assert_eq!(exec_heading(0, None), "");
+        assert_eq!(exec_heading(1, None), "\n");
     }
 
     /// A positional address is refused with the two spellings that do

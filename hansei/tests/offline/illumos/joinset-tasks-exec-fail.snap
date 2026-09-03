@@ -2,22 +2,22 @@
 source: hansei/src/offline.rs
 description: "`tasks --exec type no::such::Type` over illumos/joinset"
 ---
-3  idle  src/bin/joinset.rs:79  future tokio::util::idle_notified_set::IdleNotifiedSet<tokio::runtime::task::join::JoinHandle<u32>>  async fn joinset::driver
+task 3
 error: the tokio info records no type named no::such::Type; try `find-types no::such::Type`
 
-4  idle  src/bin/joinset.rs:30  future tokio::sync::notify::Notified  async fn joinset::member
+task 4
 error: the tokio info records no type named no::such::Type; try `find-types no::such::Type`
 
-5  idle  src/bin/joinset.rs:30  future tokio::sync::notify::Notified  async fn joinset::member
+task 5
 error: the tokio info records no type named no::such::Type; try `find-types no::such::Type`
 
-6  idle  src/bin/joinset.rs:30  future tokio::sync::notify::Notified  async fn joinset::member
+task 6
 error: the tokio info records no type named no::such::Type; try `find-types no::such::Type`
 
-7  idle  src/bin/joinset.rs:30  future tokio::sync::notify::Notified  async fn joinset::member
+task 7
 error: the tokio info records no type named no::such::Type; try `find-types no::such::Type`
 
-8  idle  src/bin/joinset.rs:30  future tokio::sync::notify::Notified  async fn joinset::member
+task 8
 error: the tokio info records no type named no::such::Type; try `find-types no::such::Type`
 Executed against 6 tasks, 6 failed
 error: --exec failed against 6 of 6 tasks

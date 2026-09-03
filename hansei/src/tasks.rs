@@ -1646,8 +1646,9 @@ fn exec_group<T: proc::Target>(
 }
 
 /// `--exec COMMAND`: run the command once per surviving task, its
-/// omitted target filled with that task, each run's output under the
-/// task's table row. One task's failure never stops the loop — the
+/// omitted target filled with that task, each run's output under a
+/// `task N` heading — unless the command is `task` itself, whose
+/// block opens with that line. One task's failure never stops the loop — the
 /// failed run shows its error in place, the summary line counts them,
 /// and the command fails after the loop when any run did, so a script
 /// sees one failure with nothing skipped.
@@ -1661,19 +1662,20 @@ fn exec_exec<T: proc::Target>(
     // Parse once up front: a command that does not parse is the
     // command line's mistake, not any task's, and fails before the
     // loop prints a heading.
-    repl::parse_exec_command(&cmd.exec).context("--exec")?;
+    let parsed = repl::parse_exec_command(&cmd.exec).context("--exec")?;
+    let headed = !matches!(parsed, crate::Command::Task { target: None, .. });
     print_warnings(&session.analysis().errors)?;
     let rows = rows(session);
     let survivors = survivors.unwrap_or_else(|| (0..rows.len()).collect());
     let shown = cmd.limit.unwrap_or(survivors.len()).min(survivors.len());
-    let groups = !session.group_tags().is_empty();
     let mut failed = 0usize;
     // Each run goes under a cursor scoped to its task — the command's
     // omitted target and `$_` are that task's — and the session's own
     // cursor comes back once the loop is done.
     let saved = *session.cursor.borrow();
     for (n, &index) in survivors[..shown].iter().enumerate() {
-        write!(out, "{}", exec_heading(n, &rows[index], groups))?;
+        let label = format!("task {}", rows[index].id);
+        write!(out, "{}", exec_heading(n, headed.then_some(&label)))?;
         let command = repl::parse_exec_command(&cmd.exec).expect("parsed above");
         crate::cursor::scope_to(session, index);
         // `quit` is not a per-task answer, so a Quit flow is ignored
@@ -1699,10 +1701,15 @@ fn exec_exec<T: proc::Target>(
 }
 
 /// The heading `--exec` opens task `n`'s output with: a blank line
-/// between one task's output and the next, then the task's table row.
-fn exec_heading(n: usize, row: &TaskRow, groups: bool) -> String {
+/// between one task's output and the next, then the task's name the
+/// way `task` spells its own heading — or no name, when the command
+/// is `task` and prints that line itself.
+fn exec_heading(n: usize, label: Option<&str>) -> String {
     let sep = if n > 0 { "\n" } else { "" };
-    format!("{sep}{}\n", row_cells(row, groups).join("  "))
+    match label {
+        Some(label) => format!("{sep}{label}\n"),
+        None => sep.to_string(),
+    }
 }
 
 /// Gather what a census counts and print it.
@@ -2597,19 +2604,15 @@ mod filter_tests {
     }
 
     /// The first task's heading opens the output; every later one is
-    /// set off by one blank line.
+    /// set off by one blank line — the blank line alone when the
+    /// command prints its own heading.
     #[test]
     fn test_exec_headings_separate_tasks_with_one_blank_line() {
         use super::exec_heading;
-        let r = row("129");
-        assert_eq!(
-            exec_heading(0, &r, false),
-            "129  idle  —  —  async fn app::work\n"
-        );
-        assert_eq!(
-            exec_heading(1, &r, false),
-            "\n129  idle  —  —  async fn app::work\n"
-        );
+        assert_eq!(exec_heading(0, Some("task 129")), "task 129\n");
+        assert_eq!(exec_heading(1, Some("task 129")), "\ntask 129\n");
+        assert_eq!(exec_heading(0, None), "");
+        assert_eq!(exec_heading(1, None), "\n");
     }
 
     /// A positional id is refused with the selector spelling that

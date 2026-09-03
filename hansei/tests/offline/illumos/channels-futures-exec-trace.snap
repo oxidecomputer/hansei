@@ -2,7 +2,7 @@
 source: hansei/src/offline.rs
 description: "`futures --exec trace -l 1` over illumos/channels"
 ---
-0xADDR  3  frame 1, `notified`  —  —  future tokio::sync::notify::Notified
+future 0xADDR
 future 0xADDR: future tokio::sync::notify::Notified
 Held by: task 3 — async fn channels::notify_waiter (frame 1, `notified`)
 

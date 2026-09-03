@@ -570,8 +570,9 @@ fn exec_group<T: proc::Target>(
 }
 
 /// `--exec COMMAND`: run the command once per surviving thread under a
-/// cursor on that thread, each run's output under the thread's table
-/// row. One thread's failure never stops the loop — the failed run
+/// cursor on that thread, each run's output under a `thread N`
+/// heading — unless the command is `thread` itself, whose block opens
+/// by naming the lwp. One thread's failure never stops the loop — the failed run
 /// shows its error in place, the summary line counts them, and the
 /// command fails after the loop when any run did, so a script sees one
 /// failure with nothing skipped.
@@ -585,7 +586,8 @@ fn exec_exec<T: proc::Target>(
     // Parse once up front: a command that does not parse is the
     // command line's mistake, not any thread's, and fails before the
     // loop prints a heading.
-    repl::parse_exec_command(&cmd.exec).context("--exec")?;
+    let parsed = repl::parse_exec_command(&cmd.exec).context("--exec")?;
+    let headed = !matches!(parsed, crate::Command::Thread { lwp: None });
     let rows = rows(session);
     let mut failed = 0usize;
     // Each run goes under a cursor on its thread — the command's
@@ -593,7 +595,8 @@ fn exec_exec<T: proc::Target>(
     // own cursor comes back once the loop is done.
     let saved = *session.cursor.borrow();
     for (n, &index) in survivors.iter().enumerate() {
-        write!(out, "{}", exec_heading(n, &rows[index]))?;
+        let label = format!("thread {}", rows[index].lwp);
+        write!(out, "{}", exec_heading(n, headed.then_some(&label)))?;
         let command = repl::parse_exec_command(&cmd.exec).expect("parsed above");
         // `quit` is not a per-thread answer, so a Quit flow is ignored
         // and the loop runs on.
@@ -620,10 +623,15 @@ fn exec_exec<T: proc::Target>(
 }
 
 /// The heading `--exec` opens thread `n`'s output with: a blank line
-/// between one thread's output and the next, then the thread's row.
-fn exec_heading(n: usize, row: &ThreadRow) -> String {
+/// between one thread's output and the next, then the thread's lwp
+/// the way `thread` takes it — or no name, when the command is
+/// `thread` and opens with the lwp itself.
+fn exec_heading(n: usize, label: Option<&str>) -> String {
     let sep = if n > 0 { "\n" } else { "" };
-    format!("{sep}{}\n", row_cells(row).join("  "))
+    match label {
+        Some(label) => format!("{sep}{label}\n"),
+        None => sep.to_string(),
+    }
 }
 
 /// One thread as `thread` prints it: its heading — the lwp, what it is
@@ -1296,15 +1304,15 @@ mod tests {
         assert_eq!(member_sample(&rows, &[0, 1, 2, 3]), "2, 3, 4, …");
     }
 
-    /// The exec heading is the row without its frame, and a blank line
-    /// separates one thread's output from the next but not the first.
+    /// The exec heading names the thread as `thread` takes it, and a
+    /// blank line separates one thread's output from the next but not
+    /// the first — the blank line alone when the command names the
+    /// thread itself.
     #[test]
     fn test_exec_headings_separate_threads_with_one_blank_line() {
-        let rows = population();
-        assert_eq!(
-            exec_heading(0, &rows[0]),
-            "2  tokio-rt-worker  worker 0, polling  129\n"
-        );
-        assert_eq!(exec_heading(1, &rows[3]), "\n9  —  no runtime  —\n");
+        assert_eq!(exec_heading(0, Some("thread 2")), "thread 2\n");
+        assert_eq!(exec_heading(1, Some("thread 9")), "\nthread 9\n");
+        assert_eq!(exec_heading(0, None), "");
+        assert_eq!(exec_heading(1, None), "\n");
     }
 }

@@ -2,7 +2,7 @@
 source: hansei/src/offline.rs
 description: "`tasks --exec trace -n` over linux-floor/foreign-runtime"
 ---
-1  idle  1  src/bin/foreign-runtime.rs:36  a tokio::sync::Semaphore (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 1  async fn foreign_runtime::joined
+task 1
 Waiting on: a tokio::sync::Semaphore (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 1
 
 #0  future        tokio::sync::batch_semaphore::Acquire
@@ -12,13 +12,13 @@ Waiting on: a tokio::sync::Semaphore (semaphore 0xADDR): 1 permit requested, 0 a
 #2  async fn      foreign_runtime::joined
       awaiting at src/bin/foreign-runtime.rs:36 (Suspend0, 0 locals)
 
-2  idle  1  src/bin/foreign-runtime.rs:51  future core::future::pending::Pending<()>  async fn foreign_runtime::detached
+task 2
 #0  future        core::future::pending::Pending<()>
       (<no_state>, 0 locals)
 #1  async fn      foreign_runtime::detached
       awaiting at src/bin/foreign-runtime.rs:51 (Suspend0, 1 local)
 
-3  idle  2  src/bin/foreign-runtime.rs:63  timer (deadline TS on the target's monotonic clock)  async fn foreign_runtime::local_sleeper
+task 3
 Waiting on: timer (deadline TS on the target's monotonic clock)
 
 #0  future        tokio::time::sleep::Sleep
@@ -26,7 +26,7 @@ Waiting on: timer (deadline TS on the target's monotonic clock)
 #1  async fn      foreign_runtime::local_sleeper
       awaiting at src/bin/foreign-runtime.rs:63 (Suspend0, 0 locals)
 
-4  idle  0  src/bin/foreign-runtime.rs:26  task 1  async fn foreign_runtime::joiner
+task 4
 Waiting on: task 1
 
 #0  future        tokio::runtime::task::join::JoinHandle<u32>

@@ -2,21 +2,21 @@
 source: hansei/src/offline.rs
 description: "`tasks --exec trace -n` over linux-floor/blocking-pool"
 ---
-3  blocking (running)  —  —  future tokio::runtime::blocking::task::BlockingTask<blocking_pool::main::{async_block#0}::{closure_env#0}>
+task 3
 mid-poll, but lwp 1614549's walked stack holds no frame in the task's poll symbol (its walk ended: no CFI for /usr/lib64/libc.so.6 (none of its pages are in the core, and the backing file is not on this machine); the frame-pointer walk found nothing below 0xADDR); `threads 1614549` shows the raw stack
 
 #0  future        Option<blocking_pool::main::{async_block#0}::{closure_env#0}>
       constructed at src/bin/blocking-pool.rs:32 (None, 0 locals)
 
-4  blocking (queued)  —  —  future tokio::runtime::blocking::task::BlockingTask<blocking_pool::main::{async_block#0}::{closure_env#1}>
+task 4
 #0  future        Option<blocking_pool::main::{async_block#0}::{closure_env#1}>
       constructed at src/bin/blocking-pool.rs:32 (Some, 0 locals)
 
-5  blocking (queued)  —  —  future tokio::runtime::blocking::task::BlockingTask<blocking_pool::main::{async_block#0}::{closure_env#2}>
+task 5
 #0  future        Option<blocking_pool::main::{async_block#0}::{closure_env#2}>
       constructed at src/bin/blocking-pool.rs:32 (Some, 0 locals)
 
-6  idle  src/bin/blocking-pool.rs:18  task 3  async fn blocking_pool::running_waiter
+task 6
 Waiting on: task 3
 
 #0  future        tokio::runtime::task::join::JoinHandle<u32>
@@ -24,7 +24,7 @@ Waiting on: task 3
 #1  async fn      blocking_pool::running_waiter
       awaiting at src/bin/blocking-pool.rs:18 (Suspend0, 0 locals)
 
-7  idle  src/bin/blocking-pool.rs:24  task 4  async fn blocking_pool::queued_waiter
+task 7
 Waiting on: task 4
 
 #0  future        tokio::runtime::task::join::JoinHandle<u32>

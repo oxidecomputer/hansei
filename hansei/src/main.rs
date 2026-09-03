@@ -404,8 +404,8 @@ pub enum Command {
     /// `--exec COMMAND` takes the rest of the line as one session
     /// command and runs it once per surviving future, the command's
     /// omitted target filled with that future — `futures --with type
-    /// acquire --exec trace -v` traces every match, each run under the
-    /// future's table row. The target is the future itself, even one a
+    /// acquire --exec trace -v` traces every match, each run under a
+    /// `future 0x…` heading. The target is the future itself, even one a
     /// task holds: `trace` follows its own chain, `print` and `locals`
     /// its own frames, where `future 0x…` would have selected the
     /// holding task. One future's failure never stops the loop, the
@@ -906,8 +906,8 @@ pub enum Command {
     /// `--exec COMMAND` takes the rest of the line as one session
     /// command and runs it once per surviving task, the command's
     /// omitted target filled with that task — `tasks --with type
-    /// qorb --exec trace -v` traces every match, each run under the
-    /// task's table row, and `tasks --with state running --exec task
+    /// qorb --exec trace -v` traces every match, each run under a
+    /// `task N` heading, and `tasks --with state running --exec task
     /// --futures` prints every running task's fields and finds. One
     /// task's failure never stops the loop: the failed run shows its
     /// error in place, the listing closes with `Executed against N
@@ -1033,7 +1033,7 @@ pub enum Command {
         group: Option<String>,
 
         /// Run COMMAND once per surviving thread, under a cursor on
-        /// that thread, each run's output under the thread's row.
+        /// that thread, each run's output under a `thread N` heading.
         /// Takes the rest of the line, the command's own flags
         /// included, so it must be the last flag:
         /// `threads --with has-task yes --exec trace -l 3`.
