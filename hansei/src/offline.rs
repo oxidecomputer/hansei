@@ -89,21 +89,15 @@ fn commands(
             "futures -l 1 --exec type no::such::Type".to_owned(),
         ),
         ("threads", "threads".to_owned()),
-        ("threads-v", "threads -v".to_owned()),
-        // A frame budget alone implies the block form; both spellings
-        // pin the flag plumbing the table/block split rides on.
-        ("threads-f", "threads -f 3".to_owned()),
-        // The thread filters: a grouping at the role's kind level, the
-        // grouped block form (a frame budget asks for it) with the
-        // yes/no split of the polling threads — the workers left out,
-        // since a worker's block is its whole core and the grouping is
-        // the point — and the exec loop under a cursor on each
+        // The thread filters: a grouping at the role's kind level, a
+        // grouping with the yes/no split of the polling threads under
+        // a negated clause, and the exec loop under a cursor on each
         // surviving thread: succeeding, and failing per thread with
         // the error in place and the counting summary.
         ("threads-group-role", "threads --group role".to_owned()),
         (
-            "threads-group-has-task-f",
-            "threads --without role ^worker --group has-task -f 1".to_owned(),
+            "threads-group-has-task",
+            "threads --without role ^worker --group has-task".to_owned(),
         ),
         (
             "threads-exec-trace",
@@ -165,7 +159,7 @@ fn commands(
         list.push(("future-held", format!("future {:#x}", held.addr)));
     }
     if let Some(lwp) = session.lwps.first() {
-        list.push(("threads-one", format!("threads {}", lwp.tid)));
+        list.push(("thread-one", format!("thread {}", lwp.tid)));
     }
     if let Some(task) = session.tasks.tasks.first() {
         if let Some(id) = task.task_id {

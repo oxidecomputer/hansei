@@ -1761,7 +1761,7 @@ fn test_ct_runtime_acceptance() {
         // threads listing names it as such, with what it is doing read
         // from where its core and driver are rather than from the
         // parker array it does not have.
-        let out = hansei_ok(&bundle, core, "threads -v");
+        let out = hansei_ok(&bundle, core, "threads --exec thread");
         assert!(
             out.contains("block_on thread of its current_thread runtime"),
             "{out}"
@@ -2726,36 +2726,44 @@ fn test_sleep_join_graph() {
 fn test_threads_shows_workers_and_stacks() {
     let bundle = fixtures().bundle("simple-await");
     with_core("simple-await", |core| {
-        let out = hansei_ok(&bundle, core, "threads -v");
-        // The listing opens with the first lwp's block, and the blank
-        // lines fall between blocks — not ahead of them, and not
-        // nowhere.
-        assert!(out.starts_with("lwp "), "{out}");
-        assert!(out.contains("\n\nlwp "), "{out}");
-        // The heading claims what each thread is polling, in one of
-        // the claim's three spellings.
-        let claim =
-            regex::Regex::new(r"lwp \d+  (polling no task|polling task \d+|last polled task \d+)")
-                .unwrap();
+        let out = hansei_ok(&bundle, core, "threads --exec thread");
+        // Each thread's block opens under its table row, and every
+        // line under a block's heading sits four columns in.
+        let claim = regex::Regex::new(
+            r"(?m)^lwp \d+  (polling no task|polling task \d+|last polled task \d+)",
+        )
+        .unwrap();
         assert!(claim.is_match(&out), "{out}");
-        assert!(out.contains("worker 0"), "{out}");
+        for line in out
+            .lines()
+            .filter(|l| l.starts_with("    ") || l.starts_with("lwp "))
+        {
+            assert!(
+                line.starts_with("lwp ") || line.starts_with("    "),
+                "{line}"
+            );
+        }
+        assert!(out.contains("\n    worker 0\n"), "{out}");
         // The thread's own tokio context prints ahead of the scheduler
         // state.
-        assert!(out.contains("thread_id"), "{out}");
-        assert!(out.contains("budget"), "{out}");
+        assert!(out.contains("\n    thread_id: "), "{out}");
+        assert!(out.contains("\n    budget: "), "{out}");
         assert!(out.contains("multi_thread::worker::Core"), "{out}");
         assert!(out.contains("is_searching:"), "{out}");
         // The blocking thread holds a runtime context without running
         // the worker loop.
-        assert!(out.contains("not in the scheduler's run loop"), "{out}");
-        assert!(out.contains("stack:"), "{out}");
+        assert!(
+            out.contains("\n    not in the scheduler's run loop\n"),
+            "{out}"
+        );
+        assert!(out.contains("\n    stack:\n        0x"), "{out}");
         assert!(out.contains("simple_await::main"), "{out}");
     });
 }
 
 /// The bare `threads` is a table over every lwp — runtime workers,
 /// the threads that merely entered, and the ones holding no runtime
-/// at all — one row each, with the block form under -v.
+/// at all — one row each, and `thread` prints a block for each.
 #[test]
 fn test_threads_lists_a_table_row_per_lwp() {
     let bundle = fixtures().bundle("simple-await");
@@ -2768,12 +2776,14 @@ fn test_threads_lists_a_table_row_per_lwp() {
             assert!(header.contains(column), "{out}");
         }
         let mut rows: Vec<&str> = lines.collect();
-        // The table closes with its count; one row per block the -v
-        // form prints, so the two listings cover the same population.
+        // The table closes with its count; one row per block `thread`
+        // prints under it, so the two listings cover the same
+        // population.
         let footer = rows.pop().expect("the listing has a footer");
         assert_eq!(footer, format!("[{} threads]", rows.len()), "{out}");
-        let blocks = hansei_ok(&bundle, core, "threads -v");
-        assert_eq!(rows.len(), blocks.split("\n\n").count(), "{out}");
+        let blocks = hansei_ok(&bundle, core, "threads --exec thread");
+        let heading = regex::Regex::new(r"(?m)^lwp \d+  ").unwrap();
+        assert_eq!(rows.len(), heading.find_iter(&blocks).count(), "{blocks}");
         // A worker's row names its place in the run loop; the main
         // thread entered the runtime without running its loop.
         assert!(rows.iter().any(|r| r.contains("worker 0,")), "{out}");
@@ -2781,41 +2791,33 @@ fn test_threads_lists_a_table_row_per_lwp() {
     });
 }
 
-/// `threads` narrows to one thread when its lwp is named: that block
-/// alone is printed, and an lwp the listing does not hold is an error
-/// naming the ones it does.
+/// `thread N` prints one thread's block — the same block `threads
+/// --exec thread` prints under that thread's row — and an lwp the
+/// listing does not hold is an error naming the ones it does. The
+/// listing itself takes no lwp ids, and says which command does.
 #[test]
-fn test_threads_selects_one_lwp() {
+fn test_thread_selects_one_lwp() {
     let bundle = fixtures().bundle("simple-await");
     with_core("simple-await", |core| {
-        let full = hansei_ok(&bundle, core, "threads -v");
-        let first = full.split("\n\n").next().expect("the listing has a block");
+        let full = hansei_ok(&bundle, core, "threads --exec thread");
+        // The first block: from its `lwp` heading to the blank line
+        // before the next thread's row.
+        let start = full.find("\nlwp ").expect("the loop prints a block") + 1;
+        let end = full[start..]
+            .find("\n\n")
+            .map_or(full.len(), |i| start + i + 1);
+        let first = &full[start..end];
         let tid = first
             .strip_prefix("lwp ")
             .and_then(|rest| rest.split_whitespace().next())
             .expect("the block heading names its lwp");
 
-        let one = hansei_ok(&bundle, core, &format!("threads {tid}"));
-        assert_eq!(one, format!("{first}\n"), "the lwp selects its block alone");
-
-        // More than one lwp selects each named block, in listing
-        // order.
-        let mut blocks = full.split("\n\n");
-        let (first, second) = (blocks.next().unwrap(), blocks.next().unwrap());
-        let second_tid = second
-            .strip_prefix("lwp ")
-            .and_then(|rest| rest.split_whitespace().next())
-            .expect("the second block heading names its lwp");
-        let two = hansei_ok(&bundle, core, &format!("threads {tid} {second_tid}"));
-        assert_eq!(
-            two,
-            format!("{first}\n\n{second}\n"),
-            "two lwps select their blocks"
-        );
+        let one = hansei_ok(&bundle, core, &format!("thread {tid}"));
+        assert_eq!(one, first, "the lwp selects its block alone");
 
         // An lwp no runtime runs on is an error, which fails a
         // scripted session.
-        let out = hansei(&bundle, core, "threads 999999");
+        let out = hansei(&bundle, core, "thread 999999");
         assert!(
             !out.status.success(),
             "{}",
@@ -2823,30 +2825,36 @@ fn test_threads_selects_one_lwp() {
         );
         let stderr = String::from_utf8_lossy(&out.stderr);
         assert!(stderr.contains("no lwp 999999 ("), "{stderr}");
+
+        // The listing refuses an lwp id, naming the selector.
+        let out = hansei(&bundle, core, &format!("threads {tid}"));
+        assert!(!out.status.success());
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(stderr.contains(&format!("`thread {tid}`")), "{stderr}");
     });
 }
 
-/// Registers print only where they are asked for or earned: a healthy
-/// capture's listing carries none, `--registers` puts an annotated
-/// block in every selected thread's block, and the stack registers
-/// attribute to the thread they were read from.
+/// Registers print only where they are earned or asked for: a healthy
+/// capture's thread blocks carry none, `regs` under each thread prints
+/// an annotated block, and the stack registers attribute to the
+/// thread they were read from.
 #[test]
 fn test_threads_registers_annotate_on_request() {
     let bundle = fixtures().bundle("simple-await");
     with_core("simple-await", |core| {
-        let plain = hansei_ok(&bundle, core, "threads -v");
+        let plain = hansei_ok(&bundle, core, "threads --exec thread");
         assert!(!plain.contains("registers:"), "{plain}");
 
-        let out = hansei_ok(&bundle, core, "threads --registers");
-        let blocks = out.split("\n\n").count();
-        assert_eq!(out.matches("  registers:\n").count(), blocks, "{out}");
+        let out = hansei_ok(&bundle, core, "threads --exec regs");
+        let blocks = out.matches("registers:\n").count();
+        assert!(blocks > 0, "{out}");
         // Each block's rsp is that thread's own. The claim names a
         // thread rather than being first-person, so what says it is
-        // the block's own lwp: the tid on the rsp line must be the
-        // one in the heading above it, in every block.
-        let heading = regex::Regex::new(r"(?m)^lwp (\d+)\b").unwrap();
+        // the loop's own row: the tid on the rsp line must be the one
+        // the row above it starts with, in every block.
+        let heading = regex::Regex::new(r"(?m)^(\d+)  ").unwrap();
         let rsp =
-            regex::Regex::new(r"(?m)^    rsp  0x[0-9a-f]{16}  — \[ stack tid=(\d+) \]$").unwrap();
+            regex::Regex::new(r"(?m)^  rsp  0x[0-9a-f]{16}  — \[ stack tid=(\d+) \]$").unwrap();
         let headings: Vec<&str> = heading
             .captures_iter(&out)
             .map(|c| c.get(1).unwrap().as_str())
@@ -3532,7 +3540,7 @@ fn test_a_unique_prefix_names_a_command() {
         // proper prefix of `threads` fits `thread` too: only the full
         // word names the listing now, and `thr` is refused naming
         // both.
-        assert!(hansei_ok(&bundle, core, "threads -f 0").contains("lwp "));
+        assert!(hansei_ok(&bundle, core, "threads").contains("LWP"));
         let out = hansei(&bundle, core, "thr -f 0");
         assert!(
             !out.status.success(),

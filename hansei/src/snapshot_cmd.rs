@@ -112,7 +112,7 @@ fn warm_threads<T: proc::Target>(
 }
 
 /// The reads under one scheduler context's block: the deferred wakers
-/// and the checked-in `Core`, rendered the way `threads -v` renders
+/// and the checked-in `Core`, rendered the way `thread` renders
 /// them.
 fn warm_scheduler_ctx<T: proc::Target>(ctx: &bundle::Context<'_, T>, sched_ctx: reify::Value<'_>) {
     const WARM_DEPTH: usize = 200;

@@ -1,0 +1,7 @@
+---
+source: hansei/src/offline.rs
+description: "`threads --without role ^worker --group has-task` over illumos/foreign-runtime"
+---
+COUNT  HAS TASK  LWPS
+    2  no        1, 2
+[1 group]

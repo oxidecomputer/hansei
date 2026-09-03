@@ -781,7 +781,7 @@ pub(crate) fn blocking_lwps<'s, T: proc::Target>(
         if running.is_empty() {
             return HashMap::new();
         }
-        let stacks = crate::threads::load_stacks(session);
+        let stacks = session.stacks();
         let mut map = HashMap::new();
         for task in running {
             let Ok(Some(range)) = session.ctx.poll_symbol_range(task) else {

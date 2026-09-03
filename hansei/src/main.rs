@@ -12,7 +12,7 @@ use mimalloc::MiMalloc;
 use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
 use std::cell::{Cell, OnceCell, RefCell};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
@@ -975,31 +975,27 @@ pub enum Command {
     /// comes with it — the task-taking commands answer `no task
     /// selected` until `task` moves on — and a bare `trace` walks the
     /// thread's native stack; the hybrid trace is the task cursor's.
-    /// Bare `thread` prints the cursor's thread as its table row;
-    /// `-v` its full block. The stack at any depth is `trace -l N`
+    /// Either way it prints the thread in full: its heading — the
+    /// lwp, what it is polling, and the fatal signal where it took
+    /// one — then its tokio context, the worker core it holds, and
+    /// its stack, fifty frames deep at most. The lwp that took the
+    /// fatal signal also shows its registers, annotated with what
+    /// each value points into. The stack at any depth is `trace -l N`
     /// under the cursor, and the registers are `regs`.
     Thread {
         /// The lwp id (see `threads`). Naming none prints the
         /// cursor's thread.
         lwp: Option<u32>,
-
-        /// Print the thread's full block rather than one row.
-        #[arg(long, short)]
-        verbose: bool,
     },
 
     /// List every thread in the target — one table row per lwp: its
     /// name where the core records one, its place in a runtime (which
     /// worker and what its parker says, the block_on caller, a
     /// blocking-pool thread read from its stack, or no runtime at
-    /// all), the task it is polling, and the top of its stack.
-    ///
-    /// -v prints full blocks instead: the thread's tokio context, the
-    /// worker core it holds, and its whole stack. The thread that
-    /// took the fatal signal also shows its registers, annotated with
-    /// what each value points into; --registers asks that of every
-    /// listed thread. Naming lwps, --frames, or --registers implies
-    /// -v.
+    /// all), the task it is polling, and the top of its stack. One
+    /// thread in full — its tokio context, the worker core it holds,
+    /// its whole stack — is `thread N`, so `threads --with role
+    /// worker --exec thread` prints every worker that way.
     ///
     /// Filters are the selection: repeatable `--with FIELD ARG` /
     /// `--without FIELD ARG` clauses AND together, and `--group FIELD`
@@ -1012,29 +1008,11 @@ pub enum Command {
     /// thread under a cursor on it: `threads --with has-task yes
     /// --exec trace` walks every polling thread's stack.
     Threads {
-        /// Print each selected thread's full block rather than one
-        /// table row.
-        #[arg(long, short)]
-        verbose: bool,
-
-        /// Maximum stack frames to print per thread (50 when -v is
-        /// given without it).
-        #[arg(long, short)]
-        frames: Option<usize>,
-
-        /// Show each listed thread's registers — frame-0 trap state,
-        /// one line per general-purpose register, annotated with what
-        /// the value points into (a task's allocation, an lwp's
-        /// stack, a symbol, heap). The lwp that took the fatal signal
-        /// shows them without the flag.
-        #[arg(long, short)]
-        registers: bool,
-
-        /// Show only these threads, each selected by the lwp id its
-        /// heading carries. The whole listing is printed when none is
-        /// named.
-        #[arg(value_name = "LWP")]
-        lwp: Vec<u32>,
+        // The lwp ids the old grammar took, kept so the refusal can
+        // name the way forward rather than clap's bare "unexpected
+        // argument".
+        #[arg(value_name = "LWP", hide = true)]
+        lwp: Vec<String>,
 
         /// Keep the threads whose FIELD matches ARG. Repeatable; every
         /// clause must hold. The fields are name, role, task,
@@ -1050,8 +1028,7 @@ pub enum Command {
         without: Vec<String>,
 
         /// Tally the surviving threads by FIELD: one row per distinct
-        /// value, most numerous first, with a few member lwps; under
-        /// -v, every member's block under its bucket.
+        /// value, most numerous first, with a few member lwps.
         #[arg(long, short = 'g', value_name = "FIELD")]
         group: Option<String>,
 
@@ -1409,6 +1386,13 @@ pub struct Session<'b, T: Target> {
     /// it, so `tasks --exec task` reads it per task rather than
     /// rebuilding it.
     census_tree: OnceCell<tasks::CensusTree>,
+    /// Every lwp's unwound stack, keyed by tid — the one unwind the
+    /// thread rows, the blocking rows and `thread` all read, so
+    /// `threads --exec thread` walks the CFI once rather than once
+    /// per thread. Empty when the target cannot be walked; the
+    /// warning saying so prints once, when the unwind is first
+    /// asked for.
+    stacks: OnceCell<BTreeMap<u32, unwind::Backtrace>>,
     /// What the target's allocator says is live, where its allocator is
     /// libumem and says anything at all. `None` inside the cell is a
     /// target without umem, which is most of them.
@@ -1549,6 +1533,7 @@ impl<'b, T: Target> Session<'b, T> {
             extents: OnceCell::new(),
             census: OnceCell::new(),
             census_tree: OnceCell::new(),
+            stacks: OnceCell::new(),
             umem: OnceCell::new(),
             gates: GateCounts::default(),
             audited: Cell::new(false),
@@ -1590,6 +1575,24 @@ impl<'b, T: Target> Session<'b, T> {
     fn extents(&self) -> &bundle::TaskExtents {
         self.extents
             .get_or_init(|| self.ctx.task_extents(&self.tasks))
+    }
+
+    /// Every lwp's stack, unwound once per session on first use. A
+    /// target that cannot be walked still has runtime state worth
+    /// listing, so a failure costs the stacks and one warning, nothing
+    /// else.
+    pub(crate) fn stacks(&self) -> &BTreeMap<u32, unwind::Backtrace> {
+        self.stacks
+            .get_or_init(|| match unwind::load_frames(self.proc) {
+                Ok(unwound) => unwound.stacks,
+                Err(e) => {
+                    let _ = writeln!(
+                        io::stderr(),
+                        "warning: cannot unwind the target's threads: {e:#}"
+                    );
+                    BTreeMap::new()
+                }
+            })
     }
 
     /// The census as a tree, built once per session on first use.
@@ -1834,32 +1837,25 @@ pub fn dispatch<T: Target>(
             };
             tasks::exec_tasks(session, cmd, theme, out)?
         }
-        Command::Thread { lwp, verbose } => {
+        Command::Thread { lwp } => {
             let render = RenderOpts::from_settings(&session.settings.borrow());
-            cursor::exec_thread(session, lwp, verbose, theme, render, out)?
+            cursor::exec_thread(session, lwp, render, out)?
         }
         Command::Threads {
-            verbose,
-            frames,
-            registers,
             lwp,
             with,
             without,
             group,
             exec,
         } => {
-            let render = RenderOpts::from_settings(&session.settings.borrow());
             let cmd = threads::ThreadsCmd {
-                verbose,
-                frames,
-                registers,
                 lwp,
                 with,
                 without,
                 group,
                 exec,
             };
-            threads::exec_threads(session, cmd, theme, render, out)?
+            threads::exec_threads(session, cmd, theme, out)?
         }
         Command::Trace {
             target,
