@@ -3,12 +3,12 @@ source: hansei/src/offline.rs
 description: "`task 3` over linux/dyn-future"
 ---
 task 3
-state: idle
-type: async fn dyn_future::driver
-awaiting at: src/bin/dyn-future.rs:36
-waiting on: future tokio::sync::oneshot::Receiver<u32>
-waker: <empty>
-spawned at: src/bin/dyn-future.rs:53:21
-defined at: src/bin/dyn-future.rs:24
-held futures: 0
-join sets: 1 (1 task)
+    state: idle
+    type: async fn dyn_future::driver
+    awaiting at: src/bin/dyn-future.rs:36
+    waiting on: future tokio::sync::oneshot::Receiver<u32>
+    waker: <empty>
+    spawned at: src/bin/dyn-future.rs:53:21
+    defined at: src/bin/dyn-future.rs:24
+    held futures: 0
+    join sets: 1 (1 task)

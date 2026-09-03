@@ -1225,15 +1225,21 @@ mod tests {
             let labels: Vec<&str> = text
                 .lines()
                 .skip(1)
+                .map(|line| line.trim_start())
                 .map(|line| line.split_once(": ").map(|(l, _)| l).unwrap_or(line))
                 .collect();
+            // Every line under the heading is set in four columns.
+            assert!(
+                text.lines().skip(1).all(|l| l.starts_with("    ")),
+                "{text}"
+            );
             assert!(labels.starts_with(&["state", "type"]), "{text}");
             assert!(!labels.contains(&"owner"), "{text}");
             // The selection carries the task's source anchors, its
             // waker, and the census's counts — the last two always,
             // since their empty spellings are answers.
-            assert!(text.contains("\nspawned at: "), "{text}");
-            assert!(text.contains("\ndefined at: "), "{text}");
+            assert!(text.contains("\n    spawned at: "), "{text}");
+            assert!(text.contains("\n    defined at: "), "{text}");
             assert!(labels.contains(&"waker"), "{text}");
             assert!(labels.contains(&"held futures"), "{text}");
             assert!(labels.ends_with(&["held futures", "join sets"]), "{text}");
@@ -1245,7 +1251,7 @@ mod tests {
         exec_task(&session, None, true, &mut out).expect("bare task --futures prints");
         let listed = String::from_utf8(out).expect("the listing is UTF-8");
         assert!(
-            listed.contains("\nheld futures: 0\njoin sets: 0\n"),
+            listed.contains("\n    held futures: 0\n    join sets: 0\n"),
             "{listed}"
         );
     }

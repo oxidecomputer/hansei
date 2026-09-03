@@ -3,12 +3,12 @@ source: hansei/src/offline.rs
 description: "`task 3` over illumos/unordered"
 ---
 task 3
-state: idle
-type: async fn unordered::driver
-awaiting at: src/bin/unordered.rs:115
-waiting on: future futures_util::stream::futures_unordered::FuturesUnordered<unordered::set_member>
-waker: <empty>
-spawned at: src/bin/unordered.rs:137:21
-defined at: src/bin/unordered.rs:78
-held futures: 5
-join sets: 1 (3 futures)
+    state: idle
+    type: async fn unordered::driver
+    awaiting at: src/bin/unordered.rs:115
+    waiting on: future futures_util::stream::futures_unordered::FuturesUnordered<unordered::set_member>
+    waker: <empty>
+    spawned at: src/bin/unordered.rs:137:21
+    defined at: src/bin/unordered.rs:78
+    held futures: 5
+    join sets: 1 (3 futures)

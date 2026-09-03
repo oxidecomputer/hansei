@@ -3,14 +3,14 @@ source: hansei/src/offline.rs
 description: "`task 1 --futures` over linux/walk-shapes"
 ---
 task 1
-state: idle
-owner: runtime 0 @ 0xADDR (current_thread)
-type: async fn walk_shapes::chained
-awaiting at: src/bin/walk-shapes.rs:103
-waiting on: future tokio::sync::notify::Notified
-waker: <empty>
-spawned at: src/bin/walk-shapes.rs:245:9
-defined at: src/bin/walk-shapes.rs:92
-held futures: 1
-    (frame 4, `wz`): 0xADDR  async fn walk_shapes::deep  Unresumed — src/bin/walk-shapes.rs:87
-join sets: 0
+    state: idle
+    owner: runtime 0 @ 0xADDR (current_thread)
+    type: async fn walk_shapes::chained
+    awaiting at: src/bin/walk-shapes.rs:103
+    waiting on: future tokio::sync::notify::Notified
+    waker: <empty>
+    spawned at: src/bin/walk-shapes.rs:245:9
+    defined at: src/bin/walk-shapes.rs:92
+    held futures: 1
+        (frame 4, `wz`): 0xADDR  async fn walk_shapes::deep  Unresumed — src/bin/walk-shapes.rs:87
+    join sets: 0
