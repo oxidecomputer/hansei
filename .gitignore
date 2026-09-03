@@ -1,5 +1,8 @@
 /target
 
+# Tests have a separate build directory.
+/test-programs/target
+
 # Rejected goldens a diverged snapshot writes for review.
 *.snap.new
 
