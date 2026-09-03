@@ -1,6 +1,6 @@
-# durin
+# hansei
 
-`durin` reifies the runtime state of a cored (or snapshotted) Rust/tokio
+`hansei` reifies the runtime state of a cored (or snapshotted) Rust/tokio
 process:
 `exegesis` reads DWARF and emits a self-contained *bundle* describing types;
 `hansei-bundle` is that bundle's wire format, and the only thing the read
@@ -29,10 +29,12 @@ binary of its own: `hansei` is the only one the workspace produces. No
 session, runtime or render code imports exegesis types; if read-side code
 seems to need something from it, it wants `hansei-bundle`.
 
-**Naming:** `durin` is only this repository's name. In prose — commit
-messages, comments, docs — the tool as a whole is **`hansei`**; say "what
-hansei does", not "what durin does". The other crate names (`exegesis`,
-`hansei-bundle`, `reify`, `proc`) name their specific layers as usual.
+**Naming:** the tool as a whole, and the repository, are **`hansei`**.
+`durin` was the repository's earlier name and survives only in old history
+and in some local checkout paths; it names nothing. In prose — commit
+messages, comments, docs — say "what hansei does", never "what durin
+does". The other crate names (`exegesis`, `hansei-bundle`, `reify`,
+`proc`) name their specific layers as usual.
 
 ## Before every commit
 
@@ -146,10 +148,11 @@ capture host); its SOURCES check fails loudly until that happens.
 
 ### 3. Only if no node can express it: add a node kind
 
-The exceptional path: six sites, four of them in `hansei-bundle/src/`
+The exceptional path: six sites, three of them in `hansei-bundle/src/`
 (schema variant, `addressed()` arm, `check_node` arm + **`FORMAT_VERSION`
-bump**, `describe_node` arm) and two in reify (the resolved variant, an
-`eval_node` arm that degrades rather than errors) — the checklist is §5
+bump**), a `describe_node` arm in `exegesis/src/describe.rs`, and two in
+reify (the resolved variant, an `eval_node` arm that degrades rather than
+errors) — the checklist is §5
 of the `add-formatter` skill. A missing arm won't compile; a missing
 version bump breaks compatibility silently.
 
