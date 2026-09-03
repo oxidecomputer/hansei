@@ -1,0 +1,5 @@
+# tokio's unstable task instrumentation records where each task was
+# spawned; hansei prints it as `Spawned at:`. Optional — hansei reads a
+# build without it just as well.
+[build]
+rustflags = ["--cfg", "tokio_unstable"]

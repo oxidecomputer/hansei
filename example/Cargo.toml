@@ -1,0 +1,22 @@
+# A small tokio program for hansei to look at. Not part of the workspace:
+# it is a demo with its own lockfile, built and run on its own (see the
+# README's "Trying it out").
+[package]
+name = "hansei-example"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+futures-util = { version = "0.3", default-features = false, features = ["alloc"] }
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "net"] }
+
+# For the prctl that lets `gcore` attach on a Linux box whose
+# `ptrace_scope` only permits tracing descendants.
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
+
+# Full DWARF for the whole graph, tokio included: hansei reads tokio's own
+# layouts from it. (On macOS the DWARF lands in a dSYM beside the binary.)
+[profile.release]
+debug = true
