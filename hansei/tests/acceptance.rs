@@ -550,11 +550,11 @@ fn list_tasks(bundle: &Path, core: &Path) -> Vec<TaskRow> {
     let mut rows: Vec<TaskRow> = Vec::new();
     let mut lines = out.lines().peekable();
     while let Some(line) = lines.next() {
-        if let Some(rest) = line.strip_prefix("Executed against ") {
+        if let Some(rest) = line.strip_prefix("[Executed against ") {
             let plural = if rows.len() == 1 { "" } else { "s" };
             assert_eq!(
                 rest,
-                format!("{} task{plural}, 0 failed", rows.len()),
+                format!("{} task{plural}, 0 failed]", rows.len()),
                 "the exec summary disagrees with the task count"
             );
             assert!(
@@ -582,7 +582,7 @@ fn list_tasks(bundle: &Path, core: &Path) -> Vec<TaskRow> {
             waker: String::new(),
         };
         while let Some(line) = lines.peek() {
-            if line.is_empty() || line.starts_with("Executed against ") {
+            if line.is_empty() || line.starts_with("[Executed against ") {
                 break;
             }
             let line = lines.next().expect("peeked");

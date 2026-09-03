@@ -409,7 +409,7 @@ pub enum Command {
     /// task holds: `trace` follows its own chain, `print` and `locals`
     /// its own frames, where `future 0x…` would have selected the
     /// holding task. One future's failure never stops the loop, the
-    /// listing closes with `Executed against N futures, M failed`, and
+    /// listing closes with `[Executed against N futures, M failed]`, and
     /// the command itself fails after the loop when M is not zero.
     /// One future's every field — who holds it and where, its state
     /// and depth, what it waits on, and what the census found inside
@@ -910,8 +910,8 @@ pub enum Command {
     /// `task N` heading, and `tasks --with state running --exec task
     /// --futures` prints every running task's fields and finds. One
     /// task's failure never stops the loop: the failed run shows its
-    /// error in place, the listing closes with `Executed against N
-    /// tasks, M failed`, and the command itself fails after the loop
+    /// error in place, the listing closes with `[Executed against N
+    /// tasks, M failed]`, and the command itself fails after the loop
     /// when M is not zero — a script sees one failure, with nothing
     /// skipped.
     ///

@@ -18,4 +18,4 @@ Waiting on: a tokio::sync::Mutex (semaphore 0xADDR): 1 permit requested, 0 avail
 #0  future        tokio::sync::batch_semaphore::Acquire
       waiting on a tokio::sync::Mutex (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: a non-task waiter, task 4
 [4 frames, 1 shown]
-Executed against 2 futures, 0 failed
+[Executed against 2 futures, 0 failed]

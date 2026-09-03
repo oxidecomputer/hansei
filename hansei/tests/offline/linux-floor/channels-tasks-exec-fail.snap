@@ -7,5 +7,5 @@ error: the tokio info records no type named no::such::Type; try `find-types no::
 
 task 4
 error: the tokio info records no type named no::such::Type; try `find-types no::such::Type`
-Executed against 2 tasks, 2 failed
+[Executed against 2 tasks, 2 failed]
 error: --exec failed against 2 of 2 tasks

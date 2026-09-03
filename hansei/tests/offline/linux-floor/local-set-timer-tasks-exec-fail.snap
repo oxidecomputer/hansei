@@ -10,5 +10,5 @@ error: the tokio info records no type named no::such::Type; try `find-types no::
 
 task 3
 error: the tokio info records no type named no::such::Type; try `find-types no::such::Type`
-Executed against 3 tasks, 3 failed
+[Executed against 3 tasks, 3 failed]
 error: --exec failed against 3 of 3 tasks

@@ -50,4 +50,4 @@ Held by: task 7 — async fn gen_0007::member_07 (frame 0, `inner`, via held fut
 
 #0  async fn      gen_0007::leaf_09
       state Unresumed — src/bin/gen-0007.rs:86
-Executed against 7 futures, 0 failed
+[Executed against 7 futures, 0 failed]

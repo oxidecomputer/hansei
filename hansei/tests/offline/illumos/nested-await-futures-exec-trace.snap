@@ -2,4 +2,4 @@
 source: hansei/src/offline.rs
 description: "`futures --exec trace -l 1` over illumos/nested-await"
 ---
-Executed against 0 futures, 0 failed
+[Executed against 0 futures, 0 failed]
