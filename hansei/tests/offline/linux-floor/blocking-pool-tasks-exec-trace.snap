@@ -31,4 +31,4 @@ Waiting on: task 4
       waiting on task 4
 #1  async fn      blocking_pool::queued_waiter
       awaiting at src/bin/blocking-pool.rs:24 (Suspend0, 0 locals)
-Executed against 5 tasks, 0 failed
+[Executed against 5 tasks, 0 failed]

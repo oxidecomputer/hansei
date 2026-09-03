@@ -4,5 +4,5 @@ description: "`tasks --exec type no::such::Type` over linux-floor/futurelock"
 ---
 task 5
 error: the tokio info records no type named no::such::Type; try `find-types no::such::Type`
-Executed against 1 task, 1 failed
+[Executed against 1 task, 1 failed]
 error: --exec failed against 1 of 1 task

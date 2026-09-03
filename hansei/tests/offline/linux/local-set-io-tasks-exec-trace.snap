@@ -33,4 +33,4 @@ task 4
       (<no_state>, 2 locals)
 #1  async fn      local_set_io::reader
       awaiting at src/bin/local-set-io.rs:71 (Suspend0, 2 locals)
-Executed against 4 tasks, 0 failed
+[Executed against 4 tasks, 0 failed]

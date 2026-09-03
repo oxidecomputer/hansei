@@ -17,4 +17,4 @@ Waiting on: task 3
       waiting on task 3
 #1  async fn      sleep_join::joiner
       awaiting at src/bin/sleep-join.rs:19 (Suspend0, 0 locals)
-Executed against 2 tasks, 0 failed
+[Executed against 2 tasks, 0 failed]

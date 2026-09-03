@@ -5,4 +5,4 @@ description: "`threads --with has-task yes --exec trace -l 1` over linux-floor/b
 thread 1614549
 lwp 1614549 native stack:
 0xADDR  
-Executed against 1 thread, 0 failed
+[Executed against 1 thread, 0 failed]

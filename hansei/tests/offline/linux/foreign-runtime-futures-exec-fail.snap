@@ -2,4 +2,4 @@
 source: hansei/src/offline.rs
 description: "`futures -l 1 --exec type no::such::Type` over linux/foreign-runtime"
 ---
-Executed against 0 futures, 0 failed
+[Executed against 0 futures, 0 failed]

@@ -33,4 +33,4 @@ task 7
       (<no_state>, 0 locals)
 #1  async fn      gen_0007::member_07
       awaiting at src/bin/gen-0007.rs:198 (Suspend0, 4 locals; holds 1 pending future)
-Executed against 5 tasks, 0 failed
+[Executed against 5 tasks, 0 failed]

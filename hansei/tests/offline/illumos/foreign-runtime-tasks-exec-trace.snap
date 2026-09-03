@@ -33,4 +33,4 @@ Waiting on: timer (deadline TS)
       waiting on timer (deadline TS)
 #1  async fn      foreign_runtime::local_sleeper
       awaiting at src/bin/foreign-runtime.rs:63 (Suspend0, 0 locals)
-Executed against 4 tasks, 0 failed
+[Executed against 4 tasks, 0 failed]

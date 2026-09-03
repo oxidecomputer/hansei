@@ -2,4 +2,4 @@
 source: hansei/src/offline.rs
 description: "`threads --with has-task yes --exec trace -l 1` over linux/local-set-timer"
 ---
-Executed against 0 threads, 0 failed
+[Executed against 0 threads, 0 failed]

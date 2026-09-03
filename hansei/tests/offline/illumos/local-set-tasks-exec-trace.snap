@@ -27,4 +27,4 @@ Waiting on: task 1
       waiting on task 1
 #1  async fn      local_set::joiner
       awaiting at src/bin/local-set.rs:30 (Suspend0, 0 locals)
-Executed against 3 tasks, 0 failed
+[Executed against 3 tasks, 0 failed]

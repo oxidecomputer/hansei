@@ -102,4 +102,4 @@ Child of: futures_util::stream::futures_unordered::FuturesUnordered<unordered::l
 
 #0  async fn      unordered::leaf
       state Unresumed — src/bin/unordered.rs:36
-Executed against 14 futures, 0 failed
+[Executed against 14 futures, 0 failed]

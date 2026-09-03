@@ -13,4 +13,4 @@ task 4
       (<no_state>, 1 local)
 #1  async fn      channels::hold
       awaiting at src/bin/channels.rs:48 (Suspend0, 6 locals)
-Executed against 2 tasks, 0 failed
+[Executed against 2 tasks, 0 failed]

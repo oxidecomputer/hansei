@@ -39,4 +39,4 @@ task 8
       (<no_state>, 4 locals)
 #1  async fn      joinset::member
       awaiting at src/bin/joinset.rs:30 (Suspend1, 2 locals)
-Executed against 6 tasks, 0 failed
+[Executed against 6 tasks, 0 failed]

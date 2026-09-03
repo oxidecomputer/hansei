@@ -1688,7 +1688,7 @@ fn exec_exec<T: proc::Target>(
     *session.cursor.borrow_mut() = saved;
     writeln!(
         out,
-        "Executed against {}, {failed} failed",
+        "[Executed against {}, {failed} failed]",
         summary::counted(shown, "task")
     )?;
     if failed > 0 {

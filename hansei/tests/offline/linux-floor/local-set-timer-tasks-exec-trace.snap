@@ -27,4 +27,4 @@ Waiting on: timer (deadline TS on the target's monotonic clock)
       waiting on timer (deadline TS on the target's monotonic clock)
 #1  async fn      local_set_timer::sleeper
       awaiting at src/bin/local-set-timer.rs:38 (Suspend0, 1 local)
-Executed against 3 tasks, 0 failed
+[Executed against 3 tasks, 0 failed]
