@@ -185,12 +185,12 @@ mod tests {
     };
     use crate::{Encoding, StrId};
 
-    use gimli::{DebugInfoOffset, UnitSectionOffset};
+    use gimli::UnitSectionOffset;
 
     use std::collections::BTreeMap;
 
     fn type_id(offset: usize) -> TypeId {
-        TypeId(UnitSectionOffset::DebugInfoOffset(DebugInfoOffset(offset)))
+        TypeId(UnitSectionOffset(offset))
     }
 
     #[derive(Default)]

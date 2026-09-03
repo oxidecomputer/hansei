@@ -369,9 +369,9 @@ mod tests {
     fn test_hints_resolve_by_normalized_name_and_size() {
         use crate::raw_types::{RawStruct, RawType};
         use crate::{DwReader, TypeId};
-        use gimli::{DebugInfoOffset, UnitSectionOffset};
+        use gimli::UnitSectionOffset;
 
-        let type_id = |offset| TypeId(UnitSectionOffset::DebugInfoOffset(DebugInfoOffset(offset)));
+        let type_id = |offset| TypeId(UnitSectionOffset(offset));
         let mut reader = DwReader::default();
         let strukt = |reader: &mut DwReader<'static>, id, name: &'static str, size| {
             let name = Some(reader.strings.intern(name));

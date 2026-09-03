@@ -441,7 +441,7 @@ mod tests {
     #[test]
     fn test_func_accessors_pass_the_raw_facts_through() {
         use crate::raw_types::SourceLoc;
-        use gimli::{DebugInfoOffset, UnitSectionOffset};
+        use gimli::UnitSectionOffset;
         use std::num::NonZero;
 
         let mut reader = DwReader::default();
@@ -450,7 +450,7 @@ mod tests {
         let dir = reader.strings.intern("src");
         let comp_dir = reader.strings.intern("/crate");
         reader.functions.insert(
-            crate::FuncId(UnitSectionOffset::DebugInfoOffset(DebugInfoOffset(0x10))),
+            crate::FuncId(UnitSectionOffset(0x10)),
             crate::raw_types::RawFunc {
                 name: Some(name),
                 namespace: None,

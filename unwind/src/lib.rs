@@ -530,7 +530,7 @@ impl<T: Target> Unwinder<'_, T> {
         cfa: u64,
         row: &gimli::UnwindTableRow<usize>,
     ) -> Result<Option<u64>> {
-        match row.register(reg.into()) {
+        match row.register(reg.into()).unwrap_or(RegisterRule::Undefined) {
             RegisterRule::Undefined => {
                 if reg.is_callee_saved() {
                     // Callee-saved register unmodified.
