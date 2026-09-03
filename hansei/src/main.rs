@@ -291,10 +291,12 @@ pub enum Command {
         #[arg(long, short)]
         futures: bool,
 
-        /// How many entries each "most of them are this" listing shows
-        /// before the rest are summed into a final row.
-        #[arg(long, short = 'n', default_value_t = 5)]
-        top: usize,
+        /// Show at most this many entries in each "most of them are
+        /// this" listing; the rest are summed into a final row. The
+        /// census keeps its own default rather than reading `config
+        /// limit`, whose "everything" would make every tally a page.
+        #[arg(long, short = 'l', value_name = "N", default_value_t = 5)]
+        limit: usize,
     },
 
     /// Move the cursor one await frame inward — toward #0, the most
@@ -684,8 +686,9 @@ pub enum Command {
     /// Show or change the session's settings. The render keys —
     /// depth, max-string-len, max-array-values, ugly — govern
     /// `trace -v` locals and every other render outright; `limit`
-    /// also backs the `--limit` flags, which override the session
-    /// value for that command only; `truncate-names` cuts the
+    /// also backs the listings' `--limit` flags, which override the
+    /// session value for that command only (`census --limit` has a
+    /// default of its own and never reads it); `truncate-names` cuts the
     /// listings' name columns, the names `census` tallies, and the
     /// names ending `trace`'s frame lines, to the terminal's width,
     /// an ellipsis marking each cut — a `!` pipeline's output included, since its
@@ -1731,11 +1734,11 @@ pub fn dispatch<T: Target>(
             threads,
             tasks,
             futures,
-            top,
+            limit,
         } => {
             session.note_version_ceiling();
             let sections = summary::Sections::select(threads, tasks, futures);
-            tasks::exec_census(session, sections, top, theme, out)?
+            tasks::exec_census(session, sections, limit, theme, out)?
         }
         Command::Down { then } => {
             cursor::exec_down(session, theme, out)?;
