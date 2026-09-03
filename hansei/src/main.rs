@@ -978,7 +978,8 @@ pub enum Command {
     /// selected` until `task` moves on — and a bare `trace` walks the
     /// thread's native stack; the hybrid trace is the task cursor's.
     /// Bare `thread` prints the cursor's thread as its table row;
-    /// `-v`, `--frames` or `--registers` its full block.
+    /// `-v` its full block. The stack at any depth is `trace -l N`
+    /// under the cursor, and the registers are `regs`.
     Thread {
         /// The lwp id (see `threads`). Naming none prints the
         /// cursor's thread.
@@ -987,15 +988,6 @@ pub enum Command {
         /// Print the thread's full block rather than one row.
         #[arg(long, short)]
         verbose: bool,
-
-        /// Maximum stack frames to print in the block (50 when the
-        /// block form is asked for without it). Implies -v.
-        #[arg(long, short)]
-        frames: Option<usize>,
-
-        /// Show the thread's registers in the block. Implies -v.
-        #[arg(long, short)]
-        registers: bool,
     },
 
     /// List every thread in the target — one table row per lwp: its
@@ -1844,14 +1836,9 @@ pub fn dispatch<T: Target>(
             };
             tasks::exec_tasks(session, cmd, theme, out)?
         }
-        Command::Thread {
-            lwp,
-            verbose,
-            frames,
-            registers,
-        } => {
+        Command::Thread { lwp, verbose } => {
             let render = RenderOpts::from_settings(&session.settings.borrow());
-            cursor::exec_thread(session, lwp, verbose, frames, registers, theme, render, out)?
+            cursor::exec_thread(session, lwp, verbose, theme, render, out)?
         }
         Command::Threads {
             verbose,
