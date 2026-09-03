@@ -331,7 +331,7 @@ the `format-bump` skill's fixture-regeneration loop).
    value's bytes, follow pointers through `ctx.proc`, guard with
    `ctx.visited`, and degrade to `<null>` / `<truncated>` /
    `<target unavailable>` / `<unreadable>` rather than erroring.
-6. `hansei-bundle/src/describe.rs` — a `describe_node` arm, so the golden
+6. `exegesis/src/describe.rs` — a `describe_node` arm, so the golden
    summary keeps printing the fully resolved tree. (`exegesis/tests/
    golden.rs` only *calls* `describe_debug_format`; nothing to add there.)
 
