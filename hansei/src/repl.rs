@@ -1383,15 +1383,15 @@ mod tests {
             threads,
             tasks,
             futures,
-            top,
-        } = Line::try_parse_from(["census", "-Tf", "--top", "9"])
+            limit,
+        } = Line::try_parse_from(["census", "-Tf", "--limit", "9"])
             .expect("census takes its section flags")
             .command
         else {
             panic!("census parsed as another command");
         };
         assert!(threads && futures && !tasks);
-        assert_eq!(top, 9);
+        assert_eq!(limit, 9);
     }
 
     /// Which command failed is framed only on a multi-command line; a
