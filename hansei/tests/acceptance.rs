@@ -54,6 +54,7 @@
 
 use exegesis::extract::{ExtractOptions, extract_file};
 use hansei_bundle::{Bundle, BundleView};
+use hansei_runtime::testkit::matrix::Matrix;
 use hansei_runtime::tokio::bundle::Context as BundleContext;
 use proc::{Proc, Target};
 
@@ -125,6 +126,11 @@ fn extracted_from(cell: &Cell) -> String {
 struct Cell {
     /// The fixture-dir name, `None` for the primary cell.
     name: Option<String>,
+    /// Whether this is the primary cell, named or not: `regen.sh`
+    /// builds that one in the everyday dirs whatever it was asked for
+    /// by, so where its binaries land is decided by what it *is*,
+    /// not by whether `HANSEI_CELL` spelled it out.
+    primary: bool,
     /// `--tokio`/`--toolchain`/`--no-unstable` for `regen.sh`; empty
     /// for the primary cell, whose defaults are exactly that recipe.
     flags: Vec<String>,
@@ -141,6 +147,7 @@ fn cell() -> &'static Cell {
         let Ok(name) = std::env::var("HANSEI_CELL") else {
             return Cell {
                 name: None,
+                primary: true,
                 flags: Vec::new(),
                 unstable: true,
                 pair: String::new(),
@@ -162,6 +169,8 @@ fn cell() -> &'static Cell {
                 "HANSEI_CELL={name} is not rust-<toolchain>-tokio-<version>-{{unstable,stable}}"
             );
         };
+        let m = Matrix::load();
+        let primary = unstable && tokio == m.primary.tokio && toolchain == m.primary.toolchain;
         let mut flags = vec![
             "--tokio".to_owned(),
             tokio,
@@ -175,6 +184,7 @@ fn cell() -> &'static Cell {
         Cell {
             pair: format!("rust-{toolchain}-{cfg}"),
             name: Some(name),
+            primary,
             flags,
             unstable,
         }
@@ -236,9 +246,13 @@ fn fixtures() -> &'static Fixtures {
                     .join(format!("{}-a", cell.pair)),
             ),
         };
+        // Build B lands wherever regen.sh lands the cell: the everyday
+        // bin dir for the primary cell, named or not, and a per-cell
+        // dir for every other. Deciding this by the name alone would
+        // send the named primary cell to a dir regen.sh never writes.
         let bin_b = match &cell.name {
-            None => fixture_dir.join("bin"),
-            Some(name) => fixture_dir.join("bin").join(name),
+            Some(name) if !cell.primary => fixture_dir.join("bin").join(name),
+            _ => fixture_dir.join("bin"),
         };
         let bundles = base.join("integration");
         fs::create_dir_all(&bundles).expect("failed to create the bundle dir");
