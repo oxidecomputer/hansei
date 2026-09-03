@@ -7,4 +7,4 @@ description: "`tasks --exec trace -n` over illumos/simple-await"
       (<no_state>, 1 local)
 #1  async fn      simple_await::work
       awaiting at src/bin/simple-await.rs:40 (Suspend1, 12 locals)
-Executed against 1 tasks, 0 failed
+Executed against 1 task, 0 failed

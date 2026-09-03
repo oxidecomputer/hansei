@@ -11,4 +11,4 @@ description: "`tasks --exec trace -n` over illumos/nested-await"
       awaiting at src/bin/nested-await.rs:12 (Suspend0, 0 locals)
 #3  async fn      nested_await::outer
       awaiting at src/bin/nested-await.rs:19 (Suspend0, 0 locals)
-Executed against 1 tasks, 0 failed
+Executed against 1 task, 0 failed

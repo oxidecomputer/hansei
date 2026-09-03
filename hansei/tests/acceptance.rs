@@ -551,10 +551,10 @@ fn list_tasks(bundle: &Path, core: &Path) -> Vec<TaskRow> {
     let mut lines = out.lines().peekable();
     while let Some(line) = lines.next() {
         if let Some(rest) = line.strip_prefix("Executed against ") {
-            // The loop's summary spells its count `N tasks` whatever N.
+            let plural = if rows.len() == 1 { "" } else { "s" };
             assert_eq!(
                 rest,
-                format!("{} tasks, 0 failed", rows.len()),
+                format!("{} task{plural}, 0 failed", rows.len()),
                 "the exec summary disagrees with the task count"
             );
             assert!(
