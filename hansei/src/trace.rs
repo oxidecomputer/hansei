@@ -2463,6 +2463,7 @@ mod future_trace_tests {
             blocking_lwps: &HashMap::new(),
             finds,
             tree: &tree,
+            fit: None,
         };
         let mut out: Vec<u8> = Vec::new();
         print_task_view(&view, index, futures, &mut out).expect("the task renders");

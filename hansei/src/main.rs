@@ -1816,7 +1816,9 @@ pub fn dispatch<T: Target>(
         #[cfg(feature = "snapshot")]
         Command::Snapshot { output } => snapshot_cmd::exec_snapshot(session, &output, out)?,
         Command::Sync { addr, kind } => sync::exec_sync(session, addr, kind, out)?,
-        Command::Task { target, futures } => cursor::exec_task(session, target, futures, out)?,
+        Command::Task { target, futures } => {
+            cursor::exec_task(session, target, futures, session.fit_width(theme), out)?
+        }
         Command::Tasks {
             limit,
             with,
