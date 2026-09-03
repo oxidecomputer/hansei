@@ -7,4 +7,4 @@ description: "`tasks --exec trace -n` over linux-floor/unordered"
       (<no_state>, 3 locals)
 #1  async fn      unordered::driver
       awaiting at src/bin/unordered.rs:115 (Suspend0, 8 locals; holds 5 pending futures)
-Executed against 1 tasks, 0 failed
+Executed against 1 task, 0 failed

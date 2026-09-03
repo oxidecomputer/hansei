@@ -4,5 +4,5 @@ description: "`futures -l 1 --exec type no::such::Type` over linux/futurelock"
 ---
 0xADDR  5  frame 5, `future1`  Suspend0 — src/bin/futurelock.rs:78  a tokio::sync::Mutex (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 5  async fn futurelock::do_async_thing
 error: the tokio info records no type named no::such::Type; try `find-types no::such::Type`
-Executed against 1 futures, 1 failed
-error: --exec failed against 1 of 1 futures
+Executed against 1 future, 1 failed
+error: --exec failed against 1 of 1 future

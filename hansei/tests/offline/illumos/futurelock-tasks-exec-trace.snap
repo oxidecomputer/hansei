@@ -19,4 +19,4 @@ Waiting on: a tokio::sync::Mutex (semaphore 0xADDR): 1 permit requested, 0 avail
       awaiting at src/bin/futurelock.rs:70 (Suspend1, 3 locals; holds 1 pending future)
 #6  async block   futurelock::main::{async_block#0}
       awaiting at src/bin/futurelock.rs:28 (Suspend1, 1 local)
-Executed against 1 tasks, 0 failed
+Executed against 1 task, 0 failed

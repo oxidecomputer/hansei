@@ -4,5 +4,5 @@ description: "`futures -l 1 --exec type no::such::Type` over linux/channels"
 ---
 0xADDR  3  frame 1, `notified`  —  —  future tokio::sync::notify::Notified
 error: the tokio info records no type named no::such::Type; try `find-types no::such::Type`
-Executed against 1 futures, 1 failed
-error: --exec failed against 1 of 1 futures
+Executed against 1 future, 1 failed
+error: --exec failed against 1 of 1 future

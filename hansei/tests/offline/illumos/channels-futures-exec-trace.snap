@@ -8,4 +8,4 @@ Held by: task 3 — async fn channels::notify_waiter (frame 1, `notified`)
 
 #0  future        tokio::sync::notify::Notified
       (<no_state>, 4 locals)
-Executed against 1 futures, 0 failed
+Executed against 1 future, 0 failed
