@@ -519,6 +519,47 @@ impl<'a> BundleType<'a> {
         )
     }
 
+    /// If this is a C-style enumeration, the name of the enumerator whose
+    /// value `bytes` holds, or `None` when no enumerator claims it — an
+    /// uninitialized slot, or a value the source never named. The word is
+    /// read at the enumeration's own width and sign-extended when its
+    /// repr is signed, so a negative enumerator matches its bytes.
+    pub fn enumerator_name(&self, bytes: &[u8]) -> Option<&'a str> {
+        let TypeDef::CEnum {
+            size,
+            repr,
+            enumerators,
+            ..
+        } = self.def()
+        else {
+            return None;
+        };
+        let size = usize::try_from(*size).ok()?;
+        if size == 0 || size > 16 {
+            return None;
+        }
+        let mut word = [0u8; 16];
+        word[..size].copy_from_slice(bytes.get(..size)?);
+        let raw = u128::from_le_bytes(word);
+        let signed = matches!(
+            self.at(*repr).def(),
+            TypeDef::Base {
+                encoding: Encoding::Signed | Encoding::SignedChar,
+                ..
+            }
+        );
+        let value = if signed {
+            let shift = 128 - 8 * size as u32;
+            ((raw as i128) << shift) >> shift
+        } else {
+            raw as i128
+        };
+        enumerators
+            .iter()
+            .find(|(_, v)| *v == value)
+            .map(|(name, _)| self.str(*name))
+    }
+
     /// If this is a trait-object wide pointer (`&dyn Trait`,
     /// `Box<dyn Trait>`), decompose it into its data-pointer and vtable
     /// members.

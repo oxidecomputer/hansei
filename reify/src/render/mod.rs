@@ -564,14 +564,12 @@ pub(crate) fn write_display_value<'a, T: Target>(
             write_rust_enum(f, info, name, pretty, ctx)
         }
 
-        TypeClass::CEnum => {
-            // For C-style enums, try to find the active variant name.
-            if let Some(Ok(active)) = ty.active_variant(bytes) {
-                write!(f, "{}", active.name)
-            } else {
-                write_hex_bytes(f, bytes)
-            }
-        }
+        TypeClass::CEnum => match ty.enumerator_name(bytes) {
+            Some(name) => f.write_str(name),
+            // A value no enumerator claims: the bytes are the only
+            // honest thing to say about it.
+            None => write_hex_bytes(f, bytes),
+        },
 
         TypeClass::Array { element, count } => {
             let elem_size = element.size() as usize;
@@ -1083,21 +1081,25 @@ mod tests {
         assert_eq!(show(u32::from('é')), "'\\xe9'");
     }
 
-    /// A C enumeration dumps its bytes rather than naming the enumerator. The
-    /// `CEnum` arm asks `active_variant`, which is only implemented for a Rust
-    /// enum's `VariantShape` and returns `None` for every `TypeDef::CEnum`, so
-    /// the name lookup can never succeed through the current `BundleType`
-    /// interface.
+    /// A C enumeration renders as the name of the enumerator its bytes
+    /// hold, at the repr's width and sign — so a negative enumerator over
+    /// an `i8` repr matches its sign-extended byte — and dumps the bytes
+    /// when no enumerator claims the value.
     #[test]
-    fn test_c_enum_falls_back_to_hex_bytes() {
+    fn test_c_enum_renders_enumerator_name() {
         let b = test_bundle();
         let v = BundleView::new(&b);
         let color = v.ty(COLOR).unwrap();
-        assert!(color.active_variant(&1u32.to_le_bytes()).is_none());
-        assert_eq!(
-            format!("{}", Value::new(color, 0, &1u32.to_le_bytes()).display()),
-            "[0x01, 0x00, 0x00, 0x00]"
-        );
+        let show = |bytes: &[u8]| format!("{}", Value::new(color, 0, bytes).display());
+        assert_eq!(show(&0u32.to_le_bytes()), "Red");
+        assert_eq!(show(&1u32.to_le_bytes()), "Green");
+        assert_eq!(show(&7u32.to_le_bytes()), "[0x07, 0x00, 0x00, 0x00]");
+
+        let shade = v.ty(SHADE).unwrap();
+        let show = |bytes: &[u8]| format!("{}", Value::new(shade, 0, bytes).display());
+        assert_eq!(show(&[0xff]), "Dark");
+        assert_eq!(show(&[0x01]), "Light");
+        assert_eq!(show(&[0x7f]), "[0x7f]");
     }
 
     /// A buffer shorter than the type is reported rather than read past. The
