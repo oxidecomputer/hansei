@@ -2,7 +2,7 @@
 source: hansei/src/offline.rs
 description: "`tasks --exec trace -n` over linux/sleep-join"
 ---
-3  idle  src/bin/sleep-join.rs:12  timer (deadline TS on the target's monotonic clock)  async fn sleep_join::sleeper
+task 3
 Waiting on: timer (deadline TS on the target's monotonic clock)
 
 #0  future        tokio::time::sleep::Sleep
@@ -10,7 +10,7 @@ Waiting on: timer (deadline TS on the target's monotonic clock)
 #1  async fn      sleep_join::sleeper
       awaiting at src/bin/sleep-join.rs:12 (Suspend0, 0 locals)
 
-4  idle  src/bin/sleep-join.rs:19  task 3  async fn sleep_join::joiner
+task 4
 Waiting on: task 3
 
 #0  future        tokio::runtime::task::join::JoinHandle<u32>

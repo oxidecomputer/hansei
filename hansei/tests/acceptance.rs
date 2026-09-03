@@ -2850,9 +2850,9 @@ fn test_threads_registers_annotate_on_request() {
         assert!(blocks > 0, "{out}");
         // Each block's rsp is that thread's own. The claim names a
         // thread rather than being first-person, so what says it is
-        // the loop's own row: the tid on the rsp line must be the one
-        // the row above it starts with, in every block.
-        let heading = regex::Regex::new(r"(?m)^(\d+)  ").unwrap();
+        // the loop's own heading: the tid on the rsp line must be the
+        // one the heading above it names, in every block.
+        let heading = regex::Regex::new(r"(?m)^thread (\d+)$").unwrap();
         let rsp =
             regex::Regex::new(r"(?m)^  rsp  0x[0-9a-f]{16}  — \[ stack tid=(\d+) \]$").unwrap();
         let headings: Vec<&str> = heading

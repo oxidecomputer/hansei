@@ -2,19 +2,19 @@
 source: hansei/src/offline.rs
 description: "`tasks --exec type no::such::Type` over illumos/blocking-pool"
 ---
-3  blocking (running)  —  —  future tokio::runtime::blocking::task::BlockingTask<blocking_pool::main::{async_block#0}::{closure_env#0}>
+task 3
 error: the tokio info records no type named no::such::Type; try `find-types no::such::Type`
 
-4  blocking (queued)  —  —  future tokio::runtime::blocking::task::BlockingTask<blocking_pool::main::{async_block#0}::{closure_env#1}>
+task 4
 error: the tokio info records no type named no::such::Type; try `find-types no::such::Type`
 
-5  blocking (queued)  —  —  future tokio::runtime::blocking::task::BlockingTask<blocking_pool::main::{async_block#0}::{closure_env#2}>
+task 5
 error: the tokio info records no type named no::such::Type; try `find-types no::such::Type`
 
-6  idle  src/bin/blocking-pool.rs:18  task 3  async fn blocking_pool::running_waiter
+task 6
 error: the tokio info records no type named no::such::Type; try `find-types no::such::Type`
 
-7  idle  src/bin/blocking-pool.rs:24  task 4  async fn blocking_pool::queued_waiter
+task 7
 error: the tokio info records no type named no::such::Type; try `find-types no::such::Type`
 Executed against 5 tasks, 5 failed
 error: --exec failed against 5 of 5 tasks

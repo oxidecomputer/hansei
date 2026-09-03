@@ -2,7 +2,7 @@
 source: hansei/src/offline.rs
 description: "`futures -l 1 --exec type no::such::Type` over linux-floor/channels"
 ---
-0xADDR  3  frame 1, `notified`  —  —  future tokio::sync::notify::Notified
+future 0xADDR
 error: the tokio info records no type named no::such::Type; try `find-types no::such::Type`
 Executed against 1 future, 1 failed
 error: --exec failed against 1 of 1 future

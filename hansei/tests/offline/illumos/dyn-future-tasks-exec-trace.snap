@@ -2,7 +2,7 @@
 source: hansei/src/offline.rs
 description: "`tasks --exec trace -n` over illumos/dyn-future"
 ---
-3  idle  src/bin/dyn-future.rs:36  future tokio::sync::oneshot::Receiver<u32>  async fn dyn_future::driver
+task 3
 #0  future        tokio::sync::oneshot::Receiver<u32>
       (<no_state>, 1 local)
 #1  async fn      dyn_future::boxed_leaf [dyn]
@@ -10,7 +10,7 @@ description: "`tasks --exec trace -n` over illumos/dyn-future"
 #2  async fn      dyn_future::driver
       awaiting at src/bin/dyn-future.rs:36 (Suspend0, 1 local)
 
-4  idle  src/bin/dyn-future.rs:17  future tokio::sync::oneshot::Receiver<u32>  async fn dyn_future::set_member
+task 4
 #0  future        tokio::sync::oneshot::Receiver<u32>
       (<no_state>, 1 local)
 #1  async fn      dyn_future::set_member

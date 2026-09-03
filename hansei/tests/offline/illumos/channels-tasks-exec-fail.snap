@@ -2,10 +2,10 @@
 source: hansei/src/offline.rs
 description: "`tasks --exec type no::such::Type` over illumos/channels"
 ---
-3  idle  src/bin/channels.rs:30  future tokio::sync::notify::Notified  async fn channels::notify_waiter
+task 3
 error: the tokio info records no type named no::such::Type; try `find-types no::such::Type`
 
-4  idle  src/bin/channels.rs:48  future tokio::sync::oneshot::Receiver<u32>  async fn channels::hold
+task 4
 error: the tokio info records no type named no::such::Type; try `find-types no::such::Type`
 Executed against 2 tasks, 2 failed
 error: --exec failed against 2 of 2 tasks

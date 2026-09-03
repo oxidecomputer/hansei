@@ -2,7 +2,7 @@
 source: hansei/src/offline.rs
 description: "`futures -l 1 --exec type no::such::Type` over linux/walk-shapes"
 ---
-0xADDR  1  0  frame 4, `wz`  Unresumed — src/bin/walk-shapes.rs:87  —  async fn walk_shapes::deep
+future 0xADDR
 error: the tokio info records no type named no::such::Type; try `find-types no::such::Type`
 Executed against 1 future, 1 failed
 error: --exec failed against 1 of 1 future

@@ -2,7 +2,7 @@
 source: hansei/src/offline.rs
 description: "`tasks --exec trace -n` over illumos/local-set"
 ---
-1  idle  1  src/bin/local-set.rs:16  timer (deadline TS)  async fn local_set::local_sleeper
+task 1
 Waiting on: timer (deadline TS)
 
 #0  future        tokio::time::sleep::Sleep
@@ -10,7 +10,7 @@ Waiting on: timer (deadline TS)
 #1  async fn      local_set::local_sleeper
       awaiting at src/bin/local-set.rs:16 (Suspend0, 0 locals)
 
-2  idle  1  src/bin/local-set.rs:23  a tokio::sync::Semaphore (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 2  async fn local_set::local_acquirer
+task 2
 Waiting on: a tokio::sync::Semaphore (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 2
 
 #0  future        tokio::sync::batch_semaphore::Acquire
@@ -20,7 +20,7 @@ Waiting on: a tokio::sync::Semaphore (semaphore 0xADDR): 1 permit requested, 0 a
 #2  async fn      local_set::local_acquirer
       awaiting at src/bin/local-set.rs:23 (Suspend0, 0 locals)
 
-3  idle  0  src/bin/local-set.rs:30  task 1  async fn local_set::joiner
+task 3
 Waiting on: task 1
 
 #0  future        tokio::runtime::task::join::JoinHandle<u32>

@@ -2,7 +2,7 @@
 source: hansei/src/offline.rs
 description: "`tasks --exec trace -n` over linux/unordered"
 ---
-3  idle  src/bin/unordered.rs:115  future futures_util::stream::futures_unordered::FuturesUnordered<unordered::set_member>  async fn unordered::driver
+task 3
 #0  future        futures_util::stream::futures_unordered::FuturesUnordered<unordered::set_member>
       (<no_state>, 3 locals)
 #1  async fn      unordered::driver
