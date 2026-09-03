@@ -366,17 +366,16 @@ mod tests {
         let members = |args: &[&str]| path_members(&session, &w(args));
 
         // #0 is the leaf, a oneshot receiver: its one member, and —
-        // since `.strong` resolves at the root through that single
-        // member, the Option and the Arc — everything reachable that
-        // way, which is exactly what one step in offers. The Option
-        // is `Some`, and only that variant is offered.
+        // since a step at the root reads through that single member
+        // — the Option's live variant, where the listing stops: the
+        // Arc behind it is reached as `.Some`, and offered there.
         let root = members(&[]).unwrap();
-        assert_eq!(root[0], "inner", "{root:?}");
-        for expected in ["Some", "strong", "weak", "data", "state", "value"] {
-            assert!(root.iter().any(|n| n == expected), "{root:?}");
-        }
-        assert!(!root.iter().any(|n| n == "None"), "{root:?}");
+        assert_eq!(root, ["inner", "Some"]);
         assert_eq!(members(&["inner."]).unwrap(), root[1..]);
+        let behind = members(&["inner.Some."]).unwrap();
+        for expected in ["strong", "weak", "data", "state", "value"] {
+            assert!(behind.iter().any(|n| n == expected), "{behind:?}");
+        }
         // The spelled-out `.` reads the same frame.
         assert_eq!(members(&["."]).unwrap(), root);
 

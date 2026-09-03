@@ -2,4 +2,4 @@
 source: hansei/src/offline.rs
 description: "`print no_such_member` over linux/simple-await"
 ---
-error: type tokio::sync::oneshot::Inner<u32> has no member named no_such_member (members: state, value, tx_task, rx_task)
+error: `no_such_member` is not a variant of core::option::Option<alloc::sync::Arc<tokio::sync::oneshot::Inner<u32>, alloc::alloc::Global>>; the active variant is `Some`, reached as `.Some`
