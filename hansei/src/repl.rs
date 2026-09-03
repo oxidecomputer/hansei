@@ -2054,19 +2054,13 @@ mod tests {
     #[test]
     fn test_completion_offers_a_commands_flags() {
         let flags = completions("tasks -");
-        for expected in [
-            "--group",
-            "--with",
-            "--without",
-            "--limit",
-            "--exec",
-            "--verbose",
-        ] {
+        for expected in ["--group", "--with", "--without", "--limit", "--exec"] {
             assert!(flags.iter().any(|f| f == expected), "{flags:?}");
         }
         assert!(flags.iter().all(|f| f.starts_with("--")), "{flags:?}");
         assert_eq!(completions("tasks --gr"), ["--group"]);
         assert_eq!(completions("task 129 -"), completions("task -"));
+        assert_eq!(completions("task --fu"), ["--futures"]);
     }
 
     /// A short flag that takes a value owes it as the next word (`-l
@@ -2077,7 +2071,7 @@ mod tests {
         assert!(completions("tasks -l ").is_empty());
         assert_eq!(completions("tasks -l 10 --gr"), ["--group"]);
         assert_eq!(completions("tasks -l10 --gr"), ["--group"]);
-        assert_eq!(completions("tasks -vl 10 --gr"), ["--group"]);
+        assert_eq!(completions("threads -vf 3 --gr"), ["--group"]);
         assert_eq!(completions("tasks --limit=10 --gr"), ["--group"]);
         assert!(completions("tasks -w type ").is_empty());
         assert_eq!(completions("tasks -w type foo --gr"), ["--group"]);
@@ -2726,7 +2720,7 @@ mod tests {
                 .command,
             Command::Task {
                 target: Some(crate::TraceTarget::Task(5)),
-                verbose: false
+                futures: false
             }
         ));
         assert!(matches!(

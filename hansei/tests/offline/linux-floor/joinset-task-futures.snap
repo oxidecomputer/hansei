@@ -1,0 +1,22 @@
+---
+source: hansei/src/offline.rs
+description: "`task 3 --futures` over linux-floor/joinset"
+---
+task 3
+state: idle
+type: async fn joinset::driver
+awaiting at: src/bin/joinset.rs:79
+waiting on: future tokio::util::idle_notified_set::IdleNotifiedSet<tokio::runtime::task::join::JoinHandle<u32>>
+waker: <empty>
+spawned at: src/bin/joinset.rs:96:21
+defined at: src/bin/joinset.rs:44
+held futures: 0
+join sets: 2 (6 tasks)
+    - tokio::task::join_set::JoinSet<u32> at 0xADDR (frame 2, `set`): 3 tasks
+        task 6  async fn joinset::member  idle
+        task 5  async fn joinset::member  idle
+        task 4  async fn joinset::member  idle
+    - tokio::task::join_set::JoinSet<u32> at 0xADDR (frame 2, `kept`): 3 tasks
+        task 9  <complete, awaiting join>
+        task 8  async fn joinset::member  idle
+        task 7  async fn joinset::member  idle

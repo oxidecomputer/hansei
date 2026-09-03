@@ -5,4 +5,7 @@ description: "`task 3` over linux/blocking-pool"
 task 3
 state: blocking (running)
 type: future tokio::runtime::blocking::task::BlockingTask<blocking_pool::main::{async_block#0}::{closure_env#0}>
+waker: <empty>
 spawned at: src/bin/blocking-pool.rs:35:23
+held futures: 0
+join sets: 0

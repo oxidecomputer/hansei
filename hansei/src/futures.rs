@@ -3,8 +3,8 @@
 //! than under the tasks that hold them.
 
 use crate::tasks::{
-    self, CensusTree, Cmp, EMPTY_BUCKET, Entry, Listing, alternatives, census_tree, listing_footer,
-    print_future_entry, resolve_rt, task_id,
+    self, CensusTree, Cmp, EMPTY_BUCKET, Entry, Finds, Listing, alternatives, census_tree,
+    listing_footer, print_future_entry, resolve_rt, task_id,
 };
 use crate::trace::FutureAt;
 use crate::whatis::via_suffix;
@@ -91,7 +91,7 @@ pub(crate) fn rows<'s, T: proc::Target>(session: &'s Session<'_, T>) -> &'s [Fut
 
 /// Build every row from what it prints — taken apart from the session
 /// so a test can lay out a population no fixture holds. Rows come in
-/// the order `tasks --futures` prints the same finds: task by task,
+/// the order `task --futures` prints the same finds: task by task,
 /// each task's held futures ahead of its set children, and whatever
 /// the census found inside a find directly after it — so a listing
 /// read top to bottom meets a future before the ones it holds. A
@@ -102,7 +102,7 @@ pub(crate) fn build_rows(
     census: &census::FutureCensus,
     impls: &names::ImplFold,
 ) -> Vec<FutureRow> {
-    let tree = census_tree(&census.held, &census.sets, &census.join_sets);
+    let tree = census_tree(census.into());
     let rows = Rows {
         list,
         census,
@@ -120,7 +120,7 @@ pub(crate) fn build_rows(
     // the census's biggest finds are sets with tens of thousands of
     // children — so the build is parallel at every level and the rows
     // still come out in the listing's order.
-    let roots: Vec<&Vec<Entry<'_>>> = tree.roots.values().collect();
+    let roots: Vec<&Vec<Entry>> = tree.roots.values().collect();
     roots
         .par_iter()
         .map(|entries| rows.rows_of_all(entries))
@@ -139,7 +139,7 @@ const PARALLEL_ROWS: usize = 64;
 struct Rows<'a> {
     list: &'a bundle::TaskList,
     census: &'a census::FutureCensus,
-    tree: &'a CensusTree<'a>,
+    tree: &'a CensusTree,
     impls: &'a names::ImplFold,
     /// Task index by address, for the rows that wait on a task: a
     /// scan of the listing per row is a scan of megabytes per row.
@@ -149,7 +149,7 @@ struct Rows<'a> {
 impl Rows<'_> {
     /// The rows of several finds in order, built side by side once
     /// there are enough of them for the split to pay for itself.
-    fn rows_of_all(&self, entries: &[Entry<'_>]) -> Vec<FutureRow> {
+    fn rows_of_all(&self, entries: &[Entry]) -> Vec<FutureRow> {
         if entries.len() < PARALLEL_ROWS {
             return entries.iter().flat_map(|e| self.rows_of(*e)).collect();
         }
@@ -172,14 +172,15 @@ impl Rows<'_> {
     /// of a set — each followed by the rows of what the census found
     /// inside it. A join set holds tasks, which have rows of their own
     /// in `tasks`, so it contributes none here.
-    fn rows_of(&self, entry: Entry<'_>) -> Vec<FutureRow> {
+    fn rows_of(&self, entry: Entry) -> Vec<FutureRow> {
         match entry {
-            Entry::Held(i, h) => {
-                let mut out = vec![self.held(i, h)];
+            Entry::Held(i) => {
+                let mut out = vec![self.held(i, &self.census.held[i])];
                 out.extend(self.rows_under(census::Via::Held(i)));
                 out
             }
-            Entry::Set(set, s) => {
+            Entry::Set(set) => {
+                let s = &self.census.sets[set];
                 let live: Vec<(usize, &census::SetChild, &str)> = s
                     .children
                     .iter()
@@ -201,7 +202,9 @@ impl Rows<'_> {
     }
 
     fn held(&self, i: usize, h: &census::HeldFuture) -> FutureRow {
-        let inside = self.tree.counts_under(census::Via::Held(i));
+        let inside = self
+            .tree
+            .counts_under(self.census.into(), census::Via::Held(i));
         FutureRow {
             at: FutureAt::Held(i),
             addr: h.addr,
@@ -243,7 +246,9 @@ impl Rows<'_> {
         c: &census::SetChild,
         future: &str,
     ) -> FutureRow {
-        let inside = self.tree.counts_under(census::Via::SetChild { set, child });
+        let inside = self
+            .tree
+            .counts_under(self.census.into(), census::Via::SetChild { set, child });
         FutureRow {
             at: FutureAt::Child { set, child },
             addr: c.node,
@@ -361,7 +366,7 @@ fn print_future_table(
 struct Blocks<'a> {
     list: &'a bundle::TaskList,
     census: &'a census::FutureCensus,
-    tree: CensusTree<'a>,
+    tree: &'a CensusTree,
     impls: &'a names::ImplFold,
     group_tags: Vec<String>,
     polling: HashMap<u64, u32>,
@@ -425,6 +430,7 @@ impl Blocks<'_> {
         let via = Self::via_of(row);
         let listing = Listing {
             blocking_lwps: self.blocking_lwps,
+            finds: Finds::from(self.census),
             nested: &self.tree.nested,
             list: self.list,
             polling: &self.polling,
@@ -805,7 +811,7 @@ fn blocks<'s, T: proc::Target>(session: &'s Session<'_, T>) -> Blocks<'s> {
     Blocks {
         list: &session.tasks,
         census,
-        tree: census_tree(&census.held, &census.sets, &census.join_sets),
+        tree: session.census_tree(),
         impls: &session.impl_fold,
         group_tags: session.group_tags(),
         polling: tasks::polling_map(session),

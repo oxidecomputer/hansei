@@ -47,7 +47,6 @@ fn commands(
 ) -> Vec<(&'static str, String)> {
     let mut list = vec![
         ("tasks", "tasks".to_owned()),
-        ("tasks-v", "tasks -v".to_owned()),
         // The filter path over a stable field, the grouping path over
         // a value-bearing field, and a grouping whose every row lands
         // in `<empty>` (a parked capture polls nothing, so no task
@@ -62,10 +61,8 @@ fn commands(
         // spellings as bucket values and the armed-nothing rows in
         // `<empty>`.
         ("tasks-group-waker", "tasks --group waker".to_owned()),
-        // A count field pays the census on the table path; the grouped
-        // block form prints each bucket's blocks under its line.
+        // A count field pays the census on the table path.
         ("tasks-with-holds", "tasks --with holds >0".to_owned()),
-        ("tasks-group-state-v", "tasks --group state -v".to_owned()),
         // The exec loop: each task's heading over the scoped command's
         // output, and — with a command that fails per task — the error
         // in place, the summary line, and the loop's own failure.
@@ -169,6 +166,9 @@ fn commands(
         // the commands after it, so these stay in this order.
         if let Some(id) = task.task_id {
             list.push(("task-first", format!("task {id}")));
+            // The same task with the census's finds listed under its
+            // counts: what each fixture's first task holds and drives.
+            list.push(("task-futures", format!("task {id} --futures")));
             list.push(("print-frame", "print".to_owned()));
             // The same frame's variables, flat: what `locals` lists
             // is what the print above nests as members.

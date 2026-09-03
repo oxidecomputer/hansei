@@ -1,0 +1,16 @@
+---
+source: hansei/src/offline.rs
+description: "`task 1 --futures` over linux/local-set-timer"
+---
+task 1
+state: idle
+owner: local set 0 @ 0xADDR (lwp 1609428)
+type: async fn local_set_timer::local_sleeper
+awaiting at: src/bin/local-set-timer.rs:18
+waiting on: timer (deadline TS on the target's monotonic clock)
+waker: timer 0xADDR
+    timer entry 0xADDR in the wheel, registered
+spawned at: src/bin/local-set-timer.rs:58:20
+defined at: src/bin/local-set-timer.rs:15
+held futures: 0
+join sets: 0

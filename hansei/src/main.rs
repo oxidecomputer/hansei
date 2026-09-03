@@ -222,9 +222,9 @@ pub enum Command {
     /// This is the listing to read first. Every other command answers a
     /// question about one thing — this task, that address, those
     /// threads — and each number here is one a named command expands:
-    /// `threads` for a thread, `tasks` for the task blocks behind a
-    /// tally, `tasks --futures` for the futures counted off the await
-    /// chains, `graph` for what waits on what.
+    /// `threads` for a thread, `tasks` for the task rows behind a
+    /// tally, `futures` for the futures counted off the await chains,
+    /// `graph` for what waits on what.
     ///
     /// The thread section splits the target's lwps three ways: the
     /// workers running a scheduler's loop, the threads that have merely
@@ -274,7 +274,7 @@ pub enum Command {
     /// Taking a census walks every task's await chain twice over — once
     /// for what each waits on, once for the futures off those chains —
     /// so on a large target it is the slowest command here. Both walks
-    /// are kept, though, so a `tasks --futures`, `graph` or `whatis`
+    /// are kept, though, so a `futures`, `graph` or `whatis`
     /// after it costs nothing. A census narrowed to sections walks only
     /// what those sections need, which is nothing at all for the
     /// threads.
@@ -354,7 +354,7 @@ pub enum Command {
     /// cursor's lone future as one line; `-v` prints its await chain.
     Future {
         /// The future's address, in hex with a required leading `0x`
-        /// (see `tasks --futures`). Naming none prints the cursor's
+        /// (see `futures`). Naming none prints the cursor's
         /// lone future.
         #[arg(value_parser = parse_hex_addr)]
         addr: Option<u64>,
@@ -372,7 +372,7 @@ pub enum Command {
     /// truncated. `--limit` is the only cut, and cutting earns a
     /// footer counting what was left out.
     ///
-    /// This is the population `tasks --futures` lists under each task,
+    /// This is the population `task --futures` lists under each task,
     /// as one listing: every future sitting in a frame's local off the
     /// await chain — a `select!`/`join!` arm mid-flight, one stored
     /// across an await, a futurelock's abandoned lock — and every
@@ -647,7 +647,7 @@ pub enum Command {
     /// The future counts are the census's, so the first `runtimes
     /// --list` walks every task's await chain — the slowest thing a
     /// session does on a large target. The walk is kept, so a later
-    /// `census`, `tasks --futures`, `graph` or `whatis` costs nothing.
+    /// `census`, `futures`, `graph` or `whatis` costs nothing.
     Runtimes {
         /// List the executors instead of showing their state: one row
         /// per runtime and per `LocalSet`, with what each holds.
@@ -776,8 +776,93 @@ pub enum Command {
     /// claims the address (`whatis` semantics), and refuses when no
     /// task contains it. Selecting a running task also selects the lwp
     /// polling it; selecting an idle one clears any thread cursor.
-    /// Bare `task` prints the cursor's task as one labelled line per
-    /// field; `-v` its full block.
+    /// Either way it prints the task as one labelled line per field:
+    /// state, owner, type, the leaf await site, what it waits on,
+    /// every slot holding its waker (and where each sits — the wheel
+    /// entry, the io slot, the wake-queue node), the spawn site,
+    /// where the future is defined, and the census's counts — how
+    /// many futures it holds in its own frames beside its await
+    /// chain, and how many sets it drives from them. `--futures`
+    /// lists each find under its count.
+    ///
+    /// Those counts are of what no task listing otherwise shows — a
+    /// `select!` arm held in a frame, a FuturesUnordered's children, a
+    /// JoinSet's tasks. They are counted apart because a set is a
+    /// container rather than a future in flight: what it holds is the
+    /// count beside it, and the numbers add up rather than
+    /// overlapping.
+    ///
+    /// The `join sets` row counts what its sets hold in two parts
+    /// where it drives both kinds, because they are two populations:
+    /// a JoinSet holds *tasks*, which `tasks` already lists, and a
+    /// FuturesUnordered holds futures, which nothing else shows at
+    /// all. A kind it drives none of goes unmentioned rather than
+    /// counted at zero.
+    ///
+    /// A task's own await chain is what `trace` prints: the future it
+    /// is suspended in, the one that is awaiting, and so on down to
+    /// the leaf it is parked on. That chain is the only thing the task
+    /// polls when it wakes. `--futures` lists what it has in flight
+    /// *beside* it.
+    ///
+    /// A row under `held futures` is a future sitting in a frame's
+    /// local, off the await chain: a `select!`/`join!` arm mid-flight,
+    /// one stored across an await, or a futurelock's abandoned lock.
+    /// Whether it will ever be polled again is not knowable here — a
+    /// select arm is polled at every wakeup, a futurelock's never.
+    /// `graph` is what decides that. The same find in a set child's
+    /// frames is printed under that child and marked `held`, since no
+    /// heading over it says so.
+    ///
+    /// A FuturesUnordered is listed under `join sets` with the
+    /// children it polls. A child lives in a heap node rather than in
+    /// a frame, so neither a task listing nor a trace reaches it. An
+    /// empty slot is a completed child the set has not reaped yet —
+    /// not a future outstanding, and counted apart from the ones in
+    /// flight.
+    ///
+    /// A JoinSet — and so anything built on one, such as omicron's
+    /// `ParallelTaskSet` — is listed there too, with the tasks it
+    /// holds, by the ids `trace` takes. Those are spawned tasks: each
+    /// is a `tasks` row of its own, runs on whatever worker picks it
+    /// up, and keeps running whether or not the task holding the set
+    /// ever wakes. So the set says *what this task is waiting to
+    /// join*, not what it is polling. A member the listing has no row
+    /// for is one no runtime owns any longer: complete and waiting to
+    /// be joined, or running where this session cannot enumerate it.
+    ///
+    /// The scan recurses through what it finds, so a future held
+    /// inside a set child is listed indented under that child rather
+    /// than beside the ones its task holds itself. Read the
+    /// indentation as containment: a future under a set child is
+    /// *inside* it, so the rows nested under a find are not a
+    /// population beside it. A joined task's own frames are not
+    /// scanned from here at all — they are scanned under its own
+    /// `task`, where they belong.
+    ///
+    /// Every count is of the finds at the top of its listing, for the
+    /// same reason: a future the census reached through a set child
+    /// is already inside something counted, and counting it again
+    /// would make a task driving 3075 children of which each holds
+    /// one future report both numbers as if they were populations to
+    /// add up.
+    ///
+    /// Every address printed — a held future's, a set child's node —
+    /// is what `trace <0xaddr>` accepts to follow that one future's
+    /// own chain, and what `whatis <0xaddr>` says the whereabouts of.
+    ///
+    /// What is listed is found *by value* in a frame's bytes:
+    /// coroutine environments, future trait objects (resolved through
+    /// the vtable join), and the recognized leaf futures. Ordinary
+    /// pointers are never followed, so a future reachable only behind
+    /// an unrecognized Box or Arc is not here, and DWARF cannot say
+    /// whether a hand-written combinator implements Future, so one is
+    /// not listed itself — though the scan descends through it and
+    /// any coroutine inside it is. Treat the listing as a lower bound.
+    ///
+    /// The descent into one local stops at `--search-depth` levels,
+    /// and says so where it stopped; raise it on the command line for
+    /// a target that nests futures deeper than that.
     Task {
         /// A decimal task id (see `tasks`), or a 0x address inside
         /// the task's allocation. Naming none prints the cursor's
@@ -785,9 +870,10 @@ pub enum Command {
         #[arg(value_parser = parse_trace_target, value_name = "ID|0xADDR")]
         target: Option<TraceTarget>,
 
-        /// Print the cursor task's full block rather than its summary.
+        /// List the task's futures and task sets under their counts,
+        /// rather than only counting them.
         #[arg(long, short)]
-        verbose: bool,
+        futures: bool,
     },
 
     /// List every task the target's executors own — one table row per
@@ -799,14 +885,13 @@ pub enum Command {
     /// left out.
     ///
     /// Filters are the selection: repeatable `--with FIELD ARG` /
-    /// `--without FIELD ARG` clauses AND together, `--group FIELD`
-    /// tallies the survivors, and one task's block is `tasks -v
-    /// --with id 129`. The string fields — type, awaiting,
-    /// waiting-on, waker, spawned, defined, state — are
-    /// case-insensitive regexes over the spelled value; rt (an index
-    /// or `0x` handle), lwp and id are exact; holds and sets compare
-    /// the census's counts, spelled '>N', '<N' or '=N' (quote them
-    /// from a shell).
+    /// `--without FIELD ARG` clauses AND together and `--group FIELD`
+    /// tallies the survivors; one task's every field is `task 129`.
+    /// The string fields — type, awaiting, waiting-on, waker,
+    /// spawned, defined, state — are case-insensitive regexes over
+    /// the spelled value; rt (an index or `0x` handle), lwp and id
+    /// are exact; holds and sets compare the census's counts, spelled
+    /// '>N', '<N' or '=N' (quote them from a shell).
     ///
     /// The waker field is the wakeup answer: every slot hansei
     /// decodes holding this task's waker — `timer 0x…`, `io 0x…
@@ -816,110 +901,28 @@ pub enum Command {
     /// identity kept where it groups usefully (`semaphore 0x…`,
     /// `join task N`) — a `select!` over several buckets by the
     /// combination; a task with no armed slot lands in `<empty>`,
-    /// which is the "nothing can wake it" answer. `-v` places each
-    /// slot (the wake-queue node, the trailer) under the block's
-    /// `Waker:` line.
+    /// which is the "nothing can wake it" answer. `task` places each
+    /// slot (the wake-queue node, the trailer) under its `waker:`
+    /// line.
     ///
     /// `--exec COMMAND` takes the rest of the line as one session
     /// command and runs it once per surviving task, the command's
     /// omitted target filled with that task — `tasks --with type
     /// qorb --exec trace -v` traces every match, each run under the
-    /// task's table row. One task's failure never stops the loop:
-    /// the failed run shows its error in place, the listing closes
-    /// with `Executed against N tasks, M failed`, and the command
-    /// itself fails after the loop when M is not zero — a script
-    /// sees one failure, with nothing skipped.
+    /// task's table row, and `tasks --with state running --exec task
+    /// --futures` prints every running task's fields and finds. One
+    /// task's failure never stops the loop: the failed run shows its
+    /// error in place, the listing closes with `Executed against N
+    /// tasks, M failed`, and the command itself fails after the loop
+    /// when M is not zero — a script sees one failure, with nothing
+    /// skipped.
     ///
-    /// `-v` prints each task's full block instead: state, owner,
-    /// spawn location, where the future is defined, how many futures
-    /// it holds in its own frames beside its await chain, and how
-    /// many sets it drives from them.
-    ///
-    /// Those last two are of what no task listing otherwise shows — a
-    /// `select!` arm held in a frame, a FuturesUnordered's children, a
-    /// JoinSet's tasks. `--futures` lists each under its own count. They
-    /// are counted apart because a set is a container rather than a
-    /// future in flight: what it holds is the count beside it, and the
-    /// numbers add up rather than overlapping.
-    ///
-    /// The `Join sets` row counts what its sets hold in two parts where
-    /// it drives both kinds, because they are two populations: a JoinSet
-    /// holds *tasks*, which this listing already carries blocks for, and
-    /// a FuturesUnordered holds futures, which nothing else shows at
-    /// all. A kind it drives none of goes unmentioned rather than
-    /// counted at zero.
-    ///
-    /// A task's own await chain is what `trace` prints: the future it is
-    /// suspended in, the one that is awaiting, and so on down to the leaf
-    /// it is parked on. That chain is the only thing the task polls when
-    /// it wakes. `--futures` lists what a program has in flight *beside*
-    /// it.
-    ///
-    /// A row under `Held futures` is a future sitting in a frame's
-    /// local, off the await chain: a `select!`/`join!` arm mid-flight,
-    /// one stored across an await, or a futurelock's abandoned lock.
-    /// Whether it will ever be polled again is not knowable here — a
-    /// select arm is polled at every wakeup, a futurelock's never.
-    /// `graph` is what decides that. The same find in a set child's
-    /// frames is printed under that child and marked `held`, since no
-    /// heading over it says so.
-    ///
-    /// A FuturesUnordered is listed under `Join sets` with the children
-    /// it polls. A child lives in a heap node rather than in a frame, so
-    /// neither a task listing nor a trace reaches it. An empty slot is a
-    /// completed child the set has not reaped yet — not a future
-    /// outstanding, and counted apart from the ones in flight.
-    ///
-    /// A JoinSet — and so anything built on one, such as omicron's
-    /// `ParallelTaskSet` — is listed there too, with the tasks it holds,
-    /// by the ids `trace` takes. Those are spawned tasks: each has a
-    /// block of its own here, runs on whatever worker picks it up, and
-    /// keeps running whether or not the task holding the set ever wakes. So the set says *what this task is waiting to join*, not
-    /// what it is polling. A member the listing has no block for is one
-    /// no runtime owns any longer: complete and waiting to be joined, or
-    /// running where this session cannot enumerate it.
-    ///
-    /// The scan recurses through what it finds, so a future held inside a
-    /// set child is listed indented under that child rather than beside
-    /// the ones its task holds itself. Read the indentation as
-    /// containment: a future under a set child is *inside* it, so the
-    /// rows nested under a find are not a population beside it. A joined
-    /// task's own frames are not scanned from here at all — they are
-    /// scanned under its own block, where they belong.
-    ///
-    /// Every count is of the finds at the top of its listing, for the
-    /// same reason: a future the census reached through a set child is
-    /// already inside something counted, and counting it again would
-    /// make a task driving 3075 children of which each holds one future
-    /// report both numbers as if they were populations to add up.
-    ///
-    /// Every address printed — a held future's, a set child's node — is
-    /// what `trace <0xaddr>` accepts to follow that one future's own
-    /// chain, and what `whatis <0xaddr>` says the whereabouts of.
-    ///
-    /// What is listed is found *by value* in a frame's bytes: coroutine
-    /// environments, future trait objects (resolved through the vtable
-    /// join), and the recognized leaf futures. Ordinary pointers are
-    /// never followed, so a future reachable only behind an unrecognized
-    /// Box or Arc is not here, and DWARF cannot say whether a
-    /// hand-written combinator implements Future, so one is not listed
-    /// itself — though the scan descends through it and any coroutine
-    /// inside it is. Treat the listing as a lower bound.
-    ///
-    /// The descent into one local stops at `--search-depth` levels,
-    /// and says so where it stopped; raise it on the command line for
-    /// a target that nests futures deeper than that.
+    /// What each task has in flight beside its own await chain — the
+    /// futures held in its frames, the sets it drives — is the
+    /// census's to count and `task` (or `futures`) to show; the table
+    /// reads the wait analysis and nothing else, so it never pays for
+    /// that walk unless a holds/sets clause asks.
     Tasks {
-        /// Print each task's full block — state, owner, source
-        /// locations and census counts — rather than one table row.
-        #[arg(long, short)]
-        verbose: bool,
-
-        /// List each task's futures and task sets under their counts,
-        /// rather than only counting them. Implies -v.
-        #[arg(long, short)]
-        futures: bool,
-
         /// Show at most this many tasks — or, under --group, this
         /// many buckets; a footer counts what the cut left out.
         /// Everything is listed when the flag is absent and no
@@ -944,8 +947,7 @@ pub enum Command {
         /// Bucket the surviving tasks by FIELD's spelled value: one
         /// `COUNT VALUE` row per bucket, most numerous first, each
         /// with a few member ids; a task with nothing in the field
-        /// lands in `<empty>`. With -v, every member's block prints
-        /// under its bucket.
+        /// lands in `<empty>`.
         #[arg(long, short = 'g', value_name = "FIELD")]
         group: Option<String>,
 
@@ -1081,7 +1083,7 @@ pub enum Command {
 
     /// Print an await chain: a task's, selected by its decimal id
     /// (see `tasks`), or a lone future's, selected by the hex address
-    /// `tasks --futures` prints — a held future's address or a
+    /// `futures` prints — a held future's address or a
     /// set child's node address; any pointer into either resolves.
     /// Either way the future type is resolved automatically, via the
     /// symbol join for a task and via the census for an address.
@@ -1100,7 +1102,7 @@ pub enum Command {
     /// prints that lwp's native backtrace instead.
     Trace {
         /// What to trace: a decimal task id from `tasks`, or a future
-        /// address from `tasks --futures`, in hex with a required
+        /// address from `futures`, in hex with a required
         /// leading `0x`. May be omitted where something fills it in —
         /// the cursor (`task`, `future`, `thread` select one), or
         /// `tasks --exec trace`, which runs it under each surviving
@@ -1186,7 +1188,7 @@ pub enum Command {
     ///
     /// Any pointer into a thing resolves to it, not just its first
     /// byte: a task's Header, its future's state machine and its
-    /// Trailer all name the task, and every address `tasks --futures`
+    /// Trailer all name the task, and every address `futures`
     /// prints — a held future's, a set's, a set child's node — names
     /// what it was printed for.
     Whatis {
@@ -1302,7 +1304,7 @@ fn parse_hex_addr(s: &str) -> std::result::Result<u64, String> {
 }
 
 /// What `trace` was pointed at: a task, by decimal id, or a future, by
-/// the hex address `tasks --futures` prints.
+/// the hex address `futures` prints.
 #[derive(Clone, Copy, Debug)]
 pub enum TraceTarget {
     Task(u64),
@@ -1320,7 +1322,7 @@ fn parse_trace_target(s: &str) -> std::result::Result<TraceTarget, String> {
         s.parse().map(TraceTarget::Task).map_err(|_| {
             format!(
                 "a trace target is a decimal task id (see `tasks`) or a future \
-                 address in hex with a leading 0x (see `tasks --futures`), \
+                 address in hex with a leading 0x (see `futures`), \
                  got {s:?}"
             )
         })
@@ -1413,6 +1415,10 @@ pub struct Session<'b, T: Target> {
     /// place for a session nothing warmed, or whose worker died.
     extents: OnceCell<bundle::TaskExtents>,
     census: OnceCell<census::FutureCensus>,
+    /// The census as the tree the listings show — built once beside
+    /// it, so `tasks --exec task` reads it per task rather than
+    /// rebuilding it.
+    census_tree: OnceCell<tasks::CensusTree>,
     /// What the target's allocator says is live, where its allocator is
     /// libumem and says anything at all. `None` inside the cell is a
     /// target without umem, which is most of them.
@@ -1552,6 +1558,7 @@ impl<'b, T: Target> Session<'b, T> {
             impl_fold: hansei_bundle::names::ImplFold::for_bundle(bundle),
             extents: OnceCell::new(),
             census: OnceCell::new(),
+            census_tree: OnceCell::new(),
             umem: OnceCell::new(),
             gates: GateCounts::default(),
             audited: Cell::new(false),
@@ -1593,6 +1600,12 @@ impl<'b, T: Target> Session<'b, T> {
     fn extents(&self) -> &bundle::TaskExtents {
         self.extents
             .get_or_init(|| self.ctx.task_extents(&self.tasks))
+    }
+
+    /// The census as a tree, built once per session on first use.
+    fn census_tree(&self) -> &tasks::CensusTree {
+        self.census_tree
+            .get_or_init(|| tasks::census_tree(self.census().into()))
     }
 
     fn census(&self) -> &census::FutureCensus {
@@ -1811,10 +1824,8 @@ pub fn dispatch<T: Target>(
         #[cfg(feature = "snapshot")]
         Command::Snapshot { output } => snapshot_cmd::exec_snapshot(session, &output, out)?,
         Command::Sync { addr, kind } => sync::exec_sync(session, addr, kind, out)?,
-        Command::Task { target, verbose } => cursor::exec_task(session, target, verbose, out)?,
+        Command::Task { target, futures } => cursor::exec_task(session, target, futures, out)?,
         Command::Tasks {
-            verbose,
-            futures,
             limit,
             with,
             without,
@@ -1824,8 +1835,6 @@ pub fn dispatch<T: Target>(
         } => {
             session.note_version_ceiling();
             let cmd = tasks::TasksCmd {
-                verbose,
-                futures,
                 limit: limit.or(session.settings.borrow().limit),
                 with,
                 without,

@@ -9,7 +9,7 @@ use hansei_bundle::names;
 use hansei_runtime::tokio::graph as rt_graph;
 use hansei_runtime::tokio::{Lifecycle, bundle, census};
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, HashMap};
 use std::io::{self, Write};
 
 /// How a task is referred to in passing: by id, or by Header address
@@ -31,74 +31,104 @@ pub(crate) fn task_label(list: &bundle::TaskList, index: usize) -> String {
     }
 }
 
+/// The census's find lists, as the tree and the listings read them —
+/// taken apart from the census itself so a test can lay out a shape no
+/// fixture happens to hold. An [`Entry`] is an index into one of them,
+/// and every question about one is asked here.
+#[derive(Clone, Copy)]
+pub(crate) struct Finds<'a> {
+    pub(crate) held: &'a [census::HeldFuture],
+    pub(crate) sets: &'a [census::FutureSet],
+    pub(crate) join_sets: &'a [census::JoinSet],
+}
+
+impl<'a> From<&'a census::FutureCensus> for Finds<'a> {
+    fn from(census: &'a census::FutureCensus) -> Self {
+        Finds {
+            held: &census.held,
+            sets: &census.sets,
+            join_sets: &census.join_sets,
+        }
+    }
+}
+
+impl Finds<'_> {
+    /// Every find as an [`Entry`]. Held first, then sets, then join
+    /// sets, so each level lists what a frame holds ahead of what it
+    /// drives.
+    fn entries(self) -> impl Iterator<Item = Entry> {
+        let held = (0..self.held.len()).map(Entry::Held);
+        let sets = (0..self.sets.len()).map(Entry::Set);
+        let join_sets = (0..self.join_sets.len()).map(Entry::JoinSet);
+        held.chain(sets).chain(join_sets)
+    }
+
+    /// The task whose frames a find was reached from.
+    fn owner(self, entry: Entry) -> usize {
+        match entry {
+            Entry::Held(i) => self.held[i].owner,
+            Entry::Set(i) => self.sets[i].owner,
+            Entry::JoinSet(i) => self.join_sets[i].owner,
+        }
+    }
+
+    /// The find it was reached through — `None` for one found in the
+    /// task's own frames.
+    fn via(self, entry: Entry) -> Option<census::Via> {
+        match entry {
+            Entry::Held(i) => self.held[i].via,
+            Entry::Set(i) => self.sets[i].via,
+            Entry::JoinSet(i) => self.join_sets[i].via,
+        }
+    }
+}
+
 /// The census as a tree, which is what a listing shows: two flat lists
 /// naming their parent leave the reader matching addresses across them.
-pub(crate) struct CensusTree<'a> {
+/// It holds indices into the finds rather than the finds, so a session
+/// builds it once beside the census and every `task` block reads it —
+/// `tasks --exec task` over twenty thousand tasks rebuilds nothing.
+pub(crate) struct CensusTree {
     /// Each task's finds that named no parent, keyed by its index in
     /// the task list.
-    pub(crate) roots: BTreeMap<usize, Vec<Entry<'a>>>,
+    pub(crate) roots: BTreeMap<usize, Vec<Entry>>,
     /// Everything else, keyed by the find it was reached through: a set
     /// can sit in a held future's frames, a future be held in a set
     /// child's.
-    pub(crate) nested: HashMap<census::Via, Vec<Entry<'a>>>,
+    pub(crate) nested: HashMap<census::Via, Vec<Entry>>,
     /// What each task owns, tallied.
     counts: BTreeMap<usize, Counts>,
 }
 
-/// Rebuild that tree from what the census found, which is all it reads:
-/// the census is a walk of a target, but rendering it is not. It takes
-/// the find lists rather than the census itself so a test can lay out a
-/// shape no fixture happens to hold.
-pub(crate) fn census_tree<'a>(
-    census_held: &'a [census::HeldFuture],
-    census_sets: &'a [census::FutureSet],
-    census_join_sets: &'a [census::JoinSet],
-) -> CensusTree<'a> {
-    let mut roots: BTreeMap<usize, Vec<Entry<'a>>> = BTreeMap::new();
-    let mut nested: HashMap<census::Via, Vec<Entry<'a>>> = HashMap::new();
-    for entry in census_entries(census_held, census_sets, census_join_sets) {
-        match entry.via() {
+/// Build that tree from what the census found, which is all it reads:
+/// the census is a walk of a target, but rendering it is not.
+pub(crate) fn census_tree(finds: Finds<'_>) -> CensusTree {
+    let mut roots: BTreeMap<usize, Vec<Entry>> = BTreeMap::new();
+    let mut nested: HashMap<census::Via, Vec<Entry>> = HashMap::new();
+    for entry in finds.entries() {
+        match finds.via(entry) {
             Some(via) => nested.entry(via).or_default().push(entry),
-            None => roots.entry(entry.owner()).or_default().push(entry),
+            None => roots.entry(finds.owner(entry)).or_default().push(entry),
         }
     }
     CensusTree {
         roots,
         nested,
-        counts: census_counts(census_held, census_sets, census_join_sets),
+        counts: census_counts(finds),
     }
 }
 
-impl CensusTree<'_> {
+impl CensusTree {
     /// What the census found inside one find, tallied the way a task's
     /// own finds are: only what was reached directly through it, since
     /// anything deeper is inside one of those.
-    pub(crate) fn counts_under(&self, via: census::Via) -> Counts {
+    pub(crate) fn counts_under(&self, finds: Finds<'_>, via: census::Via) -> Counts {
         let mut counts = Counts::default();
         for entry in self.nested.get(&via).into_iter().flatten() {
-            counts.add(*entry);
+            counts.add(finds, *entry);
         }
         counts
     }
-}
-
-/// Every census find as an [`Entry`]. Held first, then sets, then join
-/// sets, so each level lists what a frame holds ahead of what it drives.
-fn census_entries<'a>(
-    census_held: &'a [census::HeldFuture],
-    census_sets: &'a [census::FutureSet],
-    census_join_sets: &'a [census::JoinSet],
-) -> impl Iterator<Item = Entry<'a>> {
-    let held = census_held
-        .iter()
-        .enumerate()
-        .map(|(i, h)| Entry::Held(i, h));
-    let sets = census_sets
-        .iter()
-        .enumerate()
-        .map(|(i, s)| Entry::Set(i, s));
-    let join_sets = census_join_sets.iter().map(Entry::JoinSet);
-    held.chain(sets).chain(join_sets)
 }
 
 /// What the census found for each task, keyed by its index in the task
@@ -111,54 +141,35 @@ fn census_entries<'a>(
 /// children, each holding the future it was spawned with, say it held
 /// 3075 futures *and* drove sets of 3075: two rows for one population,
 /// which is what the caller asked apart in the first place.
-fn census_counts(
-    census_held: &[census::HeldFuture],
-    census_sets: &[census::FutureSet],
-    census_join_sets: &[census::JoinSet],
-) -> BTreeMap<usize, Counts> {
+fn census_counts(finds: Finds<'_>) -> BTreeMap<usize, Counts> {
     let mut counts: BTreeMap<usize, Counts> = BTreeMap::new();
-    for entry in
-        census_entries(census_held, census_sets, census_join_sets).filter(|e| e.via().is_none())
-    {
-        counts.entry(entry.owner()).or_default().add(entry);
+    for entry in finds.entries().filter(|&e| finds.via(e).is_none()) {
+        counts
+            .entry(finds.owner(entry))
+            .or_default()
+            .add(finds, entry);
     }
     counts
 }
 
-/// One find in the nested listing, with the census index that anything
-/// found inside it names as its parent. A join set carries no index:
-/// its members are tasks, scanned as the tasks they are, so nothing is
-/// ever reached *through* one.
-#[derive(Clone, Copy)]
-pub(crate) enum Entry<'a> {
-    Held(usize, &'a census::HeldFuture),
-    Set(usize, &'a census::FutureSet),
-    JoinSet(&'a census::JoinSet),
+/// One find in the nested listing, by its index in the census's list
+/// of its kind — the index anything found inside a held future or a
+/// set names as its parent. Nothing is ever reached *through* a join
+/// set: its members are tasks, scanned as the tasks they are.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Entry {
+    Held(usize),
+    Set(usize),
+    JoinSet(usize),
 }
 
-impl Entry<'_> {
-    fn owner(&self) -> usize {
-        match self {
-            Entry::Held(_, h) => h.owner,
-            Entry::Set(_, s) => s.owner,
-            Entry::JoinSet(j) => j.owner,
-        }
-    }
-
-    fn via(&self) -> Option<census::Via> {
-        match self {
-            Entry::Held(_, h) => h.via,
-            Entry::Set(_, s) => s.via,
-            Entry::JoinSet(j) => j.via,
-        }
-    }
-
+impl Entry {
     /// Which of a block's two listings this find belongs under: the
     /// futures the task holds itself, or the sets it drives, of either
     /// kind. Only a root is sorted this way — a find inside another is
     /// printed under what holds it, wherever that is.
-    pub(crate) fn is_set(&self) -> bool {
-        matches!(self, Entry::Set(_, _) | Entry::JoinSet(_))
+    pub(crate) fn is_set(self) -> bool {
+        matches!(self, Entry::Set(_) | Entry::JoinSet(_))
     }
 }
 
@@ -265,16 +276,17 @@ pub(crate) struct Counts {
 }
 
 impl Counts {
-    fn add(&mut self, entry: Entry<'_>) {
+    fn add(&mut self, finds: Finds<'_>, entry: Entry) {
         match entry {
-            Entry::Held(_, _) => self.held += 1,
-            Entry::Set(_, s) => {
+            Entry::Held(_) => self.held += 1,
+            Entry::Set(i) => {
+                let s = &finds.sets[i];
                 self.sets += 1;
                 self.children_live += s.children.iter().filter(|c| c.future.is_some()).count();
             }
-            Entry::JoinSet(j) => {
+            Entry::JoinSet(i) => {
                 self.join_sets += 1;
-                self.joined += j.children.len();
+                self.joined += finds.join_sets[i].children.len();
             }
         }
     }
@@ -313,7 +325,8 @@ impl Counts {
 /// blocks say rather than something of their own.
 pub(crate) struct Listing<'a> {
     pub(crate) blocking_lwps: &'a HashMap<u64, u32>,
-    pub(crate) nested: &'a HashMap<census::Via, Vec<Entry<'a>>>,
+    pub(crate) finds: Finds<'a>,
+    pub(crate) nested: &'a HashMap<census::Via, Vec<Entry>>,
     pub(crate) list: &'a bundle::TaskList,
     pub(crate) polling: &'a HashMap<u64, u32>,
     pub(crate) impls: &'a names::ImplFold,
@@ -333,9 +346,9 @@ pub(crate) struct Listing<'a> {
 /// found in a set child's frames sits under a listing of children, so
 /// there it says what it is. Descending into a child turns the mark on;
 /// nothing turns it off.
-pub(crate) fn print_future_entry<'a>(
-    entry: Entry<'a>,
-    listing: &Listing<'a>,
+pub(crate) fn print_future_entry(
+    entry: Entry,
+    listing: &Listing<'_>,
     indent: usize,
     mark_held: bool,
     out: &mut dyn io::Write,
@@ -343,7 +356,8 @@ pub(crate) fn print_future_entry<'a>(
     let pad = " ".repeat(indent);
     let nested = listing.nested;
     match entry {
-        Entry::Held(index, h) => {
+        Entry::Held(index) => {
+            let h = &listing.finds.held[index];
             let state = h
                 .state
                 .as_ref()
@@ -365,7 +379,8 @@ pub(crate) fn print_future_entry<'a>(
                 print_future_entry(*inner, listing, indent + 4, mark_held, out)?;
             }
         }
-        Entry::Set(index, set) => {
+        Entry::Set(index) => {
+            let set = &listing.finds.sets[index];
             let live = set.children.iter().filter(|c| c.future.is_some()).count();
             let plural = if live == 1 { "" } else { "ren" };
             let reaped = match set.children.len() - live {
@@ -412,7 +427,8 @@ pub(crate) fn print_future_entry<'a>(
                 }
             }
         }
-        Entry::JoinSet(set) => {
+        Entry::JoinSet(index) => {
+            let set = &listing.finds.join_sets[index];
             let held = set.children.len();
             let plural = if held == 1 { "" } else { "s" };
             // The set keeps its own count; a walk that reached fewer
@@ -906,19 +922,39 @@ fn row_cells(row: &TaskRow, groups: bool) -> Vec<String> {
     cells
 }
 
-/// One task as labelled lines — what the cursor's `task` selector
-/// prints. A row's cells stacked rather than joined: the future type
-/// alone outruns a terminal, and stacked, the id and state stay
-/// readable at its left. A line prints only where the target has
-/// something for it — no `—` placeholders — so a missing source
-/// anchor is a shorter block, the way the table's `-v` block is not.
-pub(crate) fn print_task_summary<T: proc::Target>(
-    session: &Session<'_, T>,
+/// What printing one task reads, taken apart from the session so the
+/// offline tests can drive it over a census no fixture holds —
+/// [`print_task`] gathers it from a session.
+pub(crate) struct TaskView<'a> {
+    pub(crate) list: &'a bundle::TaskList,
+    pub(crate) rows: &'a [TaskRow],
+    pub(crate) impls: &'a names::ImplFold,
+    /// Each task's group — its runtime, or the local set that owns it
+    /// — on the targets holding more than one, and empty for the rest.
+    pub(crate) group_tags: &'a [String],
+    pub(crate) polling: &'a HashMap<u64, u32>,
+    pub(crate) blocking_lwps: &'a HashMap<u64, u32>,
+    pub(crate) finds: Finds<'a>,
+    pub(crate) tree: &'a CensusTree,
+}
+
+/// One task as labelled lines — what `task` prints. A row's cells
+/// stacked rather than joined: the future type alone outruns a
+/// terminal, and stacked, the id and state stay readable at its left.
+/// A line prints only where the target has something for it — no `—`
+/// placeholders — so a missing source anchor is a shorter block. The
+/// waker and the census counts print always, because their empty
+/// spellings are answers: `<empty>` is "nothing can wake it", `0` is
+/// "holds nothing". Under `futures`, the census's finds are listed
+/// under the count each belongs to.
+pub(crate) fn print_task_view(
+    view: &TaskView<'_>,
     index: usize,
+    futures: bool,
     out: &mut dyn io::Write,
 ) -> Result<()> {
-    let task = &session.tasks.tasks[index];
-    let row = &rows(session)[index];
+    let task = &view.list.tasks[index];
+    let row = &view.rows[index];
     writeln!(out, "task {}", row.id)?;
     // A mid-poll task waits on nothing, so the lwp polling it goes on
     // the state rather than on a wait line, where the table's wait cell
@@ -932,7 +968,7 @@ pub(crate) fn print_task_summary<T: proc::Target>(
         });
     }
     writeln!(out, "state: {state}")?;
-    if let Some(tag) = session.group_tags().get(task.group) {
+    if let Some(tag) = view.group_tags.get(task.group) {
         writeln!(out, "owner: {tag}")?;
     }
     writeln!(out, "type: {}", row.future)?;
@@ -942,6 +978,13 @@ pub(crate) fn print_task_summary<T: proc::Target>(
     if !polled && row.waiting_on != "—" {
         writeln!(out, "waiting on: {}", row.waiting_on)?;
     }
+    // Every slot holding the task's waker, then where each sits: the
+    // registries' detail (which wheel entry, which io slot) and the
+    // slots those do not place (the wake-queue node, the trailer).
+    writeln!(out, "waker: {}", row.waker.as_deref().unwrap_or("<empty>"))?;
+    for line in row.wait_detail.iter().chain(&row.waker_detail) {
+        writeln!(out, "    {line}")?;
+    }
     if let Some(loc) = &task.spawn_location {
         writeln!(out, "spawned at: {loc}")?;
     }
@@ -950,35 +993,69 @@ pub(crate) fn print_task_summary<T: proc::Target>(
     {
         writeln!(out, "defined at: {file}:{line}")?;
     }
+    // What the task has off its spine, in two rows rather than one:
+    // the futures held in its own frames, and the sets it drives from
+    // them. A set is a container, so counting it among the futures
+    // made a row saying `Futures: 2` list three finds; keeping the two
+    // apart lets each number say what the listing under it shows. The
+    // sets are one row whichever kind they are — a listing of what
+    // this task drives is one thing to read — with the tasks and the
+    // futures they hold counted apart, since those are not the same
+    // population. Last, since what `--futures` lists under them is as
+    // long as the census found it to be.
+    let listing = Listing {
+        blocking_lwps: view.blocking_lwps,
+        finds: view.finds,
+        nested: &view.tree.nested,
+        list: view.list,
+        polling: view.polling,
+        impls: view.impls,
+    };
+    let count = view.tree.counts.get(&index).copied().unwrap_or_default();
+    let roots = || view.tree.roots.get(&index).into_iter().flatten();
+    for (label, value, sets) in [
+        ("held futures", count.held.to_string(), false),
+        ("join sets", count.sets_summary(), true),
+    ] {
+        writeln!(out, "{label}: {value}")?;
+        if futures {
+            for entry in roots().filter(|e| e.is_set() == sets) {
+                print_future_entry(*entry, &listing, 4, false, out)?;
+            }
+        }
+    }
     Ok(())
 }
 
-/// One task's full block — what `tasks -v` prints for it — for the
-/// cursor's `task -v`.
-pub(crate) fn print_task_block<T: proc::Target>(
+/// [`print_task_view`] over the session: what `task` prints for the
+/// task at `index`. The listing under `--futures` is a lower bound the
+/// same way `futures` is, so that flag also says where the walk
+/// stopped short — a walk that hit a limit looks like completeness
+/// otherwise — while the counts alone stay quiet, as the table does.
+pub(crate) fn print_task<T: proc::Target>(
     session: &Session<'_, T>,
     index: usize,
+    futures: bool,
     out: &mut dyn io::Write,
 ) -> Result<()> {
-    let polling = polling_map(session);
     let census = session.census();
-    let selected: BTreeSet<usize> = [index].into();
-    print_tasks(
-        &session.tasks,
-        rows(session),
-        &session.impl_fold,
-        &session.group_tags(),
-        &polling,
-        blocking_lwps(session),
-        &census.held,
-        &census.sets,
-        &census.join_sets,
-        false,
-        None,
-        Some(&selected),
-        false,
-        out,
-    )
+    if futures {
+        print_warnings(&census.errors)?;
+        warn_census_capped(census.capped, "listed")?;
+        warn_census_refused(census.refused, "listed")?;
+    }
+    let polling = polling_map(session);
+    let view = TaskView {
+        list: &session.tasks,
+        rows: rows(session),
+        impls: &session.impl_fold,
+        group_tags: &session.group_tags(),
+        polling: &polling,
+        blocking_lwps: blocking_lwps(session),
+        finds: census.into(),
+        tree: session.census_tree(),
+    };
+    print_task_view(&view, index, futures, out)
 }
 
 /// Print the table: one row per task, in the listing's own id order,
@@ -1056,8 +1133,6 @@ pub(crate) fn field_values<T: proc::Target>(
 /// in as the raw flag values and is parsed here, so the errors name
 /// the flag they came from.
 pub(crate) struct TasksCmd {
-    pub(crate) verbose: bool,
-    pub(crate) futures: bool,
     pub(crate) limit: Option<usize>,
     pub(crate) with: Vec<String>,
     pub(crate) without: Vec<String>,
@@ -1423,7 +1498,7 @@ fn member_sample(rows: &[TaskRow], members: &[usize]) -> String {
 fn refuse_positional_ids(task: &[String]) -> Result<()> {
     match task.first() {
         Some(first) => Err(anyhow::anyhow!(
-            "tasks takes no task ids; `task {first}` selects that one task (-v for its block)"
+            "tasks takes no task ids; `task {first}` selects that one task"
         )),
         None => Ok(()),
     }
@@ -1452,7 +1527,7 @@ pub(crate) fn exec_tasks<T: proc::Target>(
         || group.is_some_and(Field::needs_census))
     .then(|| {
         let census = session.census();
-        census_counts(&census.held, &census.sets, &census.join_sets)
+        census_counts(census.into())
     });
 
     // The filters' survivors, as indices into the task list — `None`
@@ -1486,68 +1561,27 @@ pub(crate) fn exec_tasks<T: proc::Target>(
         );
     }
 
-    // The bare command is the table; -v or --futures ask for the block
-    // form. The table reads the wait analysis and nothing else, so it
-    // does not pay for the future census the blocks count.
-    if !cmd.verbose && !cmd.futures {
-        print_warnings(&session.analysis().errors)?;
-        let groups = !session.group_tags().is_empty();
-        let fit = session.fit_width(theme);
-        match &survivors {
-            None => print_task_table(rows(session), groups, cmd.limit, fit, out)?,
-            Some(indices) => {
-                let rows = rows(session);
-                let filtered: Vec<TaskRow> = indices.iter().map(|&i| rows[i].clone()).collect();
-                print_task_table(&filtered, groups, cmd.limit, fit, out)?;
-            }
+    // The table reads the wait analysis and nothing else, so it does
+    // not pay for the future census `task` counts.
+    print_warnings(&session.analysis().errors)?;
+    let groups = !session.group_tags().is_empty();
+    let fit = session.fit_width(theme);
+    match &survivors {
+        None => print_task_table(rows(session), groups, cmd.limit, fit, out)?,
+        Some(indices) => {
+            let rows = rows(session);
+            let filtered: Vec<TaskRow> = indices.iter().map(|&i| rows[i].clone()).collect();
+            print_task_table(&filtered, groups, cmd.limit, fit, out)?;
         }
-        print_warnings(&list.errors)?;
-        return Ok(());
     }
-
-    let polling = polling_map(session);
-
-    // What each task has in flight beside its own await chain: the
-    // count every block carries, and — under `--futures` — the finds
-    // listed beneath it.
-    let census = session.census();
-    if cmd.futures {
-        print_warnings(&census.errors)?;
-        // A walk that failed says so above; one that hit a limit says so
-        // here, because it looks like completeness otherwise. The listing
-        // is a lower bound either way (`help tasks`), but this is the part
-        // of it that varies by target rather than being inherent.
-        warn_census_capped(census.capped, "listed")?;
-        warn_census_refused(census.refused, "listed")?;
-    }
-
-    let selected: Option<BTreeSet<usize>> = survivors.map(|s| s.into_iter().collect());
-    print_tasks(
-        list,
-        rows(session),
-        &session.impl_fold,
-        &session.group_tags(),
-        &polling,
-        blocking_lwps(session),
-        &census.held,
-        &census.sets,
-        &census.join_sets,
-        cmd.futures,
-        cmd.limit,
-        selected.as_ref(),
-        true,
-        out,
-    )?;
-
     print_warnings(&list.errors)?;
-
     Ok(())
 }
 
 /// `--group FIELD`: bucket the surviving rows by the field's spelled
 /// value and print `COUNT VALUE` rows, most numerous first (ties in
-/// value order), each with up to three member ids — or, under `-v`,
-/// every member's block under its bucket. `--limit` cuts buckets.
+/// value order), each with up to three member ids. `--limit` cuts
+/// buckets.
 fn exec_group<T: proc::Target>(
     session: &Session<'_, T>,
     cmd: &TasksCmd,
@@ -1572,51 +1606,21 @@ fn exec_group<T: proc::Target>(
     buckets.sort_by_key(|(_, members)| std::cmp::Reverse(members.len()));
     let shown = cmd.limit.unwrap_or(buckets.len()).min(buckets.len());
 
-    if cmd.verbose || cmd.futures {
-        let polling = polling_map(session);
-        let census = session.census();
-        if cmd.futures {
-            print_warnings(&census.errors)?;
-            warn_census_capped(census.capped, "listed")?;
-            warn_census_refused(census.refused, "listed")?;
-        }
-        for (value, members) in &buckets[..shown] {
-            writeln!(out, "{}  {value}", members.len())?;
-            let selected: BTreeSet<usize> = members.iter().copied().collect();
-            print_tasks(
-                &session.tasks,
-                rows,
-                &session.impl_fold,
-                &session.group_tags(),
-                &polling,
-                blocking_lwps(session),
-                &census.held,
-                &census.sets,
-                &census.join_sets,
-                cmd.futures,
-                None,
-                Some(&selected),
-                false,
-                out,
-            )?;
-        }
-    } else {
-        let heading = field.name().replace('-', " ").to_uppercase();
-        let mut table = crate::output::Table::new(3)
-            .align_right(0)
-            .header(["COUNT".to_string(), heading, "TASKS".to_string()])
-            .truncatable(1)
-            .fit(fit);
-        for (value, members) in &buckets[..shown] {
-            table.row([
-                members.len().to_string(),
-                value.clone(),
-                member_sample(rows, members),
-            ]);
-        }
-        if !table.is_empty() {
-            table.write(out)?;
-        }
+    let heading = field.name().replace('-', " ").to_uppercase();
+    let mut table = crate::output::Table::new(3)
+        .align_right(0)
+        .header(["COUNT".to_string(), heading, "TASKS".to_string()])
+        .truncatable(1)
+        .fit(fit);
+    for (value, members) in &buckets[..shown] {
+        table.row([
+            members.len().to_string(),
+            value.clone(),
+            member_sample(rows, members),
+        ]);
+    }
+    if !table.is_empty() {
+        table.write(out)?;
     }
     writeln!(out, "{}", listing_footer(buckets.len(), shown, "group"))?;
     print_warnings(&session.tasks.errors)?;
@@ -1676,134 +1680,6 @@ fn exec_heading(n: usize, row: &TaskRow, groups: bool) -> String {
     format!("{sep}{}\n", row_cells(row, groups).join("  "))
 }
 
-/// Print the task listing: a block per task, and — under `futures` —
-/// the census's finds for it, listed beneath the count each belongs
-/// under.
-/// `selected` narrows the listing to those indices of the task list —
-/// the filters' survivors, or a group's bucket — and `None` is the
-/// whole list. `footer` says whether to close with the count line;
-/// a bucket's blocks print under a line that already counted them.
-/// `group_tags` labels each task's group — its runtime, or the local
-/// set that owns it — on the targets holding more than one, and is
-/// empty — no row — for the rest.
-///
-/// It takes what it prints rather than a session so the offline tests
-/// can drive it, the census as its flat lists so a test can lay out a
-/// shape no fixture happens to hold.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn print_tasks(
-    list: &bundle::TaskList,
-    rows: &[TaskRow],
-    impls: &names::ImplFold,
-    group_tags: &[String],
-    polling: &HashMap<u64, u32>,
-    blocking_lwps: &HashMap<u64, u32>,
-    census_held: &[census::HeldFuture],
-    census_sets: &[census::FutureSet],
-    census_join_sets: &[census::JoinSet],
-    futures: bool,
-    limit: Option<usize>,
-    selected: Option<&BTreeSet<usize>>,
-    footer: bool,
-    out: &mut dyn io::Write,
-) -> Result<()> {
-    let total = selected.map_or(list.tasks.len(), BTreeSet::len);
-    let selected = |index: usize| selected.is_none_or(|only| only.contains(&index));
-    let census = census_tree(census_held, census_sets, census_join_sets);
-    let listing = Listing {
-        blocking_lwps,
-        nested: &census.nested,
-        list,
-        polling,
-        impls,
-    };
-
-    // A block per task rather than a row: a future type is long enough
-    // that column-aligning it pushes the two source locations off the
-    // right of any terminal.
-    let mut shown = 0;
-    for (index, task) in list.tasks.iter().enumerate() {
-        if !selected(index) {
-            continue;
-        }
-        if limit.is_some_and(|limit| shown >= limit) {
-            break;
-        }
-        shown += 1;
-        let id = task_id(list, index);
-        writeln!(out, "Task {id}: {}", future_name(&task.future, impls))?;
-        writeln!(
-            out,
-            "    State: {}",
-            task_state(task, polling, blocking_lwps)
-        )?;
-        if let Some(tag) = group_tags.get(task.group) {
-            writeln!(out, "    Owner: {tag}")?;
-        }
-        // Every block carries every row, so the two source locations sit
-        // at the same place in each and a missing one reads as a gap in
-        // what the target recorded rather than as a shorter block.
-        let spawned = match &task.spawn_location {
-            Some(loc) => loc.to_string(),
-            None => "-".to_string(),
-        };
-        writeln!(out, "    Spawned at: {spawned}")?;
-        let defined = match &task.future {
-            bundle::FutureInfo::Known(known) => match &known.decl {
-                Some((file, line)) => format!("{file}:{line}"),
-                None => "-".to_string(),
-            },
-            _ => "-".to_string(),
-        };
-        writeln!(out, "    Defined at: {defined}")?;
-        // The wait, spelled as the table's cell, with the registries'
-        // detail lines under it: which wheel entry, which io slot.
-        if let Some(row) = rows.get(index) {
-            writeln!(out, "    Waiting on: {}", row.waiting_on)?;
-            for line in &row.wait_detail {
-                writeln!(out, "        {line}")?;
-            }
-            writeln!(
-                out,
-                "    Waker: {}",
-                row.waker.as_deref().unwrap_or("<empty>")
-            )?;
-            for line in &row.waker_detail {
-                writeln!(out, "        {line}")?;
-            }
-        }
-        // What the task has off its spine, in two rows rather than one:
-        // the futures held in its own frames, and the sets it drives
-        // from them. A set is a container, so counting it among the
-        // futures made a row saying `Futures: 2` list three finds;
-        // keeping the two apart lets each number say what the listing
-        // under it shows. The sets are one row whichever kind they are —
-        // a listing of what this task drives is one thing to read — with
-        // the tasks and the futures they hold counted apart, since those
-        // are not the same population. Last in the block, since what
-        // `--futures` lists under them is as long as the census found it
-        // to be.
-        let count = census.counts.get(&index).copied().unwrap_or_default();
-        let roots = || census.roots.get(&index).into_iter().flatten();
-        for (label, value, sets) in [
-            ("Held futures", count.held.to_string(), false),
-            ("Join sets", count.sets_summary(), true),
-        ] {
-            writeln!(out, "    {label}: {value}")?;
-            if futures {
-                for entry in roots().filter(|e| e.is_set() == sets) {
-                    print_future_entry(*entry, &listing, 8, false, out)?;
-                }
-            }
-        }
-        writeln!(out)?;
-    }
-    if footer {
-        writeln!(out, "{}", listing_footer(total, shown, "task"))?;
-    }
-    Ok(())
-}
-
 /// Gather what a census counts and print it.
 ///
 /// Only what `sections` asks for is gathered, since what a census costs
@@ -1829,7 +1705,7 @@ pub(crate) fn exec_census<T: proc::Target>(
             .flat_map(|analysis| &analysis.errors)
             .chain(census.iter().flat_map(|census| &census.errors)),
     )?;
-    // As `tasks --futures`: a walk that hit a depth limit looks like
+    // As `task --futures`: a walk that hit a depth limit looks like
     // completeness in a count, so it says so.
     if let Some(census) = census {
         warn_census_capped(census.capped, "counted")?;
@@ -2335,48 +2211,6 @@ mod table_tests {
         assert!(!print(false).contains("RT"), "{}", print(false));
     }
 
-    /// The block form honors the same limit: `-v --limit 1` prints
-    /// one block and the same two-number footer.
-    #[test]
-    fn test_a_limit_cuts_the_blocks_too() {
-        use hansei_runtime::tokio::bundle::TaskList;
-
-        let list = TaskList {
-            tasks: vec![task(1, 0), task(2, 0), task(3, 0)],
-            errors: vec![],
-        };
-        let rows = build_rows(
-            &list,
-            &[],
-            &[],
-            &HashMap::new(),
-            &hansei_bundle::names::ImplFold::default(),
-            &Default::default(),
-            &Default::default(),
-        );
-        let mut out = Vec::new();
-        super::print_tasks(
-            &list,
-            &rows,
-            &hansei_bundle::names::ImplFold::default(),
-            &[],
-            &HashMap::new(),
-            &HashMap::new(),
-            &[],
-            &[],
-            &[],
-            false,
-            Some(1),
-            None,
-            true,
-            &mut out,
-        )
-        .expect("the listing renders");
-        let out = String::from_utf8(out).expect("utf8");
-        assert_eq!(out.matches("Task ").count(), 1, "{out}");
-        assert!(out.ends_with("[3 tasks, 1 shown]\n"), "{out}");
-    }
-
     /// `--limit` cuts the rows and earns the footer; without it every
     /// row prints above the plain count.
     #[test]
@@ -2761,7 +2595,7 @@ mod filter_tests {
         let err = refuse_positional_ids(&["129".to_string()]).unwrap_err();
         assert_eq!(
             err.to_string(),
-            "tasks takes no task ids; `task 129` selects that one task (-v for its block)"
+            "tasks takes no task ids; `task 129` selects that one task"
         );
     }
 }
@@ -2861,7 +2695,7 @@ mod census_warning_tests {
 
 #[cfg(test)]
 mod census_listing_tests {
-    use super::{Entry, Listing, bundle, census, census_counts, print_future_entry};
+    use super::{Entry, Finds, Listing, bundle, census, census_counts, print_future_entry};
 
     use hansei_bundle::BundleTypeId;
     use hansei_runtime::tokio::TaskState;
@@ -2943,7 +2777,12 @@ mod census_listing_tests {
         let held_list = vec![held(2, None), held(2, Some(Via::Held(0)))];
         let sets = vec![future_set(3)];
         let join_sets = vec![join_set(2, 2, vec![joined(Some(7)), joined(None)])];
-        let counts = census_counts(&held_list, &sets, &join_sets);
+        let finds = Finds {
+            held: &held_list,
+            sets: &sets,
+            join_sets: &join_sets,
+        };
+        let counts = census_counts(finds);
 
         assert_eq!(counts.keys().copied().collect::<Vec<_>>(), [2, 3]);
         let two = counts[&2];
@@ -2967,16 +2806,22 @@ mod census_listing_tests {
         let polling = HashMap::new();
         let blocking = HashMap::new();
         let impls = hansei_bundle::names::ImplFold::default();
-        let listing = Listing {
-            blocking_lwps: &blocking,
-            nested: &nested,
-            list: &list,
-            polling: &polling,
-            impls: &impls,
-        };
         let show = |set: &census::JoinSet| {
+            let join_sets = std::slice::from_ref(set);
+            let listing = Listing {
+                blocking_lwps: &blocking,
+                finds: Finds {
+                    held: &[],
+                    sets: &[],
+                    join_sets,
+                },
+                nested: &nested,
+                list: &list,
+                polling: &polling,
+                impls: &impls,
+            };
             let mut out = Vec::new();
-            print_future_entry(Entry::JoinSet(set), &listing, 0, false, &mut out)
+            print_future_entry(Entry::JoinSet(0), &listing, 0, false, &mut out)
                 .expect("printing a join set row succeeds");
             String::from_utf8(out).expect("the listing is utf8")
         };
