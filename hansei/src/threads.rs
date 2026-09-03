@@ -10,7 +10,7 @@ use hansei_runtime::tokio::bundle::{self, ParkState};
 use reify::Value;
 
 use std::collections::{BTreeMap, HashMap};
-use std::io::{self, Write};
+use std::io;
 
 /// One row of the `threads` table: the compact per-lwp answer, built
 /// once — with the one unwind of every stack — and cached beside the
@@ -45,7 +45,7 @@ pub(crate) fn rows<'s, T: proc::Target>(session: &'s Session<'_, T>) -> &'s [Thr
 }
 
 fn build_rows<T: proc::Target>(session: &Session<'_, T>) -> Vec<ThreadRow> {
-    let stacks = load_stacks(session);
+    let stacks = session.stacks();
     // One parker-array read per runtime, shared by its workers' rows.
     let mut parks: HashMap<usize, Option<bundle::ParkStates>> = HashMap::new();
     let mut rows: Vec<ThreadRow> = session
@@ -69,24 +69,6 @@ fn build_rows<T: proc::Target>(session: &Session<'_, T>) -> Vec<ThreadRow> {
         .collect();
     rows.sort_by_key(|row| row.lwp);
     rows
-}
-
-/// Unwind every stack, once; a target that cannot be walked still has
-/// runtime state worth listing, so a failure costs the stack columns
-/// and a warning, nothing else.
-pub(crate) fn load_stacks<T: proc::Target>(
-    session: &Session<'_, T>,
-) -> BTreeMap<u32, unwind::Backtrace> {
-    match unwind::load_frames(session.proc) {
-        Ok(unwound) => unwound.stacks,
-        Err(e) => {
-            let _ = writeln!(
-                io::stderr(),
-                "warning: cannot unwind the target's threads: {e:#}"
-            );
-            BTreeMap::new()
-        }
-    }
 }
 
 /// A thread's place in a runtime: the `ROLE` cell as spelled, and the
@@ -247,14 +229,6 @@ fn row_cells(row: &ThreadRow) -> [String; 4] {
     ]
 }
 
-/// One thread's table row as a single line, cells joined — the line
-/// the cursor's `thread` selector prints. `None` for an lwp the rows
-/// do not hold.
-pub(crate) fn row_line<T: proc::Target>(session: &Session<'_, T>, lwp: u32) -> Option<String> {
-    let row = rows(session).iter().find(|row| row.lwp == lwp)?;
-    Some(row_cells(row).join("  "))
-}
-
 /// Print the table: one row per selected lwp, in lwp order, nothing
 /// truncated, and the count under it.
 fn print_thread_table<'r>(
@@ -290,23 +264,13 @@ fn print_thread_table<'r>(
 /// rides in as the raw flag values and is parsed here, so the errors
 /// name the flag they came from.
 pub(crate) struct ThreadsCmd {
-    pub(crate) verbose: bool,
-    pub(crate) frames: Option<usize>,
-    pub(crate) registers: bool,
-    pub(crate) lwp: Vec<u32>,
+    /// The lwp ids the old grammar took, kept so the refusal can name
+    /// the way forward.
+    pub(crate) lwp: Vec<String>,
     pub(crate) with: Vec<String>,
     pub(crate) without: Vec<String>,
     pub(crate) group: Option<String>,
     pub(crate) exec: Vec<String>,
-}
-
-impl ThreadsCmd {
-    /// The block form, as opposed to the table: asked for outright, or
-    /// by anything that asks after one thread's insides — a named
-    /// lwp, a frame budget, registers.
-    fn blocks(&self) -> bool {
-        self.verbose || self.registers || self.frames.is_some() || !self.lwp.is_empty()
-    }
 }
 
 /// One filterable field of the thread population — what `--with`,
@@ -516,27 +480,19 @@ fn member_sample(rows: &[ThreadRow], members: &[usize]) -> String {
     }
 }
 
-/// Every thread the runtime is running on, as the runtime sees it and
-/// as the stack sees it: the task it is polling, the worker core it
-/// holds while it runs, and the frames it is parked in. The named
-/// lwps and the filter clauses narrow the listing; the block form is
-/// [`ThreadsCmd::blocks`]'s call. The lwp that took the fatal signal
-/// prints its registers unasked — that is exactly when they matter —
-/// and `registers` asks the same of every listed thread.
+/// Every thread the target holds, one table row each: its place in a
+/// runtime, the task it is polling, the top of its stack. The filter
+/// clauses narrow the listing; one thread's insides — its tokio
+/// context, the worker core it holds, its whole stack — are
+/// [`print_thread`]'s, under `thread`.
 pub(crate) fn exec_threads<T: proc::Target>(
     session: &Session<'_, T>,
     cmd: ThreadsCmd,
     theme: crate::output::Theme,
-    opts: RenderOpts,
     out: &mut dyn io::Write,
 ) -> Result<()> {
-    // Resolve the selection before any work, so an lwp the target does
-    // not hold says so rather than printing nothing — and without first
-    // paying for (or warning about) the unwind below.
-    for &tid in &cmd.lwp {
-        if !session.lwps.iter().any(|l| l.tid == tid) {
-            return Err(no_such_thread(session.lwps.len(), tid));
-        }
+    if let Some(first) = cmd.lwp.first() {
+        anyhow::bail!("threads takes no lwp ids; `thread {first}` selects that one thread");
     }
     let group = cmd
         .group
@@ -550,10 +506,7 @@ pub(crate) fn exec_threads<T: proc::Target>(
     // thread, narrowed by the clauses.
     let rows = rows(session);
     let survivors: Vec<usize> = (0..rows.len())
-        .filter(|&i| {
-            (cmd.lwp.is_empty() || cmd.lwp.contains(&rows[i].lwp))
-                && clauses.iter().all(|c| survives(c, &rows[i]))
-        })
+        .filter(|&i| clauses.iter().all(|c| survives(c, &rows[i])))
         .collect();
 
     if !cmd.exec.is_empty() {
@@ -562,37 +515,22 @@ pub(crate) fn exec_threads<T: proc::Target>(
         return exec_exec(session, &cmd, &survivors, theme, out);
     }
     if let Some(field) = group {
-        return exec_group(
-            session,
-            &cmd,
-            field,
-            &survivors,
-            opts,
-            session.fit_width(theme),
-            out,
-        );
+        return exec_group(session, field, &survivors, session.fit_width(theme), out);
     }
-    if !cmd.blocks() {
-        return print_thread_table(
-            survivors.iter().map(|&i| &rows[i]),
-            session.fit_width(theme),
-            out,
-        );
-    }
-    let tids: Vec<u32> = survivors.iter().map(|&i| rows[i].lwp).collect();
-    print_blocks(session, &tids, cmd.frames, cmd.registers, opts, out)
+    print_thread_table(
+        survivors.iter().map(|&i| &rows[i]),
+        session.fit_width(theme),
+        out,
+    )
 }
 
 /// `--group FIELD`: bucket the surviving rows by the field's spelled
 /// value and print `COUNT VALUE` rows, most numerous first (ties in
-/// value order), each with up to three member lwps — or, under the
-/// block form, every member's block under its bucket.
+/// value order), each with up to three member lwps.
 fn exec_group<T: proc::Target>(
     session: &Session<'_, T>,
-    cmd: &ThreadsCmd,
     field: Field,
     survivors: &[usize],
-    opts: RenderOpts,
     fit: Option<usize>,
     out: &mut dyn io::Write,
 ) -> Result<()> {
@@ -607,29 +545,21 @@ fn exec_group<T: proc::Target>(
     // sort is stable.
     buckets.sort_by_key(|(_, members)| std::cmp::Reverse(members.len()));
 
-    if cmd.blocks() {
-        for (n, (value, members)) in buckets.iter().enumerate() {
-            write!(out, "{}", bucket_heading(n, members.len(), value))?;
-            let tids: Vec<u32> = members.iter().map(|&i| rows[i].lwp).collect();
-            print_blocks(session, &tids, cmd.frames, cmd.registers, opts, out)?;
-        }
-    } else {
-        let heading = field.name().replace('-', " ").to_uppercase();
-        let mut table = crate::output::Table::new(3)
-            .align_right(0)
-            .header(["COUNT".to_string(), heading, "LWPS".to_string()])
-            .truncatable(1)
-            .fit(fit);
-        for (value, members) in &buckets {
-            table.row([
-                members.len().to_string(),
-                value.clone(),
-                member_sample(rows, members),
-            ]);
-        }
-        if !table.is_empty() {
-            table.write(out)?;
-        }
+    let heading = field.name().replace('-', " ").to_uppercase();
+    let mut table = crate::output::Table::new(3)
+        .align_right(0)
+        .header(["COUNT".to_string(), heading, "LWPS".to_string()])
+        .truncatable(1)
+        .fit(fit);
+    for (value, members) in &buckets {
+        table.row([
+            members.len().to_string(),
+            value.clone(),
+            member_sample(rows, members),
+        ]);
+    }
+    if !table.is_empty() {
+        table.write(out)?;
     }
     writeln!(
         out,
@@ -637,13 +567,6 @@ fn exec_group<T: proc::Target>(
         listing_footer(buckets.len(), buckets.len(), "group")
     )?;
     Ok(())
-}
-
-/// The line bucket `n`'s blocks print under: a blank line between one
-/// bucket's blocks and the next bucket, then its count and value.
-fn bucket_heading(n: usize, count: usize, value: &str) -> String {
-    let sep = if n > 0 { "\n" } else { "" };
-    format!("{sep}{count}  {value}\n")
 }
 
 /// `--exec COMMAND`: run the command once per surviving thread under a
@@ -703,116 +626,86 @@ fn exec_heading(n: usize, row: &ThreadRow) -> String {
     format!("{sep}{}\n", row_cells(row).join("  "))
 }
 
-/// The block form: each named lwp's tokio context, scheduler state,
-/// registers where earned or asked, and stack, in lwp order.
-fn print_blocks<T: proc::Target>(
+/// One thread as `thread` prints it: its heading — the lwp, what it is
+/// polling, its runtime where the listings tag groups, and the fatal
+/// signal where it took one — then, four columns in, its tokio
+/// context, its scheduler state, its registers where it took the
+/// fatal signal (that is exactly when they matter; `regs` prints them
+/// otherwise), and its stack, fifty frames deep at most (`trace -l`
+/// prints it to any depth).
+pub(crate) fn print_thread<T: proc::Target>(
     session: &Session<'_, T>,
-    lwps: &[u32],
-    frames: Option<usize>,
-    registers: bool,
+    tid: u32,
     opts: RenderOpts,
     out: &mut dyn io::Write,
 ) -> Result<()> {
-    let frames = frames.unwrap_or(50);
+    const FRAMES: usize = 50;
 
-    // Unwinding reads the CFI of every mapped object, so it is done once
-    // for the whole target and only when a command asks for it. A target
-    // it cannot walk still has runtime state worth printing, so a failure
-    // costs the stacks and nothing else.
-    let stacks = match unwind::load_frames(session.proc) {
-        Ok(unwound) => unwound.stacks,
-        Err(e) => {
-            writeln!(
-                io::stderr(),
-                "warning: cannot unwind the target's threads: {e:#}"
-            )?;
-            BTreeMap::new()
+    if !session.lwps.iter().any(|l| l.tid == tid) {
+        return Err(no_such_thread(session.lwps.len(), tid));
+    }
+    let stacks = session.stacks();
+    let fatal = session.proc.fatal_signal();
+    let print_stack = |out: &mut dyn io::Write| -> Result<()> {
+        match stacks.get(&tid) {
+            Some(backtrace) => {
+                writeln!(out, "    stack:")?;
+                for line in backtrace.stack_trace(FRAMES) {
+                    writeln!(out, "        {line}")?;
+                }
+            }
+            None => writeln!(out, "    stack: unavailable")?,
         }
+        Ok(())
     };
 
-    let fatal = session.proc.fatal_signal();
-    let mut selected: Vec<&proc::LwpInfo> = session
-        .lwps
-        .iter()
-        .filter(|l| lwps.contains(&l.tid))
-        .collect();
-    selected.sort_by_key(|l| l.tid);
-    for (i, lwp) in selected.into_iter().enumerate() {
-        if i > 0 {
-            writeln!(out)?;
+    // A thread holding no tokio context has only its stack to show;
+    // everything below the heading is the runtime's.
+    let Some(worker) = session.workers.iter().find(|w| w.tid == tid) else {
+        let took = fatal_tag(fatal.as_ref(), tid);
+        writeln!(out, "lwp {tid}  no runtime{took}")?;
+        if took_fatal(fatal.as_ref(), tid) {
+            crate::registers::print_lwp_registers(session, tid, "    ", out)?;
         }
-        // A thread holding no tokio context has only its stack to
-        // show; everything below the heading is the runtime's.
-        let Some(worker) = session.workers.iter().find(|w| w.tid == lwp.tid) else {
-            let took = fatal_tag(fatal.as_ref(), lwp.tid);
-            writeln!(out, "lwp {}  no runtime{took}", lwp.tid)?;
-            if shows_registers(registers, fatal.as_ref(), lwp.tid) {
-                crate::registers::print_lwp_registers(session, lwp.tid, "  ", out)?;
-            }
-            match stacks.get(&lwp.tid) {
-                Some(backtrace) => {
-                    writeln!(out, "  stack:")?;
-                    for line in backtrace.stack_trace(frames) {
-                        writeln!(out, "    {line}")?;
-                    }
-                }
-                None => writeln!(out, "  stack: unavailable")?,
-            }
-            continue;
-        };
-        // Which runtime the thread runs is only worth a tag when the
-        // listings tag their groups at all — more than one runtime, or
-        // a local set sharing the population.
-        let tag = if session.group_tags().is_empty() {
-            String::new()
-        } else {
-            match session.runtime_of(worker.tid) {
-                Some((index, rt)) => format!("  {}", crate::runtimes::runtime_label(index, rt)),
-                None => String::new(),
-            }
-        };
-        let took = fatal_tag(fatal.as_ref(), worker.tid);
-        writeln!(
-            out,
-            "lwp {}  {}{tag}{took}",
-            worker.tid,
-            polling(session, worker)
-        )?;
+        return print_stack(out);
+    };
+    // Which runtime the thread runs is only worth a tag when the
+    // listings tag their groups at all — more than one runtime, or a
+    // local set sharing the population.
+    let tag = if session.group_tags().is_empty() {
+        String::new()
+    } else {
+        match session.runtime_of(tid) {
+            Some((index, rt)) => format!("  {}", crate::runtimes::runtime_label(index, rt)),
+            None => String::new(),
+        }
+    };
+    let took = fatal_tag(fatal.as_ref(), tid);
+    writeln!(out, "lwp {tid}  {}{tag}{took}", polling(session, worker))?;
 
-        if let Err(e) = print_thread_context(session, worker, opts, out) {
-            writeln!(out, "  thread context unreadable: {e:#}")?;
-        }
-
-        match scheduler_state(session, worker) {
-            Ok(SchedulerState::Worker(worker_ctx)) => {
-                print_worker_state(session, worker_ctx, opts, out)?
-            }
-            Ok(SchedulerState::BlockOn(ct_ctx)) => {
-                print_block_on_state(session, worker, ct_ctx, opts, out)?
-            }
-            // A thread inside the runtime without a scheduler context is
-            // ordinary: `block_on` enters the runtime from a thread that
-            // never runs the worker loop.
-            Ok(SchedulerState::None) => writeln!(out, "  not in the scheduler's run loop")?,
-            Err(e) => writeln!(out, "  scheduler context unreadable: {e:#}")?,
-        }
-
-        // Frame 0 of the stack below, so it prints just above it.
-        if shows_registers(registers, fatal.as_ref(), worker.tid) {
-            crate::registers::print_lwp_registers(session, worker.tid, "  ", out)?;
-        }
-
-        match stacks.get(&worker.tid) {
-            Some(backtrace) => {
-                writeln!(out, "  stack:")?;
-                for line in backtrace.stack_trace(frames) {
-                    writeln!(out, "    {line}")?;
-                }
-            }
-            None => writeln!(out, "  stack: unavailable")?,
-        }
+    if let Err(e) = print_thread_context(session, worker, opts, out) {
+        writeln!(out, "    thread context unreadable: {e:#}")?;
     }
-    Ok(())
+
+    match scheduler_state(session, worker) {
+        Ok(SchedulerState::Worker(worker_ctx)) => {
+            print_worker_state(session, worker_ctx, opts, out)?
+        }
+        Ok(SchedulerState::BlockOn(ct_ctx)) => {
+            print_block_on_state(session, worker, ct_ctx, opts, out)?
+        }
+        // A thread inside the runtime without a scheduler context is
+        // ordinary: `block_on` enters the runtime from a thread that
+        // never runs the worker loop.
+        Ok(SchedulerState::None) => writeln!(out, "    not in the scheduler's run loop")?,
+        Err(e) => writeln!(out, "    scheduler context unreadable: {e:#}")?,
+    }
+
+    // Frame 0 of the stack below, so it prints just above it.
+    if took_fatal(fatal.as_ref(), tid) {
+        crate::registers::print_lwp_registers(session, tid, "    ", out)?;
+    }
+    print_stack(out)
 }
 
 /// The error for an lwp the target does not hold. It counts the lwps
@@ -838,11 +731,11 @@ fn fatal_tag(fatal: Option<&proc::FatalSignal>, tid: u32) -> String {
     }
 }
 
-/// Whether a thread's block prints its registers: asked for with
-/// `--registers`, or earned by taking the fatal signal — that is
-/// exactly when they matter, and healthy captures stay unaffected.
-fn shows_registers(registers: bool, fatal: Option<&proc::FatalSignal>, tid: u32) -> bool {
-    registers || fatal.is_some_and(|sig| sig.lwp == Some(tid))
+/// Whether the thread took the fatal signal — what earns its block the
+/// register lines, since that is exactly when they matter, and healthy
+/// captures stay unaffected.
+fn took_fatal(fatal: Option<&proc::FatalSignal>, tid: u32) -> bool {
+    fatal.is_some_and(|sig| sig.lwp == Some(tid))
 }
 
 /// What a thread is doing with the task it last entered. tokio restores
@@ -883,7 +776,10 @@ fn print_thread_context<T: proc::Target>(
     Ok(())
 }
 
-/// Print one named value the way the threads listing indents them.
+/// Print one named value the way `thread` indents its fields: four
+/// columns in, with a nested render's lines set under the value's
+/// first line, which [`print_variable`] opens two columns past the
+/// label.
 fn print_rendered<T: proc::Target>(
     session: &Session<'_, T>,
     name: &str,
@@ -895,12 +791,12 @@ fn print_rendered<T: proc::Target>(
     let heap = heap.as_ref().map(|view| view as &dyn reify::Heap);
     print_variable(
         out,
-        "  ",
+        "    ",
         name,
         None,
         &format_args!(
             "{:#}",
-            render(session, value, opts, heap).line_prefix("    ")
+            render(session, value, opts, heap).line_prefix("      ")
         ),
     )
 }
@@ -935,7 +831,7 @@ fn print_worker_state<'b, T: proc::Target>(
     opts: RenderOpts,
     out: &mut dyn io::Write,
 ) -> Result<()> {
-    writeln!(out, "  worker {}", session.ctx.worker_index(worker_ctx)?)?;
+    writeln!(out, "    worker {}", session.ctx.worker_index(worker_ctx)?)?;
 
     let defer = worker_ctx.member("defer")?;
     print_rendered(session, "defer", &defer, opts, out)?;
@@ -957,7 +853,7 @@ fn print_block_on_state<'b, T: proc::Target>(
     opts: RenderOpts,
     out: &mut dyn io::Write,
 ) -> Result<()> {
-    writeln!(out, "  block_on thread of its current_thread runtime")?;
+    writeln!(out, "    block_on thread of its current_thread runtime")?;
     if let Some((_, rt)) = session.runtime_of(worker.tid) {
         match session.ctx.ct_park_state(rt.handle, ct_ctx) {
             Ok(state) => {
@@ -966,9 +862,9 @@ fn print_block_on_state<'b, T: proc::Target>(
                 } else {
                     ""
                 };
-                writeln!(out, "  {}{woken}", state.activity)?;
+                writeln!(out, "    {}{woken}", state.activity)?;
             }
-            Err(e) => writeln!(out, "  park state unreadable: {e:#}")?,
+            Err(e) => writeln!(out, "    park state unreadable: {e:#}")?,
         }
     }
 
@@ -997,7 +893,7 @@ fn print_checked_in_core<T: proc::Target>(
 ) -> Result<()> {
     let core = sched_ctx.member("core")?.member("value")?;
     let Some(boxed) = core.try_select_variant("Some")? else {
-        writeln!(out, "  core: {absent}")?;
+        writeln!(out, "    core: {absent}")?;
         return Ok(());
     };
     let core = boxed.deref_ptr(session.ctx.proc)?;
@@ -1028,9 +924,8 @@ pub(crate) fn render<'r, 'b, T: proc::Target>(
 #[cfg(test)]
 mod tests {
     use super::{
-        Clause, Field, ParkState, ThreadRow, blocking_role, bucket_heading, exec_heading,
-        fatal_tag, group_value, matcher, member_sample, no_such_thread, park_word, parse_clauses,
-        polling_line, survives,
+        Clause, Field, ParkState, ThreadRow, blocking_role, exec_heading, fatal_tag, group_value,
+        matcher, member_sample, no_such_thread, park_word, parse_clauses, polling_line, survives,
     };
 
     /// The three spellings of the heading's claim: believed, stale,
@@ -1072,18 +967,15 @@ mod tests {
 
     /// The register block is earned by exactly the lwp the fatal
     /// signal names — not its siblings, not anyone on a healthy
-    /// capture, nobody when the core did not say which lwp took it —
-    /// and `--registers` asks it of every thread regardless.
+    /// capture, nobody when the core did not say which lwp took it.
     #[test]
-    fn test_registers_print_for_the_faulting_lwp_or_on_request() {
-        use super::shows_registers;
+    fn test_registers_print_for_the_faulting_lwp() {
+        use super::took_fatal;
         let sig = segv(Some(7));
-        assert!(shows_registers(false, Some(&sig), 7));
-        assert!(!shows_registers(false, Some(&sig), 8));
-        assert!(!shows_registers(false, None, 7));
-        assert!(!shows_registers(false, Some(&segv(None)), 7));
-        assert!(shows_registers(true, None, 8));
-        assert!(shows_registers(true, Some(&sig), 8));
+        assert!(took_fatal(Some(&sig), 7));
+        assert!(!took_fatal(Some(&sig), 8));
+        assert!(!took_fatal(None, 7));
+        assert!(!took_fatal(Some(&segv(None)), 7));
     }
 
     /// An lwp the target does not hold counts the ones it does, since
@@ -1414,13 +1306,5 @@ mod tests {
             "2  tokio-rt-worker  worker 0, polling  129\n"
         );
         assert_eq!(exec_heading(1, &rows[3]), "\n9  —  no runtime  —\n");
-    }
-
-    /// A bucket's blocks print under its count and value, with a blank
-    /// line before every bucket but the first.
-    #[test]
-    fn test_bucket_headings_separate_buckets_with_one_blank_line() {
-        assert_eq!(bucket_heading(0, 3, "worker"), "3  worker\n");
-        assert_eq!(bucket_heading(1, 1, "no runtime"), "\n1  no runtime\n");
     }
 }

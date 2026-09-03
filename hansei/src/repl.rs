@@ -2071,7 +2071,7 @@ mod tests {
         assert!(completions("tasks -l ").is_empty());
         assert_eq!(completions("tasks -l 10 --gr"), ["--group"]);
         assert_eq!(completions("tasks -l10 --gr"), ["--group"]);
-        assert_eq!(completions("threads -vf 3 --gr"), ["--group"]);
+        assert_eq!(completions("trace -vl 3 --na"), ["--native"]);
         assert_eq!(completions("tasks --limit=10 --gr"), ["--group"]);
         assert!(completions("tasks -w type ").is_empty());
         assert_eq!(completions("tasks -w type foo --gr"), ["--group"]);
@@ -2745,14 +2745,10 @@ mod tests {
             Command::Futures { .. }
         ));
         assert!(matches!(
-            Line::try_parse_from(["thread", "3", "-v"])
+            Line::try_parse_from(["thread", "3"])
                 .expect("thread selects")
                 .command,
-            Command::Thread {
-                lwp: Some(3),
-                verbose: true,
-                ..
-            }
+            Command::Thread { lwp: Some(3) }
         ));
         assert!(matches!(
             Line::try_parse_from(["threads"])

@@ -1,0 +1,7 @@
+---
+source: hansei/src/offline.rs
+description: "`threads --without role ^worker --group has-task` over linux-floor/gen-0007"
+---
+COUNT  HAS TASK  LWPS
+    1  no        1614180
+[1 group]

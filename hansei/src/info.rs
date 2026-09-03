@@ -240,7 +240,7 @@ fn build_id_lines(ids: Option<&proc::BuildIds>, out: &mut dyn io::Write) -> Resu
 
 /// `info signal`: what ended the process, who sent it where the
 /// siginfo says, and where the taking lwp was — its registers stay in
-/// `threads -v`.
+/// `thread`.
 fn signal<T: Target>(session: &Session<'_, T>, out: &mut dyn io::Write) -> Result<()> {
     let Some(sig) = session.proc.fatal_signal() else {
         writeln!(out, "signal: none recorded (a live capture, not a crash)")?;

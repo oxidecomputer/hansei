@@ -368,13 +368,12 @@ fn print_root_chain<T: proc::Target>(
     trace::exec_trace(session, root, &opts, out)
 }
 
-/// `thread`: select an lwp, or print the cursor's — its table row, or
-/// under `verbose` the block `threads -v` prints for it.
+/// `thread`: select an lwp, or print the cursor's — either way the
+/// block `threads` tallies it in: its tokio context, its scheduler
+/// state, and its stack.
 pub(crate) fn exec_thread<T: proc::Target>(
     session: &Session<'_, T>,
     lwp: Option<u32>,
-    verbose: bool,
-    theme: crate::output::Theme,
     render: crate::RenderOpts,
     out: &mut dyn io::Write,
 ) -> Result<()> {
@@ -389,23 +388,7 @@ pub(crate) fn exec_thread<T: proc::Target>(
             .lwp
             .ok_or_else(|| anyhow!("no thread selected"))?,
     };
-    if verbose {
-        let cmd = threads::ThreadsCmd {
-            verbose: true,
-            frames: None,
-            registers: false,
-            lwp: vec![tid],
-            with: Vec::new(),
-            without: Vec::new(),
-            group: None,
-            exec: Vec::new(),
-        };
-        return threads::exec_threads(session, cmd, theme, render, out);
-    }
-    let line = threads::row_line(session, tid)
-        .ok_or_else(|| threads::no_such_thread(session.lwps.len(), tid))?;
-    writeln!(out, "{line}")?;
-    Ok(())
+    threads::print_thread(session, tid, render, out)
 }
 
 /// Move the cursor to an lwp: the thread alone. No task root comes
@@ -869,8 +852,6 @@ mod tests {
         exec_thread(
             &session,
             Some(lwp),
-            false,
-            crate::output::Theme::plain(),
             RenderOpts::from_settings(&session.settings.borrow()),
             &mut Vec::new(),
         )
@@ -1332,11 +1313,11 @@ mod tests {
         assert_eq!(polling_worker(&workers, &task(0b1, Some(1))), None);
     }
 
-    /// The thread selector: an unknown lwp refuses, the row names the
-    /// selected lwp in the table's cells, `$_` is exactly its stack
-    /// pointer, and `-v` asks for the block.
+    /// The thread selector: an unknown lwp refuses, the block's heading
+    /// names the selected lwp, its fields sit four columns in, and
+    /// `$_` is exactly its stack pointer.
     #[test]
-    fn test_thread_rows_and_blocks_spell_the_selected_lwp() {
+    fn test_thread_blocks_spell_the_selected_lwp() {
         let (bundle, snapshot) = testkit::load("linux", "nested-await");
         let args = session_args("linux", "nested-await");
         let session = Session::attach(&snapshot, &bundle, &args).expect("the pair attaches");
@@ -1344,31 +1325,20 @@ mod tests {
         let (tid, rsp) = (lwp.tid, lwp.regs.rsp);
         let render = RenderOpts::from_settings(&session.settings.borrow());
 
-        let theme = crate::output::Theme::plain();
-        let err = exec_thread(
-            &session,
-            Some(999_999),
-            false,
-            theme,
-            render,
-            &mut Vec::new(),
-        )
-        .expect_err("an unknown lwp refuses");
+        let err = exec_thread(&session, Some(999_999), render, &mut Vec::new())
+            .expect_err("an unknown lwp refuses");
         assert!(err.to_string().starts_with("no lwp 999999"), "{err}");
 
         let mut out = Vec::new();
-        exec_thread(&session, Some(tid), false, theme, render, &mut out).expect("the lwp selects");
-        let line = String::from_utf8(out).expect("the row is UTF-8");
-        assert!(line.starts_with(&tid.to_string()), "{line}");
-        assert_eq!(line.trim_end().split("  ").count(), 4, "{line}");
-        assert_eq!(session.cursor.borrow().last_addr, Some(rsp));
-
-        // `-v` is the block: the stack under the row's fields.
-        let mut out = Vec::new();
-        exec_thread(&session, Some(tid), true, theme, render, &mut out)
-            .expect("the block form answers");
+        exec_thread(&session, Some(tid), render, &mut out).expect("the lwp selects");
         let text = String::from_utf8(out).expect("the block is UTF-8");
-        assert!(text.contains("stack"), "{text}");
+        assert!(text.starts_with(&format!("lwp {tid}  ")), "{text}");
+        assert!(
+            text.lines().skip(1).all(|l| l.starts_with("    ")),
+            "{text}"
+        );
+        assert!(text.contains("\n    stack:"), "{text}");
+        assert_eq!(session.cursor.borrow().last_addr, Some(rsp));
     }
 
     /// `frame` prints the selected frame's line the way a plain trace

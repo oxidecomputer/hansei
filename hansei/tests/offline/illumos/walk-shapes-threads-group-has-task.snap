@@ -1,0 +1,7 @@
+---
+source: hansei/src/offline.rs
+description: "`threads --without role ^worker --group has-task` over illumos/walk-shapes"
+---
+COUNT  HAS TASK  LWPS
+    3  no        1, 2, 3
+[1 group]

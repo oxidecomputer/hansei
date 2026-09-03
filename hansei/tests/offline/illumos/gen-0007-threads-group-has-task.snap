@@ -1,0 +1,7 @@
+---
+source: hansei/src/offline.rs
+description: "`threads --without role ^worker --group has-task` over illumos/gen-0007"
+---
+COUNT  HAS TASK  LWPS
+    1  no        1
+[1 group]
