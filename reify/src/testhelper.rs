@@ -600,6 +600,9 @@ fixture_ids! {
     // A bare tuple `(u32, u32)`: the same `__0`/`__1` members as PAIR
     // under the name that marks them as the `.0`/`.1` a path spells.
     TUPLE2,
+    // A C enumeration over a *signed* repr with a negative enumerator:
+    // COLOR's unsigned lookup cannot tell whether the sign was honored.
+    SHADE,
 }
 
 /// A hand-built mini-bundle exercising every TypeDef kind reify touches:
@@ -639,6 +642,7 @@ pub fn test_bundle() -> Bundle {
     let (i8n, i16n, i32n, i64n) = (s("i8"), s("i16"), s("i32"), s("i64"));
     let (charn, u24n, u16n) = (s("char"), s("u24"), s("u16"));
     let (colorn, redn, greenn) = (s("Color"), s("Red"), s("Green"));
+    let (shaden, darkn, lightn) = (s("Shade"), s("Dark"), s("Light"));
     let (val_unionn, intn, floatn) = (s("Val"), s("int"), s("float"));
     let unmodelledn = s("Unmodelled");
     let btree_mapn = s("alloc::collections::btree::map::BTreeMap<u32, u32>");
@@ -1879,6 +1883,16 @@ pub fn test_bundle() -> Bundle {
             name: s("(u32, u32)"),
             size: 8,
             members: vec![m(tuple0n, U32, 0), m(tuple1n, U32, 4)],
+        },
+    );
+    // Shade -- a C-style enumeration over i8, with a negative enumerator.
+    types.add(
+        SHADE,
+        TypeDef::CEnum {
+            name: shaden,
+            size: 1,
+            repr: I8,
+            enumerators: vec![(darkn, -1), (lightn, 1)],
         },
     );
 

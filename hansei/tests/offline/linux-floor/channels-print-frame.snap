@@ -4,7 +4,7 @@ description: "`print` over linux-floor/channels"
 ---
 tokio::sync::notify::Notified {
     notify: 0xADDR -> tokio::sync::notify::Notify { .. },
-    state: [0xADDR],
+    state: Waiting,
     notify_waiters_calls: 0,
     waiter: tokio::sync::notify::Waiter {
         pointers: tokio::util::linked_list::Pointers<tokio::sync::notify::Waiter> { .. } @ 0xADDR,
