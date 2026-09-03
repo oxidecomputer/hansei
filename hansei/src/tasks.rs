@@ -1,8 +1,7 @@
 //! The `tasks` and `census` commands: the task listing and the counts
 //! over it, plus the naming helpers every listing shares.
 
-use crate::summary;
-use crate::{Session, print_warnings, repl};
+use crate::{Session, output, print_warnings, repl, summary};
 
 use anyhow::{Context as _, Result};
 use hansei_bundle::names;
@@ -325,6 +324,12 @@ impl Counts {
 /// blocks say rather than something of their own.
 pub(crate) struct Listing<'a> {
     pub(crate) blocking_lwps: &'a HashMap<u64, u32>,
+    /// The width a row's name is cut to fit within, the way
+    /// [`Session::fit_width`] gives it; `None` leaves every name whole.
+    /// A cut takes from the name alone — the address, the frame and
+    /// local, the state after it all stay — so a row still says what
+    /// and where even when it cannot say the whole type.
+    pub(crate) fit: Option<usize>,
     pub(crate) finds: Finds<'a>,
     pub(crate) nested: &'a HashMap<census::Via, Vec<Entry>>,
     pub(crate) list: &'a bundle::TaskList,
@@ -364,14 +369,14 @@ pub(crate) fn print_future_entry(
                 .map(|s| format!("  {s}"))
                 .unwrap_or_default();
             let mark = if mark_held { "held " } else { "" };
-            writeln!(
-                out,
-                "{pad}{mark}(frame {}, `{}`): {:#x}  {}{state}",
-                h.frame,
-                h.local,
-                h.addr,
-                names::display_future_name(&h.future, listing.impls)
-            )?;
+            let before = format!(
+                "{pad}{mark}(frame {}, `{}`): {:#x}  ",
+                h.frame, h.local, h.addr
+            );
+            let name = names::display_future_name(&h.future, listing.impls);
+            let taken = before.chars().count() + state.chars().count();
+            let name = output::fit_name(&name, taken, listing.fit);
+            writeln!(out, "{before}{name}{state}")?;
             if let Some(waiting) = &h.waiting_on {
                 writeln!(out, "{pad}  waiting on {waiting}")?;
             }
@@ -387,14 +392,14 @@ pub(crate) fn print_future_entry(
                 0 => String::new(),
                 n => format!(", {n} completed and not yet reaped"),
             };
-            writeln!(
-                out,
-                "{pad}- {} at {:#x} (frame {}, `{}`): {live} child{plural} in flight{reaped}",
-                names::fold_type_name(&set.ty, listing.impls),
-                set.addr,
-                set.frame,
-                set.local
-            )?;
+            let after = format!(
+                " at {:#x} (frame {}, `{}`): {live} child{plural} in flight{reaped}",
+                set.addr, set.frame, set.local
+            );
+            let name = names::fold_type_name(&set.ty, listing.impls);
+            let taken = indent + 2 + after.chars().count();
+            let name = output::fit_name(&name, taken, listing.fit);
+            writeln!(out, "{pad}- {name}{after}")?;
             for (child_index, child) in set.children.iter().enumerate() {
                 let Some(future) = &child.future else {
                     writeln!(
@@ -409,12 +414,11 @@ pub(crate) fn print_future_entry(
                     .as_ref()
                     .map(|s| format!("  {s}"))
                     .unwrap_or_default();
-                writeln!(
-                    out,
-                    "{pad}    {:#x}  {}{state}",
-                    child.node,
-                    names::display_future_name(future, listing.impls)
-                )?;
+                let before = format!("{pad}    {:#x}  ", child.node);
+                let name = names::display_future_name(future, listing.impls);
+                let taken = before.chars().count() + state.chars().count();
+                let name = output::fit_name(&name, taken, listing.fit);
+                writeln!(out, "{before}{name}{state}")?;
                 if let Some(waiting) = &child.waiting_on {
                     writeln!(out, "{pad}      waiting on {waiting}")?;
                 }
@@ -438,16 +442,16 @@ pub(crate) fn print_future_entry(
                 len if len != held as u64 => format!(" (the set records {len})"),
                 _ => String::new(),
             };
-            writeln!(
-                out,
-                "{pad}- {} at {:#x} (frame {}, `{}`): {held} task{plural}{short}",
-                names::fold_type_name(&set.ty, listing.impls),
-                set.addr,
-                set.frame,
-                set.local
-            )?;
+            let after = format!(
+                " at {:#x} (frame {}, `{}`): {held} task{plural}{short}",
+                set.addr, set.frame, set.local
+            );
+            let name = names::fold_type_name(&set.ty, listing.impls);
+            let taken = indent + 2 + after.chars().count();
+            let name = output::fit_name(&name, taken, listing.fit);
+            writeln!(out, "{pad}- {name}{after}")?;
             for child in &set.children {
-                writeln!(out, "{pad}    {}", joined_task(child, listing))?;
+                writeln!(out, "{pad}    {}", joined_task(child, listing, indent + 4))?;
             }
         }
     }
@@ -475,17 +479,17 @@ pub(crate) fn task_state(
 
 /// One joined task's row: how the task listing names it, or — for a
 /// task no listing can show — why it is not there to name.
-fn joined_task(child: &census::JoinedTask, listing: &Listing<'_>) -> String {
+fn joined_task(child: &census::JoinedTask, listing: &Listing<'_>, indent: usize) -> String {
     let who = match child.id {
         Some(id) => format!("task {id}"),
         None => format!("task at {:#x}", child.task),
     };
     if let Some(task) = listing.list.tasks.iter().find(|t| t.addr.0 == child.task) {
         let state = task_state(task, listing.polling, listing.blocking_lwps);
-        return format!(
-            "{who}  {}  {state}",
-            future_name(&task.future, listing.impls)
-        );
+        let name = future_name(&task.future, listing.impls);
+        let taken = indent + who.chars().count() + 2 + 2 + state.chars().count();
+        let name = output::fit_name(&name, taken, listing.fit);
+        return format!("{who}  {name}  {state}");
     }
     // Complete means off the runtime's owned list, alive only through
     // the set's entry until its output is taken; alive but unlisted
@@ -936,6 +940,11 @@ pub(crate) struct TaskView<'a> {
     pub(crate) blocking_lwps: &'a HashMap<u64, u32>,
     pub(crate) finds: Finds<'a>,
     pub(crate) tree: &'a CensusTree,
+    /// The width the finds' names are cut to fit within under
+    /// `--futures` ([`Session::fit_width`]); `None` leaves them whole.
+    /// The task's own type line is never cut: it is the one name the
+    /// command is about, so it wraps rather than ends in an ellipsis.
+    pub(crate) fit: Option<usize>,
 }
 
 /// One task as labelled lines — what `task` prints. A row's cells
@@ -1011,6 +1020,7 @@ pub(crate) fn print_task_view(
     // long as the census found it to be.
     let listing = Listing {
         blocking_lwps: view.blocking_lwps,
+        fit: view.fit,
         finds: view.finds,
         nested: &view.tree.nested,
         list: view.list,
@@ -1042,6 +1052,7 @@ pub(crate) fn print_task<T: proc::Target>(
     session: &Session<'_, T>,
     index: usize,
     futures: bool,
+    fit: Option<usize>,
     out: &mut dyn io::Write,
 ) -> Result<()> {
     let census = session.census();
@@ -1060,6 +1071,7 @@ pub(crate) fn print_task<T: proc::Target>(
         blocking_lwps: blocking_lwps(session),
         finds: census.into(),
         tree: session.census_tree(),
+        fit,
     };
     print_task_view(&view, index, futures, out)
 }
@@ -2806,6 +2818,94 @@ mod census_listing_tests {
         assert_eq!(three.held, 0);
     }
 
+    /// Under a fit width, a row's name is cut to the room its other
+    /// columns leave — the address and frame before it, the state after
+    /// it, all kept — on every row kind, and left whole with no width.
+    #[test]
+    fn test_a_fit_width_cuts_the_names_and_keeps_the_columns() {
+        let long = "app::a::very::long::module::path::down::to::the::future::in::question::\
+                    with::generic::arguments::spelled::out::in::full::Type";
+        let mut held_future = held(0, None);
+        held_future.future = long.to_string();
+        held_future.state = Some("Suspend0 — app.rs:9".to_string());
+        let held_list = [held_future];
+        let mut set = future_set(0);
+        set.ty = format!("FuturesUnordered<{long}>");
+        set.children[0].future = Some(long.to_string());
+        let sets = [set];
+        let mut joined_set = join_set(0, 0, vec![]);
+        joined_set.ty = format!("JoinSet<{long}>");
+        let join_sets = [joined_set];
+        let nested = HashMap::new();
+        let list = bundle::TaskList {
+            tasks: vec![],
+            errors: vec![],
+        };
+        let polling = HashMap::new();
+        let blocking = HashMap::new();
+        let impls = hansei_bundle::names::ImplFold::default();
+        let show = |fit: Option<usize>| {
+            let listing = Listing {
+                blocking_lwps: &blocking,
+                fit,
+                finds: Finds {
+                    held: &held_list,
+                    sets: &sets,
+                    join_sets: &join_sets,
+                },
+                nested: &nested,
+                list: &list,
+                polling: &polling,
+                impls: &impls,
+            };
+            let mut out = Vec::new();
+            for entry in [Entry::Held(0), Entry::Set(0), Entry::JoinSet(0)] {
+                print_future_entry(entry, &listing, 0, false, &mut out)
+                    .expect("printing a row succeeds");
+            }
+            String::from_utf8(out).expect("the listing is utf8")
+        };
+
+        // Fitted: every row that carried the long name is exactly the
+        // width, its name ending in an ellipsis, its other columns
+        // intact.
+        let fitted = show(Some(100));
+        let rows: Vec<&str> = fitted.lines().collect();
+        assert_eq!(rows.len(), 5, "{fitted}");
+        for row in [rows[0], rows[1], rows[2], rows[4]] {
+            assert_eq!(row.chars().count(), 100, "{row}");
+            assert!(row.contains('…'), "{row}");
+        }
+        assert!(
+            rows[0].starts_with("(frame 0, `fut`): 0x1000  future app::"),
+            "{fitted}"
+        );
+        assert!(rows[0].ends_with("…  Suspend0 — app.rs:9"), "{fitted}");
+        assert!(rows[1].starts_with("- Futures"), "{fitted}");
+        assert!(
+            rows[1].ends_with(
+                "… at 0x2000 (frame 1, `unordered`): 1 child in flight, \
+                 1 completed and not yet reaped"
+            ),
+            "{fitted}"
+        );
+        assert!(rows[2].starts_with("    0x4000  future app::"), "{fitted}");
+        assert_eq!(
+            rows[3], "    0x4000  <completed, not yet reaped>",
+            "{fitted}"
+        );
+        assert!(rows[4].starts_with("- JoinSet<app::"), "{fitted}");
+        assert!(
+            rows[4].ends_with("… at 0x3000 (frame 0, `workers`): 0 tasks"),
+            "{fitted}"
+        );
+
+        // No width: every name whole.
+        let whole = show(None);
+        assert!(!whole.contains('…'), "{whole}");
+        assert_eq!(whole.matches(long).count(), 4, "{whole}");
+    }
+
     /// A join set's row carries the count the walk reached; what the set
     /// records for itself is appended only when the walk fell short of
     /// it, since that is the row the stderr error belongs to.
@@ -2823,6 +2923,7 @@ mod census_listing_tests {
             let join_sets = std::slice::from_ref(set);
             let listing = Listing {
                 blocking_lwps: &blocking,
+                fit: None,
                 finds: Finds {
                     held: &[],
                     sets: &[],

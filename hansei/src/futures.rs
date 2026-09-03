@@ -430,6 +430,7 @@ impl Blocks<'_> {
         let via = Self::via_of(row);
         let listing = Listing {
             blocking_lwps: self.blocking_lwps,
+            fit: None,
             finds: Finds::from(self.census),
             nested: &self.tree.nested,
             list: self.list,

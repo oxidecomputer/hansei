@@ -62,13 +62,14 @@ pub(crate) fn exec_task<T: proc::Target>(
     session: &Session<'_, T>,
     target: Option<TraceTarget>,
     futures: bool,
+    fit: Option<usize>,
     out: &mut dyn io::Write,
 ) -> Result<()> {
     let index = match target {
         Some(target) => select_task(session, target)?,
         None => cursor_task(session).ok_or_else(|| anyhow!("no task selected"))?,
     };
-    tasks::print_task(session, index, futures, out)
+    tasks::print_task(session, index, futures, fit, out)
 }
 
 /// The task the cursor stands on, if its root is one: a `Task` root,
@@ -835,7 +836,7 @@ mod tests {
         let id = task.task_id.expect("the fixture's tasks carry ids");
 
         let mut out = Vec::new();
-        exec_task(&session, Some(TraceTarget::Task(id)), false, &mut out)
+        exec_task(&session, Some(TraceTarget::Task(id)), false, None, &mut out)
             .expect("a task id selects");
         {
             let c = session.cursor.borrow();
@@ -851,6 +852,7 @@ mod tests {
             &session,
             Some(TraceTarget::Future(task.addr.0)),
             false,
+            None,
             &mut Vec::new(),
         )
         .expect("the header address selects");
@@ -864,6 +866,7 @@ mod tests {
             &session,
             Some(TraceTarget::Future(0x10)),
             false,
+            None,
             &mut Vec::new(),
         )
         .expect_err("a wild address refuses");
@@ -950,6 +953,7 @@ mod tests {
             &session,
             Some(TraceTarget::Task(id)),
             false,
+            None,
             &mut Vec::new(),
         )
         .expect("the task selects again");
@@ -968,6 +972,7 @@ mod tests {
             &session,
             Some(TraceTarget::Task(id)),
             false,
+            None,
             &mut Vec::new(),
         )
         .expect("the task selects");
@@ -1085,6 +1090,7 @@ mod tests {
             &session,
             Some(TraceTarget::Task(ids[0])),
             false,
+            None,
             &mut Vec::new(),
         )
         .expect("the first task selects");
@@ -1151,6 +1157,7 @@ mod tests {
             &session,
             Some(TraceTarget::Future(f1)),
             false,
+            None,
             &mut Vec::new(),
         )
         .expect("an inner frame's base selects");
@@ -1167,6 +1174,7 @@ mod tests {
             &session,
             Some(TraceTarget::Future(f0)),
             false,
+            None,
             &mut Vec::new(),
         )
         .expect("the root frame's base selects");
@@ -1182,6 +1190,7 @@ mod tests {
                 &session,
                 Some(TraceTarget::Future(f1_end)),
                 false,
+                None,
                 &mut Vec::new(),
             )
             .expect("a byte past the inner frame selects");
@@ -1208,11 +1217,13 @@ mod tests {
                 &session,
                 Some(TraceTarget::Task(id)),
                 false,
+                None,
                 &mut Vec::new(),
             )
             .expect("the task selects");
             let mut out = Vec::new();
-            exec_task(&session, None, false, &mut out).expect("bare task prints the cursor's");
+            exec_task(&session, None, false, None, &mut out)
+                .expect("bare task prints the cursor's");
             let text = String::from_utf8(out).expect("the summary is UTF-8");
             assert!(text.starts_with(&format!("task {id}\n")), "{id}: {text}");
             // Under the heading, one labelled line per field, the state
@@ -1244,7 +1255,7 @@ mod tests {
         // `--futures` lists the finds under the counts: a task holding
         // nothing prints the same lines and nothing more.
         let mut out = Vec::new();
-        exec_task(&session, None, true, &mut out).expect("bare task --futures prints");
+        exec_task(&session, None, true, None, &mut out).expect("bare task --futures prints");
         let listed = String::from_utf8(out).expect("the listing is UTF-8");
         assert!(
             listed.contains("\n    held futures: 0\n    join sets: 0\n"),
@@ -1299,6 +1310,7 @@ mod tests {
             &session,
             Some(TraceTarget::Task(id)),
             false,
+            None,
             &mut Vec::new(),
         )
         .expect("a task selects");
@@ -1430,6 +1442,7 @@ mod tests {
             &session,
             Some(TraceTarget::Task(id)),
             false,
+            None,
             &mut Vec::new(),
         )
         .expect("the task selects");
@@ -1480,6 +1493,7 @@ mod tests {
             &session,
             Some(TraceTarget::Task(id)),
             false,
+            None,
             &mut Vec::new(),
         )
         .expect("the task selects");
@@ -1513,6 +1527,7 @@ mod tests {
             &session,
             Some(TraceTarget::Task(id)),
             false,
+            None,
             &mut Vec::new(),
         )
         .expect("a cursor stands");
