@@ -250,12 +250,14 @@ fn member_step<'a, T: Target>(proc: &'a T, node: Node<'a>, name: &str) -> Result
 /// prompt offers after a trailing `.`. They are the members
 /// [`member_step`] would find: the value's own, and, wherever its
 /// auto-deref would look further, the ones it would find there — an
-/// enum's variants and its active payload's members, a pointer's
+/// enum's active variant and its payload's members, a pointer's
 /// target's, the data behind a heap header, a transparent wrapper's
 /// inner — in that order, each name once. Compiler slots (`__…`) are
 /// left out, except a tuple's fields, offered as the `.0` the grammar
 /// reads. A value that cannot be followed (an unreadable pointer, an
-/// undecodable variant) ends the listing with what was found so far.
+/// undecodable variant) ends the listing with what was found so far —
+/// an enum whose discriminant cannot be read with every variant, any
+/// of which could be the live one.
 pub fn member_names<T: Target>(proc: &T, node: &Node<'_>) -> Vec<String> {
     let mut v = match node {
         Node::Entry { .. } => return vec!["0".to_string(), "1".to_string()],
@@ -279,15 +281,22 @@ pub fn member_names<T: Target>(proc: &T, node: &Node<'_>) -> Vec<String> {
             }
         }
         match v.ty.kind() {
-            TypeKind::Enum => {
-                for variant in v.ty.variants() {
-                    offer(&mut names, variant.name.to_string());
+            TypeKind::Enum => match v.active_variant() {
+                // Only the live variant: `.name` refuses the others,
+                // so offering them would offer what cannot resolve.
+                Ok((active, payload)) => {
+                    offer(&mut names, active.to_string());
+                    v = payload;
                 }
-                match v.active_variant() {
-                    Ok((_, payload)) => v = payload,
-                    Err(_) => break,
+                // With no discriminant to read, any of them could be
+                // the one.
+                Err(_) => {
+                    for variant in v.ty.variants() {
+                        offer(&mut names, variant.name.to_string());
+                    }
+                    break;
                 }
-            }
+            },
             TypeKind::Pointer => match v.deref_ptr(proc) {
                 Ok(target) => v = target,
                 Err(_) => break,
@@ -701,7 +710,7 @@ mod tests {
 
     /// The names offered after a `.` are the ones `.name` would then
     /// accept: a struct's own; a wrapper's own and then its inner's; an
-    /// enum's variants and its active payload's; a pointer's target's;
+    /// enum's active variant and its payload's; a pointer's target's;
     /// a heap header's own and the data's behind it. Compiler slots
     /// are left out, a tuple's fields offered as digits, a map entry's
     /// halves as `0` and `1`.
@@ -726,12 +735,13 @@ mod tests {
         let tuple = Value::new(v.ty(TUPLE2).unwrap(), 0x100, &bytes);
         assert_eq!(names(&mem, tuple), ["0", "1"]);
 
-        // Msg::A(Point { 7, 9 }): the variants, then the payload's.
+        // Msg::A(Point { 7, 9 }): the live variant, then its payload's
+        // — B and C are not offered, since `.B` would refuse.
         let mut bytes = vec![0u8; 16];
         bytes[8..12].copy_from_slice(&7u32.to_le_bytes());
         bytes[12..16].copy_from_slice(&9u32.to_le_bytes());
         let msg = Value::new(v.ty(MSG).unwrap(), 0x100, &bytes);
-        assert_eq!(names(&mem, msg), ["A", "B", "C", "x", "y"]);
+        assert_eq!(names(&mem, msg), ["A", "x", "y"]);
 
         let mem = FakeMem::new()
             .at(0x1000, u64s(&[0x2000]))

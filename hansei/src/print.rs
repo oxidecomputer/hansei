@@ -368,12 +368,14 @@ mod tests {
         // #0 is the leaf, a oneshot receiver: its one member, and —
         // since `.strong` resolves at the root through that single
         // member, the Option and the Arc — everything reachable that
-        // way, which is exactly what one step in offers.
+        // way, which is exactly what one step in offers. The Option
+        // is `Some`, and only that variant is offered.
         let root = members(&[]).unwrap();
         assert_eq!(root[0], "inner", "{root:?}");
-        for expected in ["None", "Some", "strong", "weak", "data", "state", "value"] {
+        for expected in ["Some", "strong", "weak", "data", "state", "value"] {
             assert!(root.iter().any(|n| n == expected), "{root:?}");
         }
+        assert!(!root.iter().any(|n| n == "None"), "{root:?}");
         assert_eq!(members(&["inner."]).unwrap(), root[1..]);
         // The spelled-out `.` reads the same frame.
         assert_eq!(members(&["."]).unwrap(), root);
