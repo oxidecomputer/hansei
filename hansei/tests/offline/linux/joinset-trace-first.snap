@@ -7,4 +7,4 @@ description: "`trace 3 -n` over linux/joinset"
 #1  async fn      tokio::task::join_set::JoinSet::join_next<u32>
       awaiting at tokio-1.52.4/src/task/join_set.rs:297 (Suspend0, 0 locals)
 #2  async fn      joinset::driver
-      awaiting at src/bin/joinset.rs:79 (Suspend1, 6 locals)
+      awaiting at src/bin/joinset.rs:83 (Suspend1, 6 locals)

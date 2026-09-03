@@ -1,3 +1,7 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
 //! The async debug bundle: a serialized description of a debug binary's
 //! tokio runtime, keyed by v0 mangled symbol names so a separately-compiled
 //! target binary can be interpreted without any address ever crossing

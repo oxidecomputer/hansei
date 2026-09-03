@@ -5,4 +5,4 @@ description: "`trace 1 -n` over linux/local-set-io"
 #0  future        tokio::io::util::read::Read<tokio::net::unix::stream::UnixStream>
       (<no_state>, 2 locals)
 #1  async fn      local_set_io::local_reader
-      awaiting at src/bin/local-set-io.rs:28 (Suspend0, 2 locals)
+      awaiting at src/bin/local-set-io.rs:32 (Suspend0, 2 locals)

@@ -4,11 +4,11 @@ source: hansei-runtime/tests/two_binary.rs
 fingerprint 15/15
 workers 3
 task 3 idle nested_await::outer::{async_fn_env#0}
-  spawned src/bin/nested-await.rs:33:21
-  defined src/bin/nested-await.rs:16
-  await nested_await::outer::{async_fn_env#0} Suspend0 @ src/bin/nested-await.rs:19
-  await nested_await::middle::{async_fn_env#0} Suspend0 @ src/bin/nested-await.rs:12
-  await nested_await::leaf::{async_fn_env#0} Suspend0 @ src/bin/nested-await.rs:8
+  spawned src/bin/nested-await.rs:37:21
+  defined src/bin/nested-await.rs:20
+  await nested_await::outer::{async_fn_env#0} Suspend0 @ src/bin/nested-await.rs:23
+  await nested_await::middle::{async_fn_env#0} Suspend0 @ src/bin/nested-await.rs:16
+  await nested_await::leaf::{async_fn_env#0} Suspend0 @ src/bin/nested-await.rs:12
   await tokio::sync::oneshot::Receiver<u32>
   end leaf
-  site src/bin/nested-await.rs:19
+  site src/bin/nested-await.rs:23

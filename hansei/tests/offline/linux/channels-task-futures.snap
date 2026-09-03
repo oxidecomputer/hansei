@@ -5,11 +5,11 @@ description: "`task 3 --futures` over linux/channels"
 task 3
     state: idle
     type: async fn channels::notify_waiter
-    awaiting at: src/bin/channels.rs:30
+    awaiting at: src/bin/channels.rs:34
     waiting on: future tokio::sync::notify::Notified
     waker: <empty>
-    spawned at: src/bin/channels.rs:75:23
-    defined at: src/bin/channels.rs:17
+    spawned at: src/bin/channels.rs:79:23
+    defined at: src/bin/channels.rs:21
     held futures: 1
         (frame 1, `notified`): 0xADDR  future tokio::sync::notify::Notified
     join sets: 0

@@ -1,3 +1,7 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
 //! A typed view over a buffer of target memory: [`Value`] pairs a bundle
 //! type with the bytes of one value and the address they were read from, and
 //! navigates the value's structure -- members, pointees, array elements, enum

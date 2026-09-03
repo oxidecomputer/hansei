@@ -1,3 +1,7 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
 //! Leaf renderers: one machine word decoded through a
 //! [`ScalarDecode`](crate::debug_type::ScalarDecode), a code pointer resolved
 //! to a symbol, a UTF-8 string, a byte array in a standard notation -- plus the

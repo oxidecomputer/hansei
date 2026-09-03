@@ -9,4 +9,4 @@ Waiting on: a tokio::sync::Semaphore (semaphore 0xADDR): 1 permit requested, 0 a
 #1  async fn      tokio::sync::semaphore::Semaphore::acquire
       awaiting at tokio-1.47.5/src/sync/semaphore.rs:591 (Suspend0, 1 local)
 #2  async fn      foreign_runtime::joined
-      awaiting at src/bin/foreign-runtime.rs:36 (Suspend0, 0 locals)
+      awaiting at src/bin/foreign-runtime.rs:40 (Suspend0, 0 locals)

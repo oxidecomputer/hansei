@@ -6,25 +6,25 @@ task 1
 #0  future        tokio::sync::notify::Notified
       (<no_state>, 4 locals)
 #1  async fn      walk_shapes::deep
-      awaiting at src/bin/walk-shapes.rs:88 (Suspend0, 1 local)
+      awaiting at src/bin/walk-shapes.rs:92 (Suspend0, 1 local)
 #2  future        walk_shapes::WrapE<walk_shapes::deep>
       (Running, 2 locals)
 #3  future        walk_shapes::WrapS<walk_shapes::WrapE<walk_shapes::deep>>
       (<no_state>, 2 locals)
 #4  async fn      walk_shapes::chained
-      awaiting at src/bin/walk-shapes.rs:103 (Suspend0, 1 local; holds 1 pending future)
+      awaiting at src/bin/walk-shapes.rs:107 (Suspend0, 1 local; holds 1 pending future)
 
 task 2
 #0  future        tokio::sync::notify::Notified
       (<no_state>, 4 locals)
 #1  async fn      walk_shapes::holder
-      awaiting at src/bin/walk-shapes.rs:125 (Suspend1, 3 locals)
+      awaiting at src/bin/walk-shapes.rs:129 (Suspend1, 3 locals)
 
 task 3
 #0  future        tokio::sync::notify::Notified
       (<no_state>, 4 locals)
 #1  async fn      walk_shapes::abandoner
-      awaiting at src/bin/walk-shapes.rs:147 (Suspend1, 4 locals; holds 1 pending future)
+      awaiting at src/bin/walk-shapes.rs:151 (Suspend1, 4 locals; holds 1 pending future)
 
 task 4
 Waiting on: a tokio::sync::Mutex (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: a non-task waiter, task 4
@@ -38,7 +38,7 @@ Waiting on: a tokio::sync::Mutex (semaphore 0xADDR): 1 permit requested, 0 avail
 #3  async fn      tokio::sync::mutex::Mutex::lock<()>
       awaiting at tokio-1.52.4/src/sync/mutex.rs:455 (Suspend0, 0 locals)
 #4  async fn      walk_shapes::victim
-      awaiting at src/bin/walk-shapes.rs:155 (Suspend1, 1 local)
+      awaiting at src/bin/walk-shapes.rs:159 (Suspend1, 1 local)
 
 task 5
 Waiting on: a tokio::sync::Semaphore (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 5, task 6, task 10
@@ -48,7 +48,7 @@ Waiting on: a tokio::sync::Semaphore (semaphore 0xADDR): 1 permit requested, 0 a
 #1  async fn      tokio::sync::semaphore::Semaphore::acquire
       awaiting at tokio-1.52.4/src/sync/semaphore.rs:597 (Suspend0, 1 local)
 #2  async fn      walk_shapes::blocked
-      awaiting at src/bin/walk-shapes.rs:161 (Suspend0, 1 local)
+      awaiting at src/bin/walk-shapes.rs:165 (Suspend0, 1 local)
 
 task 6
 Waiting on: a tokio::sync::Semaphore (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 5, task 6, task 10
@@ -58,13 +58,13 @@ Waiting on: a tokio::sync::Semaphore (semaphore 0xADDR): 1 permit requested, 0 a
 #1  async fn      tokio::sync::semaphore::Semaphore::acquire
       awaiting at tokio-1.52.4/src/sync/semaphore.rs:597 (Suspend0, 1 local)
 #2  async fn      walk_shapes::blocked
-      awaiting at src/bin/walk-shapes.rs:161 (Suspend0, 1 local)
+      awaiting at src/bin/walk-shapes.rs:165 (Suspend0, 1 local)
 
 task 7
 #0  future        tokio::sync::notify::Notified
       (<no_state>, 4 locals)
 #1  async fn      walk_shapes::local_parker
-      awaiting at src/bin/walk-shapes.rs:194 (Suspend0, 1 local)
+      awaiting at src/bin/walk-shapes.rs:198 (Suspend0, 1 local)
 
 task 8
 Waiting on: task 7
@@ -72,11 +72,11 @@ Waiting on: task 7
 #0  future        tokio::runtime::task::join::JoinHandle<u32>
       waiting on task 7
 #1  async fn      walk_shapes::joiner
-      awaiting at src/bin/walk-shapes.rs:201 (Suspend0, 0 locals)
+      awaiting at src/bin/walk-shapes.rs:205 (Suspend0, 0 locals)
 
 task 9
 #0  async fn      walk_shapes::side_parker
-      state Unresumed — src/bin/walk-shapes.rs:204
+      state Unresumed — src/bin/walk-shapes.rs:208
 
 task 10
 Waiting on: a tokio::sync::Semaphore (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 5, task 6, task 10
@@ -86,5 +86,5 @@ Waiting on: a tokio::sync::Semaphore (semaphore 0xADDR): 1 permit requested, 0 a
 #1  async fn      tokio::sync::semaphore::Semaphore::acquire
       awaiting at tokio-1.52.4/src/sync/semaphore.rs:597 (Suspend0, 1 local)
 #2  async fn      walk_shapes::hidden_blocked
-      awaiting at src/bin/walk-shapes.rs:167 (Suspend0, 1 local)
+      awaiting at src/bin/walk-shapes.rs:171 (Suspend0, 1 local)
 [Executed against 10 tasks, 0 failed]

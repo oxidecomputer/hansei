@@ -6,49 +6,49 @@ program: local-set-io
 [tasks]
 task: local_set_io::local_reader::{async_fn_env#0}
   kind: AsyncFn
-  decl: local-set-io.rs:24
+  decl: local-set-io.rs:28
   entries: 1
   symbols-per-entry: 6
   stage: Stage<local_set_io::local_reader::{async_fn_env#0}>
   variants:
-    Unresumed @ local-set-io.rs:24
-    Returned @ local-set-io.rs:29
-    Panicked @ local-set-io.rs:29
-    Suspend0 @ local-set-io.rs:28
+    Unresumed @ local-set-io.rs:28
+    Returned @ local-set-io.rs:33
+    Panicked @ local-set-io.rs:33
+    Suspend0 @ local-set-io.rs:32
 task: local_set_io::local_writer::{async_fn_env#0}
   kind: AsyncFn
-  decl: local-set-io.rs:45
+  decl: local-set-io.rs:49
   entries: 1
   symbols-per-entry: 6
   stage: Stage<local_set_io::local_writer::{async_fn_env#0}>
   variants:
-    Unresumed @ local-set-io.rs:45
-    Returned @ local-set-io.rs:58
-    Panicked @ local-set-io.rs:58
-    Suspend0 @ local-set-io.rs:47
-    Suspend1 @ local-set-io.rs:56
+    Unresumed @ local-set-io.rs:49
+    Returned @ local-set-io.rs:62
+    Panicked @ local-set-io.rs:62
+    Suspend0 @ local-set-io.rs:51
+    Suspend1 @ local-set-io.rs:60
 task: local_set_io::local_watcher::{async_fn_env#0}
   kind: AsyncFn
-  decl: local-set-io.rs:33
+  decl: local-set-io.rs:37
   entries: 1
   symbols-per-entry: 6
   stage: Stage<local_set_io::local_watcher::{async_fn_env#0}>
   variants:
-    Unresumed @ local-set-io.rs:33
-    Returned @ local-set-io.rs:38
-    Panicked @ local-set-io.rs:38
-    Suspend0 @ local-set-io.rs:36
+    Unresumed @ local-set-io.rs:37
+    Returned @ local-set-io.rs:42
+    Panicked @ local-set-io.rs:42
+    Suspend0 @ local-set-io.rs:40
 task: local_set_io::reader::{async_fn_env#0}
   kind: AsyncFn
-  decl: local-set-io.rs:67
+  decl: local-set-io.rs:71
   entries: 2
   symbols-per-entry: 6,6
   stage: Stage<local_set_io::reader::{async_fn_env#0}>
   variants:
-    Unresumed @ local-set-io.rs:67
-    Returned @ local-set-io.rs:72
-    Panicked @ local-set-io.rs:72
-    Suspend0 @ local-set-io.rs:71
+    Unresumed @ local-set-io.rs:71
+    Returned @ local-set-io.rs:76
+    Panicked @ local-set-io.rs:76
+    Suspend0 @ local-set-io.rs:75
 
 [dyn-futures]
 dyn: core::future::poll_fn::PollFn<tokio::runtime::scheduler::current_thread::{impl#0}::block_on::{closure#0}::{closure_env#0}<local_set_io::main::{async_block_env#0}>> (poll)

@@ -1,3 +1,7 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
 //! The `futures` command: every future the census found in flight
 //! beside the tasks' own await chains, listed as one population rather
 //! than under the tasks that hold them.

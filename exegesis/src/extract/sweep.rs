@@ -1,3 +1,7 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
 //! Phase 1 of extraction: one sweep over every subprogram classifies task
 //! vtable fns into per-`(T, S)` seeds, collects `<T as Future>::poll` impls
 //! and `drop_glue::<T>` instantiations for the dyn-future table, and records

@@ -1,3 +1,7 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
 //! The walk-contract binder: resolve every navigation hansei's runtime
 //! walk executes against this target's own DWARF, at extraction, and
 //! record the bound paths in the bundle's [`WalksTable`] as data.

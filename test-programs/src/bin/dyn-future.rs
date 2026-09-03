@@ -1,3 +1,7 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
 //! A `Pin<Box<dyn Future>>` awaitee plus a `JoinSet`: exercises
 //! the dyn-future join table, since the boxed future's concrete type is
 //! only reachable through its vtable's poll/drop_glue symbols.

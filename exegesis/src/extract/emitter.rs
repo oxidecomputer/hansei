@@ -1,3 +1,7 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
 //! Phase 3 of extraction: the [`Emitter`] drains a worklist of reachable
 //! DWARF types into bundle [`TypeDef`]s, attaches each type's display
 //! program through the detection layer, pairs coroutine awaits with the

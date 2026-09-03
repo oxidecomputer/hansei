@@ -1,3 +1,7 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
 //! The on-box suite that holds the portable illumos core reader to
 //! libproc, the reference reader, on the one machine that has both. It
 //! compiles nowhere else, so `cargo test -p proc` runs it on the box

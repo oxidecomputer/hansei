@@ -6,13 +6,13 @@ task 3
 #0  future        gen_0007::GfSel3<core::future::pending::Pending<u64>, core::future::pending::Pending<u64>, core::future::pending::Pending<u64>>
       (<no_state>, 0 locals)
 #1  async fn      gen_0007::driver_00
-      awaiting at src/bin/gen-0007.rs:125 (Suspend0, 5 locals)
+      awaiting at src/bin/gen-0007.rs:129 (Suspend0, 5 locals)
 
 task 4
 #0  future        tokio::sync::notify::Notified
       (<no_state>, 4 locals)
 #1  async fn      gen_0007::member_02
-      awaiting at src/bin/gen-0007.rs:144 (Suspend0, 3 locals)
+      awaiting at src/bin/gen-0007.rs:148 (Suspend0, 3 locals)
 
 task 5
 Waiting on: timer (deadline TS on the target's monotonic clock)
@@ -20,17 +20,17 @@ Waiting on: timer (deadline TS on the target's monotonic clock)
 #0  future        tokio::time::sleep::Sleep
       waiting on timer (deadline TS on the target's monotonic clock)
 #1  async fn      gen_0007::member_03
-      awaiting at src/bin/gen-0007.rs:166 (Suspend0, 5 locals; holds 1 pending future)
+      awaiting at src/bin/gen-0007.rs:170 (Suspend0, 5 locals; holds 1 pending future)
 
 task 6
 #0  future        gen_0007::GfSel2<core::future::pending::Pending<u64>, core::future::pending::Pending<u64>>
       (<no_state>, 0 locals)
 #1  async fn      gen_0007::member_06
-      awaiting at src/bin/gen-0007.rs:180 (Suspend0, 3 locals)
+      awaiting at src/bin/gen-0007.rs:184 (Suspend0, 3 locals)
 
 task 7
 #0  future        gen_0007::GfSel2<core::future::pending::Pending<u64>, core::future::pending::Pending<u64>>
       (<no_state>, 0 locals)
 #1  async fn      gen_0007::member_07
-      awaiting at src/bin/gen-0007.rs:198 (Suspend0, 4 locals; holds 1 pending future)
+      awaiting at src/bin/gen-0007.rs:202 (Suspend0, 4 locals; holds 1 pending future)
 [Executed against 5 tasks, 0 failed]

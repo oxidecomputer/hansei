@@ -1,3 +1,7 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
 //! The `v1_53` timer family. tokio 1.53 restructured the timer: the entry
 //! holds its `TimerShared` directly — the `registered` flag and the cached
 //! `deadline` `Instant` are gone — and registration collapsed into the

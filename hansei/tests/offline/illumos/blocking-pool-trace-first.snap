@@ -5,4 +5,4 @@ description: "`trace 3 -n` over illumos/blocking-pool"
 mid-poll, but lwp 4's walked stack holds no frame in the task's poll symbol (its walk ended: no CFI for /lib/amd64/libc.so.1 (none of its pages are in the core, and the backing file is not on this machine); the frame-pointer walk found nothing below 0xADDR); `threads 4` shows the raw stack
 
 #0  future        Option<blocking_pool::main::{async_block#0}::{closure_env#0}>
-      constructed at src/bin/blocking-pool.rs:32 (None, 0 locals)
+      constructed at src/bin/blocking-pool.rs:36 (None, 0 locals)

@@ -6,20 +6,20 @@ program: unordered
 [tasks]
 task: unordered::driver::{async_fn_env#0}
   kind: AsyncFn
-  decl: unordered.rs:78
+  decl: unordered.rs:82
   entries: 2
   symbols-per-entry: 6,6
   stage: Stage<unordered::driver::{async_fn_env#0}>
   variants:
-    Unresumed @ unordered.rs:78
-    Returned @ unordered.rs:124
-    Panicked @ unordered.rs:124
-    Suspend0 @ unordered.rs:115
-    Suspend1 @ unordered.rs:118
-    Suspend2 @ unordered.rs:119
-    Suspend3 @ unordered.rs:120
-    Suspend4 @ unordered.rs:122
-    Suspend5 @ unordered.rs:123
+    Unresumed @ unordered.rs:82
+    Returned @ unordered.rs:128
+    Panicked @ unordered.rs:128
+    Suspend0 @ unordered.rs:119
+    Suspend1 @ unordered.rs:122
+    Suspend2 @ unordered.rs:123
+    Suspend3 @ unordered.rs:124
+    Suspend4 @ unordered.rs:126
+    Suspend5 @ unordered.rs:127
 
 [dyn-futures]
 dyn: core::future::poll_fn::PollFn<tokio::runtime::scheduler::current_thread::{impl#0}::block_on::{closure#0}::{closure_env#0}<unordered::main::{async_block_env#0}>> (poll)

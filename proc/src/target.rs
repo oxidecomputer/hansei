@@ -1,3 +1,7 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
 //! [`Proc`]: whichever backend can read the core in hand.
 //!
 //! A core is identified by what wrote it, not by what is reading it, so

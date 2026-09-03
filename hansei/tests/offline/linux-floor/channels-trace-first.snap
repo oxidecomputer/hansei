@@ -5,4 +5,4 @@ description: "`trace 3 -n` over linux-floor/channels"
 #0  future        tokio::sync::notify::Notified
       (<no_state>, 4 locals)
 #1  async fn      channels::notify_waiter
-      awaiting at src/bin/channels.rs:30 (Suspend0, 2 locals; holds 1 pending future)
+      awaiting at src/bin/channels.rs:34 (Suspend0, 2 locals; holds 1 pending future)

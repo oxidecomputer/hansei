@@ -6,39 +6,39 @@ program: joinset
 [tasks]
 task: joinset::driver::{async_fn_env#0}
   kind: AsyncFn
-  decl: joinset.rs:44
+  decl: joinset.rs:48
   entries: 2
   symbols-per-entry: 6,6
   stage: Stage<joinset::driver::{async_fn_env#0}>
   variants:
-    Unresumed @ joinset.rs:44
-    Returned @ joinset.rs:83
-    Panicked @ joinset.rs:83
-    Suspend0 @ joinset.rs:74
-    Suspend1 @ joinset.rs:79
+    Unresumed @ joinset.rs:48
+    Returned @ joinset.rs:87
+    Panicked @ joinset.rs:87
+    Suspend0 @ joinset.rs:78
+    Suspend1 @ joinset.rs:83
 task: joinset::member::{async_fn_env#0}
   kind: AsyncFn
-  decl: joinset.rs:27
+  decl: joinset.rs:31
   entries: 2
   symbols-per-entry: 6,6
   stage: Stage<joinset::member::{async_fn_env#0}>
   variants:
-    Unresumed @ joinset.rs:27
-    Returned @ joinset.rs:32
-    Panicked @ joinset.rs:32
-    Suspend0 @ joinset.rs:29
-    Suspend1 @ joinset.rs:30
+    Unresumed @ joinset.rs:31
+    Returned @ joinset.rs:36
+    Panicked @ joinset.rs:36
+    Suspend0 @ joinset.rs:33
+    Suspend1 @ joinset.rs:34
 task: joinset::finisher::{async_fn_env#0}
   kind: AsyncFn
-  decl: joinset.rs:39
+  decl: joinset.rs:43
   entries: 2
   symbols-per-entry: 6,6
   stage: Stage<joinset::finisher::{async_fn_env#0}>
   variants:
-    Unresumed @ joinset.rs:39
-    Returned @ joinset.rs:42
-    Panicked @ joinset.rs:42
-    Suspend0 @ joinset.rs:40
+    Unresumed @ joinset.rs:43
+    Returned @ joinset.rs:46
+    Panicked @ joinset.rs:46
+    Suspend0 @ joinset.rs:44
 
 [dyn-futures]
 dyn: core::future::poll_fn::PollFn<tokio::runtime::scheduler::current_thread::{impl#0}::block_on::{closure#0}::{closure_env#0}<joinset::main::{async_block_env#0}>> (poll)

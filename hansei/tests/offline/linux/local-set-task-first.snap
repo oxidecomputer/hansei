@@ -4,13 +4,13 @@ description: "`task 1` over linux/local-set"
 ---
 task 1
     state: idle
-    owner: local set 0 @ 0xADDR (lwp 1609246)
+    owner: local set 0 @ 0xADDR (lwp 3637697)
     type: async fn local_set::local_sleeper
-    awaiting at: src/bin/local-set.rs:16
+    awaiting at: src/bin/local-set.rs:20
     waiting on: timer (deadline TS on the target's monotonic clock)
     waker: timer 0xADDR
         timer entry 0xADDR in the wheel, registered
-    spawned at: src/bin/local-set.rs:46:29
-    defined at: src/bin/local-set.rs:13
+    spawned at: src/bin/local-set.rs:50:29
+    defined at: src/bin/local-set.rs:17
     held futures: 0
     join sets: 0

@@ -5,10 +5,10 @@ description: "`task 3 --futures` over illumos/nested-await"
 task 3
     state: idle
     type: async fn nested_await::outer
-    awaiting at: src/bin/nested-await.rs:19
+    awaiting at: src/bin/nested-await.rs:23
     waiting on: future tokio::sync::oneshot::Receiver<u32>
     waker: <empty>
-    spawned at: src/bin/nested-await.rs:33:21
-    defined at: src/bin/nested-await.rs:16
+    spawned at: src/bin/nested-await.rs:37:21
+    defined at: src/bin/nested-await.rs:20
     held futures: 0
     join sets: 0

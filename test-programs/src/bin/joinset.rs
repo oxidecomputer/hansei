@@ -1,3 +1,7 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
 //! Tasks a `JoinSet` holds (the `hansei tasks --futures` census): a
 //! driver parked in `join_next` while the tasks it spawned onto the set
 //! park in a shared `Notify`. Unlike a `FuturesUnordered`'s children,

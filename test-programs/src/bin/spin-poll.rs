@@ -1,3 +1,7 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
 //! One spawned task caught mid-poll: it commits a single await, then
 //! spins forever in a synchronous section of its poll — the shape whose
 //! trace stops at the last committed await while the truth of what the

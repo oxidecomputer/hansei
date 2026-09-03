@@ -1,3 +1,7 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
 //! The `print` command: a local of the cursor frame, or memory at an
 //! address read as a named type, rendered as a typed value, and paths
 //! into it — the answer to every `...` the renderer elides.

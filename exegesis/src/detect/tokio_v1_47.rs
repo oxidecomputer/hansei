@@ -1,3 +1,7 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
 //! The timer detectors for tokio 1.47 and 1.48: the `TimerEntry` that
 //! keeps a `registered` flag and a cached `deadline` `Instant` beside its
 //! lazily-registered `TimerShared`, the `Sleep` whose `entry` is that

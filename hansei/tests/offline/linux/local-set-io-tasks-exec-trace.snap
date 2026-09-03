@@ -6,7 +6,7 @@ task 1
 #0  future        tokio::io::util::read::Read<tokio::net::unix::stream::UnixStream>
       (<no_state>, 2 locals)
 #1  async fn      local_set_io::local_reader
-      awaiting at src/bin/local-set-io.rs:28 (Suspend0, 2 locals)
+      awaiting at src/bin/local-set-io.rs:32 (Suspend0, 2 locals)
 
 task 2
 #0  future        tokio::runtime::io::scheduled_io::Readiness
@@ -20,17 +20,17 @@ task 2
 #4  async fn      tokio::net::unix::stream::UnixStream::readable
       awaiting at tokio-1.52.4/src/net/unix/stream.rs:234 (Suspend0, 0 locals)
 #5  async fn      local_set_io::local_watcher
-      awaiting at src/bin/local-set-io.rs:36 (Suspend0, 2 locals)
+      awaiting at src/bin/local-set-io.rs:40 (Suspend0, 2 locals)
 
 task 3
 #0  future        tokio::io::util::write_all::WriteAll<tokio::net::unix::stream::UnixStream>
       (<no_state>, 2 locals)
 #1  async fn      local_set_io::local_writer
-      awaiting at src/bin/local-set-io.rs:56 (Suspend1, 2 locals)
+      awaiting at src/bin/local-set-io.rs:60 (Suspend1, 2 locals)
 
 task 4
 #0  future        tokio::io::util::read::Read<tokio::net::unix::stream::UnixStream>
       (<no_state>, 2 locals)
 #1  async fn      local_set_io::reader
-      awaiting at src/bin/local-set-io.rs:71 (Suspend0, 2 locals)
+      awaiting at src/bin/local-set-io.rs:75 (Suspend0, 2 locals)
 [Executed against 4 tasks, 0 failed]

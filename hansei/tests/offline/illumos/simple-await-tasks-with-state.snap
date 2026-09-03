@@ -3,5 +3,5 @@ source: hansei/src/offline.rs
 description: "`tasks --with state idle` over illumos/simple-await"
 ---
 ID  STATE  AWAITING AT                 WAITING ON                                  FUTURE
-3   idle   src/bin/simple-await.rs:40  future tokio::sync::oneshot::Receiver<u32>  async fn simple_await::work
+3   idle   src/bin/simple-await.rs:44  future tokio::sync::oneshot::Receiver<u32>  async fn simple_await::work
 [1 task]

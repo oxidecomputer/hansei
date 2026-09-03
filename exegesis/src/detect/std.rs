@@ -1,3 +1,7 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
 //! Detectors for std/core/alloc types, plus the shape-keyed structural
 //! chain (trait-object and function pointers, the bare scalar newtype).
 //! Everything here describes a layout the *toolchain* owns: a rustc or

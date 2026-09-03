@@ -1,3 +1,7 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
 //! `select!` and `join!` shapes: two spawned tasks suspended
 //! inside combinator-generated futures, parked deterministically on
 //! oneshots whose senders are intentionally leaked.

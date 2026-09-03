@@ -3,8 +3,8 @@ source: hansei/src/offline.rs
 description: "`tasks --with state idle` over illumos/local-set-io"
 ---
 ID  STATE  RT  AWAITING AT                 WAITING ON           FUTURE
-1   idle   1   src/bin/local-set-io.rs:28  io fd 11 (readable)  async fn local_set_io::local_reader
-2   idle   1   src/bin/local-set-io.rs:36  io fd 13 (readable)  async fn local_set_io::local_watcher
-3   idle   1   src/bin/local-set-io.rs:56  io fd 15 (writable)  async fn local_set_io::local_writer
-4   idle   0   src/bin/local-set-io.rs:71  io fd 17 (readable)  async fn local_set_io::reader
+1   idle   1   src/bin/local-set-io.rs:32  io fd 11 (readable)  async fn local_set_io::local_reader
+2   idle   1   src/bin/local-set-io.rs:40  io fd 13 (readable)  async fn local_set_io::local_watcher
+3   idle   1   src/bin/local-set-io.rs:60  io fd 15 (writable)  async fn local_set_io::local_writer
+4   idle   0   src/bin/local-set-io.rs:75  io fd 17 (readable)  async fn local_set_io::reader
 [4 tasks]

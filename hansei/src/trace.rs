@@ -1,3 +1,7 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
 //! The `trace` command: await chains rendered one line per future,
 //! for a task by id or a lone future by address.
 
@@ -2815,7 +2819,7 @@ mod trace_render_tests {
                 false
             ),
             "#0  async fn      walk_shapes::side_parker
-      state Unresumed — src/bin/walk-shapes.rs:204
+      state Unresumed — src/bin/walk-shapes.rs:208
 "
         );
     }
@@ -2838,13 +2842,13 @@ mod trace_render_tests {
             "#0  future        tokio::sync::notify::Notified
       (<no_state>, 4 locals)
 #1  async fn      walk_shapes::deep
-      awaiting at src/bin/walk-shapes.rs:88 (Suspend0, 1 local)
+      awaiting at src/bin/walk-shapes.rs:92 (Suspend0, 1 local)
 #2  future        walk_shapes::WrapE<walk_shapes::deep>
       (Running, 2 locals)
 #3  future        walk_shapes::WrapS<walk_shapes::WrapE<walk_shapes::deep>>
       (<no_state>, 2 locals)
 #4  async fn      walk_shapes::chained
-      awaiting at src/bin/walk-shapes.rs:103 (Suspend0, 1 local; holds 1 pending future)
+      awaiting at src/bin/walk-shapes.rs:107 (Suspend0, 1 local; holds 1 pending future)
 "
         );
     }
@@ -2863,7 +2867,7 @@ mod trace_render_tests {
             "#0  future        tokio::sync::oneshot::Receiver<u32>
       (<no_state>, 1 local)
 #1  async fn      simple_await::work
-      awaiting at src/bin/simple-await.rs:40 (Suspend1, 12 locals)
+      awaiting at src/bin/simple-await.rs:44 (Suspend1, 12 locals)
 "
         );
     }
@@ -2894,11 +2898,11 @@ mod trace_render_tests {
 #3  async fn      tokio::sync::mutex::Mutex::lock<()>
       awaiting at tokio-1.52.4/src/sync/mutex.rs:455 (Suspend0, 0 locals)
 #4  async fn      futurelock::do_async_thing
-      awaiting at src/bin/futurelock.rs:78 (Suspend0, 2 locals)
+      awaiting at src/bin/futurelock.rs:82 (Suspend0, 2 locals)
 #5  async fn      futurelock::do_stuff
-      awaiting at src/bin/futurelock.rs:70 (Suspend1, 3 locals; holds 1 pending future)
+      awaiting at src/bin/futurelock.rs:74 (Suspend1, 3 locals; holds 1 pending future)
 #6  async block   futurelock::main::{async_block#0}
-      awaiting at src/bin/futurelock.rs:28 (Suspend1, 1 local)
+      awaiting at src/bin/futurelock.rs:32 (Suspend1, 1 local)
 "
         );
     }
@@ -2939,9 +2943,9 @@ mod trace_render_tests {
             "#0  future        tokio::sync::oneshot::Receiver<u32>
       (<no_state>, 1 local)
 #1  async fn      dyn_future::boxed_leaf [dyn]
-      awaiting at src/bin/dyn-future.rs:12 (Suspend0, 0 locals)
+      awaiting at src/bin/dyn-future.rs:16 (Suspend0, 0 locals)
 #2  async fn      dyn_future::driver
-      awaiting at src/bin/dyn-future.rs:36 (Suspend0, 1 local)
+      awaiting at src/bin/dyn-future.rs:40 (Suspend0, 1 local)
 "
         );
     }
@@ -2965,9 +2969,9 @@ mod trace_render_tests {
             "#0  future        tokio::sync::oneshot:…
       (<no_state>, 1 local)
 #1  async fn      dyn_future::box… [dyn]
-      awaiting at src/bin/dyn-future.rs:12 (Suspend0, 0 locals)
+      awaiting at src/bin/dyn-future.rs:16 (Suspend0, 0 locals)
 #2  async fn      dyn_future::driver
-      awaiting at src/bin/dyn-future.rs:36 (Suspend0, 1 local)
+      awaiting at src/bin/dyn-future.rs:40 (Suspend0, 1 local)
 "
         );
     }
@@ -3041,14 +3045,14 @@ mod trace_render_tests {
         let rendered = trace("simple-await", "simple_await::work::{async_fn_env#0}", true);
         assert!(
             rendered.contains(
-                "      awaiting at src/bin/simple-await.rs:40 (Suspend1, 12 locals)\
+                "      awaiting at src/bin/simple-await.rs:44 (Suspend1, 12 locals)\
                  \n      locals:\n        count: u32 = 3\n"
             ),
             "{rendered}"
         );
         assert!(
             rendered.contains(
-                "      other suspend points:\n        Suspend0 — src/bin/simple-await.rs:38 \
+                "      other suspend points:\n        Suspend0 — src/bin/simple-await.rs:42 \
                  (13 locals) → async fn simple_await::ready_value\n"
             ),
             "{rendered}"
@@ -3093,7 +3097,7 @@ mod trace_render_tests {
         );
         assert!(
             styled.contains(
-                "      awaiting at \x1b[32msrc/bin/futurelock.rs:28\x1b[0m (Suspend1, 1 local)\n"
+                "      awaiting at \x1b[32msrc/bin/futurelock.rs:32\x1b[0m (Suspend1, 1 local)\n"
             ),
             "{styled}"
         );
@@ -3116,7 +3120,7 @@ mod trace_render_tests {
         assert!(
             styled.contains(
                 "      \x1b[2mother suspend points:\x1b[0m\n        \
-                 \x1b[2mSuspend0 — src/bin/simple-await.rs:38 (13 locals) \
+                 \x1b[2mSuspend0 — src/bin/simple-await.rs:42 (13 locals) \
                  → async fn simple_await::ready_value\x1b[0m\n"
             ),
             "{styled}"

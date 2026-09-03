@@ -5,11 +5,11 @@ description: "`task 1` over linux/ct-runtime"
 task 1
     state: idle
     type: async fn ct_runtime::sleeper
-    awaiting at: src/bin/ct-runtime.rs:13
+    awaiting at: src/bin/ct-runtime.rs:17
     waiting on: timer (deadline TS on the target's monotonic clock)
     waker: timer 0xADDR
         timer entry 0xADDR in the wheel, registered
-    spawned at: src/bin/ct-runtime.rs:33:24
-    defined at: src/bin/ct-runtime.rs:10
+    spawned at: src/bin/ct-runtime.rs:37:24
+    defined at: src/bin/ct-runtime.rs:14
     held futures: 0
     join sets: 0

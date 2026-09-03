@@ -1,3 +1,7 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
 //! A second current_thread runtime that no thread is inside. It is
 //! built on a thread of its own, spawned onto, driven until everything
 //! it owns has parked, and then left alone: its `block_on` returns, so

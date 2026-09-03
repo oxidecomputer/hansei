@@ -3,5 +3,5 @@ source: hansei/src/offline.rs
 description: "`tasks --with id 3,6` over illumos/local-set"
 ---
 ID  STATE  RT  AWAITING AT              WAITING ON  FUTURE
-3   idle   0   src/bin/local-set.rs:30  task 1      async fn local_set::joiner
+3   idle   0   src/bin/local-set.rs:34  task 1      async fn local_set::joiner
 [1 task]

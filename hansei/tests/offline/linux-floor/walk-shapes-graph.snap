@@ -10,5 +10,5 @@ TASK  STATE  WAITING ON
 
 futurelock: task 3 holds a place in the wake queue of a tokio::sync::Mutex (semaphore 0xADDR) in a future it stopped polling:
   `fut` (async fn tokio::sync::mutex::Mutex::lock<()>)
-  held across async fn walk_shapes::abandoner state Suspend1 — src/bin/walk-shapes.rs:147
+  held across async fn walk_shapes::abandoner state Suspend1 — src/bin/walk-shapes.rs:151
   blocked behind it: task 4

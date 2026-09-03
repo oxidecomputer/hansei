@@ -3,19 +3,19 @@ source: hansei-runtime/tests/two_binary.rs
 description: "the fixture programs (and lockfile) these snapshots were captured from. A digest that moved means the goldens in this file describe a program no longer in the tree: recapture with test-programs/capture-snapshots.sh, then re-bless the goldens here and in value_render.rs."
 ---
 lock Cargo.lock b50b0dd397651d06208402a6ab2272c7
-simple-await b28f1f1a243b0e874dbfa8423ccf304a
-nested-await 64f01b5e9f4b450d53bb1bbe9dc4daca
-dyn-future 8998187a6c48a5f323957eee76df32de
-futurelock 05b319923c7195e36f749ce8b73d19b2
-sleep-join b745f8daa7e484ca3d79579e2b7127e7
-channels 2066d34d2b5a39312c2b5d4099fff67b
-unordered 4cc3871d0a77ba6ed574d5af60c01777
-joinset 1b39049e1c55b068baca597d5394c204
-ct-runtime 3babdc48f0e7e99ec6bd9280d484834a
-local-set d9106363123d8613c133c4091c674e26
-local-set-timer 8eaafc4757cbe851b8191aab0f3526eb
-local-set-io 90b96ba329f2a6ea4904a7998579ebe6
-foreign-runtime fb70fe496e4f0f1b1bb62ca1422df00d
-gen-0007 31fe38f4df07f85714a2f9ac3019b17c
-walk-shapes 4ad4ce005c721ea36da00b163e988072
-blocking-pool 7a2f1dd3aa585c617d8ece741380b5e5
+simple-await 2b957ffd30157a755614032238ffeb9a
+nested-await f7e03e7e43ed197f0335fb3e1e1c23fc
+dyn-future fa3d6c53628c1ba18041d982d76fe975
+futurelock 90a6720c005c39843dd023a4d2909e0c
+sleep-join aaadd0d01fa50ffd1ac03626771193a2
+channels 062c7e252fd7308f8a0b4493ac13b8cd
+unordered fa62ebd6fd68d44d67880df377a969df
+joinset fe36e1b457f8720ad363c48019cd0f94
+ct-runtime fc32f4cee323552dd2f25e3c6dd0558b
+local-set 553f304b1cf4749866cdbb216be8ced7
+local-set-timer 1886cbdc24efe09b127b4b7fff6c489d
+local-set-io 9f7da1bfde740001ba3b83146601a7ff
+foreign-runtime d03c411da5707551650f9cbd4b2cbafa
+gen-0007 185e7a92f89400923fcf25d669f45dcb
+walk-shapes d98f2fd7f4e09798fa86344115a9bd2b
+blocking-pool 256bf9dd10849df9ef28d42dfefb9350

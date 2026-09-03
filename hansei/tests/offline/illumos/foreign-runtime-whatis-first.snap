@@ -1,8 +1,8 @@
 ---
 source: hansei/src/offline.rs
-description: "`whatis 0x18ea580` over illumos/foreign-runtime"
+description: "`whatis 0x145fa80` over illumos/foreign-runtime"
 ---
 Task 1: async fn foreign_runtime::joined
     At: offset 0xADDR in the task's allocation (header 0xADDR)
     State: idle
-    Spawned at: src/bin/foreign-runtime.rs:83:23
+    Spawned at: src/bin/foreign-runtime.rs:87:23

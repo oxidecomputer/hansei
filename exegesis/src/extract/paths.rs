@@ -1,3 +1,7 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
 //! Source-location plumbing: owned copies of DWARF locations, the display
 //! path a reader sees (crate-cache and toolchain prefixes stripped), and
 //! the versions recovered from producer strings and registry paths.

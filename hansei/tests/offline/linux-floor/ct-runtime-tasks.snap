@@ -3,6 +3,6 @@ source: hansei/src/offline.rs
 description: "`tasks` over linux-floor/ct-runtime"
 ---
 ID  STATE  AWAITING AT               WAITING ON                                                                                                FUTURE
-1   idle   src/bin/ct-runtime.rs:13  timer (deadline TS on the target's monotonic clock)                                             async fn ct_runtime::sleeper
-2   idle   src/bin/ct-runtime.rs:20  a tokio::sync::Semaphore (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 2  async fn ct_runtime::acquirer
+1   idle   src/bin/ct-runtime.rs:17  timer (deadline TS on the target's monotonic clock)                                             async fn ct_runtime::sleeper
+2   idle   src/bin/ct-runtime.rs:24  a tokio::sync::Semaphore (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 2  async fn ct_runtime::acquirer
 [2 tasks]

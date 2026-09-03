@@ -5,11 +5,11 @@ description: "`task 3` over linux/sleep-join"
 task 3
     state: idle
     type: async fn sleep_join::sleeper
-    awaiting at: src/bin/sleep-join.rs:12
+    awaiting at: src/bin/sleep-join.rs:16
     waiting on: timer (deadline TS on the target's monotonic clock)
     waker: timer 0xADDR
         timer entry 0xADDR in the wheel, registered
-    spawned at: src/bin/sleep-join.rs:30:22
-    defined at: src/bin/sleep-join.rs:9
+    spawned at: src/bin/sleep-join.rs:34:22
+    defined at: src/bin/sleep-join.rs:13
     held futures: 0
     join sets: 0

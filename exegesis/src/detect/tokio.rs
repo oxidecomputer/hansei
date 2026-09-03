@@ -1,3 +1,7 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
 //! Detectors for the tokio types whose layout has held across every
 //! supported tokio version: the sync primitives, the mpsc block chain,
 //! and the loom shims. A tokio release is what moves anything here; a

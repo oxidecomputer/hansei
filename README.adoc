@@ -381,28 +381,28 @@ List the tasks, then filter them by future name with partial matches:
 ----
 hansei> tasks
 ID  STATE  AWAITING AT      WAITING ON                                                                                             FUTURE
-3   idle   src/main.rs:106  io fd 6 (readable)                                                                                     async fn hansei_example::listener
-4   idle   src/main.rs:135  the semaphore at 0x55b3521b16c0: 1 permit requested, 0 available; wake queue: task 4                   async fn hansei_example::producer
-5   idle   src/main.rs:154  a tokio::sync::Mutex (semaphore 0x55b3521b0cf0): 1 permit requested, 0 available; wake queue: task 5   async fn hansei_example::dispatcher
-6   idle   src/main.rs:179  future tokio::sync::oneshot::Receiver<()>                                                              async fn hansei_example::reloader
-7   idle   src/main.rs:227  future futures_util::stream::futures_unordered::FuturesUnordered<hansei_example::probe>                async fn hansei_example::fanout
-8   idle   src/main.rs:246  timer (deadline 1661342.991s on the target's monotonic clock)                                          async fn hansei_example::heartbeat
-9   idle   src/main.rs:195  future tokio::util::idle_notified_set::IdleNotifiedSet<tokio::runtime::task::join::JoinHandle<usize>>  async fn hansei_example::supervisor
-10  idle   src/main.rs:205  future tokio::sync::notify::Notified                                                                   async fn hansei_example::worker
-11  idle   src/main.rs:205  future tokio::sync::notify::Notified                                                                   async fn hansei_example::worker
-12  idle   src/main.rs:205  future tokio::sync::notify::Notified                                                                   async fn hansei_example::worker
+3   idle   src/main.rs:110  io fd 6 (readable)                                                                                     async fn hansei_example::listener
+4   idle   src/main.rs:139  the semaphore at 0x55b3521b16c0: 1 permit requested, 0 available; wake queue: task 4                   async fn hansei_example::producer
+5   idle   src/main.rs:158  a tokio::sync::Mutex (semaphore 0x55b3521b0cf0): 1 permit requested, 0 available; wake queue: task 5   async fn hansei_example::dispatcher
+6   idle   src/main.rs:183  future tokio::sync::oneshot::Receiver<()>                                                              async fn hansei_example::reloader
+7   idle   src/main.rs:231  future futures_util::stream::futures_unordered::FuturesUnordered<hansei_example::probe>                async fn hansei_example::fanout
+8   idle   src/main.rs:250  timer (deadline 1661342.991s on the target's monotonic clock)                                          async fn hansei_example::heartbeat
+9   idle   src/main.rs:199  future tokio::util::idle_notified_set::IdleNotifiedSet<tokio::runtime::task::join::JoinHandle<usize>>  async fn hansei_example::supervisor
+10  idle   src/main.rs:209  future tokio::sync::notify::Notified                                                                   async fn hansei_example::worker
+11  idle   src/main.rs:209  future tokio::sync::notify::Notified                                                                   async fn hansei_example::worker
+12  idle   src/main.rs:209  future tokio::sync::notify::Notified                                                                   async fn hansei_example::worker
 [10 tasks]
 
 hansei> tasks --with type dispatcher
 ID  STATE  AWAITING AT      WAITING ON                                                                                            FUTURE
-5   idle   src/main.rs:154  a tokio::sync::Mutex (semaphore 0x55b3521b0cf0): 1 permit requested, 0 available; wake queue: task 5  async fn hansei_example::dispatcher
+5   idle   src/main.rs:158  a tokio::sync::Mutex (semaphore 0x55b3521b0cf0): 1 permit requested, 0 available; wake queue: task 5  async fn hansei_example::dispatcher
 [1 task]
 
 hansei> tasks --with type worker
 ID  STATE  AWAITING AT      WAITING ON                            FUTURE
-10  idle   src/main.rs:205  future tokio::sync::notify::Notified  async fn hansei_example::worker
-11  idle   src/main.rs:205  future tokio::sync::notify::Notified  async fn hansei_example::worker
-12  idle   src/main.rs:205  future tokio::sync::notify::Notified  async fn hansei_example::worker
+10  idle   src/main.rs:209  future tokio::sync::notify::Notified  async fn hansei_example::worker
+11  idle   src/main.rs:209  future tokio::sync::notify::Notified  async fn hansei_example::worker
+12  idle   src/main.rs:209  future tokio::sync::notify::Notified  async fn hansei_example::worker
 [3 tasks]
 ----
 
@@ -424,13 +424,13 @@ Waiting on: a tokio::sync::Mutex (semaphore 0x55b3521b0cf0): 1 permit requested,
 #3  async fn      tokio::sync::mutex::Mutex::lock<hansei_example::Config>
       awaiting at tokio-1.53.1/src/sync/mutex.rs:455 (Suspend0, 0 locals)
 #4  async fn      hansei_example::dispatcher
-      awaiting at src/main.rs:154 (Suspend1, 7 locals)
+      awaiting at src/main.rs:158 (Suspend1, 7 locals)
 [Executed against 1 task, 0 failed]
 
 hansei> tasks --with type dispatcher --exec frame 4 print config.data.c
 task 5
 #4  async fn      hansei_example::dispatcher
-      awaiting at src/main.rs:154 (Suspend1, 7 locals)
+      awaiting at src/main.rs:158 (Suspend1, 7 locals)
 hansei_example::Config {
     upstream: core::net::socket_addr::SocketAddr::V4 {
         ip: 10.0.0.7,

@@ -1,3 +1,7 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
 //! Generate the libproc bindings, on the one system that has libproc.
 //!
 //! bindgen links libclang, so it is a build-dependency only where the
