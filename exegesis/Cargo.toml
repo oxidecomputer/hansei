@@ -1,7 +1,10 @@
 [package]
 name = "exegesis"
-version = "0.1.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Reads DWARF from a debug build and emits the tokio-info bundle describing its async runtime"
 
 [dependencies]
 blake3 = { workspace = true, features = ["rayon"] }

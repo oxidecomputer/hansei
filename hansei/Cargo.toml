@@ -1,7 +1,10 @@
 [package]
 name = "hansei"
-version = "0.1.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "A tokio post-mortem debugger: inspect the runtime, its tasks and their futures in a core dump"
 
 [features]
 # The `snapshot` command, which captures the offline tests' fixtures
