@@ -25,7 +25,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Mutex;
 
-const TOOLCHAIN: &str = "1.97.1";
+const TOOLCHAIN: &str = "1.98.0";
 
 fn test_programs_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../test-programs")

@@ -248,8 +248,10 @@ fn read_vtable_words<'a, T: Target>(
     }
     Some(
         bytes
-            .chunks_exact(8)
-            .map(|chunk| u64::from_le_bytes(chunk.try_into().unwrap()))
+            .as_chunks::<8>()
+            .0
+            .iter()
+            .map(|chunk| u64::from_le_bytes(*chunk))
             .collect(),
     )
 }

@@ -1043,9 +1043,9 @@ fn parse_prstatus(desc: &[u8]) -> Result<LwpInfo> {
     let mut regs = [0u64; PR_REG_COUNT];
     for (slot, chunk) in regs
         .iter_mut()
-        .zip(desc[PR_REG..].chunks_exact(8).take(PR_REG_COUNT))
+        .zip(desc[PR_REG..].as_chunks::<8>().0.iter().take(PR_REG_COUNT))
     {
-        *slot = u64::from_le_bytes(chunk.try_into().unwrap());
+        *slot = u64::from_le_bytes(*chunk);
     }
     Ok(LwpInfo {
         tid,

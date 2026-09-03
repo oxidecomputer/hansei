@@ -429,9 +429,9 @@ fn parse_clauses(with: &[String], without: &[String]) -> Result<Vec<Clause>> {
     let mut clauses = Vec::new();
     for (specs, negate) in [(with, false), (without, true)] {
         let flag = if negate { "--without" } else { "--with" };
-        for pair in specs.chunks_exact(2) {
-            let field = Field::parse(&pair[0]).with_context(|| flag.to_string())?;
-            let matchers = alternatives(&pair[1])
+        for [name, spec] in specs.as_chunks::<2>().0 {
+            let field = Field::parse(name).with_context(|| flag.to_string())?;
+            let matchers = alternatives(spec)
                 .and_then(|alts| alts.iter().map(|alt| matcher(field, alt)).collect())
                 .with_context(|| format!("{flag} {}", field.name()))?;
             clauses.push(Clause {

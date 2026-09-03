@@ -99,9 +99,9 @@ impl<'a> Corrupt<'a> {
             let Some(aligned) = bytes.get_mut(skew..) else {
                 continue;
             };
-            for word in aligned.chunks_exact_mut(8) {
-                if u64::from_le_bytes(word.try_into().unwrap()) == value {
-                    word.copy_from_slice(&lie.to_le_bytes());
+            for word in aligned.as_chunks_mut::<8>().0 {
+                if u64::from_le_bytes(*word) == value {
+                    *word = lie.to_le_bytes();
                     patched += 1;
                 }
             }
