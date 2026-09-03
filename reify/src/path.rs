@@ -3,9 +3,10 @@
 //!
 //! A path is a sequence of [`Step`]s applied to a root [`Value`]:
 //! `.member` navigates structure the way Rust's `.` does — through a
-//! reference, a `Box`, an `Arc`/`Rc` header, a `Pin`, a `NonNull`, a
-//! niched `Option<NonNull>`, and into an enum's active variant —
-//! `[N]` and ranges select elements through the same formatter walks
+//! reference, a `Box`, an `Arc`/`Rc` header, a `Pin`, a `NonNull` —
+//! and into an enum only by its variant's name, the active one:
+//! `.Some.x`, never `.x`, since the layer the rendering shows is the
+//! one the path must spell. `[N]` and ranges select elements through the same formatter walks
 //! the renderer uses, and `*` dereferences explicitly, the only way
 //! through a raw pointer the auto-deref would not follow on its own.
 //! A range fans out: every following step applies to each selected
@@ -184,10 +185,12 @@ pub fn resolve<'a, T: Target>(
 }
 
 /// `.name`, with Rust's auto-deref: while the member is not here,
-/// follow what the value is — into an enum's active variant, through
-/// a pointer, past an `ArcInner`/`RcBox` header, down one transparent
-/// wrapper — and ask again. Bounded so a cyclic pointer chain refuses
-/// instead of spinning.
+/// follow what the value is — through a pointer, past an
+/// `ArcInner`/`RcBox` header, down one transparent wrapper — and ask
+/// again. An enum is not followed: its variant is a step of its own,
+/// and a name that is no variant refuses, naming the one that is
+/// active. Bounded so a cyclic pointer chain refuses instead of
+/// spinning.
 fn member_step<'a, T: Target>(proc: &'a T, node: Node<'a>, name: &str) -> Result<Node<'a>> {
     let v = match node {
         Node::Entry { key, value } => {
@@ -206,25 +209,21 @@ fn member_step<'a, T: Target>(proc: &'a T, node: Node<'a>, name: &str) -> Result
         }
         match v.ty.kind() {
             TypeKind::Enum => {
-                // The name may be a variant's own: the active one
-                // answers its payload, an inactive one is refused with
-                // the name of the variant that is live instead.
-                match v.try_select_variant(name) {
-                    Ok(Some(payload)) => return Ok(Node::Value(payload)),
-                    Ok(None) => {
-                        let active = v.active_variant_raw()?.0;
-                        return Err(Error::inactive_variant_member(
-                            name.to_string(),
-                            active.to_string(),
-                        ));
-                    }
-                    // Not a variant name: descend into the active
-                    // variant's payload and look there.
-                    Err(_) => {
-                        let (_, payload) = v.active_variant()?;
-                        v = payload;
-                    }
-                }
+                // The name is a variant's or nothing: the active one
+                // answers its payload, and anything else is refused
+                // with the name of the variant that is live.
+                return match v.try_select_variant(name) {
+                    Ok(Some(payload)) => Ok(Node::Value(payload)),
+                    Ok(None) => Err(Error::inactive_variant(
+                        name.to_string(),
+                        v.active_variant_raw()?.0.to_string(),
+                    )),
+                    Err(_) => Err(Error::not_a_variant(
+                        v.ty.name().to_string(),
+                        name.to_string(),
+                        v.active_variant_raw()?.0.to_string(),
+                    )),
+                };
             }
             TypeKind::Pointer => v = v.deref_ptr(proc)?,
             _ => {
@@ -249,15 +248,15 @@ fn member_step<'a, T: Target>(proc: &'a T, node: Node<'a>, name: &str) -> Result
 /// The names a `.name` step could take next from `node` — what a
 /// prompt offers after a trailing `.`. They are the members
 /// [`member_step`] would find: the value's own, and, wherever its
-/// auto-deref would look further, the ones it would find there — an
-/// enum's active variant and its payload's members, a pointer's
-/// target's, the data behind a heap header, a transparent wrapper's
-/// inner — in that order, each name once. Compiler slots (`__…`) are
-/// left out, except a tuple's fields, offered as the `.0` the grammar
-/// reads. A value that cannot be followed (an unreadable pointer, an
-/// undecodable variant) ends the listing with what was found so far —
-/// an enum whose discriminant cannot be read with every variant, any
-/// of which could be the live one.
+/// auto-deref would look further, the ones it would find there — a
+/// pointer's target's, the data behind a heap header, a transparent
+/// wrapper's inner — in that order, each name once; an enum offers
+/// its active variant and ends the listing, since the step past it
+/// is that name. Compiler slots (`__…`) are left out, except a
+/// tuple's fields, offered as the `.0` the grammar reads. A value
+/// that cannot be followed (an unreadable pointer) ends the listing
+/// with what was found so far, and an enum whose discriminant cannot
+/// be read offers every variant, any of which could be the live one.
 pub fn member_names<T: Target>(proc: &T, node: &Node<'_>) -> Vec<String> {
     let mut v = match node {
         Node::Entry { .. } => return vec!["0".to_string(), "1".to_string()],
@@ -281,22 +280,22 @@ pub fn member_names<T: Target>(proc: &T, node: &Node<'_>) -> Vec<String> {
             }
         }
         match v.ty.kind() {
-            TypeKind::Enum => match v.active_variant() {
-                // Only the live variant: `.name` refuses the others,
-                // so offering them would offer what cannot resolve.
-                Ok((active, payload)) => {
-                    offer(&mut names, active.to_string());
-                    v = payload;
-                }
-                // With no discriminant to read, any of them could be
-                // the one.
-                Err(_) => {
-                    for variant in v.ty.variants() {
-                        offer(&mut names, variant.name.to_string());
+            TypeKind::Enum => {
+                match v.active_variant_raw() {
+                    // Only the live variant: `.name` refuses the
+                    // others, so offering them would offer what
+                    // cannot resolve.
+                    Ok((active, _)) => offer(&mut names, active.to_string()),
+                    // With no discriminant to read, any of them could
+                    // be the one.
+                    Err(_) => {
+                        for variant in v.ty.variants() {
+                            offer(&mut names, variant.name.to_string());
+                        }
                     }
-                    break;
                 }
-            },
+                break;
+            }
             TypeKind::Pointer => match v.deref_ptr(proc) {
                 Ok(target) => v = target,
                 Err(_) => break,
@@ -646,8 +645,10 @@ mod tests {
         assert!(err.to_string().contains("pointer"), "{err}");
     }
 
-    /// On an enum, `.member` reads through the active variant; naming
-    /// an inactive variant refuses with the active one's name.
+    /// On an enum, `.member` names a variant: the active one answers
+    /// its payload, an inactive one refuses with the active one's
+    /// name, and a payload member named without its variant refuses
+    /// the same way rather than reading through.
     #[test]
     fn test_member_reads_the_active_variant_only() {
         let b = test_bundle();
@@ -659,16 +660,21 @@ mod tests {
         bytes[8..12].copy_from_slice(&7u32.to_le_bytes());
         bytes[12..16].copy_from_slice(&9u32.to_le_bytes());
         let msg = Value::new(v.ty(MSG).unwrap(), 0x100, &bytes);
-        // The active variant's payload members resolve unnamed…
-        assert_eq!(
-            shown(resolve(&mem, msg, &parse(".x").unwrap()).unwrap()),
-            "7"
-        );
-        // …and the variant name answers the payload itself.
+        // The variant name answers the payload, and its members
+        // stand behind it…
         assert_eq!(
             shown(resolve(&mem, msg, &parse(".A").unwrap()).unwrap()),
             "Point { x: 7, y: 9 }"
         );
+        assert_eq!(
+            shown(resolve(&mem, msg, &parse(".A.x").unwrap()).unwrap()),
+            "7"
+        );
+        // …not at the enum itself, which names the variant to go
+        // through.
+        let err = resolve(&mem, msg, &parse(".x").unwrap()).expect_err("x is a payload member");
+        assert!(err.to_string().contains("not a variant"), "{err}");
+        assert!(err.to_string().contains("`A`"), "{err}");
         let err = resolve(&mem, msg, &parse(".B").unwrap()).expect_err("B is not active");
         assert!(err.to_string().contains("active variant"), "{err}");
         assert!(err.to_string().contains('A'), "{err}");
@@ -710,7 +716,7 @@ mod tests {
 
     /// The names offered after a `.` are the ones `.name` would then
     /// accept: a struct's own; a wrapper's own and then its inner's; an
-    /// enum's active variant and its payload's; a pointer's target's;
+    /// enum's active variant alone; a pointer's target's;
     /// a heap header's own and the data's behind it. Compiler slots
     /// are left out, a tuple's fields offered as digits, a map entry's
     /// halves as `0` and `1`.
@@ -735,13 +741,15 @@ mod tests {
         let tuple = Value::new(v.ty(TUPLE2).unwrap(), 0x100, &bytes);
         assert_eq!(names(&mem, tuple), ["0", "1"]);
 
-        // Msg::A(Point { 7, 9 }): the live variant, then its payload's
-        // — B and C are not offered, since `.B` would refuse.
+        // Msg::A(Point { 7, 9 }): the live variant alone — B and C
+        // would refuse, and the payload's members stand behind `.A`.
         let mut bytes = vec![0u8; 16];
         bytes[8..12].copy_from_slice(&7u32.to_le_bytes());
         bytes[12..16].copy_from_slice(&9u32.to_le_bytes());
         let msg = Value::new(v.ty(MSG).unwrap(), 0x100, &bytes);
-        assert_eq!(names(&mem, msg), ["A", "x", "y"]);
+        assert_eq!(names(&mem, msg), ["A"]);
+        let payload = resolve(&mem, msg, &parse(".A").unwrap()).unwrap();
+        assert_eq!(member_names(&mem, &payload[0].node), ["x", "y"]);
 
         let mem = FakeMem::new()
             .at(0x1000, u64s(&[0x2000]))

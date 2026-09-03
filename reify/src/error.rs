@@ -53,8 +53,16 @@ enum ErrorKind {
         name: String,
         members: String,
     },
-    #[error("`{name}` is not in the active variant, which is {active}")]
-    InactiveVariantMember { name: String, active: String },
+    #[error("`{name}` is not the active variant, which is {active}")]
+    InactiveVariant { name: String, active: String },
+    #[error(
+        "`{name}` is not a variant of {ty}; the active variant is `{active}`, reached as `.{active}`"
+    )]
+    NotAVariant {
+        ty: String,
+        name: String,
+        active: String,
+    },
     #[error("index {index} is past the end of {ty} ({len} elements)")]
     IndexPastEnd { ty: String, index: u64, len: u64 },
     #[error("the range reaches {bound}, past the end of {ty} ({len} elements)")]
@@ -145,8 +153,12 @@ impl Error {
         Self::new(ErrorKind::NoMemberOf { ty, name, members })
     }
 
-    pub(crate) fn inactive_variant_member(name: String, active: String) -> Self {
-        Self::new(ErrorKind::InactiveVariantMember { name, active })
+    pub(crate) fn inactive_variant(name: String, active: String) -> Self {
+        Self::new(ErrorKind::InactiveVariant { name, active })
+    }
+
+    pub(crate) fn not_a_variant(ty: String, name: String, active: String) -> Self {
+        Self::new(ErrorKind::NotAVariant { ty, name, active })
     }
 
     pub(crate) fn index_past_end(ty: impl Into<String>, index: u64, len: u64) -> Self {
