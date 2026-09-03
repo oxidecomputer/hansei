@@ -1,7 +1,10 @@
 [package]
 name = "unwind"
-version = "0.1.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Stack unwinding for a core-dump target using DWARF .eh_frame CFI"
 
 [dependencies]
 anyhow.workspace = true

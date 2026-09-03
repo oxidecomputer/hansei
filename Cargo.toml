@@ -19,6 +19,12 @@ members = [
 # profiles, built on its own (README, "Trying it out").
 exclude = ["example", "test-programs"]
 
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MPL-2.0"
+repository = "https://github.com/oxidecomputer/hansei"
+
 [workspace.dependencies]
 anyhow = "1.0"
 bindgen = { version = "0.72", default-features = false }
