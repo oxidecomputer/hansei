@@ -586,12 +586,16 @@ fn list_tasks(bundle: &Path, core: &Path) -> Vec<TaskRow> {
                 break;
             }
             let line = lines.next().expect("peeked");
-            // An indented line is detail under the field above it (a
-            // wheel entry, an io slot, a wake-queue node), not a field.
-            if line.starts_with(' ') {
+            // A field sits four columns in; anything deeper is detail
+            // under the field above it (a wheel entry, an io slot, a
+            // wake-queue node), not a field.
+            let field_line = line
+                .strip_prefix("    ")
+                .unwrap_or_else(|| panic!("unexpected task line {line:?}"));
+            if field_line.starts_with(' ') {
                 continue;
             }
-            let (label, value) = line
+            let (label, value) = field_line
                 .split_once(": ")
                 .unwrap_or_else(|| panic!("unexpected task line {line:?}"));
             let field = match label {
@@ -1046,7 +1050,9 @@ fn rejoin_columns(out: &str) -> String {
 /// [`spawn_line`] for why a golden does not hold it.
 fn drop_spawn_line(out: &str) -> String {
     out.lines()
-        .filter(|line| !line.starts_with("Spawned at: ") && !line.starts_with("spawned at: "))
+        .filter(|line| {
+            !line.starts_with("Spawned at: ") && !line.trim_start().starts_with("spawned at: ")
+        })
         .fold(String::new(), |mut text, line| {
             text.push_str(line);
             text.push('\n');
@@ -1069,6 +1075,7 @@ fn spawn_line(loc: &str) -> Option<String> {
 fn assert_spawned_at(trace: &str, loc: &str) {
     let line = trace
         .lines()
+        .map(str::trim_start)
         .find(|line| line.starts_with("spawned at: "))
         .map(str::to_owned);
     assert_eq!(line, spawn_line(loc), "in:\n{trace}");
@@ -2229,9 +2236,12 @@ fn test_futures_acceptance() {
             futures.starts_with(&format!("task {}\n", driver.id)),
             "{futures}"
         );
-        assert!(futures.contains("\nheld futures: 5\n    "), "{futures}");
         assert!(
-            futures.contains("\njoin sets: 1 (3 futures)\n    - "),
+            futures.contains("\n    held futures: 5\n        "),
+            "{futures}"
+        );
+        assert!(
+            futures.contains("\n    join sets: 1 (3 futures)\n        - "),
             "{futures}"
         );
         assert!(
@@ -2247,7 +2257,8 @@ fn test_futures_acceptance() {
         // Set-child rows sit one indent step deeper than the set's own
         // bulleted row.
         let child =
-            regex::Regex::new(r"\n        (0x[0-9a-f]+)  async fn unordered::set_member").unwrap();
+            regex::Regex::new(r"\n            (0x[0-9a-f]+)  async fn unordered::set_member")
+                .unwrap();
         let nodes: Vec<String> = child
             .captures_iter(&futures)
             .map(|c| c[1].to_string())
@@ -2261,7 +2272,7 @@ fn test_futures_acceptance() {
         // carrying a future of its own.
         for local in ["held", "boxed", "pair", "maybe", "nested_hold"] {
             assert!(
-                futures.contains(&format!("\n    (frame 1, `{local}`)")),
+                futures.contains(&format!("\n        (frame 1, `{local}`)")),
                 "{futures}"
             );
         }
@@ -2277,11 +2288,11 @@ fn test_futures_acceptance() {
         // tree is the census's attribution, drawn.
         let held_row = r"held \(frame 1, `held`\): 0x[0-9a-f]+  async fn unordered::leaf";
         let under_child =
-            regex::Regex::new(&format!(r"\n            {held_row}  Unresumed")).unwrap();
+            regex::Regex::new(&format!(r"\n                {held_row}  Unresumed")).unwrap();
         assert_eq!(under_child.find_iter(&futures).count(), 3, "{futures}");
         assert!(
             futures.contains(
-                "\n            - futures_util::stream::futures_unordered::FuturesUnordered\
+                "\n                - futures_util::stream::futures_unordered::FuturesUnordered\
                  <unordered::leaf> at 0x"
             ),
             "{futures}"
@@ -2291,7 +2302,7 @@ fn test_futures_acceptance() {
             "{futures}"
         );
         let under_set = regex::Regex::new(
-            r"\n                0x[0-9a-f]+  async fn unordered::leaf  Unresumed",
+            r"\n                    0x[0-9a-f]+  async fn unordered::leaf  Unresumed",
         )
         .unwrap();
         assert_eq!(under_set.find_iter(&futures).count(), 2, "{futures}");
@@ -2302,7 +2313,7 @@ fn test_futures_acceptance() {
         // mark there — the heading is already the word.
         let carried_row = r"\(frame 0, `inner`\): 0x[0-9a-f]+  async fn unordered::leaf";
         let under_held =
-            regex::Regex::new(&format!(r"\n        {carried_row}  Unresumed")).unwrap();
+            regex::Regex::new(&format!(r"\n            {carried_row}  Unresumed")).unwrap();
         assert_eq!(under_held.find_iter(&futures).count(), 1, "{futures}");
 
         // Every one of those finds is the driver's: any other task
@@ -2310,7 +2321,7 @@ fn test_futures_acceptance() {
         for row in rows.iter().filter(|row| row.id != driver.id) {
             let other = hansei_ok(&bundle, core, &format!("task {} --futures", row.id));
             assert!(
-                other.ends_with("\nheld futures: 0\njoin sets: 0\n"),
+                other.ends_with("\n    held futures: 0\n    join sets: 0\n"),
                 "{other}"
             );
         }
@@ -2397,7 +2408,7 @@ fn test_futures_acceptance() {
         );
 
         // And so is a held future, by the address its row prints.
-        let held = regex::Regex::new(r"\n    \(frame 1, `held`\): (0x[0-9a-f]+)")
+        let held = regex::Regex::new(r"\n        \(frame 1, `held`\): (0x[0-9a-f]+)")
             .unwrap()
             .captures(&futures)
             .map(|c| c[1].to_string())
@@ -2468,10 +2479,10 @@ fn test_search_depth_acceptance() {
 
         // What the driver holds outright is still found and still
         // counted; what it holds nested is neither.
-        assert!(listed.contains("\nheld futures: 3\n"), "{listed}");
+        assert!(listed.contains("\n    held futures: 3\n"), "{listed}");
         for local in ["held", "boxed", "nested_hold"] {
             assert!(
-                listed.contains(&format!("\n    (frame 1, `{local}`)")),
+                listed.contains(&format!("\n        (frame 1, `{local}`)")),
                 "{listed}"
             );
         }
@@ -2527,7 +2538,7 @@ fn test_join_set_acceptance() {
 
         let futures = hansei_ok(&bundle, core, &format!("task {} --futures", driver.id));
         assert!(
-            futures.contains("\njoin sets: 2 (6 tasks)\n    - "),
+            futures.contains("\n    join sets: 2 (6 tasks)\n        - "),
             "{futures}"
         );
         assert!(
@@ -2539,7 +2550,8 @@ fn test_join_set_acceptance() {
         // Every member is named by the id its own row carries, so the
         // set reads as an edge into the listing rather than as a
         // population beside it.
-        let member = regex::Regex::new(r"\n        task (\d+)  async fn joinset::member").unwrap();
+        let member =
+            regex::Regex::new(r"\n            task (\d+)  async fn joinset::member").unwrap();
         let ids: Vec<String> = member
             .captures_iter(&futures)
             .map(|c| c[1].to_string())
@@ -2556,7 +2568,7 @@ fn test_join_set_acceptance() {
         // listing has no row for it and nothing but this set's entry
         // names it — which the row says outright rather than naming a
         // future it cannot reach.
-        let done = regex::Regex::new(r"\n        task (\d+)  <complete, awaiting join>")
+        let done = regex::Regex::new(r"\n            task (\d+)  <complete, awaiting join>")
             .unwrap()
             .captures(&futures)
             .unwrap_or_else(|| panic!("no completed member: {futures}"))[1]
@@ -3409,7 +3421,7 @@ fn test_a_stale_future_is_not_counted_as_one_in_flight() {
 
         if hansei_ok(&bundle, core, "umem-audit").contains("no umem metadata in this target") {
             assert_eq!(task.futures, "1", "{rows:?}");
-            assert!(stdout.contains("\nheld futures: 1\n"), "{stdout}");
+            assert!(stdout.contains("\n    held futures: 1\n"), "{stdout}");
             assert!(stderr.is_empty(), "{stderr}");
             return;
         }
@@ -3418,7 +3430,7 @@ fn test_a_stale_future_is_not_counted_as_one_in_flight() {
         // that removed the row and left the count would be worse than
         // not refusing at all.
         assert_eq!(task.futures, "0", "{rows:?}");
-        assert!(stdout.contains("\nheld futures: 0\n"), "{stdout}");
+        assert!(stdout.contains("\n    held futures: 0\n"), "{stdout}");
         assert!(
             stderr.contains(
                 "the allocator has taken back the memory 1 find(s) lay in; \

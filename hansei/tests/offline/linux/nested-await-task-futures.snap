@@ -3,12 +3,12 @@ source: hansei/src/offline.rs
 description: "`task 3 --futures` over linux/nested-await"
 ---
 task 3
-state: idle
-type: async fn nested_await::outer
-awaiting at: src/bin/nested-await.rs:19
-waiting on: future tokio::sync::oneshot::Receiver<u32>
-waker: <empty>
-spawned at: src/bin/nested-await.rs:33:21
-defined at: src/bin/nested-await.rs:16
-held futures: 0
-join sets: 0
+    state: idle
+    type: async fn nested_await::outer
+    awaiting at: src/bin/nested-await.rs:19
+    waiting on: future tokio::sync::oneshot::Receiver<u32>
+    waker: <empty>
+    spawned at: src/bin/nested-await.rs:33:21
+    defined at: src/bin/nested-await.rs:16
+    held futures: 0
+    join sets: 0

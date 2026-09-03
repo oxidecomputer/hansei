@@ -2490,7 +2490,10 @@ mod future_trace_tests {
             // heading.
             assert!(rendered.contains(", `future1`): 0x"), "{rendered}");
             assert!(!rendered.contains("held (frame"), "{rendered}");
-            assert!(rendered.contains("\nheld futures: 1\n    ("), "{rendered}");
+            assert!(
+                rendered.contains("\n    held futures: 1\n        ("),
+                "{rendered}"
+            );
 
             for (index, task) in list.tasks.iter().enumerate() {
                 if index == owner {
@@ -2498,7 +2501,7 @@ mod future_trace_tests {
                 }
                 let other = task.task_id.expect("every fixture task has an id");
                 let rendered = render(list, &census.held, &census.sets, true, other);
-                assert!(rendered.contains("\nheld futures: 0\n"), "{rendered}");
+                assert!(rendered.contains("\n    held futures: 0\n"), "{rendered}");
                 assert!(!rendered.contains("`future1`"), "{rendered}");
             }
         });
@@ -2571,10 +2574,10 @@ mod future_trace_tests {
             // child, which the child's own row counts.
             assert!(
                 rendered.contains(
-                    "held futures: 0\njoin sets: 1 (1 future)\n    \
+                    "    held futures: 0\n    join sets: 1 (1 future)\n        \
                      - FuturesUnordered<step> at 0x1000 (frame 0, `pending`): \
-                     1 child in flight, 1 completed and not yet reaped\n        \
-                     0x2000  async fn step  Suspend0 — step.rs:9\n            \
+                     1 child in flight, 1 completed and not yet reaped\n            \
+                     0x2000  async fn step  Suspend0 — step.rs:9\n                \
                      held (frame 1, `lock`): 0x3000  async fn Mutex::lock\n"
                 ),
                 "{rendered}"
@@ -2583,8 +2586,11 @@ mod future_trace_tests {
             // one child, not two — and they say it with or without the
             // listing under them.
             let counted = render(list, &held, &sets, false, id);
-            assert!(counted.contains("\nheld futures: 0\n"), "{counted}");
-            assert!(counted.contains("\njoin sets: 1 (1 future)\n"), "{counted}");
+            assert!(counted.contains("\n    held futures: 0\n"), "{counted}");
+            assert!(
+                counted.contains("\n    join sets: 1 (1 future)\n"),
+                "{counted}"
+            );
             assert!(!counted.contains("FuturesUnordered"), "{counted}");
         });
     }
@@ -2632,9 +2638,9 @@ mod future_trace_tests {
 
             let rendered = render_joining(list, &[], &[], &join_sets, true, id);
             let expected = format!(
-                "held futures: 0\njoin sets: 1 (3 tasks)\n    \
-                 - JoinSet<()> at 0x4000 (frame 0, `set`): 3 tasks\n        \
-                 task {}  {}  {}\n        task {}  {}  {}\n        \
+                "    held futures: 0\n    join sets: 1 (3 tasks)\n        \
+                 - JoinSet<()> at 0x4000 (frame 0, `set`): 3 tasks\n            \
+                 task {}  {}  {}\n            task {}  {}  {}\n            \
                  task 99  <complete, awaiting join>\n",
                 joined[0].task_id.expect("the fixture's tasks have ids"),
                 future_name(
@@ -2670,10 +2676,10 @@ mod future_trace_tests {
             let id = list.tasks[empty].task_id.expect("the task has an id");
             let rendered = render(list, &census.held, &census.sets, true, id);
             assert!(rendered.starts_with(&format!("task {id}\n")), "{rendered}");
-            assert!(rendered.contains("\nheld futures: 0\n"), "{rendered}");
+            assert!(rendered.contains("\n    held futures: 0\n"), "{rendered}");
             // A task that drives no set says so with a bare zero: what
             // the sets it does not have would hold is noise.
-            assert!(rendered.ends_with("\njoin sets: 0\n"), "{rendered}");
+            assert!(rendered.ends_with("\n    join sets: 0\n"), "{rendered}");
         });
     }
 }

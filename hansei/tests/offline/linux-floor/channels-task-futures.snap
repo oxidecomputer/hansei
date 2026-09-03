@@ -3,13 +3,13 @@ source: hansei/src/offline.rs
 description: "`task 3 --futures` over linux-floor/channels"
 ---
 task 3
-state: idle
-type: async fn channels::notify_waiter
-awaiting at: src/bin/channels.rs:30
-waiting on: future tokio::sync::notify::Notified
-waker: <empty>
-spawned at: src/bin/channels.rs:75:23
-defined at: src/bin/channels.rs:17
-held futures: 1
-    (frame 1, `notified`): 0xADDR  future tokio::sync::notify::Notified
-join sets: 0
+    state: idle
+    type: async fn channels::notify_waiter
+    awaiting at: src/bin/channels.rs:30
+    waiting on: future tokio::sync::notify::Notified
+    waker: <empty>
+    spawned at: src/bin/channels.rs:75:23
+    defined at: src/bin/channels.rs:17
+    held futures: 1
+        (frame 1, `notified`): 0xADDR  future tokio::sync::notify::Notified
+    join sets: 0

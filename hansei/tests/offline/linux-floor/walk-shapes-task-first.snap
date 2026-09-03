@@ -3,13 +3,13 @@ source: hansei/src/offline.rs
 description: "`task 1` over linux-floor/walk-shapes"
 ---
 task 1
-state: idle
-owner: runtime 0 @ 0xADDR (current_thread)
-type: async fn walk_shapes::chained
-awaiting at: src/bin/walk-shapes.rs:103
-waiting on: future tokio::sync::notify::Notified
-waker: <empty>
-spawned at: src/bin/walk-shapes.rs:245:9
-defined at: src/bin/walk-shapes.rs:92
-held futures: 1
-join sets: 0
+    state: idle
+    owner: runtime 0 @ 0xADDR (current_thread)
+    type: async fn walk_shapes::chained
+    awaiting at: src/bin/walk-shapes.rs:103
+    waiting on: future tokio::sync::notify::Notified
+    waker: <empty>
+    spawned at: src/bin/walk-shapes.rs:245:9
+    defined at: src/bin/walk-shapes.rs:92
+    held futures: 1
+    join sets: 0

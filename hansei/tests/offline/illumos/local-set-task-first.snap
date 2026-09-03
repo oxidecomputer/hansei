@@ -3,14 +3,14 @@ source: hansei/src/offline.rs
 description: "`task 1` over illumos/local-set"
 ---
 task 1
-state: idle
-owner: local set 0 @ 0xADDR (lwp 1)
-type: async fn local_set::local_sleeper
-awaiting at: src/bin/local-set.rs:16
-waiting on: timer (deadline TS)
-waker: timer 0xADDR
-    timer entry 0xADDR in the wheel, registered
-spawned at: src/bin/local-set.rs:46:29
-defined at: src/bin/local-set.rs:13
-held futures: 0
-join sets: 0
+    state: idle
+    owner: local set 0 @ 0xADDR (lwp 1)
+    type: async fn local_set::local_sleeper
+    awaiting at: src/bin/local-set.rs:16
+    waiting on: timer (deadline TS)
+    waker: timer 0xADDR
+        timer entry 0xADDR in the wheel, registered
+    spawned at: src/bin/local-set.rs:46:29
+    defined at: src/bin/local-set.rs:13
+    held futures: 0
+    join sets: 0

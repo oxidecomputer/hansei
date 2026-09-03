@@ -941,7 +941,9 @@ pub(crate) struct TaskView<'a> {
 /// One task as labelled lines — what `task` prints. A row's cells
 /// stacked rather than joined: the future type alone outruns a
 /// terminal, and stacked, the id and state stay readable at its left.
-/// A line prints only where the target has something for it — no `—`
+/// The fields sit four columns in from the `task N` heading, so a run
+/// of them under `tasks --exec task` reads as blocks rather than as
+/// one long column. A line prints only where the target has something for it — no `—`
 /// placeholders — so a missing source anchor is a shorter block. The
 /// waker and the census counts print always, because their empty
 /// spellings are answers: `<empty>` is "nothing can wake it", `0` is
@@ -967,31 +969,35 @@ pub(crate) fn print_task_view(
             None => " (mid-poll)".to_string(),
         });
     }
-    writeln!(out, "state: {state}")?;
+    writeln!(out, "    state: {state}")?;
     if let Some(tag) = view.group_tags.get(task.group) {
-        writeln!(out, "owner: {tag}")?;
+        writeln!(out, "    owner: {tag}")?;
     }
-    writeln!(out, "type: {}", row.future)?;
+    writeln!(out, "    type: {}", row.future)?;
     if let Some(loc) = &row.awaiting_at {
-        writeln!(out, "awaiting at: {loc}")?;
+        writeln!(out, "    awaiting at: {loc}")?;
     }
     if !polled && row.waiting_on != "—" {
-        writeln!(out, "waiting on: {}", row.waiting_on)?;
+        writeln!(out, "    waiting on: {}", row.waiting_on)?;
     }
     // Every slot holding the task's waker, then where each sits: the
     // registries' detail (which wheel entry, which io slot) and the
     // slots those do not place (the wake-queue node, the trailer).
-    writeln!(out, "waker: {}", row.waker.as_deref().unwrap_or("<empty>"))?;
+    writeln!(
+        out,
+        "    waker: {}",
+        row.waker.as_deref().unwrap_or("<empty>")
+    )?;
     for line in row.wait_detail.iter().chain(&row.waker_detail) {
-        writeln!(out, "    {line}")?;
+        writeln!(out, "        {line}")?;
     }
     if let Some(loc) = &task.spawn_location {
-        writeln!(out, "spawned at: {loc}")?;
+        writeln!(out, "    spawned at: {loc}")?;
     }
     if let bundle::FutureInfo::Known(known) = &task.future
         && let Some((file, line)) = &known.decl
     {
-        writeln!(out, "defined at: {file}:{line}")?;
+        writeln!(out, "    defined at: {file}:{line}")?;
     }
     // What the task has off its spine, in two rows rather than one:
     // the futures held in its own frames, and the sets it drives from
@@ -1017,10 +1023,10 @@ pub(crate) fn print_task_view(
         ("held futures", count.held.to_string(), false),
         ("join sets", count.sets_summary(), true),
     ] {
-        writeln!(out, "{label}: {value}")?;
+        writeln!(out, "    {label}: {value}")?;
         if futures {
             for entry in roots().filter(|e| e.is_set() == sets) {
-                print_future_entry(*entry, &listing, 4, false, out)?;
+                print_future_entry(*entry, &listing, 8, false, out)?;
             }
         }
     }
