@@ -704,8 +704,10 @@ impl Write for ShellSink {
 /// declared possible values (every `ValueEnum`), and the few value
 /// sets clap cannot see — the `FIELD` of a `--with FIELD ARG` pair,
 /// whose second value is free-form, and `config`'s keys — from the
-/// modules that parse them. A word the grammar does not recognize
-/// completes to nothing rather than to a guess.
+/// modules that parse them; what only the target knows — a clause's
+/// argument, a selector's id — is asked of the session. A word the
+/// grammar does not recognize completes to nothing rather than to a
+/// guess.
 struct LineCompleter {
     /// Where the answers only the session has come from: its thread,
     /// asked over a channel while the prompt waits. Tests pass a
@@ -1084,6 +1086,21 @@ fn values_of(
                     space: true,
                 })
                 .collect();
+        }
+        // A selector's argument: the ids its listing holds, which are
+        // the same values `--with id` / `--with lwp` complete to.
+        ("task", "target", _) | ("thread", "lwp", _) => {
+            let (listing, field) = match command {
+                "task" => ("tasks", "id"),
+                _ => ("threads", "lwp"),
+            };
+            return answer(Ask::Values {
+                command: listing.to_string(),
+                field: field.to_string(),
+            })
+            .into_iter()
+            .map(|v| Candidate::word(v.spelled, None))
+            .collect();
         }
         ("config", "key", _) => crate::settings::KEYS.to_vec(),
         ("config", "value", _) => positional_words
@@ -1520,6 +1537,8 @@ mod tests {
                 ("tasks", "state") => (vec!["idle", "idle (cancelled)", "running"], true),
                 ("tasks", "type") => (vec!["Vec<(u64, u64)>"], true),
                 ("tasks", "lwp") => (vec!["7"], false),
+                ("tasks", "id") => (vec!["129", "130", "2001"], false),
+                ("threads", "lwp") => (vec!["1", "7", "12"], false),
                 ("threads", "has-task") => (vec!["yes", "no"], false),
                 _ => (Vec::new(), false),
             };
@@ -1574,6 +1593,24 @@ mod tests {
             ["--group"]
         );
         assert!(complete_with(&mut c, "tasks --group state ").is_empty());
+    }
+
+    /// A selector's argument is offered from the ids its listing
+    /// holds: `task` the task ids, `thread` the lwps. `future` takes an
+    /// address no listing field spells, so it offers nothing.
+    #[test]
+    fn test_completion_offers_the_targets_ids_to_a_selector() {
+        let (mut c, _) = stateful_completer();
+        assert_eq!(complete_with(&mut c, "task "), ["129", "130", "2001"]);
+        assert_eq!(complete_with(&mut c, "task 1"), ["129", "130"]);
+        assert_eq!(complete_with(&mut c, "thread "), ["1", "7", "12"]);
+        assert_eq!(complete_with(&mut c, "thread 1"), ["1", "12"]);
+        // The argument once typed, the word after it is a command.
+        assert_eq!(
+            complete_with(&mut c, "thread 7 "),
+            complete_with(&mut c, "")
+        );
+        assert!(complete_with(&mut c, "future ").is_empty());
     }
 
     /// A clause argument completes at its last unescaped comma: the
