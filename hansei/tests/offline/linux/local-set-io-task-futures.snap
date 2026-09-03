@@ -1,0 +1,16 @@
+---
+source: hansei/src/offline.rs
+description: "`task 1 --futures` over linux/local-set-io"
+---
+task 1
+state: idle
+owner: local set 0 @ 0xADDR (lwp 1609606)
+type: async fn local_set_io::local_reader
+awaiting at: src/bin/local-set-io.rs:28
+waiting on: io fd 9 (readable)
+waker: io 0xADDR read
+    io 0xADDR: awaiting readable via the read-waiter slot, ready: writable
+spawned at: src/bin/local-set-io.rs:98:20
+defined at: src/bin/local-set-io.rs:24
+held futures: 0
+join sets: 0

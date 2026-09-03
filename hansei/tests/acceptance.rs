@@ -191,13 +191,13 @@ fn cell() -> &'static Cell {
     })
 }
 
-/// The `Spawned at` value a listing reports: the recorded location
-/// under tokio_unstable instrumentation, the `-` gap marker without.
+/// The `spawned at` value `task` reports: the recorded location under
+/// tokio_unstable instrumentation, no line at all without.
 fn spawned(loc: &str) -> String {
     if cell().unstable {
         loc.to_owned()
     } else {
-        "-".to_owned()
+        String::new()
     }
 }
 
@@ -527,38 +527,52 @@ struct TaskRow {
     /// How many sets it drives and how many tasks and futures they
     /// hold, `0` when it drives none.
     sets: String,
-    /// The two source locations, `-` when the target did not record one.
+    /// The two source locations, empty when the target did not record
+    /// one — `task` prints no line for a missing anchor.
     spawned: String,
     defined: String,
-    /// The wait, spelled as the table's cell — `—` for a task waiting
-    /// on nothing nameable.
+    /// The wait, spelled as the table's cell — empty for a task
+    /// waiting on nothing nameable, which gets no line either.
     waiting: String,
     /// The waker slots, `<empty>` where nothing is armed.
     waker: String,
 }
 
-/// Run `tasks -v` and parse the block listing: a `Task <id>: <future>`
-/// header per task, then one indented `<label>: <value>` line per
-/// attribute, then a blank line. Every block carries every attribute, so
-/// a field left empty here is a row the listing failed to print.
+/// Run `task` under every task — `tasks --exec task` — and parse what
+/// it prints: each task's table row as the exec heading, then a `task
+/// <id>` line and one `<label>: <value>` line per field. The fields
+/// `task` always prints — state, type, waker, the two census counts —
+/// must be there for every task; the anchors and the wait print only
+/// where the target has them, so those may come back empty.
 fn list_tasks(bundle: &Path, core: &Path) -> Vec<TaskRow> {
-    let out = hansei_ok(bundle, core, "tasks -v");
+    let out = hansei_ok(bundle, core, "tasks --exec task");
 
-    let mut lines = out.lines().peekable();
     let mut rows: Vec<TaskRow> = Vec::new();
-    while let Some(line) = lines.peek() {
-        let Some(header) = line.strip_prefix("Task ") else {
+    let mut lines = out.lines().peekable();
+    while let Some(line) = lines.next() {
+        if let Some(rest) = line.strip_prefix("Executed against ") {
+            // The loop's summary spells its count `N tasks` whatever N.
+            assert_eq!(
+                rest,
+                format!("{} tasks, 0 failed", rows.len()),
+                "the exec summary disagrees with the task count"
+            );
+            assert!(
+                lines.next().is_none(),
+                "output after the exec summary: {out}"
+            );
             break;
+        }
+        // The exec heading — the task's table row — opens each run;
+        // the `task` line under it opens the fields.
+        let Some(id) = line.strip_prefix("task ") else {
+            continue;
         };
-        // The id holds no `: `, so the first one separates it from a
-        // future name that may well hold more (`<ambiguous: a | b>`).
-        let (id, future) = header
-            .split_once(": ")
-            .unwrap_or_else(|| panic!("unexpected tasks header {line:?}"));
+        assert!(!id.contains(' '), "unexpected task line {line:?}");
         let mut row = TaskRow {
             id: id.to_string(),
             state: String::new(),
-            future: future.to_string(),
+            future: String::new(),
             owner: String::new(),
             futures: String::new(),
             sets: String::new(),
@@ -567,60 +581,46 @@ fn list_tasks(bundle: &Path, core: &Path) -> Vec<TaskRow> {
             waiting: String::new(),
             waker: String::new(),
         };
-        lines.next();
-
-        for line in &mut lines {
-            if line.is_empty() {
+        while let Some(line) = lines.peek() {
+            if line.is_empty() || line.starts_with("Executed against ") {
                 break;
             }
-            let attr = line
-                .strip_prefix("    ")
-                .unwrap_or_else(|| panic!("unexpected tasks line {line:?}"));
-            // A deeper-indented line is registry detail under the wait
-            // row (a wheel entry, an io slot), not an attribute.
-            if attr.starts_with(' ') {
+            let line = lines.next().expect("peeked");
+            // An indented line is detail under the field above it (a
+            // wheel entry, an io slot, a wake-queue node), not a field.
+            if line.starts_with(' ') {
                 continue;
             }
-            let (label, value) = attr
+            let (label, value) = line
                 .split_once(": ")
-                .unwrap_or_else(|| panic!("unexpected tasks line {line:?}"));
+                .unwrap_or_else(|| panic!("unexpected task line {line:?}"));
             let field = match label {
-                "State" => &mut row.state,
-                "Owner" => &mut row.owner,
-                "Held futures" => &mut row.futures,
-                "Join sets" => &mut row.sets,
-                "Spawned at" => &mut row.spawned,
-                "Defined at" => &mut row.defined,
-                "Waiting on" => &mut row.waiting,
-                "Waker" => &mut row.waker,
-                _ => panic!("unexpected tasks attribute {line:?}"),
+                "state" => &mut row.state,
+                "owner" => &mut row.owner,
+                "type" => &mut row.future,
+                "awaiting at" => continue,
+                "waiting on" => &mut row.waiting,
+                "waker" => &mut row.waker,
+                "spawned at" => &mut row.spawned,
+                "defined at" => &mut row.defined,
+                "held futures" => &mut row.futures,
+                "join sets" => &mut row.sets,
+                _ => panic!("unexpected task field {line:?}"),
             };
-            assert!(field.is_empty(), "repeated tasks attribute {line:?}");
+            assert!(field.is_empty(), "repeated task field {line:?}");
             *field = value.to_string();
         }
-        // Every attribute except the group tag, which only a
-        // multi-group population prints.
         for (label, value) in [
-            ("State", &row.state),
-            ("Held futures", &row.futures),
-            ("Join sets", &row.sets),
-            ("Spawned at", &row.spawned),
-            ("Defined at", &row.defined),
-            ("Waiting on", &row.waiting),
-            ("Waker", &row.waker),
+            ("state", &row.state),
+            ("type", &row.future),
+            ("waker", &row.waker),
+            ("held futures", &row.futures),
+            ("join sets", &row.sets),
         ] {
-            assert!(!value.is_empty(), "task {} has no {label} row", row.id);
+            assert!(!value.is_empty(), "task {} has no {label} line", row.id);
         }
         rows.push(row);
     }
-
-    let footer = lines.next().expect("tasks output has a count footer");
-    let plural = if rows.len() == 1 { "" } else { "s" };
-    assert_eq!(
-        footer,
-        format!("[{} task{plural}]", rows.len()),
-        "footer disagrees with the task count"
-    );
     rows
 }
 
@@ -1190,7 +1190,7 @@ fn test_a_session_can_extract_from_debug_info() {
     let debug_binary = fixtures().debug_binary(program);
     // Enough of the session to exercise the whole attach: the summary,
     // the task listing off the census, and the wait graph.
-    let command = "info\ntasks --futures\ngraph\n";
+    let command = "info\ntasks --exec task --futures\ngraph\n";
     with_core(program, |core| {
         let from_bundle = hansei_ok(&bundle, core, command);
         let out = hansei_from(("--debug-info", &debug_binary), core, &[], command);
@@ -1236,7 +1236,7 @@ fn test_save_tokio_info_persists_the_extraction() {
     let program = "simple-await";
     let bundle = fixtures().bundle(program);
     let debug_binary = fixtures().debug_binary(program);
-    let command = "info\ntasks --futures\n";
+    let command = "info\ntasks --exec task --futures\n";
     with_core(program, |core| {
         let dir = tempfile::tempdir().expect("failed to create a tempdir");
         let saved = dir.path().join("saved.tinfo");
@@ -1855,7 +1855,9 @@ fn test_blocking_pool_acceptance() {
         let on_lwp = regex::Regex::new(r"^blocking \(running on lwp \d+\)$").unwrap();
         assert!(on_lwp.is_match(&running.state), "{rows:#?}");
         assert_eq!(queued.state, "blocking (queued)", "{rows:#?}");
-        assert_eq!(running.waiting, "—", "{rows:#?}");
+        // A blocking cell waits on a pool thread, not on a future, so
+        // `task` prints no wait line for it.
+        assert_eq!(running.waiting, "", "{rows:#?}");
 
         // The join edges point at listed rows, plainly spelled.
         let a = task_with_future(&rows, "async fn blocking_pool::running_waiter");
@@ -2034,7 +2036,7 @@ fn test_spin_poll_acceptance() {
         // lwp the joined section must attribute the poll to.
         let lwp = task
             .state
-            .strip_prefix("running (lwp ")
+            .strip_prefix("running (mid-poll on lwp ")
             .and_then(|state| state.strip_suffix(')'))
             .unwrap_or_else(|| panic!("the spinner is not running on a worker: {rows:#?}"));
 
@@ -2200,7 +2202,7 @@ fn test_whatis_acceptance() {
 }
 
 /// The sub-executor census: a `FuturesUnordered`'s children are futures,
-/// not tasks — `tasks --futures` lists them under the task that polls
+/// not tasks — `task --futures` lists them under the task that polls
 /// the set, `trace -v` labels their queued wakers with that task, and
 /// `whatis` resolves a child node address to it.
 #[test]
@@ -2212,27 +2214,24 @@ fn test_futures_acceptance() {
 
         // Five held futures, and one set holding three children — the
         // driver's own finds, counted apart from what the census went
-        // on to find inside them. The plain listing carries both
-        // counts, and says `0` for a task the census found nothing for
-        // rather than staying silent; `--futures` lists what each
-        // counted, under its own row.
+        // on to find inside them. `task` carries both counts, and says
+        // `0` for a task the census found nothing for rather than
+        // staying silent; `--futures` lists what each counted, under
+        // its own row.
         assert_eq!(driver.futures, "5", "{rows:?}");
         assert_eq!(driver.sets, "1 (3 futures)", "{rows:?}");
         for row in rows.iter().filter(|row| row.id != driver.id) {
             assert_eq!(row.futures, "0", "{row:?}");
             assert_eq!(row.sets, "0", "{row:?}");
         }
-        let futures = hansei_ok(&bundle, core, "tasks --futures");
+        let futures = hansei_ok(&bundle, core, &format!("task {} --futures", driver.id));
         assert!(
-            futures.contains(&format!("Task {}: ", driver.id)),
+            futures.starts_with(&format!("task {}\n", driver.id)),
             "{futures}"
         );
+        assert!(futures.contains("\nheld futures: 5\n    "), "{futures}");
         assert!(
-            futures.contains("    Held futures: 5\n        "),
-            "{futures}"
-        );
-        assert!(
-            futures.contains("    Join sets: 1 (3 futures)\n        - "),
+            futures.contains("\njoin sets: 1 (3 futures)\n    - "),
             "{futures}"
         );
         assert!(
@@ -2248,8 +2247,7 @@ fn test_futures_acceptance() {
         // Set-child rows sit one indent step deeper than the set's own
         // bulleted row.
         let child =
-            regex::Regex::new(r"\n            (0x[0-9a-f]+)  async fn unordered::set_member")
-                .unwrap();
+            regex::Regex::new(r"\n        (0x[0-9a-f]+)  async fn unordered::set_member").unwrap();
         let nodes: Vec<String> = child
             .captures_iter(&futures)
             .map(|c| c[1].to_string())
@@ -2263,7 +2261,7 @@ fn test_futures_acceptance() {
         // carrying a future of its own.
         for local in ["held", "boxed", "pair", "maybe", "nested_hold"] {
             assert!(
-                futures.contains(&format!("\n        (frame 1, `{local}`)")),
+                futures.contains(&format!("\n    (frame 1, `{local}`)")),
                 "{futures}"
             );
         }
@@ -2279,11 +2277,11 @@ fn test_futures_acceptance() {
         // tree is the census's attribution, drawn.
         let held_row = r"held \(frame 1, `held`\): 0x[0-9a-f]+  async fn unordered::leaf";
         let under_child =
-            regex::Regex::new(&format!(r"\n                {held_row}  Unresumed")).unwrap();
+            regex::Regex::new(&format!(r"\n            {held_row}  Unresumed")).unwrap();
         assert_eq!(under_child.find_iter(&futures).count(), 3, "{futures}");
         assert!(
             futures.contains(
-                "\n                - futures_util::stream::futures_unordered::FuturesUnordered\
+                "\n            - futures_util::stream::futures_unordered::FuturesUnordered\
                  <unordered::leaf> at 0x"
             ),
             "{futures}"
@@ -2293,37 +2291,27 @@ fn test_futures_acceptance() {
             "{futures}"
         );
         let under_set = regex::Regex::new(
-            r"\n                    0x[0-9a-f]+  async fn unordered::leaf  Unresumed",
+            r"\n                0x[0-9a-f]+  async fn unordered::leaf  Unresumed",
         )
         .unwrap();
         assert_eq!(under_set.find_iter(&futures).count(), 2, "{futures}");
 
         // The same nesting without a set in it: a future the driver
         // holds carries one, so its row sits one step under the row
-        // that holds it, inside the `Held futures` block. No `held`
+        // that holds it, inside the `held futures` block. No `held`
         // mark there — the heading is already the word.
         let carried_row = r"\(frame 0, `inner`\): 0x[0-9a-f]+  async fn unordered::leaf";
         let under_held =
-            regex::Regex::new(&format!(r"\n            {carried_row}  Unresumed")).unwrap();
+            regex::Regex::new(&format!(r"\n        {carried_row}  Unresumed")).unwrap();
         assert_eq!(under_held.find_iter(&futures).count(), 1, "{futures}");
 
-        // Narrowing to the driver shows its block alone, with the same
-        // finds under it: every one of them is the driver's.
-        let narrowed = hansei_ok(&bundle, core, &format!("tasks -f --with id {}", driver.id));
-        assert!(
-            narrowed.starts_with(&format!("Task {}: ", driver.id)),
-            "{narrowed}"
-        );
-        assert!(narrowed.ends_with("\n[1 task]\n"), "{narrowed}");
-        assert!(narrowed.contains("3 children in flight"), "{narrowed}");
-        assert!(
-            narrowed.contains("    Join sets: 1 (3 futures)\n"),
-            "{narrowed}"
-        );
+        // Every one of those finds is the driver's: any other task
+        // lists nothing under its zeros.
         for row in rows.iter().filter(|row| row.id != driver.id) {
+            let other = hansei_ok(&bundle, core, &format!("task {} --futures", row.id));
             assert!(
-                !narrowed.contains(&format!("Task {}: ", row.id)),
-                "{narrowed}"
+                other.ends_with("\nheld futures: 0\njoin sets: 0\n"),
+                "{other}"
             );
         }
 
@@ -2409,7 +2397,7 @@ fn test_futures_acceptance() {
         );
 
         // And so is a held future, by the address its row prints.
-        let held = regex::Regex::new(r"\n        \(frame 1, `held`\): (0x[0-9a-f]+)")
+        let held = regex::Regex::new(r"\n    \(frame 1, `held`\): (0x[0-9a-f]+)")
             .unwrap()
             .captures(&futures)
             .map(|c| c[1].to_string())
@@ -2461,9 +2449,14 @@ fn test_futures_acceptance() {
 fn test_search_depth_acceptance() {
     let bundle = fixtures().bundle("unordered");
     with_core("unordered", |core| {
-        let full = hansei_ok(&bundle, core, "tasks --futures");
+        let full = hansei_ok(&bundle, core, "tasks --exec task --futures");
 
-        let shallow = hansei_with(&bundle, core, &["--search-depth", "0"], "tasks --futures");
+        let shallow = hansei_with(
+            &bundle,
+            core,
+            &["--search-depth", "0"],
+            "tasks --exec task --futures",
+        );
         let warned = String::from_utf8_lossy(&shallow.stderr);
         let listed = String::from_utf8_lossy(&shallow.stdout);
         assert!(shallow.status.success(), "{warned}");
@@ -2475,10 +2468,10 @@ fn test_search_depth_acceptance() {
 
         // What the driver holds outright is still found and still
         // counted; what it holds nested is neither.
-        assert!(listed.contains("    Held futures: 3\n"), "{listed}");
+        assert!(listed.contains("\nheld futures: 3\n"), "{listed}");
         for local in ["held", "boxed", "nested_hold"] {
             assert!(
-                listed.contains(&format!("\n        (frame 1, `{local}`)")),
+                listed.contains(&format!("\n    (frame 1, `{local}`)")),
                 "{listed}"
             );
         }
@@ -2496,19 +2489,24 @@ fn test_search_depth_acceptance() {
 
         // And it moves the other way: past what this target needs, the
         // walk is the unbounded one, warning and all.
-        let deep = hansei_with(&bundle, core, &["--search-depth", "64"], "tasks --futures");
+        let deep = hansei_with(
+            &bundle,
+            core,
+            &["--search-depth", "64"],
+            "tasks --exec task --futures",
+        );
         let quiet = String::from_utf8_lossy(&deep.stderr);
         assert!(quiet.is_empty(), "{quiet}");
         assert_eq!(String::from_utf8_lossy(&deep.stdout), full);
     });
 }
 
-/// A `JoinSet` holds tasks rather than futures: `tasks --futures` lists
-/// them under the task that drives the set, by the ids each has a block
+/// A `JoinSet` holds tasks rather than futures: `task --futures` lists
+/// them under the task that drives the set, by the ids each has a row
 /// of its own under — and no futures count moves, because a spawned task
 /// is on its own await chain rather than off anybody's.
 ///
-/// One of them has no block to name, being a member of the second set
+/// One of them has no row to name, being a member of the second set
 /// that ran to completion and was never joined: a task off the
 /// runtime's owned list, which only the set still holds.
 #[test]
@@ -2527,9 +2525,9 @@ fn test_join_set_acceptance() {
             assert_eq!(row.sets, "0", "{row:?}");
         }
 
-        let futures = hansei_ok(&bundle, core, "tasks --futures");
+        let futures = hansei_ok(&bundle, core, &format!("task {} --futures", driver.id));
         assert!(
-            futures.contains("    Join sets: 2 (6 tasks)\n        - "),
+            futures.contains("\njoin sets: 2 (6 tasks)\n    - "),
             "{futures}"
         );
         assert!(
@@ -2538,11 +2536,10 @@ fn test_join_set_acceptance() {
         );
         assert!(futures.contains("`): 3 tasks\n"), "{futures}");
 
-        // Every member is named by the id its own block carries, so the
+        // Every member is named by the id its own row carries, so the
         // set reads as an edge into the listing rather than as a
         // population beside it.
-        let member =
-            regex::Regex::new(r"\n            task (\d+)  async fn joinset::member").unwrap();
+        let member = regex::Regex::new(r"\n        task (\d+)  async fn joinset::member").unwrap();
         let ids: Vec<String> = member
             .captures_iter(&futures)
             .map(|c| c[1].to_string())
@@ -2556,10 +2553,10 @@ fn test_join_set_acceptance() {
 
         // Except the member of the unjoined set that has run to
         // completion. It has left the runtime's owned list, so the
-        // listing has no block for it and nothing but this set's entry
+        // listing has no row for it and nothing but this set's entry
         // names it — which the row says outright rather than naming a
         // future it cannot reach.
-        let done = regex::Regex::new(r"\n            task (\d+)  <complete, awaiting join>")
+        let done = regex::Regex::new(r"\n        task (\d+)  <complete, awaiting join>")
             .unwrap()
             .captures(&futures)
             .unwrap_or_else(|| panic!("no completed member: {futures}"))[1]
@@ -3054,7 +3051,7 @@ fn test_census_prints_only_the_sections_named() {
 }
 
 /// What a set holds is counted apart from what a frame holds, with the
-/// same split `tasks --futures` lists: five children in flight across
+/// same split `task --futures` lists: five children in flight across
 /// the two sets, and nine futures held in frames beside them.
 ///
 /// The census counts a find wherever the scan reached it, so nesting
@@ -3405,23 +3402,23 @@ fn test_a_stale_future_is_not_counted_as_one_in_flight() {
     with_core("stale-local", |core| {
         let rows = list_tasks(&bundle, core);
         let task = task_with_future(&rows, "async fn stale_local::holder");
-        let out = hansei(&bundle, core, "tasks --futures");
+        let out = hansei(&bundle, core, &format!("task {} --futures", task.id));
         let stdout = String::from_utf8_lossy(&out.stdout);
         let stderr = String::from_utf8_lossy(&out.stderr);
         assert!(out.status.success(), "{stderr}\n{stdout}");
 
         if hansei_ok(&bundle, core, "umem-audit").contains("no umem metadata in this target") {
             assert_eq!(task.futures, "1", "{rows:?}");
-            assert!(stdout.contains("Held futures: 1"), "{stdout}");
+            assert!(stdout.contains("\nheld futures: 1\n"), "{stdout}");
             assert!(stderr.is_empty(), "{stderr}");
             return;
         }
-        // The count in the plain listing and the block under
-        // `--futures` are the same census, so both have to say none —
-        // a refusal that removed the row and left the count would be
-        // worse than not refusing at all.
+        // The count `task` prints and the listing under `--futures`
+        // are the same census, so both have to say none — a refusal
+        // that removed the row and left the count would be worse than
+        // not refusing at all.
         assert_eq!(task.futures, "0", "{rows:?}");
-        assert!(stdout.contains("Held futures: 0"), "{stdout}");
+        assert!(stdout.contains("\nheld futures: 0\n"), "{stdout}");
         assert!(
             stderr.contains(
                 "the allocator has taken back the memory 1 find(s) lay in; \

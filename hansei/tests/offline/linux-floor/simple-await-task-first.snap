@@ -7,5 +7,8 @@ state: idle
 type: async fn simple_await::work
 awaiting at: src/bin/simple-await.rs:40
 waiting on: future tokio::sync::oneshot::Receiver<u32>
+waker: <empty>
 spawned at: src/bin/simple-await.rs:75:21
 defined at: src/bin/simple-await.rs:17
+held futures: 0
+join sets: 0

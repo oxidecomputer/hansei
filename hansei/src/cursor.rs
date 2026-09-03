@@ -56,21 +56,19 @@ pub(crate) fn prompt_label(c: &Cursor) -> String {
     }
 }
 
-/// `task`: select one, or print the cursor's.
+/// `task`: select one, or print the cursor's — with the census's finds
+/// listed under its counts when `futures` asks.
 pub(crate) fn exec_task<T: proc::Target>(
     session: &Session<'_, T>,
     target: Option<TraceTarget>,
-    verbose: bool,
+    futures: bool,
     out: &mut dyn io::Write,
 ) -> Result<()> {
     let index = match target {
         Some(target) => select_task(session, target)?,
         None => cursor_task(session).ok_or_else(|| anyhow!("no task selected"))?,
     };
-    match verbose {
-        true => tasks::print_task_block(session, index, out),
-        false => tasks::print_task_summary(session, index, out),
-    }
+    tasks::print_task(session, index, futures, out)
 }
 
 /// The task the cursor stands on, if its root is one: a `Task` root,
@@ -1231,16 +1229,25 @@ mod tests {
                 .collect();
             assert!(labels.starts_with(&["state", "type"]), "{text}");
             assert!(!labels.contains(&"owner"), "{text}");
-            // The selection carries the task's source anchors.
+            // The selection carries the task's source anchors, its
+            // waker, and the census's counts — the last two always,
+            // since their empty spellings are answers.
             assert!(text.contains("\nspawned at: "), "{text}");
             assert!(text.contains("\ndefined at: "), "{text}");
+            assert!(labels.contains(&"waker"), "{text}");
+            assert!(labels.contains(&"held futures"), "{text}");
+            assert!(labels.ends_with(&["held futures", "join sets"]), "{text}");
         }
 
-        // `-v` prints the cursor task's full block.
+        // `--futures` lists the finds under the counts: a task holding
+        // nothing prints the same lines and nothing more.
         let mut out = Vec::new();
-        exec_task(&session, None, true, &mut out).expect("bare task -v prints the block");
-        let block = String::from_utf8(out).expect("the block is UTF-8");
-        assert!(block.contains("Task "), "{block}");
+        exec_task(&session, None, true, &mut out).expect("bare task --futures prints");
+        let listed = String::from_utf8(out).expect("the listing is UTF-8");
+        assert!(
+            listed.contains("\nheld futures: 0\njoin sets: 0\n"),
+            "{listed}"
+        );
     }
 
     /// A set child roots as a lone future, at the node address the
