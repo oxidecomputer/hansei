@@ -70,10 +70,7 @@ impl From<gimli::UnitSectionOffset> for TypeId {
 
 impl fmt::Debug for TypeId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let inner = match self.0 {
-            UnitSectionOffset::DebugInfoOffset(o) => o.0,
-            UnitSectionOffset::DebugTypesOffset(o) => o.0,
-        };
+        let inner = self.0.0;
         write!(f, "{inner:#x}")
     }
 }
@@ -89,10 +86,7 @@ impl From<gimli::UnitSectionOffset> for VarId {
 
 impl fmt::Debug for VarId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let inner = match self.0 {
-            UnitSectionOffset::DebugInfoOffset(o) => o.0,
-            UnitSectionOffset::DebugTypesOffset(o) => o.0,
-        };
+        let inner = self.0.0;
         write!(f, "{inner:#x}")
     }
 }
@@ -108,10 +102,7 @@ impl From<gimli::UnitSectionOffset> for FuncId {
 
 impl fmt::Debug for FuncId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let inner = match self.0 {
-            UnitSectionOffset::DebugInfoOffset(o) => o.0,
-            UnitSectionOffset::DebugTypesOffset(o) => o.0,
-        };
+        let inner = self.0.0;
         write!(f, "{inner:#x}")
     }
 }
@@ -119,14 +110,13 @@ impl fmt::Debug for FuncId {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gimli::{DebugInfoOffset, DebugTypesOffset};
 
     /// The id wrappers debug-print as the bare hex offset — what an
     /// operator pastes between `dump` output and `--include-type`.
     #[test]
     fn test_ids_debug_print_as_hex_offsets() {
-        let info = UnitSectionOffset::DebugInfoOffset(DebugInfoOffset(0x1f));
-        let types = UnitSectionOffset::DebugTypesOffset(DebugTypesOffset(0x2c));
+        let info = UnitSectionOffset(0x1f);
+        let types = UnitSectionOffset(0x2c);
         assert_eq!(format!("{:?}", TypeId(info)), "0x1f");
         assert_eq!(format!("{:?}", TypeId(types)), "0x2c");
         assert_eq!(format!("{:?}", VarId(info)), "0x1f");

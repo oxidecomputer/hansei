@@ -2127,10 +2127,10 @@ mod tests {
     use crate::raw_types::{
         NsId, RawArray, RawBase, RawEnum, RawMember, RawPointer, RawStruct, RawUnion, VariantShape,
     };
-    use gimli::{DebugInfoOffset, UnitSectionOffset};
+    use gimli::UnitSectionOffset;
 
     fn type_id(offset: usize) -> TypeId {
-        TypeId(UnitSectionOffset::DebugInfoOffset(DebugInfoOffset(offset)))
+        TypeId(UnitSectionOffset(offset))
     }
 
     fn ns(reader: &mut DwReader<'static>, path: &'static str) -> NsId {

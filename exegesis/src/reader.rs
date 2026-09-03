@@ -1388,10 +1388,10 @@ fn remap_ns_in_place<S>(ty: &mut RawType<S>, ns_remap: &HashMap<NsId, NsId>) {
 mod tests {
     use super::*;
     use crate::raw_types::{Encoding, RawArray};
-    use gimli::{DebugInfoOffset, UnitSectionOffset};
+    use gimli::UnitSectionOffset;
 
     fn type_id(offset: usize) -> TypeId {
-        TypeId(UnitSectionOffset::DebugInfoOffset(DebugInfoOffset(offset)))
+        TypeId(UnitSectionOffset(offset))
     }
 
     fn insert_struct(

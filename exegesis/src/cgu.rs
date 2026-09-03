@@ -48,20 +48,13 @@ impl<'a, 'dw> UnitCtx<'a, 'dw> {
     }
 
     fn biased(&self, offset: UnitSectionOffset) -> UnitSectionOffset {
-        match offset {
-            UnitSectionOffset::DebugInfoOffset(o) => {
-                UnitSectionOffset::DebugInfoOffset(gimli::DebugInfoOffset(o.0 + self.bias))
-            }
-            UnitSectionOffset::DebugTypesOffset(o) => {
-                UnitSectionOffset::DebugTypesOffset(gimli::DebugTypesOffset(o.0 + self.bias))
-            }
-        }
+        UnitSectionOffset(offset.0 + self.bias)
     }
 
     /// The id-space offset of a DIE in this unit.
     pub(crate) fn die_offset(
         &self,
-        entry: &DebuggingInformationEntry<'_, '_, Slice<'dw>>,
+        entry: &DebuggingInformationEntry<Slice<'dw>>,
     ) -> UnitSectionOffset {
         self.biased(entry.offset().to_unit_section_offset(&self.unit))
     }
@@ -73,7 +66,7 @@ impl<'a, 'dw> UnitCtx<'a, 'dw> {
     pub(crate) fn attr_ref(&self, value: AttributeValue<Slice<'dw>>) -> Option<UnitSectionOffset> {
         match value {
             AttributeValue::UnitRef(o) => Some(self.biased(o.to_unit_section_offset(&self.unit))),
-            AttributeValue::DebugInfoRef(o) => Some(self.biased(o.into())),
+            AttributeValue::DebugInfoRef(o) => Some(self.biased(UnitSectionOffset(o.0))),
             _ => None,
         }
     }
@@ -172,11 +165,11 @@ impl<'dw> CodegenUnit<'dw> {
         assert_eq!(entry.tag(), gimli::DW_TAG_compile_unit);
 
         let offset = unit.die_offset(entry);
-        let name = match entry.attr(gimli::DW_AT_name)? {
+        let name = match entry.attr(gimli::DW_AT_name) {
             Some(attr) => attr.attr_str(unit)?,
             None => UNNAMED_CGU,
         };
-        let producer = match entry.attr(gimli::DW_AT_producer)? {
+        let producer = match entry.attr(gimli::DW_AT_producer) {
             Some(attr) => Some(attr.attr_str(unit)?),
             None => None,
         };
@@ -196,7 +189,7 @@ impl<'dw> CodegenUnit<'dw> {
         };
 
         if entry.has_children() {
-            while let Some(()) = cursor.next_entry()? {
+            while cursor.next_entry()? {
                 if cursor.current().is_some() {
                     cgu.parse_nested_types(unit, cursor)?;
                 } else {
@@ -320,7 +313,7 @@ impl<'dw> CodegenUnit<'dw> {
 
         // TODO: why consume everything?
         if entry.has_children() {
-            while let Some(()) = cursor.next_entry()? {
+            while cursor.next_entry()? {
                 if cursor.current().is_some() {
                     cursor.consume_entry()?;
                 } else {
@@ -353,7 +346,7 @@ impl<'dw> CodegenUnit<'dw> {
 
         if entry.has_children() {
             self.with_namespace(ns, |this| {
-                while cursor.next_entry()?.is_some() {
+                while cursor.next_entry()? {
                     if cursor.current().is_some() {
                         this.parse_nested_types(unit, cursor)?;
                     } else {
@@ -388,7 +381,7 @@ impl<'dw> CodegenUnit<'dw> {
 
         if entry.has_children() {
             self.with_namespace(ns, |this| {
-                while let Some(()) = cursor.next_entry()? {
+                while cursor.next_entry()? {
                     if let Some(child) = cursor.current() {
                         match child.tag() {
                             gimli::DW_TAG_variant_part => {
@@ -467,7 +460,7 @@ impl<'dw> CodegenUnit<'dw> {
 
         if entry.has_children() {
             self.with_namespace(ns, |this| {
-                while let Some(()) = cursor.next_entry()? {
+                while cursor.next_entry()? {
                     if let Some(child) = cursor.current() {
                         match child.tag() {
                             gimli::DW_TAG_member => {
@@ -529,11 +522,11 @@ impl<'dw> CodegenUnit<'dw> {
 
         let mut count = None;
         if entry.has_children() {
-            while let Some(()) = cursor.next_entry()? {
+            while cursor.next_entry()? {
                 if let Some(child) = cursor.current() {
                     if child.tag() == gimli::DW_TAG_subrange_type
                         && count.is_none()
-                        && let Some(attr) = child.attr(gimli::DW_AT_count)?
+                        && let Some(attr) = child.attr(gimli::DW_AT_count)
                     {
                         count = attr.value().udata_value();
                     }
@@ -579,7 +572,7 @@ impl<'dw> CodegenUnit<'dw> {
 
         let mut enumerators = Vec::new();
         if entry.has_children() {
-            while let Some(()) = cursor.next_entry()? {
+            while cursor.next_entry()? {
                 if let Some(child) = cursor.current() {
                     match child.tag() {
                         gimli::DW_TAG_enumerator => {
@@ -773,7 +766,7 @@ impl<'dw> CodegenUnit<'dw> {
         let mut template_params = vec![];
         let mut awaitees = vec![];
         if entry.has_children() {
-            while let Some(()) = cursor.next_entry()? {
+            while cursor.next_entry()? {
                 if let Some(child) = cursor.current() {
                     match child.tag() {
                         gimli::DW_TAG_formal_parameter => {
@@ -846,9 +839,9 @@ fn collect_awaitees<'dw>(
     // next step descend into it.
     let mut depth = 1usize;
     while depth > 0 {
-        let Some(()) = cursor.next_entry()? else {
+        if !cursor.next_entry()? {
             break;
-        };
+        }
         match cursor.current() {
             None => depth -= 1,
             Some(child) => match child.tag() {
@@ -944,8 +937,7 @@ fn parse_variant_part<'dw>(
 
     // DW_AT_discr is a reference to the discriminant member DIE.
     let mut discr_ref = None;
-    let mut attrs = entry.attrs();
-    while let Some(attr) = attrs.next()? {
+    for attr in entry.attrs() {
         if attr.name() == gimli::DW_AT_discr {
             match unit.attr_ref(attr.value()) {
                 Some(o) => discr_ref = Some(o),
@@ -958,7 +950,7 @@ fn parse_variant_part<'dw>(
     let mut variants = Vec::new();
 
     if entry.has_children() {
-        while let Some(()) = cursor.next_entry()? {
+        while cursor.next_entry()? {
             if let Some(child) = cursor.current() {
                 match child.tag() {
                     gimli::DW_TAG_member => {
@@ -1003,16 +995,15 @@ fn parse_variant<'dw>(
 
     let mut discr_value = None;
 
-    let mut attrs = entry.attrs();
-    while let Some(attr) = attrs.next()? {
+    for attr in entry.attrs() {
         if attr.name() == gimli::DW_AT_discr_value {
-            discr_value = Some(attr_discr_value(&attr));
+            discr_value = Some(attr_discr_value(attr));
         }
     }
 
     let mut member = None;
     if entry.has_children() {
-        while let Some(()) = cursor.next_entry()? {
+        while cursor.next_entry()? {
             if let Some(child) = cursor.current() {
                 match child.tag() {
                     gimli::DW_TAG_member => {
@@ -1046,6 +1037,7 @@ fn attr_discr_value(attr: &Attribute<Slice<'_>>) -> u128 {
         AttributeValue::Data2(v) => v as u128,
         AttributeValue::Data4(v) => v as u128,
         AttributeValue::Data8(v) => v as u128,
+        AttributeValue::Data16(v) => v,
         AttributeValue::Block(ref data) => {
             let endian = data.endian();
             let slice = data.slice();
@@ -1078,14 +1070,13 @@ fn parse_enumerator<'dw>(
     let mut name = None;
     let mut value = None;
 
-    let mut attrs = entry.attrs();
-    while let Some(attr) = attrs.next()? {
+    for attr in entry.attrs() {
         match attr.name() {
             gimli::DW_AT_name => {
                 name = Some(attr.attr_str(unit)?);
             }
             gimli::DW_AT_const_value => {
-                value = Some(attr_discr_value(&attr));
+                value = Some(attr_discr_value(attr));
             }
             _ => {}
         }
@@ -1168,14 +1159,14 @@ trait ConsumeEntry {
     fn consume_entry(&mut self) -> Result<()>;
 }
 
-impl ConsumeEntry for EntriesCursor<'_, '_, Slice<'_>> {
+impl ConsumeEntry for EntriesCursor<'_, Slice<'_>> {
     fn consume_entry(&mut self) -> Result<()> {
         let Some(entry) = self.current() else {
             return Ok(());
         };
 
         if entry.has_children() {
-            while let Some(()) = self.next_entry()? {
+            while self.next_entry()? {
                 if self.current().is_some() {
                     self.consume_entry()?;
                 } else {
@@ -1358,7 +1349,7 @@ mod tests {
                 entry.set(gimli::DW_AT_byte_size, W::Udata(8));
                 entry.set(
                     gimli::DW_AT_specification,
-                    W::DebugInfoRef(gwrite::Reference::Entry(unit_id, decl_b)),
+                    W::DebugInfoRef(gwrite::DebugInfoRef::Entry(unit_id, decl_b)),
                 );
 
                 let coords = unit.add(root, gimli::DW_TAG_structure_type);

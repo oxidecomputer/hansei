@@ -765,14 +765,14 @@ mod tests {
         RawUnion, RawVariant, VariantShape,
     };
 
-    use gimli::{DebugInfoOffset, UnitSectionOffset};
+    use gimli::UnitSectionOffset;
 
     use ::std::collections::BTreeMap;
 
     use crate::bundle::POINTER_SIZE;
 
     fn type_id(offset: usize) -> TypeId {
-        TypeId(UnitSectionOffset::DebugInfoOffset(DebugInfoOffset(offset)))
+        TypeId(UnitSectionOffset(offset))
     }
 
     /// A fixture reader with builder methods spelling layouts the way the

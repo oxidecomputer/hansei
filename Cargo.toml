@@ -23,43 +23,43 @@ exclude = ["example", "test-programs"]
 anyhow = "1.0"
 bindgen = { version = "0.72", default-features = false }
 blake3 = { version = "1", features = ["pure"] }
-clap = { version = "4.5.51", features = ["derive", "wrap_help"] }
+clap = { version = "4.6", features = ["derive", "wrap_help"] }
 exegesis = { path = "exegesis", version = "0.1.0" }
-insta = "1.48"
-# Test scaffolding, dev-dependency only: see testrun/src/lib.rs.
-testrun = { path = "testrun", version = "0.1.0" }
 # The bundle format stores rust_type_name_hash values (TypeTable::
 # by_normalized_name); foldhash makes no cross-version hash stability
 # promise, so bumping it requires a bundle FORMAT_VERSION bump.
 foldhash = "0.2"
-gimli = { version = "0.32", features = ["fallible-iterator"] }
-goblin = "0.10.3"
+gimli = { version = "0.34", features = ["fallible-iterator"] }
+goblin = "0.10"
 hansei-bundle = { path = "hansei-bundle", version = "0.1.0" }
 hansei-runtime = { path = "hansei-runtime" }
+insta = "1.48"
 libproc-sys = { path = "libproc-sys", version = "0.1.0" }
-memmap2 = "0.9.9"
-mimalloc = { version = "*", features = ["v3"] }
-object = "0.38"
+memmap2 = "0.9"
+mimalloc = { version = "0.1", features = ["v3"] }
+object = "0.40"
 postcard = { version = "1.1", default-features = false, features = ["use-std"] }
+proc = { path = "proc", version = "0.1.0" }
 # Property tests only; the default features pull in a persistence file and a
 # fork/timeout harness neither of which any test here wants.
-proptest = { version = "1", default-features = false, features = ["std"] }
+proptest = { version = "1.11", default-features = false, features = ["std"] }
 rayon = "1.12"
-proc = { path = "proc", version = "0.1.0" }
 reedline = "0.51"
-terminal_size = "0.4"
 reify = { path = "reify", version = "0.1.0" }
 regex = "1.12"
-rustc-demangle = "0.1.27"
-scroll = "0.13.0"
+rustc-demangle = "0.1"
+scroll = "0.13"
 semver = "1.0"
 serde = { version = "1.0", features = ["derive"] }
-toml = "0.9"
-subprocess = "1.0.0"
-tempfile = "3.14"
-thiserror = "2.0.17"
-unwind = { path = "unwind" }
+subprocess = "1.2"
+tempfile = "3.27"
+terminal_size = "0.4"
+# Test scaffolding, dev-dependency only: see testrun/src/lib.rs.
+testrun = { path = "testrun", version = "0.1.0" }
+thiserror = "2.0"
+toml = "1.1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+unwind = { path = "unwind" }
 zstd = "0.13"
 zstd-sys = "2.0"

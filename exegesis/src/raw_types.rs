@@ -636,8 +636,7 @@ impl<'dw> CommonAttrs<'dw> {
         let mut source_loc = SourceLoc::default();
         let offset = unit.die_offset(entry);
 
-        let mut attrs = entry.attrs();
-        while let Some(attr) = attrs.next()? {
+        for attr in entry.attrs() {
             match attr.name() {
                 gimli::DW_AT_name => {
                     name = Some(attr.attr_str(unit)?);
@@ -670,7 +669,7 @@ impl<'dw> CommonAttrs<'dw> {
                 gimli::DW_AT_decl_column => {
                     source_loc.column = NonZero::new(attr.value().udata_value().unwrap());
                 }
-                _ => other_attr(&attr)?,
+                _ => other_attr(attr)?,
             }
         }
 

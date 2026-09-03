@@ -1428,12 +1428,12 @@ mod tests {
     use crate::raw_types::{NsId, RawBase, RawMember, RawPointer, RawStruct, RawType};
     use crate::{DwReader, Encoding, TypeId};
 
-    use gimli::{DebugInfoOffset, UnitSectionOffset};
+    use gimli::UnitSectionOffset;
 
     use ::std::collections::BTreeMap;
 
     fn type_id(offset: usize) -> TypeId {
-        TypeId(UnitSectionOffset::DebugInfoOffset(DebugInfoOffset(offset)))
+        TypeId(UnitSectionOffset(offset))
     }
 
     /// Version-keyed family selection: highest floor at or below the

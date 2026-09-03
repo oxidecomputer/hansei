@@ -1433,17 +1433,17 @@ mod tests {
     use crate::view::DwView;
     use crate::{DwReader, Encoding, FuncId, StrId};
 
-    use gimli::{DebugInfoOffset, UnitSectionOffset};
+    use gimli::UnitSectionOffset;
 
     use std::collections::BTreeMap;
     use std::num::NonZero;
 
     fn type_id(offset: usize) -> TypeId {
-        TypeId(UnitSectionOffset::DebugInfoOffset(DebugInfoOffset(offset)))
+        TypeId(UnitSectionOffset(offset))
     }
 
     fn func_id(offset: usize) -> FuncId {
-        FuncId(UnitSectionOffset::DebugInfoOffset(DebugInfoOffset(offset)))
+        FuncId(UnitSectionOffset(offset))
     }
 
     #[derive(Default)]

@@ -613,13 +613,13 @@ mod tests {
     };
     use crate::{DwReader, StrId, TypeId};
 
-    use gimli::{DebugInfoOffset, UnitSectionOffset};
+    use gimli::UnitSectionOffset;
 
     use std::collections::BTreeMap;
     use std::num::NonZero;
 
     fn type_id(offset: usize) -> TypeId {
-        TypeId(UnitSectionOffset::DebugInfoOffset(DebugInfoOffset(offset)))
+        TypeId(UnitSectionOffset(offset))
     }
 
     fn insert_struct(

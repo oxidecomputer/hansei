@@ -534,14 +534,14 @@ mod tests {
         RawEnum, RawFunc, RawGenericParameter, RawMember, RawPointer, RawStruct, RawSubParameter,
         RawUnion, VariantShape,
     };
-    use gimli::{DebugInfoOffset, UnitSectionOffset};
+    use gimli::UnitSectionOffset;
 
     fn type_id(offset: usize) -> TypeId {
-        TypeId(UnitSectionOffset::DebugInfoOffset(DebugInfoOffset(offset)))
+        TypeId(UnitSectionOffset(offset))
     }
 
     fn func_id(offset: usize) -> FuncId {
-        FuncId(UnitSectionOffset::DebugInfoOffset(DebugInfoOffset(offset)))
+        FuncId(UnitSectionOffset(offset))
     }
 
     fn insert_struct(
