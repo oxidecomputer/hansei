@@ -30,7 +30,7 @@ versions = ["1.47.5", "1.48.0", "1.49.0", "1.50.0", "1.51.4", "1.52.4", "1.53.1"
 
 [toolchain]
 floor = "1.97.0"
-versions = ["1.97.0", "1.97.1"]
+versions = ["1.97.0", "1.97.1", "1.98.0"]
 
 # Which cells the trim policy actually builds, so "the matrix" is
 # enumerable by tooling rather than implied by prose. The tokio axis is
