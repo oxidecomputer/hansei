@@ -1,3 +1,7 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
 //! Shapes that pin the walk's internals, quarantined like `gen-0007`:
 //! this program is in the snapshot-pair suite and the capture list
 //! only — the golden, matrix, and acceptance lists enumerate

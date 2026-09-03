@@ -1,3 +1,7 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
 //! The libproc-backed [`Core`] reader: an illumos core dump read
 //! through `Pgrab_core`. This is the reference the portable illumos
 //! core reader is held against, and it lives inside the test target on

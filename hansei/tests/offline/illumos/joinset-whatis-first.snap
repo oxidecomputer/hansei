@@ -1,8 +1,8 @@
 ---
 source: hansei/src/offline.rs
-description: "`whatis 0x154b600` over illumos/joinset"
+description: "`whatis 0xeae600` over illumos/joinset"
 ---
 Task 3: async fn joinset::driver
     At: offset 0xADDR in the task's allocation (header 0xADDR)
     State: idle
-    Spawned at: src/bin/joinset.rs:96:21
+    Spawned at: src/bin/joinset.rs:100:21

@@ -1,8 +1,8 @@
 ---
 source: hansei/src/offline.rs
-description: "`whatis 0x55622254f900` over linux-floor/joinset"
+description: "`whatis 0x5593b77f2900` over linux-floor/joinset"
 ---
 Task 3: async fn joinset::driver
     At: offset 0xADDR in the task's allocation (header 0xADDR)
     State: idle
-    Spawned at: src/bin/joinset.rs:96:21
+    Spawned at: src/bin/joinset.rs:100:21

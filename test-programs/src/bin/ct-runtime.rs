@@ -1,3 +1,7 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
 //! A current_thread runtime: the same parked shapes the multi_thread
 //! fixtures use — a timer sleeper and a semaphore waiter — scheduled by
 //! the flavor whose discovery chain crosses the `CurrentThread` variant.

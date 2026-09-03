@@ -7,7 +7,7 @@ future 0xADDR: async fn walk_shapes::deep
 Held by: task 1 — async fn walk_shapes::chained (frame 4, `wz`)
 
 #0  async fn      walk_shapes::deep
-      state Unresumed — src/bin/walk-shapes.rs:87
+      state Unresumed — src/bin/walk-shapes.rs:91
 
 future 0xADDR
 future 0xADDR: async fn tokio::sync::mutex::Mutex::lock<()>

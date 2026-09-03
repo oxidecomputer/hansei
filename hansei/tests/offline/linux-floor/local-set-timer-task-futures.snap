@@ -4,13 +4,13 @@ description: "`task 1 --futures` over linux-floor/local-set-timer"
 ---
 task 1
     state: idle
-    owner: local set 0 @ 0xADDR (lwp 1613639)
+    owner: local set 0 @ 0xADDR (lwp 3643691)
     type: async fn local_set_timer::local_sleeper
-    awaiting at: src/bin/local-set-timer.rs:18
+    awaiting at: src/bin/local-set-timer.rs:22
     waiting on: timer (deadline TS on the target's monotonic clock)
     waker: timer 0xADDR
         timer entry 0xADDR in the wheel, registered
-    spawned at: src/bin/local-set-timer.rs:58:20
-    defined at: src/bin/local-set-timer.rs:15
+    spawned at: src/bin/local-set-timer.rs:62:20
+    defined at: src/bin/local-set-timer.rs:19
     held futures: 0
     join sets: 0

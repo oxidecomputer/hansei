@@ -1,3 +1,7 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
 //! Extraction golden tests: run `extract` on the
 //! test-programs fixtures and compare a textual summary against checked-in
 //! expectations.
@@ -532,7 +536,7 @@ fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
             .expect("the work coroutine's env records its declaration");
         let file = bundle.strings.get(work_env.file).expect("interned file");
         assert!(file.ends_with("src/bin/simple-await.rs"), "{file}");
-        assert_eq!(work_env.line, 17);
+        assert_eq!(work_env.line, 21);
 
         for prefix in [
             "core::ptr::unique::Unique<",

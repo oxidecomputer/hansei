@@ -1,3 +1,7 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
 //! A `LocalSet` on a current_thread runtime: two tasks spawned onto the
 //! set's own `LocalOwnedTasks` list — one parked on the timer, one on a
 //! semaphore — and one ordinary spawned task awaiting a local task's

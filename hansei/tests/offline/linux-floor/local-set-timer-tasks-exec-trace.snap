@@ -8,7 +8,7 @@ Waiting on: timer (deadline TS on the target's monotonic clock)
 #0  future        tokio::time::sleep::Sleep
       waiting on timer (deadline TS on the target's monotonic clock)
 #1  async fn      local_set_timer::local_sleeper
-      awaiting at src/bin/local-set-timer.rs:18 (Suspend0, 0 locals)
+      awaiting at src/bin/local-set-timer.rs:22 (Suspend0, 0 locals)
 
 task 2
 Waiting on: a tokio::sync::Semaphore (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 2
@@ -18,7 +18,7 @@ Waiting on: a tokio::sync::Semaphore (semaphore 0xADDR): 1 permit requested, 0 a
 #1  async fn      tokio::sync::semaphore::Semaphore::acquire
       awaiting at tokio-1.47.5/src/sync/semaphore.rs:591 (Suspend0, 1 local)
 #2  async fn      local_set_timer::local_acquirer
-      awaiting at src/bin/local-set-timer.rs:25 (Suspend0, 0 locals)
+      awaiting at src/bin/local-set-timer.rs:29 (Suspend0, 0 locals)
 
 task 3
 Waiting on: timer (deadline TS on the target's monotonic clock)
@@ -26,5 +26,5 @@ Waiting on: timer (deadline TS on the target's monotonic clock)
 #0  future        tokio::time::sleep::Sleep
       waiting on timer (deadline TS on the target's monotonic clock)
 #1  async fn      local_set_timer::sleeper
-      awaiting at src/bin/local-set-timer.rs:38 (Suspend0, 1 local)
+      awaiting at src/bin/local-set-timer.rs:42 (Suspend0, 1 local)
 [Executed against 3 tasks, 0 failed]

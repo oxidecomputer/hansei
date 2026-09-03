@@ -3,6 +3,6 @@ source: hansei/src/offline.rs
 description: "`tasks --with state idle` over linux/channels"
 ---
 ID  STATE  AWAITING AT             WAITING ON                                  FUTURE
-3   idle   src/bin/channels.rs:30  future tokio::sync::notify::Notified        async fn channels::notify_waiter
-4   idle   src/bin/channels.rs:48  future tokio::sync::oneshot::Receiver<u32>  async fn channels::hold
+3   idle   src/bin/channels.rs:34  future tokio::sync::notify::Notified        async fn channels::notify_waiter
+4   idle   src/bin/channels.rs:52  future tokio::sync::oneshot::Receiver<u32>  async fn channels::hold
 [2 tasks]

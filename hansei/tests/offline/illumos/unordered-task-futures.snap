@@ -5,26 +5,26 @@ description: "`task 3 --futures` over illumos/unordered"
 task 3
     state: idle
     type: async fn unordered::driver
-    awaiting at: src/bin/unordered.rs:115
+    awaiting at: src/bin/unordered.rs:119
     waiting on: future futures_util::stream::futures_unordered::FuturesUnordered<unordered::set_member>
     waker: <empty>
-    spawned at: src/bin/unordered.rs:137:21
-    defined at: src/bin/unordered.rs:78
+    spawned at: src/bin/unordered.rs:141:21
+    defined at: src/bin/unordered.rs:82
     held futures: 5
-        (frame 1, `held`): 0xADDR  async fn unordered::set_member  Unresumed — src/bin/unordered.rs:56
-        (frame 1, `boxed`): 0xADDR  async fn unordered::set_member  Unresumed — src/bin/unordered.rs:56
-        (frame 1, `pair`): 0xADDR  async fn unordered::leaf  Unresumed — src/bin/unordered.rs:36
-        (frame 1, `maybe`): 0xADDR  async fn unordered::leaf  Unresumed — src/bin/unordered.rs:36
-        (frame 1, `nested_hold`): 0xADDR  async fn unordered::holder<unordered::leaf>  Unresumed — src/bin/unordered.rs:46
-            (frame 0, `inner`): 0xADDR  async fn unordered::leaf  Unresumed — src/bin/unordered.rs:36
+        (frame 1, `held`): 0xADDR  async fn unordered::set_member  Unresumed — src/bin/unordered.rs:60
+        (frame 1, `boxed`): 0xADDR  async fn unordered::set_member  Unresumed — src/bin/unordered.rs:60
+        (frame 1, `pair`): 0xADDR  async fn unordered::leaf  Unresumed — src/bin/unordered.rs:40
+        (frame 1, `maybe`): 0xADDR  async fn unordered::leaf  Unresumed — src/bin/unordered.rs:40
+        (frame 1, `nested_hold`): 0xADDR  async fn unordered::holder<unordered::leaf>  Unresumed — src/bin/unordered.rs:50
+            (frame 0, `inner`): 0xADDR  async fn unordered::leaf  Unresumed — src/bin/unordered.rs:40
     join sets: 1 (3 futures)
         - futures_util::stream::futures_unordered::FuturesUnordered<unordered::set_member> at 0xADDR (frame 1, `set`): 3 children in flight
-            0xADDR  async fn unordered::set_member  Suspend0 — src/bin/unordered.rs:69
-                held (frame 1, `held`): 0xADDR  async fn unordered::leaf  Unresumed — src/bin/unordered.rs:36
-            0xADDR  async fn unordered::set_member  Suspend0 — src/bin/unordered.rs:69
-                held (frame 1, `held`): 0xADDR  async fn unordered::leaf  Unresumed — src/bin/unordered.rs:36
-            0xADDR  async fn unordered::set_member  Suspend0 — src/bin/unordered.rs:69
-                held (frame 1, `held`): 0xADDR  async fn unordered::leaf  Unresumed — src/bin/unordered.rs:36
+            0xADDR  async fn unordered::set_member  Suspend0 — src/bin/unordered.rs:73
+                held (frame 1, `held`): 0xADDR  async fn unordered::leaf  Unresumed — src/bin/unordered.rs:40
+            0xADDR  async fn unordered::set_member  Suspend0 — src/bin/unordered.rs:73
+                held (frame 1, `held`): 0xADDR  async fn unordered::leaf  Unresumed — src/bin/unordered.rs:40
+            0xADDR  async fn unordered::set_member  Suspend0 — src/bin/unordered.rs:73
+                held (frame 1, `held`): 0xADDR  async fn unordered::leaf  Unresumed — src/bin/unordered.rs:40
                 - futures_util::stream::futures_unordered::FuturesUnordered<unordered::leaf> at 0xADDR (frame 1, `inner`): 2 children in flight
-                    0xADDR  async fn unordered::leaf  Unresumed — src/bin/unordered.rs:36
-                    0xADDR  async fn unordered::leaf  Unresumed — src/bin/unordered.rs:36
+                    0xADDR  async fn unordered::leaf  Unresumed — src/bin/unordered.rs:40
+                    0xADDR  async fn unordered::leaf  Unresumed — src/bin/unordered.rs:40

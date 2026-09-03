@@ -1,3 +1,7 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
 //! Named-statics recovery: locate the tokio statics hansei resolves by
 //! symbol name — the TLS context key and the task waker vtable — by their
 //! v0-mangled shape in the symbol table.

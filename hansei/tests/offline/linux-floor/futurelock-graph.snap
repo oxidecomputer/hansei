@@ -8,5 +8,5 @@ TASK          STATE  WAITING ON
 
 futurelock: task 5 holds 1 granted permit of a tokio::sync::Mutex (semaphore 0xADDR) in a future it stopped polling:
   `future1` (async fn futurelock::do_async_thing)
-  held across async fn futurelock::do_stuff state Suspend1 — src/bin/futurelock.rs:70
+  held across async fn futurelock::do_stuff state Suspend1 — src/bin/futurelock.rs:74
   blocked behind it: task 5

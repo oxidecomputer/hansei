@@ -5,4 +5,4 @@ expression: actual
 #0  future        tokio::sync::oneshot::Receiver<u32>
       (<no_state>, 1 local)
 #1  async fn      many_tasks::park_task
-      awaiting at src/bin/many-tasks.rs:11 (Suspend0, 0 locals)
+      awaiting at src/bin/many-tasks.rs:15 (Suspend0, 0 locals)

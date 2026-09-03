@@ -8,7 +8,7 @@ Waiting on: timer (deadline TS on the target's monotonic clock)
 #0  future        tokio::time::sleep::Sleep
       waiting on timer (deadline TS on the target's monotonic clock)
 #1  async fn      sleep_join::sleeper
-      awaiting at src/bin/sleep-join.rs:12 (Suspend0, 0 locals)
+      awaiting at src/bin/sleep-join.rs:16 (Suspend0, 0 locals)
 
 task 4
 Waiting on: task 3
@@ -16,5 +16,5 @@ Waiting on: task 3
 #0  future        tokio::runtime::task::join::JoinHandle<u32>
       waiting on task 3
 #1  async fn      sleep_join::joiner
-      awaiting at src/bin/sleep-join.rs:19 (Suspend0, 0 locals)
+      awaiting at src/bin/sleep-join.rs:23 (Suspend0, 0 locals)
 [Executed against 2 tasks, 0 failed]

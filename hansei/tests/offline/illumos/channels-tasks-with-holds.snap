@@ -3,5 +3,5 @@ source: hansei/src/offline.rs
 description: "`tasks --with holds >0` over illumos/channels"
 ---
 ID  STATE  AWAITING AT             WAITING ON                            FUTURE
-3   idle   src/bin/channels.rs:30  future tokio::sync::notify::Notified  async fn channels::notify_waiter
+3   idle   src/bin/channels.rs:34  future tokio::sync::notify::Notified  async fn channels::notify_waiter
 [1 task]

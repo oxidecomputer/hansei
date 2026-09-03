@@ -14,9 +14,9 @@ Waiting on: a tokio::sync::Mutex (semaphore 0xADDR): 1 permit requested, 0 avail
 #3  async fn      tokio::sync::mutex::Mutex::lock<()>
       awaiting at tokio-1.47.5/src/sync/mutex.rs:455 (Suspend0, 0 locals)
 #4  async fn      futurelock::do_async_thing
-      awaiting at src/bin/futurelock.rs:78 (Suspend0, 2 locals)
+      awaiting at src/bin/futurelock.rs:82 (Suspend0, 2 locals)
 #5  async fn      futurelock::do_stuff
-      awaiting at src/bin/futurelock.rs:70 (Suspend1, 3 locals; holds 1 pending future)
+      awaiting at src/bin/futurelock.rs:74 (Suspend1, 3 locals; holds 1 pending future)
 #6  async block   futurelock::main::{async_block#0}
-      awaiting at src/bin/futurelock.rs:28 (Suspend1, 1 local)
+      awaiting at src/bin/futurelock.rs:32 (Suspend1, 1 local)
 [Executed against 1 task, 0 failed]

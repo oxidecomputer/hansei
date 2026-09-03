@@ -6,11 +6,11 @@ task 1
     state: idle
     owner: local set 0 @ 0xADDR (lwp 1)
     type: async fn local_set_io::local_reader
-    awaiting at: src/bin/local-set-io.rs:28
+    awaiting at: src/bin/local-set-io.rs:32
     waiting on: io fd 11 (readable)
     waker: io 0xADDR read
         io 0xADDR: awaiting readable via the read-waiter slot, ready: writable
-    spawned at: src/bin/local-set-io.rs:98:20
-    defined at: src/bin/local-set-io.rs:24
+    spawned at: src/bin/local-set-io.rs:102:20
+    defined at: src/bin/local-set-io.rs:28
     held futures: 0
     join sets: 0

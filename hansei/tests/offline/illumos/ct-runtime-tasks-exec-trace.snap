@@ -8,7 +8,7 @@ Waiting on: timer (deadline TS)
 #0  future        tokio::time::sleep::Sleep
       waiting on timer (deadline TS)
 #1  async fn      ct_runtime::sleeper
-      awaiting at src/bin/ct-runtime.rs:13 (Suspend0, 0 locals)
+      awaiting at src/bin/ct-runtime.rs:17 (Suspend0, 0 locals)
 
 task 2
 Waiting on: a tokio::sync::Semaphore (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 2
@@ -18,5 +18,5 @@ Waiting on: a tokio::sync::Semaphore (semaphore 0xADDR): 1 permit requested, 0 a
 #1  async fn      tokio::sync::semaphore::Semaphore::acquire
       awaiting at tokio-1.52.4/src/sync/semaphore.rs:597 (Suspend0, 1 local)
 #2  async fn      ct_runtime::acquirer
-      awaiting at src/bin/ct-runtime.rs:20 (Suspend0, 0 locals)
+      awaiting at src/bin/ct-runtime.rs:24 (Suspend0, 0 locals)
 [Executed against 2 tasks, 0 failed]

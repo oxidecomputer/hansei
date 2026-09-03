@@ -1,3 +1,7 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
 //! Structural rendering of Rust aggregates: struct and enum-variant bodies,
 //! including the `__N` tuple-field elision that makes a tuple struct render as
 //! `Name(v0, v1)` rather than `Name { __0: v0, __1: v1 }`.

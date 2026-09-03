@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
 #
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this
+# file, You can obtain one at https://mozilla.org/MPL/2.0/.
+#
 # The generated-fixture soak loop: for each seed, emit a program with
 # genfix, capture a real snapshot pair from it (capture-snapshots.sh —
 # the same two-binary capture the checked-in fixtures get), and hold

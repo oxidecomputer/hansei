@@ -24,26 +24,26 @@ task: tokio::runtime::blocking::task::BlockingTask<blocking_pool::main::{async_b
   stage: Stage<tokio::runtime::blocking::task::BlockingTask<blocking_pool::main::{async_block#0}::{closure_env#1}>>
 task: blocking_pool::queued_waiter::{async_fn_env#0}
   kind: AsyncFn
-  decl: blocking-pool.rs:21
+  decl: blocking-pool.rs:25
   entries: 2
   symbols-per-entry: 6,6
   stage: Stage<blocking_pool::queued_waiter::{async_fn_env#0}>
   variants:
-    Unresumed @ blocking-pool.rs:21
-    Returned @ blocking-pool.rs:25
-    Panicked @ blocking-pool.rs:25
-    Suspend0 @ blocking-pool.rs:24
+    Unresumed @ blocking-pool.rs:25
+    Returned @ blocking-pool.rs:29
+    Panicked @ blocking-pool.rs:29
+    Suspend0 @ blocking-pool.rs:28
 task: blocking_pool::running_waiter::{async_fn_env#0}
   kind: AsyncFn
-  decl: blocking-pool.rs:15
+  decl: blocking-pool.rs:19
   entries: 2
   symbols-per-entry: 5,5
   stage: Stage<blocking_pool::running_waiter::{async_fn_env#0}>
   variants:
-    Unresumed @ blocking-pool.rs:15
-    Returned @ blocking-pool.rs:19
-    Panicked @ blocking-pool.rs:19
-    Suspend0 @ blocking-pool.rs:18
+    Unresumed @ blocking-pool.rs:19
+    Returned @ blocking-pool.rs:23
+    Panicked @ blocking-pool.rs:23
+    Suspend0 @ blocking-pool.rs:22
 
 [dyn-futures]
 dyn: blocking_pool::main::{async_block_env#0} (poll, drop_glue)

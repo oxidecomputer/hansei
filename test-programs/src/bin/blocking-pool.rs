@@ -1,3 +1,7 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
 //! `spawn_blocking` cells as rows: one claimed by the pool's only
 //! thread and running, one parked in the queue behind it, and a task
 //! awaiting each handle — join edges that point at listed rows.

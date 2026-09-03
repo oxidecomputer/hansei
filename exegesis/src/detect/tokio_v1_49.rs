@@ -1,3 +1,7 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
 //! The timer detectors for tokio 1.49 through 1.52, where the alternative
 //! timer arrived. The entry layout is unchanged from
 //! [`super::tokio_v1_47`] — whose record builders this module reuses —

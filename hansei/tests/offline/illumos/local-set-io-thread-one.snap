@@ -28,7 +28,7 @@ lwp 1  polling no task  runtime 0 @ 0xADDR
           tick: 4,
           driver: core::option::Option<tokio::runtime::driver::Driver>::None,
           metrics: tokio::runtime::metrics::batch::MetricsBatch {
-              busy_duration_total: 456073,
+              busy_duration_total: 506759,
               processing_scheduled_tasks_started_at: core::option::Option<std::time::Instant> { .. } @ 0xADDR,
               park_count: 1,
               park_unpark_count: 1,
@@ -51,11 +51,10 @@ lwp 1  polling no task  runtime 0 @ 0xADDR
         0xADDR  <tokio::runtime::time::Driver>::park_internal
         0xADDR  <tokio::runtime::scheduler::current_thread::Context>::park_internal
         0xADDR  <tokio::runtime::scheduler::current_thread::Context>::park
-        0xADDR  <std::thread::local::LocalKey<tokio::runtime::context::Context>>::with::<tokio::runtime::context::set_scheduler<(alloc::boxed::Box<tokio::runtime::scheduler::current_thread::Core>, core::option::Option<()>), <tokio::runtime::scheduler::current_thread::CoreGuard>::enter<<tokio::runtime::scheduler::current_thread::CoreGuard>::block_on<core::pin::Pin<&mut local_set_io::main::{closure#0}>>::{closure#0}, core::option::Option<()>>::{closure#0}>::{closure#0}, (alloc::boxed::Box<tokio::runtime::scheduler::current_thread::Core>, core::option::Option<()>)>
+        0xADDR  <tokio::runtime::context::scoped::Scoped<tokio::runtime::scheduler::Context>>::set::<<tokio::runtime::scheduler::current_thread::CoreGuard>::enter<<tokio::runtime::scheduler::current_thread::CoreGuard>::block_on<core::pin::Pin<&mut local_set_io::main::{closure#0}>>::{closure#0}, core::option::Option<()>>::{closure#0}, (alloc::boxed::Box<tokio::runtime::scheduler::current_thread::Core>, core::option::Option<()>)>
         0xADDR  <tokio::runtime::scheduler::current_thread::CoreGuard>::block_on::<core::pin::Pin<&mut local_set_io::main::{closure#0}>>
         0xADDR  tokio::runtime::context::runtime::enter_runtime::<<tokio::runtime::scheduler::current_thread::CurrentThread>::block_on<local_set_io::main::{closure#0}>::{closure#0}, ()>
         0xADDR  <tokio::runtime::runtime::Runtime>::block_on::<local_set_io::main::{closure#0}>
-        0xADDR  oxide_tokio_rt::run_builder::<(), local_set_io::main::{closure#0}>
         0xADDR  local_set_io::main
         0xADDR  std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
         0xADDR  std::rt::lang_start::<()>::{closure#0}

@@ -6,37 +6,37 @@ program: local-set
 [tasks]
 task: local_set::local_sleeper::{async_fn_env#0}
   kind: AsyncFn
-  decl: local-set.rs:13
+  decl: local-set.rs:17
   entries: 1
   symbols-per-entry: 6
   stage: Stage<local_set::local_sleeper::{async_fn_env#0}>
   variants:
-    Unresumed @ local-set.rs:13
-    Returned @ local-set.rs:18
-    Panicked @ local-set.rs:18
-    Suspend0 @ local-set.rs:16
+    Unresumed @ local-set.rs:17
+    Returned @ local-set.rs:22
+    Panicked @ local-set.rs:22
+    Suspend0 @ local-set.rs:20
 task: local_set::local_acquirer::{async_fn_env#0}
   kind: AsyncFn
-  decl: local-set.rs:20
+  decl: local-set.rs:24
   entries: 1
   symbols-per-entry: 6
   stage: Stage<local_set::local_acquirer::{async_fn_env#0}>
   variants:
-    Unresumed @ local-set.rs:20
-    Returned @ local-set.rs:25
-    Panicked @ local-set.rs:25
-    Suspend0 @ local-set.rs:23
+    Unresumed @ local-set.rs:24
+    Returned @ local-set.rs:29
+    Panicked @ local-set.rs:29
+    Suspend0 @ local-set.rs:27
 task: local_set::joiner::{async_fn_env#0}
   kind: AsyncFn
-  decl: local-set.rs:27
+  decl: local-set.rs:31
   entries: 2
   symbols-per-entry: 6,6
   stage: Stage<local_set::joiner::{async_fn_env#0}>
   variants:
-    Unresumed @ local-set.rs:27
-    Returned @ local-set.rs:31
-    Panicked @ local-set.rs:31
-    Suspend0 @ local-set.rs:30
+    Unresumed @ local-set.rs:31
+    Returned @ local-set.rs:35
+    Panicked @ local-set.rs:35
+    Suspend0 @ local-set.rs:34
 
 [dyn-futures]
 dyn: core::future::poll_fn::PollFn<tokio::runtime::scheduler::current_thread::{impl#0}::block_on::{closure#0}::{closure_env#0}<local_set::main::{async_block_env#0}>> (poll)

@@ -7,4 +7,4 @@ Waiting on: timer (deadline TS)
 #0  future        tokio::time::sleep::Sleep
       waiting on timer (deadline TS)
 #1  async fn      local_set_timer::local_sleeper
-      awaiting at src/bin/local-set-timer.rs:18 (Suspend0, 0 locals)
+      awaiting at src/bin/local-set-timer.rs:22 (Suspend0, 0 locals)

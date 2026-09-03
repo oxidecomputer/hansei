@@ -5,11 +5,11 @@ description: "`task 3 --futures` over illumos/dyn-future"
 task 3
     state: idle
     type: async fn dyn_future::driver
-    awaiting at: src/bin/dyn-future.rs:36
+    awaiting at: src/bin/dyn-future.rs:40
     waiting on: future tokio::sync::oneshot::Receiver<u32>
     waker: <empty>
-    spawned at: src/bin/dyn-future.rs:53:21
-    defined at: src/bin/dyn-future.rs:24
+    spawned at: src/bin/dyn-future.rs:57:21
+    defined at: src/bin/dyn-future.rs:28
     held futures: 0
     join sets: 1 (1 task)
         - tokio::task::join_set::JoinSet<u32> at 0xADDR (frame 2, `set`): 1 task

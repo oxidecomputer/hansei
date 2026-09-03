@@ -1,3 +1,7 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
 //! The parked target for the `proc` crate's on-box suite
 //! (`proc/tests/illumos.rs`): a process holding still in a state that
 //! suite knows exactly, with no tokio anywhere in it.

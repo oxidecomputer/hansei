@@ -1,3 +1,7 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
 //! The session cursor: one selected position in the target — an lwp,
 //! a chain root, a frame within that root's await chain — that every
 //! single-target command falls back to when given no target, and that

@@ -7,42 +7,42 @@ future 0xADDR: async fn unordered::set_member
 Held by: task 3 — async fn unordered::driver (frame 1, `held`)
 
 #0  async fn      unordered::set_member
-      state Unresumed — src/bin/unordered.rs:56
+      state Unresumed — src/bin/unordered.rs:60
 
 future 0xADDR
 future 0xADDR: async fn unordered::set_member
 Held by: task 3 — async fn unordered::driver (frame 1, `boxed`)
 
 #0  async fn      unordered::set_member
-      state Unresumed — src/bin/unordered.rs:56
+      state Unresumed — src/bin/unordered.rs:60
 
 future 0xADDR
 future 0xADDR: async fn unordered::leaf
 Held by: task 3 — async fn unordered::driver (frame 1, `pair`)
 
 #0  async fn      unordered::leaf
-      state Unresumed — src/bin/unordered.rs:36
+      state Unresumed — src/bin/unordered.rs:40
 
 future 0xADDR
 future 0xADDR: async fn unordered::leaf
 Held by: task 3 — async fn unordered::driver (frame 1, `maybe`)
 
 #0  async fn      unordered::leaf
-      state Unresumed — src/bin/unordered.rs:36
+      state Unresumed — src/bin/unordered.rs:40
 
 future 0xADDR
 future 0xADDR: async fn unordered::leaf
 Held by: task 3 — async fn unordered::driver (frame 0, `inner`, via held future at 0xADDR)
 
 #0  async fn      unordered::leaf
-      state Unresumed — src/bin/unordered.rs:36
+      state Unresumed — src/bin/unordered.rs:40
 
 future 0xADDR
 future 0xADDR: async fn unordered::leaf
 Held by: task 3 — async fn unordered::driver (frame 0, `inner`, via held future at 0xADDR)
 
 #0  async fn      unordered::leaf
-      state Unresumed — src/bin/unordered.rs:36
+      state Unresumed — src/bin/unordered.rs:40
 
 future 0xADDR
 future 0xADDR: async fn unordered::set_member
@@ -57,7 +57,7 @@ future 0xADDR: async fn unordered::leaf
 Held by: task 3 — async fn unordered::driver (frame 1, `held`, via set child at 0xADDR)
 
 #0  async fn      unordered::leaf
-      state Unresumed — src/bin/unordered.rs:36
+      state Unresumed — src/bin/unordered.rs:40
 
 future 0xADDR
 future 0xADDR: async fn unordered::set_member
@@ -72,7 +72,7 @@ future 0xADDR: async fn unordered::leaf
 Held by: task 3 — async fn unordered::driver (frame 1, `held`, via set child at 0xADDR)
 
 #0  async fn      unordered::leaf
-      state Unresumed — src/bin/unordered.rs:36
+      state Unresumed — src/bin/unordered.rs:40
 
 future 0xADDR
 future 0xADDR: async fn unordered::set_member
@@ -87,19 +87,19 @@ future 0xADDR: async fn unordered::leaf
 Held by: task 3 — async fn unordered::driver (frame 1, `held`, via set child at 0xADDR)
 
 #0  async fn      unordered::leaf
-      state Unresumed — src/bin/unordered.rs:36
+      state Unresumed — src/bin/unordered.rs:40
 
 future 0xADDR
 future 0xADDR: async fn unordered::leaf
 Child of: futures_util::stream::futures_unordered::FuturesUnordered<unordered::leaf> at 0xADDR (frame 1, `inner`, via set child at 0xADDR), polled by task 3 — async fn unordered::driver
 
 #0  async fn      unordered::leaf
-      state Unresumed — src/bin/unordered.rs:36
+      state Unresumed — src/bin/unordered.rs:40
 
 future 0xADDR
 future 0xADDR: async fn unordered::leaf
 Child of: futures_util::stream::futures_unordered::FuturesUnordered<unordered::leaf> at 0xADDR (frame 1, `inner`, via set child at 0xADDR), polled by task 3 — async fn unordered::driver
 
 #0  async fn      unordered::leaf
-      state Unresumed — src/bin/unordered.rs:36
+      state Unresumed — src/bin/unordered.rs:40
 [Executed against 14 futures, 0 failed]

@@ -1,12 +1,12 @@
 ---
 source: hansei/src/offline.rs
-description: "`future 0x1a05638` over illumos/walk-shapes"
+description: "`future 0xf20638` over illumos/walk-shapes"
 ---
 future 0xADDR
     type: async fn walk_shapes::deep
     held by: task 1 (frame 4, `wz`)
     owner: runtime 0 @ 0xADDR (current_thread)
-    state: Unresumed — src/bin/walk-shapes.rs:87
+    state: Unresumed — src/bin/walk-shapes.rs:91
     depth: 1 frame
     held futures: 0
     join sets: 0

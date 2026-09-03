@@ -5,7 +5,7 @@ description: "`census` over linux-floor/futurelock"
 Threads: 5 lwps, 5 in runtime 0 @ 0xADDR
     4 in the scheduler's run loop
         1 parked in the io driver
-            worker 0, lwp 1612317
+            worker 1, lwp 3642387
         3 parked
     1 in runtime 0 @ 0xADDR, outside the run loop
         0 in the blocking pool (0 idle, 0 tasks queued)

@@ -1,8 +1,8 @@
 ---
 source: hansei/src/offline.rs
-description: "`whatis 0x5645be513600` over linux-floor/walk-shapes"
+description: "`whatis 0x559d0bb88600` over linux-floor/walk-shapes"
 ---
 Task 1: async fn walk_shapes::chained
     At: offset 0xADDR in the task's allocation (header 0xADDR)
     State: idle
-    Spawned at: src/bin/walk-shapes.rs:245:9
+    Spawned at: src/bin/walk-shapes.rs:249:9

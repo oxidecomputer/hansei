@@ -1,3 +1,7 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
 //! Test-only helpers over the checked-in fixture pairs in
 //! `tests/fixtures/<set>/`: the load-and-attach chain that this crate's
 //! offline suites and hansei's unit tests otherwise each re-spell.

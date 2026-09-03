@@ -6,28 +6,28 @@ program: futurelock
 [tasks]
 task: futurelock::start_background_task::{async_fn#0}::{async_block_env#0}
   kind: AsyncBlock
-  decl: futurelock.rs:44
+  decl: futurelock.rs:48
   entries: 2
   symbols-per-entry: 6,6
   stage: Stage<futurelock::start_background_task::{async_fn#0}::{async_block_env#0}>
   variants:
-    Unresumed @ futurelock.rs:44
-    Returned @ futurelock.rs:50
-    Panicked @ futurelock.rs:50
-    Suspend0 @ futurelock.rs:46
-    Suspend1 @ futurelock.rs:48
+    Unresumed @ futurelock.rs:48
+    Returned @ futurelock.rs:54
+    Panicked @ futurelock.rs:54
+    Suspend0 @ futurelock.rs:50
+    Suspend1 @ futurelock.rs:52
 task: futurelock::main::{async_block#0}::{async_block_env#0}
   kind: AsyncBlock
-  decl: futurelock.rs:16
+  decl: futurelock.rs:20
   entries: 2
   symbols-per-entry: 6,6
   stage: Stage<futurelock::main::{async_block#0}::{async_block_env#0}>
   variants:
-    Unresumed @ futurelock.rs:16
-    Returned @ futurelock.rs:29
-    Panicked @ futurelock.rs:29
-    Suspend0 @ futurelock.rs:25
-    Suspend1 @ futurelock.rs:28
+    Unresumed @ futurelock.rs:20
+    Returned @ futurelock.rs:33
+    Panicked @ futurelock.rs:33
+    Suspend0 @ futurelock.rs:29
+    Suspend1 @ futurelock.rs:32
 
 [dyn-futures]
 dyn: core::future::poll_fn::PollFn<futurelock::do_stuff::{async_fn#0}::{closure_env#0}> (poll)

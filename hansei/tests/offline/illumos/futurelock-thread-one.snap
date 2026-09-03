@@ -18,7 +18,9 @@ lwp 1  polling no task
         0xADDR  
         0xADDR  <parking_lot::condvar::Condvar>::wait_until_internal
         0xADDR  <tokio::runtime::park::Inner>::park
+        0xADDR  <tokio::runtime::park::CachedParkThread>::block_on::<futurelock::main::{closure#0}>
         0xADDR  tokio::runtime::context::runtime::enter_runtime::<<tokio::runtime::scheduler::multi_thread::MultiThread>::block_on<futurelock::main::{closure#0}>::{closure#0}, ()>
+        0xADDR  <tokio::runtime::runtime::Runtime>::block_on::<futurelock::main::{closure#0}>
         0xADDR  oxide_tokio_rt::run_builder::<(), futurelock::main::{closure#0}>
         0xADDR  futurelock::main
         0xADDR  std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>

@@ -3,11 +3,11 @@ source: hansei/src/offline.rs
 description: "`futures` over linux/gen-0007"
 ---
 ADDR            TASK  HELD IN                                              STATE                                WAITING ON  FUTURE
-0xADDR  3     set 0xADDR                                   Unresumed — src/bin/gen-0007.rs:76   —           async fn gen_0007::leaf_01
-0xADDR  3     set 0xADDR                                   Unresumed — src/bin/gen-0007.rs:76   —           async fn gen_0007::leaf_01
-0xADDR  3     set 0xADDR                                   Unresumed — src/bin/gen-0007.rs:76   —           async fn gen_0007::leaf_01
-0xADDR  5     frame 1, `v0`                                        Unresumed — src/bin/gen-0007.rs:95   —           async fn gen_0007::holder_04<gen_0007::leaf_05>
-0xADDR  5     frame 0, `inner`, via held future at 0xADDR  Unresumed — src/bin/gen-0007.rs:81   —           async fn gen_0007::leaf_05
-0xADDR  7     frame 1, `v0`                                        Unresumed — src/bin/gen-0007.rs:102  —           async fn gen_0007::holder_08<gen_0007::leaf_09>
-0xADDR  7     frame 0, `inner`, via held future at 0xADDR  Unresumed — src/bin/gen-0007.rs:86   —           async fn gen_0007::leaf_09
+0xADDR  3     set 0xADDR                                   Unresumed — src/bin/gen-0007.rs:80   —           async fn gen_0007::leaf_01
+0xADDR  3     set 0xADDR                                   Unresumed — src/bin/gen-0007.rs:80   —           async fn gen_0007::leaf_01
+0xADDR  3     set 0xADDR                                   Unresumed — src/bin/gen-0007.rs:80   —           async fn gen_0007::leaf_01
+0xADDR  5     frame 1, `v0`                                        Unresumed — src/bin/gen-0007.rs:99   —           async fn gen_0007::holder_04<gen_0007::leaf_05>
+0xADDR  5     frame 0, `inner`, via held future at 0xADDR  Unresumed — src/bin/gen-0007.rs:85   —           async fn gen_0007::leaf_05
+0xADDR  7     frame 1, `v0`                                        Unresumed — src/bin/gen-0007.rs:106  —           async fn gen_0007::holder_08<gen_0007::leaf_09>
+0xADDR  7     frame 0, `inner`, via held future at 0xADDR  Unresumed — src/bin/gen-0007.rs:90   —           async fn gen_0007::leaf_09
 [7 futures]

@@ -1,3 +1,7 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
 //! The core-dump target for the `proc` crate's Linux suite
 //! (`proc/tests/linux.rs`): a process that reports exactly what it is
 //! holding, then dumps core on purpose, with no tokio anywhere in it.

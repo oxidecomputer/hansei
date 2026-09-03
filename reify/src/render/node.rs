@@ -1,3 +1,7 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
 //! The [`DisplayNode`] interpreter: one generic evaluator that renders a type
 //! through the display program its bundle supplies, in place of a per-type
 //! renderer. Owns the pretty-vs-inline layout, cycle guarding, and degradation

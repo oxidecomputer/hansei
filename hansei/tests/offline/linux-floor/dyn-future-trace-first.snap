@@ -5,6 +5,6 @@ description: "`trace 3 -n` over linux-floor/dyn-future"
 #0  future        tokio::sync::oneshot::Receiver<u32>
       (<no_state>, 1 local)
 #1  async fn      dyn_future::boxed_leaf [dyn]
-      awaiting at src/bin/dyn-future.rs:12 (Suspend0, 0 locals)
+      awaiting at src/bin/dyn-future.rs:16 (Suspend0, 0 locals)
 #2  async fn      dyn_future::driver
-      awaiting at src/bin/dyn-future.rs:36 (Suspend0, 1 local)
+      awaiting at src/bin/dyn-future.rs:40 (Suspend0, 1 local)

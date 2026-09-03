@@ -5,4 +5,4 @@ description: "`trace 3 -n` over illumos/unordered"
 #0  future        futures_util::stream::futures_unordered::FuturesUnordered<unordered::set_member>
       (<no_state>, 3 locals)
 #1  async fn      unordered::driver
-      awaiting at src/bin/unordered.rs:115 (Suspend0, 8 locals; holds 5 pending futures)
+      awaiting at src/bin/unordered.rs:119 (Suspend0, 8 locals; holds 5 pending futures)

@@ -3,5 +3,5 @@ source: hansei/src/offline.rs
 description: "`futures` over linux/futurelock"
 ---
 ADDR            TASK  HELD IN             STATE                                WAITING ON                                                                                            FUTURE
-0xADDR  5     frame 5, `future1`  Suspend0 — src/bin/futurelock.rs:78  a tokio::sync::Mutex (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 5  async fn futurelock::do_async_thing
+0xADDR  5     frame 5, `future1`  Suspend0 — src/bin/futurelock.rs:82  a tokio::sync::Mutex (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 5  async fn futurelock::do_async_thing
 [1 future]

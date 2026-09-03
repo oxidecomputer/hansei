@@ -1306,13 +1306,13 @@ fn test_simple_await_acceptance() {
         assert_eq!(rows.len(), 1, "{rows:#?}");
         let task = task_with_future(&rows, "async fn simple_await::work");
         assert_eq!(task.state, "idle");
-        assert_eq!(task.spawned, spawned("src/bin/simple-await.rs:75:21"));
-        assert_eq!(task.defined, "src/bin/simple-await.rs:17");
+        assert_eq!(task.spawned, spawned("src/bin/simple-await.rs:79:21"));
+        assert_eq!(task.defined, "src/bin/simple-await.rs:21");
 
         let out = trace(&bundle, core, &task.id, false);
         assert_spawned_at(
             &hansei_ok(&bundle, core, &format!("task {}", task.id)),
-            "src/bin/simple-await.rs:75:21",
+            "src/bin/simple-await.rs:79:21",
         );
         golden(
             "simple-await-trace",
@@ -1481,13 +1481,13 @@ fn test_nested_await_acceptance() {
         assert_eq!(rows.len(), 1, "{rows:#?}");
         let task = task_with_future(&rows, "async fn nested_await::outer");
         assert_eq!(task.state, "idle");
-        assert_eq!(task.spawned, spawned("src/bin/nested-await.rs:33:21"));
-        assert_eq!(task.defined, "src/bin/nested-await.rs:16");
+        assert_eq!(task.spawned, spawned("src/bin/nested-await.rs:37:21"));
+        assert_eq!(task.defined, "src/bin/nested-await.rs:20");
 
         let out = trace(&bundle, core, &task.id, false);
         assert_spawned_at(
             &hansei_ok(&bundle, core, &format!("task {}", task.id)),
-            "src/bin/nested-await.rs:33:21",
+            "src/bin/nested-await.rs:37:21",
         );
         golden(
             "nested-await-trace",
@@ -1509,12 +1509,12 @@ fn test_dyn_future_acceptance() {
 
         let driver = task_with_future(&rows, "async fn dyn_future::driver");
         assert_eq!(driver.state, "idle");
-        assert_eq!(driver.spawned, spawned("src/bin/dyn-future.rs:53:21"));
-        assert_eq!(driver.defined, "src/bin/dyn-future.rs:24");
+        assert_eq!(driver.spawned, spawned("src/bin/dyn-future.rs:57:21"));
+        assert_eq!(driver.defined, "src/bin/dyn-future.rs:28");
         let out = trace(&bundle, core, &driver.id, false);
         assert_spawned_at(
             &hansei_ok(&bundle, core, &format!("task {}", driver.id)),
-            "src/bin/dyn-future.rs:53:21",
+            "src/bin/dyn-future.rs:57:21",
         );
         golden(
             "dyn-future-driver-trace",
@@ -1523,12 +1523,12 @@ fn test_dyn_future_acceptance() {
 
         let member = task_with_future(&rows, "async fn dyn_future::set_member");
         assert_eq!(member.state, "idle");
-        assert_eq!(member.spawned, spawned("src/bin/dyn-future.rs:28:9"));
-        assert_eq!(member.defined, "src/bin/dyn-future.rs:15");
+        assert_eq!(member.spawned, spawned("src/bin/dyn-future.rs:32:9"));
+        assert_eq!(member.defined, "src/bin/dyn-future.rs:19");
         let out = trace(&bundle, core, &member.id, false);
         assert_spawned_at(
             &hansei_ok(&bundle, core, &format!("task {}", member.id)),
-            "src/bin/dyn-future.rs:28:9",
+            "src/bin/dyn-future.rs:32:9",
         );
         golden(
             "dyn-future-member-trace",
@@ -1551,8 +1551,8 @@ fn test_futurelock_acceptance() {
         assert_eq!(rows.len(), 1, "{rows:#?}");
         let task = task_with_future(&rows, "async block futurelock::main::{async_block#0}");
         assert_eq!(task.state, "idle");
-        assert_eq!(task.spawned, spawned("src/bin/futurelock.rs:16:17"));
-        assert_eq!(task.defined, "src/bin/futurelock.rs:16");
+        assert_eq!(task.spawned, spawned("src/bin/futurelock.rs:20:17"));
+        assert_eq!(task.defined, "src/bin/futurelock.rs:20");
 
         // The chain the diagnosis is built on, six frames from the
         // async block down to the semaphore. The wake queue at the
@@ -1562,7 +1562,7 @@ fn test_futurelock_acceptance() {
         let out = trace(&bundle, core, &task.id, false);
         assert_spawned_at(
             &hansei_ok(&bundle, core, &format!("task {}", task.id)),
-            "src/bin/futurelock.rs:16:17",
+            "src/bin/futurelock.rs:20:17",
         );
         golden(
             "futurelock-trace",
@@ -1653,8 +1653,8 @@ fn test_many_tasks_acceptance() {
         for row in &rows {
             assert_eq!(row.state, "idle", "{row:#?}");
             assert_eq!(row.future, "async fn many_tasks::park_task");
-            assert_eq!(row.spawned, spawned("src/bin/many-tasks.rs:27:13"));
-            assert_eq!(row.defined, "src/bin/many-tasks.rs:9");
+            assert_eq!(row.spawned, spawned("src/bin/many-tasks.rs:31:13"));
+            assert_eq!(row.defined, "src/bin/many-tasks.rs:13");
         }
         let ids: HashSet<&str> = rows.iter().map(|row| row.id.as_str()).collect();
         assert_eq!(ids.len(), rows.len(), "task ids are unique");
@@ -1667,7 +1667,7 @@ fn test_many_tasks_acceptance() {
         let out = trace(&bundle, core, &task.id, false);
         assert_spawned_at(
             &hansei_ok(&bundle, core, &format!("task {}", task.id)),
-            "src/bin/many-tasks.rs:27:13",
+            "src/bin/many-tasks.rs:31:13",
         );
         golden(
             "many-tasks-trace",
@@ -1703,14 +1703,14 @@ fn test_sleep_join_acceptance() {
         let out = trace(&bundle, core, &sleeper.id, false);
         assert_spawned_at(
             &hansei_ok(&bundle, core, &format!("task {}", sleeper.id)),
-            "src/bin/sleep-join.rs:30:22",
+            "src/bin/sleep-join.rs:34:22",
         );
         golden("sleep-join-sleeper-trace", &symbols().apply(&out));
 
         let out = trace(&bundle, core, &joiner.id, false);
         assert_spawned_at(
             &hansei_ok(&bundle, core, &format!("task {}", joiner.id)),
-            "src/bin/sleep-join.rs:31:23",
+            "src/bin/sleep-join.rs:35:23",
         );
         golden("sleep-join-joiner-trace", &symbols().apply(&out));
     });
@@ -1735,7 +1735,7 @@ fn test_ct_runtime_acceptance() {
         let out = trace(&bundle, core, &sleeper.id, false);
         assert_spawned_at(
             &hansei_ok(&bundle, core, &format!("task {}", sleeper.id)),
-            "src/bin/ct-runtime.rs:33:24",
+            "src/bin/ct-runtime.rs:37:24",
         );
         golden(
             "ct-runtime-sleeper-trace",
@@ -3150,7 +3150,7 @@ fn test_type_and_find_types() {
         // The state the task is parked in, at the await point rustc
         // recorded for it — the same line the trace prints.
         assert!(out.contains("Suspend1"), "{out}");
-        assert!(out.contains("src/bin/simple-await.rs:40"), "{out}");
+        assert!(out.contains("src/bin/simple-await.rs:44"), "{out}");
 
         // The locals held across that await — and only those. The
         // arguments rustc also lists here belong to `Unresumed`, whose

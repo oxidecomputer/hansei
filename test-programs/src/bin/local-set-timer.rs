@@ -1,3 +1,7 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
 //! A `LocalSet` whose only trace outside its own list is a timer: both
 //! its tasks are spawned with their `JoinHandle`s dropped on the spot,
 //! and the one they park on — a semaphore nothing else touches — is

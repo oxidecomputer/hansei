@@ -1,3 +1,7 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
 //! reify's contract over a [`proc::Target`]: every read is lent
 //! straight from the target's own storage ([`proc::Target::read_bytes`]),
 //! which the renderer holds across its recursion, so a read costs no

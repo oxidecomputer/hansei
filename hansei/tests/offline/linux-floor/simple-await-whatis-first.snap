@@ -1,8 +1,8 @@
 ---
 source: hansei/src/offline.rs
-description: "`whatis 0x55d00bda5900` over linux-floor/simple-await"
+description: "`whatis 0x56504836a900` over linux-floor/simple-await"
 ---
 Task 3: async fn simple_await::work
     At: offset 0xADDR in the task's allocation (header 0xADDR)
     State: idle
-    Spawned at: src/bin/simple-await.rs:75:21
+    Spawned at: src/bin/simple-await.rs:79:21
