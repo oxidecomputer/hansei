@@ -1,0 +1,10 @@
+---
+source: hansei/src/offline.rs
+description: "`future 0x56306a1b60c0` over linux/channels"
+---
+future 0xADDR
+    type: future tokio::sync::notify::Notified
+    held by: task 3 (frame 1, `notified`)
+    depth: 1 frame
+    held futures: 0
+    join sets: 0

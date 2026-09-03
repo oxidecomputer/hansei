@@ -621,7 +621,7 @@ fn parse_scope(selector: &str, arg: &str) -> Option<Scope> {
 fn apply_scope<T: proc::Target>(session: &Session<'_, T>, scope: Scope) -> Result<()> {
     match scope {
         Scope::Task(target) => crate::cursor::select_task(session, target).map(|_| ()),
-        Scope::Future(addr) => crate::cursor::select_future(session, addr, &mut io::sink()),
+        Scope::Future(addr) => crate::cursor::select_future(session, addr).map(|_| ()),
         Scope::Thread(lwp) => crate::cursor::select_thread(session, lwp),
     }
 }

@@ -360,7 +360,7 @@ fn print_future_table(
     Ok(())
 }
 
-/// What printing a block needs beyond its row: the census tree the
+/// What printing one future reads beyond its row: the census tree the
 /// finds inside it are read from, and the task listing a nested join
 /// set names its members from.
 struct Blocks<'a> {
@@ -371,6 +371,10 @@ struct Blocks<'a> {
     group_tags: Vec<String>,
     polling: HashMap<u64, u32>,
     blocking_lwps: &'a HashMap<u64, u32>,
+    /// The width the finds' names are cut to fit within
+    /// ([`Session::fit_width`]); `None` leaves them whole. The
+    /// future's own `type:` line is never cut.
+    fit: Option<usize>,
 }
 
 impl Blocks<'_> {
@@ -383,18 +387,23 @@ impl Blocks<'_> {
         }
     }
 
-    /// One future's full block — what `futures -v` prints for it:
-    /// where it sits, its own state and depth, what it waits on, and
-    /// the census's finds inside it, listed under the count each
-    /// belongs to. Every block carries every row, so a missing value
-    /// reads as a gap in what the census could say rather than as a
-    /// shorter block.
+    /// One future as labelled lines — what `future` prints: its type,
+    /// where it sits (the holding frame and local, or the set whose
+    /// child node it is, and the task either belongs to), its owner
+    /// where the target has more than one group, its own state and
+    /// depth, what it waits on, and the census's finds inside it,
+    /// listed under the count each belongs to. The fields sit four
+    /// columns in from the `future 0x…` heading, the finds four more.
+    /// A line prints only where the census has something for it — a
+    /// child whose state could not be read is a shorter block — while
+    /// the counts print always, since `0` is an answer.
     fn print(&self, row: &FutureRow, out: &mut dyn io::Write) -> Result<()> {
-        writeln!(out, "Future {:#x}: {}", row.addr, row.future)?;
+        writeln!(out, "future {:#x}", row.addr)?;
+        writeln!(out, "    type: {}", row.future)?;
         match row.at {
             FutureAt::Held(_) => writeln!(
                 out,
-                "    Held by: {} ({}){}",
+                "    held by: {} ({}){}",
                 tasks::task_label(self.list, row.owner),
                 row.held_in
                     .split(", via ")
@@ -406,7 +415,7 @@ impl Blocks<'_> {
                 let s = &self.census.sets[set];
                 writeln!(
                     out,
-                    "    Child of: {} at {:#x}, polled by {}{}",
+                    "    child of: {} at {:#x}, polled by {}{}",
                     names::fold_type_name(&s.ty, self.impls),
                     s.addr,
                     tasks::task_label(self.list, row.owner),
@@ -415,22 +424,22 @@ impl Blocks<'_> {
             }
         }
         if let Some(tag) = self.group_tags.get(row.rt) {
-            writeln!(out, "    Owner: {tag}")?;
+            writeln!(out, "    owner: {tag}")?;
         }
-        writeln!(out, "    State: {}", row.state.as_deref().unwrap_or("-"))?;
-        writeln!(out, "    Depth: {}", summary::counted(row.depth, "frame"))?;
-        writeln!(
-            out,
-            "    Waiting on: {}",
-            row.waiting_on.as_deref().unwrap_or("—")
-        )?;
-        // What the census found inside this future, the way a task's
-        // block lists what it found in the task's own frames: the
-        // futures held in its frames, then the sets driven from them.
+        if let Some(state) = &row.state {
+            writeln!(out, "    state: {state}")?;
+        }
+        writeln!(out, "    depth: {}", summary::counted(row.depth, "frame"))?;
+        if let Some(waiting) = &row.waiting_on {
+            writeln!(out, "    waiting on: {waiting}")?;
+        }
+        // What the census found inside this future, the way `task`
+        // lists what it found in the task's own frames: the futures
+        // held in its frames, then the sets driven from them.
         let via = Self::via_of(row);
         let listing = Listing {
             blocking_lwps: self.blocking_lwps,
-            fit: None,
+            fit: self.fit,
             finds: Finds::from(self.census),
             nested: &self.tree.nested,
             list: self.list,
@@ -439,24 +448,49 @@ impl Blocks<'_> {
         };
         let inside = || self.tree.nested.get(&via).into_iter().flatten();
         for (label, value, sets) in [
-            ("Held futures", row.holds.to_string(), false),
-            ("Join sets", row.sets_summary.clone(), true),
+            ("held futures", row.holds.to_string(), false),
+            ("join sets", row.sets_summary.clone(), true),
         ] {
             writeln!(out, "    {label}: {value}")?;
             for entry in inside().filter(|e| e.is_set() == sets) {
                 print_future_entry(*entry, &listing, 8, false, out)?;
             }
         }
-        writeln!(out)?;
         Ok(())
     }
+}
+
+/// What `future` prints for the census find at `at`: the block above,
+/// over the session. A set child the set has already reaped is no
+/// future in flight, has no row, and is refused by name.
+pub(crate) fn print_future<T: proc::Target>(
+    session: &Session<'_, T>,
+    at: FutureAt,
+    fit: Option<usize>,
+    out: &mut dyn io::Write,
+) -> Result<()> {
+    let rows = rows(session);
+    let Some(row) = rows.iter().find(|row| row.at == at) else {
+        anyhow::bail!("that child has completed and awaits reaping; nothing is in flight there");
+    };
+    let census = session.census();
+    let blocks = Blocks {
+        list: &session.tasks,
+        census,
+        tree: session.census_tree(),
+        impls: &session.impl_fold,
+        group_tags: session.group_tags(),
+        polling: tasks::polling_map(session),
+        blocking_lwps: tasks::blocking_lwps(session),
+        fit,
+    };
+    blocks.print(row, out)
 }
 
 /// Everything the `futures` command was asked. The filter grammar
 /// rides in as the raw flag values and is parsed here, so the errors
 /// name the flag they came from.
 pub(crate) struct FuturesCmd {
-    pub(crate) verbose: bool,
     pub(crate) limit: Option<usize>,
     pub(crate) with: Vec<String>,
     pub(crate) without: Vec<String>,
@@ -788,43 +822,16 @@ pub(crate) fn exec_futures<T: proc::Target>(
     }
 
     let groups = !session.group_tags().is_empty();
-    if !cmd.verbose {
-        let selected: Vec<&FutureRow> = survivors.iter().map(|&i| &rows[i]).collect();
-        print_future_table(&selected, groups, cmd.limit, session.fit_width(theme), out)?;
-        print_warnings(&session.tasks.errors)?;
-        return Ok(());
-    }
-
-    let blocks = blocks(session);
-    let shown = cmd.limit.unwrap_or(survivors.len()).min(survivors.len());
-    for &index in &survivors[..shown] {
-        blocks.print(&rows[index], out)?;
-    }
-    writeln!(out, "{}", listing_footer(survivors.len(), shown, "future"))?;
+    let selected: Vec<&FutureRow> = survivors.iter().map(|&i| &rows[i]).collect();
+    print_future_table(&selected, groups, cmd.limit, session.fit_width(theme), out)?;
     print_warnings(&session.tasks.errors)?;
     Ok(())
 }
 
-/// What the block printer reads, gathered from the session once per
-/// command.
-fn blocks<'s, T: proc::Target>(session: &'s Session<'_, T>) -> Blocks<'s> {
-    let census = session.census();
-    Blocks {
-        list: &session.tasks,
-        census,
-        tree: session.census_tree(),
-        impls: &session.impl_fold,
-        group_tags: session.group_tags(),
-        polling: tasks::polling_map(session),
-        blocking_lwps: tasks::blocking_lwps(session),
-    }
-}
-
 /// `--group FIELD`: bucket the surviving rows by the field's spelled
 /// value and print `COUNT VALUE` rows, most numerous first (ties in
-/// value order), each with up to three member addresses — or, under
-/// `-v`, every member's block under its bucket. `--limit` cuts
-/// buckets.
+/// value order), each with up to three member addresses. `--limit`
+/// cuts buckets.
 fn exec_group<T: proc::Target>(
     session: &Session<'_, T>,
     cmd: &FuturesCmd,
@@ -845,31 +852,21 @@ fn exec_group<T: proc::Target>(
     buckets.sort_by_key(|(_, members)| std::cmp::Reverse(members.len()));
     let shown = cmd.limit.unwrap_or(buckets.len()).min(buckets.len());
 
-    if cmd.verbose {
-        let blocks = blocks(session);
-        for (value, members) in &buckets[..shown] {
-            writeln!(out, "{}  {value}", members.len())?;
-            for &index in members {
-                blocks.print(&rows[index], out)?;
-            }
-        }
-    } else {
-        let heading = field.name().replace('-', " ").to_uppercase();
-        let mut table = crate::output::Table::new(3)
-            .align_right(0)
-            .header(["COUNT".to_string(), heading, "FUTURES".to_string()])
-            .truncatable(1)
-            .fit(fit);
-        for (value, members) in &buckets[..shown] {
-            table.row([
-                members.len().to_string(),
-                value.clone(),
-                member_sample(rows, members),
-            ]);
-        }
-        if !table.is_empty() {
-            table.write(out)?;
-        }
+    let heading = field.name().replace('-', " ").to_uppercase();
+    let mut table = crate::output::Table::new(3)
+        .align_right(0)
+        .header(["COUNT".to_string(), heading, "FUTURES".to_string()])
+        .truncatable(1)
+        .fit(fit);
+    for (value, members) in &buckets[..shown] {
+        table.row([
+            members.len().to_string(),
+            value.clone(),
+            member_sample(rows, members),
+        ]);
+    }
+    if !table.is_empty() {
+        table.write(out)?;
     }
     writeln!(out, "{}", listing_footer(buckets.len(), shown, "group"))?;
     print_warnings(&session.tasks.errors)?;

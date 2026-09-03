@@ -13,10 +13,9 @@
 //! address — moves with it and with nothing else.
 
 use crate::tasks::{self, no_such_task};
-use crate::{RenderOpts, Session, TraceOpts, TraceTarget, output, threads, trace};
+use crate::{RenderOpts, Session, TraceOpts, TraceTarget, futures, output, threads, trace};
 
 use anyhow::{Result, anyhow};
-use hansei_bundle::names;
 use hansei_runtime::tokio::{Lifecycle, bundle, census};
 use reify::Value;
 
@@ -191,7 +190,9 @@ fn claiming_frame(chain: &bundle::AwaitChain<'_>, addr: u64) -> Option<usize> {
         .map(|(i, _)| i)
 }
 
-/// `future`: select a lone future, or print the cursor's.
+/// `future`: select a lone future, or print the cursor's — either way
+/// the block `futures` tallies it in, with the census's finds inside
+/// it, and under `verbose` its await chain after that.
 pub(crate) fn exec_future<T: proc::Target>(
     session: &Session<'_, T>,
     addr: Option<u64>,
@@ -199,63 +200,56 @@ pub(crate) fn exec_future<T: proc::Target>(
     theme: output::Theme,
     out: &mut dyn io::Write,
 ) -> Result<()> {
-    let Some(addr) = addr else {
-        // Bare `future` reprints the cursor's lone future. A `Future`
-        // root inside a task's allocation is a task cursor in address
-        // clothing (an id-less task), not a lone future.
-        let addr = match session.cursor.borrow().root {
-            Some(TraceTarget::Future(addr)) if !task_rooted(session, addr) => addr,
-            _ => return Err(anyhow!("no future selected")),
-        };
-        if verbose {
-            return print_root_chain(session, theme, out);
+    let at = match addr {
+        Some(addr) => select_future(session, addr)?,
+        None => {
+            // Bare `future` reprints the cursor's lone future. A
+            // `Future` root inside a task's allocation is a task cursor
+            // in address clothing (an id-less task), not a lone future.
+            let addr = match session.cursor.borrow().root {
+                Some(TraceTarget::Future(addr)) if !task_rooted(session, addr) => addr,
+                _ => return Err(anyhow!("no future selected")),
+            };
+            future_at(session, addr)?
         }
-        writeln!(out, "{}", future_line(session, addr)?)?;
-        return Ok(());
     };
-    // The selection line is the one line either way — whether the
-    // address stayed a lone root or collapsed to the task holding it.
-    select_future(session, addr, out)?;
+    futures::print_future(session, at, session.fit_width(theme), out)?;
     if verbose {
-        return print_root_chain(session, theme, out);
+        print_root_chain(session, theme, out)?;
     }
     Ok(())
 }
 
-/// Move the cursor to the future at `addr`, printing the one line of
-/// what was selected. An address some task holds collapses to that
-/// task at the holding frame — one cursor, never two; only a chain no
-/// task contains (a set child in its heap node) roots as a future,
-/// and it roots at the node: that is the address every listing prints
-/// for the child and every address command resolves back to it,
-/// where the chain's own root — a boxed child's heap referent — sits
-/// in no allocation the census can name.
+/// What the census says `addr` is.
+fn future_at<T: proc::Target>(session: &Session<'_, T>, addr: u64) -> Result<trace::FutureAt> {
+    trace::future_at(
+        &session.ctx.view,
+        &session.tasks,
+        session.extents(),
+        session.census(),
+        &session.impl_fold,
+        addr,
+    )
+}
+
+/// Move the cursor to the future at `addr`, answering what the census
+/// says it is. An address some task holds collapses to that task at
+/// the holding frame — one cursor, never two; only a chain no task
+/// contains (a set child in its heap node) roots as a future, and it
+/// roots at the node: that is the address every listing prints for
+/// the child and every address command resolves back to it, where the
+/// chain's own root — a boxed child's heap referent — sits in no
+/// allocation the census can name.
 pub(crate) fn select_future<T: proc::Target>(
     session: &Session<'_, T>,
     addr: u64,
-    out: &mut dyn io::Write,
-) -> Result<()> {
+) -> Result<trace::FutureAt> {
     let census = session.census();
     let list = &session.tasks;
-    let found = trace::future_at(
-        &session.ctx.view,
-        list,
-        session.extents(),
-        census,
-        &session.impl_fold,
-        addr,
-    )?;
+    let found = future_at(session, addr)?;
     match found {
         trace::FutureAt::Held(i) => {
             let h = &census.held[i];
-            writeln!(
-                out,
-                "future {:#x}: {} — held by {} (frame #{})",
-                h.addr,
-                names::display_future_name(&h.future, &session.impl_fold),
-                tasks::task_label(list, h.owner),
-                h.frame,
-            )?;
             let task = &list.tasks[h.owner];
             // $_ is the holding frame's own base, not the held
             // future's: the cursor stands on the frame.
@@ -268,19 +262,7 @@ pub(crate) fn select_future<T: proc::Target>(
             };
         }
         trace::FutureAt::Child { set, child } => {
-            let s = &census.sets[set];
-            let c = &s.children[child];
-            let future = match &c.future {
-                Some(future) => names::display_future_name(future, &session.impl_fold),
-                None => "<undecoded>".to_string(),
-            };
-            writeln!(
-                out,
-                "future {:#x}: {future} — child of {} polled by {}",
-                c.node,
-                names::fold_type_name(&s.ty, &session.impl_fold),
-                tasks::task_label(list, s.owner),
-            )?;
+            let c = &census.sets[set].children[child];
             *session.cursor.borrow_mut() = Cursor {
                 lwp: None,
                 root: Some(TraceTarget::Future(c.node)),
@@ -289,7 +271,7 @@ pub(crate) fn select_future<T: proc::Target>(
             };
         }
     }
-    Ok(())
+    Ok(found)
 }
 
 /// Frame `n`'s base address in a task's chain, where the task has
@@ -359,38 +341,6 @@ pub(crate) fn scope_to_future<T: proc::Target>(session: &Session<'_, T>, at: tra
 /// allocation.
 fn task_rooted<T: proc::Target>(session: &Session<'_, T>, addr: u64) -> bool {
     matches!(session.extents().locate(addr), Some((_, 0)))
-}
-
-/// The one-line spelling of a lone future, by asking the census what
-/// the address is.
-fn future_line<T: proc::Target>(session: &Session<'_, T>, addr: u64) -> Result<String> {
-    let census = session.census();
-    let found = trace::future_at(
-        &session.ctx.view,
-        &session.tasks,
-        session.extents(),
-        census,
-        &session.impl_fold,
-        addr,
-    )?;
-    Ok(match found {
-        trace::FutureAt::Held(i) => {
-            let h = &census.held[i];
-            format!(
-                "future {:#x}: {}",
-                h.addr,
-                names::display_future_name(&h.future, &session.impl_fold)
-            )
-        }
-        trace::FutureAt::Child { set, child } => {
-            let c = &census.sets[set].children[child];
-            let future = match &c.future {
-                Some(future) => names::display_future_name(future, &session.impl_fold),
-                None => "<undecoded>".to_string(),
-            };
-            format!("future {addr:#x}: {future}")
-        }
-    })
 }
 
 /// The cursor root's chain, printed the way `trace` prints it.
@@ -1034,8 +984,9 @@ mod tests {
             &mut out,
         )
         .expect("a held future selects");
-        let line = String::from_utf8(out).expect("the selection line is UTF-8");
-        assert!(line.contains("held by"), "{line}");
+        let block = String::from_utf8(out).expect("the block is UTF-8");
+        assert!(block.starts_with(&format!("future {addr:#x}\n")), "{block}");
+        assert!(block.contains("\n    held by: "), "{block}");
 
         let c = *session.cursor.borrow();
         assert_eq!(c.frame, frame);
@@ -1264,7 +1215,7 @@ mod tests {
     }
 
     /// A set child roots as a lone future, at the node address the
-    /// listings print for it: its selection line prints once, bare
+    /// listings print for it: its block prints on selection, bare
     /// `future` reprints it, and a task cursor answers `no future
     /// selected`.
     #[test]
@@ -1286,19 +1237,28 @@ mod tests {
 
         let mut out = Vec::new();
         exec_future(&session, Some(addr), false, theme, &mut out).expect("a set child selects");
-        let sel = String::from_utf8(out).expect("the selection line is UTF-8");
-        assert!(sel.contains("child of"), "{sel}");
-        assert_eq!(sel.lines().count(), 1, "one selection line only: {sel}");
+        let sel = String::from_utf8(out).expect("the block is UTF-8");
+        assert!(sel.starts_with(&format!("future {addr:#x}\n")), "{sel}");
+        // The fields sit four columns in, every one of them.
+        assert!(sel.lines().skip(1).all(|l| l.starts_with("    ")), "{sel}");
+        assert!(sel.contains("\n    child of: "), "{sel}");
+        assert!(sel.contains("\n    depth: "), "{sel}");
+        assert!(sel.ends_with("\n    join sets: 0\n"), "{sel}");
 
         let mut out = Vec::new();
         exec_future(&session, None, false, theme, &mut out).expect("bare future reprints it");
-        let line = String::from_utf8(out).expect("the line is UTF-8");
-        assert!(line.starts_with(&format!("future {addr:#x}:")), "{line}");
+        let again = String::from_utf8(out).expect("the block is UTF-8");
+        assert_eq!(again, sel, "bare future reprints the block");
 
-        // `-v` prints the chain rather than the one line.
+        // `-v` prints the chain under the block.
         let mut out = Vec::new();
         exec_future(&session, None, true, theme, &mut out).expect("future -v prints the chain");
-        assert!(!out.is_empty(), "the chain prints");
+        let chained = String::from_utf8(out).expect("the chain is UTF-8");
+        assert!(chained.starts_with(&sel), "{chained}");
+        assert!(
+            chained.len() > sel.len(),
+            "the chain prints under the block"
+        );
 
         let id = session
             .tasks
