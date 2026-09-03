@@ -1,0 +1,12 @@
+---
+source: hansei/src/offline.rs
+description: "`future 0x14fd6a0` over illumos/unordered"
+---
+future 0xADDR
+    type: async fn unordered::set_member
+    child of: futures_util::stream::futures_unordered::FuturesUnordered<unordered::set_member> at 0xADDR, polled by task 3
+    state: Suspend0 — src/bin/unordered.rs:69
+    depth: 2 frames
+    held futures: 1
+        (frame 1, `held`): 0xADDR  async fn unordered::leaf  Unresumed — src/bin/unordered.rs:36
+    join sets: 0

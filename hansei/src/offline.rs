@@ -76,7 +76,6 @@ fn commands(
         // exact field that splits the two populations, and the exec
         // loop under a cursor scoped to each future's own chain.
         ("futures", "futures".to_owned()),
-        ("futures-v", "futures -v".to_owned()),
         (
             "futures-group-waiting",
             "futures --group waiting-on".to_owned(),
@@ -148,6 +147,22 @@ fn commands(
         })
     {
         list.push(("sync-ref", format!("sync {joined:#x} --kind address")));
+    }
+    // The future selector, on a set child in flight — the one kind of
+    // find that roots as a lone future — and on a held future, which
+    // collapses to the holding task but prints its own block.
+    if let Some(node) = session
+        .census()
+        .sets
+        .iter()
+        .flat_map(|set| &set.children)
+        .find(|child| child.root.is_some())
+        .map(|child| child.node)
+    {
+        list.push(("future-child", format!("future {node:#x}")));
+    }
+    if let Some(held) = session.census().held.first() {
+        list.push(("future-held", format!("future {:#x}", held.addr)));
     }
     if let Some(lwp) = session.lwps.first() {
         list.push(("threads-one", format!("threads {}", lwp.tid)));

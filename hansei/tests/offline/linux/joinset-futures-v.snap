@@ -1,5 +1,0 @@
----
-source: hansei/src/offline.rs
-description: "`futures -v` over linux/joinset"
----
-[0 futures]

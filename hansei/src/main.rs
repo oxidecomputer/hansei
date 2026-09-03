@@ -350,8 +350,15 @@ pub enum Command {
     /// listings print — for the chains no task contains, such as a
     /// FuturesUnordered child in its heap node. An address some task
     /// holds selects that task instead, positioned at the holding
-    /// frame — one cursor, never two. Bare `future` prints the
-    /// cursor's lone future as one line; `-v` prints its await chain.
+    /// frame — one cursor, never two. Either way it prints the future
+    /// as one labelled line per field: its type, where it sits (the
+    /// holding frame and local, or the set whose child node it is,
+    /// and the task either belongs to), its owner where the target
+    /// holds more than one group, its suspend state and depth, what
+    /// it waits on, and the census's finds inside it under their
+    /// counts — the same finds `task --futures` lists. Bare `future`
+    /// prints the cursor's lone future; `-v` prints its await chain
+    /// under the block.
     Future {
         /// The future's address, in hex with a required leading `0x`
         /// (see `futures`). Naming none prints the cursor's
@@ -359,7 +366,7 @@ pub enum Command {
         #[arg(value_parser = parse_hex_addr)]
         addr: Option<u64>,
 
-        /// Print the future's await chain rather than one line.
+        /// Print the future's await chain under its fields.
         #[arg(long, short)]
         verbose: bool,
     },
@@ -404,19 +411,11 @@ pub enum Command {
     /// holding task. One future's failure never stops the loop, the
     /// listing closes with `Executed against N futures, M failed`, and
     /// the command itself fails after the loop when M is not zero.
-    ///
-    /// `-v` prints each future's full block instead: who holds it and
-    /// where, its state and how deep its own chain runs, what it waits
-    /// on, and — listed under the same two counts a task's block
-    /// carries — what the census found inside it: the futures held in
-    /// its frames and the sets driven from them.
+    /// One future's every field — who holds it and where, its state
+    /// and depth, what it waits on, and what the census found inside
+    /// it — is `future 0x…`, so `futures --with type acquire --exec
+    /// future` prints each match in full.
     Futures {
-        /// Print each future's full block — where it sits, state,
-        /// depth, wait, and the finds inside it — rather than one
-        /// table row.
-        #[arg(long, short)]
-        verbose: bool,
-
         /// Show at most this many futures — or, under --group, this
         /// many buckets; a footer counts what the cut left out.
         /// Everything is listed when the flag is absent and no
@@ -441,8 +440,7 @@ pub enum Command {
         /// Bucket the surviving futures by FIELD's spelled value: one
         /// `COUNT VALUE` row per bucket, most numerous first, each
         /// with a few member addresses; a future with nothing in the
-        /// field lands in `<empty>`. With -v, every member's block
-        /// prints under its bucket.
+        /// field lands in `<empty>`.
         #[arg(long, short = 'g', value_name = "FIELD")]
         group: Option<String>,
 
@@ -1761,7 +1759,6 @@ pub fn dispatch<T: Target>(
             cursor::exec_future(session, addr, verbose, theme, out)?
         }
         Command::Futures {
-            verbose,
             limit,
             with,
             without,
@@ -1771,7 +1768,6 @@ pub fn dispatch<T: Target>(
         } => {
             session.note_version_ceiling();
             let cmd = futures::FuturesCmd {
-                verbose,
                 limit: limit.or(session.settings.borrow().limit),
                 with,
                 without,

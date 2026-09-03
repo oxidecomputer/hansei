@@ -1,0 +1,11 @@
+---
+source: hansei/src/offline.rs
+description: "`future 0x14fd6d0` over illumos/unordered"
+---
+future 0xADDR
+    type: async fn unordered::leaf
+    held by: task 3 (frame 1, `held`), via set child at 0xADDR
+    state: Unresumed — src/bin/unordered.rs:36
+    depth: 1 frame
+    held futures: 0
+    join sets: 0
