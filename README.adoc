@@ -1,160 +1,358 @@
+:showtitle:
+:toc: left
+:toclevels: 2
+:icons: font
+ifdef::env-github[]
+:tip-caption: :bulb:
+:note-caption: :information_source:
+:important-caption: :heavy_exclamation_mark:
+:caution-caption: :fire:
+:warning-caption: :warning:
+endif::[]
+
 = Hansei
 
-A suite of tools for extracting DWARF-derived *tokio runtime debug info*
-from Rust binaries and using it to reconstruct the runtime state of a live
-(or cored) `tokio` process.
+> https://en.wikipedia.org/wiki/Hansei[Hansei] (反省; "self-reflection") is a central idea in
+> Japanese culture, meaning to acknowledge one's own mistake and to pledge improvement.
 
-Experimental and mostly untested, expect bugs.
+A `tokio` post-mortem debugger.
 
-== Tools
+`hansei` is a tool to observe the state of the `tokio` runtime and its associated async tasks in
+core dumps.
 
-These are the workspace members that may be useful:
+Core dumps generated on illumos and Linux are supported. Analysis of core dumps can be performed on
+any platform `hansei` can build on, e.g., an illumos core can be debugged on macOS.
 
-* hansei: The one binary. Inspect the state of the `tokio` multi-threaded
-  runtime in a core dump: task listings, automatic await-chain traces, and
-  task dependency graphs with futurelock detection; `hansei tokio-info`
-  produces and inspects the tokio-info files it reads.
-* exegesis: The library behind `hansei tokio-info`: read a debug binary's
-  DWARF and extract a self-contained *tokio-info* file describing its async
-  runtime and types.
-* hansei-bundle: The tokio-info file's wire format, and the only thing the
-  read side depends on.
-* hansei-runtime: The tokio-introspection library behind hansei.
-* reify: Interpret a process's memory through a tokio-info file, rendering
-  values of its recorded types for humans.
-* proc: Target access — readers for illumos and Linux core dumps, minimal
-  bindings for illumos `libproc`, and replayable target snapshots.
+The binary that dumped core must use `v0` symbol mangling, which is the default since Rust 1.97.0+,
+though older releases of Rust support it with the `-C symbol-mangling-version=v0` flag.
 
-A core is read according to what wrote it rather than what is reading it, so an
-illumos core opens on Linux and a Linux core opens on illumos. hansei inspects
-cores only; take one with `gcore` and point hansei at it. Extraction and
-type/value work (reify) are portable.
+Both the `current-thread` and `multi-thread` executors are supported, as are programs that use
+multiple runtimes and the `tokio_unstable` feature.
+
+Using the `hansei tokio-info extract` subcommand, `hansei` can create a tokio-info (`.tinfo`) file
+that contains only the small subset of struct layouts from the DWARF `hansei` needs. The tokio-info
+format is vastly smaller, and therefore more convenient to transfer than a release build with full
+debug information:
+
+[source,console]
+----
+$ ls -lh cores/nexus*
+-rw-r--r--@  1 wfc   2.3G Aug 22 14:18 nexus.core
+-rwxr-xr-x@  1 wfc   4.1G Aug 22 14:44 nexus.debug_bin*
+-rw-r--r--@  1 wfc   9.3M Sep  2 22:32 nexus.tinfo
+----
 
 == Usage
 
-The workflow has two stages: extract tokio info once from a debug binary
-(anywhere), then point hansei at a matching target.
+Build `hansei` with `cargo build --release --bin hansei`.
 
-=== 1. Extract tokio info
+`hansei` always operates against core dumps; live processes are not supported. You will need debug
+information for the process that dumped core. This could be the original binary if it was built
+with `debug=true`, it could be a split debug info `.dwp` file on Linux, or it could be a separate
+build of the original binary with `debug=true` set. If you are using a separate build, it is
+critical that all dependencies and build flags (including the profile, e.g., `release`) be the same.
+Otherwise the struct layouts `hansei` extracts from the DWARF may vary from the layout used in the
+core, invalidating its analysis. `hansei` will attempt to validate that the DWARF matches the core,
+but this is best-effort.
 
-Read the DWARF from a debug build and write a tokio-info file:
+=== Loading a core dump
 
-[source,sh]
-----
-hansei tokio-info extract path/to/sled-agent.debug -o sled-agent.tinfo
-----
-
-The file is self-contained; the debug binary is not needed again. Other
-subcommands inspect what was produced:
-
-[source,sh]
-----
-hansei tokio-info stats sled-agent.tinfo   # summary counts
-hansei tokio-info dump  sled-agent.tinfo   # full tables as text
-----
-
-`extract --include-type <fqn>` forces an otherwise-unreached type to be
-emitted, and `--allow-missing-infra` lets extraction proceed on a binary that
-isn't a tokio target.
-
-A session can also skip this stage: `--debug-info` in place of `--tokio-info`
-extracts in memory while the core is attaching. That is the answer for a
-one-off look, and a tokio-info file the answer when the same target will be
-opened again.
-
-=== 2. Inspect a target
-
-hansei reads a core dump (`--core`) written by either system, interpreting it
-through the tokio info from step 1. Together they name a *session*, and what
-to ask of it is read from stdin.
-
-[source,sh]
-----
-hansei --core core.sled-agent --tokio-info sled-agent.tinfo
-----
-
-A **Linux** core needs a third file, `--binary`: the executable it was taken
-from.
-
-[source,sh]
-----
-hansei --core core.oxide --tokio-info oxide.tinfo --binary ./oxide
-----
-
-This is not a convenience. A Linux core carries no symbol table — `.symtab` is
-not `SHF_ALLOC`, so it is never in the address space there is to dump, and no
-`coredump_filter` setting can put it there — and the path the core records for
-its executable is rarely still right on the machine reading the core. Without
-that file not one symbol resolves. An illumos core carries each mapped object's
-symbol table in its own section headers, so it needs no companion binary and
-warns if given one.
-
-Pass the binary that **ran**, not a separate debug build of the same source.
-The two share no addresses, and the debug build resolves every symbol *name*,
-so nothing downstream would notice; hansei compares the core's
-`NT_GNU_BUILD_ID` against the file's and refuses a mismatch (`--force`
-downgrades it to a warning).
-
-When stdin is a terminal that is a prompt, with history, tab completion, and
-errors that end the command rather than the session:
+You can directly invoke `hansei` against the core using:
 
 ----
-hansei〉census                   # how many threads, tasks and futures, and their states
-hansei〉tasks                    # every task: id, state, future type, spawn site
-hansei〉trace 42 -v              # one task's await chain, with its live locals
-hansei〉graph                    # the dependency graph, and any futurelock
-hansei〉threads                  # the runtime's threads: worker cores and stacks
-hansei〉runtimes --list          # every runtime and LocalSet, and what each holds
-hansei〉runtimes --shared        # the scheduler state each runtime's workers share
-hansei〉runtimes --drivers       # the io, signal and time drivers
-hansei〉find-types oxide         # recorded type names containing a substring
-hansei〉type sled_agent::Foo     # one type's recorded layout
-hansei〉type -r sled_agent::Foo  # that layout with everything it names in it
-hansei〉info                     # what is attached, and how well it matches
-hansei〉tasks ! grep sled_agent  # pipe a command's output into a shell command
-hansei〉tasks ; graph            # several commands, in order, on one line
-hansei〉quit
+hansei --core mybin.core --debug-info mybin.dbg
 ----
 
-`trace` takes `--depth`/`-d` to bound how deep values are formatted, and the
-graph flags any futurelock — a lock future granted or queued on a contended
-semaphore whose task stopped polling it (RFD 609). `threads` and `runtimes`
-read the runtime's own state out of the target and take the same
-`--depth`; `find-types` and `type` ask the tokio info instead of the target, and
-report the layouts every other command decodes memory with — `type` stops at
-the names a layout mentions, `type --recursive`/`-r` opens each of them under
-the line that names it, and whatever they name in turn, marking with a `…`
-every line it had more to say below. Each `--depth` stops at four unless told
-otherwise, which is about what Rust's own wrapper types cost to see through.
-A command answers to any leading substring that fits it and no other, so `ce`
-runs `census`. Every flag has a short form; `help` lists the rest.
+To analyze a Linux core, the **original** binary must also be present so we can read its symbol
+table. This is not required for illumos cores, as the symbol table is included as part of the core
+on that platform.
 
-When stdin is not a terminal the same commands are read one per line, which is
-how scripts and pipelines drive it; `--exec`/`-e` gives them on the command
-line instead, and the session exits when they are answered:
-
-[source,sh]
 ----
-echo 'trace 42 -v' | hansei --core core.sled-agent --tokio-info sled-agent.tinfo
-
-hansei --core core.sled-agent --tokio-info sled-agent.tinfo -e 'tasks; graph'
-
-hansei --core core.sled-agent --tokio-info sled-agent.tinfo <<'EOF'
-# blank lines and comments are skipped
-tasks
-graph
-EOF
+hansei --core mybin.core --debug-info mybin.dbg --binary mybin
 ----
 
-Either way the session stops at the first command that fails and exits
-non-zero; `quit` ends it early.
+This will immediately process the DWARF and launch a `hansei` session. DWARF processing is
+computationally expensive, and can typically take tens of seconds on larger binaries. To avoid
+needing to do this each time for a binary, the extracted tokio-info can be saved from within the
+`hansei` REPL using the `save-tokio-info` command.
 
-The session takes `--force`/`-f` to proceed even when the tokio info's symbols
-don't all resolve in the target (tokio info from a mismatched build otherwise
-refuses to attach); `trace` takes `--ugly`/`-u` to bypass the custom value formatters and
-show the raw structural view.
+To pre-generate the tokio-info, use the `tokio-info extract` subcommand:
 
-== What's with the name?
+----
+hansei tokio-info extract mybin.dbg --output mybin.tinfo
+----
 
-In _The Lord of the Rings_, Durin is Gimli's father, `gimli` being the excellent DWARF library for Rust. The joke doesn't quite work as
-DWARF is actually older than CTF, oh well.
+This file then replaces `--debug-info` and makes startup significantly faster.
+
+----
+hansei --core mybin.core --tokio-info mybin.tinfo
+----
+
+Non-interactive sessions can be started with the `--exec` flag, or by passing commands in via
+`stdin`. Commands can be separated with semicolons.
+
+----
+hansei --core mybin.core --tokio-info mybin.tinfo --exec 'census; tasks --with state running'
+
+# Equivalent
+echo 'census; tasks --with state running' | hansei --core mybin.core --tokio-info mybin.tinfo
+----
+
+All commands can be tab completed, as can most arguments to commands. Run `help` for a list of all
+commands, and `help <COMMAND>` for details on a given command.
+
+=== Reviewing runtime state
+
+The `census` command gives a brief summary of the threads, tasks, and futures present in the
+`tokio` runtime.
+
+----
+hansei> census
+Terminated by SIGSEGV (SEGV_MAPERR), fault address 0x0, taken on lwp 2040415
+
+Threads: 33 lwps, 33 in runtime 0 @ 0x5629d639a9a0
+    32 in the scheduler's run loop
+        1 polling a task
+            worker 0, lwp 2040415  task 35
+        31 parked
+    1 in runtime 0 @ 0x5629d639a9a0, outside the run loop
+        0 in the blocking pool (0 idle, 0 tasks queued)
+        1 that entered the runtime another way (a block_on caller)
+
+Tasks: 3 owned by runtime 0 @ 0x5629d639a9a0
+    State: 1 running, 2 idle
+    Future types and what they await:
+        1  async block rama_core::rt::executor::Executor::spawn_task<tracing::instrument::Instrumented<rama_tcp::server::listener::TcpListener::serve::{async_fn#0}::{async_block_env#3}<rama_http_types::body_limit_layer::Body…
+           └─ 1  nothing — mid-poll on a worker
+        1  async block tokio_graceful::guard::ShutdownGuard::spawn_task_fn<http_mitm_proxy_boring::main::{async_block#0}::{closure_env#0}, http_mitm_proxy_boring::main::{async_block#0}::{closure#0}>
+           └─ 1  an io resource
+        1  async block tokio_graceful::shutdown::ShutdownBuilder::build<tokio_graceful::shutdown::default_signal>
+           └─ 1  future core::future::poll_fn::PollFn<tokio_graceful::shutdown::default_signal::{async_fn#0}::{closure_env#1}>
+
+Futures: 23 in flight, on 60 await-chain frames (up to 8 deep)
+    Location:
+         3  polled as tasks
+        20  held in frames, off any await chain
+         0  in 0 FuturesUnordered
+    Future types and what they await:
+        5  future tokio_graceful::trigger::Receiver
+        2  future Pin<&mut futures_util::future::future::fuse::Fuse<tokio_graceful::guard::ShutdownGuard::cancelled>>
+        2  future Pin<&mut rama_http_core::server::conn::auto::UpgradeableConnection<Pin<Box<rama_tcp::stream::TcpStream>>, rama_http_core::service::RamaHttpService<Arc<rama_http::layer::trace::service::Trace<rama_core::laye…
+        2  future Pin<&mut rama_tcp::server::listener::TcpListener::serve::{async_fn#0}<rama_http_types::body_limit_layer::BodyLimitService<rama_http_backend::server::service::HttpService<rama_http_core::server::conn::auto::…
+        1  async block rama_http_core::proto::h1::dispatch::Server::recv_msg<rama_http_core::service::RamaHttpService<Arc<rama_http::layer::trace::service::Trace<rama_core::layer::consume_err::ConsumeErr<rama_http::layer::pr…
+        8  across 8 more types
+----
+
+There are three object types that can be reviewed in more depth: tasks, futures, and threads. Each
+has a plural command (`tasks`) that can be used to list, group, and filter objects, and a singular
+command (`task`) that inspects one. This syntax follows the general pattern the excellent
+https://github.com/go-delve/delve/[Delve debugger for Go] uses.
+
+Counts by a field can be found using `--group`.
+
+----
+hansei> tasks --group state
+COUNT  STATE                          TASKS
+22495  idle                           129, 130, 131, …
+    3  running                        2436, 2439, 2445
+    1  blocking (running on lwp 156)  765
+[3 groups]
+----
+
+Use `--with` and `--without` to filter results.
+
+----
+hansei> tasks --with state running --without id 2445
+ID    STATE    AWAITING AT                      WAITING ON               FUTURE
+2436  running  parallel-task-set/src/lib.rs:97  — (mid-poll on lwp 115)  async block parallel_task_set::ParallelTaskSet::spawn::{async_fn#0}<support_bundle_collection::step::CompletedCollectionStep, support_bundle_collection…
+2439  running  parallel-task-set/src/lib.rs:97  — (mid-poll on lwp 124)  async block parallel_task_set::ParallelTaskSet::spawn::{async_fn#0}<support_bundle_collection::step::CompletedCollectionStep, support_bundle_collection…
+[2 tasks]
+----
+
+The `--exec` flag can execute single-object commands against all objects returned:
+
+----
+hansei> tasks --with state running --without id 2445 --exec task
+task 2436
+    state: running (mid-poll on lwp 115)
+    type: async block parallel_task_set::ParallelTaskSet::spawn::{async_fn#0}<support_bundle_collection::step::CompletedCollectionStep, support_bundle_collection::collection::BundleCollection::run_collect_bundle_steps::{async_fn#0}>
+    awaiting at: parallel-task-set/src/lib.rs:97
+    waker: <empty>
+    spawned at: parallel-task-set/src/lib.rs:96:18
+    defined at: parallel-task-set/src/lib.rs:96
+    held futures: 0
+    join sets: 2 (7057 futures)
+
+task 2439
+    state: running (mid-poll on lwp 124)
+    type: async block parallel_task_set::ParallelTaskSet::spawn::{async_fn#0}<support_bundle_collection::step::CompletedCollectionStep, support_bundle_collection::collection::BundleCollection::run_collect_bundle_steps::{async_fn#0}>
+    awaiting at: parallel-task-set/src/lib.rs:97
+    waker: <empty>
+    spawned at: parallel-task-set/src/lib.rs:96:18
+    defined at: parallel-task-set/src/lib.rs:96
+    held futures: 0
+    join sets: 2 (7126 futures)
+[Executed against 2 tasks, 0 failed]
+----
+
+Use the singular form of a command to set the session cursor to a particular object. The prompt
+will show the cursor's location when set.
+
+----
+hansei> task 2439
+task 2439
+    state: running (mid-poll on lwp 124)
+    type: async block parallel_task_set::ParallelTaskSet::spawn::{async_fn#0}<support_bundle_collection::step::CompletedCollectionStep, support_bundle_collection::collection::BundleCollection::run_collect_bundle_steps::{async_fn#0}>
+    awaiting at: parallel-task-set/src/lib.rs:97
+    waker: <empty>
+    spawned at: parallel-task-set/src/lib.rs:96:18
+    defined at: parallel-task-set/src/lib.rs:96
+    held futures: 0
+    join sets: 2 (7126 futures)
+hansei : task 2439 #0> 
+----
+
+A command appended to `task` and other singular commands will execute against that object without
+moving the cursor.
+
+----
+hansei> task 2439 trace
+warning: task 2439 is running on lwp 124; its state may be torn
+#0  future        futures_util::stream::futures_unordered::FuturesUnordered<support_bundle_collection::steps::host_info::save_zone_log_zip_or_error>
+      (<no_state>, 3 locals)
+#1  async fn      support_bundle_collection::steps::host_info::collect_data_from_sled
+      awaiting at support-bundle-collection/src/steps/host_info.rs:250 (Suspend6, 10 locals)
+#2  async block   support_bundle_collection::steps::host_info::spawn_query_all_sleds::{async_fn#0}::{closure#0} [dyn]
+      awaiting at support-bundle-collection/src/steps/host_info.rs:58 (Suspend0, 0 locals)
+#3  async fn      support_bundle_collection::step::CollectionStep::run
+      awaiting at support-bundle-collection/src/step.rs:55 (Suspend0, 3 locals)
+#4  async block   support_bundle_collection::collection::BundleCollection::run_collect_bundle_steps::{async_fn#0}
+      awaiting at support-bundle-collection/src/collection.rs:204 (Suspend0, 0 locals)
+#5  async block   parallel_task_set::ParallelTaskSet::spawn::{async_fn#0}<support_bundle_collection::step::CompletedCollectionStep, support_bundle_collection::collection::BundleCollection::run_collect_bundle_steps::{async_fn…
+      awaiting at parallel-task-set/src/lib.rs:97 (Suspend0, 0 locals)
+----
+
+For tasks and futures, an async backtrace can be printed using the `trace` command. This is heavily
+inspired by the lilos debugger described in https://cliffle.com/blog/lildb.
+
+For tasks that are running on a thread, the `--native` flag will combine the stack trace of the
+thread with the async trace, showing only the native frames between the task's poll function and
+the top of the stack.
+
+----
+hansei : task 2439 #0> trace --native
+warning: task 2439 is running on lwp 124; its state may be torn
+mid-poll on lwp 124
+0xfffff5ffef0a7a34  __lwp_unpark
+0xfffff5ffef1e2d4b  vmem_xalloc
+0xfffff5ffef1db79a  memalign
+0xfffff5ffef03c318  posix_memalign
+0x000000000e350965  __rustc::__rdl_alloc
+0x000000000d782cee  <tokio::runtime::scheduler::multi_thread::handle::Handle>::bind_new_task::<tracing::instrument::Instrumented<core::pin::Pin<alloc::boxed::Box<dyn core::future::future::Future<Output = ()> + core::marker::…
+0x000000000d77c5ab  tokio::task::spawn::spawn::<tracing::instrument::Instrumented<core::pin::Pin<alloc::boxed::Box<dyn core::future::future::Future<Output = ()> + core::marker::Send>>>>
+0x000000000d738866  <hyper_util::rt::tokio::TokioExecutor as hyper::rt::Executor<core::pin::Pin<alloc::boxed::Box<dyn core::future::future::Future<Output = ()> + core::marker::Send>>>>::execute
+0x000000000d776dd2  <core::pin::Pin<alloc::boxed::Box<<hyper_util::client::legacy::client::Client<reqwest::connect::Connector, reqwest::async_impl::body::Body>>::connect_to::{closure#0}::{closure#1}::{closure#0}>> as core::f…
+0x000000000d774e0c  <futures_util::future::try_future::try_flatten::TryFlatten<futures_util::future::try_future::MapOk<futures_util::future::try_future::MapErr<hyper_util::service::oneshot::Oneshot<reqwest::connect::Connecto…
+0x000000000d704c5b  <hyper_util::common::lazy::Lazy<<hyper_util::client::legacy::client::Client<reqwest::connect::Connector, reqwest::async_impl::body::Body>>::connect_to::{closure#0}, futures_util::future::either::Either<fu…
+0x000000000d6fce54  <hyper_util::client::legacy::client::Client<reqwest::connect::Connector, reqwest::async_impl::body::Body>>::send_request::{closure#0}
+0x000000000d6cf766  <reqwest::async_impl::client::HyperService as tower_service::Service<http::request::Request<reqwest::async_impl::body::Body>>>::call::{closure#0}
+0x000000000d6e66e8  <tower::retry::future::ResponseFuture<reqwest::retry::Policy, reqwest::async_impl::client::HyperService, http::request::Request<reqwest::async_impl::body::Body>> as core::future::future::Future>::poll
+0x000000000d6d7bdb  <reqwest::cookie::service::ResponseFuture<tower::retry::Retry<reqwest::retry::Policy, reqwest::async_impl::client::HyperService>, reqwest::async_impl::body::Body> as core::future::future::Future>::poll
+0x000000000d6e4634  <tower_http::follow_redirect::ResponseFuture<reqwest::cookie::service::CookieService<tower::retry::Retry<reqwest::retry::Policy, reqwest::async_impl::client::HyperService>>, reqwest::async_impl::body::Bod…
+0x000000000d6db94f  <reqwest::async_impl::client::PendingRequest as core::future::future::Future>::poll
+0x000000000d6db8cd  <reqwest::async_impl::client::Pending as core::future::future::Future>::poll
+0x000000000af7ae21  <core::future::poll_fn::PollFn<support_bundle_collection::steps::host_info::save_zone_log_zip_or_error::{closure#0}::{closure#5}> as core::future::future::Future>::poll
+0x000000000b020b51  <futures_util::stream::futures_unordered::FuturesUnordered<support_bundle_collection::steps::host_info::save_zone_log_zip_or_error::{closure#0}> as futures_util::stream::stream::StreamExt>::poll_next_unpin
+
+#0  future        futures_util::stream::futures_unordered::FuturesUnordered<support_bundle_collection::steps::host_info::save_zone_log_zip_or_error>
+      (<no_state>, 3 locals)
+#1  async fn      support_bundle_collection::steps::host_info::collect_data_from_sled
+      awaiting at support-bundle-collection/src/steps/host_info.rs:250 (Suspend6, 10 locals)
+#2  async block   support_bundle_collection::steps::host_info::spawn_query_all_sleds::{async_fn#0}::{closure#0} [dyn]
+      awaiting at support-bundle-collection/src/steps/host_info.rs:58 (Suspend0, 0 locals)
+#3  async fn      support_bundle_collection::step::CollectionStep::run
+      awaiting at support-bundle-collection/src/step.rs:55 (Suspend0, 3 locals)
+#4  async block   support_bundle_collection::collection::BundleCollection::run_collect_bundle_steps::{async_fn#0}
+      awaiting at support-bundle-collection/src/collection.rs:204 (Suspend0, 0 locals)
+#5  async block   parallel_task_set::ParallelTaskSet::spawn::{async_fn#0}<support_bundle_collection::step::CompletedCollectionStep, support_bundle_collection::collection::BundleCollection::run_collect_bundle_steps::{async_fn…
+      awaiting at parallel-task-set/src/lib.rs:97 (Suspend0, 0 locals)
+----
+
+Navigate between async frames using the `up`, `down`, and `frame` commands. The current frame number
+is displayed in the prompt.
+
+A given async frame may contain a number of local variables that are live at the frame's current
+suspend point. The `locals` command will list them.
+
+----
+hansei : task 2439 #0> locals
+ready_to_run_queue: alloc::sync::Arc<futures_util::stream::futures_unordered::ready_to_run_queue::ReadyToRunQueue<support_bundle_collection::steps::host_info::save_zone_log_zip_or_error::{async_fn_env#0}>, alloc::alloc::Global> = 0x4d0a6650 -> alloc::sync::ArcInner<futures_util::stream::futures_unordered::ready_to_run_queue::ReadyToRunQueue<support_bundle_collection::steps::host_info::save_zone_log_zip_or_error::{async_fn_env#0}>> {
+          strong: 1,
+          weak: 7128,
+          data: futures_util::stream::futures_unordered::ready_to_run_queue::ReadyToRunQueue<support_bundle_collection::steps::host_info::save_zone_log_zip_or_error::{async_fn_env#0}> { .. } @ 0x4d0a6660,
+      }
+head_all: core::sync::atomic::Atomic<*mut futures_util::stream::futures_unordered::task::Task<support_bundle_collection::steps::host_info::save_zone_log_zip_or_error::{async_fn_env#0}>> = 0x4e007960 (task 2439 via FuturesUnordered) -> futures_util::stream::futures_unordered::task::Task<support_bundle_collection::steps::host_info::save_zone_log_zip_or_error::{async_fn_env#0}> {
+          future: core::cell::UnsafeCell<core::option::Option<support_bundle_collection::steps::host_info::save_zone_log_zip_or_error::{async_fn_env#0}>> { .. } @ 0x4e007968 (task 2439 via FuturesUnordered),
+          next_all: task 2439 via FuturesUnordered,
+          prev_all: null,
+          len_all: 7126,
+          next_ready_to_run: null,
+          ready_to_run_queue: alloc::sync::Weak<futures_util::stream::futures_unordered::ready_to_run_queue::ReadyToRunQueue<support_bundle_collection::steps::host_info::save_zone_log_zip_or_error::{async_fn_env#0}>, alloc::alloc::Global> { .. } @ 0x4e007960 (task 2439 via FuturesUnordered),
+          queued: core::sync::atomic::Atomic<bool> { .. } @ 0x4e007f18 (task 2439 via FuturesUnordered),
+          woken: core::sync::atomic::Atomic<bool> { .. } @ 0x4e007f19 (task 2439 via FuturesUnordered),
+      }
+is_terminated: core::sync::atomic::Atomic<bool> = 0
+----
+
+The `print` command will display the details of a specific local, or a field in within it. Press
+Tab to receive autocomplete suggestions for field names.
+
+----
+hansei : task 2439 #0> print head_all.future
+core::option::Option<support_bundle_collection::steps::host_info::save_zone_log_zip_or_error::{async_fn_env#0}>::Some(support_bundle_collection::steps::host_info::save_zone_log_zip_or_error::{async_fn_env#0}::3 {
+        logger: 0x111e0a40 -> slog::Logger<alloc::sync::Arc<dyn slog::SendSyncRefUnwindSafeDrain<Ok=(), Err=core::convert::Infallible>, alloc::alloc::Global>> { .. },
+        zone: "oxz_propolis-server_bb36cd0f-4603-425c-9a58-5f17bc454b85",
+        path: "/var/tmp/.tmpXWNr2l/rack/de608e01-b8e4-4d93-b972-a7dbed36dd22/sled/a2adea92-b56e-44fc-8a0d-7d63b5fd3b93",
+        disabled: 0,
+        futures: (tokio_util::sync::cancellation_token::WaitForCancellationFuture, sled_agent_client::{impl#11}::support_logs_download::{async_fn_env#0}) (..) @ 0x4e007b40,
+        __awaitee: core::future::poll_fn::PollFn<support_bundle_collection::steps::host_info::save_zone_log_zip_or_error::{async_fn#0}::{closure_env#5}> { .. } @ 0x4e007ee8,
+    })
+----
+
+How many levels the printer will recurse into an object is controlled by the `depth` option in the
+`config` command. Certain known types, e.g., `Vec`, `String`, will be printed in a human-friendly
+format, rather than the raw struct fields. The `ugly` setting disables this behavior.
+
+When the await chain bottoms out in a recognized wait primitive, a report on what the task is
+waiting on will be displayed:
+
+* `tokio::time::Sleep`: the registered timer deadline
+* `JoinHandle<T>`: the id of the awaited task (a dependency edge between tasks)
+* `tokio::sync::batch_semaphore::Acquire`: the contended `Mutex`/`RwLock`/`Semaphore`, their permit
+counts and wake queue, and associated tasks
+
+An overall view of task relationships is available with `graph`.
+
+----
+hansei> graph
+TASK                             STATE    WAITING ON
+619                              idle     task 765
+└─ 765                           running  future Option<async_bb8_diesel::async_traits::AsyncConnection::run_with_connection::{async_block#0}::{closure_env#0}<async_bb8_diesel::connection::Connection<diesel_dtrace::DTraceConn…
+620                              idle     future core::future::poll_fn::PollFn<oxide_update_engine::engine::StepExec::execute::{async_fn#0}::{closure_env#1}<nexus_types::deployment::execution::spec::ReconfiguratorExecutionSpe…
+└─ 2887 [its handle held above]  idle     future *const alloc::sync::ArcInner<tokio::sync::mpsc::chan::Chan<oxide_update_engine_types::events::Event<nexus_types::deployment::execution::spec::ReconfiguratorExecutionSpec>, toki…
+----
+
+== Development
+
+On illumos, we build test programs that link against `libproc` to sanity check our cross-platform
+illumos core dump parsing. `libproc-sys` generates its bindings with `bindgen`, which in turn uses
+`libclang`. Ensure that the following are set, adjusting the LLVM version as needed:
+
+[source,shell]
+----
+export LIBCLANG_PATH=/opt/ooce/llvm-15/lib
+export LD_LIBRARY_PATH=/opt/ooce/llvm-15/lib:$LD_LIBRARY_PATH
+----
+
+The test suite will execute programs and core them, so the user running the tests must be
+permitted to do this. On Linux this is controlled with `kernel.yama.ptrace_scope`.
