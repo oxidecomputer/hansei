@@ -686,9 +686,9 @@ pub enum Command {
     /// `trace -v` locals and every other render outright; `limit`
     /// also backs the `--limit` flags, which override the session
     /// value for that command only; `truncate-names` cuts the
-    /// listings' name columns, and the names ending `trace`'s frame
-    /// lines, to the terminal's width, an ellipsis
-    /// marking each cut — a `!` pipeline's output included, since its
+    /// listings' name columns, the names `census` tallies, and the
+    /// names ending `trace`'s frame lines, to the terminal's width,
+    /// an ellipsis marking each cut — a `!` pipeline's output included, since its
     /// last command writes to the same terminal — and never touches
     /// output that is not headed for one. The values live for the
     /// session only. Bare `config` prints every key at its current
@@ -1735,7 +1735,7 @@ pub fn dispatch<T: Target>(
         } => {
             session.note_version_ceiling();
             let sections = summary::Sections::select(threads, tasks, futures);
-            tasks::exec_census(session, sections, top, out)?
+            tasks::exec_census(session, sections, top, theme, out)?
         }
         Command::Down { then } => {
             cursor::exec_down(session, theme, out)?;
