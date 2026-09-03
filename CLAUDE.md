@@ -8,11 +8,15 @@ side depends on; `reify` reads a target process's memory and renders values
 of those types for humans. `hansei`/`proc` do the target reading; their
 illumos-only parts
 are cfg-gated at module level, so both crates **build and compile-check on
-macOS** (`cargo check -p hansei` works here) — but *running* against a real
+macOS** (`cargo check -p hansei` works there) — but *running* against a real
 core, and hansei's acceptance suite
-(`#![cfg(any(linux, illumos))]`, zero tests on macOS), need the illumos or
-Linux hosts. Type/bundle/render work lives in `exegesis`, `hansei-bundle`
+(`#![cfg(any(linux, illumos))]`, zero tests on macOS), need an illumos or
+Linux host. Type/bundle/render work lives in `exegesis`, `hansei-bundle`
 and `reify`, which are fully portable, tests included.
+
+Host names, paths, remotes and the per-host loops for a particular
+checkout live in an untracked `CLAUDE.local.md` beside this file; nothing
+machine-specific belongs here.
 
 Only exegesis reads DWARF, so only exegesis depends on the DWARF stack
 (gimli, object, memmap2, regex). **hansei-runtime and reify never depend on
@@ -153,8 +157,8 @@ version bump breaks compatibility silently.
 
 Bumping `FORMAT_VERSION` invalidates the checked-in binary fixtures in
 `hansei-runtime/tests/fixtures/`, so a `-p hansei-runtime` run fails to
-load them until they are regenerated — which needs a remote host, not
-macOS. The regeneration loop (land, push, regenerate, `--amend` +
+load them until they are regenerated — which needs an illumos or Linux
+host, not macOS. The regeneration loop (land, push, regenerate, `--amend` +
 force-push so `main` is never red) is the `format-bump` skill. Never
 weigh the bump itself in a design trade-off; the loop is its only cost.
 
@@ -162,18 +166,15 @@ weigh the bump itself in a design trade-off; the loop is its only cost.
 
 **Run tests with `cargo nextest run --no-fail-fast`.** nextest stops at the
 first failure by default, so that flag is not optional — the point of a sweep
-is every failure at once. On this macOS host use `cargo test --no-fail-fast`
-instead: nextest's one-process-per-test bursts wedge syspolicyd here, and
-`CHECK_ALL_LOCAL_TEST="cargo test" ./check-all.sh` swaps only the local
-leg. Otherwise every invocation this file spells `cargo
-test …` translates directly: `cargo nextest run -p exegesis --test golden`,
-`INSTA_UPDATE=always cargo nextest run …`, `HANSEI_MATRIX=1 cargo nextest run
--p hansei-runtime --test matrix`. It cannot run doctests (the tree has none —
-`cargo test --doc` if that changes).
+is every failure at once. It cannot run doctests (the tree has none —
+`cargo test --doc` if that changes). Every invocation this file spells
+translates directly to `cargo test` where nextest is unavailable.
 
-`check-all.sh` drives nextest on all three hosts (the linux host's is in
-`/home/linuxbrew/.linuxbrew/bin`, which is why that host's command has its own
-PATH prefix).
+Green means green on **all three platforms**: macOS, illumos and Linux.
+Each has caught a failure the other two could not, so a suite run on one
+proves little about the others. Detection is covered portably by the golden
+tests below; a real cored target on an illumos or Linux host is where the
+render side and the acceptance suite are exercised.
 
 **A test that builds a fixture must go through `testrun::once_per_run`.**
 nextest runs each test in its own process, so anything a suite arranged once
@@ -242,7 +243,8 @@ check:
 - **Offline two-binary fixtures** (`hansei-runtime/tests/fixtures/*.tinfo`) are
   checked-in *binary* bundles with a version header, so **any `FORMAT_VERSION`
   bump makes a `-p hansei-runtime` run fail to load them** — see *Format
-  bumps* above for the regeneration loop, which needs illumos.
+  bumps* above for the regeneration loop, which needs an illumos or Linux
+  host.
 - **Version-matrix goldens** (`hansei-runtime/tests/matrix.rs`, opt-in) build
   every cell `test-programs/matrix.toml` declares (tokio × toolchain ×
   tokio_unstable) via `regen.sh`, extract every tokio fixture per cell, and
@@ -272,11 +274,10 @@ whole-crate sweep (`cargo mutants -p hansei-runtime -j 4`) is ~25
 minutes; triage its `missed.txt` into tests, or into an `exclude_re`
 entry with a comment where the mutant is equivalent.
 
-Every `cargo mutants` run, `--in-diff` included, goes to the Linux host
-under a memory cap. A mutant that breaks a write loop's exit appends
-output without bound, and macOS has no enforceable per-process memory
-cap: such runs have crashed this machine before the test timeout could
-reap them. The remotes test `HEAD`, so commit and push first, then:
+Every `cargo mutants` run, `--in-diff` included, goes on Linux under a
+memory cap. A mutant that breaks a write loop's exit appends output
+without bound, and macOS has no enforceable per-process memory cap: such
+a run has crashed a machine before the test timeout could reap it.
 
 ```
 ulimit -v 16777216 && systemd-run --user --scope -p MemoryMax=48G \
@@ -327,66 +328,16 @@ canary because every fixture is rebuilt from source.
   review surface for "did I change only what I meant to."
 - **Adding coverage for a new formatter** — and debugging a detector that
   does not fire (`--explain-format`), and discovering a layout from real
-  DWARF (`--include-type` + `dump` against `sled-agent.debug`) — are §§3–4
+  DWARF (`--include-type` + `dump` against a real production binary) — are §§3–4
   of the `add-formatter` skill. The one fact worth repeating here: **debug
   formats are not in the `.golden` files at all**, so a new formatter
   changes no golden and re-blessing tells you nothing about it — its
   coverage is an inline `assert_format` (or presence-only `assert!`) in
   `exegesis/tests/golden.rs`.
 
-A **local core pair** sits under `./cores/` for when a test core is
-needed on this machine: `nexus.22247.bin` (the debug nexus binary),
-`nexus.22247.core` (its core), and `nexus.22247.tinfo` extracted from
-them. Reach for these first — every value-printing command runs against
-them right here (`hansei -t ./cores/nexus.22247.tinfo -c
-./cores/nexus.22247.core`), no remote host required. After an exegesis
-change, re-extract with `hansei tokio-info extract ./cores/nexus.22247.bin
--o ./cores/nexus.22247.tinfo`. The files are gitignored and exist only on
-this machine; the illumos host below is still where a *sled-agent* core
-and the acceptance suite live.
-
-The `illumos` host, accessible over SSH (`ssh illumos`), is where the *rendered*
-output can be exercised against a real cored target, and where detection can
-be run against large production binaries; hansei builds here, but its
-acceptance suite compiles to zero tests on macOS.
-(Detection itself is covered portably by the golden tests above; illumos is for
-the render side and for real cores.) The repository is at `/data/durin`; a debug
-`sled-agent` is at `/tmp/sled-agent.debug`; a core with live channels/semaphores
-is at `/data/aborts/core.sled-agent-v0`. Full loop:
-
-```
-ssh illumos 'cd /data/durin && git pull origin main &&
-  cargo build --release -p hansei &&
-  ./target/release/hansei tokio-info extract /tmp/sled-agent.debug -o /tmp/sled-agent.tinfo &&
-  echo 'trace <N> -v' | ./target/release/hansei -t /tmp/sled-agent.tinfo \
-    --core /data/aborts/core.sled-agent-v0'
-```
-
 `config ugly on` disables every custom formatter for the session and prints
 the raw structural view — the way to see what a formatter is hiding, and to
 check that it hides only what you meant.
-
-Note illumos `grep` lacks `\s`/`-P`; use `[[:space:]]` in patterns there.
-
-The `macro` host (`ssh macro`) is a Linux box with the repository at
-`~/devel/durin`. `cargo` is **not** on its non-interactive PATH, so prefix
-remote commands with `export PATH=$HOME/.cargo/bin:$PATH`. It has the pinned
-toolchain, `gcore`, and a permissive `ptrace_scope`, so it runs everything
-illumos does — including hansei's acceptance suite, which is
-`#![cfg(any(linux, illumos))]` and compiles to zero tests on macOS.
-
-Green means green on **all three**: macOS, `illumos`, and `macro`. Each has
-caught a failure the other two could not, so a suite run on one proves little
-about the others. Pass `--no-fail-fast`: both runners stop at the first
-failure without it, which hides everything after it.
-
-`./check-all.sh` is how to run all three: it drives this tree plus both remotes
-in parallel and prints one summary, so reach for it rather than hand-rolling
-the `ssh` invocations. Everything after `--` goes to `cargo nextest run`
-(`./check-all.sh -- -p exegesis`), `-p` pushes `HEAD` to origin first, and `-l`
-runs this machine only. The remotes test the commit at `HEAD`, so uncommitted
-changes are tested nowhere but here — the script warns when that is the case,
-and refuses outright when `HEAD` is not on `origin/main`.
 
 What varies by target, and so must never be pinned in a portable test:
 
@@ -423,16 +374,11 @@ What varies by target, and so must never be pinned in a portable test:
   Identical code is foldable and Mach-O folds it, so only one of them is
   named in the golden dyn-future list while ELF names both. Give a fixture's
   futures distinct shapes — capture something different — rather than
-  discovering this a check-all round trip later.
+  discovering this a cross-platform round trip later.
 - **Offsets reached through tokio's `driver::Handle`,** whose io and signal
   members embed OS-specific types. The `TimerEntry` `assert_format` carries one
   arm per system because no two agree. Every other offset these asserts pin is
   portable.
-
-To get the latest changes over to `illumos` or `macro`, the current commit(s)
-may be pushed to the `origin` remote ONLY. Never push to `gh` under any
-circumstances. Sync a host with `git fetch origin main && git reset --hard
-origin/main`.
 
 ### tokio/std layout facts worth remembering
 
