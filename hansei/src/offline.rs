@@ -37,6 +37,7 @@ pub(crate) fn session_args(set: &str, program: &str) -> SessionArgs {
         best_effort: false,
         runtime: None,
         search_depth: census::Bounds::default().scan_depth,
+        config: Vec::new(),
         audit: false,
     }
 }

@@ -10,7 +10,7 @@
 //! live for the session only; a flag given on a command overrides them
 //! for that command alone.
 
-use anyhow::{Result, anyhow};
+use anyhow::{Context, Result, anyhow};
 
 use std::cell::RefCell;
 use std::io;
@@ -60,6 +60,27 @@ impl Settings {
             pager: crate::pager::from_env(),
             ..Settings::default()
         }
+    }
+
+    /// The defaults a session starts with, then every `--config
+    /// SETTING VALUE` the command line gave, applied in order as
+    /// `config` would apply them at the prompt — and refused as it
+    /// would refuse them, naming the flag.
+    pub(crate) fn from_args(config: &[String]) -> Result<Self> {
+        let mut settings = Settings::from_env();
+        for pair in config.chunks(2) {
+            let [key, value] = pair else {
+                unreachable!("clap takes --config's two values together");
+            };
+            if !KEYS.contains(&key.as_str()) {
+                return Err(anyhow!(
+                    "--config {key} {value}: no setting {key:?}; the keys are {}",
+                    KEYS.join(", ")
+                ));
+            }
+            store(&mut settings, key, value).with_context(|| format!("--config {key} {value}"))?;
+        }
+        Ok(settings)
     }
 }
 
@@ -235,6 +256,34 @@ mod tests {
         assert!(!settings.borrow().truncate_names);
         assert!(settings.borrow().ugly);
         assert_eq!(settings.borrow().pager.as_deref(), Some("less -S"));
+    }
+
+    /// `--config` pairs apply in order over the session's defaults,
+    /// and a value `config` would refuse is refused naming the flag.
+    #[test]
+    fn test_config_flags_apply_in_order_and_are_refused_like_config() {
+        let flags = |words: &[&str]| words.iter().map(|w| w.to_string()).collect::<Vec<_>>();
+        let settings = Settings::from_args(&flags(&["limit", "50", "limit", "off", "ugly", "on"]))
+            .expect("the flags apply");
+        assert_eq!(settings.limit, None);
+        assert!(settings.ugly);
+        assert_eq!(settings.depth, 2);
+
+        let err = Settings::from_args(&flags(&["depth", "x"]))
+            .err()
+            .expect("refused");
+        assert_eq!(
+            format!("{err:#}"),
+            "--config depth x: config depth takes a number, got \"x\""
+        );
+        let err = Settings::from_args(&flags(&["nope", "1"]))
+            .err()
+            .expect("refused");
+        assert_eq!(
+            err.to_string(),
+            "--config nope 1: no setting \"nope\"; the keys are depth, limit, \
+             max-array-values, max-string-len, pager, truncate-names, ugly"
+        );
     }
 
     /// `config pager off` is no pager, and reads back as `off`.

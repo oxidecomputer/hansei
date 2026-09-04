@@ -178,6 +178,18 @@ struct SessionArgs {
     #[arg(long, value_name = "LEVELS", default_value_t = census::Bounds::default().scan_depth)]
     search_depth: usize,
 
+    /// A session setting to start with, as `config SETTING VALUE`
+    /// would set it at the prompt: `--config pager off`, `--config
+    /// limit 50`. One flag per setting; the keys and values are
+    /// `config`'s own, and a value it would refuse refuses the attach.
+    #[arg(
+        long,
+        num_args = 2,
+        value_names = ["SETTING", "VALUE"],
+        action = clap::ArgAction::Append
+    )]
+    config: Vec<String>,
+
     /// Check the census against its own construction rules whenever
     /// one is taken, reporting any violation on stderr. The total
     /// class holds over any core whatsoever; the healthy-only class is
@@ -724,7 +736,8 @@ pub enum Command {
     /// `--exec`'s and a `!` pipeline's answers never page. The values
     /// live for the session only. Bare `config` prints every key at
     /// its current value; `config KEY` prints one; `config KEY VALUE`
-    /// changes it.
+    /// changes it; `--config KEY VALUE` on the command line sets one
+    /// before the first command.
     Config {
         /// The key to show or change. Naming none prints them all.
         key: Option<String>,
@@ -1472,6 +1485,9 @@ pub struct Session<'b, T: Target> {
 
 impl<'b, T: Target> Session<'b, T> {
     fn attach(proc: &'b T, bundle: &'b Bundle, args: &'b SessionArgs) -> Result<Self> {
+        // Before the target is read: a refused `--config` is a mistyped
+        // command line, and should cost nothing more than one.
+        let settings = settings::Settings::from_args(&args.config)?;
         let policy = if args.best_effort {
             contract::WalkPolicy::BestEffort
         } else {
@@ -1583,7 +1599,7 @@ impl<'b, T: Target> Session<'b, T> {
             task_rows: OnceCell::new(),
             future_rows: OnceCell::new(),
             thread_rows: OnceCell::new(),
-            settings: RefCell::new(settings::Settings::from_env()),
+            settings: RefCell::new(settings),
             cursor: RefCell::new(cursor::Cursor::default()),
         })
     }
@@ -2550,6 +2566,39 @@ mod cli_tests {
         assert_eq!(session.tokio_info.as_deref(), Some(Path::new("app.tinfo")));
         assert_eq!(session.debug_info, None);
         assert_eq!(cli.exec, ["tasks"]);
+    }
+
+    /// `--config` takes a setting and its value, once per flag, and
+    /// keeps them in the order given; a flag with one word is refused.
+    #[test]
+    fn test_config_flags_pair_a_setting_with_its_value() {
+        let cli = parse(&[
+            "hansei",
+            "-c",
+            "core.app",
+            "-t",
+            "app.tinfo",
+            "--config",
+            "pager",
+            "off",
+            "--config",
+            "limit",
+            "50",
+        ]);
+        let session = cli.session.expect("session args");
+        assert_eq!(session.config, ["pager", "off", "limit", "50"]);
+        assert!(
+            Cli::try_parse_from([
+                "hansei",
+                "-c",
+                "core.app",
+                "-t",
+                "app.tinfo",
+                "--config",
+                "ugly"
+            ])
+            .is_err()
+        );
     }
 
     /// A debug build stands in for a tokio-info file, and the summary
