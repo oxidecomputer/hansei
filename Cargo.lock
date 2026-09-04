@@ -588,6 +588,7 @@ dependencies = [
  "hansei-bundle",
  "hansei-runtime",
  "insta",
+ "libc",
  "mimalloc",
  "proc",
  "rayon",

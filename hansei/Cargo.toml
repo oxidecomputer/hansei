@@ -41,6 +41,9 @@ clap = { workspace = true }
 exegesis = { workspace = true }
 hansei-bundle = { workspace = true }
 hansei-runtime = { workspace = true }
+# The pager holds the terminal while it runs, so an interrupt meant for
+# it must not end the session: this is what parks SIGINT for that long.
+libc = { workspace = true }
 proc = { workspace = true }
 rayon = { workspace = true }
 reedline = { workspace = true }

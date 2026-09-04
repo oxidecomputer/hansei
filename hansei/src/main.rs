@@ -29,6 +29,7 @@ mod info;
 #[cfg(test)]
 mod offline;
 mod output;
+mod pager;
 mod pattern;
 mod print;
 mod registers;
@@ -716,16 +717,22 @@ pub enum Command {
     /// names ending `trace`'s frame lines, to the terminal's width,
     /// an ellipsis marking each cut — a `!` pipeline's output included, since its
     /// last command writes to the same terminal — and never touches
-    /// output that is not headed for one. The values live for the
-    /// session only. Bare `config` prints every key at its current
-    /// value; `config KEY` prints one; `config KEY VALUE` changes it.
+    /// output that is not headed for one; `pager` is the shell command
+    /// a prompt's answers page through — `HANSEI_PAGER`, else `PAGER`,
+    /// else `less` to start with, given `LESS=FRX` when the
+    /// environment sets no `LESS` — or `off` for none, and a script's,
+    /// `--exec`'s and a `!` pipeline's answers never page. The values
+    /// live for the session only. Bare `config` prints every key at
+    /// its current value; `config KEY` prints one; `config KEY VALUE`
+    /// changes it.
     Config {
         /// The key to show or change. Naming none prints them all.
         key: Option<String>,
 
         /// The new value. Naming none prints the key's current value.
         /// `ugly` and `truncate-names` take on or off; `limit` takes
-        /// a count, or `off` for no limit.
+        /// a count, or `off` for no limit; `pager` takes a shell
+        /// command (quoted where it carries flags), or `off`.
         value: Option<String>,
     },
 
@@ -1576,7 +1583,7 @@ impl<'b, T: Target> Session<'b, T> {
             task_rows: OnceCell::new(),
             future_rows: OnceCell::new(),
             thread_rows: OnceCell::new(),
-            settings: RefCell::new(settings::Settings::default()),
+            settings: RefCell::new(settings::Settings::from_env()),
             cursor: RefCell::new(cursor::Cursor::default()),
         })
     }
@@ -2378,6 +2385,7 @@ mod render_flag_tests {
             max_array_values: 3,
             limit: None,
             truncate_names: true,
+            pager: None,
         };
         let resolved = RenderOpts::from_settings(&session);
         assert_eq!(resolved.depth, 6);

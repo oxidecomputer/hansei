@@ -530,7 +530,15 @@ fn answer_words<T: proc::Target>(
     // input however the session was started, so only the plain stdout
     // path may style — but the pipeline inherits stdout, so its last
     // command writes to the same terminal, and the pipe's theme keeps
-    // that terminal's width.
+    // that terminal's width. A prompt's answer onto a terminal pages
+    // instead, and the pager's pipe ends on that terminal too, so it
+    // is styled as stdout would be.
+    let pager = session.settings.borrow().pager.clone();
+    let pages = crate::pager::pages(
+        mode == Mode::Interactive,
+        io::stdout().is_terminal(),
+        pager.as_deref(),
+    );
     match shell {
         Some(shell) => {
             let sink = ShellSink {
@@ -539,6 +547,23 @@ fn answer_words<T: proc::Target>(
             let mut out = io::BufWriter::new(sink);
             let flow = answer(Theme::for_pipe(), &mut out)?;
             out.flush()?;
+            Ok(flow)
+        }
+        None if pages => {
+            let pager = pager.expect("pages only with a pager");
+            let mut out = io::BufWriter::new(crate::pager::PagerSink::new(&pager));
+            // The pager is waited for whether the answer finished or
+            // failed: the prompt must not come back while the pager
+            // still holds the terminal, and an error is reported after
+            // it has been quit, where the reader will see it.
+            let flow = answer(Theme::for_stdout(), &mut out);
+            let flushed = out.flush();
+            let sink = out
+                .into_inner()
+                .unwrap_or_else(|_| unreachable!("the sink's flush never fails"));
+            sink.finish()?;
+            let flow = flow?;
+            flushed?;
             Ok(flow)
         }
         None => {
