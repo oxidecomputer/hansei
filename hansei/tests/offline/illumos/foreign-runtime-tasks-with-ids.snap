@@ -2,6 +2,6 @@
 source: hansei/src/offline.rs
 description: "`tasks --with id 3,6` over illumos/foreign-runtime"
 ---
-ID  STATE  RT  AWAITING AT                    WAITING ON  FUTURE
-3   idle   0   src/bin/foreign-runtime.rs:30  task 1      async fn foreign_runtime::joiner
+ID  STATE  RT  FUTURES  AWAITING AT                    WAITING ON  FUTURE
+3   idle   0         0  src/bin/foreign-runtime.rs:30  task 1      async fn foreign_runtime::joiner
 [1 task]

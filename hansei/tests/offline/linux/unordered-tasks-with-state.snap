@@ -2,6 +2,6 @@
 source: hansei/src/offline.rs
 description: "`tasks --with state idle` over linux/unordered"
 ---
-ID  STATE  AWAITING AT               WAITING ON                                                                               FUTURE
-3   idle   src/bin/unordered.rs:119  future futures_util::stream::futures_unordered::FuturesUnordered<unordered::set_member>  async fn unordered::driver
+ID  STATE  FUTURES  AWAITING AT               WAITING ON                                                                               FUTURE
+3   idle         8  src/bin/unordered.rs:119  future futures_util::stream::futures_unordered::FuturesUnordered<unordered::set_member>  async fn unordered::driver
 [1 task]

@@ -868,6 +868,7 @@ pub enum Command {
     /// List every task the target's executors own — one table row per
     /// task: id, lifecycle state (with the cancel bit where set), the
     /// owning runtime or local set on targets holding more than one,
+    /// how many futures it has in flight beside its own await chain,
     /// the leaf await site the task is parked behind, what it waits
     /// on, and its concrete future type, never truncated. `--limit`
     /// is the only cut, and cutting earns a footer counting what was
@@ -879,8 +880,8 @@ pub enum Command {
     /// The string fields — type, awaiting, waiting-on, waker,
     /// spawned, defined, state — are case-insensitive regexes over
     /// the spelled value; rt (an index or `0x` handle), lwp and id
-    /// are exact; holds and sets compare the census's counts, spelled
-    /// '>N', '<N' or '=N' (quote them from a shell).
+    /// are exact; holds, sets and futures compare the census's
+    /// counts, spelled '>N', '<N' or '=N' (quote them from a shell).
     ///
     /// The waker field is the wakeup answer: every slot hansei
     /// decodes holding this task's waker — `timer 0x…`, `io 0x…
@@ -906,11 +907,13 @@ pub enum Command {
     /// when M is not zero — a script sees one failure, with nothing
     /// skipped.
     ///
-    /// What each task has in flight beside its own await chain — the
-    /// futures held in its frames, the sets it drives — is the
-    /// census's to count and `task` (or `futures`) to show; the table
-    /// reads the wait analysis and nothing else, so it never pays for
-    /// that walk unless a holds/sets clause asks.
+    /// `FUTURES` is what each task has in flight beside its own await
+    /// chain: the futures held in its frames and the live children of
+    /// the sets it drives — the rows `futures` lists for the task —
+    /// which is the census's to count and `task` (or `futures`) to
+    /// show as a listing. `task` splits the number into what is held
+    /// and what the sets hold, and the futures field compares it
+    /// whole; holds and sets compare the two halves.
     Tasks {
         /// Show at most this many tasks — or, under --group, this
         /// many buckets; a footer counts what the cut left out.
@@ -923,7 +926,7 @@ pub enum Command {
         /// more clauses, which AND. Fields: type, awaiting,
         /// waiting-on, waker, spawned, defined, state
         /// (case-insensitive regexes); rt, lwp, id (exact); holds,
-        /// sets ('>N', '<N', '=N'). ARG may list alternatives,
+        /// sets, futures ('>N', '<N', '=N'). ARG may list alternatives,
         /// `1,2,3`, of which any matches; a literal comma is `\,`.
         #[arg(long, short = 'w', num_args = 2, value_names = ["FIELD", "ARG"])]
         with: Vec<String>,
