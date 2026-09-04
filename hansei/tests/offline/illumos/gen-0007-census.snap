@@ -13,7 +13,7 @@ Threads: 3 lwps, 3 in runtime 0 @ 0xADDR
 
 Tasks: 5 owned by runtime 0 @ 0xADDR
     State: 5 idle
-    Future types and what they await:
+    Types and what they are waiting on:
         1  async fn gen_0007::driver_00
            └─ 1  future gen_0007::GfSel3<core::future::pending::Pending<u64>, core::future::pending::Pending<u64>, core::future::pending::Pending<u64>>
         1  async fn gen_0007::member_02
@@ -30,7 +30,7 @@ Futures: 12 in flight, on 17 await-chain frames (up to 2 deep)
         5  polled as tasks
         4  held in frames, off any await chain
         3  in 1 FuturesUnordered
-    Future types and what they await:
+    Types and what they are waiting on:
         3  async fn gen_0007::leaf_01
         1  async fn gen_0007::holder_04<gen_0007::leaf_05>
         1  async fn gen_0007::holder_08<gen_0007::leaf_09>

@@ -9,7 +9,7 @@ Threads: 1 lwp, 1 in runtime 0 @ 0xADDR
 
 Tasks: 3 owned by 1 runtime and 1 local set
     State: 3 idle
-    Future types and what they await:
+    Types and what they are waiting on:
         1  async fn local_set_timer::local_acquirer
            └─ 1  a tokio::sync::Semaphore
         1  async fn local_set_timer::local_sleeper

@@ -13,7 +13,7 @@ Threads: 3 lwps, 3 in runtime 0 @ 0xADDR
 
 Tasks: 1 owned by runtime 0 @ 0xADDR
     State: 1 idle
-    Future types and what they await:
+    Types and what they are waiting on:
         1  async fn unordered::driver
            └─ 1  future futures_util::stream::futures_unordered::FuturesUnordered<unordered::set_member>
 
@@ -22,7 +22,7 @@ Futures: 15 in flight, on 19 await-chain frames (up to 2 deep)
         1  polled as tasks
         9  held in frames, off any await chain
         5  in 2 FuturesUnordered
-    Future types and what they await:
+    Types and what they are waiting on:
         8  async fn unordered::leaf
         5  async fn unordered::set_member
            ├─ 3  future tokio::sync::notify::Notified

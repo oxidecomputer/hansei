@@ -13,7 +13,7 @@ Threads: 3 lwps, 3 in runtime 0 @ 0xADDR
 
 Tasks: 6 owned by runtime 0 @ 0xADDR
     State: 6 idle
-    Future types and what they await:
+    Types and what they are waiting on:
         5  async fn joinset::member
            └─ 5  future tokio::sync::notify::Notified
         1  async fn joinset::driver

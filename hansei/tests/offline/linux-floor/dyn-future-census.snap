@@ -13,7 +13,7 @@ Threads: 3 lwps, 3 in runtime 0 @ 0xADDR
 
 Tasks: 2 owned by runtime 0 @ 0xADDR
     State: 2 idle
-    Future types and what they await:
+    Types and what they are waiting on:
         1  async fn dyn_future::driver
            └─ 1  future tokio::sync::oneshot::Receiver<u32>
         1  async fn dyn_future::set_member

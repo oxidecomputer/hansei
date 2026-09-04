@@ -13,7 +13,7 @@ Threads: 3 lwps, 3 in runtime 0 @ 0xADDR
 
 Tasks: 2 owned by runtime 0 @ 0xADDR
     State: 2 idle
-    Future types and what they await:
+    Types and what they are waiting on:
         1  async fn channels::hold
            └─ 1  future tokio::sync::oneshot::Receiver<u32>
         1  async fn channels::notify_waiter
@@ -24,5 +24,5 @@ Futures: 3 in flight, on 5 await-chain frames (up to 2 deep)
         2  polled as tasks
         1  held in frames, off any await chain
         0  in 0 FuturesUnordered
-    Future types and what they await:
+    Types and what they are waiting on:
         1  future tokio::sync::notify::Notified

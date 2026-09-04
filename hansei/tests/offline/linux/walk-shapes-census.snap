@@ -12,7 +12,7 @@ Threads: 3 lwps, 3 in 2 runtimes
 
 Tasks: 10 owned by 2 runtimes and 2 local sets
     State: 1 queued, 9 idle
-    Future types and what they await:
+    Types and what they are waiting on:
         2  async fn walk_shapes::blocked
            └─ 2  a tokio::sync::Semaphore
         1  async fn walk_shapes::abandoner
@@ -30,7 +30,7 @@ Futures: 12 in flight, on 33 await-chain frames (up to 5 deep)
         10  polled as tasks
          2  held in frames, off any await chain
          0  in 0 FuturesUnordered
-    Future types and what they await:
+    Types and what they are waiting on:
         1  async fn tokio::sync::mutex::Mutex::lock<()>
            └─ 1  a tokio::sync::Mutex
         1  async fn walk_shapes::deep

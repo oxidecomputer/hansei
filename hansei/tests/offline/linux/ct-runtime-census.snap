@@ -9,7 +9,7 @@ Threads: 1 lwp, 1 in runtime 0 @ 0xADDR
 
 Tasks: 2 owned by runtime 0 @ 0xADDR
     State: 2 idle
-    Future types and what they await:
+    Types and what they are waiting on:
         1  async fn ct_runtime::acquirer
            └─ 1  a tokio::sync::Semaphore
         1  async fn ct_runtime::sleeper
