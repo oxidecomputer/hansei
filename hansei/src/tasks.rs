@@ -1110,7 +1110,7 @@ fn print_task_table(
     // ahead of the three that run wide.
     header.push("FUTURES");
     let futures = header.len() - 1;
-    header.extend(["AWAITING AT", "WAITING ON", "FUTURE"]);
+    header.extend(["AWAITING AT", "WAITING ON", "TYPE"]);
     let columns = header.len();
     // The wait and the future are type names: what a terminal cuts
     // to keep a row on one line.
