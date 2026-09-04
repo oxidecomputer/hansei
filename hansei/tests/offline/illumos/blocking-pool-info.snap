@@ -5,7 +5,5 @@ description: "`info` over illumos/blocking-pool"
 core:       <snapshot>
 tokio info: <tokio info>
 symbols resolved: 20/20
-
 process: not recorded by this target
-
 signal: none recorded

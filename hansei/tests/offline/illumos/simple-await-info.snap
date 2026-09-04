@@ -5,7 +5,5 @@ description: "`info` over illumos/simple-await"
 core:       <snapshot>
 tokio info: <tokio info>
 symbols resolved: 15/15
-
 process: not recorded by this target
-
 signal: none recorded
