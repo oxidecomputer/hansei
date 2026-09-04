@@ -536,8 +536,7 @@ pub enum Command {
     /// tokio info attached and how far the symbols resolve; the process
     /// identity (ids, model, start time, argv, environment — what gdb's
     /// `info proc` and mdb's `::status`, `::pargs` and `::penv`
-    /// answer); what ended it and where; and how many threads, tasks
-    /// and runtimes there are to look at.
+    /// answer); and what ended it and where.
     Info,
 
     /// List the variables the cursor's current frame holds live — the

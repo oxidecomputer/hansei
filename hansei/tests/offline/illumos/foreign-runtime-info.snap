@@ -9,6 +9,3 @@ symbols resolved: 20/20
 process: not recorded by this target
 
 signal: none recorded (a live capture, not a crash)
-
-2 worker thread(s), 4 task(s)
-2 runtimes, 1 local set (see `runtimes --list`)

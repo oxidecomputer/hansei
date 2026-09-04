@@ -1153,10 +1153,8 @@ fn test_info_acceptance() {
             "{process}"
         );
 
-        // What was attached, and what there is to look at.
+        // What was attached.
         assert!(process.contains("symbols resolved: "), "{process}");
-        assert!(process.contains("task(s)"), "{process}");
-        assert!(process.contains("(see `runtimes --list`)"), "{process}");
     });
 }
 
@@ -1983,8 +1981,7 @@ fn test_foreign_runtime_acceptance() {
         assert!(!out.contains("does not list"), "{out}");
 
         // `runtimes` names the runtime and the route to it, and the set
-        // that harvesting *its* wheel found. `info` counts them and
-        // leaves the naming to the listing.
+        // that harvesting *its* wheel found.
         // Both rows at once, and the lwps told apart: the set found in
         // the hidden runtime's wheel is pinned to a thread of its own,
         // not the one the main runtime runs on — which two maskings of
@@ -1993,12 +1990,6 @@ fn test_foreign_runtime_acceptance() {
         golden(
             "foreign-runtime-runtimes",
             &Symbols::new().columns().apply(&out),
-        );
-
-        let info = hansei_ok(&bundle, core, "info");
-        assert!(
-            info.contains("2 runtimes, 1 local set (see `runtimes --list`)"),
-            "{info}"
         );
     });
 }
