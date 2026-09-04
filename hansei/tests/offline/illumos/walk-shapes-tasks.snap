@@ -2,7 +2,7 @@
 source: hansei/src/offline.rs
 description: "`tasks` over illumos/walk-shapes"
 ---
-ID  STATE   RT  FUTURES  AWAITING AT                 WAITING ON                                                                                                           FUTURE
+ID  STATE   RT  FUTURES  AWAITING AT                 WAITING ON                                                                                                           TYPE
 1   idle    0         1  src/bin/walk-shapes.rs:107  future tokio::sync::notify::Notified                                                                                 async fn walk_shapes::chained
 2   idle    0         0  src/bin/walk-shapes.rs:129  future tokio::sync::notify::Notified                                                                                 async fn walk_shapes::holder
 3   idle    0         1  src/bin/walk-shapes.rs:151  future tokio::sync::notify::Notified                                                                                 async fn walk_shapes::abandoner

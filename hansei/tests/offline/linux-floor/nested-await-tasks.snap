@@ -2,6 +2,6 @@
 source: hansei/src/offline.rs
 description: "`tasks` over linux-floor/nested-await"
 ---
-ID  STATE  FUTURES  AWAITING AT                 WAITING ON                                  FUTURE
+ID  STATE  FUTURES  AWAITING AT                 WAITING ON                                  TYPE
 3   idle         0  src/bin/nested-await.rs:23  future tokio::sync::oneshot::Receiver<u32>  async fn nested_await::outer
 [1 task]

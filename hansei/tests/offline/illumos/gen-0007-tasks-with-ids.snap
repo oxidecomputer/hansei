@@ -2,7 +2,7 @@
 source: hansei/src/offline.rs
 description: "`tasks --with id 3,6` over illumos/gen-0007"
 ---
-ID  STATE  FUTURES  AWAITING AT              WAITING ON                                                                                                                              FUTURE
+ID  STATE  FUTURES  AWAITING AT              WAITING ON                                                                                                                              TYPE
 3   idle         3  src/bin/gen-0007.rs:129  future gen_0007::GfSel3<core::future::pending::Pending<u64>, core::future::pending::Pending<u64>, core::future::pending::Pending<u64>>  async fn gen_0007::driver_00
 6   idle         0  src/bin/gen-0007.rs:184  future gen_0007::GfSel2<core::future::pending::Pending<u64>, core::future::pending::Pending<u64>>                                       async fn gen_0007::member_06
 [2 tasks]

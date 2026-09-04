@@ -2,7 +2,7 @@
 source: hansei/src/offline.rs
 description: "`tasks --with state idle` over linux-floor/ct-runtime"
 ---
-ID  STATE  FUTURES  AWAITING AT               WAITING ON                                                                                                FUTURE
+ID  STATE  FUTURES  AWAITING AT               WAITING ON                                                                                                TYPE
 1   idle         0  src/bin/ct-runtime.rs:17  timer (deadline TS on the target's monotonic clock)                                             async fn ct_runtime::sleeper
 2   idle         0  src/bin/ct-runtime.rs:24  a tokio::sync::Semaphore (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 2  async fn ct_runtime::acquirer
 [2 tasks]

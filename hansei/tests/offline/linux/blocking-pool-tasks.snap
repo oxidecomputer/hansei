@@ -2,7 +2,7 @@
 source: hansei/src/offline.rs
 description: "`tasks` over linux/blocking-pool"
 ---
-ID  STATE               FUTURES  AWAITING AT                  WAITING ON  FUTURE
+ID  STATE               FUTURES  AWAITING AT                  WAITING ON  TYPE
 3   blocking (running)        0  —                            —           future tokio::runtime::blocking::task::BlockingTask<blocking_pool::main::{async_block#0}::{closure_env#0}>
 4   blocking (queued)         0  —                            —           future tokio::runtime::blocking::task::BlockingTask<blocking_pool::main::{async_block#0}::{closure_env#1}>
 5   blocking (queued)         0  —                            —           future tokio::runtime::blocking::task::BlockingTask<blocking_pool::main::{async_block#0}::{closure_env#2}>

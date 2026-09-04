@@ -2,6 +2,6 @@
 source: hansei/src/offline.rs
 description: "`tasks --with id 3,6` over linux/sleep-join"
 ---
-ID  STATE  FUTURES  AWAITING AT               WAITING ON                                                     FUTURE
+ID  STATE  FUTURES  AWAITING AT               WAITING ON                                                     TYPE
 3   idle         0  src/bin/sleep-join.rs:16  timer (deadline TS on the target's monotonic clock)  async fn sleep_join::sleeper
 [1 task]

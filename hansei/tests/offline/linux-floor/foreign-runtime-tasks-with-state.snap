@@ -2,7 +2,7 @@
 source: hansei/src/offline.rs
 description: "`tasks --with state idle` over linux-floor/foreign-runtime"
 ---
-ID  STATE  RT  FUTURES  AWAITING AT                    WAITING ON                                                                                                FUTURE
+ID  STATE  RT  FUTURES  AWAITING AT                    WAITING ON                                                                                                TYPE
 1   idle   1         0  src/bin/foreign-runtime.rs:40  a tokio::sync::Semaphore (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 1  async fn foreign_runtime::joined
 2   idle   1         0  src/bin/foreign-runtime.rs:55  future core::future::pending::Pending<()>                                                                 async fn foreign_runtime::detached
 3   idle   2         0  src/bin/foreign-runtime.rs:67  timer (deadline TS on the target's monotonic clock)                                             async fn foreign_runtime::local_sleeper

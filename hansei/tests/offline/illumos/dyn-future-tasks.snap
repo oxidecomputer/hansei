@@ -2,7 +2,7 @@
 source: hansei/src/offline.rs
 description: "`tasks` over illumos/dyn-future"
 ---
-ID  STATE  FUTURES  AWAITING AT               WAITING ON                                  FUTURE
+ID  STATE  FUTURES  AWAITING AT               WAITING ON                                  TYPE
 3   idle         0  src/bin/dyn-future.rs:40  future tokio::sync::oneshot::Receiver<u32>  async fn dyn_future::driver
 4   idle         0  src/bin/dyn-future.rs:21  future tokio::sync::oneshot::Receiver<u32>  async fn dyn_future::set_member
 [2 tasks]

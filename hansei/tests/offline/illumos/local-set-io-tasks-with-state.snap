@@ -2,7 +2,7 @@
 source: hansei/src/offline.rs
 description: "`tasks --with state idle` over illumos/local-set-io"
 ---
-ID  STATE  RT  FUTURES  AWAITING AT                 WAITING ON           FUTURE
+ID  STATE  RT  FUTURES  AWAITING AT                 WAITING ON           TYPE
 1   idle   1         0  src/bin/local-set-io.rs:32  io fd 11 (readable)  async fn local_set_io::local_reader
 2   idle   1         0  src/bin/local-set-io.rs:40  io fd 13 (readable)  async fn local_set_io::local_watcher
 3   idle   1         0  src/bin/local-set-io.rs:60  io fd 15 (writable)  async fn local_set_io::local_writer

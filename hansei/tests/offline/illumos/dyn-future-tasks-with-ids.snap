@@ -2,6 +2,6 @@
 source: hansei/src/offline.rs
 description: "`tasks --with id 3,6` over illumos/dyn-future"
 ---
-ID  STATE  FUTURES  AWAITING AT               WAITING ON                                  FUTURE
+ID  STATE  FUTURES  AWAITING AT               WAITING ON                                  TYPE
 3   idle         0  src/bin/dyn-future.rs:40  future tokio::sync::oneshot::Receiver<u32>  async fn dyn_future::driver
 [1 task]
