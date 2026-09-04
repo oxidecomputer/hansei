@@ -5,7 +5,5 @@ description: "`info` over linux/dyn-future"
 core:       <snapshot>
 tokio info: <tokio info>
 symbols resolved: 5/5
-
 process: not recorded by this target
-
 signal: none recorded

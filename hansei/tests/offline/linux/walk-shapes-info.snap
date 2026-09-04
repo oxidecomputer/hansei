@@ -5,7 +5,5 @@ description: "`info` over linux/walk-shapes"
 core:       <snapshot>
 tokio info: <tokio info>
 symbols resolved: 17/17
-
 process: not recorded by this target
-
 signal: none recorded

@@ -18,16 +18,9 @@ use proc::Target;
 use std::io;
 
 pub fn exec_info<T: Target>(session: &Session<'_, T>, out: &mut dyn io::Write) -> Result<()> {
-    // Each part rendered whole, then joined — so the blank-line seams
-    // cannot drift from the part count.
-    let render = |part: fn(&Session<'_, T>, &mut dyn io::Write) -> Result<()>| -> Result<String> {
-        let mut buf = Vec::new();
-        part(session, &mut buf)?;
-        Ok(String::from_utf8(buf).expect("info output is UTF-8"))
-    };
-    let parts = [render(attach)?, render(process)?, render(signal)?];
-    write!(out, "{}", parts.join("\n"))?;
-    Ok(())
+    attach(session, out)?;
+    process(session, out)?;
+    signal(session, out)
 }
 
 /// What was attached, and how far its symbols resolve in the target.
