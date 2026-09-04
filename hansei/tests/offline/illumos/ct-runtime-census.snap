@@ -3,20 +3,31 @@ source: hansei/src/offline.rs
 description: "`census` over illumos/ct-runtime"
 ---
 Threads: 1 lwp, 1 in runtime 0 @ 0xADDR
-    1 in the scheduler's run loop
-        1 parked in the io driver
-            block_on thread, lwp 1
+
+COUNT  RT  ROLE             STATE           LWPS
+    1  0   block_on thread  in driver       1
+    0  0   blocking pool    0 idle, 0 busy  —
+[1 lwp]
 
 Tasks: 2 owned by runtime 0 @ 0xADDR
-    State: 2 idle
-    Types and what they are waiting on:
-        1  async fn ct_runtime::acquirer
-           └─ 1  a tokio::sync::Semaphore
-        1  async fn ct_runtime::sleeper
-           └─ 1  a timer
 
-Futures: 2 in flight, on 5 await-chain frames (up to 3 deep)
-    Location:
-        2  polled as tasks
-        0  held in frames, off any await chain
-        0  in 0 FuturesUnordered
+COUNT  STATE
+    2  idle
+[2 tasks]
+
+COUNT  TYPE / WAITING ON
+    1  async fn ct_runtime::acquirer
+       └─ 1  a tokio::sync::Semaphore (semaphore)
+    1  async fn ct_runtime::sleeper
+       └─ 1  timer
+[2 types]
+
+Futures: 2 in flight, on 5 await-chain frames, up to 3 deep
+
+COUNT  HELD IN
+    2  task (its own await chain)
+    0  frame (off any await chain)
+    0  set (0 FuturesUnordered)
+[2 futures]
+
+[0 types]

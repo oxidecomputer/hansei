@@ -3,22 +3,31 @@ source: hansei/src/offline.rs
 description: "`census` over linux/nested-await"
 ---
 Threads: 3 lwps, 3 in runtime 0 @ 0xADDR
-    2 in the scheduler's run loop
-        1 parked in the io driver
-            worker 1, lwp 3636220
-        1 parked
-    1 in runtime 0 @ 0xADDR, outside the run loop
-        0 in the blocking pool (0 idle, 0 tasks queued)
-        1 that entered the runtime another way (a block_on caller)
+
+COUNT  RT  ROLE             STATE            LWPS
+    1  0   worker           in driver        3636220
+    1  0   worker           parked           3636221
+    1  0   entered runtime  block_on caller  3636218
+    0  0   blocking pool    0 idle, 0 busy   —
+[3 lwps]
 
 Tasks: 1 owned by runtime 0 @ 0xADDR
-    State: 1 idle
-    Types and what they are waiting on:
-        1  async fn nested_await::outer
-           └─ 1  future tokio::sync::oneshot::Receiver<u32>
 
-Futures: 1 in flight, on 4 await-chain frames (up to 4 deep)
-    Location:
-        1  polled as tasks
-        0  held in frames, off any await chain
-        0  in 0 FuturesUnordered
+COUNT  STATE
+    1  idle
+[1 task]
+
+COUNT  TYPE / WAITING ON
+    1  async fn nested_await::outer
+       └─ 1  future tokio::sync::oneshot::Receiver<u32>
+[1 type]
+
+Futures: 1 in flight, on 4 await-chain frames, up to 4 deep
+
+COUNT  HELD IN
+    1  task (its own await chain)
+    0  frame (off any await chain)
+    0  set (0 FuturesUnordered)
+[1 future]
+
+[0 types]

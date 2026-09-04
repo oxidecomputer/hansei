@@ -3,26 +3,35 @@ source: hansei/src/offline.rs
 description: "`census` over linux/channels"
 ---
 Threads: 3 lwps, 3 in runtime 0 @ 0xADDR
-    2 in the scheduler's run loop
-        1 parked in the io driver
-            worker 1, lwp 3636979
-        1 parked
-    1 in runtime 0 @ 0xADDR, outside the run loop
-        0 in the blocking pool (0 idle, 0 tasks queued)
-        1 that entered the runtime another way (a block_on caller)
+
+COUNT  RT  ROLE             STATE            LWPS
+    1  0   worker           in driver        3636979
+    1  0   worker           parked           3636978
+    1  0   entered runtime  block_on caller  3636976
+    0  0   blocking pool    0 idle, 0 busy   —
+[3 lwps]
 
 Tasks: 2 owned by runtime 0 @ 0xADDR
-    State: 2 idle
-    Types and what they are waiting on:
-        1  async fn channels::hold
-           └─ 1  future tokio::sync::oneshot::Receiver<u32>
-        1  async fn channels::notify_waiter
-           └─ 1  future tokio::sync::notify::Notified
 
-Futures: 3 in flight, on 5 await-chain frames (up to 2 deep)
-    Location:
-        2  polled as tasks
-        1  held in frames, off any await chain
-        0  in 0 FuturesUnordered
-    Types and what they are waiting on:
-        1  future tokio::sync::notify::Notified
+COUNT  STATE
+    2  idle
+[2 tasks]
+
+COUNT  TYPE / WAITING ON
+    1  async fn channels::hold
+       └─ 1  future tokio::sync::oneshot::Receiver<u32>
+    1  async fn channels::notify_waiter
+       └─ 1  future tokio::sync::notify::Notified
+[2 types]
+
+Futures: 3 in flight, on 5 await-chain frames, up to 2 deep
+
+COUNT  HELD IN
+    2  task (its own await chain)
+    1  frame (off any await chain)
+    0  set (0 FuturesUnordered)
+[3 futures]
+
+COUNT  TYPE / WAITING ON
+    1  future tokio::sync::notify::Notified
+[1 type]

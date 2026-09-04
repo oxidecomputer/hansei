@@ -3,24 +3,33 @@ source: hansei/src/offline.rs
 description: "`census` over linux-floor/joinset"
 ---
 Threads: 3 lwps, 3 in runtime 0 @ 0xADDR
-    2 in the scheduler's run loop
-        1 parked in the io driver
-            worker 0, lwp 3643154
-        1 parked
-    1 in runtime 0 @ 0xADDR, outside the run loop
-        0 in the blocking pool (0 idle, 0 tasks queued)
-        1 that entered the runtime another way (a block_on caller)
+
+COUNT  RT  ROLE             STATE            LWPS
+    1  0   worker           in driver        3643154
+    1  0   worker           parked           3643153
+    1  0   entered runtime  block_on caller  3643151
+    0  0   blocking pool    0 idle, 0 busy   —
+[3 lwps]
 
 Tasks: 6 owned by runtime 0 @ 0xADDR
-    State: 6 idle
-    Types and what they are waiting on:
-        5  async fn joinset::member
-           └─ 5  future tokio::sync::notify::Notified
-        1  async fn joinset::driver
-           └─ 1  future tokio::util::idle_notified_set::IdleNotifiedSet<tokio::runtime::task::join::JoinHandle<u32>>
 
-Futures: 6 in flight, on 13 await-chain frames (up to 3 deep)
-    Location:
-        6  polled as tasks
-        0  held in frames, off any await chain
-        0  in 0 FuturesUnordered
+COUNT  STATE
+    6  idle
+[6 tasks]
+
+COUNT  TYPE / WAITING ON
+    5  async fn joinset::member
+       └─ 5  future tokio::sync::notify::Notified
+    1  async fn joinset::driver
+       └─ 1  future tokio::util::idle_notified_set::IdleNotifiedSet<tokio::runtime::task::join::JoinHandle<u32>>
+[2 types]
+
+Futures: 6 in flight, on 13 await-chain frames, up to 3 deep
+
+COUNT  HELD IN
+    6  task (its own await chain)
+    0  frame (off any await chain)
+    0  set (0 FuturesUnordered)
+[6 futures]
+
+[0 types]

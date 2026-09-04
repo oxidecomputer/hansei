@@ -3,24 +3,35 @@ source: hansei/src/offline.rs
 description: "`census` over linux-floor/local-set-io"
 ---
 Threads: 1 lwp, 1 in runtime 0 @ 0xADDR
-    1 in the scheduler's run loop
-        1 parked in the io driver
-            block_on thread, lwp 3643868
+
+COUNT  RT  ROLE             STATE           LWPS
+    1  0   block_on thread  in driver       3643868
+    0  0   blocking pool    0 idle, 0 busy  —
+[1 lwp]
 
 Tasks: 4 owned by 1 runtime and 1 local set
-    State: 4 idle
-    Types and what they are waiting on:
-        1  async fn local_set_io::local_reader
-           └─ 1  an io resource
-        1  async fn local_set_io::local_watcher
-           └─ 1  an io resource
-        1  async fn local_set_io::local_writer
-           └─ 1  an io resource
-        1  async fn local_set_io::reader
-           └─ 1  an io resource
 
-Futures: 4 in flight, on 12 await-chain frames (up to 6 deep)
-    Location:
-        4  polled as tasks
-        0  held in frames, off any await chain
-        0  in 0 FuturesUnordered
+COUNT  STATE
+    4  idle
+[4 tasks]
+
+COUNT  TYPE / WAITING ON
+    1  async fn local_set_io::local_reader
+       └─ 1  io
+    1  async fn local_set_io::local_watcher
+       └─ 1  io
+    1  async fn local_set_io::local_writer
+       └─ 1  io
+    1  async fn local_set_io::reader
+       └─ 1  io
+[4 types]
+
+Futures: 4 in flight, on 12 await-chain frames, up to 6 deep
+
+COUNT  HELD IN
+    4  task (its own await chain)
+    0  frame (off any await chain)
+    0  set (0 FuturesUnordered)
+[4 futures]
+
+[0 types]

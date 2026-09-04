@@ -3,30 +3,41 @@ source: hansei/src/offline.rs
 description: "`census` over linux/blocking-pool"
 ---
 Threads: 4 lwps, 4 in runtime 0 @ 0xADDR
-    2 in the scheduler's run loop
-        1 parked in the io driver
-            worker 0, lwp 3638778
-        1 parked
-    2 in runtime 0 @ 0xADDR, outside the run loop
-        1 in the blocking pool (0 idle, 2 tasks queued)
-        1 that entered the runtime another way (a block_on caller)
+
+COUNT  RT  ROLE             STATE                     LWPS
+    1  0   worker           in driver                 3638778
+    1  0   worker           parked                    3638779
+    1  0   blocking pool    0 idle, 1 busy, 2 queued  —
+    1  0   entered runtime  block_on caller           —
+[4 lwps]
 
 Tasks: 5 owned by runtime 0 @ 0xADDR
-    State: 1 running, 2 queued, 2 idle
-    Types and what they are waiting on:
-        1  async fn blocking_pool::queued_waiter
-           └─ 1  another task (JoinHandle)
-        1  async fn blocking_pool::running_waiter
-           └─ 1  another task (JoinHandle)
-        1  future tokio::runtime::blocking::task::BlockingTask<blocking_pool::main::{async_block#0}::{closure_env#0}>
-           └─ 1  nothing — mid-poll on a worker
-        1  future tokio::runtime::blocking::task::BlockingTask<blocking_pool::main::{async_block#0}::{closure_env#1}>
-           └─ 1  future Option<blocking_pool::main::{async_block#0}::{closure_env#1}>
-        1  future tokio::runtime::blocking::task::BlockingTask<blocking_pool::main::{async_block#0}::{closure_env#2}>
-           └─ 1  future Option<blocking_pool::main::{async_block#0}::{closure_env#2}>
 
-Futures: 5 in flight, on 7 await-chain frames (up to 2 deep)
-    Location:
-        5  polled as tasks
-        0  held in frames, off any await chain
-        0  in 0 FuturesUnordered
+COUNT  STATE
+    2  blocking (queued)
+    2  idle
+    1  blocking (running)
+[5 tasks]
+
+COUNT  TYPE / WAITING ON
+    1  async fn blocking_pool::queued_waiter
+       └─ 1  task
+    1  async fn blocking_pool::running_waiter
+       └─ 1  task
+    1  future tokio::runtime::blocking::task::BlockingTask<blocking_pool::main::{async_block#0}::{closure_env#0}>
+       └─ 1  — (mid-poll)
+    1  future tokio::runtime::blocking::task::BlockingTask<blocking_pool::main::{async_block#0}::{closure_env#1}>
+       └─ 1  future Option<blocking_pool::main::{async_block#0}::{closure_env#1}>
+    1  future tokio::runtime::blocking::task::BlockingTask<blocking_pool::main::{async_block#0}::{closure_env#2}>
+       └─ 1  future Option<blocking_pool::main::{async_block#0}::{closure_env#2}>
+[5 types]
+
+Futures: 5 in flight, on 7 await-chain frames, up to 2 deep
+
+COUNT  HELD IN
+    5  task (its own await chain)
+    0  frame (off any await chain)
+    0  set (0 FuturesUnordered)
+[5 futures]
+
+[0 types]

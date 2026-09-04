@@ -3,28 +3,37 @@ source: hansei/src/offline.rs
 description: "`census` over linux-floor/unordered"
 ---
 Threads: 3 lwps, 3 in runtime 0 @ 0xADDR
-    2 in the scheduler's run loop
-        1 parked in the io driver
-            worker 1, lwp 3642975
-        1 parked
-    1 in runtime 0 @ 0xADDR, outside the run loop
-        0 in the blocking pool (0 idle, 0 tasks queued)
-        1 that entered the runtime another way (a block_on caller)
+
+COUNT  RT  ROLE             STATE            LWPS
+    1  0   worker           in driver        3642975
+    1  0   worker           parked           3642974
+    1  0   entered runtime  block_on caller  3642972
+    0  0   blocking pool    0 idle, 0 busy   —
+[3 lwps]
 
 Tasks: 1 owned by runtime 0 @ 0xADDR
-    State: 1 idle
-    Types and what they are waiting on:
-        1  async fn unordered::driver
-           └─ 1  future futures_util::stream::futures_unordered::FuturesUnordered<unordered::set_member>
 
-Futures: 15 in flight, on 19 await-chain frames (up to 2 deep)
-    Location:
-        1  polled as tasks
-        9  held in frames, off any await chain
-        5  in 2 FuturesUnordered
-    Types and what they are waiting on:
-        8  async fn unordered::leaf
-        5  async fn unordered::set_member
-           ├─ 3  future tokio::sync::notify::Notified
-           └─ 2  async fn unordered::set_member
-        1  async fn unordered::holder<unordered::leaf>
+COUNT  STATE
+    1  idle
+[1 task]
+
+COUNT  TYPE / WAITING ON
+    1  async fn unordered::driver
+       └─ 1  future futures_util::stream::futures_unordered::FuturesUnordered<unordered::set_member>
+[1 type]
+
+Futures: 15 in flight, on 19 await-chain frames, up to 2 deep
+
+COUNT  HELD IN
+    1  task (its own await chain)
+    9  frame (off any await chain)
+    5  set (2 FuturesUnordered)
+[15 futures]
+
+COUNT  TYPE / WAITING ON
+    8  async fn unordered::leaf
+    5  async fn unordered::set_member
+       ├─ 3  future tokio::sync::notify::Notified
+       └─ 2  async fn unordered::set_member
+    1  async fn unordered::holder<unordered::leaf>
+[3 types]

@@ -10,26 +10,32 @@
 //! mostly doing. So it counts rather than lists, and every number it
 //! prints is one the other commands can be pointed at to expand.
 //!
+//! Each section is a heading and one or two tables, in the shape the
+//! listings' `--group` prints: a `COUNT` column, the value it counts,
+//! and the `[N things]` footer. The spellings are the listings' too —
+//! a thread's role and state as `threads` spells them, a task's state
+//! as `tasks` does, a wait as the `WAITING ON` column does — so a row
+//! here is a `--with` clause away from its members.
+//!
 //! Nothing here reads the target. It is handed [`Facts`] — the thread
 //! classification, the task list, the wait analysis and the future
 //! census — and reduces them to a page, which is what lets the tallies
 //! be tested from values laid out by hand rather than from a core that
 //! happens to hold the shape under test.
 
-use crate::output;
-use crate::tasks::future_name;
+use crate::output::{self, Theme};
+use crate::tasks::{future_name, listing_footer, row_state};
 
 use anyhow::Result;
 use hansei_bundle::names;
 use hansei_runtime::tokio::Lifecycle;
 use hansei_runtime::tokio::bundle::{
-    BlockingPool, CtActivity, CtParkState, FutureInfo, ParkState, ParkStates, Task, TaskList,
-    WaitKind,
+    BlockingPool, CtActivity, CtParkState, ParkState, ParkStates, Task, TaskList, WaitKind,
 };
 use hansei_runtime::tokio::census::{FutureSet, HeldFuture};
 use hansei_runtime::tokio::graph::TaskWait;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io;
 
 /// One thread of the target that holds a tokio `Context`.
@@ -46,7 +52,7 @@ pub struct Thread {
     /// caller on a multi_thread target, a blocking-pool thread).
     pub role: Option<ThreadRole>,
     /// The task it is polling, where the runtime still calls that task
-    /// running — the same claim `tasks` makes in its `State` row.
+    /// running — the same claim `tasks` makes in its `STATE` column.
     pub polling: Option<u64>,
 }
 
@@ -76,7 +82,7 @@ pub struct Runtime {
 /// Everything a census counts, as the session read it.
 pub struct Facts<'a> {
     /// Every lwp the target has, whatever it is doing.
-    pub lwps: usize,
+    pub lwps: Vec<u32>,
     /// Those of them holding a tokio `Context`.
     pub runtime: Vec<Thread>,
     /// The runtimes those threads are inside, in the order `runtimes`
@@ -99,10 +105,6 @@ pub struct Facts<'a> {
     pub sets: &'a [FutureSet],
     /// The bundle's impl-path substitutions for the display fold.
     pub impls: &'a names::ImplFold,
-    /// The signal that killed the target, where its core records one —
-    /// `None` for a live capture. It heads the census: what ended the
-    /// process is the one fact a reader wants before any count.
-    pub fatal: Option<proc::FatalSignal>,
 }
 
 /// The one-line spelling of a fatal signal every surface shares:
@@ -147,21 +149,6 @@ impl Facts<'_> {
             ),
         }
     }
-
-    /// How a row belonging to one runtime names it: nothing at all when
-    /// the target has a single runtime, whose name the section heading
-    /// has already given, and ` of <name>` when there are several rows
-    /// like it to tell apart.
-    fn whose(&self, index: usize) -> String {
-        match self.runtimes.len() > 1 {
-            true => self
-                .runtimes
-                .get(index)
-                .map(|rt| format!(" of {}", rt.label))
-                .unwrap_or_default(),
-            false => String::new(),
-        }
-    }
 }
 
 /// Which of the three sections to print.
@@ -188,16 +175,18 @@ impl Sections {
 
 /// Print the census.
 ///
-/// `top` bounds every "most of them are this" listing; the rows past it
-/// are counted rather than dropped silently. `fit` is the width the
-/// tallies keep their lines within by cutting the names in them, as
+/// `top` bounds every type tally; the rows past it are counted rather
+/// than dropped silently. `fit` is the width the tables keep their
+/// lines within by cutting the names in them, as
 /// [`Session::fit_width`](crate::Session::fit_width) gives it; `None`
-/// leaves every name whole.
+/// leaves every name whole. `theme` styles the section headings when
+/// the page is bound for a terminal.
 pub fn print(
     facts: &Facts<'_>,
     sections: Sections,
     top: usize,
     fit: Option<usize>,
+    theme: Theme,
     out: &mut dyn io::Write,
 ) -> Result<()> {
     // The blank line goes *between* sections rather than after each, so
@@ -210,29 +199,28 @@ pub fn print(
         }
         Ok(())
     };
-    // The signal heads every census whatever sections were asked for:
-    // it is a header rather than a section, and what ended the process
-    // is the one fact a reader wants before any count.
-    if let Some(sig) = &facts.fatal {
-        separate(out)?;
-        let lwp = sig
-            .lwp
-            .map(|tid| format!(", taken on lwp {tid}"))
-            .unwrap_or_default();
-        writeln!(out, "Terminated by {}{lwp}", fatal_signal_line(sig))?;
-    }
     if sections.threads {
         separate(out)?;
-        threads(facts, out)?;
+        threads(facts, theme, out)?;
     }
     if sections.tasks {
         separate(out)?;
-        tasks(facts, top, fit, out)?;
+        tasks(facts, top, fit, theme, out)?;
     }
     if sections.futures {
         separate(out)?;
-        futures(facts, top, fit, out)?;
+        futures(facts, top, fit, theme, out)?;
     }
+    Ok(())
+}
+
+/// A section's heading: the section's name and its colon, bold where
+/// the theme allows, then the one-line summary the tables below break
+/// down — and a blank line, so the first table's header stands apart
+/// from it.
+fn heading(theme: Theme, name: &str, summary: &str, out: &mut dyn io::Write) -> Result<()> {
+    writeln!(out, "{} {summary}", theme.bold(&format!("{name}:")))?;
+    writeln!(out)?;
     Ok(())
 }
 
@@ -240,8 +228,10 @@ pub fn print(
 // Threads
 // ---------------------------------------------------------------------
 
-/// Which bucket a runtime thread falls in. The order is the order they
-/// print in: what a reader is looking for first, first.
+/// What one run-loop thread is doing, in the order rows of one count
+/// list: the driver holder first, since a worker parked there is
+/// parked on the whole runtime's behalf and is the one thread a reader
+/// came looking for.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum ThreadKind {
     Driver,
@@ -254,126 +244,210 @@ enum ThreadKind {
 }
 
 impl ThreadKind {
-    fn label(self) -> &'static str {
+    /// The `STATE` cell, spelled as the `threads` listing spells the
+    /// state half of a worker's role.
+    fn state(self) -> &'static str {
         match self {
-            Self::Driver => "parked in the io driver",
-            Self::Polling => "polling a task",
-            Self::BlockOnPoll => "polling the block_on future",
-            Self::Awake => "awake, polling no task",
-            Self::Notified => "notified, waking",
+            Self::Driver => "in driver",
+            Self::Polling => "polling",
+            Self::BlockOnPoll => "polling block_on",
+            Self::Awake => "awake",
+            Self::Notified => "notified",
             Self::Parked => "parked",
             Self::Unread => "park state unread",
         }
     }
-
-    /// Whether a row of this kind names the threads in it. Which worker
-    /// holds the driver and which worker is polling what are the two
-    /// facts a reader goes on to ask about; the rest are a count.
-    fn names_threads(self) -> bool {
-        matches!(self, Self::Driver | Self::Polling | Self::BlockOnPoll)
-    }
 }
 
-fn threads(facts: &Facts<'_>, out: &mut dyn io::Write) -> Result<()> {
-    let in_loop: Vec<&Thread> = facts.runtime.iter().filter(|t| t.role.is_some()).collect();
-    let entered = facts.runtime.len() - in_loop.len();
+/// Where a row of the thread table sorts: by the runtime it is inside,
+/// then — within one runtime — by count, as `--group` ranks its
+/// buckets, with ties in the order the kinds are declared, then the
+/// two rows of threads that entered the runtime without running its
+/// loop; the threads outside every runtime come last of all.
+#[derive(PartialEq, Eq, PartialOrd, Ord)]
+struct ThreadKey {
+    /// The runtime's index; `usize::MAX` for a thread inside none it
+    /// could be joined to, so those rows follow every runtime's.
+    rt: usize,
+    order: u8,
+    role: &'static str,
+    state: String,
+}
+
+const ORDER_POOL: u8 = 10;
+const ORDER_ENTERED: u8 = 11;
+const ORDER_NO_RUNTIME: u8 = 20;
+
+/// One row of the thread table.
+struct ThreadRow {
+    key: ThreadKey,
+    count: usize,
+    /// The lwps in the row, where the census can say which they are;
+    /// `None` where it can only count them.
+    lwps: Option<Vec<String>>,
+}
+
+fn threads(facts: &Facts<'_>, theme: Theme, out: &mut dyn io::Write) -> Result<()> {
     // The threads are in runtimes, never in a local set: a set is
     // polled by a task of whatever runtime it was created on.
     let inside = match facts.runtimes.len() {
         1 => facts.runtimes[0].label.clone(),
         n => counted(n, "runtime"),
     };
+    heading(
+        theme,
+        "Threads",
+        &format!(
+            "{}, {} in {inside}",
+            counted(facts.lwps.len(), "lwp"),
+            facts.runtime.len()
+        ),
+        out,
+    )?;
+
+    // The run-loop threads, bucketed by runtime, role and state.
+    let mut in_loop: BTreeMap<ThreadKey, Vec<String>> = BTreeMap::new();
+    for thread in &facts.runtime {
+        let Some(role) = &thread.role else {
+            continue;
+        };
+        let kind = kind(facts, thread);
+        let role = match role {
+            ThreadRole::Worker(_) => "worker",
+            ThreadRole::BlockOn(_) => "block_on thread",
+        };
+        let key = ThreadKey {
+            rt: thread.runtime.unwrap_or(usize::MAX),
+            order: kind as u8,
+            role,
+            state: kind.state().to_string(),
+        };
+        let lwp = match thread.polling {
+            Some(id) => format!("{} (task {id})", thread.tid),
+            None => thread.tid.to_string(),
+        };
+        in_loop.entry(key).or_default().push(lwp);
+    }
+    let mut rows: Vec<ThreadRow> = in_loop
+        .into_iter()
+        .map(|(key, lwps)| ThreadRow {
+            count: lwps.len(),
+            key,
+            lwps: Some(lwps),
+        })
+        .collect();
+
+    // The threads that entered a runtime without running its loop:
+    // its blocking pool's, and the rest.
+    let indices = (0..facts.runtimes.len()).map(Some).chain([None]);
+    for index in indices {
+        let entered: Vec<String> = facts
+            .runtime
+            .iter()
+            .filter(|t| t.runtime == index && t.role.is_none())
+            .map(|t| t.tid.to_string())
+            .collect();
+        let rt = index.unwrap_or(usize::MAX);
+        match index.and_then(|index| facts.runtimes[index].pool.as_ref()) {
+            Some(pool) => rows.extend(blocking_pool(facts, rt, pool, entered)),
+            None if entered.is_empty() => {}
+            None => rows.push(ThreadRow {
+                key: ThreadKey {
+                    rt,
+                    order: ORDER_ENTERED,
+                    role: "entered runtime",
+                    state: "—".to_string(),
+                },
+                count: entered.len(),
+                lwps: Some(entered),
+            }),
+        }
+    }
+
+    // The lwps holding no runtime context at all.
+    let in_runtime: BTreeSet<u32> = facts.runtime.iter().map(|t| t.tid).collect();
+    let outside: Vec<String> = facts
+        .lwps
+        .iter()
+        .filter(|tid| !in_runtime.contains(tid))
+        .map(|tid| tid.to_string())
+        .collect();
+    if !outside.is_empty() {
+        rows.push(ThreadRow {
+            key: ThreadKey {
+                rt: usize::MAX,
+                order: ORDER_NO_RUNTIME,
+                role: "no runtime",
+                state: "—".to_string(),
+            },
+            count: outside.len(),
+            lwps: Some(outside),
+        });
+    }
+    rows.sort_by(|a, b| {
+        a.key
+            .rt
+            .cmp(&b.key.rt)
+            .then_with(|| b.count.cmp(&a.count))
+            .then_with(|| a.key.cmp(&b.key))
+    });
+
+    let mut table = output::Table::new(5)
+        .header(["COUNT", "RT", "ROLE", "STATE", "LWPS"])
+        .align_right(0);
+    for row in &rows {
+        let rt = match row.key.rt {
+            usize::MAX => "—".to_string(),
+            rt => rt.to_string(),
+        };
+        let lwps = match row.lwps.as_deref() {
+            Some([]) | None => "—".to_string(),
+            Some(lwps) => sample(lwps),
+        };
+        table.row([
+            row.count.to_string(),
+            rt,
+            row.key.role.to_string(),
+            row.key.state.clone(),
+            lwps,
+        ]);
+    }
+    if !table.is_empty() {
+        table.write(out)?;
+    }
     writeln!(
         out,
-        "Threads: {}, {} in {inside}",
-        counted(facts.lwps, "lwp"),
-        facts.runtime.len()
+        "{}",
+        listing_footer(facts.lwps.len(), facts.lwps.len(), "lwp")
     )?;
-    writeln!(out, "    {} in the scheduler's run loop", in_loop.len())?;
-
-    let mut buckets: BTreeMap<ThreadKind, Vec<&Thread>> = BTreeMap::new();
-    for thread in &in_loop {
-        buckets.entry(kind(facts, thread)).or_default().push(thread);
-    }
-    for (kind, threads) in &buckets {
-        writeln!(out, "        {} {}", threads.len(), kind.label())?;
-        if !kind.names_threads() {
-            continue;
-        }
-        for thread in threads {
-            let role = match &thread.role {
-                Some(ThreadRole::Worker(index)) => format!("worker {index}"),
-                Some(ThreadRole::BlockOn(_)) => "block_on thread".to_string(),
-                None => "no worker".to_string(),
-            };
-            let task = match thread.polling {
-                Some(id) => format!("  task {id}"),
-                None => String::new(),
-            };
-            writeln!(out, "            {role}, lwp {}{task}", thread.tid)?;
-        }
-    }
-
-    // A driver held by nobody parked in it is a thread polling it
-    // without sleeping — a zero-duration park, or one already notified
-    // out of its sleep and not yet back in the run loop. Saying so is
-    // the difference between "no io thread right now" and "the census
-    // could not find it".
-    for (index, runtime) in facts.runtimes.iter().enumerate() {
-        if let Some(parks) = &runtime.parks
-            && parks.driver_held
-            && parks.in_driver().is_none()
-        {
-            writeln!(
-                out,
-                "        the io driver{} is held, but no worker is parked in it",
-                facts.whose(index)
-            )?;
-        }
-    }
-
-    // A woken flag on a parked block_on thread is a wakeup that was owed
-    // and had not been consumed when the target stopped — the CT sibling
-    // of the held-driver note above.
-    for thread in &in_loop {
-        if let Some(ThreadRole::BlockOn(Some(state))) = &thread.role
-            && state.woken
-        {
-            writeln!(
-                out,
-                "        the block_on future of lwp {} was woken and not yet polled",
-                thread.tid
-            )?;
-        }
-    }
-
-    if entered > 0 {
-        writeln!(out, "    {entered} in {inside}, outside the run loop")?;
-        for (index, runtime) in facts.runtimes.iter().enumerate() {
-            blocking_pool(facts, index, runtime, out)?;
-        }
-    }
-    let outside = facts.lwps.saturating_sub(facts.runtime.len());
-    if outside > 0 {
-        writeln!(out, "    {outside} holding no runtime context")?;
-    }
     Ok(())
 }
 
+/// Up to three of a row's lwps and `…` — the sample a bucket row
+/// carries, as `--group` samples its members.
+fn sample(lwps: &[String]) -> String {
+    let shown: Vec<&str> = lwps.iter().take(3).map(String::as_str).collect();
+    match lwps.len() > shown.len() {
+        true => format!("{}, …", shown.join(", ")),
+        false => shown.join(", "),
+    }
+}
+
 /// Split the threads that entered one runtime without running its loop
-/// into its blocking pool's and the rest.
+/// into its blocking pool's and the rest, as rows.
 ///
 /// The runtime launches each worker with `spawn_blocking`, so the pool
 /// counts the workers among its threads — its `num_threads` is larger
 /// than the pool proper by exactly the scheduler's worker count, and
-/// netting them out is what makes this row a share of the line above it
-/// rather than a second count of threads already listed. The pool's
-/// idle count needs no such correction: a worker's blocking task is its
-/// run loop and never returns, so a worker is never idle *to the pool*.
+/// netting them out is what makes this row a share of the threads that
+/// entered rather than a second count of threads already listed. The
+/// pool's idle count needs no such correction: a worker's blocking task
+/// is its run loop and never returns, so a worker is never idle *to the
+/// pool*.
 ///
-/// Every count here is of one runtime's threads. A pool belongs to the
-/// runtime that launched it, and netting one runtime's workers out of
-/// another's pool would report a number that is nobody's.
+/// The census reads no stacks, so it cannot say which of the threads
+/// that entered are the pool's: a row lists its lwps only when every
+/// thread that entered is in it, and counts them otherwise.
 ///
 /// Where the two do not reconcile — a worker thread that has left the
 /// pool's tally, a runtime hansei is reading mid-startup — nothing is
@@ -381,21 +455,18 @@ fn threads(facts: &Facts<'_>, out: &mut dyn io::Write) -> Result<()> {
 /// include the workers.
 fn blocking_pool(
     facts: &Facts<'_>,
-    index: usize,
-    runtime: &Runtime,
-    out: &mut dyn io::Write,
-) -> Result<()> {
-    let Some(pool) = &runtime.pool else {
-        return Ok(());
-    };
-    let mine = || facts.runtime.iter().filter(|t| t.runtime == Some(index));
-    let entered = mine().filter(|t| t.role.is_none()).count();
+    rt: usize,
+    pool: &BlockingPool,
+    entered: Vec<String>,
+) -> Vec<ThreadRow> {
+    let runtime = facts.runtimes.get(rt);
+    let mine = || facts.runtime.iter().filter(|t| t.runtime == Some(rt));
     // The scheduler's own count of workers where it was read, since
     // that is what `launch` spawned; the threads seen running its loop
     // otherwise. Only a multi_thread scheduler's workers are launched
     // through spawn_blocking and so counted among the pool's threads; a
     // block_on thread is the caller's own.
-    let launched = runtime.parks.as_ref().map_or_else(
+    let launched = runtime.and_then(|rt| rt.parks.as_ref()).map_or_else(
         || {
             mine()
                 .filter(|t| matches!(t.role, Some(ThreadRole::Worker(_))))
@@ -404,34 +475,54 @@ fn blocking_pool(
         |parks| parks.workers.len(),
     );
     let threads = pool.threads as usize;
-    let queued = counted(pool.queued as usize, "task");
-    let whose = facts.whose(index);
+    let queued = match pool.queued {
+        0 => String::new(),
+        n => format!(", {n} queued"),
+    };
     let Some(blocking) = threads
         .checked_sub(launched)
-        .filter(|blocking| *blocking <= entered)
+        .filter(|blocking| *blocking <= entered.len())
     else {
-        writeln!(
-            out,
-            "        the blocking pool{whose} counts {} of its own, the workers \
-             above among them ({} idle, {queued} queued)",
-            counted(threads, "thread"),
-            pool.idle,
-        )?;
-        return Ok(());
+        return vec![ThreadRow {
+            key: ThreadKey {
+                rt,
+                order: ORDER_ENTERED,
+                role: "entered runtime",
+                state: format!(
+                    "pool counts {} (workers among them), {} idle{queued}",
+                    counted(threads, "thread"),
+                    pool.idle
+                ),
+            },
+            count: entered.len(),
+            lwps: Some(entered),
+        }];
     };
-    writeln!(
-        out,
-        "        {blocking} in the blocking pool{whose} ({} idle, {queued} queued)",
-        pool.idle
-    )?;
-    let other = entered - blocking;
+    let other = entered.len() - blocking;
+    let busy = blocking.saturating_sub(pool.idle as usize);
+    let mut rows = vec![ThreadRow {
+        key: ThreadKey {
+            rt,
+            order: ORDER_POOL,
+            role: "blocking pool",
+            state: format!("{} idle, {busy} busy{queued}", pool.idle),
+        },
+        count: blocking,
+        lwps: (other == 0).then(|| entered.clone()),
+    }];
     if other > 0 {
-        writeln!(
-            out,
-            "        {other} that entered the runtime{whose} another way (a block_on caller)"
-        )?;
+        rows.push(ThreadRow {
+            key: ThreadKey {
+                rt,
+                order: ORDER_ENTERED,
+                role: "entered runtime",
+                state: "block_on caller".to_string(),
+            },
+            count: other,
+            lwps: (blocking == 0).then_some(entered),
+        });
     }
-    Ok(())
+    rows
 }
 
 /// The parker states of the runtime a thread is inside, where that
@@ -481,58 +572,37 @@ fn kind(facts: &Facts<'_>, thread: &Thread) -> ThreadKind {
 // Tasks
 // ---------------------------------------------------------------------
 
-fn tasks(facts: &Facts<'_>, top: usize, fit: Option<usize>, out: &mut dyn io::Write) -> Result<()> {
+fn tasks(
+    facts: &Facts<'_>,
+    top: usize,
+    fit: Option<usize>,
+    theme: Theme,
+    out: &mut dyn io::Write,
+) -> Result<()> {
     let list = facts.tasks;
-    writeln!(
+    heading(
+        theme,
+        "Tasks",
+        &format!("{} owned by {}", list.tasks.len(), facts.whole()),
         out,
-        "Tasks: {} owned by {}",
-        list.tasks.len(),
-        facts.whole()
     )?;
 
     // State first: every task is in exactly one of these, so it is
-    // the one row that adds up to the total above it.
-    let mut lifecycle: BTreeMap<&'static str, usize> = BTreeMap::new();
-    let mut aborting = 0;
-    let mut unknown_future = 0;
+    // the one table that adds up to the total above it. The spelling
+    // is the `STATE` cell's, so a row here is a `tasks --group state`
+    // bucket — a blocking task's pool spelling, the cancel bit
+    // appended — less the lwp a running blocking task names.
+    let mut states: BTreeMap<String, usize> = BTreeMap::new();
     for task in &list.tasks {
-        let bucket = match task.state.lifecycle() {
-            Lifecycle::Running => "running",
-            Lifecycle::Queued => "queued",
-            Lifecycle::Idle => "idle",
-            Lifecycle::Complete => "complete",
-        };
-        *lifecycle.entry(bucket).or_default() += 1;
-        aborting +=
-            usize::from(task.state.is_cancelled() && task.state.lifecycle() != Lifecycle::Complete);
-        unknown_future += usize::from(!matches!(task.future, FutureInfo::Known(_)));
+        *states.entry(row_state(task, None)).or_default() += 1;
     }
-    // In the order tokio's own lifecycle reads, not the alphabetical
-    // one the tally accumulated in.
-    let ordered = ["running", "queued", "idle", "complete"]
-        .into_iter()
-        .filter_map(|name| Some(format!("{} {name}", lifecycle.get(name)?)))
-        .collect::<Vec<_>>();
-    if !ordered.is_empty() {
-        writeln!(out, "    State: {}", ordered.join(", "))?;
-    }
-
-    // Only what is out of the ordinary. Every other state word bit is
-    // the norm rather than news — nearly every spawned task is
-    // detached, and one being joined is already the JoinHandle row of
-    // the tally below — so a row counting those is a row that says the
-    // same thing about every target.
-    let notable = [
-        (aborting, "cancelled but not yet complete"),
-        (unknown_future, "whose future the bundle cannot name"),
-    ]
-    .into_iter()
-    .filter(|(n, _)| *n > 0)
-    .map(|(n, label)| format!("{n} {label}"))
-    .collect::<Vec<_>>();
-    if !notable.is_empty() {
-        writeln!(out, "    Of note: {}", notable.join(", "))?;
-    }
+    counts("STATE", rank(tally(states)), out)?;
+    writeln!(
+        out,
+        "{}",
+        listing_footer(list.tasks.len(), list.tasks.len(), "task")
+    )?;
+    writeln!(out)?;
 
     // What the runtime is full of, by the future a task runs. What the
     // tasks of a type are blocked on hangs off the type rather than
@@ -555,7 +625,7 @@ fn tasks(facts: &Facts<'_>, top: usize, fit: Option<usize>, out: &mut dyn io::Wr
     let futures = types
         .into_iter()
         .map(|(name, (count, waits))| chained(name, count, &waits, top));
-    rows(FUTURE_TYPES, ranked(futures, top, "type"), fit, out)
+    tree(ranked(futures, top, more_types), fit, out)
 }
 
 /// The wait tally: one bucket per thing a task or a future can be
@@ -641,7 +711,11 @@ impl Waits {
         }
     }
 
-    /// The tally as printable rows, commonest first.
+    /// The tally as printable rows, commonest first, each spelled as
+    /// the `WAITING ON` column spells the wait at kind level — `io`,
+    /// `timer`, `task`, the semaphore by the primitive wrapping it —
+    /// and a task waiting on nothing by why: `— (mid-poll)`, `—
+    /// (complete)`, or the bare dash of a chain that reached no leaf.
     ///
     /// `top` bounds the leaf types only. The rows above them are a
     /// closed set — three primitives and three reasons there is nothing
@@ -653,28 +727,32 @@ impl Waits {
         // a wakeup that was owed and had not been delivered, which is
         // worth saying wherever the timer count is said.
         let timer = match self.timer_past_due {
-            0 => "a timer".to_string(),
-            n => format!("a timer ({n} already past due)"),
+            0 => "timer".to_string(),
+            n => format!("timer ({n} past due)"),
         };
         let mut rows = vec![
             Row::new(self.timer, timer),
-            Row::new(self.task, "another task (JoinHandle)"),
-            Row::new(self.io, "an io resource"),
-            Row::new(self.running, "nothing — mid-poll on a worker"),
-            Row::new(self.complete, "nothing — finished"),
-            Row::new(self.undecoded, "a chain that stopped before any leaf"),
+            Row::new(self.task, "task"),
+            Row::new(self.io, "io"),
+            Row::new(self.running, "— (mid-poll)"),
+            Row::new(self.complete, "— (complete)"),
+            Row::new(self.undecoded, "—"),
         ];
         for (owner, count) in &self.semaphores {
             let what = match owner {
-                Some(owner) => format!("a {owner}"),
-                None => "a semaphore no frame names the owner of".to_string(),
+                Some(owner) => format!("a {owner} (semaphore)"),
+                None => "a semaphore".to_string(),
             };
             rows.push(Row::new(*count, what));
         }
-        let mut leaves = ranked(tally(self.leaves.clone()), top, "leaf type");
-        // The `across N more` row ranking left last stays last, under
-        // the rows it summarizes rather than sorted in among them.
-        let rest = (self.leaves.len() > top).then(|| leaves.pop()).flatten();
+        let Ranked {
+            rows: mut leaves,
+            total,
+            ..
+        } = ranked(tally(self.leaves.clone()), top, |n| format!("({n} more)"));
+        // The `(N more)` row ranking left last stays last, under the
+        // rows it summarizes rather than sorted in among them.
+        let rest = (total > top).then(|| leaves.pop()).flatten();
         rows.append(&mut leaves);
         let mut rows = rank(rows);
         rows.extend(rest);
@@ -690,6 +768,7 @@ fn futures(
     facts: &Facts<'_>,
     top: usize,
     fit: Option<usize>,
+    theme: Theme,
     out: &mut dyn io::Write,
 ) -> Result<()> {
     // Every count here is of *chains*, not of the frames they stand on:
@@ -723,30 +802,41 @@ fn futures(
 
     // The three populations are disjoint by construction — a task's own
     // spine, what its frames hold beside it, and what its sets hold —
-    // so this total is a sum and not a re-count. They are a block of
-    // their own rather than three rows under the heading, so that the
-    // tally below cannot be read as a fourth place a future can be.
-    writeln!(
+    // so this total is a sum and not a re-count.
+    let in_flight = tasks + held + live;
+    heading(
+        theme,
+        "Futures",
+        &format!(
+            "{in_flight} in flight, on {}, up to {deepest} deep",
+            counted(frames, "await-chain frame"),
+        ),
         out,
-        "Futures: {} in flight, on {} (up to {deepest} deep)",
-        tasks + held + live,
-        counted(frames, "await-chain frame"),
     )?;
+
+    // Where each is, in the `HELD IN` column's terms: a task's own
+    // chain, a frame, a set. Every row prints, a zero included, since
+    // the three are a closed set and a zero here says "none" rather
+    // than nothing. A reaped slot is a future no longer: it is said on
+    // the set row rather than counted, so the table still sums to the
+    // footer.
     let reaped = match slots - live {
         0 => String::new(),
-        n => format!(", and {n} completed and not yet reaped"),
+        n => format!(", {n} completed and not yet reaped"),
     };
+    // `FuturesUnordered` names one set however many there are, so it
+    // is spelled as tokio spells it rather than pluralized.
     let places = [
-        Row::new(tasks, "polled as tasks"),
-        Row::new(held, "held in frames, off any await chain"),
-        // `FuturesUnordered` names one set however many there are, so
-        // it is spelled as tokio spells it rather than pluralized.
+        Row::new(tasks, "task (its own await chain)"),
+        Row::new(held, "frame (off any await chain)"),
         Row::new(
             live,
-            format!("in {} FuturesUnordered{reaped}", facts.sets.len()),
+            format!("set ({} FuturesUnordered{reaped})", facts.sets.len()),
         ),
     ];
-    rows("Location", places, fit, out)?;
+    counts("HELD IN", places.into_iter().collect(), out)?;
+    writeln!(out, "{}", listing_footer(in_flight, in_flight, "future"))?;
+    writeln!(out)?;
 
     // The same tally as the tasks', over the futures no task listing
     // shows: they park on the same things and are as worth naming, and
@@ -756,7 +846,7 @@ fn futures(
     // what the census *names* — a chain frame is not among them, since
     // this section counts its depth and nothing else, and the future its
     // task runs is already a row of the tasks' own type tally. A reaped
-    // slot is a future no longer, counted above rather than here.
+    // slot is a future no longer, said above rather than counted here.
     let mut types: BTreeMap<String, (usize, Waits)> = BTreeMap::new();
     let children = facts
         .sets
@@ -778,26 +868,26 @@ fn futures(
     let futures = types
         .into_iter()
         .map(|(name, (count, waits))| chained(name, count, &waits, top));
-    rows(FUTURE_TYPES, ranked(futures, top, "type"), fit, out)?;
-    Ok(())
+    tree(ranked(futures, top, more_types), fit, out)
 }
 
 // ---------------------------------------------------------------------
 // Shared shaping
 // ---------------------------------------------------------------------
 
-/// The heading both type tallies print under. It carries what the
-/// branches are, since a branch is a whole chain collapsed to its far
-/// end rather than the next frame down — which is `trace`'s listing,
-/// and what a reader goes to when a row here is the one they came for.
-///
-/// It says "what they are waiting on" rather than naming the chain:
-/// the branches under a row are the several places the futures *of
-/// that type* ended up, one per group of them, and calling them a
-/// chain invites reading the list downward as one chain's frames. The
-/// verb is the one `tasks` and `futures` head their column with, since
-/// a branch here is that column's value, tallied.
-const FUTURE_TYPES: &str = "Types and what they are waiting on";
+/// The header of both type tallies. It names the two levels the way
+/// perf's `--hierarchy` heads its own: the column holds a type, and
+/// under each type, what the futures of that type are waiting on —
+/// each branch a whole chain collapsed to its far end rather than the
+/// next frame down, which is `trace`'s listing. The second word is the
+/// column `tasks` and `futures` print, since a branch here is that
+/// column's value, tallied.
+const TYPE_HEADER: &str = "TYPE / WAITING ON";
+
+/// The tail row of a type tally: what the rows past `top` add up to.
+fn more_types(n: usize) -> String {
+    format!("({n} more types)")
+}
 
 /// One future type as a row, with what the chains rooted at it reach
 /// hanging off it.
@@ -821,7 +911,7 @@ pub(crate) fn counted(n: usize, noun: &str) -> String {
     format!("{n} {noun}{plural}")
 }
 
-/// One row of a listing: how many, of what, and — where the census has
+/// One row of a tally: how many, of what, and — where the census has
 /// more to say about that row than a number — the tally that breaks it
 /// down, drawn as branches beneath it.
 struct Row {
@@ -863,59 +953,89 @@ fn rank(mut rows: Vec<Row>) -> Vec<Row> {
     rows
 }
 
+/// A tally cut to its `top` commonest rows: the rows, with whatever
+/// the cut left out summed into a tail row, and the two numbers the
+/// footer says — how many there were, how many are shown.
+struct Ranked {
+    rows: Vec<Row>,
+    total: usize,
+    shown: usize,
+}
+
 /// The `top` commonest entries of a tally, with whatever it leaves out
-/// counted rather than dropped in silence.
-fn ranked(tally: impl IntoIterator<Item = Row>, top: usize, noun: &str) -> Vec<Row> {
+/// counted rather than dropped in silence: `tail` spells the row that
+/// sums them, from how many rows it stands for.
+fn ranked(
+    tally: impl IntoIterator<Item = Row>,
+    top: usize,
+    tail: impl Fn(usize) -> String,
+) -> Ranked {
     let mut rows = rank(tally.into_iter().collect());
     let total = rows.len();
+    let shown = total.min(top);
     if total > top {
         let rest: usize = rows[top..].iter().map(|row| row.count).sum();
         rows.truncate(top);
-        rows.push(Row::new(
-            rest,
-            format!("across {}", counted(total - top, &format!("more {noun}"))),
-        ));
+        rows.push(Row::new(rest, tail(total - top)));
     }
-    rows
+    Ranked { rows, total, shown }
 }
 
-/// Print a labelled block of counted rows, its lines fit within `fit`
-/// columns. A block with nothing in it is not printed: a heading over
-/// no rows reads as data missing rather than absent.
-fn rows(
-    label: &str,
-    rows: impl IntoIterator<Item = Row>,
-    fit: Option<usize>,
-    out: &mut dyn io::Write,
-) -> Result<()> {
-    let rows: Vec<Row> = rows.into_iter().collect();
+/// Print a two-column table of counted rows under `COUNT` and `label`,
+/// or nothing for no rows: the caller's footer says what there was.
+fn counts(label: &str, rows: Vec<Row>, out: &mut dyn io::Write) -> Result<()> {
     if rows.is_empty() {
         return Ok(());
     }
-    writeln!(out, "    {label}:")?;
-    level(&rows, "        ", false, fit, out)
+    let mut table = output::Table::new(2)
+        .header(["COUNT", label])
+        .align_right(0);
+    for row in &rows {
+        table.row([row.count.to_string(), row.what.clone()]);
+    }
+    table.write(out)?;
+    Ok(())
 }
 
-/// Print one level of a listing, the counts right-aligned within the
-/// level so the magnitudes line up, and each row's breakdown hanging
-/// off the label above it.
-///
-/// `branch` says whether these rows *are* a breakdown, and so are drawn
-/// as branches of the row they hang from rather than as a listing in
-/// their own right.
+/// Print a type tally: the `COUNT` / [`TYPE_HEADER`] table, each row's
+/// breakdown drawn as branches beneath it, and the `[N types, M
+/// shown]` footer.
+fn tree(ranked: Ranked, fit: Option<usize>, out: &mut dyn io::Write) -> Result<()> {
+    let Ranked { rows, total, shown } = ranked;
+    if !rows.is_empty() {
+        let mut table = output::Table::new(2)
+            .header(["COUNT", TYPE_HEADER])
+            .align_right(0)
+            .truncatable(1)
+            .fit(fit);
+        for row in &rows {
+            table.row([row.count.to_string(), row.what.clone()]);
+        }
+        // The branches hang from where the type starts, so a breakdown
+        // reads as the type's and not the count's.
+        let indent = " ".repeat(table.width(0) + 2);
+        let mut lines = table.render().into_iter();
+        writeln!(out, "{}", lines.next().expect("the header line"))?;
+        for (row, line) in rows.iter().zip(lines) {
+            writeln!(out, "{line}")?;
+            if !row.under.is_empty() {
+                branches(&row.under, &indent, fit, out)?;
+            }
+        }
+    }
+    writeln!(out, "{}", listing_footer(total, shown, "type"))?;
+    Ok(())
+}
+
+/// Print one row's breakdown as branches under it, the counts
+/// right-aligned within the level so the magnitudes line up, as perf's
+/// hierarchy indents each level's share with its label.
 ///
 /// `fit` is the width of the whole line, so the indent and the stem
 /// come off it before the table fits what is left: a cut name leaves
 /// the line within the edge, not just the table's part of it.
-fn level(
-    rows: &[Row],
-    indent: &str,
-    branch: bool,
-    fit: Option<usize>,
-    out: &mut dyn io::Write,
-) -> Result<()> {
-    let stem = if branch { "├─ ".chars().count() } else { 0 };
-    let taken = indent.chars().count() + stem;
+fn branches(rows: &[Row], indent: &str, fit: Option<usize>, out: &mut dyn io::Write) -> Result<()> {
+    let taken = indent.chars().count() + "├─ ".chars().count();
     let mut table = output::Table::new(2)
         .align_right(0)
         .truncatable(1)
@@ -925,18 +1045,14 @@ fn level(
     }
     let width = table.width(0);
     for ((i, row), line) in rows.iter().enumerate().zip(table.render()) {
-        let (stem, run) = match (branch, i + 1 == rows.len()) {
-            (false, _) => ("", ""),
-            (true, true) => ("└─ ", "   "),
-            (true, false) => ("├─ ", "│  "),
+        let (stem, run) = match i + 1 == rows.len() {
+            true => ("└─ ", "   "),
+            false => ("├─ ", "│  "),
         };
         writeln!(out, "{indent}{stem}{line}")?;
         if !row.under.is_empty() {
-            // Indented to where this row's label starts, so what breaks
-            // it down reads as hanging from the name and not from the
-            // count.
             let under = format!("{indent}{run}{}", " ".repeat(width + 2));
-            level(&row.under, &under, true, fit, out)?;
+            branches(&row.under, &under, fit, out)?;
         }
     }
     Ok(())
@@ -947,7 +1063,7 @@ mod tests {
     use super::*;
 
     use hansei_bundle::{BundleTypeId, FutureKind, TaskEntryId};
-    use hansei_runtime::tokio::bundle::{KnownFuture, Task, WaitTarget};
+    use hansei_runtime::tokio::bundle::{FutureInfo, KnownFuture, Task, WaitTarget};
     use hansei_runtime::tokio::census::SetChild;
     use hansei_runtime::tokio::graph::TaskRef;
     use hansei_runtime::tokio::{Location, RawInstant, TaskAddr, TaskState};
@@ -1072,6 +1188,36 @@ mod tests {
         }
     }
 
+    /// A run-loop thread of runtime 0, polling nothing.
+    fn worker(tid: u32, index: u64) -> Thread {
+        Thread {
+            tid,
+            runtime: Some(0),
+            role: Some(ThreadRole::Worker(index)),
+            polling: None,
+        }
+    }
+
+    /// A thread that entered runtime 0 without running its loop.
+    fn entered(tid: u32) -> Thread {
+        Thread {
+            tid,
+            runtime: Some(0),
+            role: None,
+            polling: None,
+        }
+    }
+
+    /// A current_thread runtime's block_on thread, in runtime 0.
+    fn block_on(tid: u32, state: Option<CtParkState>, polling: Option<u64>) -> Thread {
+        Thread {
+            tid,
+            runtime: Some(0),
+            role: Some(ThreadRole::BlockOn(state)),
+            polling,
+        }
+    }
+
     /// Print a whole census over facts a test laid out, and hand back
     /// the page.
     fn census(facts: &Facts<'_>, top: usize) -> String {
@@ -1086,8 +1232,14 @@ mod tests {
     /// The same, its lines fit within `fit` columns.
     fn fitted(facts: &Facts<'_>, sections: Sections, top: usize, fit: Option<usize>) -> String {
         let mut out = Vec::new();
-        print(facts, sections, top, fit, &mut out).unwrap();
+        print(facts, sections, top, fit, Theme::plain(), &mut out).unwrap();
         String::from_utf8(out).unwrap()
+    }
+
+    /// The thread section alone — the page up to its first blank line
+    /// past the heading's own.
+    fn thread_section(facts: &Facts<'_>) -> String {
+        sections(facts, Sections::select(true, false, false), 5)
     }
 
     /// The one runtime the thread fixtures below are inside, holding
@@ -1104,7 +1256,7 @@ mod tests {
     /// is about.
     fn facts<'a>(tasks: &'a TaskList, waits: &'a [TaskWait]) -> Facts<'a> {
         Facts {
-            lwps: 0,
+            lwps: Vec::new(),
             runtime: Vec::new(),
             runtimes: vec![runtime(None, None)],
             local_sets: 0,
@@ -1113,7 +1265,6 @@ mod tests {
             held: &[],
             sets: &[],
             impls: &EMPTY_IMPLS,
-            fatal: None,
         }
     }
 
@@ -1122,55 +1273,6 @@ mod tests {
             tasks: Vec::new(),
             errors: Vec::new(),
         }
-    }
-
-    /// A fault heads the census in full: the signal by name, the code
-    /// by its name, the faulting address, and the lwp that took it —
-    /// separated from the sections below by a blank line.
-    #[test]
-    fn test_a_fatal_signal_heads_the_census() {
-        let list = empty();
-        let mut facts = facts(&list, &[]);
-        facts.fatal = Some(proc::FatalSignal {
-            name: "SIGSEGV",
-            signo: 11,
-            code: 1,
-            code_name: Some("SEGV_MAPERR"),
-            fault_addr: Some(0),
-            lwp: Some(3950440),
-            sender: None,
-        });
-        let page = census(&facts, 5);
-        assert!(
-            page.starts_with(
-                "Terminated by SIGSEGV (SEGV_MAPERR), fault address 0x0, taken on lwp 3950440\n\n"
-            ),
-            "{page}"
-        );
-    }
-
-    /// A signal that faulted nowhere — user-sent, no decoded code —
-    /// is its name alone, and it still heads a census narrowed to one
-    /// section: it is a header, not a section.
-    #[test]
-    fn test_a_plain_signal_heads_a_narrowed_census() {
-        let list = empty();
-        let mut facts = facts(&list, &[]);
-        facts.fatal = Some(proc::FatalSignal {
-            name: "SIGTERM",
-            signo: 15,
-            code: 0,
-            code_name: None,
-            fault_addr: None,
-            lwp: Some(7),
-            sender: None,
-        });
-        let page = sections(&facts, Sections::select(false, true, false), 5);
-        assert!(
-            page.starts_with("Terminated by SIGTERM, taken on lwp 7\n\n"),
-            "{page}"
-        );
-        assert!(!page.contains("Threads:"), "{page}");
     }
 
     /// A code the fault table does not name is still evidence — it is
@@ -1190,49 +1292,52 @@ mod tests {
         assert_eq!(fatal_signal_line(&sig), "SIGSEGV (code 128)");
     }
 
-    /// No signal, no line: a live capture's census starts with its
-    /// counts.
+    /// The heading's name and colon are bold on a terminal and bare
+    /// bytes everywhere else; nothing else on the page is styled.
     #[test]
-    fn test_a_live_capture_has_no_signal_line() {
+    fn test_headings_are_bold_only_on_a_terminal() {
         let list = empty();
         let facts = facts(&list, &[]);
-        let page = census(&facts, 5);
-        assert!(page.starts_with("Threads:"), "{page}");
+        let plain = census(&facts, 5);
+        assert!(
+            plain.starts_with("Threads: 0 lwps, 0 in runtime 0 @ 0x1000\n\n"),
+            "{plain}"
+        );
+        assert!(!plain.contains('\x1b'), "{plain}");
+
+        let mut out = Vec::new();
+        let all = Sections::select(false, false, false);
+        print(&facts, all, 5, None, Theme::forced(), &mut out).unwrap();
+        let styled = String::from_utf8(out).unwrap();
+        assert!(
+            styled.starts_with("\x1b[1mThreads:\x1b[0m 0 lwps, 0 in runtime 0 @ 0x1000\n\n"),
+            "{styled}"
+        );
+        assert!(
+            styled.contains("\n\x1b[1mTasks:\x1b[0m 0 owned by"),
+            "{styled}"
+        );
+        assert!(
+            styled.contains("\n\x1b[1mFutures:\x1b[0m 0 in flight"),
+            "{styled}"
+        );
+        assert_eq!(styled.matches('\x1b').count(), 6, "{styled}");
     }
 
-    /// The two threads a reader came for — the one holding the driver
-    /// and the ones polling — are named; the rest are a count.
+    /// Every run-loop thread is a row by what it is doing, the rows of
+    /// one runtime ranked by count as `--group` ranks its buckets and,
+    /// among equals, the driver holder first; a polling row names the
+    /// task beside each lwp; the pool is a share of the threads that
+    /// entered, netted of the workers it launched; and the lwps outside
+    /// every runtime close the table.
     #[test]
-    fn test_threads_name_the_driver_holder_and_the_pollers() {
+    fn test_threads_are_rows_by_role_and_state() {
         let list = empty();
         let mut facts = facts(&list, &[]);
-        facts.lwps = 6;
-        facts.runtime = vec![
-            Thread {
-                tid: 11,
-                runtime: Some(0),
-                role: Some(ThreadRole::Worker(0)),
-                polling: None,
-            },
-            Thread {
-                tid: 12,
-                runtime: Some(0),
-                role: Some(ThreadRole::Worker(1)),
-                polling: Some(42),
-            },
-            Thread {
-                tid: 13,
-                runtime: Some(0),
-                role: Some(ThreadRole::Worker(2)),
-                polling: None,
-            },
-            Thread {
-                tid: 14,
-                runtime: Some(0),
-                role: None,
-                polling: None,
-            },
-        ];
+        facts.lwps = vec![11, 12, 13, 14, 15, 16];
+        let mut polling = worker(12, 1);
+        polling.polling = Some(42);
+        facts.runtime = vec![worker(11, 0), polling, worker(13, 2), entered(14)];
         // The pool counts the three workers among its four threads,
         // since the runtime launched each of them with spawn_blocking.
         facts.runtimes = vec![runtime(
@@ -1247,45 +1352,84 @@ mod tests {
             }),
         )];
 
-        let page = census(&facts, 5);
-        let threads = page.split("\n\n").next().unwrap();
         assert_eq!(
-            threads,
-            "Threads: 6 lwps, 4 in runtime 0 @ 0x1000\n    \
-             3 in the scheduler's run loop\n        \
-             1 parked in the io driver\n            \
-             worker 0, lwp 11\n        \
-             1 polling a task\n            \
-             worker 1, lwp 12  task 42\n        \
-             1 parked\n    \
-             1 in runtime 0 @ 0x1000, outside the run loop\n        \
-             1 in the blocking pool (1 idle, 1 task queued)\n    \
-             2 holding no runtime context"
+            thread_section(&facts),
+            "Threads: 6 lwps, 4 in runtime 0 @ 0x1000\n\
+             \n\
+             COUNT  RT  ROLE           STATE                     LWPS\n\
+             \x20   1  0   worker         in driver                 11\n\
+             \x20   1  0   worker         polling                   12 (task 42)\n\
+             \x20   1  0   worker         parked                    13\n\
+             \x20   1  0   blocking pool  1 idle, 0 busy, 1 queued  14\n\
+             \x20   2  —   no runtime     —                         15, 16\n\
+             [6 lwps]\n"
+        );
+    }
+
+    /// A row samples three of its lwps and says there are more, as a
+    /// `--group` bucket samples its members.
+    #[test]
+    fn test_a_row_samples_three_lwps() {
+        let list = empty();
+        let mut facts = facts(&list, &[]);
+        facts.lwps = vec![1, 2, 3, 4, 5];
+        facts.runtime = (1..=5).map(|tid| worker(tid, u64::from(tid) - 1)).collect();
+        facts.runtimes = vec![runtime(
+            Some(ParkStates {
+                workers: vec![ParkState::Condvar; 5],
+                driver_held: false,
+            }),
+            None,
+        )];
+        let page = thread_section(&facts);
+        assert!(
+            page.contains("    5  0   worker  parked  1, 2, 3, …\n"),
+            "{page}"
+        );
+        assert!(!page.contains("entered runtime"), "{page}");
+    }
+
+    /// Where the pool's threads and the block_on callers both have
+    /// members, neither row can say which lwps are its — the census
+    /// reads no stacks — so both count and neither lists.
+    #[test]
+    fn test_a_split_pool_lists_no_lwps() {
+        let list = empty();
+        let mut facts = facts(&list, &[]);
+        facts.lwps = vec![11, 12, 13, 14];
+        facts.runtime = vec![worker(11, 0), entered(12), entered(13), entered(14)];
+        facts.runtimes = vec![runtime(
+            Some(ParkStates {
+                workers: vec![ParkState::Condvar],
+                driver_held: false,
+            }),
+            Some(BlockingPool {
+                threads: 3,
+                idle: 2,
+                queued: 0,
+            }),
+        )];
+        assert_eq!(
+            thread_section(&facts),
+            "Threads: 4 lwps, 4 in runtime 0 @ 0x1000\n\
+             \n\
+             COUNT  RT  ROLE             STATE            LWPS\n\
+             \x20   2  0   blocking pool    2 idle, 0 busy   —\n\
+             \x20   1  0   worker           parked           11\n\
+             \x20   1  0   entered runtime  block_on caller  —\n\
+             [4 lwps]\n"
         );
     }
 
     /// A pool whose count does not reconcile with the workers it
     /// launched is reported as its own count rather than netted into a
-    /// share of a line it would not add up to.
+    /// share of a row it would not add up to.
     #[test]
     fn test_an_unreconciled_pool_count_is_reported_as_the_pools_own() {
         let list = empty();
         let mut facts = facts(&list, &[]);
-        facts.lwps = 2;
-        facts.runtime = vec![
-            Thread {
-                tid: 11,
-                runtime: Some(0),
-                role: Some(ThreadRole::Worker(0)),
-                polling: None,
-            },
-            Thread {
-                tid: 12,
-                runtime: Some(0),
-                role: None,
-                polling: None,
-            },
-        ];
+        facts.lwps = vec![11, 12];
+        facts.runtime = vec![worker(11, 0), entered(12)];
         facts.runtimes = vec![runtime(
             Some(ParkStates {
                 workers: vec![ParkState::Condvar],
@@ -1297,13 +1441,10 @@ mod tests {
                 queued: 0,
             }),
         )];
-
-        let page = census(&facts, 5);
+        let page = thread_section(&facts);
         assert!(
             page.contains(
-                "    1 in runtime 0 @ 0x1000, outside the run loop\n        \
-                 the blocking pool counts 9 threads of its own, the workers \
-                 above among them (4 idle, 0 tasks queued)\n"
+                "    1  0   entered runtime  pool counts 9 threads (workers among them), 4 idle  12\n"
             ),
             "{page}"
         );
@@ -1311,31 +1452,24 @@ mod tests {
 
     /// A current_thread runtime's block_on thread is classified from
     /// its own core rather than a parker word: parked in the driver
-    /// here, named like the driver-holding worker it is — and its
-    /// pending wakeup is called out, since a woken parked thread is a
-    /// wakeup owed and not yet delivered. The pool needs no netting:
-    /// no worker of this flavor was launched through spawn_blocking.
+    /// here, in the row the driver-holding worker would take. The pool
+    /// needs no netting: no worker of this flavor was launched through
+    /// spawn_blocking.
     #[test]
     fn test_a_block_on_thread_is_classified_from_its_core() {
         let list = empty();
         let mut facts = facts(&list, &[]);
-        facts.lwps = 3;
+        facts.lwps = vec![11, 12, 13];
         facts.runtime = vec![
-            Thread {
-                tid: 11,
-                runtime: Some(0),
-                role: Some(ThreadRole::BlockOn(Some(CtParkState {
+            block_on(
+                11,
+                Some(CtParkState {
                     woken: true,
                     activity: CtActivity::Parked,
-                }))),
-                polling: None,
-            },
-            Thread {
-                tid: 12,
-                runtime: Some(0),
-                role: None,
-                polling: None,
-            },
+                }),
+                None,
+            ),
+            entered(12),
         ];
         facts.runtimes = vec![runtime(
             None,
@@ -1346,18 +1480,15 @@ mod tests {
             }),
         )];
 
-        let page = census(&facts, 5);
-        let threads = page.split("\n\n").next().unwrap();
         assert_eq!(
-            threads,
-            "Threads: 3 lwps, 2 in runtime 0 @ 0x1000\n    \
-             1 in the scheduler's run loop\n        \
-             1 parked in the io driver\n            \
-             block_on thread, lwp 11\n        \
-             the block_on future of lwp 11 was woken and not yet polled\n    \
-             1 in runtime 0 @ 0x1000, outside the run loop\n        \
-             1 in the blocking pool (1 idle, 0 tasks queued)\n    \
-             1 holding no runtime context"
+            thread_section(&facts),
+            "Threads: 3 lwps, 2 in runtime 0 @ 0x1000\n\
+             \n\
+             COUNT  RT  ROLE             STATE           LWPS\n\
+             \x20   1  0   block_on thread  in driver       11\n\
+             \x20   1  0   blocking pool    1 idle, 0 busy  12\n\
+             \x20   1  —   no runtime       —               13\n\
+             [3 lwps]\n"
         );
     }
 
@@ -1366,118 +1497,37 @@ mod tests {
     /// with the core on its stack — the latter counted as polling when
     /// a task id says which.
     #[test]
-    fn test_block_on_activities_have_their_own_buckets() {
+    fn test_block_on_activities_have_their_own_rows() {
         let list = empty();
         let mut facts = facts(&list, &[]);
-        facts.lwps = 2;
+        facts.lwps = vec![11, 12];
         facts.runtime = vec![
-            Thread {
-                tid: 11,
-                runtime: Some(0),
-                role: Some(ThreadRole::BlockOn(Some(CtParkState {
+            block_on(
+                11,
+                Some(CtParkState {
                     woken: false,
                     activity: CtActivity::PollingBlockOn,
-                }))),
-                polling: None,
-            },
-            Thread {
-                tid: 12,
-                runtime: Some(0),
-                role: Some(ThreadRole::BlockOn(Some(CtParkState {
+                }),
+                None,
+            ),
+            block_on(
+                12,
+                Some(CtParkState {
                     woken: false,
                     activity: CtActivity::RunningTasks,
-                }))),
-                polling: Some(7),
-            },
+                }),
+                Some(7),
+            ),
         ];
 
-        let page = census(&facts, 5);
+        let page = thread_section(&facts);
         assert!(
             page.contains(
-                "        1 polling a task\n            \
-                 block_on thread, lwp 12  task 7\n        \
-                 1 polling the block_on future\n            \
-                 block_on thread, lwp 11\n"
+                "    1  0   block_on thread  polling           12 (task 7)\n    \
+                 1  0   block_on thread  polling block_on  11\n"
             ),
             "{page}"
         );
-        assert!(!page.contains("was woken"), "{page}");
-    }
-
-    /// A task whose future the bundle cannot name is counted in the
-    /// same "of note" line as the aborting ones.
-    #[test]
-    fn test_unnamed_futures_are_of_note() {
-        let mut unnamed = task(1, 0, "x", "x.rs");
-        unnamed.future = FutureInfo::Unknown { poll_symbol: None };
-        let list = TaskList {
-            tasks: vec![unnamed],
-            errors: Vec::new(),
-        };
-        let waits = [wait(1, None, 1)];
-        let page = census(&facts(&list, &waits), 5);
-        assert!(
-            page.contains("    Of note: 1 whose future the bundle cannot name\n"),
-            "{page}"
-        );
-    }
-
-    /// A finished task parks on nothing: the tally says so rather than
-    /// counting it among the chains that stopped short.
-    #[test]
-    fn test_complete_tasks_wait_on_nothing() {
-        let list = TaskList {
-            tasks: vec![task(1, COMPLETE, "x", "x.rs")],
-            errors: Vec::new(),
-        };
-        let waits = [wait(1, None, 1)];
-        let page = census(&facts(&list, &waits), 5);
-        assert!(page.contains("nothing — finished"), "{page}");
-    }
-
-    /// At exactly `top` leaves nothing is summarized, and no leaf row
-    /// is pinned to the bottom: every row still ranks among the others.
-    #[test]
-    fn test_exactly_top_leaves_still_rank_among_the_rows() {
-        let mut waits = Waits::default();
-        waits.leaves.insert("hot".to_string(), 5);
-        waits.leaves.insert("warm".to_string(), 2);
-        waits.undecoded = 1;
-        let whats: Vec<String> = waits.rows(2).into_iter().map(|r| r.what).collect();
-        assert_eq!(
-            whats,
-            ["hot", "warm", "a chain that stopped before any leaf"]
-        );
-    }
-
-    /// `top` truncates only past itself: at exactly `top` entries there
-    /// is nothing left out and no summary row is added.
-    #[test]
-    fn test_ranked_summarizes_only_past_top() {
-        let rows = |counts: &[usize]| -> Vec<Row> {
-            counts
-                .iter()
-                .enumerate()
-                .map(|(i, c)| Row::new(*c, format!("k{i}")))
-                .collect()
-        };
-        assert_eq!(ranked(rows(&[5, 3]), 2, "leaf type").len(), 2);
-        let more = ranked(rows(&[5, 3, 1]), 2, "leaf type");
-        assert_eq!(more.len(), 3);
-        assert_eq!(more[2].what, "across 1 more leaf type");
-    }
-
-    /// A row names its runtime only when there are several to tell
-    /// apart: one runtime's name is on the section heading already.
-    #[test]
-    fn test_rows_name_their_runtime_only_among_several() {
-        let list = empty();
-        let mut facts = facts(&list, &[]);
-        assert_eq!(facts.whose(0), "");
-
-        facts.runtimes = vec![runtime(None, None), runtime(None, None)];
-        assert_eq!(facts.whose(0), " of runtime 0 @ 0x1000");
-        assert_eq!(facts.whose(9), "", "an index past the list names nothing");
     }
 
     /// Running tasks without a believed task id is awake, not polling:
@@ -1486,45 +1536,35 @@ mod tests {
     fn test_running_tasks_without_a_task_id_is_awake() {
         let list = empty();
         let mut facts = facts(&list, &[]);
-        facts.lwps = 1;
-        facts.runtime = vec![Thread {
-            tid: 11,
-            runtime: Some(0),
-            role: Some(ThreadRole::BlockOn(Some(CtParkState {
+        facts.lwps = vec![11];
+        facts.runtime = vec![block_on(
+            11,
+            Some(CtParkState {
                 woken: false,
                 activity: CtActivity::RunningTasks,
-            }))),
-            polling: None,
-        }];
+            }),
+            None,
+        )];
 
-        let page = census(&facts, 5);
-        assert!(page.contains("1 awake, polling no task\n"), "{page}");
-        assert!(!page.contains("polling a task"), "{page}");
+        let page = thread_section(&facts);
+        assert!(
+            page.contains("    1  0   block_on thread  awake  11\n"),
+            "{page}"
+        );
+        assert!(!page.contains("polling"), "{page}");
     }
 
     /// A pool with nothing in it but the workers still prints its row:
     /// the threads idle in it and the tasks queued on it are the two
-    /// numbers a reader came for, and `0 in the blocking pool` with a
-    /// task queued on it is a state worth seeing.
+    /// numbers a reader came for, and a pool of none with a task queued
+    /// on it is a state worth seeing. The thread that entered is then
+    /// wholly the caller's, and the row says which lwp it is.
     #[test]
     fn test_a_pool_of_workers_alone_still_reports_its_counters() {
         let list = empty();
         let mut facts = facts(&list, &[]);
-        facts.lwps = 2;
-        facts.runtime = vec![
-            Thread {
-                tid: 11,
-                runtime: Some(0),
-                role: Some(ThreadRole::Worker(0)),
-                polling: None,
-            },
-            Thread {
-                tid: 12,
-                runtime: Some(0),
-                role: None,
-                polling: None,
-            },
-        ];
+        facts.lwps = vec![11, 12];
+        facts.runtime = vec![worker(11, 0), entered(12)];
         facts.runtimes = vec![runtime(
             Some(ParkStates {
                 workers: vec![ParkState::Condvar],
@@ -1537,13 +1577,28 @@ mod tests {
             }),
         )];
 
-        let page = census(&facts, 5);
+        let page = thread_section(&facts);
         assert!(
-            page.contains("        0 in the blocking pool (0 idle, 3 tasks queued)\n"),
+            page.contains("    1  0   entered runtime  block_on caller           12\n"),
             "{page}"
         );
         assert!(
-            page.contains("1 that entered the runtime another way (a block_on caller)"),
+            page.ends_with("    0  0   blocking pool    0 idle, 0 busy, 3 queued  —\n[2 lwps]\n"),
+            "{page}"
+        );
+    }
+
+    /// A runtime whose pool could not be read still lists the threads
+    /// that entered it, with nothing claimed about which pool they are.
+    #[test]
+    fn test_no_pool_reading_leaves_the_entered_row_bare() {
+        let list = empty();
+        let mut facts = facts(&list, &[]);
+        facts.lwps = vec![11, 12];
+        facts.runtime = vec![worker(11, 0), entered(12)];
+        let page = thread_section(&facts);
+        assert!(
+            page.contains("    1  0   entered runtime  —                  12\n"),
             "{page}"
         );
     }
@@ -1551,26 +1606,16 @@ mod tests {
     /// A worker index addresses its own scheduler's parker array and no
     /// other, so a second runtime's worker 0 is classified from that
     /// runtime's parkers — not from the first runtime's, which is a
-    /// different thread's state that happens to share an index.
+    /// different thread's state that happens to share an index. The
+    /// `RT` column is what tells the two rows apart.
     #[test]
     fn test_each_thread_is_classified_from_its_own_runtimes_parkers() {
         let list = empty();
         let mut facts = facts(&list, &[]);
-        facts.lwps = 2;
-        facts.runtime = vec![
-            Thread {
-                tid: 11,
-                runtime: Some(0),
-                role: Some(ThreadRole::Worker(0)),
-                polling: None,
-            },
-            Thread {
-                tid: 12,
-                runtime: Some(1),
-                role: Some(ThreadRole::Worker(0)),
-                polling: None,
-            },
-        ];
+        facts.lwps = vec![11, 12];
+        let mut second = worker(12, 0);
+        second.runtime = Some(1);
+        facts.runtime = vec![worker(11, 0), second];
         facts.runtimes = vec![
             runtime(
                 Some(ParkStates {
@@ -1589,52 +1634,89 @@ mod tests {
             },
         ];
 
-        let page = census(&facts, 5);
-        let threads = page.split("\n\n").next().unwrap();
         assert_eq!(
-            threads,
-            "Threads: 2 lwps, 2 in 2 runtimes\n    \
-             2 in the scheduler's run loop\n        \
-             1 parked in the io driver\n            \
-             worker 0, lwp 11\n        \
-             1 parked",
-            "{page}"
+            thread_section(&facts),
+            "Threads: 2 lwps, 2 in 2 runtimes\n\
+             \n\
+             COUNT  RT  ROLE    STATE      LWPS\n\
+             \x20   1  0   worker  in driver  11\n\
+             \x20   1  1   worker  parked     12\n\
+             [2 lwps]\n"
         );
     }
 
-    /// A driver held by a worker that is not parked in it is a thread
-    /// polling it without sleeping — which the listing says, rather
-    /// than leaving a reader to conclude the census missed it.
+    /// A task whose future the bundle cannot name is a type row like
+    /// any other, spelled as the `TYPE` column spells it.
     #[test]
-    fn test_a_held_driver_with_nobody_parked_in_it_says_so() {
-        let list = empty();
-        let mut facts = facts(&list, &[]);
-        facts.lwps = 1;
-        facts.runtime = vec![Thread {
-            tid: 11,
-            runtime: Some(0),
-            role: Some(ThreadRole::Worker(0)),
-            polling: None,
-        }];
-        facts.runtimes = vec![runtime(
-            Some(ParkStates {
-                workers: vec![ParkState::Awake],
-                driver_held: true,
-            }),
-            None,
-        )];
-
-        let page = census(&facts, 5);
+    fn test_unnamed_futures_are_a_type_row() {
+        let mut unnamed = task(1, 0, "x", "x.rs");
+        unnamed.future = FutureInfo::Unknown { poll_symbol: None };
+        let list = TaskList {
+            tasks: vec![unnamed],
+            errors: Vec::new(),
+        };
+        let waits = [wait(1, None, 1)];
+        let page = census(&facts(&list, &waits), 5);
         assert!(
-            page.contains("the io driver is held, but no worker is parked in it"),
+            page.contains("COUNT  TYPE / WAITING ON\n    1  <unknown>\n"),
             "{page}"
         );
     }
 
-    /// Every task lands in exactly one lifecycle bucket and exactly one
-    /// wait bucket, so both rows add up to the total over them. A task
-    /// with no wait target is bucketed by why it has none, and the wait
-    /// buckets hang off the future type whose tasks they count.
+    /// A finished task parks on nothing: the tally says so rather than
+    /// counting it among the chains that stopped short.
+    #[test]
+    fn test_complete_tasks_wait_on_nothing() {
+        let list = TaskList {
+            tasks: vec![task(1, COMPLETE, "x", "x.rs")],
+            errors: Vec::new(),
+        };
+        let waits = [wait(1, None, 1)];
+        let page = census(&facts(&list, &waits), 5);
+        assert!(page.contains("└─ 1  — (complete)\n"), "{page}");
+    }
+
+    /// At exactly `top` leaves nothing is summarized, and no leaf row
+    /// is pinned to the bottom: every row still ranks among the others.
+    #[test]
+    fn test_exactly_top_leaves_still_rank_among_the_rows() {
+        let mut waits = Waits::default();
+        waits.leaves.insert("hot".to_string(), 5);
+        waits.leaves.insert("warm".to_string(), 2);
+        waits.undecoded = 1;
+        let whats: Vec<String> = waits.rows(2).into_iter().map(|r| r.what).collect();
+        assert_eq!(whats, ["hot", "warm", "—"]);
+    }
+
+    /// `top` truncates only past itself: at exactly `top` entries there
+    /// is nothing left out and no tail row is added; past it, the tail
+    /// sums what was cut and the footer's numbers say how many rows.
+    #[test]
+    fn test_ranked_summarizes_only_past_top() {
+        let rows = |counts: &[usize]| -> Vec<Row> {
+            counts
+                .iter()
+                .enumerate()
+                .map(|(i, c)| Row::new(*c, format!("k{i}")))
+                .collect()
+        };
+        let exact = ranked(rows(&[5, 3]), 2, more_types);
+        assert_eq!(exact.rows.len(), 2);
+        assert_eq!((exact.total, exact.shown), (2, 2));
+        let more = ranked(rows(&[5, 3, 1]), 2, more_types);
+        assert_eq!(more.rows.len(), 3);
+        assert_eq!(more.rows[2].what, "(1 more types)");
+        assert_eq!(more.rows[2].count, 1);
+        assert_eq!((more.total, more.shown), (3, 2));
+    }
+
+    /// Every task lands in exactly one state row and exactly one wait
+    /// branch, so both add up to the total over them. A task with no
+    /// wait target is bucketed by why it has none, and the wait
+    /// branches hang off the future type whose tasks they count. The
+    /// state rows are the `STATE` cells, so a cancelled task is its
+    /// lifecycle with the bit appended, as `tasks --group state` would
+    /// bucket it.
     #[test]
     fn test_task_tallies_count_every_task_once() {
         let list = TaskList {
@@ -1661,51 +1743,65 @@ mod tests {
             // counted as though it had reached one.
             leaf_wait(7, None, 2, None),
         ];
-        let page = census(&facts(&list, &waits), 5);
+        let page = sections(
+            &facts(&list, &waits),
+            Sections::select(false, true, false),
+            5,
+        );
 
-        assert!(
-            page.contains("Tasks: 7 owned by runtime 0 @ 0x1000\n"),
-            "{page}"
+        assert_eq!(
+            page,
+            "Tasks: 7 owned by runtime 0 @ 0x1000\n\
+             \n\
+             COUNT  STATE\n\
+             \x20   5  idle\n\
+             \x20   1  queued (cancelled)\n\
+             \x20   1  running\n\
+             [7 tasks]\n\
+             \n\
+             COUNT  TYPE / WAITING ON\n\
+             \x20   3  future c::fut\n\
+             \x20      ├─ 2  future tokio::runtime::io::scheduled_io::Readiness\n\
+             \x20      └─ 1  —\n\
+             \x20   2  future a::fut\n\
+             \x20      └─ 2  timer (1 past due)\n\
+             \x20   2  future b::fut\n\
+             \x20      ├─ 1  a tokio::sync::Mutex (semaphore)\n\
+             \x20      └─ 1  — (mid-poll)\n\
+             [3 types]\n"
         );
+    }
+
+    /// A blocking task's state is the pool spelling its `STATE` cell
+    /// carries, less the lwp — one bucket for every running blocking
+    /// task, as a census wants.
+    #[test]
+    fn test_blocking_tasks_are_a_state_row() {
+        let mut blocking = task(1, RUNNING, "x", "x.rs");
+        blocking.blocking = true;
+        let list = TaskList {
+            tasks: vec![blocking, task(2, 0, "x", "x.rs")],
+            errors: Vec::new(),
+        };
+        let page = census(&facts(&list, &[]), 5);
         assert!(
-            page.contains("    State: 1 running, 1 queued, 5 idle\n"),
-            "{page}"
-        );
-        // Only the anomaly: that six of the seven are detached is the
-        // norm, and says nothing about this target.
-        assert!(
-            page.contains("    Of note: 1 cancelled but not yet complete\n"),
-            "{page}"
-        );
-        assert!(
-            page.contains(
-                "    Types and what they are waiting on:\n        \
-                 3  future c::fut\n           \
-                 ├─ 2  future tokio::runtime::io::scheduled_io::Readiness\n           \
-                 └─ 1  a chain that stopped before any leaf\n        \
-                 2  future a::fut\n           \
-                 └─ 2  a timer (1 already past due)\n        \
-                 2  future b::fut\n           \
-                 ├─ 1  a tokio::sync::Mutex\n           \
-                 └─ 1  nothing — mid-poll on a worker\n"
-            ),
+            page.contains("COUNT  STATE\n    1  blocking (running)\n    1  idle\n[2 tasks]\n"),
             "{page}"
         );
     }
 
-    /// The leaf rows are the ones `--top` bounds: the primitives and
-    /// the three reasons there is nothing to say are a closed set, so
-    /// cutting one would drop a fact rather than a long tail.
+    /// The leaf branches are the ones `--limit` bounds: the primitives
+    /// and the three reasons there is nothing to say are a closed set,
+    /// so cutting one would drop a fact rather than a long tail.
     #[test]
     fn test_top_bounds_the_leaf_rows_and_not_the_rest() {
         let mut tasks = Vec::new();
         let mut waits = Vec::new();
         for i in 0..4 {
-            for n in 0..=i {
+            for _ in 0..=i {
                 let id = tasks.len() as u64;
                 tasks.push(task(id, JOIN_INTEREST, "f", "f.rs"));
                 waits.push(leaf_wait(id, None, 1, Some(&format!("leaf{i}"))));
-                let _ = n;
             }
         }
         // One task on a timer, which no bound may cut.
@@ -1720,12 +1816,13 @@ mod tests {
         let page = census(&facts(&list, &waits), 2);
         assert!(
             page.contains(
-                "    Types and what they are waiting on:\n        \
-                 11  future f\n            \
-                 ├─ 4  future leaf3\n            \
-                 ├─ 3  future leaf2\n            \
-                 ├─ 1  a timer\n            \
-                 └─ 3  across 2 more leaf types\n"
+                "COUNT  TYPE / WAITING ON\n   \
+                 11  future f\n       \
+                 ├─ 4  future leaf3\n       \
+                 ├─ 3  future leaf2\n       \
+                 ├─ 1  timer\n       \
+                 └─ 3  (2 more)\n\
+                 [1 type]\n"
             ),
             "{page}"
         );
@@ -1757,18 +1854,20 @@ mod tests {
 
         assert!(
             page.contains(
-                "    Types and what they are waiting on:\n        \
-                 2  future a::fut\n        \
-                 2  future b::fut\n           \
-                 ├─ 1  a timer\n           \
-                 └─ 1  future b::fut\n"
+                "COUNT  TYPE / WAITING ON\n    \
+                 2  future a::fut\n    \
+                 2  future b::fut\n       \
+                 ├─ 1  future b::fut\n       \
+                 └─ 1  timer\n\
+                 [2 types]\n"
             ),
             "{page}"
         );
     }
 
-    /// A listing bounded by `--top` sums what it left out rather than
-    /// dropping it, so the rows still account for every task.
+    /// A tally bounded by `--limit` sums what it left out into a tail
+    /// row rather than dropping it, so the rows still account for
+    /// every task, and the footer says how many types there were.
     #[test]
     fn test_top_bounds_the_listings_and_counts_the_rest() {
         let mut tasks = Vec::new();
@@ -1790,10 +1889,11 @@ mod tests {
 
         assert!(
             page.contains(
-                "    Types and what they are waiting on:\n         \
-                 6  future f5\n         \
-                 5  future f4\n        \
-                 10  across 4 more types\n"
+                "COUNT  TYPE / WAITING ON\n    \
+                 6  future f5\n    \
+                 5  future f4\n   \
+                 10  (4 more types)\n\
+                 [6 types, 2 shown]\n"
             ),
             "{page}"
         );
@@ -1801,7 +1901,8 @@ mod tests {
 
     /// The three future populations are disjoint, so the headline is
     /// their sum: a set's children are not also held futures, and a
-    /// reaped slot is neither.
+    /// reaped slot is neither — it is said on the set row and not
+    /// counted, so the table sums to its footer.
     ///
     /// Every one of them counts *futures*, never the frames they stand
     /// on — the two tasks here run three and two frames deep, and are
@@ -1835,29 +1936,32 @@ mod tests {
         facts.held = &held;
         facts.sets = &sets;
 
-        let page = census(&facts, 5);
-        let futures = page.split("\n\n").nth(2).unwrap();
+        let page = sections(&facts, Sections::select(false, false, true), 5);
         assert_eq!(
-            futures,
+            page,
             // 2 tasks, 1 held, 1 resident set child: the reaped slot is
-            // counted, and deliberately not added in. Their chains run
+            // said, and deliberately not added in. Their chains run
             // 3 + 2 + 1 + 1 frames.
-            "Futures: 4 in flight, on 7 await-chain frames (up to 3 deep)\n    \
-             Location:\n        \
-             2  polled as tasks\n        \
-             1  held in frames, off any await chain\n        \
-             1  in 1 FuturesUnordered, and 1 completed and not yet reaped\n    \
-             Types and what they are waiting on:\n        \
-             1  future child::fut\n           \
-             └─ 1  a timer\n        \
-             1  future held::fut\n           \
-             └─ 1  another task (JoinHandle)\n"
+            "Futures: 4 in flight, on 7 await-chain frames, up to 3 deep\n\
+             \n\
+             COUNT  HELD IN\n\
+             \x20   2  task (its own await chain)\n\
+             \x20   1  frame (off any await chain)\n\
+             \x20   1  set (1 FuturesUnordered, 1 completed and not yet reaped)\n\
+             [4 futures]\n\
+             \n\
+             COUNT  TYPE / WAITING ON\n\
+             \x20   1  future child::fut\n\
+             \x20      └─ 1  timer\n\
+             \x20   1  future held::fut\n\
+             \x20      └─ 1  task\n\
+             [2 types]\n"
         );
     }
 
     /// The futures' type tally spans both populations the census names,
-    /// bounds itself by `--top` as the tasks' does, and leaves the reaped
-    /// slots — which are no future's type — out.
+    /// bounds itself by `--limit` as the tasks' does, and leaves the
+    /// reaped slots — which are no future's type — out.
     #[test]
     fn test_future_types_tally_the_held_and_the_resident() {
         let list = empty();
@@ -1888,33 +1992,38 @@ mod tests {
         let page = census(&facts, 2);
         assert!(
             page.contains(
-                "    Types and what they are waiting on:\n        \
-                 4  future hot::fut\n           \
-                 └─ 4  a chain that stopped before any leaf\n        \
-                 1  future cold::fut\n           \
-                 └─ 1  async fn cold::park\n        \
-                 1  across 1 more type\n"
+                "COUNT  TYPE / WAITING ON\n    \
+                 4  future hot::fut\n       \
+                 └─ 4  —\n    \
+                 1  future cold::fut\n       \
+                 └─ 1  async fn cold::park\n    \
+                 1  (1 more types)\n\
+                 [3 types, 2 shown]\n"
             ),
             "{page}"
         );
     }
 
     /// A fit cuts a tallied name to the room its line leaves it, the
-    /// indent and the count taken off first so the whole line lands
-    /// within the edge, with an ellipsis to say so; without a fit the
-    /// name prints whole however long.
+    /// count taken off first so the whole line lands within the edge,
+    /// with an ellipsis to say so; without a fit the name prints whole
+    /// however long. A branch's line is cut the same way, its indent
+    /// and stem taken off too.
     #[test]
     fn test_a_fit_cuts_the_tallied_names_to_the_line() {
         const LONG: &str = "a::very::long::module::path::to::some::future_type";
         let list = empty();
-        let held: Vec<HeldFuture> = (0..2).map(|_| held(LONG, None)).collect();
+        let held: Vec<HeldFuture> = (0..2)
+            .map(|_| held(LONG, Some(WaitKind::Io)))
+            .chain([held(LONG, Some(WaitKind::Task { addr: 0x7100 }))])
+            .collect();
         let mut facts = facts(&list, &[]);
         facts.held = &held;
         let futures = Sections::select(false, false, true);
 
         let whole = fitted(&facts, futures, 2, None);
         assert!(
-            whole.contains(&format!("\n        2  future {LONG}\n")),
+            whole.contains(&format!("\n    3  future {LONG}\n")),
             "{whole}"
         );
 
@@ -1922,12 +2031,17 @@ mod tests {
         let line = cut.lines().find(|l| l.contains("future a::")).unwrap();
         assert_eq!(line.chars().count(), 40, "{cut}");
         assert!(line.ends_with('…'), "{cut}");
-        assert!(line.starts_with("        2  future a::very"), "{cut}");
+        assert!(line.starts_with("    3  future a::very"), "{cut}");
+        // The branches fit too, and are short enough to print whole.
+        assert!(
+            cut.contains("\n       ├─ 2  io\n       └─ 1  task\n"),
+            "{cut}"
+        );
     }
 
     /// A census names the sections it was asked for and nothing else,
     /// with the blank line between them rather than around them — so a
-    /// narrowed page starts and ends on a section of its own.
+    /// narrowed page starts on its heading and ends on its last footer.
     #[test]
     fn test_named_sections_print_alone() {
         let list = TaskList {
@@ -1936,33 +2050,47 @@ mod tests {
         };
         let waits = vec![wait(1, Some(timer(9, 1)), 2)];
         let mut facts = facts(&list, &waits);
-        facts.lwps = 1;
-        facts.runtime = vec![Thread {
-            tid: 11,
-            runtime: Some(0),
-            role: Some(ThreadRole::Worker(0)),
-            polling: None,
-        }];
+        facts.lwps = vec![11];
+        facts.runtime = vec![worker(11, 0)];
 
         let only_tasks = sections(&facts, Sections::select(false, true, false), 5);
         assert!(
             only_tasks.starts_with("Tasks: 1 owned by runtime 0 @ 0x1000\n"),
             "{only_tasks}"
         );
+        assert!(only_tasks.ends_with("[1 type]\n"), "{only_tasks}");
         assert!(!only_tasks.contains("Threads:"), "{only_tasks}");
         assert!(!only_tasks.contains("Futures:"), "{only_tasks}");
-        assert!(!only_tasks.contains("\n\n"), "{only_tasks}");
 
-        // Two of them: one blank line, between the two headings and
-        // nowhere else.
+        // Two of them: the second heading follows the first section's
+        // footer after one blank line, and the page ends on a footer.
         let two = sections(&facts, Sections::select(true, false, true), 5);
-        let headings: Vec<&str> = two
-            .split("\n\n")
-            .map(|s| s.lines().next().unwrap())
-            .collect();
-        assert_eq!(headings.len(), 2, "{two}");
-        assert!(headings[0].starts_with("Threads: "), "{two}");
-        assert!(headings[1].starts_with("Futures: "), "{two}");
+        assert!(
+            two.starts_with("Threads: 1 lwp, 1 in runtime 0 @ 0x1000\n"),
+            "{two}"
+        );
+        assert!(two.contains("\n[1 lwp]\n\nFutures: 1 in flight, "), "{two}");
+        assert!(!two.contains("Tasks:"), "{two}");
+        // The task's own type is the task section's row, not the
+        // future section's: this page names no future type.
+        assert!(two.ends_with("[1 future]\n\n[0 types]\n"), "{two}");
+    }
+
+    /// A section over nothing is its heading and its footers: a table
+    /// with no rows prints no header, since a header over no rows
+    /// reads as data missing rather than absent.
+    #[test]
+    fn test_an_empty_section_is_heading_and_footers() {
+        let list = empty();
+        let facts = facts(&list, &[]);
+        assert_eq!(
+            sections(&facts, Sections::select(false, true, false), 5),
+            "Tasks: 0 owned by runtime 0 @ 0x1000\n\n[0 tasks]\n\n[0 types]\n"
+        );
+        assert_eq!(
+            sections(&facts, Sections::select(true, false, false), 5),
+            "Threads: 0 lwps, 0 in runtime 0 @ 0x1000\n\n[0 lwps]\n"
+        );
     }
 
     /// Naming no section is naming all three, which is the whole census

@@ -831,7 +831,7 @@ fn blocking_state(task: &bundle::Task, lwp: Option<u32>) -> String {
 /// The `STATE` cell: the lifecycle — a blocking cell's queued/running
 /// spelling — and the cancel bit, which any lifecycle can carry,
 /// appended rather than replacing it.
-fn row_state(task: &bundle::Task, blocking_lwp: Option<u32>) -> String {
+pub(crate) fn row_state(task: &bundle::Task, blocking_lwp: Option<u32>) -> String {
     let state = match task.blocking {
         true => blocking_state(task, blocking_lwp),
         false => task.state.lifecycle().to_string(),
@@ -1784,7 +1784,7 @@ pub(crate) fn exec_census<T: proc::Target>(
     let runtimes = census_runtimes(session, sections.threads)?;
 
     let facts = summary::Facts {
-        lwps: session.lwps.len(),
+        lwps: session.lwps.iter().map(|lwp| lwp.tid).collect(),
         runtime,
         runtimes,
         local_sets: session.local_sets.len(),
@@ -1793,9 +1793,8 @@ pub(crate) fn exec_census<T: proc::Target>(
         held: census.map(|census| &census.held[..]).unwrap_or(&[]),
         sets: census.map(|census| &census.sets[..]).unwrap_or(&[]),
         impls: &session.impl_fold,
-        fatal: session.proc.fatal_signal(),
     };
-    summary::print(&facts, sections, top, session.fit_width(theme), out)
+    summary::print(&facts, sections, top, session.fit_width(theme), theme, out)
 }
 
 /// Every discovered runtime with the readings that are its alone: what

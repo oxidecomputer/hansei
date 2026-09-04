@@ -108,39 +108,47 @@ The `census` command gives a brief summary of the threads, tasks, and futures pr
 
 ----
 hansei> census
-Terminated by SIGSEGV (SEGV_MAPERR), fault address 0x0, taken on lwp 2040415
-
 Threads: 33 lwps, 33 in runtime 0 @ 0x5629d639a9a0
-    32 in the scheduler's run loop
-        1 polling a task
-            worker 0, lwp 2040415  task 35
-        31 parked
-    1 in runtime 0 @ 0x5629d639a9a0, outside the run loop
-        0 in the blocking pool (0 idle, 0 tasks queued)
-        1 that entered the runtime another way (a block_on caller)
+
+COUNT  RT  ROLE             STATE            LWPS
+   31  0   worker           parked           2040416, 2040429, 2040432, …
+    1  0   worker           polling          2040415 (task 35)
+    1  0   entered runtime  block_on caller  2040413
+    0  0   blocking pool    0 idle, 0 busy   —
+[33 lwps]
 
 Tasks: 3 owned by runtime 0 @ 0x5629d639a9a0
-    State: 1 running, 2 idle
-    Future types and what they await:
-        1  async block rama_core::rt::executor::Executor::spawn_task<tracing::instrument::Instrumented<rama_tcp::server::listener::TcpListener::serve::{async_fn#0}::{async_block_env#3}<rama_http_types::body_limit_layer::Body…
-           └─ 1  nothing — mid-poll on a worker
-        1  async block tokio_graceful::guard::ShutdownGuard::spawn_task_fn<http_mitm_proxy_boring::main::{async_block#0}::{closure_env#0}, http_mitm_proxy_boring::main::{async_block#0}::{closure#0}>
-           └─ 1  an io resource
-        1  async block tokio_graceful::shutdown::ShutdownBuilder::build<tokio_graceful::shutdown::default_signal>
-           └─ 1  future core::future::poll_fn::PollFn<tokio_graceful::shutdown::default_signal::{async_fn#0}::{closure_env#1}>
 
-Futures: 23 in flight, on 60 await-chain frames (up to 8 deep)
-    Location:
-         3  polled as tasks
-        20  held in frames, off any await chain
-         0  in 0 FuturesUnordered
-    Future types and what they await:
-        5  future tokio_graceful::trigger::Receiver
-        2  future Pin<&mut futures_util::future::future::fuse::Fuse<tokio_graceful::guard::ShutdownGuard::cancelled>>
-        2  future Pin<&mut rama_http_core::server::conn::auto::UpgradeableConnection<Pin<Box<rama_tcp::stream::TcpStream>>, rama_http_core::service::RamaHttpService<Arc<rama_http::layer::trace::service::Trace<rama_core::laye…
-        2  future Pin<&mut rama_tcp::server::listener::TcpListener::serve::{async_fn#0}<rama_http_types::body_limit_layer::BodyLimitService<rama_http_backend::server::service::HttpService<rama_http_core::server::conn::auto::…
-        1  async block rama_http_core::proto::h1::dispatch::Server::recv_msg<rama_http_core::service::RamaHttpService<Arc<rama_http::layer::trace::service::Trace<rama_core::layer::consume_err::ConsumeErr<rama_http::layer::pr…
-        8  across 8 more types
+COUNT  STATE
+    2  idle
+    1  running
+[3 tasks]
+
+COUNT  TYPE / WAITING ON
+    1  async block rama_core::rt::executor::Executor::spawn_task<tracing::instrument::Instrumented<rama_tcp::server::listener::TcpListener::serve::{async_fn#0}::{async_block_env#3}<rama_http_types::body_limit_layer::BodyLimitS…
+       └─ 1  — (mid-poll)
+    1  async block tokio_graceful::guard::ShutdownGuard::spawn_task_fn<http_mitm_proxy_boring::main::{async_block#0}::{closure_env#0}, http_mitm_proxy_boring::main::{async_block#0}::{closure#0}>
+       └─ 1  io
+    1  async block tokio_graceful::shutdown::ShutdownBuilder::build<tokio_graceful::shutdown::default_signal>
+       └─ 1  future core::future::poll_fn::PollFn<tokio_graceful::shutdown::default_signal::{async_fn#0}::{closure_env#1}>
+[3 types]
+
+Futures: 23 in flight, on 60 await-chain frames, up to 8 deep
+
+COUNT  HELD IN
+    3  task (its own await chain)
+   20  frame (off any await chain)
+    0  set (0 FuturesUnordered)
+[23 futures]
+
+COUNT  TYPE / WAITING ON
+    5  future tokio_graceful::trigger::Receiver
+    2  future Pin<&mut futures_util::future::future::fuse::Fuse<tokio_graceful::guard::ShutdownGuard::cancelled>>
+    2  future Pin<&mut rama_http_core::server::conn::auto::UpgradeableConnection<Pin<Box<rama_tcp::stream::TcpStream>>, rama_http_core::service::RamaHttpService<Arc<rama_http::layer::trace::service::Trace<rama_core::layer::con…
+    2  future Pin<&mut rama_tcp::server::listener::TcpListener::serve::{async_fn#0}<rama_http_types::body_limit_layer::BodyLimitService<rama_http_backend::server::service::HttpService<rama_http_core::server::conn::auto::Builde…
+    1  async block rama_http_core::proto::h1::dispatch::Server::recv_msg<rama_http_core::service::RamaHttpService<Arc<rama_http::layer::trace::service::Trace<rama_core::layer::consume_err::ConsumeErr<rama_http::layer::proxy_au…
+    8  (8 more types)
+[13 types, 5 shown]
 ----
 
 There are three object types that can be reviewed in more depth: tasks, futures, and threads. Each

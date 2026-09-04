@@ -3,22 +3,33 @@ source: hansei/src/offline.rs
 description: "`census` over illumos/local-set-timer"
 ---
 Threads: 1 lwp, 1 in runtime 0 @ 0xADDR
-    1 in the scheduler's run loop
-        1 parked in the io driver
-            block_on thread, lwp 1
+
+COUNT  RT  ROLE             STATE           LWPS
+    1  0   block_on thread  in driver       1
+    0  0   blocking pool    0 idle, 0 busy  —
+[1 lwp]
 
 Tasks: 3 owned by 1 runtime and 1 local set
-    State: 3 idle
-    Types and what they are waiting on:
-        1  async fn local_set_timer::local_acquirer
-           └─ 1  a tokio::sync::Semaphore
-        1  async fn local_set_timer::local_sleeper
-           └─ 1  a timer
-        1  async fn local_set_timer::sleeper
-           └─ 1  a timer
 
-Futures: 3 in flight, on 7 await-chain frames (up to 3 deep)
-    Location:
-        3  polled as tasks
-        0  held in frames, off any await chain
-        0  in 0 FuturesUnordered
+COUNT  STATE
+    3  idle
+[3 tasks]
+
+COUNT  TYPE / WAITING ON
+    1  async fn local_set_timer::local_acquirer
+       └─ 1  a tokio::sync::Semaphore (semaphore)
+    1  async fn local_set_timer::local_sleeper
+       └─ 1  timer
+    1  async fn local_set_timer::sleeper
+       └─ 1  timer
+[3 types]
+
+Futures: 3 in flight, on 7 await-chain frames, up to 3 deep
+
+COUNT  HELD IN
+    3  task (its own await chain)
+    0  frame (off any await chain)
+    0  set (0 FuturesUnordered)
+[3 futures]
+
+[0 types]

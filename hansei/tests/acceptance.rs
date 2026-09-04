@@ -1751,8 +1751,7 @@ fn test_ct_runtime_acceptance() {
 
         // And the census's thread section classifies it the same way.
         let out = hansei_ok(&bundle, core, "census --threads");
-        assert!(out.contains("1 in the scheduler's run loop"), "{out}");
-        assert!(out.contains("block_on thread, lwp"), "{out}");
+        assert!(out.contains("  block_on thread  in driver"), "{out}");
     });
 }
 
@@ -2960,21 +2959,25 @@ fn test_census_counts_the_target() {
     with_core("sleep-join", |core| {
         let out = hansei_ok(&bundle, core, "census");
 
-        assert!(out.contains(" in the scheduler's run loop"), "{out}");
-        assert!(out.contains("1 parked in the io driver"), "{out}");
         // The section names the one runtime the target holds, the way
         // `runtimes` lists it.
         let inside =
             regex::Regex::new(r"Threads: \d+ lwps, \d+ in runtime 0 @ 0x[0-9a-f]+\n").unwrap();
         assert!(inside.is_match(&out), "{out}");
+        let driver =
+            regex::Regex::new(r"\n    1  0   worker           in driver        \d+\n").unwrap();
+        assert!(driver.is_match(&out), "{out}");
         // The `block_on` thread is in the runtime without running the
         // worker loop, as `threads` says of it too — and it is counted
         // apart from the pool's own threads, which the runtime's two
-        // workers are otherwise counted among.
-        assert!(out.contains(", outside the run loop\n"), "{out}");
-        assert!(out.contains(" in the blocking pool ("), "{out}");
+        // workers are otherwise counted among. The pool's row cannot
+        // say which lwps are its; the caller's can, since every thread
+        // that entered is the caller's.
+        let entered =
+            regex::Regex::new(r"\n    1  0   entered runtime  block_on caller  \d+\n").unwrap();
+        assert!(entered.is_match(&out), "{out}");
         assert!(
-            out.contains("1 that entered the runtime another way (a block_on caller)"),
+            out.contains("\n    0  0   blocking pool    0 idle, 0 busy   —\n"),
             "{out}"
         );
 
@@ -2989,19 +2992,16 @@ fn test_census_counts_the_target() {
         ))
         .unwrap();
         assert!(owned.is_match(&out), "{out}");
-        assert!(out.contains("    State: 2 idle\n"), "{out}");
         assert!(
-            out.contains(
-                "        1  async fn sleep_join::sleeper\n           \
-                 └─ 1  a timer\n"
-            ),
+            out.contains("COUNT  STATE\n    2  idle\n[2 tasks]\n"),
             "{out}"
         );
         assert!(
-            out.contains(
-                "        1  async fn sleep_join::joiner\n           \
-                 └─ 1  another task (JoinHandle)\n"
-            ),
+            out.contains("    1  async fn sleep_join::sleeper\n       └─ 1  timer\n"),
+            "{out}"
+        );
+        assert!(
+            out.contains("    1  async fn sleep_join::joiner\n       └─ 1  task\n"),
             "{out}"
         );
 
@@ -3012,11 +3012,13 @@ fn test_census_counts_the_target() {
         // things running.
         assert!(
             out.contains(
-                "Futures: 2 in flight, on 4 await-chain frames (up to 2 deep)\n    \
-                 Location:\n        \
-                 2  polled as tasks\n        \
-                 0  held in frames, off any await chain\n        \
-                 0  in 0 FuturesUnordered\n"
+                "Futures: 2 in flight, on 4 await-chain frames, up to 2 deep\n\
+                 \n\
+                 COUNT  HELD IN\n    \
+                 2  task (its own await chain)\n    \
+                 0  frame (off any await chain)\n    \
+                 0  set (0 FuturesUnordered)\n\
+                 [2 futures]\n"
             ),
             "{out}"
         );
@@ -3054,10 +3056,7 @@ fn test_census_prints_only_the_sections_named() {
         assert!(!tasks.contains("Threads: "), "{tasks}");
         assert!(!tasks.contains("Futures: "), "{tasks}");
         assert!(
-            tasks.contains(
-                "        1  async fn sleep_join::sleeper\n           \
-                 └─ 1  a timer\n"
-            ),
+            tasks.contains("    1  async fn sleep_join::sleeper\n       └─ 1  timer\n"),
             "{tasks}"
         );
     });
@@ -3077,8 +3076,8 @@ fn test_census_counts_a_set_and_what_is_held_beside_it() {
         let out = hansei_ok(&bundle, core, "census");
         assert!(
             out.contains(
-                "        9  held in frames, off any await chain\n        \
-                 5  in 2 FuturesUnordered\n"
+                "    9  frame (off any await chain)\n    \
+                 5  set (2 FuturesUnordered)\n"
             ),
             "{out}"
         );
@@ -3086,10 +3085,7 @@ fn test_census_counts_a_set_and_what_is_held_beside_it() {
         // the driver holds inside a tuple and an enum, the nested set's
         // own two children, and the one carried by the future the
         // driver holds for it.
-        assert!(
-            out.contains("        8  async fn unordered::leaf\n"),
-            "{out}"
-        );
+        assert!(out.contains("    8  async fn unordered::leaf\n"), "{out}");
         // What all five of them are — the set's children and the two
         // held beside them are the same async fn, the boxed one named
         // through the dyn join rather than by its pointer — and, under
@@ -3101,7 +3097,7 @@ fn test_census_counts_a_set_and_what_is_held_beside_it() {
         // what leaves this branch at three of the five.
         assert!(
             out.contains(
-                "        5  async fn unordered::set_member\n           \
+                "    5  async fn unordered::set_member\n       \
                  ├─ 3  future tokio::sync::notify::Notified\n"
             ),
             "{out}"

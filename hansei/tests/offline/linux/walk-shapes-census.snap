@@ -3,34 +3,45 @@ source: hansei/src/offline.rs
 description: "`census` over linux/walk-shapes"
 ---
 Threads: 3 lwps, 3 in 2 runtimes
-    1 in the scheduler's run loop
-        1 parked in the io driver
-            block_on thread, lwp 3638592
-    2 in 2 runtimes, outside the run loop
-        0 in the blocking pool of runtime 0 @ 0xADDR (0 idle, 0 tasks queued)
-        0 in the blocking pool of runtime 1 @ 0xADDR (0 idle, 0 tasks queued)
+
+COUNT  RT  ROLE             STATE           LWPS
+    1  0   block_on thread  in driver       3638592
+    0  0   blocking pool    0 idle, 0 busy  —
+    0  1   blocking pool    0 idle, 0 busy  —
+    2  —   entered runtime  —               3638595, 3638594
+[3 lwps]
 
 Tasks: 10 owned by 2 runtimes and 2 local sets
-    State: 1 queued, 9 idle
-    Types and what they are waiting on:
-        2  async fn walk_shapes::blocked
-           └─ 2  a tokio::sync::Semaphore
-        1  async fn walk_shapes::abandoner
-           └─ 1  future tokio::sync::notify::Notified
-        1  async fn walk_shapes::chained
-           └─ 1  future tokio::sync::notify::Notified
-        1  async fn walk_shapes::hidden_blocked
-           └─ 1  a tokio::sync::Semaphore
-        1  async fn walk_shapes::holder
-           └─ 1  future tokio::sync::notify::Notified
-        4  across 4 more types
 
-Futures: 12 in flight, on 33 await-chain frames (up to 5 deep)
-    Location:
-        10  polled as tasks
-         2  held in frames, off any await chain
-         0  in 0 FuturesUnordered
-    Types and what they are waiting on:
-        1  async fn tokio::sync::mutex::Mutex::lock<()>
-           └─ 1  a tokio::sync::Mutex
-        1  async fn walk_shapes::deep
+COUNT  STATE
+    9  idle
+    1  queued
+[10 tasks]
+
+COUNT  TYPE / WAITING ON
+    2  async fn walk_shapes::blocked
+       └─ 2  a tokio::sync::Semaphore (semaphore)
+    1  async fn walk_shapes::abandoner
+       └─ 1  future tokio::sync::notify::Notified
+    1  async fn walk_shapes::chained
+       └─ 1  future tokio::sync::notify::Notified
+    1  async fn walk_shapes::hidden_blocked
+       └─ 1  a tokio::sync::Semaphore (semaphore)
+    1  async fn walk_shapes::holder
+       └─ 1  future tokio::sync::notify::Notified
+    4  (4 more types)
+[9 types, 5 shown]
+
+Futures: 12 in flight, on 33 await-chain frames, up to 5 deep
+
+COUNT  HELD IN
+   10  task (its own await chain)
+    2  frame (off any await chain)
+    0  set (0 FuturesUnordered)
+[12 futures]
+
+COUNT  TYPE / WAITING ON
+    1  async fn tokio::sync::mutex::Mutex::lock<()>
+       └─ 1  a tokio::sync::Mutex (semaphore)
+    1  async fn walk_shapes::deep
+[2 types]
