@@ -9,6 +9,7 @@
 
 use super::{Lifecycle, Location, RawInstant, TaskAddr, TaskState};
 
+use hansei_bundle::tokio::timer;
 use hansei_bundle::{BundleTypeId, FutureKind, TaskEntryId};
 use reify::Value;
 
@@ -371,11 +372,9 @@ pub struct TimerEntryInfo {
 impl TimerEntryInfo {
     /// The entry's decoded wheel state, where the word was readable.
     pub fn wheel_state(&self) -> Option<WheelState> {
-        const DEREGISTERED: u64 = u64::MAX;
-        const PENDING_FIRE: u64 = DEREGISTERED - 1;
         Some(match self.state? {
-            DEREGISTERED => WheelState::Deregistered,
-            PENDING_FIRE => WheelState::PendingFire,
+            timer::STATE_DEREGISTERED => WheelState::Deregistered,
+            timer::STATE_PENDING_FIRE => WheelState::PendingFire,
             _ => WheelState::Registered,
         })
     }
@@ -384,7 +383,9 @@ impl TimerEntryInfo {
 /// Where a wheel entry is in its life, decoded from its state word.
 /// The sentinels are tokio's own constants, folded into its code at
 /// compile time and so — as with [`TaskState`](super::TaskState) —
-/// knowable only from its source.
+/// knowable only from its source; they are spelled once, in
+/// [`hansei_bundle::tokio::timer`], where the timer formatters read the
+/// same values, so `print` and `tasks` cannot decode one word two ways.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub enum WheelState {
     /// The word is the deadline tick: parked, not yet due.
@@ -399,8 +400,8 @@ pub enum WheelState {
 impl fmt::Display for WheelState {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Registered => f.write_str("registered"),
-            Self::PendingFire => f.write_str("pending fire"),
+            Self::Registered => f.write_str(timer::REGISTERED),
+            Self::PendingFire => f.write_str(timer::PENDING_FIRE),
             Self::Deregistered => f.write_str("fired, not yet polled"),
         }
     }

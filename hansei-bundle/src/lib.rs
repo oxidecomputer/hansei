@@ -13,6 +13,7 @@ mod schema;
 mod shape;
 mod strings;
 pub mod symbols;
+pub mod tokio;
 mod view;
 
 pub use io::{Error, FORMAT_VERSION, Result};
