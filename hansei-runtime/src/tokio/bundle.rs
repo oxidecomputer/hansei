@@ -19,6 +19,7 @@ use super::{Location, RawInstant, TaskAddr, TaskState};
 
 use anyhow::{Context as _, Result, anyhow, bail, ensure};
 use hansei_bundle::symbols::normalized_v0_key;
+use hansei_bundle::tokio::semaphore;
 use hansei_bundle::{
     BundleType, BundleTypeId, BundleView, DynPointer, FutureKind, StaticRole, SymbolLookup,
     TaskEntryId, TaskFutureEntry, TypeDef, WalkOutcome, WalkRole, strip_build_prefix,
@@ -1819,8 +1820,8 @@ impl<'b, T: Target> Context<'b, T> {
             addr,
             owner,
             num_permits,
-            available: raw >> 1,
-            closed: raw & 1 != 0,
+            available: raw >> semaphore::PERMIT_SHIFT,
+            closed: raw & semaphore::CLOSED != 0,
             waiters,
         })
     }

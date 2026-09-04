@@ -29,3 +29,12 @@ pub mod timer {
     pub const REGISTERED: &str = "registered";
     pub const PENDING_FIRE: &str = "pending fire";
 }
+
+/// The `batch_semaphore::Semaphore` permits word, behind tokio's `Mutex`,
+/// `RwLock`, `Semaphore` and the bounded mpsc channel.
+pub mod semaphore {
+    /// The low bit: set once the semaphore is closed.
+    pub const CLOSED: u64 = 1;
+    /// The available permit count occupies the bits above the closed bit.
+    pub const PERMIT_SHIFT: u8 = 1;
+}

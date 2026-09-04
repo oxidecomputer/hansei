@@ -15,6 +15,7 @@ use super::{
     Reach, Through, WORD, Want, find_unique, is_unsigned_integer, reach, sole_param_target,
     step_into, struct_of, transparent, unique_member, zero_offset_member,
 };
+use crate::bundle::tokio::semaphore;
 use crate::bundle::{
     Arm, BundleTypeId, DisplayNode, Field, ScalarDecode, Selector, Shape, Stmt, StringInterner,
     ValueExpr,
@@ -934,11 +935,12 @@ impl Emitter<'_> {
         ScalarDecode::Bits(vec![kind, order])
     }
 
-    /// tokio batch-semaphore permit word: bit 0 closed, the rest the available
-    /// permit count.
+    /// tokio batch-semaphore permit word: the closed bit, then the available
+    /// permit count above it — the spelling the runtime layer's wait-target
+    /// decode shares.
     fn semaphore_permits_decode(&mut self) -> ScalarDecode {
-        let closed = self.bool_field("closed", 0);
-        let permits = self.uint_tail_field("permits", 1);
+        let closed = self.bool_field("closed", semaphore::CLOSED.trailing_zeros() as u8);
+        let permits = self.uint_tail_field("permits", semaphore::PERMIT_SHIFT);
         ScalarDecode::Bits(vec![closed, permits])
     }
 
