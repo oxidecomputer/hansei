@@ -480,15 +480,36 @@ pub(crate) fn task_state(
     polling: &HashMap<u64, u32>,
     blocking_lwps: &HashMap<u64, u32>,
 ) -> String {
+    let lwp = task_lwp(task, polling, blocking_lwps);
     if task.blocking {
-        return blocking_state(task, blocking_lwps.get(&task.addr.0).copied());
+        return blocking_state(task, lwp);
     }
-    match (task.state.lifecycle(), task.task_id) {
-        (Lifecycle::Running, Some(id)) if polling.contains_key(&id) => {
-            format!("running (lwp {})", polling[&id])
-        }
+    match (task.state.lifecycle(), lwp) {
+        (Lifecycle::Running, Some(lwp)) => format!("running (lwp {lwp})"),
         (lifecycle, _) => lifecycle.to_string(),
     }
+}
+
+/// The thread a task is on, where anything names one: the worker whose
+/// current-task word claims it, else — for a blocking cell — the pool
+/// thread whose stack is inside its poll. A task that is not running
+/// is on no thread.
+pub(crate) fn task_lwp(
+    task: &bundle::Task,
+    polling: &HashMap<u64, u32>,
+    blocking_lwps: &HashMap<u64, u32>,
+) -> Option<u32> {
+    if task.state.lifecycle() != Lifecycle::Running {
+        return None;
+    }
+    task.task_id
+        .and_then(|id| polling.get(&id))
+        .or_else(|| {
+            task.blocking
+                .then(|| blocking_lwps.get(&task.addr.0))
+                .flatten()
+        })
+        .copied()
 }
 
 /// One joined task's row: how the task listing names it, or — for a
@@ -596,7 +617,8 @@ pub(crate) struct TaskRow {
     pub(crate) spawned: Option<String>,
     /// `Defined at:` — where the root future's source declares it.
     pub(crate) defined: Option<String>,
-    /// The lwp mid-poll on the task, where the runtime names one.
+    /// The thread the task is on ([`task_lwp`]), `None` for a task on
+    /// no thread.
     pub(crate) lwp: Option<u32>,
 }
 
@@ -647,9 +669,10 @@ pub(crate) fn build_rows(
         .enumerate()
         .map(|(index, task)| {
             let (waker, waker_kind, waker_detail) = waker_slots(task.addr.0, &slots, registries);
+            let lwp = task_lwp(task, polling, blocking_lwps);
             TaskRow {
                 id: task_id(list, index),
-                state: row_state(task, blocking_lwps.get(&task.addr.0).copied()),
+                state: row_state(task, lwp),
                 rt: task.group,
                 awaiting_at: waits
                     .get(index)
@@ -670,10 +693,7 @@ pub(crate) fn build_rows(
                         .map(|(file, line)| format!("{file}:{line}")),
                     _ => None,
                 },
-                lwp: match task.state.lifecycle() == Lifecycle::Running {
-                    true => task.task_id.and_then(|id| polling.get(&id)).copied(),
-                    false => None,
-                },
+                lwp,
             }
         })
         .collect()
@@ -813,13 +833,13 @@ pub(crate) fn blocking_lwps<'s, T: proc::Target>(
 }
 
 /// The `blocking (…)` spelling a pool cell's STATE carries: queued
-/// until a thread claims it, running while claimed — spelled
-/// `blocking_lwp#N` where the stacks name the lwp running it, one
-/// word so the column stays narrow.
+/// until a thread claims it, running while claimed — plain `blocking`
+/// where something names the lwp running it, since the row's thread
+/// carries which one.
 fn blocking_state(task: &bundle::Task, lwp: Option<u32>) -> String {
     match task.state.lifecycle() {
         Lifecycle::Running => match lwp {
-            Some(lwp) => format!("blocking_lwp#{lwp}"),
+            Some(_) => "blocking".to_string(),
             None => "blocking (running)".to_string(),
         },
         lifecycle => match lifecycle == Lifecycle::Complete {
@@ -832,9 +852,9 @@ fn blocking_state(task: &bundle::Task, lwp: Option<u32>) -> String {
 /// The `STATE` cell: the lifecycle — a blocking cell's queued/running
 /// spelling — and the cancel bit, which any lifecycle can carry,
 /// appended rather than replacing it.
-pub(crate) fn row_state(task: &bundle::Task, blocking_lwp: Option<u32>) -> String {
+pub(crate) fn row_state(task: &bundle::Task, lwp: Option<u32>) -> String {
     let state = match task.blocking {
-        true => blocking_state(task, blocking_lwp),
+        true => blocking_state(task, lwp),
         false => task.state.lifecycle().to_string(),
     };
     match task.state.is_cancelled() {
@@ -970,10 +990,11 @@ pub(crate) struct TaskView<'a> {
 /// of them under `tasks --exec task` reads as blocks rather than as
 /// one long column. A line prints only where the target has something for it — no `—`
 /// placeholders — so a missing source anchor is a shorter block. The
-/// waker and the census counts print always, because their empty
-/// spellings are answers: `<empty>` is "nothing can wake it", `0` is
-/// "holds nothing". Under `futures`, the census's finds are listed
-/// under the count each belongs to.
+/// thread, the waker and the census counts print always, because
+/// their empty spellings are answers: `<none>` is "on no thread",
+/// `<empty>` is "nothing can wake it", `0` is "holds nothing". Under
+/// `futures`, the census's finds are listed under the count each
+/// belongs to.
 pub(crate) fn print_task_view(
     view: &TaskView<'_>,
     index: usize,
@@ -983,18 +1004,20 @@ pub(crate) fn print_task_view(
     let task = &view.list.tasks[index];
     let row = &view.rows[index];
     writeln!(out, "task {}", row.id)?;
-    // A mid-poll task waits on nothing, so the lwp polling it goes on
-    // the state rather than on a wait line, where the table's wait cell
-    // carries it.
+    writeln!(out, "    state: {}", row.state)?;
+    // The thread the task is on — the worker mid-poll on it, the pool
+    // thread running a blocking cell — printed always, since `<none>`
+    // is an answer: the task is on no thread.
+    writeln!(
+        out,
+        "    thread: {}",
+        row.lwp
+            .map(|lwp| lwp.to_string())
+            .unwrap_or_else(|| "<none>".to_string())
+    )?;
+    // A mid-poll task waits on nothing, so it gets no wait line; the
+    // table's wait cell says why.
     let polled = !task.blocking && task.state.lifecycle() == Lifecycle::Running;
-    let mut state = row.state.clone();
-    if polled {
-        state.push_str(&match row.lwp {
-            Some(lwp) => format!(" (mid-poll on lwp {lwp})"),
-            None => " (mid-poll)".to_string(),
-        });
-    }
-    writeln!(out, "    state: {state}")?;
     if let Some(tag) = view.group_tags.get(task.group) {
         writeln!(out, "    owner: {tag}")?;
     }
@@ -2082,7 +2105,8 @@ mod table_tests {
     }
 
     /// A blocking cell's STATE spells where it is in the pool — queued,
-    /// running (with the lwp where the stacks name one) — its wait
+    /// running, or plain `blocking` where the stacks name the lwp
+    /// running it, which the row's thread then carries — its wait
     /// column stays empty, and the cancel bit rides whichever spelling.
     #[test]
     fn test_blocking_rows_spell_queue_and_thread() {
@@ -2114,7 +2138,8 @@ mod table_tests {
             &Default::default(),
             &HashMap::from([(0x1000 + 2 * 0x100, 42)]),
         );
-        assert_eq!(with_lwp[0].state, "blocking_lwp#42");
+        assert_eq!(with_lwp[0].state, "blocking");
+        assert_eq!(with_lwp[0].lwp, Some(42));
 
         // The block form agrees, complete stays plain.
         let polling = HashMap::new();
@@ -2128,7 +2153,7 @@ mod table_tests {
                 &polling,
                 &HashMap::from([(0x1000 + 2 * 0x100, 7)])
             ),
-            "blocking_lwp#7"
+            "blocking"
         );
         const COMPLETE: u64 = 0b010;
         assert_eq!(

@@ -4,6 +4,7 @@ description: "`task 3 --futures` over linux-floor/channels"
 ---
 task 3
     state: idle
+    thread: <none>
     type: async fn channels::notify_waiter
     awaiting at: src/bin/channels.rs:34
     waiting on: future tokio::sync::notify::Notified

@@ -4,6 +4,7 @@ description: "`task 1` over linux-floor/local-set-timer"
 ---
 task 1
     state: idle
+    thread: <none>
     owner: local set 0 @ 0xADDR (lwp 3643691)
     type: async fn local_set_timer::local_sleeper
     awaiting at: src/bin/local-set-timer.rs:22

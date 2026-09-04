@@ -592,7 +592,9 @@ fn tasks(
     // the one table that adds up to the total above it. The spelling
     // is the `STATE` cell's, so a row here is a `tasks --group state`
     // bucket — a blocking task's pool spelling, the cancel bit
-    // appended — less the lwp a running blocking task names.
+    // appended — spelled as if no thread were named, so a running
+    // blocking task is `blocking (running)` here whether or not the
+    // listing knows its lwp.
     let mut states: BTreeMap<String, usize> = BTreeMap::new();
     for task in &list.tasks {
         *states.entry(row_state(task, None)).or_default() += 1;

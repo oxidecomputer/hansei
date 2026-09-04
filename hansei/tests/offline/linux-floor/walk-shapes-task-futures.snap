@@ -4,6 +4,7 @@ description: "`task 1 --futures` over linux-floor/walk-shapes"
 ---
 task 1
     state: idle
+    thread: <none>
     owner: runtime 0 @ 0xADDR (current_thread)
     type: async fn walk_shapes::chained
     awaiting at: src/bin/walk-shapes.rs:107

@@ -1162,9 +1162,9 @@ mod tests {
                 .expect("bare task prints the cursor's");
             let text = String::from_utf8(out).expect("the summary is UTF-8");
             assert!(text.starts_with(&format!("task {id}\n")), "{id}: {text}");
-            // Under the heading, one labelled line per field, the state
-            // and type always there; a single-group target carries no
-            // owner line.
+            // Under the heading, one labelled line per field, the state,
+            // thread and type always there; a single-group target
+            // carries no owner line.
             let labels: Vec<&str> = text
                 .lines()
                 .skip(1)
@@ -1176,7 +1176,7 @@ mod tests {
                 text.lines().skip(1).all(|l| l.starts_with("    ")),
                 "{text}"
             );
-            assert!(labels.starts_with(&["state", "type"]), "{text}");
+            assert!(labels.starts_with(&["state", "thread", "type"]), "{text}");
             assert!(!labels.contains(&"owner"), "{text}");
             // The selection carries the task's source anchors, its
             // waker, and the census's counts — the last two always,

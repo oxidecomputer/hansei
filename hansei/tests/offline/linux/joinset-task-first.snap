@@ -4,6 +4,7 @@ description: "`task 3` over linux/joinset"
 ---
 task 3
     state: idle
+    thread: <none>
     type: async fn joinset::driver
     awaiting at: src/bin/joinset.rs:83
     waiting on: future tokio::util::idle_notified_set::IdleNotifiedSet<tokio::runtime::task::join::JoinHandle<u32>>

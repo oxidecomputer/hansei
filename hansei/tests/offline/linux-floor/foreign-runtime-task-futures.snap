@@ -4,6 +4,7 @@ description: "`task 1 --futures` over linux-floor/foreign-runtime"
 ---
 task 1
     state: idle
+    thread: <none>
     owner: runtime 1 @ 0xADDR (current_thread, no thread inside it)
     type: async fn foreign_runtime::joined
     awaiting at: src/bin/foreign-runtime.rs:40

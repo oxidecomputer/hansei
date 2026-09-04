@@ -160,10 +160,10 @@ Counts by a field can be found using `--group`.
 
 ----
 hansei> tasks --group state
-COUNT  STATE                          TASKS
-22495  idle                           129, 130, 131, …
-    3  running                        2436, 2439, 2445
-    1  blocking (running on lwp 156)  765
+COUNT  STATE     TASKS
+22495  idle      129, 130, 131, …
+    3  running   2436, 2439, 2445
+    1  blocking  765
 [3 groups]
 ----
 
@@ -182,7 +182,8 @@ The `--exec` flag can execute single-object commands against all objects returne
 ----
 hansei> tasks --with state running --without id 2445 --exec task
 task 2436
-    state: running (mid-poll on lwp 115)
+    state: running
+    thread: 115
     type: async block parallel_task_set::ParallelTaskSet::spawn::{async_fn#0}<support_bundle_collection::step::CompletedCollectionStep, support_bundle_collection::collection::BundleCollection::run_collect_bundle_steps::{async_fn#0}>
     awaiting at: parallel-task-set/src/lib.rs:97
     waker: <empty>
@@ -192,7 +193,8 @@ task 2436
     join sets: 2 (7057 futures)
 
 task 2439
-    state: running (mid-poll on lwp 124)
+    state: running
+    thread: 124
     type: async block parallel_task_set::ParallelTaskSet::spawn::{async_fn#0}<support_bundle_collection::step::CompletedCollectionStep, support_bundle_collection::collection::BundleCollection::run_collect_bundle_steps::{async_fn#0}>
     awaiting at: parallel-task-set/src/lib.rs:97
     waker: <empty>
@@ -209,7 +211,8 @@ will show the cursor's location when set.
 ----
 hansei> task 2439
 task 2439
-    state: running (mid-poll on lwp 124)
+    state: running
+    thread: 124
     type: async block parallel_task_set::ParallelTaskSet::spawn::{async_fn#0}<support_bundle_collection::step::CompletedCollectionStep, support_bundle_collection::collection::BundleCollection::run_collect_bundle_steps::{async_fn#0}>
     awaiting at: parallel-task-set/src/lib.rs:97
     waker: <empty>

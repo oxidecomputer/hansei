@@ -531,6 +531,8 @@ struct TaskRow {
     /// one — `task` prints no line for a missing anchor.
     spawned: String,
     defined: String,
+    /// The thread the task is on, `<none>` where it is on none.
+    thread: String,
     /// The wait, spelled as the table's cell — empty for a task
     /// waiting on nothing nameable, which gets no line either.
     waiting: String,
@@ -541,8 +543,8 @@ struct TaskRow {
 /// Run `task` under every task — `tasks --exec task` — and parse what
 /// it prints: each task's table row as the exec heading, then a `task
 /// <id>` line and one `<label>: <value>` line per field. The fields
-/// `task` always prints — state, type, waker, the two census counts —
-/// must be there for every task; the anchors and the wait print only
+/// `task` always prints — state, thread, type, waker, the two census
+/// counts — must be there for every task; the anchors and the wait print only
 /// where the target has them, so those may come back empty.
 fn list_tasks(bundle: &Path, core: &Path) -> Vec<TaskRow> {
     let out = hansei_ok(bundle, core, "tasks --exec task");
@@ -578,6 +580,7 @@ fn list_tasks(bundle: &Path, core: &Path) -> Vec<TaskRow> {
             sets: String::new(),
             spawned: String::new(),
             defined: String::new(),
+            thread: String::new(),
             waiting: String::new(),
             waker: String::new(),
         };
@@ -600,6 +603,7 @@ fn list_tasks(bundle: &Path, core: &Path) -> Vec<TaskRow> {
                 .unwrap_or_else(|| panic!("unexpected task line {line:?}"));
             let field = match label {
                 "state" => &mut row.state,
+                "thread" => &mut row.thread,
                 "owner" => &mut row.owner,
                 "type" => &mut row.future,
                 "awaiting at" => continue,
@@ -616,6 +620,7 @@ fn list_tasks(bundle: &Path, core: &Path) -> Vec<TaskRow> {
         }
         for (label, value) in [
             ("state", &row.state),
+            ("thread", &row.thread),
             ("type", &row.future),
             ("waker", &row.waker),
             ("held futures", &row.futures),
@@ -1838,9 +1843,10 @@ fn test_blocking_pool_acceptance() {
             "future tokio::runtime::blocking::task::BlockingTask<\
              blocking_pool::main::{async_block#0}::{closure_env#1}>",
         );
-        let on_lwp = regex::Regex::new(r"^blocking_lwp#\d+$").unwrap();
-        assert!(on_lwp.is_match(&running.state), "{rows:#?}");
+        assert_eq!(running.state, "blocking", "{rows:#?}");
+        assert!(running.thread.parse::<u32>().is_ok(), "{rows:#?}");
         assert_eq!(queued.state, "blocking (queued)", "{rows:#?}");
+        assert_eq!(queued.thread, "<none>", "{rows:#?}");
         // A blocking cell waits on a pool thread, not on a future, so
         // `task` prints no wait line for it.
         assert_eq!(running.waiting, "", "{rows:#?}");
@@ -2013,11 +2019,12 @@ fn test_spin_poll_acceptance() {
 
         // The listing corroborates the worker's claim, and names the
         // lwp the joined section must attribute the poll to.
-        let lwp = task
-            .state
-            .strip_prefix("running (mid-poll on lwp ")
-            .and_then(|state| state.strip_suffix(')'))
-            .unwrap_or_else(|| panic!("the spinner is not running on a worker: {rows:#?}"));
+        assert_eq!(task.state, "running", "{rows:#?}");
+        let lwp = &task.thread;
+        assert!(
+            lwp.parse::<u32>().is_ok(),
+            "the spinner is not running on a worker: {rows:#?}"
+        );
 
         // Not [`hansei_ok`]: tracing a running task warns that its
         // state may be torn, and that warning is part of the assertion.

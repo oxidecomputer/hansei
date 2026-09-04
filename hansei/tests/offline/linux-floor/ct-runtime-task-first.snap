@@ -4,6 +4,7 @@ description: "`task 1` over linux-floor/ct-runtime"
 ---
 task 1
     state: idle
+    thread: <none>
     type: async fn ct_runtime::sleeper
     awaiting at: src/bin/ct-runtime.rs:17
     waiting on: timer (deadline TS on the target's monotonic clock)
