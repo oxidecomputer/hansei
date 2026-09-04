@@ -1925,7 +1925,8 @@ pub fn dispatch<T: Target>(
                 // answers with the native backtrace rather than
                 // refusing. The hybrid trace is the task cursor's.
                 if let Some(tid) = session.cursor.borrow().lwp {
-                    trace::exec_trace_lwp(session, tid, limit, out)?;
+                    let fit = session.fit_width(theme);
+                    trace::exec_trace_lwp(session, tid, limit, fit, out)?;
                     return Ok(Flow::Continue);
                 }
                 anyhow::bail!(

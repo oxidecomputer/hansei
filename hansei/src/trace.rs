@@ -19,14 +19,16 @@ use std::fmt;
 use std::io::{self, Write};
 
 /// A bare `trace` under a thread cursor: the lwp's native backtrace,
-/// the same walk `threads` shows, without the runtime state around
-/// it. The hybrid trace — the await chain with the native
-/// continuation glued on — belongs to the task cursor: `task` selects
-/// one, mid-poll or not.
+/// one frame a line — its pc, then its symbol cut to the fit like a
+/// chain frame's name — without any runtime state around it. The
+/// hybrid trace — the await chain with the native continuation glued
+/// on — belongs to the task cursor: `task` selects one, mid-poll or
+/// not.
 pub(crate) fn exec_trace_lwp<T: proc::Target>(
     session: &Session<'_, T>,
     tid: u32,
     limit: Option<usize>,
+    fit: Option<usize>,
     out: &mut dyn io::Write,
 ) -> Result<()> {
     let unwound =
@@ -37,8 +39,9 @@ pub(crate) fn exec_trace_lwp<T: proc::Target>(
     };
     writeln!(out, "lwp {tid} native stack:")?;
     let max = limit.unwrap_or(50);
-    for line in backtrace.stack_trace(max) {
-        writeln!(out, "{line}")?;
+    for frame in backtrace.frames.iter().take(max) {
+        let symbol = frame.symbol.as_ref().map(|s| s.name.as_str());
+        writeln!(out, "{}", native_stack_line(frame.regs.rip, symbol, fit))?;
     }
     let total = backtrace.frames.len();
     if max < total {
@@ -49,6 +52,17 @@ pub(crate) fn exec_trace_lwp<T: proc::Target>(
         )?;
     }
     Ok(())
+}
+
+/// One line of the thread trace: the frame's pc, two spaces, and its
+/// demangled symbol — nothing where the frame has none — cut to what
+/// the fit leaves after the pc column, the way the native section
+/// above a mid-poll chain cuts its rows.
+fn native_stack_line(pc: u64, symbol: Option<&str>, fit: Option<usize>) -> String {
+    let name = format!("{:#}", rustc_demangle::demangle(symbol.unwrap_or_default()));
+    // The pc column and the gap after it.
+    let name = output::fit_name(&name, 18 + 2, fit);
+    format!("{pc:#018x}  {name}")
 }
 
 pub(crate) fn exec_trace<T: proc::Target>(
@@ -1547,7 +1561,7 @@ mod chain_end_tests {
 /// the refusal spelling.
 #[cfg(test)]
 mod native_section_tests {
-    use super::{TraceOpts, print_native_section, refuse_join};
+    use super::{TraceOpts, native_stack_line, print_native_section, refuse_join};
     use crate::{RenderOpts, output};
     use hansei_bundle::BundleTypeId;
     use hansei_runtime::tokio::stackjoin::{self, NativeFrame};
@@ -1682,6 +1696,28 @@ mod native_section_tests {
 0x0000000000009000  __lwp_park
 0x0000000000009010  std::sync::poison::…
 "
+        );
+    }
+
+    /// The thread trace's frame line: the pc column, then the symbol
+    /// demangled, and — under a fit — cut to what the pc column
+    /// leaves, so `config truncate-names` reaches a bare `trace`
+    /// under a thread cursor too. A frame without a symbol ends at
+    /// the gap.
+    #[test]
+    fn test_a_fit_cuts_the_thread_trace_to_the_edge() {
+        let mangled = "_ZN3std4sync6poison5mutex14Mutex$LT$T$GT$4lock17h0123456789abcdefE";
+        assert_eq!(
+            native_stack_line(0x9010, Some(mangled), None),
+            "0x0000000000009010  std::sync::poison::mutex::Mutex<T>::lock"
+        );
+        assert_eq!(
+            native_stack_line(0x9010, Some(mangled), Some(40)),
+            "0x0000000000009010  std::sync::poison::…"
+        );
+        assert_eq!(
+            native_stack_line(0x9000, None, Some(40)),
+            "0x0000000000009000  "
         );
     }
 
