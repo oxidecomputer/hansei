@@ -1,0 +1,8 @@
+---
+source: hansei/src/offline.rs
+description: "`runtimes` over linux/foreign-runtime"
+---
+ID  FLAVOR          HANDLE          TASKS  FUTURES  WORKERS  THREADS  FOUND VIA
+0   current_thread  0xADDR      1        1        1        1  a thread's runtime context
+1   current_thread  0xADDR      2        2        1        0  a JoinHandle held by an enumerated task
+[2 runtimes]

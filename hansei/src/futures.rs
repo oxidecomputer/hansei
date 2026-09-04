@@ -56,7 +56,7 @@ pub(crate) struct FutureRow {
     /// task list, and as `tasks` names it.
     pub(crate) owner: usize,
     pub(crate) task: String,
-    /// The owner's group index (`runtimes --list`).
+    /// The owner's group index (`runtimes`).
     pub(crate) rt: usize,
     pub(crate) kind: Kind,
     /// The `HELD IN` cell: `frame N, \`local\`` for a held future,
@@ -512,7 +512,7 @@ pub(crate) enum Field {
     Kind,
     /// The owning task's id, as `tasks` prints it — exact.
     Task,
-    /// The owner's group index `runtimes --list` prints — exact.
+    /// The owner's group index `runtimes` prints — exact.
     Rt,
     /// The holding frame number — exact, a held future's only.
     Frame,

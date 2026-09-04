@@ -1,0 +1,5 @@
+---
+source: hansei/src/offline.rs
+description: "`runtime` over illumos/foreign-runtime"
+---
+error: 2 runtimes; name one by its index or handle (`runtimes` lists them)

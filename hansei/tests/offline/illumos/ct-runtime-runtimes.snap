@@ -1,0 +1,7 @@
+---
+source: hansei/src/offline.rs
+description: "`runtimes` over illumos/ct-runtime"
+---
+ID  FLAVOR          HANDLE     TASKS  FUTURES  WORKERS  THREADS  FOUND VIA
+0   current_thread  0xADDR      2        2        1        1  a thread's runtime context
+[1 runtime]

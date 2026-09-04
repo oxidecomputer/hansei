@@ -792,7 +792,7 @@ fn print_thread_context<T: proc::Target>(
 /// columns in, with a nested render's lines set under the value's
 /// first line, which [`print_variable`] opens two columns past the
 /// label.
-fn print_rendered<T: proc::Target>(
+pub(crate) fn print_rendered<T: proc::Target>(
     session: &Session<'_, T>,
     name: &str,
     value: &Value<'_>,

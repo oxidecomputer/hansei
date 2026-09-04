@@ -1,0 +1,7 @@
+---
+source: hansei/src/offline.rs
+description: "`runtimes --group flavor` over linux-floor/foreign-runtime"
+---
+COUNT  FLAVOR          RUNTIMES
+    2  current_thread  runtime 0, runtime 1
+[1 group]

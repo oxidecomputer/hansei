@@ -159,7 +159,7 @@ struct SessionArgs {
     best_effort: bool,
 
     /// Read only one of the target's runtimes, by its index in the
-    /// discovered list (`runtimes --list` names them). By default every
+    /// discovered list (`runtimes` names them). By default every
     /// runtime is read, merged with a tag where there is more than one.
     #[arg(long, value_name = "INDEX")]
     runtime: Option<usize>,
@@ -610,55 +610,88 @@ pub enum Command {
     /// to show.
     Regs,
 
-    /// Show each runtime's own state, read straight through the tokio
-    /// info's layouts: its drivers, and the scheduler state its workers
-    /// share. Naming no section shows both, and naming no runtime shows
-    /// every one of them, each under a heading.
-    ///
-    /// `--list` asks the other question instead: not what one runtime
-    /// holds, but which executors there are at all — one row per
-    /// discovered runtime, then one per discovered `LocalSet`, with the
-    /// tasks and futures the merged population attributes to it.
+    /// Print one runtime in full: its heading — the index and handle
+    /// address the way `runtimes` lists it — then, four columns in,
+    /// its flavor, the tasks and futures it holds, its worker count,
+    /// the lwps inside it, the route discovery reached it by, and the
+    /// two halves of its handle: the drivers (io, signal, time and the
+    /// clock) and the scheduler state its workers share (the
+    /// owned-task set, the injection queue, the idle set and the
+    /// per-worker remotes). Both are read straight through the
+    /// bundle's layouts rather than a hand-written mirror of tokio's
+    /// structs, so a field tokio adds shows up without hansei being
+    /// taught about it. Naming none prints the one runtime, on a
+    /// target holding one.
+    Runtime {
+        /// The runtime's index in the `runtimes` listing, or the
+        /// handle address printed beside it there in hex with a
+        /// leading 0x.
+        #[arg(value_name = "RUNTIME", value_parser = parse_runtime_scope)]
+        scope: Option<RuntimeScope>,
+    },
+
+    /// List every runtime the target holds — one table row per
+    /// discovered runtime: its index, scheduler flavor and handle
+    /// address, the tasks and futures the merged population attributes
+    /// to it, its worker count (a multi_thread runtime's worker slots;
+    /// one for a current_thread runtime, which runs everything on the
+    /// thread that entered it), the threads inside it, and the route
+    /// discovery reached it by. One runtime in full — its lwps by id,
+    /// its drivers and the scheduler state its workers share — is
+    /// `runtime N`.
     ///
     /// The index each row carries is the one the task listing tags its
-    /// blocks with, the one `--runtime` selects by, and the one this
-    /// command takes; the handle address beside it names the same thing
-    /// and can be given anywhere the index can.
+    /// blocks with, the one `--runtime` selects by, and the one
+    /// `runtime` takes; the handle address beside it names the same
+    /// thing and can be given anywhere the index can. A `LocalSet`
+    /// shares that tag space (its tasks are tagged `local set N`) but
+    /// is not a runtime and has no row here; `whatis` on its shared
+    /// state names it.
     ///
-    /// A listed row says where its group runs — the lwps inside it — or,
-    /// when nothing is inside it, the route discovery reached it by. That
-    /// distinction is worth reading, because the list is a lower bound
-    /// by construction: a runtime no thread is inside is only found
-    /// when something already discovered points at it, so one whose
-    /// `block_on` has returned and whose tasks nothing outside it
-    /// names cannot be found at all.
+    /// A row's threads and route are worth reading together, because
+    /// the list is a lower bound by construction: a runtime no thread
+    /// is inside is only found when something already discovered
+    /// points at it — the route says what — so one whose `block_on`
+    /// has returned and whose tasks nothing outside it names cannot
+    /// be found at all.
     ///
-    /// The future counts are the census's, so the first `runtimes
-    /// --list` walks every task's await chain — the slowest thing a
-    /// session does on a large target. The walk is kept, so a later
-    /// `census`, `futures`, `graph` or `whatis` costs nothing.
+    /// Filters are the selection: repeatable `--with FIELD ARG` /
+    /// `--without FIELD ARG` clauses AND together, and `--group FIELD`
+    /// tallies the survivors. The string fields — flavor, found-via —
+    /// are case-insensitive regexes over the spelled value; id and
+    /// handle are exact; tasks, futures, workers and threads compare
+    /// counts, spelled '>N', '<N' or '=N' (quote them from a shell).
+    ///
+    /// The future counts are the census's, so the first `runtimes`
+    /// walks every task's await chain — the slowest thing a session
+    /// does on a large target. The walk is kept, so a later `census`,
+    /// `futures`, `graph` or `whatis` costs nothing.
     Runtimes {
-        /// List the executors instead of showing their state: one row
-        /// per runtime and per `LocalSet`, with what each holds.
-        #[arg(long, short, conflicts_with_all = ["drivers", "shared", "scope"])]
-        list: bool,
+        // The runtime names the old grammar took, kept so the refusal
+        // can name the way forward rather than clap's bare "unexpected
+        // argument".
+        #[arg(value_name = "RUNTIME", hide = true)]
+        scope: Vec<String>,
 
-        /// Print the drivers: io, signal, time, and the clock.
-        #[arg(long, short = 'D')]
-        drivers: bool,
+        /// Keep only the runtimes whose FIELD matches ARG; repeat for
+        /// more clauses, which AND. Fields: flavor, found-via
+        /// (case-insensitive regexes); id, handle (exact); tasks,
+        /// futures, workers, threads ('>N', '<N', '=N'). ARG may list
+        /// alternatives, `0,1`, of which any matches; a literal comma
+        /// is `\,`.
+        #[arg(long, short = 'w', num_args = 2, value_names = ["FIELD", "ARG"])]
+        with: Vec<String>,
 
-        /// Print the scheduler state the workers share: the owned-task
-        /// set, the injection queue, the idle set and the per-worker
-        /// remotes.
-        #[arg(long, short)]
-        shared: bool,
+        /// Drop the runtimes whose FIELD matches ARG; the same fields
+        /// as --with.
+        #[arg(long, short = 'W', num_args = 2, value_names = ["FIELD", "ARG"])]
+        without: Vec<String>,
 
-        /// Show only these runtimes, each named by its index in the
-        /// listing or by the handle address printed beside it there in
-        /// hex with a leading 0x. All of them are shown when none is
-        /// named.
-        #[arg(value_name = "RUNTIME", value_parser = parse_runtime_scope)]
-        scope: Vec<RuntimeScope>,
+        /// Bucket the surviving runtimes by FIELD's spelled value:
+        /// one `COUNT VALUE` row per bucket, most numerous first, each
+        /// with a few member names.
+        #[arg(long, short = 'g', value_name = "FIELD")]
+        group: Option<String>,
     },
 
     /// Write this session's tokio info to a file `--tokio-info` can
@@ -1197,7 +1230,7 @@ impl RenderOpts {
 /// Which runtime a command was pointed at.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RuntimeScope {
-    /// Its position in the `runtimes --list` listing — the index every
+    /// Its position in the `runtimes` listing — the index every
     /// listing tags a task's group with.
     Index(usize),
     /// The address of its handle, which that listing prints beside the
@@ -1218,9 +1251,9 @@ fn parse_runtime_scope(s: &str) -> std::result::Result<RuntimeScope, String> {
     } else {
         s.parse().map(RuntimeScope::Index).map_err(|_| {
             format!(
-                "a runtime is named by its index in the `runtimes --list` \
-                 listing, or by the handle address printed beside it there \
-                 (with or without its leading @), got {s:?}"
+                "a runtime is named by its index in the `runtimes` listing, \
+                 or by the handle address printed beside it there (with or \
+                 without its leading @), got {s:?}"
             )
         })
     }
@@ -1689,9 +1722,9 @@ impl<'b, T: Target> Session<'b, T> {
     /// group order tasks are stamped with — empty (no tags) when the
     /// whole population is one runtime's, which is nearly every target.
     ///
-    /// Each names its group the way `runtimes --list` lists it, so a tag
-    /// can be looked up there and handed straight back to `--runtime` or
-    /// to `runtimes`.
+    /// Each names its group the way `runtimes` lists it, so a tag can
+    /// be looked up there and handed straight back to `--runtime` or
+    /// to `runtime`.
     fn group_tags(&self) -> Vec<String> {
         if self.runtimes.len() + self.local_sets.len() <= 1 {
             return Vec::new();
@@ -1788,19 +1821,23 @@ pub fn dispatch<T: Target>(
             print::exec_print(session, &args, render, out)?
         }
         Command::Regs => registers::exec_regs(session, out)?,
+        Command::Runtime { scope } => {
+            let render = RenderOpts::from_settings(&session.settings.borrow());
+            runtimes::exec_runtime(session, scope, render, out)?
+        }
         Command::Runtimes {
-            list,
-            drivers,
-            shared,
             scope,
+            with,
+            without,
+            group,
         } => {
-            if list {
-                runtimes::exec_list(session, out)?
-            } else {
-                let fields = runtimes::Fields::select(drivers, shared);
-                let render = RenderOpts::from_settings(&session.settings.borrow());
-                runtimes::exec_runtimes(session, &scope, fields, render, out)?
-            }
+            let cmd = runtimes::RuntimesCmd {
+                scope,
+                with,
+                without,
+                group,
+            };
+            runtimes::exec_runtimes(session, cmd, theme, out)?
         }
         Command::SaveTokioInfo { output } => exec_save_tokio_info(session, &output, out)?,
         Command::Config { key, value } => {

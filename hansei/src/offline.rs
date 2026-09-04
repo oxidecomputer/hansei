@@ -119,7 +119,15 @@ fn commands(
         // scan is never entered and the miss names what sync lists.
         ("sync-miss", "sync 0x1".to_owned()),
         ("census", "census".to_owned()),
-        ("runtimes-list", "runtimes --list".to_owned()),
+        // The runtime listing, a grouping over its one string column
+        // every fixture fills, and the block of the one runtime — or
+        // the refusal, on a fixture holding two.
+        ("runtimes", "runtimes".to_owned()),
+        (
+            "runtimes-group-flavor",
+            "runtimes --group flavor".to_owned(),
+        ),
+        ("runtime", "runtime".to_owned()),
         // The info summary and each section. A snapshot records no
         // process notes and no fd table, so the goldens pin the
         // degraded spellings; objects rows come from the recorded

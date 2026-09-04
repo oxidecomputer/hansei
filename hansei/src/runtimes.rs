@@ -2,55 +2,66 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-//! The `runtimes` command: the state of each executor the target holds,
-//! and — with `--list` — which executors those are.
+//! The `runtimes` listing — every runtime the target holds, a row
+//! apiece — and the `runtime` block: one runtime in full.
 
 use crate::summary::counted;
-use crate::threads::render;
+use crate::tasks::{Cmp, EMPTY_BUCKET, alternatives, distinct_values, listing_footer};
+use crate::threads::print_rendered;
 use crate::{RenderOpts, RuntimeScope, Session, output};
 
-use anyhow::{Result, anyhow};
+use anyhow::{Context as _, Result, anyhow};
 use hansei_runtime::tokio::{bundle, census};
 
+use std::collections::BTreeMap;
 use std::io;
 
-/// One entry of the target's group space: a discovered runtime, or a
-/// discovered `LocalSet`, with what the merged task population
-/// attributes to it.
+/// One row of the listing: a discovered runtime, with what the merged
+/// task population attributes to it.
 ///
-/// The two are listed together because that is how the population is
-/// tagged — a task belongs to exactly one of them, and the question
-/// "whose task is this" is answered by an index into the pair of lists
-/// in this order.
+/// The population is tagged by group — a task belongs to exactly one
+/// runtime or `LocalSet`, the runtimes numbered first — and this
+/// listing is the runtimes' half of that space: a local set is not a
+/// scheduler, has no flavor, workers or drivers, and is named only
+/// where a task's owner tag or `whatis` names it.
 pub(crate) struct Group {
-    /// What kind of executor it is, and its index among the ones of
-    /// that kind: together the identifier the task listing tags a block
-    /// with, and the one `runtimes` selects by. They are kept apart so
-    /// a column of indices lines up under itself however the kinds
-    /// beside them are spelled.
-    kind: &'static str,
+    /// Its index among the runtimes: the identifier the task listing
+    /// tags a block with, and the one `runtime` selects by.
     index: usize,
-    /// The scheduler flavor, empty for a local set — which is not a
-    /// scheduler and has none.
     flavor: String,
-    /// A runtime's handle, or a local set's `Shared`: the address the
-    /// group is identified by, and the one that can be given in place
-    /// of the index.
+    /// The handle's address: what the runtime is identified by, and
+    /// what can be given in place of the index.
     addr: u64,
     tasks: usize,
     futures: usize,
-    /// The threads inside it, or — for a group nothing is inside — the
-    /// route discovery reached it by. Never empty: which of the two a
-    /// row says is the difference between a group being run and being
-    /// merely found.
-    where_: String,
+    /// The scheduler's worker count: a multi_thread runtime's worker
+    /// slots — `None` where its parker array could not be read — and
+    /// one for a current_thread runtime, which runs everything on the
+    /// thread that entered it.
+    workers: Option<usize>,
+    /// The lwps whose context reaches it — zero for a runtime nothing
+    /// is currently inside.
+    threads: usize,
+    /// How discovery reached it. For a runtime with threads inside it
+    /// that is a thread's context; for one with none, the pointer
+    /// something already discovered held — which is what makes a
+    /// row with no threads worth reading beside this one.
+    route: String,
+}
+
+impl Group {
+    /// How the row names itself — `runtime 0` — the sample a bucket
+    /// carries.
+    fn label(&self) -> String {
+        format!("runtime {}", self.index)
+    }
 }
 
 /// How a runtime is named wherever one is meant: the index the
-/// `runtimes --list` listing lists it under, and the handle address
-/// printed beside it there.
+/// `runtimes` listing lists it under, and the handle address printed
+/// beside it there.
 ///
-/// Both halves identify it on their own — `runtimes` takes either, the
+/// Both halves identify it on their own — `runtime` takes either, the
 /// address with or without a leading `@`, and `--runtime` the index —
 /// so a name printed anywhere in a session pastes straight back in,
 /// and an index that shifts under `--runtime` is still pinned by the
@@ -65,73 +76,62 @@ pub(crate) fn local_set_label(index: usize, set: &bundle::LocalSetRef<'_>) -> St
     format!("local set {index} @ {:#x}", set.shared.addr)
 }
 
-/// Every group in the target, in the order tasks are stamped with.
+/// Every runtime in the target, in the order tasks are stamped with.
 ///
 /// It takes the discovery results rather than a session so the offline
 /// fixture tests can drive it, the way [`crate::tasks::print_tasks`]
-/// does.
-pub(crate) fn groups(
+/// does; the context is for the one reading a row needs, the worker
+/// count.
+pub(crate) fn groups<T: proc::Target>(
+    ctx: &bundle::Context<'_, T>,
     runtimes: &[bundle::RuntimeRef<'_>],
-    local_sets: &[bundle::LocalSetRef<'_>],
     list: &bundle::TaskList,
     census: &census::FutureCensus,
 ) -> Vec<Group> {
-    let futures = futures_by_group(list, census, runtimes.len() + local_sets.len());
+    let futures = futures_by_group(list, census, runtimes.len());
     let tasks = |group: usize| list.tasks.iter().filter(|t| t.group == group).count();
-
-    let mut groups = Vec::new();
-    for (i, rt) in runtimes.iter().enumerate() {
-        // A runtime no thread's context reaches has no lwp to count, and
-        // how it was found is the interesting part instead. One that has
-        // threads gets their number and not their ids: a real runtime
-        // runs on a hundred and more, and `threads` is the listing.
-        let where_ = if rt.worker_tids.is_empty() {
-            format!("no thread inside it, found via {}", rt.route)
-        } else {
-            format!("on {}", counted(rt.worker_tids.len(), "lwp"))
-        };
-        groups.push(Group {
-            kind: "runtime",
+    runtimes
+        .iter()
+        .enumerate()
+        .map(|(i, rt)| Group {
             index: i,
             flavor: rt.flavor.to_string(),
             addr: rt.handle.addr,
             tasks: tasks(i),
             futures: futures[i],
-            where_,
-        });
-    }
-    for (i, set) in local_sets.iter().enumerate() {
-        // A set is pinned to one thread by construction, so its lwp and
-        // its route are both worth saying: the thread it belongs to, and
-        // the reason hansei can see it at all.
-        let where_ = match set.owner_tid {
-            Some(tid) => format!("on lwp {tid}, found via {}", set.route),
-            None => format!("no thread holds it, found via {}", set.route),
-        };
-        // The listing already holds one row per runtime, so the next
-        // row's position *is* the set's group index.
-        let group = groups.len();
-        groups.push(Group {
-            kind: "local set",
-            index: i,
-            flavor: String::new(),
-            addr: set.shared.addr,
-            tasks: tasks(group),
-            futures: futures[group],
-            where_,
-        });
-    }
-    groups
+            workers: worker_count(ctx, rt),
+            threads: rt.worker_tids.len(),
+            route: rt.route.to_string(),
+        })
+        .collect()
 }
 
-/// How many futures in flight each group holds.
+/// The scheduler's worker count, as tokio's own `num_workers` counts
+/// it: the multi_thread runtime's remotes — one per worker slot,
+/// whether or not a thread currently holds it — and one for a
+/// current_thread runtime. `None` where the remotes could not be read.
+fn worker_count<T: proc::Target>(
+    ctx: &bundle::Context<'_, T>,
+    rt: &bundle::RuntimeRef<'_>,
+) -> Option<usize> {
+    match rt.flavor {
+        bundle::RuntimeFlavor::MultiThread => {
+            ctx.park_states(rt.handle).ok().map(|p| p.workers.len())
+        }
+        bundle::RuntimeFlavor::CurrentThread => Some(1),
+    }
+}
+
+/// How many futures in flight each of the first `groups` groups holds
+/// — the runtimes, numbered ahead of the local sets, whose finds fall
+/// off the end and are not counted.
 ///
 /// The three populations counted are the census's own — the tasks, what
 /// their frames hold beside their await chains, and what their
 /// `FuturesUnordered` hold — attributed to a group through the task
 /// that owns each find. Counting them the way [`crate::summary`] counts
-/// them is deliberate: these rows sum to the number a census prints,
-/// rather than to a second differently-drawn one.
+/// them is deliberate: these rows sum to the number a census prints
+/// for the runtimes, rather than to a second differently-drawn one.
 fn futures_by_group(
     list: &bundle::TaskList,
     census: &census::FutureCensus,
@@ -161,35 +161,63 @@ fn futures_by_group(
     counts
 }
 
-/// Print the listing: one row per group, the columns padded so the
-/// counts and the lwps line up down the page.
+/// The rows over a session: every runtime the target holds.
+fn rows<T: proc::Target>(session: &Session<'_, T>) -> Vec<Group> {
+    groups(
+        &session.ctx,
+        &session.runtimes,
+        &session.tasks,
+        session.census(),
+    )
+}
+
+/// Print the listing: one row per runtime, the counts right-aligned as
+/// numbers, and the count under it.
 ///
 /// `excluded` is how many runtimes `--runtime` left out of the session,
 /// so a filtered listing cannot be read as the whole target.
 pub(crate) fn print_groups(
-    groups: &[Group],
+    groups: &[&Group],
     excluded: usize,
+    fit: Option<usize>,
     out: &mut dyn io::Write,
 ) -> Result<()> {
-    let mut table =
-        output::Table::new(6).header(["KIND", "ID", "FLAVOR", "HANDLE", "HOLDS", "WHERE"]);
+    let dash = || "—".to_string();
+    // The route is a sentence, the one cell that runs wide: what a
+    // terminal cuts to keep a row on one line.
+    let mut table = output::Table::new(8)
+        .header([
+            "ID",
+            "FLAVOR",
+            "HANDLE",
+            "TASKS",
+            "FUTURES",
+            "WORKERS",
+            "THREADS",
+            "FOUND VIA",
+        ])
+        .align_right(3)
+        .align_right(4)
+        .align_right(5)
+        .align_right(6)
+        .truncatable(7)
+        .fit(fit);
     for g in groups {
         table.row([
-            g.kind.to_string(),
             g.index.to_string(),
             g.flavor.clone(),
             format!("{:#x}", g.addr),
-            format!(
-                "{}, {}",
-                counted(g.tasks, "task"),
-                counted(g.futures, "future")
-            ),
-            g.where_.clone(),
+            g.tasks.to_string(),
+            g.futures.to_string(),
+            g.workers.map_or_else(dash, |n| n.to_string()),
+            g.threads.to_string(),
+            g.route.clone(),
         ]);
     }
     if !table.is_empty() {
         table.write(out)?;
     }
+    writeln!(out, "[{}]", counted(groups.len(), "runtime"))?;
     if excluded > 0 {
         writeln!(
             out,
@@ -200,159 +228,418 @@ pub(crate) fn print_groups(
     Ok(())
 }
 
-/// `runtimes --list`: every executor the target holds, a row apiece.
-pub(crate) fn exec_list<T: proc::Target>(
+/// Everything the `runtimes` command was asked. The filter grammar
+/// rides in as the raw flag values and is parsed here, so the errors
+/// name the flag they came from.
+pub(crate) struct RuntimesCmd {
+    /// The runtime names the old grammar took, kept so the refusal can
+    /// name the way forward.
+    pub(crate) scope: Vec<String>,
+    pub(crate) with: Vec<String>,
+    pub(crate) without: Vec<String>,
+    pub(crate) group: Option<String>,
+}
+
+/// One filterable field of the runtime population — what `--with`,
+/// `--without` and `--group` name.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Field {
+    /// The index in the listing — exact.
+    Id,
+    /// The scheduler flavor.
+    Flavor,
+    /// The handle address — exact.
+    Handle,
+    /// The tasks the population attributes to it.
+    Tasks,
+    /// The futures in flight the census attributes to it.
+    Futures,
+    /// The scheduler's worker count.
+    Workers,
+    /// The lwps inside it.
+    Threads,
+    /// The route discovery reached it by.
+    FoundVia,
+}
+
+impl Field {
+    const NAMES: [(&'static str, Field); 8] = [
+        ("id", Field::Id),
+        ("flavor", Field::Flavor),
+        ("handle", Field::Handle),
+        ("tasks", Field::Tasks),
+        ("futures", Field::Futures),
+        ("workers", Field::Workers),
+        ("threads", Field::Threads),
+        ("found-via", Field::FoundVia),
+    ];
+
+    /// Every field name, in the order the errors list them — what the
+    /// prompt offers after `--group`, `--with` and `--without`.
+    pub(crate) fn names() -> impl Iterator<Item = &'static str> {
+        Self::NAMES.iter().map(|(n, _)| *n)
+    }
+
+    /// The field a flag named, or an error listing what it could have.
+    fn parse(name: &str) -> Result<Field> {
+        Self::NAMES
+            .iter()
+            .find(|(n, _)| *n == name)
+            .map(|(_, f)| *f)
+            .ok_or_else(|| {
+                anyhow!(
+                    "no field {name:?}; the fields are {}",
+                    Self::NAMES.map(|(n, _)| n).join(", ")
+                )
+            })
+    }
+
+    fn name(self) -> &'static str {
+        Self::NAMES
+            .iter()
+            .find(|(_, f)| *f == self)
+            .map(|(n, _)| *n)
+            .expect("every field is named")
+    }
+
+    /// Whether the field's argument is a pattern rather than an exact
+    /// or compared value.
+    fn is_pattern(self) -> bool {
+        matches!(self, Field::Flavor | Field::FoundVia)
+    }
+
+    /// The count a compared field reads off a row — `None` for a
+    /// worker count that could not be read, which no comparison
+    /// matches.
+    fn count(self, g: &Group) -> Option<usize> {
+        match self {
+            Field::Tasks => Some(g.tasks),
+            Field::Futures => Some(g.futures),
+            Field::Workers => g.workers,
+            Field::Threads => Some(g.threads),
+            _ => unreachable!("{self:?} is not a count field"),
+        }
+    }
+
+    /// The distinct values the rows hold for the field, or `None` for
+    /// a count the argument compares against.
+    fn values(self, rows: &[Group]) -> Option<Vec<String>> {
+        let column = |f: fn(&Group) -> Option<String>| distinct_values(rows.iter().map(f));
+        Some(match self {
+            Field::Id => column(|g| Some(g.index.to_string())),
+            Field::Flavor => column(|g| Some(g.flavor.clone())),
+            Field::Handle => column(|g| Some(format!("{:#x}", g.addr))),
+            Field::FoundVia => column(|g| Some(g.route.clone())),
+            Field::Tasks | Field::Futures | Field::Workers | Field::Threads => return None,
+        })
+    }
+}
+
+/// The values the target holds for `field`, for the prompt to offer
+/// after `--with FIELD` (see `tasks::field_values`).
+pub(crate) fn field_values<T: proc::Target>(
     session: &Session<'_, T>,
-    out: &mut dyn io::Write,
-) -> Result<()> {
-    let groups = groups(
-        &session.runtimes,
-        &session.local_sets,
-        &session.tasks,
-        session.census(),
-    );
-    print_groups(&groups, session.excluded.len(), out)
+    field: &str,
+) -> Option<(Vec<String>, bool)> {
+    let field = Field::parse(field).ok()?;
+    Some((field.values(&rows(session))?, field.is_pattern()))
 }
 
-/// Which of the runtime handle's members `runtimes` was asked for.
-#[derive(Copy, Clone)]
-pub(crate) struct Fields {
-    drivers: bool,
-    shared: bool,
+/// How one clause matches its field's value.
+#[derive(Debug)]
+enum Matcher {
+    /// A case-insensitive regex over the spelled value.
+    Pattern(crate::pattern::Pattern),
+    /// Exact index: `id`.
+    Id(usize),
+    /// Exact address: `handle`.
+    Handle(u64),
+    /// `'>N'` / `'<N'` / `'=N'`: the count fields.
+    Cmp(Cmp),
 }
 
-impl Fields {
-    /// The sections the flags name. Naming none asks for the whole
-    /// runtime, as [`crate::summary::Sections::select`] reads a census's
-    /// flags.
-    pub(crate) fn select(drivers: bool, shared: bool) -> Self {
-        let all = !(drivers || shared);
-        Self {
-            drivers: drivers || all,
-            shared: shared || all,
+/// One `--with`/`--without` clause.
+#[derive(Debug)]
+struct Clause {
+    field: Field,
+    /// The argument's alternatives (`0,1`): the clause matches a row
+    /// when any one of them does.
+    matchers: Vec<Matcher>,
+    /// `--without`: the clause keeps the rows it does *not* match.
+    negate: bool,
+}
+
+/// Parse the flag pairs into clauses. clap delivered FIELD/ARG pairs
+/// (`num_args = 2`), so the chunks are exact.
+fn parse_clauses(with: &[String], without: &[String]) -> Result<Vec<Clause>> {
+    let mut clauses = Vec::new();
+    for (specs, negate) in [(with, false), (without, true)] {
+        let flag = if negate { "--without" } else { "--with" };
+        for [name, spec] in specs.as_chunks::<2>().0 {
+            let field = Field::parse(name).with_context(|| flag.to_string())?;
+            let matchers = alternatives(spec)
+                .and_then(|alts| alts.iter().map(|alt| matcher(field, alt)).collect())
+                .with_context(|| format!("{flag} {}", field.name()))?;
+            clauses.push(Clause {
+                field,
+                matchers,
+                negate,
+            });
         }
     }
+    Ok(clauses)
+}
 
-    /// The handle members to print, each with the heading it goes
-    /// under, in the order a full listing prints them.
-    fn members(self) -> Vec<(&'static str, &'static str)> {
-        let mut members = Vec::new();
-        if self.drivers {
-            members.push(("drivers", "driver"));
+/// The matcher one field's argument compiles to.
+fn matcher(field: Field, arg: &str) -> Result<Matcher> {
+    Ok(match field {
+        Field::Id => Matcher::Id(
+            arg.parse()
+                .map_err(|_| anyhow!("an id is the index a runtimes row carries, got {arg:?}"))?,
+        ),
+        Field::Handle => Matcher::Handle(parse_handle(arg)?),
+        Field::Tasks | Field::Futures | Field::Workers | Field::Threads => {
+            Matcher::Cmp(Cmp::parse(arg)?)
         }
-        if self.shared {
-            members.push(("shared", "shared"));
-        }
-        members
+        Field::Flavor | Field::FoundVia => Matcher::Pattern(crate::pattern::Pattern::new(arg)?),
+    })
+}
+
+/// A handle as the listing prints it — `0x` hex, with or without the
+/// `@` a label dresses it in — and nothing else: a bare number would
+/// be an index, and an index is never read as an address.
+fn parse_handle(arg: &str) -> Result<u64> {
+    let addr = arg.strip_prefix('@').unwrap_or(arg);
+    let digits = addr
+        .strip_prefix("0x")
+        .or_else(|| addr.strip_prefix("0X"))
+        .ok_or_else(|| anyhow!("a handle is the 0x address a runtimes row prints, got {arg:?}"))?;
+    u64::from_str_radix(digits, 16).map_err(|e| anyhow!("invalid handle address {arg:?}: {e}"))
+}
+
+/// Whether one row survives one clause: any alternative matching is
+/// a hit, and `--without` keeps the misses.
+fn survives(clause: &Clause, g: &Group) -> bool {
+    let hit = clause.matchers.iter().any(|matcher| match matcher {
+        Matcher::Pattern(p) => field_text(clause.field, g).is_some_and(|t| p.is_match(t)),
+        Matcher::Id(index) => g.index == *index,
+        Matcher::Handle(addr) => g.addr == *addr,
+        Matcher::Cmp(cmp) => clause.field.count(g).is_some_and(|n| cmp.matches(n)),
+    });
+    hit != clause.negate
+}
+
+/// The spelled value a regex field matches — `None`, nothing to
+/// match, where the row has nothing to say.
+fn field_text(field: Field, g: &Group) -> Option<&str> {
+    match field {
+        Field::Flavor => Some(&g.flavor),
+        Field::FoundVia => Some(&g.route),
+        _ => unreachable!("{field:?} is not a regex field"),
     }
 }
 
-/// Render each named runtime's own state out of the target: the
-/// scheduler state its workers share, and the drivers they park on.
-///
-/// Both are read straight through the bundle's layouts rather than into
-/// a hand-written mirror of tokio's structs, so a field tokio adds shows
-/// up without hansei being taught about it.
+/// What a bucket is named for one row: the field's spelled value, or
+/// `None` for [`EMPTY_BUCKET`].
+fn group_value(field: Field, g: &Group) -> Option<String> {
+    match field {
+        Field::Id => Some(g.index.to_string()),
+        Field::Flavor => Some(g.flavor.clone()),
+        Field::Handle => Some(format!("{:#x}", g.addr)),
+        Field::FoundVia => Some(g.route.clone()),
+        Field::Tasks | Field::Futures | Field::Workers | Field::Threads => {
+            field.count(g).map(|n| n.to_string())
+        }
+    }
+}
+
+/// Up to three member labels and `…` — the sample a bucket row
+/// carries.
+fn member_sample(rows: &[Group], members: &[usize]) -> String {
+    let labels: Vec<String> = members.iter().take(3).map(|&i| rows[i].label()).collect();
+    match members.len() > labels.len() {
+        true => format!("{}, …", labels.join(", ")),
+        false => labels.join(", "),
+    }
+}
+
+/// Every runtime the target holds, one table row each. The filter
+/// clauses narrow the listing; one runtime's insides — its threads by
+/// lwp, its drivers, the scheduler state its workers share — are
+/// [`print_runtime`]'s, under `runtime`.
 pub(crate) fn exec_runtimes<T: proc::Target>(
     session: &Session<'_, T>,
-    scopes: &[RuntimeScope],
-    fields: Fields,
+    cmd: RuntimesCmd,
+    theme: output::Theme,
+    out: &mut dyn io::Write,
+) -> Result<()> {
+    if let Some(first) = cmd.scope.first() {
+        anyhow::bail!("runtimes takes no runtime names; `runtime {first}` prints that one runtime");
+    }
+    let group = cmd
+        .group
+        .as_deref()
+        .map(Field::parse)
+        .transpose()
+        .context("--group")?;
+    let clauses = parse_clauses(&cmd.with, &cmd.without)?;
+
+    let rows = rows(session);
+    let survivors: Vec<usize> = (0..rows.len())
+        .filter(|&i| clauses.iter().all(|c| survives(c, &rows[i])))
+        .collect();
+
+    if let Some(field) = group {
+        return exec_group(&rows, field, &survivors, session.fit_width(theme), out);
+    }
+    let shown: Vec<&Group> = survivors.iter().map(|&i| &rows[i]).collect();
+    print_groups(
+        &shown,
+        session.excluded.len(),
+        session.fit_width(theme),
+        out,
+    )
+}
+
+/// `--group FIELD`: bucket the surviving rows by the field's spelled
+/// value and print `COUNT VALUE` rows, most numerous first (ties in
+/// value order), each with up to three member labels.
+fn exec_group(
+    rows: &[Group],
+    field: Field,
+    survivors: &[usize],
+    fit: Option<usize>,
+    out: &mut dyn io::Write,
+) -> Result<()> {
+    let mut grouped: BTreeMap<String, Vec<usize>> = BTreeMap::new();
+    for &index in survivors {
+        let value = group_value(field, &rows[index]).unwrap_or_else(|| EMPTY_BUCKET.to_string());
+        grouped.entry(value).or_default().push(index);
+    }
+    let mut buckets: Vec<(String, Vec<usize>)> = grouped.into_iter().collect();
+    // Count descending; the map already ordered ties by value, and the
+    // sort is stable.
+    buckets.sort_by_key(|(_, members)| std::cmp::Reverse(members.len()));
+
+    let heading = field.name().replace('-', " ").to_uppercase();
+    let mut table = output::Table::new(3)
+        .align_right(0)
+        .header(["COUNT".to_string(), heading, "RUNTIMES".to_string()])
+        .truncatable(1)
+        .fit(fit);
+    for (value, members) in &buckets {
+        table.row([
+            members.len().to_string(),
+            value.clone(),
+            member_sample(rows, members),
+        ]);
+    }
+    if !table.is_empty() {
+        table.write(out)?;
+    }
+    writeln!(
+        out,
+        "{}",
+        listing_footer(buckets.len(), buckets.len(), "group")
+    )?;
+    Ok(())
+}
+
+/// `runtime`: print the named runtime in full — or the one runtime,
+/// on a target holding one, when none is named.
+pub(crate) fn exec_runtime<T: proc::Target>(
+    session: &Session<'_, T>,
+    scope: Option<RuntimeScope>,
     opts: RenderOpts,
     out: &mut dyn io::Write,
 ) -> Result<()> {
-    let selected = select(session, scopes)?;
-    let members = fields.members();
-    // A heading is only earned by an ambiguity it resolves: one runtime
-    // and one section is the value alone, as it was before either could
-    // be more than one.
-    let head_runtimes = selected.len() > 1;
-    let head_members = members.len() > 1;
-    let mut printed = false;
-    for (index, rt) in selected {
-        if head_runtimes {
-            if printed {
-                writeln!(out)?;
-            }
-            writeln!(out, "{} ({}):", runtime_label(index, rt), rt.flavor)?;
-            printed = true;
-        }
-        for (i, (heading, member)) in members.iter().enumerate() {
-            if blank_before(printed, head_runtimes, i) {
-                writeln!(out)?;
-            }
-            if head_members {
-                writeln!(out, "{heading}:")?;
-            }
-            let value = rt.handle.member(member)?;
-            let heap = session.heap_view();
-            let heap = heap.as_ref().map(|view| view as &dyn reify::Heap);
-            writeln!(out, "{:#}", render(session, &value, opts, heap))?;
-            printed = true;
-        }
+    let index = match scope {
+        Some(scope) => select(session, scope)?,
+        None => match session.runtimes.len() {
+            1 => 0,
+            0 => anyhow::bail!("the target holds no runtime"),
+            n => anyhow::bail!(
+                "{} runtimes; name one by its index or handle (`runtimes` lists them)",
+                n
+            ),
+        },
+    };
+    print_runtime(session, index, opts, out)
+}
+
+/// One runtime as `runtime` prints it: its heading — the index and
+/// handle address the way the listing names it — then, four columns
+/// in, its flavor, the tasks and futures it holds, its worker count,
+/// the lwps inside it, the route discovery reached it by, and the two
+/// halves of its handle: the drivers its workers park on, and the
+/// scheduler state they share.
+///
+/// Both halves are read straight through the bundle's layouts rather
+/// than into a hand-written mirror of tokio's structs, so a field
+/// tokio adds shows up without hansei being taught about it.
+fn print_runtime<T: proc::Target>(
+    session: &Session<'_, T>,
+    index: usize,
+    opts: RenderOpts,
+    out: &mut dyn io::Write,
+) -> Result<()> {
+    let rt = &session.runtimes[index];
+    let rows = rows(session);
+    let g = &rows[index];
+    writeln!(out, "{}", runtime_label(index, rt))?;
+    writeln!(out, "    flavor: {}", rt.flavor)?;
+    writeln!(out, "    tasks: {}", g.tasks)?;
+    writeln!(out, "    futures: {}", g.futures)?;
+    let workers = match g.workers {
+        Some(n) => n.to_string(),
+        None => "unreadable".to_string(),
+    };
+    writeln!(out, "    workers: {workers}")?;
+    writeln!(out, "    threads: {}", threads_line(&rt.worker_tids))?;
+    writeln!(out, "    found via: {}", rt.route)?;
+    // The handle's `driver` member holds every driver, so it prints
+    // under the plural.
+    for (label, member) in [("drivers", "driver"), ("shared", "shared")] {
+        let value = rt.handle.member(member)?;
+        print_rendered(session, label, &value, opts, out)?;
     }
     Ok(())
 }
 
-/// Whether a blank line goes before this member section: between
-/// everything the command prints, except ahead of the first section
-/// under a runtime's own heading, which already introduces it.
-fn blank_before(printed: bool, head_runtimes: bool, i: usize) -> bool {
-    printed && !(head_runtimes && i == 0)
+/// The `threads:` line: how many lwps are inside the runtime, and
+/// which — this block is the one place they are listed, since the
+/// listing counts them and `threads` has no runtime column — or that
+/// none is, which is the state a found-but-not-run runtime is in.
+fn threads_line(tids: &[u32]) -> String {
+    if tids.is_empty() {
+        return "none inside it".to_string();
+    }
+    let tids: Vec<String> = tids.iter().map(|t| t.to_string()).collect();
+    format!("{} (lwp {})", tids.len(), tids.join(", "))
 }
 
-/// The runtimes the scopes name, with the index each is listed under —
-/// every discovered runtime when the command named none.
+/// The runtime a scope names, as its index in the session's list.
 ///
-/// A scope that names nothing is an error before anything is printed,
-/// the way [`crate::threads::exec_threads`] resolves its lwps: a number
-/// that came from somewhere else says so rather than quietly showing
-/// the rest. What survives is in listing order however the scopes were
-/// written, and a runtime named twice is still shown once.
-fn select<'s, 'b, T: proc::Target>(
-    session: &'s Session<'b, T>,
-    scopes: &[RuntimeScope],
-) -> Result<Vec<(usize, &'s bundle::RuntimeRef<'b>)>> {
+/// A scope that names nothing is an error, the way `thread` resolves
+/// its lwp: a number that came from somewhere else says so rather than
+/// quietly showing something else.
+fn select<T: proc::Target>(session: &Session<'_, T>, scope: RuntimeScope) -> Result<usize> {
     let handles: Vec<u64> = session.runtimes.iter().map(|rt| rt.handle.addr).collect();
-    match selected(&handles, scopes) {
-        Ok(indices) => Ok(indices
-            .into_iter()
-            .map(|index| (index, &session.runtimes[index]))
-            .collect()),
-        Err(scope) => Err(no_such_runtime(session, scope)),
-    }
+    position(&handles, scope).ok_or_else(|| no_such_runtime(session, scope))
 }
 
-/// The positions the scopes pick out of the runtimes, named here by
-/// their handle addresses alone — or the first scope that names none of
-/// them.
-fn selected(handles: &[u64], scopes: &[RuntimeScope]) -> Result<Vec<usize>, RuntimeScope> {
-    for &scope in scopes {
-        if !(0..handles.len()).any(|index| names(scope, index, handles[index])) {
-            return Err(scope);
-        }
-    }
-    Ok((0..handles.len())
-        .filter(|&index| {
-            scopes.is_empty()
-                || scopes
-                    .iter()
-                    .any(|&scope| names(scope, index, handles[index]))
-        })
-        .collect())
-}
-
-/// Whether a scope names the runtime at this position. Either
-/// identifier stands on its own, so the two arms are one question asked
-/// of two spellings.
-fn names(scope: RuntimeScope, index: usize, handle: u64) -> bool {
+/// The position the scope picks out of the runtimes, named here by
+/// their handle addresses alone. Either identifier stands on its own,
+/// so the two arms are one question asked of two spellings.
+fn position(handles: &[u64], scope: RuntimeScope) -> Option<usize> {
     match scope {
-        RuntimeScope::Index(named) => index == named,
-        RuntimeScope::Handle(addr) => handle == addr,
+        RuntimeScope::Index(index) => (index < handles.len()).then_some(index),
+        RuntimeScope::Handle(addr) => handles.iter().position(|&h| h == addr),
     }
 }
 
 /// The error for a scope that names nothing: what was asked for and
-/// how many runtimes there are. `runtimes --list` is the listing.
+/// how many runtimes there are. `runtimes` is the listing.
 fn no_such_runtime<T: proc::Target>(
     session: &Session<'_, T>,
     scope: RuntimeScope,
@@ -371,51 +658,36 @@ fn no_such_runtime<T: proc::Target>(
 /// against a real captured snapshot resolves to.
 #[cfg(test)]
 mod runtimes_tests {
-    use super::{Fields, blank_before, groups, print_groups, selected};
+    use super::{
+        Field, Group, groups, parse_clauses, position, print_groups, survives, threads_line,
+    };
     use crate::RuntimeScope;
     use hansei_runtime::testkit;
     use hansei_runtime::tokio::census;
 
-    /// Naming no runtime asks for all of them; naming some asks for
-    /// those, by index or by handle address, in listing order however
-    /// they were written and once each however often they were named.
+    /// A scope names a runtime by index or by handle address, and the
+    /// two spellings cannot be confused for one another: an index is
+    /// never read as an address, nor an address as an index.
     #[test]
-    fn test_scopes_select_by_either_identifier() {
+    fn test_a_scope_names_by_either_identifier() {
         let handles = [0x10, 0x20, 0x30];
-        let select = |scopes: &[RuntimeScope]| selected(&handles, scopes);
-        assert_eq!(select(&[]), Ok(vec![0, 1, 2]));
-        assert_eq!(select(&[RuntimeScope::Index(1)]), Ok(vec![1]));
-        assert_eq!(select(&[RuntimeScope::Handle(0x30)]), Ok(vec![2]));
-        assert_eq!(
-            select(&[RuntimeScope::Handle(0x30), RuntimeScope::Index(0)]),
-            Ok(vec![0, 2])
-        );
-        assert_eq!(
-            select(&[RuntimeScope::Index(1), RuntimeScope::Handle(0x20)]),
-            Ok(vec![1])
-        );
+        assert_eq!(position(&handles, RuntimeScope::Index(1)), Some(1));
+        assert_eq!(position(&handles, RuntimeScope::Handle(0x30)), Some(2));
+        assert_eq!(position(&handles, RuntimeScope::Index(3)), None);
+        assert_eq!(position(&handles, RuntimeScope::Handle(0x40)), None);
+        assert_eq!(position(&handles, RuntimeScope::Handle(1)), None);
+        assert_eq!(position(&handles, RuntimeScope::Index(0x10)), None);
+    }
 
-        // A scope that names nothing fails the whole selection, rather
-        // than showing the runtimes the others named as if the number
-        // that fit none had not been asked for.
-        assert_eq!(
-            select(&[RuntimeScope::Index(0), RuntimeScope::Index(3)]),
-            Err(RuntimeScope::Index(3))
-        );
-        assert_eq!(
-            select(&[RuntimeScope::Handle(0x40)]),
-            Err(RuntimeScope::Handle(0x40))
-        );
-        // An index is never read as an address, nor an address as an
-        // index: neither identifier answers for the other's spelling.
-        assert_eq!(
-            select(&[RuntimeScope::Handle(1)]),
-            Err(RuntimeScope::Handle(1))
-        );
-        assert_eq!(
-            select(&[RuntimeScope::Index(0x10)]),
-            Err(RuntimeScope::Index(0x10))
-        );
+    /// The rows over a fixture, for the tests that filter them.
+    fn rows_of(program: &str) -> Vec<Group> {
+        let (bundle, snapshot) = testkit::load_any(program);
+        let ctx = testkit::context(&bundle, &snapshot);
+        let mut e = testkit::enumerate(&ctx, &snapshot);
+        e.discover(&ctx, &[]);
+        let (runtimes, list) = (e.runtimes, e.list);
+        let census = census::census(&ctx, &list);
+        groups(&ctx, &runtimes, &list, &census)
     }
 
     /// The futures column counts what the census found through each
@@ -426,7 +698,7 @@ mod runtimes_tests {
         let (bundle, snapshot) = testkit::load_any("unordered");
         let ctx = testkit::context(&bundle, &snapshot);
         let mut e = testkit::enumerate(&ctx, &snapshot);
-        let local_sets = e.discover(&ctx, &[]);
+        e.discover(&ctx, &[]);
         let (runtimes, list) = (e.runtimes, e.list);
         let census = census::census(&ctx, &list);
         assert!(
@@ -439,129 +711,164 @@ mod runtimes_tests {
             .iter()
             .map(|s| s.children.iter().filter(|c| c.future.is_some()).count())
             .sum();
-        let rows = groups(&runtimes, &local_sets, &list, &census);
+        let rows = groups(&ctx, &runtimes, &list, &census);
         let total: usize = rows.iter().map(|g| g.futures).sum();
         assert_eq!(total, list.tasks.len() + census.held.len() + live);
     }
 
-    /// Naming no section asks for the whole runtime; naming one asks
-    /// for it alone, and naming both is spelling the whole out.
+    /// The listing over the fixture that holds both kinds of runtime
+    /// row: one threads are inside, and one none are — found only
+    /// because a `JoinHandle` pointed at one of its tasks. The fixture
+    /// also holds a `LocalSet`, which is not a runtime and gets no
+    /// row: its task is counted nowhere here.
     #[test]
-    fn test_naming_no_section_asks_for_all_of_them() {
-        let all = Fields::select(false, false);
-        assert!(all.drivers && all.shared);
-        let drivers = Fields::select(true, false);
-        assert!(drivers.drivers && !drivers.shared);
-        let shared = Fields::select(false, true);
-        assert!(!shared.drivers && shared.shared);
-        let both = Fields::select(true, true);
-        assert!(both.drivers && both.shared);
-    }
-
-    /// Blank lines fall between the pieces the command prints, and
-    /// nowhere else: never ahead of the very first piece, and never
-    /// between a runtime's heading and its first member section.
-    #[test]
-    fn test_blank_lines_fall_between_pieces() {
-        assert!(!blank_before(false, false, 0));
-        assert!(!blank_before(false, true, 0));
-        assert!(blank_before(true, false, 0));
-        assert!(!blank_before(true, true, 0));
-        assert!(blank_before(true, true, 1));
-        assert!(blank_before(true, false, 1));
-    }
-
-    /// The listing over the fixture that holds every kind of row: a
-    /// runtime threads are inside, a runtime none are — found only
-    /// because a `JoinHandle` pointed at one of its tasks — and a
-    /// `LocalSet` inside that hidden runtime, found by harvesting its
-    /// wheel.
-    #[test]
-    fn test_every_group_is_listed_with_its_route() {
-        let (bundle, snapshot) = testkit::load_any("foreign-runtime");
-        let ctx = testkit::context(&bundle, &snapshot);
-        let mut e = testkit::enumerate(&ctx, &snapshot);
-        let local_sets = e.discover(&ctx, &[]);
-        let (runtimes, list) = (e.runtimes, e.list);
-        let census = census::census(&ctx, &list);
-
-        let rows = groups(&runtimes, &local_sets, &list, &census);
-        assert_eq!(rows.len(), 3, "two runtimes and a local set");
+    fn test_every_runtime_is_listed_with_its_route() {
+        let rows = rows_of("foreign-runtime");
+        assert_eq!(rows.len(), 2, "two runtimes; the local set is not one");
 
         let mut out = Vec::new();
-        print_groups(&rows, 0, &mut out).expect("the listing renders");
+        let shown: Vec<&Group> = rows.iter().collect();
+        print_groups(&shown, 0, None, &mut out).expect("the listing renders");
         let shown = String::from_utf8(out).expect("rendered output is UTF-8");
         let lines: Vec<&str> = shown.lines().collect();
         assert_eq!(lines.len(), 4, "{shown}");
 
         // The header names the columns, padded with the rows it names —
         // which is what lets the acceptance suite slice them by label.
-        assert!(lines[0].starts_with("KIND       ID  FLAVOR"), "{shown}");
-        for label in ["HANDLE", "HOLDS", "WHERE"] {
+        assert!(lines[0].starts_with("ID  FLAVOR"), "{shown}");
+        for label in [
+            "HANDLE",
+            "TASKS",
+            "FUTURES",
+            "WORKERS",
+            "THREADS",
+            "FOUND VIA",
+        ] {
             assert!(lines[0].contains(label), "{shown}");
         }
+        // The counts are the census's own: each runtime sums its tasks
+        // and the futures their frames hold. A current_thread runtime
+        // has one worker, and the one thread inside it is the one
+        // that entered it.
+        assert!(lines[1].starts_with("0   current_thread  0x"), "{shown}");
         assert!(
-            lines[1].starts_with("runtime    0   current_thread  0x"),
-            "{shown}"
-        );
-        assert!(lines[1].contains("  on 1 lwp"), "{shown}");
-        // The counts are the census's own: each group sums its tasks
-        // and the futures their frames hold.
-        assert!(lines[1].contains("  1 task, 1 future "), "{shown}");
-        assert!(lines[2].contains("  2 tasks, 2 futures  "), "{shown}");
-        assert!(lines[3].contains("  1 task, 1 future "), "{shown}");
-        assert!(
-            lines[2].starts_with("runtime    1   current_thread  0x"),
+            lines[1].contains("      1        1        1        1  "),
             "{shown}"
         );
         assert!(
-            lines[2].ends_with(
-                "  no thread inside it, found via a JoinHandle held by an enumerated task"
-            ),
+            lines[1].ends_with("  a thread's runtime context"),
             "{shown}"
         );
-        // The set has no flavor to print, and its index still lands in
-        // the column the runtimes' indices are in.
-        assert!(lines[3].starts_with("local set  0   "), "{shown}");
-        assert!(lines[3].contains("  0x"), "{shown}");
+        assert!(lines[2].starts_with("1   current_thread  0x"), "{shown}");
         assert!(
-            lines[3].ends_with("found via a task waker on a timer parked in a runtime's wheel"),
+            lines[2].contains("      2        2        1        0  "),
             "{shown}"
         );
+        assert!(
+            lines[2].ends_with("  a JoinHandle held by an enumerated task"),
+            "{shown}"
+        );
+        assert_eq!(lines[3], "[2 runtimes]", "{shown}");
 
-        // Every task is attributed to exactly one group, and every
-        // group's futures are at least its tasks — a task is a future in
-        // flight itself, so a row counting fewer would mean the census's
-        // populations had been double-counted or lost.
-        assert_eq!(
-            rows.iter().map(|g| g.tasks).sum::<usize>(),
-            list.tasks.len(),
-            "{shown}"
-        );
+        // The runtimes' tasks are the population less the set's one,
+        // and every runtime's futures are at least its tasks — a task
+        // is a future in flight itself, so a row counting fewer would
+        // mean the census's populations had been double-counted or
+        // lost.
+        assert_eq!(rows.iter().map(|g| g.tasks).sum::<usize>(), 3, "{shown}");
         for row in &rows {
-            assert!(
-                row.futures >= row.tasks,
-                "{} {}: {shown}",
-                row.kind,
-                row.index
-            );
+            assert!(row.futures >= row.tasks, "{}: {shown}", row.label());
         }
+    }
+
+    /// The clauses read the rows' fields: a pattern over the spelled
+    /// flavor and route, an exact id or handle, and a comparison over
+    /// each count.
+    #[test]
+    fn test_clauses_select_by_every_field() {
+        let rows = rows_of("foreign-runtime");
+        let survivors = |with: &[&str], without: &[&str]| -> Vec<String> {
+            let with: Vec<String> = with.iter().map(|s| s.to_string()).collect();
+            let without: Vec<String> = without.iter().map(|s| s.to_string()).collect();
+            let clauses = parse_clauses(&with, &without).expect("the clauses parse");
+            rows.iter()
+                .filter(|g| clauses.iter().all(|c| survives(c, g)))
+                .map(Group::label)
+                .collect()
+        };
+        assert_eq!(
+            survivors(&["flavor", "current"], &[]),
+            ["runtime 0", "runtime 1"]
+        );
+        assert!(survivors(&["flavor", "multi"], &[]).is_empty());
+        assert_eq!(survivors(&["id", "1"], &[]), ["runtime 1"]);
+        assert_eq!(survivors(&[], &["id", "1"]), ["runtime 0"]);
+        assert_eq!(survivors(&["threads", "=0"], &[]), ["runtime 1"]);
+        assert_eq!(survivors(&["threads", ">0"], &[]), ["runtime 0"]);
+        assert_eq!(survivors(&["tasks", ">1"], &[]), ["runtime 1"]);
+        assert_eq!(
+            survivors(&["workers", "=1"], &[]),
+            ["runtime 0", "runtime 1"]
+        );
+        assert_eq!(survivors(&["found-via", "joinhandle"], &[]), ["runtime 1"]);
+        let handle = format!("{:#x}", rows[1].addr);
+        assert_eq!(survivors(&["handle", &handle], &[]), ["runtime 1"]);
+        assert_eq!(
+            survivors(&["handle", &format!("@{handle}")], &[]),
+            ["runtime 1"]
+        );
+        // Alternatives, and clauses ANDed.
+        assert_eq!(survivors(&["id", "0,1"], &[]), ["runtime 0", "runtime 1"]);
+        assert_eq!(
+            survivors(&["flavor", "current"], &["threads", "=0"]),
+            ["runtime 0"]
+        );
+    }
+
+    /// An argument that does not fit its field is refused by name: an
+    /// index is never read as an address, a count wants its operator,
+    /// and a field that does not exist lists the ones that do.
+    #[test]
+    fn test_malformed_clauses_are_refused() {
+        let refuse = |with: &[&str]| {
+            let with: Vec<String> = with.iter().map(|s| s.to_string()).collect();
+            format!("{:#}", parse_clauses(&with, &[]).expect_err("refused"))
+        };
+        assert!(refuse(&["handle", "1"]).contains("0x address"));
+        assert!(refuse(&["id", "0x10"]).contains("index"));
+        assert!(refuse(&["tasks", "3"]).contains("'>N'"));
+        assert!(refuse(&["lwp", "3"]).contains("the fields are id, flavor"));
+        assert!(refuse(&["tasks", "3"]).starts_with("--with tasks"));
+    }
+
+    /// A count field offers no values to complete — the argument is a
+    /// comparison — and the others offer what the rows hold.
+    #[test]
+    fn test_fields_offer_their_values() {
+        let rows = rows_of("foreign-runtime");
+        assert_eq!(Field::Flavor.values(&rows).unwrap(), ["current_thread"]);
+        assert_eq!(Field::Id.values(&rows).unwrap(), ["0", "1"]);
+        assert!(Field::Tasks.values(&rows).is_none());
+        assert!(Field::Workers.values(&rows).is_none());
+    }
+
+    /// The block's threads line counts the lwps and names them, or
+    /// says none is inside.
+    #[test]
+    fn test_the_threads_line_names_the_lwps() {
+        assert_eq!(threads_line(&[]), "none inside it");
+        assert_eq!(threads_line(&[7]), "1 (lwp 7)");
+        assert_eq!(threads_line(&[3, 7, 12]), "3 (lwp 3, 7, 12)");
     }
 
     /// A filtered session says so, rather than reading as a target with
     /// fewer runtimes than it has.
     #[test]
     fn test_an_excluded_runtime_is_reported() {
-        let (bundle, snapshot) = testkit::load_any("foreign-runtime");
-        let ctx = testkit::context(&bundle, &snapshot);
-        let mut e = testkit::enumerate(&ctx, &snapshot);
-        let local_sets = e.discover(&ctx, &[]);
-        let (runtimes, list) = (e.runtimes, e.list);
-        let census = census::census(&ctx, &list);
-        let rows = groups(&runtimes, &local_sets, &list, &census);
-
+        let rows = rows_of("foreign-runtime");
+        let shown: Vec<&Group> = rows.iter().collect();
         let mut out = Vec::new();
-        print_groups(&rows, 1, &mut out).expect("the listing renders");
+        print_groups(&shown, 1, None, &mut out).expect("the listing renders");
         let shown = String::from_utf8(out).expect("rendered output is UTF-8");
         assert!(
             shown.ends_with("1 runtime excluded by --runtime; attach without it to see them\n"),
