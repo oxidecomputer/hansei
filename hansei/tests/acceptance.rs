@@ -1146,12 +1146,9 @@ fn test_info_acceptance() {
             assert!(process.contains("environment:"), "{process}");
         }
 
-        // gcore stops the process rather than crashing it, so the
-        // signal line says a live capture outright.
-        assert!(
-            process.contains("signal: none recorded (a live capture, not a crash)"),
-            "{process}"
-        );
+        // gcore stops the process rather than crashing it, so no
+        // signal is recorded.
+        assert!(process.contains("signal: none recorded"), "{process}");
 
         // What was attached.
         assert!(process.contains("symbols resolved: "), "{process}");

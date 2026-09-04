@@ -138,12 +138,10 @@ fn build_id_lines(ids: Option<&proc::BuildIds>, out: &mut dyn io::Write) -> Resu
 
 /// What ended the process, who sent it where the siginfo says, and
 /// where the taking lwp was — its registers stay in `thread`. A core
-/// with no fatal signal is a live capture, which is worth saying
-/// outright: "why does hansei show no crash?" is the question this
-/// preempts.
+/// with no fatal signal (a live capture) says so outright.
 fn signal<T: Target>(session: &Session<'_, T>, out: &mut dyn io::Write) -> Result<()> {
     let Some(sig) = session.proc.fatal_signal() else {
-        writeln!(out, "signal: none recorded (a live capture, not a crash)")?;
+        writeln!(out, "signal: none recorded")?;
         return Ok(());
     };
     writeln!(out, "signal: {}", summary::fatal_signal_line(&sig))?;
