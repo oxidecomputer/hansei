@@ -813,12 +813,13 @@ pub(crate) fn blocking_lwps<'s, T: proc::Target>(
 }
 
 /// The `blocking (…)` spelling a pool cell's STATE carries: queued
-/// until a thread claims it, running — on the lwp the stacks name,
-/// where they name one — while claimed.
+/// until a thread claims it, running while claimed — spelled
+/// `blocking_lwp#N` where the stacks name the lwp running it, one
+/// word so the column stays narrow.
 fn blocking_state(task: &bundle::Task, lwp: Option<u32>) -> String {
     match task.state.lifecycle() {
         Lifecycle::Running => match lwp {
-            Some(lwp) => format!("blocking (running on lwp {lwp})"),
+            Some(lwp) => format!("blocking_lwp#{lwp}"),
             None => "blocking (running)".to_string(),
         },
         lifecycle => match lifecycle == Lifecycle::Complete {
@@ -2113,7 +2114,7 @@ mod table_tests {
             &Default::default(),
             &HashMap::from([(0x1000 + 2 * 0x100, 42)]),
         );
-        assert_eq!(with_lwp[0].state, "blocking (running on lwp 42)");
+        assert_eq!(with_lwp[0].state, "blocking_lwp#42");
 
         // The block form agrees, complete stays plain.
         let polling = HashMap::new();
@@ -2127,7 +2128,7 @@ mod table_tests {
                 &polling,
                 &HashMap::from([(0x1000 + 2 * 0x100, 7)])
             ),
-            "blocking (running on lwp 7)"
+            "blocking_lwp#7"
         );
         const COMPLETE: u64 = 0b010;
         assert_eq!(

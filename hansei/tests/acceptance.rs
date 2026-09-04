@@ -1838,7 +1838,7 @@ fn test_blocking_pool_acceptance() {
             "future tokio::runtime::blocking::task::BlockingTask<\
              blocking_pool::main::{async_block#0}::{closure_env#1}>",
         );
-        let on_lwp = regex::Regex::new(r"^blocking \(running on lwp \d+\)$").unwrap();
+        let on_lwp = regex::Regex::new(r"^blocking_lwp#\d+$").unwrap();
         assert!(on_lwp.is_match(&running.state), "{rows:#?}");
         assert_eq!(queued.state, "blocking (queued)", "{rows:#?}");
         // A blocking cell waits on a pool thread, not on a future, so
