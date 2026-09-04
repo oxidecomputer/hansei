@@ -9,6 +9,7 @@
 //! it emits.
 
 use hansei_bundle::Encoding;
+use hansei_bundle::tokio::timer;
 use hansei_bundle::{
     Arm, BitField as BundleBitField, Bundle, BundleTypeId, DiscrDef, DiscrValue, DiscrValues,
     DisplayNode as BundleNode, DynFutureTable, FORMAT_VERSION, Field as BundleField,
@@ -2465,6 +2466,12 @@ fixture_ids! {
     // 1 and no default -- the only way to reach an unmatched discriminant,
     // which every other `Variant` in these fixtures computes a boolean for.
     N_CHOICE,
+    // A tokio timer entry's three words, under the program the 1.53 family
+    // attaches to a bare `TimerEntry`: the state word is a deadline tick
+    // below `STATE_MIN_VALUE` and one of two sentinels at or above it, and
+    // the program must name each sentinel rather than subtract the wheel
+    // clock from it.
+    N_TIMER,
 }
 
 /// A self-contained bundle whose sole formatter is a [`BundleNode`] tree,
@@ -2508,6 +2515,15 @@ pub fn node_bundle() -> Bundle {
     );
     let queuel = s("queue");
     let (choicen, tagn) = (s("Choice"), s("tag"));
+    let (timern, tickn, whenn, elapsedn) =
+        (s("Timer"), s("tick"), s("registered_when"), s("elapsed"));
+    let (deadlinel, registeredl, pendingl, unregisteredl, elapsedl) = (
+        s("deadline"),
+        s(timer::REGISTERED),
+        s(timer::PENDING_FIRE),
+        s("unregistered"),
+        s("elapsed"),
+    );
 
     let m = |name, ty, offset| MemberDef { name, ty, offset };
 
@@ -2579,6 +2595,18 @@ pub fn node_bundle() -> Bundle {
             name: choicen,
             size: 1,
             members: vec![m(tagn, N_U8, 0)],
+        },
+    );
+    types.add(
+        N_TIMER,
+        TypeDef::Struct {
+            name: timern,
+            size: 24,
+            members: vec![
+                m(tickn, N_U64, 0),
+                m(whenn, N_U64, 8),
+                m(elapsedn, N_U64, 16),
+            ],
         },
     );
     let types = types.finish();
@@ -2655,6 +2683,47 @@ pub fn node_bundle() -> Bundle {
         default: None,
     };
 
+    // The timer program as the 1.53 family emits it for a bare entry: the
+    // tick test is tokio's own `state < STATE_MIN_VALUE`, and with no
+    // absolute deadline to fall back on, `deadline` names the state where
+    // no remaining wait is computable.
+    let tick_test = || vlt(vread(sel(&[0])), vconst(timer::STATE_MIN_VALUE));
+    let sentinel_state = || BundleNode::Variant {
+        discriminant: vne(vread(sel(&[0])), vconst(timer::STATE_DEREGISTERED)),
+        arms: vec![Arm::labeled(1, pendingl)],
+        default: Some(Box::new(BundleNode::Variant {
+            discriminant: vne(vread(sel(&[1])), vconst(0)),
+            arms: vec![Arm::labeled(0, unregisteredl), Arm::labeled(1, elapsedl)],
+            default: None,
+        })),
+    };
+    let timer_node = BundleNode::Struct {
+        fields: vec![
+            BundleField::Synth {
+                label: deadlinel,
+                node: BundleNode::Variant {
+                    discriminant: tick_test(),
+                    arms: vec![Arm::payload(
+                        1,
+                        BundleNode::Computed {
+                            value: vsub(vread(sel(&[0])), vread(sel(&[2]))),
+                            decode: BundleScalarDecode::Millis,
+                        },
+                    )],
+                    default: Some(Box::new(sentinel_state())),
+                },
+            },
+            BundleField::Synth {
+                label: statel,
+                node: BundleNode::Variant {
+                    discriminant: tick_test(),
+                    arms: vec![Arm::labeled(1, registeredl)],
+                    default: Some(Box::new(sentinel_state())),
+                },
+            },
+        ],
+    };
+
     let mut b = Bundle {
         meta: Meta {
             format_version: FORMAT_VERSION,
@@ -2666,6 +2735,7 @@ pub fn node_bundle() -> Bundle {
             debug_formats: std::collections::BTreeMap::from([
                 (N_THING, thing_node),
                 (N_CHOICE, choice_node),
+                (N_TIMER, timer_node),
             ]),
             name_index: vec![],
             ..Default::default()

@@ -640,6 +640,7 @@ mod tests {
     use crate::Value;
     use crate::testhelper::*;
 
+    use hansei_bundle::tokio::timer;
     use hansei_bundle::{
         Arm, BundleView, DisplayNode as BundleNode, MemberRef, ScalarDecode, Selector, Step,
         TypeDef, ValueExpr,
@@ -1767,6 +1768,49 @@ mod tests {
         let value = Value::new(v.ty(CHAN).unwrap(), 0, &bytes);
         let shown = format!("{}", value.display());
         assert!(shown.contains("queued: 3"), "{shown}");
+    }
+
+    /// A timer's state word is a deadline tick only below `STATE_MIN_VALUE`;
+    /// the two words at and above it are sentinels and must each name their
+    /// state, not be subtracted from the wheel clock. The pending-fire word
+    /// is the one that matters: taken as a tick it prints a plausible small
+    /// negative wait beside `registered`, which is what a core taken inside
+    /// the driver's `process_at_time` used to show.
+    #[test]
+    fn test_timer_state_word_names_each_sentinel() {
+        let b = node_bundle();
+        let v = BundleView::new(&b);
+        // Timer: tick @0, registered_when @8, elapsed @16.
+        let show = |tick: u64, registered_when: u64, elapsed: u64| {
+            let bytes = u64s(&[tick, registered_when, elapsed]);
+            format!(
+                "{}",
+                Value::new(v.ty(N_TIMER).unwrap(), 0, &bytes).display()
+            )
+        };
+        assert_eq!(
+            show(12_721, 1, 0),
+            "Timer { deadline: 12.721s, state: registered }"
+        );
+        assert_eq!(
+            show(timer::STATE_PENDING_FIRE, 1, 5),
+            "Timer { deadline: pending fire, state: pending fire }"
+        );
+        assert_eq!(
+            show(timer::STATE_DEREGISTERED, 1, 5),
+            "Timer { deadline: elapsed, state: elapsed }"
+        );
+        assert_eq!(
+            show(timer::STATE_DEREGISTERED, 0, 5),
+            "Timer { deadline: unregistered, state: unregistered }"
+        );
+        // The largest legal tick is still a tick. (Its wait prints negative
+        // because the `Millis` decode reads the word as signed; the state is
+        // what the boundary pins.)
+        assert_eq!(
+            show(timer::STATE_MIN_VALUE - 1, 1, 0),
+            "Timer { deadline: -0.003s, state: registered }"
+        );
     }
 
     /// A `Millis` decode spells a millisecond count as seconds, reading the

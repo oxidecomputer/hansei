@@ -13,23 +13,29 @@ use super::ReachStep::{Named, PeelTo, Variant};
 use super::tokio::wheel_elapsed;
 use super::{Reach, WORD, reach};
 use crate::TypeId;
+use crate::bundle::tokio::timer::{PENDING_FIRE, REGISTERED, STATE_DEREGISTERED, STATE_MIN_VALUE};
 use crate::bundle::{Arm, DisplayNode, Field, ScalarDecode, ValueExpr};
 use crate::extract::Emitter;
 
 /// The `{ deadline, state }` pair a 1.53 timer renders as — the same record
 /// the earlier family produces, decoded from the restructured words.
 /// `state` names where the entry is in its life — `unregistered` (first
-/// poll pending), `registered` (parked in the wheel), or `elapsed` (fired,
-/// not yet polled) — and `deadline` is the wait remaining as a duration
-/// (`12.721s`) while registered, falling back to `absolute` where no
-/// remaining wait is computable.
+/// poll pending), `registered` (parked in the wheel), `pending fire` (the
+/// driver has marked it to fire and not yet delivered the wakeup) or
+/// `elapsed` (fired, not yet polled) — and `deadline` is the wait remaining
+/// as a duration (`12.721s`) while registered, falling back to `absolute`
+/// where no remaining wait is computable.
 ///
 /// The entry's `StateCell` word *is* the registration state: the deadline
 /// tick (ms since the runtime's `TimeSource` epoch) while the entry sits in
-/// the wheel, `u64::MAX` otherwise. `registered_when` beside it caches the
-/// registration tick — zero from the constructor and kept after firing, so
-/// with the state word deregistered it is what separates `unregistered`
-/// from `elapsed`. The wheel's own clock ([`wheel_elapsed`]) is in the same
+/// the wheel, and one of tokio's sentinels at or above `STATE_MIN_VALUE`
+/// otherwise — `STATE_PENDING_FIRE` between the driver's `mark_pending` and
+/// its `fire`, `STATE_DEREGISTERED` after. The tick test is tokio's own
+/// `state < STATE_MIN_VALUE`, not a comparison with one sentinel: a sentinel
+/// treated as a tick would print a plausible small negative wait.
+/// `registered_when` beside it caches the registration tick — zero from the
+/// constructor and kept after firing, so with the state word deregistered
+/// it is what separates `unregistered` from `elapsed`. The wheel's own clock ([`wheel_elapsed`]) is in the same
 /// unit, and the difference is the remaining wait — two reads of target
 /// memory, no host clock, so it means the same thing against a live process
 /// and a core.
@@ -51,7 +57,7 @@ fn timer_fields<'a>(
         path.extend(tail);
         path
     };
-    // The state word: the deadline tick while registered, `u64::MAX` not.
+    // The state word: the deadline tick while registered, a sentinel not.
     let tick = emitter
         .walk(
             root,
@@ -79,44 +85,49 @@ fn timer_fields<'a>(
     let now = wheel_elapsed(emitter, root, prefix, true)?;
 
     use ValueExpr::{Const, Read};
-    let registered_test = || Read(tick.clone()).ne(Const(u64::MAX));
+    // `1` while the word is a deadline tick, `0` for either sentinel.
+    let tick_test = || Read(tick.clone()).lt(Const(STATE_MIN_VALUE));
+    // Among the sentinels: `1` for pending fire, `0` for deregistered.
+    let pending_test = || Read(tick.clone()).ne(Const(STATE_DEREGISTERED));
     let ever_registered = || Read(registered_when.clone()).ne(Const(0));
     let remaining = DisplayNode::Computed {
         value: Read(tick.clone()) - Read(now),
         decode: ScalarDecode::Millis,
     };
-
-    // With the entry deregistered, fall back to the absolute deadline where
-    // the caller has one, and to naming the state where it does not.
-    let fallback = match absolute {
-        Some(node) => Box::new(node),
-        None => {
-            let unregistered = emitter.label_arm(0, "unregistered");
-            let elapsed = emitter.label_arm(1, "elapsed");
-            Box::new(DisplayNode::Variant {
+    // The state a sentinel word names: pending fire by the word itself,
+    // otherwise whether the entry was ever in the wheel.
+    let sentinel_state = |emitter: &mut Emitter<'_>| {
+        let pending = emitter.label_arm(1, PENDING_FIRE);
+        let unregistered = emitter.label_arm(0, "unregistered");
+        let elapsed = emitter.label_arm(1, "elapsed");
+        DisplayNode::Variant {
+            discriminant: pending_test(),
+            arms: vec![pending],
+            default: Some(Box::new(DisplayNode::Variant {
                 discriminant: ever_registered(),
                 arms: vec![unregistered, elapsed],
                 default: None,
-            })
+            })),
         }
     };
+
+    // With no tick in the word, fall back to the absolute deadline where
+    // the caller has one, and to naming the state where it does not.
+    let fallback = match absolute {
+        Some(node) => node,
+        None => sentinel_state(emitter),
+    };
     let deadline = DisplayNode::Variant {
-        discriminant: registered_test(),
+        discriminant: tick_test(),
         arms: vec![Arm::payload(1, remaining)],
-        default: Some(fallback),
+        default: Some(Box::new(fallback)),
     };
 
-    let unregistered = emitter.label_arm(0, "unregistered");
-    let elapsed = emitter.label_arm(1, "elapsed");
-    let parked = emitter.label_arm(1, "registered");
+    let parked = emitter.label_arm(1, REGISTERED);
     let state = DisplayNode::Variant {
-        discriminant: registered_test(),
+        discriminant: tick_test(),
         arms: vec![parked],
-        default: Some(Box::new(DisplayNode::Variant {
-            discriminant: ever_registered(),
-            arms: vec![unregistered, elapsed],
-            default: None,
-        })),
+        default: Some(Box::new(sentinel_state(emitter))),
     };
     Some((deadline, state))
 }

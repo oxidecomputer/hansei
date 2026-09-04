@@ -675,17 +675,20 @@ fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
                 "tokio::runtime::time::entry::TimerEntry :: Node Struct \
                  {{ deadline: Variant {{ discr=Read(registered@+104), \
                  arms=[0=>(Alias {{ deadline@+88, follow }})], default=Variant {{ \
-                 discr=(Read(inner.{{Some}}.__0.state.state.v.value.__0@+48) != 0xffffffffffffffff), \
-                 arms=[0=>(Alias {{ deadline@+88, follow }}), 1=>(Computed(\
+                 discr=(Read(inner.{{Some}}.__0.state.state.v.value.__0@+48) < 0xfffffffffffffffe), \
+                 arms=[1=>(Computed(\
                  (Read(inner.{{Some}}.__0.state.state.v.value.__0@+48) - \
                  Read(driver.{{CurrentThread}}.__0.ptr.pointer.*.data.driver.time.{{Some}}.__0.inner.\
                  {{Traditional}}.state.__1.data.value.wheel.elapsed@+{ct_wheel} | \
                  driver.{{MultiThread}}.__0.ptr.pointer.*.data.driver.time.{{Some}}.__0.inner.\
-                 {{Traditional}}.state.__1.data.value.wheel.elapsed@+{mt_wheel}))))] }} }}, \
+                 {{Traditional}}.state.__1.data.value.wheel.elapsed@+{mt_wheel}))))], \
+                 default=Alias {{ deadline@+88, follow }} }} }}, \
                  state: Variant {{ discr=Read(registered@+104), arms=[0=>unregistered], \
                  default=Variant {{ \
+                 discr=(Read(inner.{{Some}}.__0.state.state.v.value.__0@+48) < 0xfffffffffffffffe), \
+                 arms=[1=>registered], default=Variant {{ \
                  discr=(Read(inner.{{Some}}.__0.state.state.v.value.__0@+48) != 0xffffffffffffffff), \
-                 arms=[0=>elapsed, 1=>registered] }} }} }}"
+                 arms=[0=>elapsed, 1=>pending fire] }} }} }} }}"
             ),
         );
         // The `Sleep` around the entry: the same program re-rooted across the
@@ -700,20 +703,22 @@ fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
                  arms=[0=>(Alias {{ entry.{{Traditional}}.__0.deadline@+88, follow }})], \
                  default=Variant {{ \
                  discr=(Read(entry.{{Traditional}}.__0.inner.{{Some}}.__0.state.state.v.value.__0@+48) \
-                 != 0xffffffffffffffff), \
-                 arms=[0=>(Alias {{ entry.{{Traditional}}.__0.deadline@+88, follow }}), \
-                 1=>(Computed(\
+                 < 0xfffffffffffffffe), \
+                 arms=[1=>(Computed(\
                  (Read(entry.{{Traditional}}.__0.inner.{{Some}}.__0.state.state.v.value.__0@+48) - \
                  Read(entry.{{Traditional}}.__0.driver.{{CurrentThread}}.__0.ptr.pointer.*.data.\
                  driver.time.{{Some}}.__0.inner.{{Traditional}}.state.__1.data.value.wheel.elapsed\
                  @+{ct_wheel} | \
                  entry.{{Traditional}}.__0.driver.{{MultiThread}}.__0.ptr.pointer.*.data.driver.\
                  time.{{Some}}.__0.inner.{{Traditional}}.state.__1.data.value.wheel.elapsed\
-                 @+{mt_wheel}))))] }} }}, \
+                 @+{mt_wheel}))))], \
+                 default=Alias {{ entry.{{Traditional}}.__0.deadline@+88, follow }} }} }}, \
                  state: Variant {{ discr=Read(entry.{{Traditional}}.__0.registered@+104), \
                  arms=[0=>unregistered], default=Variant {{ \
                  discr=(Read(entry.{{Traditional}}.__0.inner.{{Some}}.__0.state.state.v.value.__0@+48) \
-                 != 0xffffffffffffffff), arms=[0=>elapsed, 1=>registered] }} }} }}"
+                 < 0xfffffffffffffffe), arms=[1=>registered], default=Variant {{ \
+                 discr=(Read(entry.{{Traditional}}.__0.inner.{{Some}}.__0.state.state.v.value.__0@+48) \
+                 != 0xffffffffffffffff), arms=[0=>elapsed, 1=>pending fire] }} }} }} }}"
             ),
         );
         // The `Instant` chain each deadline sits behind: three transparent

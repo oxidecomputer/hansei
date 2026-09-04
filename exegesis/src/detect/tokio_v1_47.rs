@@ -16,22 +16,29 @@ use super::ReachStep::{Named, PeelTo, Variant};
 use super::tokio::wheel_elapsed;
 use super::{Reach, WORD, reach};
 use crate::TypeId;
+use crate::bundle::tokio::timer::{PENDING_FIRE, REGISTERED, STATE_DEREGISTERED, STATE_MIN_VALUE};
 use crate::bundle::{Arm, DisplayNode, Field, ScalarDecode, ValueExpr};
 use crate::extract::Emitter;
 
 /// The `{ deadline, state }` pair a timer renders as. `state` names where the
 /// entry is in its life — `unregistered` (first poll pending), `registered`
-/// (parked in the wheel), or `elapsed` (fired, not yet polled) — and
-/// `deadline` is the wait remaining as a duration (`12.721s`) while
+/// (parked in the wheel), `pending fire` (the driver has marked it to fire
+/// and not yet delivered the wakeup) or `elapsed` (fired, not yet polled) —
+/// and `deadline` is the wait remaining as a duration (`12.721s`) while
 /// registered, falling back to the absolute deadline instant in the states
 /// where no remaining wait is computable.
 ///
 /// The entry's `StateCell` word holds the deadline as a *tick* (ms since the
-/// runtime's `TimeSource` epoch), or `u64::MAX` once the driver has fired
-/// it; the driver's wheel keeps its own clock in the same unit (`elapsed`,
-/// advanced each time the wheel is processed). Their difference is the
-/// remaining wait — computed from two reads of target memory, no host clock
-/// involved, so it means the same thing against a live process and a core.
+/// runtime's `TimeSource` epoch) while it is a tick at all: every word at or
+/// above `STATE_MIN_VALUE` is one of tokio's sentinels (`STATE_PENDING_FIRE`,
+/// then `STATE_DEREGISTERED` once the driver has fired it), so the tick test
+/// is tokio's own `state < STATE_MIN_VALUE` rather than a comparison with
+/// one sentinel — a sentinel treated as a tick would subtract the clock from
+/// it and print a plausible small negative wait. The driver's wheel keeps its
+/// own clock in the same unit (`elapsed`, advanced each time the wheel is
+/// processed). Their difference is the remaining wait — computed from two
+/// reads of target memory, no host clock involved, so it means the same thing
+/// against a live process and a core.
 ///
 /// The wheel is reached through the entry's own scheduler handle
 /// ([`wheel_elapsed`]); `flavored_inner` is the calling family's declaration
@@ -82,26 +89,36 @@ pub(super) fn timer_fields<'a>(
         decode: ScalarDecode::Millis,
     };
     let registered_read = || Read(registered.clone());
-    let fired_test = || Read(tick.clone()).ne(Const(u64::MAX));
+    // `1` while the word is a deadline tick, `0` for either sentinel.
+    let tick_test = || Read(tick.clone()).lt(Const(STATE_MIN_VALUE));
+    // Among the sentinels: `1` for pending fire, `0` for deregistered.
+    let pending_test = || Read(tick.clone()).ne(Const(STATE_DEREGISTERED));
+    // Neither sentinel has a computable remaining wait; both fall back to
+    // the absolute instant.
     let deadline = DisplayNode::Variant {
         discriminant: registered_read(),
         arms: vec![Arm::payload(0, instant())],
         default: Some(Box::new(DisplayNode::Variant {
-            discriminant: fired_test(),
-            arms: vec![Arm::payload(0, instant()), Arm::payload(1, remaining)],
-            default: None,
+            discriminant: tick_test(),
+            arms: vec![Arm::payload(1, remaining)],
+            default: Some(Box::new(instant())),
         })),
     };
     let unregistered = emitter.label_arm(0, "unregistered");
+    let parked = emitter.label_arm(1, REGISTERED);
     let elapsed = emitter.label_arm(0, "elapsed");
-    let parked = emitter.label_arm(1, "registered");
+    let pending = emitter.label_arm(1, PENDING_FIRE);
     let state = DisplayNode::Variant {
         discriminant: registered_read(),
         arms: vec![unregistered],
         default: Some(Box::new(DisplayNode::Variant {
-            discriminant: fired_test(),
-            arms: vec![elapsed, parked],
-            default: None,
+            discriminant: tick_test(),
+            arms: vec![parked],
+            default: Some(Box::new(DisplayNode::Variant {
+                discriminant: pending_test(),
+                arms: vec![elapsed, pending],
+                default: None,
+            })),
         })),
     };
     Some((deadline, state))
