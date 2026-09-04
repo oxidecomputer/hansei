@@ -372,6 +372,14 @@ fn eval_expr<'a, T: Target>(
         ValueExpr::Lt(a, b) => {
             u64::from(eval_expr(a, vars, bytes, addr, ctx)? < eval_expr(b, vars, bytes, addr, ctx)?)
         }
+        ValueExpr::Shl(a, b) => {
+            let value = eval_expr(a, vars, bytes, addr, ctx)?;
+            let count = eval_expr(b, vars, bytes, addr, ctx)?;
+            u32::try_from(count)
+                .ok()
+                .and_then(|count| value.checked_shl(count))
+                .unwrap_or(0)
+        }
     })
 }
 
@@ -926,6 +934,32 @@ mod tests {
         let value = Value::new(view.ty(CHAN).unwrap(), 0, &bytes);
         let shown = format!("{}", value.display_from_target(&mem, 8));
         assert_eq!(shown, "[]", "{shown}");
+    }
+
+    /// `Shl` by the word width or more is `0`, not a wrapped shift count:
+    /// a slot index past the bitmap can never read as ready.
+    #[test]
+    fn test_shl_past_the_word_width_is_zero() {
+        let shown_for = |count: u64| {
+            let mut b = test_bundle();
+            b.types.debug_formats.insert(
+                CHAN,
+                BundleNode::Computed {
+                    value: vshl(vread(sel(&[0])), vconst(count)),
+                    decode: ScalarDecode::Raw,
+                },
+            );
+            b.validate().expect("a shift must validate");
+            let v = BundleView::new(&b);
+            // Chan: tail usize @0 = 1, the word shifted.
+            let bytes = u64s(&[1, 0, 0]);
+            let value = Value::new(v.ty(CHAN).unwrap(), 0, &bytes);
+            format!("{}", value.display())
+        };
+        assert_eq!(shown_for(3), "8");
+        assert_eq!(shown_for(63), (1u64 << 63).to_string());
+        assert_eq!(shown_for(64), "0");
+        assert_eq!(shown_for(u64::MAX), "0");
     }
 
     #[test]

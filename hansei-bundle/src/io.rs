@@ -30,7 +30,7 @@ pub const MAGIC: [u8; 8] = *b"exegesis";
 
 /// The current bundle format version. Bump on any schema change, including
 /// indirect ones (e.g. new [`crate::Encoding`] variants).
-pub const FORMAT_VERSION: u32 = 48;
+pub const FORMAT_VERSION: u32 = 49;
 
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -852,7 +852,8 @@ fn check_value_expr(
         | ValueExpr::Add(a, b)
         | ValueExpr::Sub(a, b)
         | ValueExpr::Mul(a, b)
-        | ValueExpr::Lt(a, b) => {
+        | ValueExpr::Lt(a, b)
+        | ValueExpr::Shl(a, b) => {
             check_value_expr(bundle, scope, a, num_vars, what)?;
             check_value_expr(bundle, scope, b, num_vars, what)
         }

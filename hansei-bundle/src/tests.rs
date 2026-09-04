@@ -2471,6 +2471,17 @@ mod node_validation {
     }
 
     #[test]
+    fn test_validate_checks_both_operands_of_a_shift() {
+        // The shift count is an operand like any other: an out-of-range
+        // variable there is caught, not just one on the shifted side.
+        let b = with_format(DisplayNode::Computed {
+            value: ValueExpr::Const(1) << ValueExpr::Var(0),
+            decode: ScalarDecode::Raw,
+        });
+        rejects(&b, "variable 0 out of range (0 declared)");
+    }
+
+    #[test]
     fn test_validate_rejects_an_unresolvable_expression_read() {
         let b = with_format(DisplayNode::Computed {
             value: ValueExpr::Read(Selector::member(9)),

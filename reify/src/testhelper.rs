@@ -449,6 +449,9 @@ pub fn vmul(a: ValueExpr, b: ValueExpr) -> ValueExpr {
 pub fn vlt(a: ValueExpr, b: ValueExpr) -> ValueExpr {
     ValueExpr::Lt(Box::new(a), Box::new(b))
 }
+pub fn vshl(a: ValueExpr, b: ValueExpr) -> ValueExpr {
+    ValueExpr::Shl(Box::new(a), Box::new(b))
+}
 pub fn vne(a: ValueExpr, b: ValueExpr) -> ValueExpr {
     ValueExpr::Ne(Box::new(a), Box::new(b))
 }

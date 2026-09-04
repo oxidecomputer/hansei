@@ -761,6 +761,9 @@ pub enum ValueExpr {
     Mul(Box<ValueExpr>, Box<ValueExpr>),
     /// `1` if `lhs < rhs` (unsigned), else `0`.
     Lt(Box<ValueExpr>, Box<ValueExpr>),
+    /// `lhs << rhs`; a shift of 64 or more yields `0` rather than wrapping
+    /// the count, so a slot index past the word's width masks nothing.
+    Shl(Box<ValueExpr>, Box<ValueExpr>),
 }
 
 /// Builders, so a display program composes as the expression it is instead
@@ -815,6 +818,13 @@ impl std::ops::BitAnd for ValueExpr {
     type Output = ValueExpr;
     fn bitand(self, rhs: ValueExpr) -> ValueExpr {
         ValueExpr::And(Box::new(self), Box::new(rhs))
+    }
+}
+
+impl std::ops::Shl for ValueExpr {
+    type Output = ValueExpr;
+    fn shl(self, rhs: ValueExpr) -> ValueExpr {
+        ValueExpr::Shl(Box::new(self), Box::new(rhs))
     }
 }
 

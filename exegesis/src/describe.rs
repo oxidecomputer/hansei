@@ -495,6 +495,11 @@ fn describe_value_expr(bundle: &Bundle, root: BundleTypeId, expr: &ValueExpr) ->
             describe_value_expr(bundle, root, a),
             describe_value_expr(bundle, root, b)
         ),
+        ValueExpr::Shl(a, b) => format!(
+            "({} << {})",
+            describe_value_expr(bundle, root, a),
+            describe_value_expr(bundle, root, b)
+        ),
     }
 }
 

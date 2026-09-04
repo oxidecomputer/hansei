@@ -308,6 +308,8 @@ pub enum ValueExpr {
     Sub(Box<ValueExpr>, Box<ValueExpr>),
     Mul(Box<ValueExpr>, Box<ValueExpr>),
     Lt(Box<ValueExpr>, Box<ValueExpr>),
+    /// `lhs << rhs`, `0` for a count of 64 or more.
+    Shl(Box<ValueExpr>, Box<ValueExpr>),
 }
 
 /// Resolved storage-specific entry traversal for [`DisplayNode::Map`].
@@ -630,6 +632,10 @@ impl<'a> DisplayNode<'a> {
                     Box::new(resolve_value_expr(scope, b)?),
                 ),
                 BundleExpr::Lt(a, b) => ValueExpr::Lt(
+                    Box::new(resolve_value_expr(scope, a)?),
+                    Box::new(resolve_value_expr(scope, b)?),
+                ),
+                BundleExpr::Shl(a, b) => ValueExpr::Shl(
                     Box::new(resolve_value_expr(scope, a)?),
                     Box::new(resolve_value_expr(scope, b)?),
                 ),
