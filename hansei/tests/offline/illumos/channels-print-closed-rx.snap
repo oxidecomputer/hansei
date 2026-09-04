@@ -1,0 +1,37 @@
+---
+source: hansei/src/offline.rs
+description: "`print _closed_rx` over illumos/channels"
+---
+tokio::sync::mpsc::bounded::Receiver<u32> {
+    capacity: 8,
+    free: closed=false, permits=7,
+    queued: [
+        30,
+    ],
+    tx: tokio::sync::mpsc::list::Tx<u32> {
+        block_tail: 0xADDR,
+        tail_position: 2,
+    },
+    rx_waker: tokio::sync::task::atomic_waker::AtomicWaker {
+        state: 0,
+        waker: tokio::loom::std::unsafe_cell::UnsafeCell<core::option::Option<core::task::wake::Waker>> { .. } @ 0xADDR,
+    },
+    notify_rx_closed: tokio::sync::notify::Notify {
+        state: state=idle, generation=0,
+        mutex: locked=false, parked=false,
+        queue: [],
+    },
+    semaphore: tokio::sync::mpsc::bounded::Semaphore {
+        mutex: locked=false, parked=false,
+        closed: false,
+        permits: closed=false, permits=7,
+        bound: 8,
+        queue: [],
+    },
+    tx_count: 0,
+    tx_weak_count: 0,
+    rx_fields: tokio::sync::mpsc::chan::RxFields<u32> {
+        list: tokio::sync::mpsc::list::Rx<u32> { .. } @ 0xADDR,
+        rx_closed: false,
+    },
+}

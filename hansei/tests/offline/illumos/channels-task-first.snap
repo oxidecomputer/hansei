@@ -6,10 +6,10 @@ task 3
     state: idle
     thread: <none>
     type: async fn channels::notify_waiter
-    awaiting at: src/bin/channels.rs:34
+    awaiting at: src/bin/channels.rs:35
     waiting on: future tokio::sync::notify::Notified
     waker: <empty>
-    spawned at: src/bin/channels.rs:79:23
-    defined at: src/bin/channels.rs:21
+    spawned at: src/bin/channels.rs:95:23
+    defined at: src/bin/channels.rs:22
     held futures: 1
     join sets: 0

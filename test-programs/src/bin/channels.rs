@@ -3,8 +3,9 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 //! tokio sync primitives parked in a steady state: a holder task parks
-//! forever owning a bounded `mpsc` with queued,
-//! unreceived messages, a `watch`, a `Semaphore`, and a `Notify` — the types
+//! forever owning a bounded `mpsc` with queued, unreceived messages, two
+//! more whose senders have dropped (one with a message still queued, one
+//! drained first), a `watch`, a `Semaphore`, and a `Notify` — the types
 //! the tokio-sync formatters (`MpscRx`/`MpscChan`/`MpscBlock`,
 //! `BoundedSemaphore`, `WatchState`, `Semaphore`, `Notify`) detect. A second
 //! task parks a waiter in the `Notify`'s queue. `READY` on stdout means every
@@ -40,6 +41,8 @@ async fn notify_waiter(notify: Arc<Notify>, ready: oneshot::Sender<()>) {
 async fn hold(
     _tx: mpsc::Sender<u32>,
     _rx: mpsc::Receiver<u32>,
+    _closed_rx: mpsc::Receiver<u32>,
+    _drained_rx: mpsc::Receiver<u32>,
     _watch_tx: watch::Sender<u32>,
     _watch_rx: watch::Receiver<u32>,
     _sem: Arc<Semaphore>,
@@ -65,6 +68,19 @@ fn main() {
         tx.send(10).await.expect("capacity available");
         tx.send(20).await.expect("capacity available");
 
+        // Two channels whose senders have all dropped. Closing claims a
+        // slot past the last message and never writes it, so the tail
+        // sits one ahead of what the receiver can read: one channel with
+        // a message still queued ahead of that slot, one drained before
+        // the close so nothing is.
+        let (closed_tx, closed_rx) = mpsc::channel::<u32>(8);
+        closed_tx.send(30).await.expect("capacity available");
+        drop(closed_tx);
+        let (drained_tx, mut drained_rx) = mpsc::channel::<u32>(8);
+        drained_tx.send(40).await.expect("capacity available");
+        drop(drained_tx);
+        assert_eq!(drained_rx.recv().await, Some(40));
+
         // A watch channel with a value published after receiver creation, so
         // the receiver's one-slot inbox remains unseen while it is parked.
         let (watch_tx, watch_rx) = watch::channel(7u32);
@@ -87,6 +103,8 @@ fn main() {
         let _holder = tokio::spawn(hold(
             tx,
             rx,
+            closed_rx,
+            drained_rx,
             watch_tx,
             watch_rx,
             sem,

@@ -218,6 +218,26 @@ fn commands(
             }
         }
     }
+    // The holder's three receivers through the mpsc formatter: a channel
+    // with messages queued, one whose senders dropped with a message
+    // still ahead of the close slot, and one drained before the close.
+    // The last two pin that the queued walk stops at the close slot
+    // rather than showing its bytes as a message.
+    if program == "channels" {
+        let holder = session.tasks.tasks.iter().find(|task| {
+            matches!(&task.future, bundle::FutureInfo::Known(known)
+                if known.display_name.starts_with("channels::hold::"))
+        });
+        if let Some(id) = holder.and_then(|task| task.task_id) {
+            list.push(("task-holder", format!("task {id}")));
+            // The cursor lands on the leaf, the parked oneshot; the
+            // receivers are locals of the holder's own frame above it.
+            list.push(("holder-up", "up".to_owned()));
+            list.push(("print-rx", "print _rx".to_owned()));
+            list.push(("print-closed-rx", "print _closed_rx".to_owned()));
+            list.push(("print-drained-rx", "print _drained_rx".to_owned()));
+        }
+    }
     // The register readout under whatever cursor the commands above
     // left: a task no thread is polling refuses, and a thread cursor
     // answers with the lwp's annotated block. One program pins the

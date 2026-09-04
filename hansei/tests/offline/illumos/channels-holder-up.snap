@@ -1,0 +1,6 @@
+---
+source: hansei/src/offline.rs
+description: "`up` over illumos/channels"
+---
+#1  async fn      channels::hold
+      awaiting at src/bin/channels.rs:55 (Suspend0, 8 locals)

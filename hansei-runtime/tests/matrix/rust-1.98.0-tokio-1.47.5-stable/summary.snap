@@ -805,26 +805,26 @@ program: channels
 [tasks]
 task: channels::notify_waiter::{async_fn_env#0}
   kind: AsyncFn
-  decl: channels.rs:21
+  decl: channels.rs:22
   entries: 2
   symbols-per-entry: 6,6
   stage: Stage<channels::notify_waiter::{async_fn_env#0}>
   variants:
-    Unresumed @ channels.rs:21
-    Returned @ channels.rs:35
-    Panicked @ channels.rs:35
-    Suspend0 @ channels.rs:34
+    Unresumed @ channels.rs:22
+    Returned @ channels.rs:36
+    Panicked @ channels.rs:36
+    Suspend0 @ channels.rs:35
 task: channels::hold::{async_fn_env#0}
   kind: AsyncFn
-  decl: channels.rs:49
+  decl: channels.rs:52
   entries: 2
   symbols-per-entry: 6,6
   stage: Stage<channels::hold::{async_fn_env#0}>
   variants:
-    Unresumed @ channels.rs:49
-    Returned @ channels.rs:53
-    Panicked @ channels.rs:53
-    Suspend0 @ channels.rs:52
+    Unresumed @ channels.rs:52
+    Returned @ channels.rs:56
+    Panicked @ channels.rs:56
+    Suspend0 @ channels.rs:55
 
 [dyn-futures]
 dyn: channels::hold::{async_fn_env#0} (poll, drop_glue)

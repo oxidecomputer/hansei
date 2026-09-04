@@ -1,0 +1,15 @@
+---
+source: hansei/src/offline.rs
+description: "`task 4` over linux/channels"
+---
+task 4
+    state: idle
+    thread: <none>
+    type: async fn channels::hold
+    awaiting at: src/bin/channels.rs:55
+    waiting on: future tokio::sync::oneshot::Receiver<u32>
+    waker: <empty>
+    spawned at: src/bin/channels.rs:103:23
+    defined at: src/bin/channels.rs:52
+    held futures: 0
+    join sets: 0
