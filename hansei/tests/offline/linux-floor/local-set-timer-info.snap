@@ -9,6 +9,3 @@ symbols resolved: 5/5
 process: not recorded by this target
 
 signal: none recorded (a live capture, not a crash)
-
-1 worker thread(s), 3 task(s)
-1 runtime, 1 local set (see `runtimes --list`)

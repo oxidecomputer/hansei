@@ -7,8 +7,8 @@
 //! One screen of everything the target records about itself: what was
 //! attached and how far its symbols resolve, who the process was —
 //! what gdb's `info proc` and mdb's `::status`, `::pargs` and `::penv`
-//! answer — what ended it, and how much there is for the listings to
-//! go and look at.
+//! answer — and what ended it. What the runtime holds is the
+//! listings' question (`threads`, `tasks`, `runtimes`).
 
 use crate::{Session, summary};
 
@@ -25,12 +25,7 @@ pub fn exec_info<T: Target>(session: &Session<'_, T>, out: &mut dyn io::Write) -
         part(session, &mut buf)?;
         Ok(String::from_utf8(buf).expect("info output is UTF-8"))
     };
-    let parts = [
-        render(attach)?,
-        render(process)?,
-        render(signal)?,
-        render(listings)?,
-    ];
+    let parts = [render(attach)?, render(process)?, render(signal)?];
     write!(out, "{}", parts.join("\n"))?;
     Ok(())
 }
@@ -46,32 +41,6 @@ fn attach<T: Target>(session: &Session<'_, T>, out: &mut dyn io::Write) -> Resul
         fp.matched,
         fp.total,
         if fp.is_complete() { "" } else { " (forced)" }
-    )?;
-    Ok(())
-}
-
-/// How much there is for the listings to go and look at.
-fn listings<T: Target>(session: &Session<'_, T>, out: &mut dyn io::Write) -> Result<()> {
-    writeln!(
-        out,
-        "{} worker thread(s), {} task(s)",
-        session.workers.len(),
-        session.tasks.tasks.len()
-    )?;
-    // What the target's executors are is `runtimes`' question: the
-    // summary says how many there are to go and look at, and leaves
-    // naming them to the listing that can afford the room.
-    let sets = match session.local_sets.is_empty() {
-        true => String::new(),
-        false => format!(
-            ", {}",
-            summary::counted(session.local_sets.len(), "local set")
-        ),
-    };
-    writeln!(
-        out,
-        "{}{sets} (see `runtimes --list`)",
-        summary::counted(session.runtimes.len(), "runtime")
     )?;
     Ok(())
 }

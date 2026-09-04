@@ -9,6 +9,3 @@ symbols resolved: 29/29
 process: not recorded by this target
 
 signal: none recorded (a live capture, not a crash)
-
-3 worker thread(s), 10 task(s)
-2 runtimes, 2 local sets (see `runtimes --list`)
