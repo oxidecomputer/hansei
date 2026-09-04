@@ -1,0 +1,7 @@
+---
+source: hansei/src/offline.rs
+description: "`runtimes` over linux/simple-await"
+---
+ID  FLAVOR        HANDLE          TASKS  FUTURES  WORKERS  THREADS  FOUND VIA
+0   multi_thread  0xADDR      1        1        2        3  a thread's runtime context
+[1 runtime]

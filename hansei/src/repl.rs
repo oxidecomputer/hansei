@@ -265,6 +265,7 @@ fn target_values<T: proc::Target>(
         "tasks" => crate::tasks::field_values(session, field),
         "futures" => crate::futures::field_values(session, field),
         "threads" => crate::threads::field_values(session, field),
+        "runtimes" => crate::runtimes::field_values(session, field),
         _ => None,
     };
     let Some((values, pattern)) = found else {
@@ -591,13 +592,16 @@ fn parse_words(words: &[String]) -> Result<Option<Line>> {
 /// holds a new one to that), and the hidden ones are not filed at
 /// all, since clap would not list them either.
 const HELP_SECTIONS: &[(&str, &[&str])] = &[
-    ("Overview", &["info", "census", "runtimes"]),
-    ("Listings", &["tasks", "futures", "threads", "graph"]),
+    ("Overview", &["info", "census"]),
+    (
+        "Listings",
+        &["tasks", "futures", "threads", "runtimes", "graph"],
+    ),
     ("Selection", &["task", "future", "thread"]),
     ("Frame navigation", &["frame", "up", "down"]),
     (
         "Inspection",
-        &["trace", "locals", "print", "regs", "whatis"],
+        &["trace", "locals", "print", "regs", "runtime", "whatis"],
     ),
     (
         "Other commands",
@@ -1170,12 +1174,13 @@ fn values_of(
         ("tasks", "with" | "without" | "group", []) => crate::tasks::Field::names().collect(),
         ("futures", "with" | "without" | "group", []) => crate::futures::Field::names().collect(),
         ("threads", "with" | "without" | "group", []) => crate::threads::Field::names().collect(),
+        ("runtimes", "with" | "without" | "group", []) => crate::runtimes::Field::names().collect(),
         // The clause's argument: what the target holds for the field
         // the first word named. The argument is a comma list of
         // alternatives, so the word completes at its last unescaped
         // comma — the alternatives before it kept, the one being
         // typed offered.
-        ("tasks" | "futures" | "threads", "with" | "without", [field]) => {
+        ("tasks" | "futures" | "threads" | "runtimes", "with" | "without", [field]) => {
             let ask = Ask::Values {
                 command: command.to_string(),
                 field: field.to_string(),
@@ -1193,10 +1198,11 @@ fn values_of(
         }
         // A selector's argument: the ids its listing holds, which are
         // the same values `--with id` / `--with lwp` complete to.
-        ("task", "target", _) | ("thread", "lwp", _) => {
+        ("task", "target", _) | ("thread", "lwp", _) | ("runtime", "scope", _) => {
             let (listing, field) = match command {
                 "task" => ("tasks", "id"),
-                _ => ("threads", "lwp"),
+                "thread" => ("threads", "lwp"),
+                _ => ("runtimes", "id"),
             };
             return answer(Ask::Values {
                 command: listing.to_string(),
@@ -2144,6 +2150,13 @@ mod tests {
         let threads: Vec<String> = crate::threads::Field::names().map(String::from).collect();
         assert_eq!(completions("threads --group "), threads);
         assert_eq!(completions("threads --without "), threads);
+        let runtimes: Vec<String> = crate::runtimes::Field::names().map(String::from).collect();
+        assert_eq!(completions("runtimes --group "), runtimes);
+        assert_eq!(completions("runtimes --with "), runtimes);
+        assert_eq!(
+            completions("runtimes -w f"),
+            ["flavor", "futures", "found-via"]
+        );
         assert_eq!(completions("tasks --group wa"), ["waiting-on", "waker"]);
         assert_eq!(completions("futures --with k"), ["kind"]);
         assert_eq!(completions("threads --with has"), ["has-task"]);
@@ -2537,87 +2550,80 @@ mod tests {
         assert!(args.is_empty());
     }
 
-    /// The runtimes' sections are flags rather than a value, the way
-    /// the census's are, so both can be asked for at once and naming
-    /// neither asks for the whole runtime.
+    /// `runtime` is pointed at one runtime, named by its index in the
+    /// listing or by the handle address printed beside it, and the
+    /// two spellings cannot be confused for one another. Naming none
+    /// parses too: the dispatch answers with the one runtime, or
+    /// refuses.
     #[test]
-    fn test_runtimes_takes_its_sections_as_flags() {
-        let sections = |line: &[&str]| {
-            let Command::Runtimes {
-                drivers, shared, ..
-            } = Line::try_parse_from(line)
-                .expect("runtimes takes its section flags")
-                .command
-            else {
-                panic!("runtimes parsed as another command");
-            };
-            (drivers, shared)
-        };
-        assert_eq!(sections(&["runtimes", "-D"]), (true, false));
-        assert_eq!(sections(&["runtimes", "--shared"]), (false, true));
-        assert_eq!(sections(&["runtimes", "-Ds"]), (true, true));
-    }
-
-    /// The runtimes a command is pointed at are named by their index in
-    /// the listing or by the handle address printed beside them, as
-    /// many as the reader cares to name, and the two spellings cannot
-    /// be confused for one another.
-    #[test]
-    fn test_runtimes_is_pointed_at_the_runtimes_named() {
+    fn test_runtime_is_pointed_at_the_runtime_named() {
         let scope = |line: &[&str]| {
-            let Command::Runtimes { scope, .. } = Line::try_parse_from(line)
-                .expect("runtimes takes scopes")
+            let Command::Runtime { scope } = Line::try_parse_from(line)
+                .expect("runtime takes a scope")
                 .command
             else {
-                panic!("runtimes parsed as another command");
+                panic!("runtime parsed as another command");
             };
             scope
         };
         assert_eq!(
-            scope(&["runtimes", "0x7f11c0"]),
-            [RuntimeScope::Handle(0x7f11c0)]
+            scope(&["runtime", "0x7f11c0"]),
+            Some(RuntimeScope::Handle(0x7f11c0))
         );
         // A label spells the handle `@ 0x…`, so the address still works
         // with the `@` stuck to it.
         assert_eq!(
-            scope(&["runtimes", "@0x7f11c0"]),
-            [RuntimeScope::Handle(0x7f11c0)]
+            scope(&["runtime", "@0x7f11c0"]),
+            Some(RuntimeScope::Handle(0x7f11c0))
         );
-        assert_eq!(scope(&["runtimes", "2"]), [RuntimeScope::Index(2)]);
-        // Several at once, since the question "what are these two
-        // doing" is the one several runtimes raise.
-        assert_eq!(
-            scope(&["runtimes", "2", "@0x7f11c0"]),
-            [RuntimeScope::Index(2), RuntimeScope::Handle(0x7f11c0)]
-        );
-        assert!(scope(&["runtimes"]).is_empty());
+        assert_eq!(scope(&["runtime", "2"]), Some(RuntimeScope::Index(2)));
+        assert_eq!(scope(&["runtime"]), None);
 
         // An address without its prefix would be an index; one that is
         // neither is refused rather than guessed at, as is an `@` on
-        // anything but an address.
-        assert!(Line::try_parse_from(["runtimes", "7f11c0"]).is_err());
-        assert!(Line::try_parse_from(["runtimes", "@2"]).is_err());
+        // anything but an address. One runtime at a time: the block
+        // form is one runtime's.
+        assert!(Line::try_parse_from(["runtime", "7f11c0"]).is_err());
+        assert!(Line::try_parse_from(["runtime", "@2"]).is_err());
+        assert!(Line::try_parse_from(["runtime", "0", "1"]).is_err());
+        // The old section flags are gone: the block is the whole
+        // runtime.
+        assert!(Line::try_parse_from(["runtime", "-D"]).is_err());
+        assert!(Line::try_parse_from(["runtime", "--shared"]).is_err());
     }
 
-    /// `--list` asks a different question than the state views, so it
-    /// is refused alongside anything that narrows one: a section flag,
-    /// or a named runtime.
+    /// `runtimes` is the listing: it takes the filter grammar and no
+    /// section flags, and a runtime named to it parses only so the
+    /// dispatch can refuse it with the `runtime N` spelling.
     #[test]
-    fn test_the_listing_is_asked_for_on_its_own() {
-        let listing = |line: &[&str]| {
-            let Command::Runtimes { list, .. } = Line::try_parse_from(line)
-                .expect("runtimes takes --list")
-                .command
-            else {
-                panic!("runtimes parsed as another command");
-            };
-            list
+    fn test_runtimes_takes_the_filter_grammar() {
+        let Command::Runtimes {
+            scope,
+            with,
+            without,
+            group,
+        } = Line::try_parse_from(["runtimes", "--with", "threads", ">0", "-g", "flavor"])
+            .expect("runtimes takes the filter grammar")
+            .command
+        else {
+            panic!("runtimes parsed as another command");
         };
-        assert!(listing(&["runtimes", "-l"]));
-        assert!(!listing(&["runtimes"]));
-        assert!(Line::try_parse_from(["runtimes", "-l", "-D"]).is_err());
-        assert!(Line::try_parse_from(["runtimes", "--list", "--shared"]).is_err());
-        assert!(Line::try_parse_from(["runtimes", "-l", "0"]).is_err());
+        assert!(scope.is_empty());
+        assert_eq!(with, ["threads", ">0"]);
+        assert!(without.is_empty());
+        assert_eq!(group.as_deref(), Some("flavor"));
+
+        let Command::Runtimes { scope, .. } = Line::try_parse_from(["runtimes", "0"])
+            .expect("a named runtime parses, to be refused by name")
+            .command
+        else {
+            panic!("runtimes parsed as another command");
+        };
+        assert_eq!(scope, ["0"]);
+        assert!(Line::try_parse_from(["runtimes", "--list"]).is_err());
+        assert!(Line::try_parse_from(["runtimes", "-D"]).is_err());
+        assert!(Line::try_parse_from(["runtimes", "-s"]).is_err());
+        assert!(Line::try_parse_from(["runtimes", "--exec", "runtime"]).is_err());
     }
 
     /// The filter grammar: `--with`/`--without` take FIELD ARG pairs,
@@ -2659,7 +2665,7 @@ mod tests {
 
         // The short spellings: `-w`/`-W` for the pairs, `-g` for the
         // field, on every listing command.
-        for listing in ["tasks", "futures", "threads"] {
+        for listing in ["tasks", "futures", "threads", "runtimes"] {
             let words = [listing, "-w", "a", "b", "-W", "c", "d", "-g", "e"];
             let line = Line::try_parse_from(words).expect("the short filter spellings parse");
             let (with, without, group) = match line.command {
@@ -2676,6 +2682,12 @@ mod tests {
                     ..
                 }
                 | Command::Threads {
+                    with,
+                    without,
+                    group,
+                    ..
+                }
+                | Command::Runtimes {
                     with,
                     without,
                     group,

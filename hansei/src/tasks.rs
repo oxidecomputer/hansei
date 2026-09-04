@@ -556,7 +556,7 @@ pub(crate) struct TaskRow {
     /// The lifecycle, with ` (cancelled)` appended when the cancel
     /// bit is set.
     pub(crate) state: String,
-    /// The group index `runtimes --list` prints (runtimes and local
+    /// The group index `runtimes` prints (runtimes and local
     /// sets share the space); the column prints only on targets
     /// holding more than one group.
     pub(crate) rt: usize,
@@ -1198,7 +1198,7 @@ pub(crate) enum Field {
     Defined,
     /// The lifecycle, ` (cancelled)` included.
     State,
-    /// The group index `runtimes --list` prints — exact.
+    /// The group index `runtimes` prints — exact.
     Rt,
     /// The lwp mid-poll on the task — exact.
     Lwp,
@@ -1423,7 +1423,7 @@ fn matcher(field: Field, arg: &str, handles: &[u64]) -> Result<Matcher> {
 }
 
 /// Resolve an `rt` argument — a group index, or a runtime's `0x`
-/// handle as `runtimes --list` prints it, with or without a leading
+/// handle as `runtimes` prints it, with or without a leading
 /// `@` — to the group index rows carry. Exact, and an unknown handle
 /// is an error rather than an empty match.
 pub(crate) fn resolve_rt(arg: &str, handles: &[u64]) -> Result<usize> {
@@ -1438,7 +1438,7 @@ pub(crate) fn resolve_rt(arg: &str, handles: &[u64]) -> Result<usize> {
     }
     arg.parse().map_err(|_| {
         anyhow::anyhow!(
-            "a runtime is named by its index in `runtimes --list` or by the \
+            "a runtime is named by its index in `runtimes` or by the \
              handle address printed beside it there, got {arg:?}"
         )
     })

@@ -1,0 +1,7 @@
+---
+source: hansei/src/offline.rs
+description: "`runtimes --group flavor` over linux/dyn-future"
+---
+COUNT  FLAVOR        RUNTIMES
+    1  multi_thread  runtime 0
+[1 group]

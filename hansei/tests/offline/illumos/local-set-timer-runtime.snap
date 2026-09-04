@@ -1,0 +1,78 @@
+---
+source: hansei/src/offline.rs
+description: "`runtime` over illumos/local-set-timer"
+---
+runtime 0 @ 0xADDR
+    flavor: current_thread
+    tasks: 1
+    futures: 1
+    workers: 1
+    threads: 1 (lwp 1)
+    found via: a thread's runtime context
+    drivers:
+      tokio::runtime::driver::Handle {
+          io: tokio::runtime::driver::IoHandle::Enabled {
+              registry: mio::poll::Registry { .. } @ 0xADDR,
+              registrations: tokio::runtime::io::registration_set::RegistrationSet { .. } @ 0xADDR,
+              synced: tokio::loom::std::parking_lot::Mutex<tokio::runtime::io::registration_set::Synced> { .. } @ 0xADDR,
+              waker: mio::waker::Waker { .. } @ 0xADDR,
+              metrics: tokio::runtime::metrics::io::IoDriverMetrics { .. } @ 0xADDR,
+          },
+          signal: core::option::Option<tokio::runtime::signal::Handle>::Some(0xADDR -> <unreadable>),
+          time: core::option::Option<tokio::runtime::time::handle::Handle>::Some {
+              time_source: tokio::runtime::time::source::TimeSource { .. } @ 0xADDR,
+              inner: tokio::runtime::time::Inner { .. } @ 0xADDR,
+          },
+          clock: tokio::time::clock::Clock {
+              inner: tokio::loom::std::parking_lot::Mutex<tokio::time::clock::Inner> { .. } @ 0xADDR,
+          },
+      }
+    shared:
+      tokio::runtime::scheduler::current_thread::Shared {
+          inject: tokio::runtime::scheduler::inject::Inject<alloc::sync::Arc<tokio::runtime::scheduler::current_thread::Handle, alloc::alloc::Global>> {
+              shared: tokio::runtime::scheduler::inject::shared::Shared<alloc::sync::Arc<tokio::runtime::scheduler::current_thread::Handle, alloc::alloc::Global>> { .. } @ 0xADDR,
+              synced: tokio::loom::std::parking_lot::Mutex<tokio::runtime::scheduler::inject::synced::Synced> { .. } @ 0xADDR,
+          },
+          owned: tokio::runtime::task::list::OwnedTasks<alloc::sync::Arc<tokio::runtime::scheduler::current_thread::Handle, alloc::alloc::Global>> {
+              list: tokio::util::sharded_list::ShardedList<tokio::runtime::task::Task<alloc::sync::Arc<tokio::runtime::scheduler::current_thread::Handle, alloc::alloc::Global>>, tokio::runtime::task::core::Header> { .. } @ 0xADDR,
+              id: 1,
+              closed: core::sync::atomic::Atomic<bool> { .. } @ 0xADDR,
+          },
+          woken: core::sync::atomic::Atomic<bool> {
+              v: 0,
+          },
+          config: tokio::runtime::config::Config {
+              global_queue_interval: core::option::Option<u32> { .. } @ 0xADDR,
+              event_interval: 61,
+              before_park: core::option::Option<alloc::sync::Arc<(dyn core::ops::function::Fn<(), Output=()> + core::marker::Send + core::marker::Sync), alloc::alloc::Global>> { .. } @ 0xADDR,
+              after_unpark: core::option::Option<alloc::sync::Arc<(dyn core::ops::function::Fn<(), Output=()> + core::marker::Send + core::marker::Sync), alloc::alloc::Global>> { .. } @ 0xADDR,
+              before_spawn: core::option::Option<alloc::sync::Arc<(dyn core::ops::function::Fn<(&tokio::runtime::task_hooks::TaskMeta), Output=()> + core::marker::Send + core::marker::Sync), alloc::alloc::Global>> { .. } @ 0xADDR,
+              after_termination: core::option::Option<alloc::sync::Arc<(dyn core::ops::function::Fn<(&tokio::runtime::task_hooks::TaskMeta), Output=()> + core::marker::Send + core::marker::Sync), alloc::alloc::Global>> { .. } @ 0xADDR,
+              before_poll: core::option::Option<alloc::sync::Arc<(dyn core::ops::function::Fn<(&tokio::runtime::task_hooks::TaskMeta), Output=()> + core::marker::Send + core::marker::Sync), alloc::alloc::Global>> { .. } @ 0xADDR,
+              after_poll: core::option::Option<alloc::sync::Arc<(dyn core::ops::function::Fn<(&tokio::runtime::task_hooks::TaskMeta), Output=()> + core::marker::Send + core::marker::Sync), alloc::alloc::Global>> { .. } @ 0xADDR,
+              disable_lifo_slot: true,
+              seed_generator: tokio::util::rand::rt::RngSeedGenerator { .. } @ 0xADDR,
+              metrics_poll_count_histogram: core::option::Option<tokio::runtime::metrics::histogram::HistogramBuilder> { .. } @ 0xADDR,
+              unhandled_panic: Ignore,
+              enable_eager_driver_handoff: false,
+          },
+          scheduler_metrics: tokio::runtime::metrics::scheduler::SchedulerMetrics {
+              remote_schedule_count: tokio::util::metric_atomics::MetricAtomicU64 { .. } @ 0xADDR,
+              budget_forced_yield_count: tokio::util::metric_atomics::MetricAtomicU64 { .. } @ 0xADDR,
+          },
+          worker_metrics: tokio::runtime::metrics::worker::WorkerMetrics {
+              busy_duration_total: tokio::util::metric_atomics::MetricAtomicU64 { .. } @ 0xADDR,
+              queue_depth: tokio::util::metric_atomics::MetricAtomicUsize { .. } @ 0xADDR,
+              thread_id: std::sync::poison::mutex::Mutex<core::option::Option<std::thread::id::ThreadId>> { .. } @ 0xADDR,
+              park_count: tokio::util::metric_atomics::MetricAtomicU64 { .. } @ 0xADDR,
+              park_unpark_count: tokio::util::metric_atomics::MetricAtomicU64 { .. } @ 0xADDR,
+              noop_count: tokio::util::metric_atomics::MetricAtomicU64 { .. } @ 0xADDR,
+              steal_count: tokio::util::metric_atomics::MetricAtomicU64 { .. } @ 0xADDR,
+              steal_operations: tokio::util::metric_atomics::MetricAtomicU64 { .. } @ 0xADDR,
+              poll_count: tokio::util::metric_atomics::MetricAtomicU64 { .. } @ 0xADDR,
+              mean_poll_time: tokio::util::metric_atomics::MetricAtomicU64 { .. } @ 0xADDR,
+              local_schedule_count: tokio::util::metric_atomics::MetricAtomicU64 { .. } @ 0xADDR,
+              overflow_count: tokio::util::metric_atomics::MetricAtomicU64 { .. } @ 0xADDR,
+              poll_count_histogram: core::option::Option<tokio::runtime::metrics::histogram::Histogram> { .. } @ 0xADDR,
+          },
+      }

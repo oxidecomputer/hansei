@@ -1,0 +1,7 @@
+---
+source: hansei/src/offline.rs
+description: "`runtimes` over linux/gen-0007"
+---
+ID  FLAVOR        HANDLE          TASKS  FUTURES  WORKERS  THREADS  FOUND VIA
+0   multi_thread  0xADDR      5       12        2        3  a thread's runtime context
+[1 runtime]

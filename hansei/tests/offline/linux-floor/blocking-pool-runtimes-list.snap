@@ -1,6 +1,0 @@
----
-source: hansei/src/offline.rs
-description: "`runtimes --list` over linux-floor/blocking-pool"
----
-KIND     ID  FLAVOR        HANDLE          HOLDS               WHERE
-runtime  0   multi_thread  0xADDR  5 tasks, 5 futures  on 4 lwps

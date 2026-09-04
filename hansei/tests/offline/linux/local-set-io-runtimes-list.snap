@@ -1,7 +1,0 @@
----
-source: hansei/src/offline.rs
-description: "`runtimes --list` over linux/local-set-io"
----
-KIND       ID  FLAVOR          HANDLE          HOLDS               WHERE
-runtime    0   current_thread  0xADDR  1 task, 1 future    on 1 lwp
-local set  0                   0xADDR  3 tasks, 3 futures  on lwp 3638055, found via a task waker on an io resource registered with a runtime's driver

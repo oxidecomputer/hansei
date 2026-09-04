@@ -1,6 +1,0 @@
----
-source: hansei/src/offline.rs
-description: "`runtimes --list` over linux/channels"
----
-KIND     ID  FLAVOR        HANDLE          HOLDS               WHERE
-runtime  0   multi_thread  0xADDR  2 tasks, 3 futures  on 3 lwps

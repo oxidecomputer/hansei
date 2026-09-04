@@ -1,6 +1,0 @@
----
-source: hansei/src/offline.rs
-description: "`runtimes --list` over illumos/ct-runtime"
----
-KIND     ID  FLAVOR          HANDLE     HOLDS               WHERE
-runtime  0   current_thread  0xADDR  2 tasks, 2 futures  on 1 lwp
