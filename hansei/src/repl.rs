@@ -565,15 +565,115 @@ fn parse_command(command: &str) -> Result<Option<Line>> {
 fn parse_words(words: &[String]) -> Result<Option<Line>> {
     match Line::try_parse_from(words) {
         Ok(parsed) => Ok(Some(parsed)),
+        // A one-word help request is bare `help` however abbreviated,
+        // and its listing is rendered here rather than by clap, which
+        // lists subcommands as one flat block and has no way to head
+        // groups of them. `help COMMAND` is still clap's.
+        Err(e) if e.kind() == clap::error::ErrorKind::DisplayHelp && words.len() == 1 => {
+            print!("{}", help_listing(&Theme::for_stdout()));
+            Ok(None)
+        }
         // `use_stderr` is clap's own split between a real parse failure
-        // and output that was asked for: `help` renders as an error but
-        // is a successful command, and must not fail a script.
+        // and output that was asked for: `help tasks` renders as an
+        // error but is a successful command, and must not fail a script.
         Err(e) if !e.use_stderr() => {
             print!("{e}");
             Ok(None)
         }
         Err(e) => Err(anyhow!("{}", clap_message(e))),
     }
+}
+
+/// The sections bare `help` lists the commands under, each in the
+/// order it is read: the target's overview first, then what selects
+/// a cursor and what asks about it. Every visible command is filed
+/// exactly once (`test_help_sections_file_every_visible_command_once`
+/// holds a new one to that), and the hidden ones are not filed at
+/// all, since clap would not list them either.
+const HELP_SECTIONS: &[(&str, &[&str])] = &[
+    ("Overview", &["info", "census", "runtimes"]),
+    ("Listings", &["tasks", "futures", "threads", "graph"]),
+    ("Selection", &["task", "future", "thread"]),
+    ("Frame navigation", &["frame", "up", "down"]),
+    (
+        "Inspection",
+        &["trace", "locals", "print", "regs", "whatis"],
+    ),
+    (
+        "Other commands",
+        &["config", "history", "save-tokio-info", "help", "quit"],
+    ),
+];
+
+/// The width help wraps at: the terminal's, capped where clap caps
+/// its own so `help` and `help COMMAND` flow alike, and that cap
+/// outright where the output is not a terminal.
+const HELP_WIDTH: usize = 100;
+
+/// The listing bare `help` prints: every command clap would list,
+/// under [`HELP_SECTIONS`]' headings. The text beside each command is
+/// its own first paragraph — what clap would have printed — so this
+/// and `help COMMAND` never disagree.
+fn help_listing(theme: &Theme) -> String {
+    let mut root = Line::command();
+    root.build();
+    let width = theme.width().map_or(HELP_WIDTH, |w| w.min(HELP_WIDTH));
+    // One column for every section, as clap pads one listing: the
+    // longest name sets it, a two-space indent before and gap after.
+    let column = HELP_SECTIONS
+        .iter()
+        .flat_map(|(_, names)| names.iter())
+        .map(|name| name.len())
+        .max()
+        .unwrap_or(0)
+        + 4;
+
+    let mut out = root.get_about().map(|a| a.to_string()).unwrap_or_default();
+    out.push('\n');
+    for (heading, names) in HELP_SECTIONS {
+        out.push('\n');
+        out.push_str(&theme.bold(&format!("{heading}:")));
+        out.push('\n');
+        for name in names.iter() {
+            let about = root
+                .find_subcommand(name)
+                .and_then(|c| c.get_about())
+                .map(|a| a.to_string())
+                .unwrap_or_default();
+            out.push_str(&format!("  {name:<w$}", w = column - 2));
+            for (i, line) in wrap_words(&about, width.saturating_sub(column))
+                .iter()
+                .enumerate()
+            {
+                if i > 0 {
+                    out.push_str(&" ".repeat(column));
+                }
+                out.push_str(line);
+                out.push('\n');
+            }
+        }
+    }
+    out
+}
+
+/// `text` flowed into lines of at most `width` characters, broken at
+/// spaces; a word longer than the width stands alone on its line.
+/// Empty text is one empty line, so a caller always ends the line it
+/// started.
+fn wrap_words(text: &str, width: usize) -> Vec<String> {
+    let mut lines = vec![String::new()];
+    for word in text.split_whitespace() {
+        let line = lines.last_mut().expect("one line always stands");
+        if !line.is_empty() && line.chars().count() + 1 + word.chars().count() > width {
+            lines.push(word.to_string());
+        } else {
+            if !line.is_empty() {
+                line.push(' ');
+            }
+            line.push_str(word);
+        }
+    }
+    lines
 }
 
 /// Parse the words a frame move carries after it (`up locals`), for
@@ -2291,12 +2391,78 @@ mod tests {
         assert_eq!(toy("pai"), ["paint", "pain"]);
     }
 
+    /// Bare `help` files every command clap would list under exactly
+    /// one section, and files nothing clap would not list: a new
+    /// command fails here until it is filed, a hidden or renamed one
+    /// until it is unfiled. The listing itself heads each section and
+    /// pads every name to one column.
+    #[test]
+    fn test_help_sections_file_every_visible_command_once() {
+        let mut root = Line::command();
+        root.build();
+        let visible: Vec<&str> = root
+            .get_subcommands()
+            .filter(|c| !c.is_hide_set())
+            .map(|c| c.get_name())
+            .collect();
+        let filed: Vec<&str> = HELP_SECTIONS
+            .iter()
+            .flat_map(|(_, names)| names.iter().copied())
+            .collect();
+        for name in &visible {
+            let times = filed.iter().filter(|n| n == &name).count();
+            assert_eq!(times, 1, "{name} is filed {times} times");
+        }
+        for name in &filed {
+            assert!(
+                visible.contains(name),
+                "{name} is filed but not a listed command"
+            );
+        }
+
+        let listing = help_listing(&Theme::plain());
+        assert!(
+            listing.starts_with("Commands a hansei session accepts.\n\n"),
+            "{listing}"
+        );
+        for (heading, _) in HELP_SECTIONS {
+            assert!(listing.contains(&format!("\n{heading}:\n  ")), "{listing}");
+        }
+        assert!(
+            listing.contains("\n  frame            Move the cursor"),
+            "{listing}"
+        );
+        assert!(listing.contains("\n  save-tokio-info  Write"), "{listing}");
+        assert!(
+            listing.contains("\n  quit             Leave the session\n"),
+            "{listing}"
+        );
+        for line in listing.lines() {
+            assert!(line.chars().count() <= HELP_WIDTH, "{line}");
+        }
+    }
+
+    /// Words flow greedily, break at spaces, and a word wider than the
+    /// line stands alone rather than being cut.
+    #[test]
+    fn test_wrap_words_flows_and_breaks_at_spaces() {
+        assert_eq!(wrap_words("", 10), [""]);
+        assert_eq!(wrap_words("foo bar baz", 10), ["foo bar", "baz"]);
+        assert_eq!(wrap_words("foo bar baz", 5), ["foo", "bar", "baz"]);
+        assert_eq!(
+            wrap_words("a verylongword b", 6),
+            ["a", "verylongword", "b"]
+        );
+    }
+
     /// `help` is a successful command that clap renders as an error;
     /// a real parse failure is one, with clap's prefix stripped since
     /// the caller frames it.
     #[test]
     fn test_help_is_answered_and_nonsense_is_refused() {
         assert!(matches!(parse_command("help"), Ok(None)));
+        assert!(matches!(parse_command("hel"), Ok(None)));
+        assert!(matches!(parse_command("help tasks"), Ok(None)));
         assert!(matches!(parse_command("tasks"), Ok(Some(_))));
         let Err(err) = parse_command("no-such-command") else {
             panic!("nonsense parsed as a command");
