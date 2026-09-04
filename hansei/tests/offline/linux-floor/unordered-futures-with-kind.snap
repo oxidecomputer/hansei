@@ -2,7 +2,7 @@
 source: hansei/src/offline.rs
 description: "`futures --with kind child` over linux-floor/unordered"
 ---
-ADDR            TASK  HELD IN                                              STATE                                WAITING ON  FUTURE
+ADDR            TASK  HELD IN                                              STATE                                WAITING ON  TYPE
 0xADDR  3     set 0xADDR                                   Suspend0 — src/bin/unordered.rs:73   —           async fn unordered::set_member
 0xADDR  3     set 0xADDR                                   Suspend0 — src/bin/unordered.rs:73   —           async fn unordered::set_member
 0xADDR  3     set 0xADDR                                   Suspend0 — src/bin/unordered.rs:73   —           async fn unordered::set_member

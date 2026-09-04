@@ -2,6 +2,6 @@
 source: hansei/src/offline.rs
 description: "`futures` over illumos/channels"
 ---
-ADDR       TASK  HELD IN              STATE  WAITING ON  FUTURE
+ADDR       TASK  HELD IN              STATE  WAITING ON  TYPE
 0xADDR  3     frame 1, `notified`  —      —           future tokio::sync::notify::Notified
 [1 future]

@@ -338,7 +338,7 @@ fn print_future_table(
     if groups {
         header.push("RT");
     }
-    header.extend(["HELD IN", "STATE", "WAITING ON", "FUTURE"]);
+    header.extend(["HELD IN", "STATE", "WAITING ON", "TYPE"]);
     let columns = header.len();
     // The wait and the future are type names: what a terminal cuts
     // to keep a row on one line.

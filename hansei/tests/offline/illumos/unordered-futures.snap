@@ -2,7 +2,7 @@
 source: hansei/src/offline.rs
 description: "`futures` over illumos/unordered"
 ---
-ADDR      TASK  HELD IN                                        STATE                                WAITING ON  FUTURE
+ADDR      TASK  HELD IN                                        STATE                                WAITING ON  TYPE
 0xADDR  3     frame 1, `held`                                Unresumed — src/bin/unordered.rs:60  —           async fn unordered::set_member
 0xADDR  3     frame 1, `boxed`                               Unresumed — src/bin/unordered.rs:60  —           async fn unordered::set_member
 0xADDR  3     frame 1, `pair`                                Unresumed — src/bin/unordered.rs:40  —           async fn unordered::leaf
