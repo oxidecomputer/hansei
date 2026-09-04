@@ -654,7 +654,7 @@ fn test_tasks_lists_a_table_row_per_task() {
         let mut lines = out.lines();
         let header = lines.next().expect("the listing has a header");
         assert!(header.starts_with("ID"), "{out}");
-        for column in ["STATE", "AWAITING AT", "WAITING ON", "FUTURE"] {
+        for column in ["STATE", "FUTURES", "AWAITING AT", "WAITING ON", "FUTURE"] {
             assert!(header.contains(column), "{out}");
         }
         let rest: Vec<&str> = lines.collect();

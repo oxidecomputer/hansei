@@ -2,6 +2,6 @@
 source: hansei/src/offline.rs
 description: "`tasks --with id 3,6` over linux-floor/local-set-timer"
 ---
-ID  STATE  RT  AWAITING AT                    WAITING ON                                                     FUTURE
-3   idle   0   src/bin/local-set-timer.rs:42  timer (deadline TS on the target's monotonic clock)  async fn local_set_timer::sleeper
+ID  STATE  RT  FUTURES  AWAITING AT                    WAITING ON                                                     FUTURE
+3   idle   0         0  src/bin/local-set-timer.rs:42  timer (deadline TS on the target's monotonic clock)  async fn local_set_timer::sleeper
 [1 task]

@@ -320,6 +320,16 @@ impl Counts {
         }
         format!("{sets} ({})", holds.join(" and "))
     }
+
+    /// How many futures the task has in flight beside its own await
+    /// chain — the `FUTURES` column, and what a `futures` clause
+    /// compares: the futures held in its frames and the live children
+    /// of the sets it drives, which is the population `futures` lists
+    /// for the task. A set itself is a container, not a future, and a
+    /// joined task is a row of its own, so neither is in the number.
+    pub(crate) fn futures(&self) -> usize {
+        self.held + self.children_live
+    }
 }
 
 /// What printing a find needs beyond the find itself: the tree it sits
@@ -919,11 +929,12 @@ fn wait_detail(task: &bundle::Task, registries: &bundle::Registries) -> Vec<Stri
 
 /// One row's table cells, in column order — the table's rows, and the
 /// heading `--exec` opens each task's output with.
-fn row_cells(row: &TaskRow, groups: bool) -> Vec<String> {
+fn row_cells(row: &TaskRow, futures: usize, groups: bool) -> Vec<String> {
     let mut cells = vec![row.id.clone(), row.state.clone()];
     if groups {
         cells.push(row.rt.to_string());
     }
+    cells.push(futures.to_string());
     cells.push(row.awaiting_at.clone().unwrap_or_else(|| "—".to_string()));
     cells.push(row.waiting_on.clone());
     cells.push(row.future.clone());
@@ -1081,9 +1092,10 @@ pub(crate) fn print_task<T: proc::Target>(
 }
 
 /// Print the table: one row per task, in the listing's own id order,
-/// the `RT` column only when the target holds more than one group.
+/// each with its [`Counts::futures`] count, the `RT` column only when
+/// the target holds more than one group.
 fn print_task_table(
-    rows: &[TaskRow],
+    rows: &[(&TaskRow, usize)],
     groups: bool,
     limit: Option<usize>,
     fit: Option<usize>,
@@ -1094,17 +1106,22 @@ fn print_task_table(
     if groups {
         header.push("RT");
     }
+    // The count sits with the short cells, right-aligned as a number,
+    // ahead of the three that run wide.
+    header.push("FUTURES");
+    let futures = header.len() - 1;
     header.extend(["AWAITING AT", "WAITING ON", "FUTURE"]);
     let columns = header.len();
     // The wait and the future are type names: what a terminal cuts
     // to keep a row on one line.
     let mut table = crate::output::Table::new(columns)
         .header(header)
+        .align_right(futures)
         .truncatable(columns - 2)
         .truncatable(columns - 1)
         .fit(fit);
-    for row in &rows[..shown] {
-        table.row(row_cells(row, groups));
+    for (row, futures) in &rows[..shown] {
+        table.row(row_cells(row, *futures, groups));
     }
     if !table.is_empty() {
         table.write(out)?;
@@ -1189,12 +1206,14 @@ pub(crate) enum Field {
     Holds,
     /// A comparison on the `Join sets` count.
     Sets,
+    /// A comparison on the `FUTURES` column, [`Counts::futures`].
+    Futures,
     /// The task id — exact, for scripts.
     Id,
 }
 
 impl Field {
-    const NAMES: [(&'static str, Field); 12] = [
+    const NAMES: [(&'static str, Field); 13] = [
         ("type", Field::Type),
         ("awaiting", Field::Awaiting),
         ("waiting-on", Field::WaitingOn),
@@ -1206,6 +1225,7 @@ impl Field {
         ("lwp", Field::Lwp),
         ("holds", Field::Holds),
         ("sets", Field::Sets),
+        ("futures", Field::Futures),
         ("id", Field::Id),
     ];
 
@@ -1239,7 +1259,7 @@ impl Field {
 
     /// Whether evaluating this field costs the future census.
     fn needs_census(self) -> bool {
-        matches!(self, Field::Holds | Field::Sets)
+        matches!(self, Field::Holds | Field::Sets | Field::Futures)
     }
 
     /// Whether the field's argument is a pattern rather than an exact
@@ -1247,7 +1267,7 @@ impl Field {
     fn is_pattern(self) -> bool {
         !matches!(
             self,
-            Field::Id | Field::Lwp | Field::Rt | Field::Holds | Field::Sets
+            Field::Id | Field::Lwp | Field::Rt | Field::Holds | Field::Sets | Field::Futures
         )
     }
 
@@ -1268,7 +1288,7 @@ impl Field {
             Field::Rt => column(|r| Some(r.rt.to_string())),
             Field::Lwp => column(|r| r.lwp.map(|lwp| lwp.to_string())),
             Field::Id => column(|r| Some(r.id.clone())),
-            Field::Holds | Field::Sets => return None,
+            Field::Holds | Field::Sets | Field::Futures => return None,
         })
     }
 }
@@ -1284,7 +1304,7 @@ enum Matcher {
     Lwp(u32),
     /// A resolved group index: `rt`.
     Rt(usize),
-    /// `'>N'` / `'<N'` / `'=N'`: `holds`, `sets`.
+    /// `'>N'` / `'<N'` / `'=N'`: `holds`, `sets`, `futures`.
     Cmp(Cmp),
 }
 
@@ -1397,7 +1417,7 @@ fn matcher(field: Field, arg: &str, handles: &[u64]) -> Result<Matcher> {
                 .map_err(|_| anyhow::anyhow!("an lwp is a decimal id, got {arg:?}"))?,
         ),
         Field::Rt => Matcher::Rt(resolve_rt(arg, handles)?),
-        Field::Holds | Field::Sets => Matcher::Cmp(Cmp::parse(arg)?),
+        Field::Holds | Field::Sets | Field::Futures => Matcher::Cmp(Cmp::parse(arg)?),
         _ => Matcher::Pattern(crate::pattern::Pattern::new(arg)?),
     })
 }
@@ -1424,10 +1444,16 @@ pub(crate) fn resolve_rt(arg: &str, handles: &[u64]) -> Result<usize> {
     })
 }
 
-/// The census counts a `holds`/`sets` clause reads, keyed by task
-/// index — built only when some clause or grouping names one, since
+/// The census counts the table's `FUTURES` column and a
+/// `holds`/`sets`/`futures` clause read, keyed by task index — built
+/// only for the table and for a clause or grouping naming one, since
 /// they cost the census walk.
 type CountsByTask = BTreeMap<usize, Counts>;
+
+/// One task's counts, zero where the census found nothing for it.
+fn counts_of(counts: &CountsByTask, index: usize) -> Counts {
+    counts.get(&index).copied().unwrap_or_default()
+}
 
 /// Whether one row survives one clause: any alternative matching is
 /// a hit, and `--without` keeps the misses.
@@ -1459,16 +1485,16 @@ fn field_text(field: Field, row: &TaskRow) -> Option<&str> {
 
 /// The count a comparison field reads.
 fn field_count(field: Field, index: usize, counts: Option<&CountsByTask>) -> usize {
-    let count = counts
-        .expect("census counts are built for a holds/sets clause")
-        .get(&index)
-        .copied()
-        .unwrap_or_default();
+    let count = counts_of(
+        counts.expect("census counts are built for a count clause"),
+        index,
+    );
     match field {
         Field::Holds => count.held,
         // The row the blocks print: how many sets the task drives, of
         // either kind.
         Field::Sets => count.sets + count.join_sets,
+        Field::Futures => count.futures(),
         _ => unreachable!("{field:?} is not a count field"),
     }
 }
@@ -1497,7 +1523,9 @@ fn group_value(
         Field::State => Some(row.state.clone()),
         Field::Rt => Some(row.rt.to_string()),
         Field::Lwp => row.lwp.map(|lwp| lwp.to_string()),
-        Field::Holds | Field::Sets => Some(field_count(field, index, counts).to_string()),
+        Field::Holds | Field::Sets | Field::Futures => {
+            Some(field_count(field, index, counts).to_string())
+        }
         Field::Id => Some(row.id.clone()),
     }
 }
@@ -1543,14 +1571,13 @@ pub(crate) fn exec_tasks<T: proc::Target>(
     let handles: Vec<u64> = session.runtimes.iter().map(|rt| rt.handle.addr).collect();
     let clauses = parse_clauses(&cmd.with, &cmd.without, &handles)?;
 
-    // A holds/sets clause or grouping reads what only the census
-    // counts, so exactly those pay its walk on the table path.
+    // The table's `FUTURES` column and a count clause or grouping
+    // read what only the census counts; `--exec` and the other
+    // groupings pay for its walk only when a clause asks.
+    let build_counts = || census_counts(session.census().into());
     let counts = (clauses.iter().any(|c| c.field.needs_census())
         || group.is_some_and(Field::needs_census))
-    .then(|| {
-        let census = session.census();
-        census_counts(census.into())
-    });
+    .then(build_counts);
 
     // The filters' survivors, as indices into the task list — `None`
     // when there is nothing to filter by.
@@ -1583,19 +1610,21 @@ pub(crate) fn exec_tasks<T: proc::Target>(
         );
     }
 
-    // The table reads the wait analysis and nothing else, so it does
-    // not pay for the future census `task` counts.
+    // The table counts each task's futures, so it pays for the census
+    // walk, and, as a count clause does, without the walk's own
+    // warnings: those go with a listing of the finds (`task
+    // --futures`, `futures`), where a walk cut short is a list cut
+    // short.
     print_warnings(&session.analysis().errors)?;
+    let counts = counts.unwrap_or_else(build_counts);
+    let rows = rows(session);
+    let indices: Vec<usize> = survivors.unwrap_or_else(|| (0..rows.len()).collect());
+    let listed: Vec<(&TaskRow, usize)> = indices
+        .iter()
+        .map(|&i| (&rows[i], counts_of(&counts, i).futures()))
+        .collect();
     let groups = !session.group_tags().is_empty();
-    let fit = session.fit_width(theme);
-    match &survivors {
-        None => print_task_table(rows(session), groups, cmd.limit, fit, out)?,
-        Some(indices) => {
-            let rows = rows(session);
-            let filtered: Vec<TaskRow> = indices.iter().map(|&i| rows[i].clone()).collect();
-            print_task_table(&filtered, groups, cmd.limit, fit, out)?;
-        }
-    }
+    print_task_table(&listed, groups, cmd.limit, session.fit_width(theme), out)?;
     print_warnings(&list.errors)?;
     Ok(())
 }
@@ -2238,6 +2267,7 @@ mod table_tests {
     #[test]
     fn test_the_rt_column_prints_only_for_groups() {
         let rows = rows_of(vec![task(1, 0)], vec![wait(1, None)], HashMap::new());
+        let rows: Vec<(&super::TaskRow, usize)> = rows.iter().map(|r| (r, 0)).collect();
         let print = |groups: bool| {
             let mut out = Vec::new();
             print_task_table(&rows, groups, None, None, &mut out).expect("table prints");
@@ -2245,6 +2275,28 @@ mod table_tests {
         };
         assert!(print(true).contains("RT"), "{}", print(true));
         assert!(!print(false).contains("RT"), "{}", print(false));
+    }
+
+    /// Each row carries its futures count, right-aligned under a
+    /// `FUTURES` heading between the state and the await site.
+    #[test]
+    fn test_the_futures_column_counts_each_row() {
+        let rows = rows_of(
+            vec![task(1, 0), task(2, 0)],
+            vec![wait(1, None), wait(2, None)],
+            HashMap::new(),
+        );
+        let rows: Vec<(&super::TaskRow, usize)> = rows.iter().zip([0, 3075]).collect();
+        let mut out = Vec::new();
+        print_task_table(&rows, false, None, None, &mut out).expect("table prints");
+        let out = String::from_utf8(out).expect("utf8");
+        let lines: Vec<&str> = out.lines().collect();
+        assert!(
+            lines[0].starts_with("ID  STATE  FUTURES  AWAITING AT"),
+            "{out}"
+        );
+        assert!(lines[1].starts_with("1   idle         0  "), "{out}");
+        assert!(lines[2].starts_with("2   idle      3075  "), "{out}");
     }
 
     /// `--limit` cuts the rows and earns the footer; without it every
@@ -2256,6 +2308,7 @@ mod table_tests {
             vec![wait(1, None), wait(2, None), wait(3, None)],
             HashMap::new(),
         );
+        let rows: Vec<(&super::TaskRow, usize)> = rows.iter().map(|r| (r, 0)).collect();
         let mut out = Vec::new();
         print_task_table(&rows, false, Some(2), None, &mut out).expect("table prints");
         let out = String::from_utf8(out).expect("utf8");
@@ -2359,10 +2412,11 @@ mod filter_tests {
         assert!(matcher(Field::Lwp, "x", &[]).is_err());
     }
 
-    /// `holds` and `sets` compare the census's counts with the three
-    /// spellings and no others; `sets` is the blocks' own row — both
-    /// kinds of set together — and a task the census found nothing
-    /// for counts zero.
+    /// `holds`, `sets` and `futures` compare the census's counts with
+    /// the three spellings and no others; `sets` is the blocks' own
+    /// row — both kinds of set together — `futures` is the table's
+    /// column — the held futures and the sets' live children — and a
+    /// task the census found nothing for counts zero.
     #[test]
     fn test_count_fields_compare_the_census() {
         let mut counts: BTreeMap<usize, Counts> = BTreeMap::new();
@@ -2371,8 +2425,9 @@ mod filter_tests {
             Counts {
                 held: 2,
                 sets: 1,
+                children_live: 5,
                 join_sets: 1,
-                ..Default::default()
+                joined: 3,
             },
         );
         let keeps =
@@ -2383,12 +2438,15 @@ mod filter_tests {
         assert!(!keeps("holds", "<2"));
         assert!(keeps("sets", "=2"));
         assert!(!keeps("sets", ">2"));
-        assert!(survives(
-            &clause("holds", "=0"),
-            5,
-            &row("1"),
-            Some(&counts)
-        ));
+        assert!(keeps("futures", "=7"));
+        assert!(!keeps("futures", "<7"));
+        assert_eq!(
+            group_value(Field::Futures, 0, &row("1"), Some(&counts)).as_deref(),
+            Some("7")
+        );
+        for field in ["holds", "sets", "futures"] {
+            assert!(survives(&clause(field, "=0"), 5, &row("1"), Some(&counts)));
+        }
 
         let err = Cmp::parse("2").unwrap_err();
         assert!(err.to_string().contains("'>N', '<N' or '=N'"), "{err}");
@@ -2578,9 +2636,10 @@ mod filter_tests {
         assert_eq!(values("awaiting"), Some(Vec::new()));
         assert_eq!(values("holds"), None);
         assert_eq!(values("sets"), None);
+        assert_eq!(values("futures"), None);
         // Pattern fields escape their values on the way back into the
         // line; the exact and compared ones do not.
-        for exact in ["id", "lwp", "rt", "holds", "sets"] {
+        for exact in ["id", "lwp", "rt", "holds", "sets", "futures"] {
             assert!(!Field::parse(exact).unwrap().is_pattern(), "{exact}");
         }
         for pattern in [
@@ -2601,7 +2660,7 @@ mod filter_tests {
         for (name, field) in Field::NAMES {
             assert_eq!(
                 field.needs_census(),
-                matches!(field, Field::Holds | Field::Sets),
+                matches!(field, Field::Holds | Field::Sets | Field::Futures),
                 "{name}"
             );
         }
@@ -2823,6 +2882,9 @@ mod census_listing_tests {
         let three = counts[&3];
         assert_eq!((three.sets, three.children_live), (1, 1));
         assert_eq!(three.held, 0);
+        // The table's count: what is held plus what the sets hold
+        // live, never the joined tasks.
+        assert_eq!((two.futures(), three.futures()), (1, 1));
     }
 
     /// Under a fit width, a row's name is cut to the room its other

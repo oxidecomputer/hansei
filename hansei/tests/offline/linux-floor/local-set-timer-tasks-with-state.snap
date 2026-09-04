@@ -2,8 +2,8 @@
 source: hansei/src/offline.rs
 description: "`tasks --with state idle` over linux-floor/local-set-timer"
 ---
-ID  STATE  RT  AWAITING AT                    WAITING ON                                                                                                FUTURE
-1   idle   1   src/bin/local-set-timer.rs:22  timer (deadline TS on the target's monotonic clock)                                             async fn local_set_timer::local_sleeper
-2   idle   1   src/bin/local-set-timer.rs:29  a tokio::sync::Semaphore (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 2  async fn local_set_timer::local_acquirer
-3   idle   0   src/bin/local-set-timer.rs:42  timer (deadline TS on the target's monotonic clock)                                             async fn local_set_timer::sleeper
+ID  STATE  RT  FUTURES  AWAITING AT                    WAITING ON                                                                                                FUTURE
+1   idle   1         0  src/bin/local-set-timer.rs:22  timer (deadline TS on the target's monotonic clock)                                             async fn local_set_timer::local_sleeper
+2   idle   1         0  src/bin/local-set-timer.rs:29  a tokio::sync::Semaphore (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 2  async fn local_set_timer::local_acquirer
+3   idle   0         0  src/bin/local-set-timer.rs:42  timer (deadline TS on the target's monotonic clock)                                             async fn local_set_timer::sleeper
 [3 tasks]

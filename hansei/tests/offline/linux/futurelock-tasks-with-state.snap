@@ -2,6 +2,6 @@
 source: hansei/src/offline.rs
 description: "`tasks --with state idle` over linux/futurelock"
 ---
-ID  STATE  AWAITING AT               WAITING ON                                                                                            FUTURE
-5   idle   src/bin/futurelock.rs:32  a tokio::sync::Mutex (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 5  async block futurelock::main::{async_block#0}
+ID  STATE  FUTURES  AWAITING AT               WAITING ON                                                                                            FUTURE
+5   idle         1  src/bin/futurelock.rs:32  a tokio::sync::Mutex (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 5  async block futurelock::main::{async_block#0}
 [1 task]

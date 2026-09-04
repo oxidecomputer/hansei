@@ -2,11 +2,11 @@
 source: hansei/src/offline.rs
 description: "`tasks --with state idle` over illumos/joinset"
 ---
-ID  STATE  AWAITING AT            WAITING ON                                                                                           FUTURE
-3   idle   src/bin/joinset.rs:83  future tokio::util::idle_notified_set::IdleNotifiedSet<tokio::runtime::task::join::JoinHandle<u32>>  async fn joinset::driver
-4   idle   src/bin/joinset.rs:34  future tokio::sync::notify::Notified                                                                 async fn joinset::member
-5   idle   src/bin/joinset.rs:34  future tokio::sync::notify::Notified                                                                 async fn joinset::member
-6   idle   src/bin/joinset.rs:34  future tokio::sync::notify::Notified                                                                 async fn joinset::member
-7   idle   src/bin/joinset.rs:34  future tokio::sync::notify::Notified                                                                 async fn joinset::member
-8   idle   src/bin/joinset.rs:34  future tokio::sync::notify::Notified                                                                 async fn joinset::member
+ID  STATE  FUTURES  AWAITING AT            WAITING ON                                                                                           FUTURE
+3   idle         0  src/bin/joinset.rs:83  future tokio::util::idle_notified_set::IdleNotifiedSet<tokio::runtime::task::join::JoinHandle<u32>>  async fn joinset::driver
+4   idle         0  src/bin/joinset.rs:34  future tokio::sync::notify::Notified                                                                 async fn joinset::member
+5   idle         0  src/bin/joinset.rs:34  future tokio::sync::notify::Notified                                                                 async fn joinset::member
+6   idle         0  src/bin/joinset.rs:34  future tokio::sync::notify::Notified                                                                 async fn joinset::member
+7   idle         0  src/bin/joinset.rs:34  future tokio::sync::notify::Notified                                                                 async fn joinset::member
+8   idle         0  src/bin/joinset.rs:34  future tokio::sync::notify::Notified                                                                 async fn joinset::member
 [6 tasks]

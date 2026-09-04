@@ -2,6 +2,6 @@
 source: hansei/src/offline.rs
 description: "`tasks` over linux/simple-await"
 ---
-ID  STATE  AWAITING AT                 WAITING ON                                  FUTURE
-3   idle   src/bin/simple-await.rs:44  future tokio::sync::oneshot::Receiver<u32>  async fn simple_await::work
+ID  STATE  FUTURES  AWAITING AT                 WAITING ON                                  FUTURE
+3   idle         0  src/bin/simple-await.rs:44  future tokio::sync::oneshot::Receiver<u32>  async fn simple_await::work
 [1 task]
