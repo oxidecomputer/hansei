@@ -5,9 +5,9 @@ description: "`census` over linux/channels"
 Threads: 3 lwps, 3 in runtime 0 @ 0xADDR
 
 COUNT  RT  ROLE             STATE            LWPS
-    1  0   worker           in driver        3636979
-    1  0   worker           parked           3636978
-    1  0   entered runtime  block_on caller  3636976
+    1  0   worker           in driver        1721263
+    1  0   worker           parked           1721264
+    1  0   entered runtime  block_on caller  1721261
     0  0   blocking pool    0 idle, 0 busy   —
 [3 lwps]
 

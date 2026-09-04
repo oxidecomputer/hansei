@@ -309,13 +309,25 @@ pub fn btree_internal(entries: &[(u32, u32)], edges: &[u64]) -> Vec<u8> {
     bytes
 }
 
-/// Bytes for an mpsc [`BLOCK`]: `[u32; 4] values @0, start_index: usize @16,
-/// next: *Block @24`. The queued-message walk reads a block field by field, so
-/// this is placed as one region and served piecemeal.
-pub fn mpsc_block(values: &[u32; 4], start_index: u64, next: u64) -> Vec<u8> {
+/// Every slot of a [`mpsc_block`] written: the four ready bits set, nothing
+/// above them.
+pub const MPSC_ALL_READY: u64 = 0b1111;
+
+/// The bit tokio's `Tx::close` sets on the block owning the slot it claimed,
+/// for the fixture's four-slot blocks: one above the released bit, which
+/// is one above the last slot.
+pub const MPSC_TX_CLOSED: u64 = 1 << 5;
+
+/// Bytes for a [`CHAN_BLOCK`]: `[u32; 4] values @0, start_index: usize @16,
+/// next: *Block @24, ready_slots: usize @32`. The queued-message walk reads a
+/// block field by field, so this is placed as one region and served
+/// piecemeal. `ready` is the bitmap as tokio keeps it: bit `k` set once slot
+/// `k` is written, the close flag above the slot bits.
+pub fn mpsc_block(values: &[u32; 4], start_index: u64, next: u64, ready: u64) -> Vec<u8> {
     let mut bytes = u32s(values);
     bytes.extend_from_slice(&start_index.to_le_bytes());
     bytes.extend_from_slice(&next.to_le_bytes());
+    bytes.extend_from_slice(&ready.to_le_bytes());
     bytes
 }
 
@@ -466,11 +478,15 @@ pub fn vload(addr: ValueExpr) -> ValueExpr {
 }
 
 /// The synthetic mpsc block-chain walk as a [`BundleNode::CustomList`],
-/// mirroring what the extractor now emits. Block layout: values @0,
-/// start_index @16, next @24; 4-byte slots, 4 per block. Loop vars are
-/// 0 = cur (index), 1 = tail, 2 = block pointer. Reproduces `[20, 30]`.
+/// mirroring what the extractor emits. Block layout: values @0, start_index
+/// @16, next @24, ready_slots @32; 4-byte slots, 4 per block. Loop vars are
+/// 0 = cur (index), 1 = tail, 2 = block pointer. A slot whose ready bit is
+/// clear ends the walk: it is the close marker, or a message still being
+/// written that the receiver cannot pass either. Reproduces `[20, 30]`.
 pub fn chan_queued_node(element: BundleTypeId) -> BundleNode {
     let start = || vload(vadd(vvar(2), vconst(16)));
+    let ready = || vload(vadd(vvar(2), vconst(32)));
+    let mask = || vshl(vconst(1), vsub(vvar(0), start()));
     BundleNode::CustomList {
         vars: vec![vread(sel(&[1])), vread(sel(&[0])), vread(sel(&[2]))],
         condition: vand(vlt(vvar(0), vvar(1)), vne(vvar(2), vconst(0))),
@@ -481,6 +497,9 @@ pub fn chan_queued_node(element: BundleTypeId) -> BundleNode {
             BundleStmt::If {
                 cond: vlt(vsub(vvar(0), start()), vconst(4)),
                 then: vec![
+                    BundleStmt::Break {
+                        cond: vne(vand(ready(), mask()), mask()),
+                    },
                     BundleStmt::Emit {
                         at: vadd(vvar(2), vmul(vsub(vvar(0), start()), vconst(4))),
                     },
@@ -1267,20 +1286,25 @@ pub fn test_bundle() -> Bundle {
         CHAN_BLOCK,
         TypeDef::Struct {
             name: chan_blockn,
-            size: 32,
+            size: 40,
             members: vec![
                 m(valuesfieldn, BLOCK_VALUES, 0),
                 m(headerfieldn, CHAN_BLOCK_HEADER, 16),
             ],
         },
     );
-    // ChanBlockHeader { start_index: usize @0, next: *ChanBlock @8 }
+    // ChanBlockHeader { start_index: usize @0, next: *ChanBlock @8,
+    // ready_slots: usize @16 }
     types.add(
         CHAN_BLOCK_HEADER,
         TypeDef::Struct {
             name: chan_block_headern,
-            size: 16,
-            members: vec![m(start_indexn, U64, 0), m(nextn, CHAN_BLOCK_PTR, 8)],
+            size: 24,
+            members: vec![
+                m(start_indexn, U64, 0),
+                m(nextn, CHAN_BLOCK_PTR, 8),
+                m(ready_slotsn, U64, 16),
+            ],
         },
     );
     types.add(

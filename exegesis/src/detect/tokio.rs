@@ -558,6 +558,7 @@ pub(super) struct ChanShape {
     start_index_offset: u64,
     next_offset: u64,
     values_offset: u64,
+    ready_offset: u64,
     /// Slot stride and per-block slot count of the inline values array.
     stride: u64,
     count: u64,
@@ -634,6 +635,14 @@ pub(super) fn mpsc_chan_shape(emitter: &mut Emitter<'_>, id: TypeId) -> Option<C
     let RawType::Array(values_arr) = reader.canonical_type(values_ty)? else {
         return None;
     };
+    // The per-slot ready bitmap, an atomic word: bit `k` is set once slot `k`
+    // holds a written message.
+    let ready = emitter
+        .walk(
+            block,
+            &reach![Named("header"), Named("ready_slots"), PeelTo(WORD)],
+        )?
+        .0;
 
     // The block base is a runtime pointer, so its fields are reached by Load at
     // constant offsets rather than selectors; resolve those offsets and the
@@ -641,6 +650,7 @@ pub(super) fn mpsc_chan_shape(emitter: &mut Emitter<'_>, id: TypeId) -> Option<C
     let start_index_offset = path_offset(reader, &emitter.interner, block, &start_index)?.0;
     let next_offset = path_offset(reader, &emitter.interner, block, &next)?.0;
     let values_offset = path_offset(reader, &emitter.interner, block, &values)?.0;
+    let ready_offset = path_offset(reader, &emitter.interner, block, &ready)?.0;
     let stride = raw_type_size(reader, values_arr.elem_type_id)?;
     let count = values_arr.count;
 
@@ -664,6 +674,7 @@ pub(super) fn mpsc_chan_shape(emitter: &mut Emitter<'_>, id: TypeId) -> Option<C
         start_index_offset,
         next_offset,
         values_offset,
+        ready_offset,
         stride,
         count,
         element,
@@ -671,12 +682,19 @@ pub(super) fn mpsc_chan_shape(emitter: &mut Emitter<'_>, id: TypeId) -> Option<C
 }
 
 /// Build the synthetic `queued` field's node: a [`DisplayNode::CustomList`] that
-/// walks the mpsc block chain and emits the live `[index, tail)` messages,
-/// reproducing the retired bespoke `MpscChan` leaf from the general value
-/// language. Loop variables are `0 = cur` (the read index, advanced per
-/// message), `1 = tail`, and `2 = block` (the current block pointer). A block's
-/// fields are read with `Load` at constant offsets because the block base is a
-/// runtime word, not a member of the rendered value.
+/// walks the mpsc block chain and emits the written messages in
+/// `[index, tail)`, reproducing the retired bespoke `MpscChan` leaf from the
+/// general value language. Loop variables are `0 = cur` (the read index,
+/// advanced per message), `1 = tail`, and `2 = block` (the current block
+/// pointer). A block's fields are read with `Load` at constant offsets because
+/// the block base is a runtime word, not a member of the rendered value.
+///
+/// A sender claims a slot (`tail_position.fetch_add`) before writing it and
+/// sets the slot's bit in the block's `ready_slots` after, and `Tx::close`
+/// claims a slot it never writes, so `[index, tail)` overstates the queue:
+/// permanently by one on every channel whose senders have all dropped, and
+/// transiently by each write in flight. The receiver cannot read past the
+/// first unwritten slot either (the queue is FIFO), so the walk stops there.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn mpsc_queued_node(
     tail: Selector,
@@ -685,6 +703,7 @@ pub(super) fn mpsc_queued_node(
     start_index_offset: u64,
     next_offset: u64,
     values_offset: u64,
+    ready_offset: u64,
     stride: u64,
     count: u64,
     element: BundleTypeId,
@@ -693,6 +712,9 @@ pub(super) fn mpsc_queued_node(
     let word = crate::bundle::POINTER_SIZE as u32;
     // `block->start_index`, recomputed at each use (there is no `start` var).
     let start = || (Var(2) + Const(start_index_offset)).load(word);
+    // `block->ready_slots`, and the bit in it for slot `cur`.
+    let ready = || (Var(2) + Const(ready_offset)).load(word);
+    let slot_bit = || Const(1) << (Var(0) - start());
     DisplayNode::CustomList {
         vars: vec![
             Read(index), // 0: cur = read index
@@ -710,6 +732,11 @@ pub(super) fn mpsc_queued_node(
                 // cur - start < slots: the message lives in this block.
                 cond: (Var(0) - start()).lt(Const(count)),
                 then: vec![
+                    // An unwritten slot ends the queue: the close marker, or
+                    // a message still being written.
+                    Stmt::Break {
+                        cond: (ready() & slot_bit()).ne(slot_bit()),
+                    },
                     // Emit values[cur - start] at values_offset + i*stride.
                     Stmt::Emit {
                         at: Var(2) + (Const(values_offset) + (Var(0) - start()) * Const(stride)),
@@ -981,6 +1008,7 @@ impl Emitter<'_> {
             start_index_offset,
             next_offset,
             values_offset,
+            ready_offset,
             stride,
             count,
             element,
@@ -995,6 +1023,7 @@ impl Emitter<'_> {
                 start_index_offset,
                 next_offset,
                 values_offset,
+                ready_offset,
                 stride,
                 count,
                 element,

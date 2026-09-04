@@ -875,7 +875,7 @@ mod tests {
 
     #[test]
     fn test_mpsc_chan_shows_only_queued_messages() {
-        let mem = FakeMem::new().at(0x1000, mpsc_block(&[10, 20, 30, 40], 0, 0));
+        let mem = FakeMem::new().at(0x1000, mpsc_block(&[10, 20, 30, 40], 0, 0, MPSC_ALL_READY));
 
         let b = test_bundle();
         let v = BundleView::new(&b);
@@ -907,7 +907,7 @@ mod tests {
         // format, walks the block chain from the value language: seed
         // cur/tail/block from the Chan, then loop reading each block's
         // start_index (a Load), emit the in-window slots, and follow `next`.
-        let mem = FakeMem::new().at(0x1000, mpsc_block(&[10, 20, 30, 40], 0, 0));
+        let mem = FakeMem::new().at(0x1000, mpsc_block(&[10, 20, 30, 40], 0, 0, MPSC_ALL_READY));
 
         let mut b = test_bundle();
         b.types.debug_formats.insert(CHAN, chan_queued_node(U32));
@@ -934,6 +934,83 @@ mod tests {
         let value = Value::new(view.ty(CHAN).unwrap(), 0, &bytes);
         let shown = format!("{}", value.display_from_target(&mem, 8));
         assert_eq!(shown, "[]", "{shown}");
+    }
+
+    /// A `Chan` with its head block at 0x1000: tail usize @0, index usize
+    /// @8, head ptr @16.
+    fn chan_at_0x1000(tail: u64, index: u64) -> Vec<u8> {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&tail.to_le_bytes());
+        buf.extend_from_slice(&index.to_le_bytes());
+        buf.extend_from_slice(&0x1000u64.to_le_bytes());
+        buf
+    }
+
+    /// The queued walk over `mem` for a channel with the given tail and
+    /// index, through the mirrored `chan_queued_node` program.
+    fn queued(mem: &FakeMem, tail: u64, index: u64) -> String {
+        let mut b = test_bundle();
+        b.types.debug_formats.insert(CHAN, chan_queued_node(U32));
+        b.validate().expect("CustomList bundle must validate");
+        let view = BundleView::new(&b);
+        let bytes = chan_at_0x1000(tail, index);
+        let value = Value::new(view.ty(CHAN).unwrap(), 0, &bytes);
+        format!("{}", value.display_from_target(mem, 8))
+    }
+
+    /// All senders dropped: `Tx::close` claimed one slot past the last
+    /// message and set the close flag without writing it, so the tail
+    /// stays one ahead of an index that never passes the closed slot. The
+    /// walk stops there rather than showing the slot's bytes as a message.
+    #[test]
+    fn test_custom_list_stops_at_the_close_slot() {
+        // Slots 0 and 1 were sent and received; slot 2 is the close slot,
+        // still holding the bytes an earlier message left behind.
+        let mem = FakeMem::new().at(
+            0x1000,
+            mpsc_block(&[10, 20, 30, 40], 0, 0, 0b0011 | MPSC_TX_CLOSED),
+        );
+        assert_eq!(queued(&mem, 3, 2), "[]");
+
+        // A backlog ahead of the close slot is exactly the backlog.
+        assert_eq!(queued(&mem, 3, 1), "[20]");
+    }
+
+    /// A sender claims its slot before writing it, so a slot between index
+    /// and tail can have its ready bit clear while a later slot's writer
+    /// has finished. The queue is FIFO and the receiver cannot pass the
+    /// unwritten slot, so neither it nor anything after it is shown.
+    #[test]
+    fn test_custom_list_stops_at_a_slot_still_being_written() {
+        // Slot 1 claimed and unwritten, slot 2 written: nothing reachable.
+        let mem = FakeMem::new().at(0x1000, mpsc_block(&[10, 20, 30, 40], 0, 0, 0b0101));
+        assert_eq!(queued(&mem, 4, 1), "[]");
+
+        // Slot 1 lands: the walk reaches 30 too, and stops at the still
+        // unwritten slot 3.
+        let mem = FakeMem::new().at(0x1000, mpsc_block(&[10, 20, 30, 40], 0, 0, 0b0111));
+        assert_eq!(queued(&mem, 4, 1), "[20, 30]");
+    }
+
+    /// `Block::reclaim` clears a block's ready bits and leaves its values,
+    /// so a recycled block carries messages that were delivered from it
+    /// before. When the close slot lands in such a block, the walk must
+    /// follow the chain into it and still show nothing.
+    #[test]
+    fn test_custom_list_ignores_stale_values_in_a_reclaimed_block() {
+        let mem = FakeMem::new()
+            .at(
+                0x1000,
+                mpsc_block(&[10, 20, 30, 40], 0, 0x2000, MPSC_ALL_READY),
+            )
+            .at(0x2000, mpsc_block(&[50, 60, 70, 80], 4, 0, MPSC_TX_CLOSED));
+
+        // Index 4 is the close slot, the first of the recycled block.
+        assert_eq!(queued(&mem, 5, 4), "[]");
+
+        // From index 3 the walk emits the first block's last slot, hops
+        // to the second, and stops at its close slot.
+        assert_eq!(queued(&mem, 5, 3), "[40]");
     }
 
     /// `Shl` by the word width or more is `0`, not a wrapped shift count:
@@ -970,7 +1047,7 @@ mod tests {
         // RxChan at 0x2010: tail @0, index @8, head @16, then the semaphore's
         // permits @24 (-> free 3) and bound @32 (-> capacity 16).
         let mem = FakeMem::new()
-            .at(0x1000, mpsc_block(&[10, 20, 30, 40], 0, 0))
+            .at(0x1000, mpsc_block(&[10, 20, 30, 40], 0, 0, MPSC_ALL_READY))
             .at(0x2010, u64s(&[3, 1, 0x1000, 6, 16]))
             .panic_on_unmapped();
 
@@ -1008,7 +1085,7 @@ mod tests {
     #[test]
     fn test_a_formatter_declines_to_decode_freed_memory() {
         let mem = FakeMem::new()
-            .at(0x1000, mpsc_block(&[10, 20, 30, 40], 0, 0))
+            .at(0x1000, mpsc_block(&[10, 20, 30, 40], 0, 0, MPSC_ALL_READY))
             .at(0x2010, u64s(&[3, 1, 0x1000, 6, 16]));
 
         let b = test_bundle();
@@ -1248,7 +1325,7 @@ mod tests {
         b.types.debug_formats.insert(CHAN, chan_queued_node(U32));
         b.validate().expect("CustomList bundle must validate");
         let view = BundleView::new(&b);
-        let mem = FakeMem::new().at(0x1000, mpsc_block(&[10, 20, 30, 40], 0, 0));
+        let mem = FakeMem::new().at(0x1000, mpsc_block(&[10, 20, 30, 40], 0, 0, MPSC_ALL_READY));
 
         // Chan: tail usize @0, index usize @8, head ptr @16.
         let chan = u64s(&[3, 1, 0x1000]);
@@ -1408,7 +1485,10 @@ mod tests {
     fn test_custom_list_marker_joins_the_emitted_elements() {
         // Four queued messages exhaust the first block; the walk then moves
         // to the unreadable second block and degrades after them.
-        let mem = FakeMem::new().at(0x4000, mpsc_block(&[20, 30, 40, 50], 0, 0x5000));
+        let mem = FakeMem::new().at(
+            0x4000,
+            mpsc_block(&[20, 30, 40, 50], 0, 0x5000, MPSC_ALL_READY),
+        );
 
         let b = test_bundle();
         let v = BundleView::new(&b);

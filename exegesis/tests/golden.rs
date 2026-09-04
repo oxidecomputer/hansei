@@ -929,7 +929,9 @@ fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
              condition=((Var(0) < Var(1)) & (Var(2) != 0x0)), \
              body=[break if (Var(0) < Load((Var(2) + 0x80), 8)); \
              if ((Var(0) - Load((Var(2) + 0x80), 8)) < 0x20) \
-             { emit((Var(2) + (0x0 + ((Var(0) - Load((Var(2) + 0x80), 8)) * 0x4)))); \
+             { break if ((Load((Var(2) + 0x90), 8) & (0x1 << (Var(0) - Load((Var(2) + 0x80), 8)))) \
+             != (0x1 << (Var(0) - Load((Var(2) + 0x80), 8)))); \
+             emit((Var(2) + (0x0 + ((Var(0) - Load((Var(2) + 0x80), 8)) * 0x4)))); \
              Var(0) = (Var(0) + 0x1) } else { Var(2) = Load((Var(2) + 0x88), 8) }], \
              element=u32 }, \
              tx: <structural>, rx_waker: <structural>, notify_rx_closed: <structural>, \
@@ -987,7 +989,9 @@ fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
              condition=((Var(0) < Var(1)) & (Var(2) != 0x0)), \
              body=[break if (Var(0) < Load((Var(2) + 0x80), 8)); \
              if ((Var(0) - Load((Var(2) + 0x80), 8)) < 0x20) \
-             { emit((Var(2) + (0x0 + ((Var(0) - Load((Var(2) + 0x80), 8)) * 0x4)))); \
+             { break if ((Load((Var(2) + 0x90), 8) & (0x1 << (Var(0) - Load((Var(2) + 0x80), 8)))) \
+             != (0x1 << (Var(0) - Load((Var(2) + 0x80), 8)))); \
+             emit((Var(2) + (0x0 + ((Var(0) - Load((Var(2) + 0x80), 8)) * 0x4)))); \
              Var(0) = (Var(0) + 0x1) } else { Var(2) = Load((Var(2) + 0x88), 8) }], \
              element=u32 }, \
              tx: <structural>, rx_waker: <structural>, notify_rx_closed: <structural>, \
@@ -1019,7 +1023,9 @@ fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
              condition=((Var(0) < Var(1)) & (Var(2) != 0x0)), \
              body=[break if (Var(0) < Load((Var(2) + 0x80), 8)); \
              if ((Var(0) - Load((Var(2) + 0x80), 8)) < 0x20) \
-             { emit((Var(2) + (0x0 + ((Var(0) - Load((Var(2) + 0x80), 8)) * 0x4)))); \
+             { break if ((Load((Var(2) + 0x90), 8) & (0x1 << (Var(0) - Load((Var(2) + 0x80), 8)))) \
+             != (0x1 << (Var(0) - Load((Var(2) + 0x80), 8)))); \
+             emit((Var(2) + (0x0 + ((Var(0) - Load((Var(2) + 0x80), 8)) * 0x4)))); \
              Var(0) = (Var(0) + 0x1) } else { Var(2) = Load((Var(2) + 0x88), 8) }], \
              element=u32 }, \
              tx: <structural>, rx_waker: <structural>, notify_rx_closed: <structural>, \
