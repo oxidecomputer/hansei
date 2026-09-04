@@ -13,7 +13,7 @@ Threads: 3 lwps, 3 in runtime 0 @ 0xADDR
 
 Tasks: 2 owned by runtime 0 @ 0xADDR
     State: 2 idle
-    Future types and what they await:
+    Types and what they are waiting on:
         1  async fn sleep_join::joiner
            └─ 1  another task (JoinHandle)
         1  async fn sleep_join::sleeper

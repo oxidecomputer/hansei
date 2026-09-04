@@ -791,11 +791,13 @@ fn futures(
 /// end rather than the next frame down — which is `trace`'s listing,
 /// and what a reader goes to when a row here is the one they came for.
 ///
-/// It says "what they await" rather than naming the chain: the branches
-/// under a row are the several places the futures *of that type* ended
-/// up, one per group of them, and calling them a chain invites reading
-/// the list downward as one chain's frames.
-const FUTURE_TYPES: &str = "Future types and what they await";
+/// It says "what they are waiting on" rather than naming the chain:
+/// the branches under a row are the several places the futures *of
+/// that type* ended up, one per group of them, and calling them a
+/// chain invites reading the list downward as one chain's frames. The
+/// verb is the one `tasks` and `futures` head their column with, since
+/// a branch here is that column's value, tallied.
+const FUTURE_TYPES: &str = "Types and what they are waiting on";
 
 /// One future type as a row, with what the chains rooted at it reach
 /// hanging off it.
@@ -1677,7 +1679,7 @@ mod tests {
         );
         assert!(
             page.contains(
-                "    Future types and what they await:\n        \
+                "    Types and what they are waiting on:\n        \
                  3  future c::fut\n           \
                  ├─ 2  future tokio::runtime::io::scheduled_io::Readiness\n           \
                  └─ 1  a chain that stopped before any leaf\n        \
@@ -1718,7 +1720,7 @@ mod tests {
         let page = census(&facts(&list, &waits), 2);
         assert!(
             page.contains(
-                "    Future types and what they await:\n        \
+                "    Types and what they are waiting on:\n        \
                  11  future f\n            \
                  ├─ 4  future leaf3\n            \
                  ├─ 3  future leaf2\n            \
@@ -1755,7 +1757,7 @@ mod tests {
 
         assert!(
             page.contains(
-                "    Future types and what they await:\n        \
+                "    Types and what they are waiting on:\n        \
                  2  future a::fut\n        \
                  2  future b::fut\n           \
                  ├─ 1  a timer\n           \
@@ -1788,7 +1790,7 @@ mod tests {
 
         assert!(
             page.contains(
-                "    Future types and what they await:\n         \
+                "    Types and what they are waiting on:\n         \
                  6  future f5\n         \
                  5  future f4\n        \
                  10  across 4 more types\n"
@@ -1845,7 +1847,7 @@ mod tests {
              2  polled as tasks\n        \
              1  held in frames, off any await chain\n        \
              1  in 1 FuturesUnordered, and 1 completed and not yet reaped\n    \
-             Future types and what they await:\n        \
+             Types and what they are waiting on:\n        \
              1  future child::fut\n           \
              └─ 1  a timer\n        \
              1  future held::fut\n           \
@@ -1886,7 +1888,7 @@ mod tests {
         let page = census(&facts, 2);
         assert!(
             page.contains(
-                "    Future types and what they await:\n        \
+                "    Types and what they are waiting on:\n        \
                  4  future hot::fut\n           \
                  └─ 4  a chain that stopped before any leaf\n        \
                  1  future cold::fut\n           \

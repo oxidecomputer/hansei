@@ -13,7 +13,7 @@ Threads: 4 lwps, 4 in runtime 0 @ 0xADDR
 
 Tasks: 5 owned by runtime 0 @ 0xADDR
     State: 1 running, 2 queued, 2 idle
-    Future types and what they await:
+    Types and what they are waiting on:
         1  async fn blocking_pool::queued_waiter
            └─ 1  another task (JoinHandle)
         1  async fn blocking_pool::running_waiter

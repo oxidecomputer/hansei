@@ -13,7 +13,7 @@ Threads: 5 lwps, 5 in runtime 0 @ 0xADDR
 
 Tasks: 1 owned by runtime 0 @ 0xADDR
     State: 1 idle
-    Future types and what they await:
+    Types and what they are waiting on:
         1  async block futurelock::main::{async_block#0}
            └─ 1  a tokio::sync::Mutex
 
@@ -22,6 +22,6 @@ Futures: 2 in flight, on 12 await-chain frames (up to 7 deep)
         1  polled as tasks
         1  held in frames, off any await chain
         0  in 0 FuturesUnordered
-    Future types and what they await:
+    Types and what they are waiting on:
         1  async fn futurelock::do_async_thing
            └─ 1  a tokio::sync::Mutex

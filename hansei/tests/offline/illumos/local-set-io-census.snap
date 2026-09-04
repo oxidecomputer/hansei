@@ -9,7 +9,7 @@ Threads: 1 lwp, 1 in runtime 0 @ 0xADDR
 
 Tasks: 4 owned by 1 runtime and 1 local set
     State: 4 idle
-    Future types and what they await:
+    Types and what they are waiting on:
         1  async fn local_set_io::local_reader
            └─ 1  an io resource
         1  async fn local_set_io::local_watcher
