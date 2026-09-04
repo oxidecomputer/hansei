@@ -2,7 +2,7 @@
 source: hansei/src/offline.rs
 description: "`futures --with kind child` over linux-floor/gen-0007"
 ---
-ADDR            TASK  HELD IN             STATE                               WAITING ON  FUTURE
+ADDR            TASK  HELD IN             STATE                               WAITING ON  TYPE
 0xADDR  3     set 0xADDR  Unresumed — src/bin/gen-0007.rs:80  —           async fn gen_0007::leaf_01
 0xADDR  3     set 0xADDR  Unresumed — src/bin/gen-0007.rs:80  —           async fn gen_0007::leaf_01
 0xADDR  3     set 0xADDR  Unresumed — src/bin/gen-0007.rs:80  —           async fn gen_0007::leaf_01
