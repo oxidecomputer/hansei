@@ -1,5 +1,0 @@
----
-source: hansei/src/offline.rs
-description: "`info signal` over illumos/blocking-pool"
----
-signal: none recorded (a live capture, not a crash)

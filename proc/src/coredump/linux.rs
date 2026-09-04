@@ -1124,24 +1124,6 @@ impl Target for Core {
         Some(Core::build_ids(self))
     }
 
-    fn symbol_object_bases(&self) -> Vec<u64> {
-        let Some(exec) = &self.exec else {
-            return Vec::new();
-        };
-        // The executable's symtab is served by the file standing in
-        // for it, so symbol presence is that file being on hand.
-        if !matches!(self.backing.get(&exec.path), Some(Some(_))) {
-            return Vec::new();
-        }
-        self.mappings
-            .iter()
-            .filter(|m| m.path.as_deref() == Some(exec.path.as_str()))
-            .map(|m| m.vaddr)
-            .min()
-            .into_iter()
-            .collect()
-    }
-
     fn readable_len(&self, addr: u64, max: u64) -> u64 {
         Core::readable_len(self, addr, max)
     }
@@ -1879,15 +1861,12 @@ mod tests {
         assert!(!ids.disagree());
 
         // The Target surface answers the same facts generically: the
-        // ids, the recorded exec path, and the executable as the one
-        // object whose symbols are on hand (its file is).
+        // ids and the recorded exec path.
         assert_eq!(Target::build_ids(&p), Some(p.build_ids()));
         assert_eq!(Target::exec_path(&p), Some(exe.clone()));
-        assert_eq!(Target::symbol_object_bases(&p), vec![BUILD_ID_BASE]);
         let target = crate::Proc::LinuxCore(p);
         assert!(Target::build_ids(&target).is_some());
         assert_eq!(Target::exec_path(&target), Some(exe));
-        assert_eq!(Target::symbol_object_bases(&target), vec![BUILD_ID_BASE]);
     }
 
     /// A substituted binary is what the reader opens in place of the

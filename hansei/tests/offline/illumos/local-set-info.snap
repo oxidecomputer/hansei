@@ -5,7 +5,10 @@ description: "`info` over illumos/local-set"
 core:       <snapshot>
 tokio info: <tokio info>
 symbols resolved: 17/17
+
+process: not recorded by this target
+
 signal: none recorded (a live capture, not a crash)
-objects: 10 loaded (see `info objects`)
+
 1 worker thread(s), 3 task(s)
 1 runtime, 1 local set (see `runtimes --list`)

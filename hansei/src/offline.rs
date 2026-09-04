@@ -125,11 +125,6 @@ fn commands(
         // degraded spellings; objects rows come from the recorded
         // mappings, with every CFI read declined by the capture.
         ("info", "info".to_owned()),
-        ("info-process", "info process".to_owned()),
-        ("info-signal", "info signal".to_owned()),
-        ("info-objects", "info objects".to_owned()),
-        ("info-fds", "info fds".to_owned()),
-        ("info-v", "info -v".to_owned()),
     ];
     // The by-value fallback's hit: a joined task's header is held
     // inside its awaiter's JoinHandle frame, so it is an address every

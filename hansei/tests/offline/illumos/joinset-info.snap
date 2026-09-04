@@ -5,7 +5,10 @@ description: "`info` over illumos/joinset"
 core:       <snapshot>
 tokio info: <tokio info>
 symbols resolved: 19/19
+
+process: not recorded by this target
+
 signal: none recorded (a live capture, not a crash)
-objects: 10 loaded (see `info objects`)
+
 3 worker thread(s), 6 task(s)
 1 runtime (see `runtimes --list`)

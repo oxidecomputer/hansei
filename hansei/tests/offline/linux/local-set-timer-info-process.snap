@@ -1,5 +1,0 @@
----
-source: hansei/src/offline.rs
-description: "`info process` over linux/local-set-timer"
----
-process: not recorded by this target

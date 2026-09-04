@@ -5,7 +5,10 @@ description: "`info` over linux/gen-0007"
 core:       <snapshot>
 tokio info: <tokio info>
 symbols resolved: 11/11
+
+process: not recorded by this target
+
 signal: none recorded (a live capture, not a crash)
-objects: 5 loaded (see `info objects`)
+
 3 worker thread(s), 5 task(s)
 1 runtime (see `runtimes --list`)

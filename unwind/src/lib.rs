@@ -86,8 +86,8 @@ pub struct Frame {
     /// Whether the frame-pointer walk produced this frame rather than
     /// CFI. Such a frame is a validated guess — the return address
     /// landed in mapped text — not a fact the unwind tables state. The
-    /// listing does not mark it: [`Backtrace::truncated`] and `info
-    /// objects` already say which objects the walk could not source.
+    /// listing does not mark it: [`Backtrace::truncated`] already says
+    /// which object the walk could not source.
     pub heuristic: bool,
 }
 
@@ -107,45 +107,6 @@ pub struct MissingCfi {
     pub range: Range<u64>,
     pub path: String,
     pub why: String,
-}
-
-/// One file-backed object and whether this target can source its CFI:
-/// `Ok` when its unwind tables parse from what the target serves,
-/// `Err(why)` in the words the walk's truncation notes use.
-#[derive(Clone, PartialEq, Debug)]
-pub struct CfiStatus {
-    pub range: Range<u64>,
-    pub path: String,
-    pub cfi: std::result::Result<(), String>,
-}
-
-/// Survey every file-backed object: where it sits and whether its CFI
-/// is on hand — the per-object answer behind [`load_frames`]'s
-/// `missing` list, with the objects that parsed included.
-pub fn cfi_survey<T: Target>(target: &T) -> Result<Vec<CfiStatus>> {
-    let mappings = target
-        .mappings()
-        .context("failed to retrieve memory mappings from the target")?;
-    let (images, missing) = load_images(target, &mappings);
-    let mut out: Vec<CfiStatus> = missing
-        .into_iter()
-        .map(|m| CfiStatus {
-            range: m.range,
-            path: m.path,
-            cfi: Err(m.why),
-        })
-        .collect();
-    for image in &images {
-        out.push(CfiStatus {
-            range: image.range.clone(),
-            path: image.path.clone(),
-            cfi: ObjectInfo::parse(&image.bytes, image.range.clone())
-                .map(|_| ())
-                .map_err(|e| format!("{e:#}")),
-        });
-    }
-    out.sort_by_key(|s| s.range.start);
-    Ok(out)
 }
 
 pub fn load_frames<T: Target>(target: &T) -> Result<Unwound> {

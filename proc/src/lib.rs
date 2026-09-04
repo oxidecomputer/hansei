@@ -235,13 +235,6 @@ pub trait Target: Sync {
         None
     }
 
-    /// The open-fd table the target records, in fd order. `None` for
-    /// a target that carries none: a Linux core, a snapshot, or an
-    /// illumos core old enough to predate `NT_FDINFO`.
-    fn fds(&self) -> Option<&[FdInfo]> {
-        None
-    }
-
     /// The path of the target's executable, as the target records it.
     fn exec_path(&self) -> Option<std::path::PathBuf> {
         None
@@ -252,15 +245,6 @@ pub trait Target: Sync {
     /// beside the `--binary` standing in for its executable.
     fn build_ids(&self) -> Option<BuildIds> {
         None
-    }
-
-    /// The load addresses of the objects whose symbol tables this
-    /// target can read — an illumos core carries one per mapped
-    /// object, a Linux core only the substituted executable's. Empty
-    /// for a target that cannot attribute symbols to objects (a
-    /// snapshot records a flat table).
-    fn symbol_object_bases(&self) -> Vec<u64> {
-        Vec::new()
     }
 
     /// The target's memory mappings.
@@ -711,25 +695,6 @@ impl BuildIds {
     pub fn disagree(&self) -> bool {
         matches!((&self.core, &self.binary), (Some(a), Some(b)) if a != b)
     }
-}
-
-/// One open file descriptor as an illumos core's `NT_FDINFO` notes
-/// record it — the fixed `prfdinfo_core_t`, which unlike the variable
-/// `prfdinfo_t` of `/proc/<pid>/fdinfo` carries no `pr_misc` items:
-/// a socket has no local or peer name here, only its mode. A Linux
-/// core records no fd table at all.
-#[derive(Clone, PartialEq, Eq, Debug)]
-pub struct FdInfo {
-    pub fd: i32,
-    /// `st_mode`: the file type in the `S_IFMT` bits plus permissions.
-    pub mode: u32,
-    pub ino: u64,
-    pub offset: i64,
-    pub size: u64,
-    /// The `O_*` flags the fd was opened with (`pr_fileflags`).
-    pub fileflags: i32,
-    /// The path, empty where the kernel recorded none (a socket).
-    pub path: String,
 }
 
 /// The process-identity facts a core records about its target: who it

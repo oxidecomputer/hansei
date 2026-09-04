@@ -1,5 +1,0 @@
----
-source: hansei/src/offline.rs
-description: "`info fds` over linux/ct-runtime"
----
-fds: not recorded by this target

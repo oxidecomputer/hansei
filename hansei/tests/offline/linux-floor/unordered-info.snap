@@ -5,7 +5,10 @@ description: "`info` over linux-floor/unordered"
 core:       <snapshot>
 tokio info: <tokio info>
 symbols resolved: 3/3
+
+process: not recorded by this target
+
 signal: none recorded (a live capture, not a crash)
-objects: 5 loaded (see `info objects`)
+
 3 worker thread(s), 1 task(s)
 1 runtime (see `runtimes --list`)
