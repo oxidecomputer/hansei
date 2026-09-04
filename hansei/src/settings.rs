@@ -32,9 +32,9 @@ pub(crate) struct Settings {
     /// terminal is never cut, whatever this says.
     pub(crate) truncate_names: bool,
     /// The shell command a prompt's answers page through, or `None`
-    /// for none — `config pager off`. A session starts with what the
-    /// environment names ([`crate::pager::from_env`]); `less` when it
-    /// names nothing.
+    /// for none — `config pager off`. A session starts with what
+    /// `HANSEI_PAGER` names ([`crate::pager::from_env`]), else less
+    /// with hansei's own flags where less is found.
     pub(crate) pager: Option<String>,
 }
 
@@ -47,7 +47,7 @@ impl Default for Settings {
             max_array_values: reify::DEFAULT_MAX_ARRAY_VALUES,
             limit: None,
             truncate_names: true,
-            pager: Some("less".to_string()),
+            pager: Some(crate::pager::DEFAULT.to_string()),
         }
     }
 }
@@ -231,7 +231,7 @@ mod tests {
              limit             off\n\
              max-array-values  128\n\
              max-string-len    131072\n\
-             pager             less\n\
+             pager             less -FRX\n\
              truncate-names    on\n\
              ugly              off\n"
         );

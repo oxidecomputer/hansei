@@ -730,10 +730,10 @@ pub enum Command {
     /// an ellipsis marking each cut — a `!` pipeline's output included, since its
     /// last command writes to the same terminal — and never touches
     /// output that is not headed for one; `pager` is the shell command
-    /// a prompt's answers page through — `HANSEI_PAGER`, else `PAGER`,
-    /// else `less` to start with, given `LESS=FRX` when the
-    /// environment sets no `LESS` — or `off` for none, and a script's,
-    /// `--exec`'s and a `!` pipeline's answers never page. The values
+    /// a prompt's answers page through — `HANSEI_PAGER` to start with,
+    /// else `less -FRX` where less is found, `PAGER` never — or `off`
+    /// for none, and a script's, `--exec`'s and a `!` pipeline's
+    /// answers never page. The values
     /// live for the session only. Bare `config` prints every key at
     /// its current value; `config KEY` prints one; `config KEY VALUE`
     /// changes it; `--config KEY VALUE` on the command line sets one
