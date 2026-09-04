@@ -12,7 +12,8 @@
 //! the last column is never padded — a type name ends its line, so a
 //! terminal soft-wrap belongs to the name and triple-click still
 //! copies the whole logical line — and a header row, where a listing
-//! has one, is padded with the same widths as the rows it names.
+//! has one, is padded with the same widths as the rows it names, and
+//! is bold where the output is a terminal.
 
 use std::borrow::Cow;
 use std::io::{self, IsTerminal};
@@ -155,6 +156,9 @@ pub(crate) struct Table {
     truncatable: Vec<bool>,
     /// The width to fit lines within, when there is an edge to fit.
     fit: Option<usize>,
+    /// What styles the header: bold on a terminal, and nothing
+    /// anywhere else.
+    theme: Theme,
     header: Option<Vec<String>>,
     rows: Vec<Vec<String>>,
 }
@@ -198,6 +202,7 @@ impl Table {
             aligns: (0..columns).map(|_| Align::Left).collect(),
             truncatable: vec![false; columns],
             fit: None,
+            theme: Theme::plain(),
             header: None,
             rows: Vec::new(),
         }
@@ -213,6 +218,13 @@ impl Table {
     /// columns, or leave every cell whole for `None`.
     pub(crate) fn fit(mut self, width: Option<usize>) -> Self {
         self.fit = width;
+        self
+    }
+
+    /// Style the table for where it is going: its header is bold on
+    /// a terminal, and every cell is as it is elsewhere.
+    pub(crate) fn theme(mut self, theme: Theme) -> Self {
+        self.theme = theme;
         self
     }
 
@@ -309,15 +321,15 @@ impl Table {
         }
     }
 
-    /// Render every line, the header's first when there is one. Each
-    /// cell but the last is padded to its column's width; the last is
-    /// appended as it is.
+    /// Render every line, the header's first when there is one — and
+    /// bold, where the theme styles. Each cell but the last is padded
+    /// to its column's width; the last is appended as it is.
     pub(crate) fn render(&self) -> Vec<String> {
         let widths = self.fitted_widths();
-        self.header
-            .iter()
-            .chain(&self.rows)
-            .map(|row| {
+        let header = self.header.iter().map(|row| (row, true));
+        header
+            .chain(self.rows.iter().map(|row| (row, false)))
+            .map(|(row, is_header)| {
                 let mut line = String::new();
                 for (i, cell) in row.iter().enumerate() {
                     let cell = self.clipped(i, cell, widths[i]);
@@ -338,7 +350,10 @@ impl Table {
                     }
                     line.push_str(self.sep);
                 }
-                line
+                match is_header {
+                    true => self.theme.bold(&line).into_owned(),
+                    false => line,
+                }
             })
             .collect()
     }
@@ -408,6 +423,23 @@ mod tests {
         t.row(["a", "x"]);
         assert_eq!(rendered(&t), ["KIND  WHERE", "a     x"]);
         assert_eq!(t.width(0), 4);
+    }
+
+    /// A themed table's header line is bold, as one line: the styling
+    /// wraps the padded labels, so the rows under it — never styled —
+    /// still line up under them. Plain, the header is bare text.
+    #[test]
+    fn test_the_header_is_bold_only_under_a_styling_theme() {
+        let mut t = Table::new(2)
+            .header(["KIND", "WHERE"])
+            .theme(Theme::forced());
+        t.row(["a", "x"]);
+        assert_eq!(rendered(&t), ["\x1b[1mKIND  WHERE\x1b[0m", "a     x"]);
+        let mut t = Table::new(2)
+            .header(["KIND", "WHERE"])
+            .theme(Theme::plain());
+        t.row(["a", "x"]);
+        assert_eq!(rendered(&t), ["KIND  WHERE", "a     x"]);
     }
 
     /// A table with a header but no rows is still empty: the caller

@@ -180,6 +180,7 @@ pub(crate) fn print_groups(
     groups: &[&Group],
     excluded: usize,
     fit: Option<usize>,
+    theme: output::Theme,
     out: &mut dyn io::Write,
 ) -> Result<()> {
     let dash = || "—".to_string();
@@ -201,7 +202,8 @@ pub(crate) fn print_groups(
         .align_right(5)
         .align_right(6)
         .truncatable(7)
-        .fit(fit);
+        .fit(fit)
+        .theme(theme);
     for g in groups {
         table.row([
             g.index.to_string(),
@@ -490,13 +492,21 @@ pub(crate) fn exec_runtimes<T: proc::Target>(
         .collect();
 
     if let Some(field) = group {
-        return exec_group(&rows, field, &survivors, session.fit_width(theme), out);
+        return exec_group(
+            &rows,
+            field,
+            &survivors,
+            session.fit_width(theme),
+            theme,
+            out,
+        );
     }
     let shown: Vec<&Group> = survivors.iter().map(|&i| &rows[i]).collect();
     print_groups(
         &shown,
         session.excluded.len(),
         session.fit_width(theme),
+        theme,
         out,
     )
 }
@@ -509,6 +519,7 @@ fn exec_group(
     field: Field,
     survivors: &[usize],
     fit: Option<usize>,
+    theme: output::Theme,
     out: &mut dyn io::Write,
 ) -> Result<()> {
     let mut grouped: BTreeMap<String, Vec<usize>> = BTreeMap::new();
@@ -526,7 +537,8 @@ fn exec_group(
         .align_right(0)
         .header(["COUNT".to_string(), heading, "RUNTIMES".to_string()])
         .truncatable(1)
-        .fit(fit);
+        .fit(fit)
+        .theme(theme);
     for (value, members) in &buckets {
         table.row([
             members.len().to_string(),
@@ -728,7 +740,8 @@ mod runtimes_tests {
 
         let mut out = Vec::new();
         let shown: Vec<&Group> = rows.iter().collect();
-        print_groups(&shown, 0, None, &mut out).expect("the listing renders");
+        print_groups(&shown, 0, None, crate::output::Theme::plain(), &mut out)
+            .expect("the listing renders");
         let shown = String::from_utf8(out).expect("rendered output is UTF-8");
         let lines: Vec<&str> = shown.lines().collect();
         assert_eq!(lines.len(), 4, "{shown}");
@@ -868,7 +881,8 @@ mod runtimes_tests {
         let rows = rows_of("foreign-runtime");
         let shown: Vec<&Group> = rows.iter().collect();
         let mut out = Vec::new();
-        print_groups(&shown, 1, None, &mut out).expect("the listing renders");
+        print_groups(&shown, 1, None, crate::output::Theme::plain(), &mut out)
+            .expect("the listing renders");
         let shown = String::from_utf8(out).expect("rendered output is UTF-8");
         assert!(
             shown.ends_with("1 runtime excluded by --runtime; attach without it to see them\n"),

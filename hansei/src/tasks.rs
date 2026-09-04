@@ -1099,6 +1099,7 @@ fn print_task_table(
     groups: bool,
     limit: Option<usize>,
     fit: Option<usize>,
+    theme: crate::output::Theme,
     out: &mut dyn io::Write,
 ) -> Result<()> {
     let shown = limit.unwrap_or(rows.len()).min(rows.len());
@@ -1119,7 +1120,8 @@ fn print_task_table(
         .align_right(futures)
         .truncatable(columns - 2)
         .truncatable(columns - 1)
-        .fit(fit);
+        .fit(fit)
+        .theme(theme);
     for (row, futures) in &rows[..shown] {
         table.row(row_cells(row, *futures, groups));
     }
@@ -1606,6 +1608,7 @@ pub(crate) fn exec_tasks<T: proc::Target>(
             survivors,
             counts,
             session.fit_width(theme),
+            theme,
             out,
         );
     }
@@ -1624,7 +1627,14 @@ pub(crate) fn exec_tasks<T: proc::Target>(
         .map(|&i| (&rows[i], counts_of(&counts, i).futures()))
         .collect();
     let groups = !session.group_tags().is_empty();
-    print_task_table(&listed, groups, cmd.limit, session.fit_width(theme), out)?;
+    print_task_table(
+        &listed,
+        groups,
+        cmd.limit,
+        session.fit_width(theme),
+        theme,
+        out,
+    )?;
     print_warnings(&list.errors)?;
     Ok(())
 }
@@ -1633,6 +1643,7 @@ pub(crate) fn exec_tasks<T: proc::Target>(
 /// value and print `COUNT VALUE` rows, most numerous first (ties in
 /// value order), each with up to three member ids. `--limit` cuts
 /// buckets.
+#[allow(clippy::too_many_arguments)]
 fn exec_group<T: proc::Target>(
     session: &Session<'_, T>,
     cmd: &TasksCmd,
@@ -1640,6 +1651,7 @@ fn exec_group<T: proc::Target>(
     survivors: Option<Vec<usize>>,
     counts: Option<CountsByTask>,
     fit: Option<usize>,
+    theme: crate::output::Theme,
     out: &mut dyn io::Write,
 ) -> Result<()> {
     print_warnings(&session.analysis().errors)?;
@@ -1662,7 +1674,8 @@ fn exec_group<T: proc::Target>(
         .align_right(0)
         .header(["COUNT".to_string(), heading, "TASKS".to_string()])
         .truncatable(1)
-        .fit(fit);
+        .fit(fit)
+        .theme(theme);
     for (value, members) in &buckets[..shown] {
         table.row([
             members.len().to_string(),
@@ -2269,7 +2282,15 @@ mod table_tests {
         let rows: Vec<(&super::TaskRow, usize)> = rows.iter().map(|r| (r, 0)).collect();
         let print = |groups: bool| {
             let mut out = Vec::new();
-            print_task_table(&rows, groups, None, None, &mut out).expect("table prints");
+            print_task_table(
+                &rows,
+                groups,
+                None,
+                None,
+                crate::output::Theme::plain(),
+                &mut out,
+            )
+            .expect("table prints");
             String::from_utf8(out).expect("utf8")
         };
         assert!(print(true).contains("RT"), "{}", print(true));
@@ -2287,7 +2308,15 @@ mod table_tests {
         );
         let rows: Vec<(&super::TaskRow, usize)> = rows.iter().zip([0, 3075]).collect();
         let mut out = Vec::new();
-        print_task_table(&rows, false, None, None, &mut out).expect("table prints");
+        print_task_table(
+            &rows,
+            false,
+            None,
+            None,
+            crate::output::Theme::plain(),
+            &mut out,
+        )
+        .expect("table prints");
         let out = String::from_utf8(out).expect("utf8");
         let lines: Vec<&str> = out.lines().collect();
         assert!(
@@ -2309,7 +2338,15 @@ mod table_tests {
         );
         let rows: Vec<(&super::TaskRow, usize)> = rows.iter().map(|r| (r, 0)).collect();
         let mut out = Vec::new();
-        print_task_table(&rows, false, Some(2), None, &mut out).expect("table prints");
+        print_task_table(
+            &rows,
+            false,
+            Some(2),
+            None,
+            crate::output::Theme::plain(),
+            &mut out,
+        )
+        .expect("table prints");
         let out = String::from_utf8(out).expect("utf8");
         assert!(out.contains("\n1 "), "{out}");
         assert!(out.contains("\n2 "), "{out}");

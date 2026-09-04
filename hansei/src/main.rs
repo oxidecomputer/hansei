@@ -1810,7 +1810,7 @@ pub fn dispatch<T: Target>(
         }
         Command::Graph { limit } => {
             let limit = limit.or(session.settings.borrow().limit);
-            graph::exec_graph(session, limit, out)?
+            graph::exec_graph(session, limit, theme, out)?
         }
         // Answered in `repl`, which knows whether there is a prompt to
         // have a history; it never reaches here.

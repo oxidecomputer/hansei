@@ -238,6 +238,7 @@ fn row_cells(row: &ThreadRow) -> [String; 4] {
 fn print_thread_table<'r>(
     rows: impl ExactSizeIterator<Item = &'r ThreadRow>,
     fit: Option<usize>,
+    theme: crate::output::Theme,
     out: &mut dyn io::Write,
 ) -> Result<()> {
     let total = rows.len();
@@ -246,7 +247,8 @@ fn print_thread_table<'r>(
     let mut table = crate::output::Table::new(5)
         .header(["LWP", "NAME", "ROLE", "TASK", "FRAME 0"])
         .truncatable(4)
-        .fit(fit);
+        .fit(fit)
+        .theme(theme);
     for row in rows {
         let [lwp, name, role, task] = row_cells(row);
         table.row([
@@ -519,11 +521,19 @@ pub(crate) fn exec_threads<T: proc::Target>(
         return exec_exec(session, &cmd, &survivors, theme, out);
     }
     if let Some(field) = group {
-        return exec_group(session, field, &survivors, session.fit_width(theme), out);
+        return exec_group(
+            session,
+            field,
+            &survivors,
+            session.fit_width(theme),
+            theme,
+            out,
+        );
     }
     print_thread_table(
         survivors.iter().map(|&i| &rows[i]),
         session.fit_width(theme),
+        theme,
         out,
     )
 }
@@ -536,6 +546,7 @@ fn exec_group<T: proc::Target>(
     field: Field,
     survivors: &[usize],
     fit: Option<usize>,
+    theme: crate::output::Theme,
     out: &mut dyn io::Write,
 ) -> Result<()> {
     let rows = rows(session);
@@ -554,7 +565,8 @@ fn exec_group<T: proc::Target>(
         .align_right(0)
         .header(["COUNT".to_string(), heading, "LWPS".to_string()])
         .truncatable(1)
-        .fit(fit);
+        .fit(fit)
+        .theme(theme);
     for (value, members) in &buckets {
         table.row([
             members.len().to_string(),

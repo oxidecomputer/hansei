@@ -18,6 +18,7 @@ use std::io;
 pub(crate) fn exec_graph<T: proc::Target>(
     session: &Session<'_, T>,
     limit: Option<usize>,
+    theme: output::Theme,
     out: &mut dyn io::Write,
 ) -> Result<()> {
     let analysis = session.analysis();
@@ -28,6 +29,7 @@ pub(crate) fn exec_graph<T: proc::Target>(
         session.relations(),
         &session.impl_fold,
         limit,
+        theme,
         out,
     )?;
 
@@ -64,6 +66,7 @@ fn print_graph(
     relations: &Relations,
     impls: &names::ImplFold,
     limit: Option<usize>,
+    theme: output::Theme,
     out: &mut dyn io::Write,
 ) -> Result<()> {
     let edges = &relations.edges;
@@ -112,7 +115,9 @@ fn print_graph(
     let roots = starts.len();
     let shown = limit.unwrap_or(roots).min(roots);
     let cut = starts.get(shown).copied().unwrap_or(rows.len());
-    let mut table = output::Table::new(3).header(["TASK", "STATE", "WAITING ON"]);
+    let mut table = output::Table::new(3)
+        .header(["TASK", "STATE", "WAITING ON"])
+        .theme(theme);
     for [id, state, target] in rows.drain(..cut) {
         table.row([id, state, target]);
     }
@@ -427,6 +432,7 @@ mod graph_tests {
             &relations,
             &names::ImplFold::default(),
             limit,
+            crate::output::Theme::plain(),
             &mut out,
         )
         .unwrap();

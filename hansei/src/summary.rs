@@ -394,7 +394,8 @@ fn threads(facts: &Facts<'_>, theme: Theme, out: &mut dyn io::Write) -> Result<(
 
     let mut table = output::Table::new(5)
         .header(["COUNT", "RT", "ROLE", "STATE", "LWPS"])
-        .align_right(0);
+        .align_right(0)
+        .theme(theme);
     for row in &rows {
         let rt = match row.key.rt {
             usize::MAX => "—".to_string(),
@@ -596,7 +597,7 @@ fn tasks(
     for task in &list.tasks {
         *states.entry(row_state(task, None)).or_default() += 1;
     }
-    counts("STATE", rank(tally(states)), out)?;
+    counts("STATE", rank(tally(states)), theme, out)?;
     writeln!(
         out,
         "{}",
@@ -625,7 +626,7 @@ fn tasks(
     let futures = types
         .into_iter()
         .map(|(name, (count, waits))| chained(name, count, &waits, top));
-    tree(ranked(futures, top, more_types), fit, out)
+    tree(ranked(futures, top, more_types), fit, theme, out)
 }
 
 /// The wait tally: one bucket per thing a task or a future can be
@@ -834,7 +835,7 @@ fn futures(
             format!("set ({} FuturesUnordered{reaped})", facts.sets.len()),
         ),
     ];
-    counts("HELD IN", places.into_iter().collect(), out)?;
+    counts("HELD IN", places.into_iter().collect(), theme, out)?;
     writeln!(out, "{}", listing_footer(in_flight, in_flight, "future"))?;
     writeln!(out)?;
 
@@ -868,7 +869,7 @@ fn futures(
     let futures = types
         .into_iter()
         .map(|(name, (count, waits))| chained(name, count, &waits, top));
-    tree(ranked(futures, top, more_types), fit, out)
+    tree(ranked(futures, top, more_types), fit, theme, out)
 }
 
 // ---------------------------------------------------------------------
@@ -983,13 +984,14 @@ fn ranked(
 
 /// Print a two-column table of counted rows under `COUNT` and `label`,
 /// or nothing for no rows: the caller's footer says what there was.
-fn counts(label: &str, rows: Vec<Row>, out: &mut dyn io::Write) -> Result<()> {
+fn counts(label: &str, rows: Vec<Row>, theme: Theme, out: &mut dyn io::Write) -> Result<()> {
     if rows.is_empty() {
         return Ok(());
     }
     let mut table = output::Table::new(2)
         .header(["COUNT", label])
-        .align_right(0);
+        .align_right(0)
+        .theme(theme);
     for row in &rows {
         table.row([row.count.to_string(), row.what.clone()]);
     }
@@ -1000,14 +1002,15 @@ fn counts(label: &str, rows: Vec<Row>, out: &mut dyn io::Write) -> Result<()> {
 /// Print a type tally: the `COUNT` / [`TYPE_HEADER`] table, each row's
 /// breakdown drawn as branches beneath it, and the `[N types, M
 /// shown]` footer.
-fn tree(ranked: Ranked, fit: Option<usize>, out: &mut dyn io::Write) -> Result<()> {
+fn tree(ranked: Ranked, fit: Option<usize>, theme: Theme, out: &mut dyn io::Write) -> Result<()> {
     let Ranked { rows, total, shown } = ranked;
     if !rows.is_empty() {
         let mut table = output::Table::new(2)
             .header(["COUNT", TYPE_HEADER])
             .align_right(0)
             .truncatable(1)
-            .fit(fit);
+            .fit(fit)
+            .theme(theme);
         for row in &rows {
             table.row([row.count.to_string(), row.what.clone()]);
         }
@@ -1293,7 +1296,8 @@ mod tests {
     }
 
     /// The heading's name and colon are bold on a terminal and bare
-    /// bytes everywhere else; nothing else on the page is styled.
+    /// bytes everywhere else, as is each table's header line; nothing
+    /// else on the page is styled.
     #[test]
     fn test_headings_are_bold_only_on_a_terminal() {
         let list = empty();
@@ -1321,7 +1325,11 @@ mod tests {
             styled.contains("\n\x1b[1mFutures:\x1b[0m 0 in flight"),
             "{styled}"
         );
-        assert_eq!(styled.matches('\x1b').count(), 6, "{styled}");
+        assert!(
+            styled.contains("\n\x1b[1mCOUNT  HELD IN\x1b[0m\n    0  task"),
+            "{styled}"
+        );
+        assert_eq!(styled.matches('\x1b').count(), 8, "{styled}");
     }
 
     /// Every run-loop thread is a row by what it is doing, the rows of

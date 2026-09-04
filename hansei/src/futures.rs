@@ -331,6 +331,7 @@ fn print_future_table(
     groups: bool,
     limit: Option<usize>,
     fit: Option<usize>,
+    theme: crate::output::Theme,
     out: &mut dyn io::Write,
 ) -> Result<()> {
     let shown = limit.unwrap_or(rows.len()).min(rows.len());
@@ -346,7 +347,8 @@ fn print_future_table(
         .header(header)
         .truncatable(columns - 2)
         .truncatable(columns - 1)
-        .fit(fit);
+        .fit(fit)
+        .theme(theme);
     for row in &rows[..shown] {
         table.row(row_cells(row, groups));
     }
@@ -814,13 +816,21 @@ pub(crate) fn exec_futures<T: proc::Target>(
             field,
             &survivors,
             session.fit_width(theme),
+            theme,
             out,
         );
     }
 
     let groups = !session.group_tags().is_empty();
     let selected: Vec<&FutureRow> = survivors.iter().map(|&i| &rows[i]).collect();
-    print_future_table(&selected, groups, cmd.limit, session.fit_width(theme), out)?;
+    print_future_table(
+        &selected,
+        groups,
+        cmd.limit,
+        session.fit_width(theme),
+        theme,
+        out,
+    )?;
     print_warnings(&session.tasks.errors)?;
     Ok(())
 }
@@ -835,6 +845,7 @@ fn exec_group<T: proc::Target>(
     field: Field,
     survivors: &[usize],
     fit: Option<usize>,
+    theme: crate::output::Theme,
     out: &mut dyn io::Write,
 ) -> Result<()> {
     let rows = rows(session);
@@ -854,7 +865,8 @@ fn exec_group<T: proc::Target>(
         .align_right(0)
         .header(["COUNT".to_string(), heading, "FUTURES".to_string()])
         .truncatable(1)
-        .fit(fit);
+        .fit(fit)
+        .theme(theme);
     for (value, members) in &buckets[..shown] {
         table.row([
             members.len().to_string(),
