@@ -4,10 +4,11 @@
 
 //! The `info` command: the process-facts oracle.
 //!
-//! Bare `info` prints the one-screen attach summary; `info <section>`
-//! prints one section in full — what gdb's `info proc` and mdb's
-//! `::status`, `::pargs`, `::penv`, `::pfiles` and `::objects` answer
-//! — and `info -v` prints every section.
+//! One screen of everything the target records about itself: what was
+//! attached and how far its symbols resolve, who the process was —
+//! what gdb's `info proc` and mdb's `::status`, `::pargs` and `::penv`
+//! answer — what ended it, and how much there is for the listings to
+//! go and look at.
 
 use crate::{Session, summary};
 
@@ -16,61 +17,26 @@ use proc::Target;
 
 use std::io;
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug, clap::ValueEnum)]
-pub enum Section {
-    Process,
-    Signal,
-    Objects,
-    Fds,
+pub fn exec_info<T: Target>(session: &Session<'_, T>, out: &mut dyn io::Write) -> Result<()> {
+    // Each part rendered whole, then joined — so the blank-line seams
+    // cannot drift from the part count.
+    let render = |part: fn(&Session<'_, T>, &mut dyn io::Write) -> Result<()>| -> Result<String> {
+        let mut buf = Vec::new();
+        part(session, &mut buf)?;
+        Ok(String::from_utf8(buf).expect("info output is UTF-8"))
+    };
+    let parts = [
+        render(attach)?,
+        render(process)?,
+        render(signal)?,
+        render(listings)?,
+    ];
+    write!(out, "{}", parts.join("\n"))?;
+    Ok(())
 }
 
-pub fn exec_info<T: Target>(
-    session: &Session<'_, T>,
-    section: Option<Section>,
-    verbose: bool,
-    out: &mut dyn io::Write,
-) -> Result<()> {
-    match section {
-        Some(section) => print_section(session, section, out),
-        None if verbose => {
-            let all = [
-                Section::Process,
-                Section::Signal,
-                Section::Objects,
-                Section::Fds,
-            ];
-            // Each section rendered whole, then joined — so the
-            // blank-line seams cannot drift from the section count.
-            let mut sections = Vec::new();
-            for section in all {
-                let mut buf = Vec::new();
-                print_section(session, section, &mut buf)?;
-                sections.push(String::from_utf8(buf).expect("section output is UTF-8"));
-            }
-            write!(out, "{}", sections.join("\n"))?;
-            Ok(())
-        }
-        None => attach_summary(session, out),
-    }
-}
-
-fn print_section<T: Target>(
-    session: &Session<'_, T>,
-    section: Section,
-    out: &mut dyn io::Write,
-) -> Result<()> {
-    match section {
-        Section::Process => process(session, out),
-        Section::Signal => signal(session, out),
-        Section::Objects => objects(session, out),
-        Section::Fds => fds(session, out),
-    }
-}
-
-/// The one-screen attach summary: what was attached, how far its
-/// symbols resolve, who the process was, what ended it, and how much
-/// there is for the listings to go and look at.
-fn attach_summary<T: Target>(session: &Session<'_, T>, out: &mut dyn io::Write) -> Result<()> {
+/// What was attached, and how far its symbols resolve in the target.
+fn attach<T: Target>(session: &Session<'_, T>, out: &mut dyn io::Write) -> Result<()> {
     let fp = session.ctx.validate_fingerprint();
     writeln!(out, "core:       {}", session.core.display())?;
     writeln!(out, "tokio info: {}", session.bundle_source)?;
@@ -81,51 +47,20 @@ fn attach_summary<T: Target>(session: &Session<'_, T>, out: &mut dyn io::Write) 
         fp.total,
         if fp.is_complete() { "" } else { " (forced)" }
     )?;
-    if let Some(facts) = session.proc.process_facts() {
-        writeln!(
-            out,
-            "pid: {} ({}), parent {}",
-            facts.pid, facts.fname, facts.ppid
-        )?;
-        let line = match &facts.argv {
-            Some(argv) => argv.join(" "),
-            None => facts.psargs.clone(),
-        };
-        writeln!(out, "argv: {line}")?;
-    }
-    // What ended the process, or that nothing did: a core with no
-    // fatal signal is a live capture, which is worth saying outright —
-    // "why does hansei show no crash?" is the question this preempts.
-    match session.proc.fatal_signal() {
-        Some(sig) => {
-            let lwp = sig
-                .lwp
-                .map(|tid| format!(", taken on lwp {tid}"))
-                .unwrap_or_default();
-            writeln!(out, "signal: {}{lwp}", summary::fatal_signal_line(&sig))?;
-        }
-        None => writeln!(out, "signal: none recorded (a live capture, not a crash)")?,
-    }
-    if let Ok(mappings) = session.proc.mappings() {
-        let mut paths: Vec<&str> = mappings.iter().filter_map(|m| m.path.as_deref()).collect();
-        paths.sort_unstable();
-        paths.dedup();
-        if !paths.is_empty() {
-            writeln!(out, "objects: {} loaded (see `info objects`)", paths.len())?;
-        }
-    }
-    if let Some(fds) = session.proc.fds() {
-        writeln!(out, "fds: {} recorded (see `info fds`)", fds.len())?;
-    }
+    Ok(())
+}
+
+/// How much there is for the listings to go and look at.
+fn listings<T: Target>(session: &Session<'_, T>, out: &mut dyn io::Write) -> Result<()> {
     writeln!(
         out,
         "{} worker thread(s), {} task(s)",
         session.workers.len(),
         session.tasks.tasks.len()
     )?;
-    // What the target's executors are is `runtimes`' question: an
-    // attach summary says how many there are to go and look at, and
-    // leaves naming them to the listing that can afford the room.
+    // What the target's executors are is `runtimes`' question: the
+    // summary says how many there are to go and look at, and leaves
+    // naming them to the listing that can afford the room.
     let sets = match session.local_sets.is_empty() {
         true => String::new(),
         false => format!(
@@ -141,8 +76,8 @@ fn attach_summary<T: Target>(session: &Session<'_, T>, out: &mut dyn io::Write) 
     Ok(())
 }
 
-/// `info process`: the identity out of the core's own notes — mdb's
-/// `::status`, `::pargs` and `::penv` in one place.
+/// The identity out of the core's own notes — mdb's `::status`,
+/// `::pargs` and `::penv` in one place.
 fn process<T: Target>(session: &Session<'_, T>, out: &mut dyn io::Write) -> Result<()> {
     let Some(facts) = session.proc.process_facts() else {
         writeln!(out, "process: not recorded by this target")?;
@@ -214,16 +149,6 @@ fn env_absence(linux: bool) -> &'static str {
     }
 }
 
-/// The fd table's: `Some(true)` is a Linux core — process facts with
-/// no data model — whose system records no fd table; anything else is
-/// a target with no fd story at all.
-fn fds_absence(linux: Option<bool>) -> &'static str {
-    match linux {
-        Some(true) => "not recorded in a Linux core",
-        _ => "not recorded by this target",
-    }
-}
-
 /// Both build ids and whether they agree, for the targets where the
 /// question arises (a Linux core beside its `--binary`).
 fn build_id_lines(ids: Option<&proc::BuildIds>, out: &mut dyn io::Write) -> Result<()> {
@@ -242,9 +167,11 @@ fn build_id_lines(ids: Option<&proc::BuildIds>, out: &mut dyn io::Write) -> Resu
     Ok(())
 }
 
-/// `info signal`: what ended the process, who sent it where the
-/// siginfo says, and where the taking lwp was — its registers stay in
-/// `thread`.
+/// What ended the process, who sent it where the siginfo says, and
+/// where the taking lwp was — its registers stay in `thread`. A core
+/// with no fatal signal is a live capture, which is worth saying
+/// outright: "why does hansei show no crash?" is the question this
+/// preempts.
 fn signal<T: Target>(session: &Session<'_, T>, out: &mut dyn io::Write) -> Result<()> {
     let Some(sig) = session.proc.fatal_signal() else {
         writeln!(out, "signal: none recorded (a live capture, not a crash)")?;
@@ -293,137 +220,6 @@ fn taken_on(lwp: u32, pc: Option<u64>, sym: impl Fn(u64) -> Option<String>) -> S
         }
     }
     line
-}
-
-/// `info objects`: every file-backed object, with whether this target
-/// can source its symbols and its CFI — asked of the symbolizer's and
-/// the unwinder's own lookups, so a stack cut short by missing CFI
-/// has its reason surfaced here.
-fn objects<T: Target>(session: &Session<'_, T>, out: &mut dyn io::Write) -> Result<()> {
-    let survey = unwind::cfi_survey(session.proc)?;
-    if survey.is_empty() {
-        writeln!(out, "no file-backed objects in the target's mappings")?;
-        return Ok(());
-    }
-    let symbols = session.proc.symbol_object_bases();
-    let rows: Vec<[String; 4]> = survey
-        .iter()
-        .map(|s| {
-            [
-                format!("{:#x}..{:#x}", s.range.start, s.range.end),
-                s.path.clone(),
-                match symbols.iter().any(|b| s.range.contains(b)) {
-                    true => "yes".to_string(),
-                    false => "—".to_string(),
-                },
-                match &s.cfi {
-                    Ok(()) => "yes".to_string(),
-                    Err(why) => format!("no ({why})"),
-                },
-            ]
-        })
-        .collect();
-    write!(
-        out,
-        "{}",
-        table(&["RANGE", "PATH", "SYMBOLS", "CFI"], &rows)
-    )?;
-    if let Some(ids) = session.proc.build_ids()
-        && ids.disagree()
-    {
-        writeln!(
-            out,
-            "warning: the substituted binary's build id disagrees with the core's"
-        )?;
-    }
-    Ok(())
-}
-
-/// `info fds`: the open-fd table an illumos core records, whole — a
-/// count first, since a busy target records tens of thousands.
-fn fds<T: Target>(session: &Session<'_, T>, out: &mut dyn io::Write) -> Result<()> {
-    let Some(fds) = session.proc.fds() else {
-        let linux = session.proc.process_facts().map(|f| f.model.is_none());
-        writeln!(out, "fds: {}", fds_absence(linux))?;
-        return Ok(());
-    };
-    writeln!(out, "{} fds recorded", fds.len())?;
-    write!(out, "{}", fd_table(fds))?;
-    Ok(())
-}
-
-/// The fd table: the type word out of the mode, size and offset, and
-/// the recorded path — `—` where the kernel wrote none (a socket).
-fn fd_table(fds: &[proc::FdInfo]) -> String {
-    let rows: Vec<[String; 5]> = fds
-        .iter()
-        .map(|fd| {
-            [
-                fd.fd.to_string(),
-                kind(fd.mode).to_string(),
-                fd.size.to_string(),
-                fd.offset.to_string(),
-                match fd.path.is_empty() {
-                    true => "—".to_string(),
-                    false => fd.path.clone(),
-                },
-            ]
-        })
-        .collect();
-    table(&["FD", "TYPE", "SIZE", "OFFSET", "PATH"], &rows)
-}
-
-/// The `S_IFMT` type words, illumos's set — `door` and `port` exist
-/// nowhere else, and no Linux target reaches this table.
-fn kind(mode: u32) -> &'static str {
-    match mode & 0o170000 {
-        0o010000 => "fifo",
-        0o020000 => "chr",
-        0o040000 => "dir",
-        0o060000 => "blk",
-        0o100000 => "reg",
-        0o120000 => "lnk",
-        0o140000 => "sock",
-        0o150000 => "door",
-        0o160000 => "port",
-        _ => "?",
-    }
-}
-
-/// Left-aligned columns two spaces apart, the last column ragged and
-/// trailing space trimmed. Nothing is truncated — `! less -S` is the
-/// answer to width, as everywhere.
-fn table<const N: usize>(header: &[&str; N], rows: &[[String; N]]) -> String {
-    let width = |cell: &str| cell.chars().count();
-    let mut widths = header.map(width);
-    for row in rows {
-        for (w, cell) in widths.iter_mut().zip(row) {
-            *w = (*w).max(width(cell));
-        }
-    }
-    let mut out = String::new();
-    let mut line = |cells: &[&str]| {
-        let mut text = String::new();
-        for (i, (cell, w)) in cells.iter().zip(widths).enumerate() {
-            if i > 0 {
-                text.push_str("  ");
-            }
-            text.push_str(cell);
-            // The last column's padding is trailing space, trimmed
-            // below — so every column can pad alike.
-            for _ in width(cell)..w {
-                text.push(' ');
-            }
-        }
-        out.push_str(text.trim_end());
-        out.push('\n');
-    };
-    line(header);
-    for row in rows {
-        let cells: Vec<&str> = row.iter().map(String::as_str).collect();
-        line(&cells);
-    }
-    out
 }
 
 /// An epoch timestamp as a civil UTC date — `pr_start`'s clock. The
@@ -476,20 +272,6 @@ mod tests {
     }
 
     #[test]
-    fn test_kind_words_cover_the_ifmt_range() {
-        assert_eq!(kind(0o100644), "reg");
-        assert_eq!(kind(0o140666), "sock");
-        assert_eq!(kind(0o020620), "chr");
-        assert_eq!(kind(0o040755), "dir");
-        assert_eq!(kind(0o150000), "door");
-        assert_eq!(kind(0o010644), "fifo");
-        assert_eq!(kind(0o060640), "blk");
-        assert_eq!(kind(0o120777), "lnk");
-        assert_eq!(kind(0o160000), "port");
-        assert_eq!(kind(0), "?");
-    }
-
-    #[test]
     fn test_utc_survives_the_2100_century() {
         // 2100 is not a leap year: the Gregorian century correction's
         // one observable seam inside the epoch's useful range.
@@ -537,39 +319,6 @@ mod tests {
         assert_eq!(argv_absence(false), "not readable from this core");
         assert_eq!(env_absence(true), "not recorded in a Linux core");
         assert_eq!(env_absence(false), "not readable from this core");
-        assert_eq!(fds_absence(Some(true)), "not recorded in a Linux core");
-        assert_eq!(fds_absence(Some(false)), "not recorded by this target");
-        assert_eq!(fds_absence(None), "not recorded by this target");
-    }
-
-    #[test]
-    fn test_fd_table_spells_rows_and_sockets() {
-        let fds = vec![
-            proc::FdInfo {
-                fd: 1,
-                mode: 0o100644,
-                ino: 7,
-                offset: 128,
-                size: 4096,
-                fileflags: 2,
-                path: "/var/log/x.log".to_string(),
-            },
-            proc::FdInfo {
-                fd: 12,
-                mode: 0o140666,
-                ino: 0,
-                offset: 0,
-                size: 0,
-                fileflags: 2,
-                path: String::new(),
-            },
-        ];
-        assert_eq!(
-            fd_table(&fds),
-            "FD  TYPE  SIZE  OFFSET  PATH\n\
-             1   reg   4096  128     /var/log/x.log\n\
-             12  sock  0     0       —\n"
-        );
     }
 
     #[test]

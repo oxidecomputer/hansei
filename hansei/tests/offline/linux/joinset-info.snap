@@ -5,7 +5,10 @@ description: "`info` over linux/joinset"
 core:       <snapshot>
 tokio info: <tokio info>
 symbols resolved: 7/7
+
+process: not recorded by this target
+
 signal: none recorded (a live capture, not a crash)
-objects: 5 loaded (see `info objects`)
+
 3 worker thread(s), 6 task(s)
 1 runtime (see `runtimes --list`)

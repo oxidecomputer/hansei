@@ -428,10 +428,8 @@ mod tests {
             .snapshot()
             .expect("snapshot assembles");
         assert_eq!(Target::process_facts(&snapshot), None);
-        assert_eq!(Target::fds(&snapshot), None);
         assert_eq!(Target::exec_path(&snapshot), None);
         assert_eq!(Target::build_ids(&snapshot), None);
-        assert_eq!(Target::symbol_object_bases(&snapshot), Vec::<u64>::new());
     }
 
     /// An in-memory fake target: one memory run, a few symbols.

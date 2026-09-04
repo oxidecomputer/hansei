@@ -532,25 +532,13 @@ pub enum Command {
         last: Option<usize>,
     },
 
-    /// Show the process facts the target records. Bare `info` is the
-    /// one-screen attach summary: the target, the tokio info, how far
-    /// its symbols resolve, who the process was and what ended it. A
-    /// section prints one subject in full — what gdb's `info proc` and
-    /// mdb's `::status`, `::pargs`, `::penv`, `::pfiles` and
-    /// `::objects` answer.
-    Info {
-        /// One section in full: process (ids, model, start time, argv,
-        /// environment), signal (what ended the process and where),
-        /// objects (every loaded object, with whether its symbols and
-        /// CFI are on hand), fds (the open-fd table an illumos core
-        /// records).
-        #[arg(value_enum, value_name = "SECTION")]
-        section: Option<info::Section>,
-
-        /// Print every section in full.
-        #[arg(short, long, conflicts_with = "section")]
-        verbose: bool,
-    },
+    /// Show what the target records about its process: the core and
+    /// tokio info attached and how far the symbols resolve; the process
+    /// identity (ids, model, start time, argv, environment — what gdb's
+    /// `info proc` and mdb's `::status`, `::pargs` and `::penv`
+    /// answer); what ended it and where; and how many threads, tasks
+    /// and runtimes there are to look at.
+    Info,
 
     /// List the variables the cursor's current frame holds live — the
     /// locals a verbose `trace` or `frame` nests under the frame line,
@@ -1791,7 +1779,7 @@ pub fn dispatch<T: Target>(
         // Answered in `repl`, which knows whether there is a prompt to
         // have a history; it never reaches here.
         Command::History { .. } => unreachable!("history is answered by the repl"),
-        Command::Info { section, verbose } => info::exec_info(session, section, verbose, out)?,
+        Command::Info => info::exec_info(session, out)?,
         Command::Locals => cursor::exec_locals(session, theme, out)?,
         Command::Print { args } => {
             let render = RenderOpts::from_settings(&session.settings.borrow());

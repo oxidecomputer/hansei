@@ -5,7 +5,10 @@ description: "`info` over illumos/walk-shapes"
 core:       <snapshot>
 tokio info: <tokio info>
 symbols resolved: 29/29
+
+process: not recorded by this target
+
 signal: none recorded (a live capture, not a crash)
-objects: 10 loaded (see `info objects`)
+
 3 worker thread(s), 10 task(s)
 2 runtimes, 2 local sets (see `runtimes --list`)

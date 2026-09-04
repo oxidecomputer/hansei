@@ -1361,39 +1361,18 @@ mod tests {
         Line::command().debug_assert();
     }
 
-    /// `info` takes one section, or `-v` for all of them — never both,
-    /// which would leave it ambiguous how much was asked for.
+    /// `info` takes nothing: it prints everything the target records,
+    /// so there is no section to pick and no verbosity to raise.
     #[test]
-    fn test_info_takes_a_section_or_verbose() {
-        let Command::Info { section, verbose } = Line::try_parse_from(["info"])
+    fn test_info_takes_no_arguments() {
+        let Command::Info = Line::try_parse_from(["info"])
             .expect("bare info parses")
             .command
         else {
             panic!("info parsed as another command");
         };
-        assert_eq!(section, None);
-        assert!(!verbose);
-
-        let Command::Info { section, verbose } = Line::try_parse_from(["info", "fds"])
-            .expect("info takes a section")
-            .command
-        else {
-            panic!("info parsed as another command");
-        };
-        assert_eq!(section, Some(crate::info::Section::Fds));
-        assert!(!verbose);
-
-        let Command::Info { section, verbose } = Line::try_parse_from(["info", "-v"])
-            .expect("info takes -v")
-            .command
-        else {
-            panic!("info parsed as another command");
-        };
-        assert_eq!(section, None);
-        assert!(verbose);
-
-        assert!(Line::try_parse_from(["info", "fds", "-v"]).is_err());
-        assert!(Line::try_parse_from(["info", "panic"]).is_err());
+        assert!(Line::try_parse_from(["info", "process"]).is_err());
+        assert!(Line::try_parse_from(["info", "-v"]).is_err());
     }
 
     /// The census sections are flags rather than a value, so several of
@@ -2118,15 +2097,10 @@ mod tests {
         assert_eq!(completions("tasks -w type foo --gr"), ["--group"]);
     }
 
-    /// A `ValueEnum` positional offers its declared values, with the
+    /// A `ValueEnum` argument offers its declared values, with the
     /// declared help beside each.
     #[test]
     fn test_completion_offers_declared_value_enums() {
-        let sections = completions("info ");
-        for expected in ["process", "signal", "objects", "fds"] {
-            assert!(sections.iter().any(|s| s == expected), "{sections:?}");
-        }
-        assert_eq!(completions("info si"), ["signal"]);
         assert_eq!(completions("sync --kind se"), ["semaphore", "set"]);
         let line = "sync --kind sem";
         let semaphore = LineCompleter::new(Box::new(|_| Vec::new()))

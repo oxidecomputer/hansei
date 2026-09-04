@@ -119,14 +119,6 @@ impl Target for Proc {
         }
     }
 
-    fn fds(&self) -> Option<&[crate::FdInfo]> {
-        match self {
-            // A Linux core records no fd table at all.
-            Proc::LinuxCore(_) => None,
-            Proc::IllumosCore(c) => Target::fds(c),
-        }
-    }
-
     fn exec_path(&self) -> Option<PathBuf> {
         match self {
             Proc::LinuxCore(c) => Target::exec_path(c),
@@ -138,13 +130,6 @@ impl Target for Proc {
         match self {
             Proc::LinuxCore(c) => Target::build_ids(c),
             Proc::IllumosCore(c) => Target::build_ids(c),
-        }
-    }
-
-    fn symbol_object_bases(&self) -> Vec<u64> {
-        match self {
-            Proc::LinuxCore(c) => Target::symbol_object_bases(c),
-            Proc::IllumosCore(c) => Target::symbol_object_bases(c),
         }
     }
 

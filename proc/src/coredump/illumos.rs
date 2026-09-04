@@ -27,7 +27,7 @@
 
 use super::common::{Segment, Symbols, elf_ctx};
 use crate::{
-    Error, FatalSignal, FdInfo, LoadedObject, LoadedObjectWithPath, LwpInfo, MapFlags, Mappings,
+    Error, FatalSignal, LoadedObject, LoadedObjectWithPath, LwpInfo, MapFlags, Mappings,
     ProcessFacts, Regs, Result, Status, SymbolBuf, Target, Timespec, fault_code_name,
 };
 
@@ -171,20 +171,6 @@ const PR_MODEL_LP64: u8 = 2;
 /// Where a pointer-array walk gives up: past any real argv or
 /// environment, short of chasing a corrupt array across the dump.
 const STRING_TABLE_MAX: u64 = 4096;
-
-/// `prfdinfo_core_t`, the fixed form the kernel writes into a core's
-/// `NT_FDINFO` notes — one per open fd. Unlike the variable
-/// `prfdinfo_t` of `/proc/<pid>/fdinfo` it carries no `pr_misc`
-/// items, so a socket has no local or peer name here.
-const NT_FDINFO: u32 = 22;
-const FDINFO_LEN: usize = 1088;
-const FDINFO_PR_MODE: usize = 4;
-const FDINFO_PR_INO: usize = 32;
-const FDINFO_PR_OFFSET: usize = 40;
-const FDINFO_PR_SIZE: usize = 48;
-const FDINFO_PR_FILEFLAGS: usize = 56;
-const FDINFO_PR_PATH: usize = 64;
-const FDINFO_PATH_LEN: usize = 1024;
 
 /// `prlwpname`: a thread id and the name that thread was given.
 const LWPNAME_LEN: usize = 40;
@@ -373,9 +359,6 @@ pub struct Core {
     /// The process identity out of the `psinfo_t`, argv and environment
     /// included; `None` for a core carrying no psinfo note.
     facts: Option<ProcessFacts>,
-    /// The open-fd table out of the `NT_FDINFO` notes, in fd order;
-    /// `None` for a core carrying none of them.
-    fds: Option<Vec<FdInfo>>,
 }
 
 impl std::fmt::Debug for Core {
@@ -421,7 +404,6 @@ impl Core {
         let mut auxv = BTreeMap::new();
         let mut exec = None;
         let mut psinfo: Option<Vec<u8>> = None;
-        let mut fds: Option<Vec<FdInfo>> = None;
         let mut fatal = None;
         let mut brk: Option<Range<u64>> = None;
         for note in elf.iter_note_headers(&core).into_iter().flatten() {
@@ -473,9 +455,6 @@ impl Core {
                     // only be followed once the segments are readable.
                     psinfo = Some(desc.to_vec());
                 }
-                NT_FDINFO if desc.len() >= FDINFO_LEN => {
-                    fds.get_or_insert_with(Vec::new).push(parse_fdinfo(desc));
-                }
                 NT_AUXV => {
                     for pair in desc.as_chunks::<16>().0 {
                         let tag = u64::from_le_bytes(pair[0..8].try_into().unwrap());
@@ -513,10 +492,6 @@ impl Core {
             exec_bias: None,
             brk,
             facts: None,
-            fds: fds.map(|mut fds| {
-                fds.sort_by_key(|f| f.fd);
-                fds
-            }),
         };
         core_file.fill_stack_ranges();
         core_file.facts = psinfo
@@ -1320,21 +1295,6 @@ fn parse_lwpname(desc: &[u8]) -> (u32, String) {
     (tid, String::from_utf8_lossy(&raw[..end]).into_owned())
 }
 
-/// One `prfdinfo_core_t` out of an `NT_FDINFO` note.
-fn parse_fdinfo(desc: &[u8]) -> FdInfo {
-    let int = |at: usize| i32::from_le_bytes(desc[at..at + 4].try_into().unwrap());
-    let word = |at: usize| u64::from_le_bytes(desc[at..at + 8].try_into().unwrap());
-    FdInfo {
-        fd: int(0),
-        mode: u32::from_le_bytes(desc[FDINFO_PR_MODE..FDINFO_PR_MODE + 4].try_into().unwrap()),
-        ino: word(FDINFO_PR_INO),
-        offset: word(FDINFO_PR_OFFSET) as i64,
-        size: word(FDINFO_PR_SIZE),
-        fileflags: int(FDINFO_PR_FILEFLAGS),
-        path: super::fixed_str(&desc[FDINFO_PR_PATH..FDINFO_PR_PATH + FDINFO_PATH_LEN]),
-    }
-}
-
 /// The executable's path, from the command line the process was given.
 /// `pr_psargs` is the whole line, so the first word is the path — the
 /// nearest an illumos core comes to naming its own executable.
@@ -1367,16 +1327,8 @@ impl Target for Core {
         self.facts.clone()
     }
 
-    fn fds(&self) -> Option<&[FdInfo]> {
-        self.fds.as_deref()
-    }
-
     fn exec_path(&self) -> Option<PathBuf> {
         Core::exec_name(self).ok()
-    }
-
-    fn symbol_object_bases(&self) -> Vec<u64> {
-        self.symbols.keys().copied().collect()
     }
 
     fn readable_len(&self, addr: u64, max: u64) -> u64 {
@@ -2338,20 +2290,6 @@ mod tests {
         );
     }
 
-    /// One `prfdinfo_core_t` for the test's builder: fd, mode, size,
-    /// and a path (empty for the fds the kernel names none for).
-    fn fdinfo(fd: i32, mode: u32, size: u64, path: &str) -> Vec<u8> {
-        let mut out = vec![0u8; FDINFO_LEN];
-        out[0..4].copy_from_slice(&fd.to_le_bytes());
-        out[FDINFO_PR_MODE..FDINFO_PR_MODE + 4].copy_from_slice(&mode.to_le_bytes());
-        out[FDINFO_PR_INO..FDINFO_PR_INO + 8].copy_from_slice(&77u64.to_le_bytes());
-        out[FDINFO_PR_OFFSET..FDINFO_PR_OFFSET + 8].copy_from_slice(&9i64.to_le_bytes());
-        out[FDINFO_PR_SIZE..FDINFO_PR_SIZE + 8].copy_from_slice(&size.to_le_bytes());
-        out[FDINFO_PR_FILEFLAGS..FDINFO_PR_FILEFLAGS + 4].copy_from_slice(&2i32.to_le_bytes());
-        out[FDINFO_PR_PATH..FDINFO_PR_PATH + path.len()].copy_from_slice(path.as_bytes());
-        out
-    }
-
     /// A user-sent signal's `siginfo` union holds the sender's pid
     /// where a fault's holds the address, and the decoder tells the
     /// two apart by the code.
@@ -2365,46 +2303,6 @@ mod tests {
         assert_eq!(fatal.name, "SIGTERM");
         assert_eq!(fatal.fault_addr, None);
         assert_eq!(fatal.sender, Some(4141));
-    }
-
-    /// Every `NT_FDINFO` note decodes into the fd table, in fd order
-    /// whatever order the notes came in; a socket's path is empty, the
-    /// way the kernel writes it. A core without the notes has no table
-    /// — a different answer from an empty one.
-    #[test]
-    fn test_fdinfo_notes_decode_into_the_fd_table() {
-        let (_dir, p) = CoreBuilder::default()
-            .thread(1, regs_at(0, 0x9000))
-            .note(NT_FDINFO, fdinfo(4, 0o140666, 0, ""))
-            .note(NT_FDINFO, fdinfo(1, 0o100644, 4096, "/var/log/x.log"))
-            // Shorter than the ABI struct: another system's bytes,
-            // ignored whole rather than sliced.
-            .note(NT_FDINFO, vec![0; 100])
-            .dumped(0x9000, PF_R | PF_W, vec![0; PAGE as usize])
-            .proc();
-
-        let fds = crate::Target::fds(&p).expect("the fd table decodes");
-        assert_eq!(fds.len(), 2);
-        assert_eq!(fds[0].fd, 1);
-        assert_eq!(fds[0].mode, 0o100644);
-        assert_eq!(fds[0].ino, 77);
-        assert_eq!(fds[0].offset, 9);
-        assert_eq!(fds[0].size, 4096);
-        assert_eq!(fds[0].fileflags, 2);
-        assert_eq!(fds[0].path, "/var/log/x.log");
-        assert_eq!(fds[1].fd, 4);
-        assert_eq!(fds[1].mode, 0o140666);
-        assert_eq!(fds[1].path, "");
-
-        // The Proc facade serves the same table.
-        let target = crate::Proc::IllumosCore(p);
-        assert_eq!(crate::Target::fds(&target).map(<[FdInfo]>::len), Some(2));
-
-        let (_dir, p) = CoreBuilder::default()
-            .thread(1, regs_at(0, 0x9000))
-            .dumped(0x9000, PF_R | PF_W, vec![0; PAGE as usize])
-            .proc();
-        assert_eq!(crate::Target::fds(&p), None);
     }
 
     /// The ids survive an argv the dump does not carry — the pointers
@@ -2568,12 +2466,6 @@ mod tests {
         assert!(p.lookup_symbol_by_addr(0x40_0140).is_none());
         assert!(p.lookup_symbol_by_addr(0x40_0500).is_none());
         assert!(p.lookup_symbol_by_addr(0x1000).is_none());
-
-        // The whole-object attribution the objects listing reads,
-        // through the core and through the Proc facade alike.
-        assert_eq!(crate::Target::symbol_object_bases(&p), vec![0x40_0000]);
-        let target = crate::Proc::IllumosCore(p);
-        assert_eq!(crate::Target::symbol_object_bases(&target), vec![0x40_0000]);
     }
 
     /// A shared object's table holds link-time offsets; `sh_addr` is

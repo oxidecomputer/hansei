@@ -1116,16 +1116,15 @@ fn assert_locals(verbose_trace: &str, names: &[&str]) {
     }
 }
 
-/// The `info` sections against a real core: the process identity out
-/// of the core's own notes, the fd table where the system records one,
-/// a live capture's signal answer, and the objects survey naming the
-/// executable with its symbols and CFI on hand.
+/// `info` against a real core: the process identity out of the core's
+/// own notes, a live capture's signal answer, and the counts the
+/// listings go and look at.
 #[test]
-fn test_info_sections_acceptance() {
+fn test_info_acceptance() {
     let program = "simple-await";
     let bundle = fixtures().bundle(program);
     with_core(program, |core| {
-        let process = hansei_ok(&bundle, core, "info process");
+        let process = hansei_ok(&bundle, core, "info");
         assert!(process.contains("pid:"), "{process}");
         assert!(process.contains("ppid:"), "{process}");
         assert!(process.contains("psargs:"), "{process}");
@@ -1148,38 +1147,16 @@ fn test_info_sections_acceptance() {
         }
 
         // gcore stops the process rather than crashing it, so the
-        // signal section says a live capture outright.
-        let signal = hansei_ok(&bundle, core, "info signal");
+        // signal line says a live capture outright.
         assert!(
-            signal.contains("signal: none recorded (a live capture, not a crash)"),
-            "{signal}"
+            process.contains("signal: none recorded (a live capture, not a crash)"),
+            "{process}"
         );
 
-        let fds = hansei_ok(&bundle, core, "info fds");
-        if cfg!(target_os = "linux") {
-            assert!(fds.contains("fds: not recorded in a Linux core"), "{fds}");
-        } else {
-            assert!(fds.contains("fds recorded"), "{fds}");
-            // The fixture keeps the standard streams open; fd 0 leads
-            // the table.
-            assert!(fds.lines().any(|l| l.starts_with("0  ")), "{fds}");
-        }
-
-        // The executable row: named, with symbols on hand (the core's
-        // own tables on illumos, the --binary the suite supplies on
-        // Linux) and its CFI parsed.
-        let objects = hansei_ok(&bundle, core, "info objects");
-        let exec = objects
-            .lines()
-            .find(|l| l.contains(program))
-            .unwrap_or_else(|| panic!("no row names the executable:\n{objects}"));
-        assert!(exec.contains("yes"), "{objects}");
-
-        // The summary carries the new identity lines on both systems.
-        let summary = hansei_ok(&bundle, core, "info");
-        assert!(summary.contains("pid: "), "{summary}");
-        assert!(summary.contains("argv: "), "{summary}");
-        assert!(summary.contains("objects: "), "{summary}");
+        // What was attached, and what there is to look at.
+        assert!(process.contains("symbols resolved: "), "{process}");
+        assert!(process.contains("task(s)"), "{process}");
+        assert!(process.contains("(see `runtimes --list`)"), "{process}");
     });
 }
 
