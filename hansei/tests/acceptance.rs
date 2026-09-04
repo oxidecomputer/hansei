@@ -2691,11 +2691,10 @@ fn test_sleep_join_graph() {
 // ---------------------------------------------------------------------------
 
 /// The runtime as its own threads hold it: each worker's index and the
-/// `Core` it is carrying, plus the stack the unwinder walks out of the
-/// core. Worker counts follow the box's CPU count, so what is asserted
-/// is the shape of a worker, not how many there are.
+/// `Core` it is carrying. Worker counts follow the box's CPU count, so
+/// what is asserted is the shape of a worker, not how many there are.
 #[test]
-fn test_threads_shows_workers_and_stacks() {
+fn test_threads_shows_workers() {
     let bundle = fixtures().bundle("simple-await");
     with_core("simple-await", |core| {
         let out = hansei_ok(&bundle, core, "threads --exec thread");
@@ -2728,8 +2727,9 @@ fn test_threads_shows_workers_and_stacks() {
             out.contains("\n    not in the scheduler's run loop\n"),
             "{out}"
         );
-        assert!(out.contains("\n    stack:\n        0x"), "{out}");
-        assert!(out.contains("simple_await::main"), "{out}");
+        // The stack is `trace`'s under the thread cursor, not the
+        // block's.
+        assert!(!out.contains("stack:"), "{out}");
     });
 }
 

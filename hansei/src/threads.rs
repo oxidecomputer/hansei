@@ -489,8 +489,8 @@ fn member_sample(rows: &[ThreadRow], members: &[usize]) -> String {
 /// Every thread the target holds, one table row each: its place in a
 /// runtime, the task it is polling, the top of its stack. The filter
 /// clauses narrow the listing; one thread's insides — its tokio
-/// context, the worker core it holds, its whole stack — are
-/// [`print_thread`]'s, under `thread`.
+/// context, the worker core it holds — are [`print_thread`]'s, under
+/// `thread`.
 pub(crate) fn exec_threads<T: proc::Target>(
     session: &Session<'_, T>,
     cmd: ThreadsCmd,
@@ -653,37 +653,22 @@ fn exec_heading(n: usize, label: Option<&str>) -> String {
 /// One thread as `thread` prints it: its heading — the lwp, what it is
 /// polling, its runtime where the listings tag groups, and the fatal
 /// signal where it took one — then, four columns in, its tokio
-/// context, its scheduler state, its registers where it took the
+/// context, its scheduler state, and its registers where it took the
 /// fatal signal (that is exactly when they matter; `regs` prints them
-/// otherwise), and its stack, fifty frames deep at most (`trace -l`
-/// prints it to any depth).
+/// otherwise). The stack stays out of it: a bare `trace` under the
+/// thread cursor walks it.
 pub(crate) fn print_thread<T: proc::Target>(
     session: &Session<'_, T>,
     tid: u32,
     opts: RenderOpts,
     out: &mut dyn io::Write,
 ) -> Result<()> {
-    const FRAMES: usize = 50;
-
     if !session.lwps.iter().any(|l| l.tid == tid) {
         return Err(no_such_thread(session.lwps.len(), tid));
     }
-    let stacks = session.stacks();
     let fatal = session.proc.fatal_signal();
-    let print_stack = |out: &mut dyn io::Write| -> Result<()> {
-        match stacks.get(&tid) {
-            Some(backtrace) => {
-                writeln!(out, "    stack:")?;
-                for line in backtrace.stack_trace(FRAMES) {
-                    writeln!(out, "        {line}")?;
-                }
-            }
-            None => writeln!(out, "    stack: unavailable")?,
-        }
-        Ok(())
-    };
 
-    // A thread holding no tokio context has only its stack to show;
+    // A thread holding no tokio context has only its heading to show;
     // everything below the heading is the runtime's.
     let Some(worker) = session.workers.iter().find(|w| w.tid == tid) else {
         let took = fatal_tag(fatal.as_ref(), tid);
@@ -691,7 +676,7 @@ pub(crate) fn print_thread<T: proc::Target>(
         if took_fatal(fatal.as_ref(), tid) {
             crate::registers::print_lwp_registers(session, tid, "    ", out)?;
         }
-        return print_stack(out);
+        return Ok(());
     };
     // Which runtime the thread runs is only worth a tag when the
     // listings tag their groups at all — more than one runtime, or a
@@ -725,11 +710,10 @@ pub(crate) fn print_thread<T: proc::Target>(
         Err(e) => writeln!(out, "    scheduler context unreadable: {e:#}")?,
     }
 
-    // Frame 0 of the stack below, so it prints just above it.
     if took_fatal(fatal.as_ref(), tid) {
         crate::registers::print_lwp_registers(session, tid, "    ", out)?;
     }
-    print_stack(out)
+    Ok(())
 }
 
 /// The error for an lwp the target does not hold. It counts the lwps

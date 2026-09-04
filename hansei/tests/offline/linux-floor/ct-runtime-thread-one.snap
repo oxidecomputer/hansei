@@ -44,7 +44,3 @@ lwp 3643331  polling no task
           global_queue_interval: 31,
           unhandled_panic: false,
       }
-    stack:
-        0xADDR  
-        0xADDR  
-        0xADDR

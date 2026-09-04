@@ -373,8 +373,8 @@ fn print_root_chain<T: proc::Target>(
 }
 
 /// `thread`: select an lwp, or print the cursor's — either way the
-/// block `threads` tallies it in: its tokio context, its scheduler
-/// state, and its stack.
+/// block `threads` tallies it in: its tokio context and its scheduler
+/// state.
 pub(crate) fn exec_thread<T: proc::Target>(
     session: &Session<'_, T>,
     lwp: Option<u32>,
@@ -1341,7 +1341,8 @@ mod tests {
             text.lines().skip(1).all(|l| l.starts_with("    ")),
             "{text}"
         );
-        assert!(text.contains("\n    stack:"), "{text}");
+        // The stack is `trace`'s under the cursor, not the block's.
+        assert!(!text.contains("stack:"), "{text}");
         assert_eq!(session.cursor.borrow().last_addr, Some(rsp));
     }
 

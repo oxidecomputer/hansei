@@ -1025,11 +1025,10 @@ pub enum Command {
     /// thread's native stack; the hybrid trace is the task cursor's.
     /// Either way it prints the thread in full: its heading — the
     /// lwp, what it is polling, and the fatal signal where it took
-    /// one — then its tokio context, the worker core it holds, and
-    /// its stack, fifty frames deep at most. The lwp that took the
-    /// fatal signal also shows its registers, annotated with what
-    /// each value points into. The stack at any depth is `trace -l N`
-    /// under the cursor, and the registers are `regs`.
+    /// one — then its tokio context and the worker core it holds.
+    /// The lwp that took the fatal signal also shows its registers,
+    /// annotated with what each value points into. The stack is
+    /// `trace` under the cursor, and the registers are `regs`.
     Thread {
         /// The lwp id (see `threads`). Naming none prints the
         /// cursor's thread.
@@ -1041,9 +1040,9 @@ pub enum Command {
     /// worker and what its parker says, the block_on caller, a
     /// blocking-pool thread read from its stack, or no runtime at
     /// all), the task it is polling, and the top of its stack. One
-    /// thread in full — its tokio context, the worker core it holds,
-    /// its whole stack — is `thread N`, so `threads --with role
-    /// worker --exec thread` prints every worker that way.
+    /// thread in full — its tokio context, the worker core it holds —
+    /// is `thread N`, so `threads --with role worker --exec thread`
+    /// prints every worker that way.
     ///
     /// Filters are the selection: repeatable `--with FIELD ARG` /
     /// `--without FIELD ARG` clauses AND together, and `--group FIELD`
