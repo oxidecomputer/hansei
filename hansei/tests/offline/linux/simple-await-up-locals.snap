@@ -3,7 +3,7 @@ source: hansei/src/offline.rs
 description: "`up locals` over linux/simple-await"
 ---
 #1  async fn      simple_await::work
-      awaiting at src/bin/simple-await.rs:44 (Suspend1, 12 locals)
+      awaiting at src/bin/simple-await.rs:47 (Suspend1, 13 locals)
 count: u32 = 3
 labels: alloc::collections::btree::map::BTreeMap<u64, u32, alloc::alloc::Global> {
       1: 10,
@@ -30,4 +30,5 @@ borrowed: &str = "borrowed\ntext"
 owned: alloc::string::String = "owned\ttext"
 c_owned: alloc::ffi::c_str::CString = "c\xfftext"
 c_borrowed: &core::ffi::c_str::CStr = "cstr"
+glyph: char = '中'
 first: u32 = 41

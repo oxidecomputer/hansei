@@ -639,6 +639,9 @@ fixture_ids! {
     // A concrete type behind the Arc'd dyn that holds the same wide pointer
     // back to itself, so following the pointee revisits it.
     SELF_REF,
+    // C's one-byte `char` and a `[char; 2]`: the byte and the code-point
+    // readings of a character type, which share one `TypeClass` arm.
+    C_CHAR, CHAR_ARR,
 }
 
 /// A hand-built mini-bundle exercising every TypeDef kind reify touches:
@@ -2016,6 +2019,21 @@ pub fn test_bundle() -> Bundle {
             name: self_refn,
             size: 16,
             members: vec![m(s("back"), ARC_DYN_PTR, 0)],
+        },
+    );
+    types.add(
+        C_CHAR,
+        TypeDef::Base {
+            name: s("c_char"),
+            size: 1,
+            encoding: Encoding::UnsignedChar,
+        },
+    );
+    types.add(
+        CHAR_ARR,
+        TypeDef::Array {
+            elem: CHAR,
+            count: 2,
         },
     );
 

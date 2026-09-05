@@ -19,7 +19,9 @@
 //! test -p exegesis --test golden`; a plain run leaves each rejected
 //! golden beside its file as `<program>.snap.new`.
 
-use exegesis::bundle::{Bundle, DisplayNode, MemberRef, Step, TypeDef, WalkOutcome, WalkRole};
+use exegesis::bundle::{
+    Bundle, DisplayNode, Encoding, MemberRef, Step, TypeDef, WalkOutcome, WalkRole,
+};
 use exegesis::describe::describe_debug_format;
 use exegesis::extract::{DebugSources, ExtractOptions, ExtractStats, extract_sources};
 use exegesis::summary::{portable_summary, walk_entry_line};
@@ -771,6 +773,22 @@ fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
              internal=alloc::collections::btree::node::InternalNode<u64, u32>, \
              internal_data=data@+0, internal_edges=edges@+144, \
              edge=value.value.__0.pointer@+0 } }",
+        );
+        // A `char` is a 4-byte `DW_ATE_UTF` base type, which is what
+        // reify's code-point reading of it rests on: a 1-byte char is C's
+        // and stays a byte.
+        let char_defs: Vec<_> = bundle
+            .types
+            .find_by_name(&bundle.strings, "char")
+            .filter_map(|id| match bundle.types.get(id) {
+                Some(TypeDef::Base { size, encoding, .. }) => Some((*size, *encoding)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            char_defs,
+            [(4, Encoding::UtfChar)],
+            "{program}: `char` is not one 4-byte UTF base type"
         );
     }
     if program == "futurelock" {

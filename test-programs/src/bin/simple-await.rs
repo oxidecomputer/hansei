@@ -39,6 +39,9 @@ async fn work(ready: oneshot::Sender<()>, park: oneshot::Receiver<u32>) -> u32 {
     // rendering), and their recorded length counts the NUL terminator.
     let c_owned = CString::new(b"c\xFFtext".to_vec()).unwrap();
     let c_borrowed: &CStr = c"cstr";
+    // A non-ASCII `char` whose low byte is printable ASCII (`-`), so a
+    // render that reads one byte of it prints a plausible wrong character.
+    let glyph = '中';
     let first = ready_value().await;
     ready.send(()).expect("main waits for readiness");
     let second = park.await.unwrap_or(0);
@@ -55,6 +58,7 @@ async fn work(ready: oneshot::Sender<()>, park: oneshot::Receiver<u32>) -> u32 {
         + owned.len() as u32
         + c_owned.as_bytes().len() as u32
         + c_borrowed.to_bytes().len() as u32
+        + glyph.len_utf8() as u32
 }
 
 // Keep the map live across `park.await` so its private layout remains part of

@@ -1298,13 +1298,13 @@ fn test_simple_await_acceptance() {
         assert_eq!(rows.len(), 1, "{rows:#?}");
         let task = task_with_future(&rows, "async fn simple_await::work");
         assert_eq!(task.state, "idle");
-        assert_eq!(task.spawned, spawned("src/bin/simple-await.rs:79:21"));
+        assert_eq!(task.spawned, spawned("src/bin/simple-await.rs:83:21"));
         assert_eq!(task.defined, "src/bin/simple-await.rs:21");
 
         let out = trace(&bundle, core, &task.id, false);
         assert_spawned_at(
             &hansei_ok(&bundle, core, &format!("task {}", task.id)),
-            "src/bin/simple-await.rs:79:21",
+            "src/bin/simple-await.rs:83:21",
         );
         golden(
             "simple-await-trace",
@@ -1340,6 +1340,7 @@ fn test_simple_await_acceptance() {
                 "owned",
                 "c_owned",
                 "c_borrowed",
+                "glyph",
                 "first"
             ],
             "in:\n{verbose}"
@@ -1436,6 +1437,8 @@ fn test_ugly_locals_acceptance() {
             pretty.contains(r#"owned: alloc::string::String = "owned\ttext""#),
             "{pretty}"
         );
+        // The char is the code point, not its low byte (`-`).
+        assert!(pretty.contains("glyph: char = '中'"), "{pretty}");
 
         // The raw view: the very same locals render through their structure, and the
         // formatted forms are gone entirely.
@@ -3244,7 +3247,7 @@ fn test_type_and_find_types() {
         // The state the task is parked in, at the await point rustc
         // recorded for it — the same line the trace prints.
         assert!(out.contains("Suspend1"), "{out}");
-        assert!(out.contains("src/bin/simple-await.rs:44"), "{out}");
+        assert!(out.contains("src/bin/simple-await.rs:47"), "{out}");
 
         // The locals held across that await — and only those. The
         // arguments rustc also lists here belong to `Unresumed`, whose

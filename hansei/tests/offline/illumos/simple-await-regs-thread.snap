@@ -15,7 +15,7 @@ registers:
   r8   0xADDR  — unmapped
   r9   0xADDR  — [ anon ]
   r10  0xADDR  — [ anon ]
-  r11  0xADDR  — in libc.so.1 text
+  r11  0xADDR  — unmapped
   r12  0xADDR
   r13  0xADDR
   r14  0xADDR  — [ heap ]

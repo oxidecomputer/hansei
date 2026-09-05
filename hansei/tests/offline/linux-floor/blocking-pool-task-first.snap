@@ -4,7 +4,7 @@ description: "`task 3` over linux-floor/blocking-pool"
 ---
 task 3
     state: blocking
-    thread: 3446075
+    thread: 555669
     type: future tokio::runtime::blocking::task::BlockingTask<blocking_pool::main::{async_block#0}::{closure_env#0}>
     waker: <empty>
     spawned at: src/bin/blocking-pool.rs:39:23

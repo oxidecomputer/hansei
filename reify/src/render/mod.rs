@@ -465,13 +465,27 @@ pub(crate) fn write_display_value<'a, T: Target>(
             }
 
             if is_char {
-                let ch = bytes[0];
-                return if ch.is_ascii_graphic() || ch == b' ' {
-                    write!(f, "'{}'", ch as char)
-                } else {
-                    f.write_str("'\\x")?;
-                    f.write_str(hex_pair(ch))?;
-                    f.write_str("'")
+                // A 1-byte char is C's: a bare byte with no code point
+                // behind it (0xE9 is not U+00E9), so it prints as one.
+                // Anything wider is a code point — rustc's `char` is a
+                // 4-byte `DW_ATE_UTF` — and a word `char` refuses (a
+                // surrogate, or past U+10FFFF) is not a char at all.
+                if size == 1 {
+                    let ch = bytes[0];
+                    return if ch.is_ascii_graphic() || ch == b' ' {
+                        write!(f, "'{}'", ch as char)
+                    } else {
+                        f.write_str("'\\x")?;
+                        f.write_str(hex_pair(ch))?;
+                        f.write_str("'")
+                    };
+                }
+                let Some(word) = read_unsigned_at(bytes, 0, size) else {
+                    return write_hex_bytes(f, bytes);
+                };
+                return match u32::try_from(word).ok().and_then(char::from_u32) {
+                    Some(ch) => write!(f, "{ch:?}"),
+                    None => f.write_str("<invalid_char>"),
                 };
             }
 
@@ -1066,11 +1080,15 @@ mod tests {
         );
     }
 
-    /// A `char` renders quoted, escaping anything not printable ASCII. reify
-    /// reads only the low byte of the 4-byte scalar, so a non-ASCII code point
-    /// shows that byte escaped rather than the character it belongs to.
+    /// A Rust `char` is a 4-byte code point: it renders as the character
+    /// itself in `char`'s own `Debug` spelling — printable non-ASCII as
+    /// is, control characters and the quote escaped — and a word no
+    /// `char` can hold (a surrogate, anything past U+10FFFF) prints as a
+    /// marker rather than as whichever byte of it happens to be ASCII.
+    /// A C `char` is one byte with no code point behind it, so it keeps
+    /// the byte spelling.
     #[test]
-    fn test_char_renders_quoted_and_escapes_non_printable() {
+    fn test_char_renders_code_point_and_c_char_renders_byte() {
         let b = test_bundle();
         let v = BundleView::new(&b);
         let show = |c: u32| {
@@ -1081,8 +1099,47 @@ mod tests {
         };
         assert_eq!(show(u32::from('A')), "'A'");
         assert_eq!(show(u32::from(' ')), "' '");
-        assert_eq!(show(0x07), "'\\x07'");
-        assert_eq!(show(u32::from('é')), "'\\xe9'");
+        assert_eq!(show(u32::from('\n')), "'\\n'");
+        assert_eq!(show(u32::from('\'')), "'\\''");
+        assert_eq!(show(0x07), "'\\u{7}'");
+        assert_eq!(show(u32::from('é')), "'é'");
+        // The low byte of U+4E2D is `-`; of U+0100 it is NUL.
+        assert_eq!(show(u32::from('中')), "'中'");
+        assert_eq!(show(u32::from('Ā')), "'Ā'");
+        assert_eq!(show(u32::from('😀')), "'😀'");
+        assert_eq!(show(0xD800), "<invalid_char>");
+        assert_eq!(show(0x110000), "<invalid_char>");
+        assert_eq!(show(0xFFFF_FFFF), "<invalid_char>");
+
+        // C's `char`: the byte, printable or escaped, never a code point.
+        let c_char = |byte: u8| {
+            format!(
+                "{}",
+                Value::new(v.ty(C_CHAR).unwrap(), 0, &[byte]).display()
+            )
+        };
+        assert_eq!(c_char(b'A'), "'A'");
+        assert_eq!(c_char(0xE9), "'\\xe9'");
+        assert_eq!(c_char(0x07), "'\\x07'");
+    }
+
+    /// An array of `char` renders each element as a code point, not as
+    /// hex bytes the way an integer array does.
+    #[test]
+    fn test_char_array_renders_code_points() {
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+        let mut bytes = Vec::new();
+        for c in ['中', 'A'] {
+            bytes.extend_from_slice(&u32::from(c).to_le_bytes());
+        }
+        assert_eq!(
+            format!(
+                "{}",
+                Value::new(v.ty(CHAR_ARR).unwrap(), 0, &bytes).display()
+            ),
+            "['中', 'A']"
+        );
     }
 
     /// A C enumeration renders as the name of the enumerator its bytes
