@@ -10,7 +10,7 @@ use crate::trace::print_variable;
 use crate::{RenderOpts, Session, repl, summary};
 
 use anyhow::{Context as _, Result};
-use hansei_runtime::tokio::bundle::{self, ParkState};
+use hansei_runtime::tokio::bundle::{self, CtActivity, ParkState};
 use reify::Value;
 
 use std::collections::{BTreeMap, HashMap};
@@ -767,6 +767,20 @@ fn polling_line(current: Option<u64>, believed: Option<u64>) -> String {
     }
 }
 
+/// The block_on thread's activity as its line spells it. The
+/// thread-local's task id is the claim and the listing is what backs
+/// it, as the heading's line has it: a task id the listing does not
+/// call running is one whose output is being taken, or one it does not
+/// carry — the thread is inside it, but that is not a poll to name.
+fn block_on_line(activity: CtActivity, believed: bool) -> String {
+    match activity {
+        CtActivity::PollingTask(id) if !believed => {
+            format!("inside task {id}, not a task this session lists as running")
+        }
+        activity => activity.to_string(),
+    }
+}
+
 /// The tokio state a thread carries in its own thread-local `Context`:
 /// which thread the runtime takes it for, whether it has entered a
 /// runtime, and what is left of the task's cooperative budget.
@@ -851,9 +865,10 @@ fn print_worker_state<'b, T: proc::Target>(
 }
 
 /// A current_thread `block_on` thread's state: what it is doing — read
-/// from where its core and driver are — and the `Core` itself while it
-/// is checked into the context, which is exactly while the thread parks
-/// or polls the `block_on` future.
+/// from where its core and driver are and which task it says it is
+/// inside — and the `Core` itself while it is checked into the
+/// context, which is exactly while the thread parks or polls, the
+/// `block_on` future and a spawned task alike.
 fn print_block_on_state<'b, T: proc::Target>(
     session: &Session<'_, T>,
     worker: &bundle::Worker,
@@ -863,14 +878,25 @@ fn print_block_on_state<'b, T: proc::Target>(
 ) -> Result<()> {
     writeln!(out, "    block_on thread of its current_thread runtime")?;
     if let Some((_, rt)) = session.runtime_of(worker.tid) {
-        match session.ctx.ct_park_state(rt.handle, ct_ctx) {
+        match session
+            .ctx
+            .ct_park_state(rt.handle, ct_ctx, worker.current_task_id)
+        {
             Ok(state) => {
                 let woken = if state.woken {
                     ", a wakeup pending"
                 } else {
                     ""
                 };
-                writeln!(out, "    {}{woken}", state.activity)?;
+                // The same corroboration the heading's line gets: the
+                // id the activity carries is this worker's.
+                let believed =
+                    crate::tasks::polled_task(worker.current_task_id, &session.tasks).is_some();
+                writeln!(
+                    out,
+                    "    {}{woken}",
+                    block_on_line(state.activity, believed)
+                )?;
             }
             Err(e) => writeln!(out, "    park state unreadable: {e:#}")?,
         }
@@ -932,8 +958,9 @@ pub(crate) fn render<'r, 'b, T: proc::Target>(
 #[cfg(test)]
 mod tests {
     use super::{
-        Clause, Field, ParkState, ThreadRow, blocking_role, exec_heading, fatal_tag, group_value,
-        matcher, member_sample, no_such_thread, park_word, parse_clauses, polling_line, survives,
+        Clause, CtActivity, Field, ParkState, ThreadRow, block_on_line, blocking_role,
+        exec_heading, fatal_tag, group_value, matcher, member_sample, no_such_thread, park_word,
+        parse_clauses, polling_line, survives,
     };
 
     /// The three spellings of the heading's claim: believed, stale,
@@ -944,6 +971,30 @@ mod tests {
         assert_eq!(polling_line(None, None), "polling no task");
         assert_eq!(polling_line(Some(7), Some(7)), "polling task 7");
         assert_eq!(polling_line(Some(7), None), "last polled task 7");
+    }
+
+    /// The block_on line names a task poll only when the listing backs
+    /// the id; an unbacked id is "inside" the task, and every other
+    /// activity is spelled as the runtime layer spells it, believed
+    /// or not.
+    #[test]
+    fn test_the_block_on_line_hedges_an_unbacked_task_id() {
+        assert_eq!(
+            block_on_line(CtActivity::PollingTask(7), true),
+            "polling task 7"
+        );
+        assert_eq!(
+            block_on_line(CtActivity::PollingTask(7), false),
+            "inside task 7, not a task this session lists as running"
+        );
+        assert_eq!(
+            block_on_line(CtActivity::PollingBlockOn, true),
+            "polling the block_on future"
+        );
+        assert_eq!(
+            block_on_line(CtActivity::Parked, false),
+            "parked in the driver"
+        );
     }
 
     fn segv(lwp: Option<u32>) -> proc::FatalSignal {

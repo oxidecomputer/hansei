@@ -537,15 +537,20 @@ fn parks_of<'a>(facts: &'a Facts<'_>, thread: &Thread) -> Option<&'a ParkStates>
 /// everything: a worker parked there is parked on the whole runtime's
 /// behalf, and it is the one thread a reader came looking for.
 fn kind(facts: &Facts<'_>, thread: &Thread) -> ThreadKind {
-    // A block_on thread's state comes from its own checked-in core
-    // rather than a parker word: parked in the driver, polling the root
-    // future, or running tasks with the core on its stack.
+    // A block_on thread's state comes from its own checked-in core and
+    // thread-local task id rather than a parker word: parked in the
+    // driver, polling the root future, or polling a task — the last
+    // counted as polling only when the listing believes the id, as a
+    // worker's is, and awake otherwise, like the bookkeeping between
+    // polls and a shutdown's drops.
     if let Some(ThreadRole::BlockOn(state)) = &thread.role {
         return match state.map(|s| s.activity) {
             Some(CtActivity::Parked) => ThreadKind::Driver,
             Some(CtActivity::PollingBlockOn) => ThreadKind::BlockOnPoll,
-            Some(CtActivity::RunningTasks) if thread.polling.is_some() => ThreadKind::Polling,
-            Some(CtActivity::RunningTasks) => ThreadKind::Awake,
+            Some(CtActivity::PollingTask(_)) if thread.polling.is_some() => ThreadKind::Polling,
+            Some(
+                CtActivity::PollingTask(_) | CtActivity::BetweenPolls | CtActivity::DroppingTask(_),
+            ) => ThreadKind::Awake,
             None => ThreadKind::Unread,
         };
     }
@@ -1502,10 +1507,10 @@ mod tests {
         );
     }
 
-    /// The two states only a block_on thread can be in: polling the
-    /// root future (core checked in, driver kept), and running tasks
-    /// with the core on its stack — the latter counted as polling when
-    /// a task id says which.
+    /// The two polling states a block_on thread can be in, told apart
+    /// by the thread-local task id: the root future when none is set,
+    /// a spawned task — the row a worker mid-poll takes — when the
+    /// listing believes the id.
     #[test]
     fn test_block_on_activities_have_their_own_rows() {
         let list = empty();
@@ -1524,7 +1529,7 @@ mod tests {
                 12,
                 Some(CtParkState {
                     woken: false,
-                    activity: CtActivity::RunningTasks,
+                    activity: CtActivity::PollingTask(7),
                 }),
                 Some(7),
             ),
@@ -1540,25 +1545,46 @@ mod tests {
         );
     }
 
-    /// Running tasks without a believed task id is awake, not polling:
-    /// the polling claim is only made when a task id backs it.
+    /// The states that are neither parked nor a believed poll are
+    /// awake, not polling: a task id the listing does not back (a
+    /// completed task's output being taken, a task it does not carry),
+    /// the bookkeeping between polls, and a shutdown's drops. The
+    /// polling claim is only made when a believed task id backs it.
     #[test]
-    fn test_running_tasks_without_a_task_id_is_awake() {
+    fn test_unbelieved_and_between_poll_states_are_awake() {
         let list = empty();
         let mut facts = facts(&list, &[]);
-        facts.lwps = vec![11];
-        facts.runtime = vec![block_on(
-            11,
-            Some(CtParkState {
-                woken: false,
-                activity: CtActivity::RunningTasks,
-            }),
-            None,
-        )];
+        facts.lwps = vec![11, 12, 13];
+        facts.runtime = vec![
+            block_on(
+                11,
+                Some(CtParkState {
+                    woken: false,
+                    activity: CtActivity::PollingTask(7),
+                }),
+                None,
+            ),
+            block_on(
+                12,
+                Some(CtParkState {
+                    woken: false,
+                    activity: CtActivity::BetweenPolls,
+                }),
+                None,
+            ),
+            block_on(
+                13,
+                Some(CtParkState {
+                    woken: false,
+                    activity: CtActivity::DroppingTask(7),
+                }),
+                None,
+            ),
+        ];
 
         let page = thread_section(&facts);
         assert!(
-            page.contains("    1  0   block_on thread  awake  11\n"),
+            page.contains("    3  0   block_on thread  awake  11, 12, 13\n"),
             "{page}"
         );
         assert!(!page.contains("polling"), "{page}");

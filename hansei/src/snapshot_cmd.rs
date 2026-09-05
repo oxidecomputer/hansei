@@ -108,7 +108,7 @@ fn warm_threads<T: proc::Target>(
                 .iter()
                 .find(|r| r.worker_tids.contains(&worker.tid))
             {
-                let _ = ctx.ct_park_state(rt.handle, ct_ctx);
+                let _ = ctx.ct_park_state(rt.handle, ct_ctx, worker.current_task_id);
             }
             warm_scheduler_ctx(ctx, ct_ctx);
         }

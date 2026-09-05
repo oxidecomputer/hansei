@@ -239,21 +239,37 @@ pub struct CtParkState {
 }
 
 /// Where a CT `block_on` thread is in its run loop, read from where the
-/// scheduler core is: the loop checks the core *into* the context's
-/// `RefCell` while it parks or polls the root future — taking the
-/// driver out of it for exactly as long as it parks — and holds it on
-/// the stack, unreadable from here, while it runs tasks.
+/// scheduler core is and which task the thread says it is inside. The
+/// loop checks the core *into* the context's `RefCell` around every
+/// closure it runs under the scheduler — a park (with the driver taken
+/// out of the core for exactly that long), a poll of the root future,
+/// and a poll of each spawned task alike — and holds it on the stack,
+/// unreadable from here, only in the bookkeeping between those. A
+/// checked-in core with its driver therefore says "polling", and the
+/// thread-local task id says what: `None` is the root future, since
+/// nothing but a task's poll sets it.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub enum CtActivity {
     /// Core checked in, driver taken: blocked in the system's readiness
     /// call (or a zero-duration yield to it) on the runtime's behalf.
     Parked,
-    /// Core checked in, driver present: polling the `block_on` future
-    /// itself.
+    /// Core checked in, driver present, no task id: polling the
+    /// `block_on` future itself.
     PollingBlockOn,
-    /// Core checked out to the thread's stack: running spawned tasks or
-    /// the scheduler's own bookkeeping.
-    RunningTasks,
+    /// Core checked in, driver present, task id set: polling the task
+    /// with that id — one the scheduler ran, or one a `LocalSet` polled
+    /// under the root future. The id is what the thread-local says; it
+    /// is the caller's to check against the task list, as a task id
+    /// also stands while a completed task's output is taken.
+    PollingTask(u64),
+    /// Core checked out to the thread's stack, no task id: between
+    /// polls, in the scheduler's own bookkeeping.
+    BetweenPolls,
+    /// Core checked out to the thread's stack with a task id set: the
+    /// one path that leaves this is runtime shutdown, which drains the
+    /// owned tasks with the core held as a local and drops each
+    /// task's future under its id.
+    DroppingTask(u64),
 }
 
 impl fmt::Display for CtActivity {
@@ -261,7 +277,9 @@ impl fmt::Display for CtActivity {
         match self {
             Self::Parked => f.write_str("parked in the driver"),
             Self::PollingBlockOn => f.write_str("polling the block_on future"),
-            Self::RunningTasks => f.write_str("running tasks"),
+            Self::PollingTask(id) => write!(f, "polling task {id}"),
+            Self::BetweenPolls => f.write_str("between polls"),
+            Self::DroppingTask(id) => write!(f, "dropping task {id} at shutdown"),
         }
     }
 }
@@ -1072,7 +1090,9 @@ mod tests {
         let cases = [
             (CtActivity::Parked, "parked in the driver"),
             (CtActivity::PollingBlockOn, "polling the block_on future"),
-            (CtActivity::RunningTasks, "running tasks"),
+            (CtActivity::PollingTask(7), "polling task 7"),
+            (CtActivity::BetweenPolls, "between polls"),
+            (CtActivity::DroppingTask(7), "dropping task 7 at shutdown"),
         ];
         for (activity, expected) in cases {
             assert_eq!(activity.to_string(), expected);

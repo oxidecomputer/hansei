@@ -686,19 +686,33 @@ impl<'b, T: Target> Context<'b, T> {
     }
 
     /// What a CT runtime's `block_on` thread is doing, from the handle
-    /// [`Context::find_runtimes`] reached and the scheduler context
-    /// [`Context::ct_worker_context`] returned for that thread.
+    /// [`Context::find_runtimes`] reached, the scheduler context
+    /// [`Context::ct_worker_context`] returned for that thread, and the
+    /// task id its thread-local `Context` carries ([`Worker::current_task_id`]).
     ///
-    /// The core's whereabouts are the state: checked into the context's
-    /// `RefCell` while the thread parks (driver taken out of it) or
-    /// polls the root future (driver still in it), held on the stack —
-    /// unreadable from here — while it runs tasks.
-    pub fn ct_park_state(&self, handle: Value<'b>, ct_ctx: Value<'b>) -> Result<CtParkState> {
+    /// The core's whereabouts and the task id together are the state:
+    /// the core is checked into the context's `RefCell` while the
+    /// thread parks (driver taken out of it) and while it polls (driver
+    /// still in it) — the root future when no task id is set, the task
+    /// with that id otherwise — and held on the stack, unreadable from
+    /// here, only between polls. See [`CtActivity`] for the table.
+    pub fn ct_park_state(
+        &self,
+        handle: Value<'b>,
+        ct_ctx: Value<'b>,
+        current_task_id: Option<u64>,
+    ) -> Result<CtParkState> {
         let woken = self.walk(WalkRole::CtSharedWoken).read(handle)?;
         let activity = match self.walk(WalkRole::CtWorkerCore).walk(ct_ctx)?.optional() {
-            None => CtActivity::RunningTasks,
+            None => match current_task_id {
+                None => CtActivity::BetweenPolls,
+                Some(id) => CtActivity::DroppingTask(id),
+            },
             Some(core) => match self.walk(WalkRole::CtCoreDriver).walk(core)? {
-                Walked::At(_) => CtActivity::PollingBlockOn,
+                Walked::At(_) => match current_task_id {
+                    None => CtActivity::PollingBlockOn,
+                    Some(id) => CtActivity::PollingTask(id),
+                },
                 Walked::Inactive(_) | Walked::Null => CtActivity::Parked,
             },
         };

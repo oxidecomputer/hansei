@@ -82,6 +82,7 @@ const PROGRAMS: &[&str] = &[
     "foreign-runtime",
     "blocking-pool",
     "spin-poll",
+    "ct-spin",
     "stale-local",
 ];
 
@@ -2123,6 +2124,53 @@ fn test_spin_poll_acceptance() {
         assert!(out.contains("registers:"), "{out}");
         let rsp = regex::Regex::new(r"(?m)^  rsp  0x[0-9a-f]{16}  — \[ stack tid=\d+ \]$").unwrap();
         assert!(rsp.is_match(&out), "{out}");
+    });
+}
+
+/// The same mid-poll shape on a current_thread runtime, where the
+/// thread polling the spinner is the `block_on` thread. Its scheduler
+/// core is checked in with its driver for the whole poll, exactly as
+/// it is while the root future is polled, so the state is told apart
+/// by the thread-local task id: the thread is polling the task, and
+/// nothing prints the root future.
+#[test]
+fn test_ct_spin_acceptance() {
+    let bundle = fixtures().bundle("ct-spin");
+    with_core("ct-spin", |core| {
+        let rows = list_tasks(&bundle, core);
+        assert_eq!(rows.len(), 1, "{rows:#?}");
+        let task = task_with_future(&rows, "async fn ct_spin::spinner");
+        assert_eq!(task.state, "running", "{rows:#?}");
+        let lwp = &task.thread;
+        assert!(
+            lwp.parse::<u32>().is_ok(),
+            "the spinner is not running on the block_on thread: {rows:#?}"
+        );
+
+        // The thread block: the heading's claim and the block_on line
+        // agree on the task, and the root future is named nowhere.
+        let out = hansei_ok(&bundle, core, "threads --exec thread");
+        assert!(
+            out.contains(&format!("lwp {lwp}  polling task {}", task.id)),
+            "{out}"
+        );
+        assert!(
+            out.contains("block_on thread of its current_thread runtime"),
+            "{out}"
+        );
+        assert!(
+            out.contains(&format!("\n    polling task {}\n", task.id)),
+            "{out}"
+        );
+        assert!(!out.contains("block_on future"), "{out}");
+        assert!(!out.contains("between polls"), "{out}");
+
+        // And the census puts it in the polling row, with the task
+        // named beside the lwp, not the root-future row.
+        let out = hansei_ok(&bundle, core, "census --threads");
+        assert!(out.contains("  block_on thread  polling  "), "{out}");
+        assert!(out.contains(&format!("{lwp} (task {})", task.id)), "{out}");
+        assert!(!out.contains("polling block_on"), "{out}");
     });
 }
 

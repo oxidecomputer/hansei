@@ -1940,17 +1940,22 @@ fn thread_role<T: proc::Target>(
     match session.ctx.ct_worker_context(worker) {
         Ok(Some(ct_ctx)) => {
             let state = match session.runtime_of(worker.tid) {
-                Some((_, rt)) => match session.ctx.ct_park_state(rt.handle, ct_ctx) {
-                    Ok(state) => Some(state),
-                    Err(e) => {
-                        writeln!(
-                            io::stderr(),
-                            "warning: cannot read the block_on state of lwp {}: {e:#}",
-                            worker.tid
-                        )?;
-                        None
+                Some((_, rt)) => {
+                    match session
+                        .ctx
+                        .ct_park_state(rt.handle, ct_ctx, worker.current_task_id)
+                    {
+                        Ok(state) => Some(state),
+                        Err(e) => {
+                            writeln!(
+                                io::stderr(),
+                                "warning: cannot read the block_on state of lwp {}: {e:#}",
+                                worker.tid
+                            )?;
+                            None
+                        }
                     }
-                },
+                }
                 None => None,
             };
             Ok(Some(summary::ThreadRole::BlockOn(state)))
