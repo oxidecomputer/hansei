@@ -4,6 +4,6 @@ description: "`info` over illumos/dyn-future"
 ---
 core:       <snapshot>
 tokio info: <tokio info>
-symbols resolved: 17/17
+symbols resolved: 19/19
 process: not recorded by this target
 signal: none recorded

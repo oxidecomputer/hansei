@@ -4,10 +4,10 @@ description: "`runtime` over linux-floor/dyn-future"
 ---
 runtime 0 @ 0xADDR
     flavor: multi_thread
-    tasks: 2
-    futures: 2
+    tasks: 3
+    futures: 3
     workers: 2
-    threads: 3 (lwp 1775732, 1775735, 1775734)
+    threads: 3 (lwp 2646438, 2646441, 2646440)
     found via: a thread's runtime context
     drivers:
       tokio::runtime::driver::Handle {

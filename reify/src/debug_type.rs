@@ -139,9 +139,10 @@ pub enum DisplayNode<'a> {
         target: BundleType<'a>,
         then: Box<DisplayNode<'a>>,
     },
-    /// Display a Rust trait-object data pointer and vtable. `tail_offset` is
-    /// added to the data-pointer address before reading the concrete pointee,
-    /// skipping the sized header of an unsized wrapper such as `ArcInner`.
+    /// Display a Rust trait-object data pointer and vtable. `tail_prefixes`
+    /// is the sized prefix of each unsized wrapper between the data pointer
+    /// and the erased value (`ArcInner`'s refcounts), outermost first; the
+    /// render folds it against the vtable's align word to find the pointee.
     DynPointer {
         pointer_offset: u64,
         vtable: BundleType<'a>,
@@ -149,7 +150,7 @@ pub enum DisplayNode<'a> {
         drop_in_place: u32,
         size: u32,
         align: u32,
-        tail_offset: u64,
+        tail_prefixes: Vec<u64>,
     },
     /// Render an associative collection, using `entries` to produce exactly
     /// `length` key/value pairs and the shared map presentation for output.
@@ -854,7 +855,7 @@ impl<'a> DisplayNode<'a> {
                     drop_in_place,
                     size,
                     align,
-                    tail_offset,
+                    tail_prefixes,
                 } => {
                     let (_, pointer_offset) = resolve_selector(scope, pointer)?;
                     let (vtable, vtable_offset) = resolve_selector(scope, vtable)?;
@@ -865,7 +866,7 @@ impl<'a> DisplayNode<'a> {
                         drop_in_place: *drop_in_place,
                         size: *size,
                         align: *align,
-                        tail_offset: *tail_offset,
+                        tail_prefixes: tail_prefixes.clone(),
                     })
                 }
                 BundleNode::Map {

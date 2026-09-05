@@ -30,7 +30,7 @@ pub const MAGIC: [u8; 8] = *b"exegesis";
 
 /// The current bundle format version. Bump on any schema change, including
 /// indirect ones (e.g. new [`crate::Encoding`] variants).
-pub const FORMAT_VERSION: u32 = 49;
+pub const FORMAT_VERSION: u32 = 50;
 
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -664,7 +664,7 @@ fn check_node(bundle: &Bundle, scope: BundleTypeId, node: &DisplayNode, what: &s
             drop_in_place,
             size,
             align,
-            tail_offset: _,
+            tail_prefixes,
         } => {
             if pointer == vtable {
                 return corrupt("dyn pointer reuses one selector".to_string());
@@ -677,8 +677,17 @@ fn check_node(bundle: &Bundle, scope: BundleTypeId, node: &DisplayNode, what: &s
             else {
                 unreachable!("the shape table verified a pointer");
             };
-            if !has_dyn_tail(bundle, *data_target, &mut Vec::new()) {
+            let Some(depth) = dyn_tail_depth(bundle, *data_target, &mut Vec::new()) else {
                 return corrupt("dyn-pointer data selector does not target dyn".to_string());
+            };
+            // One prefix per wrapper: the reader rounds at every level, so
+            // a list of the wrong length lands the erased value in a
+            // header or past it.
+            if tail_prefixes.len() != depth {
+                return corrupt(format!(
+                    "dyn pointer carries {} tail prefixes for a target wrapping its dyn tail {depth} deep",
+                    tail_prefixes.len()
+                ));
             }
 
             let vtable_ptr = selector_target(bundle, scope, vtable, what)?;
@@ -1018,30 +1027,33 @@ fn check_map_entries(
     Ok(())
 }
 
-fn has_dyn_tail(bundle: &Bundle, id: BundleTypeId, seen: &mut Vec<BundleTypeId>) -> bool {
+/// How many unsized wrappers sit between `id` and its `dyn Trait` tail:
+/// zero for a bare `dyn`, one for `ArcInner<dyn Trait>`, and so on down
+/// each struct's final member. `None` when `id` has no dyn tail.
+fn dyn_tail_depth(
+    bundle: &Bundle,
+    id: BundleTypeId,
+    seen: &mut Vec<BundleTypeId>,
+) -> Option<usize> {
     if seen.len() >= 8 || seen.contains(&id) {
-        return false;
+        return None;
     }
-    let Some(def) = bundle.types.get(id) else {
-        return false;
-    };
+    let def = bundle.types.get(id)?;
     let name = match def {
         TypeDef::Struct { name, .. } | TypeDef::Opaque { name, .. } => bundle.strings.get(*name),
         _ => None,
     };
     if name.is_some_and(|name| name.starts_with("dyn ") || name.starts_with("(dyn ")) {
-        return true;
+        return Some(0);
     }
     let TypeDef::Struct { members, .. } = def else {
-        return false;
+        return None;
     };
-    let Some(tail) = members.last() else {
-        return false;
-    };
+    let tail = members.last()?;
     seen.push(id);
-    let found = has_dyn_tail(bundle, tail.ty, seen);
+    let inner = dyn_tail_depth(bundle, tail.ty, seen);
     seen.pop();
-    found
+    Some(inner? + 1)
 }
 
 impl Bundle {

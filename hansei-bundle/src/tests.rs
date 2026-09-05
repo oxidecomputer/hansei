@@ -1295,7 +1295,7 @@ fn dyn_bundle() -> Bundle {
                 drop_in_place: 0,
                 size: 1,
                 align: 2,
-                tail_offset: 0,
+                tail_prefixes: vec![16],
             },
         )]),
         name_index: vec![],
@@ -2682,7 +2682,7 @@ mod node_validation {
     }
 
     /// The data side of a wide pointer must target an unsized thing —
-    /// the pointee is read at a `tail_offset` past a header, which is
+    /// the pointee is read past the headers `tail_prefixes` spells, which is
     /// nonsense for a sized type, and the vtable would be read as one
     /// anyway.
     #[test]
@@ -2807,10 +2807,54 @@ mod node_validation {
                 },
             ],
         });
-        let node = b.types.debug_formats[&BundleTypeId(12)].clone();
+        let mut node = b.types.debug_formats[&BundleTypeId(12)].clone();
+        let DisplayNode::DynPointer { tail_prefixes, .. } = &mut node else {
+            unreachable!("the fixture format is a dyn pointer")
+        };
+        *tail_prefixes = vec![0; depth];
         b.types.debug_formats.clear();
         b.types.debug_formats.insert(wide, node);
         b
+    }
+
+    /// The reader rounds the erased value's offset at every wrapper, so
+    /// the bundle has to spell exactly one prefix per wrapper: a list
+    /// that is short or long by one would land the value inside a
+    /// header, or past it, and read whatever is there as the value.
+    #[test]
+    fn test_validate_rejects_a_dyn_pointer_with_the_wrong_prefix_count() {
+        for wrong in [vec![], vec![16, 5]] {
+            let count = wrong.len();
+            let b = dyn_format(BundleTypeId(12), |node| {
+                let DisplayNode::DynPointer { tail_prefixes, .. } = node else {
+                    unreachable!("the fixture format is a dyn pointer")
+                };
+                *tail_prefixes = wrong;
+            });
+            rejects(
+                &b,
+                &format!("carries {count} tail prefixes for a target wrapping its dyn tail 1 deep"),
+            );
+        }
+        // A bare dyn pointee wraps nothing, and so carries no prefix.
+        let b = dyn_format(BundleTypeId(5), |node| {
+            let DisplayNode::DynPointer { tail_prefixes, .. } = node else {
+                unreachable!("the fixture format is a dyn pointer")
+            };
+            *tail_prefixes = vec![16];
+        });
+        rejects(
+            &b,
+            "carries 1 tail prefixes for a target wrapping its dyn tail 0 deep",
+        );
+        dyn_format(BundleTypeId(5), |node| {
+            let DisplayNode::DynPointer { tail_prefixes, .. } = node else {
+                unreachable!("the fixture format is a dyn pointer")
+            };
+            tail_prefixes.clear();
+        })
+        .validate()
+        .expect("a bare dyn pointee with no prefixes validates");
     }
 
     /// The search for a dyn tail is bounded, because the type graph it

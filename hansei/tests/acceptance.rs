@@ -1491,7 +1491,7 @@ fn test_dyn_future_acceptance() {
     let bundle = fixtures().bundle("dyn-future");
     with_core("dyn-future", |core| {
         let rows = list_tasks(&bundle, core);
-        assert_eq!(rows.len(), 2, "{rows:#?}");
+        assert_eq!(rows.len(), 3, "{rows:#?}");
 
         let driver = task_with_future(&rows, "async fn dyn_future::driver");
         assert_eq!(driver.state, "idle");
@@ -1520,6 +1520,25 @@ fn test_dyn_future_acceptance() {
             "dyn-future-member-trace",
             &Symbols::new().task(&member.id, "member").apply(&out),
         );
+
+        // The holder's `Arc<dyn Aligned>` erases a 64-aligned value, which
+        // std places at the first 64-byte boundary past the `ArcInner`
+        // refcounts, not right after them: the render has to round the
+        // header by the vtable's align word to read `7` rather than
+        // padding. Frame #0 is the oneshot the holder awaits; #1 is the
+        // async fn whose local it is.
+        let holder = task_with_future(&rows, "async fn dyn_future::hold_aligned");
+        let printed = hansei_ok(
+            &bundle,
+            core,
+            &format!("task {}; frame 1; print aligned", holder.id),
+        );
+        assert!(
+            printed.contains("concrete type: dyn_future::Padded"),
+            "{printed}"
+        );
+        assert!(printed.contains("value: 7"), "{printed}");
+        assert!(printed.contains("align: 64"), "{printed}");
     });
 }
 

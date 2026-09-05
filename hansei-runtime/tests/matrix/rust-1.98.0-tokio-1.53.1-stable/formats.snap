@@ -7,13 +7,14 @@ family: v1_53 (tokio 1.53.1)
 &[u8] :: Node Slice { pointer=data_ptr, length=length, element=u8 }
 &core::ffi::c_str::CStr :: Node Str { pointer=data_ptr, length=length, nul_terminated }
 &str :: Node Str { pointer=data_ptr, length=length }
-*const alloc::sync::ArcInner<(dyn core::ops::function::Fn<(&tokio::runtime::task_hooks::TaskMeta), Output=()> + core::marker::Send + core::marker::Sync)> :: Node DynPointer { pointer=pointer, vtable=vtable, slots=[drop_in_place:0, size:1, align:2], tail_offset=16 }
-*const alloc::sync::ArcInner<(dyn core::ops::function::Fn<(), Output=()> + core::marker::Send + core::marker::Sync)> :: Node DynPointer { pointer=pointer, vtable=vtable, slots=[drop_in_place:0, size:1, align:2], tail_offset=16 }
-*const alloc::sync::ArcInner<(dyn core::ops::function::Fn<(), Output=alloc::string::String> + core::marker::Send + core::marker::Sync)> :: Node DynPointer { pointer=pointer, vtable=vtable, slots=[drop_in_place:0, size:1, align:2], tail_offset=16 }
+*const alloc::sync::ArcInner<(dyn core::ops::function::Fn<(&tokio::runtime::task_hooks::TaskMeta), Output=()> + core::marker::Send + core::marker::Sync)> :: Node DynPointer { pointer=pointer, vtable=vtable, slots=[drop_in_place:0, size:1, align:2], tail_prefixes=[16] }
+*const alloc::sync::ArcInner<(dyn core::ops::function::Fn<(), Output=()> + core::marker::Send + core::marker::Sync)> :: Node DynPointer { pointer=pointer, vtable=vtable, slots=[drop_in_place:0, size:1, align:2], tail_prefixes=[16] }
+*const alloc::sync::ArcInner<(dyn core::ops::function::Fn<(), Output=alloc::string::String> + core::marker::Send + core::marker::Sync)> :: Node DynPointer { pointer=pointer, vtable=vtable, slots=[drop_in_place:0, size:1, align:2], tail_prefixes=[16] }
+*const alloc::sync::ArcInner<dyn dyn_future::Aligned> :: Node DynPointer { pointer=pointer, vtable=vtable, slots=[drop_in_place:0, size:1, align:2], tail_prefixes=[16] }
 <pointer> :: Node Symbol { <self> }
-alloc::boxed::Box<(dyn core::any::Any + core::marker::Send), alloc::alloc::Global> :: Node DynPointer { pointer=pointer, vtable=vtable, slots=[drop_in_place:0, size:1, align:2], tail_offset=0 }
-alloc::boxed::Box<(dyn core::future::future::Future<Output=()> + core::marker::Send), alloc::alloc::Global> :: Node DynPointer { pointer=pointer, vtable=vtable, slots=[drop_in_place:0, size:1, align:2], tail_offset=0 }
-alloc::boxed::Box<(dyn core::future::future::Future<Output=u32> + core::marker::Send), alloc::alloc::Global> :: Node DynPointer { pointer=pointer, vtable=vtable, slots=[drop_in_place:0, size:1, align:2], tail_offset=0 }
+alloc::boxed::Box<(dyn core::any::Any + core::marker::Send), alloc::alloc::Global> :: Node DynPointer { pointer=pointer, vtable=vtable, slots=[drop_in_place:0, size:1, align:2], tail_prefixes=[] }
+alloc::boxed::Box<(dyn core::future::future::Future<Output=()> + core::marker::Send), alloc::alloc::Global> :: Node DynPointer { pointer=pointer, vtable=vtable, slots=[drop_in_place:0, size:1, align:2], tail_prefixes=[] }
+alloc::boxed::Box<(dyn core::future::future::Future<Output=u32> + core::marker::Send), alloc::alloc::Global> :: Node DynPointer { pointer=pointer, vtable=vtable, slots=[drop_in_place:0, size:1, align:2], tail_prefixes=[] }
 alloc::boxed::Box<[std::sync::mpmc::array::Slot<()>], alloc::alloc::Global> :: Node Slice { pointer=data_ptr, length=length, element=std::sync::mpmc::array::Slot<()> }
 alloc::boxed::Box<[tokio::loom::std::parking_lot::Mutex<tokio::util::linked_list::LinkedList<tokio::runtime::task::Task<alloc::sync::Arc<tokio::runtime::scheduler::current_thread::Handle, alloc::alloc::Global>>>>], alloc::alloc::Global> :: Node Slice { pointer=data_ptr, length=length, element=tokio::loom::std::parking_lot::Mutex<tokio::util::linked_list::LinkedList<tokio::runtime::task::Task<alloc::sync::Arc<tokio::runtime::scheduler::current_thread::Handle, alloc::alloc::Global>>>> }
 alloc::boxed::Box<[tokio::loom::std::parking_lot::Mutex<tokio::util::linked_list::LinkedList<tokio::runtime::task::Task<alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle, alloc::alloc::Global>>>>], alloc::alloc::Global> :: Node Slice { pointer=data_ptr, length=length, element=tokio::loom::std::parking_lot::Mutex<tokio::util::linked_list::LinkedList<tokio::runtime::task::Task<alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle, alloc::alloc::Global>>>> }
@@ -102,6 +103,7 @@ core::cell::UnsafeCell<tokio::runtime::task::core::Stage<channels::notify_waiter
 core::cell::UnsafeCell<tokio::runtime::task::core::Stage<ct_runtime::acquirer::{async_fn_env#0}>> :: Node Alias { value, follow }
 core::cell::UnsafeCell<tokio::runtime::task::core::Stage<ct_runtime::sleeper::{async_fn_env#0}>> :: Node Alias { value, follow }
 core::cell::UnsafeCell<tokio::runtime::task::core::Stage<dyn_future::driver::{async_fn_env#0}>> :: Node Alias { value, follow }
+core::cell::UnsafeCell<tokio::runtime::task::core::Stage<dyn_future::hold_aligned::{async_fn_env#0}>> :: Node Alias { value, follow }
 core::cell::UnsafeCell<tokio::runtime::task::core::Stage<dyn_future::set_member::{async_fn_env#0}>> :: Node Alias { value, follow }
 core::cell::UnsafeCell<tokio::runtime::task::core::Stage<foreign_runtime::detached::{async_fn_env#0}>> :: Node Alias { value, follow }
 core::cell::UnsafeCell<tokio::runtime::task::core::Stage<foreign_runtime::joined::{async_fn_env#0}>> :: Node Alias { value, follow }
@@ -172,6 +174,7 @@ core::ptr::non_null::NonNull<alloc::collections::btree::node::InternalNode<u64, 
 core::ptr::non_null::NonNull<alloc::collections::btree::node::LeafNode<u64, u32>> :: Node Alias { pointer, follow }
 core::ptr::non_null::NonNull<alloc::rc::RcInner<tokio::task::local::Context>> :: Node Alias { pointer, follow }
 core::ptr::non_null::NonNull<alloc::sync::ArcInner<()>> :: Node Alias { pointer, follow }
+core::ptr::non_null::NonNull<alloc::sync::ArcInner<dyn_future::Padded>> :: Node Alias { pointer, follow }
 core::ptr::non_null::NonNull<alloc::sync::ArcInner<futures_util::stream::futures_unordered::ready_to_run_queue::ReadyToRunQueue<unordered::leaf::{async_fn_env#0}>>> :: Node Alias { pointer, follow }
 core::ptr::non_null::NonNull<alloc::sync::ArcInner<futures_util::stream::futures_unordered::ready_to_run_queue::ReadyToRunQueue<unordered::set_member::{async_fn_env#0}>>> :: Node Alias { pointer, follow }
 core::ptr::non_null::NonNull<alloc::sync::ArcInner<futures_util::stream::futures_unordered::task::Task<unordered::leaf::{async_fn_env#0}>>> :: Node Alias { pointer, follow }
@@ -282,6 +285,7 @@ tokio::loom::std::unsafe_cell::UnsafeCell<tokio::runtime::task::core::Stage<chan
 tokio::loom::std::unsafe_cell::UnsafeCell<tokio::runtime::task::core::Stage<ct_runtime::acquirer::{async_fn_env#0}>> :: Node Alias { __0, follow }
 tokio::loom::std::unsafe_cell::UnsafeCell<tokio::runtime::task::core::Stage<ct_runtime::sleeper::{async_fn_env#0}>> :: Node Alias { __0, follow }
 tokio::loom::std::unsafe_cell::UnsafeCell<tokio::runtime::task::core::Stage<dyn_future::driver::{async_fn_env#0}>> :: Node Alias { __0, follow }
+tokio::loom::std::unsafe_cell::UnsafeCell<tokio::runtime::task::core::Stage<dyn_future::hold_aligned::{async_fn_env#0}>> :: Node Alias { __0, follow }
 tokio::loom::std::unsafe_cell::UnsafeCell<tokio::runtime::task::core::Stage<dyn_future::set_member::{async_fn_env#0}>> :: Node Alias { __0, follow }
 tokio::loom::std::unsafe_cell::UnsafeCell<tokio::runtime::task::core::Stage<foreign_runtime::detached::{async_fn_env#0}>> :: Node Alias { __0, follow }
 tokio::loom::std::unsafe_cell::UnsafeCell<tokio::runtime::task::core::Stage<foreign_runtime::joined::{async_fn_env#0}>> :: Node Alias { __0, follow }

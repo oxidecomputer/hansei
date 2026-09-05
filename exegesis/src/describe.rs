@@ -350,9 +350,9 @@ pub fn describe_node(bundle: &Bundle, root: BundleTypeId, node: &DisplayNode) ->
             drop_in_place,
             size,
             align,
-            tail_offset,
+            tail_prefixes,
         } => format!(
-            "DynPointer {{ pointer={}, vtable={}, slots=[drop_in_place:{drop_in_place}, size:{size}, align:{align}], tail_offset={tail_offset} }}",
+            "DynPointer {{ pointer={}, vtable={}, slots=[drop_in_place:{drop_in_place}, size:{size}, align:{align}], tail_prefixes={tail_prefixes:?} }}",
             field(bundle, root, pointer),
             field(bundle, root, vtable),
         ),

@@ -5,31 +5,33 @@ description: "`census` over linux-floor/dyn-future"
 Threads: 3 lwps, 3 in runtime 0 @ 0xADDR
 
 COUNT  RT  ROLE             STATE            LWPS
-    1  0   worker           in driver        1775735
-    1  0   worker           parked           1775734
-    1  0   entered runtime  block_on caller  1775732
+    1  0   worker           in driver        2646441
+    1  0   worker           parked           2646440
+    1  0   entered runtime  block_on caller  2646438
     0  0   blocking pool    0 idle, 0 busy   —
 [3 lwps]
 
-Tasks: 2 owned by runtime 0 @ 0xADDR
+Tasks: 3 owned by runtime 0 @ 0xADDR
 
 COUNT  STATE
-    2  idle
-[2 tasks]
+    3  idle
+[3 tasks]
 
 COUNT  TYPE / WAITING ON
     1  async fn dyn_future::driver
        └─ 1  future tokio::sync::oneshot::Receiver<u32>
+    1  async fn dyn_future::hold_aligned
+       └─ 1  future tokio::sync::oneshot::Receiver<u32>
     1  async fn dyn_future::set_member
        └─ 1  future tokio::sync::oneshot::Receiver<u32>
-[2 types]
+[3 types]
 
-Futures: 2 in flight, on 5 await-chain frames, up to 3 deep
+Futures: 3 in flight, on 7 await-chain frames, up to 3 deep
 
 COUNT  HELD IN
-    2  task (its own await chain)
+    3  task (its own await chain)
     0  frame (off any await chain)
     0  set (0 FuturesUnordered)
-[2 futures]
+[3 futures]
 
 [0 types]

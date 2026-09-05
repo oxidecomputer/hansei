@@ -13,6 +13,12 @@ task 3
 task 4
 #0  future        tokio::sync::oneshot::Receiver<u32>
       (<no_state>, 1 local)
+#1  async fn      dyn_future::hold_aligned
+      awaiting at src/bin/dyn-future.rs:97 (Suspend0, 2 locals)
+
+task 5
+#0  future        tokio::sync::oneshot::Receiver<u32>
+      (<no_state>, 1 local)
 #1  async fn      dyn_future::set_member
       awaiting at src/bin/dyn-future.rs:21 (Suspend0, 0 locals)
-[Executed against 2 tasks, 0 failed]
+[Executed against 3 tasks, 0 failed]

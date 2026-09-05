@@ -42,7 +42,7 @@ pub(crate) fn eval_dyn_pointer<'a, T: Target>(
         drop_in_place: drop_in_place_slot,
         size: size_slot,
         align: align_slot,
-        tail_offset,
+        tail_prefixes,
     } = node
     else {
         unreachable!()
@@ -91,9 +91,13 @@ pub(crate) fn eval_dyn_pointer<'a, T: Target>(
     write_hex_u64(f, pointer_address)?;
     // The vtable resolves the erased *tail* type; when the pointer targets an
     // unsized wrapper (e.g. `ArcInner<dyn Trait>`) the value lives past a
-    // sized header, so read the pointee at the tail offset, not the raw
-    // pointer.
-    let pointee_address = pointer_address.wrapping_add(*tail_offset);
+    // sized header whose extent depends on the concrete type's alignment,
+    // which is the vtable's to say.
+    let align_word = words
+        .as_deref()
+        .and_then(|words| words.get(*align_slot as usize).copied());
+    let pointee_address =
+        tail_offset(tail_prefixes, align_word).map(|offset| pointer_address.wrapping_add(offset));
     // A zero-sized concrete type (e.g. slog's `()` list terminator) has no
     // pointee worth following — the `concrete type:` line below already names
     // it. Showing `-> ()` would only add noise.
@@ -102,31 +106,39 @@ pub(crate) fn eval_dyn_pointer<'a, T: Target>(
         ctx.proc,
         ctx.visited,
     ) {
-        let key = (pointee_address, concrete_ty.name());
-        if !visited.borrow_mut().insert(key) {
-            write!(f, " -> <cycle>")?;
-        } else {
-            match ctx.read(pointee_address, concrete_ty.size()) {
-                Ok(pointee_bytes) => {
-                    let pointee = Value {
-                        ty: concrete_ty,
-                        addr: pointee_address,
-                        bytes: pointee_bytes,
-                    };
-                    write!(f, " -> ")?;
-                    write_display_value(
-                        f,
-                        &pointee,
-                        RenderCtx {
-                            suppress_addr: true,
-                            ..ctx.deeper()
-                        },
-                        pretty,
-                    )?;
+        let key = pointee_address.map(|address| (address, concrete_ty.name()));
+        match key {
+            // A header is in the way and the word that says how far it
+            // reaches is not an alignment: nothing places the value.
+            None => match align_word {
+                Some(align) => write!(f, " -> <vtable align {align} is not a power of two>")?,
+                None => f.write_str(" -> <vtable align unavailable>")?,
+            },
+            Some(key) if !visited.borrow_mut().insert(key) => write!(f, " -> <cycle>")?,
+            Some(key) => {
+                let pointee_address = key.0;
+                match ctx.read(pointee_address, concrete_ty.size()) {
+                    Ok(pointee_bytes) => {
+                        let pointee = Value {
+                            ty: concrete_ty,
+                            addr: pointee_address,
+                            bytes: pointee_bytes,
+                        };
+                        write!(f, " -> ")?;
+                        write_display_value(
+                            f,
+                            &pointee,
+                            RenderCtx {
+                                suppress_addr: true,
+                                ..ctx.deeper()
+                            },
+                            pretty,
+                        )?;
+                    }
+                    Err(marker) => write!(f, " -> {marker}")?,
                 }
-                Err(marker) => write!(f, " -> {marker}")?,
+                visited.borrow_mut().remove(&key);
             }
-            visited.borrow_mut().remove(&key);
         }
     }
     write!(f, ",")?;
@@ -201,6 +213,24 @@ pub(crate) fn eval_dyn_pointer<'a, T: Target>(
 
     write_record_close(f, pretty, ctx.prefix, ctx.depth)?;
     write!(f, "}}")
+}
+
+/// How far past the data pointer the erased value starts: zero for a bare
+/// `dyn`, and otherwise the wrappers' sized prefixes laid end to end with
+/// each rounded up to the concrete value's alignment — std places every
+/// unsized tail that way (`Arc::data_offset` rounds `ArcInner<()>`'s size
+/// to `align_of_val`), so `[16]` under an align of 64 is 64, not 16, and
+/// `[16, 5]` under 32 is 64, not 32. `None` when a header is in the way
+/// and the vtable's align word is missing or not a power of two: no layout
+/// was ever computed from such a value, so no offset follows from it.
+fn tail_offset(prefixes: &[u64], align: Option<u64>) -> Option<u64> {
+    if prefixes.is_empty() {
+        return Some(0);
+    }
+    let align = align.filter(|align| align.is_power_of_two())?;
+    prefixes.iter().try_fold(0u64, |offset, prefix| {
+        offset.checked_add(*prefix)?.checked_next_multiple_of(align)
+    })
 }
 
 pub(crate) fn resolve_function_symbol<T: Target>(proc: Option<&T>, address: u64) -> Option<String> {
@@ -298,6 +328,7 @@ fn infer_concrete_type<'a>(
 
 #[cfg(test)]
 mod tests {
+    use super::tail_offset;
     use crate::Value;
     use crate::testhelper::*;
 
@@ -361,6 +392,139 @@ mod tests {
             shown.contains("method[3]: 0x4000 -> <Point as app::Trait>::run,"),
             "{shown}"
         );
+    }
+
+    /// An `Arc<dyn Trait>`'s data pointer targets `ArcInner`, whose two
+    /// refcount words DWARF places the value after, at 16 — but std puts
+    /// it at that prefix rounded up to the concrete type's alignment, so
+    /// a 64-aligned `Point` sits at +64 and the bytes at +16 are padding.
+    #[test]
+    fn test_wrapped_dyn_pointee_starts_at_the_alignment_multiple() {
+        let mem = FakeMem::new()
+            .at(0x1010, u32s(&[9, 9]))
+            .at(0x1040, u32s(&[1, 2]))
+            .at(0x3000, u64s(&[0x4000, 8, 64]))
+            .symbol(0x4000, "<Point as app::Trait>::drop");
+
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+        let bytes = u64s(&[0x1000, 0x3000]);
+        let value = Value::new(v.ty(ARC_DYN_PTR).unwrap(), 0, &bytes);
+        let shown = format!("{:#}", value.display_from_target(&mem, 8));
+        assert!(
+            shown.contains("pointer: 0x1000 -> Point {\n        x: 1,\n        y: 2,\n    },"),
+            "{shown}"
+        );
+        assert!(shown.contains("align: 64,"), "{shown}");
+    }
+
+    /// Under an alignment the header already satisfies, the prefix is the
+    /// offset: a word-aligned value starts right after the refcounts.
+    #[test]
+    fn test_wrapped_dyn_pointee_under_a_small_alignment_follows_the_header() {
+        let mem = FakeMem::new()
+            .at(0x1010, u32s(&[1, 2]))
+            .at(0x3000, u64s(&[0x4000, 8, 8]))
+            .symbol(0x4000, "<Point as app::Trait>::drop");
+
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+        let bytes = u64s(&[0x1000, 0x3000]);
+        let value = Value::new(v.ty(ARC_DYN_PTR).unwrap(), 0, &bytes);
+        let shown = format!("{:#}", value.display_from_target(&mem, 8));
+        assert!(
+            shown.contains("pointer: 0x1000 -> Point {\n        x: 1,\n        y: 2,\n    },"),
+            "{shown}"
+        );
+    }
+
+    /// Two wrappers round twice: Arc's 16 goes to 32 under a 32-aligned
+    /// value, and the Mutex's 5 on top of that goes to 64. Rounding the
+    /// summed prefixes once (21 → 32) would read the Mutex's own header
+    /// as the value; under an alignment of 8 the same fold lands at 24.
+    #[test]
+    fn test_nested_wrappers_round_at_every_level() {
+        let show = |align: u64, mem: FakeMem| {
+            let mem = mem
+                .at(0x3000, u64s(&[0x4000, 8, align]))
+                .symbol(0x4000, "<Point as app::Trait>::drop");
+            let b = test_bundle();
+            let v = BundleView::new(&b);
+            let bytes = u64s(&[0x1000, 0x3000]);
+            let value = Value::new(v.ty(ARC_MUTEX_DYN_PTR).unwrap(), 0, &bytes);
+            format!("{}", value.display_from_target(&mem, 8))
+        };
+
+        let wide = show(
+            32,
+            FakeMem::new()
+                .at(0x1020, u32s(&[9, 9]))
+                .at(0x1040, u32s(&[1, 2])),
+        );
+        assert!(
+            wide.contains("pointer: 0x1000 -> Point { x: 1, y: 2 },"),
+            "{wide}"
+        );
+
+        let narrow = show(8, FakeMem::new().at(0x1018, u32s(&[3, 4])));
+        assert!(
+            narrow.contains("pointer: 0x1000 -> Point { x: 3, y: 4 },"),
+            "{narrow}"
+        );
+    }
+
+    /// A vtable whose align word is not a power of two places nothing
+    /// behind a header: the pointee is not read from a guessed offset,
+    /// and the record says why. A bare dyn pointee has no header to
+    /// place, so the same word costs it nothing.
+    #[test]
+    fn test_wrapped_dyn_pointee_declines_a_vtable_align_that_is_no_alignment() {
+        let mem = FakeMem::new()
+            .at(0x1000, u32s(&[1, 2]))
+            .at(0x1010, u32s(&[1, 2]))
+            .at(0x3000, u64s(&[0x4000, 8, 3]))
+            .symbol(0x4000, "<Point as app::Trait>::drop");
+
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+        let bytes = u64s(&[0x1000, 0x3000]);
+
+        let wrapped = Value::new(v.ty(ARC_DYN_PTR).unwrap(), 0, &bytes);
+        let shown = format!("{}", wrapped.display_from_target(&mem, 8));
+        assert!(
+            shown.contains("pointer: 0x1000 -> <vtable align 3 is not a power of two>,"),
+            "{shown}"
+        );
+        assert!(shown.contains("concrete type: Point,"), "{shown}");
+
+        let bare = Value::new(v.ty(FAT_PTR).unwrap(), 0, &bytes);
+        let shown = format!("{}", bare.display_from_target(&mem, 8));
+        assert!(
+            shown.contains("pointer: 0x1000 -> Point { x: 1, y: 2 },"),
+            "{shown}"
+        );
+    }
+
+    /// The fold behind the reads above, at the values the fixtures cannot
+    /// spell: no prefixes need no alignment, a missing or zero align word
+    /// places nothing, and an offset that overflows is no offset.
+    #[test]
+    fn test_tail_offset_rounds_each_prefix_to_the_alignment() {
+        assert_eq!(tail_offset(&[], None), Some(0));
+        assert_eq!(tail_offset(&[], Some(3)), Some(0));
+        assert_eq!(tail_offset(&[16], Some(1)), Some(16));
+        assert_eq!(tail_offset(&[16], Some(8)), Some(16));
+        assert_eq!(tail_offset(&[16], Some(16)), Some(16));
+        assert_eq!(tail_offset(&[16], Some(32)), Some(32));
+        assert_eq!(tail_offset(&[16], Some(64)), Some(64));
+        assert_eq!(tail_offset(&[16, 5], Some(1)), Some(21));
+        assert_eq!(tail_offset(&[16, 5], Some(8)), Some(24));
+        assert_eq!(tail_offset(&[16, 5], Some(32)), Some(64));
+        assert_eq!(tail_offset(&[16], None), None);
+        assert_eq!(tail_offset(&[16], Some(0)), None);
+        assert_eq!(tail_offset(&[16], Some(3)), None);
+        assert_eq!(tail_offset(&[u64::MAX], Some(8)), None);
+        assert_eq!(tail_offset(&[u64::MAX - 6], Some(8)), None);
     }
 
     /// A null vtable word and a nonzero one nothing can read are different

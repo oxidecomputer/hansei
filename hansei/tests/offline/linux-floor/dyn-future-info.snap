@@ -4,6 +4,6 @@ description: "`info` over linux-floor/dyn-future"
 ---
 core:       <snapshot>
 tokio info: <tokio info>
-symbols resolved: 5/5
+symbols resolved: 7/7
 process: not recorded by this target
 signal: none recorded

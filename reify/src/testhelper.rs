@@ -630,6 +630,12 @@ fixture_ids! {
     // A C enumeration over a *signed* repr with a negative enumerator:
     // COLOR's unsigned lookup cannot tell whether the sign was honored.
     SHADE,
+    // Wide pointers whose data half targets an unsized wrapper rather than
+    // the bare dyn: Arc's heap header ahead of the dyn tail, and that header
+    // ahead of a Mutex's ahead of it, so the render's per-wrapper rounding
+    // has a one-level and a two-level case to get right.
+    ARC_DYN_INNER, ARC_DYN_INNER_PTR, ARC_DYN_PTR,
+    MUTEX_DYN, ARC_MUTEX_DYN_INNER, ARC_MUTEX_DYN_INNER_PTR, ARC_MUTEX_DYN_PTR,
 }
 
 /// A hand-built mini-bundle exercising every TypeDef kind reify touches:
@@ -1927,6 +1933,79 @@ pub fn test_bundle() -> Bundle {
             enumerators: vec![(darkn, -1), (lightn, 1)],
         },
     );
+    // ArcInner<dyn Trait> { strong @0, weak @8, data: dyn @16 }: DWARF
+    // spells the tail at the end of the sized prefix, whatever alignment
+    // the concrete value will turn out to need.
+    let arc_dyn_innern = s("alloc::sync::ArcInner<dyn app::Trait>");
+    types.add(
+        ARC_DYN_INNER,
+        TypeDef::Struct {
+            name: arc_dyn_innern,
+            size: 16,
+            members: vec![
+                m(strongn, U64, 0),
+                m(weakn, U64, 8),
+                m(datan, DYN_TRAIT, 16),
+            ],
+        },
+    );
+    types.add(
+        ARC_DYN_INNER_PTR,
+        TypeDef::Pointer {
+            name: None,
+            target: ARC_DYN_INNER,
+        },
+    );
+    types.add(
+        ARC_DYN_PTR,
+        TypeDef::Struct {
+            name: s("ArcDynPtr"),
+            size: 16,
+            members: vec![m(pointern, ARC_DYN_INNER_PTR, 0), m(vtablen, VTABLE_PTR, 8)],
+        },
+    );
+    // Mutex<dyn Trait> { raw: u32 @0, poison: u8 @4, data: dyn @5 } inside
+    // the same Arc header: two prefixes, each rounded on its own.
+    let (mutex_dynn, rawn, poisonn) =
+        (s("std::sync::Mutex<dyn app::Trait>"), s("raw"), s("poison"));
+    types.add(
+        MUTEX_DYN,
+        TypeDef::Struct {
+            name: mutex_dynn,
+            size: 5,
+            members: vec![m(rawn, U32, 0), m(poisonn, U8, 4), m(datan, DYN_TRAIT, 5)],
+        },
+    );
+    types.add(
+        ARC_MUTEX_DYN_INNER,
+        TypeDef::Struct {
+            name: s("alloc::sync::ArcInner<std::sync::Mutex<dyn app::Trait>>"),
+            size: 16,
+            members: vec![
+                m(strongn, U64, 0),
+                m(weakn, U64, 8),
+                m(datan, MUTEX_DYN, 16),
+            ],
+        },
+    );
+    types.add(
+        ARC_MUTEX_DYN_INNER_PTR,
+        TypeDef::Pointer {
+            name: None,
+            target: ARC_MUTEX_DYN_INNER,
+        },
+    );
+    types.add(
+        ARC_MUTEX_DYN_PTR,
+        TypeDef::Struct {
+            name: s("ArcMutexDynPtr"),
+            size: 16,
+            members: vec![
+                m(pointern, ARC_MUTEX_DYN_INNER_PTR, 0),
+                m(vtablen, VTABLE_PTR, 8),
+            ],
+        },
+    );
 
     let types = types.finish();
 
@@ -2070,7 +2149,29 @@ pub fn test_bundle() -> Bundle {
                         drop_in_place: 0,
                         size: 1,
                         align: 2,
-                        tail_offset: 0,
+                        tail_prefixes: vec![],
+                    },
+                ),
+                (
+                    ARC_DYN_PTR,
+                    BundleNode::DynPointer {
+                        pointer: sel(&[0]),
+                        vtable: sel(&[1]),
+                        drop_in_place: 0,
+                        size: 1,
+                        align: 2,
+                        tail_prefixes: vec![16],
+                    },
+                ),
+                (
+                    ARC_MUTEX_DYN_PTR,
+                    BundleNode::DynPointer {
+                        pointer: sel(&[0]),
+                        vtable: sel(&[1]),
+                        drop_in_place: 0,
+                        size: 1,
+                        align: 2,
+                        tail_prefixes: vec![16, 5],
                     },
                 ),
                 (

@@ -4,4 +4,4 @@ description: "`graph` over linux/dyn-future"
 ---
 TASK                         STATE  WAITING ON
 3                            idle   future tokio::sync::oneshot::Receiver<u32>
-└─ 4 [in the JoinSet above]  idle   future tokio::sync::oneshot::Receiver<u32>
+└─ 5 [in the JoinSet above]  idle   future tokio::sync::oneshot::Receiver<u32>

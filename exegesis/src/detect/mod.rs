@@ -1421,7 +1421,7 @@ fn transparent(
 #[cfg(test)]
 mod tests {
     use super::ReachStep::{Named, PeelTo};
-    use super::std::{dyn_tail_offset, has_dyn_tail, scalar_newtype_node, str_node};
+    use super::std::{dyn_tail_prefixes, has_dyn_tail, scalar_newtype_node, str_node};
     use super::{Detector, Family, trace};
     use crate::bundle::{DisplayNode, MemberRef, Notation, POINTER_SIZE, Shape, Step};
     use crate::extract::Emitter;
@@ -1594,19 +1594,23 @@ mod tests {
         assert!(has_dyn_tail(&reader, outer_id, &mut Vec::new()));
         assert!(!has_dyn_tail(&reader, plain_id, &mut Vec::new()));
 
-        // A bare `dyn` sits at offset zero; each wrapper adds its tail
-        // member's offset (16), so the erased value is reached by skipping
-        // the accumulated sized headers.
-        assert_eq!(dyn_tail_offset(&reader, dyn_id, &mut Vec::new()), Some(0));
+        // A bare `dyn` has no header; each wrapper contributes its tail
+        // member's offset (16) as one prefix, outermost first, and they
+        // stay separate: the reader rounds each one to the concrete
+        // value's alignment before adding the next.
         assert_eq!(
-            dyn_tail_offset(&reader, inner_id, &mut Vec::new()),
-            Some(16)
+            dyn_tail_prefixes(&reader, dyn_id, &mut Vec::new()),
+            Some(vec![])
         );
         assert_eq!(
-            dyn_tail_offset(&reader, outer_id, &mut Vec::new()),
-            Some(32)
+            dyn_tail_prefixes(&reader, inner_id, &mut Vec::new()),
+            Some(vec![16])
         );
-        assert_eq!(dyn_tail_offset(&reader, plain_id, &mut Vec::new()), None);
+        assert_eq!(
+            dyn_tail_prefixes(&reader, outer_id, &mut Vec::new()),
+            Some(vec![16, 16])
+        );
+        assert_eq!(dyn_tail_prefixes(&reader, plain_id, &mut Vec::new()), None);
     }
 
     /// A failed named walk says which member it wanted and what the type

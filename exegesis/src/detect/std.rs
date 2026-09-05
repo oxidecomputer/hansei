@@ -523,10 +523,10 @@ pub(super) fn dyn_pointer_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<
         let RawType::Pointer(pointer) = reader.canonical_type(member.type_id)? else {
             return None;
         };
-        let tail_offset = dyn_tail_offset(reader, pointer.target_type_id, &mut Vec::new())?;
-        Some((index, tail_offset))
+        let tail_prefixes = dyn_tail_prefixes(reader, pointer.target_type_id, &mut Vec::new())?;
+        Some((index, tail_prefixes))
     });
-    let (pointer_index, tail_offset) = data_matches.next()?;
+    let (pointer_index, tail_prefixes) = data_matches.next()?;
     if data_matches.next().is_some() {
         return None;
     }
@@ -567,24 +567,27 @@ pub(super) fn dyn_pointer_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<
         drop_in_place: 0,
         size: 1,
         align: 2,
-        tail_offset,
+        tail_prefixes,
     })
 }
 
-/// The byte offset of the `dyn Trait` tail within `id`, if `id` is a
-/// `dyn Trait` type or an unsized aggregate whose final field recursively
+/// The sized prefixes ahead of the `dyn Trait` tail within `id`, if `id` is
+/// a `dyn Trait` type or an unsized aggregate whose final field recursively
 /// contains that dyn tail (such as `ArcInner<dyn Trait>`). Rust wide
 /// pointers carry metadata for either shape.
 ///
-/// A bare `dyn Trait` has offset zero; a wrapper contributes the offset of
-/// its final member and recurses into it. Returns `None` when there is no
-/// dyn tail. Consumers add this to the data-pointer address to reach the
-/// erased value, skipping any sized header (e.g. an `Arc`'s refcounts).
-pub(super) fn dyn_tail_offset(
+/// A bare `dyn Trait` has no prefix; each wrapper contributes the DWARF
+/// offset of its final member — the size of the sized fields ahead of it —
+/// and recurses into it, outermost first. Returns `None` when there is no
+/// dyn tail. The offsets are *not* summed: DWARF spells the tail's offset
+/// as if it were byte-aligned, while std places it at the prefix rounded
+/// up to the concrete value's alignment (`Arc::data_offset`), so the
+/// reader rounds at every level against the vtable's align word.
+pub(super) fn dyn_tail_prefixes(
     reader: &DwReader<'_>,
     id: TypeId,
     seen: &mut Vec<TypeId>,
-) -> Option<u64> {
+) -> Option<Vec<u64>> {
     let id = reader.canonicalize(id);
     if seen.len() >= 8 || seen.contains(&id) {
         return None;
@@ -592,22 +595,24 @@ pub(super) fn dyn_tail_offset(
     let raw = reader.canonical_type(id)?;
     if fq_name(reader, id).is_some_and(|name| name.starts_with("dyn ") || name.starts_with("(dyn "))
     {
-        return Some(0);
+        return Some(Vec::new());
     }
     let RawType::Struct(st) = raw else {
         return None;
     };
     let tail = st.members.last()?;
     seen.push(id);
-    let inner = dyn_tail_offset(reader, tail.type_id, seen);
+    let inner = dyn_tail_prefixes(reader, tail.type_id, seen);
     seen.pop();
-    tail.offset.checked_add(inner?)
+    let mut prefixes = vec![tail.offset];
+    prefixes.extend(inner?);
+    Some(prefixes)
 }
 
-/// Whether `id` has a `dyn Trait` tail (see [`dyn_tail_offset`]).
+/// Whether `id` has a `dyn Trait` tail (see [`dyn_tail_prefixes`]).
 #[cfg(test)]
 pub(super) fn has_dyn_tail(reader: &DwReader<'_>, id: TypeId, seen: &mut Vec<TypeId>) -> bool {
-    dyn_tail_offset(reader, id, seen).is_some()
+    dyn_tail_prefixes(reader, id, seen).is_some()
 }
 
 pub(super) fn unsafe_cell_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
@@ -1279,7 +1284,7 @@ mod tests {
             fx.strukt(id, None, "Wrapper", &[("last", next, 16)], &[]);
             next = id;
         }
-        assert_eq!(dyn_tail_offset(&fx.reader, next, &mut Vec::new()), None);
+        assert_eq!(dyn_tail_prefixes(&fx.reader, next, &mut Vec::new()), None);
     }
 
     #[test]

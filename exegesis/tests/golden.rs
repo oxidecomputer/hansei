@@ -510,6 +510,29 @@ fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
             .any(|format| matches!(format, DisplayNode::DynPointer { .. })),
         "{program}: no dyn-pointer nodes were extracted"
     );
+    // A bare dyn pointee has no header, so no prefix; an `Arc<dyn>`'s data
+    // pointer targets `ArcInner`, whose two refcount words are the one
+    // prefix the reader rounds to the concrete type's alignment. Every
+    // runtime carries both: the boxed `Any` is a `JoinError`'s panic
+    // payload, the `Arc<dyn Fn>` a task hook.
+    assert_format(
+        program,
+        bundle,
+        "alloc::boxed::Box<(dyn core::any::Any + core::marker::Send), alloc::alloc::Global>",
+        "alloc::boxed::Box<(dyn core::any::Any + core::marker::Send), alloc::alloc::Global> \
+         :: Node DynPointer { pointer=pointer@+0, vtable=vtable@+8, \
+         slots=[drop_in_place:0, size:1, align:2], tail_prefixes=[] }",
+    );
+    assert_format(
+        program,
+        bundle,
+        "*const alloc::sync::ArcInner<(dyn core::ops::function::Fn<(), Output=()> \
+         + core::marker::Send + core::marker::Sync)>",
+        "*const alloc::sync::ArcInner<(dyn core::ops::function::Fn<(), Output=()> \
+         + core::marker::Send + core::marker::Sync)> \
+         :: Node DynPointer { pointer=pointer@+0, vtable=vtable@+8, \
+         slots=[drop_in_place:0, size:1, align:2], tail_prefixes=[16] }",
+    );
     assert_format(
         program,
         bundle,

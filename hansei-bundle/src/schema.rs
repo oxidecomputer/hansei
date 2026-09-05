@@ -605,17 +605,23 @@ pub enum DisplayNode {
     /// recording them here keeps rustc's private slot ordering out of bundle
     /// consumers.
     ///
-    /// `tail_offset` is the byte offset of the `dyn Trait` tail *within the
-    /// struct the data pointer targets*. It is zero for a bare `dyn Trait`
-    /// pointee, but nonzero when the pointee is an unsized wrapper such as
-    /// `ArcInner<dyn Trait>`, whose sized header precedes the erased value.
+    /// `tail_prefixes` describes where the `dyn Trait` tail sits *within the
+    /// struct the data pointer targets*: one entry per unsized wrapper
+    /// between the pointee and the bare `dyn`, outermost first, each the
+    /// size of that wrapper's sized prefix as DWARF spells it. It is empty
+    /// for a bare `dyn Trait` pointee, `[16]` for `ArcInner<dyn Trait>`
+    /// (two refcount words ahead of the erased value), `[16, 5]` for
+    /// `ArcInner<Mutex<dyn Trait>>`. The prefixes are not offsets: a wrapper
+    /// places its unsized tail at the prefix rounded up to the concrete
+    /// value's alignment, which only the vtable knows, so the reader folds
+    /// the list against the vtable's align word rather than summing it.
     DynPointer {
         pointer: Selector,
         vtable: Selector,
         drop_in_place: u32,
         size: u32,
         align: u32,
-        tail_offset: u64,
+        tail_prefixes: Vec<u64>,
     },
     /// Render an associative collection as `{ key: value, ... }`.
     ///

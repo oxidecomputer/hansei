@@ -352,6 +352,17 @@ task: dyn_future::set_member::{async_fn_env#0}
     Returned @ dyn-future.rs:22
     Panicked @ dyn-future.rs:22
     Suspend0 @ dyn-future.rs:21
+task: dyn_future::hold_aligned::{async_fn_env#0}
+  kind: AsyncFn
+  decl: dyn-future.rs:92
+  entries: 2
+  symbols-per-entry: 6,6
+  stage: Stage<dyn_future::hold_aligned::{async_fn_env#0}>
+  variants:
+    Unresumed @ dyn-future.rs:92
+    Returned @ dyn-future.rs:98
+    Panicked @ dyn-future.rs:98
+    Suspend0 @ dyn-future.rs:97
 task: dyn_future::driver::{async_fn_env#0}
   kind: AsyncFn
   decl: dyn-future.rs:28
@@ -370,6 +381,7 @@ dyn: core::future::poll_fn::PollFn<tokio::runtime::scheduler::current_thread::{i
 dyn: core::pin::Pin<&mut dyn_future::main::{async_block_env#0}> (poll)
 dyn: dyn_future::boxed_leaf::{async_fn_env#0} (poll, drop_glue)
 dyn: dyn_future::driver::{async_fn_env#0} (poll, drop_glue)
+dyn: dyn_future::hold_aligned::{async_fn_env#0} (poll, drop_glue)
 dyn: dyn_future::main::{async_block_env#0} (poll, drop_glue)
 dyn: dyn_future::set_member::{async_fn_env#0} (poll, drop_glue)
 
