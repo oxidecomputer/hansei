@@ -20,7 +20,8 @@
 //! golden beside its file as `<program>.snap.new`.
 
 use exegesis::bundle::{
-    Bundle, DisplayNode, Encoding, MemberRef, Step, TypeDef, WalkOutcome, WalkRole,
+    Bundle, DiscrValue, DiscrValues, DisplayNode, Encoding, MemberRef, Step, TypeDef, WalkOutcome,
+    WalkRole,
 };
 use exegesis::describe::describe_debug_format;
 use exegesis::extract::{DebugSources, ExtractOptions, ExtractStats, extract_sources};
@@ -355,6 +356,91 @@ fn assert_state_members(program: &str, bundle: &Bundle, type_name: &str, expecte
 /// Names rather than offsets because names are what the contract pins —
 /// offsets move between tokio versions and between platforms, the chain
 /// does not.
+/// The bits each variant of the enum named `type_name` is selected by,
+/// as `(variant, bits)` in the bundle's order, with `None` for a niche
+/// default — after checking the tag is the base type `tag` names.
+///
+/// The bundle's contract is that these are the tag's raw bits as a
+/// little-endian read of it produces them, which is *not* what DWARF
+/// carries: LLVM spells a constant in the narrowest form that holds it
+/// with the repr's signedness, so a negative constant on a wide signed
+/// tag arrives narrower than the tag and extraction must widen it. The
+/// portable summary lists variants without their values, so only this
+/// notices a constant stored at the form's width instead of the tag's.
+fn assert_discr_values(
+    program: &str,
+    bundle: &Bundle,
+    type_name: &str,
+    tag: &str,
+    expected: &[(&str, Option<u128>)],
+) {
+    let mut ids = bundle.types.find_by_name(&bundle.strings, type_name);
+    let Some(id) = ids.next() else {
+        panic!("{program}: no type named {type_name}");
+    };
+    assert!(
+        ids.next().is_none(),
+        "{program}: {type_name} names more than one type"
+    );
+    let Some(TypeDef::Enum { shape, .. }) = bundle.types.get(id) else {
+        panic!("{program}: {type_name} is not a variant enum");
+    };
+    let discr = shape
+        .discr
+        .as_ref()
+        .unwrap_or_else(|| panic!("{program}: {type_name} has no discriminant"));
+    match bundle.types.get(discr.ty) {
+        Some(TypeDef::Base { name, .. }) => assert_eq!(
+            bundle.strings.get(*name).unwrap(),
+            tag,
+            "{program}: {type_name}'s tag is not {tag}"
+        ),
+        other => panic!("{program}: {type_name}'s tag is {other:?}, not a base type"),
+    }
+    let values: Vec<(&str, Option<u128>)> = shape
+        .variants
+        .iter()
+        .map(|v| {
+            let bits = v.discr_values.as_ref().map(|dv| match dv {
+                DiscrValues(values) => match values[..] {
+                    [DiscrValue::Value(x)] => x,
+                    _ => panic!("{program}: {type_name} carries a value list: {values:?}"),
+                },
+            });
+            (bundle.strings.get(v.name).unwrap(), bits)
+        })
+        .collect();
+    assert_eq!(
+        values, expected,
+        "{program}: {type_name}'s variants select on unexpected bits"
+    );
+}
+
+/// The enumerators of the C-style enum named `type_name`, as
+/// `(name, value)` in the bundle's order: the value each constant
+/// names, so a negative one is negative whatever form spelled it.
+fn assert_enumerators(program: &str, bundle: &Bundle, type_name: &str, expected: &[(&str, i128)]) {
+    let mut ids = bundle.types.find_by_name(&bundle.strings, type_name);
+    let Some(id) = ids.next() else {
+        panic!("{program}: no type named {type_name}");
+    };
+    assert!(
+        ids.next().is_none(),
+        "{program}: {type_name} names more than one type"
+    );
+    let Some(TypeDef::CEnum { enumerators, .. }) = bundle.types.get(id) else {
+        panic!("{program}: {type_name} is not a C-style enum");
+    };
+    let values: Vec<(&str, i128)> = enumerators
+        .iter()
+        .map(|(name, value)| (bundle.strings.get(*name).unwrap(), *value))
+        .collect();
+    assert_eq!(
+        values, expected,
+        "{program}: {type_name} lists unexpected enumerators"
+    );
+}
+
 /// The env-decl table's entry for the environment type named
 /// `type_name`, as (file, line).
 fn env_decl<'b>(program: &str, bundle: &'b Bundle, type_name: &str) -> (&'b str, u32) {
@@ -615,6 +701,54 @@ fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
             bundle,
             "simple_await::ready_value::{async_fn_env#0}",
             17,
+        );
+    }
+    if program == "enum-reprs" {
+        // Each variant selects on the bits its tag holds. `Below` is the
+        // case: a `-1` LLVM spells as one `0xff` byte has to become the
+        // four-byte tag's `0xffff_ffff`, and `-2` on the eight-byte tag
+        // its `0xffff_ffff_ffff_fffe`; the unsigned control's `0xff`
+        // byte stays `0xff`. Everything spelled at the tag's width
+        // passes through.
+        assert_discr_values(
+            program,
+            bundle,
+            "enum_reprs::Signed32",
+            "i32",
+            &[
+                ("Below", Some(0xffff_ffff)),
+                ("Zero", Some(0)),
+                ("Wide", Some(1000)),
+            ],
+        );
+        assert_discr_values(
+            program,
+            bundle,
+            "enum_reprs::Signed64",
+            "i64",
+            &[
+                ("Below", Some(0xffff_ffff_ffff_fffe)),
+                ("Zero", Some(0)),
+                ("Floor", Some(0x8000_0000_0000_0000)),
+            ],
+        );
+        assert_discr_values(
+            program,
+            bundle,
+            "enum_reprs::Unsigned32",
+            "u32",
+            &[
+                ("Byte", Some(0xff)),
+                ("Zero", Some(0)),
+                ("Top", Some(0xffff_ffff)),
+            ],
+        );
+        // A C-style enum stores the value each constant names.
+        assert_enumerators(
+            program,
+            bundle,
+            "enum_reprs::Level",
+            &[("Below", -1), ("Base", 0), ("Above", 7)],
         );
     }
     if program == "select-combinator" {
@@ -1374,6 +1508,11 @@ fn test_golden_foreign_runtime() {
 #[test]
 fn test_golden_blocking_pool() {
     run_golden("blocking-pool");
+}
+
+#[test]
+fn test_golden_enum_reprs() {
+    run_golden("enum-reprs");
 }
 
 /// Two extractions of one binary agree byte for byte.
