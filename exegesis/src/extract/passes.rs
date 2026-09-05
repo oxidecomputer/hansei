@@ -6,6 +6,7 @@
 //! does not hold together, and strip coroutine states of members that are
 //! another state's storage.
 
+use crate::bundle::names::coroutine_kind;
 use crate::bundle::{BundleTypeId, MemberDef, StrRef, TypeDef, TypeTable};
 
 use tracing::warn;
@@ -13,26 +14,45 @@ use tracing::warn;
 use std::collections::HashSet;
 
 /// Drop from each of a coroutine's states the members that are not that
-/// state's own, returning `(dropped, deduplicated)`.
+/// state's own.
 ///
 /// Only the active state's storage means anything: which one that is comes
 /// from the discriminant, and the others hold whatever the coroutine last
-/// left there. rustc's own debuginfo does not hold to that. It lists an
-/// `async fn`'s arguments as members of *every* variant, at the offsets they
+/// left there. rustc's own debuginfo does not hold to that. It lists a
+/// coroutine's captures as members of *every* variant, at the offsets they
 /// occupy in `Unresumed`, however long ago the state being described stopped
 /// using them — `Returned` and `Panicked` carry them too, and there the
-/// arguments provably cannot exist.
+/// captures provably cannot exist: a coroutine drops them in place on its
+/// way out.
 ///
-/// The offset is what tells the two apart. An argument still live at a
-/// suspend point is a saved local with a slot of its own, and rustc relocates
-/// it there (and, separately, lists it twice); one that is dead is left
-/// pointing at the slot it had in `Unresumed`. So a member matching an
-/// `Unresumed` member exactly — name, type and offset — is `Unresumed`'s
-/// storage rather than this state's, and describing it means reading bytes
-/// whose meaning ended whenever the coroutine moved past them. In the
-/// `simple-await` fixture that is a `oneshot::Sender` consumed by `send()` a
-/// line before the await, whose channel has since been freed: what is left
-/// at the offset is a dangling pointer into reused heap.
+/// Which suspended states a capture is dead in depends on what kind of
+/// coroutine it is, and the type's name says which.
+///
+/// An `async fn`'s captures are its arguments, and the desugaring moves
+/// each into a body local at entry, so the capture slot is dead from the
+/// first suspend on. An argument still live at a suspend point is a saved
+/// local with a slot of its own, and rustc relocates it there (and,
+/// separately, lists it twice); one that is dead is left pointing at the
+/// slot it had in `Unresumed`. So a member matching an `Unresumed` member
+/// exactly — name, type and offset — is `Unresumed`'s storage rather than
+/// this state's, and describing it means reading bytes whose meaning ended
+/// whenever the coroutine moved past them. In the `simple-await` fixture
+/// that is a `oneshot::Sender` consumed by `send()` a line before the
+/// await, whose channel has since been freed: what is left at the offset
+/// is a dangling pointer into reused heap.
+///
+/// An `async move { … }` block has no such step: its captures *are* the
+/// body's storage for the whole life of the coroutine, at the one offset
+/// in every state, and a suspended state that dropped them would hide the
+/// lock a task is waiting on or the sender it has not yet fired. So a
+/// block's captures stay in its `Suspend` states and go only from the
+/// terminal ones. A capture the body moved out of before suspending is
+/// still listed, holding a byte-perfect copy of what was moved; the
+/// debuginfo carries no liveness for captures, and nothing in the bundle
+/// can tell that copy from a live value. Async closures and hand-written
+/// coroutines are treated as blocks: whether their arguments get the
+/// `async fn` move has not been checked against a fixture, and listing a
+/// stale argument is the lesser failure next to hiding a live capture.
 ///
 /// This recognizes a rustc artifact by its shape, so what it found is
 /// reported under `--stats`. The member counts alone are a weak signal — they
@@ -56,8 +76,8 @@ pub(super) fn drop_members_of_other_states(
     // Every coroutine's `Unresumed` payload, against the other states of the
     // same coroutine. Collected first because the members are read from one
     // entry of the table and written to another.
-    let mut work: Vec<(BundleTypeId, Vec<BundleTypeId>)> = Vec::new();
-    for def in &types.types {
+    let mut work: Vec<(BundleTypeId, Vec<BundleTypeId>, bool)> = Vec::new();
+    for (i, def) in types.types.iter().enumerate() {
         let TypeDef::Enum { shape, .. } = def else {
             continue;
         };
@@ -76,17 +96,27 @@ pub(super) fn drop_members_of_other_states(
             continue;
         };
         found.coroutines_matched += 1;
+        let args_moved_at_entry = names
+            .get(i)
+            .and_then(|n| n.as_deref())
+            .and_then(coroutine_kind)
+            == Some("async fn");
         work.push((
             unresumed,
             payloads().filter(|id| *id != unresumed).collect(),
+            args_moved_at_entry,
         ));
     }
 
-    let (mut dropped, mut deduplicated) = (0, 0);
-    for (unresumed, states) in work {
+    for (unresumed, states, args_moved_at_entry) in work {
         let held_by_unresumed: HashSet<(StrRef, BundleTypeId, u64)> =
             members_of(types, unresumed).iter().map(key).collect();
         for state in states {
+            let terminal = matches!(
+                state_name(names, state),
+                Some("Returned") | Some("Panicked")
+            );
+            let strip = args_moved_at_entry || terminal;
             let members = match &mut types.types[state.0 as usize] {
                 TypeDef::Struct { members, .. } | TypeDef::Union { members, .. } => members,
                 _ => continue,
@@ -94,22 +124,23 @@ pub(super) fn drop_members_of_other_states(
             let mut kept: HashSet<(StrRef, BundleTypeId, u64)> = HashSet::new();
             members.retain(|m| {
                 if held_by_unresumed.contains(&key(m)) {
-                    dropped += 1;
-                    return false;
+                    if strip {
+                        found.members_dropped += 1;
+                        return false;
+                    }
+                    found.captures_kept += 1;
                 }
                 // The same member listed twice over, which is how rustc
                 // spells an argument that *is* live here: once as the
                 // argument, once as the saved local, both at the one slot.
                 if !kept.insert(key(m)) {
-                    deduplicated += 1;
+                    found.members_deduplicated += 1;
                     return false;
                 }
                 true
             });
         }
     }
-    found.members_dropped = dropped;
-    found.members_deduplicated = deduplicated;
     found
 }
 
@@ -120,6 +151,9 @@ pub(super) struct StatePass {
     pub(super) coroutines_matched: usize,
     pub(super) members_dropped: usize,
     pub(super) members_deduplicated: usize,
+    /// Members matching `Unresumed`'s that a suspended state of a block
+    /// kept, because there they are the block's captures.
+    pub(super) captures_kept: usize,
 }
 
 fn key(m: &MemberDef) -> (StrRef, BundleTypeId, u64) {
@@ -336,11 +370,6 @@ mod tests {
         );
     }
 
-    /// rustc lists an `async fn`'s arguments in every one of a coroutine's
-    /// states. Where the argument is still live the listing is relocated to
-    /// its saved-local slot (and doubled); where it is dead it is left at the
-    /// slot it had in `Unresumed`, which is another state's storage and reads
-    /// as whatever the coroutine last left there.
     /// The coroutine screen keys on rustc's own state names: any one of
     /// `Returned`, `Panicked`, or a `Suspend` state marks the enum, and
     /// no other name does.
@@ -393,8 +422,13 @@ mod tests {
         }
     }
 
+    /// rustc lists an `async fn`'s arguments in every one of a coroutine's
+    /// states. Where the argument is still live the listing is relocated to
+    /// its saved-local slot (and doubled); where it is dead it is left at the
+    /// slot it had in `Unresumed`, which is another state's storage and reads
+    /// as whatever the coroutine last left there.
     #[test]
-    fn test_drop_members_of_other_states() {
+    fn test_async_fn_states_drop_arguments_left_at_their_unresumed_slot() {
         use crate::bundle::{
             BundleTypeId, MemberDef, StringInterner, TypeDef, TypeTable, VariantDef, VariantShape,
         };
@@ -455,10 +489,13 @@ mod tests {
             name_index: vec![],
             ..Default::default()
         };
-        let names: Vec<Option<String>> = ["u32", "E::Unresumed", "E::Suspend0", "E::Suspend1"]
+        // An `async fn`'s env, spelled the way rustc does, generics and
+        // all: the gate reads the kind off the name's last path segment.
+        let env = "app::work::{async_fn_env#0}<alloc::string::String>";
+        let names: Vec<Option<String>> = ["u32", "Unresumed", "Suspend0", "Suspend1", "Returned"]
             .iter()
-            .map(|n| Some((*n).to_owned()))
-            .chain([Some("E::Returned".to_owned()), Some("E".to_owned())])
+            .map(|state| Some(format!("{env}::{state}")))
+            .chain([Some(env.to_owned())])
             .collect();
 
         assert_eq!(
@@ -468,6 +505,7 @@ mod tests {
                 coroutines_matched: 1,
                 members_dropped: 2,
                 members_deduplicated: 1,
+                captures_kept: 0,
             }
         );
 
@@ -503,5 +541,116 @@ mod tests {
         let found = drop_members_of_other_states(&mut types, &renamed);
         assert_eq!(found.coroutines_seen, 1);
         assert_eq!(found.coroutines_matched, 0);
+    }
+
+    /// An `async move` block's captures are its storage in every state, at
+    /// the one offset. rustc lists them the same way it lists an `async
+    /// fn`'s dead arguments — once, at the `Unresumed` slot — so the kind
+    /// in the env's name is what keeps a suspended state's captures and
+    /// strips only the terminal states, where the block has dropped them.
+    #[test]
+    fn test_async_block_states_keep_captures_until_the_block_returns() {
+        use crate::bundle::{
+            BundleTypeId, MemberDef, StringInterner, TypeDef, TypeTable, VariantDef, VariantShape,
+        };
+        use std::collections::BTreeMap;
+
+        let mut strings = StringInterner::new();
+        let mut s = |n: &str| strings.intern(n);
+        let (lockn, txn, guardn, awaiteen, envn) =
+            (s("lock"), s("tx"), s("_guard"), s("__awaitee"), s("env"));
+        let u32t = BundleTypeId(0);
+        let m = |name, offset| MemberDef {
+            name,
+            ty: u32t,
+            offset,
+        };
+        let state = |members| TypeDef::Struct {
+            name: envn,
+            size: 40,
+            members,
+        };
+        let variant = |ty| VariantDef {
+            name: envn,
+            discr_values: None,
+            payload: MemberDef {
+                name: envn,
+                ty,
+                offset: 0,
+            },
+            decl: None,
+            await_site: None,
+        };
+
+        // The `futurelock` fixture's background block, as rustc lists it.
+        let mut types = TypeTable {
+            types: vec![
+                TypeDef::Base {
+                    name: s("u32"),
+                    size: 4,
+                    encoding: crate::Encoding::Unsigned,
+                },
+                // 1: Unresumed — the two captures.
+                state(vec![m(lockn, 16), m(txn, 0)]),
+                // 2: Suspend0 — the awaitee beside both captures, one of them
+                // (in the source) not yet consumed.
+                state(vec![m(awaiteen, 32), m(lockn, 16), m(txn, 0)]),
+                // 3: Suspend1 — a body local beside the same captures.
+                state(vec![m(guardn, 8), m(awaiteen, 32), m(lockn, 16), m(txn, 0)]),
+                // 4, 5: the terminal states, listing captures the block has
+                // dropped on its way out.
+                state(vec![m(lockn, 16), m(txn, 0)]),
+                state(vec![m(lockn, 16), m(txn, 0)]),
+                TypeDef::Enum {
+                    name: envn,
+                    size: 40,
+                    shape: VariantShape {
+                        discr: None,
+                        variants: (1..=5).map(|i| variant(BundleTypeId(i))).collect(),
+                    },
+                },
+            ],
+            debug_formats: BTreeMap::new(),
+            name_index: vec![],
+            ..Default::default()
+        };
+        let env = "app::start::{async_fn#0}::{async_block_env#0}";
+        let names: Vec<Option<String>> = [
+            "u32",
+            "Unresumed",
+            "Suspend0",
+            "Suspend1",
+            "Returned",
+            "Panicked",
+        ]
+        .iter()
+        .map(|state| Some(format!("{env}::{state}")))
+        .chain([Some(env.to_owned())])
+        .collect();
+
+        assert_eq!(
+            drop_members_of_other_states(&mut types, &names),
+            StatePass {
+                coroutines_seen: 1,
+                coroutines_matched: 1,
+                members_dropped: 4,
+                members_deduplicated: 0,
+                captures_kept: 4,
+            }
+        );
+
+        let members = |i: usize| match &types.types[i] {
+            TypeDef::Struct { members, .. } => members.clone(),
+            other => panic!("{other:?} is not a struct"),
+        };
+        // The suspended states keep their captures, in rustc's order.
+        assert_eq!(members(2), vec![m(awaiteen, 32), m(lockn, 16), m(txn, 0)]);
+        assert_eq!(
+            members(3),
+            vec![m(guardn, 8), m(awaiteen, 32), m(lockn, 16), m(txn, 0)]
+        );
+        // The terminal states lose them.
+        assert_eq!(members(4), vec![]);
+        assert_eq!(members(5), vec![]);
     }
 }

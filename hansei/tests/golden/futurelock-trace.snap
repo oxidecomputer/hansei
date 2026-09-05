@@ -9,7 +9,7 @@ Waiting on: a tokio::sync::Mutex (semaphore ADDR1): 1 permit requested, 0 availa
 #1  async fn      tokio::sync::mutex::Mutex::acquire<()>
       awaiting at tokio/src/sync/mutex.rs:LINE (Suspend1, 0 locals)
 #2  async block   tokio::sync::mutex::Mutex::lock::{async_fn#0}<()>
-      awaiting at tokio/src/sync/mutex.rs:LINE (Suspend0, 0 locals)
+      awaiting at tokio/src/sync/mutex.rs:LINE (Suspend0, 1 local)
 #3  async fn      tokio::sync::mutex::Mutex::lock<()>
       awaiting at tokio/src/sync/mutex.rs:LINE (Suspend0, 0 locals)
 #4  async fn      futurelock::do_async_thing

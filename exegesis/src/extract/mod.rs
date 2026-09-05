@@ -175,6 +175,9 @@ pub struct ExtractStats {
     /// dropped as an exact repeat of one already listed.
     pub state_members_dropped: usize,
     pub state_members_deduplicated: usize,
+    /// Members matching `Unresumed`'s that a block's suspended state kept
+    /// as its captures.
+    pub state_captures_kept: usize,
     /// Task entries whose provenance carries declaration coordinates.
     pub provenance_located: usize,
     /// The producer's rustc version when it predates [`RUSTC_FLOOR`].
@@ -240,6 +243,7 @@ impl fmt::Display for ExtractStats {
             "  members deduplicated:   {}",
             self.state_members_deduplicated
         )?;
+        writeln!(f, "  captures kept:          {}", self.state_captures_kept)?;
         writeln!(f, "vtable concrete types:")?;
         writeln!(f, "  hints:                  {}", self.vtable_type_hints)?;
         writeln!(f, "  rooted:                 {}", self.vtable_type_roots)?;
@@ -1277,6 +1281,7 @@ fn extract_from_view(
     stats.coroutines_matched = counts.states.coroutines_matched;
     stats.state_members_dropped = counts.states.members_dropped;
     stats.state_members_deduplicated = counts.states.members_deduplicated;
+    stats.state_captures_kept = counts.states.captures_kept;
 
     let task_normalized = normalized_value_index(&by_symbol);
     let dyn_normalized = normalized_value_index(&dyn_table);

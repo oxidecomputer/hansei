@@ -313,6 +313,37 @@ fn assert_format(program: &str, bundle: &Bundle, type_name: &str, expected: &str
     }
 }
 
+/// The members a coroutine state lists, by name, in the bundle's order.
+///
+/// The `.snap` summaries name a coroutine's states and where each
+/// suspends, not what each holds, and the state-stripping pass
+/// (`drop_members_of_other_states`) decides the latter from the env
+/// kind in the type's name. Pinning a state's members here is what
+/// catches that pass stripping a capture the state still owns, or
+/// keeping an argument it does not — the acceptance suite's `locals:`
+/// expectations are blessed from the tool's own output, so they cannot.
+fn assert_state_members(program: &str, bundle: &Bundle, type_name: &str, expected: &[&str]) {
+    let mut ids = bundle.types.find_by_name(&bundle.strings, type_name);
+    let Some(id) = ids.next() else {
+        panic!("{program}: no type named {type_name}");
+    };
+    assert!(
+        ids.next().is_none(),
+        "{program}: {type_name} names more than one type"
+    );
+    let members: Vec<&str> = match bundle.types.get(id) {
+        Some(TypeDef::Struct { members, .. }) => members
+            .iter()
+            .map(|m| bundle.strings.get(m.name).unwrap())
+            .collect(),
+        other => panic!("{program}: {type_name} is {other:?}, not a struct"),
+    };
+    assert_eq!(
+        members, expected,
+        "{program}: {type_name} lists unexpected members"
+    );
+}
+
 /// The member-name chain a walk row bound to, in `--explain-walk`'s
 /// spelling.
 ///
@@ -671,6 +702,33 @@ fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
         );
     }
     if program == "futurelock" {
+        // What the state-stripping pass leaves of three coroutines, from
+        // the raw DWARF's listing of every capture in every state. The
+        // background task's block captures `lock` and `tx`, and both are
+        // its live storage while it waits on the lock, so its suspended
+        // state keeps them. `do_stuff`'s `lock` is an argument still live
+        // at its first suspend: rustc relocates it to a saved slot and
+        // lists it twice, and one copy survives. `start_background_task`
+        // moves its `lock` into the block before ever suspending, so the
+        // stale copy at its `Unresumed` slot goes.
+        assert_state_members(
+            program,
+            bundle,
+            "futurelock::start_background_task::{async_fn#0}::{async_block_env#0}::Suspend0",
+            &["__awaitee", "__1", "lock", "tx"],
+        );
+        assert_state_members(
+            program,
+            bundle,
+            "futurelock::do_stuff::{async_fn_env#0}::Suspend0",
+            &["lock", "future1", "disabled", "futures", "__awaitee"],
+        );
+        assert_state_members(
+            program,
+            bundle,
+            "futurelock::start_background_task::{async_fn_env#0}::Suspend0",
+            &["__awaitee", "__1", "__2", "__3"],
+        );
         // The timer formatter behind `sleep`/`timeout`, resolved end to end:
         // the deadline tick out of the entry's `StateCell` (crossing the
         // `Option<TimerShared>` variant), and the wheel clock reached through
