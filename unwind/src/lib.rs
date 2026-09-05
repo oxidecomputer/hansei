@@ -453,21 +453,19 @@ impl<T: Target> Unwinder<'_, T> {
         let encoding = fde.cie().encoding();
 
         // Compute the CFA (Canonical Frame Address) for the previous function.
-        let cfa = self.compute_cfa(regs, row.cfa(), encoding, object)?;
+        let cfa = self.evaluate_cfa(regs, row.cfa(), encoding, object)?;
 
-        let mut modified_regs = Vec::new();
         let mut prev_regs = Regs::default();
         for reg in REGS {
-            if let Some(value) = self.restore_register(reg, regs, cfa, row)? {
+            if let Some(value) = self.restore_register(reg, regs, cfa, row, encoding, object)? {
                 prev_regs[reg] = value;
-                modified_regs.push(reg);
             }
         }
 
         // An undefined return address is how the CFI says the stack ends
         // — it is what glibc's thread entry and the program's own
         // `_start` carry — so this is the bottom, not a failure.
-        let Some(prev_pc) = self.restore_register(RIP, regs, cfa, row)? else {
+        let Some(prev_pc) = self.restore_register(RIP, regs, cfa, row, encoding, object)? else {
             return Ok(Pop::End);
         };
 
@@ -490,6 +488,8 @@ impl<T: Target> Unwinder<'_, T> {
         regs: &Regs,
         cfa: u64,
         row: &gimli::UnwindTableRow<usize>,
+        encoding: gimli::Encoding,
+        object: &ObjectInfo,
     ) -> Result<Option<u64>> {
         match row.register(reg.into()).unwrap_or(RegisterRule::Undefined) {
             RegisterRule::Undefined => {
@@ -511,14 +511,25 @@ impl<T: Target> Unwinder<'_, T> {
                 // Value is CFA + offset (not a pointer).
                 Ok(Some((cfa as i64 + offset) as u64))
             }
-            RegisterRule::Expression(_) | RegisterRule::ValExpression(_) => {
-                Err(anyhow::anyhow!("Register expressions not supported"))
+            // The expression forms are how a signal trampoline's CFI
+            // says where the kernel saved each register: an address
+            // computed from the stack pointer, into the ucontext.
+            RegisterRule::Expression(expr) => {
+                let addr = self.evaluate(&expr, encoding, regs, Some(cfa), object)?;
+                Ok(Some(self.target.read_u64(addr)?))
             }
+            RegisterRule::ValExpression(expr) => Ok(Some(self.evaluate(
+                &expr,
+                encoding,
+                regs,
+                Some(cfa),
+                object,
+            )?)),
             e => Err(anyhow::anyhow!("Unsupported register rule {e:?} for {reg}")),
         }
     }
 
-    fn compute_cfa(
+    fn evaluate_cfa(
         &self,
         regs: &Regs,
         cfa_rule: &CfaRule<usize>,
@@ -531,88 +542,104 @@ impl<T: Target> Unwinder<'_, T> {
                 let reg_val = regs[reg.into()];
                 Ok((reg_val as i64 + offset) as u64)
             }
-            CfaRule::Expression(expr) => {
-                let expression = expr.get(&object.eh_frame)?;
-                let mut eval = expression.evaluation(encoding);
-                let mut result = eval.evaluate().context("initial CFA evaluation failed")?;
+            CfaRule::Expression(expr) => self.evaluate(expr, encoding, regs, None, object),
+        }
+    }
 
-                loop {
-                    match result {
-                        EvaluationResult::Complete => break,
+    /// Run a CFI expression to the one number it yields — an address
+    /// or a value; the rule that named the expression knows which.
+    /// Registers come from this frame, memory from the target, and the
+    /// CFA from `cfa` when the rule is a register's, since a CFA
+    /// expression asking for the CFA would be asking for itself.
+    fn evaluate(
+        &self,
+        expr: &gimli::UnwindExpression<usize>,
+        encoding: gimli::Encoding,
+        regs: &Regs,
+        cfa: Option<u64>,
+        object: &ObjectInfo,
+    ) -> Result<u64> {
+        let expression = expr.get(&object.eh_frame)?;
+        let mut eval = expression.evaluation(encoding);
+        let mut result = eval
+            .evaluate()
+            .context("initial CFI expression evaluation failed")?;
 
-                        // CASE A: The expression needs a register value (e.g., DW_OP_breg7)
-                        EvaluationResult::RequiresRegister { register, .. } => {
-                            let val = regs[register.into()];
-                            result = eval
-                                .resume_with_register(Value::Generic(val))
-                                .context("failed to resume with CFA register")?;
-                        }
+        loop {
+            match result {
+                EvaluationResult::Complete => break,
 
-                        // CASE B: The expression needs to read memory (e.g., DW_OP_deref)
-                        // This happens if the CFA is stored on the stack of the *previous* frame
-                        EvaluationResult::RequiresMemory { address, size, .. } => {
-                            let val = match size {
-                                8 => self.target.read_u64(address)?,
-                                4 => self.target.read_u32(address)? as u64,
-                                2 => self.target.read_u16(address)? as u64,
-                                1 => self.target.read_u8(address)? as u64,
-                                _ => anyhow::bail!("CFA had unexpected read size of {size}"),
-                            };
-                            result = eval
-                                .resume_with_memory(Value::Generic(val))
-                                .context("failed to resume with CFA memory read")?;
-                        }
-
-                        EvaluationResult::RequiresRelocatedAddress(addr) => {
-                            // Assume no relocations and just use address as-is. Is this a valid
-                            // assumption? Not sure.
-                            result = eval
-                                .resume_with_relocated_address(addr)
-                                .context("failed to resume with CFA relocated")?;
-                        }
-
-                        // ERROR CASES:
-                        // A CFA expression calculating the CFA cannot ask for the Frame Base or CFA.
-                        // That would be infinite recursion.
-                        EvaluationResult::RequiresFrameBase => {
-                            anyhow::bail!(
-                                "CFA expression requires FrameBase (circular dependency)"
-                            );
-                        }
-                        EvaluationResult::RequiresCallFrameCfa => {
-                            anyhow::bail!("CFA expression requires CFA (circular dependency)");
-                        }
-
-                        r => anyhow::bail!("Unsupported DWARF Op in CFA expression: {r:?}"),
-                    }
+                // The expression needs a register value (e.g., DW_OP_breg7)
+                EvaluationResult::RequiresRegister { register, .. } => {
+                    let val = regs[register.into()];
+                    result = eval
+                        .resume_with_register(Value::Generic(val))
+                        .context("failed to resume with a register")?;
                 }
 
-                // The result of a CFA expression is the address of the CFA.
-                let final_results = eval.result();
+                // The expression needs to read memory (e.g., DW_OP_deref)
+                EvaluationResult::RequiresMemory { address, size, .. } => {
+                    let val = match size {
+                        8 => self.target.read_u64(address)?,
+                        4 => self.target.read_u32(address)? as u64,
+                        2 => self.target.read_u16(address)? as u64,
+                        1 => self.target.read_u8(address)? as u64,
+                        _ => anyhow::bail!("CFI expression had unexpected read size of {size}"),
+                    };
+                    result = eval
+                        .resume_with_memory(Value::Generic(val))
+                        .context("failed to resume with a memory read")?;
+                }
 
-                match final_results.first() {
-                    Some(gimli::Piece {
-                        location: gimli::Location::Address { address },
-                        ..
-                    }) => {
-                        // In some DWARF contexts, a "Location" result implies the value IS the address.
-                        Ok(*address)
-                    }
-                    Some(gimli::Piece {
-                        location: gimli::Location::Value { value },
-                        ..
-                    }) => {
-                        // In others, it returns a Value literal.
-                        match value {
-                            Value::Generic(v) => Ok(*v),
-                            _ => anyhow::bail!("CFA resolved to non-generic value"),
-                        }
-                    }
-                    _ => anyhow::bail!(
-                        "CFA expression {final_results:?} did not resolve to a single address/value"
-                    ),
+                EvaluationResult::RequiresRelocatedAddress(addr) => {
+                    // Assume no relocations and just use address as-is. Is this a valid
+                    // assumption? Not sure.
+                    result = eval
+                        .resume_with_relocated_address(addr)
+                        .context("failed to resume with a relocated address")?;
+                }
+
+                EvaluationResult::RequiresCallFrameCfa => {
+                    let Some(cfa) = cfa else {
+                        anyhow::bail!("CFA expression requires CFA (circular dependency)");
+                    };
+                    result = eval
+                        .resume_with_call_frame_cfa(cfa)
+                        .context("failed to resume with the CFA")?;
+                }
+
+                // A CFI expression has no frame base to ask for.
+                EvaluationResult::RequiresFrameBase => {
+                    anyhow::bail!("CFI expression requires FrameBase");
+                }
+
+                r => anyhow::bail!("Unsupported DWARF Op in CFI expression: {r:?}"),
+            }
+        }
+
+        let final_results = eval.result();
+
+        match final_results.first() {
+            Some(gimli::Piece {
+                location: gimli::Location::Address { address },
+                ..
+            }) => {
+                // In some DWARF contexts, a "Location" result implies the value IS the address.
+                Ok(*address)
+            }
+            Some(gimli::Piece {
+                location: gimli::Location::Value { value },
+                ..
+            }) => {
+                // In others, it returns a Value literal.
+                match value {
+                    Value::Generic(v) => Ok(*v),
+                    _ => anyhow::bail!("CFI expression resolved to non-generic value"),
                 }
             }
+            _ => anyhow::bail!(
+                "CFI expression {final_results:?} did not resolve to a single address/value"
+            ),
         }
     }
 }
