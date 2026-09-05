@@ -945,7 +945,7 @@ fn native_frames(view: &BundleView<'_>, frames: &[unwind::Frame]) -> Vec<stackjo
                 Some(SymbolLookup::Missing) | None => Vec::new(),
             };
             stackjoin::NativeFrame {
-                pc: f.pc,
+                pc: f.lookup_pc(),
                 name,
                 futures,
             }
@@ -1933,17 +1933,21 @@ nothing deeper is on the native stack
                 regs: proc::Regs::default(),
                 symbol: Some(sym),
                 heuristic: false,
+                interrupted: false,
             },
             unwind::Frame {
                 pc: 0x9000,
                 regs: proc::Regs::default(),
                 symbol: None,
                 heuristic: false,
+                interrupted: false,
             },
         ];
         let laid = super::native_frames(&view, &frames);
         assert_eq!(laid.len(), 2);
-        assert_eq!(laid[0].pc, 0x7004);
+        // A suspended frame is placed by the byte before its return
+        // address, which is what the poll range is tested against.
+        assert_eq!(laid[0].pc, 0x7003);
         assert_eq!(laid[0].futures, vec![*ty]);
         assert_eq!(
             laid[0].name,

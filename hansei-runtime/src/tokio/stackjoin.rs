@@ -23,8 +23,9 @@ use std::ops::Range;
 /// yields them.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct NativeFrame {
-    /// The frame's program counter, tested against the poll symbol's
-    /// address range.
+    /// The address the frame is looked up by — the byte before a
+    /// return address, the instruction itself for an interrupted
+    /// frame — tested against the poll symbol's address range.
     pub pc: u64,
     /// The demangled symbol name, empty for a frame without one. The
     /// classifier reads it only to recognize panic plumbing; what a

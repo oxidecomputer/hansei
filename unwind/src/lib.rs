@@ -89,6 +89,30 @@ pub struct Frame {
     /// listing does not mark it: [`Backtrace::truncated`] already says
     /// which object the walk could not source.
     pub heuristic: bool,
+    /// Whether `pc` is the instruction the thread will run next rather
+    /// than a return address: the innermost frame, a signal trampoline
+    /// (the kernel resumes it, nothing called it), and the frame the
+    /// trampoline restores. Every other frame is suspended at a call,
+    /// and its pc points *after* it.
+    pub interrupted: bool,
+}
+
+impl Frame {
+    /// The address this frame is looked up by, in CFI and in a symbol
+    /// table. A return address points after the call that made it,
+    /// which for a call in tail position — a `call` to a function that
+    /// never returns, ending its caller — is the first byte of the next
+    /// function; the byte before is inside the call, and so inside the
+    /// function that made it. An interrupted instruction is the frame's
+    /// own, and stepping back from a function's first instruction would
+    /// land in whatever precedes it.
+    pub fn lookup_pc(&self) -> u64 {
+        lookup_pc(self.pc, self.interrupted)
+    }
+}
+
+fn lookup_pc(pc: u64, interrupted: bool) -> u64 {
+    if interrupted { pc } else { pc.wrapping_sub(1) }
 }
 
 /// Every thread's backtrace, plus what the walk could not source: the
@@ -262,13 +286,13 @@ impl<T: Target> Unwinder<'_, T> {
         let mut frames = Vec::new();
         let mut truncated = None;
         let mut regs = initial_regs.clone();
-        let mut pc = regs.rip;
 
         let initial_frame = Frame {
             pc: regs.rip,
             regs: regs.clone(),
             symbol: self.target.lookup_symbol_by_addr(regs.rip),
             heuristic: false,
+            interrupted: true,
         };
         frames.push(initial_frame);
 
@@ -283,12 +307,12 @@ impl<T: Target> Unwinder<'_, T> {
         {
             regs.rip = ret;
             regs.rsp += size_of::<u64>() as u64;
-            pc = ret;
             frames.push(Frame {
                 pc: ret,
-                symbol: self.symbol_at(ret),
+                symbol: self.symbol_at(ret, false),
                 regs: regs.clone(),
                 heuristic: false,
+                interrupted: false,
             });
         }
 
@@ -297,17 +321,12 @@ impl<T: Target> Unwinder<'_, T> {
             if !self.mappings.contains_addr(regs.rip) {
                 break;
             }
-            if !self.mappings.contains_addr(pc) {
-                pc -= size_of::<u64>() as u64;
-                if !self.mappings.contains_addr(pc) {
-                    break;
-                }
-            }
 
-            // PC will point to directly after function generally, or outside the function
-            // entirely for functions without an epilogue. Adjust it to point to the
-            // function.
-            pc -= 1;
+            // The frame being popped is the last one pushed; where it
+            // is looked up depends on whether its pc is a return
+            // address or the interrupted instruction itself.
+            let frame = frames.last().expect("the innermost frame is pushed first");
+            let pc = frame.lookup_pc();
 
             // No object with unwind information covers this pc — the
             // vDSO, or a mapping whose file has gone. The frame pointer
@@ -331,8 +350,19 @@ impl<T: Target> Unwinder<'_, T> {
                 }
             };
 
+            // A frame restored by a signal trampoline is what the pop
+            // says about the frame it popped through: the trampoline's
+            // own pc is where the kernel's sigreturn resumes, not a
+            // return address, so it is named by that pc. Its CFI was
+            // found by the byte before because the trampoline's FDE
+            // starts one byte early for exactly this lookup.
+            if prev_frame.interrupted {
+                let trampoline = frames.last_mut().expect("the popped frame is pushed");
+                trampoline.interrupted = true;
+                trampoline.symbol = self.target.lookup_symbol_by_addr(trampoline.pc);
+            }
+
             regs = prev_frame.regs.clone();
-            pc = regs.rip;
 
             frames.push(prev_frame);
         }
@@ -386,9 +416,10 @@ impl<T: Target> Unwinder<'_, T> {
         match popped {
             Some(prev_regs) => Pop::Frame(Box::new(Frame {
                 pc: prev_regs.rip,
-                symbol: self.symbol_at(prev_regs.rip),
+                symbol: self.symbol_at(prev_regs.rip, false),
                 regs: prev_regs,
                 heuristic: true,
+                interrupted: false,
             })),
             None => Pop::Lost(self.lost_at(pc)),
         }
@@ -406,14 +437,12 @@ impl<T: Target> Unwinder<'_, T> {
         }
     }
 
-    /// The symbol a return address belongs to. A return address points
-    /// *after* the call, which for a call in tail position can be the
-    /// first byte of the next function; stepping back one finds the
-    /// function that actually made the call.
-    fn symbol_at(&self, addr: u64) -> Option<SymbolBuf> {
+    /// The symbol a popped frame's pc belongs to, looked up the way
+    /// [`Frame::lookup_pc`] says: the byte before a return address,
+    /// the instruction itself when a signal trampoline restored it.
+    fn symbol_at(&self, pc: u64, interrupted: bool) -> Option<SymbolBuf> {
         self.target
-            .lookup_symbol_by_addr(addr)
-            .or_else(|| self.target.lookup_symbol_by_addr(addr - 1))
+            .lookup_symbol_by_addr(lookup_pc(pc, interrupted))
     }
 
     /// Attempt to pop the frame to the previous function based on .eh_frame unwind info.
@@ -451,6 +480,10 @@ impl<T: Target> Unwinder<'_, T> {
         };
         let row = fde.unwind_info_for_address(&object.eh_frame, &object.bases, ctx, pc)?;
         let encoding = fde.cie().encoding();
+        // A signal trampoline's CFI restores the registers the kernel
+        // saved when it delivered the signal, so the frame it pops to
+        // is stopped at the interrupted instruction, not after a call.
+        let interrupted = fde.cie().is_signal_trampoline();
 
         // Compute the CFA (Canonical Frame Address) for the previous function.
         let cfa = self.evaluate_cfa(regs, row.cfa(), encoding, object)?;
@@ -474,9 +507,10 @@ impl<T: Target> Unwinder<'_, T> {
 
         let prev_frame = Frame {
             pc: prev_pc,
-            symbol: self.symbol_at(prev_regs.rip),
+            symbol: self.symbol_at(prev_regs.rip, interrupted),
             regs: prev_regs,
             heuristic: false,
+            interrupted,
         };
 
         Ok(Pop::Frame(Box::new(prev_frame)))
@@ -743,81 +777,16 @@ impl<'a> ObjectInfo<'a> {
 }
 
 #[cfg(test)]
+mod cfi_tests;
+#[cfg(test)]
+mod testhelper;
+
+#[cfg(test)]
 mod fallback_tests {
     use super::{Backtrace, MissingCfi, Unwinder};
+    use crate::testhelper::{FakeTarget, HEAP, STACK, TEXT, names, symbol, target};
     use gimli::UnwindContext;
-    use proc::{LoadedObjectWithPath, MapFlags, Mappings, Regs, SymbolBuf, Target};
-
-    /// Memory regions and a mapping table, and nothing else: with no
-    /// parsed objects, every pop goes through the frame-pointer
-    /// fallback, which is what these tests pin.
-    struct FakeTarget {
-        mem: Vec<(u64, Vec<u8>)>,
-        mappings: Mappings,
-    }
-
-    impl Target for FakeTarget {
-        fn read_bytes(&self, addr: u64, len: u64) -> proc::Result<&[u8]> {
-            for (base, bytes) in &self.mem {
-                if addr >= *base && addr + len <= base + bytes.len() as u64 {
-                    let at = (addr - base) as usize;
-                    return Ok(&bytes[at..at + len as usize]);
-                }
-            }
-            Err(proc::Error::unmapped(addr, len))
-        }
-        fn lookup_symbol_by_addr(&self, _: u64) -> Option<SymbolBuf> {
-            None
-        }
-        fn lookup_symbol_by_name(&self, _: &str) -> Option<SymbolBuf> {
-            None
-        }
-        fn symbols(&self) -> proc::Result<Vec<SymbolBuf>> {
-            Ok(Vec::new())
-        }
-        fn mappings(&self) -> proc::Result<Mappings> {
-            unreachable!("the tests hand the unwinder its mappings")
-        }
-        fn lwps(&self) -> proc::Result<Vec<proc::LwpInfo>> {
-            Ok(Vec::new())
-        }
-        fn tls_var_addr(&self, _: &Regs, _: &SymbolBuf) -> proc::Result<Option<u64>> {
-            Ok(None)
-        }
-    }
-
-    const TEXT: u64 = 0x40_0000;
-    const HEAP: u64 = 0x60_0000;
-    const STACK: u64 = 0x7000_0000;
-
-    fn mapping(vaddr: u64, size: u64, flags: u32) -> LoadedObjectWithPath {
-        LoadedObjectWithPath {
-            path: None,
-            vaddr,
-            size,
-            flags: MapFlags(flags),
-        }
-    }
-
-    /// A target whose stack memory holds the given words, with a text,
-    /// a heap and a stack mapping. No CFI anywhere.
-    fn target(stack_words: &[(u64, u64)]) -> FakeTarget {
-        const READ: u32 = 0x04;
-        const WRITE: u32 = 0x02;
-        const EXEC: u32 = 0x01;
-        let mem = stack_words
-            .iter()
-            .map(|&(addr, word)| (addr, word.to_le_bytes().to_vec()))
-            .collect();
-        let mappings = [
-            mapping(TEXT, 0x1000, READ | EXEC),
-            mapping(HEAP, 0x1000, READ | WRITE),
-            mapping(STACK, 0x1_0000, READ | WRITE),
-        ]
-        .into_iter()
-        .collect();
-        FakeTarget { mem, mappings }
-    }
+    use proc::Regs;
 
     fn walk(target: &FakeTarget, regs: &Regs, missing: &[MissingCfi]) -> Backtrace {
         let unwinder = Unwinder {
@@ -904,6 +873,37 @@ mod fallback_tests {
         assert!(why.contains("none of its pages are in the core"), "{why}");
     }
 
+    /// A frame is named for the function its lookup pc is in: the
+    /// innermost frame stopped at a function's first byte is that
+    /// function's, and a return address that is the first byte of the
+    /// *next* function — a `call` that ended its caller — belongs to
+    /// the caller, not the function that happens to follow it.
+    #[test]
+    fn test_frames_are_named_by_their_lookup_pc() {
+        let regs = Regs {
+            rip: TEXT + 0x10,
+            rsp: STACK + 0xf0,
+            rbp: STACK + 0x100,
+            ..Regs::default()
+        };
+        let mut t = target(&[
+            (STACK + 0x100, STACK + 0x200),
+            (STACK + 0x108, TEXT + 0x30), // fn_c's first byte: fn_b's tail call
+            (STACK + 0x200, STACK + 0x300),
+            (STACK + 0x208, TEXT + 0x45), // inside fn_d
+        ]);
+        t.symbols = vec![
+            symbol("fn_a", TEXT + 0x10, 0x10),
+            symbol("fn_b", TEXT + 0x20, 0x10),
+            symbol("fn_c", TEXT + 0x30, 0x10),
+            symbol("fn_d", TEXT + 0x40, 0x10),
+        ];
+        let bt = walk(&t, &regs, &[]);
+        assert_eq!(names(&bt), ["fn_a", "fn_b", "fn_d"]);
+        let lookups: Vec<u64> = bt.frames.iter().map(|f| f.lookup_pc()).collect();
+        assert_eq!(lookups, [TEXT + 0x10, TEXT + 0x2f, TEXT + 0x44]);
+    }
+
     /// The listing prints guessed frames like any other and stops at
     /// `max_frames`; why the walk ended is [`Backtrace::truncated`]'s
     /// to say, not the listing's.
@@ -917,6 +917,7 @@ mod fallback_tests {
             },
             symbol: None,
             heuristic,
+            interrupted: false,
         };
         let bt = Backtrace {
             frames: vec![frame(0x10, false), frame(0x20, true)],

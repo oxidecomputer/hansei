@@ -31,6 +31,9 @@ const PROGRAM: &str = "core-target";
 /// stack. The name is mangled in the symtab, so it is matched after
 /// demangling.
 const PARK_FN: &str = "core_target::park_forever";
+/// A function symbol the fixture exports unmangled, with an entry
+/// address to stop a thread on.
+const MARKER_FN: &str = "core_marker_fn";
 
 fn workspace_root() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap()
@@ -312,16 +315,36 @@ fn test_a_kernel_shaped_core_unwinds() {
 /// A copy of the core doctored to look like `tid` called through a null
 /// function pointer: its pc is 0, and the address the faulting `call`
 /// pushed — the thread's real pc — sits at the top of its stack.
-fn with_null_call(core: &Path, tid: u32, rip: u64, rsp: u64) -> (tempfile::TempDir, PathBuf) {
+/// A copy of the core with thread `tid` stopped as if it had just
+/// been called from `caller`: the call's return address — the pc
+/// `caller` was walked at — pushed at the top of a fresh frame, the
+/// thread's pc at `rip`, and its callee-saved registers as `caller`
+/// had them, so the walk below the doctored frame is the original
+/// thread's from that frame on.
+///
+/// The thread's registers are in its `NT_PRSTATUS` note, and the
+/// pushed word lands in whichever dumped segment holds that stack.
+fn with_call_from(
+    core: &Path,
+    tid: u32,
+    rip: u64,
+    caller: &proc::Regs,
+) -> (tempfile::TempDir, PathBuf) {
     const PT_LOAD: u32 = 1;
     const PT_NOTE: u32 = 4;
     const NT_PRSTATUS: u32 = 1;
     // Offsets into `struct elf_prstatus`: the thread id, then `pr_reg`,
-    // within which `rip` and `rsp` sit at their `user_regs_struct`
-    // indices (16 and 19).
+    // within which each register sits at its `user_regs_struct` index.
     const PR_PID: usize = 32;
-    const PR_RIP: usize = 112 + 16 * 8;
-    const PR_RSP: usize = 112 + 19 * 8;
+    const PR_REG: usize = 112;
+    const R15: usize = 0;
+    const R14: usize = 1;
+    const R13: usize = 2;
+    const R12: usize = 3;
+    const RBP: usize = 4;
+    const RBX: usize = 5;
+    const RIP: usize = 16;
+    const RSP: usize = 19;
 
     let mut bytes = std::fs::read(core).expect("failed to read the core");
     let e_phoff = u64::from_le_bytes(bytes[0x20..0x28].try_into().unwrap());
@@ -344,8 +367,8 @@ fn with_null_call(core: &Path, tid: u32, rip: u64, rsp: u64) -> (tempfile::TempD
         })
         .collect();
 
-    // The faulting call: pc 0, return address pushed at rsp - 8.
-    let pushed_at = rsp - 8;
+    // The call: its return address pushed at the caller's rsp - 8.
+    let pushed_at = caller.rsp - 8;
     let &(_, p_offset, p_vaddr, _) = phdrs
         .iter()
         .find(|&&(p_type, _, p_vaddr, p_filesz)| {
@@ -353,7 +376,7 @@ fn with_null_call(core: &Path, tid: u32, rip: u64, rsp: u64) -> (tempfile::TempD
         })
         .expect("no dumped segment holds the top of the thread's stack");
     let at = (p_offset + (pushed_at - p_vaddr)) as usize;
-    bytes[at..at + 8].copy_from_slice(&rip.to_le_bytes());
+    bytes[at..at + 8].copy_from_slice(&caller.rip.to_le_bytes());
 
     // The thread's registers: walk the note segment to its NT_PRSTATUS.
     let mut patched = false;
@@ -371,8 +394,18 @@ fn with_null_call(core: &Path, tid: u32, rip: u64, rsp: u64) -> (tempfile::TempD
                 && u32::from_le_bytes(bytes[desc + PR_PID..desc + PR_PID + 4].try_into().unwrap())
                     == tid
             {
-                bytes[desc + PR_RIP..desc + PR_RIP + 8].copy_from_slice(&0u64.to_le_bytes());
-                bytes[desc + PR_RSP..desc + PR_RSP + 8].copy_from_slice(&pushed_at.to_le_bytes());
+                let mut set = |index: usize, value: u64| {
+                    let at = desc + PR_REG + index * 8;
+                    bytes[at..at + 8].copy_from_slice(&value.to_le_bytes());
+                };
+                set(RIP, rip);
+                set(RSP, pushed_at);
+                set(RBP, caller.rbp);
+                set(RBX, caller.rbx);
+                set(R12, caller.r12);
+                set(R13, caller.r13);
+                set(R14, caller.r14);
+                set(R15, caller.r15);
                 patched = true;
             }
             at = desc + (descsz as usize).next_multiple_of(4);
@@ -384,6 +417,18 @@ fn with_null_call(core: &Path, tid: u32, rip: u64, rsp: u64) -> (tempfile::TempD
     let doctored = dir.path().join("core");
     std::fs::write(&doctored, bytes).expect("failed to write the doctored core");
     (dir, doctored)
+}
+
+/// The parked worker's walk, and its id: the thread the doctoring
+/// tests rebuild a frame on.
+fn parked_worker(
+    stacks: &std::collections::BTreeMap<u32, unwind::Backtrace>,
+) -> (u32, &unwind::Backtrace) {
+    let (tid, bt) = stacks
+        .iter()
+        .find(|(_, bt)| demangled(bt).iter().any(|n| n.contains(PARK_FN)))
+        .expect("no parked worker to doctor");
+    (*tid, bt)
 }
 
 /// A thread that called through a null pointer faults with pc 0, which
@@ -398,17 +443,13 @@ fn test_a_null_call_unwinds_to_the_caller() {
         .expect("failed to unwind the core")
         .stacks;
 
-    let (tid, original) = stacks
-        .iter()
-        .find(|(_, bt)| demangled(bt).iter().any(|n| n.contains(PARK_FN)))
-        .expect("no parked worker to doctor");
-    let frame0 = &original.frames[0];
-    let (_dir, doctored) = with_null_call(core(), *tid, frame0.regs.rip, frame0.regs.rsp);
+    let (tid, original) = parked_worker(&stacks);
+    let (_dir, doctored) = with_call_from(core(), tid, 0, &original.frames[0].regs);
 
     let p = Proc::open_core(&doctored).expect("failed to open the doctored core");
     let crashed = &unwind::load_frames(&p)
         .expect("failed to unwind the doctored core")
-        .stacks[tid];
+        .stacks[&tid];
 
     assert_eq!(crashed.frames[0].pc, 0, "the null frame leads the walk");
     let pcs = |frames: &[unwind::Frame]| frames.iter().map(|f| f.pc).collect::<Vec<_>>();
@@ -417,6 +458,59 @@ fn test_a_null_call_unwinds_to_the_caller() {
         pcs(&original.frames),
         "past the null frame, the walk is the original thread's"
     );
+}
+
+/// A thread stopped on a function's first instruction — the `push`
+/// that a stack overflow faults in, a leaf's first load through a bad
+/// pointer — is looked up where it stopped, not one byte back in
+/// whatever precedes the function. Here the parked worker is rebuilt
+/// as if `park_forever`'s frame had just called `core_marker_fn`: the
+/// doctored walk is that function's entry frame followed by exactly
+/// the original frames from `park_forever` down, and the entry frame
+/// is named for the function it is in. Looked up one byte back, the
+/// walk pops through the preceding function's last row and lands
+/// somewhere else.
+#[test]
+fn test_a_stop_at_a_function_entry_pops_its_caller() {
+    let p = Proc::open_core(core()).expect("failed to open the core");
+    let stacks = unwind::load_frames(&p)
+        .expect("failed to unwind the core")
+        .stacks;
+    let entry = p
+        .lookup_symbol_by_name(MARKER_FN)
+        .expect("the fixture's marker function is in the symtab")
+        .st_value;
+
+    let (tid, original) = parked_worker(&stacks);
+    let names = demangled(original);
+    let park = names
+        .iter()
+        .position(|n| n.contains(PARK_FN))
+        .expect("the worker is parked");
+    let (_dir, doctored) = with_call_from(core(), tid, entry, &original.frames[park].regs);
+
+    let p = Proc::open_core(&doctored).expect("failed to open the doctored core");
+    let stopped = &unwind::load_frames(&p)
+        .expect("failed to unwind the doctored core")
+        .stacks[&tid];
+
+    let pcs = |frames: &[unwind::Frame]| frames.iter().map(|f| f.pc).collect::<Vec<_>>();
+    assert_eq!(
+        pcs(&stopped.frames[..1]),
+        [entry],
+        "the entry frame leads the walk: {:#?}",
+        demangled(stopped)
+    );
+    assert_eq!(
+        pcs(&stopped.frames[1..]),
+        pcs(&original.frames[park..]),
+        "past the entry frame, the walk is the original thread's from the caller down:\n{:#?}\nagainst\n{:#?}",
+        demangled(stopped),
+        &names[park..]
+    );
+    assert_eq!(demangled(stopped)[0], MARKER_FN);
+    assert!(stopped.frames[0].interrupted && !stopped.frames[1].interrupted);
+    assert_eq!(stopped.truncated, None, "{:#?}", demangled(stopped));
 }
 
 /// The rendered form callers actually print.

@@ -823,7 +823,7 @@ pub(crate) fn blocking_lwps<'s, T: proc::Target>(
             };
             if let Some((tid, _)) = stacks
                 .iter()
-                .find(|(_, bt)| bt.frames.iter().any(|f| range.contains(&f.pc)))
+                .find(|(_, bt)| bt.frames.iter().any(|f| range.contains(&f.lookup_pc())))
             {
                 map.insert(task.addr.0, *tid);
             }
