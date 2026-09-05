@@ -47,6 +47,13 @@ dyn: local_set::local_sleeper::{async_fn_env#0} (poll, drop_glue)
 dyn: local_set::main::{async_block#0}::{async_block_env#0} (poll, drop_glue)
 dyn: local_set::main::{async_block_env#0} (poll, drop_glue)
 
+[env-decls]
+env: local_set::joiner::{async_fn_env#0} @ local-set.rs:31
+env: local_set::local_acquirer::{async_fn_env#0} @ local-set.rs:24
+env: local_set::local_sleeper::{async_fn_env#0} @ local-set.rs:17
+env: local_set::main::{async_block#0}::{async_block_env#0} @ local-set.rs:54
+env: local_set::main::{async_block_env#0} @ local-set.rs:41
+
 [infra]
 header: ok
 vtable: ok

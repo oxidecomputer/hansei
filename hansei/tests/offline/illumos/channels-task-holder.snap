@@ -10,6 +10,6 @@ task 4
     waiting on: future tokio::sync::oneshot::Receiver<u32>
     waker: <empty>
     spawned at: src/bin/channels.rs:103:23
-    defined at: src/bin/channels.rs:52
+    defined at: src/bin/channels.rs:41
     held futures: 0
     join sets: 0

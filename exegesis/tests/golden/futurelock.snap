@@ -40,6 +40,15 @@ dyn: futurelock::main::{async_block_env#0} (poll, drop_glue)
 dyn: futurelock::start_background_task::{async_fn#0}::{async_block_env#0} (poll, drop_glue)
 dyn: futurelock::start_background_task::{async_fn_env#0} (poll, drop_glue)
 
+[env-decls]
+env: futurelock::do_async_thing::{async_fn_env#0} @ futurelock.rs:80
+env: futurelock::do_stuff::{async_fn#0}::{closure_env#0} @ select.rs:659
+env: futurelock::do_stuff::{async_fn_env#0} @ futurelock.rs:60
+env: futurelock::main::{async_block#0}::{async_block_env#0} @ futurelock.rs:20
+env: futurelock::main::{async_block_env#0} @ futurelock.rs:19
+env: futurelock::start_background_task::{async_fn#0}::{async_block_env#0} @ futurelock.rs:48
+env: futurelock::start_background_task::{async_fn_env#0} @ futurelock.rs:42
+
 [infra]
 header: ok
 vtable: ok

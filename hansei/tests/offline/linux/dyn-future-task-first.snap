@@ -10,6 +10,6 @@ task 3
     waiting on: future tokio::sync::oneshot::Receiver<u32>
     waker: <empty>
     spawned at: src/bin/dyn-future.rs:57:21
-    defined at: src/bin/dyn-future.rs:28
+    defined at: src/bin/dyn-future.rs:24
     held futures: 0
     join sets: 1 (1 task)

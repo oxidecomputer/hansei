@@ -353,6 +353,36 @@ fn assert_state_members(program: &str, bundle: &Bundle, type_name: &str, expecte
 /// Names rather than offsets because names are what the contract pins —
 /// offsets move between tokio versions and between platforms, the chain
 /// does not.
+/// The env-decl table's entry for the environment type named
+/// `type_name`, as (file, line).
+fn env_decl<'b>(program: &str, bundle: &'b Bundle, type_name: &str) -> (&'b str, u32) {
+    let loc = bundle
+        .types
+        .env_decls
+        .iter()
+        .find_map(|(id, loc)| {
+            let name = match &bundle.types.types[id.0 as usize] {
+                TypeDef::Enum { name, .. } | TypeDef::Struct { name, .. } => *name,
+                _ => return None,
+            };
+            (bundle.strings.get(name)? == type_name).then_some(loc)
+        })
+        .unwrap_or_else(|| panic!("{program}: {type_name} records no declaration"));
+    let file = bundle.strings.get(loc.file).expect("interned file");
+    (file, loc.line)
+}
+
+/// `type_name`'s environment is declared in the fixture's own source
+/// at line `expected`.
+fn assert_env_decl(program: &str, bundle: &Bundle, type_name: &str, expected: u32) {
+    let (file, line) = env_decl(program, bundle, type_name);
+    assert!(
+        file.ends_with(&format!("src/bin/{program}.rs")),
+        "{program}: {type_name} declared in {file}"
+    );
+    assert_eq!(line, expected, "{program}: {type_name}'s line");
+}
+
 fn walk_path(program: &str, bundle: &Bundle, role: WalkRole) -> String {
     let binding = &bundle.walks.entries[&role];
     assert!(
@@ -573,25 +603,67 @@ fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
          wake_by_ref: Symbol { wake_by_ref@+16 }, drop: Symbol { drop@+24 } }",
     );
     if program == "simple-await" {
-        // The env-decl table: an async fn's environment is declared
-        // where the fn is written, and that recorded site is what
-        // anchors a combinator frame's `constructed at` line.
-        let work_env = bundle
-            .types
-            .env_decls
-            .iter()
-            .find_map(|(id, loc)| {
-                let TypeDef::Enum { name, .. } = &bundle.types.types[id.0 as usize] else {
-                    return None;
-                };
-                (bundle.strings.get(*name)? == "simple_await::work::{async_fn_env#0}")
-                    .then_some(loc)
-            })
-            .expect("the work coroutine's env records its declaration");
-        let file = bundle.strings.get(work_env.file).expect("interned file");
-        assert!(file.ends_with("src/bin/simple-await.rs"), "{file}");
-        assert_eq!(work_env.line, 21);
-
+        // The env-decl table, from both of an async fn's sources: `work`
+        // is declared at its `fn` line, and `ready_value` — whose outer
+        // fn is inlined away, leaving only the resume fn — at its body's
+        // `{`, which for a one-line signature is the same line.
+        assert_env_decl(program, bundle, "simple_await::work::{async_fn_env#0}", 21);
+        assert_env_decl(
+            program,
+            bundle,
+            "simple_await::ready_value::{async_fn_env#0}",
+            17,
+        );
+    }
+    if program == "select-combinator" {
+        // A multi-line signature is where the two sources disagree: the
+        // fn at 15, its resume fn at the `{` on 19. The fn wins.
+        assert_env_decl(
+            program,
+            bundle,
+            "select_combinator::selector::{async_fn_env#0}",
+            15,
+        );
+    }
+    if program == "blocking-pool" {
+        // A closure declares at its own line, which is its body fn's —
+        // a sibling of the env, never the enclosing block the env's
+        // namespace names: the `spawn_blocking` closure is written at
+        // 39 inside a block declared at 36.
+        assert_env_decl(
+            program,
+            bundle,
+            "blocking_pool::main::{async_block#0}::{closure_env#0}",
+            39,
+        );
+    }
+    if program == "futurelock" {
+        // Blocks declare at their own line the same way: the background
+        // task's block is written at 48 inside a fn declared at 42, and
+        // main's spawned block at 20 inside a block at 19. The closure
+        // `select!` expands inside `do_stuff` is written by the macro,
+        // and declares where the macro's own source writes it.
+        assert_env_decl(
+            program,
+            bundle,
+            "futurelock::start_background_task::{async_fn#0}::{async_block_env#0}",
+            48,
+        );
+        assert_env_decl(
+            program,
+            bundle,
+            "futurelock::main::{async_block#0}::{async_block_env#0}",
+            20,
+        );
+        assert_env_decl(program, bundle, "futurelock::main::{async_block_env#0}", 19);
+        let (file, _) = env_decl(
+            program,
+            bundle,
+            "futurelock::do_stuff::{async_fn#0}::{closure_env#0}",
+        );
+        assert!(file.ends_with("/macros/select.rs"), "{program}: {file}");
+    }
+    if program == "simple-await" {
         for prefix in [
             "core::ptr::unique::Unique<",
             "core::num::niche_types::UsizeNoHighBit",

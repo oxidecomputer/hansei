@@ -30,6 +30,13 @@ dyn: unordered::leaf::{async_fn_env#0} (poll, drop_glue)
 dyn: unordered::main::{async_block_env#0} (poll, drop_glue)
 dyn: unordered::set_member::{async_fn_env#0} (poll, drop_glue)
 
+[env-decls]
+env: unordered::driver::{async_fn_env#0} @ unordered.rs:82
+env: unordered::holder::{async_fn_env#0}<unordered::leaf::{async_fn_env#0}> @ unordered.rs:50
+env: unordered::leaf::{async_fn_env#0} @ unordered.rs:40
+env: unordered::main::{async_block_env#0} @ unordered.rs:135
+env: unordered::set_member::{async_fn_env#0} @ unordered.rs:60
+
 [infra]
 header: ok
 vtable: ok

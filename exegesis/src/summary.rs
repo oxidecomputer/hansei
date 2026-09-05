@@ -179,6 +179,27 @@ pub fn portable_summary(bundle: &Bundle, program: &str, crate_str: &str) -> Stri
         writeln!(out, "dyn: {name} ({})", kinds.join(", ")).unwrap();
     }
 
+    // Where each of the fixture's own closure and coroutine environments
+    // was written — the `constructed at` anchor for a frame holding one.
+    // Filtered to envs the fixture crate declares: an env of tokio's or
+    // std's that merely mentions the crate in its arguments lives in a
+    // file whose lines are the dependency's business.
+    writeln!(out, "\n[env-decls]").unwrap();
+    let mut env_decls: Vec<(String, String)> = bundle
+        .types
+        .env_decls
+        .iter()
+        .filter_map(|(id, loc)| {
+            let name = type_name(*id);
+            name.starts_with(crate_str)
+                .then(|| (name, format!("{}:{}", basename(s(loc.file)), loc.line)))
+        })
+        .collect();
+    env_decls.sort();
+    for (name, at) in &env_decls {
+        writeln!(out, "env: {name} @ {at}").unwrap();
+    }
+
     writeln!(out, "\n[infra]").unwrap();
     let infra = &bundle.infra;
     for (what, id) in [

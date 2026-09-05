@@ -60,6 +60,14 @@ dyn: local_set_io::main::{async_block#0}::{async_block_env#0} (poll, drop_glue)
 dyn: local_set_io::main::{async_block_env#0} (poll, drop_glue)
 dyn: local_set_io::reader::{async_fn_env#0} (poll, drop_glue)
 
+[env-decls]
+env: local_set_io::local_reader::{async_fn_env#0} @ local-set-io.rs:28
+env: local_set_io::local_watcher::{async_fn_env#0} @ local-set-io.rs:37
+env: local_set_io::local_writer::{async_fn_env#0} @ local-set-io.rs:49
+env: local_set_io::main::{async_block#0}::{async_block_env#0} @ local-set-io.rs:107
+env: local_set_io::main::{async_block_env#0} @ local-set-io.rs:82
+env: local_set_io::reader::{async_fn_env#0} @ local-set-io.rs:71
+
 [infra]
 header: ok
 vtable: ok

@@ -10,7 +10,7 @@ task 3
     waiting on: future gen_0007::GfSel3<core::future::pending::Pending<u64>, core::future::pending::Pending<u64>, core::future::pending::Pending<u64>>
     waker: <empty>
     spawned at: src/bin/gen-0007.rs:223:19
-    defined at: src/bin/gen-0007.rs:115
+    defined at: src/bin/gen-0007.rs:111
     held futures: 0
     join sets: 2 (2 tasks and 3 futures)
         - futures_util::stream::futures_unordered::FuturesUnordered<gen_0007::leaf_01> at 0xADDR (frame 1, `v0`): 3 children in flight

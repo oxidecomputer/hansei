@@ -47,6 +47,13 @@ dyn: local_set_timer::main::{async_block#0}::{async_block_env#0} (poll, drop_glu
 dyn: local_set_timer::main::{async_block_env#0} (poll, drop_glue)
 dyn: local_set_timer::sleeper::{async_fn_env#0} (poll, drop_glue)
 
+[env-decls]
+env: local_set_timer::local_acquirer::{async_fn_env#0} @ local-set-timer.rs:26
+env: local_set_timer::local_sleeper::{async_fn_env#0} @ local-set-timer.rs:19
+env: local_set_timer::main::{async_block#0}::{async_block_env#0} @ local-set-timer.rs:70
+env: local_set_timer::main::{async_block_env#0} @ local-set-timer.rs:50
+env: local_set_timer::sleeper::{async_fn_env#0} @ local-set-timer.rs:39
+
 [infra]
 header: ok
 vtable: ok

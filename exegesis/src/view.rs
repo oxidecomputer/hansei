@@ -72,12 +72,19 @@ impl<'a> DwView<'a> {
     /// (`"foo::bar"`).
     pub fn find_func(&self, path: &str) -> Option<Func<'a>> {
         let (ns_id, func_name) = self.resolve_path(path)?;
+        self.find_func_in(ns_id, func_name)
+    }
+
+    /// Find a function by its own name inside one namespace. The name
+    /// is matched whole, so one carrying generic arguments — which may
+    /// themselves contain `::` — needs this form rather than a path.
+    pub(crate) fn find_func_in(&self, ns: Option<NsId>, name: &str) -> Option<Func<'a>> {
         self.collector
             .funcs_by_name
-            .get(&self.collector.strings.find(func_name)?)?
+            .get(&self.collector.strings.find(name)?)?
             .iter()
             .map(|&id| self.get_func(id))
-            .find(|f| f.namespace_id() == ns_id)
+            .find(|f| f.namespace_id() == ns)
     }
 
     /// Iterate over all functions.

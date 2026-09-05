@@ -62,6 +62,15 @@ dyn: foreign_runtime::joiner::{async_fn_env#0} (poll, drop_glue)
 dyn: foreign_runtime::local_sleeper::{async_fn_env#0} (poll, drop_glue)
 dyn: foreign_runtime::main::{async_block_env#1} (poll, drop_glue)
 
+[env-decls]
+env: foreign_runtime::detached::{async_fn_env#0} @ foreign-runtime.rs:50
+env: foreign_runtime::hidden_runtime::{async_block#0}::{async_block_env#0} @ foreign-runtime.rs:104
+env: foreign_runtime::hidden_runtime::{async_block_env#0} @ foreign-runtime.rs:102
+env: foreign_runtime::joined::{async_fn_env#0} @ foreign-runtime.rs:35
+env: foreign_runtime::joiner::{async_fn_env#0} @ foreign-runtime.rs:27
+env: foreign_runtime::local_sleeper::{async_fn_env#0} @ foreign-runtime.rs:62
+env: foreign_runtime::main::{async_block_env#1} @ foreign-runtime.rs:130
+
 [infra]
 header: ok
 vtable: ok

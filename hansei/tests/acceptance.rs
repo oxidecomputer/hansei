@@ -1496,7 +1496,7 @@ fn test_dyn_future_acceptance() {
         let driver = task_with_future(&rows, "async fn dyn_future::driver");
         assert_eq!(driver.state, "idle");
         assert_eq!(driver.spawned, spawned("src/bin/dyn-future.rs:57:21"));
-        assert_eq!(driver.defined, "src/bin/dyn-future.rs:28");
+        assert_eq!(driver.defined, "src/bin/dyn-future.rs:24");
         let out = trace(&bundle, core, &driver.id, false);
         assert_spawned_at(
             &hansei_ok(&bundle, core, &format!("task {}", driver.id)),

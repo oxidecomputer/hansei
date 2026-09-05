@@ -3,6 +3,6 @@ source: hansei/src/offline.rs
 description: "`threads --group role` over linux/blocking-pool"
 ---
 COUNT  ROLE             LWPS
-    2  entered runtime  2645545, 2645548
-    2  worker           2645547, 2645549
+    2  entered runtime  3442160, 3442164
+    2  worker           3442162, 3442163
 [2 groups]

@@ -17,7 +17,7 @@ task: channels::notify_waiter::{async_fn_env#0}
     Suspend0 @ channels.rs:35
 task: channels::hold::{async_fn_env#0}
   kind: AsyncFn
-  decl: channels.rs:52
+  decl: channels.rs:41
   entries: 2
   symbols-per-entry: 6,6
   stage: Stage<channels::hold::{async_fn_env#0}>
@@ -33,6 +33,11 @@ dyn: channels::main::{async_block_env#0} (poll, drop_glue)
 dyn: channels::notify_waiter::{async_fn_env#0} (poll, drop_glue)
 dyn: core::future::poll_fn::PollFn<tokio::runtime::scheduler::current_thread::{impl#0}::block_on::{closure#0}::{closure_env#0}<channels::main::{async_block_env#0}>> (poll)
 dyn: core::pin::Pin<&mut channels::main::{async_block_env#0}> (poll)
+
+[env-decls]
+env: channels::hold::{async_fn_env#0} @ channels.rs:41
+env: channels::main::{async_block_env#0} @ channels.rs:63
+env: channels::notify_waiter::{async_fn_env#0} @ channels.rs:22
 
 [infra]
 header: ok

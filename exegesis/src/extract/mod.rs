@@ -49,7 +49,7 @@ use crate::bundle::{
 use crate::detect::{Family, FormatExplanation, struct_of};
 use crate::raw_types::{NsId, RawType};
 use crate::symbols::normalized_value_index;
-use crate::view::DwView;
+use crate::view::{DwView, Func, SourceLocView};
 use crate::{DwReader, TypeId};
 
 use object::{Object, ObjectSymbol};
@@ -872,7 +872,6 @@ fn extract_from_view(
         fut_polls,
         drop_glues,
         glue_by_name,
-        resume_locs,
         resume_awaitees,
         vtable_missing_linkage,
         dyn_decl_only_self,
@@ -1103,7 +1102,6 @@ fn extract_from_view(
             reader,
             view,
             task.future,
-            resume_locs.get(&task.future),
             &mut em,
             &mut stats,
         ));
@@ -1225,12 +1223,9 @@ fn extract_from_view(
     stats.tokio_family_guessed = (em.versioned_dispatch && em.tokio_version.is_none())
         .then(|| Family::select(None).name().to_owned());
     // Declaration sites for every emitted closure/coroutine environment
-    // type. The env DIEs carry no coordinates of their own, so each is
-    // recovered the way task provenance recovers one: the nearest
-    // enclosing subprogram up the namespace chain. For a closure env
-    // the innermost hit is usually the `{closure#N}` fn itself, whose
-    // decl is where the closure is written — the construction site of
-    // whatever combinator holds it.
+    // type — the anchor behind a combinator frame's `constructed at`
+    // line. `env_decl_site` is the rule task provenance uses too, so a
+    // task's `Defined at` and a frame holding the same env agree.
     const ENV_MARKERS: [&str; 5] = [
         "{closure_env#",
         "{async_fn_env#",
@@ -1238,7 +1233,7 @@ fn extract_from_view(
         "{async_closure_env#",
         "{coroutine_env#",
     ];
-    let env_types: Vec<(TypeId, crate::bundle::BundleTypeId)> = em
+    let mut env_types: Vec<(TypeId, crate::bundle::BundleTypeId)> = em
         .emitted_named()
         .filter_map(|(tid, _)| {
             let raw = reader.canonical_type(tid)?;
@@ -1249,27 +1244,15 @@ fn extract_from_view(
             Some((tid, em.bundle_id_of(tid)?))
         })
         .collect();
+    // In bundle-id order, not DIE order: the sites' files are interned
+    // as they are met, and a bundle's string table has to come out the
+    // same whether its DWARF arrived packed or in place.
+    env_types.sort_by_key(|&(_, bid)| bid);
     for (tid, bid) in env_types {
-        let Some(raw) = reader.canonical_type(tid) else {
-            continue;
-        };
-        let mut ns = raw.namespace();
-        while let Some(id) = ns {
-            let entry = reader.namespaces.get(id);
-            if let Some(func) = view.find_func(&ns_path(reader, id))
-                && let Some(loc) = func.source_loc()
-                && let (Some(file), Some(line)) = (loc.file(), loc.line())
-            {
-                let loc = SourceLoc {
-                    file: em
-                        .interner
-                        .intern(&display_path(loc.comp_dir(), loc.dir(), file)),
-                    line: line.get() as u32,
-                };
-                em.record_env_decl(bid, loc);
-                break;
-            }
-            ns = entry.parent;
+        if let Some(loc) = env_decl_site(reader, view, tid)
+            && let Some(loc) = intern_loc(&mut em, &loc)
+        {
+            em.record_env_decl(bid, loc);
         }
     }
 
@@ -1340,14 +1323,68 @@ pub(crate) fn ns_path(reader: &DwReader<'_>, ns: NsId) -> String {
     segs.join("::")
 }
 
+/// Where a closure or coroutine environment was written. The env DIE
+/// carries no coordinates of its own; rustc places it beside the fn
+/// that runs its body — `{closure#N}` for `{closure_env#N}`,
+/// `{async_block#N}` for `{async_block_env#N}`, and so on — inside the
+/// namespace of whatever contains it, and that sibling's decl line is
+/// the block's own line. Walking up to the containing fn instead lands
+/// on the wrong site: the enclosing fn's line for a block written
+/// somewhere inside it.
+///
+/// An async fn has one more source: the fn its env's namespace is
+/// named after, declared at the `fn` line, where the sibling
+/// `{async_fn#N}` is declared at the body's `{` — several lines below
+/// on a multi-line signature. The fn is preferred where it exists and
+/// the sibling covers one inlined away. A generic fn misses the
+/// name-keyed lookup (its DIE spells the parameters) and takes the
+/// sibling too. Absent both, `None`: no site beats a definite wrong one.
+fn env_decl_site<'a>(
+    reader: &DwReader<'a>,
+    view: &DwView<'a>,
+    env: TypeId,
+) -> Option<SourceLocView<'a>> {
+    let raw = reader.canonical_type(env)?;
+    let leaf = reader.strings.get(raw.name()?);
+    let ns = raw.namespace();
+    let located = |func: Option<Func<'a>>| {
+        func.and_then(|f| f.source_loc())
+            .filter(|loc| loc.file().is_some() && loc.line().is_some())
+    };
+    if leaf.starts_with("{async_fn_env#")
+        && let Some(id) = ns
+    {
+        let entry = reader.namespaces.get(id);
+        let outer = view.find_func_in(entry.parent, reader.strings.get(entry.name));
+        if let Some(loc) = located(outer) {
+            return Some(loc);
+        }
+    }
+    let body = leaf.replacen("_env#", "#", 1);
+    if body == leaf {
+        return None;
+    }
+    located(view.find_func_in(ns, &body))
+}
+
+/// A subprogram's coordinates as the bundle records them.
+fn intern_loc(em: &mut Emitter<'_>, loc: &SourceLocView<'_>) -> Option<SourceLoc> {
+    let (file, line) = (loc.file()?, loc.line()?);
+    Some(SourceLoc {
+        file: em
+            .interner
+            .intern(&display_path(loc.comp_dir(), loc.dir(), file)),
+        line: line.get() as u32,
+    })
+}
+
 /// Determine a task future's provenance: coroutine env types name
-/// their defining async fn/block in their namespace path; the subprogram
-/// carries the declaration coordinates the type DIE lacks.
+/// their defining async fn/block in their namespace path, and the
+/// declaration site is the env's ([`env_decl_site`]).
 fn classify_future(
     reader: &DwReader<'_>,
     view: &DwView<'_>,
     future: TypeId,
-    resume_loc: Option<&OwnedLoc>,
     em: &mut Emitter<'_>,
     stats: &mut ExtractStats,
 ) -> Provenance {
@@ -1377,50 +1414,12 @@ fn classify_future(
         }
     };
 
-    let mut decl = None;
-
-    // The resume fn's own coordinates are the async fn/block's
-    // declaration site — the most direct source.
-    if matches!(kind, FutureKind::AsyncFn | FutureKind::AsyncBlock)
-        && let Some(loc) = resume_loc
-        && let (Some(file), Some(line)) = (loc.file.as_deref(), loc.line)
-    {
-        decl = Some(SourceLoc {
-            file: em.interner.intern(&display_path(
-                loc.comp_dir.as_deref(),
-                loc.dir.as_deref(),
-                file,
-            )),
-            line: line as u32,
-        });
-    }
-
-    // Fallback: walk up the coroutine's namespace chain looking for the
-    // defining subprogram; skip generated scopes ({async_block#N},
-    // {closure#N}, …) between the env and the fn.
-    if decl.is_none() && matches!(kind, FutureKind::AsyncFn | FutureKind::AsyncBlock) {
-        let mut ns = raw.namespace();
-        while let Some(id) = ns {
-            let entry = reader.namespaces.get(id);
-            let leaf = reader.strings.get(entry.name);
-            if !leaf.starts_with('{')
-                && let Some(func) = view.find_func(&ns_path(reader, id))
-            {
-                if let Some(loc) = func.source_loc()
-                    && let (Some(file), Some(line)) = (loc.file(), loc.line())
-                {
-                    decl = Some(SourceLoc {
-                        file: em
-                            .interner
-                            .intern(&display_path(loc.comp_dir(), loc.dir(), file)),
-                        line: line.get() as u32,
-                    });
-                }
-                break;
-            }
-            ns = entry.parent;
+    let decl = match kind {
+        FutureKind::AsyncFn | FutureKind::AsyncBlock => {
+            env_decl_site(reader, view, future).and_then(|loc| intern_loc(em, &loc))
         }
-    }
+        FutureKind::Combinator | FutureKind::Manual => None,
+    };
 
     if decl.is_some() {
         stats.provenance_located += 1;
@@ -1912,21 +1911,111 @@ mod tests {
         let view = DwView::new(&fx.reader);
         let mut em = Emitter::new(&fx.reader, BTreeMap::new(), None, None);
         let mut stats = ExtractStats::default();
-        let p = classify_future(&fx.reader, &view, join_all, None, &mut em, &mut stats);
+        let p = classify_future(&fx.reader, &view, join_all, &mut em, &mut stats);
         assert!(matches!(p.kind, FutureKind::Combinator));
-        let p = classify_future(&fx.reader, &view, my_fut, None, &mut em, &mut stats);
+        let p = classify_future(&fx.reader, &view, my_fut, &mut em, &mut stats);
         assert!(matches!(p.kind, FutureKind::Manual));
         assert_eq!(stats.provenance_located, 0);
     }
 
-    #[test]
-    fn test_async_fn_declarations_resolve_through_the_namespace_chain() {
+    /// An async fn's env beside both of its sources: the fn itself at
+    /// the `fn` line and the resume fn `{async_fn#0}` at the body's
+    /// `{`, four lines down on a multi-line signature.
+    fn async_fn_fixture(with_outer: bool) -> (Fx, TypeId) {
         let mut fx = Fx::default();
         let app = fx.ns("app");
         let outer = fx.ns_under(Some(app), "outer");
-        let closure = fx.ns_under(Some(outer), "{closure#0}");
         let env = type_id(1);
-        fx.strukt(env, Some(closure), "{async_fn_env#0}", &[], &[]);
+        fx.strukt(env, Some(outer), "{async_fn_env#0}", &[], &[]);
+        if with_outer {
+            fx.func(
+                func_id(0x100),
+                Some(app),
+                "outer",
+                None,
+                &[],
+                &[],
+                None,
+                Some(42),
+            );
+        }
+        fx.func(
+            func_id(0x200),
+            Some(outer),
+            "{async_fn#0}",
+            None,
+            &[],
+            &[],
+            None,
+            Some(46),
+        );
+        (fx, env)
+    }
+
+    fn provenance_of(fx: &mut Fx, env: TypeId) -> (Provenance, ExtractStats) {
+        fx.reader.index_names();
+        let view = DwView::new(&fx.reader);
+        let mut em = Emitter::new(&fx.reader, BTreeMap::new(), None, None);
+        let mut stats = ExtractStats::default();
+        let p = classify_future(&fx.reader, &view, env, &mut em, &mut stats);
+        (p, stats)
+    }
+
+    #[test]
+    fn test_an_async_fn_declares_at_its_fn_line() {
+        let (mut fx, env) = async_fn_fixture(true);
+        let (p, stats) = provenance_of(&mut fx, env);
+        assert!(matches!(p.kind, FutureKind::AsyncFn));
+        let decl = p.decl.expect("the fn names the declaration");
+        assert_eq!(decl.line, 42, "the fn line, not the resume fn's `{{` line");
+        assert_eq!(stats.provenance_located, 1);
+    }
+
+    #[test]
+    fn test_an_inlined_async_fn_declares_at_its_resume_fn() {
+        // The outer fn inlined away leaves only the resume fn, whose
+        // line is the body's `{`: a site, where the enclosing fn's
+        // would be a wrong one and none would lose the fn entirely.
+        let (mut fx, env) = async_fn_fixture(false);
+        let (p, stats) = provenance_of(&mut fx, env);
+        let decl = p.decl.expect("the resume fn names the declaration");
+        assert_eq!(decl.line, 46);
+        assert_eq!(stats.provenance_located, 1);
+    }
+
+    #[test]
+    fn test_a_fn_without_a_line_yields_to_its_resume_fn() {
+        // The fn is there but its coordinates are incomplete — a file
+        // and no line — so it names no site, and the resume fn's is
+        // taken rather than nothing.
+        let (mut fx, env) = async_fn_fixture(false);
+        let app = fx.ns("app");
+        fx.func(
+            func_id(0x100),
+            Some(app),
+            "outer",
+            None,
+            &[],
+            &[],
+            None,
+            Some(0),
+        );
+        let (p, _) = provenance_of(&mut fx, env);
+        assert_eq!(p.decl.expect("the resume fn's site").line, 46);
+    }
+
+    #[test]
+    fn test_an_async_block_declares_at_its_own_line_not_its_fns() {
+        // rustc places `{async_block_env#0}` beside the `{async_block#0}`
+        // that runs it, inside the containing fn's namespace. The
+        // block's line is the sibling's; the fn's line — the first hit
+        // of a walk up the namespace chain — is where the block is
+        // *not*.
+        let mut fx = Fx::default();
+        let app = fx.ns("app");
+        let outer = fx.ns_under(Some(app), "outer");
+        let env = type_id(1);
+        fx.strukt(env, Some(outer), "{async_block_env#0}", &[], &[]);
         fx.func(
             func_id(0x100),
             Some(app),
@@ -1937,15 +2026,99 @@ mod tests {
             None,
             Some(42),
         );
+        fx.func(
+            func_id(0x200),
+            Some(outer),
+            "{async_block#0}",
+            None,
+            &[],
+            &[],
+            None,
+            Some(48),
+        );
+        let (p, stats) = provenance_of(&mut fx, env);
+        assert!(matches!(p.kind, FutureKind::AsyncBlock));
+        assert_eq!(p.decl.expect("the block's body fn names it").line, 48);
+        assert_eq!(stats.provenance_located, 1);
+    }
 
+    #[test]
+    fn test_a_block_without_its_body_fn_declares_nowhere() {
+        // Only the containing fn is left: its line is not the block's,
+        // so the block gets no site rather than that one.
+        let mut fx = Fx::default();
+        let app = fx.ns("app");
+        let outer = fx.ns_under(Some(app), "outer");
+        let env = type_id(1);
+        fx.strukt(env, Some(outer), "{async_block_env#0}", &[], &[]);
+        fx.func(
+            func_id(0x100),
+            Some(app),
+            "outer",
+            None,
+            &[],
+            &[],
+            None,
+            Some(42),
+        );
+        let (p, stats) = provenance_of(&mut fx, env);
+        assert!(p.decl.is_none());
+        assert_eq!(stats.provenance_located, 0);
+    }
+
+    #[test]
+    fn test_a_generic_closure_env_finds_its_body_fn_by_its_whole_name() {
+        // A closure inside a generic fn spells the parameters on both
+        // the env and its body fn — arguments that carry `::` of their
+        // own, so the lookup goes by name inside the namespace, never
+        // by path. The env sits in `{closure#0}`'s namespace when the
+        // closure is itself nested in another, and its sibling there is
+        // that namespace's own `{closure#0}`.
+        let mut fx = Fx::default();
+        let app = fx.ns("app");
+        let outer = fx.ns_under(Some(app), "outer");
+        let closure = fx.ns_under(Some(outer), "{closure#0}");
+        let env = type_id(1);
+        fx.strukt(
+            env,
+            Some(closure),
+            "{closure_env#0}<app::types::Item>",
+            &[],
+            &[],
+        );
+        fx.func(
+            func_id(0x100),
+            Some(app),
+            "outer<T>",
+            None,
+            &[],
+            &[],
+            None,
+            Some(10),
+        );
+        fx.func(
+            func_id(0x200),
+            Some(outer),
+            "{closure#0}<app::types::Item>",
+            None,
+            &[],
+            &[],
+            None,
+            Some(20),
+        );
+        fx.func(
+            func_id(0x300),
+            Some(closure),
+            "{closure#0}<app::types::Item>",
+            None,
+            &[],
+            &[],
+            None,
+            Some(24),
+        );
         fx.reader.index_names();
         let view = DwView::new(&fx.reader);
-        let mut em = Emitter::new(&fx.reader, BTreeMap::new(), None, None);
-        let mut stats = ExtractStats::default();
-        let p = classify_future(&fx.reader, &view, env, None, &mut em, &mut stats);
-        assert!(matches!(p.kind, FutureKind::AsyncFn));
-        let decl = p.decl.expect("the defining fn names the declaration");
-        assert_eq!(decl.line, 42);
-        assert_eq!(stats.provenance_located, 1);
+        let loc = env_decl_site(&fx.reader, &view, env).expect("the inner closure's body fn");
+        assert_eq!(loc.line().map(|l| l.get()), Some(24));
     }
 }

@@ -40,6 +40,15 @@ dyn: futurelock::main::{async_block_env#0} (poll, drop_glue)
 dyn: futurelock::start_background_task::{async_fn#0}::{async_block_env#0} (poll, drop_glue)
 dyn: futurelock::start_background_task::{async_fn_env#0} (poll, drop_glue)
 
+[env-decls]
+env: futurelock::do_async_thing::{async_fn_env#0} @ futurelock.rs:80
+env: futurelock::do_stuff::{async_fn#0}::{closure_env#0} @ select.rs:661
+env: futurelock::do_stuff::{async_fn_env#0} @ futurelock.rs:60
+env: futurelock::main::{async_block#0}::{async_block_env#0} @ futurelock.rs:20
+env: futurelock::main::{async_block_env#0} @ futurelock.rs:19
+env: futurelock::start_background_task::{async_fn#0}::{async_block_env#0} @ futurelock.rs:48
+env: futurelock::start_background_task::{async_fn_env#0} @ futurelock.rs:42
+
 [infra]
 header: ok
 vtable: ok
@@ -147,6 +156,11 @@ dyn: simple_await::main::{async_block_env#0} (poll, drop_glue)
 dyn: simple_await::ready_value::{async_fn_env#0} (poll)
 dyn: simple_await::work::{async_fn_env#0} (poll, drop_glue)
 
+[env-decls]
+env: simple_await::main::{async_block_env#0} @ simple-await.rs:72
+env: simple_await::ready_value::{async_fn_env#0} @ simple-await.rs:17
+env: simple_await::work::{async_fn_env#0} @ simple-await.rs:21
+
 [infra]
 header: ok
 vtable: ok
@@ -253,6 +267,12 @@ dyn: nested_await::leaf::{async_fn_env#0} (poll, drop_glue)
 dyn: nested_await::main::{async_block_env#0} (poll, drop_glue)
 dyn: nested_await::middle::{async_fn_env#0} (poll, drop_glue)
 dyn: nested_await::outer::{async_fn_env#0} (poll, drop_glue)
+
+[env-decls]
+env: nested_await::leaf::{async_fn_env#0} @ nested-await.rs:11
+env: nested_await::main::{async_block_env#0} @ nested-await.rs:32
+env: nested_await::middle::{async_fn_env#0} @ nested-await.rs:15
+env: nested_await::outer::{async_fn_env#0} @ nested-await.rs:20
 
 [infra]
 header: ok
@@ -365,7 +385,7 @@ task: dyn_future::hold_aligned::{async_fn_env#0}
     Suspend0 @ dyn-future.rs:97
 task: dyn_future::driver::{async_fn_env#0}
   kind: AsyncFn
-  decl: dyn-future.rs:28
+  decl: dyn-future.rs:24
   entries: 2
   symbols-per-entry: 6,6
   stage: Stage<dyn_future::driver::{async_fn_env#0}>
@@ -384,6 +404,13 @@ dyn: dyn_future::driver::{async_fn_env#0} (poll, drop_glue)
 dyn: dyn_future::hold_aligned::{async_fn_env#0} (poll, drop_glue)
 dyn: dyn_future::main::{async_block_env#0} (poll, drop_glue)
 dyn: dyn_future::set_member::{async_fn_env#0} (poll, drop_glue)
+
+[env-decls]
+env: dyn_future::boxed_leaf::{async_fn_env#0} @ dyn-future.rs:15
+env: dyn_future::driver::{async_fn_env#0} @ dyn-future.rs:24
+env: dyn_future::hold_aligned::{async_fn_env#0} @ dyn-future.rs:92
+env: dyn_future::main::{async_block_env#0} @ dyn-future.rs:50
+env: dyn_future::set_member::{async_fn_env#0} @ dyn-future.rs:19
 
 [infra]
 header: ok
@@ -474,7 +501,7 @@ program: select-combinator
 [tasks]
 task: select_combinator::joiner::{async_fn_env#0}
   kind: AsyncFn
-  decl: select-combinator.rs:31
+  decl: select-combinator.rs:27
   entries: 2
   symbols-per-entry: 6,6
   stage: Stage<select_combinator::joiner::{async_fn_env#0}>
@@ -485,7 +512,7 @@ task: select_combinator::joiner::{async_fn_env#0}
     Suspend0 @ join.rs:203 (awaited at select-combinator.rs:33)
 task: select_combinator::selector::{async_fn_env#0}
   kind: AsyncFn
-  decl: select-combinator.rs:19
+  decl: select-combinator.rs:15
   entries: 2
   symbols-per-entry: 6,6
   stage: Stage<select_combinator::selector::{async_fn_env#0}>
@@ -505,6 +532,14 @@ dyn: select_combinator::main::{async_block_env#0} (poll, drop_glue)
 dyn: select_combinator::selector::{async_fn_env#0} (poll, drop_glue)
 dyn: select_combinator::wait::{async_fn_env#0} (poll, drop_glue)
 dyn: tokio::future::maybe_done::MaybeDone<select_combinator::wait::{async_fn_env#0}> (poll, drop_glue)
+
+[env-decls]
+env: select_combinator::joiner::{async_fn#0}::{closure_env#0} @ join.rs:151
+env: select_combinator::joiner::{async_fn_env#0} @ select-combinator.rs:27
+env: select_combinator::main::{async_block_env#0} @ select-combinator.rs:42
+env: select_combinator::selector::{async_fn#0}::{closure_env#0} @ select.rs:661
+env: select_combinator::selector::{async_fn_env#0} @ select-combinator.rs:15
+env: select_combinator::wait::{async_fn_env#0} @ select-combinator.rs:11
 
 [infra]
 header: ok
@@ -610,6 +645,10 @@ dyn: core::future::poll_fn::PollFn<tokio::runtime::scheduler::current_thread::{i
 dyn: core::pin::Pin<&mut many_tasks::main::{async_block_env#0}> (poll)
 dyn: many_tasks::main::{async_block_env#0} (poll, drop_glue)
 dyn: many_tasks::park_task::{async_fn_env#0} (poll, drop_glue)
+
+[env-decls]
+env: many_tasks::main::{async_block_env#0} @ many-tasks.rs:23
+env: many_tasks::park_task::{async_fn_env#0} @ many-tasks.rs:13
 
 [infra]
 header: ok
@@ -728,6 +767,11 @@ dyn: sleep_join::joiner::{async_fn_env#0} (poll, drop_glue)
 dyn: sleep_join::main::{async_block_env#0} (poll, drop_glue)
 dyn: sleep_join::sleeper::{async_fn_env#0} (poll, drop_glue)
 
+[env-decls]
+env: sleep_join::joiner::{async_fn_env#0} @ sleep-join.rs:20
+env: sleep_join::main::{async_block_env#0} @ sleep-join.rs:31
+env: sleep_join::sleeper::{async_fn_env#0} @ sleep-join.rs:13
+
 [infra]
 header: ok
 vtable: ok
@@ -828,7 +872,7 @@ task: channels::notify_waiter::{async_fn_env#0}
     Suspend0 @ channels.rs:35
 task: channels::hold::{async_fn_env#0}
   kind: AsyncFn
-  decl: channels.rs:52
+  decl: channels.rs:41
   entries: 2
   symbols-per-entry: 6,6
   stage: Stage<channels::hold::{async_fn_env#0}>
@@ -844,6 +888,11 @@ dyn: channels::main::{async_block_env#0} (poll, drop_glue)
 dyn: channels::notify_waiter::{async_fn_env#0} (poll, drop_glue)
 dyn: core::future::poll_fn::PollFn<tokio::runtime::scheduler::current_thread::{impl#0}::block_on::{closure#0}::{closure_env#0}<channels::main::{async_block_env#0}>> (poll)
 dyn: core::pin::Pin<&mut channels::main::{async_block_env#0}> (poll)
+
+[env-decls]
+env: channels::hold::{async_fn_env#0} @ channels.rs:41
+env: channels::main::{async_block_env#0} @ channels.rs:63
+env: channels::notify_waiter::{async_fn_env#0} @ channels.rs:22
 
 [infra]
 header: ok
@@ -957,6 +1006,13 @@ dyn: unordered::holder::{async_fn_env#0}<unordered::leaf::{async_fn_env#0}> (pol
 dyn: unordered::leaf::{async_fn_env#0} (poll, drop_glue)
 dyn: unordered::main::{async_block_env#0} (poll, drop_glue)
 dyn: unordered::set_member::{async_fn_env#0} (poll, drop_glue)
+
+[env-decls]
+env: unordered::driver::{async_fn_env#0} @ unordered.rs:82
+env: unordered::holder::{async_fn_env#0}<unordered::leaf::{async_fn_env#0}> @ unordered.rs:50
+env: unordered::leaf::{async_fn_env#0} @ unordered.rs:40
+env: unordered::main::{async_block_env#0} @ unordered.rs:135
+env: unordered::set_member::{async_fn_env#0} @ unordered.rs:60
 
 [infra]
 header: ok
@@ -1089,6 +1145,12 @@ dyn: joinset::finisher::{async_fn_env#0} (poll, drop_glue)
 dyn: joinset::main::{async_block_env#0} (poll, drop_glue)
 dyn: joinset::member::{async_fn_env#0} (poll, drop_glue)
 
+[env-decls]
+env: joinset::driver::{async_fn_env#0} @ joinset.rs:48
+env: joinset::finisher::{async_fn_env#0} @ joinset.rs:43
+env: joinset::main::{async_block_env#0} @ joinset.rs:94
+env: joinset::member::{async_fn_env#0} @ joinset.rs:31
+
 [infra]
 header: ok
 vtable: ok
@@ -1205,6 +1267,11 @@ dyn: core::pin::Pin<&mut ct_runtime::main::{async_block_env#0}> (poll)
 dyn: ct_runtime::acquirer::{async_fn_env#0} (poll, drop_glue)
 dyn: ct_runtime::main::{async_block_env#0} (poll, drop_glue)
 dyn: ct_runtime::sleeper::{async_fn_env#0} (poll, drop_glue)
+
+[env-decls]
+env: ct_runtime::acquirer::{async_fn_env#0} @ ct-runtime.rs:21
+env: ct_runtime::main::{async_block_env#0} @ ct-runtime.rs:32
+env: ct_runtime::sleeper::{async_fn_env#0} @ ct-runtime.rs:14
 
 [infra]
 header: ok
@@ -1336,6 +1403,13 @@ dyn: local_set::local_sleeper::{async_fn_env#0} (poll, drop_glue)
 dyn: local_set::main::{async_block#0}::{async_block_env#0} (poll, drop_glue)
 dyn: local_set::main::{async_block_env#0} (poll, drop_glue)
 
+[env-decls]
+env: local_set::joiner::{async_fn_env#0} @ local-set.rs:31
+env: local_set::local_acquirer::{async_fn_env#0} @ local-set.rs:24
+env: local_set::local_sleeper::{async_fn_env#0} @ local-set.rs:17
+env: local_set::main::{async_block#0}::{async_block_env#0} @ local-set.rs:54
+env: local_set::main::{async_block_env#0} @ local-set.rs:41
+
 [infra]
 header: ok
 vtable: ok
@@ -1465,6 +1539,13 @@ dyn: local_set_timer::local_sleeper::{async_fn_env#0} (poll, drop_glue)
 dyn: local_set_timer::main::{async_block#0}::{async_block_env#0} (poll, drop_glue)
 dyn: local_set_timer::main::{async_block_env#0} (poll, drop_glue)
 dyn: local_set_timer::sleeper::{async_fn_env#0} (poll, drop_glue)
+
+[env-decls]
+env: local_set_timer::local_acquirer::{async_fn_env#0} @ local-set-timer.rs:26
+env: local_set_timer::local_sleeper::{async_fn_env#0} @ local-set-timer.rs:19
+env: local_set_timer::main::{async_block#0}::{async_block_env#0} @ local-set-timer.rs:70
+env: local_set_timer::main::{async_block_env#0} @ local-set-timer.rs:50
+env: local_set_timer::sleeper::{async_fn_env#0} @ local-set-timer.rs:39
 
 [infra]
 header: ok
@@ -1608,6 +1689,14 @@ dyn: local_set_io::local_writer::{async_fn_env#0} (poll, drop_glue)
 dyn: local_set_io::main::{async_block#0}::{async_block_env#0} (poll, drop_glue)
 dyn: local_set_io::main::{async_block_env#0} (poll, drop_glue)
 dyn: local_set_io::reader::{async_fn_env#0} (poll, drop_glue)
+
+[env-decls]
+env: local_set_io::local_reader::{async_fn_env#0} @ local-set-io.rs:28
+env: local_set_io::local_watcher::{async_fn_env#0} @ local-set-io.rs:37
+env: local_set_io::local_writer::{async_fn_env#0} @ local-set-io.rs:49
+env: local_set_io::main::{async_block#0}::{async_block_env#0} @ local-set-io.rs:107
+env: local_set_io::main::{async_block_env#0} @ local-set-io.rs:82
+env: local_set_io::reader::{async_fn_env#0} @ local-set-io.rs:71
 
 [infra]
 header: ok
@@ -1754,6 +1843,15 @@ dyn: foreign_runtime::joiner::{async_fn_env#0} (poll, drop_glue)
 dyn: foreign_runtime::local_sleeper::{async_fn_env#0} (poll, drop_glue)
 dyn: foreign_runtime::main::{async_block_env#1} (poll, drop_glue)
 
+[env-decls]
+env: foreign_runtime::detached::{async_fn_env#0} @ foreign-runtime.rs:50
+env: foreign_runtime::hidden_runtime::{async_block#0}::{async_block_env#0} @ foreign-runtime.rs:104
+env: foreign_runtime::hidden_runtime::{async_block_env#0} @ foreign-runtime.rs:102
+env: foreign_runtime::joined::{async_fn_env#0} @ foreign-runtime.rs:35
+env: foreign_runtime::joiner::{async_fn_env#0} @ foreign-runtime.rs:27
+env: foreign_runtime::local_sleeper::{async_fn_env#0} @ foreign-runtime.rs:62
+env: foreign_runtime::main::{async_block_env#1} @ foreign-runtime.rs:130
+
 [infra]
 header: ok
 vtable: ok
@@ -1891,6 +1989,12 @@ dyn: core::pin::Pin<&mut blocking_pool::main::{async_block_env#0}> (poll)
 dyn: tokio::runtime::blocking::task::BlockingTask<blocking_pool::main::{async_block#0}::{closure_env#0}> (poll, drop_glue)
 dyn: tokio::runtime::blocking::task::BlockingTask<blocking_pool::main::{async_block#0}::{closure_env#1}> (poll)
 dyn: tokio::runtime::blocking::task::BlockingTask<blocking_pool::main::{async_block#0}::{closure_env#2}> (poll)
+
+[env-decls]
+env: blocking_pool::main::{async_block#0}::{closure_env#0} @ blocking-pool.rs:39
+env: blocking_pool::main::{async_block_env#0} @ blocking-pool.rs:36
+env: blocking_pool::queued_waiter::{async_fn_env#0} @ blocking-pool.rs:25
+env: blocking_pool::running_waiter::{async_fn_env#0} @ blocking-pool.rs:19
 
 [infra]
 header: ok

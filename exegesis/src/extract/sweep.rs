@@ -52,8 +52,6 @@ pub(super) struct Sweep {
     /// `drop_glue<T>` display name's inner text → symbols, for glue DIEs
     /// without a template-parameter reference.
     pub(super) glue_by_name: BTreeMap<String, BTreeSet<String>>,
-    /// Coroutine env → its resume fn's declaration coordinates.
-    pub(super) resume_locs: BTreeMap<TypeId, OwnedLoc>,
     /// Coroutine env → the `__awaitee` locals of its resume fn: where each
     /// of its awaits is *written*, which for an await produced by a macro
     /// is not where the coroutine type says it is.
@@ -92,9 +90,6 @@ impl Sweep {
         }
         for (name, syms) in other.glue_by_name {
             self.glue_by_name.entry(name).or_default().extend(syms);
-        }
-        for (t, loc) in other.resume_locs {
-            self.resume_locs.entry(t).or_insert(loc);
         }
         for (t, awaitees) in other.resume_awaitees {
             self.resume_awaitees.entry(t).or_insert(awaitees);
@@ -249,9 +244,6 @@ fn sweep_function(
                     .entry(t)
                     .or_default()
                     .insert(strip(linkage).to_owned());
-                if let Some(loc) = func.source_loc() {
-                    out.resume_locs.entry(t).or_insert_with(|| owned_loc(&loc));
-                }
                 let awaitees = func.raw().awaitees.as_ref();
                 if !awaitees.is_empty() {
                     out.resume_awaitees.entry(t).or_insert_with(|| {

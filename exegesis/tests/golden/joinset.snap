@@ -48,6 +48,12 @@ dyn: joinset::finisher::{async_fn_env#0} (poll, drop_glue)
 dyn: joinset::main::{async_block_env#0} (poll, drop_glue)
 dyn: joinset::member::{async_fn_env#0} (poll, drop_glue)
 
+[env-decls]
+env: joinset::driver::{async_fn_env#0} @ joinset.rs:48
+env: joinset::finisher::{async_fn_env#0} @ joinset.rs:43
+env: joinset::main::{async_block_env#0} @ joinset.rs:94
+env: joinset::member::{async_fn_env#0} @ joinset.rs:31
+
 [infra]
 header: ok
 vtable: ok
