@@ -393,8 +393,10 @@ pub enum VariantShape<S> {
         discr: Option<RawMember<S>>,
         /// Variants keyed by discriminant value. `None` = default/niche
         /// variant (matched when no explicit value matches). `Some(val)` =
-        /// variant selected when the discriminant equals `val`.
-        variants: Box<[(Option<u128>, RawVariant<S>)]>,
+        /// variant selected when the discriminant equals `val`, as the
+        /// form-faithful bits `DW_AT_discr_value` carried — see
+        /// [`DiscrBits`] for why those are not yet the tag's bits.
+        variants: Box<[(Option<DiscrBits>, RawVariant<S>)]>,
     },
     /// A C-style enum (`DW_TAG_enumeration_type`): named integer constants
     /// with no variant payloads. The entire enum is the discriminant value.
@@ -423,9 +425,62 @@ pub struct RawVariant<S> {
 pub struct RawEnumerator<S> {
     /// The enumerator name (e.g., "Red", "Green").
     pub name: S,
-    /// The constant value (`DW_AT_const_value`), stored as u128 for
-    /// uniformity. Signedness is determined by the enum's underlying type.
-    pub value: u128,
+    /// The constant value (`DW_AT_const_value`) as the form carried it.
+    /// Signedness is determined by the enum's underlying type.
+    pub value: DiscrBits,
+}
+
+/// The bits a `DW_AT_discr_value` or `DW_AT_const_value` attribute
+/// carried, and how many of them the form actually spelled.
+///
+/// LLVM writes a constant in the narrowest `DW_FORM_dataN` that holds
+/// it *as a number of the constant's own signedness*: `-1` on a
+/// `#[repr(i32)]` enum is `DW_FORM_data1 0xff`, not `data4 0xffffffff`,
+/// while `0xffff_ffff` on a `#[repr(u32)]` one is `data4`. The parser
+/// cannot tell those apart without the discriminant's type, which it
+/// does not have, so it records the bits exactly as read together with
+/// the form's width and leaves the widening to whoever holds the type
+/// ([`DiscrBits::tag_bits`], [`DiscrBits::value`]).
+#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
+pub struct DiscrBits {
+    /// The constant's bits, zero-extended to 128.
+    pub bits: u128,
+    /// The bytes of `bits` the form carried: 1, 2, 4, 8 or 16. Every bit
+    /// above `8 * width` is padding, not information.
+    pub width: u8,
+}
+
+impl DiscrBits {
+    /// A constant whose form spelled all 128 bits, or one already
+    /// sign-extended to them: nothing is left to widen.
+    pub const fn full(bits: u128) -> Self {
+        Self { bits, width: 16 }
+    }
+
+    /// The constant sign-extended from its form's width when `signed`,
+    /// as an `i128` — the value the constant names.
+    pub fn value(self, signed: bool) -> i128 {
+        if signed {
+            // A full-width constant shifts by zero: it is the value.
+            let shift = 128 - 8 * u32::from(self.width);
+            ((self.bits as i128) << shift) >> shift
+        } else {
+            self.bits as i128
+        }
+    }
+
+    /// The raw bits a `tag_size`-byte discriminant of the given
+    /// signedness holds when it selects this constant: [`Self::value`]
+    /// masked to the tag's width, which is what a little-endian read of
+    /// the tag produces and what the bundle stores.
+    pub fn tag_bits(self, signed: bool, tag_size: u64) -> u128 {
+        let value = self.value(signed) as u128;
+        if tag_size < 16 {
+            value & ((1u128 << (8 * tag_size)) - 1)
+        } else {
+            value
+        }
+    }
 }
 
 /// A Rust struct.

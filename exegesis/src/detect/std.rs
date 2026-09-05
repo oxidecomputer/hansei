@@ -766,8 +766,8 @@ mod tests {
     use super::*;
     use crate::DwReader;
     use crate::raw_types::{
-        NsId, RawArray, RawBase, RawEnum, RawGenericParameter, RawMember, RawPointer, RawStruct,
-        RawUnion, RawVariant, VariantShape,
+        DiscrBits, NsId, RawArray, RawBase, RawEnum, RawGenericParameter, RawMember, RawPointer,
+        RawStruct, RawUnion, RawVariant, VariantShape,
     };
 
     use gimli::UnitSectionOffset;
@@ -927,7 +927,7 @@ mod tests {
                     alignment: None,
                     shape: VariantShape::Many {
                         discr: None,
-                        variants: Box::new([(Some(1), some)]),
+                        variants: Box::new([(Some(DiscrBits::full(1)), some)]),
                     },
                     template_params: Box::new([]),
                     source_loc: None,

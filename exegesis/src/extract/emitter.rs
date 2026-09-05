@@ -17,7 +17,7 @@ use crate::bundle::{
     SourceLoc, StrRef, StringInterner, TypeDef, TypeTable, VariantDef, VariantShape,
 };
 use crate::detect::{Family, FormatExplanation, trace, unique_member};
-use crate::raw_types::{RawType, VariantShape as RawVariantShape};
+use crate::raw_types::{DiscrBits, RawType, VariantShape as RawVariantShape};
 use crate::{DwReader, Encoding, TypeId};
 
 use rayon::iter::ParallelIterator;
@@ -396,6 +396,20 @@ impl<'a> Emitter<'a> {
         Some((file.to_owned(), loc.line?.get() as u32))
     }
 
+    /// Whether the base type `id` names is signed, and its size — the
+    /// two facts widening a discriminant constant needs. A type that is
+    /// not a base (nothing rustc emits as a tag) reads as unsigned with
+    /// no known size, so its constants pass through untouched.
+    fn base_of(&self, id: TypeId) -> (bool, Option<u64>) {
+        match self.reader.types.get(&self.reader.canonicalize(id)) {
+            Some(RawType::Base(b)) => (
+                matches!(b.encoding, Encoding::Signed | Encoding::SignedChar),
+                Some(b.size),
+            ),
+            _ => (false, None),
+        }
+    }
+
     fn convert(&mut self, id: TypeId) -> TypeDef {
         // Copying the reader reference out of `self` gives the type a
         // borrow independent of `&mut self`, so no clone is needed.
@@ -458,6 +472,7 @@ impl<'a> Emitter<'a> {
                                 )
                             }
                         };
+                        let signed = repr_type_id.is_some_and(|r| self.base_of(r).0);
                         TypeDef::CEnum {
                             name,
                             size: e.size,
@@ -466,7 +481,7 @@ impl<'a> Emitter<'a> {
                                 .iter()
                                 .map(|en| {
                                     let n = self.intern_opt(Some(en.name));
-                                    (n, en.value as i128)
+                                    (n, en.value.value(signed))
                                 })
                                 .collect(),
                         }
@@ -499,6 +514,19 @@ impl<'a> Emitter<'a> {
                     RawVariantShape::Many { discr, variants } => {
                         let members: Vec<_> = variants.iter().map(|(_, v)| &v.member).collect();
                         let sites = self.await_sites(id, &members);
+                        // The bundle stores each variant's value as the
+                        // bits the tag holds, which the parser could not
+                        // produce without the tag's type: a signed tag
+                        // widens the form-width constant, and a value
+                        // spelled wider than the tag is cut to it.
+                        let (signed, tag_size) = match discr {
+                            Some(d) => self.base_of(d.type_id),
+                            None => (false, None),
+                        };
+                        let tag_bits = |bits: DiscrBits| match tag_size {
+                            Some(size) => bits.tag_bits(signed, size),
+                            None => bits.bits,
+                        };
                         TypeDef::Enum {
                             name,
                             size: e.size,
@@ -512,8 +540,9 @@ impl<'a> Emitter<'a> {
                                     .zip(sites)
                                     .map(|((value, v), await_site)| VariantDef {
                                         name: self.intern_opt(v.member.name),
-                                        discr_values: value
-                                            .map(|x| DiscrValues(vec![DiscrValue::Value(x)])),
+                                        discr_values: value.map(|x| {
+                                            DiscrValues(vec![DiscrValue::Value(tag_bits(x))])
+                                        }),
                                         payload: self.convert_member(&v.member),
                                         decl: self.member_decl(&v.member),
                                         await_site,
@@ -608,8 +637,8 @@ pub(super) struct Emitted {
 mod tests {
     use super::*;
     use crate::raw_types::{
-        RawEnum, RawEnumerator, RawMember, RawStruct, RawType, SourceLoc as RawSourceLoc,
-        VariantShape,
+        RawEnum, RawEnumerator, RawMember, RawStruct, RawType, RawVariant,
+        SourceLoc as RawSourceLoc, VariantShape,
     };
     use crate::{DwReader, StrId, TypeId};
 
@@ -719,7 +748,7 @@ mod tests {
                         repr_type_id: None,
                         enumerators: Box::new([RawEnumerator {
                             name: reader.strings.intern("Red"),
-                            value: 0,
+                            value: DiscrBits::full(0),
                         }]),
                     },
                     template_params: Box::new([]),
@@ -731,6 +760,190 @@ mod tests {
         em.emit(type_id(0x10));
         em.emit(type_id(0x20));
         assert_eq!(em.cenum_synth_repr, 2);
+    }
+
+    fn insert_base(
+        reader: &mut DwReader<'static>,
+        id: TypeId,
+        name: &'static str,
+        encoding: Encoding,
+        size: u64,
+    ) {
+        let name = Some(reader.strings.intern(name));
+        reader.types.insert(
+            id,
+            RawType::Base(crate::raw_types::RawBase {
+                name,
+                namespace: None,
+                encoding,
+                size,
+                alignment: None,
+            }),
+        );
+    }
+
+    /// An enum whose variants carry the given constants over a
+    /// discriminant of type `tag` at offset 0, or a C-style enum over
+    /// `tag` as its repr when `cstyle`.
+    fn insert_enum(
+        reader: &mut DwReader<'static>,
+        id: TypeId,
+        name: &'static str,
+        tag: TypeId,
+        values: &[Option<DiscrBits>],
+        cstyle: bool,
+    ) {
+        let variant_name = |reader: &mut DwReader<'static>, i: usize| {
+            reader.strings.intern(match i {
+                0 => "V0",
+                1 => "V1",
+                2 => "V2",
+                _ => "V3",
+            })
+        };
+        let shape = if cstyle {
+            VariantShape::CStyle {
+                repr_type_id: Some(tag),
+                enumerators: values
+                    .iter()
+                    .enumerate()
+                    .map(|(i, v)| RawEnumerator {
+                        name: variant_name(reader, i),
+                        value: v.expect("an enumerator always has a value"),
+                    })
+                    .collect(),
+            }
+        } else {
+            let member = |name: Option<StrId>, ty| RawMember {
+                name,
+                offset: 0,
+                type_id: ty,
+                source_loc: None,
+            };
+            let discr = Some(member(None, tag));
+            VariantShape::Many {
+                discr,
+                variants: values
+                    .iter()
+                    .enumerate()
+                    .map(|(i, v)| {
+                        let name = Some(variant_name(reader, i));
+                        (
+                            *v,
+                            RawVariant {
+                                member: member(name, tag),
+                            },
+                        )
+                    })
+                    .collect(),
+            }
+        };
+        let name = Some(reader.strings.intern(name));
+        reader.types.insert(
+            id,
+            RawType::Enum(RawEnum {
+                name,
+                namespace: None,
+                size: 8,
+                alignment: None,
+                shape,
+                template_params: Box::new([]),
+                source_loc: None,
+            }),
+        );
+    }
+
+    /// The bundle stores a variant's constant as the bits its tag holds.
+    /// LLVM spells a signed constant in the narrowest form that fits it
+    /// as a signed number (`-1` on an `i32` tag is one `0xff` byte), so
+    /// a signed tag sign-extends the form's width and cuts to its own,
+    /// while an unsigned tag takes the bits as written: the same `0xff`
+    /// byte on a `u32` tag is 255. A 16-byte tag is the whole word: a
+    /// signed one still widens a narrow constant, and neither cuts
+    /// anything. A C-style enum stores the value the constant names
+    /// instead, widened the same way.
+    #[test]
+    fn test_discriminant_constants_are_widened_to_their_tags_bits() {
+        let mut reader = DwReader::default();
+        let i32_t = type_id(0x10);
+        let u32_t = type_id(0x20);
+        let i128_t = type_id(0x70);
+        let u128_t = type_id(0x80);
+        insert_base(&mut reader, i32_t, "i32", Encoding::Signed, 4);
+        insert_base(&mut reader, u32_t, "u32", Encoding::Unsigned, 4);
+        insert_base(&mut reader, i128_t, "i128", Encoding::Signed, 16);
+        insert_base(&mut reader, u128_t, "u128", Encoding::Unsigned, 16);
+        let byte = |bits| Some(DiscrBits { bits, width: 1 });
+        let half = |bits| Some(DiscrBits { bits, width: 2 });
+        let sdata = |v: i64| Some(DiscrBits::full(v as u128));
+        let signed = type_id(0x30);
+        let unsigned = type_id(0x40);
+        let level = type_id(0x50);
+        let shade = type_id(0x60);
+        let values = [byte(0xff), half(0x03e8), sdata(-1), None];
+        insert_enum(&mut reader, signed, "Signed", i32_t, &values, false);
+        insert_enum(&mut reader, unsigned, "Unsigned", u32_t, &values, false);
+        let wide = type_id(0x90);
+        let wide_unsigned = type_id(0xa0);
+        let block = Some(DiscrBits::full((1 << 64) | 5));
+        let wides = [byte(0xff), block, sdata(-1)];
+        insert_enum(&mut reader, wide, "Wide", i128_t, &wides, false);
+        insert_enum(
+            &mut reader,
+            wide_unsigned,
+            "WideUnsigned",
+            u128_t,
+            &wides,
+            false,
+        );
+        let constants = [byte(0xff), half(0x03e8), sdata(-1)];
+        insert_enum(&mut reader, level, "Level", i32_t, &constants, true);
+        insert_enum(&mut reader, shade, "Shade", u32_t, &constants, true);
+
+        let mut em = Emitter::new(&reader, BTreeMap::new(), None, None);
+        let tag_bits = |em: &mut Emitter<'_>, id| -> Vec<Option<u128>> {
+            let bid = em.emit(id);
+            let TypeDef::Enum { shape, .. } = &em.defs[bid.0 as usize] else {
+                panic!("a Many enum emits as Enum");
+            };
+            shape
+                .variants
+                .iter()
+                .map(|v| match &v.discr_values {
+                    Some(DiscrValues(values)) => match values[..] {
+                        [DiscrValue::Value(x)] => Some(x),
+                        _ => panic!("one plain value per variant: {values:?}"),
+                    },
+                    None => None,
+                })
+                .collect()
+        };
+        assert_eq!(
+            tag_bits(&mut em, signed),
+            [Some(0xffff_ffff), Some(0x03e8), Some(0xffff_ffff), None]
+        );
+        assert_eq!(
+            tag_bits(&mut em, unsigned),
+            [Some(0xff), Some(0x03e8), Some(0xffff_ffff), None]
+        );
+        assert_eq!(
+            tag_bits(&mut em, wide),
+            [Some(u128::MAX), Some((1 << 64) | 5), Some(u128::MAX)]
+        );
+        assert_eq!(
+            tag_bits(&mut em, wide_unsigned),
+            [Some(0xff), Some((1 << 64) | 5), Some(u128::MAX)]
+        );
+
+        let named = |em: &mut Emitter<'_>, id| -> Vec<i128> {
+            let bid = em.emit(id);
+            let TypeDef::CEnum { enumerators, .. } = &em.defs[bid.0 as usize] else {
+                panic!("a CStyle enum emits as CEnum");
+            };
+            enumerators.iter().map(|(_, v)| *v).collect()
+        };
+        assert_eq!(named(&mut em, level), [-1, 0x03e8, -1]);
+        assert_eq!(named(&mut em, shade), [0xff, 0x03e8, -1]);
     }
 
     #[test]

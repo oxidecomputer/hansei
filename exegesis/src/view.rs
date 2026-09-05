@@ -410,7 +410,7 @@ impl<'a> SourceLocView<'a> {
 mod tests {
     use super::{DwView, Namespace};
     use crate::raw_types::{
-        Encoding, RawBase, RawEnum, RawEnumerator, RawGenericParameter, RawMember,
+        DiscrBits, Encoding, RawBase, RawEnum, RawEnumerator, RawGenericParameter, RawMember,
         RawStaticVariable, RawStruct, RawType, RawUnion, RawVariant, VariantShape,
     };
     use crate::reader::DwReader;
@@ -592,7 +592,7 @@ mod tests {
     /// The variant names of a Many-shaped enum.
     fn variant_names<'a>(
         reader: &'a DwReader<'a>,
-        variants: &[(Option<u128>, RawVariant<StrId>)],
+        variants: &[(Option<DiscrBits>, RawVariant<StrId>)],
     ) -> Vec<&'a str> {
         variants
             .iter()
@@ -1334,7 +1334,7 @@ mod tests {
     ) -> Vec<(&'a str, u128)> {
         enumerators
             .iter()
-            .map(|e| (reader.strings.get(e.name), e.value))
+            .map(|e| (reader.strings.get(e.name), e.value.bits))
             .collect()
     }
 

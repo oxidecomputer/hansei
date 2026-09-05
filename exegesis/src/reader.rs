@@ -1387,7 +1387,7 @@ fn remap_ns_in_place<S>(ty: &mut RawType<S>, ns_remap: &HashMap<NsId, NsId>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::raw_types::{Encoding, RawArray};
+    use crate::raw_types::{DiscrBits, Encoding, RawArray};
     use gimli::UnitSectionOffset;
 
     fn type_id(offset: usize) -> TypeId {
@@ -1673,7 +1673,7 @@ mod tests {
     ) -> RawEnumerator<StrId> {
         RawEnumerator {
             name: reader.strings.intern(name),
-            value,
+            value: DiscrBits::full(value),
         }
     }
 
@@ -1754,7 +1754,7 @@ mod tests {
         insert_union_with(&mut reader, rich_union, "U", 12, members, params.clone());
 
         let variants: Box<[_]> = (0u128..3)
-            .map(|i| (Some(i), variant(&mut reader, "V", 8, base)))
+            .map(|i| (Some(DiscrBits::full(i)), variant(&mut reader, "V", 8, base)))
             .collect();
         let discr = member(&mut reader, "discr", 0, base);
         let many = type_id(0x60);
@@ -2115,7 +2115,7 @@ mod tests {
         let many = |reader: &mut DwReader<'static>, with_discr: bool, values: &[u128]| {
             let variants = values
                 .iter()
-                .map(|&value| (Some(value), variant(reader, "V", 8, elem)))
+                .map(|&value| (Some(DiscrBits::full(value)), variant(reader, "V", 8, elem)))
                 .collect();
             VariantShape::Many {
                 discr: with_discr.then(|| member(reader, "discr", 0, elem)),

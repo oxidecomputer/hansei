@@ -3,7 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 use crate::raw_types::{
-    CommonAttrs, Encoding, NamespaceTable, NsId, RawArray, RawAwaitee, RawBase, RawEnum,
+    CommonAttrs, DiscrBits, Encoding, NamespaceTable, NsId, RawArray, RawAwaitee, RawBase, RawEnum,
     RawEnumerator, RawFunc, RawGenericParameter, RawMember, RawPointer, RawStaticVariable,
     RawStruct, RawSubParameter, RawType, RawUnion, RawVariant, SourceLoc, VariantShape,
 };
@@ -989,7 +989,7 @@ fn parse_variant_part<'dw>(
 fn parse_variant<'dw>(
     unit: &UnitCtx<'_, 'dw>,
     cursor: &mut EntriesCursor<Slice<'dw>>,
-) -> Result<(Option<u128>, RawVariant<&'dw str>)> {
+) -> Result<(Option<DiscrBits>, RawVariant<&'dw str>)> {
     let entry = cursor.current().unwrap();
     assert!(entry.tag() == gimli::DW_TAG_variant);
 
@@ -1023,21 +1023,38 @@ fn parse_variant<'dw>(
     Ok((discr_value, RawVariant { member }))
 }
 
-/// Parse a `DW_AT_discr_value` attribute into a `u128`.
+/// Parse a `DW_AT_discr_value` (or `DW_AT_const_value`) attribute into
+/// the bits it carried and the width of the form that carried them.
 ///
-/// In DWARFv4 (which rustc targets), u128 discriminants are encoded as
-/// `DW_FORM_block` containing 16 bytes in **target byte order**. The
+/// The fixed-size data forms record their own width, which is what a
+/// signed constant's later widening needs (see [`DiscrBits`]). `sdata`
+/// arrives sign-extended across the whole word already and `udata`
+/// never wants extending, so both count as full-width. In DWARFv4
+/// (which rustc targets), u128 discriminants are encoded as
+/// `DW_FORM_block` containing 16 bytes in **target byte order**; the
 /// endianness is extracted from the block data itself (it is an
 /// `EndianSlice` that carries the target's byte order).
-fn attr_discr_value(attr: &Attribute<Slice<'_>>) -> u128 {
+fn attr_discr_value(attr: &Attribute<Slice<'_>>) -> DiscrBits {
     match attr.value() {
-        AttributeValue::Udata(v) => v as u128,
-        AttributeValue::Sdata(v) => v as u128,
-        AttributeValue::Data1(v) => v as u128,
-        AttributeValue::Data2(v) => v as u128,
-        AttributeValue::Data4(v) => v as u128,
-        AttributeValue::Data8(v) => v as u128,
-        AttributeValue::Data16(v) => v,
+        AttributeValue::Udata(v) => DiscrBits::full(v as u128),
+        AttributeValue::Sdata(v) => DiscrBits::full(v as u128),
+        AttributeValue::Data1(v) => DiscrBits {
+            bits: v as u128,
+            width: 1,
+        },
+        AttributeValue::Data2(v) => DiscrBits {
+            bits: v as u128,
+            width: 2,
+        },
+        AttributeValue::Data4(v) => DiscrBits {
+            bits: v as u128,
+            width: 4,
+        },
+        AttributeValue::Data8(v) => DiscrBits {
+            bits: v as u128,
+            width: 8,
+        },
+        AttributeValue::Data16(v) => DiscrBits::full(v),
         AttributeValue::Block(ref data) => {
             let endian = data.endian();
             let slice = data.slice();
@@ -1050,9 +1067,13 @@ fn attr_discr_value(attr: &Attribute<Slice<'_>>) -> u128 {
                     buf[16 - slice.len()..].copy_from_slice(slice);
                 }
             }
-            match endian {
+            let bits = match endian {
                 gimli::RunTimeEndian::Little => u128::from_le_bytes(buf),
                 gimli::RunTimeEndian::Big => u128::from_be_bytes(buf),
+            };
+            DiscrBits {
+                bits,
+                width: slice.len() as u8,
             }
         }
         other => panic!("unexpected DW_AT_discr_value form: {:?}", other),
@@ -1197,7 +1218,7 @@ impl<'dw> DwString<'dw> for Attribute<Slice<'dw>> {
 #[cfg(test)]
 mod tests {
     use crate::StrId;
-    use crate::raw_types::{RawType, VariantShape};
+    use crate::raw_types::{DiscrBits, RawType, VariantShape};
     use crate::reader::{DwReader, ReadArgs};
 
     use gimli::write as gwrite;
@@ -1501,8 +1522,9 @@ mod tests {
                     panic!("two discriminated variants are Many");
                 };
                 assert!(discr.is_some());
-                let keys: Vec<Option<u128>> = variants.iter().map(|(value, _)| *value).collect();
-                assert_eq!(keys, [Some(0), Some(3)]);
+                let keys: Vec<Option<DiscrBits>> =
+                    variants.iter().map(|(value, _)| *value).collect();
+                assert_eq!(keys, [Some(DiscrBits::full(0)), Some(DiscrBits::full(3))]);
 
                 let VariantShape::Many { variants, .. } = shape(reader, "PinnedShape") else {
                     panic!("a discriminated single variant stays Many");
@@ -1562,12 +1584,112 @@ mod tests {
                     let VariantShape::Many { variants, .. } = shape(reader, "Wide") else {
                         panic!("the discriminated pair is Many");
                     };
-                    let keys: Vec<Option<u128>> =
+                    let keys: Vec<Option<DiscrBits>> =
                         variants.iter().map(|(value, _)| *value).collect();
-                    assert_eq!(keys, [Some(value), Some(0)], "{endian:?}");
+                    assert_eq!(
+                        keys,
+                        [Some(DiscrBits::full(value)), Some(DiscrBits::full(0))],
+                        "{endian:?}"
+                    );
                 },
             );
         }
+    }
+
+    /// The fixed-size data forms keep the width they were written in,
+    /// while `sdata`, `udata` and a block count as full-width — the
+    /// parser records what the form said and nothing more, since which
+    /// of those bits are information is the discriminant type's call
+    /// (see `DiscrBits`). Both attributes that carry a constant share
+    /// the reading.
+    #[test]
+    fn test_discriminant_constants_record_their_forms_width() {
+        parsed(
+            gimli::RunTimeEndian::Little,
+            |dwarf, unit_id| {
+                let unit = dwarf.units.get_mut(unit_id);
+                let root = unit.root();
+                let word = unit.add(root, gimli::DW_TAG_base_type);
+                let entry = unit.get_mut(word);
+                entry.set(gimli::DW_AT_name, W::String(b"i32".to_vec()));
+                entry.set(gimli::DW_AT_byte_size, W::Udata(4));
+                entry.set(gimli::DW_AT_encoding, W::Encoding(gimli::DW_ATE_signed));
+
+                let outer = unit.add(root, gimli::DW_TAG_structure_type);
+                let entry = unit.get_mut(outer);
+                entry.set(gimli::DW_AT_name, W::String(b"Forms".to_vec()));
+                entry.set(gimli::DW_AT_byte_size, W::Udata(8));
+                let part = unit.add(outer, gimli::DW_TAG_variant_part);
+                let member = unit.add(part, gimli::DW_TAG_member);
+                let entry = unit.get_mut(member);
+                entry.set(gimli::DW_AT_name, W::String(b"discr".to_vec()));
+                entry.set(gimli::DW_AT_type, W::UnitRef(word));
+                let entry = unit.get_mut(part);
+                entry.set(gimli::DW_AT_discr, W::UnitRef(member));
+                for value in [
+                    W::Data1(0xff),
+                    W::Data2(0x03e8),
+                    W::Data4(0xffff_ffff),
+                    W::Data8(0x8000_0000_0000_0000),
+                    W::Sdata(-1),
+                    W::Udata(7),
+                ] {
+                    let variant = unit.add(part, gimli::DW_TAG_variant);
+                    let entry = unit.get_mut(variant);
+                    entry.set(gimli::DW_AT_discr_value, value);
+                    let payload = unit.add(variant, gimli::DW_TAG_member);
+                    let entry = unit.get_mut(payload);
+                    entry.set(gimli::DW_AT_name, W::String(b"V".to_vec()));
+                    entry.set(gimli::DW_AT_type, W::UnitRef(word));
+                }
+
+                let clike = unit.add(root, gimli::DW_TAG_enumeration_type);
+                let entry = unit.get_mut(clike);
+                entry.set(gimli::DW_AT_name, W::String(b"Level".to_vec()));
+                entry.set(gimli::DW_AT_byte_size, W::Udata(4));
+                entry.set(gimli::DW_AT_type, W::UnitRef(word));
+                for (name, value) in [(b"Below", W::Sdata(-1)), (b"Above", W::Data1(0xff))] {
+                    let enumerator = unit.add(clike, gimli::DW_TAG_enumerator);
+                    let entry = unit.get_mut(enumerator);
+                    entry.set(gimli::DW_AT_name, W::String(name.to_vec()));
+                    entry.set(gimli::DW_AT_const_value, value);
+                }
+            },
+            |reader| {
+                let VariantShape::Many { variants, .. } = shape(reader, "Forms") else {
+                    panic!("the discriminated variants are Many");
+                };
+                let keys: Vec<Option<DiscrBits>> =
+                    variants.iter().map(|(value, _)| *value).collect();
+                let data = |bits, width| Some(DiscrBits { bits, width });
+                assert_eq!(
+                    keys,
+                    [
+                        data(0xff, 1),
+                        data(0x03e8, 2),
+                        data(0xffff_ffff, 4),
+                        data(0x8000_0000_0000_0000, 8),
+                        Some(DiscrBits::full(u128::MAX)),
+                        Some(DiscrBits::full(7)),
+                    ]
+                );
+
+                let VariantShape::CStyle { enumerators, .. } = shape(reader, "Level") else {
+                    panic!("the enumeration is CStyle");
+                };
+                let values: Vec<DiscrBits> = enumerators.iter().map(|e| e.value).collect();
+                assert_eq!(
+                    values,
+                    [
+                        DiscrBits::full(u128::MAX),
+                        DiscrBits {
+                            bits: 0xff,
+                            width: 1
+                        }
+                    ]
+                );
+            },
+        );
     }
 
     #[test]

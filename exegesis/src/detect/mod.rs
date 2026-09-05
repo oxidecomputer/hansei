@@ -1425,7 +1425,7 @@ mod tests {
     use super::{Detector, Family, trace};
     use crate::bundle::{DisplayNode, MemberRef, Notation, POINTER_SIZE, Shape, Step};
     use crate::extract::Emitter;
-    use crate::raw_types::{NsId, RawBase, RawMember, RawPointer, RawStruct, RawType};
+    use crate::raw_types::{DiscrBits, NsId, RawBase, RawMember, RawPointer, RawStruct, RawType};
     use crate::{DwReader, Encoding, TypeId};
 
     use gimli::UnitSectionOffset;
@@ -1764,13 +1764,13 @@ mod tests {
                     discr: None,
                     variants: Box::new([
                         (
-                            Some(0),
+                            Some(DiscrBits::full(0)),
                             RawVariant {
                                 member: member(trad, pay_a, 0),
                             },
                         ),
                         (
-                            Some(1),
+                            Some(DiscrBits::full(1)),
                             RawVariant {
                                 member: member(wheel, pay_b, 0),
                             },
