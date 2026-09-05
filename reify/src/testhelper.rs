@@ -636,6 +636,9 @@ fixture_ids! {
     // has a one-level and a two-level case to get right.
     ARC_DYN_INNER, ARC_DYN_INNER_PTR, ARC_DYN_PTR,
     MUTEX_DYN, ARC_MUTEX_DYN_INNER, ARC_MUTEX_DYN_INNER_PTR, ARC_MUTEX_DYN_PTR,
+    // A concrete type behind the Arc'd dyn that holds the same wide pointer
+    // back to itself, so following the pointee revisits it.
+    SELF_REF,
 }
 
 /// A hand-built mini-bundle exercising every TypeDef kind reify touches:
@@ -2006,6 +2009,15 @@ pub fn test_bundle() -> Bundle {
             ],
         },
     );
+    let self_refn = s("SelfRef");
+    types.add(
+        SELF_REF,
+        TypeDef::Struct {
+            name: self_refn,
+            size: 16,
+            members: vec![m(s("back"), ARC_DYN_PTR, 0)],
+        },
+    );
 
     let types = types.finish();
 
@@ -2529,7 +2541,7 @@ pub fn test_bundle() -> Bundle {
                 ),
                 (WATCH_RECEIVER, watch_receiver_node),
             ]),
-            name_index: vec![(pointn, POINT)],
+            name_index: vec![(pointn, POINT), (self_refn, SELF_REF)],
             ..Default::default()
         },
         tasks: TaskTable::default(),

@@ -505,6 +505,30 @@ mod tests {
         );
     }
 
+    /// A pointee that holds the same wide pointer is followed once: the
+    /// second visit to that address as that type is the cycle marker, not
+    /// a descent the depth budget has to cut.
+    #[test]
+    fn test_wrapped_dyn_pointee_that_points_back_at_itself_is_a_cycle() {
+        let mem = FakeMem::new()
+            .at(0x1040, u64s(&[0x1000, 0x3000]))
+            .at(0x3000, u64s(&[0x4000, 16, 64]))
+            .symbol(0x4000, "<SelfRef as app::Trait>::drop");
+
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+        let bytes = u64s(&[0x1000, 0x3000]);
+        let value = Value::new(v.ty(ARC_DYN_PTR).unwrap(), 0, &bytes);
+        let shown = format!("{}", value.display_from_target(&mem, 8));
+        assert!(
+            shown.contains(
+                "pointer: 0x1000 -> SelfRef { back: ArcDynPtr { pointer: 0x1000 -> <cycle>,"
+            ),
+            "{shown}"
+        );
+        assert_eq!(shown.matches("SelfRef {").count(), 1, "{shown}");
+    }
+
     /// The fold behind the reads above, at the values the fixtures cannot
     /// spell: no prefixes need no alignment, a missing or zero align word
     /// places nothing, and an offset that overflows is no offset.
