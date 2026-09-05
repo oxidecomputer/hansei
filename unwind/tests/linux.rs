@@ -71,7 +71,11 @@ fn core() -> &'static Path {
             let dir = tempfile::tempdir().expect("failed to create a tempdir");
             let core = dir.path().join("core");
             let out = Command::new("gdb")
-                .args(["-batch", "-nx", "-ex", "run", "-ex"])
+                // gdb stops the target on SIGUSR1 by default; the fixture's
+                // signalled worker needs it delivered.
+                .args(["-batch", "-nx"])
+                .args(["-ex", "handle SIGUSR1 nostop noprint pass"])
+                .args(["-ex", "run", "-ex"])
                 .arg(format!("gcore {}", core.display()))
                 .args(["-ex", "kill", "--args"])
                 .arg(&fixture)
@@ -511,6 +515,56 @@ fn test_a_stop_at_a_function_entry_pops_its_caller() {
     assert_eq!(demangled(stopped)[0], MARKER_FN);
     assert!(stopped.frames[0].interrupted && !stopped.frames[1].interrupted);
     assert_eq!(stopped.truncated, None, "{:#?}", demangled(stopped));
+}
+
+/// One worker parks inside a signal handler, so its stack carries the
+/// trampoline the kernel laid between the handler and the frame it
+/// interrupted. The walk crosses it — the trampoline's CFI restores
+/// every register by expression, out of the ucontext — marks it, and
+/// lands on an interrupted frame below which the fixture's own
+/// frames follow. Every backing object is on this machine, so the
+/// walk still reaches the bottom.
+#[test]
+fn test_a_signal_handler_frame_is_crossed_and_marked() {
+    let p = Proc::open_core(core()).expect("failed to open the core");
+    let stacks = unwind::load_frames(&p)
+        .expect("failed to unwind the core")
+        .stacks;
+
+    let with: Vec<_> = stacks
+        .iter()
+        .filter(|(_, bt)| bt.frames.iter().any(|f| f.trampoline))
+        .collect();
+    assert_eq!(
+        with.len(),
+        1,
+        "exactly one thread parks in a signal handler: {:#?}",
+        stacks
+            .iter()
+            .map(|(t, b)| (t, demangled(b)))
+            .collect::<Vec<_>>()
+    );
+    let (tid, bt) = with[0];
+    let names = demangled(bt);
+    let at = bt.frames.iter().position(|f| f.trampoline).unwrap();
+    assert!(
+        at > 0 && names[..at].iter().any(|n| n.contains(PARK_FN)),
+        "tid {tid}: the handler parks above the trampoline: {names:#?}"
+    );
+    assert!(
+        bt.frames[at].interrupted && bt.frames[at + 1].interrupted,
+        "tid {tid}: the trampoline and the frame it restores are both stopped, not suspended at a call: {names:#?}"
+    );
+    assert!(
+        names[at + 1..].iter().any(|n| n.contains("core_target")),
+        "tid {tid}: the walk never reached the fixture's frames below the interrupted one: {names:#?}"
+    );
+    assert_eq!(bt.truncated, None, "tid {tid}: {names:#?}");
+    let line = &bt.stack_trace(64)[at];
+    assert!(
+        line.ends_with(unwind::SIGNAL_HANDLER_CALLED),
+        "the listing spells the seam: {line}"
+    );
 }
 
 /// The rendered form callers actually print.

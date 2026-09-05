@@ -137,7 +137,11 @@ fn dumped() -> &'static Dumped {
         // thread that gdb would then write out in full; the kernel
         // skips those pages, gdb does not.
         let out = Command::new("gdb")
-            .args(["-batch", "-nx", "-ex", "run", "-ex"])
+            // gdb stops the target on SIGUSR1 by default; the fixture's
+            // signalled worker needs it delivered.
+            .args(["-batch", "-nx"])
+            .args(["-ex", "handle SIGUSR1 nostop noprint pass"])
+            .args(["-ex", "run", "-ex"])
             .arg(format!("gcore {}", core.display()))
             .args(["-ex", "kill", "--args"])
             .arg(fixture())

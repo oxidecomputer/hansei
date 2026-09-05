@@ -40,8 +40,12 @@ pub(crate) fn exec_trace_lwp<T: proc::Target>(
     writeln!(out, "lwp {tid} native stack:")?;
     let max = limit.unwrap_or(50);
     for frame in backtrace.frames.iter().take(max) {
-        let symbol = frame.symbol.as_ref().map(|s| s.name.as_str());
-        writeln!(out, "{}", native_stack_line(frame.regs.rip, symbol, fit))?;
+        let name = native_frame_name(frame);
+        writeln!(
+            out,
+            "{}",
+            native_stack_line(frame.regs.rip, name.as_deref(), fit)
+        )?;
     }
     let total = backtrace.frames.len();
     if max < total {
@@ -54,14 +58,28 @@ pub(crate) fn exec_trace_lwp<T: proc::Target>(
     Ok(())
 }
 
+/// A native frame's name as every stack listing prints it: its
+/// symbol demangled, or [`unwind::SIGNAL_HANDLER_CALLED`] for a
+/// signal trampoline — the seam between a handler and the frame it
+/// interrupted, which reads as what it is rather than as libc's
+/// `__restore_rt`. `None` for a frame with neither.
+pub(crate) fn native_frame_name(frame: &unwind::Frame) -> Option<String> {
+    if frame.trampoline {
+        return Some(unwind::SIGNAL_HANDLER_CALLED.to_string());
+    }
+    frame
+        .symbol
+        .as_ref()
+        .map(|s| format!("{:#}", rustc_demangle::demangle(&s.name)))
+}
+
 /// One line of the thread trace: the frame's pc, two spaces, and its
-/// demangled symbol — nothing where the frame has none — cut to what
-/// the fit leaves after the pc column, the way the native section
-/// above a mid-poll chain cuts its rows.
-fn native_stack_line(pc: u64, symbol: Option<&str>, fit: Option<usize>) -> String {
-    let name = format!("{:#}", rustc_demangle::demangle(symbol.unwrap_or_default()));
+/// name — nothing where the frame has none — cut to what the fit
+/// leaves after the pc column, the way the native section above a
+/// mid-poll chain cuts its rows.
+fn native_stack_line(pc: u64, name: Option<&str>, fit: Option<usize>) -> String {
     // The pc column and the gap after it.
-    let name = output::fit_name(&name, 18 + 2, fit);
+    let name = output::fit_name(name.unwrap_or_default(), 18 + 2, fit);
     format!("{pc:#018x}  {name}")
 }
 
@@ -936,9 +954,7 @@ fn native_frames(view: &BundleView<'_>, frames: &[unwind::Frame]) -> Vec<stackjo
         .iter()
         .map(|f| {
             let mangled = f.symbol.as_ref().map(|s| s.name.as_str());
-            let name = mangled
-                .map(|m| format!("{:#}", rustc_demangle::demangle(m)))
-                .unwrap_or_default();
+            let name = native_frame_name(f).unwrap_or_default();
             let futures = match mangled.map(|m| view.dyn_future_ids_for_symbol(m)) {
                 Some(SymbolLookup::Unique(id)) => vec![id],
                 Some(SymbolLookup::Ambiguous(ids)) => ids,
@@ -1699,20 +1715,19 @@ mod native_section_tests {
         );
     }
 
-    /// The thread trace's frame line: the pc column, then the symbol
-    /// demangled, and — under a fit — cut to what the pc column
-    /// leaves, so `config truncate-names` reaches a bare `trace`
-    /// under a thread cursor too. A frame without a symbol ends at
-    /// the gap.
+    /// The thread trace's frame line: the pc column, then the name,
+    /// and — under a fit — cut to what the pc column leaves, so
+    /// `config truncate-names` reaches a bare `trace` under a thread
+    /// cursor too. A frame without a name ends at the gap.
     #[test]
     fn test_a_fit_cuts_the_thread_trace_to_the_edge() {
-        let mangled = "_ZN3std4sync6poison5mutex14Mutex$LT$T$GT$4lock17h0123456789abcdefE";
+        let name = "std::sync::poison::mutex::Mutex<T>::lock";
         assert_eq!(
-            native_stack_line(0x9010, Some(mangled), None),
+            native_stack_line(0x9010, Some(name), None),
             "0x0000000000009010  std::sync::poison::mutex::Mutex<T>::lock"
         );
         assert_eq!(
-            native_stack_line(0x9010, Some(mangled), Some(40)),
+            native_stack_line(0x9010, Some(name), Some(40)),
             "0x0000000000009010  std::sync::poison::…"
         );
         assert_eq!(
@@ -1931,9 +1946,10 @@ nothing deeper is on the native stack
             unwind::Frame {
                 pc: 0x7004,
                 regs: proc::Regs::default(),
-                symbol: Some(sym),
+                symbol: Some(sym.clone()),
                 heuristic: false,
                 interrupted: false,
+                trampoline: false,
             },
             unwind::Frame {
                 pc: 0x9000,
@@ -1941,10 +1957,23 @@ nothing deeper is on the native stack
                 symbol: None,
                 heuristic: false,
                 interrupted: false,
+                trampoline: false,
+            },
+            // A signal trampoline: named for what it is, whatever its
+            // symbol says, and placed by its own pc.
+            unwind::Frame {
+                pc: 0x7010,
+                regs: proc::Regs::default(),
+                symbol: Some(sym),
+                heuristic: false,
+                interrupted: true,
+                trampoline: true,
             },
         ];
         let laid = super::native_frames(&view, &frames);
-        assert_eq!(laid.len(), 2);
+        assert_eq!(laid.len(), 3);
+        assert_eq!(laid[2].name, unwind::SIGNAL_HANDLER_CALLED);
+        assert_eq!(laid[2].pc, 0x7010);
         // A suspended frame is placed by the byte before its return
         // address, which is what the poll range is tested against.
         assert_eq!(laid[0].pc, 0x7003);

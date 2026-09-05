@@ -62,16 +62,17 @@ impl Backtrace {
             .iter()
             .take(max_frames)
             .map(|frame| {
-                let mangled = frame
-                    .symbol
-                    .as_ref()
-                    .map(|s| s.name.as_str())
-                    .unwrap_or_default();
-                format!(
-                    "{:#018x}  {:#}",
-                    frame.regs.rip,
-                    rustc_demangle::demangle(mangled)
-                )
+                let name = if frame.trampoline {
+                    SIGNAL_HANDLER_CALLED.to_string()
+                } else {
+                    let mangled = frame
+                        .symbol
+                        .as_ref()
+                        .map(|s| s.name.as_str())
+                        .unwrap_or_default();
+                    format!("{:#}", rustc_demangle::demangle(mangled))
+                };
+                format!("{:#018x}  {name}", frame.regs.rip)
             })
             .collect();
         lines
@@ -95,7 +96,18 @@ pub struct Frame {
     /// trampoline restores. Every other frame is suspended at a call,
     /// and its pc points *after* it.
     pub interrupted: bool,
+    /// Whether this frame is a signal trampoline: the seam between a
+    /// handler and the frame it interrupted, which the kernel resumes
+    /// to leave the handler. Listings print it as
+    /// [`SIGNAL_HANDLER_CALLED`], since its symbol — `__restore_rt`,
+    /// when libc's symbol table is on hand at all — says less than
+    /// what it is.
+    pub trampoline: bool,
 }
+
+/// What a stack listing prints for a signal trampoline's frame, in
+/// gdb's spelling.
+pub const SIGNAL_HANDLER_CALLED: &str = "<signal handler called>";
 
 impl Frame {
     /// The address this frame is looked up by, in CFI and in a symbol
@@ -293,6 +305,7 @@ impl<T: Target> Unwinder<'_, T> {
             symbol: self.target.lookup_symbol_by_addr(regs.rip),
             heuristic: false,
             interrupted: true,
+            trampoline: false,
         };
         frames.push(initial_frame);
 
@@ -313,6 +326,7 @@ impl<T: Target> Unwinder<'_, T> {
                 regs: regs.clone(),
                 heuristic: false,
                 interrupted: false,
+                trampoline: false,
             });
         }
 
@@ -359,6 +373,7 @@ impl<T: Target> Unwinder<'_, T> {
             if prev_frame.interrupted {
                 let trampoline = frames.last_mut().expect("the popped frame is pushed");
                 trampoline.interrupted = true;
+                trampoline.trampoline = true;
                 trampoline.symbol = self.target.lookup_symbol_by_addr(trampoline.pc);
             }
 
@@ -420,6 +435,7 @@ impl<T: Target> Unwinder<'_, T> {
                 regs: prev_regs,
                 heuristic: true,
                 interrupted: false,
+                trampoline: false,
             })),
             None => Pop::Lost(self.lost_at(pc)),
         }
@@ -511,6 +527,7 @@ impl<T: Target> Unwinder<'_, T> {
             regs: prev_regs,
             heuristic: false,
             interrupted,
+            trampoline: false,
         };
 
         Ok(Pop::Frame(Box::new(prev_frame)))
@@ -918,6 +935,7 @@ mod fallback_tests {
             symbol: None,
             heuristic,
             interrupted: false,
+            trampoline: false,
         };
         let bt = Backtrace {
             frames: vec![frame(0x10, false), frame(0x20, true)],

@@ -203,16 +203,17 @@ fn blocking_role(frames: &[String]) -> Option<&'static str> {
     })
 }
 
-/// Every frame's symbol, demangled without the hash — the spelling the
-/// role classifier matches on and the `FRAME 0` cell prints.
+/// Every frame's name — the symbol demangled without the hash, or a
+/// signal trampoline's marker — the spelling the role classifier
+/// matches on and the `FRAME 0` cell prints.
 fn stack_names(stack: Option<&unwind::Backtrace>) -> Vec<String> {
     stack
         .map(|bt| {
             bt.frames
                 .iter()
-                .map(|frame| match &frame.symbol {
-                    Some(symbol) => format!("{:#}", rustc_demangle::demangle(&symbol.name)),
-                    None => format!("{:#x}", frame.pc),
+                .map(|frame| {
+                    crate::trace::native_frame_name(frame)
+                        .unwrap_or_else(|| format!("{:#x}", frame.pc))
                 })
                 .collect()
         })

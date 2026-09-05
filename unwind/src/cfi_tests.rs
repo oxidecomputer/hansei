@@ -11,7 +11,7 @@
 //! Linux suite walks never stop a thread on a function's first byte.
 
 use crate::testhelper::{FakeTarget, STACK, TEXT, names, symbol, target};
-use crate::{Backtrace, ObjectInfo, Unwinder};
+use crate::{Backtrace, ObjectInfo, SIGNAL_HANDLER_CALLED, Unwinder};
 use gimli::write::{
     Address, CallFrameInstruction as I, CommonInformationEntry, EhFrame, EndianVec, Expression,
     FrameDescriptionEntry, FrameTable,
@@ -241,6 +241,7 @@ fn test_a_stop_at_a_functions_first_byte_pops_its_caller() {
     // address, and its rbp is untouched.
     assert_eq!(bt.frames[1].regs.rsp, S + 8);
     assert_eq!(bt.frames[1].regs.rbp, R);
+    assert!(bt.frames.iter().all(|f| !f.trampoline));
     assert_eq!(bt.truncated, None);
 }
 
@@ -306,7 +307,13 @@ fn test_a_signal_trampoline_restores_the_interrupted_frame() {
     let interrupted: Vec<bool> = bt.frames.iter().map(|f| f.interrupted).collect();
     assert_eq!(interrupted, [true, true, true, false]);
     assert_eq!(names(&bt), ["handler", "restore_rt", "fn_b", "fn_c"]);
+    let trampolines: Vec<bool> = bt.frames.iter().map(|f| f.trampoline).collect();
+    assert_eq!(trampolines, [false, true, false, false]);
     assert_eq!(bt.frames[1].lookup_pc(), T);
+    // The listing spells the seam, not the trampoline's symbol.
+    let lines = bt.stack_trace(8);
+    assert_eq!(lines[1], format!("{T:#018x}  {SIGNAL_HANDLER_CALLED}"));
+    assert_eq!(lines[2], format!("{B:#018x}  fn_b"));
     assert_eq!(bt.frames[2].regs.rsp, s2);
     assert_eq!(bt.frames[2].regs.rbp, u + 0x100);
     assert_eq!(bt.frames[3].regs.rsp, s2 + 8);

@@ -18,6 +18,14 @@
 //! value on stdout before parking, so the suite knows what the core
 //! should say without having to trust the code that reads it.
 //!
+//! The last worker parks inside a signal handler rather than on its
+//! own frames, so one stack in the core has the trampoline the kernel
+//! lays between a handler and the frame it interrupted — the seam the
+//! unwinder's suite checks a walk crosses and marks. That worker
+//! reports in from inside the handler, so the abort that ends the
+//! process cannot come before the handler's frame exists. The suite
+//! that runs the fixture under gdb has to let SIGUSR1 through.
+//!
 //! Reading `/proc/thread-self` makes this a Linux program at runtime,
 //! which is where the suite that drives it runs.
 
@@ -25,7 +33,7 @@ use std::cell::Cell;
 use std::hint::black_box;
 use std::io::Write;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc;
+use std::sync::{Mutex, mpsc};
 use std::thread;
 
 /// A function symbol the suite resolves by name and back by address.
@@ -57,6 +65,54 @@ thread_local! {
 
 /// One LWP each, under the names the suite looks for.
 const WORKERS: [&str; 3] = ["core-worker-0", "core-worker-1", "core-worker-2"];
+/// The worker that parks inside a signal handler.
+const SIGNALLED: &str = "core-worker-2";
+
+/// The signalled worker's report channel, for its handler to report
+/// through: a handler takes no arguments of ours.
+#[cfg(target_os = "linux")]
+static SIGNALLED_TX: Mutex<Option<mpsc::Sender<(u32, u64, u64)>>> = Mutex::new(None);
+
+/// The handler: reports in, then parks for good, so the trampoline
+/// that would return to the interrupted frame stays on the stack.
+/// Nothing here is async-signal-safe, and nothing needs to be: the
+/// thread raised the signal at itself from a quiet spot.
+#[cfg(target_os = "linux")]
+extern "C" fn report_and_park_in_handler(_: libc::c_int) {
+    let tx = SIGNALLED_TX
+        .lock()
+        .expect("nothing panics holding it")
+        .take()
+        .expect("the handler runs once");
+    tx.send(claim_slot()).expect("nobody is waiting");
+    park_forever()
+}
+
+/// Deliver `SIGUSR1` to this thread and report and park in its
+/// handler. `raise` runs the handler before it returns, and the
+/// handler never does. Linux only, like the core the suite takes of
+/// it: `libc` is a Linux dependency of this crate.
+#[cfg(target_os = "linux")]
+fn report_and_park_in_signal_handler(tx: mpsc::Sender<(u32, u64, u64)>) -> ! {
+    *SIGNALLED_TX.lock().expect("nothing panics holding it") = Some(tx);
+    // SAFETY: the handler is a plain function of the signature
+    // `signal` wants, and it blocks forever.
+    unsafe {
+        libc::signal(
+            libc::SIGUSR1,
+            report_and_park_in_handler as extern "C" fn(libc::c_int) as libc::sighandler_t,
+        );
+        libc::raise(libc::SIGUSR1);
+    }
+    unreachable!("the SIGUSR1 handler parks forever")
+}
+
+/// Elsewhere the worker reports and parks like the others.
+#[cfg(not(target_os = "linux"))]
+fn report_and_park_in_signal_handler(tx: mpsc::Sender<(u32, u64, u64)>) -> ! {
+    tx.send(claim_slot()).expect("nobody is waiting");
+    park_forever()
+}
 
 /// This thread's id, from procfs: an oracle the core parser had no hand
 /// in. `/proc/thread-self` resolves to `<pid>/task/<tid>`.
@@ -98,6 +154,9 @@ fn main() {
         thread::Builder::new()
             .name(name.to_string())
             .spawn(move || {
+                if name == SIGNALLED {
+                    report_and_park_in_signal_handler(tx);
+                }
                 tx.send(claim_slot()).expect("nobody is waiting");
                 park_forever();
             })
