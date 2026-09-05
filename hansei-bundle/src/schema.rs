@@ -1085,9 +1085,13 @@ pub struct VariantDef {
     pub discr_values: Option<DiscrValues>,
     /// The variant's payload member (offset + type).
     pub payload: MemberDef,
-    /// Declaration coordinates of the variant member. For coroutine state
-    /// machines rustc records the *awaited expression* here, so a
-    /// `SuspendN` variant's `decl` is its await point's source line.
+    /// Declaration coordinates of the variant member. For a coroutine
+    /// state machine's `SuspendN` variants rustc records the *awaited
+    /// expression* here, so their `decl` is the await point's source
+    /// line; its terminal variants carry a boundary of the body's span
+    /// instead — `Unresumed` the line the body opens on, `Returned` and
+    /// `Panicked` its closing brace — which is where the coroutine is
+    /// defined, not anywhere it waits.
     pub decl: Option<SourceLoc>,
     /// Where a coroutine suspend point's await is *written*, when that is
     /// known to differ from where `decl` puts it.

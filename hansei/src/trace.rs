@@ -2842,10 +2842,12 @@ mod trace_render_tests {
             .into_owned()
     }
 
-    /// A frame parked in a terminal state reports the state and its
-    /// source site with the `state` spelling — no resume-point claim —
-    /// and the suspend inventory, being type information, is out of the
-    /// default view entirely.
+    /// A frame parked in a terminal state reports the state with the
+    /// `state` spelling and no source site: an `Unresumed` future has
+    /// run no instruction of its body, so it is at no await, and the
+    /// line the debug info records on it — where the body opens — is
+    /// not one. The suspend inventory, being type information, is out
+    /// of the default view entirely.
     #[test]
     fn test_a_terminal_state_reports_itself_without_inventory() {
         assert_eq!(
@@ -2855,7 +2857,7 @@ mod trace_render_tests {
                 false
             ),
             "#0  async fn      walk_shapes::side_parker
-      state Unresumed — src/bin/walk-shapes.rs:208
+      state Unresumed
 "
         );
     }

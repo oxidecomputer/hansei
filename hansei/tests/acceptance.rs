@@ -532,6 +532,10 @@ struct TaskRow {
     /// one — `task` prints no line for a missing anchor.
     spawned: String,
     defined: String,
+    /// The await site the task is suspended behind, empty when no frame
+    /// on its chain is at one — a task never polled has none, and
+    /// `task` prints no line for it.
+    awaiting: String,
     /// The thread the task is on, `<none>` where it is on none.
     thread: String,
     /// The wait, spelled as the table's cell — empty for a task
@@ -581,6 +585,7 @@ fn list_tasks(bundle: &Path, core: &Path) -> Vec<TaskRow> {
             sets: String::new(),
             spawned: String::new(),
             defined: String::new(),
+            awaiting: String::new(),
             thread: String::new(),
             waiting: String::new(),
             waker: String::new(),
@@ -607,7 +612,7 @@ fn list_tasks(bundle: &Path, core: &Path) -> Vec<TaskRow> {
                 "thread" => &mut row.thread,
                 "owner" => &mut row.owner,
                 "type" => &mut row.future,
-                "awaiting at" => continue,
+                "awaiting at" => &mut row.awaiting,
                 "waiting on" => &mut row.waiting,
                 "waker" => &mut row.waker,
                 "spawned at" => &mut row.spawned,
@@ -2138,9 +2143,33 @@ fn test_ct_spin_acceptance() {
     let bundle = fixtures().bundle("ct-spin");
     with_core("ct-spin", |core| {
         let rows = list_tasks(&bundle, core);
-        assert_eq!(rows.len(), 1, "{rows:#?}");
+        assert_eq!(rows.len(), 2, "{rows:#?}");
         let task = task_with_future(&rows, "async fn ct_spin::spinner");
         assert_eq!(task.state, "running", "{rows:#?}");
+
+        // The task the spinner spawned before it began to spin can
+        // never run: on this flavor a spawned task is polled only when
+        // the running one yields, and the spinner never does. Its root
+        // is `Unresumed` — no instruction of its body has executed —
+        // so it is suspended behind no await, and the listing must not
+        // present the line its body opens on as one.
+        let dormant = task_with_future(&rows, "async fn ct_spin::dormant");
+        assert_eq!(dormant.state, "queued", "{rows:#?}");
+        assert_eq!(dormant.awaiting, "", "{rows:#?}");
+        let out = hansei_ok(&bundle, core, "tasks");
+        let row = out
+            .lines()
+            .find(|line| line.contains("async fn ct_spin::dormant"))
+            .unwrap_or_else(|| panic!("no row for the dormant task: {out}"));
+        assert!(!row.contains("ct-spin.rs"), "{out}");
+        // And grouping by await site files it in the empty bucket,
+        // not under its body's opening line.
+        let out = hansei_ok(&bundle, core, "tasks --group awaiting");
+        let bucket = out
+            .lines()
+            .find(|line| line.contains("<empty>"))
+            .unwrap_or_else(|| panic!("no empty bucket in the grouping: {out}"));
+        assert!(bucket.contains(&dormant.id), "{out}");
         let lwp = &task.thread;
         assert!(
             lwp.parse::<u32>().is_ok(),

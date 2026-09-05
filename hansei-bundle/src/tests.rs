@@ -1879,10 +1879,14 @@ mod view_tests {
         let u8n = strings.intern("u8");
         let envn = strings.intern("app::work::{async_fn_env#0}");
         let unresumed = strings.intern("app::work::{async_fn_env#0}::Unresumed");
+        let returned = strings.intern("app::work::{async_fn_env#0}::Returned");
         let suspend0 = strings.intern("app::work::{async_fn_env#0}::Suspend0");
+        let suspend1 = strings.intern("app::work::{async_fn_env#0}::Suspend1");
         let file = strings.intern("src/work.rs");
         let v0 = strings.intern("0");
+        let v1 = strings.intern("1");
         let v3 = strings.intern("3");
+        let v4 = strings.intern("4");
 
         let tag = |v: u128| Some(DiscrValues(vec![DiscrValue::Value(v)]));
         b.types = TypeTable {
@@ -1915,6 +1919,11 @@ mod view_tests {
                             ty: BundleTypeId(0),
                         }),
                         variants: vec![
+                            // The terminal states carry the body's
+                            // span boundaries as their coordinates, the
+                            // way rustc records them: the opening line
+                            // on Unresumed, the closing brace on
+                            // Returned.
                             VariantDef {
                                 name: v0,
                                 discr_values: tag(0),
@@ -1923,7 +1932,18 @@ mod view_tests {
                                     ty: BundleTypeId(1),
                                     offset: 0,
                                 },
-                                decl: None,
+                                decl: Some(SourceLoc { file, line: 12 }),
+                                await_site: None,
+                            },
+                            VariantDef {
+                                name: v1,
+                                discr_values: tag(1),
+                                payload: MemberDef {
+                                    name: v1,
+                                    ty: BundleTypeId(4),
+                                    offset: 0,
+                                },
+                                decl: Some(SourceLoc { file, line: 40 }),
                                 await_site: None,
                             },
                             VariantDef {
@@ -1937,8 +1957,34 @@ mod view_tests {
                                 decl: Some(SourceLoc { file, line: 18 }),
                                 await_site: None,
                             },
+                            // An await written in a macro: `decl` names
+                            // the expansion, `await_site` where the
+                            // macro was invoked.
+                            VariantDef {
+                                name: v4,
+                                discr_values: tag(4),
+                                payload: MemberDef {
+                                    name: v4,
+                                    ty: BundleTypeId(5),
+                                    offset: 0,
+                                },
+                                decl: Some(SourceLoc { file, line: 21 }),
+                                await_site: Some(SourceLoc { file, line: 33 }),
+                            },
                         ],
                     },
+                },
+                // 4: Returned payload
+                TypeDef::Struct {
+                    name: returned,
+                    size: 8,
+                    members: vec![],
+                },
+                // 5: Suspend1 payload
+                TypeDef::Struct {
+                    name: suspend1,
+                    size: 8,
+                    members: vec![],
                 },
             ],
             debug_formats: std::collections::BTreeMap::new(),
@@ -1961,7 +2007,7 @@ mod view_tests {
         let v = e.active_variant(&[0u8; 8]).unwrap().unwrap();
         assert_eq!(v.name, "0");
         assert_eq!(v.state_name(), "Unresumed");
-        assert_eq!(v.decl, None);
+        assert_eq!(v.decl, Some(("src/work.rs", 12)));
 
         let v = e
             .active_variant(&[3, 0, 0, 0, 0, 0, 0, 0])
@@ -1970,6 +2016,47 @@ mod view_tests {
         assert_eq!(v.name, "3");
         assert_eq!(v.state_name(), "Suspend0");
         assert_eq!(v.decl, Some(("src/work.rs", 18)));
+    }
+
+    /// Only a suspend state is at an await. The terminal states carry
+    /// coordinates too — the body's opening line and closing brace —
+    /// but those say where the coroutine is defined, not where it
+    /// waits, and `await_loc` must not hand them out as a site.
+    #[test]
+    fn test_await_loc_only_on_suspend_states() {
+        let b = coroutine_bundle();
+        let e = BundleView::new(&b).ty(BundleTypeId(3)).unwrap();
+        let at = |tag: u8| {
+            e.active_variant(&[tag, 0, 0, 0, 0, 0, 0, 0])
+                .unwrap()
+                .unwrap()
+        };
+
+        // Unresumed: nothing has run, so nothing is awaited — even
+        // though the variant records the line the body opens on.
+        let v = at(0);
+        assert_eq!(v.state_name(), "Unresumed");
+        assert_eq!(v.decl, Some(("src/work.rs", 12)));
+        assert_eq!(v.await_loc(), None);
+
+        // Returned: the body is over; its closing brace is no await.
+        let v = at(1);
+        assert_eq!(v.state_name(), "Returned");
+        assert_eq!(v.decl, Some(("src/work.rs", 40)));
+        assert_eq!(v.await_loc(), None);
+
+        // A suspend state answers its await point — the member's own
+        // coordinates when nothing better was recovered…
+        let v = at(3);
+        assert_eq!(v.state_name(), "Suspend0");
+        assert_eq!(v.await_loc(), Some(("src/work.rs", 18)));
+
+        // …and the site the await was written at when extraction
+        // found `decl` naming a macro's expansion instead.
+        let v = at(4);
+        assert_eq!(v.state_name(), "Suspend1");
+        assert_eq!(v.decl, Some(("src/work.rs", 21)));
+        assert_eq!(v.await_loc(), Some(("src/work.rs", 33)));
     }
 
     #[test]

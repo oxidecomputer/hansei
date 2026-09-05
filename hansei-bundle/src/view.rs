@@ -683,7 +683,18 @@ impl<'a> BundleVariant<'a> {
     /// Where a coroutine suspend point's await sits in source: the place
     /// it is written, falling back to the coordinates the variant member
     /// carries when nothing better was recovered.
+    ///
+    /// Only a `SuspendN` state is at an await. `Unresumed` has run no
+    /// instruction of the body and `Returned`/`Panicked` have finished
+    /// it, so none of the three waits anywhere; the coordinates rustc
+    /// records on them are the body's opening line and closing brace,
+    /// and reporting those as an await site would claim the future is
+    /// parked at a line it has never reached or has already left. They
+    /// answer `None`; the raw coordinates stay on `decl`.
     pub fn await_loc(&self) -> Option<(&'a str, u32)> {
+        if !self.state_name().starts_with("Suspend") {
+            return None;
+        }
         self.await_site.or(self.decl)
     }
 }

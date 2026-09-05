@@ -36,12 +36,23 @@ fn grind() -> u32 {
     spins
 }
 
+/// Spawned by the spinner just before it starts to spin, and never
+/// polled: on this flavor a spawned task runs only when the running
+/// one yields, and the spinner never does again. Its root future sits
+/// `Unresumed` for the rest of the process — a state that is at no
+/// await, whatever coordinates the debug info records on it.
+async fn dormant() -> u32 {
+    tokio::task::yield_now().await;
+    1
+}
+
 /// The yield commits one await unconditionally (its first poll is
 /// always `Pending`), so the task has been scheduled and resumed by the
 /// time it spins — a poll the scheduler's run loop entered, not the
 /// root future.
 async fn spinner() -> u32 {
     tokio::task::yield_now().await;
+    let _never = tokio::spawn(dormant());
     grind()
 }
 

@@ -1,6 +1,6 @@
 ---
 source: hansei/src/offline.rs
-description: "`future 0xb9b6a0` over illumos/unordered"
+description: "`future 0x15dc6a0` over illumos/unordered"
 ---
 future 0xADDR
     type: async fn unordered::set_member
@@ -8,5 +8,5 @@ future 0xADDR
     state: Suspend0 — src/bin/unordered.rs:73
     depth: 2 frames
     held futures: 1
-        (frame 1, `held`): 0xADDR  async fn unordered::leaf  Unresumed — src/bin/unordered.rs:40
+        (frame 1, `held`): 0xADDR  async fn unordered::leaf  Unresumed
     join sets: 0
