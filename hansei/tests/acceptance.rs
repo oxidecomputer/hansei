@@ -84,6 +84,7 @@ const PROGRAMS: &[&str] = &[
     "spin-poll",
     "ct-spin",
     "stale-local",
+    "enum-reprs",
 ];
 
 fn workspace_root() -> &'static Path {
@@ -1652,6 +1653,30 @@ fn test_print_renders_a_local_through_its_formatter() {
         assert!(!refused.status.success());
         let stderr = String::from_utf8_lossy(&refused.stderr);
         assert!(stderr.contains("whatis"), "{stderr}");
+    });
+}
+
+/// Enums whose tag constants DWARF spells narrower than the tag: a
+/// `-1` on a `#[repr(i32)]` enum arrives as one `0xff` byte and has
+/// to select on the tag's `0xffff_ffff`. Rendered from the core, each
+/// held value names its variant; a constant left at the form's width
+/// matches nothing, and the enum falls back to its name over raw
+/// bytes instead.
+#[test]
+fn test_enum_reprs_acceptance() {
+    let bundle = fixtures().bundle("enum-reprs");
+    with_core("enum-reprs", |core| {
+        let rows = list_tasks(&bundle, core);
+        let task = task_with_future(&rows, "async fn enum_reprs::hold");
+        let verbose = trace(&bundle, core, &task.id, true);
+        for local in [
+            "signed32: enum_reprs::Signed32::Below(1)",
+            "signed64: enum_reprs::Signed64::Below(2)",
+            "unsigned32: enum_reprs::Unsigned32::Byte(3)",
+            "level: enum_reprs::Level = Below",
+        ] {
+            assert!(verbose.contains(local), "{local} missing from {verbose}");
+        }
     });
 }
 

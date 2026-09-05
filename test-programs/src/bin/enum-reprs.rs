@@ -14,8 +14,9 @@
 //! across a park by one task so it reaches the bundle.
 //!
 //! The task parks deterministically: it signals readiness, then waits
-//! forever on a oneshot whose sender is intentionally leaked. This
-//! program is in the golden list only.
+//! forever on a oneshot whose sender is intentionally leaked, and the
+//! acceptance suite renders the held values from its core. This
+//! program is in the golden and acceptance lists only.
 
 use tokio::sync::oneshot;
 

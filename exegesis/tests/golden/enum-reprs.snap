@@ -6,15 +6,15 @@ program: enum-reprs
 [tasks]
 task: enum_reprs::hold::{async_fn_env#0}
   kind: AsyncFn
-  decl: enum-reprs.rs:63
+  decl: enum-reprs.rs:64
   entries: 2
   symbols-per-entry: 6,6
   stage: Stage<enum_reprs::hold::{async_fn_env#0}>
   variants:
-    Unresumed @ enum-reprs.rs:63
-    Returned @ enum-reprs.rs:85
-    Panicked @ enum-reprs.rs:85
-    Suspend0 @ enum-reprs.rs:70
+    Unresumed @ enum-reprs.rs:64
+    Returned @ enum-reprs.rs:86
+    Panicked @ enum-reprs.rs:86
+    Suspend0 @ enum-reprs.rs:71
 
 [dyn-futures]
 dyn: core::future::poll_fn::PollFn<tokio::runtime::scheduler::current_thread::{impl#0}::block_on::{closure#0}::{closure_env#0}<enum_reprs::main::{async_block_env#0}>> (poll)
@@ -23,8 +23,8 @@ dyn: enum_reprs::hold::{async_fn_env#0} (poll, drop_glue)
 dyn: enum_reprs::main::{async_block_env#0} (poll, drop_glue)
 
 [env-decls]
-env: enum_reprs::hold::{async_fn_env#0} @ enum-reprs.rs:63
-env: enum_reprs::main::{async_block_env#0} @ enum-reprs.rs:92
+env: enum_reprs::hold::{async_fn_env#0} @ enum-reprs.rs:64
+env: enum_reprs::main::{async_block_env#0} @ enum-reprs.rs:93
 
 [infra]
 header: ok
