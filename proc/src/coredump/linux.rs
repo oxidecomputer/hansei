@@ -22,7 +22,7 @@
 //! Reading a Linux core away from the machine that wrote it therefore
 //! wants those files to hand; what was dumped still reads without them.
 
-use super::common::{Segment, Symbols};
+use super::common::{Segment, Symbols, names_something};
 use crate::{
     BuildIds, Error, FatalSignal, LoadedObject, LoadedObjectWithPath, LwpInfo, MapFlags, Mappings,
     ProcessFacts, Regs, Result, Status, SymbolBuf, Target, Timespec, fault_code_name,
@@ -842,7 +842,7 @@ impl Core {
                     let Some(name) = strtab.get_at(sym.st_name) else {
                         continue;
                     };
-                    if name.is_empty() {
+                    if !names_something(name, &sym) {
                         continue;
                     }
                     let kind = sym.st_type();
@@ -2271,6 +2271,44 @@ mod tests {
                     .is_none(),
                 "{object}`{name} resolved to the executable's symbol"
             );
+        }
+    }
+
+    /// What libproc would not report, this reader must not either —
+    /// the line the illumos reader draws, drawn here from a real
+    /// binary. A PIE imports its libc through undefined `STT_FUNC`
+    /// entries at value 0 in both tables; biased, each would become a
+    /// function of size 0 at the load base, and the executable would
+    /// then claim to define `memcpy`.
+    ///
+    /// Linux only: the illumos linker gives an executable's imports
+    /// their PLT addresses, which libproc reports and this rule keeps,
+    /// so the test binary there has nothing for this test to drop.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_weak_and_valueless_symbols_are_dropped() {
+        use goblin::elf::sym::STB_WEAK;
+
+        const BASE: u64 = 0x5555_0000_0000;
+        let (_dir, p, exe) = with_test_binary(BASE);
+
+        let bytes = std::fs::read(&exe).unwrap();
+        let elf = Elf::parse(&bytes).unwrap();
+        let mut dropped: Vec<String> = Vec::new();
+        for (table, strtab) in [(&elf.syms, &elf.strtab), (&elf.dynsyms, &elf.dynstrtab)] {
+            for sym in table.iter() {
+                if !matches!(sym.st_type(), STT_FUNC | STT_OBJECT) {
+                    continue;
+                }
+                if sym.st_value == 0 || sym.st_bind() == STB_WEAK {
+                    dropped.extend(strtab.get_at(sym.st_name).map(str::to_string));
+                }
+            }
+        }
+        assert!(!dropped.is_empty(), "the test binary imports nothing");
+
+        for name in &dropped {
+            assert!(p.lookup_symbol_by_name(name).is_none(), "{name} resolved");
         }
     }
 

@@ -25,7 +25,7 @@
 //! are the ones `libproc-sys`' generated bindings assert, and the tests
 //! hold them to a core illumos actually wrote.
 
-use super::common::{Segment, Symbols, elf_ctx};
+use super::common::{Segment, Symbols, elf_ctx, names_something};
 use crate::{
     Error, FatalSignal, LoadedObject, LoadedObjectWithPath, LwpInfo, MapFlags, Mappings,
     ProcessFacts, Regs, Result, Status, SymbolBuf, Target, Timespec, fault_code_name,
@@ -40,7 +40,7 @@ use goblin::elf::program_header::program_header64::SIZEOF_PHDR;
 use goblin::elf::program_header::{PF_R, PF_W, PF_X, PT_DYNAMIC, PT_LOAD, PT_PHDR, ProgramHeader};
 use goblin::elf::section_header::SHT_SYMTAB;
 use goblin::elf::sym::sym64::SIZEOF_SYM;
-use goblin::elf::sym::{STB_LOCAL, STB_WEAK, STT_FUNC, STT_OBJECT, STT_TLS, Sym, st_bind, st_type};
+use goblin::elf::sym::{STB_LOCAL, STT_FUNC, STT_OBJECT, STT_TLS, Sym, st_bind, st_type};
 use goblin::strtab::Strtab;
 use memmap2::Mmap;
 use scroll::Pread;
@@ -1068,6 +1068,12 @@ fn parse_symbols(elf: &Elf<'_>, bytes: &[u8]) -> BTreeMap<u64, Symbols> {
 
         let object = out.entry(sh.sh_addr).or_default();
         for entry in entries {
+            let Some(name) = strs.get_at(entry.st_name) else {
+                continue;
+            };
+            if !names_something(name, &entry) {
+                continue;
+            }
             let Sym {
                 st_name,
                 st_info,
@@ -1076,22 +1082,6 @@ fn parse_symbols(elf: &Elf<'_>, bytes: &[u8]) -> BTreeMap<u64, Symbols> {
                 st_value,
                 st_size,
             } = entry;
-
-            let Some(name) = strs.get_at(st_name) else {
-                continue;
-            };
-            if name.is_empty() || st_value == 0 {
-                continue;
-            }
-            // libproc asks for `BIND_GLOBAL | BIND_LOCAL` and so never
-            // reports a weak symbol; the rest of this workspace joins
-            // on what it returns, so a second reader of the same core
-            // has to draw the line in the same place. Weak entries here
-            // are aliases and undefined references — `_mcount`,
-            // `pthread_setname_np` — that name nothing in this object.
-            if st_bind(st_info) == STB_WEAK {
-                continue;
-            }
 
             let sym = SymbolBuf {
                 name: name.to_string(),
@@ -1376,9 +1366,10 @@ mod tests {
 
     use goblin::elf::header::{EM_X86_64, ET_CORE, ET_DYN, Header as UnifiedHeader};
     use goblin::elf::program_header::PT_NOTE;
+    use goblin::elf::section_header::SHN_UNDEF;
     use goblin::elf::section_header::section_header64::SIZEOF_SHDR;
     use goblin::elf::section_header::{SHT_STRTAB, SectionHeader};
-    use goblin::elf::sym::STB_GLOBAL;
+    use goblin::elf::sym::{STB_GLOBAL, STB_WEAK};
     use scroll::Pwrite;
 
     use std::io::Write;
@@ -1747,6 +1738,7 @@ mod tests {
     struct TestSym {
         name: &'static str,
         info: u8,
+        shndx: usize,
         value: u64,
         size: u64,
     }
@@ -1761,8 +1753,22 @@ mod tests {
         TestSym {
             name,
             info,
+            shndx: 1,
             value,
             size,
+        }
+    }
+
+    /// An undefined reference: what an object records for a function
+    /// it imports. A non-PIE that takes the address of one gives it a
+    /// canonical PLT address, so the value is not always 0.
+    fn undef(name: &'static str, info: u8, value: u64) -> TestSym {
+        TestSym {
+            name,
+            info,
+            shndx: SHN_UNDEF as usize,
+            value,
+            size: 0,
         }
     }
 
@@ -1777,7 +1783,7 @@ mod tests {
                 st_name,
                 st_info: s.info,
                 st_other: 0,
-                st_shndx: 1,
+                st_shndx: s.shndx,
                 st_value: s.value,
                 st_size: s.size,
             };
@@ -2495,8 +2501,11 @@ mod tests {
     }
 
     /// What libproc would not report, this reader must not either:
-    /// weak symbols, unnamed ones, and undefined references all stay
-    /// out, so the two readers of one core agree.
+    /// weak symbols, unnamed ones, and valueless undefined references
+    /// all stay out, so the two readers of one core agree. An import
+    /// the executable has a PLT entry for is reported at that entry, as
+    /// libproc reports it; a thread-local at offset 0 is the one
+    /// valueless entry that names something.
     #[test]
     fn test_weak_and_valueless_symbols_are_dropped() {
         let (_dir, p) = CoreBuilder::default()
@@ -2508,16 +2517,23 @@ mod tests {
                     sym("real", FUNC, 0x40_0100, 0x10),
                     sym("_mcount", WEAK_FUNC, 0x40_0100, 0x10),
                     sym("", FUNC, 0x40_0200, 0x10),
-                    sym("undefined", FUNC, 0, 0),
+                    sym("valueless", FUNC, 0, 0),
+                    undef("memcpy", FUNC, 0),
+                    undef("puts", FUNC, 0x40_0400),
                     sym("notype", STB_GLOBAL << 4, 0x40_0300, 0x10),
+                    sym("first_tls", TLS, 0, 0x18),
                 ],
             )
             .proc();
 
-        assert_eq!(names(p.symbols().unwrap()), ["real"]);
-        assert!(p.object_symbols().unwrap().is_empty());
-        assert!(p.lookup_symbol_by_name("_mcount").is_none());
-        assert!(p.lookup_symbol_by_name("notype").is_none());
+        assert_eq!(names(p.symbols().unwrap()), ["real", "puts"]);
+        assert_eq!(names(p.object_symbols().unwrap()), ["first_tls"]);
+        for name in ["_mcount", "valueless", "memcpy", "notype"] {
+            assert!(p.lookup_symbol_by_name(name).is_none(), "{name} resolved");
+        }
+        assert_eq!(p.lookup_symbol_by_name("puts").unwrap().st_value, 0x40_0400);
+        assert!(p.lookup_symbol_by_addr(0x40_0400).is_none());
+        assert_eq!(p.lookup_symbol_by_name("first_tls").unwrap().st_value, 0);
     }
 
     /// Identical-code folding leaves several names on one address; a

@@ -12,6 +12,7 @@
 use crate::SymbolBuf;
 
 use goblin::container::{Container, Ctx};
+use goblin::elf::sym::{STB_WEAK, STT_TLS, Sym};
 
 use std::ops::Range;
 use std::sync::OnceLock;
@@ -41,6 +42,29 @@ impl Segment {
 /// read out of it — or written into a synthetic one — are decoded as.
 pub(crate) fn elf_ctx() -> Ctx {
     Ctx::new(Container::Big, scroll::Endian::Little)
+}
+
+/// Whether a symtab entry names something in its object: the line
+/// both readers draw before an entry goes into a [`Symbols`] table, so
+/// that one program's symbols read the same from either kind of core.
+///
+/// The line is where libproc's symbol iterator draws it, since that is
+/// what the rest of this workspace joins on and what the illumos reader
+/// is held to. Asked for `BIND_GLOBAL | BIND_LOCAL`, the iterator
+/// reports no weak entry — an alias such as `_mcount`, or an undefined
+/// reference — and it never reports a nameless one. It does report an
+/// import the executable has a PLT entry for, at that entry's address:
+/// the one address this object has for the name, and the reason the
+/// test is on the value rather than on `SHN_UNDEF`. What it has no
+/// address for is an import at value 0, which is every import of a
+/// PIE: biased, each would become a function of size 0 at the load
+/// base, and the executable would claim to define `memcpy`.
+///
+/// The one valueless entry that names something is a thread-local at
+/// offset 0: its value is an offset into the TLS block, and the first
+/// variable in the block sits at the start of it.
+pub(crate) fn names_something(name: &str, sym: &Sym) -> bool {
+    !name.is_empty() && sym.st_bind() != STB_WEAK && (sym.st_value != 0 || sym.st_type() == STT_TLS)
 }
 
 /// The symbols of one object, at their runtime addresses.
@@ -82,5 +106,63 @@ impl Symbols {
             .get(lo)
             .map(|&p| self.at(p))
             .filter(|sym| sym.name == name)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use goblin::elf::section_header::SHN_UNDEF;
+    use goblin::elf::sym::{STB_GLOBAL, STB_LOCAL, STT_FUNC, STT_OBJECT};
+
+    /// A defined entry lives in some real section; 14 is as good as any.
+    const TEXT: usize = 14;
+    const UNDEF: usize = SHN_UNDEF as usize;
+
+    fn sym(bind: u8, ty: u8, shndx: usize, value: u64) -> Sym {
+        Sym {
+            st_name: 1,
+            st_info: (bind << 4) | ty,
+            st_other: 0,
+            st_shndx: shndx,
+            st_value: value,
+            st_size: 8,
+        }
+    }
+
+    /// One row per way an entry can fail to name anything, and the
+    /// shapes that must survive them: the thread-local at offset 0,
+    /// which the zero-value rule must not eat, and the import at a PLT
+    /// address, which libproc reports.
+    #[test]
+    fn test_names_something_draws_libprocs_line() {
+        let admitted = |name, bind, ty, shndx, value| {
+            assert!(
+                names_something(name, &sym(bind, ty, shndx, value)),
+                "{name} dropped"
+            );
+        };
+        let dropped = |name, bind, ty, shndx, value| {
+            assert!(
+                !names_something(name, &sym(bind, ty, shndx, value)),
+                "{name} admitted"
+            );
+        };
+
+        admitted("f", STB_GLOBAL, STT_FUNC, TEXT, 0x1000);
+        admitted("f", STB_LOCAL, STT_FUNC, TEXT, 0x1000);
+        admitted("v", STB_GLOBAL, STT_OBJECT, TEXT, 0x2000);
+        // The first thread-local in a block is at offset 0.
+        admitted("t", STB_GLOBAL, STT_TLS, TEXT, 0);
+        // An import with a PLT entry has an address in this object.
+        admitted("puts", STB_GLOBAL, STT_FUNC, UNDEF, 0x1020);
+
+        dropped("", STB_GLOBAL, STT_FUNC, TEXT, 0x1000);
+        dropped("_mcount", STB_WEAK, STT_FUNC, TEXT, 0x1000);
+        dropped("__cxa_finalize", STB_WEAK, STT_FUNC, UNDEF, 0);
+        dropped("memcpy", STB_GLOBAL, STT_FUNC, UNDEF, 0);
+        dropped("nowhere", STB_GLOBAL, STT_FUNC, TEXT, 0);
+        dropped("nowhere", STB_GLOBAL, STT_OBJECT, TEXT, 0);
     }
 }
