@@ -2,13 +2,13 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-use crate::Encoding;
 use crate::Error;
 use crate::io::{FORMAT_VERSION, MAGIC};
 use crate::schema::*;
 use crate::strings::{StrRef, StringInterner};
+use crate::{BundleView, Encoding};
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// Deterministic xorshift64* generator so the "arbitrary graph" round-trip
 /// tests are reproducible without a property-testing dependency.
@@ -213,13 +213,13 @@ fn random_bundle(seed: u64) -> Bundle {
             .iter()
             .take(1 + rng.below(3))
         {
-            by_symbol.insert(format!("_RINv_task{i}_{f}"), TaskEntryId(i as u32));
+            by_symbol.insert(format!("_RINv_task{i}_{f}"), vec![TaskEntryId(i as u32)]);
         }
     }
 
     let dyn_futures = DynFutureTable {
         by_symbol: (0..rng.below(6))
-            .map(|i| (format!("_RNvX_dyn{i}_poll"), any_ty(&mut rng)))
+            .map(|i| (format!("_RNvX_dyn{i}_poll"), vec![any_ty(&mut rng)]))
             .collect(),
         by_normalized_symbol: BTreeMap::new(),
     };
@@ -1411,10 +1411,10 @@ fn test_symbol_lookup_is_mangled_exact_match() {
     });
     b.tasks
         .by_symbol
-        .insert("_RINvNtNtNtC_5tokio_pollE".into(), TaskEntryId(0));
+        .insert("_RINvNtNtNtC_5tokio_pollE".into(), vec![TaskEntryId(0)]);
     b.dyn_futures
         .by_symbol
-        .insert("_RNvX_dynE".into(), BundleTypeId(0));
+        .insert("_RNvX_dynE".into(), vec![BundleTypeId(0)]);
     b.provenance.entries.push(Provenance {
         decl: None,
         kind: FutureKind::AsyncFn,
@@ -1449,9 +1449,9 @@ fn test_symbol_lookup_falls_back_to_normalized_name() {
         scheduler: BundleTypeId(0),
         display_name: StrRef(0),
     };
-    let by_symbol = BTreeMap::from([(DEBUG.to_owned(), TaskEntryId(0))]);
+    let by_symbol = BTreeMap::from([(DEBUG.to_owned(), vec![TaskEntryId(0)])]);
     let tasks = TaskTable {
-        by_normalized_symbol: crate::symbols::normalized_value_index(&by_symbol),
+        by_normalized_symbol: crate::symbols::normalized_candidate_index(&by_symbol),
         by_symbol,
         entries: vec![entry],
     };
@@ -1478,11 +1478,11 @@ fn test_symbol_lookup_reports_every_ambiguous_spelling() {
         display_name: StrRef(0),
     };
     let by_symbol = BTreeMap::from([
-        (A.to_owned(), TaskEntryId(0)),
-        (B.to_owned(), TaskEntryId(1)),
+        (A.to_owned(), vec![TaskEntryId(0)]),
+        (B.to_owned(), vec![TaskEntryId(1)]),
     ]);
     let tasks = TaskTable {
-        by_normalized_symbol: crate::symbols::normalized_value_index(&by_symbol),
+        by_normalized_symbol: crate::symbols::normalized_candidate_index(&by_symbol),
         by_symbol,
         entries: vec![entry(), entry()],
     };
@@ -1491,6 +1491,161 @@ fn test_symbol_lookup_reports_every_ambiguous_spelling() {
         SymbolLookup::Ambiguous(vec![TaskEntryId(0), TaskEntryId(1)])
     );
     assert!(tasks.lookup(OTHER).is_none());
+}
+
+const COLLIDING_SYMBOL: &str =
+    "_RNvNCNvNtNtCs4y941wpZLOZ_5tokio7runtime7context7CONTEXT023___RUST_STD_INTERNAL_VAL";
+const SYMBOL_ALIAS: &str =
+    "_RNvNCNvNtNtCsbdypcaruIt3_5tokio7runtime7context7CONTEXT023___RUST_STD_INTERNAL_VAL";
+
+fn colliding_symbols_bundle() -> Bundle {
+    let mut b = tiny_bundle();
+    b.types.types.push(TypeDef::Pointer {
+        name: None,
+        target: BundleTypeId(0),
+    });
+    for id in [BundleTypeId(0), BundleTypeId(1)] {
+        b.tasks.entries.push(TaskFutureEntry {
+            future: id,
+            cell: id,
+            stage: id,
+            scheduler: id,
+            display_name: StrRef(0),
+        });
+        b.provenance.entries.push(Provenance {
+            decl: None,
+            kind: FutureKind::Manual,
+        });
+    }
+    b.tasks.by_symbol = BTreeMap::from([
+        (
+            COLLIDING_SYMBOL.to_owned(),
+            vec![TaskEntryId(0), TaskEntryId(1)],
+        ),
+        (SYMBOL_ALIAS.to_owned(), vec![TaskEntryId(0)]),
+    ]);
+    b.dyn_futures.by_symbol = BTreeMap::from([
+        (
+            COLLIDING_SYMBOL.to_owned(),
+            vec![BundleTypeId(0), BundleTypeId(1)],
+        ),
+        (SYMBOL_ALIAS.to_owned(), vec![BundleTypeId(0)]),
+    ]);
+    b.tasks.by_normalized_symbol = crate::symbols::normalized_candidate_index(&b.tasks.by_symbol);
+    b.dyn_futures.by_normalized_symbol =
+        crate::symbols::normalized_candidate_index(&b.dyn_futures.by_symbol);
+    b.validate().unwrap();
+    b
+}
+
+#[test]
+fn test_exact_symbol_collisions_survive_roundtrip() {
+    let original = colliding_symbols_bundle();
+    let b = Bundle::read_from(encode(&original).as_slice()).unwrap();
+    assert_eq!(b, original);
+    for symbol in [
+        COLLIDING_SYMBOL.to_owned(),
+        format!("{COLLIDING_SYMBOL}.llvm.7"),
+    ] {
+        assert_eq!(
+            b.tasks.lookup_id(&symbol),
+            SymbolLookup::Ambiguous(vec![TaskEntryId(0), TaskEntryId(1)])
+        );
+        assert_eq!(
+            b.dyn_futures.lookup_id(&symbol),
+            SymbolLookup::Ambiguous(vec![BundleTypeId(0), BundleTypeId(1)])
+        );
+        assert!(b.tasks.lookup(&symbol).is_none());
+        assert!(b.dyn_futures.lookup(&symbol).is_none());
+    }
+    // Exact evidence takes precedence over a broader normalized collision.
+    assert_eq!(
+        b.tasks.lookup_id(SYMBOL_ALIAS),
+        SymbolLookup::Unique(TaskEntryId(0))
+    );
+    assert_eq!(b.dyn_futures.lookup(SYMBOL_ALIAS), Some(BundleTypeId(0)));
+    let missing_alias = COLLIDING_SYMBOL.replacen("Cs4y941wpZLOZ", "Cs4y941wpZLOX", 1);
+    assert_eq!(
+        b.tasks.candidates(&missing_alias),
+        &[TaskEntryId(0), TaskEntryId(1)]
+    );
+    assert_eq!(
+        b.dyn_futures.candidates(&missing_alias),
+        &[BundleTypeId(0), BundleTypeId(1)]
+    );
+    assert!(b.tasks.candidates("missing").is_empty());
+    assert!(b.dyn_futures.candidates("missing").is_empty());
+    assert!(std::ptr::eq(
+        b.tasks.candidates(COLLIDING_SYMBOL),
+        b.tasks.by_symbol[COLLIDING_SYMBOL].as_slice()
+    ));
+    assert!(std::ptr::eq(
+        b.dyn_futures.candidates(COLLIDING_SYMBOL),
+        b.dyn_futures.by_symbol[COLLIDING_SYMBOL].as_slice()
+    ));
+    let view = BundleView::new(&b);
+    let ids: BTreeSet<_> = view.future_type_ids().collect();
+    assert_eq!(ids, BTreeSet::from([BundleTypeId(0), BundleTypeId(1)]));
+}
+
+#[test]
+fn test_symbol_indexes_reject_malformed_candidates() {
+    for normalized in [false, true] {
+        for ids in [vec![], vec![1, 0], vec![0, 0], vec![0, 2], vec![0]] {
+            for task in [false, true] {
+                let mut b = colliding_symbols_bundle();
+                let key = if normalized {
+                    crate::symbols::normalized_v0_key(COLLIDING_SYMBOL).unwrap()
+                } else {
+                    COLLIDING_SYMBOL.to_owned()
+                };
+                if task {
+                    let index = if normalized {
+                        &mut b.tasks.by_normalized_symbol
+                    } else {
+                        &mut b.tasks.by_symbol
+                    };
+                    index.insert(key, ids.iter().copied().map(TaskEntryId).collect());
+                } else {
+                    let index = if normalized {
+                        &mut b.dyn_futures.by_normalized_symbol
+                    } else {
+                        &mut b.dyn_futures.by_symbol
+                    };
+                    index.insert(key, ids.iter().copied().map(BundleTypeId).collect());
+                }
+                assert!(
+                    b.validate().is_err(),
+                    "accepted {ids:?}: normalized={normalized}, task={task}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn test_exact_indexes_validate_without_normalized_keys() {
+    for ids in [vec![], vec![1, 0], vec![0, 0], vec![0, 2]] {
+        for task in [false, true] {
+            let mut b = colliding_symbols_bundle();
+            b.tasks.by_symbol.clear();
+            b.tasks.by_normalized_symbol.clear();
+            b.dyn_futures.by_symbol.clear();
+            b.dyn_futures.by_normalized_symbol.clear();
+            if task {
+                b.tasks.by_symbol.insert(
+                    "unmangled".into(),
+                    ids.iter().copied().map(TaskEntryId).collect(),
+                );
+            } else {
+                b.dyn_futures.by_symbol.insert(
+                    "unmangled".into(),
+                    ids.iter().copied().map(BundleTypeId).collect(),
+                );
+            }
+            assert!(b.validate().is_err(), "accepted {ids:?}: task={task}");
+        }
+    }
 }
 
 #[test]

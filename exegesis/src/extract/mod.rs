@@ -42,13 +42,13 @@ use self::vtables::{
     VtableImage, VtableTypeHint, discover_vtable_types, resolve_vtable_type_hints,
 };
 use crate::bundle::{
-    BinaryIdent, Bundle, BundleTypeId, DebugSourceIdent, DynFutureTable, FamilyCeiling, FutureKind,
-    InfraTypes, Meta, Provenance, ProvenanceTable, SourceLoc, StaticsTable, TaskEntryId,
-    TaskFutureEntry, TaskTable, VtableDataSource,
+    BinaryIdent, Bundle, DebugSourceIdent, DynFutureTable, FamilyCeiling, FutureKind, InfraTypes,
+    Meta, Provenance, ProvenanceTable, SourceLoc, StaticsTable, TaskEntryId, TaskFutureEntry,
+    TaskTable, VtableDataSource,
 };
 use crate::detect::{Family, FormatExplanation, struct_of};
 use crate::raw_types::{NsId, RawType};
-use crate::symbols::normalized_value_index;
+use crate::symbols::{normalized_candidate_index, symbol_candidate_index};
 use crate::view::{DwView, Func, SourceLocView};
 use crate::{DwReader, TypeId};
 
@@ -976,20 +976,20 @@ fn extract_from_view(
     // recorded. Glue is matched by the template-parameter DIE reference
     // when the glue DIE carries one, else by its `drop_glue<T>` display
     // name against T's fully-qualified name.
-    let mut dyn_by_symbol: BTreeMap<String, TypeId> = BTreeMap::new();
+    let mut dyn_symbols = Vec::new();
     for (&t, symbols) in &fut_polls {
         for sym in symbols {
-            dyn_by_symbol.insert(sym.clone(), t);
+            dyn_symbols.push((sym.clone(), t));
             stats.dyn_poll_symbols += 1;
         }
         if let Some(glue) = drop_glues.get(&t) {
             for sym in glue {
-                dyn_by_symbol.insert(sym.clone(), t);
+                dyn_symbols.push((sym.clone(), t));
                 stats.dyn_glue_symbols += 1;
             }
         } else if let Some(glue) = fq_name(reader, t).and_then(|n| glue_by_name.get(&n)) {
             for sym in glue {
-                dyn_by_symbol.insert(sym.clone(), t);
+                dyn_symbols.push((sym.clone(), t));
                 stats.dyn_glue_symbols += 1;
                 stats.dyn_glue_by_name += 1;
             }
@@ -1061,7 +1061,7 @@ fn extract_from_view(
 
     let mut entries: Vec<TaskFutureEntry> = Vec::new();
     let mut provenance: Vec<Provenance> = Vec::new();
-    let mut by_symbol: BTreeMap<String, TaskEntryId> = BTreeMap::new();
+    let mut task_symbols = Vec::new();
     let mut fingerprint: BTreeSet<String> = BTreeSet::new();
     let mut walk_cells: Vec<(String, Option<TypeId>)> = Vec::new();
 
@@ -1107,7 +1107,7 @@ fn extract_from_view(
         ));
 
         for sym in &task.symbols {
-            by_symbol.insert(sym.clone(), entry_id);
+            task_symbols.push((sym.clone(), entry_id));
         }
         fingerprint.extend(
             task.poll_symbols
@@ -1118,12 +1118,16 @@ fn extract_from_view(
         stats.poll_instantiations += task.poll_symbols.len();
     }
     stats.task_entries = entries.len();
+    let by_symbol = symbol_candidate_index(task_symbols);
     stats.task_symbols = by_symbol.len();
 
-    let mut dyn_table: BTreeMap<String, BundleTypeId> = BTreeMap::new();
-    for (sym, t) in &dyn_by_symbol {
-        dyn_table.insert(sym.clone(), em.emit(*t));
-    }
+    let dyn_by_symbol = symbol_candidate_index(dyn_symbols);
+    let dyn_table = symbol_candidate_index(
+        dyn_by_symbol
+            .into_iter()
+            .flat_map(|(sym, types)| types.into_iter().map(move |ty| (sym.clone(), ty)))
+            .map(|(sym, ty)| (sym, em.emit(ty))),
+    );
 
     let mut emit_infra = |slot: &InfraSlot| match slot.id {
         Some(id) => em.emit(id),
@@ -1266,8 +1270,8 @@ fn extract_from_view(
     stats.state_members_deduplicated = counts.states.members_deduplicated;
     stats.state_captures_kept = counts.states.captures_kept;
 
-    let task_normalized = normalized_value_index(&by_symbol);
-    let dyn_normalized = normalized_value_index(&dyn_table);
+    let task_normalized = normalized_candidate_index(&by_symbol);
+    let dyn_normalized = normalized_candidate_index(&dyn_table);
     let bundle = Bundle {
         meta,
         strings,
@@ -1838,6 +1842,96 @@ mod tests {
             vtable_data: VtableDataSource::None,
         };
         extract_from_view(&view, &[], ident, &opts, &[])
+    }
+
+    #[test]
+    fn test_extraction_retains_exact_task_poll_and_glue_collisions() {
+        for reverse in [false, true] {
+            let mut fx = world(false, false);
+            let raw_ns = fx.ns("tokio::runtime::task::raw");
+            let core_ptr = fx.ns("core::ptr");
+            let mut tasks = [type_id(0x10), type_id(0x10), type_id(0x11)];
+            if reverse {
+                tasks.reverse();
+            }
+            for (i, future) in tasks.into_iter().enumerate() {
+                fx.func(
+                    func_id(0x200 + i),
+                    Some(raw_ns),
+                    "shutdown<T, Sched>",
+                    Some(if i == 1 {
+                        "shared_task.llvm.123"
+                    } else {
+                        "shared_task"
+                    }),
+                    &[("T", future), ("S", type_id(2))],
+                    &[],
+                    None,
+                    None,
+                );
+            }
+            let mut futures = [type_id(0x21), type_id(0x24)];
+            if reverse {
+                futures.reverse();
+            }
+            for (i, future) in futures.into_iter().enumerate() {
+                let pin = fx.pin_of(type_id(0x40 + i * 2), type_id(0x41 + i * 2), future);
+                fx.func(
+                    func_id(0x210 + i),
+                    None,
+                    "poll",
+                    Some("<app::F2 as core::future::future::Future>::poll"),
+                    &[],
+                    &[pin],
+                    None,
+                    None,
+                );
+                fx.func(
+                    func_id(0x220 + i),
+                    Some(core_ptr),
+                    "drop_glue<T>",
+                    Some(if i == 0 {
+                        "shared_glue"
+                    } else {
+                        "shared_glue.llvm.321"
+                    }),
+                    &[("T", future)],
+                    &[],
+                    None,
+                    None,
+                );
+            }
+            let (bundle, stats) = run(&mut fx, true).unwrap();
+            bundle.validate().unwrap();
+            assert_eq!(
+                stats.task_entries, 3,
+                "repeated evidence must not create entries"
+            );
+            let task_ids = bundle.tasks.candidates("shared_task.llvm.456");
+            assert_eq!(task_ids.len(), 2);
+            let task_names: BTreeSet<_> = task_ids
+                .iter()
+                .map(|id| {
+                    bundle
+                        .strings
+                        .get(bundle.tasks.entries[id.0 as usize].display_name)
+                        .unwrap()
+                })
+                .collect();
+            assert_eq!(task_names, BTreeSet::from(["app::FutA", "app::FutB"]));
+            assert!(bundle.tasks.lookup("shared_task").is_none());
+            let poll = "<app::F2 as core::future::future::Future>::poll";
+            let ids = bundle.dyn_futures.candidates(poll);
+            assert_eq!(ids.len(), 2);
+            assert_eq!(bundle.dyn_futures.candidates("shared_glue"), ids);
+            let view = hansei_bundle::BundleView::new(&bundle);
+            let names: BTreeSet<_> = ids.iter().map(|id| view.ty(*id).unwrap().name()).collect();
+            assert_eq!(names, BTreeSet::from(["{async_fn_env#0}", "app::F2"]));
+            assert!(bundle.dyn_futures.lookup(poll).is_none());
+            let mut bytes = Vec::new();
+            bundle.write_to(&mut bytes).unwrap();
+            assert_eq!(Bundle::read_from(bytes.as_slice()).unwrap(), bundle);
+        }
     }
 
     #[test]

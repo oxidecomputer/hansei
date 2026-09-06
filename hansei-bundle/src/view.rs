@@ -164,6 +164,7 @@ impl<'a> BundleView<'a> {
         table
             .by_symbol
             .values()
+            .flatten()
             .copied()
             .chain(table.by_normalized_symbol.values().flatten().copied())
     }

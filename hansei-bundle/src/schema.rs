@@ -1143,9 +1143,10 @@ impl DiscrValues {
 /// target's memory identifies the task's concrete future type.
 #[derive(Clone, PartialEq, Debug, Default, Serialize, Deserialize)]
 pub struct TaskTable {
-    /// Mangled linkage name → entry. Keys are stored without `.llvm.<hash>`
+    /// Mangled linkage name → sorted, distinct, nonempty candidate ids.
+    /// Keys are stored without `.llvm.<hash>`
     /// suffixes; use [`TaskTable::lookup`] which strips them.
-    pub by_symbol: BTreeMap<String, TaskEntryId>,
+    pub by_symbol: BTreeMap<String, Vec<TaskEntryId>>,
     /// Normalized linkage name → distinct semantic entries. Multiple raw
     /// codegen copies of one entry collapse to one id.
     pub by_normalized_symbol: BTreeMap<String, Vec<TaskEntryId>>,
@@ -1162,28 +1163,39 @@ pub enum SymbolLookup<T> {
 
 /// Exact-then-normalized resolution over a symbol table and its
 /// normalized index, shared by the task and dyn-future tables.
-fn lookup_symbol_id<T: Copy>(
-    by_symbol: &BTreeMap<String, T>,
-    by_normalized_symbol: &BTreeMap<String, Vec<T>>,
+fn lookup_symbol_candidates<'a, T>(
+    by_symbol: &'a BTreeMap<String, Vec<T>>,
+    by_normalized_symbol: &'a BTreeMap<String, Vec<T>>,
     symbol: &str,
-) -> SymbolLookup<T> {
+) -> &'a [T] {
     let symbol = strip_llvm_suffix(symbol);
-    if let Some(id) = by_symbol.get(symbol) {
-        return SymbolLookup::Unique(*id);
+    if let Some(ids) = by_symbol.get(symbol) {
+        return ids;
     }
     let Some(key) = normalized_v0_key(symbol) else {
-        return SymbolLookup::Missing;
+        return &[];
     };
-    match by_normalized_symbol.get(&key).map(Vec::as_slice) {
-        Some([id]) => SymbolLookup::Unique(*id),
-        Some(ids) if !ids.is_empty() => SymbolLookup::Ambiguous(ids.to_vec()),
-        _ => SymbolLookup::Missing,
+    by_normalized_symbol.get(&key).map_or(&[], Vec::as_slice)
+}
+
+impl<T: Copy> SymbolLookup<T> {
+    fn from_candidates(ids: &[T]) -> Self {
+        match ids {
+            [] => Self::Missing,
+            [id] => Self::Unique(*id),
+            ids => Self::Ambiguous(ids.to_vec()),
+        }
     }
 }
 
 impl TaskTable {
+    /// Borrow every candidate at the exact key, or its normalized fallback.
+    pub fn candidates(&self, symbol: &str) -> &[TaskEntryId] {
+        lookup_symbol_candidates(&self.by_symbol, &self.by_normalized_symbol, symbol)
+    }
+
     pub fn lookup_id(&self, symbol: &str) -> SymbolLookup<TaskEntryId> {
-        lookup_symbol_id(&self.by_symbol, &self.by_normalized_symbol, symbol)
+        SymbolLookup::from_candidates(self.candidates(symbol))
     }
 
     /// Look up a mangled symbol as read from the target's symtab.
@@ -1218,13 +1230,18 @@ pub struct TaskFutureEntry {
 pub struct DynFutureTable {
     /// Keys are stored without `.llvm.<hash>` suffixes; use
     /// [`DynFutureTable::lookup`] which strips them.
-    pub by_symbol: BTreeMap<String, BundleTypeId>,
+    pub by_symbol: BTreeMap<String, Vec<BundleTypeId>>,
     pub by_normalized_symbol: BTreeMap<String, Vec<BundleTypeId>>,
 }
 
 impl DynFutureTable {
+    /// Borrow every candidate at the exact key, or its normalized fallback.
+    pub fn candidates(&self, symbol: &str) -> &[BundleTypeId] {
+        lookup_symbol_candidates(&self.by_symbol, &self.by_normalized_symbol, symbol)
+    }
+
     pub fn lookup_id(&self, symbol: &str) -> SymbolLookup<BundleTypeId> {
-        lookup_symbol_id(&self.by_symbol, &self.by_normalized_symbol, symbol)
+        SymbolLookup::from_candidates(self.candidates(symbol))
     }
 
     /// Look up a mangled symbol as read from the target's symtab.

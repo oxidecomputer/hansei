@@ -496,13 +496,15 @@ fn dump(path: &Path) -> Result<()> {
         }
     }
     println!("== task symbol keys ({}) ==", bundle.tasks.by_symbol.len());
-    for (sym, id) in &bundle.tasks.by_symbol {
-        println!("{sym} -> [{}]", id.0);
+    for (sym, ids) in &bundle.tasks.by_symbol {
+        let ids: Vec<_> = ids.iter().map(|id| id.0).collect();
+        println!("{sym} -> {ids:?}");
     }
 
     println!("== dyn futures ({}) ==", bundle.dyn_futures.by_symbol.len());
-    for (sym, id) in &bundle.dyn_futures.by_symbol {
-        println!("{sym} -> [{}]", id.0);
+    for (sym, ids) in &bundle.dyn_futures.by_symbol {
+        let ids: Vec<_> = ids.iter().map(|id| id.0).collect();
+        println!("{sym} -> {ids:?}");
     }
 
     println!("== statics ({}) ==", bundle.statics.entries.len());

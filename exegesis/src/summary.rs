@@ -78,7 +78,7 @@ pub fn portable_summary(bundle: &Bundle, program: &str, crate_str: &str) -> Stri
                     .tasks
                     .by_symbol
                     .values()
-                    .filter(|id| id.0 as usize == j)
+                    .filter(|ids| ids.iter().any(|id| id.0 as usize == j))
                     .count()
             })
             .collect();
@@ -135,7 +135,12 @@ pub fn portable_summary(bundle: &Bundle, program: &str, crate_str: &str) -> Stri
     // key each type.
     writeln!(out, "\n[dyn-futures]").unwrap();
     let mut dyn_types: std::collections::BTreeMap<String, (bool, bool)> = Default::default();
-    for (sym, id) in &bundle.dyn_futures.by_symbol {
+    for (sym, id) in bundle
+        .dyn_futures
+        .by_symbol
+        .iter()
+        .flat_map(|(sym, ids)| ids.iter().map(move |id| (sym, id)))
+    {
         let name = type_name(*id);
         if !name.contains(crate_str) {
             continue;

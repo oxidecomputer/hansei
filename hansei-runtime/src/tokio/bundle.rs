@@ -1143,7 +1143,7 @@ impl<'b, T: Target> Context<'b, T> {
                 );
             }
             FutureInfo::Ambiguous { symbol, candidates } => bail!(
-                "the task's normalized future symbol {symbol} is ambiguous: {}; nothing can be traced",
+                "the task's future symbol {symbol} is ambiguous: {}; nothing can be traced",
                 candidates
                     .iter()
                     .map(|c| format!("{} (type {})", c.name, c.ty.0))
@@ -3249,7 +3249,7 @@ enum DynAwaitee<'b> {
     Resolved { future: Value<'b>, symbol: String },
     /// No vtable symbol joined the bundle's dyn-future table.
     Unknown { poll_symbol: Option<String> },
-    /// The normalized symbol joined more than one concrete bundle type.
+    /// The symbol joined more than one concrete bundle type.
     Ambiguous {
         symbol: String,
         candidates: Vec<TypeCandidate>,
@@ -3278,6 +3278,66 @@ mod tests {
     fn unordered_ctx() -> Context<'static, Snapshot> {
         let (bundle, snapshot) = unordered();
         testkit::context(bundle, snapshot)
+    }
+
+    #[test]
+    fn test_exact_task_collision_can_resolve_through_a_vtable_sibling() {
+        let (original, snapshot) = unordered();
+        let mut bundle = original.clone();
+        let first = TaskEntryId(0);
+        let second = TaskEntryId(
+            bundle
+                .tasks
+                .entries
+                .iter()
+                .position(|entry| entry.future != bundle.tasks.entries[0].future)
+                .expect("the fixture contains distinct futures") as u32,
+        );
+        bundle
+            .tasks
+            .by_symbol
+            .insert("shared_poll".into(), vec![first, second]);
+        bundle
+            .tasks
+            .by_symbol
+            .insert("unique_dealloc".into(), vec![second]);
+        bundle.tasks.by_normalized_symbol =
+            hansei_bundle::symbols::normalized_candidate_index(&bundle.tasks.by_symbol);
+        bundle.validate().unwrap();
+        let ctx = testkit::context(&bundle, snapshot);
+        ctx.symbols
+            .get_or(&1, || Some("shared_poll.llvm.123".to_owned()));
+        ctx.symbols.get_or(&2, || Some("unique_dealloc".to_owned()));
+        let mut vt = TaskVtable {
+            poll: 1,
+            dealloc: None,
+            try_read_output: None,
+            drop_join_handle_slow: None,
+            drop_abort_handle: None,
+            shutdown: None,
+            trailer_offset: 0,
+            id_offset: 0,
+            spawn_location_offset: None,
+        };
+        for _ in 0..2 {
+            let FutureInfo::Ambiguous { candidates, .. } = ctx.resolve_future(&vt) else {
+                panic!("an exact collision cannot choose a task");
+            };
+            let types: Vec<_> = candidates.iter().map(|candidate| candidate.ty).collect();
+            assert_eq!(
+                types,
+                vec![
+                    bundle.tasks.entries[0].future,
+                    bundle.tasks.entries[second.0 as usize].future
+                ]
+            );
+        }
+        vt.dealloc = Some(2);
+        let FutureInfo::Known(future) = ctx.resolve_future(&vt) else {
+            panic!("the unique sibling identifies the task");
+        };
+        assert_eq!(future.entry, second);
+        assert_eq!(future.symbol, "unique_dealloc");
     }
 
     /// The first bundle type satisfying `pred`, scanned in id order so

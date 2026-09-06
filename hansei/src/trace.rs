@@ -815,7 +815,7 @@ fn print_chain_end(
         } => {
             writeln!(
                 out,
-                "the chain continues into a {}, but its normalized poll symbol is ambiguous",
+                "the chain continues into a {}, but its poll symbol is ambiguous",
                 names::fold_type_name(pointee, impls)
             )?;
             writeln!(out, "     poll fn: {symbol}")?;
@@ -1546,7 +1546,7 @@ mod chain_end_tests {
         assert_eq!(
             out,
             "the chain continues into a dyn Future, \
-             but its normalized poll symbol is ambiguous\n     \
+             but its poll symbol is ambiguous\n     \
              poll fn: poll_sym\n     candidate: work::step (type 41)\n"
         );
     }
@@ -1927,7 +1927,7 @@ nothing deeper is on the native stack
     fn test_native_frames_resolve_futures_through_the_bundle_join() {
         let (bundle, _snapshot) = hansei_runtime::testkit::load_any("unordered");
         let view = hansei_bundle::BundleView::new(&bundle);
-        let (symbol, ty) = bundle
+        let (symbol, types) = bundle
             .dyn_futures
             .by_symbol
             .iter()
@@ -1977,7 +1977,7 @@ nothing deeper is on the native stack
         // A suspended frame is placed by the byte before its return
         // address, which is what the poll range is tested against.
         assert_eq!(laid[0].pc, 0x7003);
-        assert_eq!(laid[0].futures, vec![*ty]);
+        assert_eq!(laid[0].futures, types.clone());
         assert_eq!(
             laid[0].name,
             format!("{:#}", rustc_demangle::demangle(symbol))

@@ -49,23 +49,6 @@ pub fn normalized_candidate_index<V: Copy + Ord>(
         .collect()
 }
 
-/// Build a normalized multimap and collapse raw aliases that resolve to the
-/// same semantic value.
-pub fn normalized_value_index<V: Copy + Ord>(
-    symbols: &BTreeMap<String, V>,
-) -> BTreeMap<String, Vec<V>> {
-    let mut index: BTreeMap<String, BTreeSet<V>> = BTreeMap::new();
-    for (symbol, value) in symbols {
-        if let Some(key) = normalized_v0_key(symbol) {
-            index.entry(key).or_default().insert(*value);
-        }
-    }
-    index
-        .into_iter()
-        .map(|(key, values)| (key, values.into_iter().collect()))
-        .collect()
-}
-
 /// Produce a prototype normalized key for a v0-mangled Rust symbol.
 ///
 /// LLVM's internalization suffix is excluded independently.  Non-v0 and
@@ -232,8 +215,8 @@ impl Normalized<'_> {
 #[cfg(test)]
 mod tests {
     use super::{
-        GLOBAL_ELISION, concrete_type_from_vtable_symbol, normalized_rust_type_name,
-        normalized_v0_key, normalized_value_index, rust_type_name_hash, rust_type_names_equal,
+        GLOBAL_ELISION, concrete_type_from_vtable_symbol, normalized_candidate_index,
+        normalized_rust_type_name, normalized_v0_key, rust_type_name_hash, rust_type_names_equal,
     };
 
     use proptest::prelude::*;
@@ -321,18 +304,18 @@ mod tests {
 
     #[test]
     fn value_index_collapses_codegen_aliases() {
-        let symbols = BTreeMap::from([(DEBUG.to_owned(), 7), (NODEBUG.to_owned(), 7)]);
+        let symbols = BTreeMap::from([(DEBUG.to_owned(), vec![7]), (NODEBUG.to_owned(), vec![7])]);
         assert_eq!(
-            normalized_value_index(&symbols).values().next(),
+            normalized_candidate_index(&symbols).values().next(),
             Some(&vec![7])
         );
     }
 
     #[test]
     fn value_index_preserves_semantic_ambiguity() {
-        let symbols = BTreeMap::from([(DEBUG.to_owned(), 7), (NODEBUG.to_owned(), 9)]);
+        let symbols = BTreeMap::from([(DEBUG.to_owned(), vec![7]), (NODEBUG.to_owned(), vec![9])]);
         assert_eq!(
-            normalized_value_index(&symbols).values().next(),
+            normalized_candidate_index(&symbols).values().next(),
             Some(&vec![7, 9])
         );
     }
