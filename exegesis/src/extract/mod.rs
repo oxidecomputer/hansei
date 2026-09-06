@@ -870,6 +870,8 @@ fn extract_from_view(
     let Sweep {
         seeds,
         fut_polls,
+        explicit_polls: _,
+        coroutine_candidates: _,
         drop_glues,
         glue_by_name,
         resume_awaitees,

@@ -45,8 +45,13 @@ const SWEEP_PARALLEL_THRESHOLD: usize = 4096;
 pub(super) struct Sweep {
     /// (T, S) → accumulating seed.
     pub(super) seeds: BTreeMap<(TypeId, TypeId), TaskSeed>,
-    /// Canonical T → mangled `<T as Future>::poll` symbols.
+    /// Legacy dynamic lookup candidates, including coroutine resume shapes.
     pub(super) fut_polls: BTreeMap<TypeId, BTreeSet<String>>,
+    /// Exact Future-trait poll evidence, independent of resume-function shape.
+    pub(super) explicit_polls: BTreeMap<TypeId, BTreeSet<String>>,
+    /// Resume shapes requiring a reviewed compiler convention before they
+    /// establish future identity or initialized storage.
+    pub(super) coroutine_candidates: BTreeSet<TypeId>,
     /// Canonical T → mangled `drop_glue::<T>` symbols.
     pub(super) drop_glues: BTreeMap<TypeId, BTreeSet<String>>,
     /// `drop_glue<T>` display name's inner text → symbols, for glue DIEs
@@ -85,6 +90,10 @@ impl Sweep {
         for (t, syms) in other.fut_polls {
             self.fut_polls.entry(t).or_default().extend(syms);
         }
+        for (t, syms) in other.explicit_polls {
+            self.explicit_polls.entry(t).or_default().extend(syms);
+        }
+        self.coroutine_candidates.extend(other.coroutine_candidates);
         for (t, syms) in other.drop_glues {
             self.drop_glues.entry(t).or_default().extend(syms);
         }
@@ -240,6 +249,7 @@ fn sweep_function(
         }
         match future_poll_self_type(reader, func) {
             Ok(t) if is_coroutine_env(reader, t) => {
+                out.coroutine_candidates.insert(t);
                 out.fut_polls
                     .entry(t)
                     .or_default()
@@ -285,6 +295,10 @@ fn sweep_function(
         }
         match future_poll_self_type(reader, func) {
             Ok(t) => {
+                out.explicit_polls
+                    .entry(t)
+                    .or_default()
+                    .insert(strip(linkage).to_owned());
                 out.fut_polls
                     .entry(t)
                     .or_default()
@@ -866,6 +880,72 @@ mod tests {
         let sweep = sweep_functions(&view, None, None);
         assert_eq!(sweep.fut_polls.len(), 1);
         assert_eq!(symbols(&sweep.fut_polls[&env]), ["resume_sym"]);
+        assert!(sweep.explicit_polls.is_empty());
+        assert_eq!(sweep.coroutine_candidates, BTreeSet::from([env]));
+    }
+
+    #[test]
+    fn test_sweep_requires_the_exact_future_trait_for_poll_evidence() {
+        let mut reader = DwReader::default();
+        let future = type_id(0x10);
+        insert_struct(&mut reader, future, None, "Manual", &[]);
+        let pin = insert_pin_of(&mut reader, type_id(0x20), type_id(0x30), future);
+        for (index, linkage) in [
+            "<Manual as core::future::future::Future>::poll.llvm.123",
+            "<Manual as app::Future>::poll",
+            "<Manual as app::Stream>::poll",
+            "Manual::poll",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            insert_func(
+                &mut reader,
+                func_id(0x100 + index),
+                None,
+                "poll",
+                Some(linkage),
+                &[],
+                &[pin],
+                None,
+            );
+        }
+        let view = reader.view();
+        let sweep = sweep_functions(&view, None, None);
+        assert_eq!(
+            sweep.explicit_polls,
+            BTreeMap::from([(
+                future,
+                BTreeSet::from(["<Manual as core::future::future::Future>::poll".into()]),
+            )])
+        );
+        assert!(sweep.coroutine_candidates.is_empty());
+    }
+
+    #[test]
+    fn test_semantic_sweep_evidence_merges_independently_of_order() {
+        let contributions = || {
+            ["poll_b", "poll_a", "poll_a"].map(|symbol| Sweep {
+                explicit_polls: BTreeMap::from([(type_id(1), BTreeSet::from([symbol.to_owned()]))]),
+                coroutine_candidates: BTreeSet::from([type_id(2)]),
+                ..Default::default()
+            })
+        };
+        let mut forward = Sweep::default();
+        for part in contributions() {
+            forward.merge(part);
+        }
+        let mut reverse = Sweep::default();
+        for part in contributions().into_iter().rev() {
+            reverse.merge(part);
+        }
+        assert_eq!(forward.explicit_polls, reverse.explicit_polls);
+        assert_eq!(forward.coroutine_candidates, reverse.coroutine_candidates);
+        assert_eq!(
+            symbols(&forward.explicit_polls[&type_id(1)]),
+            ["poll_a", "poll_b"]
+        );
+        assert_eq!(forward.coroutine_candidates, BTreeSet::from([type_id(2)]));
     }
 
     #[test]
