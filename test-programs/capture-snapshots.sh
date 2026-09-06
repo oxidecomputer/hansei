@@ -48,10 +48,18 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 TOKIO=""
-if [[ "${1:-}" == --tokio ]]; then
-    TOKIO="$2"
-    shift 2
-fi
+DWARF_OVERRIDE=""
+while [[ "${1:-}" == --* ]]; do
+    case "$1" in
+        --tokio) TOKIO="${2:?missing Tokio version}"; shift 2 ;;
+        --bundle-dwarf-version) DWARF_OVERRIDE="${2:?missing DWARF version}"; shift 2 ;;
+        *) echo "capture-snapshots.sh: unknown option $1" >&2; exit 2 ;;
+    esac
+done
+case "$DWARF_OVERRIDE" in
+    ""|4|5) ;;
+    *) echo "capture-snapshots.sh: --bundle-dwarf-version must be 4 or 5" >&2; exit 2 ;;
+esac
 
 # Each system that can core a process keeps a set of its own, named for
 # itself, and `testkit::FIXTURE_SET` reads the one matching the build.
@@ -74,6 +82,7 @@ OUT="${1:-../hansei-runtime/tests/fixtures/$SET}"
 mkdir -p "$OUT"
 OUT="$(cd "$OUT" && pwd)"
 FIXTURES="$PWD/fixtures"
+DEFAULT_OUT="$(cd "../hansei-runtime/tests/fixtures/$SET" 2>/dev/null && pwd || true)"
 
 # Program -> the stdout line marking its parked steady state. Reads
 # block on the child's stdout; there are no timing sleeps anywhere.
@@ -83,6 +92,17 @@ PROGRAMS=(simple-await nested-await dyn-future futurelock sleep-join channels
 if [[ $# -gt 1 ]]; then
     PROGRAMS=("${@:2}")
 fi
+(cd .. && cargo build -q -p testrun --example capture-recipe)
+RECIPE=../target/debug/examples/capture-recipe
+DWARF_VERSIONS=()
+for p in "${PROGRAMS[@]}"; do
+    declared="$($RECIPE dwarf-version "$PWD" "$SET" "$p")"
+    if [[ "$OUT" == "$DEFAULT_OUT" && -n "$DWARF_OVERRIDE" && "$DWARF_OVERRIDE" != "$declared" ]]; then
+        echo "capture-snapshots.sh: $p declares DWARF $declared; conflicting override refused" >&2
+        exit 2
+    fi
+    DWARF_VERSIONS+=("${DWARF_OVERRIDE:-$declared}")
+done
 marker() {
     case "$1" in
         # Deadlocked for good once the background task drops the lock
@@ -108,13 +128,16 @@ if [[ -n "$TOKIO" ]]; then
 fi
 REGEN_BIN_DIR="$FIXTURES/bin-a" REGEN_TARGET_DIR="$FIXTURES/target-a" \
     ./regen.sh --no-debug-info "${TOKIO_ARGS[@]}" "${PROGRAMS[@]}"
-if [[ -n "$TOKIO" ]]; then
-    BIN_B="$FIXTURES/bin-b"
-    REGEN_BIN_DIR="$BIN_B" ./regen.sh "${TOKIO_ARGS[@]}" "${PROGRAMS[@]}"
-else
-    BIN_B="$FIXTURES/bin"
-    ./regen.sh "${PROGRAMS[@]}"
-fi
+for version in 4 5; do
+    batch=()
+    for i in "${!PROGRAMS[@]}"; do
+        [[ "${DWARF_VERSIONS[$i]}" == "$version" ]] && batch+=("${PROGRAMS[$i]}")
+    done
+    if [[ ${#batch[@]} -gt 0 ]]; then
+        REGEN_BIN_DIR="$FIXTURES/bin-b-$SET-dw$version" \
+            ./regen.sh "${TOKIO_ARGS[@]}" --dwarf-version "$version" "${batch[@]}"
+    fi
+done
 
 # The capture tool itself comes from the workspace as-is, except that
 # `snapshot` is not in a default hansei: it makes test data rather than
@@ -122,7 +145,10 @@ fi
 (cd .. && cargo build -p hansei --features snapshot)
 HANSEI=../target/debug/hansei
 
-for p in "${PROGRAMS[@]}"; do
+for i in "${!PROGRAMS[@]}"; do
+    p="${PROGRAMS[$i]}"
+    version="${DWARF_VERSIONS[$i]}"
+    BIN_B="$FIXTURES/bin-b-$SET-dw$version"
     "$HANSEI" tokio-info extract "$BIN_B/$p" -o "$OUT/$p.tinfo"
 
     fifo="$(mktemp -u)"
@@ -159,6 +185,9 @@ for p in "${PROGRAMS[@]}"; do
     rm -f "$fifo"
     trap - EXIT
 
+    "$RECIPE" "$PWD" "$SET" "$p" "$FIXTURES/bin-a/$p.recipe" \
+        "$BIN_B/$p.recipe" "$OUT/$p.capture" "$version"
+
     echo "capture-snapshots.sh: $p -> $OUT/$p.{tinfo,snapshot}"
 done
 
@@ -167,9 +196,8 @@ done
 # goldens quote line numbers out of sources they are never rebuilt
 # against — so the offline suite checks this manifest and says to come
 # back here when it no longer matches.
-DEFAULT_OUT="$(cd "../hansei-runtime/tests/fixtures/$SET" 2>/dev/null && pwd || true)"
 if [[ "$OUT" == "$DEFAULT_OUT" ]]; then
-    (cd .. && INSTA_UPDATE=always \
+    (cd .. && INSTA_UPDATE=always HANSEI_CAPTURE_SET="$SET" \
         cargo test -q -p hansei-runtime --test two_binary fixtures_record >/dev/null)
     echo "capture-snapshots.sh: recorded the fixture sources in $OUT/SOURCES.snap"
 else

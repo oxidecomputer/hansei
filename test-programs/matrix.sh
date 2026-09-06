@@ -67,6 +67,13 @@ load_manifest() {
             if ($0 ~ /^primary/) printf "P_TOKIO=%s P_TC=%s\n", q[2], q[4]
             else if (sect == "tokio" && $0 ~ /^floor/) printf "T_FLOOR=%s\n", q[2]
             else if (sect == "toolchain" && $0 ~ /^floor/) printf "TC_FLOOR=%s\n", q[2]
+            else if (sect == "provenance" && $0 ~ /^toolchain/) ptc = q[2]
+            else if (sect == "provenance" && $0 ~ /^tokio/) ptokio = q[2]
+            else if (sect == "provenance" && $0 ~ /^unstable/) pcfg = ($3 == "true" ? "unstable" : "stable")
+            else if (sect == "provenance" && $0 ~ /^dwarf_version/) pdw = $3
+            else if (sect == "provenance" && $0 ~ /^programs/) {
+                printf "PROVENANCE_CELLS=\"${PROVENANCE_CELLS:-} rust-%s-tokio-%s-%s%s\"\n", ptc, ptokio, pcfg, (pdw == 4 ? "" : "-dw" pdw)
+            }
             else {
                 if (sect == "tokio" && $0 ~ /^versions/) v = "T_VERS"
                 else if (sect == "toolchain" && $0 ~ /^versions/) v = "TC_VERS"
@@ -130,6 +137,9 @@ enumerate_cells() {
         case $seen in *" $v "*) continue ;; esac
         seen="$seen$v "
         echo "rust-$P_TC-tokio-$v-ctonly"
+    done
+    for v in ${PROVENANCE_CELLS:-}; do
+        echo "$v"
     done
 }
 
