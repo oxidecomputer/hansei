@@ -17,6 +17,7 @@ pub mod contract;
 pub mod graph;
 mod model;
 pub mod registers;
+mod semantics;
 pub mod stackjoin;
 
 use std::fmt;

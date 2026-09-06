@@ -15,6 +15,7 @@ use super::Lifecycle;
 pub use super::model::*;
 
 use super::contract::{self, ContractReport, WalkPolicy, Walked};
+use super::semantics::SemanticIndex;
 use super::{Location, RawInstant, TaskAddr, TaskState};
 
 use anyhow::{Context as _, Result, anyhow, bail, ensure};
@@ -22,8 +23,8 @@ use hansei_bundle::symbols::normalized_v0_key;
 use hansei_bundle::tokio::semaphore;
 use hansei_bundle::{
     BundleType, BundleTypeId, BundleView, DynPointer, FutureKind, StaticRole, SymbolLookup,
-    TaskEntryId, TaskFutureEntry, TypeDef, WalkOutcome, WalkRole, strip_build_prefix,
-    strip_llvm_suffix,
+    TaskEntryId, TaskFutureEntry, TypeDef, TypeSemantics, WalkOutcome, WalkRole,
+    strip_build_prefix, strip_llvm_suffix,
 };
 use proc::{LwpInfo, Mappings, SymbolBuf, Target};
 use reify::Value;
@@ -256,6 +257,7 @@ pub struct Context<'b, T> {
     /// rest of its members. Collected once: the walk asks per member of
     /// per frame of per task.
     futures: HashSet<BundleTypeId>,
+    semantics: SemanticIndex,
     /// The walk contract resolved against this bundle at attach time.
     contract: ContractReport,
 }
@@ -276,6 +278,10 @@ impl<'b, T: Target> Context<'b, T> {
         let mappings = proc.mappings().context("failed to read target mappings")?;
         let contract = contract::verify_walk_contract(&view);
         contract.check(policy)?;
+        let semantics = SemanticIndex::new(
+            view.bundle().types.types.len(),
+            &view.bundle().semantics.types,
+        )?;
         Ok(Self {
             proc,
             view,
@@ -288,6 +294,7 @@ impl<'b, T: Target> Context<'b, T> {
             task_lookups: Memo::default(),
             dyn_future_lookups: Memo::default(),
             futures: view.future_type_ids().collect(),
+            semantics,
             contract,
         })
     }
@@ -298,6 +305,14 @@ impl<'b, T: Target> Context<'b, T> {
     /// degrade when something walks them.
     pub fn contract_report(&self) -> &ContractReport {
         &self.contract
+    }
+
+    /// Borrow the bundle's independent type facts. Missing facts establish no
+    /// semantic capability; lookup does not inspect names or display formats.
+    pub fn type_semantics(&self, ty: BundleTypeId) -> Option<&TypeSemantics> {
+        self.semantics
+            .get(ty)
+            .map(|index| &self.view.bundle().semantics.types[index])
     }
 
     /// The target's monotonic clock at the moment it stopped: the latest lwp
@@ -3278,6 +3293,35 @@ mod tests {
     fn unordered_ctx() -> Context<'static, Snapshot> {
         let (bundle, snapshot) = unordered();
         testkit::context(bundle, snapshot)
+    }
+
+    #[test]
+    fn test_type_semantics_borrows_records_without_changing_production_chains() {
+        let (bundle, snapshot) = unordered();
+        let ctx = testkit::context(bundle, snapshot);
+        assert!(!bundle.semantics.types.is_empty());
+        for record in &bundle.semantics.types {
+            assert!(std::ptr::eq(ctx.type_semantics(record.ty).unwrap(), record));
+        }
+        assert!(ctx.type_semantics(BundleTypeId(u32::MAX)).is_none());
+        let mut without = bundle.clone();
+        without.semantics = Default::default();
+        without.validate().unwrap();
+        let other = testkit::context(&without, snapshot);
+        let tasks = testkit::tasks(&ctx, snapshot);
+        let mut compared = 0;
+        for task in &tasks.tasks {
+            if let TaskStage::Running(root) = ctx.task_stage(task).unwrap() {
+                let TaskStage::Running(other_root) = other.task_stage(task).unwrap() else {
+                    panic!("same resident task")
+                };
+                let actual = ctx.await_chain(root);
+                let expected = other.await_chain(other_root);
+                assert_eq!(format!("{actual:?}"), format!("{expected:?}"));
+                compared += 1;
+            }
+        }
+        assert!(compared > 0);
     }
 
     #[test]
