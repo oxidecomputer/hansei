@@ -73,6 +73,8 @@ pub struct DwReader<'dw> {
     /// Sorted (canonical type, original definition DIE) pairs for aliases only.
     /// The canonical definition itself remains directly addressable in `types`.
     definition_aliases: Vec<(TypeId, TypeId)>,
+    /// Original names only where specification inheritance changes a pointer.
+    pointer_names_before_inheritance: HashMap<TypeId, Option<StrId>>,
     /// All static variables, keyed by their VarId.
     pub variables: HashMap<VarId, RawStaticVariable<StrId>>,
     /// All functions, keyed by their FuncId.
@@ -343,6 +345,7 @@ impl<'dw> DwReader<'dw> {
             type_specifications: HashMap::new(),
             origins: BTreeMap::new(),
             definition_aliases: Vec::new(),
+            pointer_names_before_inheritance: HashMap::new(),
             variables: HashMap::new(),
             functions: HashMap::new(),
             namespaces: Namespaces::default(),
@@ -864,6 +867,7 @@ impl<'dw> DwReader<'dw> {
         let Some(declaration) = self.types.get(&declaration).cloned() else {
             return;
         };
+        let definition_id = definition;
         let Some(definition) = self.types.get_mut(&definition) else {
             return;
         };
@@ -874,6 +878,11 @@ impl<'dw> DwReader<'dw> {
                 def.namespace = def.namespace.or(decl.namespace);
             }
             (RawType::Pointer(def), RawType::Pointer(decl)) => {
+                if def.name.is_none() && decl.name.is_some() {
+                    self.pointer_names_before_inheritance
+                        .entry(definition_id)
+                        .or_insert(def.name);
+                }
                 def.name = def.name.or(decl.name);
             }
             (RawType::Enum(def), RawType::Enum(decl)) => {
@@ -912,8 +921,9 @@ impl<'dw> DwReader<'dw> {
     /// Every original definition contributing to a canonical type, in DIE order.
     /// Declarations contribute identity but never compiler provenance. An empty
     /// result means definition evidence is unavailable, not universal support.
-    /// Read each DIE's original name/target from `types`, and its compiler from
-    /// `die_origin`; never substitute the canonical winner's evidence for it.
+    /// Read each DIE's layout from `types`, its original pointer evidence from
+    /// `pointer_definition`, and its compiler from `die_origin`; never substitute
+    /// the canonical winner's evidence for another definition.
     pub fn type_definitions(&self, id: TypeId) -> impl Iterator<Item = TypeId> + '_ {
         let id = self.canonicalize(id);
         let start = self
@@ -932,6 +942,39 @@ impl<'dw> DwReader<'dw> {
             .map(|&(_, die)| die)
             .chain(canonical.then_some(id))
             .chain(aliases[split..].iter().map(|&(_, die)| die))
+    }
+
+    /// Original name and target of one pointer definition, without aliasing or
+    /// declaration-name inheritance. `DW_TAG_pointer_type` describes both Rust
+    /// references and raw pointers; the tag alone proves neither identity.
+    ///
+    /// A mutable-reference storage binder must fully parse the `&mut F` name,
+    /// match its target to the declared canonical `F`, and obtain the same
+    /// supported compiler convention for every `type_definitions` contributor.
+    /// Missing, malformed, raw (`*mut`/`*const`), and conflicting names decline.
+    ///
+    /// Polling a standalone reference additionally requires an exact Future
+    /// trait/self-type join, a matching task entry, or a reviewed delegate that
+    /// proves this reference implements Future. A method named `poll` and a
+    /// pointer-shaped layout supply no such proof. For `Pin<&mut F>`, a reviewed
+    /// Pin rule instead establishes the full route from its generic argument;
+    /// it must not infer `F: Unpin` or require the intermediate `&mut F: Future`.
+    /// These are extraction contracts, never runtime name-based heuristics.
+    pub fn pointer_definition(&self, die: TypeId) -> Option<RawPointer<StrId>> {
+        if self.type_declarations.contains(&die) {
+            return None;
+        }
+        let RawType::Pointer(pointer) = self.types.get(&die)? else {
+            return None;
+        };
+        Some(RawPointer {
+            name: self
+                .pointer_names_before_inheritance
+                .get(&die)
+                .copied()
+                .unwrap_or(pointer.name),
+            target_type_id: pointer.target_type_id,
+        })
     }
 
     /// Resolve a [`TypeId`] to its canonical form by following the
@@ -1490,6 +1533,80 @@ mod tests {
                 target_type_id: target,
             }),
         );
+    }
+
+    #[test]
+    fn test_reference_evidence_preserves_missing_and_conflicting_names() {
+        let mut reader = DwReader::new();
+        let target = type_id(0x10);
+        insert_struct(&mut reader, target, Some("Future"), 8);
+        let mut pointers = Vec::new();
+        for (index, name) in [
+            Some("&mut Future"),
+            Some("*mut Future"),
+            Some("*const Future"),
+            Some("&Future"),
+            Some("&mut Future trailing"),
+            None,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let id = type_id(0x20 + index * 0x10);
+            let name = name.map(|n| reader.strings.intern(n));
+            reader.types.insert(
+                id,
+                RawType::Pointer(RawPointer {
+                    name,
+                    target_type_id: target,
+                }),
+            );
+            pointers.push(id);
+        }
+        let reference = pointers[0];
+        let raw = pointers[1];
+        let missing = pointers[5];
+        // Even contradictory specification-linked definitions must retain both
+        // names. The layout alias is not permission to inherit reference status.
+        reader.type_specifications.insert(raw, reference);
+        let declaration = type_id(0x90);
+        reader
+            .types
+            .insert(declaration, reader.types[&reference].clone());
+        reader.type_declarations.insert(declaration);
+        reader.type_specifications.insert(missing, declaration);
+        reader.finalize_types();
+        let names: Vec<_> = reader
+            .type_definitions(reference)
+            .map(|die| {
+                let pointer = reader.pointer_definition(die).unwrap();
+                assert_eq!(pointer.target_type_id, target);
+                pointer.name.map(|n| reader.strings.get(n))
+            })
+            .collect();
+        assert!(names.contains(&Some("&mut Future")));
+        assert!(names.contains(&Some("*mut Future")));
+        assert!(names.contains(&None));
+        assert_eq!(reader.pointer_definition(missing).unwrap().name, None);
+        assert_eq!(reader.pointer_definition(declaration), None);
+        assert_eq!(reader.pointer_definition(target), None);
+        assert_eq!(reader.pointer_definition(type_id(0x100)), None);
+        for (id, name) in
+            pointers[2..5]
+                .iter()
+                .zip(["*const Future", "&Future", "&mut Future trailing"])
+        {
+            assert_eq!(
+                reader
+                    .pointer_definition(*id)
+                    .unwrap()
+                    .name
+                    .map(|n| reader.strings.get(n)),
+                Some(name)
+            );
+        }
+        reader.finalize_types();
+        assert_eq!(reader.pointer_definition(missing).unwrap().name, None);
     }
 
     #[test]
