@@ -15,6 +15,40 @@ use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 use std::hash::BuildHasher;
 
+/// Group exact linkage names without losing colliding semantic values.
+/// LLVM aliases and repeated evidence collapse to sorted, distinct ids.
+pub fn symbol_candidate_index<V: Ord>(
+    symbols: impl IntoIterator<Item = (String, V)>,
+) -> BTreeMap<String, Vec<V>> {
+    let mut index: BTreeMap<String, BTreeSet<V>> = BTreeMap::new();
+    for (symbol, value) in symbols {
+        index
+            .entry(strip_llvm_suffix(&symbol).to_owned())
+            .or_default()
+            .insert(value);
+    }
+    index
+        .into_iter()
+        .map(|(key, values)| (key, values.into_iter().collect()))
+        .collect()
+}
+
+/// Normalize every exact candidate, collapsing aliases of the same value.
+pub fn normalized_candidate_index<V: Copy + Ord>(
+    symbols: &BTreeMap<String, Vec<V>>,
+) -> BTreeMap<String, Vec<V>> {
+    let mut index: BTreeMap<String, BTreeSet<V>> = BTreeMap::new();
+    for (symbol, values) in symbols {
+        if let Some(key) = normalized_v0_key(symbol) {
+            index.entry(key).or_default().extend(values.iter().copied());
+        }
+    }
+    index
+        .into_iter()
+        .map(|(key, values)| (key, values.into_iter().collect()))
+        .collect()
+}
+
 /// Build a normalized multimap and collapse raw aliases that resolve to the
 /// same semantic value.
 pub fn normalized_value_index<V: Copy + Ord>(
@@ -211,6 +245,40 @@ mod tests {
         "_RNvNCNvNtNtCs4y941wpZLOZ_5tokio7runtime7context7CONTEXT023___RUST_STD_INTERNAL_VAL";
     const NODEBUG: &str =
         "_RNvNCNvNtNtCsbdypcaruIt3_5tokio7runtime7context7CONTEXT023___RUST_STD_INTERNAL_VAL";
+
+    #[test]
+    fn test_candidate_indexes_preserve_collisions_in_any_order() {
+        let evidence = [
+            (DEBUG.to_owned(), 9),
+            (format!("{DEBUG}.llvm.123"), 7),
+            (DEBUG.to_owned(), 7),
+            (NODEBUG.to_owned(), 11),
+            (NODEBUG.to_owned(), 9),
+            ("malloc".to_owned(), 5),
+        ];
+        let expected = BTreeMap::from([
+            (DEBUG.to_owned(), vec![7, 9]),
+            (NODEBUG.to_owned(), vec![9, 11]),
+            ("malloc".to_owned(), vec![5]),
+        ]);
+        for reverse in [false, true] {
+            for offset in 0..evidence.len() {
+                let mut reordered = evidence.to_vec();
+                reordered.rotate_left(offset);
+                if reverse {
+                    reordered.reverse();
+                }
+                let exact = super::symbol_candidate_index(reordered);
+                assert_eq!(exact, expected);
+                assert_eq!(
+                    super::normalized_candidate_index(&exact),
+                    BTreeMap::from([(normalized_v0_key(DEBUG).unwrap(), vec![7, 9, 11])])
+                );
+            }
+        }
+        assert!(super::symbol_candidate_index::<u32>([]).is_empty());
+        assert!(super::normalized_candidate_index::<u32>(&BTreeMap::new()).is_empty());
+    }
 
     #[test]
     fn crate_disambiguators_normalize_to_the_same_key() {
