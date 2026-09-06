@@ -2579,6 +2579,7 @@ pub fn test_bundle() -> Bundle {
         },
         provenance: ProvenanceTable::default(),
         impls: ImplTable::default(),
+        semantics: Default::default(),
     };
     b.types.build_normalized_index(&b.strings);
     b.validate().expect("test bundle must validate");
@@ -2888,6 +2889,7 @@ pub fn node_bundle() -> Bundle {
         },
         provenance: ProvenanceTable::default(),
         impls: ImplTable::default(),
+        semantics: Default::default(),
     };
     b.types.build_normalized_index(&b.strings);
     b.validate().expect("node bundle must validate");

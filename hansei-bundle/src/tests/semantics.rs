@@ -1,0 +1,953 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
+use super::tiny_bundle;
+use crate::*;
+
+use std::collections::BTreeMap;
+
+const CHILD: BundleTypeId = BundleTypeId(1);
+const PARENT: BundleTypeId = BundleTypeId(3);
+const STATE: BundleTypeId = BundleTypeId(4);
+const FIELD: StrRef = StrRef(1);
+const VARIANT: StrRef = StrRef(2);
+const POLL: StrRef = StrRef(5);
+
+fn issue() -> SemanticIssue {
+    SemanticIssue {
+        kind: SemanticIssueKind::NoRule,
+        detail: None,
+    }
+}
+
+fn record(ty: BundleTypeId) -> TypeSemantics {
+    TypeSemantics {
+        ty,
+        storage: StoragePolicy::DeclaredMembers,
+        future: Some(FutureFacts {
+            evidence: vec![FutureEvidence::PollSymbol(POLL)],
+            continuation: Continuation::Unknown(issue()),
+        }),
+        coroutine: None,
+        access: None,
+        resource: None,
+        container: None,
+        issues: Vec::new(),
+    }
+}
+
+fn base() -> Bundle {
+    let mut b = tiny_bundle();
+    let mut strings = StringInterner::new();
+    for s in [
+        "u64",
+        "child",
+        "3",
+        "Parent",
+        "State",
+        "<Parent as core::future::future::Future>::poll",
+        "rustc version 1.98.0 (synthetic)",
+        "synthetic-convention",
+        "tokio",
+        "1.53.1",
+        "v1_53",
+        "source.rs",
+        "tracing",
+        "0.1.40",
+        "data",
+        "vtable",
+        "dyn core::future::future::Future<Output=()>",
+    ] {
+        strings.intern(s);
+    }
+    b.strings = strings.finish();
+    let member = |name, ty, offset| MemberDef { name, ty, offset };
+    b.types = TypeTable {
+        types: vec![
+            TypeDef::Base {
+                name: StrRef(0),
+                size: 8,
+                encoding: Encoding::Unsigned,
+            },
+            TypeDef::Struct {
+                name: FIELD,
+                size: 8,
+                members: vec![member(FIELD, BundleTypeId(0), 0)],
+            },
+            TypeDef::Pointer {
+                name: None,
+                target: CHILD,
+            },
+            TypeDef::Struct {
+                name: StrRef(3),
+                size: 16,
+                members: vec![member(FIELD, CHILD, 8)],
+            },
+            TypeDef::Enum {
+                name: StrRef(4),
+                size: 24,
+                shape: VariantShape {
+                    discr: None,
+                    variants: vec![VariantDef {
+                        name: VARIANT,
+                        discr_values: None,
+                        payload: member(VARIANT, PARENT, 8),
+                        decl: None,
+                        await_site: None,
+                    }],
+                },
+            },
+            TypeDef::Union {
+                name: FIELD,
+                size: 8,
+                members: vec![member(FIELD, CHILD, 0)],
+            },
+            TypeDef::Opaque {
+                name: StrRef(16),
+                size: None,
+            },
+            TypeDef::Pointer {
+                name: None,
+                target: BundleTypeId(6),
+            },
+            TypeDef::Pointer {
+                name: None,
+                target: BundleTypeId(0),
+            },
+            TypeDef::Struct {
+                name: FIELD,
+                size: 16,
+                members: vec![
+                    member(StrRef(14), BundleTypeId(7), 0),
+                    member(StrRef(15), BundleTypeId(8), 8),
+                ],
+            },
+            TypeDef::Pointer {
+                name: None,
+                target: PARENT,
+            },
+        ],
+        ..Default::default()
+    };
+    b.dyn_futures.by_symbol = BTreeMap::from([(
+        b.strings.get(POLL).unwrap().into(),
+        vec![CHILD, PARENT, STATE, BundleTypeId(9)],
+    )]);
+    b.semantics.origins = vec![SemanticOrigin::Rustc {
+        producer: StrRef(6),
+        family: StrRef(7),
+    }];
+    b.semantics.rules = vec![SemanticRule {
+        kind: SemanticRuleKind::StdPinBoxPoll,
+        revision: 1,
+        origin: SemanticOriginId(0),
+    }];
+    b.validate().unwrap();
+    b
+}
+
+fn path(steps: Vec<Step>, target: BundleTypeId) -> TypedPath {
+    TypedPath { steps, target }
+}
+
+fn named(name: StrRef) -> Step {
+    Step::Member(MemberRef::Named(name))
+}
+
+fn delegate(target: FutureTarget) -> Continuation {
+    Continuation::Bound {
+        rule: SemanticRuleId(0),
+        program: PollProgram::Direct(PollAction::Delegate {
+            target,
+            exclusive: false,
+        }),
+    }
+}
+
+fn forwarding() -> Bundle {
+    let mut b = base();
+    let mut parent = record(PARENT);
+    parent.future.as_mut().unwrap().continuation =
+        delegate(FutureTarget::Value(path(vec![named(FIELD)], CHILD)));
+    let mut child = record(CHILD);
+    child.future.as_mut().unwrap().evidence = vec![FutureEvidence::DelegatedBy { parent: PARENT }];
+    b.semantics.types = vec![child, parent];
+    b.validate().unwrap();
+    b
+}
+
+fn continuation(b: &mut Bundle) -> &mut Continuation {
+    &mut b
+        .semantics
+        .types
+        .last_mut()
+        .unwrap()
+        .future
+        .as_mut()
+        .unwrap()
+        .continuation
+}
+
+fn target_path(b: &mut Bundle) -> &mut TypedPath {
+    let Continuation::Bound {
+        program:
+            PollProgram::Direct(PollAction::Delegate {
+                target: FutureTarget::Value(p),
+                ..
+            }),
+        ..
+    } = continuation(b)
+    else {
+        panic!("static delegate")
+    };
+    p
+}
+
+fn bad(b: &Bundle, expected: &str) {
+    let err = b
+        .validate()
+        .expect_err("malformed semantics must fail validation")
+        .to_string();
+    assert!(err.contains(expected), "expected {expected:?}, got {err:?}");
+}
+
+#[test]
+fn test_semantic_roundtrip_and_display_independence() {
+    let mut b = forwarding();
+    b.types.debug_formats.insert(
+        PARENT,
+        DisplayNode::Alias {
+            at: Selector(vec![named(FIELD)]),
+            follow_pointers: false,
+        },
+    );
+    b.validate().unwrap();
+    let semantics = b.semantics.clone();
+    let mut bytes = Vec::new();
+    b.write_to(&mut bytes).unwrap();
+    assert_eq!(Bundle::read_from(bytes.as_slice()).unwrap(), b);
+    b.types.debug_formats.clear();
+    b.validate().unwrap();
+    assert_eq!(b.semantics, semantics);
+}
+
+#[test]
+fn test_semantic_ids_evidence_and_rule_validation() {
+    type Mutation = (&'static str, fn(&mut Bundle));
+    let cases: &[Mutation] = &[
+        ("unsorted or duplicate type", |b| {
+            b.semantics.types.reverse()
+        }),
+        ("unsorted or duplicate type", |b| {
+            b.semantics.types.push(record(PARENT))
+        }),
+        ("invalid type", |b| {
+            b.semantics.types.last_mut().unwrap().ty = BundleTypeId(99)
+        }),
+        ("empty future evidence", |b| {
+            b.semantics.types[0]
+                .future
+                .as_mut()
+                .unwrap()
+                .evidence
+                .clear()
+        }),
+        ("duplicate future evidence", |b| {
+            b.semantics.types[0]
+                .future
+                .as_mut()
+                .unwrap()
+                .evidence
+                .push(FutureEvidence::DelegatedBy { parent: PARENT })
+        }),
+        ("invalid or empty string", |b| {
+            b.semantics.types[0].issues.push(SemanticIssue {
+                kind: SemanticIssueKind::NoRule,
+                detail: Some(StrRef(99)),
+            })
+        }),
+        ("invalid rule", |b| {
+            if let Continuation::Bound { rule, .. } = continuation(b) {
+                *rule = SemanticRuleId(99);
+            }
+        }),
+        ("unknown rule revision", |b| {
+            b.semantics.rules[0].revision = 2
+        }),
+        ("unknown rule revision", |b| {
+            b.semantics.rules[0].revision = 0
+        }),
+        ("invalid origin", |b| {
+            b.semantics.rules[0].origin = SemanticOriginId(99)
+        }),
+        ("incompatible capability", |b| {
+            b.semantics.rules[0].kind = SemanticRuleKind::StdBoxAccess
+        }),
+        ("duplicate semantic origin", |b| {
+            b.semantics.origins.push(b.semantics.origins[0].clone())
+        }),
+        ("duplicate semantic rule", |b| {
+            b.semantics.rules.push(b.semantics.rules[0].clone())
+        }),
+        ("invalid Rust producer", |b| {
+            b.semantics.origins[0] = SemanticOrigin::Rustc {
+                producer: StrRef(9),
+                family: StrRef(7),
+            }
+        }),
+        ("compiler origin", |b| {
+            b.semantics.origins[0] = SemanticOrigin::LibraryDelegation {
+                package: StrRef(12),
+                version: StrRef(13),
+                files: vec![SourceFileEvidence {
+                    file: StrRef(11),
+                    md5: [7; 16],
+                }],
+            }
+        }),
+        ("missing delegation parent", |b| {
+            b.semantics.types[0].future.as_mut().unwrap().evidence =
+                vec![FutureEvidence::DelegatedBy {
+                    parent: BundleTypeId(99),
+                }]
+        }),
+        ("no bound program", |b| {
+            *continuation(b) = Continuation::Unknown(issue())
+        }),
+        ("wrong future", |b| {
+            b.semantics.types[0].future.as_mut().unwrap().evidence =
+                vec![FutureEvidence::TaskEntry(TaskEntryId(99))]
+        }),
+        ("lacks its layout", |b| {
+            b.semantics.types[0].future.as_mut().unwrap().evidence =
+                vec![FutureEvidence::Coroutine(SemanticRuleId(0))]
+        }),
+        ("exact symbol candidate", |b| {
+            b.semantics.types[0].future.as_mut().unwrap().evidence =
+                vec![FutureEvidence::PollSymbol(FIELD)]
+        }),
+    ];
+    for (expected, mutate) in cases {
+        let mut b = forwarding();
+        mutate(&mut b);
+        bad(&b, expected);
+    }
+}
+
+#[test]
+fn test_semantic_paths_reject_invalid_storage_and_endpoints() {
+    type Mutation = (&'static str, fn(&mut Bundle));
+    let cases: &[Mutation] = &[
+        ("named members", |b| {
+            target_path(b).steps = vec![Step::Member(MemberRef::Index(0))]
+        }),
+        ("explicit variants", |b| {
+            target_path(b).steps = vec![Step::ActiveVariant]
+        }),
+        ("no unique member", |b| {
+            target_path(b).steps = vec![named(VARIANT)]
+        }),
+        ("endpoint type", |b| target_path(b).target = BundleTypeId(0)),
+        ("invalid type", |b| target_path(b).target = BundleTypeId(99)),
+        ("empty self delegation", |b| {
+            *target_path(b) = path(vec![], PARENT)
+        }),
+        ("non-pointer", |b| target_path(b).steps = vec![Step::Deref]),
+        ("out of bounds", |b| {
+            if let TypeDef::Struct { members, .. } = &mut b.types.types[3] {
+                members[0].offset = 9;
+            }
+        }),
+        ("out of bounds", |b| {
+            if let TypeDef::Struct { members, .. } = &mut b.types.types[3] {
+                members[0].offset = u64::MAX;
+            }
+        }),
+        ("no unique member", |b| {
+            if let TypeDef::Struct { members, .. } = &mut b.types.types[3] {
+                members.push(members[0].clone());
+            }
+        }),
+        ("union crossing", |b| {
+            b.types.types[3] = TypeDef::Union {
+                name: StrRef(3),
+                size: 16,
+                members: vec![MemberDef {
+                    name: FIELD,
+                    ty: CHILD,
+                    offset: 8,
+                }],
+            }
+        }),
+        ("out of bounds", |b| {
+            b.types.types[1] = TypeDef::Opaque {
+                name: FIELD,
+                size: Some(8),
+            }
+        }),
+    ];
+    for (expected, mutate) in cases {
+        let mut b = forwarding();
+        b.semantics.types.remove(0);
+        mutate(&mut b);
+        bad(&b, expected);
+    }
+}
+
+#[test]
+fn test_semantic_delegation_can_reach_another_value_of_the_same_type() {
+    let mut b = base();
+    let TypeDef::Struct { members, .. } = &mut b.types.types[PARENT.0 as usize] else {
+        unreachable!()
+    };
+    members[0].ty = BundleTypeId(10); // A pointer back to Parent.
+    let mut parent = record(PARENT);
+    parent.future.as_mut().unwrap().continuation = delegate(FutureTarget::Value(path(
+        vec![named(FIELD), Step::Deref],
+        PARENT,
+    )));
+    b.semantics.types = vec![parent];
+    // Repeated type ids do not prove an address cycle. The runtime checks
+    // the reached value; only an empty static self route is invalid here.
+    b.validate().unwrap();
+    *target_path(&mut b) = path(vec![], PARENT);
+    bad(&b, "empty self delegation");
+}
+
+#[test]
+fn test_semantic_exclusivity_requires_more_than_a_single_path() {
+    let mut b = forwarding();
+    let Continuation::Bound {
+        program: PollProgram::Direct(PollAction::Delegate { exclusive, .. }),
+        ..
+    } = continuation(&mut b)
+    else {
+        unreachable!()
+    };
+    *exclusive = true;
+    bad(&b, "unreviewed delegation exclusivity");
+}
+
+#[test]
+fn test_semantic_evidence_requires_an_independent_seed() {
+    let mut b = forwarding();
+    b.types.types[1] = TypeDef::Struct {
+        name: FIELD,
+        size: 8,
+        members: vec![MemberDef {
+            name: FIELD,
+            ty: BundleTypeId(10),
+            offset: 0,
+        }],
+    };
+    let child = b.semantics.types[0].future.as_mut().unwrap();
+    child.continuation = delegate(FutureTarget::Value(path(
+        vec![named(FIELD), Step::Deref],
+        PARENT,
+    )));
+    // The cycle is supported while the parent has independent poll evidence.
+    b.validate().unwrap();
+    b.semantics.types[1].future.as_mut().unwrap().evidence =
+        vec![FutureEvidence::DelegatedBy { parent: CHILD }];
+    bad(&b, "no independent seed");
+    b.semantics.types[0]
+        .future
+        .as_mut()
+        .unwrap()
+        .evidence
+        .insert(0, FutureEvidence::PollSymbol(POLL));
+    b.validate().unwrap();
+}
+
+fn coroutine() -> Bundle {
+    let mut b = base();
+    b.semantics.rules[0].kind = SemanticRuleKind::RustcAsyncFn;
+    let mut r = record(STATE);
+    r.storage = StoragePolicy::CoroutineStates;
+    r.coroutine = Some(CoroutineLayout {
+        rule: SemanticRuleId(0),
+        states: vec![CoroutineState {
+            variant: VARIANT,
+            stage: CoroutinePhase::Suspended,
+            locals: vec![FIELD],
+            uncertain_locals: vec![],
+        }],
+    });
+    r.future.as_mut().unwrap().evidence = vec![FutureEvidence::Coroutine(SemanticRuleId(0))];
+    r.future.as_mut().unwrap().continuation = Continuation::Bound {
+        rule: SemanticRuleId(0),
+        program: PollProgram::MatchVariant {
+            state: path(vec![], STATE),
+            cases: vec![PollCase {
+                variant: VARIANT,
+                action: PollAction::Delegate {
+                    target: FutureTarget::Value(path(
+                        vec![Step::Variant(VARIANT), named(FIELD)],
+                        CHILD,
+                    )),
+                    exclusive: false,
+                },
+            }],
+        },
+    };
+    b.semantics.types = vec![r];
+    b.validate().unwrap();
+    b
+}
+
+fn cases(b: &mut Bundle) -> &mut Vec<PollCase> {
+    let Continuation::Bound {
+        program: PollProgram::MatchVariant { cases, .. },
+        ..
+    } = continuation(b)
+    else {
+        unreachable!()
+    };
+    cases
+}
+
+#[test]
+fn test_semantic_coroutine_cases_and_locals_use_final_payloads() {
+    type Mutation = (&'static str, fn(&mut Bundle));
+    let mutations: &[Mutation] = &[
+        ("missing poll cases", |b| cases(b).clear()),
+        ("duplicate poll case", |b| {
+            let c = cases(b)[0].clone();
+            cases(b).push(c);
+        }),
+        ("unknown variant", |b| cases(b)[0].variant = FIELD),
+        ("selected variant guard", |b| {
+            if let TypeDef::Enum { shape, .. } = &mut b.types.types[4] {
+                let mut variant = shape.variants[0].clone();
+                variant.name = FIELD;
+                variant.discr_values = Some(DiscrValues(vec![DiscrValue::Value(1)]));
+                shape.variants.push(variant);
+                shape.discr = Some(DiscrDef {
+                    offset: 0,
+                    ty: BundleTypeId(0),
+                });
+            }
+            let mut state = b.semantics.types[0].coroutine.as_ref().unwrap().states[0].clone();
+            state.variant = FIELD;
+            b.semantics.types[0]
+                .coroutine
+                .as_mut()
+                .unwrap()
+                .states
+                .push(state);
+            let mut case = cases(b)[0].clone();
+            case.variant = FIELD;
+            case.action = PollAction::Unknown(issue());
+            cases(b).push(case);
+            if let PollAction::Delegate {
+                target: FutureTarget::Value(p),
+                ..
+            } = &mut cases(b)[0].action
+            {
+                p.steps[0] = Step::Variant(FIELD);
+            }
+        }),
+        ("duplicate or overlapping", |b| {
+            b.semantics.types[0].coroutine.as_mut().unwrap().states[0]
+                .uncertain_locals
+                .push(FIELD)
+        }),
+        ("missing coroutine local", |b| {
+            b.semantics.types[0].coroutine.as_mut().unwrap().states[0].locals = vec![VARIANT]
+        }),
+        ("terminal coroutine state has locals", |b| {
+            b.semantics.types[0].coroutine.as_mut().unwrap().states[0].stage =
+                CoroutinePhase::Returned
+        }),
+        ("unknown coroutine state has initialized locals", |b| {
+            b.semantics.types[0].coroutine.as_mut().unwrap().states[0].stage =
+                CoroutinePhase::Unknown
+        }),
+        ("missing coroutine states", |b| {
+            b.semantics.types[0]
+                .coroutine
+                .as_mut()
+                .unwrap()
+                .states
+                .clear()
+        }),
+        ("requires state storage", |b| {
+            b.semantics.types[0].storage = StoragePolicy::Unavailable(issue())
+        }),
+        ("coroutine cannot use declared", |b| {
+            b.semantics.types[0].storage = StoragePolicy::DeclaredMembers
+        }),
+        ("disagrees with coroutine stage", |b| {
+            cases(b)[0].action = PollAction::Returned
+        }),
+        ("different state or rule", |b| {
+            b.semantics.rules.push(SemanticRule {
+                kind: SemanticRuleKind::RustcAsyncBlock,
+                revision: 1,
+                origin: SemanticOriginId(0),
+            });
+            let Continuation::Bound { rule, .. } = continuation(b) else {
+                unreachable!()
+            };
+            *rule = SemanticRuleId(1);
+        }),
+    ];
+    for (expected, mutate) in mutations {
+        let mut b = coroutine();
+        mutate(&mut b);
+        bad(&b, expected);
+    }
+    let mut b = coroutine();
+    let state = &mut b.semantics.types[0].coroutine.as_mut().unwrap().states[0];
+    state.stage = CoroutinePhase::Unknown;
+    state.uncertain_locals = std::mem::take(&mut state.locals);
+    cases(&mut b)[0].action = PollAction::Unknown(issue());
+    b.validate().unwrap();
+}
+
+fn resource() -> Bundle {
+    let mut b = base();
+    b.semantics.origins[0] = SemanticOrigin::LibraryLayout {
+        package: StrRef(8),
+        version: Some(StrRef(9)),
+        family: StrRef(10),
+        selection: LayoutSelection::ReviewedRange,
+    };
+    b.semantics.rules[0].kind = SemanticRuleKind::TokioJoinHandle;
+    let mut r = record(PARENT);
+    r.resource = Some(ResourceBinding {
+        rule: SemanticRuleId(0),
+        kind: ResourceKind::JoinHandle,
+        state_rule: None,
+        exclusive_pending: false,
+    });
+    r.future.as_mut().unwrap().continuation = Continuation::Bound {
+        rule: SemanticRuleId(0),
+        program: PollProgram::Direct(PollAction::Primitive),
+    };
+    b.semantics.types = vec![r];
+    b.walks.entries.insert(
+        WalkRole::JoinHandleRaw,
+        WalkBinding {
+            roots: vec![PARENT],
+            steps: vec![named(FIELD)],
+            outcome: WalkOutcome::Bound {
+                spelling: 0,
+                spellings: 1,
+                note: None,
+            },
+        },
+    );
+    b.validate().unwrap();
+    b
+}
+
+#[test]
+fn test_semantic_resource_layout_is_separate_from_state_and_exclusivity() {
+    let mut b = resource();
+    b.semantics.types[0].future = None;
+    b.validate().unwrap();
+    b.semantics.types[0].storage = StoragePolicy::Unavailable(issue());
+    bad(&b, "unavailable storage carries a readable capability");
+    let mut b = resource();
+    b.semantics.types[0]
+        .resource
+        .as_mut()
+        .unwrap()
+        .exclusive_pending = true;
+    bad(&b, "unreviewed exclusive-pending");
+    let mut b = resource();
+    b.walks.entries.clear();
+    bad(&b, "essential walk role");
+    let mut b = resource();
+    b.walks
+        .entries
+        .get_mut(&WalkRole::JoinHandleRaw)
+        .unwrap()
+        .roots = vec![CHILD];
+    bad(&b, "essential walk role");
+    let mut b = resource();
+    b.semantics.types[0].resource = None;
+    bad(&b, "primitive has no compatible resource");
+    for selection in [
+        LayoutSelection::BelowFloor,
+        LayoutSelection::AboveReviewedRange,
+        LayoutSelection::ReviewedRange,
+    ] {
+        let mut b = resource();
+        if let SemanticOrigin::LibraryLayout { selection: s, .. } = &mut b.semantics.origins[0] {
+            *s = selection;
+        }
+        b.validate().unwrap();
+        b.semantics.rules.push(SemanticRule {
+            kind: SemanticRuleKind::TokioJoinHandleState,
+            revision: 1,
+            origin: SemanticOriginId(0),
+        });
+        b.semantics.types[0].resource.as_mut().unwrap().state_rule = Some(SemanticRuleId(1));
+        bad(
+            &b,
+            if selection == LayoutSelection::ReviewedRange {
+                "no reviewed state protocol"
+            } else {
+                "state rule requires a reviewed range"
+            },
+        );
+    }
+}
+
+#[test]
+fn test_semantic_delegation_origin_requires_unique_source_evidence() {
+    let mut b = forwarding();
+    b.semantics.rules[0].kind = SemanticRuleKind::TracingInstrumented;
+    b.semantics.origins[0] = SemanticOrigin::LibraryDelegation {
+        package: StrRef(12),
+        version: StrRef(13),
+        files: vec![SourceFileEvidence {
+            file: StrRef(11),
+            md5: [7; 16],
+        }],
+    };
+    b.validate().unwrap();
+    let mut bytes = Vec::new();
+    b.write_to(&mut bytes).unwrap();
+    assert_eq!(Bundle::read_from(bytes.as_slice()).unwrap(), b);
+    if let SemanticOrigin::LibraryDelegation { files, .. } = &mut b.semantics.origins[0] {
+        files.push(files[0].clone());
+    }
+    bad(&b, "duplicate source checksum file");
+    if let SemanticOrigin::LibraryDelegation { files, .. } = &mut b.semantics.origins[0] {
+        files.clear();
+    }
+    bad(&b, "no source checksums");
+}
+
+fn dynamic() -> Bundle {
+    let mut b = base();
+    b.semantics.rules.push(SemanticRule {
+        kind: SemanticRuleKind::DynFutureAbi,
+        revision: 1,
+        origin: SemanticOriginId(0),
+    });
+    let mut r = record(BundleTypeId(9));
+    r.future.as_mut().unwrap().continuation = delegate(FutureTarget::Dynamic {
+        pointer: path(vec![], BundleTypeId(9)),
+        layout: DynFutureLayout {
+            abi: SemanticRuleId(1),
+            data: path(vec![named(StrRef(14))], BundleTypeId(7)),
+            vtable: path(vec![named(StrRef(15))], BundleTypeId(8)),
+            trait_ty: BundleTypeId(6),
+            drop_slot: 0,
+            size_slot: 1,
+            align_slot: 2,
+            poll_slot: 3,
+        },
+    });
+    b.semantics.types = vec![r];
+    b.validate().unwrap();
+    b
+}
+
+fn dyn_layout(b: &mut Bundle) -> &mut DynFutureLayout {
+    let Continuation::Bound {
+        program:
+            PollProgram::Direct(PollAction::Delegate {
+                target: FutureTarget::Dynamic { layout, .. },
+                ..
+            }),
+        ..
+    } = continuation(b)
+    else {
+        unreachable!()
+    };
+    layout
+}
+
+#[test]
+fn test_semantic_dynamic_targets_validate_bases_fields_trait_and_slots() {
+    let mut b = dynamic();
+    let mut bytes = Vec::new();
+    b.write_to(&mut bytes).unwrap();
+    assert_eq!(Bundle::read_from(bytes.as_slice()).unwrap(), b);
+    dyn_layout(&mut b).poll_slot = 4;
+    bad(&b, "dyn ABI slots");
+    let mut b = dynamic();
+    dyn_layout(&mut b).trait_ty = BundleTypeId(0);
+    bad(&b, "wrong pointee");
+    let mut b = dynamic();
+    dyn_layout(&mut b).data.steps = vec![named(FIELD)];
+    bad(&b, "no unique member");
+    let mut b = dynamic();
+    dyn_layout(&mut b).abi = SemanticRuleId(0);
+    bad(&b, "incompatible capability");
+    let mut b = dynamic();
+    dyn_layout(&mut b).vtable = path(vec![], BundleTypeId(9));
+    bad(&b, "distinct inline words");
+    let mut b = dynamic();
+    if let TypeDef::Struct { members, .. } = &mut b.types.types[9] {
+        members[1].ty = BundleTypeId(0);
+    }
+    if let TypeDef::Base { size, .. } = &mut b.types.types[0] {
+        *size = 4;
+    }
+    dyn_layout(&mut b).vtable.target = BundleTypeId(0);
+    bad(&b, "pointer sized");
+}
+
+#[test]
+fn test_semantic_storage_candidates_exclude_generic_arguments() {
+    for (name, candidate) in [
+        ("app::work::{async_fn_env#0}", true),
+        ("app::work<T>::{async_block_env#0}<U>", true),
+        ("app::{coroutine_env#0}", true),
+        ("app::{async_closure_env#0}", true),
+        ("app::{closure_env#0}", false),
+        ("Wrapper<app::work::{async_fn_env#0}>", false),
+        ("app::work::{async_fn_env#0}::Returned", false),
+    ] {
+        assert_eq!(names::is_coroutine_candidate(name), candidate, "{name}");
+    }
+    let mut b = base();
+    let mut strings = StringInterner::new();
+    for s in b.strings.iter() {
+        strings.intern(s);
+    }
+    let name = strings.intern("app::work::{async_fn_env#0}");
+    b.strings = strings.finish();
+    if let TypeDef::Struct { name: n, .. } = &mut b.types.types[3] {
+        *n = name;
+    }
+    b.semantics.types = vec![record(PARENT)];
+    bad(&b, "unsupported compiler storage");
+    b.semantics.types[0].storage = StoragePolicy::Unavailable(SemanticIssue {
+        kind: SemanticIssueKind::UnsupportedOrigin,
+        detail: None,
+    });
+    b.validate().unwrap();
+    b.semantics.types[0].storage = StoragePolicy::CoroutineStates;
+    bad(&b, "state storage lacks coroutine layout");
+}
+
+#[test]
+fn test_semantic_access_does_not_supply_future_identity() {
+    for (kind, rule) in [
+        (AccessKind::Owned, SemanticRuleKind::StdBoxAccess),
+        (AccessKind::Owned, SemanticRuleKind::StdPinBoxAccess),
+        (AccessKind::Borrowed, SemanticRuleKind::StdMutRefAccess),
+        (AccessKind::Borrowed, SemanticRuleKind::StdPinMutRefAccess),
+    ] {
+        let mut b = base();
+        b.semantics.rules[0].kind = rule;
+        let mut r = record(PARENT);
+        r.future = None;
+        r.access = Some(AccessBinding {
+            rule: SemanticRuleId(0),
+            kind,
+            target: FutureTarget::Value(path(vec![named(FIELD)], CHILD)),
+        });
+        b.semantics.types = vec![r];
+        b.validate().unwrap();
+        b.semantics.types[0].storage = StoragePolicy::Unavailable(issue());
+        bad(&b, "unavailable storage carries a readable capability");
+        b.semantics.types[0].storage = StoragePolicy::DeclaredMembers;
+        b.semantics.types[0].access.as_mut().unwrap().kind = match kind {
+            AccessKind::Owned => AccessKind::Borrowed,
+            AccessKind::Borrowed => AccessKind::Owned,
+        };
+        bad(&b, "incompatible capability");
+    }
+}
+
+#[test]
+fn test_semantic_primitives_require_each_essential_role() {
+    for (kind, rule, roles) in [
+        (
+            ResourceKind::Sleep,
+            SemanticRuleKind::TokioSleep,
+            vec![WalkRole::SleepDeadline],
+        ),
+        (
+            ResourceKind::SemaphoreAcquire,
+            SemanticRuleKind::TokioAcquire,
+            vec![
+                WalkRole::AcquireSemaphore,
+                WalkRole::AcquireNode,
+                WalkRole::AcquireNumPermits,
+                WalkRole::AcquireNeeded,
+                WalkRole::AcquireQueued,
+            ],
+        ),
+    ] {
+        let mut b = resource();
+        b.semantics.rules[0].kind = rule;
+        b.semantics.types[0].resource.as_mut().unwrap().kind = kind;
+        let walk = b.walks.entries[&WalkRole::JoinHandleRaw].clone();
+        b.walks.entries = roles.iter().map(|r| (*r, walk.clone())).collect();
+        b.validate().unwrap();
+        for role in roles {
+            let mut missing = b.clone();
+            missing.walks.entries.remove(&role);
+            bad(&missing, "essential walk role");
+        }
+    }
+    for operation in [
+        IoOperationKind::Read,
+        IoOperationKind::WriteAll,
+        IoOperationKind::Readiness,
+    ] {
+        let mut b = resource();
+        b.semantics.rules[0].kind = SemanticRuleKind::TokioIoOperation;
+        b.semantics.types[0].resource.as_mut().unwrap().kind = ResourceKind::IoOperation(operation);
+        bad(&b, "I/O operation roles are not enabled");
+    }
+}
+
+#[test]
+fn test_semantic_container_is_not_automatically_a_future() {
+    let mut b = resource();
+    b.semantics.rules[0].kind = SemanticRuleKind::TokioJoinSet;
+    let r = &mut b.semantics.types[0];
+    r.resource = None;
+    r.future = None;
+    r.container = Some(ContainerBinding {
+        rule: SemanticRuleId(0),
+        kind: ContainerKind::JoinSet,
+    });
+    let walk = b.walks.entries[&WalkRole::JoinHandleRaw].clone();
+    b.walks.entries = [
+        WalkRole::JoinSetLength,
+        WalkRole::JoinSetLists,
+        WalkRole::JoinSetNotifiedHead,
+        WalkRole::JoinSetIdleHead,
+    ]
+    .into_iter()
+    .map(|role| (role, walk.clone()))
+    .collect();
+    b.validate().unwrap();
+    b.semantics.types[0].storage = StoragePolicy::Unavailable(issue());
+    bad(&b, "unavailable storage carries a readable capability");
+    b.semantics.types[0].storage = StoragePolicy::DeclaredMembers;
+    b.walks.entries.remove(&WalkRole::JoinSetIdleHead);
+    bad(&b, "essential walk role");
+}
+
+#[test]
+fn test_semantic_coroutine_cannot_delegate_through_uncertain_storage() {
+    let mut b = coroutine();
+    let state = &mut b.semantics.types[0].coroutine.as_mut().unwrap().states[0];
+    state.uncertain_locals = std::mem::take(&mut state.locals);
+    bad(&b, "delegate is not an initialized local");
+    let mut b = coroutine();
+    if let TypeDef::Enum { shape, .. } = &mut b.types.types[4] {
+        shape.discr = Some(DiscrDef {
+            ty: BundleTypeId(0),
+            offset: 17,
+        });
+    }
+    bad(&b, "discriminant is out of bounds");
+    if let TypeDef::Enum { shape, .. } = &mut b.types.types[4] {
+        shape.discr.as_mut().unwrap().offset = 16;
+    }
+    b.validate().unwrap();
+}

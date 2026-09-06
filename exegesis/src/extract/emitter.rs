@@ -564,7 +564,9 @@ impl<'a> Emitter<'a> {
     pub(super) fn finish(
         mut self,
         impl_selfs: &BTreeMap<String, String>,
-    ) -> (TypeTable, crate::bundle::StringTable, ImplTable, Emitted) {
+        seeds: super::semantics::SemanticSeeds,
+        tasks: &[crate::bundle::TaskFutureEntry],
+    ) -> Finished {
         let mut index: Vec<(String, BundleTypeId)> = self
             .names
             .iter()
@@ -586,6 +588,7 @@ impl<'a> Emitter<'a> {
         };
         let demoted = demote_types_with_members_out_of_bounds(&mut types, &self.names);
         let states = drop_members_of_other_states(&mut types, &self.names);
+        let semantics = super::semantics::bind_semantics(seeds, &types, &mut self.interner, tasks);
 
         let opaque = types
             .types
@@ -622,8 +625,22 @@ impl<'a> Emitter<'a> {
 
         let strings = self.interner.finish();
         types.build_normalized_index(&strings);
-        (types, strings, impls, counts)
+        Finished {
+            types,
+            strings,
+            impls,
+            counts,
+            semantics,
+        }
     }
+}
+
+pub(super) struct Finished {
+    pub(super) types: TypeTable,
+    pub(super) strings: crate::bundle::StringTable,
+    pub(super) impls: ImplTable,
+    pub(super) counts: Emitted,
+    pub(super) semantics: crate::bundle::SemanticTable,
 }
 
 /// What the closing passes over the emitted table found.

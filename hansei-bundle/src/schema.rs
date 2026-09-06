@@ -48,6 +48,7 @@ pub struct Bundle {
     pub infra: InfraTypes,
     pub provenance: ProvenanceTable,
     pub impls: ImplTable,
+    pub semantics: crate::SemanticTable,
 }
 
 // Parallel rendering shares one loaded bundle across worker threads:
@@ -1218,6 +1219,7 @@ pub struct TaskFutureEntry {
     pub stage: BundleTypeId,
     /// `S`: the scheduler (multi_thread vs current_thread handle).
     pub scheduler: BundleTypeId,
+    pub scheduler_binding: Option<crate::SchedulerBinding>,
     /// Demangled name of `T`, for display only.
     pub display_name: StrRef,
 }

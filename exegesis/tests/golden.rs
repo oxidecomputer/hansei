@@ -1405,6 +1405,35 @@ fn run_golden(program: &str) {
 
     assert_clean(program, &bundle, &stats);
 
+    // Real DWARF must retain positive task identity without turning the
+    // dormant semantic programs into production continuation claims.
+    for (index, task) in bundle.tasks.entries.iter().enumerate() {
+        let record = bundle
+            .semantics
+            .types
+            .iter()
+            .find(|record| record.ty == task.future)
+            .expect("task future has semantic identity");
+        assert!(record.future.as_ref().unwrap().evidence.contains(
+            &hansei_bundle::FutureEvidence::TaskEntry(hansei_bundle::TaskEntryId(index as u32)),
+        ));
+    }
+    assert!(
+        !bundle.semantics.types.is_empty(),
+        "{program}: no semantic records"
+    );
+    assert!(bundle.semantics.rules.is_empty());
+    assert!(
+        bundle
+            .semantics
+            .types
+            .iter()
+            .all(|record| record.future.as_ref().is_none_or(|facts| matches!(
+                facts.continuation,
+                hansei_bundle::Continuation::Unknown(_)
+            )))
+    );
+
     // The type-rooted walks are deliberately absent from the portable
     // summary — which resources a build links is the target's call —
     // so their binding is pinned here, on the fixtures that provably
@@ -1771,6 +1800,46 @@ fn test_a_packed_dwp_pair_extracts_the_same_bundle() {
     assert_eq!(split.types, unsplit.types, "{program}: type table differs");
     assert_eq!(split.tasks, unsplit.tasks, "{program}: task table differs");
     assert_eq!(split.walks, unsplit.walks, "{program}: walk table differs");
+    assert_eq!(
+        split.semantics, unsplit.semantics,
+        "{program}: semantic table differs"
+    );
+    // Poll evidence interns raw symbols, which carry the same build-specific
+    // crate disambiguators as the indexes cleared above. Normalize only those
+    // strings; every other interned value must still agree literally.
+    let normalized_strings = |bundle: &Bundle| {
+        use exegesis::bundle::{FutureEvidence, StrRef};
+        use exegesis::symbols::normalized_v0_key;
+        let polls: std::collections::BTreeSet<_> = bundle
+            .semantics
+            .types
+            .iter()
+            .filter_map(|record| record.future.as_ref())
+            .flat_map(|future| &future.evidence)
+            .filter_map(|evidence| match evidence {
+                FutureEvidence::PollSymbol(symbol) => Some(*symbol),
+                _ => None,
+            })
+            .collect();
+        bundle
+            .strings
+            .iter()
+            .enumerate()
+            .map(|(i, value)| {
+                if polls.contains(&StrRef(i as u32)) {
+                    normalized_v0_key(value).expect("poll evidence has a v0 symbol")
+                } else {
+                    value.to_owned()
+                }
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        normalized_strings(&split),
+        normalized_strings(&unsplit),
+        "{program}: normalized strings differ"
+    );
+    split.strings = unsplit.strings.clone();
     assert_eq!(
         split, unsplit,
         "{program}: the packed split changed the bundle"

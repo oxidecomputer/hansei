@@ -30,7 +30,7 @@ pub const MAGIC: [u8; 8] = *b"exegesis";
 
 /// The current bundle format version. Bump on any schema change, including
 /// indirect ones (e.g. new [`crate::Encoding`] variants).
-pub const FORMAT_VERSION: u32 = 51;
+pub const FORMAT_VERSION: u32 = 52;
 
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -93,15 +93,58 @@ fn selector_target(
     sel: &Selector,
     what: &str,
 ) -> Result<BundleTypeId> {
+    selector_target_with_policy(bundle, root, sel, what, false)
+}
+
+/// Semantic paths use the same graph traversal with stricter storage rules.
+pub(crate) fn semantic_path_target(
+    bundle: &Bundle,
+    root: BundleTypeId,
+    sel: &Selector,
+) -> Result<BundleTypeId> {
+    selector_target_with_policy(bundle, root, sel, "semantic path", true)
+}
+
+fn selector_target_with_policy(
+    bundle: &Bundle,
+    root: BundleTypeId,
+    sel: &Selector,
+    what: &str,
+    semantic: bool,
+) -> Result<BundleTypeId> {
     let mut current = root;
     let mut def = bundle
         .types
         .get(root)
         .expect("root type validated before formats");
     let mut seen = vec![root];
+    let mut offset = 0u64;
+    let inline = |parent, member: &MemberDef, offset: u64| -> Result<u64> {
+        let size = bundle.types.size_of(member.ty);
+        let end = size.and_then(|size| member.offset.checked_add(size));
+        if end
+            .zip(bundle.types.size_of(parent))
+            .is_none_or(|(end, size)| end > size)
+        {
+            return Err(Error::Corrupt(format!(
+                "{what}: inline member is unsized or out of bounds"
+            )));
+        }
+        offset
+            .checked_add(member.offset)
+            .and_then(|offset| offset.checked_add(size?).map(|_| offset))
+            .ok_or_else(|| Error::Corrupt(format!("{what}: inline offset overflow")))
+    };
     for (step, item) in sel.steps().iter().enumerate() {
         match item {
             Step::Member(at) => {
+                if semantic
+                    && (!matches!(at, MemberRef::Named(_)) || matches!(def, TypeDef::Union { .. }))
+                {
+                    return Err(Error::Corrupt(format!(
+                        "{what}: positional member or unauthorized union crossing"
+                    )));
+                }
                 let members = match def {
                     TypeDef::Struct { members, .. } | TypeDef::Union { members, .. } => members,
                     _ => {
@@ -118,6 +161,9 @@ fn selector_target(
                         unresolved(at)
                     ))
                 })?;
+                if semantic {
+                    offset = inline(current, member, offset)?;
+                }
                 if seen.contains(&member.ty) {
                     return Err(Error::Corrupt(format!(
                         "{what} for type {} contains a type cycle at step {step}",
@@ -144,6 +190,7 @@ fn selector_target(
                     .get(*target)
                     .expect("pointer target validated before formats");
                 seen = vec![current];
+                offset = 0;
             }
             Step::Variant(name) => {
                 let TypeDef::Enum { shape, .. } = def else {
@@ -158,6 +205,9 @@ fn selector_target(
                         root.0, name.0
                     ))
                 })?;
+                if semantic {
+                    offset = inline(current, &variant.payload, offset)?;
+                }
                 if seen.contains(&variant.payload.ty) {
                     return Err(Error::Corrupt(format!(
                         "{what} for type {} contains a type cycle at step {step}",
@@ -184,13 +234,18 @@ fn selector_target(
             }
         }
     }
+    if semantic && bundle.types.size_of(current).is_none() {
+        return Err(Error::Corrupt(format!(
+            "{what}: unsized or opaque endpoint"
+        )));
+    }
     Ok(current)
 }
 
 /// Resolve a selector that stays within one allocation to its byte offset.
 /// Returns `None` for a pointer crossing, whose post-dereference offset is not
 /// relative to the original value.
-fn selector_offset(bundle: &Bundle, root: BundleTypeId, sel: &Selector) -> Option<u64> {
+pub(crate) fn selector_offset(bundle: &Bundle, root: BundleTypeId, sel: &Selector) -> Option<u64> {
     let mut def = bundle.types.get(root)?;
     let mut offset = 0u64;
     for step in sel.steps() {
@@ -1347,6 +1402,7 @@ impl Bundle {
         let StaticsTable { entries: _ } = &self.statics; // plain strings, nothing to check
 
         check_walks(self)?;
+        crate::semantics::check::check_semantics(self)?;
 
         let infra = &self.infra;
         for (what, id) in [

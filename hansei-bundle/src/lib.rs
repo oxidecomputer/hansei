@@ -10,6 +10,7 @@
 mod io;
 pub mod names;
 mod schema;
+mod semantics;
 mod shape;
 mod strings;
 pub mod symbols;
@@ -26,6 +27,7 @@ pub use schema::{
     VariantDef, VariantShape, VtableDataSource, WalkBinding, WalkOutcome, WalkRole, WalksTable,
     strip_build_prefix, strip_llvm_suffix,
 };
+pub use semantics::*;
 pub use shape::Shape;
 pub use strings::{StrRef, StringInterner, StringTable};
 pub use view::{

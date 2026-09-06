@@ -295,6 +295,30 @@ fn allocator_elision_len(rest: &str) -> Option<usize> {
 /// `PollFn<foo::{async_fn_env#0}>` is not itself an async fn — or
 /// `None` for anything that is not a coroutine env at all.
 pub fn coroutine_kind(name: &str) -> Option<&'static str> {
+    let outer = outer_path(name);
+    let last = outer.rsplit("::").next()?;
+    let kind = |prefix, kind| (last.starts_with(prefix) && last.ends_with('}')).then_some(kind);
+    kind("{async_fn_env#", "async fn")
+        .or_else(|| kind("{async_block_env#", "async block"))
+        .or_else(|| kind("{async_closure_env#", "async closure"))
+}
+
+/// A compiler-storage candidate, not evidence of Future implementation or
+/// initialized fields. Inspect only the nominal type, excluding its arguments.
+pub fn is_coroutine_candidate(name: &str) -> bool {
+    let outer = outer_path(name);
+    let last = outer.rsplit("::").next().unwrap_or_default();
+    [
+        "{async_fn_env#",
+        "{async_block_env#",
+        "{async_closure_env#",
+        "{coroutine_env#",
+    ]
+    .iter()
+    .any(|prefix| last.starts_with(prefix) && last.ends_with('}'))
+}
+
+fn outer_path(name: &str) -> String {
     let mut outer = String::with_capacity(name.len());
     let mut generic_depth = 0usize;
     for c in name.chars() {
@@ -305,11 +329,7 @@ pub fn coroutine_kind(name: &str) -> Option<&'static str> {
             _ => {}
         }
     }
-    let last = outer.rsplit("::").next()?;
-    let kind = |prefix, kind| (last.starts_with(prefix) && last.ends_with('}')).then_some(kind);
-    kind("{async_fn_env#", "async fn")
-        .or_else(|| kind("{async_block_env#", "async block"))
-        .or_else(|| kind("{async_closure_env#", "async closure"))
+    outer
 }
 
 /// A future's display name where no kind column carries the kind for

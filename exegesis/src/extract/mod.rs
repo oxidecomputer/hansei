@@ -27,6 +27,7 @@
 mod emitter;
 mod passes;
 mod paths;
+mod semantics;
 mod sources;
 mod statics;
 mod sweep;
@@ -326,6 +327,8 @@ pub enum Error {
          --allow-missing-infra to extract anyway"
     )]
     MissingInfra(Vec<String>),
+    #[error("extracted bundle failed validation: {0}")]
+    InvalidBundle(#[from] hansei_bundle::Error),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -870,8 +873,8 @@ fn extract_from_view(
     let Sweep {
         seeds,
         fut_polls,
-        explicit_polls: _,
-        coroutine_candidates: _,
+        explicit_polls,
+        coroutine_candidates,
         drop_glues,
         glue_by_name,
         resume_awaitees,
@@ -1098,6 +1101,7 @@ fn extract_from_view(
             cell,
             stage,
             scheduler,
+            scheduler_binding: None,
             display_name,
         });
         provenance.push(classify_future(
@@ -1262,7 +1266,14 @@ fn extract_from_view(
         }
     }
 
-    let (types, strings, impls, counts) = em.finish(&impl_selfs);
+    let seeds = semantics::collect_semantic_seeds(&em, &explicit_polls, &coroutine_candidates);
+    let emitter::Finished {
+        types,
+        strings,
+        impls,
+        counts,
+        semantics,
+    } = em.finish(&impl_selfs, seeds, &entries);
     stats.types_emitted = types.types.len();
     stats.opaque_types = counts.opaque;
     stats.types_demoted_out_of_bounds = counts.demoted;
@@ -1294,8 +1305,10 @@ fn extract_from_view(
             entries: provenance,
         },
         impls,
+        semantics,
     };
 
+    bundle.validate()?;
     Ok((bundle, stats))
 }
 
@@ -1848,6 +1861,7 @@ mod tests {
 
     #[test]
     fn test_extraction_retains_exact_task_poll_and_glue_collisions() {
+        let mut expected_semantics = None;
         for reverse in [false, true] {
             let mut fx = world(false, false);
             let raw_ns = fx.ns("tokio::runtime::task::raw");
@@ -1905,6 +1919,11 @@ mod tests {
             }
             let (bundle, stats) = run(&mut fx, true).unwrap();
             bundle.validate().unwrap();
+            if let Some(expected) = &expected_semantics {
+                assert_eq!(&bundle.semantics, expected);
+            } else {
+                expected_semantics = Some(bundle.semantics.clone());
+            }
             assert_eq!(
                 stats.task_entries, 3,
                 "repeated evidence must not create entries"
@@ -1960,6 +1979,111 @@ mod tests {
         let display = format!("{stats}");
         assert!(display.contains("task table:"), "{display}");
         assert!(display.contains("  entries:                3"), "{display}");
+    }
+
+    #[test]
+    fn test_semantic_seeds_keep_identity_separate_from_compiler_candidates() {
+        use crate::bundle::{Continuation, FutureEvidence, SemanticIssueKind, StoragePolicy};
+
+        let mut fx = world(false, false);
+        // A normal wrapper, pointer, and compiler env without a resume symbol
+        // are reachable storage, but only the compiler env is a candidate.
+        fx.strukt(
+            type_id(0x50),
+            None,
+            "Holder",
+            &[("child", type_id(0x24), 0)],
+            &[],
+        );
+        fx.pointer(type_id(0x51), type_id(0x24));
+        fx.strukt(type_id(0x52), None, "{async_block_env#1}", &[], &[]);
+        fx.strukt(
+            type_id(0x10),
+            None,
+            "FutA",
+            &[
+                ("wrapper", type_id(0x50), 0),
+                ("pointer", type_id(0x51), 8),
+                ("unpolled", type_id(0x52), 16),
+            ],
+            &[],
+        );
+        let (bundle, _) = run(&mut fx, true).unwrap();
+        let view = hansei_bundle::BundleView::new(&bundle);
+        let facts = |name| {
+            bundle
+                .semantics
+                .types
+                .iter()
+                .find(|record| view.ty(record.ty).unwrap().name() == name)
+        };
+        for (id, task) in bundle.tasks.entries.iter().enumerate() {
+            let record = bundle
+                .semantics
+                .types
+                .iter()
+                .find(|r| r.ty == task.future)
+                .unwrap();
+            assert!(
+                record
+                    .future
+                    .as_ref()
+                    .unwrap()
+                    .evidence
+                    .contains(&FutureEvidence::TaskEntry(TaskEntryId(id as u32)))
+            );
+        }
+        assert!(
+            facts("FutA")
+                .unwrap()
+                .future
+                .as_ref()
+                .unwrap()
+                .evidence
+                .iter()
+                .all(|e| matches!(e, FutureEvidence::TaskEntry(_)))
+        );
+        let manual = facts("app::F2").unwrap();
+        let FutureEvidence::PollSymbol(symbol) = manual.future.as_ref().unwrap().evidence[0] else {
+            panic!("explicit poll evidence")
+        };
+        assert_eq!(
+            bundle.strings.get(symbol),
+            Some("<app::F2 as core::future::future::Future>::poll")
+        );
+        for name in ["{async_fn_env#0}", "{async_block_env#1}"] {
+            let candidate = facts(name).unwrap();
+            assert!(
+                candidate.future.is_none(),
+                "shape cannot supply future identity"
+            );
+            assert!(
+                matches!(candidate.storage, StoragePolicy::Unavailable(ref issue) if issue.kind == SemanticIssueKind::UnsupportedOrigin)
+            );
+        }
+        assert!(facts("Holder").is_none());
+        let demoted = facts("FutA").unwrap();
+        assert!(matches!(
+            bundle.types.get(demoted.ty),
+            Some(crate::bundle::TypeDef::Opaque { .. })
+        ));
+        assert!(
+            matches!(demoted.storage, StoragePolicy::Unavailable(ref issue) if issue.kind == SemanticIssueKind::MissingLayout)
+        );
+        assert!(bundle.semantics.origins.is_empty());
+        assert!(bundle.semantics.rules.is_empty());
+        assert!(bundle.semantics.types.iter().all(|r| {
+            r.access.is_none()
+                && r.resource.is_none()
+                && r.container.is_none()
+                && r.future
+                    .as_ref()
+                    .is_none_or(|f| matches!(f.continuation, Continuation::Unknown(_)))
+        }));
+        let mut other = bundle.clone();
+        other.types.debug_formats.clear();
+        other.validate().unwrap();
+        assert_eq!(other.semantics, bundle.semantics);
     }
 
     #[test]

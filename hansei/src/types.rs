@@ -842,6 +842,7 @@ mod tests {
             },
             provenance: Default::default(),
             impls: Default::default(),
+            semantics: Default::default(),
         }
     }
 

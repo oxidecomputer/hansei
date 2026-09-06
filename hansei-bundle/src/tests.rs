@@ -10,6 +10,8 @@ use crate::{BundleView, Encoding};
 
 use std::collections::{BTreeMap, BTreeSet};
 
+mod semantics;
+
 /// Deterministic xorshift64* generator so the "arbitrary graph" round-trip
 /// tests are reproducible without a property-testing dependency.
 struct Rng(u64);
@@ -76,6 +78,7 @@ fn tiny_bundle() -> Bundle {
         },
         provenance: ProvenanceTable::default(),
         impls: ImplTable::default(),
+        semantics: Default::default(),
     }
 }
 
@@ -203,6 +206,7 @@ fn random_bundle(seed: u64) -> Bundle {
             cell: any_ty(&mut rng),
             stage: any_ty(&mut rng),
             scheduler: any_ty(&mut rng),
+            scheduler_binding: None,
             display_name: strings.intern(&format!("some::async_fn{i}::{{async_fn_env#0}}")),
         })
         .collect();
@@ -329,6 +333,7 @@ fn random_bundle(seed: u64) -> Bundle {
         },
         provenance,
         impls: ImplTable::default(),
+        semantics: Default::default(),
     }
 }
 
@@ -625,6 +630,7 @@ fn test_validate_accepts_selector_through_deref() {
         },
         provenance: ProvenanceTable::default(),
         impls: ImplTable::default(),
+        semantics: Default::default(),
     };
     assert!(b.validate().is_ok());
     // Round-trips: validation runs on save and load too.
@@ -729,6 +735,7 @@ fn test_validate_rejects_out_of_range_member() {
         },
         provenance: ProvenanceTable::default(),
         impls: ImplTable::default(),
+        semantics: Default::default(),
     };
     let err = b
         .validate()
@@ -833,6 +840,7 @@ fn test_validate_requires_a_named_member_to_be_unique() {
         },
         provenance: ProvenanceTable::default(),
         impls: ImplTable::default(),
+        semantics: Default::default(),
     };
 
     let point = BundleTypeId(1);
@@ -959,6 +967,7 @@ fn walk_bundle(broken_b: bool) -> Bundle {
         },
         provenance: ProvenanceTable::default(),
         impls: ImplTable::default(),
+        semantics: Default::default(),
     };
     b.walks.entries.insert(
         WalkRole::SleepDeadline,
@@ -1407,6 +1416,7 @@ fn test_symbol_lookup_is_mangled_exact_match() {
         cell: BundleTypeId(0),
         stage: BundleTypeId(0),
         scheduler: BundleTypeId(0),
+        scheduler_binding: None,
         display_name: display,
     });
     b.tasks
@@ -1447,6 +1457,7 @@ fn test_symbol_lookup_falls_back_to_normalized_name() {
         cell: BundleTypeId(0),
         stage: BundleTypeId(0),
         scheduler: BundleTypeId(0),
+        scheduler_binding: None,
         display_name: StrRef(0),
     };
     let by_symbol = BTreeMap::from([(DEBUG.to_owned(), vec![TaskEntryId(0)])]);
@@ -1475,6 +1486,7 @@ fn test_symbol_lookup_reports_every_ambiguous_spelling() {
         cell: BundleTypeId(0),
         stage: BundleTypeId(0),
         scheduler: BundleTypeId(0),
+        scheduler_binding: None,
         display_name: StrRef(0),
     };
     let by_symbol = BTreeMap::from([
@@ -1510,6 +1522,7 @@ fn colliding_symbols_bundle() -> Bundle {
             cell: id,
             stage: id,
             scheduler: id,
+            scheduler_binding: None,
             display_name: StrRef(0),
         });
         b.provenance.entries.push(Provenance {
