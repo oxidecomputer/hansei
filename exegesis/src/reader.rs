@@ -20,7 +20,7 @@ use rayon::iter::{
 
 use tracing::{debug, warn};
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::num::NonZero;
 
 /// Below this many named-type groups, the parallel layout partitioning in
@@ -35,6 +35,19 @@ const ALIAS_BATCH: usize = 32;
 /// unset, for both the CGU parse pool and the parallel finalization.
 fn default_parallelism() -> usize {
     std::thread::available_parallelism().map_or(1, NonZero::get)
+}
+
+/// Identity of a defining compilation unit, stable across worker arrival order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct OriginId(pub gimli::UnitSectionOffset);
+
+/// Metadata retained once per compilation unit, independent of type aliases.
+#[derive(Clone, Copy, Debug)]
+pub struct UnitOrigin {
+    pub name: StrId,
+    pub producer: Option<StrId>,
+    /// Exclusive end of this unit in the reader's DIE id space.
+    pub end_offset: gimli::UnitSectionOffset,
 }
 
 /// A global, deduplicated view of all types from the DWARF debug information.
@@ -55,6 +68,11 @@ pub struct DwReader<'dw> {
     type_declarations: HashSet<TypeId>,
     /// Type DIE → declaration DIE from `DW_AT_specification`.
     type_specifications: HashMap<TypeId, TypeId>,
+    /// Unit metadata keyed by the root DIE, including split-unit bias.
+    pub origins: BTreeMap<OriginId, UnitOrigin>,
+    /// Sorted (canonical type, original definition DIE) pairs for aliases only.
+    /// The canonical definition itself remains directly addressable in `types`.
+    definition_aliases: Vec<(TypeId, TypeId)>,
     /// All static variables, keyed by their VarId.
     pub variables: HashMap<VarId, RawStaticVariable<StrId>>,
     /// All functions, keyed by their FuncId.
@@ -64,7 +82,8 @@ pub struct DwReader<'dw> {
     /// Interned string table for all strings found in types and variables.
     pub strings: FrozenStrings<'dw>,
     /// The `DW_AT_producer` of the first compile unit that carries one
-    /// (compiler identification, e.g. the rustc version).
+    /// (compiler identification, e.g. the rustc version). Display metadata
+    /// only: semantic compatibility must use each type's defining origins.
     pub producer: Option<StrId>,
     /// Every type by name, canonical or not — a lookup filters through
     /// [`Self::is_canonical`]. Built beside finalization's alias passes,
@@ -322,6 +341,8 @@ impl<'dw> DwReader<'dw> {
             subs: HashMap::new(),
             type_declarations: HashSet::new(),
             type_specifications: HashMap::new(),
+            origins: BTreeMap::new(),
+            definition_aliases: Vec::new(),
             variables: HashMap::new(),
             functions: HashMap::new(),
             namespaces: Namespaces::default(),
@@ -340,8 +361,10 @@ impl<'dw> DwReader<'dw> {
     /// forward references nor arrival order can affect the result.
     fn ingest(&mut self, cgu: InternedCgu) {
         if self.producer.is_none() {
-            self.producer = cgu.producer;
+            self.producer = cgu.origin.producer;
         }
+
+        self.origins.insert(cgu.origin_id, cgu.origin);
 
         for (type_id, ty) in cgu.types {
             self.types.insert(type_id, ty);
@@ -417,6 +440,13 @@ impl<'dw> DwReader<'dw> {
         self.subs = subs;
         self.types_by_name = types_by_name;
         self.funcs_by_name = funcs_by_name;
+        self.definition_aliases = self
+            .subs
+            .keys()
+            .filter(|id| self.types.contains_key(id) && !self.type_declarations.contains(id))
+            .map(|&id| (self.canonicalize(id), id))
+            .collect();
+        self.definition_aliases.sort_unstable();
     }
 
     /// The substitutions the alias passes add on top of the
@@ -872,6 +902,38 @@ impl<'dw> DwReader<'dw> {
         }
     }
 
+    /// The unit containing an original DIE, before specification resolution.
+    /// The range check also rejects offsets in gaps and beyond the last unit.
+    pub fn die_origin(&self, die: gimli::UnitSectionOffset) -> Option<(OriginId, &UnitOrigin)> {
+        let (&id, origin) = self.origins.range(..=OriginId(die)).next_back()?;
+        (die < origin.end_offset).then_some((id, origin))
+    }
+
+    /// Every original definition contributing to a canonical type, in DIE order.
+    /// Declarations contribute identity but never compiler provenance. An empty
+    /// result means definition evidence is unavailable, not universal support.
+    /// Read each DIE's original name/target from `types`, and its compiler from
+    /// `die_origin`; never substitute the canonical winner's evidence for it.
+    pub fn type_definitions(&self, id: TypeId) -> impl Iterator<Item = TypeId> + '_ {
+        let id = self.canonicalize(id);
+        let start = self
+            .definition_aliases
+            .partition_point(|&(key, _)| key < id);
+        let end = self
+            .definition_aliases
+            .partition_point(|&(key, _)| key <= id);
+        let canonical = self.types.contains_key(&id) && !self.type_declarations.contains(&id);
+        // The canonical DIE need not have the lowest offset: complete layouts
+        // can win over a less detailed earlier definition.
+        let aliases = &self.definition_aliases[start..end];
+        let split = aliases.partition_point(|&(_, die)| die < id);
+        aliases[..split]
+            .iter()
+            .map(|&(_, die)| die)
+            .chain(canonical.then_some(id))
+            .chain(aliases[split..].iter().map(|&(_, die)| die))
+    }
+
     /// Resolve a [`TypeId`] to its canonical form by following the
     /// substitution chain.
     pub fn canonicalize(&self, id: TypeId) -> TypeId {
@@ -992,7 +1054,8 @@ fn parse_job<'dw>(
 /// fold's in-flight buffer no longer pins the underlying section pages. Type
 /// references are global DIE ids and namespaces carry their global ids.
 struct InternedCgu {
-    producer: Option<StrId>,
+    origin_id: OriginId,
+    origin: UnitOrigin,
     /// This CGU's namespace table with interned names, in the original local
     /// id order so the collector can remap references against it.
     types: HashMap<TypeId, RawType<StrId>>,
@@ -1057,7 +1120,12 @@ fn intern_cgu<'dw>(
         .collect();
 
     InternedCgu {
-        producer: cgu.producer.map(|p| interner.intern(p)),
+        origin_id: OriginId(cgu.offset),
+        origin: UnitOrigin {
+            name: interner.intern(cgu.name),
+            producer: cgu.producer.map(|p| interner.intern(p)),
+            end_offset: cgu.end_offset,
+        },
         types,
         subroutine_types: cgu.subroutine_types,
         variables,
@@ -1421,6 +1489,58 @@ mod tests {
                 name: None,
                 target_type_id: target,
             }),
+        );
+    }
+
+    #[test]
+    fn test_type_definitions_exclude_unresolved_declarations() {
+        let mut reader = DwReader::new();
+        let first = type_id(0x10);
+        let second = type_id(0x20);
+        for id in [first, second] {
+            insert_struct(&mut reader, id, Some("Declared"), 0);
+            reader.type_declarations.insert(id);
+        }
+        reader.finalize_types();
+        assert_eq!(reader.canonicalize(second), first);
+        assert_eq!(reader.type_definitions(first).count(), 0);
+        assert_eq!(reader.type_definitions(second).count(), 0);
+        assert!(reader.die_origin(first.0).is_none());
+    }
+
+    #[test]
+    fn test_type_definitions_follow_transitive_aliases_in_die_order() {
+        let mut reader = DwReader::new();
+        let first = type_id(0x10);
+        let middle = type_id(0x20);
+        let last = type_id(0x30);
+        for id in [first, middle, last] {
+            insert_struct(&mut reader, id, Some("Value"), 8);
+        }
+        // Force the middle definition to win by carrying more layout detail.
+        let name = reader.strings.intern("field");
+        let RawType::Struct(ty) = reader.types.get_mut(&middle).unwrap() else {
+            unreachable!()
+        };
+        ty.members = vec![RawMember {
+            name: Some(name),
+            type_id: first,
+            offset: 0,
+            source_loc: None,
+        }]
+        .into_boxed_slice();
+        reader.finalize_types();
+        assert_eq!(reader.canonicalize(first), middle);
+        assert_eq!(reader.canonicalize(last), middle);
+        assert_eq!(
+            reader.type_definitions(last).collect::<Vec<_>>(),
+            [first, middle, last]
+        );
+        // Finalization can rebuild its derived index without accumulating copies.
+        reader.finalize_types();
+        assert_eq!(
+            reader.type_definitions(first).collect::<Vec<_>>(),
+            [first, middle, last]
         );
     }
 

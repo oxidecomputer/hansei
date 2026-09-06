@@ -299,6 +299,24 @@ fn test_package_units_with_identical_local_offsets_stay_distinct() {
     assert_eq!(holder_shape(&reader, "HolderA"), ("InnerA".to_owned(), 4));
     assert_eq!(holder_shape(&reader, "HolderB"), ("InnerB".to_owned(), 8));
 
+    assert_eq!(reader.origins.len(), 2);
+    let origins: Vec<_> = ["HolderA", "HolderB"]
+        .into_iter()
+        .map(|name| {
+            let (id, _) = reader
+                .canonical_types()
+                .find(|(_, ty)| ty.name().map(|n| reader.strings.get(n)) == Some(name))
+                .unwrap();
+            assert_eq!(reader.type_definitions(id).collect::<Vec<_>>(), [id]);
+            let (origin_id, origin) = reader.die_origin(id.0).unwrap();
+            assert_eq!(reader.strings.get(origin.producer.unwrap()), "synthetic");
+            assert!(origin_id.0.0 >= skeleton[&gimli::SectionId::DebugInfo].len());
+            (origin_id, reader.strings.get(origin.name))
+        })
+        .collect();
+    assert_ne!(origins[0].0, origins[1].0);
+    assert_eq!((origins[0].1, origins[1].1), ("cu-alpha", "cu-betaa"));
+
     let static_addr = |name: &str| {
         reader
             .variables

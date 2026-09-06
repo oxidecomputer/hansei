@@ -87,9 +87,10 @@ pub struct CodegenUnit<'dw> {
     pub name: &'dw str,
     /// The `DW_AT_producer` string (compiler identification), if present.
     pub producer: Option<&'dw str>,
-    /// Starting offset of this unit in the debug info section.
-    #[allow(dead_code)]
+    /// Root DIE offset in the reader's id space (including split-unit bias).
     pub offset: UnitSectionOffset,
+    /// Exclusive end of the unit in the same id space.
+    pub end_offset: UnitSectionOffset,
     /// Current namespace context.
     pub(crate) ns: Option<NsId>,
     /// Namespace table for this codegen unit.
@@ -178,6 +179,9 @@ impl<'dw> CodegenUnit<'dw> {
             name,
             producer,
             offset,
+            end_offset: unit.biased(UnitSectionOffset(
+                unit.header.offset().0 + unit.header.length_including_self(),
+            )),
             ns: None,
             namespaces: NamespaceTable::new(),
             types: HashMap::new(),
@@ -1292,6 +1296,135 @@ mod tests {
             "several canonical types named {want}"
         );
         found
+    }
+
+    #[test]
+    fn test_defining_origins_survive_mixed_units_and_aliases() {
+        for endian in [gimli::RunTimeEndian::Little, gimli::RunTimeEndian::Big] {
+            parsed(
+                endian,
+                |dwarf, c_unit| {
+                    let encoding = dwarf.units.get(c_unit).encoding();
+                    let units: Vec<_> = (0..4)
+                        .map(|_| {
+                            dwarf
+                                .units
+                                .add(gwrite::Unit::new(encoding, gwrite::LineProgram::none()))
+                        })
+                        .collect();
+                    let mut add = |uid, producer: Option<&str>, name: &str, size, declaration| {
+                        let unit = dwarf.units.get_mut(uid);
+                        let root = unit.root();
+                        unit.get_mut(root)
+                            .set(gimli::DW_AT_name, W::String(name.as_bytes().to_vec()));
+                        if let Some(producer) = producer {
+                            unit.get_mut(root).set(
+                                gimli::DW_AT_producer,
+                                W::String(producer.as_bytes().to_vec()),
+                            );
+                        }
+                        let id = unit.add(root, gimli::DW_TAG_structure_type);
+                        let entry = unit.get_mut(id);
+                        entry.set(gimli::DW_AT_name, W::String(name.as_bytes().to_vec()));
+                        entry.set(gimli::DW_AT_byte_size, W::Udata(size));
+                        if declaration {
+                            entry.set(gimli::DW_AT_declaration, W::Flag(true));
+                        }
+                        id
+                    };
+                    let declaration = add(c_unit, Some("GNU C17 14.2.0"), "Defined", 0, true);
+                    let definition = add(
+                        units[0],
+                        Some("rustc version 1.97.0 (aaaa 2026-07-01)"),
+                        "Defined",
+                        8,
+                        false,
+                    );
+                    add(
+                        units[1],
+                        Some("rustc version 1.98.0 (bbbb 2026-08-18)"),
+                        "Defined",
+                        8,
+                        false,
+                    );
+                    add(
+                        units[2],
+                        Some("rustc version 1.99.0 (cccc 2026-09-01)"),
+                        "Unrelated",
+                        8,
+                        false,
+                    );
+                    add(units[3], None, "MissingProducer", 8, false);
+                    let unit = dwarf.units.get_mut(units[0]);
+                    unit.get_mut(definition).set(
+                        gimli::DW_AT_specification,
+                        W::DebugInfoRef(gwrite::DebugInfoRef::Entry(c_unit, declaration)),
+                    );
+                    unit.get_mut(definition).delete(gimli::DW_AT_name);
+                    // A distinct layout with the same name must keep its own origin.
+                    let unit = dwarf.units.get_mut(c_unit);
+                    let root = unit.root();
+                    let id = unit.add(root, gimli::DW_TAG_structure_type);
+                    unit.get_mut(id)
+                        .set(gimli::DW_AT_name, W::String(b"Defined".to_vec()));
+                    unit.get_mut(id).set(gimli::DW_AT_byte_size, W::Udata(16));
+                },
+                |reader| {
+                    assert_eq!(reader.origins.len(), 5);
+                    let mut checked = 0;
+                    for (id, ty) in reader.canonical_types() {
+                        let RawType::Struct(ty) = ty else { continue };
+                        let name = reader.strings.get(ty.name.unwrap());
+                        let definitions: Vec<_> = reader.type_definitions(id).collect();
+                        assert!(definitions.windows(2).all(|w| w[0] < w[1]));
+                        let producers: Vec<_> = definitions
+                            .iter()
+                            .map(|die| {
+                                let (origin_id, origin) = reader.die_origin(die.0).unwrap();
+                                assert!(origin_id.0 <= die.0);
+                                assert!(die.0 < origin.end_offset);
+                                origin.producer.map(|p| reader.strings.get(p))
+                            })
+                            .collect();
+                        match (name, ty.size) {
+                            ("Defined", 8) => {
+                                assert_eq!(
+                                    producers,
+                                    [
+                                        Some("rustc version 1.97.0 (aaaa 2026-07-01)"),
+                                        Some("rustc version 1.98.0 (bbbb 2026-08-18)"),
+                                    ]
+                                );
+                                // Alias/declaration queries see the complete set too.
+                                for (&alias, _) in reader
+                                    .types
+                                    .iter()
+                                    .filter(|(alias, _)| reader.canonicalize(**alias) == id)
+                                {
+                                    assert_eq!(
+                                        reader.type_definitions(alias).collect::<Vec<_>>(),
+                                        definitions
+                                    );
+                                }
+                            }
+                            ("Defined", 16) => assert_eq!(producers, [Some("GNU C17 14.2.0")]),
+                            ("Unrelated", _) => assert_eq!(
+                                producers,
+                                [Some("rustc version 1.99.0 (cccc 2026-09-01)")]
+                            ),
+                            ("MissingProducer", _) => assert_eq!(producers, [None]),
+                            _ => panic!("unexpected type {name}"),
+                        }
+                        checked += 1;
+                    }
+                    assert_eq!(checked, 4);
+                    assert!(reader.die_origin(gimli::UnitSectionOffset(0)).is_none());
+                    let end = reader.origins.last_key_value().unwrap().1.end_offset;
+                    assert!(reader.die_origin(end).is_none());
+                    assert_eq!(reader.type_definitions(crate::TypeId(end)).count(), 0);
+                },
+            );
+        }
     }
 
     #[test]
