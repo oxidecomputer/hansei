@@ -6,7 +6,7 @@ use crate::cgu::{DwString, UnitCtx};
 use crate::{Result, Slice, TypeId};
 
 use foldhash::{HashMap, HashMapExt};
-use gimli::{Attribute, AttributeValue, DebuggingInformationEntry, UnitRef, UnitSectionOffset};
+use gimli::{Attribute, AttributeValue, DebuggingInformationEntry, UnitSectionOffset};
 use tracing::debug;
 
 use crate::string_table::StrId;
@@ -749,7 +749,7 @@ impl<'dw> CommonAttrs<'dw> {
 /// for a file belonging to the crate the unit was compiled from, so for
 /// those everything above the crate's `src/` lives only in `comp_dir`.
 pub(crate) fn resolve_file_index<'dw>(
-    unit: &UnitRef<Slice<'dw>>,
+    unit: &UnitCtx<'_, 'dw>,
     index: u64,
     what: &str,
     loc: &mut SourceLoc<&'dw str>,
@@ -761,6 +761,11 @@ pub(crate) fn resolve_file_index<'dw>(
         debug!(file_index = index, "invalid {what} file index");
         return Ok(());
     };
+
+    loc.file_id = Some(crate::reader::SourceFileId {
+        origin: unit.origin_id(),
+        index,
+    });
 
     let raw = unit.dwarf.attr_string(unit.unit, fent.path_name())?;
     loc.file = str::from_utf8(raw.slice()).ok();
@@ -778,6 +783,8 @@ pub(crate) fn resolve_file_index<'dw>(
 /// Location in a source file for a type. Lines and columns are 1-indexed.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct SourceLoc<S> {
+    /// Original unit/file identity, retained when a declaration is inherited.
+    pub file_id: Option<crate::reader::SourceFileId>,
     /// Name of source file, if available.
     pub file: Option<S>,
     /// Directory of source file, if available.
@@ -799,6 +806,7 @@ pub struct SourceLoc<S> {
 impl<S> Default for SourceLoc<S> {
     fn default() -> Self {
         Self {
+            file_id: None,
             file: None,
             dir: None,
             comp_dir: None,
@@ -812,13 +820,19 @@ impl<S> SourceLoc<S> {
     /// Returns `true` if none of the `SourceLoc`'s fields are populated.
     pub fn is_empty(&self) -> bool {
         let Self {
+            file_id,
             file,
             dir,
             comp_dir,
             line,
             column,
         } = self;
-        file.is_none() && dir.is_none() && comp_dir.is_none() && line.is_none() && column.is_none()
+        file_id.is_none()
+            && file.is_none()
+            && dir.is_none()
+            && comp_dir.is_none()
+            && line.is_none()
+            && column.is_none()
     }
 }
 
@@ -838,6 +852,13 @@ mod tests {
             loc
         };
         assert!(!set(|l| l.file = Some("main.rs")).is_empty());
+        assert!(
+            !set(|l| l.file_id = Some(crate::reader::SourceFileId {
+                origin: crate::reader::OriginId(gimli::UnitSectionOffset(0x10)),
+                index: 1,
+            }))
+            .is_empty()
+        );
         assert!(!set(|l| l.dir = Some("src")).is_empty());
         assert!(!set(|l| l.comp_dir = Some("/crate")).is_empty());
         assert!(!set(|l| l.line = NonZero::new(3)).is_empty());

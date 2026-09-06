@@ -713,6 +713,7 @@ mod tests {
         );
         let source_loc = loc.map(|(file, line)| {
             Box::new(RawSourceLoc {
+                file_id: None,
                 file: Some(reader.strings.intern(file)),
                 dir: None,
                 comp_dir: None,

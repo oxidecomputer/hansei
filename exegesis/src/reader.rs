@@ -42,12 +42,50 @@ fn default_parallelism() -> usize {
 pub struct OriginId(pub gimli::UnitSectionOffset);
 
 /// Metadata retained once per compilation unit, independent of type aliases.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct UnitOrigin {
     pub name: StrId,
     pub producer: Option<StrId>,
     /// Exclusive end of this unit in the reader's DIE id space.
     pub end_offset: gimli::UnitSectionOffset,
+    pub dwarf_version: u16,
+    pub line_version: Option<u16>,
+    /// Header entries only; no address/line rows or local source-file reads.
+    pub source_files: Vec<SourceFile<StrId>>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct SourceFileId {
+    pub origin: OriginId,
+    pub index: u64,
+}
+
+#[derive(Clone, Debug)]
+pub struct SourceFile<S> {
+    pub location: SourceLoc<S>,
+    /// Absent when the header has no MD5 field, including DWARF 4.
+    pub md5: Option<[u8; 16]>,
+}
+
+pub(crate) fn read_source_files<'dw>(unit: &UnitCtx<'_, 'dw>) -> Result<Vec<SourceFile<&'dw str>>> {
+    let Some(lp) = &unit.line_program else {
+        return Ok(Vec::new());
+    };
+    let header = lp.header();
+    let first = u64::from(header.version() <= 4);
+    (0..header.file_names().len())
+        .map(|offset| {
+            let index = first + offset as u64;
+            let mut location = SourceLoc::default();
+            crate::raw_types::resolve_file_index(unit, index, "line header", &mut location)?;
+            Ok(SourceFile {
+                location,
+                md5: header
+                    .file_has_md5()
+                    .then(|| *header.file(index).unwrap().md5()),
+            })
+        })
+        .collect()
 }
 
 /// A global, deduplicated view of all types from the DWARF debug information.
@@ -918,6 +956,14 @@ impl<'dw> DwReader<'dw> {
         (die < origin.end_offset).then_some((id, origin))
     }
 
+    /// Resolve original file identity without conflating equal paths in other units.
+    pub fn source_file(&self, id: SourceFileId) -> Option<&SourceFile<StrId>> {
+        let origin = self.origins.get(&id.origin)?;
+        let first = u64::from(origin.line_version? <= 4);
+        let offset = usize::try_from(id.index.checked_sub(first)?).ok()?;
+        origin.source_files.get(offset)
+    }
+
     /// Every original definition contributing to a canonical type, in DIE order.
     /// Declarations contribute identity but never compiler provenance. An empty
     /// result means definition evidence is unavailable, not universal support.
@@ -1168,6 +1214,16 @@ fn intern_cgu<'dw>(
             name: interner.intern(cgu.name),
             producer: cgu.producer.map(|p| interner.intern(p)),
             end_offset: cgu.end_offset,
+            dwarf_version: cgu.dwarf_version,
+            line_version: cgu.line_version,
+            source_files: cgu
+                .source_files
+                .into_iter()
+                .map(|file| SourceFile {
+                    location: intern_source_loc(interner, file.location),
+                    md5: file.md5,
+                })
+                .collect(),
         },
         types,
         subroutine_types: cgu.subroutine_types,
@@ -1400,6 +1456,7 @@ fn intern_var<'dw>(
         addr: var.addr,
         linkage_name: intern(var.linkage_name),
         source_loc: SourceLoc {
+            file_id: var.source_loc.file_id,
             file: intern(var.source_loc.file),
             dir: intern(var.source_loc.dir),
             comp_dir: intern(var.source_loc.comp_dir),
@@ -1420,6 +1477,7 @@ fn intern_source_loc<'dw>(
     loc: SourceLoc<&'dw str>,
 ) -> SourceLoc<StrId> {
     SourceLoc {
+        file_id: loc.file_id,
         file: intern_opt(strings, loc.file),
         dir: intern_opt(strings, loc.dir),
         comp_dir: intern_opt(strings, loc.comp_dir),
@@ -1648,6 +1706,9 @@ mod tests {
                         name: unit_name,
                         producer: (!missing).then_some(producer),
                         end_offset: UnitSectionOffset(offset + 0x20),
+                        dwarf_version: 4,
+                        line_version: None,
+                        source_files: Vec::new(),
                     },
                 );
                 insert_struct(&mut reader, type_id(offset + 1), Some("Value"), 8);

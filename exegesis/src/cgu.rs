@@ -51,6 +51,12 @@ impl<'a, 'dw> UnitCtx<'a, 'dw> {
         UnitSectionOffset(offset.0 + self.bias)
     }
 
+    pub(crate) fn origin_id(&self) -> crate::reader::OriginId {
+        crate::reader::OriginId(self.biased(UnitSectionOffset(
+            self.unit.header.offset().0 + self.unit.header.header_size(),
+        )))
+    }
+
     /// The id-space offset of a DIE in this unit.
     pub(crate) fn die_offset(
         &self,
@@ -91,6 +97,9 @@ pub struct CodegenUnit<'dw> {
     pub offset: UnitSectionOffset,
     /// Exclusive end of the unit in the same id space.
     pub end_offset: UnitSectionOffset,
+    pub dwarf_version: u16,
+    pub line_version: Option<u16>,
+    pub source_files: Vec<crate::reader::SourceFile<&'dw str>>,
     /// Current namespace context.
     pub(crate) ns: Option<NsId>,
     /// Namespace table for this codegen unit.
@@ -182,6 +191,9 @@ impl<'dw> CodegenUnit<'dw> {
             end_offset: unit.biased(UnitSectionOffset(
                 unit.header.offset().0 + unit.header.length_including_self(),
             )),
+            dwarf_version: unit.header.version(),
+            line_version: unit.line_program.as_ref().map(|lp| lp.header().version()),
+            source_files: crate::reader::read_source_files(unit)?,
             ns: None,
             namespaces: NamespaceTable::new(),
             types: HashMap::new(),

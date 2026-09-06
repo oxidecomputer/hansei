@@ -1597,6 +1597,7 @@ mod tests {
                 .collect();
             let source_loc = source_line.map(|line| {
                 Box::new(RawSourceLoc {
+                    file_id: None,
                     file: Some(self.reader.strings.intern("main.rs")),
                     dir: None,
                     comp_dir: None,

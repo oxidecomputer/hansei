@@ -462,6 +462,7 @@ mod tests {
                 name: Some(name),
                 namespace: None,
                 source_loc: Some(Box::new(SourceLoc {
+                    file_id: None,
                     file: Some(file),
                     dir: Some(dir),
                     comp_dir: Some(comp_dir),
