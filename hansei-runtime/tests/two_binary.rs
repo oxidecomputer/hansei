@@ -56,18 +56,42 @@ use std::path::Path;
 
 /// What a fixture pair was captured from: the program's own source, and
 /// the crate every program calls into before it parks.
-fn source_digest(program: &str) -> String {
-    let src = test_programs_dir().join("src");
-    let mut hasher = blake3::Hasher::new();
-    for path in [
-        src.join("lib.rs"),
-        src.join("bin").join(format!("{program}.rs")),
-    ] {
-        let bytes = std::fs::read(&path)
-            .unwrap_or_else(|e| panic!("failed to read {}: {e}", path.display()));
-        hasher.update(&bytes);
-    }
-    hasher.finalize().to_hex()[..32].to_string()
+fn source_digest(set: &str, program: &str) -> String {
+    let dir = test_programs_dir();
+    let matrix = matrix::Matrix::read(&dir);
+    let recipe = matrix.capture_recipe(set, program);
+    let expected = recipe.capture_record(&dir, &matrix, set, program);
+    let path = hansei_runtime::testkit::fixture(set, &format!("{program}.capture"));
+    let recorded = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("read {}: {e}; recapture the fixture", path.display()));
+    checked_source_digest(&recorded, &expected, set, program)
+}
+
+fn checked_source_digest(recorded: &str, expected: &str, set: &str, program: &str) -> String {
+    assert_eq!(
+        recorded, expected,
+        "{set}/{program}: capture inputs or flags changed; recapture before blessing SOURCES"
+    );
+    blake3::hash(recorded.as_bytes()).to_hex()[..32].to_string()
+}
+
+#[test]
+fn test_flag_only_stale_capture_is_rejected_before_blessing() {
+    let dir = test_programs_dir();
+    let matrix = matrix::Matrix::read(&dir);
+    let recipe = matrix.capture_recipe("linux", "delegation-cases");
+    let recorded = recipe.capture_record(&dir, &matrix, "linux", "delegation-cases");
+    assert!(!checked_source_digest(&recorded, &recorded, "linux", "delegation-cases").is_empty());
+
+    let mut changed = recipe.clone();
+    changed.dwarf_version = 4;
+    let expected = changed.capture_record(&dir, &matrix, "linux", "delegation-cases");
+    assert!(
+        std::panic::catch_unwind(|| {
+            checked_source_digest(&recorded, &expected, "linux", "delegation-cases")
+        })
+        .is_err()
+    );
 }
 
 fn test_programs_dir() -> std::path::PathBuf {
@@ -108,15 +132,20 @@ fn lockfile_of(set: &str) -> String {
 /// what reading these goldens assumes.
 #[test]
 fn test_fixtures_record_the_current_programs() {
-    let sources: String = PROGRAMS
-        .iter()
-        .map(|p| format!("{p} {}\n", source_digest(p)))
-        .collect();
-
     // Every set: each was captured on its own system, at its own time,
     // and a set left behind by an edit to the programs is as stale as
     // one captured before it, however recently the other was redone.
     for set in FIXTURE_SETS {
+        if let Ok(capturing) = std::env::var("HANSEI_CAPTURE_SET") {
+            assert!(FIXTURE_SETS.contains(&capturing.as_str()));
+            if capturing != *set {
+                continue;
+            }
+        }
+        let sources: String = PROGRAMS
+            .iter()
+            .map(|p| format!("{p} {}\n", source_digest(set, p)))
+            .collect();
         // The lockfile is per set — the floor set exists to build the
         // same sources against a different tokio — so its record is
         // too, a header line above the per-program digests.
@@ -424,6 +453,38 @@ fn test_sleep_join_offline() {
 #[test]
 fn test_blocking_pool_offline() {
     assert_summary("blocking-pool");
+}
+
+#[test]
+fn test_delegation_cases_offline() {
+    for set in FIXTURE_SETS {
+        let (bundle, snapshot) = load(set, "delegation-cases");
+        let ctx = hansei_runtime::testkit::context(&bundle, &snapshot);
+        let tasks = hansei_runtime::testkit::tasks(&ctx, &snapshot);
+        assert_eq!(tasks.tasks.len(), 8);
+        assert!(
+            tasks
+                .tasks
+                .iter()
+                .all(|task| task.state.lifecycle() == Lifecycle::Idle)
+        );
+        let cases = hansei_runtime::testkit::delegation::read_from(&snapshot)
+            .expect("fixture registry symbol")
+            .expect("post-poll ground truth");
+        assert_eq!(cases.len(), 8);
+        let instrumented = &cases[7];
+        assert!(instrumented.child >= instrumented.root);
+        assert!(
+            instrumented.child + instrumented.child_size
+                <= instrumented.root + instrumented.root_size
+        );
+        assert_eq!(
+            cases.iter().map(|c| c.child_polls).collect::<Vec<_>>(),
+            [0, 1, 0, 0, 1, 1, 1, 1]
+        );
+        assert!(bundle.semantics.rules.is_empty());
+    }
+    assert_summary("delegation-cases");
 }
 
 /// The registry join never overwrites a decoded primitive: a task

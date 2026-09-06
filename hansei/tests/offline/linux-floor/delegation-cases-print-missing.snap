@@ -1,0 +1,5 @@
+---
+source: hansei/src/offline.rs
+description: "`print no_such_member` over linux-floor/delegation-cases"
+---
+error: type delegation_cases::Gated<1> has no member named no_such_member (members: gate, child, ready)

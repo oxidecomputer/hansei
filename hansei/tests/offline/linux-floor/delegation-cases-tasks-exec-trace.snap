@@ -1,0 +1,36 @@
+---
+source: hansei/src/offline.rs
+description: "`tasks --exec trace -n` over linux-floor/delegation-cases"
+---
+task 1
+#0  future        Box<delegation_cases::Gated<1>>
+      (<no_state>, 0 locals)
+
+task 2
+#0  future        Box<delegation_cases::Gated<2>>
+      (<no_state>, 0 locals)
+
+task 3
+#0  future        Box<delegation_cases::Retained>
+      (<no_state>, 0 locals)
+
+task 4
+#0  future        Box<delegation_cases::RawHolder>
+      (<no_state>, 0 locals)
+
+task 5
+#0  future        Box<&mut delegation_cases::Probe<5>>
+      (<no_state>, 0 locals)
+
+task 6
+#0  future        Box<Box<delegation_cases::Probe<6>>>
+      (<no_state>, 0 locals)
+
+task 7
+#0  future        Box<Pin<Box<(dyn Future<Output=()> + Send)>>>
+      (<no_state>, 0 locals)
+
+task 8
+#0  future        Box<tracing::instrument::Instrumented<delegation_cases::Probe<8>>>
+      (<no_state>, 0 locals)
+[Executed against 8 tasks, 0 failed]

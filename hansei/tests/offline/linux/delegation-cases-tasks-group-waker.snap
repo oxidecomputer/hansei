@@ -1,0 +1,7 @@
+---
+source: hansei/src/offline.rs
+description: "`tasks --group waker` over linux/delegation-cases"
+---
+COUNT  WAKER    TASKS
+    8  <empty>  1, 2, 3, …
+[1 group]

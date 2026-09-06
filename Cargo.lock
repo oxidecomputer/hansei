@@ -426,6 +426,7 @@ name = "exegesis"
 version = "0.1.0"
 dependencies = [
  "blake3",
+ "exegesis",
  "foldhash",
  "gimli",
  "hansei-bundle",

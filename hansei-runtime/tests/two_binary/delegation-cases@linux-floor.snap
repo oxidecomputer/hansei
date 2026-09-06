@@ -1,0 +1,45 @@
+---
+source: hansei-runtime/tests/two_binary.rs
+---
+fingerprint 19/19
+workers 2
+task 1 idle core::pin::Pin<alloc::boxed::Box<delegation_cases::Gated<1>, alloc::alloc::Global>>
+  spawned src/bin/delegation-cases.rs:124:8
+  defined -
+  await alloc::boxed::Box<delegation_cases::Gated<1>, alloc::alloc::Global>
+  end leaf
+task 2 idle core::pin::Pin<alloc::boxed::Box<delegation_cases::Gated<2>, alloc::alloc::Global>>
+  spawned src/bin/delegation-cases.rs:124:8
+  defined -
+  await alloc::boxed::Box<delegation_cases::Gated<2>, alloc::alloc::Global>
+  end leaf
+task 3 idle core::pin::Pin<alloc::boxed::Box<delegation_cases::Retained, alloc::alloc::Global>>
+  spawned src/bin/delegation-cases.rs:124:8
+  defined -
+  await alloc::boxed::Box<delegation_cases::Retained, alloc::alloc::Global>
+  end leaf
+task 4 idle core::pin::Pin<alloc::boxed::Box<delegation_cases::RawHolder, alloc::alloc::Global>>
+  spawned src/bin/delegation-cases.rs:124:8
+  defined -
+  await alloc::boxed::Box<delegation_cases::RawHolder, alloc::alloc::Global>
+  end leaf
+task 5 idle core::pin::Pin<alloc::boxed::Box<&mut delegation_cases::Probe<5>, alloc::alloc::Global>>
+  spawned src/bin/delegation-cases.rs:124:8
+  defined -
+  await alloc::boxed::Box<&mut delegation_cases::Probe<5>, alloc::alloc::Global>
+  end leaf
+task 6 idle core::pin::Pin<alloc::boxed::Box<alloc::boxed::Box<delegation_cases::Probe<6>, alloc::alloc::Global>, alloc::alloc::Global>>
+  spawned src/bin/delegation-cases.rs:124:8
+  defined -
+  await alloc::boxed::Box<alloc::boxed::Box<delegation_cases::Probe<6>, alloc::alloc::Global>, alloc::alloc::Global>
+  end leaf
+task 7 idle core::pin::Pin<alloc::boxed::Box<core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output=()> + core::marker::Send), alloc::alloc::Global>>, alloc::alloc::Global>>
+  spawned src/bin/delegation-cases.rs:124:8
+  defined -
+  await alloc::boxed::Box<core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output=()> + core::marker::Send), alloc::alloc::Global>>, alloc::alloc::Global>
+  end leaf
+task 8 idle core::pin::Pin<alloc::boxed::Box<tracing::instrument::Instrumented<delegation_cases::Probe<8>>, alloc::alloc::Global>>
+  spawned src/bin/delegation-cases.rs:124:8
+  defined -
+  await alloc::boxed::Box<tracing::instrument::Instrumented<delegation_cases::Probe<8>>, alloc::alloc::Global>
+  end leaf

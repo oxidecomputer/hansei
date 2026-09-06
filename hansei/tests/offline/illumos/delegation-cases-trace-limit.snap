@@ -1,0 +1,6 @@
+---
+source: hansei/src/offline.rs
+description: "`trace 1 -l 1` over illumos/delegation-cases"
+---
+#0  future        Box<delegation_cases::Gated<1>>
+      (<no_state>, 0 locals)

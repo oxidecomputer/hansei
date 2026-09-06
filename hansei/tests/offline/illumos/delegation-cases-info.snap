@@ -1,0 +1,9 @@
+---
+source: hansei/src/offline.rs
+description: "`info` over illumos/delegation-cases"
+---
+core:       <snapshot>
+tokio info: <tokio info>
+symbols resolved: 31/31
+process: not recorded by this target
+signal: none recorded

@@ -21,7 +21,7 @@ testkit = ["dep:regex", "dep:testrun"]
 blake3.workspace = true
 # Only the matrix goldens build a bundle per cell; the crate itself reads
 # bundles and never produces one.
-exegesis.workspace = true
+exegesis = { workspace = true, features = ["testkit"] }
 # The self dev-dependency exists to turn the testkit feature on
 # whenever this crate's own test targets build, so no test invocation
 # needs a --features flag.

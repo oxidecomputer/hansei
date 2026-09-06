@@ -1,0 +1,41 @@
+---
+source: hansei/src/offline.rs
+description: "`census` over linux/delegation-cases"
+---
+Threads: 2 lwps, 2 in runtime 0 @ 0xADDR
+
+COUNT  RT  ROLE             STATE           LWPS
+    1  0   block_on thread  in driver       3277934
+    0  0   blocking pool    0 idle, 0 busy  —
+    1  —   entered runtime  —               3277932
+[2 lwps]
+
+Tasks: 8 owned by runtime 0 @ 0xADDR
+
+COUNT  STATE
+    8  idle
+[8 tasks]
+
+COUNT  TYPE / WAITING ON
+    1  future Pin<Box<&mut delegation_cases::Probe<5>>>
+       └─ 1  future Box<&mut delegation_cases::Probe<5>>
+    1  future Pin<Box<Box<delegation_cases::Probe<6>>>>
+       └─ 1  future Box<Box<delegation_cases::Probe<6>>>
+    1  future Pin<Box<Pin<Box<(dyn Future<Output=()> + Send)>>>>
+       └─ 1  future Box<Pin<Box<(dyn Future<Output=()> + Send)>>>
+    1  future Pin<Box<delegation_cases::Gated<1>>>
+       └─ 1  future Box<delegation_cases::Gated<1>>
+    1  future Pin<Box<delegation_cases::Gated<2>>>
+       └─ 1  future Box<delegation_cases::Gated<2>>
+    3  (3 more types)
+[8 types, 5 shown]
+
+Futures: 8 in flight, on 8 await-chain frames, up to 1 deep
+
+COUNT  HELD IN
+    8  task (its own await chain)
+    0  frame (off any await chain)
+    0  set (0 FuturesUnordered)
+[8 futures]
+
+[0 types]

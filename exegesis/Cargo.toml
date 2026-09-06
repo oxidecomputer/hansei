@@ -6,6 +6,9 @@ license.workspace = true
 repository.workspace = true
 description = "Reads DWARF from a debug build and emits the tokio-info bundle describing its async runtime"
 
+[features]
+testkit = []
+
 [dependencies]
 blake3 = { workspace = true, features = ["rayon"] }
 foldhash.workspace = true
@@ -30,6 +33,7 @@ zstd.workspace = true
 zstd-sys = { workspace = true, features = ["pkg-config"] }
 
 [dev-dependencies]
+exegesis = { path = ".", features = ["testkit"] }
 insta.workspace = true
 object = { workspace = true, features = ["write"] }
 tempfile.workspace = true

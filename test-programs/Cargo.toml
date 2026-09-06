@@ -25,6 +25,7 @@ ct-tokio = ["tokio/rt", "tokio/time", "tokio/sync", "tokio/net"]
 futures = "0.3.32"
 oxide-tokio-rt = { version = "0.1.2", optional = true }
 tokio = { version = ">=1.47", default-features = false }
+tracing = "=0.1.40"
 
 # For the `prctl` that lets a test harness core a fixture by pid; see
 # `allow_any_tracer`.

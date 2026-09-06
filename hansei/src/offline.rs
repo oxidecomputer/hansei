@@ -347,6 +347,7 @@ offline_commands! {
     test_gen_0007_commands: "gen-0007",
     test_walk_shapes_commands: "walk-shapes",
     test_blocking_pool_commands: "blocking-pool",
+    test_delegation_cases_commands: "delegation-cases",
 }
 
 /// The macro above and [`testkit::PROGRAMS`] name the same population:
@@ -371,6 +372,7 @@ fn test_every_program_has_a_command_golden() {
         "gen-0007",
         "walk-shapes",
         "blocking-pool",
+        "delegation-cases",
     ];
     assert_eq!(COVERED, PROGRAMS);
 }

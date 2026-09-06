@@ -1,0 +1,7 @@
+---
+source: hansei/src/offline.rs
+description: "`tasks --group lwp` over illumos/delegation-cases"
+---
+COUNT  LWP      TASKS
+    8  <empty>  1, 2, 3, …
+[1 group]

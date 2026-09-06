@@ -249,6 +249,10 @@ pub(crate) fn exec_snapshot<T: proc::Target>(
         )?;
     }
 
+    if let Some(result) = hansei_runtime::testkit::delegation::read_from(&recorder) {
+        result.context("failed to record the delegation fixture ground truth")?;
+    }
+
     let snapshot = recorder.snapshot().context("failed to assemble snapshot")?;
     snapshot
         .save(output)

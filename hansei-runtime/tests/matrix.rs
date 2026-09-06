@@ -86,6 +86,7 @@ const PROGRAMS: &[&str] = &[
     "local-set-io",
     "foreign-runtime",
     "blocking-pool",
+    "delegation-cases",
 ];
 
 fn test_programs_dir() -> PathBuf {
@@ -448,10 +449,21 @@ fn test_matrix() {
         }
         ran += 1;
 
-        let bundles: Vec<(&str, Bundle)> = cell
-            .programs()
+        let programs = cell.programs();
+        let bundles: Vec<(&str, Bundle)> = programs
             .iter()
             .map(|program| {
+                if *program == "delegation-cases" {
+                    let found = exegesis::testkit::assert_instrumented_sources(
+                        &cell.dwarf_path(&matrix, program),
+                        u16::from(cell.dwarf_version),
+                    );
+                    assert_eq!(
+                        found,
+                        BTreeSet::from(["poll<delegation_cases::Probe<8>>".to_owned()]),
+                        "{name}/{program}: Instrumented inventory covered the wrong functions"
+                    );
+                }
                 let opts = ExtractOptions {
                     extract_args: format!("matrix-test {name} {program}"),
                     ..Default::default()

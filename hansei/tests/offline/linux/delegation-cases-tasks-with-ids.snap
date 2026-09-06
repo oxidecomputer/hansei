@@ -1,0 +1,8 @@
+---
+source: hansei/src/offline.rs
+description: "`tasks --with id 3,6` over linux/delegation-cases"
+---
+ID  STATE  FUTURES  AWAITING AT  WAITING ON                                   TYPE
+3   idle         0  —            future Box<delegation_cases::Retained>       future Pin<Box<delegation_cases::Retained>>
+6   idle         0  —            future Box<Box<delegation_cases::Probe<6>>>  future Pin<Box<Box<delegation_cases::Probe<6>>>>
+[2 tasks]

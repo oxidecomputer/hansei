@@ -3,6 +3,6 @@ source: hansei/src/offline.rs
 description: "`threads --group role` over linux/joinset"
 ---
 COUNT  ROLE             LWPS
-    2  worker           2327842, 2327843
-    1  entered runtime  2327840
+    2  worker           3276303, 3276304
+    1  entered runtime  3276301
 [2 groups]

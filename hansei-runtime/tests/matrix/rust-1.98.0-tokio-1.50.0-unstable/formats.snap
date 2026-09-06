@@ -3,19 +3,24 @@ source: hansei-runtime/tests/matrix.rs
 ---
 family: v1_49 (tokio 1.50.0)
 
+&(dyn tracing_core::subscriber::Subscriber + core::marker::Send + core::marker::Sync) :: Node DynPointer { pointer=pointer, vtable=vtable, slots=[drop_in_place:0, size:1, align:2], tail_prefixes=[] }
+&[&str] :: Node Slice { pointer=data_ptr, length=length, element=&str }
 &[u32] :: Node Slice { pointer=data_ptr, length=length, element=u32 }
 &[u8] :: Node Slice { pointer=data_ptr, length=length, element=u8 }
 &core::ffi::c_str::CStr :: Node Str { pointer=data_ptr, length=length, nul_terminated }
+&dyn tracing_core::callsite::Callsite :: Node DynPointer { pointer=pointer, vtable=vtable, slots=[drop_in_place:0, size:1, align:2], tail_prefixes=[] }
 &str :: Node Str { pointer=data_ptr, length=length }
 *const alloc::sync::ArcInner<(dyn core::ops::function::Fn<(&tokio::runtime::task_hooks::TaskMeta), Output=()> + core::marker::Send + core::marker::Sync)> :: Node DynPointer { pointer=pointer, vtable=vtable, slots=[drop_in_place:0, size:1, align:2], tail_prefixes=[16] }
 *const alloc::sync::ArcInner<(dyn core::ops::function::Fn<(), Output=()> + core::marker::Send + core::marker::Sync)> :: Node DynPointer { pointer=pointer, vtable=vtable, slots=[drop_in_place:0, size:1, align:2], tail_prefixes=[16] }
 *const alloc::sync::ArcInner<(dyn core::ops::function::Fn<(), Output=alloc::string::String> + core::marker::Send + core::marker::Sync)> :: Node DynPointer { pointer=pointer, vtable=vtable, slots=[drop_in_place:0, size:1, align:2], tail_prefixes=[16] }
+*const alloc::sync::ArcInner<(dyn tracing_core::subscriber::Subscriber + core::marker::Send + core::marker::Sync)> :: Node DynPointer { pointer=pointer, vtable=vtable, slots=[drop_in_place:0, size:1, align:2], tail_prefixes=[16] }
 *const alloc::sync::ArcInner<dyn dyn_future::Aligned> :: Node DynPointer { pointer=pointer, vtable=vtable, slots=[drop_in_place:0, size:1, align:2], tail_prefixes=[16] }
 <pointer> :: Node Symbol { <self> }
 alloc::boxed::Box<(dyn core::any::Any + core::marker::Send), alloc::alloc::Global> :: Node DynPointer { pointer=pointer, vtable=vtable, slots=[drop_in_place:0, size:1, align:2], tail_prefixes=[] }
 alloc::boxed::Box<(dyn core::future::future::Future<Output=()> + core::marker::Send), alloc::alloc::Global> :: Node DynPointer { pointer=pointer, vtable=vtable, slots=[drop_in_place:0, size:1, align:2], tail_prefixes=[] }
 alloc::boxed::Box<(dyn core::future::future::Future<Output=u32> + core::marker::Send), alloc::alloc::Global> :: Node DynPointer { pointer=pointer, vtable=vtable, slots=[drop_in_place:0, size:1, align:2], tail_prefixes=[] }
 alloc::boxed::Box<[std::sync::mpmc::array::Slot<()>], alloc::alloc::Global> :: Node Slice { pointer=data_ptr, length=length, element=std::sync::mpmc::array::Slot<()> }
+alloc::boxed::Box<[std::sync::mpmc::array::Slot<usize>], alloc::alloc::Global> :: Node Slice { pointer=data_ptr, length=length, element=std::sync::mpmc::array::Slot<usize> }
 alloc::boxed::Box<[tokio::loom::std::parking_lot::Mutex<tokio::util::linked_list::LinkedList<tokio::runtime::task::Task<alloc::sync::Arc<tokio::runtime::scheduler::current_thread::Handle, alloc::alloc::Global>>, tokio::runtime::task::core::Header>>], alloc::alloc::Global> :: Node Slice { pointer=data_ptr, length=length, element=tokio::loom::std::parking_lot::Mutex<tokio::util::linked_list::LinkedList<tokio::runtime::task::Task<alloc::sync::Arc<tokio::runtime::scheduler::current_thread::Handle, alloc::alloc::Global>>, tokio::runtime::task::core::Header>> }
 alloc::boxed::Box<[tokio::loom::std::parking_lot::Mutex<tokio::util::linked_list::LinkedList<tokio::runtime::task::Task<alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle, alloc::alloc::Global>>, tokio::runtime::task::core::Header>>], alloc::alloc::Global> :: Node Slice { pointer=data_ptr, length=length, element=tokio::loom::std::parking_lot::Mutex<tokio::util::linked_list::LinkedList<tokio::runtime::task::Task<alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle, alloc::alloc::Global>>, tokio::runtime::task::core::Header>> }
 alloc::boxed::Box<[tokio::runtime::metrics::worker::WorkerMetrics], alloc::alloc::Global> :: Node Slice { pointer=data_ptr, length=length, element=tokio::runtime::metrics::worker::WorkerMetrics }
@@ -51,6 +56,7 @@ core::cell::UnsafeCell<core::mem::maybe_uninit::MaybeUninit<()>> :: Node Alias {
 core::cell::UnsafeCell<core::mem::maybe_uninit::MaybeUninit<core::task::wake::Waker>> :: Node Alias { value, follow }
 core::cell::UnsafeCell<core::mem::maybe_uninit::MaybeUninit<tokio::runtime::task::Notified<alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle, alloc::alloc::Global>>>> :: Node Alias { value, follow }
 core::cell::UnsafeCell<core::mem::maybe_uninit::MaybeUninit<u32>> :: Node Alias { value, follow }
+core::cell::UnsafeCell<core::mem::maybe_uninit::MaybeUninit<usize>> :: Node Alias { value, follow }
 core::cell::UnsafeCell<core::option::Option<()>> :: Node Alias { value, follow }
 core::cell::UnsafeCell<core::option::Option<alloc::boxed::Box<tokio::runtime::scheduler::current_thread::Core, alloc::alloc::Global>>> :: Node Alias { value, follow }
 core::cell::UnsafeCell<core::option::Option<alloc::boxed::Box<tokio::runtime::scheduler::multi_thread::worker::Core, alloc::alloc::Global>>> :: Node Alias { value, follow }
@@ -80,6 +86,7 @@ core::cell::UnsafeCell<core::sync::atomic::private::Align8<*mut futures_util::st
 core::cell::UnsafeCell<core::sync::atomic::private::Align8<*mut futures_util::stream::futures_unordered::task::Task<unordered::set_member::{async_fn_env#0}>>> :: Node Alias { value, follow }
 core::cell::UnsafeCell<core::sync::atomic::private::Align8<*mut parking_lot::raw_mutex::RawMutex>> :: Node Alias { value, follow }
 core::cell::UnsafeCell<core::sync::atomic::private::Align8<*mut std::sync::mpmc::list::Block<()>>> :: Node Alias { value, follow }
+core::cell::UnsafeCell<core::sync::atomic::private::Align8<*mut std::sync::mpmc::list::Block<usize>>> :: Node Alias { value, follow }
 core::cell::UnsafeCell<core::sync::atomic::private::Align8<*mut std::sys::pal::unix::sync::mutex::Mutex>> :: Node Alias { value, follow }
 core::cell::UnsafeCell<core::sync::atomic::private::Align8<*mut tokio::runtime::scheduler::multi_thread::worker::Core>> :: Node Alias { value, follow }
 core::cell::UnsafeCell<core::sync::atomic::private::Align8<*mut tokio::sync::mpsc::block::Block<()>>> :: Node Alias { value, follow }
@@ -102,8 +109,17 @@ core::cell::UnsafeCell<tokio::runtime::task::core::Stage<blocking_pool::queued_w
 core::cell::UnsafeCell<tokio::runtime::task::core::Stage<blocking_pool::running_waiter::{async_fn_env#0}>> :: Node Alias { value, follow }
 core::cell::UnsafeCell<tokio::runtime::task::core::Stage<channels::hold::{async_fn_env#0}>> :: Node Alias { value, follow }
 core::cell::UnsafeCell<tokio::runtime::task::core::Stage<channels::notify_waiter::{async_fn_env#0}>> :: Node Alias { value, follow }
+core::cell::UnsafeCell<tokio::runtime::task::core::Stage<core::pin::Pin<alloc::boxed::Box<&mut delegation_cases::Probe<5>, alloc::alloc::Global>>>> :: Node Alias { value, follow }
+core::cell::UnsafeCell<tokio::runtime::task::core::Stage<core::pin::Pin<alloc::boxed::Box<alloc::boxed::Box<delegation_cases::Probe<6>, alloc::alloc::Global>, alloc::alloc::Global>>>> :: Node Alias { value, follow }
+core::cell::UnsafeCell<tokio::runtime::task::core::Stage<core::pin::Pin<alloc::boxed::Box<core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output=()> + core::marker::Send), alloc::alloc::Global>>, alloc::alloc::Global>>>> :: Node Alias { value, follow }
+core::cell::UnsafeCell<tokio::runtime::task::core::Stage<core::pin::Pin<alloc::boxed::Box<delegation_cases::Gated<1>, alloc::alloc::Global>>>> :: Node Alias { value, follow }
+core::cell::UnsafeCell<tokio::runtime::task::core::Stage<core::pin::Pin<alloc::boxed::Box<delegation_cases::Gated<2>, alloc::alloc::Global>>>> :: Node Alias { value, follow }
+core::cell::UnsafeCell<tokio::runtime::task::core::Stage<core::pin::Pin<alloc::boxed::Box<delegation_cases::RawHolder, alloc::alloc::Global>>>> :: Node Alias { value, follow }
+core::cell::UnsafeCell<tokio::runtime::task::core::Stage<core::pin::Pin<alloc::boxed::Box<delegation_cases::Retained, alloc::alloc::Global>>>> :: Node Alias { value, follow }
+core::cell::UnsafeCell<tokio::runtime::task::core::Stage<core::pin::Pin<alloc::boxed::Box<tracing::instrument::Instrumented<delegation_cases::Probe<8>>, alloc::alloc::Global>>>> :: Node Alias { value, follow }
 core::cell::UnsafeCell<tokio::runtime::task::core::Stage<ct_runtime::acquirer::{async_fn_env#0}>> :: Node Alias { value, follow }
 core::cell::UnsafeCell<tokio::runtime::task::core::Stage<ct_runtime::sleeper::{async_fn_env#0}>> :: Node Alias { value, follow }
+core::cell::UnsafeCell<tokio::runtime::task::core::Stage<delegation_cases::main::{async_block_env#1}>> :: Node Alias { value, follow }
 core::cell::UnsafeCell<tokio::runtime::task::core::Stage<dyn_future::driver::{async_fn_env#0}>> :: Node Alias { value, follow }
 core::cell::UnsafeCell<tokio::runtime::task::core::Stage<dyn_future::hold_aligned::{async_fn_env#0}>> :: Node Alias { value, follow }
 core::cell::UnsafeCell<tokio::runtime::task::core::Stage<dyn_future::set_member::{async_fn_env#0}>> :: Node Alias { value, follow }
@@ -168,6 +184,7 @@ core::cell::UnsafeCell<usize> :: Node Alias { value, follow }
 core::mem::maybe_dangling::MaybeDangling<u16> :: Node Alias { __0, follow }
 core::mem::maybe_dangling::MaybeDangling<u32> :: Node Alias { __0, follow }
 core::mem::maybe_dangling::MaybeDangling<u64> :: Node Alias { __0, follow }
+core::mem::maybe_dangling::MaybeDangling<usize> :: Node Alias { __0, follow }
 core::net::ip_addr::Ipv4Addr :: Node Bytes IpAddr { octets }
 core::net::ip_addr::Ipv6Addr :: Node Bytes IpAddr { octets }
 core::num::niche_types::I32NotAllOnes :: Node Alias { __0, follow }
@@ -229,6 +246,7 @@ core::sync::atomic::Atomic<*mut futures_util::stream::futures_unordered::task::T
 core::sync::atomic::Atomic<*mut futures_util::stream::futures_unordered::task::Task<unordered::set_member::{async_fn_env#0}>> :: Node Alias { v.value.__0 }
 core::sync::atomic::Atomic<*mut parking_lot::raw_mutex::RawMutex> :: Node Alias { v.value.__0 }
 core::sync::atomic::Atomic<*mut std::sync::mpmc::list::Block<()>> :: Node Alias { v.value.__0 }
+core::sync::atomic::Atomic<*mut std::sync::mpmc::list::Block<usize>> :: Node Alias { v.value.__0 }
 core::sync::atomic::Atomic<*mut std::sys::pal::unix::sync::mutex::Mutex> :: Node Alias { v.value.__0 }
 core::sync::atomic::Atomic<*mut tokio::runtime::scheduler::multi_thread::worker::Core> :: Node Alias { v.value.__0 }
 core::sync::atomic::Atomic<*mut tokio::sync::mpsc::block::Block<()>> :: Node Alias { v.value.__0 }
@@ -291,8 +309,17 @@ tokio::loom::std::unsafe_cell::UnsafeCell<tokio::runtime::task::core::Stage<bloc
 tokio::loom::std::unsafe_cell::UnsafeCell<tokio::runtime::task::core::Stage<blocking_pool::running_waiter::{async_fn_env#0}>> :: Node Alias { __0, follow }
 tokio::loom::std::unsafe_cell::UnsafeCell<tokio::runtime::task::core::Stage<channels::hold::{async_fn_env#0}>> :: Node Alias { __0, follow }
 tokio::loom::std::unsafe_cell::UnsafeCell<tokio::runtime::task::core::Stage<channels::notify_waiter::{async_fn_env#0}>> :: Node Alias { __0, follow }
+tokio::loom::std::unsafe_cell::UnsafeCell<tokio::runtime::task::core::Stage<core::pin::Pin<alloc::boxed::Box<&mut delegation_cases::Probe<5>, alloc::alloc::Global>>>> :: Node Alias { __0, follow }
+tokio::loom::std::unsafe_cell::UnsafeCell<tokio::runtime::task::core::Stage<core::pin::Pin<alloc::boxed::Box<alloc::boxed::Box<delegation_cases::Probe<6>, alloc::alloc::Global>, alloc::alloc::Global>>>> :: Node Alias { __0, follow }
+tokio::loom::std::unsafe_cell::UnsafeCell<tokio::runtime::task::core::Stage<core::pin::Pin<alloc::boxed::Box<core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output=()> + core::marker::Send), alloc::alloc::Global>>, alloc::alloc::Global>>>> :: Node Alias { __0, follow }
+tokio::loom::std::unsafe_cell::UnsafeCell<tokio::runtime::task::core::Stage<core::pin::Pin<alloc::boxed::Box<delegation_cases::Gated<1>, alloc::alloc::Global>>>> :: Node Alias { __0, follow }
+tokio::loom::std::unsafe_cell::UnsafeCell<tokio::runtime::task::core::Stage<core::pin::Pin<alloc::boxed::Box<delegation_cases::Gated<2>, alloc::alloc::Global>>>> :: Node Alias { __0, follow }
+tokio::loom::std::unsafe_cell::UnsafeCell<tokio::runtime::task::core::Stage<core::pin::Pin<alloc::boxed::Box<delegation_cases::RawHolder, alloc::alloc::Global>>>> :: Node Alias { __0, follow }
+tokio::loom::std::unsafe_cell::UnsafeCell<tokio::runtime::task::core::Stage<core::pin::Pin<alloc::boxed::Box<delegation_cases::Retained, alloc::alloc::Global>>>> :: Node Alias { __0, follow }
+tokio::loom::std::unsafe_cell::UnsafeCell<tokio::runtime::task::core::Stage<core::pin::Pin<alloc::boxed::Box<tracing::instrument::Instrumented<delegation_cases::Probe<8>>, alloc::alloc::Global>>>> :: Node Alias { __0, follow }
 tokio::loom::std::unsafe_cell::UnsafeCell<tokio::runtime::task::core::Stage<ct_runtime::acquirer::{async_fn_env#0}>> :: Node Alias { __0, follow }
 tokio::loom::std::unsafe_cell::UnsafeCell<tokio::runtime::task::core::Stage<ct_runtime::sleeper::{async_fn_env#0}>> :: Node Alias { __0, follow }
+tokio::loom::std::unsafe_cell::UnsafeCell<tokio::runtime::task::core::Stage<delegation_cases::main::{async_block_env#1}>> :: Node Alias { __0, follow }
 tokio::loom::std::unsafe_cell::UnsafeCell<tokio::runtime::task::core::Stage<dyn_future::driver::{async_fn_env#0}>> :: Node Alias { __0, follow }
 tokio::loom::std::unsafe_cell::UnsafeCell<tokio::runtime::task::core::Stage<dyn_future::hold_aligned::{async_fn_env#0}>> :: Node Alias { __0, follow }
 tokio::loom::std::unsafe_cell::UnsafeCell<tokio::runtime::task::core::Stage<dyn_future::set_member::{async_fn_env#0}>> :: Node Alias { __0, follow }
@@ -353,3 +380,4 @@ tokio::time::sleep::Sleep :: Node Struct { deadline: Variant { discr=Read(entry.
 tokio::util::cacheline::CachePadded<tokio::sync::mpsc::list::Tx<()>> :: Node Alias { value, follow }
 tokio::util::cacheline::CachePadded<tokio::sync::mpsc::list::Tx<u32>> :: Node Alias { value, follow }
 tokio::util::cacheline::CachePadded<tokio::sync::task::atomic_waker::AtomicWaker> :: Node Alias { value, follow }
+tracing_core::metadata::Kind :: Node Alias { __0, follow }

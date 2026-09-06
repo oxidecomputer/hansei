@@ -1,0 +1,29 @@
+---
+source: hansei/src/offline.rs
+description: "`tasks --exec type no::such::Type` over linux-floor/delegation-cases"
+---
+task 1
+error: the tokio info records no type named no::such::Type; try `find-types no::such::Type`
+
+task 2
+error: the tokio info records no type named no::such::Type; try `find-types no::such::Type`
+
+task 3
+error: the tokio info records no type named no::such::Type; try `find-types no::such::Type`
+
+task 4
+error: the tokio info records no type named no::such::Type; try `find-types no::such::Type`
+
+task 5
+error: the tokio info records no type named no::such::Type; try `find-types no::such::Type`
+
+task 6
+error: the tokio info records no type named no::such::Type; try `find-types no::such::Type`
+
+task 7
+error: the tokio info records no type named no::such::Type; try `find-types no::such::Type`
+
+task 8
+error: the tokio info records no type named no::such::Type; try `find-types no::such::Type`
+[Executed against 8 tasks, 8 failed]
+error: --exec failed against 8 of 8 tasks

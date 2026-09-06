@@ -18,6 +18,8 @@ use proc::{LwpInfo, Target};
 
 use std::path::PathBuf;
 
+pub mod delegation;
+
 /// Every checked-in set of pairs, named for its capture's coordinates.
 ///
 /// The first axis is the capturing system. A pair is only as good as
@@ -77,6 +79,7 @@ pub const PROGRAMS: &[&str] = &[
     "gen-0007",
     "walk-shapes",
     "blocking-pool",
+    "delegation-cases",
 ];
 
 /// Mask the run-varying values analysis output carries — heap
@@ -422,7 +425,7 @@ pub mod expect {
     /// in a core, and a single `read_bytes` spanning two segments is
     /// refused whole. Chunking at `readable_len` reads what one
     /// straight read cannot, from a core and a snapshot alike.
-    fn read_run<T: Target>(target: &T, addr: u64, len: u64) -> Result<Vec<u8>> {
+    pub(super) fn read_run<T: Target>(target: &T, addr: u64, len: u64) -> Result<Vec<u8>> {
         let mut bytes = Vec::with_capacity(len as usize);
         let mut cur = addr;
         while cur < addr + len {
@@ -735,14 +738,16 @@ pub(crate) mod fake {
         }
 
         fn lookup_symbol_by_name(&self, name: &str) -> Option<SymbolBuf> {
-            (self.has_symbol && name == SYMBOL).then(|| SymbolBuf {
-                name: name.to_string(),
-                st_name: 0,
-                st_info: 0,
-                st_other: 0,
-                st_shndx: 0,
-                st_value: self.base,
-                st_size: self.bytes.len() as u64,
+            (self.has_symbol && (name == SYMBOL || name == super::delegation::SYMBOL)).then(|| {
+                SymbolBuf {
+                    name: name.to_string(),
+                    st_name: 0,
+                    st_info: 0,
+                    st_other: 0,
+                    st_shndx: 0,
+                    st_value: self.base,
+                    st_size: self.bytes.len() as u64,
+                }
             })
         }
 

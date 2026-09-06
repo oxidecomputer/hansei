@@ -81,6 +81,7 @@ const PROGRAMS: &[&str] = &[
     "local-set-io",
     "foreign-runtime",
     "blocking-pool",
+    "delegation-cases",
     "spin-poll",
     "ct-spin",
     "stale-local",
@@ -1826,6 +1827,26 @@ fn test_ct_runtime_acceptance() {
         // And the census's thread section classifies it the same way.
         let out = hansei_ok(&bundle, core, "census --threads");
         assert!(out.contains("  block_on thread  in driver"), "{out}");
+    });
+}
+
+#[test]
+fn test_delegation_cases_acceptance() {
+    let bundle = fixtures().bundle("delegation-cases");
+    with_core("delegation-cases", |core| {
+        let binary = fixtures().program("delegation-cases");
+        let proc = Proc::open_core_with_binary(
+            core,
+            cfg!(target_os = "linux").then_some(binary.as_path()),
+        )
+        .unwrap();
+        let cases = hansei_runtime::testkit::delegation::read_from(&proc)
+            .expect("registry symbol")
+            .unwrap();
+        assert_eq!(cases.len(), 8);
+        let rows = list_tasks(&bundle, core);
+        assert_eq!(rows.len(), 8, "{rows:#?}");
+        assert!(rows.iter().all(|row| row.state == "idle"), "{rows:#?}");
     });
 }
 

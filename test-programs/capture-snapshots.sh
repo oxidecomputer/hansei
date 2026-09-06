@@ -88,7 +88,7 @@ DEFAULT_OUT="$(cd "../hansei-runtime/tests/fixtures/$SET" 2>/dev/null && pwd || 
 # block on the child's stdout; there are no timing sleeps anywhere.
 PROGRAMS=(simple-await nested-await dyn-future futurelock sleep-join channels
           unordered joinset ct-runtime local-set local-set-timer local-set-io
-          foreign-runtime gen-0007 walk-shapes blocking-pool)
+          foreign-runtime gen-0007 walk-shapes blocking-pool delegation-cases)
 if [[ $# -gt 1 ]]; then
     PROGRAMS=("${@:2}")
 fi

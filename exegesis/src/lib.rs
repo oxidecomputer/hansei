@@ -13,6 +13,9 @@ pub mod string_table;
 pub mod summary;
 pub mod view;
 
+#[cfg(feature = "testkit")]
+pub mod testkit;
+
 /// The bundle wire format lives in its own crate, which carries no DWARF
 /// dependencies. Re-exported under the module paths it has always had.
 pub use hansei_bundle as bundle;

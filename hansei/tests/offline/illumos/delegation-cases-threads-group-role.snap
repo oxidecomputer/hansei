@@ -1,0 +1,8 @@
+---
+source: hansei/src/offline.rs
+description: "`threads --group role` over illumos/delegation-cases"
+---
+COUNT  ROLE             LWPS
+    1  block_on caller  2
+    1  entered runtime  1
+[2 groups]
