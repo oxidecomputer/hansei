@@ -15,7 +15,7 @@ description = "Reads a tokio runtime's tasks, futures and threads out of a targe
 # below), hansei's tests (its dev-dependency), and hansei's `snapshot`
 # feature (the capture command reads the census registry through
 # `testkit::expect`).
-testkit = ["dep:serde", "dep:regex", "dep:toml"]
+testkit = ["dep:regex", "dep:testrun"]
 
 [dev-dependencies]
 blake3.workspace = true
@@ -38,7 +38,6 @@ foldhash.workspace = true
 hansei-bundle.workspace = true
 proc.workspace = true
 reify.workspace = true
-# testkit's matrix-manifest reader (toml, serde) and output masker (regex).
+# testkit's fixture recipes and output masker.
 regex = { workspace = true, optional = true }
-serde = { workspace = true, optional = true }
-toml = { workspace = true, optional = true }
+testrun = { workspace = true, optional = true }

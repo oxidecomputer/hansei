@@ -685,68 +685,7 @@ pub fn io_candidates<T: Target>(ctx: &Context<'_, T>, snapshot: &Snapshot) -> Ve
 /// statement the version matrix enumerates cells from, and where the
 /// fixture suites read the tokio floor. (`matrix.sh` keeps its own awk
 /// parse of the same file — bash cannot link this one.)
-pub mod matrix {
-    use serde::Deserialize;
-
-    use std::path::PathBuf;
-
-    /// What `matrix.toml` declares, in the file's own shape. Unknown
-    /// keys are refused everywhere: the manifest is the contract
-    /// tooling enumerates cells from, and a key only some of its
-    /// readers know about is drift.
-    #[derive(Deserialize)]
-    #[serde(deny_unknown_fields)]
-    pub struct Matrix {
-        pub primary: Primary,
-        pub tokio: Axis,
-        pub toolchain: Axis,
-        pub cells: Cells,
-    }
-
-    /// The `primary` cell: what `test-programs/Cargo.lock` resolves,
-    /// on the default toolchain.
-    #[derive(Deserialize)]
-    #[serde(deny_unknown_fields)]
-    pub struct Primary {
-        pub tokio: String,
-        pub toolchain: String,
-    }
-
-    /// One version axis: its floor and every version it supports.
-    #[derive(Deserialize)]
-    #[serde(deny_unknown_fields)]
-    pub struct Axis {
-        pub floor: String,
-        pub versions: Vec<String>,
-    }
-
-    /// The `[cells]` trim policy: which tokio versions (or roles —
-    /// `floor`, `primary`, `latest`) each secondary axis covers.
-    #[derive(Deserialize)]
-    #[serde(deny_unknown_fields)]
-    pub struct Cells {
-        pub no_unstable_tokio: Vec<String>,
-        pub secondary_toolchain_tokio: Vec<String>,
-        pub ct_only_tokio: Vec<String>,
-    }
-
-    impl Matrix {
-        pub fn load() -> Matrix {
-            let path =
-                PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../test-programs/matrix.toml");
-            let text = std::fs::read_to_string(&path)
-                .unwrap_or_else(|e| panic!("failed to read {}: {e}", path.display()));
-            toml::from_str(&text)
-                .unwrap_or_else(|e| panic!("failed to parse {}: {e}", path.display()))
-        }
-    }
-
-    /// `matrix.toml`'s `[tokio]` floor, the version the endpoint
-    /// fixture sets pin.
-    pub fn floor() -> String {
-        Matrix::load().tokio.floor
-    }
-}
+pub use testrun::fixture as matrix;
 
 /// Test doubles for the registry reader, shared with the census's own
 /// test module (which pins the problem lists over hand-built censuses

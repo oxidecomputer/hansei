@@ -5,9 +5,8 @@
 //! Doing a fixture build once per *test-suite run*, when the run is
 //! more than one process.
 //!
-//! Test scaffolding only: nothing depends on this crate outside a
-//! `[dev-dependencies]`, so it is compiled for test binaries and never
-//! linked into anything hansei ships. It is a crate of its own because
+//! Test scaffolding only: test binaries and the optional fixture-capture
+//! feature use this crate; ordinary hansei builds do not. It is a crate of its own because
 //! the suites that need it — `exegesis`'s extraction goldens and
 //! `hansei`'s acceptance suite — are in different crates, and
 //! `#[cfg(test)]` would not reach either: that cfg is set only while a
@@ -45,6 +44,8 @@
 //! to any input reads as a different stamp and rebuilds — the same
 //! anti-staleness, keyed on the thing it was always a proxy for.
 //! Nothing sets it by default: a human's run rebuilds, as before.
+
+pub mod fixture;
 
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};

@@ -214,15 +214,8 @@ fn built_stamp(program: &str) -> PathBuf {
 /// script pins.
 fn built_from(program: &str) -> String {
     let dir = test_programs_dir();
-    let mut inputs = testrun::Inputs::new();
-    inputs
-        .text(TOOLCHAIN)
-        .file(&dir.join("src/lib.rs"))
-        .file(&dir.join("src/bin").join(format!("{program}.rs")))
-        .file(&dir.join("Cargo.toml"))
-        .file(&dir.join("Cargo.lock"))
-        .file(&dir.join("regen.sh"));
-    inputs.finish()
+    let matrix = testrun::fixture::Matrix::read(&dir);
+    matrix.primary_recipe().inputs(&dir, &matrix, program)
 }
 
 fn toolchain_installed() -> bool {

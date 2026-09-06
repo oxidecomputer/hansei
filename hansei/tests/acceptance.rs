@@ -107,7 +107,23 @@ fn compiled_from(cell: &Cell) -> String {
         .file(&dir.join("Cargo.toml"))
         .file(&dir.join("Cargo.lock"))
         .file(&dir.join("matrix.toml"))
-        .file(&dir.join("regen.sh"));
+        .file(&dir.join("regen.sh"))
+        .file(&dir.join("capture-snapshots.sh"));
+    let matrix = Matrix::read(&dir);
+    let mut recipe = matrix.primary_recipe();
+    recipe.unstable = cell.unstable;
+    for pair in cell.flags.windows(2) {
+        match pair[0].as_str() {
+            "--tokio" => recipe.tokio.clone_from(&pair[1]),
+            "--toolchain" => recipe.toolchain.clone_from(&pair[1]),
+            _ => {}
+        }
+    }
+    for program in PROGRAMS {
+        inputs
+            .text(&recipe.inputs(&dir, &matrix, program))
+            .text(&recipe.target_recipe().inputs(&dir, &matrix, program));
+    }
     inputs.finish()
 }
 
