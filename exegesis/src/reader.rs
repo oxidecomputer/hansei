@@ -1493,6 +1493,58 @@ mod tests {
     }
 
     #[test]
+    fn test_type_convention_requires_definitions_and_known_units() {
+        use crate::provenance::OriginDecline;
+
+        let mut reader = DwReader::new();
+        let id = type_id(0x10);
+        assert_eq!(
+            reader.type_convention(id, |_, _| Some(())),
+            Err(OriginDecline::MissingDefinitions)
+        );
+        insert_struct(&mut reader, id, Some("Value"), 8);
+        assert_eq!(
+            reader.type_convention(id, |_, _| Some(())),
+            Err(OriginDecline::MissingUnit(id))
+        );
+        reader.type_declarations.insert(id);
+        reader.finalize_types();
+        assert_eq!(
+            reader.type_convention(id, |_, _| Some(())),
+            Err(OriginDecline::MissingDefinitions)
+        );
+    }
+
+    #[test]
+    fn test_missing_producer_in_a_merged_definition_cannot_be_skipped() {
+        use crate::provenance::OriginDecline;
+
+        for missing_first in [false, true] {
+            let mut reader = DwReader::new();
+            let unit_name = reader.strings.intern("unit");
+            let producer = reader.strings.intern("rustc version 1.98.0");
+            for (offset, missing) in [(0x10, missing_first), (0x30, !missing_first)] {
+                let origin = OriginId(UnitSectionOffset(offset));
+                reader.origins.insert(
+                    origin,
+                    UnitOrigin {
+                        name: unit_name,
+                        producer: (!missing).then_some(producer),
+                        end_offset: UnitSectionOffset(offset + 0x20),
+                    },
+                );
+                insert_struct(&mut reader, type_id(offset + 1), Some("Value"), 8);
+            }
+            reader.finalize_types();
+            let missing = OriginId(UnitSectionOffset(if missing_first { 0x10 } else { 0x30 }));
+            assert_eq!(
+                reader.type_convention(type_id(0x31), |_, _| Some(())),
+                Err(OriginDecline::MissingProducer(missing))
+            );
+        }
+    }
+
+    #[test]
     fn test_type_definitions_exclude_unresolved_declarations() {
         let mut reader = DwReader::new();
         let first = type_id(0x10);

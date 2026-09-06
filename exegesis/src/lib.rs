@@ -6,6 +6,7 @@ mod cgu;
 pub mod describe;
 pub mod detect;
 pub mod extract;
+pub mod provenance;
 pub mod raw_types;
 pub mod reader;
 pub mod string_table;

@@ -1386,8 +1386,39 @@ mod tests {
                                 origin.producer.map(|p| reader.strings.get(p))
                             })
                             .collect();
+                        // Test-only convention selection; this does not authorize a
+                        // production compiler family or any polling/storage rule.
+                        let convention = reader.type_convention(id, |_, origin| {
+                            let version = crate::provenance::rustc_version(
+                                reader.strings.get(origin.producer?),
+                            )?;
+                            (version.major == 1 && (97..=98).contains(&version.minor))
+                                .then_some("test-convention")
+                        });
                         match (name, ty.size) {
                             ("Defined", 8) => {
+                                assert_eq!(convention, Ok("test-convention"));
+                                for only_minor in [97, 98] {
+                                    let partial = reader.type_convention(id, |_, origin| {
+                                        let version = crate::provenance::rustc_version(
+                                            reader.strings.get(origin.producer?),
+                                        )?;
+                                        (version.minor == only_minor).then_some("test-convention")
+                                    });
+                                    assert!(matches!(
+                                        partial,
+                                        Err(crate::provenance::OriginDecline::Unsupported(_))
+                                    ));
+                                }
+                                let exact = reader.type_convention(id, |_, origin| {
+                                    crate::provenance::rustc_version(
+                                        reader.strings.get(origin.producer?),
+                                    )
+                                });
+                                assert!(matches!(
+                                    exact,
+                                    Err(crate::provenance::OriginDecline::Conflict { .. })
+                                ));
                                 assert_eq!(
                                     producers,
                                     [
@@ -1407,12 +1438,30 @@ mod tests {
                                     );
                                 }
                             }
-                            ("Defined", 16) => assert_eq!(producers, [Some("GNU C17 14.2.0")]),
-                            ("Unrelated", _) => assert_eq!(
-                                producers,
-                                [Some("rustc version 1.99.0 (cccc 2026-09-01)")]
-                            ),
-                            ("MissingProducer", _) => assert_eq!(producers, [None]),
+                            ("Defined", 16) => {
+                                assert_eq!(producers, [Some("GNU C17 14.2.0")]);
+                                assert!(matches!(
+                                    convention,
+                                    Err(crate::provenance::OriginDecline::Unsupported(_))
+                                ));
+                            }
+                            ("Unrelated", _) => {
+                                assert_eq!(
+                                    producers,
+                                    [Some("rustc version 1.99.0 (cccc 2026-09-01)")]
+                                );
+                                assert!(matches!(
+                                    convention,
+                                    Err(crate::provenance::OriginDecline::Unsupported(_))
+                                ));
+                            }
+                            ("MissingProducer", _) => {
+                                assert_eq!(producers, [None]);
+                                assert!(matches!(
+                                    convention,
+                                    Err(crate::provenance::OriginDecline::MissingProducer(_))
+                                ));
+                            }
                             _ => panic!("unexpected type {name}"),
                         }
                         checked += 1;
