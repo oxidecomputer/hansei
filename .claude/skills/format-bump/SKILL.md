@@ -18,7 +18,17 @@ The snapshot side has a version of its own, `proc::snapshot::FORMAT_VERSION`
 (in `proc/src/snapshot.rs`), covering the `*.snapshot` half of each fixture
 pair. It advances independently of the bundle's, and a bump to it runs the
 same loop: the fixture-backed tests fail to load (`VersionMismatch`) until
-`capture-snapshots.sh` recaptures every set.
+`capture-snapshots.sh` recaptures every set. Snapshots are stored as raw
+payloads so git can delta consecutive recaptures (see the module docs);
+a change to the file container alone, not the payload, can convert the
+checked-in files in place instead of recapturing.
+
+A recapture can also be forced from outside the fixtures: the DWARF-5
+`delegation-cases` bundle recipe hashes the workspace `Cargo.lock` among
+its inputs (`testrun/src/fixture.rs`), so a workspace dependency change
+stales that program's `.capture` receipt on every set, and
+`test_fixtures_record_the_current_programs` refuses to bless SOURCES
+until `capture-snapshots.sh <set dir> delegation-cases` reruns there.
 
 ## The loop
 

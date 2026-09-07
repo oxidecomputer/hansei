@@ -21,13 +21,6 @@ postcard = { workspace = true }
 scroll = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
-zstd = { workspace = true }
-
-[target.'cfg(target_os = "illumos")'.dependencies]
-# zstd-sys's vendored C fails to assemble with the illumos gcc/gas
-# toolchain (Sun-syntax cmov mnemonics); link the system libzstd via
-# pkg-config instead, as exegesis already does.
-zstd-sys = { workspace = true, features = ["pkg-config"] }
 
 # The libproc-backed reference reader lives inside the on-box test
 # target, so only test builds bind libproc — building the library needs

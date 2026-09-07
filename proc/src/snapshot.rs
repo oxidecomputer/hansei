@@ -16,6 +16,17 @@
 //! tool version writes and reads them, and the version check rejects
 //! everything else.
 //!
+//! The payload is stored uncompressed, deliberately. The fixtures are
+//! checked in and recaptured whenever their format moves, and git
+//! delta-compresses consecutive versions of a raw payload down to the
+//! bytes that changed — mostly addresses and a few words of runtime
+//! state — while a compressed frame changes throughout and costs its
+//! whole size in history every time. A single raw set also packs
+//! smaller than the compressed files did, because the fixtures share
+//! most of their symbol tables and git deltas across files where a
+//! per-file frame cannot. The working tree pays for this in size, the
+//! repository does not.
+//!
 //! A capture is bounded by [`CaptureLimits`]: what the recorder may
 //! hold in its read log and how large the written file may grow. The
 //! bounds are resource limits, not evidence policy — a capture that
@@ -38,13 +49,14 @@ use std::io::{self, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-/// Uncompressed file header: magic, then a little-endian format version,
-/// then a zstd frame containing the postcard-encoded [`Snapshot`].
+/// File header: magic, then a little-endian format version, then the
+/// postcard-encoded [`Snapshot`] as is (see the module docs for why it
+/// is not compressed).
 pub const MAGIC: [u8; 8] = *b"prosnap\0";
 
 /// Bumped freely on schema change; there is no cross-version
 /// compatibility requirement (same-tool-reads-it rule).
-pub const FORMAT_VERSION: u32 = 7;
+pub const FORMAT_VERSION: u32 = 8;
 
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -214,12 +226,12 @@ pub struct Snapshot {
 }
 
 impl Snapshot {
-    /// Serialize into `w`: header, then zstd-compressed postcard payload.
+    /// Serialize into `w`: header, then the postcard payload.
     pub fn write<W: Write>(&self, mut w: W) -> Result<()> {
         w.write_all(&MAGIC)?;
         w.write_all(&FORMAT_VERSION.to_le_bytes())?;
         let payload = postcard::to_allocvec(self).map_err(Error::Encode)?;
-        zstd::stream::copy_encode(payload.as_slice(), &mut w, zstd::DEFAULT_COMPRESSION_LEVEL)?;
+        w.write_all(&payload)?;
         Ok(())
     }
 
@@ -277,7 +289,8 @@ impl Snapshot {
                 expected: FORMAT_VERSION,
             });
         }
-        let payload = zstd::stream::decode_all(r)?;
+        let mut payload = Vec::new();
+        r.read_to_end(&mut payload)?;
         postcard::from_bytes(&payload).map_err(Error::Decode)
     }
 
