@@ -2,9 +2,10 @@
 source: hansei/src/offline.rs
 description: "`tasks` over linux-floor/local-set-io"
 ---
-ID  STATE  RT  FUTURES  AWAITING AT                 WAITING ON           TYPE
-1   idle   1         0  src/bin/local-set-io.rs:32  io fd 9 (readable)   async fn local_set_io::local_reader
-2   idle   1         0  src/bin/local-set-io.rs:40  io fd 11 (readable)  async fn local_set_io::local_watcher
-3   idle   1         0  src/bin/local-set-io.rs:60  io fd 13 (writable)  async fn local_set_io::local_writer
-4   idle   0         0  src/bin/local-set-io.rs:75  io fd 15 (readable)  async fn local_set_io::reader
-[4 tasks]
+ID  STATE  RT  FUTURES  AWAITING AT                  WAITING ON                                               TYPE
+1   idle   1         0  src/bin/local-set-io.rs:32   io fd 9 (readable)                                       async fn local_set_io::local_reader
+2   idle   1         0  src/bin/local-set-io.rs:40   io fd 11 (readable)                                      async fn local_set_io::local_watcher
+3   idle   1         0  src/bin/local-set-io.rs:60   io fd 13 (writable)                                      async fn local_set_io::local_writer
+4   idle   1         0  src/bin/local-set-io.rs:100  future tokio::io::util::read::Read<local_set_io::Gated>  async fn local_set_io::local_gated_reader
+5   idle   0         0  src/bin/local-set-io.rs:114  io fd 15 (readable)                                      async fn local_set_io::reader
+[5 tasks]

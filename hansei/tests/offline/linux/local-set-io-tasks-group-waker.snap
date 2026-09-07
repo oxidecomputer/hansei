@@ -3,7 +3,8 @@ source: hansei/src/offline.rs
 description: "`tasks --group waker` over linux/local-set-io"
 ---
 COUNT  WAKER        TASKS
-    2  io read      1, 4
+    2  io read      1, 5
+    1  <empty>      4
     1  io readable  2
     1  io write     3
-[3 groups]
+[4 groups]

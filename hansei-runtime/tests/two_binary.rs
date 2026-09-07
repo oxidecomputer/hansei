@@ -482,7 +482,28 @@ fn test_delegation_cases_offline() {
             cases.iter().map(|c| c.child_polls).collect::<Vec<_>>(),
             [0, 1, 0, 0, 1, 1, 1, 1]
         );
-        assert!(bundle.semantics.rules.is_empty());
+        // Layout rules bind the resources and schedulers; no delegation
+        // rule and no delegating program exists yet, so nothing claims
+        // that any parent here polls its child.
+        assert!(
+            bundle
+                .semantics
+                .rules
+                .iter()
+                .all(|rule| rule.kind != hansei_bundle::SemanticRuleKind::TracingInstrumented)
+        );
+        assert!(bundle.semantics.types.iter().all(|record| {
+            record
+                .future
+                .as_ref()
+                .is_none_or(|facts| match &facts.continuation {
+                    hansei_bundle::Continuation::Unknown(_) => true,
+                    hansei_bundle::Continuation::Bound { program, .. } => matches!(
+                        program,
+                        hansei_bundle::PollProgram::Direct(hansei_bundle::PollAction::Primitive)
+                    ),
+                })
+        }));
     }
     assert_summary("delegation-cases");
 }
@@ -1204,17 +1225,20 @@ fn test_local_set_io_offline() {
     assert_eq!(set.route, DiscoveryRoute::Io);
     assert_ne!(set.owned_id, 0);
 
-    // All three members join the population under the set's group, and
-    // they are exactly the three the harvest named.
-    assert_eq!(list.tasks.len(), 4, "{:#?}", list.tasks);
+    // Every member joins the population under the set's group: the three
+    // the harvest named, and the gated reader, which parked on nothing
+    // and is reached only through the set's own list once one of the
+    // three has found the set.
+    assert_eq!(list.tasks.len(), 5, "{:#?}", list.tasks);
     let group = e.runtimes.len();
     let local: Vec<&Task> = list.tasks.iter().filter(|t| t.group == group).collect();
-    assert_eq!(local.len(), 3, "{local:#?}");
+    assert_eq!(local.len(), 4, "{local:#?}");
     let mut names: Vec<&str> = local.iter().map(|t| known_name(t)).collect();
     names.sort_unstable();
     assert_eq!(
         names,
         [
+            "local_set_io::local_gated_reader::{async_fn_env#0}",
             "local_set_io::local_reader::{async_fn_env#0}",
             "local_set_io::local_watcher::{async_fn_env#0}",
             "local_set_io::local_writer::{async_fn_env#0}",
@@ -1225,10 +1249,18 @@ fn test_local_set_io_offline() {
         assert_eq!(task.owner_id, Some(set.owned_id), "{task:#?}");
     }
     let members: HashSet<u64> = local.iter().map(|t| t.addr.0).collect();
-    assert_eq!(
-        candidates.iter().copied().collect::<HashSet<u64>>(),
-        members,
+    let candidates: HashSet<u64> = candidates.iter().copied().collect();
+    assert!(
+        candidates.is_subset(&members),
         "every candidate is one of the set's members"
+    );
+    let gated = local
+        .iter()
+        .find(|t| known_name(t) == "local_set_io::local_gated_reader::{async_fn_env#0}")
+        .unwrap();
+    assert!(
+        !candidates.contains(&gated.addr.0),
+        "a reader over a custom AsyncRead that never registers is no io candidate"
     );
     assert_eq!(
         list.tasks

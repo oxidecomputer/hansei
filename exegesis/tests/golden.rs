@@ -496,6 +496,226 @@ fn assert_walk(program: &str, bundle: &Bundle, role: WalkRole, expected: &str) {
     );
 }
 
+/// Every emitted type whose name starts with `prefix` (a generic leaf
+/// key ending in `<`) or equals it, with its semantic record if any.
+fn types_named<'a>(
+    bundle: &'a Bundle,
+    prefix: &'a str,
+) -> impl Iterator<
+    Item = (
+        &'a str,
+        hansei_bundle::BundleTypeId,
+        Option<&'a hansei_bundle::TypeSemantics>,
+    ),
+> + 'a {
+    bundle
+        .types
+        .name_index
+        .iter()
+        .filter_map(move |&(name, id)| {
+            let name = bundle.strings.get(name)?;
+            let matches = if prefix.ends_with('<') {
+                name.starts_with(prefix)
+            } else {
+                name == prefix
+            };
+            matches.then(|| {
+                let record = bundle.semantics.types.iter().find(|r| r.ty == id);
+                (name, id, record)
+            })
+        })
+}
+
+/// The resource a leaf type binds: every instantiation the key names
+/// carries exactly this kind, under a tokio layout rule, and its
+/// continuation — when it is positively a future — is the primitive
+/// boundary and nothing more.
+fn assert_resource(program: &str, bundle: &Bundle, key: &str, kind: hansei_bundle::ResourceKind) {
+    use hansei_bundle::{Continuation, PollAction, PollProgram};
+    let mut seen = 0;
+    for (name, _, record) in types_named(bundle, key) {
+        let record = record.unwrap_or_else(|| panic!("{program}: {name} has no semantic record"));
+        let resource = record
+            .resource
+            .as_ref()
+            .unwrap_or_else(|| panic!("{program}: {name} has no resource binding"));
+        assert_eq!(resource.kind, kind, "{program}: {name}");
+        assert!(resource.state_rule.is_none(), "{program}: {name}");
+        assert!(!resource.exclusive_pending, "{program}: {name}");
+        let rule = &bundle.semantics.rules[resource.rule.0 as usize];
+        assert!(
+            matches!(
+                bundle.semantics.origins[rule.origin.0 as usize],
+                hansei_bundle::SemanticOrigin::LibraryLayout { .. }
+            ),
+            "{program}: {name}"
+        );
+        if let Some(facts) = &record.future {
+            assert!(
+                matches!(
+                    &facts.continuation,
+                    Continuation::Bound { rule, program: PollProgram::Direct(PollAction::Primitive) }
+                        if *rule == resource.rule
+                ),
+                "{program}: {name}: {:?}",
+                facts.continuation
+            );
+        }
+        seen += 1;
+    }
+    assert!(seen > 0, "{program}: no type named {key}");
+}
+
+/// A type that must carry no resource binding: an operation over a
+/// custom reader, however much of a socket it holds.
+fn assert_no_resource(program: &str, bundle: &Bundle, key: &str) {
+    let mut seen = 0;
+    for (name, _, record) in types_named(bundle, key) {
+        assert!(
+            record.is_none_or(|r| r.resource.is_none()),
+            "{program}: {name} acquired a resource binding"
+        );
+        assert!(
+            record.is_none_or(|r| r.future.as_ref().is_none_or(|facts| matches!(
+                facts.continuation,
+                hansei_bundle::Continuation::Unknown(_)
+            ))),
+            "{program}: {name} acquired a continuation"
+        );
+        seen += 1;
+    }
+    assert!(seen > 0, "{program}: no type named {key}");
+}
+
+fn assert_container(program: &str, bundle: &Bundle, key: &str, kind: hansei_bundle::ContainerKind) {
+    let mut seen = 0;
+    for (name, _, record) in types_named(bundle, key) {
+        let record = record.unwrap_or_else(|| panic!("{program}: {name} has no semantic record"));
+        let container = record
+            .container
+            .as_ref()
+            .unwrap_or_else(|| panic!("{program}: {name} has no container binding"));
+        assert_eq!(container.kind, kind, "{program}: {name}");
+        // A container is not thereby a future.
+        assert!(
+            record.future.is_none() || record.resource.is_none(),
+            "{program}: {name}"
+        );
+        seen += 1;
+    }
+    assert!(seen > 0, "{program}: no type named {key}");
+}
+
+/// What every fixture's library bindings must satisfy: a layout rule
+/// per kind actually bound, every rule under a versioned tokio origin
+/// inside the reviewed range (or futures-util's unversioned one), no
+/// delegation anywhere, and every task entry's scheduler class bound
+/// and agreeing with the name of its `S` — the cross-check that keeps
+/// the route-based binding honest against the spelling the runtime
+/// still classifies by.
+fn assert_library_bindings(program: &str, bundle: &Bundle) {
+    use hansei_bundle::{
+        Continuation, LayoutSelection, PollAction, PollProgram, SchedulerClass, SemanticOrigin,
+        SemanticRuleKind,
+    };
+    let s = |id| bundle.strings.get(id).unwrap();
+    for origin in &bundle.semantics.origins {
+        match origin {
+            SemanticOrigin::LibraryLayout {
+                package,
+                version,
+                family,
+                selection,
+            } if s(*package) == "tokio" => {
+                let version = version.expect("the fixtures' tokio version is recovered");
+                assert_eq!(
+                    s(version),
+                    bundle.meta.tokio_version.as_ref().unwrap().to_string(),
+                    "{program}"
+                );
+                assert_eq!(
+                    s(*family),
+                    exegesis::detect::Family::select(bundle.meta.tokio_version.as_ref()).name(),
+                    "{program}"
+                );
+                assert_eq!(*selection, LayoutSelection::ReviewedRange, "{program}");
+            }
+            SemanticOrigin::LibraryLayout {
+                package, selection, ..
+            } if s(*package) == "futures-util" => {
+                assert_eq!(*selection, LayoutSelection::VersionUnknown, "{program}");
+            }
+            other => panic!("{program}: unexpected semantic origin {other:?}"),
+        }
+    }
+    for rule in &bundle.semantics.rules {
+        assert!(
+            matches!(
+                rule.kind,
+                SemanticRuleKind::TokioSleep
+                    | SemanticRuleKind::TokioJoinHandle
+                    | SemanticRuleKind::TokioAcquire
+                    | SemanticRuleKind::TokioIoOperation
+                    | SemanticRuleKind::TokioJoinSet
+                    | SemanticRuleKind::FuturesUnordered
+                    | SemanticRuleKind::TokioMultiThreadScheduler
+                    | SemanticRuleKind::TokioCurrentThreadScheduler
+                    | SemanticRuleKind::TokioLocalScheduler
+                    | SemanticRuleKind::TokioBlockingScheduler
+            ),
+            "{program}: unexpected rule {:?}",
+            rule.kind
+        );
+    }
+    for record in &bundle.semantics.types {
+        let Some(facts) = &record.future else {
+            continue;
+        };
+        match &facts.continuation {
+            Continuation::Unknown(_) => assert!(record.resource.is_none()),
+            Continuation::Bound { program: p, .. } => assert!(
+                matches!(p, PollProgram::Direct(PollAction::Primitive))
+                    && record.resource.is_some(),
+                "{program}: {:?}",
+                facts.continuation
+            ),
+        }
+    }
+    for (index, entry) in bundle.tasks.entries.iter().enumerate() {
+        let scheduler = bundle
+            .types
+            .name_index
+            .iter()
+            .find(|&&(_, id)| id == entry.scheduler)
+            .map(|&(name, _)| s(name))
+            .unwrap_or_else(|| panic!("{program}: task {index} has an unnamed scheduler"));
+        let arc_of = |inner: &str| {
+            scheduler
+                .strip_prefix("alloc::sync::Arc<")
+                .and_then(|rest| rest.strip_prefix(inner))
+                .is_some_and(|rest| rest == ">" || rest.starts_with(','))
+        };
+        let expected = if arc_of("tokio::runtime::scheduler::multi_thread::handle::Handle") {
+            SchedulerClass::MultiThread
+        } else if arc_of("tokio::runtime::scheduler::current_thread::Handle") {
+            SchedulerClass::CurrentThread
+        } else if arc_of("tokio::task::local::Shared") {
+            SchedulerClass::LocalSet
+        } else if scheduler == "tokio::runtime::blocking::schedule::BlockingSchedule" {
+            SchedulerClass::Blocking
+        } else {
+            panic!("{program}: task {index} has an unexpected scheduler {scheduler}");
+        };
+        let binding = entry.scheduler_binding.as_ref().unwrap_or_else(|| {
+            panic!("{program}: task {index} ({scheduler}) has no scheduler binding")
+        });
+        assert_eq!(
+            binding.class, expected,
+            "{program}: task {index} ({scheduler})"
+        );
+    }
+}
+
 /// Structural assertions that hold for every fixture — the "zero silent
 /// drops" checks plus metadata sanity.
 fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
@@ -1415,17 +1635,74 @@ fn run_golden(program: &str) {
         !bundle.semantics.types.is_empty(),
         "{program}: no semantic records"
     );
-    assert!(bundle.semantics.rules.is_empty());
-    assert!(
-        bundle
-            .semantics
-            .types
-            .iter()
-            .all(|record| record.future.as_ref().is_none_or(|facts| matches!(
-                facts.continuation,
-                hansei_bundle::Continuation::Unknown(_)
-            )))
-    );
+    assert_library_bindings(program, &bundle);
+    {
+        use hansei_bundle::{ContainerKind, IoOperationKind, ResourceKind};
+        match program {
+            "sleep-join" => {
+                assert_resource(
+                    program,
+                    &bundle,
+                    "tokio::time::sleep::Sleep",
+                    ResourceKind::Sleep,
+                );
+                assert_resource(
+                    program,
+                    &bundle,
+                    "tokio::runtime::task::join::JoinHandle<",
+                    ResourceKind::JoinHandle,
+                );
+            }
+            "futurelock" => assert_resource(
+                program,
+                &bundle,
+                "tokio::sync::batch_semaphore::Acquire",
+                ResourceKind::SemaphoreAcquire,
+            ),
+            "local-set-io" => {
+                // The reviewed socket operations bind; the fixture's own
+                // `AsyncRead` over the same socket does not, however
+                // much of a socket it holds.
+                assert_resource(
+                    program,
+                    &bundle,
+                    "tokio::io::util::read::Read<tokio::net::unix::stream::UnixStream>",
+                    ResourceKind::IoOperation(IoOperationKind::Read),
+                );
+                assert_resource(
+                    program,
+                    &bundle,
+                    "tokio::io::util::write_all::WriteAll<tokio::net::unix::stream::UnixStream>",
+                    ResourceKind::IoOperation(IoOperationKind::WriteAll),
+                );
+                assert_resource(
+                    program,
+                    &bundle,
+                    "tokio::runtime::io::scheduled_io::Readiness",
+                    ResourceKind::IoOperation(IoOperationKind::Readiness),
+                );
+                assert_no_resource(
+                    program,
+                    &bundle,
+                    "tokio::io::util::read::Read<local_set_io::Gated>",
+                );
+                assert_no_resource(program, &bundle, "tokio::net::unix::stream::UnixStream");
+            }
+            "joinset" => assert_container(
+                program,
+                &bundle,
+                "tokio::task::join_set::JoinSet<",
+                ContainerKind::JoinSet,
+            ),
+            "unordered" => assert_container(
+                program,
+                &bundle,
+                "futures_util::stream::futures_unordered::FuturesUnordered<",
+                ContainerKind::FuturesUnordered,
+            ),
+            _ => {}
+        }
+    }
 
     // The type-rooted walks are deliberately absent from the portable
     // summary — which resources a build links is the target's call —

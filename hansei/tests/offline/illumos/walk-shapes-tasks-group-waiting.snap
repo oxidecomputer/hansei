@@ -2,10 +2,10 @@
 source: hansei/src/offline.rs
 description: "`tasks --group waiting-on` over illumos/walk-shapes"
 ---
-COUNT  WAITING ON                                      TASKS
-    4  future tokio::sync::notify::Notified            1, 2, 3, …
+COUNT  WAITING ON                                     TASKS
+    4  future tokio::sync::notify::Notified           1, 2, 3, …
     3  a tokio::sync::Semaphore (semaphore 0xADDR)  5, 6, 10
     1  a tokio::sync::Mutex (semaphore 0xADDR)      4
-    1  async fn walk_shapes::side_parker               9
-    1  task 7                                          8
+    1  async fn walk_shapes::side_parker              9
+    1  task 7                                         8
 [5 groups]

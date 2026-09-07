@@ -29,8 +29,14 @@ task 3
       awaiting at src/bin/local-set-io.rs:60 (Suspend1, 2 locals)
 
 task 4
+#0  future        tokio::io::util::read::Read<local_set_io::Gated>
+      (<no_state>, 2 locals)
+#1  async fn      local_set_io::local_gated_reader
+      awaiting at src/bin/local-set-io.rs:100 (Suspend0, 2 locals)
+
+task 5
 #0  future        tokio::io::util::read::Read<tokio::net::unix::stream::UnixStream>
       (<no_state>, 2 locals)
 #1  async fn      local_set_io::reader
-      awaiting at src/bin/local-set-io.rs:75 (Suspend0, 2 locals)
-[Executed against 4 tasks, 0 failed]
+      awaiting at src/bin/local-set-io.rs:114 (Suspend0, 2 locals)
+[Executed against 5 tasks, 0 failed]

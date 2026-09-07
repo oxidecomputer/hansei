@@ -11,7 +11,7 @@ task 1
     waiting on: io fd 11 (readable)
     waker: io 0xADDR read
         io 0xADDR: awaiting readable via the read-waiter slot, ready: writable
-    spawned at: src/bin/local-set-io.rs:102:20
+    spawned at: src/bin/local-set-io.rs:143:20
     defined at: src/bin/local-set-io.rs:28
     held futures: 0
     join sets: 0

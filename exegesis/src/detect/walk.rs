@@ -63,6 +63,44 @@ const LOCAL_DATA: &str = "tokio::task::local::LocalData";
 /// The two-word waker pair every registered waker in the walk lands on,
 /// wherever it was registered.
 const RAW_WAKER: &str = "core::task::wake::RawWaker";
+/// The `AsyncReadExt::read` and `AsyncWriteExt::write_all` operation
+/// futures, bound only over the reviewed concrete socket types below:
+/// their `poll` calls the generic reader's or writer's own poll method,
+/// so only an instantiation over a known socket reaches a known
+/// registration.
+const IO_READ: &str = "tokio::io::util::read::Read<";
+const IO_WRITE_ALL: &str = "tokio::io::util::write_all::WriteAll<";
+/// The concrete streams whose `poll_read`/`poll_write` park in the
+/// `ScheduledIo` direction slots and nowhere else.
+const IO_SOCKETS: &[&str] = &[
+    "tokio::net::unix::stream::UnixStream",
+    "tokio::net::tcp::stream::TcpStream",
+];
+/// An `Interest`-based readiness await: the future that pushes its own
+/// embedded `Waiter` node onto the resource's list.
+const READINESS: &str = "tokio::runtime::io::scheduled_io::Readiness";
+/// The scheduler `S` of a task cell, per flavor: the flavor handles and
+/// the `LocalSet`'s shared state are `Arc`s, the blocking pool's is a
+/// plain struct.
+const MT_HANDLE: &str = "tokio::runtime::scheduler::multi_thread::handle::Handle";
+const CT_HANDLE: &str = "tokio::runtime::scheduler::current_thread::Handle";
+const BLOCKING_SCHEDULE: &str = "tokio::runtime::blocking::schedule::BlockingSchedule";
+
+/// Whether `name` spells `Arc<inner>` exactly — with or without the
+/// allocator parameter, and never a lookalike sibling of `inner`.
+fn arc_of(name: &str, inner: &str) -> bool {
+    name.strip_prefix("alloc::sync::Arc<")
+        .and_then(|rest| rest.strip_prefix(inner))
+        .is_some_and(|rest| rest == ">" || rest.starts_with(','))
+}
+
+/// Whether `name` is `key` instantiated over exactly one of `args`.
+fn leaf_over(key: &str, args: &[&str], name: &str) -> bool {
+    debug_assert!(key.ends_with('<'));
+    name.strip_prefix(key)
+        .and_then(|rest| rest.strip_suffix('>'))
+        .is_some_and(|arg| args.contains(&arg))
+}
 
 /// Whether `name` is a type a leaf key names. A key ending in `<` is a
 /// generic: the prefix of every monomorphization's name. Any other key
@@ -151,6 +189,19 @@ enum WalkRoot {
     /// io resource, generic-free by construction. Absent like a leaf
     /// when the target reaches none.
     Type(&'static str),
+    /// The monomorphizations of one generic leaf key whose single type
+    /// argument is exactly one of the named types — the bounded set of
+    /// reviewed instantiations of an operation future. Every other
+    /// instantiation is not a root, so a custom `AsyncRead` wrapper's
+    /// `Read<Wrapper>` binds nothing however much of a socket it holds.
+    /// Absent like a leaf when the target reaches none of the reviewed
+    /// ones.
+    LeafOver(&'static str, &'static [&'static str]),
+    /// Every emitted `Arc<T>` whose `T` is exactly this fully-qualified
+    /// name, with or without the allocator parameter — a task cell's
+    /// scheduler `S` for the flavors that are `Arc`s. Absent like a leaf
+    /// when the target compiled no such cell.
+    ArcOf(&'static str),
     /// The (non-opaque) `Cell<T, S>` of every entry in the task table.
     TaskCells,
     /// Where another role's binding landed.
@@ -1443,7 +1494,159 @@ fn decls() -> Vec<WalkDecl> {
                 ]]
             },
         ),
+        // The bounded io operations. `Read<R>`/`WriteAll<W>` hold the
+        // `&mut R` they poll and the buffer they fill or drain; only the
+        // reviewed socket instantiations root here, and the registration
+        // is reached through that reader/writer — the operation's own
+        // route, never a socket found by scanning the frame. The slice
+        // length is the completion witness: an empty read buffer or an
+        // exhausted write buffer completes without parking.
+        decl(
+            WalkRole::IoReadReader,
+            WalkRoot::LeafOver(IO_READ, IO_SOCKETS),
+            Pointer,
+            || vec![reach![Named("reader")]],
+        ),
+        decl(
+            WalkRole::IoReadBufLen,
+            WalkRoot::LeafOver(IO_READ, IO_SOCKETS),
+            Word,
+            || vec![reach![Named("buf"), Named("length")]],
+        ),
+        decl(
+            WalkRole::IoReadShared,
+            Pointee(WalkRole::IoReadReader),
+            Aggregate,
+            shared_of_resource,
+        ),
+        decl(
+            WalkRole::IoWriteAllWriter,
+            WalkRoot::LeafOver(IO_WRITE_ALL, IO_SOCKETS),
+            Pointer,
+            || vec![reach![Named("writer")]],
+        ),
+        decl(
+            WalkRole::IoWriteAllBufLen,
+            WalkRoot::LeafOver(IO_WRITE_ALL, IO_SOCKETS),
+            Word,
+            || vec![reach![Named("buf"), Named("length")]],
+        ),
+        decl(
+            WalkRole::IoWriteAllShared,
+            Pointee(WalkRole::IoWriteAllWriter),
+            Aggregate,
+            shared_of_resource,
+        ),
+        // A readiness await: the resource it registered on, its own
+        // `Init`/`Waiting`/`Done` state, and the `Waiter` node embedded in
+        // the future itself — the exact list entry a pending wait must be
+        // found at, with the waker, interest and `is_ready` flag the
+        // resource's wake path sets. The node sits in std's own
+        // `UnsafeCell` — the io driver imports it directly rather than
+        // through the loom shim the task cells use — so one `value`
+        // level, not the trailer waker's `__0.value` pair.
+        decl(
+            WalkRole::ReadinessScheduledIo,
+            WalkRoot::Type(READINESS),
+            Pointer,
+            || vec![reach![Named("scheduled_io")]],
+        ),
+        decl(
+            WalkRole::ReadinessState,
+            WalkRoot::Type(READINESS),
+            Enum,
+            || vec![reach![Named("state")]],
+        ),
+        decl(
+            WalkRole::ReadinessWaiter,
+            WalkRoot::Type(READINESS),
+            Aggregate,
+            || vec![reach![Named("waiter"), Named("value")]],
+        ),
+        decl(
+            WalkRole::ReadinessWaiterWaker,
+            End(WalkRole::ReadinessWaiter),
+            Aggregate,
+            || {
+                vec![reach![
+                    Named("waker"),
+                    Variant("Some"),
+                    Named("__0"),
+                    Named("waker"),
+                ]]
+            },
+        ),
+        decl(
+            WalkRole::ReadinessWaiterInterest,
+            End(WalkRole::ReadinessWaiter),
+            Word,
+            || vec![reach![Named("interest"), PeelTo(WORD)]],
+        ),
+        decl(
+            WalkRole::ReadinessWaiterReady,
+            End(WalkRole::ReadinessWaiter),
+            Word,
+            || vec![reach![Named("is_ready")]],
+        ),
+        // The semaphore's queue state beside its permit word: the closed
+        // flag inside the wait list, and the raw lock guarding it — the
+        // parking_lot flavor's `lock_api` raw mutex behind the loom
+        // wrapper's second field, or the std flavor's `sys` mutex behind
+        // its first. Which one a build linked is a feature choice within
+        // one release, so both spellings are alternatives.
+        decl(
+            WalkRole::SemaphoreClosed,
+            Pointee(WalkRole::AcquireSemaphore),
+            Word,
+            || vec![reach![Named("waiters"), FindParam, Named("closed")]],
+        ),
+        decl(
+            WalkRole::SemaphoreLock,
+            Pointee(WalkRole::AcquireSemaphore),
+            Aggregate,
+            || {
+                vec![
+                    reach![Named("waiters"), Named("__1"), Named("raw")],
+                    reach![Named("waiters"), Named("__0"), Named("inner")],
+                ]
+            },
+        ),
+        // A task cell's scheduler `S`, per class: the flavor handle or
+        // `LocalSet` shared state behind its `Arc`, and the blocking
+        // schedule's hooks (its `handle` exists only under `test-util`).
+        // Rooted at the exact `S` type, so a binding is a layout fact
+        // about the type an entry names, not about its name.
+        decl(
+            WalkRole::MtSchedulerHandle,
+            WalkRoot::ArcOf(MT_HANDLE),
+            Aggregate,
+            arc_data,
+        ),
+        decl(
+            WalkRole::CtSchedulerHandle,
+            WalkRoot::ArcOf(CT_HANDLE),
+            Aggregate,
+            arc_data,
+        ),
+        decl(
+            WalkRole::LocalSchedulerShared,
+            WalkRoot::ArcOf(LOCAL_SHARED),
+            Aggregate,
+            arc_data,
+        ),
+        decl(
+            WalkRole::BlockingScheduleHooks,
+            WalkRoot::Type(BLOCKING_SCHEDULE),
+            Aggregate,
+            || vec![reach![Named("hooks")]],
+        ),
     ]
+}
+
+/// An `Arc<T>`'s route to its `T`: the `ArcInner` pointer, then the
+/// `data` past the two counts.
+fn arc_data() -> Vec<Reach<'static>> {
+    vec![reach![Named("ptr"), Named("pointer"), Deref, Named("data"),]]
 }
 
 /// A net resource's route to the `ScheduledIo` its registration holds:
@@ -1850,6 +2053,35 @@ fn resolve_root(
             }
             Roots::Types { types, note: None }
         }
+        WalkRoot::LeafOver(key, args) => {
+            let types: Vec<(String, TypeId)> = em
+                .emitted_named()
+                .filter(|(_, name)| leaf_over(key, args, name))
+                .map(|(tid, name)| (name.to_owned(), tid))
+                .collect();
+            if types.is_empty() {
+                return Roots::Absent(format!(
+                    "no {key}\u{2026}> type over a reviewed socket in the tokio info \
+                     (the target does not reach one)"
+                ));
+            }
+            let note = (types.len() > 1).then(|| format!("{} types", types.len()));
+            Roots::Types { types, note }
+        }
+        WalkRoot::ArcOf(inner) => {
+            let types: Vec<(String, TypeId)> = em
+                .emitted_named()
+                .filter(|(_, name)| arc_of(name, inner))
+                .map(|(tid, name)| (name.to_owned(), tid))
+                .collect();
+            if types.is_empty() {
+                return Roots::Absent(format!(
+                    "no Arc<{inner}> type in the tokio info (the target does not reach one)"
+                ));
+            }
+            let note = (types.len() > 1).then(|| format!("{} types", types.len()));
+            Roots::Types { types, note }
+        }
         WalkRoot::TaskCells => {
             let mut types = Vec::new();
             let mut opaque = 0usize;
@@ -2043,7 +2275,9 @@ pub fn leaf_rooted(role: WalkRole) -> bool {
         let is_leaf = match decl.root {
             // A type-rooted row is a leaf row for this purpose: which
             // net resources a binary keeps is the target's call too.
-            WalkRoot::Leaf(_) | WalkRoot::Type(_) => true,
+            WalkRoot::Leaf(_) | WalkRoot::Type(_) | WalkRoot::LeafOver(..) | WalkRoot::ArcOf(_) => {
+                true
+            }
             WalkRoot::Infra(_) | WalkRoot::AnyHandle | WalkRoot::TaskCells => false,
             WalkRoot::End(parent) | WalkRoot::Pointee(parent) | WalkRoot::Elem(parent) => {
                 rooted.get(&parent).copied().unwrap_or(false)
@@ -2108,6 +2342,50 @@ mod tests {
             JOIN_HANDLE,
             "tokio::runtime::task::join::JoinHandleFoo"
         ));
+    }
+
+    /// A reviewed operation root is the key over exactly one of the
+    /// reviewed sockets: a wrapper that holds a socket, a split half, or
+    /// a lookalike sibling of the socket is not one.
+    #[test]
+    fn test_leaf_over_admits_only_the_reviewed_instantiations() {
+        let unix = "tokio::io::util::read::Read<tokio::net::unix::stream::UnixStream>";
+        let tcp = "tokio::io::util::write_all::WriteAll<tokio::net::tcp::stream::TcpStream>";
+        assert!(leaf_over(IO_READ, IO_SOCKETS, unix));
+        assert!(leaf_over(IO_WRITE_ALL, IO_SOCKETS, tcp));
+        assert!(!leaf_over(IO_WRITE_ALL, IO_SOCKETS, unix));
+        for name in [
+            "tokio::io::util::read::Read<my_crate::Gated<tokio::net::unix::stream::UnixStream>>",
+            "tokio::io::util::read::Read<tokio::net::unix::stream::UnixStreamHalf>",
+            "tokio::io::util::read::Read<tokio::net::unix::split::ReadHalf>",
+            "tokio::io::util::read::Read<&mut tokio::net::unix::stream::UnixStream>",
+            "tokio::io::util::read::Read<tokio::net::unix::stream::UnixStream",
+            "tokio::io::util::read::Read",
+        ] {
+            assert!(!leaf_over(IO_READ, IO_SOCKETS, name), "{name}");
+        }
+    }
+
+    /// The scheduler roots match the `Arc` over exactly the flavor
+    /// handle, with or without the allocator parameter.
+    #[test]
+    fn test_arc_of_is_exact_with_or_without_the_allocator() {
+        assert!(arc_of(
+            "alloc::sync::Arc<tokio::runtime::scheduler::current_thread::Handle>",
+            CT_HANDLE
+        ));
+        assert!(arc_of(
+            "alloc::sync::Arc<tokio::runtime::scheduler::current_thread::Handle, alloc::alloc::Global>",
+            CT_HANDLE
+        ));
+        for name in [
+            "alloc::sync::Arc<tokio::runtime::scheduler::current_thread::HandleInner>",
+            "alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle>",
+            "alloc::rc::Rc<tokio::runtime::scheduler::current_thread::Handle>",
+            "tokio::runtime::scheduler::current_thread::Handle",
+        ] {
+            assert!(!arc_of(name, CT_HANDLE), "{name}");
+        }
     }
 
     #[test]

@@ -3306,6 +3306,9 @@ mod tests {
         assert!(ctx.type_semantics(BundleTypeId(u32::MAX)).is_none());
         let mut without = bundle.clone();
         without.semantics = Default::default();
+        for entry in &mut without.tasks.entries {
+            entry.scheduler_binding = None;
+        }
         without.validate().unwrap();
         let other = testkit::context(&without, snapshot);
         let tasks = testkit::tasks(&ctx, snapshot);

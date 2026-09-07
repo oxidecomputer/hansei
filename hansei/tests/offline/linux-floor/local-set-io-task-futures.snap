@@ -5,13 +5,13 @@ description: "`task 1 --futures` over linux-floor/local-set-io"
 task 1
     state: idle
     thread: <none>
-    owner: local set 0 @ 0xADDR (lwp 3281809)
+    owner: local set 0 @ 0xADDR (lwp 3975004)
     type: async fn local_set_io::local_reader
     awaiting at: src/bin/local-set-io.rs:32
     waiting on: io fd 9 (readable)
     waker: io 0xADDR read
         io 0xADDR: awaiting readable via the read-waiter slot, ready: writable
-    spawned at: src/bin/local-set-io.rs:102:20
+    spawned at: src/bin/local-set-io.rs:143:20
     defined at: src/bin/local-set-io.rs:28
     held futures: 0
     join sets: 0

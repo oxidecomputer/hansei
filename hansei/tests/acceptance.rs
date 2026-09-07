@@ -56,7 +56,7 @@ use exegesis::extract::{ExtractOptions, extract_file};
 use hansei_bundle::{Bundle, BundleView};
 use hansei_runtime::testkit::matrix::Matrix;
 use hansei_runtime::tokio::bundle::Context as BundleContext;
-use proc::{Proc, Target};
+use proc::Proc;
 
 use std::collections::HashSet;
 use std::fs;
@@ -2007,10 +2007,11 @@ fn test_local_set_io_acceptance() {
     let bundle = fixtures().bundle("local-set-io");
     with_core("local-set-io", |core| {
         let rows = list_tasks(&bundle, core);
-        assert_eq!(rows.len(), 4, "{rows:#?}");
+        assert_eq!(rows.len(), 5, "{rows:#?}");
         let spawned = task_with_future(&rows, "async fn local_set_io::reader");
         let members = ["local_reader", "local_watcher", "local_writer"]
             .map(|name| task_with_future(&rows, &format!("async fn local_set_io::{name}")));
+        let gated = task_with_future(&rows, "async fn local_set_io::local_gated_reader");
 
         // The spawned task keeps its runtime's tag — its own waker is on
         // a registration the harvest walks, and being listed is what
@@ -2018,7 +2019,7 @@ fn test_local_set_io_acceptance() {
         let rt_tag = regex::Regex::new(r"^runtime 0 @ 0x[0-9a-f]+ \(current_thread\)$").unwrap();
         assert!(rt_tag.is_match(&spawned.owner), "{rows:#?}");
         let set_tag = regex::Regex::new(r"^local set 0 @ 0x[0-9a-f]+ \(lwp \d+\)$").unwrap();
-        for member in &members {
+        for member in members.iter().chain([&gated]) {
             assert!(set_tag.is_match(&member.owner), "{rows:#?}");
             assert_eq!(member.owner, members[0].owner, "{rows:#?}");
         }
@@ -2029,6 +2030,12 @@ fn test_local_set_io_acceptance() {
             let out = normalize(&trace(&bundle, core, &member.id, false));
             assert!(out.contains("tokio::net::unix"), "{out}");
         }
+        // The gated reader parked on nothing: no registration names it,
+        // so only the set's own list brought it in, and its chain ends
+        // at the fixture's own reader rather than at a socket.
+        let out = normalize(&trace(&bundle, core, &gated.id, false));
+        assert!(out.contains("Read<local_set_io::Gated>"), "{out}");
+        assert!(!out.contains("io fd"), "{out}");
 
         // The set has no row in the listing; the golden pins the row
         // of the runtime it was found through, with the set's tasks

@@ -159,9 +159,15 @@ pub fn portable_summary(bundle: &Bundle, program: &str, crate_str: &str) -> Stri
         // the target's call. Two fixtures differing only in what their
         // spawned task captures already disagree about `RunUntil` across
         // Mach-O and ELF, so a row for it could not be one golden file.
+        // tokio's io operation futures are the same story: `Read<Gated>`
+        // in `local-set-io` keeps a standalone `poll` on ELF and is
+        // inlined into its coroutine's resume on Mach-O. The bindings
+        // over these types are pinned by name in the golden test's
+        // inline assertions, which do not depend on the poll surviving.
         if name.starts_with("futures_util::")
             || name.starts_with("futures_core::")
             || name.starts_with("tokio::task::local::")
+            || name.starts_with("tokio::io::util::")
         {
             continue;
         }

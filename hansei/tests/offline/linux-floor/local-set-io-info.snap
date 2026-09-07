@@ -4,6 +4,6 @@ description: "`info` over linux-floor/local-set-io"
 ---
 core:       <snapshot>
 tokio info: <tokio info>
-symbols resolved: 6/6
+symbols resolved: 7/7
 process: not recorded by this target
 signal: none recorded

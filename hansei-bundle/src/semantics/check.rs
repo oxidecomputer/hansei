@@ -321,6 +321,17 @@ impl<'a> Check<'a> {
         Ok(())
     }
 
+    fn routes(&self, routes: &[WalkRole]) -> Result<()> {
+        for role in routes {
+            let binding = self.0.walks.entries.get(role);
+            require(
+                binding.is_some_and(|b| matches!(b.outcome, WalkOutcome::Bound { .. })),
+                "essential walk route is not bound",
+            )?;
+        }
+        Ok(())
+    }
+
     fn resource(&self, ty: BundleTypeId, binding: &ResourceBinding) -> Result<()> {
         use SemanticRuleKind::*;
         let kind = match binding.kind {
@@ -330,10 +341,8 @@ impl<'a> Check<'a> {
             ResourceKind::IoOperation(_) => TokioIoOperation,
         };
         self.rule(binding.rule, &[kind])?;
-        let roles = required_resource_roles(binding.kind).ok_or_else(|| {
-            Error::Corrupt("semantics: I/O operation roles are not enabled".into())
-        })?;
-        self.roles(ty, roles)?;
+        self.roles(ty, required_resource_roles(binding.kind))?;
+        self.routes(required_resource_routes(binding.kind))?;
         if let Some(rule) = binding.state_rule {
             let kind = match binding.kind {
                 ResourceKind::Sleep => TokioSleepState,
@@ -584,21 +593,79 @@ impl<'a> Check<'a> {
     }
 }
 
-/// Essential routes rooted at the resource itself. I/O awaits its bounded
-/// operation bindings; a contained socket is not an operation identity.
-pub(crate) fn required_resource_roles(kind: ResourceKind) -> Option<&'static [WalkRole]> {
+/// Essential roles rooted at the resource type itself: a binding needs
+/// every one of them bound at exactly that type. An I/O operation's
+/// roots are the reviewed operation-over-socket monomorphizations only;
+/// a contained socket is not an operation identity.
+pub fn required_resource_roles(kind: ResourceKind) -> &'static [WalkRole] {
     use WalkRole::*;
     match kind {
-        ResourceKind::Sleep => Some(&[SleepDeadline]),
-        ResourceKind::JoinHandle => Some(&[JoinHandleRaw]),
-        ResourceKind::SemaphoreAcquire => Some(&[
+        ResourceKind::Sleep => &[SleepDeadline],
+        ResourceKind::JoinHandle => &[JoinHandleRaw],
+        ResourceKind::SemaphoreAcquire => &[
             AcquireSemaphore,
             AcquireNode,
             AcquireNumPermits,
             AcquireNeeded,
             AcquireQueued,
-        ]),
-        ResourceKind::IoOperation(_) => None,
+        ],
+        ResourceKind::IoOperation(IoOperationKind::Read) => &[IoReadReader, IoReadBufLen],
+        ResourceKind::IoOperation(IoOperationKind::WriteAll) => {
+            &[IoWriteAllWriter, IoWriteAllBufLen]
+        }
+        ResourceKind::IoOperation(IoOperationKind::Readiness) => {
+            &[ReadinessScheduledIo, ReadinessState, ReadinessWaiter]
+        }
+    }
+}
+
+/// Essential routes chained below those roles — rooted where a role
+/// landed, so at other types — that must also have bound for the
+/// binding to identify its resource: the registration an operation
+/// reaches through its own reader or writer, and the waker, interest
+/// and ready flag inside a readiness await's node.
+pub fn required_resource_routes(kind: ResourceKind) -> &'static [WalkRole] {
+    use WalkRole::*;
+    match kind {
+        ResourceKind::Sleep | ResourceKind::JoinHandle | ResourceKind::SemaphoreAcquire => &[],
+        ResourceKind::IoOperation(IoOperationKind::Read) => &[IoReadShared],
+        ResourceKind::IoOperation(IoOperationKind::WriteAll) => &[IoWriteAllShared],
+        ResourceKind::IoOperation(IoOperationKind::Readiness) => &[
+            ReadinessWaiterWaker,
+            ReadinessWaiterInterest,
+            ReadinessWaiterReady,
+        ],
+    }
+}
+
+/// The route that identifies a task cell's scheduler `S` as one class:
+/// the data behind the flavor handle's `Arc`, the `LocalSet`'s shared
+/// state, or the blocking schedule's hooks. Each roots at the exact `S`
+/// type, so a binding is a layout fact about that type, not a name.
+pub fn scheduler_role(class: SchedulerClass) -> WalkRole {
+    match class {
+        SchedulerClass::MultiThread => WalkRole::MtSchedulerHandle,
+        SchedulerClass::CurrentThread => WalkRole::CtSchedulerHandle,
+        SchedulerClass::LocalSet => WalkRole::LocalSchedulerShared,
+        SchedulerClass::Blocking => WalkRole::BlockingScheduleHooks,
+    }
+}
+
+/// The roles a container binding needs bound at the container type.
+pub fn container_roles(kind: ContainerKind) -> &'static [WalkRole] {
+    use WalkRole::*;
+    match kind {
+        ContainerKind::JoinSet => &[JoinSetLength, JoinSetLists],
+        ContainerKind::FuturesUnordered => &[SetHeadAll],
+    }
+}
+
+/// The routes chained below them that the set walkers execute.
+pub fn container_routes(kind: ContainerKind) -> &'static [WalkRole] {
+    use WalkRole::*;
+    match kind {
+        ContainerKind::JoinSet => &[JoinSetNotifiedHead, JoinSetIdleHead],
+        ContainerKind::FuturesUnordered => &[],
     }
 }
 
@@ -696,22 +763,13 @@ pub(crate) fn check_semantics(bundle: &Bundle) -> Result<()> {
             check.resource(record.ty, resource)?;
         }
         if let Some(container) = &record.container {
-            let (kind, roles): (_, &[WalkRole]) = match container.kind {
-                ContainerKind::JoinSet => (
-                    SemanticRuleKind::TokioJoinSet,
-                    &[
-                        WalkRole::JoinSetLength,
-                        WalkRole::JoinSetLists,
-                        WalkRole::JoinSetNotifiedHead,
-                        WalkRole::JoinSetIdleHead,
-                    ],
-                ),
-                ContainerKind::FuturesUnordered => {
-                    (SemanticRuleKind::FuturesUnordered, &[WalkRole::SetHeadAll])
-                }
+            let kind = match container.kind {
+                ContainerKind::JoinSet => SemanticRuleKind::TokioJoinSet,
+                ContainerKind::FuturesUnordered => SemanticRuleKind::FuturesUnordered,
             };
             check.rule(container.rule, &[kind])?;
-            check.roles(record.ty, roles)?;
+            check.roles(record.ty, container_roles(container.kind))?;
+            check.routes(container_routes(container.kind))?;
         }
         let Some(future) = &record.future else {
             continue;
@@ -812,9 +870,9 @@ pub(crate) fn check_semantics(bundle: &Bundle) -> Result<()> {
                 bundle.types.size_of(entry.scheduler).is_some(),
                 "scheduler binding has opaque storage",
             )?;
-            // The existing scheduler walks use shared-state roots rather
-            // than this entry's S. A binding needs its own verified route.
-            return require(false, "scheduler root roles are not enabled");
+            // The class's route must have bound at this entry's own S; the
+            // shared-state walks root elsewhere and prove nothing about it.
+            check.roles(entry.scheduler, &[scheduler_role(binding.class)])?;
         }
     }
     Ok(())

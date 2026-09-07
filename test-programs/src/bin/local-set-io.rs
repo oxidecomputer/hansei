@@ -61,6 +61,45 @@ async fn local_writer(ready: oneshot::Sender<()>, mut stream: UnixStream, fill: 
     fill.len()
 }
 
+/// An `AsyncRead` implementation of the fixture's own: it holds a socket
+/// but polls it only while its gate is open, and the gate is closed here,
+/// so the read parks on nothing at all — no waker lands anywhere. The
+/// `Read<Gated>` this instantiates contains a `UnixStream` exactly as
+/// `Read<UnixStream>` does, and is what a socket-shaped operation must
+/// not be mistaken for: only the reviewed stream's own operation reaches
+/// a registration.
+struct Gated {
+    stream: UnixStream,
+    open: bool,
+}
+
+impl tokio::io::AsyncRead for Gated {
+    fn poll_read(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        if self.open {
+            std::pin::Pin::new(&mut self.stream).poll_read(cx, buf)
+        } else {
+            std::task::Poll::Pending
+        }
+    }
+}
+
+/// The custom reader's park: nothing registers, so the resource's
+/// waiter sites all stay empty and the task's wait is unknown.
+async fn local_gated_reader(ready: oneshot::Sender<()>, stream: UnixStream) -> usize {
+    test_programs::census_expect::task("local_set_io::local_gated_reader");
+    let mut gated = Gated {
+        stream,
+        open: false,
+    };
+    let mut buf = [0u8; 8];
+    ready.send(()).expect("main waits for readiness");
+    gated.read(&mut buf).await.expect("the gate never opens")
+}
+
 /// The ordinary spawned task. It parks on io like the set's members, so
 /// its own waker sits on a registration the harvest walks — already
 /// listed, and so not a candidate, which is the other half of what the
@@ -89,12 +128,14 @@ fn main() {
         let (watcher_b, peer_b) = UnixStream::pair().expect("a socketpair");
         let (writer_c, peer_c) = UnixStream::pair().expect("a socketpair");
         let (reader_d, peer_d) = UnixStream::pair().expect("a socketpair");
-        let _peers = (peer_a, peer_b, peer_c, peer_d);
+        let (gated_e, peer_e) = UnixStream::pair().expect("a socketpair");
+        let _peers = (peer_a, peer_b, peer_c, peer_d, peer_e);
 
         let (ready_a_tx, ready_a_rx) = oneshot::channel();
         let (ready_b_tx, ready_b_rx) = oneshot::channel();
         let (ready_c_tx, ready_c_rx) = oneshot::channel();
         let (ready_d_tx, ready_d_rx) = oneshot::channel();
+        let (ready_e_tx, ready_e_rx) = oneshot::channel();
         let local = LocalSet::new();
         // Dropping the handles detaches the tasks without cancelling
         // them: they stay in the set's list, and nothing outside it
@@ -102,6 +143,7 @@ fn main() {
         drop(local.spawn_local(local_reader(ready_a_tx, reader_a)));
         drop(local.spawn_local(local_watcher(ready_b_tx, watcher_b, "watching")));
         drop(local.spawn_local(local_writer(ready_c_tx, writer_c, vec![0xa5; 64 * 1024])));
+        drop(local.spawn_local(local_gated_reader(ready_e_tx, gated_e)));
         let _reader = tokio::spawn(reader(ready_d_tx, reader_d, 100));
         local
             .run_until(async move {
@@ -113,6 +155,7 @@ fn main() {
                 ready_b_rx.await.expect("local watcher signals readiness");
                 ready_c_rx.await.expect("local writer signals readiness");
                 ready_d_rx.await.expect("reader signals readiness");
+                ready_e_rx.await.expect("gated reader signals readiness");
                 println!("READY");
                 std::future::pending::<()>().await
             })

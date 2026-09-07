@@ -1273,7 +1273,7 @@ fn extract_from_view(
         impls,
         counts,
         semantics,
-    } = em.finish(&impl_selfs, seeds, &entries);
+    } = em.finish(&impl_selfs, seeds, &mut entries, &walks);
     stats.types_emitted = types.types.len();
     stats.opaque_types = counts.opaque;
     stats.types_demoted_out_of_bounds = counts.demoted;

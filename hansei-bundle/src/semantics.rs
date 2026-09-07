@@ -11,6 +11,11 @@ use serde::{Deserialize, Serialize};
 
 pub(crate) mod check;
 
+pub use check::{
+    container_roles, container_routes, required_resource_roles, required_resource_routes,
+    scheduler_role,
+};
+
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug, Serialize, Deserialize)]
 pub struct SemanticRuleId(pub u32);
 

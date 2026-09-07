@@ -192,6 +192,30 @@ pub fn classify(role: WalkRole) -> Class {
         // `JoinHandle` — the waker-slot index's join edge. Enrichment
         // only: a bundle without it still lists and traces.
         TrailerWaker => Class::Optional,
+        // The bounded io operations, a readiness await's own node, and
+        // the semaphore's queue state: resource bindings the semantic
+        // table dispatches through. A bundle without them still lists and
+        // traces; it decodes fewer waits.
+        IoReadReader
+        | IoReadBufLen
+        | IoReadShared
+        | IoWriteAllWriter
+        | IoWriteAllBufLen
+        | IoWriteAllShared
+        | ReadinessScheduledIo
+        | ReadinessState
+        | ReadinessWaiter
+        | ReadinessWaiterWaker
+        | ReadinessWaiterInterest
+        | ReadinessWaiterReady
+        | SemaphoreClosed
+        | SemaphoreLock => Class::Optional,
+        // A task cell's scheduler `S` as one class: the routes a
+        // scheduler binding is validated against. Absent for every flavor
+        // the target did not compile in.
+        MtSchedulerHandle | CtSchedulerHandle | LocalSchedulerShared | BlockingScheduleHooks => {
+            Class::Optional
+        }
     }
 }
 

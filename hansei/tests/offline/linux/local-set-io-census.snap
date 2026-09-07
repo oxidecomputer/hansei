@@ -5,17 +5,19 @@ description: "`census` over linux/local-set-io"
 Threads: 1 lwp, 1 in runtime 0 @ 0xADDR
 
 COUNT  RT  ROLE             STATE           LWPS
-    1  0   block_on thread  in driver       3277022
+    1  0   block_on thread  in driver       3969211
     0  0   blocking pool    0 idle, 0 busy  —
 [1 lwp]
 
-Tasks: 4 owned by 1 runtime and 1 local set
+Tasks: 5 owned by 1 runtime and 1 local set
 
 COUNT  STATE
-    4  idle
-[4 tasks]
+    5  idle
+[5 tasks]
 
 COUNT  TYPE / WAITING ON
+    1  async fn local_set_io::local_gated_reader
+       └─ 1  future tokio::io::util::read::Read<local_set_io::Gated>
     1  async fn local_set_io::local_reader
        └─ 1  io
     1  async fn local_set_io::local_watcher
@@ -24,14 +26,14 @@ COUNT  TYPE / WAITING ON
        └─ 1  io
     1  async fn local_set_io::reader
        └─ 1  io
-[4 types]
+[5 types]
 
-Futures: 4 in flight, on 12 await-chain frames, up to 6 deep
+Futures: 5 in flight, on 14 await-chain frames, up to 6 deep
 
 COUNT  HELD IN
-    4  task (its own await chain)
+    5  task (its own await chain)
     0  frame (off any await chain)
     0  set (0 FuturesUnordered)
-[4 futures]
+[5 futures]
 
 [0 types]

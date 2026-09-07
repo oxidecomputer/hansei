@@ -1668,21 +1668,33 @@ task: local_set_io::local_watcher::{async_fn_env#0}
     Returned @ local-set-io.rs:42
     Panicked @ local-set-io.rs:42
     Suspend0 @ local-set-io.rs:40
+task: local_set_io::local_gated_reader::{async_fn_env#0}
+  kind: AsyncFn
+  decl: local-set-io.rs:92
+  entries: 1
+  symbols-per-entry: 6
+  stage: Stage<local_set_io::local_gated_reader::{async_fn_env#0}>
+  variants:
+    Unresumed @ local-set-io.rs:92
+    Returned @ local-set-io.rs:101
+    Panicked @ local-set-io.rs:101
+    Suspend0 @ local-set-io.rs:100
 task: local_set_io::reader::{async_fn_env#0}
   kind: AsyncFn
-  decl: local-set-io.rs:71
+  decl: local-set-io.rs:110
   entries: 2
   symbols-per-entry: 6,6
   stage: Stage<local_set_io::reader::{async_fn_env#0}>
   variants:
-    Unresumed @ local-set-io.rs:71
-    Returned @ local-set-io.rs:76
-    Panicked @ local-set-io.rs:76
-    Suspend0 @ local-set-io.rs:75
+    Unresumed @ local-set-io.rs:110
+    Returned @ local-set-io.rs:115
+    Panicked @ local-set-io.rs:115
+    Suspend0 @ local-set-io.rs:114
 
 [dyn-futures]
 dyn: core::future::poll_fn::PollFn<tokio::runtime::scheduler::current_thread::{impl#0}::block_on::{closure#0}::{closure_env#0}<local_set_io::main::{async_block_env#0}>> (poll)
 dyn: core::pin::Pin<&mut local_set_io::main::{async_block_env#0}> (poll)
+dyn: local_set_io::local_gated_reader::{async_fn_env#0} (poll, drop_glue)
 dyn: local_set_io::local_reader::{async_fn_env#0} (poll, drop_glue)
 dyn: local_set_io::local_watcher::{async_fn_env#0} (poll, drop_glue)
 dyn: local_set_io::local_writer::{async_fn_env#0} (poll, drop_glue)
@@ -1691,12 +1703,13 @@ dyn: local_set_io::main::{async_block_env#0} (poll, drop_glue)
 dyn: local_set_io::reader::{async_fn_env#0} (poll, drop_glue)
 
 [env-decls]
+env: local_set_io::local_gated_reader::{async_fn_env#0} @ local-set-io.rs:92
 env: local_set_io::local_reader::{async_fn_env#0} @ local-set-io.rs:28
 env: local_set_io::local_watcher::{async_fn_env#0} @ local-set-io.rs:37
 env: local_set_io::local_writer::{async_fn_env#0} @ local-set-io.rs:49
-env: local_set_io::main::{async_block#0}::{async_block_env#0} @ local-set-io.rs:107
-env: local_set_io::main::{async_block_env#0} @ local-set-io.rs:82
-env: local_set_io::reader::{async_fn_env#0} @ local-set-io.rs:71
+env: local_set_io::main::{async_block#0}::{async_block_env#0} @ local-set-io.rs:149
+env: local_set_io::main::{async_block_env#0} @ local-set-io.rs:121
+env: local_set_io::reader::{async_fn_env#0} @ local-set-io.rs:110
 
 [infra]
 header: ok

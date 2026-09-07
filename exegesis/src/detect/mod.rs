@@ -44,8 +44,8 @@ use self::tokio::{
     watch_state_node,
 };
 use crate::bundle::{
-    Arm, BitField, Bundle, BundleTypeId, DisplayNode, Field, FieldRender, MemberRef, ScalarDecode,
-    Selector, Shape, Step, StringInterner,
+    Arm, BitField, Bundle, BundleTypeId, DisplayNode, Field, FieldRender, LayoutSelection,
+    MemberRef, ScalarDecode, Selector, Shape, Step, StringInterner,
 };
 use crate::extract::{Emitter, fq_name, raw_type_size};
 use crate::raw_types::{RawType, VariantShape as RawVariantShape};
@@ -291,6 +291,32 @@ impl Family {
             .find(|family| (version.major, version.minor) >= family.floor())
             .copied()
             .unwrap_or(Family::ALL[0])
+    }
+
+    /// The newest tokio `(major, minor)` whose layouts have been reviewed
+    /// against the detectors: the top of the version matrix. Advances by
+    /// hand when a release is onboarded; a target above it takes the
+    /// newest family's layouts as a guess, which the semantic origin
+    /// records as [`LayoutSelection::AboveReviewedRange`] so no state
+    /// protocol can bind on it.
+    pub const REVIEWED_CEILING: (u64, u64) = (1, 53);
+
+    /// How the recovered version relates to the reviewed range, for the
+    /// bundle's library-layout origins: unknown when none was recovered,
+    /// below the floor or above the ceiling when the family is a clamp
+    /// or a guess, and reviewed in between.
+    pub fn layout_selection(version: Option<&semver::Version>) -> LayoutSelection {
+        let Some(version) = version else {
+            return LayoutSelection::VersionUnknown;
+        };
+        let version = (version.major, version.minor);
+        if version < Family::ALL[0].floor() {
+            LayoutSelection::BelowFloor
+        } else if version > Family::REVIEWED_CEILING {
+            LayoutSelection::AboveReviewedRange
+        } else {
+            LayoutSelection::ReviewedRange
+        }
     }
 
     /// The selection and why, as the per-cell detector catalog pins it:

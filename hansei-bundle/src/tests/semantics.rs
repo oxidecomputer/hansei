@@ -891,15 +891,158 @@ fn test_semantic_primitives_require_each_essential_role() {
             bad(&missing, "essential walk role");
         }
     }
-    for operation in [
-        IoOperationKind::Read,
-        IoOperationKind::WriteAll,
-        IoOperationKind::Readiness,
+    // An I/O operation's essential routes are its own reader/writer or
+    // node and the registration reached through it, never a contained
+    // socket's own `shared` route.
+    for (operation, roles, routes) in [
+        (
+            IoOperationKind::Read,
+            vec![WalkRole::IoReadReader, WalkRole::IoReadBufLen],
+            vec![WalkRole::IoReadShared],
+        ),
+        (
+            IoOperationKind::WriteAll,
+            vec![WalkRole::IoWriteAllWriter, WalkRole::IoWriteAllBufLen],
+            vec![WalkRole::IoWriteAllShared],
+        ),
+        (
+            IoOperationKind::Readiness,
+            vec![
+                WalkRole::ReadinessScheduledIo,
+                WalkRole::ReadinessState,
+                WalkRole::ReadinessWaiter,
+            ],
+            vec![
+                WalkRole::ReadinessWaiterWaker,
+                WalkRole::ReadinessWaiterInterest,
+                WalkRole::ReadinessWaiterReady,
+            ],
+        ),
     ] {
         let mut b = resource();
         b.semantics.rules[0].kind = SemanticRuleKind::TokioIoOperation;
         b.semantics.types[0].resource.as_mut().unwrap().kind = ResourceKind::IoOperation(operation);
-        bad(&b, "I/O operation roles are not enabled");
+        let walk = b.walks.entries[&WalkRole::JoinHandleRaw].clone();
+        // A route roots where its parent landed, so it is bound at some
+        // other type; only being bound is required of it.
+        let route = WalkBinding {
+            roots: vec![CHILD],
+            ..walk.clone()
+        };
+        b.walks.entries = roles
+            .iter()
+            .map(|r| (*r, walk.clone()))
+            .chain(routes.iter().map(|r| (*r, route.clone())))
+            .collect();
+        b.validate().unwrap();
+        for role in &roles {
+            let mut missing = b.clone();
+            missing.walks.entries.remove(role);
+            bad(&missing, "essential walk role");
+            missing.walks.entries.insert(*role, route.clone());
+            bad(&missing, "essential walk role");
+        }
+        for role in &routes {
+            let mut missing = b.clone();
+            missing.walks.entries.remove(role);
+            bad(&missing, "essential walk route");
+            missing.walks.entries.insert(
+                *role,
+                WalkBinding {
+                    roots: Vec::new(),
+                    steps: Vec::new(),
+                    outcome: WalkOutcome::Absent {
+                        reason: "none".into(),
+                    },
+                },
+            );
+            bad(&missing, "essential walk route");
+        }
+        let mut contained = b.clone();
+        contained.walks.entries = [WalkRole::UnixStreamShared, WalkRole::TcpStreamShared]
+            .into_iter()
+            .map(|role| (role, walk.clone()))
+            .collect();
+        bad(&contained, "essential walk role");
+    }
+}
+
+/// A task entry's scheduler class is a layout fact about its own `S`:
+/// the class's route must have bound at exactly that type.
+#[test]
+fn test_semantic_scheduler_binding_requires_the_class_route_at_its_own_type() {
+    let mut b = resource();
+    b.tasks.entries.push(TaskFutureEntry {
+        future: PARENT,
+        cell: PARENT,
+        stage: PARENT,
+        scheduler: CHILD,
+        scheduler_binding: None,
+        display_name: StrRef(3),
+    });
+    b.tasks
+        .by_symbol
+        .insert("_RINvNtNtNtC_5tokio_pollE".into(), vec![TaskEntryId(0)]);
+    b.provenance.entries.push(Provenance {
+        decl: None,
+        kind: FutureKind::Manual,
+    });
+    let evidence = &mut b.semantics.types[0].future.as_mut().unwrap().evidence;
+    evidence.insert(0, FutureEvidence::TaskEntry(TaskEntryId(0)));
+    b.validate().unwrap();
+
+    let walk = b.walks.entries[&WalkRole::JoinHandleRaw].clone();
+    let route = |root| WalkBinding {
+        roots: vec![root],
+        ..walk.clone()
+    };
+    for (class, rule, role) in [
+        (
+            SchedulerClass::MultiThread,
+            SemanticRuleKind::TokioMultiThreadScheduler,
+            WalkRole::MtSchedulerHandle,
+        ),
+        (
+            SchedulerClass::CurrentThread,
+            SemanticRuleKind::TokioCurrentThreadScheduler,
+            WalkRole::CtSchedulerHandle,
+        ),
+        (
+            SchedulerClass::LocalSet,
+            SemanticRuleKind::TokioLocalScheduler,
+            WalkRole::LocalSchedulerShared,
+        ),
+        (
+            SchedulerClass::Blocking,
+            SemanticRuleKind::TokioBlockingScheduler,
+            WalkRole::BlockingScheduleHooks,
+        ),
+    ] {
+        let mut b = b.clone();
+        b.semantics.rules.push(SemanticRule {
+            kind: rule,
+            revision: 1,
+            origin: SemanticOriginId(0),
+        });
+        b.tasks.entries[0].scheduler_binding = Some(SchedulerBinding {
+            class,
+            rule: SemanticRuleId(1),
+        });
+        bad(&b, "essential walk role");
+        b.walks.entries.insert(role, route(CHILD));
+        b.validate().unwrap();
+        // Bound at some other type: the shared-state walks root elsewhere
+        // and prove nothing about this entry's S.
+        b.walks.entries.insert(role, route(PARENT));
+        bad(&b, "essential walk role");
+        b.walks.entries.insert(role, route(CHILD));
+        // The rule kind must name the class.
+        let other = match class {
+            SchedulerClass::MultiThread => SemanticRuleKind::TokioCurrentThreadScheduler,
+            _ => SemanticRuleKind::TokioMultiThreadScheduler,
+        };
+        b.semantics.rules[1].kind = other;
+        bad(&b, "incompatible capability");
     }
 }
 
@@ -915,21 +1058,30 @@ fn test_semantic_container_is_not_automatically_a_future() {
         kind: ContainerKind::JoinSet,
     });
     let walk = b.walks.entries[&WalkRole::JoinHandleRaw].clone();
+    let route = WalkBinding {
+        roots: vec![CHILD],
+        ..walk.clone()
+    };
     b.walks.entries = [
-        WalkRole::JoinSetLength,
-        WalkRole::JoinSetLists,
-        WalkRole::JoinSetNotifiedHead,
-        WalkRole::JoinSetIdleHead,
+        (WalkRole::JoinSetLength, walk.clone()),
+        (WalkRole::JoinSetLists, walk.clone()),
+        (WalkRole::JoinSetNotifiedHead, route.clone()),
+        (WalkRole::JoinSetIdleHead, route),
     ]
     .into_iter()
-    .map(|role| (role, walk.clone()))
     .collect();
     b.validate().unwrap();
+    let mut missing = b.clone();
+    missing.walks.entries.remove(&WalkRole::JoinSetIdleHead);
+    bad(&missing, "essential walk route");
+    let mut missing = b.clone();
+    missing.walks.entries.remove(&WalkRole::JoinSetLists);
+    bad(&missing, "essential walk role");
     b.semantics.types[0].storage = StoragePolicy::Unavailable(issue());
     bad(&b, "unavailable storage carries a readable capability");
     b.semantics.types[0].storage = StoragePolicy::DeclaredMembers;
     b.walks.entries.remove(&WalkRole::JoinSetIdleHead);
-    bad(&b, "essential walk role");
+    bad(&b, "essential walk route");
 }
 
 #[test]

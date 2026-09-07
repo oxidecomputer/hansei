@@ -565,7 +565,8 @@ impl<'a> Emitter<'a> {
         mut self,
         impl_selfs: &BTreeMap<String, String>,
         seeds: super::semantics::SemanticSeeds,
-        tasks: &[crate::bundle::TaskFutureEntry],
+        tasks: &mut [crate::bundle::TaskFutureEntry],
+        walks: &crate::bundle::WalksTable,
     ) -> Finished {
         let mut index: Vec<(String, BundleTypeId)> = self
             .names
@@ -588,7 +589,13 @@ impl<'a> Emitter<'a> {
         };
         let demoted = demote_types_with_members_out_of_bounds(&mut types, &self.names);
         let states = drop_members_of_other_states(&mut types, &self.names);
-        let semantics = super::semantics::bind_semantics(seeds, &types, &mut self.interner, tasks);
+        let library = super::semantics::Library {
+            walks,
+            tokio_version: self.tokio_version.as_ref(),
+            family: self.family,
+        };
+        let semantics =
+            super::semantics::bind_semantics(seeds, &types, &mut self.interner, tasks, &library);
 
         let opaque = types
             .types

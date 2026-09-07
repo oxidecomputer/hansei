@@ -4,6 +4,6 @@ description: "`info` over illumos/local-set-io"
 ---
 core:       <snapshot>
 tokio info: <tokio info>
-symbols resolved: 18/18
+symbols resolved: 19/19
 process: not recorded by this target
 signal: none recorded
