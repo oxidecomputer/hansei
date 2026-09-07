@@ -65,10 +65,15 @@ impl<'a> Check<'a> {
         };
         match origin {
             SemanticOrigin::Rustc { producer, family } => {
+                // rustc's LLVM backend spells its producer
+                // `clang LLVM (rustc version X (hash date))`; the bare form
+                // is accepted too. Both anchored at the front.
                 let producer = self.string(*producer)?;
                 let token = producer
-                    .strip_prefix("rustc version ")
-                    .and_then(|s| s.split_ascii_whitespace().next());
+                    .strip_prefix("clang LLVM (rustc version ")
+                    .or_else(|| producer.strip_prefix("rustc version "))
+                    .and_then(|s| s.split_ascii_whitespace().next())
+                    .map(|s| s.strip_suffix(')').unwrap_or(s));
                 require(
                     token.is_some_and(|s| semver::Version::parse(s).is_ok()),
                     "invalid Rust producer",

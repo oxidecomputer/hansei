@@ -594,8 +594,14 @@ impl<'a> Emitter<'a> {
             tokio_version: self.tokio_version.as_ref(),
             family: self.family,
         };
-        let semantics =
-            super::semantics::bind_semantics(seeds, &types, &mut self.interner, tasks, &library);
+        let semantics = super::semantics::bind_semantics(
+            seeds,
+            &types,
+            &self.names,
+            &mut self.interner,
+            tasks,
+            &library,
+        );
 
         let opaque = types
             .types

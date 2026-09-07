@@ -587,6 +587,50 @@ fn assert_no_resource(program: &str, bundle: &Bundle, key: &str) {
     assert!(seen > 0, "{program}: no type named {key}");
 }
 
+/// One coroutine's bound states, rendered as `key:Stage[locals](uncertain)`
+/// lines with the member names sorted, so an expectation reads as the
+/// convention says it should and a state whose members moved fails
+/// naming them.
+fn assert_coroutine(program: &str, bundle: &Bundle, type_name: &str, expected: &[&str]) {
+    let s = |id| bundle.strings.get(id).unwrap();
+    let mut ids = bundle.types.find_by_name(&bundle.strings, type_name);
+    let id = ids
+        .next()
+        .unwrap_or_else(|| panic!("{program}: no type named {type_name}"));
+    assert!(
+        ids.next().is_none(),
+        "{program}: {type_name} names more than one type"
+    );
+    let record = bundle
+        .semantics
+        .types
+        .iter()
+        .find(|r| r.ty == id)
+        .unwrap_or_else(|| panic!("{program}: {type_name} has no semantic record"));
+    let layout = record
+        .coroutine
+        .as_ref()
+        .unwrap_or_else(|| panic!("{program}: {type_name} has no coroutine layout"));
+    let rendered: Vec<String> = layout
+        .states
+        .iter()
+        .map(|state| {
+            let mut locals: Vec<&str> = state.locals.iter().map(|&n| s(n)).collect();
+            locals.sort_unstable();
+            let mut uncertain: Vec<&str> = state.uncertain_locals.iter().map(|&n| s(n)).collect();
+            uncertain.sort_unstable();
+            format!(
+                "{}:{:?}[{}]({})",
+                s(state.variant),
+                state.stage,
+                locals.join(","),
+                uncertain.join(",")
+            )
+        })
+        .collect();
+    assert_eq!(rendered, expected, "{program}: {type_name}");
+}
+
 fn assert_container(program: &str, bundle: &Bundle, key: &str, kind: hansei_bundle::ContainerKind) {
     let mut seen = 0;
     for (name, _, record) in types_named(bundle, key) {
@@ -621,6 +665,19 @@ fn assert_library_bindings(program: &str, bundle: &Bundle) {
     let s = |id| bundle.strings.get(id).unwrap();
     for origin in &bundle.semantics.origins {
         match origin {
+            SemanticOrigin::Rustc { producer, family } => {
+                assert!(
+                    s(*producer).contains(&format!("rustc version {}", bundle.meta.rustc_version)),
+                    "{program}: compiler origin {:?} is not the target's producer {:?}",
+                    s(*producer),
+                    bundle.meta.rustc_version
+                );
+                assert_eq!(
+                    s(*family),
+                    exegesis::detect::semantics::RUSTC_COROUTINE_V1_97.family,
+                    "{program}"
+                );
+            }
             SemanticOrigin::LibraryLayout {
                 package,
                 version,
@@ -652,7 +709,9 @@ fn assert_library_bindings(program: &str, bundle: &Bundle) {
         assert!(
             matches!(
                 rule.kind,
-                SemanticRuleKind::TokioSleep
+                SemanticRuleKind::RustcAsyncFn
+                    | SemanticRuleKind::RustcAsyncBlock
+                    | SemanticRuleKind::TokioSleep
                     | SemanticRuleKind::TokioJoinHandle
                     | SemanticRuleKind::TokioAcquire
                     | SemanticRuleKind::TokioIoOperation
@@ -666,6 +725,54 @@ fn assert_library_bindings(program: &str, bundle: &Bundle) {
             "{program}: unexpected rule {:?}",
             rule.kind
         );
+    }
+    // Compiler storage: every async fn or async block environment binds
+    // its states under the reviewed convention (the fixtures' toolchains
+    // are all inside it), carries the matching evidence, and every other
+    // compiler candidate stays unavailable with its reason.
+    for record in &bundle.semantics.types {
+        let name = bundle
+            .types
+            .name_index
+            .iter()
+            .find(|&&(_, id)| id == record.ty)
+            .map(|&(name, _)| s(name))
+            .unwrap_or_default();
+        if !hansei_bundle::names::is_coroutine_candidate(name) {
+            assert!(record.coroutine.is_none(), "{program}: {name}");
+            continue;
+        }
+        match hansei_bundle::names::coroutine_kind(name) {
+            Some("async fn") | Some("async block") => {
+                let layout = record.coroutine.as_ref().unwrap_or_else(|| {
+                    let issues: Vec<String> = record
+                        .issues
+                        .iter()
+                        .map(|i| format!("{:?}: {}", i.kind, i.detail.map(s).unwrap_or("")))
+                        .collect();
+                    panic!("{program}: {name} has no coroutine layout: {issues:?}")
+                });
+                assert_eq!(
+                    record.storage,
+                    hansei_bundle::StoragePolicy::CoroutineStates,
+                    "{program}: {name}"
+                );
+                assert!(
+                    record.future.as_ref().is_some_and(|facts| facts
+                        .evidence
+                        .contains(&hansei_bundle::FutureEvidence::Coroutine(layout.rule))),
+                    "{program}: {name} lacks coroutine evidence"
+                );
+                assert!(layout.states.len() >= 3, "{program}: {name}");
+            }
+            _ => {
+                assert!(
+                    matches!(record.storage, hansei_bundle::StoragePolicy::Unavailable(_)),
+                    "{program}: {name}"
+                );
+                assert!(!record.issues.is_empty(), "{program}: {name}");
+            }
+        }
     }
     for record in &bundle.semantics.types {
         let Some(facts) = &record.future else {
@@ -1660,6 +1767,41 @@ fn run_golden(program: &str) {
                 ResourceKind::SemaphoreAcquire,
             ),
             "local-set-io" => {
+                // An async fn: arguments in `Unresumed`, the locals live
+                // across the one await in `Suspend0` — the awaitee, the
+                // buffer, the stream moved off its argument slot, and
+                // rustc's own state byte — and nothing uncertain.
+                assert_coroutine(
+                    program,
+                    &bundle,
+                    "local_set_io::local_reader::{async_fn_env#0}",
+                    &[
+                        "0:Unresumed[ready,stream]()",
+                        "1:Returned[]()",
+                        "2:Panicked[]()",
+                        "3:Suspended[__3,__awaitee,buf,stream]()",
+                    ],
+                );
+                // An async block: no arguments, so `Unresumed` lists only
+                // its captures, and every suspended state lists them again
+                // as uncertain — kept for inspection, moved or not — beside
+                // the awaitee and rustc's own state bytes.
+                assert_coroutine(
+                    program,
+                    &bundle,
+                    "local_set_io::main::{async_block#0}::{async_block_env#0}",
+                    &[
+                        "0:Unresumed[ready_a_rx,ready_b_rx,ready_c_rx,ready_d_rx,ready_e_rx]()",
+                        "1:Returned[]()",
+                        "2:Panicked[]()",
+                        "3:Suspended[__1,__2,__3,__4,__awaitee](ready_a_rx,ready_b_rx,ready_c_rx,ready_d_rx,ready_e_rx)",
+                        "4:Suspended[__1,__2,__3,__4,__awaitee](ready_a_rx,ready_b_rx,ready_c_rx,ready_d_rx,ready_e_rx)",
+                        "5:Suspended[__1,__2,__3,__4,__awaitee](ready_a_rx,ready_b_rx,ready_c_rx,ready_d_rx,ready_e_rx)",
+                        "6:Suspended[__1,__2,__3,__4,__awaitee](ready_a_rx,ready_b_rx,ready_c_rx,ready_d_rx,ready_e_rx)",
+                        "7:Suspended[__1,__2,__3,__4,__awaitee](ready_a_rx,ready_b_rx,ready_c_rx,ready_d_rx,ready_e_rx)",
+                        "8:Suspended[__1,__2,__3,__4,__awaitee](ready_a_rx,ready_b_rx,ready_c_rx,ready_d_rx,ready_e_rx)",
+                    ],
+                );
                 // The reviewed socket operations bind; the fixture's own
                 // `AsyncRead` over the same socket does not, however
                 // much of a socket it holds.

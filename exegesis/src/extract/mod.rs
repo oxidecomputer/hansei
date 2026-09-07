@@ -1266,7 +1266,43 @@ fn extract_from_view(
         }
     }
 
-    let seeds = semantics::collect_semantic_seeds(&em, &explicit_polls, &coroutine_candidates);
+    // Which reviewed compiler convention, if any, each coroutine
+    // candidate's defining units agree on. Decided here, where the
+    // reader's unit origins are at hand; the binder sees only verdicts.
+    let compiler_verdict = |raw: TypeId| {
+        let convention = reader.type_convention(raw, |_, origin| {
+            origin
+                .producer
+                .map(|p| reader.strings.get(p))
+                .and_then(crate::detect::semantics::rustc_coroutine_convention)
+        });
+        match convention {
+            Ok(convention) => {
+                let producer = reader
+                    .type_definitions(raw)
+                    .next()
+                    .and_then(|die| reader.die_origin(die.0))
+                    .and_then(|(_, origin)| origin.producer)
+                    .map(|p| reader.strings.get(p).to_owned());
+                match producer {
+                    Some(producer) => semantics::CompilerVerdict::Supported {
+                        producer,
+                        convention,
+                    },
+                    None => semantics::CompilerVerdict::Declined(
+                        "the canonical definition records no producer".to_owned(),
+                    ),
+                }
+            }
+            Err(decline) => semantics::CompilerVerdict::Declined(format!("{decline:?}")),
+        }
+    };
+    let seeds = semantics::collect_semantic_seeds(
+        &em,
+        &explicit_polls,
+        &coroutine_candidates,
+        compiler_verdict,
+    );
     let emitter::Finished {
         types,
         strings,

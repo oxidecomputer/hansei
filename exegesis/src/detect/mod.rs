@@ -23,6 +23,7 @@
 //!   version (see [`Family`]).
 
 mod crates;
+pub mod semantics;
 mod std;
 mod tokio;
 mod tokio_v1_47;

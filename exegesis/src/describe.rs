@@ -576,6 +576,216 @@ fn describe_field(bundle: &Bundle, root: BundleTypeId, fld: &Field) -> String {
     }
 }
 
+/// Render the bundle's semantic table as text, one line per fact, keyed
+/// on type names so the same text serves `tokio-info dump`, the matrix
+/// catalog and a golden assertion alike. Origins and rules come first,
+/// numbered as the records refer to them; then every record in type
+/// order; then each task entry's scheduler class.
+pub fn describe_semantics(bundle: &Bundle) -> String {
+    use hansei_bundle::{
+        Continuation, CoroutineState, FutureEvidence, FutureTarget, PollAction, PollProgram,
+        SemanticIssue, SemanticOrigin, StoragePolicy,
+    };
+    use std::fmt::Write;
+
+    let s = |r| bundle.strings.get(r).unwrap_or("<bad strref>");
+    let type_name = |id: BundleTypeId| -> String {
+        bundle
+            .types
+            .name_index
+            .iter()
+            .find(|&&(_, ty)| ty == id)
+            .map(|&(name, _)| s(name).to_owned())
+            .unwrap_or_else(|| format!("[{}]", id.0))
+    };
+    let issue = |i: &SemanticIssue| match i.detail {
+        Some(detail) => format!("{:?}: {}", i.kind, s(detail)),
+        None => format!("{:?}", i.kind),
+    };
+    let path = |root: BundleTypeId, p: &hansei_bundle::TypedPath| {
+        format!(
+            "{} -> {}",
+            field(bundle, root, &Selector(p.steps.clone())),
+            type_name(p.target)
+        )
+    };
+    let action = |root: BundleTypeId, a: &PollAction| match a {
+        PollAction::Delegate { target, exclusive } => {
+            let target = match target {
+                FutureTarget::Value(p) => path(root, p),
+                FutureTarget::Dynamic { pointer, .. } => format!("dyn {}", path(root, pointer)),
+            };
+            format!(
+                "delegate{} {target}",
+                if *exclusive { " (exclusive)" } else { "" }
+            )
+        }
+        PollAction::Primitive => "primitive".to_owned(),
+        PollAction::Unresumed => "unresumed".to_owned(),
+        PollAction::Returned => "returned".to_owned(),
+        PollAction::Panicked => "panicked".to_owned(),
+        PollAction::Unknown(i) => format!("unknown ({})", issue(i)),
+    };
+    let state = |st: &CoroutineState| {
+        format!(
+            "{}:{:?}[{}]({})",
+            s(st.variant),
+            st.stage,
+            st.locals
+                .iter()
+                .map(|&n| s(n))
+                .collect::<Vec<_>>()
+                .join(","),
+            st.uncertain_locals
+                .iter()
+                .map(|&n| s(n))
+                .collect::<Vec<_>>()
+                .join(",")
+        )
+    };
+
+    let mut out = String::new();
+    let table = &bundle.semantics;
+    for (i, origin) in table.origins.iter().enumerate() {
+        let text = match origin {
+            SemanticOrigin::Rustc { producer, family } => {
+                format!("rustc {} ({})", s(*family), s(*producer))
+            }
+            SemanticOrigin::LibraryLayout {
+                package,
+                version,
+                family,
+                selection,
+            } => format!(
+                "layout {} {} family {} ({selection:?})",
+                s(*package),
+                version.map(s).unwrap_or("<no version>"),
+                s(*family)
+            ),
+            SemanticOrigin::LibraryDelegation {
+                package,
+                version,
+                files,
+            } => format!(
+                "delegation {} {} ({} checksummed files)",
+                s(*package),
+                s(*version),
+                files.len()
+            ),
+        };
+        let _ = writeln!(out, "origin {i}: {text}");
+    }
+    for (i, rule) in table.rules.iter().enumerate() {
+        let _ = writeln!(
+            out,
+            "rule {i}: {:?} rev {} origin {}",
+            rule.kind, rule.revision, rule.origin.0
+        );
+    }
+    for record in &table.types {
+        let mut line = format!("{} ::", type_name(record.ty));
+        match &record.storage {
+            StoragePolicy::DeclaredMembers => line.push_str(" members"),
+            StoragePolicy::CoroutineStates => line.push_str(" states"),
+            StoragePolicy::Unavailable(i) => {
+                let _ = write!(line, " unavailable ({})", issue(i));
+            }
+        }
+        if let Some(facts) = &record.future {
+            let evidence: Vec<String> = facts
+                .evidence
+                .iter()
+                .map(|e| match e {
+                    FutureEvidence::TaskEntry(id) => format!("task {}", id.0),
+                    FutureEvidence::PollSymbol(_) => "poll".to_owned(),
+                    FutureEvidence::Coroutine(rule) => format!("coroutine rule {}", rule.0),
+                    FutureEvidence::DelegatedBy { parent } => {
+                        format!("delegated by {}", type_name(*parent))
+                    }
+                })
+                .collect();
+            let _ = write!(line, " future[{}]", evidence.join(", "));
+            match &facts.continuation {
+                Continuation::Unknown(i) => {
+                    let _ = write!(line, " continuation unknown ({})", issue(i));
+                }
+                Continuation::Bound { rule, program } => {
+                    let _ = write!(line, " continuation rule {}", rule.0);
+                    match program {
+                        PollProgram::Direct(a) => {
+                            let _ = write!(line, " {}", action(record.ty, a));
+                        }
+                        PollProgram::MatchVariant { state: st, cases } => {
+                            let _ = write!(line, " match {}", path(record.ty, st));
+                            for case in cases {
+                                let _ = write!(
+                                    line,
+                                    " {{{}: {}}}",
+                                    s(case.variant),
+                                    action(record.ty, &case.action)
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if let Some(layout) = &record.coroutine {
+            let states: Vec<String> = layout.states.iter().map(state).collect();
+            let _ = write!(
+                line,
+                " coroutine rule {} {{{}}}",
+                layout.rule.0,
+                states.join(" ")
+            );
+        }
+        if let Some(access) = &record.access {
+            let _ = write!(line, " access {:?} rule {}", access.kind, access.rule.0);
+        }
+        if let Some(resource) = &record.resource {
+            let _ = write!(
+                line,
+                " resource {:?} rule {}{}{}",
+                resource.kind,
+                resource.rule.0,
+                resource
+                    .state_rule
+                    .map(|r| format!(" state rule {}", r.0))
+                    .unwrap_or_default(),
+                if resource.exclusive_pending {
+                    " exclusive-pending"
+                } else {
+                    ""
+                }
+            );
+        }
+        if let Some(container) = &record.container {
+            let _ = write!(
+                line,
+                " container {:?} rule {}",
+                container.kind, container.rule.0
+            );
+        }
+        for i in &record.issues {
+            let _ = write!(line, " issue ({})", issue(i));
+        }
+        out.push_str(&line);
+        out.push('\n');
+    }
+    for (i, entry) in bundle.tasks.entries.iter().enumerate() {
+        let class = match &entry.scheduler_binding {
+            Some(binding) => format!("{:?} rule {}", binding.class, binding.rule.0),
+            None => "unknown".to_owned(),
+        };
+        let _ = writeln!(
+            out,
+            "task {i}: scheduler {} :: {class}",
+            type_name(entry.scheduler)
+        );
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

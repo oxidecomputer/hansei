@@ -304,8 +304,13 @@ pub fn coroutine_kind(name: &str) -> Option<&'static str> {
 }
 
 /// A compiler-storage candidate, not evidence of Future implementation or
-/// initialized fields. Inspect only the nominal type, excluding its arguments.
+/// initialized fields. Inspect only the nominal type, excluding its
+/// arguments; a reference or raw pointer *to* an environment is spelled
+/// with the environment's name but is a pointer, not the storage.
 pub fn is_coroutine_candidate(name: &str) -> bool {
+    if name.starts_with('&') || name.starts_with('*') {
+        return false;
+    }
     let outer = outer_path(name);
     let last = outer.rsplit("::").next().unwrap_or_default();
     [

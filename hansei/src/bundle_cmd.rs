@@ -546,6 +546,14 @@ fn dump(path: &Path) -> Result<()> {
             .collect();
         println!("        {} from {}", steps.join("."), roots.join(" "));
     }
+
+    println!(
+        "== semantics ({} origins, {} rules, {} types) ==",
+        bundle.semantics.origins.len(),
+        bundle.semantics.rules.len(),
+        bundle.semantics.types.len()
+    );
+    print!("{}", exegesis::describe::describe_semantics(&bundle));
     Ok(())
 }
 

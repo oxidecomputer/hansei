@@ -805,6 +805,9 @@ fn test_semantic_storage_candidates_exclude_generic_arguments() {
         ("app::{closure_env#0}", false),
         ("Wrapper<app::work::{async_fn_env#0}>", false),
         ("app::work::{async_fn_env#0}::Returned", false),
+        ("&mut app::work::{async_fn_env#0}", false),
+        ("&app::work::{async_block_env#0}", false),
+        ("*const app::work::{async_fn_env#0}", false),
     ] {
         assert_eq!(names::is_coroutine_candidate(name), candidate, "{name}");
     }

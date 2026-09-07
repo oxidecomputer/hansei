@@ -160,7 +160,7 @@ fn key(m: &MemberDef) -> (StrRef, BundleTypeId, u64) {
     (m.name, m.ty, m.offset)
 }
 
-fn members_of(types: &TypeTable, id: BundleTypeId) -> &[MemberDef] {
+pub(super) fn members_of(types: &TypeTable, id: BundleTypeId) -> &[MemberDef] {
     match types.get(id) {
         Some(TypeDef::Struct { members, .. }) | Some(TypeDef::Union { members, .. }) => members,
         _ => &[],
@@ -169,7 +169,7 @@ fn members_of(types: &TypeTable, id: BundleTypeId) -> &[MemberDef] {
 
 /// The last path segment of a coroutine state's payload type, which is the
 /// state's own name: `Unresumed`, `Returned`, `Suspend0`, and so on.
-fn state_name(names: &[Option<String>], id: BundleTypeId) -> Option<&str> {
+pub(super) fn state_name(names: &[Option<String>], id: BundleTypeId) -> Option<&str> {
     let name = names.get(id.0 as usize)?.as_deref()?;
     Some(name.rsplit("::").next().unwrap_or(name))
 }

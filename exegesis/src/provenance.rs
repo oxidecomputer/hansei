@@ -22,12 +22,19 @@ pub enum OriginDecline {
 }
 
 /// Parse the version token in rustc's producer grammar, never arbitrary digits
-/// in another compiler's identification. Build/vendor suffixes remain in the
-/// original interned producer; semver prerelease/build qualifiers remain here.
-/// Parsing identifies a compiler version, not a supported semantic convention.
+/// in another compiler's identification. rustc's LLVM backend writes
+/// `clang LLVM (rustc version X (hash date))`; the bare `rustc version X …`
+/// form is accepted too. Both are anchored at the front, so a producer that
+/// merely mentions rustc somewhere is not one. Build/vendor suffixes remain
+/// in the original interned producer; semver prerelease/build qualifiers
+/// remain here. Parsing identifies a compiler version, not a supported
+/// semantic convention.
 pub fn rustc_version(producer: &str) -> Option<Version> {
-    let rest = producer.strip_prefix("rustc version ")?;
+    let rest = producer
+        .strip_prefix("clang LLVM (rustc version ")
+        .or_else(|| producer.strip_prefix("rustc version "))?;
     let token = rest.split_whitespace().next()?;
+    let token = token.strip_suffix(')').unwrap_or(token);
     Version::parse(token).ok()
 }
 
@@ -79,6 +86,11 @@ mod tests {
     #[test]
     fn test_rustc_version_requires_the_compiler_prefix_and_whole_token() {
         for (producer, expected) in [
+            (
+                "clang LLVM (rustc version 1.98.0 (88d9e12ae 2026-08-18))",
+                "1.98.0",
+            ),
+            ("clang LLVM (rustc version 1.97.0)", "1.97.0"),
             ("rustc version 1.97.0 (aabb 2026-07-01)", "1.97.0"),
             (
                 "rustc version 1.97.1 (ccdd 2026-07-08) vendor release",
@@ -97,6 +109,9 @@ mod tests {
         for producer in [
             "GNU C17 14.2.0",
             "GNU C17 1.98.0 rustc version 1.98.0",
+            "clang LLVM (rustc version )",
+            "clang LLVM (vendor rustc version 1.98.0)",
+            "clang version 19.1.0 (rustc version 1.98.0)",
             "clang version 1.98.0",
             "vendor rustc version 1.98.0",
             "rustc version ",
