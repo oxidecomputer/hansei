@@ -15,16 +15,21 @@ use super::Lifecycle;
 pub use super::model::*;
 
 use super::contract::{self, ContractReport, WalkPolicy, Walked};
+use super::observe::{
+    AcquireObservation, Consistency, IoFutureState, IoObservation, JoinObservation, Observed,
+    QueueObservation, ReadContext, ResourceObservation, ScanBudget, TimerObservation,
+    TimerRegistrationState, ValueKey, WalkIssue, WalkIssueKind, issue_of, lock_consistency,
+};
 use super::semantics::SemanticIndex;
 use super::{Location, RawInstant, TaskAddr, TaskState};
 
 use anyhow::{Context as _, Result, anyhow, bail, ensure};
 use hansei_bundle::symbols::normalized_v0_key;
-use hansei_bundle::tokio::semaphore;
+use hansei_bundle::tokio::{semaphore, timer};
 use hansei_bundle::{
-    BundleType, BundleTypeId, BundleView, ContainerKind, DynPointer, FutureKind, ResourceKind,
-    StaticRole, StoragePolicy, SymbolLookup, TaskEntryId, TaskFutureEntry, TypeDef, TypeSemantics,
-    WalkOutcome, WalkRole, strip_build_prefix, strip_llvm_suffix,
+    BundleType, BundleTypeId, BundleView, ContainerKind, DynPointer, FutureKind, IoOperationKind,
+    ResourceKind, StaticRole, Step, StoragePolicy, SymbolLookup, TaskEntryId, TaskFutureEntry,
+    TypeDef, TypeSemantics, WalkOutcome, WalkRole, strip_build_prefix, strip_llvm_suffix,
 };
 use proc::{LwpInfo, Mappings, SymbolBuf, Target};
 use reify::Value;
@@ -836,8 +841,13 @@ impl<'b, T: Target> Context<'b, T> {
                     "task pointer {addr:#x} is unmapped"
                 );
                 ensure!(visited.insert(addr), "owned-task list cycle at {addr:#x}");
-                let (task, next) = self.parse_task(addr)?;
-                tasks.push(task);
+                // The runtime's own list is what led here, so the read
+                // is held to nothing beyond the target's mappings.
+                let header = self.read_task_header(TaskAddr(addr), &ReadContext::none())?;
+                let next = self
+                    .owned_next(addr + header.trailer_offset)
+                    .context("failed to read Trailer.owned links")?;
+                tasks.push(header.into_task());
                 Ok(next)
             })();
             match step {
@@ -850,61 +860,100 @@ impl<'b, T: Target> Context<'b, T> {
         }
     }
 
-    /// Parse one task from its `Header` address; returns the task and the
-    /// next Header in the owned list (via `Trailer.owned`).
-    fn parse_task(&self, addr: u64) -> Result<(Task, Option<u64>)> {
-        let header_ty = self.infra_ty(self.view.bundle().infra.header, "task Header")?;
-        let info = Value::read(self.proc, header_ty, addr)
-            .with_context(|| format!("failed to read task Header at {addr:#x}"))?;
-
-        let state = TaskState(self.walk(WalkRole::HeaderState).read(info)?);
-        let owner_id = self.walk(WalkRole::HeaderOwnerId).read(info)?;
-
-        let vtable_addr: u64 = self.walk(WalkRole::HeaderVtable).read(info)?;
-        let vtable = self
-            .task_vtable(vtable_addr)
-            .with_context(|| format!("failed to read task vtable at {vtable_addr:#x}"))?;
-
-        let raw_id = self.proc.read_u64(addr + vtable.id_offset).map_err(|e| {
-            anyhow!(e).context(format!(
-                "failed to read task id at {addr:#x}+{:#x}",
-                vtable.id_offset
-            ))
-        })?;
-        // The id is a NonZeroU64; zero means we misread something.
-        let task_id = (raw_id != 0).then_some(raw_id);
+    /// Decode a task from its `Header` address: everything the Header
+    /// and the vtable it names establish, whoever handed the pointer
+    /// over — an owned list, a `JoinHandle`, a registered waker, a
+    /// blocking-pool queue entry. Nothing here reads the Trailer, so a
+    /// handle to a task whose owned-list links are unreadable still
+    /// identifies it; following the list is [`Context::walk_owned_list`]'s
+    /// own step.
+    ///
+    /// `read` is what the Header's bytes are held to: a candidate in
+    /// memory the allocator has taken back is refused before it is
+    /// decoded into a task that is not there.
+    pub fn read_task_header(
+        &self,
+        addr: TaskAddr,
+        read: &ReadContext<'_>,
+    ) -> Result<DecodedTaskHeader> {
+        let identity = self.header_identity(addr.0, read)?;
+        let vtable = &identity.vtable;
 
         let spawn_location = match vtable.spawn_location_offset {
             Some(off) => {
                 let loc_ptr = self
                     .proc
-                    .read_u64(addr + off)
+                    .read_u64(addr.0 + off)
                     .map_err(|e| anyhow!(e).context("failed to read spawn location pointer"))?;
                 Some(self.read_location(loc_ptr)?)
             }
             None => None,
         };
 
-        let future = self.resolve_future(&vtable);
+        let future = self.resolve_future(vtable);
         if let FutureInfo::Known(known) = &future {
-            self.cross_check_offsets(&vtable, known)?;
+            self.cross_check_offsets(vtable, known)?;
         }
 
-        let next = self
-            .owned_next(addr + vtable.trailer_offset)
-            .context("failed to read Trailer.owned links")?;
+        Ok(DecodedTaskHeader {
+            addr,
+            state: identity.state,
+            owner_id: identity.owner_id,
+            task_id: identity.task_id,
+            spawn_location,
+            vtable_addr: identity.vtable_addr,
+            trailer_offset: vtable.trailer_offset,
+            future,
+        })
+    }
 
-        let task = Task {
-            addr: TaskAddr(addr),
+    /// The first stage of [`Context::read_task_header`]: the Header's
+    /// own words and the vtable they name, which is as far as the
+    /// readers that only need a task's id and state go — a waker's
+    /// data pointer is asked about tens of thousands of times on a
+    /// production target, and neither the spawn location nor the
+    /// future join is part of that answer.
+    fn header_identity(&self, addr: u64, read: &ReadContext<'_>) -> Result<HeaderIdentity> {
+        ensure!(
+            self.mappings.contains_addr(addr),
+            "task Header pointer {addr:#x} is unmapped"
+        );
+        let header_ty = self.infra_ty(self.view.bundle().infra.header, "task Header")?;
+        if let Some(refusal) = read.refusal(addr, header_ty.size()) {
+            return Err(
+                anyhow::Error::new(refusal).context(format!("the task Header at {addr:#x}"))
+            );
+        }
+        let header = Value::read(self.proc, header_ty, addr)
+            .with_context(|| format!("failed to read the task Header at {addr:#x}"))?;
+
+        let state = TaskState(self.walk(WalkRole::HeaderState).read(header)?);
+        let owner_id = self.walk(WalkRole::HeaderOwnerId).read(header)?;
+
+        let vtable_addr: u64 = self.walk(WalkRole::HeaderVtable).read(header)?;
+        let vtable = self
+            .task_vtable(vtable_addr)
+            .with_context(|| format!("failed to read task vtable at {vtable_addr:#x}"))?;
+
+        let id_addr = addr
+            .checked_add(vtable.id_offset)
+            .ok_or_else(|| anyhow!("{addr:#x} + {:#x} overflows", vtable.id_offset))?;
+        let raw_id = self.proc.read_u64(id_addr).map_err(|e| {
+            anyhow!(e).context(format!(
+                "failed to read the task id at {addr:#x}+{:#x}",
+                vtable.id_offset
+            ))
+        })?;
+        // The id is a NonZeroU64; zero means we misread something.
+        let task_id = (raw_id != 0).then_some(raw_id);
+
+        Ok(HeaderIdentity {
             state,
             owner_id,
             task_id,
-            spawn_location,
-            future,
-            group: 0,
-            blocking: false,
-        };
-        Ok((task, next))
+            vtable_addr,
+            vtable,
+        })
     }
 
     /// Decode a `task::raw::Vtable` from target memory using the bundle's
@@ -1668,18 +1717,41 @@ impl<'b, T: Target> Context<'b, T> {
     /// Where this tokio keeps it was the binder's business at
     /// extraction; the recorded steps already spell the route.
     fn read_sleep(&self, sleep: Value<'b>) -> Result<WaitTarget> {
-        // The deadline lands on the std Timespec inside tokio's
-        // Instant, on the target's monotonic clock.
-        let deadline = self.walk(WalkRole::SleepDeadline).walk_at(sleep)?;
-        let tv_sec: i64 = self.walk(WalkRole::DeadlineTvSec).read(deadline)?;
-        let tv_nsec: u32 = self.walk(WalkRole::DeadlineTvNsec).read(deadline)?;
+        let deadline = self
+            .sleep_deadline(sleep, &ReadContext::none())?
+            .ok_or_else(|| anyhow!("the sleep's timer is of a flavor the walk does not read"))?;
         Ok(WaitTarget::Timer {
-            deadline: RawInstant {
-                tv_sec: tv_sec as u64,
-                tv_nsec,
-            },
+            deadline,
             stopped: self.stopped_at(),
         })
+    }
+
+    /// The deadline a `Sleep` caches, on the target's monotonic clock:
+    /// the std `Timespec` inside tokio's `Instant`, wherever this
+    /// tokio keeps it. `None` where the recorded route enters a timer
+    /// flavor that is not the live one.
+    fn sleep_deadline(
+        &self,
+        sleep: Value<'b>,
+        read: &ReadContext<'_>,
+    ) -> Result<Option<RawInstant>> {
+        let Some(deadline) = self
+            .walk(WalkRole::SleepDeadline)
+            .walk_with(read, sleep)?
+            .optional()
+        else {
+            return Ok(None);
+        };
+        let tv_sec: i64 = self
+            .walk(WalkRole::DeadlineTvSec)
+            .read_with(read, deadline)?;
+        let tv_nsec: u32 = self
+            .walk(WalkRole::DeadlineTvNsec)
+            .read_with(read, deadline)?;
+        Ok(Some(RawInstant {
+            tv_sec: tv_sec as u64,
+            tv_nsec,
+        }))
     }
 
     /// A `JoinHandle<T>`: the task being awaited — a dependency edge
@@ -1715,25 +1787,8 @@ impl<'b, T: Target> Context<'b, T> {
     /// left the owned list (the handle's reference keeps the Header
     /// alive), which only the state word reveals.
     pub(crate) fn header_task_ref(&self, addr: u64) -> Result<(Option<u64>, TaskState)> {
-        ensure!(
-            self.mappings.contains_addr(addr),
-            "task Header pointer {addr:#x} is unmapped"
-        );
-        let header_ty = self.infra_ty(self.view.bundle().infra.header, "task Header")?;
-        let header = Value::read(self.proc, header_ty, addr)
-            .with_context(|| format!("failed to read the task Header at {addr:#x}"))?;
-        let state = TaskState(self.walk(WalkRole::HeaderState).read(header)?);
-        let vtable_addr: u64 = self.walk(WalkRole::HeaderVtable).read(header)?;
-        let vtable = self
-            .task_vtable(vtable_addr)
-            .with_context(|| format!("failed to read task vtable at {vtable_addr:#x}"))?;
-        let raw_id = self.proc.read_u64(addr + vtable.id_offset).map_err(|e| {
-            anyhow!(e).context(format!(
-                "failed to read the task id at {addr:#x}+{:#x}",
-                vtable.id_offset
-            ))
-        })?;
-        Ok(((raw_id != 0).then_some(raw_id), state))
+        let identity = self.header_identity(addr, &ReadContext::none())?;
+        Ok((identity.task_id, identity.state))
     }
 
     /// The memory a task's allocation covers: the `Cell<T, S>` holding
@@ -1887,11 +1942,7 @@ impl<'b, T: Target> Context<'b, T> {
             ensure!(visited.insert(addr), "wait-queue cycle at {addr:#x}");
             let node = Value::read(self.proc, waiter_ty, addr)
                 .with_context(|| format!("failed to read the Waiter at {addr:#x}"))?;
-            waiters.push(SemaphoreWaiter {
-                addr,
-                needed: self.walk(WalkRole::WaiterNeeded).read(node)?,
-                waker: self.read_queued_waker(node)?,
-            });
+            waiters.push(self.queue_node(node, &ReadContext::none())?);
             cur = self
                 .walk(WalkRole::WaiterNext)
                 .walk(node)?
@@ -1903,11 +1954,25 @@ impl<'b, T: Target> Context<'b, T> {
         Ok(waiters)
     }
 
+    /// One wait-queue node as a listing carries it: the permits it
+    /// still needs and the waker it holds.
+    fn queue_node(&self, node: Value<'b>, read: &ReadContext<'_>) -> Result<SemaphoreWaiter> {
+        Ok(SemaphoreWaiter {
+            addr: node.addr,
+            needed: self.walk(WalkRole::WaiterNeeded).read_with(read, node)?,
+            waker: self.read_queued_waker(node, read)?,
+        })
+    }
+
     /// Decode the waker registered in a wait-queue node. Waiters keep
     /// theirs in an `UnsafeCell<Option<Waker>>`, whose `Some` payload
     /// peels through the `Waker` to the `RawWaker` pair.
-    fn read_queued_waker(&self, node: Value<'b>) -> Result<QueuedWaker> {
-        let Some(raw) = self.walk(WalkRole::WaiterWaker).walk(node)?.optional() else {
+    fn read_queued_waker(&self, node: Value<'b>, read: &ReadContext<'_>) -> Result<QueuedWaker> {
+        let Some(raw) = self
+            .walk(WalkRole::WaiterWaker)
+            .walk_with(read, node)?
+            .optional()
+        else {
             return Ok(QueuedWaker::Unarmed);
         };
         self.raw_waker(raw)
@@ -1998,15 +2063,8 @@ impl<'b, T: Target> Context<'b, T> {
     /// vtable join — `None` when the future is unknown or ambiguous,
     /// never a guess.
     fn header_entry(&self, addr: u64) -> Result<Option<TaskEntryId>> {
-        ensure!(
-            self.mappings.contains_addr(addr),
-            "task Header pointer {addr:#x} is unmapped"
-        );
-        let header_ty = self.infra_ty(self.view.bundle().infra.header, "task Header")?;
-        let header = Value::read(self.proc, header_ty, addr)?;
-        let vtable_addr: u64 = self.walk(WalkRole::HeaderVtable).read(header)?;
-        let vtable = self.task_vtable(vtable_addr)?;
-        match self.resolve_future(&vtable) {
+        let identity = self.header_identity(addr, &ReadContext::none())?;
+        match self.resolve_future(&identity.vtable) {
             FutureInfo::Known(known) => Ok(Some(known.entry)),
             FutureInfo::Unknown { .. } | FutureInfo::Ambiguous { .. } => Ok(None),
         }
@@ -2575,7 +2633,8 @@ impl<'b, T: Target> Context<'b, T> {
             let registration = Value::read(self.proc, io_ty, addr)
                 .with_context(|| format!("failed to read the ScheduledIo at {addr:#x}"))?;
             // Enrichment beside the harvest's real business: a torn or
-            // unbound word costs the readiness, never the resource.
+            // unbound word costs the readiness or the guard's verdict,
+            // never the resource.
             let mut resource = IoResourceInfo {
                 addr,
                 readiness: self
@@ -2583,6 +2642,7 @@ impl<'b, T: Target> Context<'b, T> {
                     .try_read(registration)
                     .ok()
                     .flatten(),
+                consistency: self.io_guard(registration, &ReadContext::none()),
                 waiters: Vec::new(),
             };
             if let Err(e) =
@@ -2627,7 +2687,12 @@ impl<'b, T: Target> Context<'b, T> {
             // A direction nobody is awaiting holds no waker.
             if let Some(raw) = self.walk(role).walk(waiters)?.optional() {
                 let task = self.registry_waker(raw, DiscoveryRoute::Io, list, found)?;
-                resource.waiters.push(IoWaiterInfo { slot, task });
+                resource.waiters.push(IoWaiterInfo {
+                    slot,
+                    task,
+                    node: None,
+                    ready: None,
+                });
             }
         }
         let Some(head) = self.walk(WalkRole::IoWaiterHead).walk(waiters)?.optional() else {
@@ -2656,9 +2721,20 @@ impl<'b, T: Target> Context<'b, T> {
                     .ok()
                     .flatten()
                     .map(Interest);
+                // The node's identity and ready flag beside the waker:
+                // a readiness await embeds exactly this node, and its
+                // wake path sets the flag here. The flag's route is the
+                // await's own row, rooted at the same `Waiter` type.
+                let ready = self
+                    .walk(WalkRole::ReadinessWaiterReady)
+                    .try_read::<bool>(node)
+                    .ok()
+                    .flatten();
                 resource.waiters.push(IoWaiterInfo {
                     slot: IoSlot::Listed { interest },
                     task,
+                    node: Some(addr),
+                    ready,
                 });
             }
             cur = self
@@ -2744,19 +2820,21 @@ impl<'b, T: Target> Context<'b, T> {
         Ok(())
     }
 
-    /// List one blocking cell as a row, wherever it was found: parse
+    /// List one blocking cell as a row, wherever it was found: decode
     /// its Header like any task's and mark it. A complete cell is left
     /// to the join edge that found it — off the pool, alive only
     /// through its handle — and a listed one is already a row. The
     /// runtime's own cells are skipped: tokio launches its worker
     /// threads through the pool, and whether a capture catches one of
-    /// those mid-launch is pure timing, not target work.
+    /// those mid-launch is pure timing, not target work. A blocking
+    /// cell is in no owned list, so its Trailer links are never read.
     fn list_blocking(&self, addr: u64, group: usize, list: &mut TaskList) {
         if list.contains(addr) {
             return;
         }
-        match self.parse_task(addr) {
-            Ok((mut task, _)) => {
+        match self.read_task_header(TaskAddr(addr), &ReadContext::none()) {
+            Ok(header) => {
+                let mut task = header.into_task();
                 if task.state.lifecycle() == Lifecycle::Complete {
                     return;
                 }
@@ -3145,6 +3223,651 @@ impl<'b, T: Target> Context<'b, T> {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Raw resource observations
+// ---------------------------------------------------------------------------
+
+impl<'b, T: Target> Context<'b, T> {
+    /// What one resource value is, decoded through the roles its
+    /// binding names and nothing else: the header a `JoinHandle`
+    /// points at, an `Acquire`'s five words, a `Sleep`'s deadline and
+    /// entry state, an io operation's registration. No task list is
+    /// consulted and no wait is diagnosed — a join names a header that
+    /// [`Context::read_task_header`] validates separately, an acquire
+    /// names a semaphore whose queue [`Context::observe_semaphore_queue`]
+    /// reads on demand — so discovery can consume a held handle before
+    /// any list exists.
+    ///
+    /// A value with no resource binding observes as nothing, with
+    /// nothing to report; a bound resource whose bytes do not decode
+    /// observes as nothing with the reason.
+    pub fn observe_resource(
+        &self,
+        value: Value<'b>,
+        read: &ReadContext<'_>,
+    ) -> Observed<ResourceObservation> {
+        let Some(kind) = self
+            .type_semantics(value.ty.id())
+            .and_then(|record| record.resource.as_ref())
+            .map(|binding| binding.kind)
+        else {
+            return Observed::none();
+        };
+        let key = ValueKey::of(value);
+        let observed = match kind {
+            ResourceKind::JoinHandle => self
+                .observe_join(value, read)
+                .map(ResourceObservation::Join),
+            ResourceKind::SemaphoreAcquire => self
+                .observe_acquire(value, read)
+                .map(ResourceObservation::Acquire),
+            ResourceKind::Sleep => return self.observe_timer(value, read),
+            ResourceKind::IoOperation(operation) => self
+                .observe_io(value, operation, read)
+                .map(ResourceObservation::Io),
+        };
+        match observed {
+            Ok(observation) => Observed::of(observation),
+            Err(e) => Observed::failed(issue_of(key, &e)),
+        }
+    }
+
+    /// A `JoinHandle`: the task header its raw pointer names.
+    fn observe_join(&self, handle: Value<'b>, read: &ReadContext<'_>) -> Result<JoinObservation> {
+        let addr: u64 = self.walk(WalkRole::JoinHandleRaw).read_with(read, handle)?;
+        ensure!(addr != 0, "the JoinHandle's task pointer is null");
+        Ok(JoinObservation {
+            handle: ValueKey::of(handle),
+            header: TaskAddr(addr),
+        })
+    }
+
+    /// An `Acquire`: its five raw words, read in place. The semaphore
+    /// is keyed by the pointer's own pointee type, so the queue read
+    /// under this key decodes with the layout this acquire was
+    /// compiled against.
+    fn observe_acquire(
+        &self,
+        acquire: Value<'b>,
+        read: &ReadContext<'_>,
+    ) -> Result<AcquireObservation> {
+        let semaphore = self
+            .walk(WalkRole::AcquireSemaphore)
+            .walk_at_with(read, acquire)?;
+        let sem_ty = semaphore
+            .ty
+            .pointer_target()
+            .ok_or_else(|| anyhow!("Acquire.semaphore is not pointer-shaped"))?;
+        let sem_addr: u64 = semaphore.parse(self.proc)?;
+        let node = self
+            .walk(WalkRole::AcquireNode)
+            .walk_at_with(read, acquire)?;
+        Ok(AcquireObservation {
+            future: ValueKey::of(acquire),
+            semaphore: ValueKey {
+                addr: sem_addr,
+                ty: sem_ty.id(),
+            },
+            node: node.addr,
+            requested: self
+                .walk(WalkRole::AcquireNumPermits)
+                .read_with(read, acquire)?,
+            needed: self
+                .walk(WalkRole::AcquireNeeded)
+                .read_with(read, acquire)?,
+            queued: self
+                .walk(WalkRole::AcquireQueued)
+                .read_with(read, acquire)?,
+            queue_position: None,
+        })
+    }
+
+    /// A `Sleep`: the deadline it caches and where its timer entry is.
+    /// Each half is read on its own, so a sleep whose entry word does
+    /// not read still reports its deadline, with the failure beside it.
+    fn observe_timer(
+        &self,
+        sleep: Value<'b>,
+        read: &ReadContext<'_>,
+    ) -> Observed<ResourceObservation> {
+        let key = ValueKey::of(sleep);
+        let mut issues = Vec::new();
+        let deadline = self.sleep_deadline(sleep, read).unwrap_or_else(|e| {
+            issues.push(issue_of(key, &e));
+            None
+        });
+        let state = self.timer_state(sleep, read).unwrap_or_else(|e| {
+            issues.push(issue_of(key, &e));
+            TimerRegistrationState::Unknown
+        });
+        Observed {
+            value: Some(ResourceObservation::Timer(TimerObservation {
+                future: key,
+                deadline,
+                state,
+            })),
+            issues,
+        }
+    }
+
+    /// Where a `Sleep`'s timer entry is in the wheel's life: the
+    /// entry's state word, decoded with the sentinels the wheel
+    /// harvest reads, behind the `Some` that says the entry exists at
+    /// all. A sleep never polled has no entry, and the route's guard
+    /// says so; a timer of a flavor the route does not enter is an
+    /// error rather than a state.
+    fn timer_state(
+        &self,
+        sleep: Value<'b>,
+        read: &ReadContext<'_>,
+    ) -> Result<TimerRegistrationState> {
+        match self
+            .walk(WalkRole::SleepTimerState)
+            .walk_with(read, sleep)?
+        {
+            Walked::At(word) => {
+                let raw: u64 = word.parse(self.proc)?;
+                Ok(match raw {
+                    timer::STATE_DEREGISTERED => TimerRegistrationState::Deregistered,
+                    timer::STATE_PENDING_FIRE => TimerRegistrationState::PendingFire,
+                    tick => TimerRegistrationState::Registered { tick },
+                })
+            }
+            Walked::Inactive("Some") => Ok(TimerRegistrationState::NotRegistered),
+            Walked::Inactive(variant) => {
+                bail!("the sleep's timer is of a flavor the walk does not read (not {variant})")
+            }
+            Walked::Null => bail!("the sleep's timer entry is behind a null pointer"),
+        }
+    }
+
+    /// A bounded io operation or a readiness await: the registration
+    /// it belongs to, reached by the operation's own route — through
+    /// the reader or writer a `Read`/`WriteAll` polls, or named
+    /// outright by a `Readiness` — and what its own storage says.
+    fn observe_io(
+        &self,
+        future: Value<'b>,
+        operation: IoOperationKind,
+        read: &ReadContext<'_>,
+    ) -> Result<IoObservation> {
+        let key = ValueKey::of(future);
+        let (endpoint, length, shared, interest) = match operation {
+            IoOperationKind::Read => (
+                WalkRole::IoReadReader,
+                WalkRole::IoReadBufLen,
+                WalkRole::IoReadShared,
+                Interest::READABLE,
+            ),
+            IoOperationKind::WriteAll => (
+                WalkRole::IoWriteAllWriter,
+                WalkRole::IoWriteAllBufLen,
+                WalkRole::IoWriteAllShared,
+                Interest::WRITABLE,
+            ),
+            IoOperationKind::Readiness => return self.observe_readiness(future, read),
+        };
+        // The reader is a `&mut` to the reviewed stream, and the
+        // registration is reached through it: the one dereference,
+        // held to `read`, then the stream's own route to its
+        // `ScheduledIo`.
+        let pointer = self.walk(endpoint).walk_at_with(read, future)?;
+        let stream = contract::execute_steps(self, read, pointer, &[Step::Deref])
+            .with_context(|| format!("walk path {}", endpoint.name()))?
+            .at(endpoint.name())?;
+        let scheduled_io = self.walk(shared).walk_at_with(read, stream)?;
+        let remaining: u64 = self.walk(length).read_with(read, future)?;
+        Ok(IoObservation {
+            future: key,
+            operation,
+            scheduled_io: ValueKey::of(scheduled_io),
+            interest,
+            waiter_node: None,
+            remaining: Some(remaining),
+            readiness_state: None,
+            waiter_ready: None,
+        })
+    }
+
+    /// A `Readiness` await: the registration it names, its own state,
+    /// and the `Waiter` node embedded in it — the exact list entry a
+    /// pending wait must be found at, with the interest and ready flag
+    /// the resource's wake path sets.
+    fn observe_readiness(
+        &self,
+        future: Value<'b>,
+        read: &ReadContext<'_>,
+    ) -> Result<IoObservation> {
+        let pointer = self
+            .walk(WalkRole::ReadinessScheduledIo)
+            .walk_at_with(read, future)?;
+        let io_ty = pointer
+            .ty
+            .pointer_target()
+            .ok_or_else(|| anyhow!("Readiness.scheduled_io is not pointer-shaped"))?;
+        let io_addr: u64 = pointer.parse(self.proc)?;
+        ensure!(io_addr != 0, "the Readiness's registration pointer is null");
+        let state = self
+            .walk(WalkRole::ReadinessState)
+            .walk_at_with(read, future)?;
+        let state = match state.ty.enumerator_name(state.bytes) {
+            Some("Init") => IoFutureState::Init,
+            Some("Waiting") => IoFutureState::Waiting,
+            Some("Done") => IoFutureState::Done,
+            _ => IoFutureState::Unknown(word_of(state.bytes)),
+        };
+        let waiter = self
+            .walk(WalkRole::ReadinessWaiter)
+            .walk_at_with(read, future)?;
+        let interest: u64 = self
+            .walk(WalkRole::ReadinessWaiterInterest)
+            .read_with(read, waiter)?;
+        let ready: bool = self
+            .walk(WalkRole::ReadinessWaiterReady)
+            .read_with(read, waiter)?;
+        Ok(IoObservation {
+            future: ValueKey::of(future),
+            operation: IoOperationKind::Readiness,
+            scheduled_io: ValueKey {
+                addr: io_addr,
+                ty: io_ty.id(),
+            },
+            interest: Interest(interest),
+            waiter_node: Some(waiter.addr),
+            remaining: None,
+            readiness_state: Some(state),
+            waiter_ready: Some(ready),
+        })
+    }
+
+    /// Walk one semaphore's wait queue, on explicit demand: who its
+    /// permits will wake, with the permit word, the closed flags and
+    /// the guard's state read beside the list.
+    ///
+    /// tokio enqueues at the list head and wakes from the tail, so the
+    /// walk runs newest-first and is reversed into wake order only
+    /// when it reached the end: the prefix a failing walk found is
+    /// kept as it was walked, since reversing it would place nodes
+    /// that are not placed. Each node's dereference is charged to
+    /// `budget` and held to `read`, and the first node that cannot be
+    /// believed ends the walk with the reason.
+    pub fn observe_semaphore_queue(
+        &self,
+        semaphore: ValueKey,
+        read: &ReadContext<'_>,
+        budget: &mut ScanBudget,
+    ) -> QueueObservation {
+        let mut queue = QueueObservation {
+            semaphore,
+            waiters: Vec::new(),
+            complete: false,
+            consistency: Consistency::Unknown,
+            closed: None,
+            queue_closed: None,
+            available: None,
+            issues: Vec::new(),
+        };
+        if !budget.charge_referent() {
+            queue.issues.push(spent(semaphore, budget));
+            return queue;
+        }
+        let sem = match self.read_keyed(semaphore, read) {
+            Ok(sem) => sem,
+            Err(e) => {
+                queue.issues.push(issue_of(semaphore, &e));
+                return queue;
+            }
+        };
+        // `permits` keeps the available count shifted above the CLOSED
+        // bit.
+        match self
+            .walk(WalkRole::SemaphorePermits)
+            .read_with::<u64>(read, sem)
+        {
+            Ok(raw) => {
+                queue.closed = Some(raw & semaphore::CLOSED != 0);
+                queue.available = Some(raw >> semaphore::PERMIT_SHIFT);
+            }
+            Err(e) => queue.issues.push(issue_of(semaphore, &e)),
+        }
+        match self
+            .walk(WalkRole::SemaphoreClosed)
+            .try_walk_with(read, sem)
+        {
+            Ok(Some(closed)) => match closed.at(WalkRole::SemaphoreClosed.name()) {
+                Ok(closed) => match closed.parse::<bool>(self.proc) {
+                    Ok(flag) => queue.queue_closed = Some(flag),
+                    Err(e) => queue.issues.push(issue_of(semaphore, &anyhow!(e))),
+                },
+                Err(e) => queue.issues.push(issue_of(semaphore, &e)),
+            },
+            Ok(None) => {}
+            Err(e) => queue.issues.push(issue_of(semaphore, &e)),
+        }
+        // The guard around the wait list: a queue read while its lock
+        // is held is a queue mid-edit, whatever its links say.
+        match self.walk(WalkRole::SemaphoreLock).try_walk_with(read, sem) {
+            Ok(Some(Walked::At(lock))) => queue.consistency = lock_consistency(lock),
+            Ok(Some(_)) | Ok(None) => {}
+            Err(e) => queue.issues.push(issue_of(semaphore, &e)),
+        }
+
+        match self.observe_queue_nodes(sem, read, budget, &mut queue.waiters) {
+            Ok(()) => {
+                queue.complete = true;
+                queue.waiters.reverse();
+            }
+            Err(issue) => queue.issues.push(issue),
+        }
+        queue
+    }
+
+    /// The wait list of one semaphore, node by node in walk order,
+    /// pushed as each is reached so a failing walk leaves its prefix.
+    fn observe_queue_nodes(
+        &self,
+        sem: Value<'b>,
+        read: &ReadContext<'_>,
+        budget: &mut ScanBudget,
+        waiters: &mut Vec<SemaphoreWaiter>,
+    ) -> std::result::Result<(), WalkIssue> {
+        let at = ValueKey::of(sem);
+        let head = self
+            .walk(WalkRole::SemaphoreQueueHead)
+            .walk_with(read, sem)
+            .map_err(|e| issue_of(at, &e))?;
+        let Some(head) = head.optional() else {
+            return Ok(());
+        };
+        let waiter_ty = head.ty.pointer_target().ok_or_else(|| {
+            WalkIssue::new(
+                at,
+                WalkIssueKind::InvalidLayout,
+                "the wait-queue head is not pointer-shaped",
+            )
+        })?;
+        let mut visited = HashSet::default();
+        let mut cur = Some(
+            head.parse::<u64>(self.proc)
+                .map_err(|e| issue_of(at, &anyhow!(e)))?,
+        );
+        while let Some(addr) = cur {
+            let key = ValueKey {
+                addr,
+                ty: waiter_ty.id(),
+            };
+            if !visited.insert(addr) {
+                return Err(WalkIssue::new(
+                    key,
+                    WalkIssueKind::Cycle,
+                    format!("wait-queue cycle at {addr:#x}"),
+                ));
+            }
+            if waiters.len() >= budget.limits.max_children as usize {
+                return Err(WalkIssue::new(
+                    key,
+                    WalkIssueKind::VisitLimit,
+                    format!("the walk stopped at {} nodes", budget.limits.max_children),
+                ));
+            }
+            if !budget.charge_referent() {
+                return Err(WalkIssue::new(
+                    key,
+                    WalkIssueKind::VisitLimit,
+                    format!(
+                        "the referent budget ({}) is spent",
+                        budget.limits.max_referent_expansions
+                    ),
+                ));
+            }
+            let node = self.read_keyed(key, read).map_err(|e| issue_of(key, &e))?;
+            waiters.push(self.queue_node(node, read).map_err(|e| issue_of(key, &e))?);
+            cur = self
+                .walk(WalkRole::WaiterNext)
+                .walk_with(read, node)
+                .map_err(|e| issue_of(key, &e))?
+                .optional()
+                .map(|ptr| ptr.parse(self.proc).map_err(|e| issue_of(key, &anyhow!(e))))
+                .transpose()?;
+        }
+        Ok(())
+    }
+
+    /// Everything parked on one io registration, read on demand from
+    /// the `ScheduledIo` a resource observation named: the two direction
+    /// slots and every node on the readiness list, armed or not, each
+    /// with its identity. A list that could not be walked to its end
+    /// keeps the nodes it reached, with the failure beside them.
+    pub fn observe_io_registration(
+        &self,
+        registration: ValueKey,
+        read: &ReadContext<'_>,
+        budget: &mut ScanBudget,
+    ) -> Observed<IoResourceInfo> {
+        if !budget.charge_referent() {
+            return Observed::failed(spent(registration, budget));
+        }
+        let io = match self.read_keyed(registration, read) {
+            Ok(io) => io,
+            Err(e) => return Observed::failed(issue_of(registration, &e)),
+        };
+        let mut issues = Vec::new();
+        let mut resource = IoResourceInfo {
+            addr: registration.addr,
+            readiness: self
+                .walk(WalkRole::ScheduledIoReadiness)
+                .try_read(io)
+                .ok()
+                .flatten(),
+            consistency: self.io_guard(io, read),
+            waiters: Vec::new(),
+        };
+        let waiters = match self
+            .walk(WalkRole::ScheduledIoWaiters)
+            .walk_at_with(read, io)
+        {
+            Ok(waiters) => waiters,
+            Err(e) => {
+                return Observed {
+                    value: Some(resource),
+                    issues: vec![issue_of(registration, &e)],
+                };
+            }
+        };
+        for (role, slot) in [
+            (WalkRole::IoReaderWaker, IoSlot::Reader),
+            (WalkRole::IoWriterWaker, IoSlot::Writer),
+        ] {
+            match self.walk(role).walk_with(read, waiters) {
+                Ok(raw) => {
+                    if let Some(raw) = raw.optional() {
+                        match self.raw_waker(raw) {
+                            Ok(waker) => resource.waiters.push(IoWaiterInfo {
+                                slot,
+                                task: waker.task(),
+                                node: None,
+                                ready: None,
+                            }),
+                            Err(e) => issues.push(issue_of(registration, &e)),
+                        }
+                    }
+                }
+                Err(e) => issues.push(issue_of(registration, &e)),
+            }
+        }
+        if let Err(e) =
+            self.observe_io_waiter_list(waiters, read, budget, &mut resource, &mut issues)
+        {
+            issues.push(e);
+        }
+        Observed {
+            value: Some(resource),
+            issues,
+        }
+    }
+
+    /// Whether the guard around a registration's waiters read unlocked:
+    /// `Unknown` where the row is unbound, lands on a representation
+    /// the reader does not decode, or does not read.
+    fn io_guard(&self, registration: Value<'b>, read: &ReadContext<'_>) -> Consistency {
+        match self
+            .walk(WalkRole::ScheduledIoLock)
+            .try_walk_with(read, registration)
+        {
+            Ok(Some(Walked::At(lock))) => lock_consistency(lock),
+            _ => Consistency::Unknown,
+        }
+    }
+
+    /// The readiness list of one registration, node by node.
+    fn observe_io_waiter_list(
+        &self,
+        waiters: Value<'b>,
+        read: &ReadContext<'_>,
+        budget: &mut ScanBudget,
+        resource: &mut IoResourceInfo,
+        issues: &mut Vec<WalkIssue>,
+    ) -> std::result::Result<(), WalkIssue> {
+        let at = ValueKey::of(waiters);
+        let head = self
+            .walk(WalkRole::IoWaiterHead)
+            .walk_with(read, waiters)
+            .map_err(|e| issue_of(at, &e))?;
+        let Some(head) = head.optional() else {
+            return Ok(());
+        };
+        let node_ty = head.ty.pointer_target().ok_or_else(|| {
+            WalkIssue::new(
+                at,
+                WalkIssueKind::InvalidLayout,
+                "the io waiter list's head is not pointer-shaped",
+            )
+        })?;
+        let mut visited = HashSet::default();
+        let mut cur = Some(
+            head.parse::<u64>(self.proc)
+                .map_err(|e| issue_of(at, &anyhow!(e)))?,
+        );
+        let mut listed = 0u32;
+        while let Some(addr) = cur {
+            let key = ValueKey {
+                addr,
+                ty: node_ty.id(),
+            };
+            if !visited.insert(addr) {
+                return Err(WalkIssue::new(
+                    key,
+                    WalkIssueKind::Cycle,
+                    format!("io waiter list cycle at {addr:#x}"),
+                ));
+            }
+            if listed >= budget.limits.max_children {
+                return Err(WalkIssue::new(
+                    key,
+                    WalkIssueKind::VisitLimit,
+                    format!("the walk stopped at {} nodes", budget.limits.max_children),
+                ));
+            }
+            if !budget.charge_referent() {
+                return Err(WalkIssue::new(
+                    key,
+                    WalkIssueKind::VisitLimit,
+                    format!(
+                        "the referent budget ({}) is spent",
+                        budget.limits.max_referent_expansions
+                    ),
+                ));
+            }
+            let node = self.read_keyed(key, read).map_err(|e| issue_of(key, &e))?;
+            listed += 1;
+            // A node whose future has not been polled since it was
+            // linked carries no waker yet; it is a node all the same.
+            let task = match self.walk(WalkRole::IoWaiterWaker).walk_with(read, node) {
+                Ok(raw) => match raw.optional() {
+                    Some(raw) => match self.raw_waker(raw) {
+                        Ok(waker) => waker.task(),
+                        Err(e) => {
+                            issues.push(issue_of(key, &e));
+                            None
+                        }
+                    },
+                    None => None,
+                },
+                Err(e) => {
+                    issues.push(issue_of(key, &e));
+                    None
+                }
+            };
+            let interest = self
+                .walk(WalkRole::IoWaiterInterest)
+                .try_read::<u64>(node)
+                .ok()
+                .flatten()
+                .map(Interest);
+            let ready = self
+                .walk(WalkRole::ReadinessWaiterReady)
+                .try_read::<bool>(node)
+                .ok()
+                .flatten();
+            resource.waiters.push(IoWaiterInfo {
+                slot: IoSlot::Listed { interest },
+                task,
+                node: Some(addr),
+                ready,
+            });
+            cur = self
+                .walk(WalkRole::IoWaiterNext)
+                .walk_with(read, node)
+                .map_err(|e| issue_of(key, &e))?
+                .optional()
+                .map(|ptr| ptr.parse(self.proc).map_err(|e| issue_of(key, &anyhow!(e))))
+                .transpose()?;
+        }
+        Ok(())
+    }
+
+    /// Read the value a key names, as its nominal type, held to `read`:
+    /// the type must exist, the address must be mapped, and the
+    /// allocator must permit the typed range.
+    fn read_keyed(&self, key: ValueKey, read: &ReadContext<'_>) -> Result<Value<'b>> {
+        let ty = self
+            .view
+            .ty(key.ty)
+            .ok_or_else(|| anyhow!("type {} is not in the tokio info", key.ty.0))?;
+        ensure!(
+            self.mappings.contains_addr(key.addr),
+            "the pointer {:#x} to {} is unmapped",
+            key.addr,
+            ty.name()
+        );
+        if let Some(refusal) = read.refusal(key.addr, ty.size()) {
+            return Err(anyhow::Error::new(refusal).context(format!("reading {}", ty.name())));
+        }
+        Value::read(self.proc, ty, key.addr)
+            .with_context(|| format!("failed to read {} at {:#x}", ty.name(), key.addr))
+    }
+}
+
+/// The issue a read charged to a spent referent budget reports.
+fn spent(at: ValueKey, budget: &ScanBudget) -> WalkIssue {
+    WalkIssue::new(
+        at,
+        WalkIssueKind::VisitLimit,
+        format!(
+            "the referent budget ({}) is spent",
+            budget.limits.max_referent_expansions
+        ),
+    )
+}
+
+/// The little-endian word `bytes` hold, for a raw value nothing names.
+fn word_of(bytes: &[u8]) -> u64 {
+    let mut word = [0u8; 8];
+    let n = bytes.len().min(8);
+    word[..n].copy_from_slice(&bytes[..n]);
+    u64::from_le_bytes(word)
+}
+
 /// The raw fields of a `batch_semaphore::Acquire` future.
 struct AcquireFields {
     /// Address of the contended `Semaphore`.
@@ -3243,6 +3966,17 @@ struct TaskVtable {
     trailer_offset: u64,
     id_offset: u64,
     spawn_location_offset: Option<u64>,
+}
+
+/// What a task `Header` says of itself before anything is joined or
+/// followed: [`Context::header_identity`]'s answer, the common prefix
+/// of every header reader.
+struct HeaderIdentity {
+    state: TaskState,
+    owner_id: Option<u64>,
+    task_id: Option<u64>,
+    vtable_addr: u64,
+    vtable: TaskVtable,
 }
 
 /// Where following one step of an await chain led: the next frame, or
@@ -3662,6 +4396,76 @@ mod tests {
         PAIR.get_or_init(|| testkit::load_any("local-set-io"))
     }
 
+    fn sleep_join() -> &'static (Bundle, Snapshot) {
+        static PAIR: OnceLock<(Bundle, Snapshot)> = OnceLock::new();
+        PAIR.get_or_init(|| testkit::load_any("sleep-join"))
+    }
+
+    /// The listed task whose future's display name contains `name`.
+    fn task_named<'a>(list: &'a TaskList, name: &str) -> &'a Task {
+        list.tasks
+            .iter()
+            .find(|t| matches!(&t.future, FutureInfo::Known(k) if k.display_name.contains(name)))
+            .unwrap_or_else(|| panic!("the fixture lists a task named {name}"))
+    }
+
+    /// A task's Header identifies it without its Trailer: with the
+    /// Trailer's pages denied, the header decodes exactly as it did
+    /// from the healthy capture while the owned-list link that lives
+    /// there does not read — which is what lets a handle name a task
+    /// whose list is unreadable, or that has left its list. And a
+    /// Header the allocator has taken back is refused before it is
+    /// decoded into a task.
+    #[test]
+    fn test_a_header_decodes_without_its_trailer_links() {
+        use crate::testkit::corrupt::Corrupt;
+        use crate::testkit::heap::FakeHeap;
+
+        let (bundle, snapshot) = sleep_join();
+        let ctx = testkit::context(bundle, snapshot);
+        let list = testkit::tasks(&ctx, snapshot);
+        let task = task_named(&list, "sleeper");
+        let healthy = ctx
+            .read_task_header(task.addr, &ReadContext::none())
+            .unwrap();
+        assert_eq!(healthy.task_id, task.task_id);
+        assert_eq!(healthy.state, task.state);
+        let trailer_ty = ctx
+            .infra_ty(ctx.view.bundle().infra.trailer, "task Trailer")
+            .unwrap();
+        let trailer = task.addr.0 + healthy.trailer_offset;
+        assert!(ctx.owned_next(trailer).is_ok());
+
+        let torn = Corrupt::new(snapshot).deny(trailer..trailer + trailer_ty.size());
+        let ctx = Context::new(&torn, BundleView::new(bundle)).unwrap();
+        let header = ctx
+            .read_task_header(task.addr, &ReadContext::none())
+            .expect("the header does not need the trailer");
+        assert_eq!(header.addr, healthy.addr);
+        assert_eq!(header.task_id, healthy.task_id);
+        assert_eq!(header.state, healthy.state);
+        assert_eq!(header.owner_id, healthy.owner_id);
+        assert_eq!(header.trailer_offset, healthy.trailer_offset);
+        assert_eq!(header.vtable_addr, healthy.vtable_addr);
+        let FutureInfo::Known(known) = &header.future else {
+            panic!("the join resolves as before: {:?}", header.future);
+        };
+        assert!(known.display_name.contains("sleeper"));
+        assert_eq!(
+            ctx.header_task_ref(task.addr.0).unwrap(),
+            (healthy.task_id, healthy.state)
+        );
+        let err = ctx.owned_next(trailer).unwrap_err();
+        assert!(format!("{err:#}").contains("Trailer"), "{err:#}");
+
+        let freed = FakeHeap::new().freed(task.addr.0..task.addr.0 + 8);
+        let err = ctx
+            .read_task_header(task.addr, &ReadContext::with_heap(&freed))
+            .unwrap_err();
+        assert!(format!("{err:#}").contains("taken back"), "{err:#}");
+        assert_eq!(freed.counts(), (0, 0, 0));
+    }
+
     /// The vtable fallback of a task's extent — taken when the bundle
     /// has no Cell layout for the future — must still reach the
     /// trailer's end. Forced by handing the walk the same task with its
@@ -3749,6 +4553,619 @@ mod tests {
         let mut sorted = keys.clone();
         sorted.sort();
         assert_eq!(keys, sorted);
+    }
+
+    // -----------------------------------------------------------------
+    // Raw resource observations
+    // -----------------------------------------------------------------
+
+    /// An address nothing in a small test program's address space
+    /// reaches.
+    const NOWHERE: u64 = 0xdead_beef_0000;
+
+    fn futurelock() -> &'static (Bundle, Snapshot) {
+        static PAIR: OnceLock<(Bundle, Snapshot)> = OnceLock::new();
+        PAIR.get_or_init(|| testkit::load_any("futurelock"))
+    }
+
+    /// The leaf future of `task`'s chain: the value its chain bottoms
+    /// out in, which the observers are asked about.
+    fn leaf_of<'a, T: Target>(ctx: &Context<'a, T>, task: &Task) -> Value<'a> {
+        let TaskStage::Running(root) = ctx.task_stage(task).unwrap() else {
+            panic!("the task's future is resident");
+        };
+        let chain = ctx.await_chain(root);
+        assert!(matches!(chain.end, ChainEnd::Leaf), "{:?}", chain.end);
+        chain.frames.last().unwrap().future
+    }
+
+    /// The listed task whose chain bottoms out in a value of a type
+    /// named `leaf`.
+    fn task_parked_on<'a, T: Target>(
+        ctx: &Context<'a, T>,
+        list: &'a TaskList,
+        leaf: &str,
+    ) -> (&'a Task, Value<'a>) {
+        list.tasks
+            .iter()
+            .filter_map(|task| {
+                let TaskStage::Running(root) = ctx.task_stage(task).ok()? else {
+                    return None;
+                };
+                let chain = ctx.await_chain(root);
+                let value = chain.frames.last()?.future;
+                (matches!(chain.end, ChainEnd::Leaf) && value.ty.name().starts_with(leaf))
+                    .then_some((task, value))
+            })
+            .next()
+            .unwrap_or_else(|| panic!("a task is parked on a {leaf}"))
+    }
+
+    /// A `JoinHandle` observes as the header it names and nothing
+    /// more: no task list is consulted, and a header that has since
+    /// completed is still the observation — completion is the
+    /// header's own fact, read separately.
+    #[test]
+    fn test_a_join_handle_observes_its_header_without_a_task_list() {
+        use crate::testkit::corrupt::Corrupt;
+
+        let (bundle, snapshot) = sleep_join();
+        let ctx = testkit::context(bundle, snapshot);
+        let list = testkit::tasks(&ctx, snapshot);
+        let joiner = task_named(&list, "joiner");
+        let sleeper = task_named(&list, "sleeper");
+        let handle = leaf_of(&ctx, joiner);
+        let observed = ctx.observe_resource(handle, &ReadContext::none());
+        assert!(observed.issues.is_empty(), "{:?}", observed.issues);
+        let Some(ResourceObservation::Join(join)) = observed.value else {
+            panic!("a JoinHandle observes as a join: {:?}", observed.value);
+        };
+        assert_eq!(join.header, sleeper.addr);
+        assert_eq!(join.handle, ValueKey::of(handle));
+        let header = ctx
+            .read_task_header(join.header, &ReadContext::none())
+            .unwrap();
+        assert_eq!(header.task_id, sleeper.task_id);
+        assert_eq!(header.state.lifecycle(), Lifecycle::Idle);
+
+        // The same handle over a capture where the sleeper has run to
+        // completion: the observation is the same header, and the
+        // header says complete.
+        let header_ty = ctx
+            .infra_ty(ctx.view.bundle().infra.header, "task Header")
+            .unwrap();
+        let state_at = ctx
+            .walk(WalkRole::HeaderState)
+            .member_offset(header_ty)
+            .expect("Header.state is a member path");
+        const COMPLETE: u64 = 0b0010;
+        const REF_ONE: u64 = 1 << 6;
+        let done = Corrupt::new(snapshot).patch(sleeper.addr.0 + state_at, REF_ONE | COMPLETE);
+        let ctx = Context::new(&done, BundleView::new(bundle)).unwrap();
+        let handle = leaf_of(&ctx, joiner);
+        let observed = ctx.observe_resource(handle, &ReadContext::none());
+        let Some(ResourceObservation::Join(join)) = observed.value else {
+            panic!("still a join: {:?}", observed.value);
+        };
+        assert_eq!(join.header, sleeper.addr);
+        let header = ctx
+            .read_task_header(join.header, &ReadContext::none())
+            .unwrap();
+        assert_eq!(header.state.lifecycle(), Lifecycle::Complete);
+
+        // A value with no resource binding is no observation and no
+        // issue: the coroutine frame itself, say.
+        let TaskStage::Running(root) = ctx.task_stage(joiner).unwrap() else {
+            unreachable!()
+        };
+        let observed = ctx.observe_resource(root, &ReadContext::none());
+        assert!(observed.value.is_none());
+        assert!(observed.issues.is_empty());
+    }
+
+    /// A `Sleep` observes its cached deadline — the same instant the
+    /// wait reader spells — and its entry registered in the wheel at a
+    /// tick, the one the wheel harvest reads off the same entry.
+    #[test]
+    fn test_a_sleep_observes_its_deadline_and_registration() {
+        let (bundle, snapshot) = sleep_join();
+        let ctx = testkit::context(bundle, snapshot);
+        let list = testkit::tasks(&ctx, snapshot);
+        let sleeper = task_named(&list, "sleeper");
+        let sleep = leaf_of(&ctx, sleeper);
+        let observed = ctx.observe_resource(sleep, &ReadContext::none());
+        let Some(ResourceObservation::Timer(timer)) = observed.value else {
+            panic!("a Sleep observes as a timer: {:?}", observed.value);
+        };
+        assert_eq!(timer.future, ValueKey::of(sleep));
+        let TaskStage::Running(root) = ctx.task_stage(sleeper).unwrap() else {
+            unreachable!()
+        };
+        let chain = ctx.await_chain(root);
+        let Some(Ok(WaitTarget::Timer { deadline, .. })) = ctx.wait_target(&chain, &list) else {
+            panic!("the wait reader reads the same sleep");
+        };
+        assert_eq!(timer.deadline, Some(deadline));
+        assert!(observed.issues.is_empty(), "{:?}", observed.issues);
+        let TimerRegistrationState::Registered { tick } = timer.state else {
+            panic!("parked in the wheel: {:?}", timer.state);
+        };
+        assert!(tick < timer::STATE_MIN_VALUE);
+        // The wheel harvest read the same word off the same entry.
+        let mut e = testkit::enumerate(&ctx, snapshot);
+        e.discover(&ctx, &[]);
+        let armed: Vec<u64> = e
+            .registries
+            .timers_of(sleeper.addr.0)
+            .filter_map(|t| t.state)
+            .collect();
+        assert_eq!(armed, [tick]);
+
+        // A sleep whose entry word says deregistered, and one never
+        // polled — its guarded `Some` inactive — are each their own
+        // state, never a tick.
+        use crate::testkit::corrupt::Corrupt;
+        let word = ctx.walk(WalkRole::SleepTimerState).walk_at(sleep).unwrap();
+        let fired = Corrupt::new(snapshot).patch(word.addr, timer::STATE_DEREGISTERED);
+        let ctx_fired = Context::new(&fired, BundleView::new(bundle)).unwrap();
+        let sleep_fired = leaf_of(&ctx_fired, sleeper);
+        let Some(ResourceObservation::Timer(timer)) = ctx_fired
+            .observe_resource(sleep_fired, &ReadContext::none())
+            .value
+        else {
+            unreachable!()
+        };
+        assert_eq!(timer.state, TimerRegistrationState::Deregistered);
+        let pending = Corrupt::new(snapshot).patch(word.addr, timer::STATE_PENDING_FIRE);
+        let ctx_pending = Context::new(&pending, BundleView::new(bundle)).unwrap();
+        let sleep_pending = leaf_of(&ctx_pending, sleeper);
+        let Some(ResourceObservation::Timer(timer)) = ctx_pending
+            .observe_resource(sleep_pending, &ReadContext::none())
+            .value
+        else {
+            unreachable!()
+        };
+        assert_eq!(timer.state, TimerRegistrationState::PendingFire);
+    }
+
+    /// An `Acquire` observes its five words with no queue read, and
+    /// the semaphore's queue is read on demand: complete, quiescent
+    /// under an unlocked guard, in the wake order the wait reader
+    /// spells, holding the acquire's node exactly once — which is
+    /// what places it.
+    #[test]
+    fn test_an_acquire_observes_its_words_and_the_queue_on_demand() {
+        let (bundle, snapshot) = futurelock();
+        let ctx = testkit::context(bundle, snapshot);
+        let list = testkit::tasks(&ctx, snapshot);
+        let (task, acquire) = task_parked_on(&ctx, &list, "tokio::sync::batch_semaphore::Acquire");
+        let observed = ctx.observe_resource(acquire, &ReadContext::none());
+        assert!(observed.issues.is_empty(), "{:?}", observed.issues);
+        let Some(ResourceObservation::Acquire(acq)) = observed.value else {
+            panic!("an Acquire observes as an acquire: {:?}", observed.value);
+        };
+        assert_eq!(acq.future, ValueKey::of(acquire));
+        assert_eq!(acq.requested, 1);
+        assert_eq!(acq.needed, 1);
+        assert!(acq.queued);
+        assert_eq!(acq.queue_position, None);
+        let sem_ty = ctx.view.ty(acq.semaphore.ty).unwrap();
+        assert_eq!(sem_ty.name(), "tokio::sync::batch_semaphore::Semaphore");
+        let node_ty = ctx.walk(WalkRole::AcquireNode).walk_at(acquire).unwrap();
+        assert_eq!(acq.node, node_ty.addr);
+
+        let mut budget = ScanBudget::default();
+        let queue = ctx.observe_semaphore_queue(acq.semaphore, &ReadContext::none(), &mut budget);
+        assert!(queue.issues.is_empty(), "{:?}", queue.issues);
+        assert!(queue.complete);
+        assert_eq!(queue.consistency, Consistency::Quiescent);
+        assert_eq!(queue.closed, Some(false));
+        assert_eq!(queue.queue_closed, Some(false));
+        // The background task holds the one permit.
+        assert_eq!(queue.available, Some(0));
+        assert!(queue.established());
+        assert_eq!(
+            queue.waiters.iter().filter(|w| w.addr == acq.node).count(),
+            1
+        );
+        assert_eq!(queue.contains(acq.node), Some(true));
+        assert_eq!(queue.contains(NOWHERE), Some(false));
+        // The semaphore itself, then one node.
+        assert_eq!(budget.referent_expansions, 1 + queue.waiters.len() as u64);
+        // Every node's waker is this task's: the abandoned op1 box
+        // and the awaited op2 were both polled by it.
+        for waiter in &queue.waiters {
+            assert_eq!(waiter.waker.task(), Some(task.addr.0), "{waiter:?}");
+        }
+
+        // The same order and nodes the wait reader spells.
+        let TaskStage::Running(root) = ctx.task_stage(task).unwrap() else {
+            unreachable!()
+        };
+        let chain = ctx.await_chain(root);
+        let Some(Ok(WaitTarget::Semaphore { waiters, .. })) = ctx.wait_target(&chain, &list) else {
+            panic!("the wait reader reads the same semaphore");
+        };
+        let legacy: Vec<u64> = waiters.iter().map(|w| w.addr).collect();
+        let observed: Vec<u64> = queue.waiters.iter().map(|w| w.addr).collect();
+        assert_eq!(observed, legacy);
+        assert_eq!(
+            queue.position(acq.node),
+            legacy.iter().position(|&a| a == acq.node)
+        );
+    }
+
+    /// The queue's guard byte and the word linking its first node —
+    /// the `Option<NonNull<Waiter>>` inside the node's pointers, at
+    /// whatever it holds — for damaging them.
+    fn queue_words<'a>(ctx: &Context<'a, Snapshot>, semaphore: ValueKey) -> (u64, u64, u64) {
+        let sem = ctx.read_keyed(semaphore, &ReadContext::none()).unwrap();
+        let lock = ctx.walk(WalkRole::SemaphoreLock).walk_at(sem).unwrap();
+        assert_eq!(lock.ty.name(), "parking_lot::raw_mutex::RawMutex");
+        let head = ctx.walk(WalkRole::SemaphoreQueueHead).walk_at(sem).unwrap();
+        let first: u64 = head.parse(ctx.proc).unwrap();
+        let node = Value::read(ctx.proc, head.ty.pointer_target().unwrap(), first).unwrap();
+        // The recorded route enters `Some` on its way to the pointer;
+        // the option itself is what the steps before that land on.
+        let steps = &ctx.view.bundle().walks.entries[&WalkRole::WaiterNext].steps;
+        let option = steps
+            .iter()
+            .position(|s| matches!(s, Step::Variant(_)))
+            .expect("the link route enters Some");
+        let Walked::At(next) =
+            contract::execute_steps(ctx, &ReadContext::none(), node, &steps[..option]).unwrap()
+        else {
+            panic!("the option is reached");
+        };
+        (lock.addr, next.addr, first)
+    }
+
+    /// A queue read under a held guard, cut short, refused by the
+    /// allocator, capped, or looped keeps the nodes it reached and
+    /// places none of them: no position, and no claim that an unseen
+    /// node is absent. The fixture's queue holds one node — op2's —
+    /// behind the granted, abandoned op1, which has left the queue
+    /// and so has no position in it.
+    #[test]
+    fn test_a_partial_or_mutating_queue_places_nothing() {
+        use crate::testkit::corrupt::Corrupt;
+        use crate::testkit::heap::FakeHeap;
+        use crate::tokio::observe::ScanLimits;
+
+        let (bundle, snapshot) = futurelock();
+        let ctx = testkit::context(bundle, snapshot);
+        let list = testkit::tasks(&ctx, snapshot);
+        let (task, acquire) = task_parked_on(&ctx, &list, "tokio::sync::batch_semaphore::Acquire");
+        let Some(ResourceObservation::Acquire(acq)) =
+            ctx.observe_resource(acquire, &ReadContext::none()).value
+        else {
+            unreachable!()
+        };
+        let (lock_byte, first_next, first) = queue_words(&ctx, acq.semaphore);
+        assert_eq!(first, acq.node);
+
+        // The granted acquire left the queue: an established walk says
+        // so, and places it nowhere.
+        let TaskStage::Running(root) = ctx.task_stage(task).unwrap() else {
+            unreachable!()
+        };
+        let chain = ctx.await_chain(root);
+        let abandoned = ctx.abandoned_acquires(&chain);
+        assert_eq!(abandoned.len(), 1, "{abandoned:?}");
+        assert!(abandoned[0].granted());
+        let granted = abandoned[0].node;
+        let queue = ctx.observe_semaphore_queue(
+            acq.semaphore,
+            &ReadContext::none(),
+            &mut ScanBudget::default(),
+        );
+        assert!(queue.established());
+        assert_eq!(queue.waiters.len(), 1);
+        assert_eq!(queue.position(first), Some(0));
+        assert_eq!(queue.contains(granted), Some(false));
+        assert_eq!(queue.position(granted), None);
+
+        // Locked: everything reads, nothing is placed.
+        let locked = Corrupt::new(snapshot).patch_byte(lock_byte, 0b01);
+        let ctx_locked = Context::new(&locked, BundleView::new(bundle)).unwrap();
+        let queue = ctx_locked.observe_semaphore_queue(
+            acq.semaphore,
+            &ReadContext::none(),
+            &mut ScanBudget::default(),
+        );
+        assert!(queue.complete);
+        assert_eq!(queue.consistency, Consistency::Mutating);
+        assert!(queue.issues.is_empty(), "{:?}", queue.issues);
+        assert_eq!(queue.waiters.len(), 1);
+        assert_eq!(queue.position(first), None);
+        assert_eq!(queue.contains(first), Some(true));
+        assert_eq!(queue.contains(granted), None);
+
+        // Cut: the node's link runs off the map, the prefix is kept,
+        // and nothing beyond it is placed or declared absent.
+        let cut = Corrupt::new(snapshot).patch(first_next, NOWHERE);
+        let ctx_cut = Context::new(&cut, BundleView::new(bundle)).unwrap();
+        let queue = ctx_cut.observe_semaphore_queue(
+            acq.semaphore,
+            &ReadContext::none(),
+            &mut ScanBudget::default(),
+        );
+        assert!(!queue.complete);
+        assert_eq!(queue.consistency, Consistency::Quiescent);
+        let reached: Vec<u64> = queue.waiters.iter().map(|w| w.addr).collect();
+        assert_eq!(reached, [first]);
+        assert_eq!(queue.issues.len(), 1);
+        assert_eq!(queue.issues[0].kind, WalkIssueKind::ReadFailed);
+        assert_eq!(queue.issues[0].at.addr, NOWHERE);
+        assert_eq!(queue.position(first), None);
+        assert_eq!(queue.contains(first), Some(true));
+        assert_eq!(queue.contains(granted), None);
+
+        // Looped: the node links back to itself.
+        let looped = Corrupt::new(snapshot).patch(first_next, first);
+        let ctx_looped = Context::new(&looped, BundleView::new(bundle)).unwrap();
+        let queue = ctx_looped.observe_semaphore_queue(
+            acq.semaphore,
+            &ReadContext::none(),
+            &mut ScanBudget::default(),
+        );
+        assert!(!queue.complete);
+        assert_eq!(queue.issues.len(), 1);
+        assert_eq!(queue.issues[0].kind, WalkIssueKind::Cycle);
+        assert_eq!(queue.waiters.len(), 1);
+
+        // Refused: the node is in memory the allocator has taken
+        // back, so it is not read and the walk ends before it.
+        let node_ty = ctx.view.ty(queue.issues[0].at.ty).unwrap();
+        let freed = FakeHeap::new().freed(first..first + node_ty.size());
+        let mut budget = ScanBudget::default();
+        let queue = ctx.observe_semaphore_queue(
+            acq.semaphore,
+            &ReadContext::with_heap(&freed),
+            &mut budget,
+        );
+        assert!(!queue.complete);
+        assert_eq!(queue.issues.len(), 1);
+        assert_eq!(queue.issues[0].kind, WalkIssueKind::Freed);
+        assert_eq!(queue.issues[0].at.addr, first);
+        assert!(queue.waiters.is_empty());
+        assert_eq!(queue.contains(first), None);
+        // Charged for the semaphore and for the node it was about to
+        // read: the budget is charged before the read the allocator
+        // then refused.
+        assert_eq!(budget.referent_expansions, 2);
+        assert_eq!(freed.counts(), (0, 0, 0));
+
+        // A live block too short for the node refuses the same way.
+        let short = FakeHeap::new().live(first..first + node_ty.size() - 1);
+        let queue = ctx.observe_semaphore_queue(
+            acq.semaphore,
+            &ReadContext::with_heap(&short),
+            &mut ScanBudget::default(),
+        );
+        assert_eq!(queue.issues.len(), 1);
+        assert_eq!(queue.issues[0].kind, WalkIssueKind::OutsideAllocation);
+
+        // Capped: no node at all is what the walk may list.
+        let mut budget = ScanBudget::new(ScanLimits {
+            max_children: 0,
+            ..ScanLimits::default()
+        });
+        let queue = ctx.observe_semaphore_queue(acq.semaphore, &ReadContext::none(), &mut budget);
+        assert!(!queue.complete);
+        assert_eq!(queue.issues.len(), 1);
+        assert_eq!(queue.issues[0].kind, WalkIssueKind::VisitLimit);
+        assert!(queue.waiters.is_empty());
+
+        // Or the referent budget is spent before the first node.
+        let mut budget = ScanBudget::new(ScanLimits {
+            max_referent_expansions: 0,
+            ..ScanLimits::default()
+        });
+        let queue = ctx.observe_semaphore_queue(acq.semaphore, &ReadContext::none(), &mut budget);
+        assert!(!queue.complete);
+        assert_eq!(queue.issues[0].kind, WalkIssueKind::VisitLimit);
+        assert!(queue.waiters.is_empty());
+
+        // And a semaphore the allocator has taken back observes as
+        // nothing but the refusal.
+        let sem_ty = ctx.view.ty(acq.semaphore.ty).unwrap();
+        let gone = FakeHeap::new().freed(acq.semaphore.addr..acq.semaphore.addr + sem_ty.size());
+        let queue = ctx.observe_semaphore_queue(
+            acq.semaphore,
+            &ReadContext::with_heap(&gone),
+            &mut ScanBudget::default(),
+        );
+        assert!(!queue.complete);
+        assert_eq!(queue.consistency, Consistency::Unknown);
+        assert_eq!(queue.available, None);
+        assert_eq!(queue.issues.len(), 1);
+        assert_eq!(queue.issues[0].kind, WalkIssueKind::Freed);
+    }
+
+    /// Each bounded io operation observes the registration its own
+    /// reader or writer reaches — the resource the registry harvest
+    /// found the task's waker on — and a readiness await observes the
+    /// exact node it embedded, which the registration read on demand
+    /// lists with the same identity and ready flag. A custom reader
+    /// over a socket observes as nothing.
+    #[test]
+    fn test_io_operations_observe_their_registrations() {
+        let (bundle, snapshot) = local_set_io();
+        let ctx = testkit::context(bundle, snapshot);
+        let mut e = testkit::enumerate(&ctx, snapshot);
+        e.discover(&ctx, &[]);
+        let list = &e.list;
+        let registered = |task: &Task| -> Vec<(u64, IoWaiterInfo)> {
+            e.registries
+                .io_of(task.addr.0)
+                .map(|(res, waiter)| (res.addr, waiter.clone()))
+                .collect()
+        };
+
+        // `Read<UnixStream>`: through `reader` to its `ScheduledIo`.
+        for (name, remaining) in [("local_reader", 8), ("::reader", 16)] {
+            let task = task_named(list, name);
+            let read = leaf_of(&ctx, task);
+            assert!(read.ty.name().starts_with("tokio::io::util::read::Read<"));
+            let observed = ctx.observe_resource(read, &ReadContext::none());
+            assert!(observed.issues.is_empty(), "{name}: {:?}", observed.issues);
+            let Some(ResourceObservation::Io(io)) = observed.value else {
+                panic!("{name}: a Read observes as io: {:?}", observed.value);
+            };
+            assert_eq!(io.operation, IoOperationKind::Read);
+            assert_eq!(io.interest, Interest::READABLE);
+            assert_eq!(io.remaining, Some(remaining));
+            assert_eq!(io.waiter_node, None);
+            assert_eq!(io.readiness_state, None);
+            let parked = registered(task);
+            assert_eq!(parked.len(), 1, "{name}: {parked:?}");
+            assert_eq!(parked[0].0, io.scheduled_io.addr);
+            assert_eq!(parked[0].1.slot, IoSlot::Reader);
+            assert_eq!(
+                ctx.view.ty(io.scheduled_io.ty).unwrap().name(),
+                "tokio::runtime::io::scheduled_io::ScheduledIo"
+            );
+        }
+
+        // `WriteAll<UnixStream>`: through `writer`.
+        let writer = task_named(list, "local_writer");
+        let write = leaf_of(&ctx, writer);
+        let Some(ResourceObservation::Io(io)) =
+            ctx.observe_resource(write, &ReadContext::none()).value
+        else {
+            panic!("a WriteAll observes as io");
+        };
+        assert_eq!(io.operation, IoOperationKind::WriteAll);
+        assert_eq!(io.interest, Interest::WRITABLE);
+        assert!(
+            io.remaining.is_some_and(|n| n > 0 && n <= 64 * 1024),
+            "{:?}",
+            io.remaining
+        );
+        let parked = registered(writer);
+        assert_eq!(parked.len(), 1);
+        assert_eq!(parked[0].0, io.scheduled_io.addr);
+        assert_eq!(parked[0].1.slot, IoSlot::Writer);
+
+        // `Readiness`: the registration it names outright, its state,
+        // and its own node — which the registration lists.
+        let watcher = task_named(list, "local_watcher");
+        let readiness = leaf_of(&ctx, watcher);
+        let observed = ctx.observe_resource(readiness, &ReadContext::none());
+        assert!(observed.issues.is_empty(), "{:?}", observed.issues);
+        let Some(ResourceObservation::Io(io)) = observed.value else {
+            panic!("a Readiness observes as io: {:?}", observed.value);
+        };
+        assert_eq!(io.operation, IoOperationKind::Readiness);
+        assert_eq!(io.interest, Interest::READABLE);
+        assert_eq!(io.readiness_state, Some(IoFutureState::Waiting));
+        assert_eq!(io.waiter_ready, Some(false));
+        assert_eq!(io.remaining, None);
+        let node = io.waiter_node.expect("a readiness await embeds its node");
+        let parked = registered(watcher);
+        assert_eq!(parked.len(), 1);
+        assert_eq!(parked[0].0, io.scheduled_io.addr);
+        assert_eq!(parked[0].1.node, Some(node));
+        assert_eq!(parked[0].1.ready, Some(false));
+        assert_eq!(
+            parked[0].1.slot,
+            IoSlot::Listed {
+                interest: Some(Interest::READABLE)
+            }
+        );
+
+        let mut budget = ScanBudget::default();
+        let registration =
+            ctx.observe_io_registration(io.scheduled_io, &ReadContext::none(), &mut budget);
+        assert!(registration.issues.is_empty(), "{:?}", registration.issues);
+        let resource = registration.value.expect("the registration reads");
+        assert_eq!(resource.addr, io.scheduled_io.addr);
+        assert_eq!(resource.consistency, Consistency::Quiescent);
+        assert_eq!(resource.waiters.len(), 1);
+        // The harvest decoded the same guard.
+        assert!(
+            e.registries
+                .io
+                .iter()
+                .all(|r| r.consistency == Consistency::Quiescent),
+            "{:?}",
+            e.registries.io
+        );
+        let listed = &resource.waiters[0];
+        assert_eq!(listed.node, Some(node));
+        assert_eq!(listed.ready, Some(false));
+        assert_eq!(listed.task, Some(watcher.addr.0));
+        assert_eq!(
+            listed.slot,
+            IoSlot::Listed {
+                interest: Some(Interest::READABLE)
+            }
+        );
+        // The registration itself, then its one node.
+        assert_eq!(budget.referent_expansions, 2);
+
+        // A registration whose list runs off the map keeps the slots
+        // it read and says where the list failed.
+        {
+            use crate::testkit::corrupt::Corrupt;
+            let io_value = ctx
+                .read_keyed(io.scheduled_io, &ReadContext::none())
+                .unwrap();
+            let waiters = ctx
+                .walk(WalkRole::ScheduledIoWaiters)
+                .walk_at(io_value)
+                .unwrap();
+            let head = ctx.walk(WalkRole::IoWaiterHead).walk_at(waiters).unwrap();
+            let cut = Corrupt::new(snapshot).patch(head.addr, NOWHERE);
+            let ctx_cut = Context::new(&cut, BundleView::new(bundle)).unwrap();
+            let registration = ctx_cut.observe_io_registration(
+                io.scheduled_io,
+                &ReadContext::none(),
+                &mut ScanBudget::default(),
+            );
+            let resource = registration.value.expect("the registration itself reads");
+            assert!(resource.waiters.is_empty());
+            assert_eq!(registration.issues.len(), 1);
+            assert_eq!(registration.issues[0].kind, WalkIssueKind::ReadFailed);
+            assert_eq!(registration.issues[0].at.addr, NOWHERE);
+        }
+
+        // `Read<Gated>` holds a socket and is not an operation on one.
+        let gated = task_named(list, "local_gated_reader");
+        let read = leaf_of(&ctx, gated);
+        assert!(read.ty.name().contains("Gated"));
+        let observed = ctx.observe_resource(read, &ReadContext::none());
+        assert!(observed.value.is_none());
+        assert!(observed.issues.is_empty());
+        assert!(registered(gated).is_empty());
+    }
+
+    /// A read operation's route dereferences its reader, and that
+    /// dereference is held to the allocator: a stream the allocator
+    /// has taken back is refused before the registration is reached.
+    #[test]
+    fn test_an_io_route_is_held_to_the_allocator() {
+        use crate::testkit::heap::FakeHeap;
+
+        let (bundle, snapshot) = local_set_io();
+        let ctx = testkit::context(bundle, snapshot);
+        let list = testkit::tasks(&ctx, snapshot);
+        let task = task_named(&list, "local_reader");
+        let read = leaf_of(&ctx, task);
+        let reader = ctx.walk(WalkRole::IoReadReader).walk_at(read).unwrap();
+        let stream: u64 = reader.parse(ctx.proc).unwrap();
+        let stream_ty = reader.ty.pointer_target().unwrap();
+        let freed = FakeHeap::new().freed(stream..stream + stream_ty.size());
+        let observed = ctx.observe_resource(read, &ReadContext::with_heap(&freed));
+        assert!(observed.value.is_none());
+        assert_eq!(observed.issues.len(), 1);
+        assert_eq!(observed.issues[0].kind, WalkIssueKind::Freed);
+        assert_eq!(observed.issues[0].at, ValueKey::of(read));
+        let live = FakeHeap::new().live(stream..stream + stream_ty.size());
+        let observed = ctx.observe_resource(read, &ReadContext::with_heap(&live));
+        assert!(observed.issues.is_empty(), "{:?}", observed.issues);
+        assert!(matches!(observed.value, Some(ResourceObservation::Io(_))));
     }
 
     /// Only a trampoline-sized symbol ending in `jmp rel32` yields a

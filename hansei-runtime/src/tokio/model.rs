@@ -7,6 +7,7 @@
 //! reads a target; [`bundle`](super::bundle) builds these, and the
 //! census, graph, and every command consume them.
 
+use super::observe::Consistency;
 use super::{Lifecycle, Location, RawInstant, TaskAddr, TaskState};
 
 use hansei_bundle::tokio::timer;
@@ -434,6 +435,9 @@ pub struct IoResourceInfo {
     /// The packed readiness word (`Ready` in the low bits); `None`
     /// where the bundle records no binding, or the word did not read.
     pub readiness: Option<u64>,
+    /// Whether the guard around the waiters read unlocked: a waiter
+    /// list read while its mutex is held is a list mid-edit.
+    pub consistency: Consistency,
     /// Everything parked on the resource: armed wakers in the two
     /// direction slots and on the readiness list.
     pub waiters: Vec<IoWaiterInfo>,
@@ -453,6 +457,13 @@ pub struct IoWaiterInfo {
     pub slot: IoSlot,
     /// The task the waker names, when it is a task's.
     pub task: Option<u64>,
+    /// The `Waiter` node's address, for a listed waiter — the exact
+    /// identity a readiness await's own embedded node is matched
+    /// against. The direction slots are bare wakers with no node.
+    pub node: Option<u64>,
+    /// A listed node's `is_ready` flag, where it read: set by the
+    /// resource's wake path once the awaited readiness arrived.
+    pub ready: Option<bool>,
 }
 
 /// The three waker sites of a `ScheduledIo`.
@@ -472,8 +483,8 @@ impl IoSlot {
     /// imply theirs; a listed node carries its own.
     pub fn interest(&self) -> Option<Interest> {
         match self {
-            Self::Reader => Some(Interest(0b01)),
-            Self::Writer => Some(Interest(0b10)),
+            Self::Reader => Some(Interest::READABLE),
+            Self::Writer => Some(Interest::WRITABLE),
             Self::Listed { interest } => *interest,
         }
     }
@@ -484,6 +495,11 @@ impl IoSlot {
 pub struct Interest(pub u64);
 
 impl Interest {
+    /// The readiness an `AsyncRead` path waits for.
+    pub const READABLE: Interest = Interest(0b01);
+    /// The readiness an `AsyncWrite` path waits for.
+    pub const WRITABLE: Interest = Interest(0b10);
+
     pub fn union(self, other: Interest) -> Interest {
         Interest(self.0 | other.0)
     }
@@ -594,6 +610,49 @@ impl TaskExtents {
         let at = self.spans.partition_point(|&(start, _, _)| start <= addr);
         let &(start, end, index) = self.spans.get(at.checked_sub(1)?)?;
         (addr < end).then(|| (index, addr - start))
+    }
+}
+
+/// Everything a bare task `Header` pointer establishes about the task
+/// it heads, read by [`Context::read_task_header`]: the identity a
+/// `JoinHandle`, a registered waker, a queue entry or an owned-list
+/// link all hand over alike. It carries no owner group and no list
+/// link — which list the task is in, and where that list goes next,
+/// are facts about the list, not about the task, and a handle to a
+/// task that has left its list still identifies it.
+///
+/// [`Context::read_task_header`]: super::bundle::Context::read_task_header
+#[derive(Debug)]
+pub struct DecodedTaskHeader {
+    pub addr: TaskAddr,
+    pub state: TaskState,
+    pub owner_id: Option<u64>,
+    pub task_id: Option<u64>,
+    /// Where the task was spawned, when the target records it
+    /// (`tokio_unstable` task instrumentation).
+    pub spawn_location: Option<Location>,
+    /// The `Vtable` the Header points at, and the Trailer offset it
+    /// records — where the task's own allocation places its Trailer.
+    pub vtable_addr: u64,
+    pub trailer_offset: u64,
+    pub future: FutureInfo,
+}
+
+impl DecodedTaskHeader {
+    /// The header as a listing row, before any list claims it: owned by
+    /// group 0 and not a blocking cell until an enumeration says
+    /// otherwise.
+    pub fn into_task(self) -> Task {
+        Task {
+            addr: self.addr,
+            state: self.state,
+            owner_id: self.owner_id,
+            task_id: self.task_id,
+            spawn_location: self.spawn_location,
+            future: self.future,
+            group: 0,
+            blocking: false,
+        }
     }
 }
 
@@ -943,6 +1002,16 @@ pub enum QueuedWaker {
     Unarmed,
 }
 
+impl QueuedWaker {
+    /// The task header the waker names, when it is a task's.
+    pub fn task(&self) -> Option<u64> {
+        match self {
+            Self::Task { addr, .. } => Some(*addr),
+            Self::Other { .. } | Self::Unarmed => None,
+        }
+    }
+}
+
 impl fmt::Display for WaitTarget {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -1257,6 +1326,7 @@ mod tests {
         let res = IoResourceInfo {
             addr: 0x20,
             readiness: Some(0x7fff_0002),
+            consistency: Consistency::Unknown,
             waiters: Vec::new(),
         };
         // The packed word's high bits (the driver tick) are not
@@ -1284,14 +1354,19 @@ mod tests {
             vec![IoResourceInfo {
                 addr: 0x30,
                 readiness: None,
+                consistency: Consistency::Unknown,
                 waiters: vec![
                     IoWaiterInfo {
                         slot: IoSlot::Reader,
                         task: Some(0x1000),
+                        node: None,
+                        ready: None,
                     },
                     IoWaiterInfo {
                         slot: IoSlot::Writer,
                         task: Some(0x2000),
+                        node: None,
+                        ready: None,
                     },
                 ],
             }],

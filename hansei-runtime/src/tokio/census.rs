@@ -40,13 +40,14 @@ use super::bundle::{AwaitChain, ChainEnd, Context, TaskList, TaskStage, WaitKind
 // (omicron's `ParallelTaskSet`, which pairs it with a semaphore) is
 // reached by the same scan, since it holds its `JoinSet` by value.
 use super::contract::is_dyn_future_pointee;
-use super::observe::ReadContext;
+use super::observe::{ReadContext, Refusal};
 
 use anyhow::{Context as _, Result, anyhow, ensure};
 use foldhash::{HashMap, HashSet};
 use hansei_bundle::{BundleTypeId, TypeClass, WalkRole};
 use proc::Target;
 use reify::Value;
+use std::fmt;
 use std::rc::Rc;
 
 /// Hard bound on one set's child walk. Real sets run to thousands of
@@ -1391,40 +1392,7 @@ impl<'b, T: Target> Walker<'_, 'b, T> {
     /// a failing walk found.
     fn walk_set(&self, set: Value<'b>, children: &mut Vec<WalkedChild<'b>>) -> Result<()> {
         let ctx = self.ctx;
-        let head_member = ctx.walk(WalkRole::SetHeadAll).walk_at(set)?;
-        let head: u64 = head_member.parse(ctx.proc)?;
-        // The node layout is the pointer's target, reached by peeling the
-        // atomic shims off the `head_all` word.
-        let node_ty = head_member
-            .ty
-            .pointer_target()
-            .ok_or_else(|| anyhow!("head_all does not peel to a pointer"))?;
-
-        let mut visited = HashSet::default();
-        let mut cur = head;
-        while cur != 0 {
-            ensure!(
-                ctx.mappings.contains_addr(cur),
-                "set node pointer {cur:#x} is unmapped"
-            );
-            // The same refusal a held find gets, one layer out: the
-            // list's own link is what claimed this node, and a node
-            // the allocator has taken back is a child that is not
-            // there. The walk stops rather than skipping it, because
-            // the link to the next node is read out of these very
-            // bytes.
-            ensure!(
-                !self.taken_back(cur),
-                "set node pointer {cur:#x} is in memory the allocator has taken back"
-            );
-            ensure!(visited.insert(cur), "set node cycle at {cur:#x}");
-            ensure!(
-                children.len() < MAX_CHILDREN,
-                "the walk stopped at {MAX_CHILDREN} nodes"
-            );
-
-            let node = Value::read(ctx.proc, node_ty, cur)
-                .with_context(|| format!("failed to read the set node at {cur:#x}"))?;
+        let visit = &mut |cur: u64, node: Value<'b>| -> std::result::Result<(), NodeStop> {
             // Task.future: UnsafeCell<Option<Fut>>; `None` is a completed
             // child the set has not reaped.
             let slot = ctx.walk(WalkRole::SetNodeFuture).walk_at(node)?;
@@ -1483,11 +1451,10 @@ impl<'b, T: Target> Walker<'_, 'b, T> {
                     None,
                 )
             };
-            children.push((child, chain, (cur, cur + node_ty.size())));
-
-            cur = ctx.walk(WalkRole::SetNodeNext).read(node)?;
-        }
-        Ok(())
+            children.push((child, chain, (cur, cur + node.ty.size())));
+            Ok(())
+        };
+        walk_set_nodes(ctx, &self.read, set, MAX_CHILDREN, visit).map_err(anyhow::Error::from)
     }
 
     /// Walk one join set's two entry lists for the tasks it holds,
@@ -1510,81 +1477,263 @@ impl<'b, T: Target> Walker<'_, 'b, T> {
         length: &mut u64,
     ) -> Result<()> {
         let ctx = self.ctx;
-        *length = ctx.walk(WalkRole::JoinSetLength).read(set)?;
-        // The lists live behind an Arc, whose target is the `ArcInner`
-        // header the payload follows; `data` is the mutex, and its own
-        // `data` the guarded value, however the loom shim spells the lock.
-        let lists = ctx
-            .walk(WalkRole::JoinSetLists)
-            .walk_at(set)
-            .context("failed to read the join set's shared lists")?;
+        let visit = &mut |addr: u64, entry: Value<'b>| -> std::result::Result<(), NodeStop> {
+            let task = join_set_entry_task(ctx, entry)?;
+            let (id, state) = ctx
+                .header_task_ref(task)
+                .with_context(|| format!("failed to identify the task joined at {addr:#x}"))?;
+            tasks.push(JoinedTask {
+                entry: addr,
+                task,
+                id,
+                state,
+                listed: self.list.contains(task),
+            });
+            Ok(())
+        };
+        walk_join_set_entries(ctx, &self.read, set, MAX_CHILDREN, length, visit)
+            .map_err(anyhow::Error::from)
+    }
+}
 
-        let mut visited = HashSet::default();
-        for queue in [WalkRole::JoinSetNotifiedHead, WalkRole::JoinSetIdleHead] {
-            let Some(head) = ctx.walk(queue).walk(lists)?.optional() else {
-                continue;
-            };
-            // The recorded steps land on the raw entry pointer inside the
-            // NonNull: its target is the layout each entry decodes with.
-            let entry_ty = head
-                .ty
-                .pointer_target()
-                .ok_or_else(|| anyhow!("the {} list head is not pointer-shaped", queue.name()))?;
-            let mut cur = Some(head.parse::<u64>(ctx.proc)?);
-            while let Some(addr) = cur {
-                ensure!(
-                    ctx.mappings.contains_addr(addr),
-                    "join set entry pointer {addr:#x} is unmapped"
-                );
-                ensure!(
-                    !self.taken_back(addr),
-                    "join set entry pointer {addr:#x} is in memory the allocator \
-                     has taken back"
-                );
-                ensure!(visited.insert(addr), "join set entry cycle at {addr:#x}");
-                ensure!(
-                    tasks.len() < MAX_CHILDREN,
-                    "the walk stopped at {MAX_CHILDREN} entries"
-                );
+// ---------------------------------------------------------------------------
+// The container node walks
+// ---------------------------------------------------------------------------
+//
+// The two intrusive lists the census and the reference scan both walk,
+// node by node: the walk owns the checks every node is held to — the
+// pointer mapped, the allocator's word on it, the cycle guard, the
+// child cap — and hands each node to its caller, which decides what a
+// node is for. The caller keeps whatever prefix a failing walk reached.
 
-                let entry = Value::read(ctx.proc, entry_ty, addr)
-                    .with_context(|| format!("failed to read the join set entry at {addr:#x}"))?;
-                // ListEntry.value is the joined task's `JoinHandle`, behind
-                // a cell and a `ManuallyDrop`. Every wrapper from the cell
-                // down to the `Header` pointer holds one value, the handle
-                // included, so peeling lands on that pointer — the same word
-                // a `JoinHandle` leaf is read through. Asking for a member
-                // by name in there would peel first and look afterwards,
-                // which is to say look past what it asked for.
-                let handle = ctx.walk(WalkRole::JoinSetEntryValue).walk_at(entry)?;
-                ensure!(
-                    handle.ty.pointer_target().is_some(),
-                    "the join set entry at {addr:#x} does not peel to a task pointer, \
-                     but to {}",
-                    handle.ty.name()
-                );
-                let task: u64 = handle.parse(ctx.proc)?;
-                let (id, state) = ctx
-                    .header_task_ref(task)
-                    .with_context(|| format!("failed to identify the task joined at {addr:#x}"))?;
-                tasks.push(JoinedTask {
-                    entry: addr,
-                    task,
-                    id,
-                    state,
-                    listed: self.list.contains(task),
-                });
+/// Why a node walk stopped short of the list's end.
+#[derive(Debug)]
+pub(crate) enum NodeStop {
+    /// A link points off the target's mappings.
+    Unmapped { what: &'static str, addr: u64 },
+    /// The allocator refuses the node's bytes.
+    Refused {
+        what: &'static str,
+        addr: u64,
+        refusal: Refusal,
+    },
+    /// A link points back at a node already walked.
+    Cycle { what: &'static str, addr: u64 },
+    /// The list ran past the child cap.
+    Capped { unit: &'static str, max: usize },
+    /// A read, a recorded walk, or the caller's own visit failed.
+    Failed(anyhow::Error),
+}
 
-                cur = ctx
-                    .walk(WalkRole::JoinSetEntryNext)
-                    .walk(entry)?
-                    .optional()
-                    .map(|ptr| ptr.parse(ctx.proc).map_err(anyhow::Error::from))
-                    .transpose()?;
-            }
+impl fmt::Display for NodeStop {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Unmapped { what, addr } => write!(f, "{what} pointer {addr:#x} is unmapped"),
+            Self::Refused {
+                what,
+                addr,
+                refusal: Refusal::Freed { .. },
+            } => write!(
+                f,
+                "{what} pointer {addr:#x} is in memory the allocator has taken back"
+            ),
+            Self::Refused {
+                what,
+                addr,
+                refusal,
+            } => write!(f, "{what} pointer {addr:#x}: {refusal}"),
+            Self::Cycle { what, addr } => write!(f, "{what} cycle at {addr:#x}"),
+            Self::Capped { unit, max } => write!(f, "the walk stopped at {max} {unit}"),
+            Self::Failed(e) => write!(f, "{e:#}"),
         }
+    }
+}
+
+impl From<NodeStop> for anyhow::Error {
+    fn from(stop: NodeStop) -> Self {
+        match stop {
+            NodeStop::Failed(e) => e,
+            other => anyhow!("{other}"),
+        }
+    }
+}
+
+impl From<anyhow::Error> for NodeStop {
+    fn from(e: anyhow::Error) -> Self {
+        NodeStop::Failed(e)
+    }
+}
+
+/// The state one intrusive-list walk carries between nodes: what its
+/// nodes are called in a diagnostic, the nodes already walked, and how
+/// many the caller may take.
+struct NodeWalk {
+    what: &'static str,
+    unit: &'static str,
+    max: usize,
+    visited: HashSet<u64>,
+    count: usize,
+}
+
+impl NodeWalk {
+    fn new(what: &'static str, unit: &'static str, max: usize) -> Self {
+        NodeWalk {
+            what,
+            unit,
+            max,
+            visited: HashSet::default(),
+            count: 0,
+        }
+    }
+
+    /// The checks every node is held to before it is read: mapped,
+    /// permitted by the allocator, not yet walked, and under the cap.
+    fn admit(
+        &mut self,
+        ctx: &Context<'_, impl Target>,
+        read: &ReadContext<'_>,
+        addr: u64,
+        size: u64,
+    ) -> std::result::Result<(), NodeStop> {
+        let what = self.what;
+        if !ctx.mappings.contains_addr(addr) {
+            return Err(NodeStop::Unmapped { what, addr });
+        }
+        // The same refusal a held find gets, one layer out: the list's
+        // own link is what claimed this node, and a node the allocator
+        // has taken back is a child that is not there. The walk stops
+        // rather than skipping it, because the link to the next node is
+        // read out of these very bytes.
+        if let Some(refusal) = read.refusal(addr, size) {
+            return Err(NodeStop::Refused {
+                what,
+                addr,
+                refusal,
+            });
+        }
+        if !self.visited.insert(addr) {
+            return Err(NodeStop::Cycle { what, addr });
+        }
+        if self.count >= self.max {
+            return Err(NodeStop::Capped {
+                unit: self.unit,
+                max: self.max,
+            });
+        }
+        self.count += 1;
         Ok(())
     }
+}
+
+/// Walk a `FuturesUnordered`'s intrusive `head_all` → `next_all` node
+/// list, handing each node to `visit` as it is reached.
+pub(crate) fn walk_set_nodes<'b, T: Target>(
+    ctx: &Context<'b, T>,
+    read: &ReadContext<'_>,
+    set: Value<'b>,
+    max: usize,
+    visit: &mut dyn FnMut(u64, Value<'b>) -> std::result::Result<(), NodeStop>,
+) -> std::result::Result<(), NodeStop> {
+    let head_member = ctx.walk(WalkRole::SetHeadAll).walk_at_with(read, set)?;
+    let head: u64 = head_member.parse(ctx.proc).map_err(anyhow::Error::from)?;
+    // The node layout is the pointer's target, reached by peeling the
+    // atomic shims off the `head_all` word.
+    let node_ty = head_member
+        .ty
+        .pointer_target()
+        .ok_or_else(|| anyhow!("head_all does not peel to a pointer"))?;
+
+    let mut walk = NodeWalk::new("set node", "nodes", max);
+    let mut cur = head;
+    while cur != 0 {
+        walk.admit(ctx, read, cur, node_ty.size())?;
+        let node = Value::read(ctx.proc, node_ty, cur)
+            .with_context(|| format!("failed to read the set node at {cur:#x}"))?;
+        visit(cur, node)?;
+        cur = ctx.walk(WalkRole::SetNodeNext).read_with(read, node)?;
+    }
+    Ok(())
+}
+
+/// Walk a `JoinSet`'s two entry lists, handing each entry to `visit`
+/// as it is reached and leaving the set's own count in `length`.
+///
+/// A `JoinSet<T>` is an `IdleNotifiedSet<JoinHandle<T>>`: a `length`
+/// in the frame beside an `Arc` to a mutex over *two* intrusive
+/// lists, one of entries whose task has woken and one of the rest.
+/// Which list an entry is in says nothing about the task — a
+/// completed task waits in `notified` for its output to be taken —
+/// so both are walked and the entries handed over together, in the
+/// order the lists hold them. The length is read before the walk and
+/// kept either way, so a short list is visible beside its count.
+///
+/// Every entry's `value` is live by construction: an entry leaves
+/// the two lists before its `JoinHandle` is consumed.
+pub(crate) fn walk_join_set_entries<'b, T: Target>(
+    ctx: &Context<'b, T>,
+    read: &ReadContext<'_>,
+    set: Value<'b>,
+    max: usize,
+    length: &mut u64,
+    visit: &mut dyn FnMut(u64, Value<'b>) -> std::result::Result<(), NodeStop>,
+) -> std::result::Result<(), NodeStop> {
+    *length = ctx.walk(WalkRole::JoinSetLength).read_with(read, set)?;
+    // The lists live behind an Arc, whose target is the `ArcInner`
+    // header the payload follows; `data` is the mutex, and its own
+    // `data` the guarded value, however the loom shim spells the lock.
+    let lists = ctx
+        .walk(WalkRole::JoinSetLists)
+        .walk_at_with(read, set)
+        .context("failed to read the join set's shared lists")?;
+
+    let mut walk = NodeWalk::new("join set entry", "entries", max);
+    for queue in [WalkRole::JoinSetNotifiedHead, WalkRole::JoinSetIdleHead] {
+        let Some(head) = ctx.walk(queue).walk_with(read, lists)?.optional() else {
+            continue;
+        };
+        // The recorded steps land on the raw entry pointer inside the
+        // NonNull: its target is the layout each entry decodes with.
+        let entry_ty = head
+            .ty
+            .pointer_target()
+            .ok_or_else(|| anyhow!("the {} list head is not pointer-shaped", queue.name()))?;
+        let mut cur = Some(head.parse::<u64>(ctx.proc).map_err(anyhow::Error::from)?);
+        while let Some(addr) = cur {
+            walk.admit(ctx, read, addr, entry_ty.size())?;
+            let entry = Value::read(ctx.proc, entry_ty, addr)
+                .with_context(|| format!("failed to read the join set entry at {addr:#x}"))?;
+            visit(addr, entry)?;
+            cur = ctx
+                .walk(WalkRole::JoinSetEntryNext)
+                .walk_with(read, entry)?
+                .optional()
+                .map(|ptr| ptr.parse(ctx.proc).map_err(anyhow::Error::from))
+                .transpose()?;
+        }
+    }
+    Ok(())
+}
+
+/// The task a `JoinSet` entry's handle names.
+///
+/// ListEntry.value is the joined task's `JoinHandle`, behind a cell
+/// and a `ManuallyDrop`. Every wrapper from the cell down to the
+/// `Header` pointer holds one value, the handle included, so peeling
+/// lands on that pointer — the same word a `JoinHandle` leaf is read
+/// through. Asking for a member by name in there would peel first and
+/// look afterwards, which is to say look past what it asked for.
+pub(crate) fn join_set_entry_task<'b, T: Target>(
+    ctx: &Context<'b, T>,
+    entry: Value<'b>,
+) -> Result<u64> {
+    let handle = ctx.walk(WalkRole::JoinSetEntryValue).walk_at(entry)?;
+    ensure!(
+        handle.ty.pointer_target().is_some(),
+        "the join set entry at {:#x} does not peel to a task pointer, but to {}",
+        entry.addr,
+        handle.ty.name()
+    );
+    Ok(handle.parse(ctx.proc)?)
 }
 
 // ---------------------------------------------------------------------------

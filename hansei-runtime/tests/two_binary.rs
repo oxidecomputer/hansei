@@ -46,6 +46,7 @@ use hansei_runtime::tokio::bundle::{
     AwaitChain, ChainEnd, Context, DiscoveryRoute, FutureInfo, RuntimeFlavor, Task, TaskStage,
     UnlistedTaskKind,
 };
+use hansei_runtime::tokio::observe::Consistency;
 use hansei_runtime::tokio::{census, graph};
 use proc::Target;
 use proc::snapshot::Snapshot;
@@ -526,9 +527,12 @@ fn test_registry_io_never_overwrites_a_decoded_wait() {
         registries.io.push(IoResourceInfo {
             addr: 0x9990,
             readiness: None,
+            consistency: Consistency::Unknown,
             waiters: vec![IoWaiterInfo {
                 slot: IoSlot::Reader,
                 task: Some(task.addr.0),
+                node: None,
+                ready: None,
             }],
         });
     }

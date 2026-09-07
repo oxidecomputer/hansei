@@ -2192,6 +2192,7 @@ mod table_tests {
             TimerEntryInfo,
         };
         use hansei_runtime::tokio::graph::JoinWaker;
+        use hansei_runtime::tokio::observe::Consistency;
 
         let t1 = 0x1000 + 0x100;
         let registries = Registries::new(
@@ -2203,9 +2204,12 @@ mod table_tests {
             vec![IoResourceInfo {
                 addr: 0xaa00,
                 readiness: None,
+                consistency: Consistency::Unknown,
                 waiters: vec![IoWaiterInfo {
                     slot: IoSlot::Reader,
                     task: Some(t1),
+                    node: None,
+                    ready: None,
                 }],
             }],
         );

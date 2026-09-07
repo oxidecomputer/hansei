@@ -435,6 +435,17 @@ impl<'a> BundleType<'a> {
         variants.iter().map(move |v| me.variant_of(v))
     }
 
+    /// The interned name of this enum's variant called `name` — what a
+    /// literal [`Step::Variant`](crate::Step::Variant) entering it
+    /// carries — or `None` when this is no enum or has no such variant.
+    pub fn variant_name_ref(&self, name: &str) -> Option<crate::StrRef> {
+        self.variant_shape()?
+            .variants
+            .iter()
+            .map(|v| v.name)
+            .find(|&r| self.str(r) == name)
+    }
+
     /// Whether this type is a coroutine state machine — an `async fn` or
     /// `async block` environment.
     ///
@@ -758,6 +769,13 @@ pub struct BundleMember<'a> {
 impl<'a> BundleMember<'a> {
     pub fn name(&self) -> &'a str {
         self.bundle.strings.get(self.def.name).unwrap_or(ANON)
+    }
+
+    /// The member's name as the bundle interns it — what a literal
+    /// [`Step::Member`](crate::Step::Member) addressing this member
+    /// by name carries.
+    pub fn name_ref(&self) -> crate::StrRef {
+        self.def.name
     }
 
     pub fn ty(&self) -> BundleType<'a> {

@@ -1,0 +1,1262 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
+//! The bounded scan of initialized storage for task references.
+//!
+//! Discovery needs the tasks a value refers to — the header a held
+//! `JoinHandle` names, the wakers queued on a semaphore an `Acquire`
+//! sits in, the wakers parked on the registration an io operation
+//! reaches — without first deciding what the holder is waiting on. The
+//! scan here walks a value's *initialized* storage by the bundle's
+//! facts alone, dispatches every resource it meets to the raw
+//! observers, and hands each reference to a sink as it is found. It
+//! never diagnoses a wait, never consults a task list, and never
+//! follows a pointer it has no contract for.
+//!
+//! At each nominal value, in order: its complete inline byte range is
+//! required; a bound resource is observed and its references emitted,
+//! and its interior is the observer's business, not the scan's; a
+//! recognized container is walked by its own contract, each initialized
+//! child a new root; a compiler coroutine is decoded through its
+//! recorded layout, with only the active state's locals scanned and
+//! its uncertain captures reported rather than read; storage the
+//! bundle declares unreadable stops with a diagnostic; any other
+//! struct descends its sized members and any other Rust enum its
+//! active payload; and raw pointers, unions, scalars, opaque values
+//! and arrays of aggregates stop where they are. A future the bundle
+//! recognizes is an event — a new origin whose contents are scanned
+//! like any other — not a stop.
+//!
+//! What the scan does *not* follow is as deliberate as what it does.
+//! An owned referent — a boxed future, a `Pin<Box<dyn Future>>` — is
+//! a boundary until the bundle carries an access binding authorizing
+//! that specific pointer; no bundle does yet, so every pointer is a
+//! stop and the legacy chain-based discovery remains the route to
+//! whatever sits behind one. A borrowed referent is followed only by a
+//! container or continuation contract, never by the scan itself.
+
+use super::TaskAddr;
+use super::bundle::Context;
+use super::census::{NodeStop, join_set_entry_task, walk_join_set_entries, walk_set_nodes};
+use super::contract::{self, Walked};
+use super::observe::{
+    ReadContext, ReferenceSink, ReferenceSource, ResourceObservation, ScanBudget, ScanCompletion,
+    ValueKey, WalkIssue, WalkIssueKind, issue_of,
+};
+
+use anyhow::anyhow;
+use foldhash::HashSet;
+use hansei_bundle::{
+    ContainerKind, CoroutineLayout, CoroutinePhase, MemberRef, SemanticIssueKind, Step,
+    StoragePolicy, TypeClass, WalkRole,
+};
+use proc::Target;
+use reify::Value;
+
+impl<'b, T: Target> Context<'b, T> {
+    /// Scan `value`'s initialized storage for task references, as the
+    /// storage of `root_task`. Every reference and every issue goes to
+    /// `sink` as it arises; the returned completion says whether the
+    /// scan saw everything it set out to and what it cost `budget`.
+    pub fn scan_references(
+        &self,
+        value: Value<'b>,
+        root_task: TaskAddr,
+        read: &ReadContext<'_>,
+        budget: &mut ScanBudget,
+        sink: &mut impl ReferenceSink,
+    ) -> ScanCompletion {
+        let (visits, referents) = (budget.inline_visits, budget.referent_expansions);
+        let mut scanner = Scanner {
+            ctx: self,
+            read: *read,
+            budget,
+            sink,
+            root_task: Some(root_task),
+            path: Vec::new(),
+            seen: HashSet::default(),
+            queues: HashSet::default(),
+            complete: true,
+            visits_spent: false,
+        };
+        scanner.root(value, Frame::default());
+        ScanCompletion {
+            complete: scanner.complete,
+            inline_visits: budget.inline_visits - visits,
+            referent_expansions: budget.referent_expansions - referents,
+        }
+    }
+}
+
+/// How far from the root the scan is, in the two dimensions the limits
+/// bound separately: futures nested inside other futures' storage, and
+/// the run of awaitees a coroutine chain descends through.
+#[derive(Copy, Clone, Default)]
+struct Frame {
+    nesting: u16,
+    chain: u16,
+}
+
+struct Scanner<'a, 'b, T> {
+    ctx: &'a Context<'b, T>,
+    read: ReadContext<'a>,
+    budget: &'a mut ScanBudget,
+    sink: &'a mut dyn ReferenceSink,
+    root_task: Option<TaskAddr>,
+    /// The literal steps from the scan's root to the value in hand,
+    /// kept on the stack and copied only by a sink that wants it. A
+    /// container's node is one dereference in it, whatever its
+    /// position in the list.
+    path: Vec<Step>,
+    /// Every origin started, by `(addr, type)`: an aliased or
+    /// re-reached future or container is scanned once.
+    seen: HashSet<ValueKey>,
+    /// The semaphores whose queues this scan has already read: one
+    /// observation per semaphore per scan.
+    queues: HashSet<ValueKey>,
+    complete: bool,
+    /// Whether the spent visit budget has been reported yet.
+    visits_spent: bool,
+}
+
+impl<'b, T: Target> Scanner<'_, 'b, T> {
+    fn report(&mut self, issue: WalkIssue) {
+        self.complete = false;
+        self.sink.issue(issue);
+    }
+
+    fn reference(&mut self, target: TaskAddr, source: ReferenceSource, from: ValueKey) {
+        self.sink
+            .reference(target, source, Some(from), self.root_task, &self.path);
+    }
+
+    /// A new origin: the scan's root, a container's child, a future
+    /// found inside another value. Scanned once per identity.
+    fn root(&mut self, value: Value<'b>, frame: Frame) {
+        if !self.seen.insert(ValueKey::of(value)) {
+            return;
+        }
+        self.scan(value, 0, frame);
+    }
+
+    /// One value, `depth` aggregate levels below its origin.
+    fn scan(&mut self, value: Value<'b>, depth: u16, frame: Frame) {
+        let key = ValueKey::of(value);
+        if !self.budget.charge_visit() {
+            // Said once per scan: every value after the first refused
+            // one would only repeat it.
+            if !self.visits_spent {
+                self.visits_spent = true;
+                self.report(WalkIssue::new(
+                    key,
+                    WalkIssueKind::VisitLimit,
+                    format!(
+                        "the inline visit budget ({}) is spent",
+                        self.budget.limits.max_inline_visits
+                    ),
+                ));
+            }
+            self.complete = false;
+            return;
+        }
+        if value.bytes.len() as u64 != value.ty.size() {
+            self.report(WalkIssue::new(
+                key,
+                WalkIssueKind::InvalidLayout,
+                format!(
+                    "{} bytes in hand for the {}-byte {}",
+                    value.bytes.len(),
+                    value.ty.size(),
+                    value.ty.name()
+                ),
+            ));
+            return;
+        }
+        if depth > self.budget.limits.max_depth {
+            self.report(WalkIssue::new(
+                key,
+                WalkIssueKind::DepthLimit,
+                format!(
+                    "the scan depth limit ({}) was reached",
+                    self.budget.limits.max_depth
+                ),
+            ));
+            return;
+        }
+        let record = self.ctx.type_semantics(value.ty.id());
+
+        // 1. A bound resource: observed whole, its interior the
+        // observer's. The registrations and queues it names are read
+        // for the tasks they hold.
+        if record.is_some_and(|r| r.resource.is_some()) {
+            self.resource(value, key);
+            return;
+        }
+
+        // 2. A recognized container: walked by its own contract.
+        match self.ctx.container_kind(value.ty.id()) {
+            Some(ContainerKind::FuturesUnordered) => {
+                self.set(value, key, frame);
+                return;
+            }
+            Some(ContainerKind::JoinSet) => {
+                self.join_set(value, key);
+                return;
+            }
+            None => {}
+        }
+
+        // 4. Storage the bundle cannot vouch for stops here: a
+        // coroutine no reviewed convention bound has no variant this
+        // scan may believe, and the enum it is shaped as must not be
+        // read as one.
+        if let Some(StoragePolicy::Unavailable(issue)) = record.map(|r| &r.storage) {
+            let detail = match issue.kind {
+                SemanticIssueKind::PossiblyUninitialized => {
+                    "storage the tokio info cannot read: which members are initialized is unknown"
+                }
+                SemanticIssueKind::UnsupportedOrigin => {
+                    "storage laid out by a compiler no reviewed convention covers"
+                }
+                _ => "storage the tokio info declares unreadable",
+            };
+            self.report(WalkIssue::new(
+                key,
+                WalkIssueKind::UnknownInitialization,
+                format!("{detail} ({})", value.ty.name()),
+            ));
+            return;
+        }
+
+        // A future the bundle recognizes, met inside another value, is
+        // a new origin — scanned once by identity, nested one deeper —
+        // and a coroutine's awaitee is one more link of its chain
+        // rather than a future it holds beside the chain.
+        let is_future = record.is_some_and(|r| r.future.is_some());
+        let (depth, frame) = if is_future && depth > 0 {
+            if !self.seen.insert(key) {
+                return;
+            }
+            let awaitee = matches!(self.path.last(), Some(Step::Member(MemberRef::Named(name)))
+                if self.ctx.view.str(*name) == Some("__awaitee"));
+            if awaitee {
+                if frame.chain >= self.budget.limits.max_chain_depth {
+                    self.report(WalkIssue::new(
+                        key,
+                        WalkIssueKind::DepthLimit,
+                        format!(
+                            "the chain depth limit ({}) was reached",
+                            self.budget.limits.max_chain_depth
+                        ),
+                    ));
+                    return;
+                }
+                (
+                    0,
+                    Frame {
+                        chain: frame.chain + 1,
+                        ..frame
+                    },
+                )
+            } else {
+                if frame.nesting >= self.budget.limits.max_future_nesting {
+                    self.report(WalkIssue::new(
+                        key,
+                        WalkIssueKind::HopLimit,
+                        format!(
+                            "the future nesting limit ({}) was reached",
+                            self.budget.limits.max_future_nesting
+                        ),
+                    ));
+                    return;
+                }
+                (
+                    0,
+                    Frame {
+                        nesting: frame.nesting + 1,
+                        ..frame
+                    },
+                )
+            }
+        } else {
+            (depth, frame)
+        };
+
+        // 4. A compiler coroutine: its active state's locals, by the
+        // recorded layout.
+        if let Some(layout) = record.and_then(|r| r.coroutine.as_ref()) {
+            self.coroutine(value, key, layout, depth, frame);
+            return;
+        }
+
+        // 5 and 6. Declared members; an enum's active payload; a stop
+        // at everything that is not initialized aggregate storage.
+        match value.ty.classify() {
+            TypeClass::Struct => self.members(value, depth, frame),
+            TypeClass::RustEnum => match value.active_variant_raw() {
+                Ok((_, payload)) => {
+                    // The variant struct is the enum's own storage, not
+                    // another aggregate layer, so its members cost the
+                    // level rather than the payload.
+                    self.path.push(Step::ActiveVariant);
+                    self.members(payload, depth, frame);
+                    self.path.pop();
+                }
+                Err(e) => self.report(WalkIssue::new(
+                    key,
+                    WalkIssueKind::InvalidLayout,
+                    format!("decoding the variant of {}: {e}", value.ty.name()),
+                )),
+            },
+            // An array of aggregates could hold a future or a handle
+            // per element; nothing here scans them, and saying so is
+            // what keeps the completion honest. An array of scalars
+            // holds neither.
+            TypeClass::Array { element, .. } if holds_aggregates(element) => {
+                self.report(WalkIssue::new(
+                    key,
+                    WalkIssueKind::UnsupportedArray,
+                    format!("{} is not scanned element by element", value.ty.name()),
+                ));
+            }
+            // A union's members are one storage read as several types,
+            // at most one of them live and nothing here to say which.
+            // A raw pointer's referent is nobody's without a binding.
+            TypeClass::Union
+            | TypeClass::Pointer { .. }
+            | TypeClass::Array { .. }
+            | TypeClass::Integer { .. }
+            | TypeClass::Float { .. }
+            | TypeClass::CEnum
+            | TypeClass::Opaque => {}
+        }
+    }
+
+    /// Descend `value`'s declared sized members, one level down.
+    fn members(&mut self, value: Value<'b>, depth: u16, frame: Frame) {
+        for member in value.ty.members() {
+            if member.ty().size() == 0 {
+                continue;
+            }
+            let step = Step::Member(MemberRef::Named(member.name_ref()));
+            match contract::execute_steps(self.ctx, &self.read, value, &[step]) {
+                Ok(Walked::At(child)) => {
+                    self.path.push(step);
+                    self.scan(child, depth + 1, frame);
+                    self.path.pop();
+                }
+                Ok(_) => {}
+                Err(e) => self.report(issue_of(ValueKey::of(value), &e)),
+            }
+        }
+    }
+
+    /// A coroutine's active state: its locals, each by name through
+    /// the recorded layout; its uncertain captures reported, not read.
+    fn coroutine(
+        &mut self,
+        value: Value<'b>,
+        key: ValueKey,
+        layout: &CoroutineLayout,
+        depth: u16,
+        frame: Frame,
+    ) {
+        let active = match value.ty.active_variant(value.bytes) {
+            Some(Ok(active)) => active,
+            Some(Err(e)) => {
+                self.report(WalkIssue::new(
+                    key,
+                    WalkIssueKind::InvalidLayout,
+                    format!("decoding the state of {}: {e}", value.ty.name()),
+                ));
+                return;
+            }
+            None => {
+                self.report(WalkIssue::new(
+                    key,
+                    WalkIssueKind::InvalidLayout,
+                    format!("{} has a coroutine layout but is no enum", value.ty.name()),
+                ));
+                return;
+            }
+        };
+        let Some(state) = layout
+            .states
+            .iter()
+            .find(|s| self.ctx.view.str(s.variant) == Some(active.name))
+        else {
+            self.report(WalkIssue::new(
+                key,
+                WalkIssueKind::UnknownInitialization,
+                format!(
+                    "state {} of {} is not in its recorded layout",
+                    active.name,
+                    value.ty.name()
+                ),
+            ));
+            return;
+        };
+        match state.stage {
+            // Nothing of the body is live once it has finished.
+            CoroutinePhase::Returned | CoroutinePhase::Panicked => return,
+            CoroutinePhase::Unknown => {
+                self.report(WalkIssue::new(
+                    key,
+                    WalkIssueKind::UnknownInitialization,
+                    format!(
+                        "state {} of {} exposes no locals the layout vouches for",
+                        active.name,
+                        value.ty.name()
+                    ),
+                ));
+                return;
+            }
+            CoroutinePhase::Unresumed | CoroutinePhase::Suspended => {}
+        }
+        let payload = match contract::execute_steps(
+            self.ctx,
+            &self.read,
+            value,
+            &[Step::Variant(state.variant)],
+        ) {
+            Ok(Walked::At(payload)) => payload,
+            Ok(_) => return,
+            Err(e) => {
+                self.report(issue_of(key, &e));
+                return;
+            }
+        };
+        self.path.push(Step::Variant(state.variant));
+        for &name in &state.uncertain_locals {
+            let local = self.ctx.view.str(name).unwrap_or("<bad strref>");
+            self.report(WalkIssue::new(
+                ValueKey::of(payload),
+                WalkIssueKind::UnknownInitialization,
+                format!(
+                    "`{local}` may not be initialized in state {} of {}",
+                    active.name,
+                    value.ty.name()
+                ),
+            ));
+        }
+        for &name in &state.locals {
+            let step = Step::Member(MemberRef::Named(name));
+            match contract::execute_steps(self.ctx, &self.read, payload, &[step]) {
+                Ok(Walked::At(local)) => {
+                    self.path.push(step);
+                    self.scan(local, depth + 1, frame);
+                    self.path.pop();
+                }
+                Ok(_) => {}
+                Err(e) => self.report(issue_of(ValueKey::of(payload), &e)),
+            }
+        }
+        self.path.pop();
+    }
+
+    /// A bound resource: observed, and the tasks its observation names
+    /// — directly, or through the queue or registration it identifies
+    /// — emitted as references.
+    fn resource(&mut self, value: Value<'b>, key: ValueKey) {
+        let observed = self.ctx.observe_resource(value, &self.read);
+        for issue in observed.issues {
+            self.report(issue);
+        }
+        match observed.value {
+            Some(ResourceObservation::Join(join)) => {
+                self.reference(join.header, ReferenceSource::JoinHandle, key);
+            }
+            Some(ResourceObservation::Acquire(acquire)) => {
+                if !self.queues.insert(acquire.semaphore) {
+                    return;
+                }
+                let queue =
+                    self.ctx
+                        .observe_semaphore_queue(acquire.semaphore, &self.read, self.budget);
+                for issue in queue.issues {
+                    self.report(issue);
+                }
+                for waiter in &queue.waiters {
+                    if let Some(task) = waiter.waker.task() {
+                        self.reference(TaskAddr(task), ReferenceSource::SemaphoreWaker, key);
+                    }
+                }
+            }
+            Some(ResourceObservation::Io(io)) => {
+                if !self.queues.insert(io.scheduled_io) {
+                    return;
+                }
+                let registration =
+                    self.ctx
+                        .observe_io_registration(io.scheduled_io, &self.read, self.budget);
+                for issue in registration.issues {
+                    self.report(issue);
+                }
+                if let Some(resource) = registration.value {
+                    for waiter in &resource.waiters {
+                        if let Some(task) = waiter.task {
+                            self.reference(TaskAddr(task), ReferenceSource::IoWaker, key);
+                        }
+                    }
+                }
+            }
+            // A timer entry's waker is the wheel's to hand over: the
+            // sleep names no task itself.
+            Some(ResourceObservation::Timer(_)) | None => {}
+        }
+    }
+
+    /// Why a container walk stopped short, as the issue it is.
+    fn node_stop(&mut self, at: ValueKey, stop: NodeStop) {
+        let issue = match stop {
+            NodeStop::Unmapped { addr, .. } => WalkIssue::new(
+                ValueKey { addr, ..at },
+                WalkIssueKind::ReadFailed,
+                stop.to_string(),
+            ),
+            NodeStop::Refused {
+                addr, ref refusal, ..
+            } => WalkIssue::new(ValueKey { addr, ..at }, refusal.kind(), stop.to_string()),
+            NodeStop::Cycle { addr, .. } => WalkIssue::new(
+                ValueKey { addr, ..at },
+                WalkIssueKind::Cycle,
+                stop.to_string(),
+            ),
+            NodeStop::Capped { .. } => {
+                WalkIssue::new(at, WalkIssueKind::VisitLimit, stop.to_string())
+            }
+            NodeStop::Failed(ref e) => issue_of(at, e),
+        };
+        self.report(issue);
+    }
+
+    /// The stop a container walk takes when the referent budget is
+    /// spent before its next node.
+    fn spent(budget: &ScanBudget) -> NodeStop {
+        NodeStop::Capped {
+            unit: "referent expansions",
+            max: budget.limits.max_referent_expansions as usize,
+        }
+    }
+
+    /// A `FuturesUnordered`: each node's initialized child is a new
+    /// origin, one dereference and one nesting hop from here.
+    fn set(&mut self, set: Value<'b>, key: ValueKey, frame: Frame) {
+        let max = self.budget.limits.max_children as usize;
+        let mut children: Vec<Value<'b>> = Vec::new();
+        let ctx = self.ctx;
+        let read = self.read;
+        let budget = &mut *self.budget;
+        let visit = &mut |cur: u64, node: Value<'b>| -> std::result::Result<(), NodeStop> {
+            if !budget.charge_referent() {
+                return Err(Self::spent(budget));
+            }
+            // Task.future: UnsafeCell<Option<Fut>>; `None` is a
+            // completed child the set has not reaped. The child is
+            // the `Some` payload's one member, entered by name.
+            let slot = ctx
+                .walk(WalkRole::SetNodeFuture)
+                .walk_at_with(&read, node)?;
+            let some = slot
+                .ty
+                .variant_name_ref("Some")
+                .ok_or_else(|| anyhow!("the child slot at {cur:#x} is not an Option"))?;
+            match contract::execute_steps(ctx, &read, slot, &[Step::Variant(some)])? {
+                Walked::At(payload) => {
+                    let member = payload
+                        .ty
+                        .members()
+                        .find(|m| m.ty().size() > 0)
+                        .ok_or_else(|| anyhow!("the child slot at {cur:#x} holds nothing"))?;
+                    let step = Step::Member(MemberRef::Named(member.name_ref()));
+                    if let Walked::At(child) =
+                        contract::execute_steps(ctx, &read, payload, &[step])?
+                    {
+                        children.push(child);
+                    }
+                }
+                Walked::Inactive(_) | Walked::Null => {}
+            }
+            Ok(())
+        };
+        let result = walk_set_nodes(ctx, &read, set, max, visit);
+        if let Err(stop) = result {
+            self.node_stop(key, stop);
+        }
+        let child_frame = Frame {
+            nesting: frame.nesting + 1,
+            ..frame
+        };
+        if frame.nesting >= self.budget.limits.max_future_nesting && !children.is_empty() {
+            self.report(WalkIssue::new(
+                key,
+                WalkIssueKind::HopLimit,
+                format!(
+                    "the future nesting limit ({}) was reached",
+                    self.budget.limits.max_future_nesting
+                ),
+            ));
+            return;
+        }
+        self.path.push(Step::Deref);
+        for child in children {
+            self.root(child, child_frame);
+        }
+        self.path.pop();
+    }
+
+    /// A `JoinSet`: each entry's handle names a task.
+    fn join_set(&mut self, set: Value<'b>, key: ValueKey) {
+        let max = self.budget.limits.max_children as usize;
+        let mut tasks: Vec<(u64, u64)> = Vec::new();
+        let mut length = 0;
+        let ctx = self.ctx;
+        let read = self.read;
+        let budget = &mut *self.budget;
+        let visit = &mut |addr: u64, entry: Value<'b>| -> std::result::Result<(), NodeStop> {
+            if !budget.charge_referent() {
+                return Err(Self::spent(budget));
+            }
+            tasks.push((addr, join_set_entry_task(ctx, entry)?));
+            Ok(())
+        };
+        let result = walk_join_set_entries(ctx, &read, set, max, &mut length, visit);
+        let walked = tasks.len() as u64;
+        match result {
+            Ok(()) if walked != length => self.report(WalkIssue::new(
+                key,
+                WalkIssueKind::CountMismatch,
+                format!("the JoinSet lists {walked} tasks against its own count of {length}"),
+            )),
+            Ok(()) => {}
+            Err(stop) => self.node_stop(key, stop),
+        }
+        self.path.push(Step::Deref);
+        for (entry, task) in tasks {
+            let from = ValueKey {
+                addr: entry,
+                ty: key.ty,
+            };
+            self.reference(TaskAddr(task), ReferenceSource::JoinSetEntry, from);
+        }
+        self.path.pop();
+    }
+}
+
+/// Whether an array of `element`s could hold a future or a handle:
+/// an aggregate element might, a scalar cannot.
+fn holds_aggregates(element: hansei_bundle::BundleType<'_>) -> bool {
+    matches!(
+        element.classify(),
+        TypeClass::Struct | TypeClass::RustEnum | TypeClass::Union | TypeClass::Array { .. }
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use crate::testkit;
+    use crate::testkit::corrupt::Corrupt;
+    use crate::testkit::heap::FakeHeap;
+    use crate::tokio::bundle::{FutureInfo, Task, TaskList, TaskStage};
+    use crate::tokio::observe::{CollectedReferences, ScanLimits, TaskReference};
+
+    use hansei_bundle::{BundleView, SemanticIssue, StoragePolicy};
+
+    /// An address nothing in a small test program's address space
+    /// reaches.
+    const NOWHERE: u64 = 0xdead_beef_0000;
+
+    /// The listed task whose future's display name contains `name`.
+    fn task_named<'a>(list: &'a TaskList, name: &str) -> &'a Task {
+        list.tasks
+            .iter()
+            .find(|t| matches!(&t.future, FutureInfo::Known(k) if k.display_name.contains(name)))
+            .unwrap_or_else(|| panic!("the fixture lists a task named {name}"))
+    }
+
+    /// The resident future a task's stage holds.
+    fn root_of<'a, T: Target>(ctx: &Context<'a, T>, task: &Task) -> Value<'a> {
+        match ctx.task_stage(task).unwrap() {
+            TaskStage::Running(root) => root,
+            other => panic!("the task's future is resident: {other:?}"),
+        }
+    }
+
+    /// Scan a task's own storage under the default limits and no
+    /// allocator evidence.
+    fn scan_task<'a, T: Target>(
+        ctx: &Context<'a, T>,
+        task: &Task,
+    ) -> (ScanCompletion, CollectedReferences) {
+        scan_task_with(ctx, task, &ReadContext::none(), ScanLimits::default())
+    }
+
+    fn scan_task_with<'a, T: Target>(
+        ctx: &Context<'a, T>,
+        task: &Task,
+        read: &ReadContext<'_>,
+        limits: ScanLimits,
+    ) -> (ScanCompletion, CollectedReferences) {
+        let mut sink = CollectedReferences::default();
+        let mut budget = ScanBudget::new(limits);
+        let completion =
+            ctx.scan_references(root_of(ctx, task), task.addr, read, &mut budget, &mut sink);
+        assert_eq!(completion.inline_visits, budget.inline_visits);
+        assert_eq!(completion.referent_expansions, budget.referent_expansions);
+        (completion, sink)
+    }
+
+    /// A path's steps spelled with their names, for assertions.
+    fn spell<T: Target>(ctx: &Context<'_, T>, path: &[Step]) -> Vec<String> {
+        path.iter()
+            .map(|step| match step {
+                Step::Member(MemberRef::Named(name)) => {
+                    format!(".{}", ctx.view.str(*name).unwrap())
+                }
+                Step::Member(MemberRef::Index(i)) => format!(".[{i}]"),
+                Step::Variant(name) => format!("<{}>", ctx.view.str(*name).unwrap()),
+                Step::ActiveVariant => "<active>".to_owned(),
+                Step::Deref => "*".to_owned(),
+            })
+            .collect()
+    }
+
+    fn kinds(issues: &[WalkIssue]) -> Vec<WalkIssueKind> {
+        issues.iter().map(|i| i.kind).collect()
+    }
+
+    /// A held `JoinHandle` is a reference to the task it names, found
+    /// with no task list and no wait diagnosed: the joiner's storage
+    /// yields exactly the sleeper, by the literal path through the
+    /// suspended state's awaitee, and the scan is complete.
+    #[test]
+    fn test_a_held_join_handle_references_its_task() {
+        let (bundle, snapshot) = testkit::load_any("sleep-join");
+        let ctx = testkit::context(&bundle, &snapshot);
+        let list = testkit::tasks(&ctx, &snapshot);
+        let joiner = task_named(&list, "joiner");
+        let sleeper = task_named(&list, "sleeper");
+        let (completion, sink) = scan_task(&ctx, joiner);
+        assert!(completion.complete, "{:?}", sink.issues);
+        assert!(sink.issues.is_empty(), "{:?}", sink.issues);
+        assert_eq!(completion.referent_expansions, 0);
+        assert!(completion.inline_visits > 1);
+        let [reference] = &sink.references[..] else {
+            panic!("one reference: {:?}", sink.references);
+        };
+        assert_eq!(reference.target, sleeper.addr);
+        assert_eq!(reference.source, ReferenceSource::JoinHandle);
+        assert_eq!(reference.root_task, Some(joiner.addr));
+        let handle = reference.source_value.expect("the handle is the source");
+        assert!(
+            ctx.view
+                .ty(handle.ty)
+                .unwrap()
+                .name()
+                .starts_with("tokio::runtime::task::join::JoinHandle<")
+        );
+        let path = spell(&ctx, &reference.path);
+        assert_eq!(path.len(), 2, "{path:?}");
+        assert!(path[0].starts_with('<'), "{path:?}");
+        assert_eq!(path[1], ".__awaitee");
+        // The handle sits at a nonzero offset inside the state: the
+        // path's endpoint is the source value's own address.
+        let root = root_of(&ctx, joiner);
+        assert!(handle.addr > root.addr && handle.addr < root.addr + root.ty.size());
+    }
+
+    /// The scan is independent of the wait: the same handle references
+    /// the same task after the sleeper has completed and left its list,
+    /// and the reference is found whether or not anything awaits it.
+    #[test]
+    fn test_a_reference_survives_the_referenced_tasks_completion() {
+        let (bundle, snapshot) = testkit::load_any("sleep-join");
+        let ctx = testkit::context(&bundle, &snapshot);
+        let list = testkit::tasks(&ctx, &snapshot);
+        let joiner = task_named(&list, "joiner");
+        let sleeper = task_named(&list, "sleeper");
+        let header_ty = ctx.view.ty(bundle.infra.header).unwrap();
+        let state_at = ctx
+            .walk(WalkRole::HeaderState)
+            .member_offset(header_ty)
+            .unwrap();
+        let done = Corrupt::new(&snapshot).patch(sleeper.addr.0 + state_at, (1 << 6) | 0b10);
+        let ctx = Context::new(&done, BundleView::new(&bundle)).unwrap();
+        let (completion, sink) = scan_task(&ctx, joiner);
+        assert!(completion.complete, "{:?}", sink.issues);
+        assert_eq!(sink.references.len(), 1);
+        assert_eq!(sink.references[0].target, sleeper.addr);
+        assert!(
+            ctx.read_task_header(sleeper.addr, &ReadContext::none())
+                .unwrap()
+                .state
+                .is_complete()
+        );
+    }
+
+    /// A sleep names no task: the sleeper's storage yields no
+    /// reference and nothing to report — the wheel is the registry
+    /// that hands its waker over.
+    #[test]
+    fn test_a_sleep_references_nothing() {
+        let (bundle, snapshot) = testkit::load_any("sleep-join");
+        let ctx = testkit::context(&bundle, &snapshot);
+        let list = testkit::tasks(&ctx, &snapshot);
+        let sleeper = task_named(&list, "sleeper");
+        let (completion, sink) = scan_task(&ctx, sleeper);
+        assert!(completion.complete, "{:?}", sink.issues);
+        assert!(sink.references.is_empty(), "{:?}", sink.references);
+        assert_eq!(completion.referent_expansions, 0);
+    }
+
+    /// An acquire reached through an unsupported wrapper — the tokio
+    /// lock's own async block, whose captured `self` reference the
+    /// layout cannot vouch for — still yields the queue's task wakers,
+    /// with the uncertain capture reported rather than read and every
+    /// pointer on the way (`future1`'s box, the `Arc`) a silent stop.
+    #[test]
+    fn test_an_acquire_references_the_queued_wakers() {
+        let (bundle, snapshot) = testkit::load_any("futurelock");
+        let ctx = testkit::context(&bundle, &snapshot);
+        let list = testkit::tasks(&ctx, &snapshot);
+        let task = task_named(&list, "futurelock::main");
+        let (completion, sink) = scan_task(&ctx, task);
+        assert!(!completion.complete);
+        assert_eq!(kinds(&sink.issues), [WalkIssueKind::UnknownInitialization]);
+        assert!(
+            sink.issues[0]
+                .detail
+                .as_deref()
+                .is_some_and(|d| d.contains("_ref__self")),
+            "{:?}",
+            sink.issues
+        );
+        let [reference] = &sink.references[..] else {
+            panic!("one queued waker: {:?}", sink.references);
+        };
+        assert_eq!(reference.source, ReferenceSource::SemaphoreWaker);
+        assert_eq!(reference.target, task.addr);
+        let acquire = reference.source_value.unwrap();
+        assert_eq!(
+            ctx.view.ty(acquire.ty).unwrap().name(),
+            "tokio::sync::batch_semaphore::Acquire"
+        );
+        let path = spell(&ctx, &reference.path);
+        assert_eq!(path.last().map(String::as_str), Some(".__awaitee"));
+        assert!(
+            path.iter().filter(|s| *s == ".__awaitee").count() >= 5,
+            "{path:?}"
+        );
+        // The semaphore and its one queue node, one dereference each.
+        assert_eq!(completion.referent_expansions, 2);
+    }
+
+    /// The tasks a `JoinSet` holds are references through its entries,
+    /// each keyed by the entry it was found in — the same pairs the
+    /// census lists as the set's members — and an entry's handle is a
+    /// reference of its own when the entry is scanned as a plain
+    /// value, through the cell and `ManuallyDrop` around it.
+    #[test]
+    fn test_a_join_set_references_its_members_through_its_entries() {
+        let (bundle, snapshot) = testkit::load_any("joinset");
+        let run = testkit::run(&bundle, &snapshot);
+        let driver = task_named(&run.list, "driver");
+        let (completion, sink) = scan_task(&run.ctx, driver);
+        assert!(completion.complete, "{:?}", sink.issues);
+        let mut found: Vec<(u64, u64)> = sink
+            .references
+            .iter()
+            .map(|r| {
+                assert_eq!(r.source, ReferenceSource::JoinSetEntry);
+                assert_eq!(r.root_task, Some(driver.addr));
+                assert_eq!(r.path.last(), Some(&Step::Deref));
+                (r.source_value.unwrap().addr, r.target.0)
+            })
+            .collect();
+        found.sort_unstable();
+        let mut listed: Vec<(u64, u64)> = run
+            .census
+            .join_sets
+            .iter()
+            .flat_map(|s| s.children.iter().map(|c| (c.entry, c.task)))
+            .collect();
+        listed.sort_unstable();
+        assert!(!listed.is_empty());
+        assert_eq!(found, listed);
+        assert_eq!(completion.referent_expansions, listed.len() as u64);
+
+        // One entry as a root of its own: the handle inside it is a
+        // struct member two wrappers down, found by descent.
+        let (entry, task) = listed[0];
+        let set = run.census.join_sets[0].addr;
+        let set_ty = run
+            .census
+            .join_sets
+            .iter()
+            .find(|s| s.addr == set)
+            .map(|s| s.ty.as_str())
+            .unwrap();
+        let set_ty = run.ctx.view.find_by_name(set_ty).next().unwrap();
+        let set_value = Value::read(&snapshot, set_ty, set).unwrap();
+        let lists = run
+            .ctx
+            .walk(WalkRole::JoinSetLists)
+            .walk_at(set_value)
+            .unwrap();
+        let head = run
+            .ctx
+            .walk(WalkRole::JoinSetIdleHead)
+            .walk(lists)
+            .unwrap()
+            .optional()
+            .or_else(|| {
+                run.ctx
+                    .walk(WalkRole::JoinSetNotifiedHead)
+                    .walk(lists)
+                    .unwrap()
+                    .optional()
+            })
+            .unwrap();
+        let entry_value = Value::read(&snapshot, head.ty.pointer_target().unwrap(), entry).unwrap();
+        let mut sink = CollectedReferences::default();
+        let mut budget = ScanBudget::default();
+        let completion = run.ctx.scan_references(
+            entry_value,
+            driver.addr,
+            &ReadContext::none(),
+            &mut budget,
+            &mut sink,
+        );
+        assert!(completion.complete, "{:?}", sink.issues);
+        assert_eq!(completion.referent_expansions, 0);
+        let [reference] = &sink.references[..] else {
+            panic!("the entry's handle: {:?}", sink.references);
+        };
+        assert_eq!(reference.source, ReferenceSource::JoinHandle);
+        assert_eq!(reference.target.0, task);
+        let path = spell(&run.ctx, &reference.path);
+        assert!(
+            path.len() >= 2 && path.iter().all(|s| s.starts_with('.')),
+            "{path:?}"
+        );
+
+        // A freed entry ends the walk before it is read: the entries
+        // before it are references, nothing after it is.
+        let entry_ty = head.ty.pointer_target().unwrap();
+        let victim = listed[listed.len() / 2].0;
+        let freed = FakeHeap::new().freed(victim..victim + entry_ty.size());
+        let (completion, sink) = scan_task_with(
+            &run.ctx,
+            driver,
+            &ReadContext::with_heap(&freed),
+            ScanLimits::default(),
+        );
+        assert!(!completion.complete);
+        assert!(sink.references.len() < listed.len());
+        assert!(
+            sink.references
+                .iter()
+                .all(|r| r.source_value.unwrap().addr != victim)
+        );
+        assert!(
+            sink.issues
+                .iter()
+                .any(|i| i.kind == WalkIssueKind::Freed && i.at.addr == victim),
+            "{:?}",
+            sink.issues
+        );
+        assert_eq!(freed.counts(), (0, 0, 0));
+    }
+
+    /// A `FuturesUnordered`'s children are new origins, each one
+    /// dereference and one nesting hop away: the walk charges a
+    /// referent per node, a freed node stops it before the node is
+    /// read, a looped node is a cycle, and a spent nesting allowance
+    /// keeps the children unscanned and says so.
+    #[test]
+    fn test_a_set_walks_its_children_as_new_origins() {
+        let (bundle, snapshot) = testkit::load_any("unordered");
+        let run = testkit::run(&bundle, &snapshot);
+        let driver = task_named(&run.list, "driver");
+        let nodes: Vec<Vec<u64>> = run
+            .census
+            .sets
+            .iter()
+            .map(|s| s.children.iter().map(|c| c.node).collect())
+            .collect();
+        let total: usize = nodes.iter().map(Vec::len).sum();
+        assert!(total > 2);
+
+        let (completion, sink) = scan_task(&run.ctx, driver);
+        // The children park in a `Notify`, which no reader observes;
+        // nothing here names a task.
+        assert!(sink.references.is_empty(), "{:?}", sink.references);
+        assert!(completion.complete, "{:?}", sink.issues);
+        assert_eq!(completion.referent_expansions, total as u64);
+        let visits = completion.inline_visits;
+
+        // Every child scanned once: a second scan of the same root
+        // costs the same visits.
+        let (again, _) = scan_task(&run.ctx, driver);
+        assert_eq!(again.inline_visits, visits);
+
+        // The outermost set's second node freed: the first child is
+        // still scanned, the rest are not.
+        let outer = nodes.iter().max_by_key(|n| n.len()).unwrap();
+        let victim = outer[1];
+        let node_ty = {
+            let set_ty = run
+                .ctx
+                .view
+                .find_by_name(&run.census.sets[0].ty)
+                .next()
+                .unwrap();
+            let set = Value::read(&snapshot, set_ty, run.census.sets[0].addr).unwrap();
+            run.ctx
+                .walk(WalkRole::SetHeadAll)
+                .walk_at(set)
+                .unwrap()
+                .ty
+                .pointer_target()
+                .unwrap()
+        };
+        let freed = FakeHeap::new().freed(victim..victim + node_ty.size());
+        let (completion, sink) = scan_task_with(
+            &run.ctx,
+            driver,
+            &ReadContext::with_heap(&freed),
+            ScanLimits::default(),
+        );
+        assert!(!completion.complete);
+        assert!(
+            sink.issues
+                .iter()
+                .any(|i| i.kind == WalkIssueKind::Freed && i.at.addr == victim),
+            "{:?}",
+            sink.issues
+        );
+        assert!(completion.referent_expansions < total as u64);
+        assert!(completion.inline_visits < visits);
+
+        // Looped: the first node's link back to itself.
+        let first = outer[0];
+        let node = Value::read(&snapshot, node_ty, first).unwrap();
+        let next = run.ctx.walk(WalkRole::SetNodeNext).walk_at(node).unwrap();
+        let looped = Corrupt::new(&snapshot).patch(next.addr, first);
+        let ctx = Context::new(&looped, BundleView::new(&bundle)).unwrap();
+        let (completion, sink) = scan_task(&ctx, driver);
+        assert!(!completion.complete);
+        assert!(
+            sink.issues
+                .iter()
+                .any(|i| i.kind == WalkIssueKind::Cycle && i.at.addr == first),
+            "{:?}",
+            sink.issues
+        );
+
+        // Cut: the link runs off the map.
+        let cut = Corrupt::new(&snapshot).patch(next.addr, NOWHERE);
+        let ctx = Context::new(&cut, BundleView::new(&bundle)).unwrap();
+        let (completion, sink) = scan_task(&ctx, driver);
+        assert!(!completion.complete);
+        assert!(
+            sink.issues
+                .iter()
+                .any(|i| i.kind == WalkIssueKind::ReadFailed && i.at.addr == NOWHERE),
+            "{:?}",
+            sink.issues
+        );
+
+        // No nesting allowed: the sets' nodes are walked, their
+        // children are not scanned, and the hop limit says so.
+        let (completion, sink) = scan_task_with(
+            &run.ctx,
+            driver,
+            &ReadContext::none(),
+            ScanLimits {
+                max_future_nesting: 0,
+                ..ScanLimits::default()
+            },
+        );
+        assert!(!completion.complete);
+        assert!(kinds(&sink.issues).contains(&WalkIssueKind::HopLimit));
+        assert!(completion.inline_visits < visits);
+
+        // A child cap of one: one node is listed per set, the rest are
+        // a visit limit.
+        let (completion, sink) = scan_task_with(
+            &run.ctx,
+            driver,
+            &ReadContext::none(),
+            ScanLimits {
+                max_children: 1,
+                ..ScanLimits::default()
+            },
+        );
+        assert!(!completion.complete);
+        assert!(kinds(&sink.issues).contains(&WalkIssueKind::VisitLimit));
+
+        // A referent budget of one: one node read, then the stop.
+        let (completion, sink) = scan_task_with(
+            &run.ctx,
+            driver,
+            &ReadContext::none(),
+            ScanLimits {
+                max_referent_expansions: 1,
+                ..ScanLimits::default()
+            },
+        );
+        assert_eq!(completion.referent_expansions, 1);
+        assert!(kinds(&sink.issues).contains(&WalkIssueKind::VisitLimit));
+    }
+
+    /// The inline limits: a depth of zero stops at the root's own
+    /// locals, and a visit budget of one stops after the root.
+    #[test]
+    fn test_the_inline_limits_stop_where_they_say() {
+        let (bundle, snapshot) = testkit::load_any("sleep-join");
+        let ctx = testkit::context(&bundle, &snapshot);
+        let list = testkit::tasks(&ctx, &snapshot);
+        let joiner = task_named(&list, "joiner");
+
+        let (completion, sink) = scan_task_with(
+            &ctx,
+            joiner,
+            &ReadContext::none(),
+            ScanLimits {
+                max_depth: 0,
+                ..ScanLimits::default()
+            },
+        );
+        assert!(!completion.complete);
+        assert!(sink.references.is_empty());
+        assert!(!sink.issues.is_empty());
+        assert!(
+            kinds(&sink.issues)
+                .iter()
+                .all(|k| *k == WalkIssueKind::DepthLimit)
+        );
+
+        let (completion, sink) = scan_task_with(
+            &ctx,
+            joiner,
+            &ReadContext::none(),
+            ScanLimits {
+                max_inline_visits: 1,
+                ..ScanLimits::default()
+            },
+        );
+        assert!(!completion.complete);
+        assert_eq!(completion.inline_visits, 1);
+        assert!(sink.references.is_empty());
+        assert_eq!(kinds(&sink.issues), [WalkIssueKind::VisitLimit]);
+    }
+
+    /// Storage the bundle declares unreadable is stopped at with the
+    /// reason, never scanned as the enum it is shaped as: the same
+    /// joiner, with its coroutine record downgraded, yields no
+    /// reference at all.
+    #[test]
+    fn test_unavailable_storage_stops_with_a_diagnostic() {
+        let (bundle, snapshot) = testkit::load_any("sleep-join");
+        let ctx = testkit::context(&bundle, &snapshot);
+        let list = testkit::tasks(&ctx, &snapshot);
+        let joiner = task_named(&list, "joiner");
+        let root = root_of(&ctx, joiner);
+        let mut unbound = bundle.clone();
+        let record = unbound
+            .semantics
+            .types
+            .iter_mut()
+            .find(|r| r.ty == root.ty.id())
+            .expect("the joiner's coroutine has a record");
+        record.storage = StoragePolicy::Unavailable(SemanticIssue {
+            kind: SemanticIssueKind::PossiblyUninitialized,
+            detail: None,
+        });
+        record.coroutine = None;
+        let ctx = testkit::context(&unbound, &snapshot);
+        let (completion, sink) = scan_task(&ctx, joiner);
+        assert!(!completion.complete);
+        assert!(sink.references.is_empty(), "{:?}", sink.references);
+        assert_eq!(kinds(&sink.issues), [WalkIssueKind::UnknownInitialization]);
+        assert_eq!(sink.issues[0].at, ValueKey::of(root));
+        assert_eq!(completion.inline_visits, 1);
+    }
+
+    /// Every io operation's task is a reference through the
+    /// registration it reaches: the local set's members each name
+    /// themselves through their own resource's waiters, and the
+    /// gated reader, which reaches no registration, names nobody.
+    #[test]
+    fn test_io_operations_reference_the_parked_wakers() {
+        let (bundle, snapshot) = testkit::load_any("local-set-io");
+        let ctx = testkit::context(&bundle, &snapshot);
+        let list = testkit::tasks(&ctx, &snapshot);
+        // The registration is one dereference; a readiness await's
+        // listed node is one more, while the direction slots are in
+        // no list at all.
+        for (name, expansions) in [
+            ("local_reader", 1),
+            ("local_writer", 1),
+            ("local_watcher", 2),
+            ("::reader", 1),
+        ] {
+            let task = task_named(&list, name);
+            let (completion, sink) = scan_task(&ctx, task);
+            assert!(completion.complete, "{name}: {:?}", sink.issues);
+            let targets: Vec<TaskAddr> = sink.references.iter().map(|r| r.target).collect();
+            assert_eq!(targets, [task.addr], "{name}: {:?}", sink.references);
+            assert_eq!(sink.references[0].source, ReferenceSource::IoWaker);
+            assert_eq!(completion.referent_expansions, expansions, "{name}");
+        }
+        let gated = task_named(&list, "local_gated_reader");
+        let (completion, sink) = scan_task(&ctx, gated);
+        assert!(completion.complete, "{:?}", sink.issues);
+        assert!(sink.references.is_empty(), "{:?}", sink.references);
+        assert_eq!(completion.referent_expansions, 0);
+    }
+
+    /// A counting sink sees the same references as the collecting
+    /// one, and copies no path.
+    #[test]
+    fn test_a_counting_sink_sees_every_reference() {
+        struct Count(usize, usize);
+        impl ReferenceSink for Count {
+            fn reference(
+                &mut self,
+                _: TaskAddr,
+                _: ReferenceSource,
+                _: Option<ValueKey>,
+                _: Option<TaskAddr>,
+                path: &[Step],
+            ) {
+                assert!(!path.is_empty());
+                self.0 += 1;
+            }
+            fn issue(&mut self, _: WalkIssue) {
+                self.1 += 1;
+            }
+        }
+        let (bundle, snapshot) = testkit::load_any("joinset");
+        let ctx = testkit::context(&bundle, &snapshot);
+        let list = testkit::tasks(&ctx, &snapshot);
+        let driver = task_named(&list, "driver");
+        let (_, collected) = scan_task(&ctx, driver);
+        let mut count = Count(0, 0);
+        let mut budget = ScanBudget::default();
+        ctx.scan_references(
+            root_of(&ctx, driver),
+            driver.addr,
+            &ReadContext::none(),
+            &mut budget,
+            &mut count,
+        );
+        assert_eq!(count.0, collected.references.len());
+        assert_eq!(count.1, collected.issues.len());
+        let _: &Vec<TaskReference> = &collected.references;
+    }
+}

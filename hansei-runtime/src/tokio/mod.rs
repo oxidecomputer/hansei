@@ -18,6 +18,7 @@ pub mod graph;
 mod model;
 pub mod observe;
 pub mod registers;
+pub mod scan;
 mod semantics;
 pub mod stackjoin;
 

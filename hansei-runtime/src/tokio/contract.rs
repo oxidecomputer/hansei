@@ -253,7 +253,7 @@ impl<'b> Walked<'b> {
 
     /// The terminal, treating the runtime outcomes as errors — for
     /// paths whose steps admit neither.
-    fn at(self, name: &str) -> Result<Value<'b>> {
+    pub(crate) fn at(self, name: &str) -> Result<Value<'b>> {
         match self {
             Walked::At(info) => Ok(info),
             Walked::Inactive(v) => bail!("{name}: variant {v} is not active"),
@@ -320,8 +320,17 @@ impl<'b, T: Target> Bound<'_, 'b, T> {
     /// Like [`Bound::walk`], but an unbound role is `None` — for
     /// [`Class::Optional`] members whose absence is an expected shape.
     pub fn try_walk(&self, root: Value<'b>) -> Result<Option<Walked<'b>>> {
+        self.try_walk_with(&ReadContext::none(), root)
+    }
+
+    /// [`Bound::try_walk`] under `read`.
+    pub fn try_walk_with(
+        &self,
+        read: &ReadContext<'_>,
+        root: Value<'b>,
+    ) -> Result<Option<Walked<'b>>> {
         match self.steps() {
-            Ok(steps) => walk_steps(self.ctx, root, steps)
+            Ok(steps) => execute_steps(self.ctx, read, root, steps)
                 .map(Some)
                 .with_context(|| format!("walk path {}", self.name())),
             Err(_) => Ok(None),
@@ -332,6 +341,21 @@ impl<'b, T: Target> Bound<'_, 'b, T> {
     /// outcome (or where either would be a hard error anyway).
     pub fn walk_at(&self, root: Value<'b>) -> Result<Value<'b>> {
         self.walk(root)?.at(self.name())
+    }
+
+    /// [`Bound::walk_at`] under `read`.
+    pub fn walk_at_with(&self, read: &ReadContext<'_>, root: Value<'b>) -> Result<Value<'b>> {
+        self.walk_with(read, root)?.at(self.name())
+    }
+
+    /// [`Bound::read`] under `read`.
+    pub fn read_with<V>(&self, read: &ReadContext<'_>, root: Value<'b>) -> Result<V>
+    where
+        V: ParseWithDbgInfo<'b>,
+    {
+        let info = self.walk_at_with(read, root)?;
+        info.parse(self.ctx.proc)
+            .with_context(|| format!("walk path {}", self.name()))
     }
 
     /// Walk to the terminal and parse a value out of it.
@@ -394,9 +418,9 @@ fn member_at<'b>(
     Some(members[index])
 }
 
-/// Execute recorded steps over target memory, uncorroborated: the
-/// walk contract's own accessors, whose referents are the runtime's
-/// structures. See [`execute_steps`].
+/// Execute recorded steps over target memory, uncorroborated — the
+/// interpreter tests' entry point. See [`execute_steps`].
+#[cfg(test)]
 fn walk_steps<'b, T: Target>(
     ctx: &Context<'b, T>,
     cur: Value<'b>,
@@ -513,7 +537,9 @@ pub(crate) fn execute_steps<'b, T: Target>(
                 return Ok(Walked::Null);
             }
             if let Some(refusal) = read.refusal(addr, target.size()) {
-                bail!("dereferencing {}: {refusal}", cur.ty.name());
+                return Err(
+                    anyhow::Error::new(refusal).context(format!("dereferencing {}", cur.ty.name()))
+                );
             }
             let pointee = Value::read(ctx.proc, target, addr)
                 .map_err(|e| anyhow!(e).context(format!("dereferencing {}", cur.ty.name())))?;
