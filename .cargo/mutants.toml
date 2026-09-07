@@ -364,4 +364,10 @@ exclude_re = [
     # `pstack` calls them — no test can observe, and the session cap is
     # a judgment about rack sleds that no host here has.
     "replace build_pool with \\(\\)",
+    # Equivalent mutant in the snapshot-corrupting test double: admitting
+    # the address exactly at a run's end matches a run with no bytes left
+    # past it, which no read of any length serves and whose readable
+    # length is zero either way. The strict bound says what a run's end
+    # means; nothing can tell the two apart.
+    "replace < with <= in Corrupt<'a>::segment",
 ]

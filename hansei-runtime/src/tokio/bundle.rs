@@ -3748,7 +3748,6 @@ impl<'b, T: Target> Context<'b, T> {
             head.parse::<u64>(self.proc)
                 .map_err(|e| issue_of(at, &anyhow!(e)))?,
         );
-        let mut listed = 0u32;
         while let Some(addr) = cur {
             let key = ValueKey {
                 addr,
@@ -3761,7 +3760,9 @@ impl<'b, T: Target> Context<'b, T> {
                     format!("io waiter list cycle at {addr:#x}"),
                 ));
             }
-            if listed >= budget.limits.max_children {
+            // The set now holds this node too, so its size is one past
+            // the nodes taken.
+            if visited.len() > budget.limits.max_children as usize {
                 return Err(WalkIssue::new(
                     key,
                     WalkIssueKind::VisitLimit,
@@ -3779,7 +3780,6 @@ impl<'b, T: Target> Context<'b, T> {
                 ));
             }
             let node = self.read_keyed(key, read).map_err(|e| issue_of(key, &e))?;
-            listed += 1;
             // A node whose future has not been polled since it was
             // linked carries no waker yet; it is a node all the same.
             let task = match self.walk(WalkRole::IoWaiterWaker).walk_with(read, node) {
@@ -4778,6 +4778,31 @@ mod tests {
             assert_eq!(waiter.waker.task(), Some(task.addr.0), "{waiter:?}");
         }
 
+        // The permits word decodes its count above the closed bit.
+        {
+            use crate::testkit::corrupt::Corrupt;
+            let sem = ctx.read_keyed(acq.semaphore, &ReadContext::none()).unwrap();
+            let permits = ctx.walk(WalkRole::SemaphorePermits).walk_at(sem).unwrap();
+            for (word, available, closed) in [
+                (
+                    (3u64 << semaphore::PERMIT_SHIFT) | semaphore::CLOSED,
+                    3,
+                    true,
+                ),
+                (5 << semaphore::PERMIT_SHIFT, 5, false),
+            ] {
+                let patched = Corrupt::new(snapshot).patch(permits.addr, word);
+                let ctx = Context::new(&patched, BundleView::new(bundle)).unwrap();
+                let queue = ctx.observe_semaphore_queue(
+                    acq.semaphore,
+                    &ReadContext::none(),
+                    &mut ScanBudget::default(),
+                );
+                assert_eq!(queue.available, Some(available), "word {word:#x}");
+                assert_eq!(queue.closed, Some(closed), "word {word:#x}");
+            }
+        }
+
         // The same order and nodes the wait reader spells.
         let TaskStage::Running(root) = ctx.task_stage(task).unwrap() else {
             unreachable!()
@@ -5105,6 +5130,27 @@ mod tests {
         // The registration itself, then its one node.
         assert_eq!(budget.referent_expansions, 2);
 
+        // The child cap is exact: a cap of one lists the one node, a
+        // cap of zero refuses it.
+        {
+            use crate::tokio::observe::ScanLimits;
+            let capped = |max_children: u32| {
+                let mut budget = ScanBudget::new(ScanLimits {
+                    max_children,
+                    ..ScanLimits::default()
+                });
+                ctx.observe_io_registration(io.scheduled_io, &ReadContext::none(), &mut budget)
+            };
+            let one = capped(1);
+            assert!(one.issues.is_empty(), "{:?}", one.issues);
+            assert_eq!(one.value.unwrap().waiters.len(), 1);
+            let none = capped(0);
+            assert_eq!(none.issues.len(), 1, "{:?}", none.issues);
+            assert_eq!(none.issues[0].kind, WalkIssueKind::VisitLimit);
+            assert_eq!(none.issues[0].at.addr, node);
+            assert!(none.value.unwrap().waiters.is_empty());
+        }
+
         // A registration whose list runs off the map keeps the slots
         // it read and says where the list failed.
         {
@@ -5129,6 +5175,32 @@ mod tests {
             assert_eq!(registration.issues.len(), 1);
             assert_eq!(registration.issues[0].kind, WalkIssueKind::ReadFailed);
             assert_eq!(registration.issues[0].at.addr, NOWHERE);
+        }
+
+        // The await's own state word, as its enumeration spells it,
+        // and a word no enumerator claims kept raw.
+        {
+            use crate::testkit::corrupt::Corrupt;
+            let word = ctx
+                .walk(WalkRole::ReadinessState)
+                .walk_at(readiness)
+                .unwrap();
+            for (byte, expected) in [
+                (0u8, IoFutureState::Init),
+                (1, IoFutureState::Waiting),
+                (2, IoFutureState::Done),
+                (7, IoFutureState::Unknown(7)),
+            ] {
+                let patched = Corrupt::new(snapshot).patch_byte(word.addr, byte);
+                let ctx = Context::new(&patched, BundleView::new(bundle)).unwrap();
+                let readiness = leaf_of(&ctx, watcher);
+                let Some(ResourceObservation::Io(io)) =
+                    ctx.observe_resource(readiness, &ReadContext::none()).value
+                else {
+                    panic!("still a readiness await")
+                };
+                assert_eq!(io.readiness_state, Some(expected), "state byte {byte}");
+            }
         }
 
         // `Read<Gated>` holds a socket and is not an operation on one.

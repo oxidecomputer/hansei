@@ -92,10 +92,28 @@ impl<'b, T: Target> Context<'b, T> {
 /// How far from the root the scan is, in the two dimensions the limits
 /// bound separately: futures nested inside other futures' storage, and
 /// the run of awaitees a coroutine chain descends through.
-#[derive(Copy, Clone, Default)]
+#[derive(Copy, Clone, Default, PartialEq, Eq, Debug)]
 struct Frame {
     nesting: u16,
     chain: u16,
+}
+
+impl Frame {
+    /// One future further inside another's storage.
+    fn nested(self) -> Frame {
+        Frame {
+            nesting: self.nesting + 1,
+            ..self
+        }
+    }
+
+    /// One awaitee further down a coroutine chain.
+    fn linked(self) -> Frame {
+        Frame {
+            chain: self.chain + 1,
+            ..self
+        }
+    }
 }
 
 struct Scanner<'a, 'b, T> {
@@ -252,13 +270,7 @@ impl<'b, T: Target> Scanner<'_, 'b, T> {
                     ));
                     return;
                 }
-                (
-                    0,
-                    Frame {
-                        chain: frame.chain + 1,
-                        ..frame
-                    },
-                )
+                (0, frame.linked())
             } else {
                 if frame.nesting >= self.budget.limits.max_future_nesting {
                     self.report(WalkIssue::new(
@@ -271,13 +283,7 @@ impl<'b, T: Target> Scanner<'_, 'b, T> {
                     ));
                     return;
                 }
-                (
-                    0,
-                    Frame {
-                        nesting: frame.nesting + 1,
-                        ..frame
-                    },
-                )
+                (0, frame.nested())
             }
         } else {
             (depth, frame)
@@ -567,7 +573,7 @@ impl<'b, T: Target> Scanner<'_, 'b, T> {
                     let member = payload
                         .ty
                         .members()
-                        .find(|m| m.ty().size() > 0)
+                        .find(|m| m.name() == "__0")
                         .ok_or_else(|| anyhow!("the child slot at {cur:#x} holds nothing"))?;
                     let step = Step::Member(MemberRef::Named(member.name_ref()));
                     if let Walked::At(child) =
@@ -584,10 +590,7 @@ impl<'b, T: Target> Scanner<'_, 'b, T> {
         if let Err(stop) = result {
             self.node_stop(key, stop);
         }
-        let child_frame = Frame {
-            nesting: frame.nesting + 1,
-            ..frame
-        };
+        let child_frame = frame.nested();
         if frame.nesting >= self.budget.limits.max_future_nesting && !children.is_empty() {
             self.report(WalkIssue::new(
                 key,
@@ -888,6 +891,42 @@ mod tests {
         assert_eq!(found, listed);
         assert_eq!(completion.referent_expansions, listed.len() as u64);
 
+        // A set whose own count disagrees with its lists says so.
+        {
+            let set = &run.census.join_sets[0];
+            let set_ty = run.ctx.view.find_by_name(&set.ty).next().unwrap();
+            let set_value = Value::read(&snapshot, set_ty, set.addr).unwrap();
+            let length = run
+                .ctx
+                .walk(WalkRole::JoinSetLength)
+                .walk_at(set_value)
+                .unwrap();
+            let lying = Corrupt::new(&snapshot).patch(length.addr, set.length + 1);
+            let ctx = Context::new(&lying, BundleView::new(&bundle)).unwrap();
+            let (completion, sink) = scan_task(&ctx, driver);
+            assert!(!completion.complete);
+            assert_eq!(sink.references.len(), listed.len());
+            let mismatch: Vec<&WalkIssue> = sink
+                .issues
+                .iter()
+                .filter(|i| i.kind == WalkIssueKind::CountMismatch)
+                .collect();
+            assert_eq!(mismatch.len(), 1, "{:?}", sink.issues);
+            assert_eq!(mismatch[0].at.addr, set.addr);
+            assert!(
+                mismatch[0]
+                    .detail
+                    .as_deref()
+                    .is_some_and(|d| d.contains(&format!(
+                        "{} tasks against its own count of {}",
+                        set.length,
+                        set.length + 1
+                    ))),
+                "{:?}",
+                mismatch[0]
+            );
+        }
+
         // One entry as a root of its own: the handle inside it is a
         // struct member two wrappers down, found by descent.
         let (entry, task) = listed[0];
@@ -1084,6 +1123,56 @@ mod tests {
         assert!(!completion.complete);
         assert!(kinds(&sink.issues).contains(&WalkIssueKind::HopLimit));
         assert!(completion.inline_visits < visits);
+        // The nested set sits inside a child, so it is never walked.
+        assert!(completion.referent_expansions < total as u64);
+
+        // One hop allowed: the children are scanned, the set nested in
+        // one of them is walked, and its own children are the limit.
+        let (completion, sink) = scan_task_with(
+            &run.ctx,
+            driver,
+            &ReadContext::none(),
+            ScanLimits {
+                max_future_nesting: 1,
+                ..ScanLimits::default()
+            },
+        );
+        assert!(!completion.complete);
+        assert!(kinds(&sink.issues).contains(&WalkIssueKind::HopLimit));
+        assert_eq!(completion.referent_expansions, total as u64);
+        assert!(completion.inline_visits < visits);
+
+        // A future held beside a chain is one hop of its own: the
+        // `holder` the driver keeps carries a `leaf` as its argument,
+        // reached by descent rather than through a set.
+        let holder = run
+            .census
+            .held
+            .iter()
+            .find(|h| h.local == "nested_hold")
+            .expect("the fixture holds `nested_hold`");
+        let holder_ty = run.ctx.view.ty(holder.ty).unwrap();
+        let holder_value = Value::read(&snapshot, holder_ty, holder.addr).unwrap();
+        let scan_holder = |limit: u16| {
+            let mut sink = CollectedReferences::default();
+            let mut budget = ScanBudget::new(ScanLimits {
+                max_future_nesting: limit,
+                ..ScanLimits::default()
+            });
+            let completion = run.ctx.scan_references(
+                holder_value,
+                driver.addr,
+                &ReadContext::none(),
+                &mut budget,
+                &mut sink,
+            );
+            (completion, sink)
+        };
+        let (completion, sink) = scan_holder(0);
+        assert_eq!(kinds(&sink.issues), [WalkIssueKind::HopLimit]);
+        assert!(!completion.complete);
+        let (completion, sink) = scan_holder(1);
+        assert!(completion.complete, "{:?}", sink.issues);
 
         // A child cap of one: one node is listed per set, the rest are
         // a visit limit.
@@ -1185,6 +1274,194 @@ mod tests {
         assert_eq!(kinds(&sink.issues), [WalkIssueKind::UnknownInitialization]);
         assert_eq!(sink.issues[0].at, ValueKey::of(root));
         assert_eq!(completion.inline_visits, 1);
+        let detail = sink.issues[0].detail.as_deref().unwrap_or("");
+        assert!(
+            detail.contains("which members are initialized is unknown"),
+            "{detail}"
+        );
+
+        // The reason is spelled per issue: a compiler no convention
+        // covers says so.
+        let mut foreign = bundle.clone();
+        let record = foreign
+            .semantics
+            .types
+            .iter_mut()
+            .find(|r| r.ty == root.ty.id())
+            .unwrap();
+        record.storage = StoragePolicy::Unavailable(SemanticIssue {
+            kind: SemanticIssueKind::UnsupportedOrigin,
+            detail: None,
+        });
+        record.coroutine = None;
+        let ctx = testkit::context(&foreign, &snapshot);
+        let (_, sink) = scan_task(&ctx, joiner);
+        assert_eq!(kinds(&sink.issues), [WalkIssueKind::UnknownInitialization]);
+        let detail = sink.issues[0].detail.as_deref().unwrap_or("");
+        assert!(detail.contains("no reviewed convention"), "{detail}");
+    }
+
+    /// The completion reports what this call cost, not the budget's
+    /// running totals: two scans against one budget report the same
+    /// deltas, and the budget holds their sum.
+    #[test]
+    fn test_the_completion_reports_deltas_against_a_charged_budget() {
+        let (bundle, snapshot) = testkit::load_any("joinset");
+        let ctx = testkit::context(&bundle, &snapshot);
+        let list = testkit::tasks(&ctx, &snapshot);
+        let driver = task_named(&list, "driver");
+        let mut budget = ScanBudget::default();
+        let mut sink = CollectedReferences::default();
+        let first = ctx.scan_references(
+            root_of(&ctx, driver),
+            driver.addr,
+            &ReadContext::none(),
+            &mut budget,
+            &mut sink,
+        );
+        let second = ctx.scan_references(
+            root_of(&ctx, driver),
+            driver.addr,
+            &ReadContext::none(),
+            &mut budget,
+            &mut sink,
+        );
+        assert!(first.inline_visits > 0 && first.referent_expansions > 0);
+        assert_eq!(first, second);
+        assert_eq!(budget.inline_visits, 2 * first.inline_visits);
+        assert_eq!(budget.referent_expansions, 2 * first.referent_expansions);
+    }
+
+    /// A coroutine chain is bounded by its own limit, not the nesting
+    /// one: the futurelock's acquire sits five awaitees down, and a
+    /// chain limit of two stops short of it with the reason.
+    #[test]
+    fn test_the_chain_depth_limit_bounds_a_deep_await_chain() {
+        let (bundle, snapshot) = testkit::load_any("futurelock");
+        let ctx = testkit::context(&bundle, &snapshot);
+        let list = testkit::tasks(&ctx, &snapshot);
+        let task = task_named(&list, "futurelock::main");
+        let (completion, sink) = scan_task_with(
+            &ctx,
+            task,
+            &ReadContext::none(),
+            ScanLimits {
+                max_chain_depth: 2,
+                ..ScanLimits::default()
+            },
+        );
+        assert!(!completion.complete);
+        assert!(sink.references.is_empty(), "{:?}", sink.references);
+        let limits: Vec<&WalkIssue> = sink
+            .issues
+            .iter()
+            .filter(|i| i.kind == WalkIssueKind::DepthLimit)
+            .collect();
+        assert_eq!(limits.len(), 1, "{:?}", sink.issues);
+        assert!(
+            limits[0]
+                .detail
+                .as_deref()
+                .is_some_and(|d| d.contains("chain depth limit (2)")),
+            "{:?}",
+            limits[0]
+        );
+        // The nesting limit, at the same value, does not bind the
+        // chain at all.
+        let (completion, sink) = scan_task_with(
+            &ctx,
+            task,
+            &ReadContext::none(),
+            ScanLimits {
+                max_future_nesting: 2,
+                ..ScanLimits::default()
+            },
+        );
+        assert_eq!(sink.references.len(), 1);
+        assert!(!kinds(&sink.issues).contains(&WalkIssueKind::HopLimit));
+        assert_eq!(completion.referent_expansions, 2);
+    }
+
+    /// An array of aggregates is reported as unscanned rather than
+    /// silently skipped, and a depth limit stops at the members before
+    /// any of them is looked at: a timer wheel level, laid down as
+    /// zeros, is a struct of scalars beside a 64-slot array.
+    #[test]
+    fn test_arrays_of_aggregates_are_reported_and_depth_stops_first() {
+        let (bundle, snapshot) = testkit::load_any("sleep-join");
+        let ctx = testkit::context(&bundle, &snapshot);
+        let level = ctx
+            .view
+            .find_by_name("tokio::runtime::time::wheel::level::Level")
+            .next()
+            .expect("the wheel level type is in the bundle");
+        let slots = level.member("slot").expect("Level.slot");
+        let TypeClass::Array { element, .. } = slots.ty().classify() else {
+            panic!("Level.slot is an array");
+        };
+        assert!(holds_aggregates(element));
+        let byte = ctx.view.find_by_name("u8").next().unwrap();
+        assert!(!holds_aggregates(byte));
+
+        let zeros = vec![0u8; level.size() as usize];
+        let value = Value::new(level, 0x1000, &zeros);
+        let scan = |limits: ScanLimits| {
+            let mut sink = CollectedReferences::default();
+            let mut budget = ScanBudget::new(limits);
+            let completion = ctx.scan_references(
+                value,
+                TaskAddr(0),
+                &ReadContext::none(),
+                &mut budget,
+                &mut sink,
+            );
+            (completion, sink)
+        };
+        let (completion, sink) = scan(ScanLimits::default());
+        assert!(!completion.complete);
+        assert_eq!(kinds(&sink.issues), [WalkIssueKind::UnsupportedArray]);
+        assert_eq!(sink.issues[0].at.addr, 0x1000 + slots.offset());
+        // Every member visited: the array and the two words.
+        assert_eq!(completion.inline_visits, 1 + level.members().count() as u64);
+
+        let (completion, sink) = scan(ScanLimits {
+            max_depth: 0,
+            ..ScanLimits::default()
+        });
+        assert!(!completion.complete);
+        assert!(!sink.issues.is_empty());
+        assert!(
+            kinds(&sink.issues)
+                .iter()
+                .all(|k| *k == WalkIssueKind::DepthLimit)
+        );
+    }
+
+    /// The two frame counters move independently.
+    #[test]
+    fn test_frame_counters_move_one_at_a_time() {
+        let frame = Frame::default();
+        assert_eq!(
+            frame.nested(),
+            Frame {
+                nesting: 1,
+                chain: 0
+            }
+        );
+        assert_eq!(
+            frame.linked(),
+            Frame {
+                nesting: 0,
+                chain: 1
+            }
+        );
+        assert_eq!(
+            frame.nested().nested().linked(),
+            Frame {
+                nesting: 2,
+                chain: 1
+            }
+        );
     }
 
     /// Every io operation's task is a reference through the

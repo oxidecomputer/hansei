@@ -52,11 +52,13 @@ impl<'a> Corrupt<'a> {
                 let head = range.start.saturating_sub(addr).min(len) as usize;
                 let tail = range.end.saturating_sub(addr).min(len) as usize;
                 [
-                    (head > 0).then(|| (addr, bytes[..head].to_vec())),
-                    (tail < bytes.len()).then(|| (addr + tail as u64, bytes[tail..].to_vec())),
+                    (addr, bytes[..head].to_vec()),
+                    (addr + tail as u64, bytes[tail..].to_vec()),
                 ]
             })
-            .flatten()
+            // A hole at a run's edge leaves an empty piece there,
+            // which no read could land in; keep only the bytes.
+            .filter(|(_, bytes)| !bytes.is_empty())
             .collect();
         Corrupt { memory, ..self }
     }
@@ -193,5 +195,112 @@ impl Target for Corrupt<'_> {
 
     fn tls_var_addr(&self, regs: &Regs, sym: &SymbolBuf) -> proc::Result<Option<u64>> {
         self.inner.tls_var_addr(regs, sym)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::testkit;
+
+    /// A captured run of at least 64 bytes, as `(base, length)`.
+    fn a_run(snapshot: &Snapshot) -> (u64, u64) {
+        snapshot
+            .segments()
+            .map(|s| (s.start, s.end - s.start))
+            .find(|&(_, len)| len >= 64)
+            .expect("a run of some size")
+    }
+
+    /// A denied range is a hole with exact edges: the byte before it
+    /// and the byte at its end still read, every byte inside it and
+    /// every read straddling it fails, and the readable length ahead
+    /// of an address is cut at the hole and at the run's end.
+    #[test]
+    fn test_a_denied_range_has_exact_edges() {
+        let (_, snapshot) = testkit::load_any("sleep-join");
+        let (base, len) = a_run(&snapshot);
+        let hole = base + 16..base + 32;
+        let corrupt = Corrupt::new(&snapshot).deny(hole.clone());
+
+        assert!(corrupt.read_bytes(base, 16).is_ok());
+        assert!(corrupt.read_bytes(base + 15, 1).is_ok());
+        assert!(corrupt.read_bytes(base + 15, 2).is_err());
+        assert!(corrupt.read_bytes(base + 16, 1).is_err());
+        assert!(corrupt.read_bytes(base + 31, 1).is_err());
+        assert!(corrupt.read_bytes(base + 31, 2).is_err());
+        assert!(corrupt.read_bytes(base + 32, 1).is_ok());
+        assert!(corrupt.read_bytes(base + 32, len - 32).is_ok());
+        assert!(corrupt.read_bytes(base + 32, len - 31).is_err());
+        assert_eq!(
+            corrupt.read_bytes(base + 32, 8).unwrap(),
+            snapshot.read_bytes(base + 32, 8).unwrap()
+        );
+
+        assert_eq!(corrupt.readable_len(base, 100), 16);
+        assert_eq!(corrupt.readable_len(base + 8, 4), 4);
+        assert_eq!(corrupt.readable_len(base + 16, 4), 0);
+        assert_eq!(corrupt.readable_len(base + 32, 1 << 40), len - 32);
+        assert_eq!(corrupt.readable_len(base + len - 4, 100), 4);
+        assert_eq!(corrupt.readable_len(base + len, 100), 0);
+    }
+
+    /// A patch changes exactly the word or byte it names, and the rest
+    /// of the run reads as captured.
+    #[test]
+    fn test_a_patch_changes_only_its_bytes() {
+        let (_, snapshot) = testkit::load_any("sleep-join");
+        let (base, _) = a_run(&snapshot);
+        let corrupt = Corrupt::new(&snapshot)
+            .patch(base + 8, 0x1122_3344_5566_7788)
+            .patch_byte(base + 20, 0xab);
+        let before = snapshot.read_bytes(base, 32).unwrap();
+        let after = corrupt.read_bytes(base, 32).unwrap();
+        assert_eq!(&after[..8], &before[..8]);
+        assert_eq!(&after[8..16], &0x1122_3344_5566_7788u64.to_le_bytes());
+        assert_eq!(&after[16..20], &before[16..20]);
+        assert_eq!(after[20], 0xab);
+        assert_eq!(&after[21..], &before[21..]);
+        let mut blind = Corrupt::new(&snapshot);
+        assert!(!blind.try_patch(0xdead_beef_0000, 1));
+        assert!(blind.try_patch(base, 1));
+    }
+
+    /// Everything that is not memory is the healthy capture's.
+    #[test]
+    fn test_symbols_and_mappings_are_the_captures() {
+        let (_, snapshot) = testkit::load_any("sleep-join");
+        let corrupt = Corrupt::new(&snapshot).deny(0..0x1000);
+        let name = testkit::expect::SYMBOL;
+        let inner = snapshot
+            .lookup_symbol_by_name(name)
+            .expect("the fixture exports it");
+        let ours = corrupt.lookup_symbol_by_name(name).expect("delegated");
+        assert_eq!(ours.st_value, inner.st_value);
+        assert_eq!(
+            corrupt
+                .lookup_symbol_by_addr(inner.st_value)
+                .map(|s| s.st_value),
+            snapshot
+                .lookup_symbol_by_addr(inner.st_value)
+                .map(|s| s.st_value)
+        );
+        assert!(!corrupt.symbols().unwrap().is_empty());
+        assert_eq!(
+            corrupt.symbols().unwrap().len(),
+            snapshot.symbols().unwrap().len()
+        );
+        assert_eq!(
+            corrupt.object_symbols().unwrap().len(),
+            snapshot.object_symbols().unwrap().len()
+        );
+        assert_eq!(
+            corrupt.lwps().unwrap().len(),
+            snapshot.lwps().unwrap().len()
+        );
+        assert_eq!(
+            corrupt.mappings().unwrap().contains_addr(inner.st_value),
+            snapshot.mappings().unwrap().contains_addr(inner.st_value)
+        );
     }
 }

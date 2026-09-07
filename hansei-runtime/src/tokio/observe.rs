@@ -700,6 +700,70 @@ mod tests {
         assert_eq!(budget.referent_expansions, 1);
     }
 
+    /// The guard decoder knows two representations by name — the
+    /// parking_lot byte with its lock bit, the std futex word that
+    /// reads zero unlocked — and answers `Unknown` for anything else,
+    /// short bytes included.
+    #[test]
+    fn test_the_guard_decoder_reads_each_representation_by_name() {
+        use crate::testkit;
+        use hansei_bundle::BundleView;
+
+        // The Linux set: std's futex mutex exists only there.
+        let (bundle, _) = testkit::load("linux", "futurelock");
+        let view = BundleView::new(&bundle);
+        let raw_mutex = view
+            .find_by_name(lock::PARKING_LOT_RAW_MUTEX)
+            .next()
+            .expect("parking_lot's RawMutex");
+        let futex = view
+            .find_by_name(lock::STD_FUTEX_MUTEX)
+            .next()
+            .expect("std's futex Mutex");
+        let other = view.find_by_name("u32").next().unwrap();
+        let at = 0x1000;
+
+        assert_eq!(
+            lock_consistency(reify::Value::new(raw_mutex, at, &[0])),
+            Consistency::Quiescent
+        );
+        // The parked bit alone is not the lock bit.
+        assert_eq!(
+            lock_consistency(reify::Value::new(raw_mutex, at, &[0b10])),
+            Consistency::Quiescent
+        );
+        assert_eq!(
+            lock_consistency(reify::Value::new(raw_mutex, at, &[0b11])),
+            Consistency::Mutating
+        );
+        assert_eq!(
+            lock_consistency(reify::Value::new(raw_mutex, at, &[])),
+            Consistency::Unknown
+        );
+
+        assert_eq!(
+            lock_consistency(reify::Value::new(futex, at, &[0, 0, 0, 0])),
+            Consistency::Quiescent
+        );
+        assert_eq!(
+            lock_consistency(reify::Value::new(futex, at, &[1, 0, 0, 0])),
+            Consistency::Mutating
+        );
+        assert_eq!(
+            lock_consistency(reify::Value::new(futex, at, &[0, 0, 0, 2])),
+            Consistency::Mutating
+        );
+        assert_eq!(
+            lock_consistency(reify::Value::new(futex, at, &[0, 0])),
+            Consistency::Unknown
+        );
+
+        assert_eq!(
+            lock_consistency(reify::Value::new(other, at, &[0, 0, 0, 0])),
+            Consistency::Unknown
+        );
+    }
+
     /// The collecting sink keeps a copy of the borrowed path.
     #[test]
     fn test_the_collecting_sink_copies_the_path() {
