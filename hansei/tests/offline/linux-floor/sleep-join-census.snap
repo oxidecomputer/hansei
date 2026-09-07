@@ -5,9 +5,9 @@ description: "`census` over linux-floor/sleep-join"
 Threads: 3 lwps, 3 in runtime 0 @ 0xADDR
 
 COUNT  RT  ROLE             STATE            LWPS
-    1  0   worker           in driver        82515
-    1  0   worker           parked           82514
-    1  0   entered runtime  block_on caller  82511
+    1  0   worker           in driver        1738160
+    1  0   worker           parked           1738159
+    1  0   entered runtime  block_on caller  1738157
     0  0   blocking pool    0 idle, 0 busy   —
 [3 lwps]
 

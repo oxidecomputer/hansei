@@ -122,3 +122,4 @@ ok      blocking::queue.len
 ok      blocking::queue.buf
 ok      blocking::queue.cap
 ok      Trailer.waker
+ok      ScheduledIo.waiters.lock (spelling 2 of 2)

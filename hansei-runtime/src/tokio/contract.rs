@@ -217,6 +217,11 @@ pub fn classify(role: WalkRole) -> Class {
         MtSchedulerHandle | CtSchedulerHandle | LocalSchedulerShared | BlockingScheduleHooks => {
             Class::Optional
         }
+        // A sleep's own entry state and the guard around a registration's
+        // waiters: what the raw observers read beside the deadline and
+        // the waiter list. A bundle without them still lists and traces;
+        // it observes an unknown registration and an unknown guard.
+        SleepTimerState | ScheduledIoLock => Class::Optional,
     }
 }
 

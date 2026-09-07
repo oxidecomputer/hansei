@@ -132,6 +132,7 @@ ok      blocking::queue.len
 ok      blocking::queue.buf
 ok      blocking::queue.cap
 ok      Trailer.waker
+ok      ScheduledIo.waiters.lock (spelling 1 of 2)
 
 program: simple-await
 
@@ -244,6 +245,7 @@ ok      blocking::queue.len
 ok      blocking::queue.buf
 ok      blocking::queue.cap
 ok      Trailer.waker
+ok      ScheduledIo.waiters.lock (spelling 1 of 2)
 
 program: nested-await
 
@@ -357,6 +359,7 @@ ok      blocking::queue.len
 ok      blocking::queue.buf
 ok      blocking::queue.cap
 ok      Trailer.waker
+ok      ScheduledIo.waiters.lock (spelling 1 of 2)
 
 program: dyn-future
 
@@ -495,6 +498,7 @@ ok      blocking::queue.len
 ok      blocking::queue.buf
 ok      blocking::queue.cap
 ok      Trailer.waker
+ok      ScheduledIo.waiters.lock (spelling 1 of 2)
 
 program: select-combinator
 
@@ -624,6 +628,7 @@ ok      blocking::queue.len
 ok      blocking::queue.buf
 ok      blocking::queue.cap
 ok      Trailer.waker
+ok      ScheduledIo.waiters.lock (spelling 1 of 2)
 
 program: many-tasks
 
@@ -733,6 +738,7 @@ ok      blocking::queue.len
 ok      blocking::queue.buf
 ok      blocking::queue.cap
 ok      Trailer.waker
+ok      ScheduledIo.waiters.lock (spelling 1 of 2)
 
 program: sleep-join
 
@@ -855,6 +861,7 @@ ok      blocking::queue.len
 ok      blocking::queue.buf
 ok      blocking::queue.cap
 ok      Trailer.waker
+ok      ScheduledIo.waiters.lock (spelling 1 of 2)
 
 program: channels
 
@@ -977,6 +984,7 @@ ok      blocking::queue.len
 ok      blocking::queue.buf
 ok      blocking::queue.cap
 ok      Trailer.waker
+ok      ScheduledIo.waiters.lock (spelling 1 of 2)
 
 program: unordered
 
@@ -1097,6 +1105,7 @@ ok      blocking::queue.len
 ok      blocking::queue.buf
 ok      blocking::queue.cap
 ok      Trailer.waker
+ok      ScheduledIo.waiters.lock (spelling 1 of 2)
 
 program: joinset
 
@@ -1234,6 +1243,7 @@ ok      blocking::queue.len
 ok      blocking::queue.buf
 ok      blocking::queue.cap
 ok      Trailer.waker
+ok      ScheduledIo.waiters.lock (spelling 1 of 2)
 
 program: ct-runtime
 
@@ -1356,6 +1366,7 @@ ok      blocking::queue.len
 ok      blocking::queue.buf
 ok      blocking::queue.cap
 ok      Trailer.waker
+ok      ScheduledIo.waiters.lock (spelling 1 of 2)
 
 program: local-set
 
@@ -1493,6 +1504,7 @@ ok      blocking::queue.len
 ok      blocking::queue.buf
 ok      blocking::queue.cap
 ok      Trailer.waker
+ok      ScheduledIo.waiters.lock (spelling 1 of 2)
 
 program: local-set-timer
 
@@ -1630,6 +1642,7 @@ ok      blocking::queue.len
 ok      blocking::queue.buf
 ok      blocking::queue.cap
 ok      Trailer.waker
+ok      ScheduledIo.waiters.lock (spelling 1 of 2)
 
 program: local-set-io
 
@@ -1794,6 +1807,7 @@ ok      blocking::queue.len
 ok      blocking::queue.buf
 ok      blocking::queue.cap
 ok      Trailer.waker
+ok      ScheduledIo.waiters.lock (spelling 1 of 2)
 
 program: foreign-runtime
 
@@ -1948,6 +1962,7 @@ ok      blocking::queue.len
 ok      blocking::queue.buf
 ok      blocking::queue.cap
 ok      Trailer.waker
+ok      ScheduledIo.waiters.lock (spelling 1 of 2)
 
 program: blocking-pool
 
@@ -2092,6 +2107,7 @@ ok      blocking::queue.len
 ok      blocking::queue.buf
 ok      blocking::queue.cap
 ok      Trailer.waker
+ok      ScheduledIo.waiters.lock (spelling 1 of 2)
 
 program: delegation-cases
 
@@ -2256,3 +2272,4 @@ ok      blocking::queue.len
 ok      blocking::queue.buf
 ok      blocking::queue.cap
 ok      Trailer.waker
+ok      ScheduledIo.waiters.lock (spelling 1 of 2)

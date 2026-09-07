@@ -2,7 +2,7 @@
 source: hansei-runtime/tests/matrix.rs
 ---
 program: delegation-cases
-walk contract (tokio 1.52.4, rustc 1.98.0 (88d9e12ae 2026-08-18)): 131 entries, 0 broken, 56 absent
+walk contract (tokio 1.52.4, rustc 1.98.0 (88d9e12ae 2026-08-18)): 133 entries, 0 broken, 57 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -134,3 +134,5 @@ walk contract (tokio 1.52.4, rustc 1.98.0 (88d9e12ae 2026-08-18)): 131 entries, 
   ok      Arc<current_thread::Handle>.data
   absent  Arc<local::Shared>.data — no Arc<tokio::task::local::Shared> type in the tokio info (the target does not reach one)
   ok      BlockingSchedule.hooks
+  absent  Sleep.timer.state — no tokio::time::sleep::Sleep… type in the tokio info (the target does not reach one)
+  ok      ScheduledIo.waiters.lock (spelling 1 of 2)

@@ -19,18 +19,18 @@ task 2
       awaiting at src/bin/foreign-runtime.rs:55 (Suspend0, 1 local)
 
 task 3
-Waiting on: task 1
-
-#0  future        tokio::runtime::task::join::JoinHandle<u32>
-      waiting on task 1
-#1  async fn      foreign_runtime::joiner
-      awaiting at src/bin/foreign-runtime.rs:30 (Suspend0, 0 locals)
-
-task 4
 Waiting on: timer (deadline TS)
 
 #0  future        tokio::time::sleep::Sleep
       waiting on timer (deadline TS)
 #1  async fn      foreign_runtime::local_sleeper
       awaiting at src/bin/foreign-runtime.rs:67 (Suspend0, 0 locals)
+
+task 4
+Waiting on: task 1
+
+#0  future        tokio::runtime::task::join::JoinHandle<u32>
+      waiting on task 1
+#1  async fn      foreign_runtime::joiner
+      awaiting at src/bin/foreign-runtime.rs:30 (Suspend0, 0 locals)
 [Executed against 4 tasks, 0 failed]

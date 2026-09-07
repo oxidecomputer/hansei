@@ -1466,6 +1466,8 @@ walk_roles! {
     CtSchedulerHandle = "Arc<current_thread::Handle>.data",
     LocalSchedulerShared = "Arc<local::Shared>.data",
     BlockingScheduleHooks = "BlockingSchedule.hooks",
+    SleepTimerState = "Sleep.timer.state",
+    ScheduledIoLock = "ScheduledIo.waiters.lock",
 }
 
 /// What binding one walk role against the target's DWARF concluded.

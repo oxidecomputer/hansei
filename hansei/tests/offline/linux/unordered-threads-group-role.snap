@@ -3,6 +3,6 @@ source: hansei/src/offline.rs
 description: "`threads --group role` over linux/unordered"
 ---
 COUNT  ROLE             LWPS
-    2  worker           78395, 78396
-    1  entered runtime  78393
+    2  worker           1734028, 1734029
+    1  entered runtime  1734026
 [2 groups]

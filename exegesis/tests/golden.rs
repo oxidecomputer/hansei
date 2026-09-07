@@ -888,6 +888,15 @@ fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
         WalkRole::TrailerWaker,
         "waker.__0.value.<Some>.__0.waker",
     );
+    // Every fixture links the io driver, and its registrations' guard
+    // is the parking_lot raw mutex behind the loom wrapper's second
+    // field — the same spelling the semaphore's guard binds.
+    assert_walk(
+        program,
+        bundle,
+        WalkRole::ScheduledIoLock,
+        "waiters.__1.raw",
+    );
     assert_eq!(stats.cells_missing, 0, "{program}: cells missing");
     assert_eq!(stats.stages_missing, 0, "{program}: stages missing");
     assert_eq!(
@@ -1785,6 +1794,17 @@ fn run_golden(program: &str) {
                     &bundle,
                     "tokio::runtime::task::join::JoinHandle<",
                     ResourceKind::JoinHandle,
+                );
+                // The sleep's entry state on the primary cell: the
+                // 1.49 family's route through the `Timer` flavor enum
+                // and the entry's `Option<TimerShared>`, landing on the
+                // `StateCell` word — the same word the wheel harvest
+                // reads off a `TimerShared` (`TimerShared.state`).
+                assert_walk(
+                    program,
+                    &bundle,
+                    WalkRole::SleepTimerState,
+                    "entry.<Traditional>.__0.inner.<Some>.__0.state.state.v.value.__0",
                 );
             }
             "futurelock" => assert_resource(

@@ -3,6 +3,6 @@ source: hansei/src/offline.rs
 description: "`threads --group role` over linux/simple-await"
 ---
 COUNT  ROLE             LWPS
-    2  worker           77242, 77243
-    1  entered runtime  77240
+    2  worker           1732888, 1732889
+    1  entered runtime  1732886
 [2 groups]

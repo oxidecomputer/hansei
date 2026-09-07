@@ -275,6 +275,17 @@ static SLEEP_DEADLINE_SPELLINGS: [(Family, Spellings); 3] = [
     (Family::V1_53, tokio_v1_53::sleep_deadline_walk),
 ];
 
+/// `Sleep.deadline`'s sibling: the state word of the sleep's timer
+/// entry, reached through the same per-family route to the entry — the
+/// bare `TimerEntry` before 1.49, the `Timer` flavor enum from 1.49,
+/// the `Option<Timer>` created on first poll from 1.53 — and then the
+/// entry's `TimerShared`, an `Option` of its own before 1.53.
+static SLEEP_TIMER_STATE_SPELLINGS: [(Family, Spellings); 3] = [
+    (Family::V1_47, tokio_v1_47::sleep_timer_state_walk),
+    (Family::V1_49, tokio_v1_49::sleep_timer_state_walk),
+    (Family::V1_53, tokio_v1_53::sleep_timer_state_walk),
+];
+
 /// The other versioned row: `time::Inner` became an enum over the driver
 /// flavor in 1.49, so the chain from a scheduler handle to the timer
 /// wheel's levels crosses one step more from that release on. Two entries
@@ -1639,6 +1650,35 @@ fn decls() -> Vec<WalkDecl> {
             WalkRoot::Type(BLOCKING_SCHEDULE),
             Aggregate,
             || vec![reach![Named("hooks")]],
+        ),
+        // The sleep's own timer entry state — the same `StateCell` word
+        // the wheel harvest reads off a `TimerShared`, reached from the
+        // `Sleep` instead: a deadline tick while registered, the
+        // fired/deregistered sentinels once the driver takes it. A guarded
+        // `Some` on the way is what says whether the entry exists at all
+        // (a never-polled sleep has none), so the row's terminal is the
+        // word behind it.
+        WalkDecl {
+            role: WalkRole::SleepTimerState,
+            root: Leaf(SLEEP),
+            terminal: Word,
+            spellings: Row::Versioned(&SLEEP_TIMER_STATE_SPELLINGS),
+            needs: None,
+        },
+        // The guard around a registration's waiters, spelled like the
+        // semaphore's: the parking_lot raw mutex behind the loom
+        // wrapper's second field, or the std flavor's `sys` mutex behind
+        // its first.
+        decl(
+            WalkRole::ScheduledIoLock,
+            Pointee(WalkRole::IoRegistrations),
+            Aggregate,
+            || {
+                vec![
+                    reach![Named("waiters"), Named("__1"), Named("raw")],
+                    reach![Named("waiters"), Named("__0"), Named("inner")],
+                ]
+            },
         ),
     ]
 }

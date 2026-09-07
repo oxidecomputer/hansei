@@ -198,3 +198,19 @@ pub(super) fn sleep_deadline_walk() -> Vec<Reach<'static>> {
         Named("t"),
     ]]
 }
+
+/// The walk contract's `Sleep.timer.state` spelling for this family:
+/// the bare `TimerEntry`'s `inner` is an `Option<TimerShared>` filled
+/// on first poll — `None` is a sleep never polled, and so registered
+/// nowhere — and the shared entry's `StateCell` word is behind it.
+pub(super) fn sleep_timer_state_walk() -> Vec<Reach<'static>> {
+    vec![reach![
+        Named("entry"),
+        Named("inner"),
+        Variant("Some"),
+        Named("__0"),
+        Named("state"),
+        Named("state"),
+        PeelTo(WORD),
+    ]]
+}

@@ -10,9 +10,9 @@
 //! unstable alternative-timer build degrades rather than misreads), and
 //! the driver's `time::Inner` becomes an enum over the driver flavor.
 
-use super::ReachStep::{ActiveVariant, Named, Variant};
+use super::ReachStep::{ActiveVariant, Named, PeelTo, Variant};
 use super::tokio_v1_47::{sleep_record, timer_entry_record};
-use super::{Reach, reach};
+use super::{Reach, WORD, reach};
 use crate::TypeId;
 use crate::bundle::DisplayNode;
 use crate::extract::Emitter;
@@ -53,5 +53,23 @@ pub(super) fn sleep_deadline_walk() -> Vec<Reach<'static>> {
         Named("std"),
         Named("__0"),
         Named("t"),
+    ]]
+}
+
+/// The walk contract's `Sleep.timer.state` spelling for this family:
+/// the traditional entry behind the `Timer` flavor enum — entered by
+/// name and guarded, since only it carries a `TimerShared` — then the
+/// entry's `Option<TimerShared>` and the word inside, as in 1.47.
+pub(super) fn sleep_timer_state_walk() -> Vec<Reach<'static>> {
+    vec![reach![
+        Named("entry"),
+        Variant("Traditional"),
+        Named("__0"),
+        Named("inner"),
+        Variant("Some"),
+        Named("__0"),
+        Named("state"),
+        Named("state"),
+        PeelTo(WORD),
     ]]
 }

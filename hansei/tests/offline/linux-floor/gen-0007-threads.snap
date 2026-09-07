@@ -2,8 +2,8 @@
 source: hansei/src/offline.rs
 description: "`threads` over linux-floor/gen-0007"
 ---
-LWP    NAME  ROLE                 TASK  FRAME 0
-84145  —     entered runtime      —     0xADDR
-84147  —     worker 0, parked     —     0xADDR
-84148  —     worker 1, in driver  —     0xADDR
+LWP      NAME  ROLE                 TASK  FRAME 0
+1739786  —     entered runtime      —     0xADDR
+1739788  —     worker 0, in driver  —     0xADDR
+1739789  —     worker 1, parked     —     0xADDR
 [3 threads]

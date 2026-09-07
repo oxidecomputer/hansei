@@ -2,7 +2,7 @@
 source: hansei-runtime/tests/matrix.rs
 ---
 program: futurelock
-walk contract (tokio 1.47.5, rustc 1.98.0 (88d9e12ae 2026-08-18)): 131 entries, 0 broken, 40 absent
+walk contract (tokio 1.47.5, rustc 1.98.0 (88d9e12ae 2026-08-18)): 133 entries, 0 broken, 40 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -134,9 +134,11 @@ walk contract (tokio 1.47.5, rustc 1.98.0 (88d9e12ae 2026-08-18)): 131 entries, 
   ok      Arc<current_thread::Handle>.data
   absent  Arc<local::Shared>.data — no Arc<tokio::task::local::Shared> type in the tokio info (the target does not reach one)
   ok      BlockingSchedule.hooks
+  ok      Sleep.timer.state (family v1_47)
+  ok      ScheduledIo.waiters.lock (spelling 1 of 2)
 
 program: simple-await
-walk contract (tokio 1.47.5, rustc 1.98.0 (88d9e12ae 2026-08-18)): 131 entries, 0 broken, 55 absent
+walk contract (tokio 1.47.5, rustc 1.98.0 (88d9e12ae 2026-08-18)): 133 entries, 0 broken, 56 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -268,9 +270,11 @@ walk contract (tokio 1.47.5, rustc 1.98.0 (88d9e12ae 2026-08-18)): 131 entries, 
   ok      Arc<current_thread::Handle>.data
   absent  Arc<local::Shared>.data — no Arc<tokio::task::local::Shared> type in the tokio info (the target does not reach one)
   ok      BlockingSchedule.hooks
+  absent  Sleep.timer.state — no tokio::time::sleep::Sleep… type in the tokio info (the target does not reach one)
+  ok      ScheduledIo.waiters.lock (spelling 1 of 2)
 
 program: nested-await
-walk contract (tokio 1.47.5, rustc 1.98.0 (88d9e12ae 2026-08-18)): 131 entries, 0 broken, 55 absent
+walk contract (tokio 1.47.5, rustc 1.98.0 (88d9e12ae 2026-08-18)): 133 entries, 0 broken, 56 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -402,9 +406,11 @@ walk contract (tokio 1.47.5, rustc 1.98.0 (88d9e12ae 2026-08-18)): 131 entries, 
   ok      Arc<current_thread::Handle>.data
   absent  Arc<local::Shared>.data — no Arc<tokio::task::local::Shared> type in the tokio info (the target does not reach one)
   ok      BlockingSchedule.hooks
+  absent  Sleep.timer.state — no tokio::time::sleep::Sleep… type in the tokio info (the target does not reach one)
+  ok      ScheduledIo.waiters.lock (spelling 1 of 2)
 
 program: dyn-future
-walk contract (tokio 1.47.5, rustc 1.98.0 (88d9e12ae 2026-08-18)): 131 entries, 0 broken, 49 absent
+walk contract (tokio 1.47.5, rustc 1.98.0 (88d9e12ae 2026-08-18)): 133 entries, 0 broken, 50 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -536,9 +542,11 @@ walk contract (tokio 1.47.5, rustc 1.98.0 (88d9e12ae 2026-08-18)): 131 entries, 
   ok      Arc<current_thread::Handle>.data
   absent  Arc<local::Shared>.data — no Arc<tokio::task::local::Shared> type in the tokio info (the target does not reach one)
   ok      BlockingSchedule.hooks
+  absent  Sleep.timer.state — no tokio::time::sleep::Sleep… type in the tokio info (the target does not reach one)
+  ok      ScheduledIo.waiters.lock (spelling 1 of 2)
 
 program: select-combinator
-walk contract (tokio 1.47.5, rustc 1.98.0 (88d9e12ae 2026-08-18)): 131 entries, 0 broken, 55 absent
+walk contract (tokio 1.47.5, rustc 1.98.0 (88d9e12ae 2026-08-18)): 133 entries, 0 broken, 56 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -670,9 +678,11 @@ walk contract (tokio 1.47.5, rustc 1.98.0 (88d9e12ae 2026-08-18)): 131 entries, 
   ok      Arc<current_thread::Handle>.data
   absent  Arc<local::Shared>.data — no Arc<tokio::task::local::Shared> type in the tokio info (the target does not reach one)
   ok      BlockingSchedule.hooks
+  absent  Sleep.timer.state — no tokio::time::sleep::Sleep… type in the tokio info (the target does not reach one)
+  ok      ScheduledIo.waiters.lock (spelling 1 of 2)
 
 program: many-tasks
-walk contract (tokio 1.47.5, rustc 1.98.0 (88d9e12ae 2026-08-18)): 131 entries, 0 broken, 56 absent
+walk contract (tokio 1.47.5, rustc 1.98.0 (88d9e12ae 2026-08-18)): 133 entries, 0 broken, 57 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -804,9 +814,11 @@ walk contract (tokio 1.47.5, rustc 1.98.0 (88d9e12ae 2026-08-18)): 131 entries, 
   ok      Arc<current_thread::Handle>.data
   absent  Arc<local::Shared>.data — no Arc<tokio::task::local::Shared> type in the tokio info (the target does not reach one)
   ok      BlockingSchedule.hooks
+  absent  Sleep.timer.state — no tokio::time::sleep::Sleep… type in the tokio info (the target does not reach one)
+  ok      ScheduledIo.waiters.lock (spelling 1 of 2)
 
 program: sleep-join
-walk contract (tokio 1.47.5, rustc 1.98.0 (88d9e12ae 2026-08-18)): 131 entries, 0 broken, 52 absent
+walk contract (tokio 1.47.5, rustc 1.98.0 (88d9e12ae 2026-08-18)): 133 entries, 0 broken, 52 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -938,9 +950,11 @@ walk contract (tokio 1.47.5, rustc 1.98.0 (88d9e12ae 2026-08-18)): 131 entries, 
   ok      Arc<current_thread::Handle>.data
   absent  Arc<local::Shared>.data — no Arc<tokio::task::local::Shared> type in the tokio info (the target does not reach one)
   ok      BlockingSchedule.hooks
+  ok      Sleep.timer.state (family v1_47)
+  ok      ScheduledIo.waiters.lock (spelling 1 of 2)
 
 program: channels
-walk contract (tokio 1.47.5, rustc 1.98.0 (88d9e12ae 2026-08-18)): 131 entries, 0 broken, 43 absent
+walk contract (tokio 1.47.5, rustc 1.98.0 (88d9e12ae 2026-08-18)): 133 entries, 0 broken, 44 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -1072,9 +1086,11 @@ walk contract (tokio 1.47.5, rustc 1.98.0 (88d9e12ae 2026-08-18)): 131 entries, 
   ok      Arc<current_thread::Handle>.data
   absent  Arc<local::Shared>.data — no Arc<tokio::task::local::Shared> type in the tokio info (the target does not reach one)
   ok      BlockingSchedule.hooks
+  absent  Sleep.timer.state — no tokio::time::sleep::Sleep… type in the tokio info (the target does not reach one)
+  ok      ScheduledIo.waiters.lock (spelling 1 of 2)
 
 program: unordered
-walk contract (tokio 1.47.5, rustc 1.98.0 (88d9e12ae 2026-08-18)): 131 entries, 0 broken, 52 absent
+walk contract (tokio 1.47.5, rustc 1.98.0 (88d9e12ae 2026-08-18)): 133 entries, 0 broken, 53 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -1206,9 +1222,11 @@ walk contract (tokio 1.47.5, rustc 1.98.0 (88d9e12ae 2026-08-18)): 131 entries, 
   ok      Arc<current_thread::Handle>.data
   absent  Arc<local::Shared>.data — no Arc<tokio::task::local::Shared> type in the tokio info (the target does not reach one)
   ok      BlockingSchedule.hooks
+  absent  Sleep.timer.state — no tokio::time::sleep::Sleep… type in the tokio info (the target does not reach one)
+  ok      ScheduledIo.waiters.lock (spelling 1 of 2)
 
 program: joinset
-walk contract (tokio 1.47.5, rustc 1.98.0 (88d9e12ae 2026-08-18)): 131 entries, 0 broken, 37 absent
+walk contract (tokio 1.47.5, rustc 1.98.0 (88d9e12ae 2026-08-18)): 133 entries, 0 broken, 38 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -1340,9 +1358,11 @@ walk contract (tokio 1.47.5, rustc 1.98.0 (88d9e12ae 2026-08-18)): 131 entries, 
   ok      Arc<current_thread::Handle>.data
   absent  Arc<local::Shared>.data — no Arc<tokio::task::local::Shared> type in the tokio info (the target does not reach one)
   ok      BlockingSchedule.hooks
+  absent  Sleep.timer.state — no tokio::time::sleep::Sleep… type in the tokio info (the target does not reach one)
+  ok      ScheduledIo.waiters.lock (spelling 1 of 2)
 
 program: ct-runtime
-walk contract (tokio 1.47.5, rustc 1.98.0 (88d9e12ae 2026-08-18)): 131 entries, 0 broken, 40 absent
+walk contract (tokio 1.47.5, rustc 1.98.0 (88d9e12ae 2026-08-18)): 133 entries, 0 broken, 40 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -1474,9 +1494,11 @@ walk contract (tokio 1.47.5, rustc 1.98.0 (88d9e12ae 2026-08-18)): 131 entries, 
   ok      Arc<current_thread::Handle>.data
   absent  Arc<local::Shared>.data — no Arc<tokio::task::local::Shared> type in the tokio info (the target does not reach one)
   ok      BlockingSchedule.hooks
+  ok      Sleep.timer.state (family v1_47)
+  ok      ScheduledIo.waiters.lock (spelling 1 of 2)
 
 program: local-set
-walk contract (tokio 1.47.5, rustc 1.98.0 (88d9e12ae 2026-08-18)): 131 entries, 0 broken, 33 absent
+walk contract (tokio 1.47.5, rustc 1.98.0 (88d9e12ae 2026-08-18)): 133 entries, 0 broken, 33 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   ok      statics.tls_local_set_key
@@ -1608,9 +1630,11 @@ walk contract (tokio 1.47.5, rustc 1.98.0 (88d9e12ae 2026-08-18)): 131 entries, 
   ok      Arc<current_thread::Handle>.data
   ok      Arc<local::Shared>.data
   ok      BlockingSchedule.hooks
+  ok      Sleep.timer.state (family v1_47)
+  ok      ScheduledIo.waiters.lock (spelling 1 of 2)
 
 program: local-set-timer
-walk contract (tokio 1.47.5, rustc 1.98.0 (88d9e12ae 2026-08-18)): 131 entries, 0 broken, 33 absent
+walk contract (tokio 1.47.5, rustc 1.98.0 (88d9e12ae 2026-08-18)): 133 entries, 0 broken, 33 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   ok      statics.tls_local_set_key
@@ -1742,9 +1766,11 @@ walk contract (tokio 1.47.5, rustc 1.98.0 (88d9e12ae 2026-08-18)): 131 entries, 
   ok      Arc<current_thread::Handle>.data
   ok      Arc<local::Shared>.data
   ok      BlockingSchedule.hooks
+  ok      Sleep.timer.state (family v1_47)
+  ok      ScheduledIo.waiters.lock (spelling 1 of 2)
 
 program: local-set-io
-walk contract (tokio 1.47.5, rustc 1.98.0 (88d9e12ae 2026-08-18)): 131 entries, 0 broken, 34 absent
+walk contract (tokio 1.47.5, rustc 1.98.0 (88d9e12ae 2026-08-18)): 133 entries, 0 broken, 35 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   ok      statics.tls_local_set_key
@@ -1876,9 +1902,11 @@ walk contract (tokio 1.47.5, rustc 1.98.0 (88d9e12ae 2026-08-18)): 131 entries, 
   ok      Arc<current_thread::Handle>.data
   ok      Arc<local::Shared>.data
   ok      BlockingSchedule.hooks
+  absent  Sleep.timer.state — no tokio::time::sleep::Sleep… type in the tokio info (the target does not reach one)
+  ok      ScheduledIo.waiters.lock (spelling 1 of 2)
 
 program: foreign-runtime
-walk contract (tokio 1.47.5, rustc 1.98.0 (88d9e12ae 2026-08-18)): 131 entries, 0 broken, 33 absent
+walk contract (tokio 1.47.5, rustc 1.98.0 (88d9e12ae 2026-08-18)): 133 entries, 0 broken, 33 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   ok      statics.tls_local_set_key
@@ -2010,9 +2038,11 @@ walk contract (tokio 1.47.5, rustc 1.98.0 (88d9e12ae 2026-08-18)): 131 entries, 
   ok      Arc<current_thread::Handle>.data
   ok      Arc<local::Shared>.data
   ok      BlockingSchedule.hooks
+  ok      Sleep.timer.state (family v1_47)
+  ok      ScheduledIo.waiters.lock (spelling 1 of 2)
 
 program: blocking-pool
-walk contract (tokio 1.47.5, rustc 1.98.0 (88d9e12ae 2026-08-18)): 131 entries, 0 broken, 55 absent
+walk contract (tokio 1.47.5, rustc 1.98.0 (88d9e12ae 2026-08-18)): 133 entries, 0 broken, 56 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -2144,9 +2174,11 @@ walk contract (tokio 1.47.5, rustc 1.98.0 (88d9e12ae 2026-08-18)): 131 entries, 
   ok      Arc<current_thread::Handle>.data
   absent  Arc<local::Shared>.data — no Arc<tokio::task::local::Shared> type in the tokio info (the target does not reach one)
   ok      BlockingSchedule.hooks
+  absent  Sleep.timer.state — no tokio::time::sleep::Sleep… type in the tokio info (the target does not reach one)
+  ok      ScheduledIo.waiters.lock (spelling 1 of 2)
 
 program: delegation-cases
-walk contract (tokio 1.47.5, rustc 1.98.0 (88d9e12ae 2026-08-18)): 131 entries, 0 broken, 56 absent
+walk contract (tokio 1.47.5, rustc 1.98.0 (88d9e12ae 2026-08-18)): 133 entries, 0 broken, 57 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -2278,3 +2310,5 @@ walk contract (tokio 1.47.5, rustc 1.98.0 (88d9e12ae 2026-08-18)): 131 entries, 
   ok      Arc<current_thread::Handle>.data
   absent  Arc<local::Shared>.data — no Arc<tokio::task::local::Shared> type in the tokio info (the target does not reach one)
   ok      BlockingSchedule.hooks
+  absent  Sleep.timer.state — no tokio::time::sleep::Sleep… type in the tokio info (the target does not reach one)
+  ok      ScheduledIo.waiters.lock (spelling 1 of 2)
