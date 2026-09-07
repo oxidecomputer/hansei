@@ -23,8 +23,8 @@ use hansei_bundle::symbols::normalized_v0_key;
 use hansei_bundle::tokio::semaphore;
 use hansei_bundle::{
     BundleType, BundleTypeId, BundleView, ContainerKind, DynPointer, FutureKind, ResourceKind,
-    StaticRole, SymbolLookup, TaskEntryId, TaskFutureEntry, TypeDef, TypeSemantics, WalkOutcome,
-    WalkRole, strip_build_prefix, strip_llvm_suffix,
+    StaticRole, StoragePolicy, SymbolLookup, TaskEntryId, TaskFutureEntry, TypeDef, TypeSemantics,
+    WalkOutcome, WalkRole, strip_build_prefix, strip_llvm_suffix,
 };
 use proc::{LwpInfo, Mappings, SymbolBuf, Target};
 use reify::Value;
@@ -1462,6 +1462,15 @@ impl<'b, T: Target> Context<'b, T> {
     pub(crate) fn recognized_future(&self, id: BundleTypeId) -> bool {
         self.type_semantics(id)
             .is_some_and(|record| record.future.is_some() || record.resource.is_some())
+    }
+
+    /// Whether the bundle declares a type's storage unreadable: a
+    /// compiler-storage candidate no reviewed convention bound, or a
+    /// layout extraction could not keep. Such a value is stopped at,
+    /// never scanned as whatever it is shaped like.
+    pub(crate) fn storage_unavailable(&self, id: BundleTypeId) -> bool {
+        self.type_semantics(id)
+            .is_some_and(|record| matches!(record.storage, StoragePolicy::Unavailable(_)))
     }
 
     /// The container a type is bound as, if any.

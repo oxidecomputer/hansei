@@ -193,22 +193,34 @@ pub(crate) fn warn_census_capped(capped: census::Capped, fate: &str) -> io::Resu
 /// unfollowed is a fan-out of futures holding futures. `fate` is what
 /// the listing or count would otherwise claim to cover.
 fn census_capped_warning(capped: census::Capped, fate: &str) -> Option<String> {
-    let (limits, beyond) = match (capped.deep, capped.distant) {
-        (0, 0) => return None,
-        (deep, 0) => (
-            format!("its depth limit in {deep} place(s)"),
-            "nested deeper",
-        ),
-        (0, distant) => (
-            format!("its nesting limit in {distant} place(s)"),
-            "held further out",
-        ),
-        (deep, distant) => (
+    let mut limits = Vec::new();
+    let mut beyond = Vec::new();
+    if capped.deep > 0 {
+        limits.push(format!("its depth limit in {} place(s)", capped.deep));
+        beyond.push("nested deeper");
+    }
+    if capped.distant > 0 {
+        limits.push(format!("its nesting limit in {} place(s)", capped.distant));
+        beyond.push("held further out");
+    }
+    if capped.unavailable > 0 {
+        limits.push(format!(
+            "storage the tokio info cannot read in {} place(s)",
+            capped.unavailable
+        ));
+        beyond.push("held in it");
+    }
+    let (limits, beyond) = match (limits.len(), beyond.as_slice()) {
+        (0, _) => return None,
+        (1, [only]) => (limits.remove(0), *only),
+        (2, _) => (limits.join(" and "), "beyond either"),
+        _ => (
             format!(
-                "its depth limit in {deep} place(s) and its nesting \
-                 limit in {distant} place(s)"
+                "{}, and {}",
+                limits[..limits.len() - 1].join(", "),
+                limits[limits.len() - 1]
             ),
-            "beyond either",
+            "beyond any of them",
         ),
     };
     // Only the depth limit is one a session can move, so only it is
@@ -2782,6 +2794,7 @@ mod census_warning_tests {
             Capped {
                 deep: 2,
                 distant: 0,
+                unavailable: 0,
             },
             "listed",
         )
@@ -2797,6 +2810,7 @@ mod census_warning_tests {
             Capped {
                 deep: 0,
                 distant: 5,
+                unavailable: 0,
             },
             "counted",
         )
@@ -2805,6 +2819,43 @@ mod census_warning_tests {
             distant,
             "the scan stopped at its nesting limit in 5 place(s); \
              anything held further out is not counted"
+        );
+    }
+
+    /// Storage the bundle declares unreadable is a third stop of its
+    /// own — nothing a session flag moves, and nothing nested or held
+    /// out: the value is right there and cannot be read.
+    #[test]
+    fn test_unavailable_storage_names_itself() {
+        let unavailable = census_capped_warning(
+            Capped {
+                deep: 0,
+                distant: 0,
+                unavailable: 3,
+            },
+            "listed",
+        )
+        .expect("a capped walk warns");
+        assert_eq!(
+            unavailable,
+            "the scan stopped at storage the tokio info cannot read in 3 \
+             place(s); anything held in it is not listed"
+        );
+        let all = census_capped_warning(
+            Capped {
+                deep: 2,
+                distant: 5,
+                unavailable: 3,
+            },
+            "counted",
+        )
+        .expect("a capped walk warns");
+        assert_eq!(
+            all,
+            "the scan stopped at its depth limit in 2 place(s), its nesting \
+             limit in 5 place(s), and storage the tokio info cannot read in 3 \
+             place(s); anything beyond any of them is not counted \
+             (--search-depth moves the depth limit)"
         );
     }
 
@@ -2838,6 +2889,7 @@ mod census_warning_tests {
             Capped {
                 deep: 2,
                 distant: 5,
+                unavailable: 0,
             },
             "listed",
         )

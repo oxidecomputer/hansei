@@ -106,17 +106,23 @@ pub struct Capped {
     /// Chains not scanned because they lay [`MAX_NESTING`] hops away
     /// from the task's own frames.
     pub distant: usize,
+    /// Values not scanned because the bundle says their storage cannot
+    /// be read: a compiler's coroutine environment no reviewed
+    /// convention covers. Its bytes are there; which of them hold live
+    /// values is not known, and an ordinary enum scan of them would
+    /// take dead storage for futures.
+    pub unavailable: usize,
 }
 
 impl Capped {
     /// Whether anything was capped at all.
     pub fn any(&self) -> bool {
-        self.deep > 0 || self.distant > 0
+        self.total() > 0
     }
 
-    /// Every place a limit stopped the walk, of either kind.
+    /// Every place a limit stopped the walk, of any kind.
     pub fn total(&self) -> usize {
-        self.deep + self.distant
+        self.deep + self.distant + self.unavailable
     }
 }
 
@@ -878,7 +884,7 @@ impl<'b, T: Target> Walker<'_, 'b, T> {
                     self.bounds.scan_depth,
                     Path::default(),
                     &mut found,
-                    &mut self.capped.deep,
+                    &mut self.capped,
                     &mut self.plans,
                     &mut self.stats,
                 );
@@ -1104,6 +1110,9 @@ pub(crate) enum Recognized {
     Set,
     JoinSet,
     Future,
+    /// Storage the bundle declares unreadable, with no identity that
+    /// would make the value a find: stopped at, never descended into.
+    Unavailable,
     Other,
 }
 
@@ -1119,6 +1128,7 @@ impl<T: Target> Recognize for Context<'_, T> {
             Some(hansei_bundle::ContainerKind::FuturesUnordered) => Recognized::Set,
             Some(hansei_bundle::ContainerKind::JoinSet) => Recognized::JoinSet,
             None if self.recognized_future(id) => Recognized::Future,
+            None if self.storage_unavailable(id) => Recognized::Unavailable,
             None => Recognized::Other,
         }
     }
@@ -1133,6 +1143,9 @@ enum ScanPlan {
     /// into, so its insides are attributed to it rather than to the
     /// frame holding it.
     Future,
+    /// Storage the bundle declares unreadable: counted as a place the
+    /// scan stopped short, never scanned as the enum it is shaped as.
+    Unavailable,
     /// A struct: recurse into each sized member, as
     /// `(member type, offset, size)`.
     Descend(Rc<Vec<(BundleTypeId, u64, u64)>>),
@@ -1153,6 +1166,7 @@ fn scan_plan(value: Value<'_>, facts: &dyn Recognize) -> ScanPlan {
         Recognized::Set => return ScanPlan::Set,
         Recognized::JoinSet => return ScanPlan::JoinSet,
         Recognized::Future => return ScanPlan::Future,
+        Recognized::Unavailable => return ScanPlan::Unavailable,
         Recognized::Other => {}
     }
     // The pointee must *be* a future trait object itself, not a dyn
@@ -1226,12 +1240,12 @@ fn scan_value<'b>(
     max_depth: usize,
     path: Path,
     found: &mut Vec<Find<'b>>,
-    deep: &mut usize,
+    capped: &mut Capped,
     plans: &mut HashMap<BundleTypeId, ScanPlan>,
     stats: &mut Stats,
 ) {
     if depth > max_depth {
-        *deep += 1;
+        capped.deep += 1;
         return;
     }
     // A remembered plan is only valid for a buffer that covers the type
@@ -1262,6 +1276,7 @@ fn scan_value<'b>(
         ScanPlan::Set => found.push(Find::Set(value)),
         ScanPlan::JoinSet => found.push(Find::JoinSet(value)),
         ScanPlan::Future => found.push(Find::Future(value)),
+        ScanPlan::Unavailable => capped.unavailable += 1,
         ScanPlan::Descend(members) => {
             let path = Path {
                 descended: true,
@@ -1280,7 +1295,7 @@ fn scan_value<'b>(
                     max_depth,
                     path,
                     found,
-                    deep,
+                    capped,
                     plans,
                     stats,
                 );
@@ -1303,7 +1318,7 @@ fn scan_value<'b>(
                 // is what costs a level, the way it always did when
                 // the payload arrived pre-peeled.
                 scan_value(
-                    payload, facts, depth, max_depth, path, found, deep, plans, stats,
+                    payload, facts, depth, max_depth, path, found, capped, plans, stats,
                 );
             }
         }
@@ -1640,6 +1655,7 @@ mod tests {
     struct Facts {
         containers: HashMap<BundleTypeId, hansei_bundle::ContainerKind>,
         futures: HashSet<BundleTypeId>,
+        unavailable: HashSet<BundleTypeId>,
     }
 
     impl Recognize for Facts {
@@ -1648,6 +1664,7 @@ mod tests {
                 Some(hansei_bundle::ContainerKind::FuturesUnordered) => Recognized::Set,
                 Some(hansei_bundle::ContainerKind::JoinSet) => Recognized::JoinSet,
                 None if self.futures.contains(&id) => Recognized::Future,
+                None if self.unavailable.contains(&id) => Recognized::Unavailable,
                 None => Recognized::Other,
             }
         }
@@ -1671,6 +1688,7 @@ mod tests {
                 .filter_map(|r| Some((r.ty, r.container.as_ref()?.kind)))
                 .collect(),
             futures,
+            unavailable: HashSet::default(),
         }
     }
 
@@ -1702,7 +1720,10 @@ mod tests {
     /// and what it remembered.
     struct Scanned<'b> {
         finds: Vec<Find<'b>>,
+        /// Values abandoned at the depth limit.
         capped: usize,
+        /// Values stopped at for unavailable storage.
+        unavailable: usize,
         plans: HashMap<BundleTypeId, ScanPlan>,
         stats: Stats,
     }
@@ -1746,7 +1767,7 @@ mod tests {
         mut plans: HashMap<BundleTypeId, ScanPlan>,
     ) -> Scanned<'b> {
         let mut finds = Vec::new();
-        let mut capped = 0;
+        let mut capped = Capped::default();
         let mut stats = Stats::default();
         scan_value(
             value,
@@ -1761,10 +1782,126 @@ mod tests {
         );
         Scanned {
             finds,
-            capped,
+            capped: capped.deep,
+            unavailable: capped.unavailable,
             plans,
             stats,
         }
+    }
+
+    /// A coroutine env the bundle declares unreadable — an unreviewed
+    /// compiler's, say — is stopped at and counted, not scanned as the
+    /// enum it is shaped as: the future its active variant holds is not
+    /// found, and the place is one the listing is short.
+    #[test]
+    fn test_unavailable_storage_is_counted_and_never_scanned_as_an_enum() {
+        let bundle = unordered();
+        // A coroutine with a tagged suspended state whose awaitee is
+        // itself a coroutine: found through the enum scan if anything is.
+        let mut suspended = None;
+        let ty = find_ty(bundle, |t| {
+            if !t.is_coroutine() {
+                return false;
+            }
+            let Some(shape) = t.variant_shape() else {
+                return false;
+            };
+            let Some(discr) = &shape.discr else {
+                return false;
+            };
+            let discr_size = t.related_type(discr.ty).size();
+            if discr_size == 0 || discr_size > 8 {
+                return false;
+            }
+            for v in &shape.variants {
+                let payload = t.related_type(v.payload.ty);
+                if !payload
+                    .name()
+                    .rsplit("::")
+                    .next()
+                    .unwrap_or("")
+                    .starts_with("Suspend")
+                {
+                    continue;
+                }
+                let Some(vals) = &v.discr_values else {
+                    continue;
+                };
+                let [DiscrValue::Value(tag)] = vals.0.as_slice() else {
+                    continue;
+                };
+                let Some(awaitee) = payload.members().find(|m| m.name() == "__awaitee") else {
+                    continue;
+                };
+                if !awaitee.ty().is_coroutine() {
+                    continue;
+                }
+                suspended = Some((discr.offset, discr_size, *tag, awaitee.ty().id()));
+                return true;
+            }
+            false
+        });
+        let (discr_offset, discr_size, tag, awaitee) =
+            suspended.expect("the fixture has a coroutine awaiting a coroutine");
+        // As the bundle's own facts have it, the coroutine is a future
+        // and is found as one.
+        let known = facts(bundle, []);
+        let bytes = vec![0u8; ty.size() as usize];
+        let value = Value::new(ty, AT, &bytes);
+        let scanned = scan(value, &known);
+        assert!(
+            matches!(scanned.finds.as_slice(), [Find::Future(_)]),
+            "{:?}",
+            scanned.summary()
+        );
+        // With its storage unavailable instead, nothing is found — not
+        // the coroutine, and not the awaitee the enum scan would have
+        // reached — and the stop is counted.
+        let mut given = facts(bundle, []);
+        given.futures.remove(&ty.id());
+        given.unavailable.insert(ty.id());
+        assert!(given.futures.contains(&awaitee));
+        let scanned = scan(value, &given);
+        assert!(scanned.finds.is_empty(), "{:?}", scanned.summary());
+        assert_eq!(scanned.unavailable, 1);
+        assert_eq!(scanned.capped, 0);
+        assert!(matches!(
+            scanned.plans.get(&ty.id()),
+            Some(ScanPlan::Unavailable)
+        ));
+        // Unknown to the facts entirely, the same enum is scanned like
+        // any other: the awaitee inside its active variant is found.
+        // That fall-through is exactly what an unavailable record
+        // exists to prevent.
+        let mut given = facts(bundle, []);
+        given.futures.remove(&ty.id());
+        let mut active = bytes.clone();
+        let at = discr_offset as usize;
+        active[at..at + discr_size as usize]
+            .copy_from_slice(&tag.to_le_bytes()[..discr_size as usize]);
+        let value = Value::new(ty, AT, &active);
+        let scanned = scan(value, &given);
+        assert!(
+            scanned.finds.iter().any(|f| f.value().ty.id() == awaitee),
+            "{:?} (types {:?}, awaitee {:?})",
+            scanned.summary(),
+            scanned
+                .finds
+                .iter()
+                .map(|f| f.value().ty.name())
+                .collect::<Vec<_>>(),
+            ty.related_type(awaitee).name()
+        );
+        // And with the storage unavailable, those same bytes yield
+        // nothing either: the active variant is never consulted.
+        let scanned = scan(value, &{
+            let mut given = facts(bundle, []);
+            given.futures.remove(&ty.id());
+            given.unavailable.insert(ty.id());
+            given
+        });
+        assert!(scanned.finds.is_empty(), "{:?}", scanned.summary());
+        assert_eq!(scanned.unavailable, 1);
     }
 
     /// An `Option`-shaped enum over a coroutine: two variants, each
@@ -2500,7 +2637,8 @@ mod tests {
             census.capped,
             Capped {
                 deep: 0,
-                distant: 8
+                distant: 8,
+                unavailable: 0,
             }
         );
         assert!(census.capped.any());
@@ -2546,7 +2684,8 @@ mod tests {
             bounded.capped,
             Capped {
                 deep: 0,
-                distant: 6
+                distant: 6,
+                unavailable: 0,
             }
         );
     }
