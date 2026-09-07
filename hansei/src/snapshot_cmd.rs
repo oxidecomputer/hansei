@@ -11,7 +11,7 @@ use anyhow::{Context as _, Result};
 use hansei_bundle::BundleView;
 use hansei_runtime::tokio::graph as rt_graph;
 use hansei_runtime::tokio::{bundle, census};
-use proc::snapshot::Recorder;
+use proc::snapshot::{CaptureLimits, RecordedHeapEvidence, Recorder};
 
 use std::io::{self, Write};
 use std::path::Path;
@@ -136,9 +136,14 @@ fn warm_scheduler_ctx<T: proc::Target>(ctx: &bundle::Context<'_, T>, sched_ctx: 
 /// and await chain is walked so the snapshot can answer the offline
 /// tests' whole question set; walk problems are warnings, not errors,
 /// since a partially-traceable target is still worth capturing.
+///
+/// A capture that reaches one of its `limits` is a failure, not a
+/// smaller capture: the recorder refuses every read past the limit and
+/// refuses to assemble, and nothing is written over `output`.
 pub(crate) fn exec_snapshot<T: proc::Target>(
     session: &Session<'_, T>,
     output: &Path,
+    limits: CaptureLimits,
     out: &mut dyn io::Write,
 ) -> Result<()> {
     // The recording wrapper has to sit under its own context: what makes
@@ -146,7 +151,7 @@ pub(crate) fn exec_snapshot<T: proc::Target>(
     // context — which reads the target directly — cannot serve here. The
     // whole analysis is therefore driven a second time.
     let proc = session.proc;
-    let recorder = Recorder::new(proc);
+    let recorder = Recorder::with_limits(proc, limits);
     let ctx =
         bundle::Context::with_policy(&recorder, BundleView::new(session.bundle), session.policy)?;
     // Not a policy check — the session already made it, and refused if it
@@ -253,16 +258,89 @@ pub(crate) fn exec_snapshot<T: proc::Target>(
         result.context("failed to record the delegation fixture ground truth")?;
     }
 
-    let snapshot = recorder.snapshot().context("failed to assemble snapshot")?;
+    // This capture builds no allocator index of its own — its census
+    // above read ungated — so it records that none is available: a
+    // replay gates nothing on evidence the capture did not gather. A
+    // capture that reached a limit assembles nothing, whatever it
+    // recorded before: the recorder checks its own account first.
+    let snapshot = recorder
+        .snapshot(RecordedHeapEvidence::Unavailable)
+        .context("failed to assemble snapshot")?;
+    let charged = recorder.charged();
     snapshot
-        .save(output)
+        .save(output, limits.output_bytes)
         .with_context(|| format!("failed to write {}", output.display()))?;
     writeln!(
         out,
-        "captured {} tasks ({chains} await chains, {} futurelocks) to {}",
+        "captured {} tasks ({chains} await chains, {} futurelocks) to {}; \
+         the read log held {} bytes in {} reads",
         list.tasks.len(),
         analysis.futurelocks.len(),
-        output.display()
+        output.display(),
+        charged.bytes,
+        charged.entries,
     )?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::offline::session_args;
+
+    use hansei_runtime::testkit;
+    use proc::snapshot::Snapshot;
+
+    /// A capture that reaches a limit fails whole. Every walk between
+    /// the recorder and this driver treats a failed read as a warning
+    /// or a smaller answer, so the failure has to be the recorder's
+    /// own to survive them — and what it protects is the file at the
+    /// output path, a previous valid capture left byte for byte, with
+    /// no temporary beside it. Within its limits the same session
+    /// captures, replaces that file, and records the neutral heap
+    /// policy, since this capture builds no index.
+    #[test]
+    fn test_a_capture_past_its_limit_publishes_nothing() {
+        let (bundle, snapshot) = testkit::load("linux", "simple-await");
+        let args = session_args("linux", "simple-await");
+        let session = Session::attach(&snapshot, &bundle, &args).expect("the pair attaches");
+        let dir = tempfile::tempdir().unwrap();
+        let output = dir.path().join("recapture.snapshot");
+        let previous = b"a previous capture, not to be touched";
+        std::fs::write(&output, previous).unwrap();
+        let listing = || -> Vec<String> {
+            let mut names: Vec<_> = std::fs::read_dir(dir.path())
+                .unwrap()
+                .map(|e| e.unwrap().file_name().into_string().unwrap())
+                .collect();
+            names.sort();
+            names
+        };
+
+        let mut out = Vec::new();
+        let limits = CaptureLimits {
+            read_log_entries: 8,
+            ..CaptureLimits::default()
+        };
+        let err = exec_snapshot(&session, &output, limits, &mut out)
+            .expect_err("a capture past its limit fails");
+        assert!(
+            format!("{err:#}").contains("read-log entries against its limit of 8"),
+            "{err:#}"
+        );
+        assert_eq!(std::fs::read(&output).unwrap(), previous);
+        assert_eq!(listing(), ["recapture.snapshot"]);
+        assert!(out.is_empty());
+
+        exec_snapshot(&session, &output, CaptureLimits::default(), &mut out)
+            .expect("the capture fits its default limits");
+        let recaptured = Snapshot::load(&output).expect("the published file is a snapshot");
+        assert_eq!(
+            recaptured.heap_evidence(),
+            RecordedHeapEvidence::Unavailable
+        );
+        assert_eq!(listing(), ["recapture.snapshot"]);
+        let out = String::from_utf8(out).unwrap();
+        assert!(out.contains("the read log held"), "{out}");
+    }
 }

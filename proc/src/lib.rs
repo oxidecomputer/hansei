@@ -26,6 +26,8 @@ pub struct Error {
 enum ErrorKind {
     #[error("malformed core file: {0}")]
     BadCore(&'static str),
+    #[error("{0}")]
+    CaptureLimit(snapshot::LimitExceeded),
     #[error("could not convert path to C string")]
     BadPath(#[from] NulError),
     #[error("failed to grab process: {0}")]
@@ -76,6 +78,12 @@ impl Error {
 
     pub fn bad_core(what: &'static str) -> Self {
         Self::new(ErrorKind::BadCore(what))
+    }
+
+    /// A snapshot capture charged more against one of its limits than
+    /// the limit allows; see [`snapshot::CaptureLimits`].
+    pub fn capture_limit(exceeded: snapshot::LimitExceeded) -> Self {
+        Self::new(ErrorKind::CaptureLimit(exceeded))
     }
 
     pub fn bad_path(e: NulError) -> Self {

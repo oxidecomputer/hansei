@@ -760,8 +760,39 @@ pub enum Command {
     #[cfg(feature = "snapshot")]
     #[command(hide = true)]
     Snapshot {
-        /// Where to write the snapshot.
+        /// Where to write the snapshot. Written beside itself first
+        /// and renamed into place once complete, so a capture that
+        /// fails leaves whatever was there before.
         output: PathBuf,
+
+        /// Fail the capture once its read log — every byte read,
+        /// duplicates included until the snapshot merges them — would
+        /// hold more than this many bytes. A resource bound for an
+        /// intentionally large capture, not a way to trim one.
+        #[arg(
+            long,
+            value_name = "BYTES",
+            default_value_t = proc::snapshot::CaptureLimits::default().read_log_bytes
+        )]
+        max_log_bytes: u64,
+
+        /// Fail the capture once its read log would hold more than
+        /// this many reads.
+        #[arg(
+            long,
+            value_name = "N",
+            default_value_t = proc::snapshot::CaptureLimits::default().read_log_entries
+        )]
+        max_log_entries: u64,
+
+        /// Fail the capture once the written snapshot would exceed
+        /// this many bytes.
+        #[arg(
+            long,
+            value_name = "BYTES",
+            default_value_t = proc::snapshot::CaptureLimits::default().output_bytes
+        )]
+        max_output_bytes: u64,
     },
 
     /// List the contended synchronization primitives: one block per
@@ -1872,7 +1903,19 @@ pub fn dispatch<T: Target>(
             settings::exec_config(&session.settings, key.as_deref(), value.as_deref(), out)?
         }
         #[cfg(feature = "snapshot")]
-        Command::Snapshot { output } => snapshot_cmd::exec_snapshot(session, &output, out)?,
+        Command::Snapshot {
+            output,
+            max_log_bytes,
+            max_log_entries,
+            max_output_bytes,
+        } => {
+            let limits = proc::snapshot::CaptureLimits {
+                read_log_bytes: max_log_bytes,
+                read_log_entries: max_log_entries,
+                output_bytes: max_output_bytes,
+            };
+            snapshot_cmd::exec_snapshot(session, &output, limits, out)?
+        }
         Command::Sync { addr, kind } => sync::exec_sync(session, addr, kind, out)?,
         Command::Task { target, futures } => {
             cursor::exec_task(session, target, futures, session.fit_width(theme), out)?

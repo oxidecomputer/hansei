@@ -19,7 +19,7 @@
 
 #![cfg(target_os = "illumos")]
 
-use proc::snapshot::{Recorder, Snapshot};
+use proc::snapshot::{CaptureLimits, RecordedHeapEvidence, Recorder, Snapshot};
 
 mod libproc;
 use libproc::Core as LibprocCore;
@@ -870,14 +870,19 @@ fn test_snapshot_replays_a_recorded_target() {
                 .expect("failed to resolve the thread-local")
         })
         .collect();
-    let snapshot = recorder.snapshot().expect("failed to build the snapshot");
+    let snapshot = recorder
+        .snapshot(RecordedHeapEvidence::Unavailable)
+        .expect("failed to build the snapshot");
 
     // Through a file, the way the capture tools write it.
     let dir = tempfile::tempdir().expect("failed to create a tempdir");
     let path = dir.path().join("park.snapshot");
-    snapshot.save(&path).expect("failed to save the snapshot");
+    snapshot
+        .save(&path, CaptureLimits::default().output_bytes)
+        .expect("failed to save the snapshot");
     let replay = Snapshot::load(&path).expect("failed to load the snapshot");
     assert_eq!(replay, snapshot);
+    assert_eq!(replay.heap_evidence(), RecordedHeapEvidence::Unavailable);
 
     assert_eq!(replay.read_bytes(addr, 64).unwrap(), bytes);
     assert_eq!(replay.read_u64(addr).unwrap(), MARKER_VALUE);

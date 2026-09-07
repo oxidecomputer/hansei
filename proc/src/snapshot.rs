@@ -15,6 +15,15 @@
 //! Snapshots are test fixtures, not an interchange format: the same
 //! tool version writes and reads them, and the version check rejects
 //! everything else.
+//!
+//! A capture is bounded by [`CaptureLimits`]: what the recorder may
+//! hold in its read log and how large the written file may grow. The
+//! bounds are resource limits, not evidence policy — a capture that
+//! reaches one fails whole, and never publishes the part it did
+//! record. The header also says whether the capture built a usable
+//! allocator index ([`RecordedHeapEvidence`]), so a replay knows
+//! whether the corroboration the capture's reads were gated by can be
+//! rebuilt from them.
 
 use crate::{
     Error as TargetError, LwpInfo, Mappings, Regs, Result as TargetResult, SymbolBuf, Target,
@@ -23,9 +32,10 @@ use crate::{
 use serde::{Deserialize, Serialize};
 
 use std::collections::BTreeMap;
-use std::fs::File;
-use std::io::{self, Read, Write};
-use std::path::Path;
+use std::fmt;
+use std::fs::{self, File};
+use std::io::{self, BufWriter, Read, Write};
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 /// Uncompressed file header: magic, then a little-endian format version,
@@ -34,7 +44,7 @@ pub const MAGIC: [u8; 8] = *b"prosnap\0";
 
 /// Bumped freely on schema change; there is no cross-version
 /// compatibility requirement (same-tool-reads-it rule).
-pub const FORMAT_VERSION: u32 = 6;
+pub const FORMAT_VERSION: u32 = 7;
 
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -50,6 +60,8 @@ pub enum Error {
     Decode(#[source] postcard::Error),
     #[error("failed to encode snapshot")]
     Encode(#[source] postcard::Error),
+    #[error("{0}")]
+    Limit(LimitExceeded),
 }
 
 /// One contiguous run of captured target memory.
@@ -63,6 +75,103 @@ impl Segment {
     fn end(&self) -> u64 {
         self.addr + self.bytes.len() as u64
     }
+}
+
+/// Whether the capture built a usable allocator index over the target,
+/// and so recorded the reads a replay needs to rebuild it.
+///
+/// `Available` is a claim: the capture's discovery and census were
+/// gated by that index, and a replay that cannot rebuild it has an
+/// incomplete capture in hand, not a target without an allocator.
+/// `Unavailable` is neutral — nothing was learned about liveness, and
+/// a replay treats every allocation the way a target with no allocator
+/// evidence is treated. Neither is a switch a reader may flip to skip
+/// a gate.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub enum RecordedHeapEvidence {
+    Available,
+    Unavailable,
+}
+
+/// The resource bounds a capture runs under.
+///
+/// The recorder logs every successful read, duplicates included until
+/// the snapshot merges them, so a capture that walks an allocator's
+/// caches and slabs can log far more than the merged memory it ends
+/// up holding. These bound that log and the written file. They are
+/// bounds on resources, not on evidence: reaching one fails the
+/// capture (see [`LimitExceeded`]) rather than trimming what it records
+/// or relaxing what its reads were gated by.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct CaptureLimits {
+    /// Bytes the read log may hold, charged per read before the bytes
+    /// are copied into it.
+    pub read_log_bytes: u64,
+    /// Reads the log may hold, charged the same way.
+    pub read_log_entries: u64,
+    /// Bytes the serialized snapshot may occupy on disk.
+    pub output_bytes: u64,
+}
+
+impl Default for CaptureLimits {
+    fn default() -> Self {
+        CaptureLimits {
+            read_log_bytes: 512 << 20,
+            read_log_entries: 4_000_000,
+            output_bytes: 512 << 20,
+        }
+    }
+}
+
+/// Which of a capture's [`CaptureLimits`] a charge exceeded.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Limit {
+    ReadLogBytes,
+    ReadLogEntries,
+    OutputBytes,
+}
+
+/// A capture that charged more against one of its limits than the
+/// limit allows: which limit, what the charge would have brought the
+/// total to, and the limit itself.
+///
+/// Sticky where it arises: a recorder that has exceeded a limit refuses
+/// every later read and refuses to assemble a snapshot, so a consumer
+/// that swallows the failed read — an allocator walk that answers
+/// "no index" to any read it cannot make — cannot turn the violation
+/// into a capture that merely lacks evidence.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct LimitExceeded {
+    pub limit: Limit,
+    /// The total the charge would have reached, saturated at `u64::MAX`
+    /// when the addition itself overflowed.
+    pub charged: u64,
+    pub cap: u64,
+}
+
+impl fmt::Display for LimitExceeded {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let unit = match self.limit {
+            Limit::ReadLogBytes => "read-log bytes",
+            Limit::ReadLogEntries => "read-log entries",
+            Limit::OutputBytes => "serialized bytes",
+        };
+        write!(
+            f,
+            "the capture charged {} {unit} against its limit of {}",
+            self.charged, self.cap
+        )
+    }
+}
+
+impl std::error::Error for LimitExceeded {}
+
+/// What a recorder's read log holds: the totals its limits are charged
+/// against, before merging.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct ReadLogSize {
+    pub bytes: u64,
+    pub entries: u64,
 }
 
 /// A captured target: everything [`Recorder`] saw the analysis read,
@@ -99,6 +208,9 @@ pub struct Snapshot {
     /// derived because a snapshot carries no program headers to derive
     /// it from, and a debug-info address means nothing without it.
     exec_bias: Option<u64>,
+    /// Whether the capture's reads were gated by an allocator index it
+    /// built, and so carry what rebuilding one needs.
+    heap_evidence: RecordedHeapEvidence,
 }
 
 impl Snapshot {
@@ -111,8 +223,44 @@ impl Snapshot {
         Ok(())
     }
 
-    pub fn save(&self, path: &Path) -> Result<()> {
-        self.write(File::create(path)?)
+    /// Write the snapshot to `path`, replacing whatever is there only
+    /// once the whole file is written within `output_limit` bytes.
+    ///
+    /// The bytes go to a sibling temporary file that is renamed over
+    /// `path` at the end, so a capture that fails partway — the limit
+    /// reached, the disk full — leaves the previous file as it was and
+    /// no truncated one beside it.
+    pub fn save(&self, path: &Path, output_limit: u64) -> Result<()> {
+        let tmp = temporary_sibling(path);
+        let written = self.write_bounded(&tmp, output_limit);
+        if let Err(e) = written.and_then(|()| fs::rename(&tmp, path).map_err(Error::Io)) {
+            let _ = fs::remove_file(&tmp);
+            return Err(e);
+        }
+        Ok(())
+    }
+
+    fn write_bounded(&self, path: &Path, output_limit: u64) -> Result<()> {
+        let mut out = Bounded {
+            inner: BufWriter::new(File::create(path)?),
+            written: 0,
+            cap: output_limit,
+            exceeded: None,
+        };
+        let result = self
+            .write(&mut out)
+            .and_then(|()| out.flush().map_err(Error::Io));
+        // The limit surfaces as an i/o error from inside the encoder;
+        // what the caller is told is the limit itself.
+        match out.exceeded {
+            Some(exceeded) => Err(Error::Limit(exceeded)),
+            None => result,
+        }
+    }
+
+    /// Whether this capture built an allocator index over its target.
+    pub fn heap_evidence(&self) -> RecordedHeapEvidence {
+        self.heap_evidence
     }
 
     /// Deserialize from `r`, rejecting wrong magic or version.
@@ -149,6 +297,49 @@ impl Snapshot {
         let idx = self.memory.partition_point(|s| s.addr <= addr);
         let seg = &self.memory[idx.checked_sub(1)?];
         (addr < seg.end()).then_some(seg)
+    }
+}
+
+/// `path` with `.tmp` appended to its file name: in the same directory,
+/// so the rename that publishes it stays within one filesystem.
+fn temporary_sibling(path: &Path) -> PathBuf {
+    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    name.push(".tmp");
+    path.with_file_name(name)
+}
+
+/// A writer that refuses the write taking it past `cap` bytes, and
+/// remembers that it did: the encoder above it sees an i/o error, and
+/// the save reads the limit back out.
+struct Bounded<W> {
+    inner: W,
+    written: u64,
+    cap: u64,
+    exceeded: Option<LimitExceeded>,
+}
+
+impl<W: Write> Write for Bounded<W> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        // Charged with the whole buffer before writing any of it; what
+        // the inner writer took short is charged again when the caller
+        // comes back with the rest.
+        let charged = self.written.checked_add(buf.len() as u64);
+        if charged.is_some_and(|total| total <= self.cap) {
+            let n = self.inner.write(buf)?;
+            self.written += n as u64;
+            return Ok(n);
+        }
+        let exceeded = LimitExceeded {
+            limit: Limit::OutputBytes,
+            charged: charged.unwrap_or(u64::MAX),
+            cap: self.cap,
+        };
+        self.exceeded = Some(exceeded);
+        Err(io::Error::other(exceeded))
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.inner.flush()
     }
 }
 
@@ -241,35 +432,116 @@ impl Target for Snapshot {
 /// [`Snapshot`] can replay the same analysis offline.
 pub struct Recorder<'a, T> {
     target: &'a T,
+    limits: CaptureLimits,
     /// Every successful read, in order; overlaps are resolved at
     /// [`Recorder::snapshot`] time (later reads win).
-    reads: Mutex<Vec<Segment>>,
+    log: Mutex<ReadLog>,
     by_addr: Mutex<BTreeMap<u64, Option<SymbolBuf>>>,
     by_name: Mutex<BTreeMap<String, Option<SymbolBuf>>>,
     tls: Mutex<BTreeMap<(u64, String), Option<u64>>>,
 }
 
+/// The read log and the account its limits are charged against, under
+/// one lock so a charge and the copy it admits are one step.
+#[derive(Default)]
+struct ReadLog {
+    reads: Vec<Segment>,
+    bytes: u64,
+    /// The first limit the log exceeded. Set once and never cleared:
+    /// from then on the log admits nothing and no snapshot assembles.
+    failed: Option<LimitExceeded>,
+}
+
+impl ReadLog {
+    /// Admit a read of `len` bytes, or say which limit it would take
+    /// the log past. Charged before the bytes are copied, so a read the
+    /// log cannot afford costs nothing but the check.
+    fn charge(
+        &mut self,
+        limits: &CaptureLimits,
+        len: u64,
+    ) -> std::result::Result<(), LimitExceeded> {
+        if let Some(failed) = self.failed {
+            return Err(failed);
+        }
+        let entries = (self.reads.len() as u64).checked_add(1);
+        let bytes = self.bytes.checked_add(len);
+        let over = |limit, charged: Option<u64>, cap| LimitExceeded {
+            limit,
+            charged: charged.unwrap_or(u64::MAX),
+            cap,
+        };
+        let exceeded = match (entries, bytes) {
+            (Some(entries), Some(bytes))
+                if entries <= limits.read_log_entries && bytes <= limits.read_log_bytes =>
+            {
+                self.bytes = bytes;
+                return Ok(());
+            }
+            (Some(entries), _) if entries <= limits.read_log_entries => {
+                over(Limit::ReadLogBytes, bytes, limits.read_log_bytes)
+            }
+            _ => over(Limit::ReadLogEntries, entries, limits.read_log_entries),
+        };
+        self.failed = Some(exceeded);
+        Err(exceeded)
+    }
+}
+
 impl<'a, T: Target> Recorder<'a, T> {
+    /// A recorder under the default [`CaptureLimits`].
     pub fn new(target: &'a T) -> Self {
+        Self::with_limits(target, CaptureLimits::default())
+    }
+
+    pub fn with_limits(target: &'a T, limits: CaptureLimits) -> Self {
         Self {
             target,
-            reads: Mutex::new(Vec::new()),
+            limits,
+            log: Mutex::new(ReadLog::default()),
             by_addr: Mutex::new(BTreeMap::new()),
             by_name: Mutex::new(BTreeMap::new()),
             tls: Mutex::new(BTreeMap::new()),
         }
     }
 
+    /// What the read log holds so far, before merging — the totals the
+    /// limits are charged against.
+    pub fn charged(&self) -> ReadLogSize {
+        let log = self.log.lock().unwrap();
+        ReadLogSize {
+            bytes: log.bytes,
+            entries: log.reads.len() as u64,
+        }
+    }
+
+    /// The limit this capture exceeded, if it has: the recorder is no
+    /// longer recording, and [`Recorder::snapshot`] will refuse. A
+    /// capture driver asks this wherever a consumer between it and the
+    /// recorder may have swallowed the failed read.
+    pub fn failure(&self) -> Option<LimitExceeded> {
+        self.log.lock().unwrap().failed
+    }
+
     /// Assemble the snapshot: everything recorded so far, plus the
-    /// function symtab, mappings, and LWPs read from the target now.
-    pub fn snapshot(&self) -> TargetResult<Snapshot> {
+    /// function symtab, mappings, and LWPs read from the target now,
+    /// stamped with whether the capture built an allocator index.
+    ///
+    /// Refuses once a limit has been exceeded: what was recorded up to
+    /// that point is a partial capture, and a partial capture published
+    /// as a snapshot would replay as a target that read less.
+    pub fn snapshot(&self, heap_evidence: RecordedHeapEvidence) -> TargetResult<Snapshot> {
+        let log = self.log.lock().unwrap();
+        if let Some(exceeded) = log.failed {
+            return Err(TargetError::capture_limit(exceeded));
+        }
         let mut functions = self.target.symbols()?;
         functions.sort_by_key(|s| s.st_value);
         let mut objects = self.target.object_symbols()?;
         objects.sort_by_key(|s| s.st_value);
 
         Ok(Snapshot {
-            memory: merge_reads(&self.reads.lock().unwrap()),
+            memory: merge_reads(&log.reads),
             functions,
             objects,
             by_addr: self.by_addr.lock().unwrap().clone(),
@@ -278,6 +550,7 @@ impl<'a, T: Target> Recorder<'a, T> {
             mappings: self.target.mappings()?,
             lwps: self.target.lwps()?,
             exec_bias: self.target.exec_bias(),
+            heap_evidence,
         })
     }
 }
@@ -328,9 +601,15 @@ fn merge_reads(reads: &[Segment]) -> Vec<Segment> {
 impl<T: Target> Target for Recorder<'_, T> {
     fn read_bytes(&self, addr: u64, len: u64) -> TargetResult<&[u8]> {
         // Recording and lending are not in tension: log a copy, then
-        // hand back the wrapped target's own storage.
+        // hand back the wrapped target's own storage. The copy is
+        // charged against the limits first, and a read the log cannot
+        // afford fails here — the wrapped target's answer is not lent
+        // either, since a capture that reaches a limit is over.
         let bytes = self.target.read_bytes(addr, len)?;
-        self.reads.lock().unwrap().push(Segment {
+        let mut log = self.log.lock().unwrap();
+        log.charge(&self.limits, bytes.len() as u64)
+            .map_err(TargetError::capture_limit)?;
+        log.reads.push(Segment {
             addr,
             bytes: bytes.to_vec(),
         });
@@ -414,7 +693,9 @@ mod tests {
         let recorder = Recorder::new(&target);
         assert_eq!(recorder.lwp_name(7).as_deref(), Some("tokio-runtime-w"));
         assert_eq!(recorder.lwp_name(8), None);
-        let snapshot = recorder.snapshot().expect("snapshot assembles");
+        let snapshot = recorder
+            .snapshot(RecordedHeapEvidence::Unavailable)
+            .expect("snapshot assembles");
         assert_eq!(snapshot.lwp_name(7), None);
     }
 
@@ -425,7 +706,7 @@ mod tests {
     fn test_snapshots_answer_absent_process_facts() {
         let target = FakeTarget::new();
         let snapshot = Recorder::new(&target)
-            .snapshot()
+            .snapshot(RecordedHeapEvidence::Unavailable)
             .expect("snapshot assembles");
         assert_eq!(Target::process_facts(&snapshot), None);
         assert_eq!(Target::exec_path(&snapshot), None);
@@ -544,7 +825,12 @@ mod tests {
         let target = FakeTarget::new();
         let rec = Recorder::new(&target);
         assert_eq!(rec.exec_bias(), Some(target.base));
-        assert_eq!(rec.snapshot().unwrap().exec_bias(), Some(target.base));
+        assert_eq!(
+            rec.snapshot(RecordedHeapEvidence::Unavailable)
+                .unwrap()
+                .exec_bias(),
+            Some(target.base)
+        );
 
         assert_eq!(Target::exec_bias(&snapshot_of(&[])), None);
     }
@@ -554,7 +840,7 @@ mod tests {
         let target = FakeTarget::new();
         let rec = Recorder::new(&target);
         let want = rec.read_bytes(0x1100, 32).unwrap().to_vec();
-        let snap = rec.snapshot().unwrap();
+        let snap = rec.snapshot(RecordedHeapEvidence::Unavailable).unwrap();
 
         // The exact read, and any sub-range of it, replays.
         assert_eq!(snap.read_bytes(0x1100, 32).unwrap(), want);
@@ -571,7 +857,7 @@ mod tests {
         let target = FakeTarget::new();
         let rec = Recorder::new(&target);
         rec.read_bytes(0x1100, 16).unwrap();
-        let snap = rec.snapshot().unwrap();
+        let snap = rec.snapshot(RecordedHeapEvidence::Unavailable).unwrap();
 
         // Never-read ranges fail even though the fake target had them.
         assert!(snap.read_bytes(0x1200, 16).is_err());
@@ -590,7 +876,7 @@ mod tests {
         rec.read_bytes(0x1100, 32).unwrap();
         // A second run, past a gap the capture never touched.
         rec.read_bytes(0x1300, 32).unwrap();
-        let snap = rec.snapshot().unwrap();
+        let snap = rec.snapshot(RecordedHeapEvidence::Unavailable).unwrap();
         assert_eq!(snap.memory.len(), 2);
 
         let lent = snap.read_bytes(0x1100, 32).unwrap();
@@ -628,7 +914,7 @@ mod tests {
             .iter()
             .map(|&(a, l)| rec.read_bytes(a, l).unwrap().to_vec())
             .collect();
-        let snap = rec.snapshot().unwrap();
+        let snap = rec.snapshot(RecordedHeapEvidence::Unavailable).unwrap();
 
         // The replay serves those reads back unchanged.
         for (&(addr, len), want) in reads.iter().zip(&borrowed) {
@@ -645,7 +931,7 @@ mod tests {
         rec.read_bytes(0x1110, 0x20).unwrap();
         rec.read_bytes(0x1100, 0x18).unwrap();
         rec.read_bytes(0x1130, 0x10).unwrap();
-        let snap = rec.snapshot().unwrap();
+        let snap = rec.snapshot(RecordedHeapEvidence::Unavailable).unwrap();
 
         assert_eq!(snap.memory.len(), 1);
         // The merged run serves a read no single original read covered.
@@ -732,7 +1018,7 @@ mod tests {
         let rec = Recorder::new(&target);
         rec.read_bytes(0x1000, 8).unwrap(); // all 1s
         rec.read_bytes(0x1004, 8).unwrap(); // all 2s
-        let snap = rec.snapshot().unwrap();
+        let snap = rec.snapshot(RecordedHeapEvidence::Unavailable).unwrap();
         assert_eq!(
             snap.read_bytes(0x1000, 12).unwrap(),
             [1, 1, 1, 1, 2, 2, 2, 2, 2, 2, 2, 2]
@@ -747,7 +1033,7 @@ mod tests {
         let tls = rec.lookup_symbol_by_name("TLS_KEY").unwrap();
         // A recorded miss.
         assert!(rec.lookup_symbol_by_name("no_such_symbol").is_none());
-        let snap = rec.snapshot().unwrap();
+        let snap = rec.snapshot(RecordedHeapEvidence::Unavailable).unwrap();
 
         assert_eq!(snap.lookup_symbol_by_name("TLS_KEY").unwrap(), tls);
         assert!(snap.lookup_symbol_by_name("no_such_symbol").is_none());
@@ -774,7 +1060,7 @@ mod tests {
             Target::lookup_symbol_by_addr(&rec, 0x120).unwrap().name,
             "poll_a"
         );
-        let mut snap = rec.snapshot().unwrap();
+        let mut snap = rec.snapshot(RecordedHeapEvidence::Unavailable).unwrap();
         snap.by_addr.insert(0x130, None);
 
         assert_eq!(snap.lookup_symbol_by_addr(0x120).unwrap().name, "poll_a");
@@ -801,7 +1087,7 @@ mod tests {
         // answer is recorded like any other.
         assert_eq!(rec.tls_var_addr(&regs(0), &key).unwrap(), None);
         assert!(want.is_some() && want != want_other);
-        let snap = rec.snapshot().unwrap();
+        let snap = rec.snapshot(RecordedHeapEvidence::Unavailable).unwrap();
 
         assert_eq!(snap.tls_var_addr(&regs(0x7000), &key).unwrap(), want);
         assert_eq!(snap.tls_var_addr(&regs(0x9000), &key).unwrap(), want_other);
@@ -831,7 +1117,7 @@ mod tests {
             &sym("TLS_KEY", 0x2000, 8),
         )
         .unwrap();
-        let snap = rec.snapshot().unwrap();
+        let snap = rec.snapshot(RecordedHeapEvidence::Unavailable).unwrap();
 
         let mut buf = Vec::new();
         snap.write(&mut buf).unwrap();
@@ -845,7 +1131,10 @@ mod tests {
         let rec = Recorder::new(&target);
         rec.read_bytes(0x1000, 64).unwrap();
         let mut buf = Vec::new();
-        rec.snapshot().unwrap().write(&mut buf).unwrap();
+        rec.snapshot(RecordedHeapEvidence::Unavailable)
+            .unwrap()
+            .write(&mut buf)
+            .unwrap();
 
         // Wrong magic.
         let mut bad = buf.clone();
@@ -855,14 +1144,19 @@ mod tests {
             Err(Error::BadMagic)
         ));
 
-        // Wrong version.
-        let mut bad = buf.clone();
-        bad[MAGIC.len()..MAGIC.len() + 4].copy_from_slice(&(FORMAT_VERSION + 1).to_le_bytes());
-        assert!(matches!(
-            Snapshot::read(bad.as_slice()),
-            Err(Error::VersionMismatch { found, expected })
-                if found == FORMAT_VERSION + 1 && expected == FORMAT_VERSION
-        ));
+        // Wrong version, newer or older: a file from before the heap
+        // policy was recorded is rejected at the header, not decoded
+        // into a snapshot that answers `Unavailable` for a capture that
+        // never said.
+        for found in [FORMAT_VERSION + 1, FORMAT_VERSION - 1] {
+            let mut bad = buf.clone();
+            bad[MAGIC.len()..MAGIC.len() + 4].copy_from_slice(&found.to_le_bytes());
+            assert!(matches!(
+                Snapshot::read(bad.as_slice()),
+                Err(Error::VersionMismatch { found: f, expected })
+                    if f == found && expected == FORMAT_VERSION
+            ));
+        }
 
         // Truncated payload.
         let bad = &buf[..buf.len() / 2];
@@ -870,6 +1164,261 @@ mod tests {
 
         // Truncated header.
         assert!(matches!(Snapshot::read(&buf[..6]), Err(Error::Io(_))));
+    }
+
+    /// The heap policy is the capture's to state and the file's to
+    /// keep: either value survives the format, and a reader gets back
+    /// the one the capture recorded.
+    #[test]
+    fn test_the_heap_evidence_round_trips() {
+        let target = FakeTarget::new();
+        for evidence in [
+            RecordedHeapEvidence::Available,
+            RecordedHeapEvidence::Unavailable,
+        ] {
+            let rec = Recorder::new(&target);
+            rec.read_bytes(0x1000, 16).unwrap();
+            let snap = rec.snapshot(evidence).unwrap();
+            assert_eq!(snap.heap_evidence(), evidence);
+            let mut buf = Vec::new();
+            snap.write(&mut buf).unwrap();
+            let back = Snapshot::read(buf.as_slice()).unwrap();
+            assert_eq!(back.heap_evidence(), evidence);
+            assert_eq!(back, snap);
+        }
+    }
+
+    /// The log is charged before a read is copied into it, and the
+    /// first charge past a limit ends the capture: that read fails,
+    /// every later one fails the same way without being logged, the
+    /// failure names the limit and the totals, and no snapshot
+    /// assembles from the part that was recorded.
+    #[test]
+    fn test_a_read_past_the_entry_limit_ends_the_capture() {
+        let target = FakeTarget::new();
+        let rec = Recorder::with_limits(
+            &target,
+            CaptureLimits {
+                read_log_entries: 2,
+                ..CaptureLimits::default()
+            },
+        );
+        rec.read_bytes(0x1000, 8).unwrap();
+        rec.read_bytes(0x1100, 8).unwrap();
+        assert_eq!(rec.failure(), None);
+        assert_eq!(
+            rec.charged(),
+            ReadLogSize {
+                bytes: 16,
+                entries: 2
+            }
+        );
+
+        let exceeded = LimitExceeded {
+            limit: Limit::ReadLogEntries,
+            charged: 3,
+            cap: 2,
+        };
+        let err = rec.read_bytes(0x1200, 8).unwrap_err();
+        assert_eq!(err.to_string(), exceeded.to_string());
+        assert_eq!(rec.failure(), Some(exceeded));
+        // Sticky: a read the log could otherwise have afforded is
+        // refused too, and the account is where the violation left it.
+        let err = rec.read_bytes(0x1000, 1).unwrap_err();
+        assert_eq!(err.to_string(), exceeded.to_string());
+        assert_eq!(
+            rec.charged(),
+            ReadLogSize {
+                bytes: 16,
+                entries: 2
+            }
+        );
+        let err = rec.snapshot(RecordedHeapEvidence::Unavailable).unwrap_err();
+        assert_eq!(err.to_string(), exceeded.to_string());
+    }
+
+    /// The byte limit is charged with the bytes a read would add, so
+    /// the read that would take the log past it is the one refused —
+    /// however many entries remain — and the total reported is the one
+    /// the read would have reached.
+    #[test]
+    fn test_a_read_past_the_byte_limit_ends_the_capture() {
+        let target = FakeTarget::new();
+        let rec = Recorder::with_limits(
+            &target,
+            CaptureLimits {
+                read_log_bytes: 40,
+                ..CaptureLimits::default()
+            },
+        );
+        rec.read_bytes(0x1000, 32).unwrap();
+        // Served no bytes: an entry, but no charge against the bytes.
+        rec.read_bytes(0x1000, 0).unwrap();
+        assert_eq!(
+            rec.charged(),
+            ReadLogSize {
+                bytes: 32,
+                entries: 2
+            }
+        );
+        assert_eq!(rec.read_bytes(0x1000, 8).unwrap().len(), 8);
+
+        let err = rec.read_bytes(0x1000, 1).unwrap_err();
+        let exceeded = LimitExceeded {
+            limit: Limit::ReadLogBytes,
+            charged: 41,
+            cap: 40,
+        };
+        assert_eq!(err.to_string(), exceeded.to_string());
+        assert_eq!(rec.failure(), Some(exceeded));
+        assert_eq!(
+            exceeded.to_string(),
+            "the capture charged 41 read-log bytes against its limit of 40"
+        );
+    }
+
+    /// A read the wrapped target refuses is not a read of the log's:
+    /// it is neither logged nor charged, and the target's own error is
+    /// what comes back.
+    #[test]
+    fn test_a_refused_read_is_not_charged() {
+        let target = FakeTarget::new();
+        let rec = Recorder::with_limits(
+            &target,
+            CaptureLimits {
+                read_log_entries: 1,
+                ..CaptureLimits::default()
+            },
+        );
+        assert!(rec.read_bytes(0x10, 8).is_err());
+        assert_eq!(rec.charged(), ReadLogSize::default());
+        assert_eq!(rec.failure(), None);
+        rec.read_bytes(0x1000, 8).unwrap();
+        assert_eq!(rec.failure(), None);
+    }
+
+    /// A save replaces the file at its path only once the whole
+    /// snapshot is written within the output limit. One that reaches
+    /// the limit fails, leaves the previous file byte for byte, and
+    /// leaves no temporary beside it.
+    #[test]
+    fn test_a_save_publishes_only_a_complete_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("fixture.snapshot");
+        let target = FakeTarget::new();
+
+        let rec = Recorder::new(&target);
+        rec.read_bytes(0x1000, 64).unwrap();
+        let first = rec.snapshot(RecordedHeapEvidence::Unavailable).unwrap();
+        first
+            .save(&path, CaptureLimits::default().output_bytes)
+            .unwrap();
+        let published = fs::read(&path).unwrap();
+        assert_eq!(Snapshot::load(&path).unwrap(), first);
+
+        let rec = Recorder::new(&target);
+        rec.read_bytes(0x1000, 0x1000).unwrap();
+        let second = rec.snapshot(RecordedHeapEvidence::Available).unwrap();
+        let cap = published.len() as u64 / 2;
+        match second.save(&path, cap).unwrap_err() {
+            Error::Limit(exceeded) => {
+                assert_eq!(exceeded.limit, Limit::OutputBytes);
+                assert_eq!(exceeded.cap, cap);
+                assert!(exceeded.charged > cap, "{exceeded}");
+            }
+            other => panic!("expected the output limit, got {other}"),
+        }
+        assert_eq!(fs::read(&path).unwrap(), published);
+        let names: Vec<_> = fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .collect();
+        assert_eq!(names, ["fixture.snapshot"]);
+
+        // Within the limit, the new file takes the old one's place.
+        second
+            .save(&path, CaptureLimits::default().output_bytes)
+            .unwrap();
+        assert_eq!(Snapshot::load(&path).unwrap(), second);
+        assert_eq!(
+            Snapshot::load(&path).unwrap().heap_evidence(),
+            RecordedHeapEvidence::Available
+        );
+    }
+
+    /// A writer that takes one byte per call and notes being flushed:
+    /// the short writes a file never gives, so the bound's account of
+    /// what actually went out is checked here rather than assumed.
+    #[derive(Default)]
+    struct Trickle {
+        bytes: Vec<u8>,
+        flushed: bool,
+    }
+
+    impl Write for Trickle {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.bytes.extend(&buf[..1.min(buf.len())]);
+            Ok(1.min(buf.len()))
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            self.flushed = true;
+            Ok(())
+        }
+    }
+
+    /// The bound charges each write with the whole buffer offered, but
+    /// counts only what the inner writer took — so a caller retrying
+    /// the remainder of a short write is charged for the remainder,
+    /// not twice for the whole, and the write refused is exactly the
+    /// one that would carry the count past the cap. Flushing reaches
+    /// the inner writer.
+    #[test]
+    fn test_the_bound_counts_what_was_written() {
+        let mut out = Bounded {
+            inner: Trickle::default(),
+            written: 0,
+            cap: 5,
+            exceeded: None,
+        };
+        // Three bytes offered, one taken, one charged.
+        assert_eq!(out.write(b"abc").unwrap(), 1);
+        assert_eq!(out.written, 1);
+        // The remainder, written whole through the retry loop.
+        out.write_all(b"bc").unwrap();
+        assert_eq!(out.written, 3);
+        // Two more fit exactly.
+        out.write_all(b"de").unwrap();
+        assert_eq!(out.written, 5);
+        assert_eq!(out.exceeded, None);
+
+        let err = out.write(b"f").unwrap_err();
+        let exceeded = LimitExceeded {
+            limit: Limit::OutputBytes,
+            charged: 6,
+            cap: 5,
+        };
+        assert_eq!(err.to_string(), exceeded.to_string());
+        assert_eq!(out.exceeded, Some(exceeded));
+        assert_eq!(out.inner.bytes, b"abcde");
+
+        assert!(!out.inner.flushed);
+        out.flush().unwrap();
+        assert!(out.inner.flushed);
+    }
+
+    /// The temporary is the output's sibling, named after it: the
+    /// rename that publishes it never crosses a filesystem.
+    #[test]
+    fn test_the_temporary_is_a_sibling() {
+        assert_eq!(
+            temporary_sibling(Path::new("/fixtures/linux/a.snapshot")),
+            Path::new("/fixtures/linux/a.snapshot.tmp")
+        );
+        assert_eq!(
+            temporary_sibling(Path::new("a.snapshot")),
+            Path::new("a.snapshot.tmp")
+        );
     }
 
     /// A read log's bytes as a plain map: the log replayed one byte at a
@@ -946,6 +1495,7 @@ mod tests {
             mappings: Mappings { inner: vec![] },
             lwps: vec![],
             exec_bias: None,
+            heap_evidence: RecordedHeapEvidence::Unavailable,
         }
     }
 
@@ -1026,7 +1576,7 @@ mod tests {
                     served.push((addr, len, bytes.to_vec()));
                 }
             }
-            let snap = rec.snapshot().unwrap();
+            let snap = rec.snapshot(RecordedHeapEvidence::Unavailable).unwrap();
             for (addr, len, bytes) in served {
                 prop_assert_eq!(snap.read_bytes(addr, len).unwrap(), &bytes[..]);
             }

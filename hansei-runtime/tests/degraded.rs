@@ -25,7 +25,7 @@ use hansei_runtime::testkit::{self, load_any, tasks as tasks_of};
 use hansei_runtime::tokio::bundle::{ChainEnd, Context, TaskList, TaskStage};
 use hansei_runtime::tokio::{census, graph};
 use proc::Target;
-use proc::snapshot::{Recorder, Snapshot};
+use proc::snapshot::{RecordedHeapEvidence, Recorder, Snapshot};
 
 use std::ops::Range;
 
@@ -776,7 +776,7 @@ fn healthy_read_set(bundle: &Bundle, snapshot: &Snapshot) -> Vec<Range<u64>> {
     let _ = graph::analyze(&ctx, &list, &Default::default());
     let _ = testkit::census(&ctx, &list);
     recorder
-        .snapshot()
+        .snapshot(RecordedHeapEvidence::Unavailable)
         .expect("the recorder assembles a snapshot")
         .segments()
         .collect()

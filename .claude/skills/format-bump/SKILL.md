@@ -14,6 +14,12 @@ regenerated with `test-programs/capture-snapshots.sh`. That script needs
 Never weigh the bump itself in a design trade-off — bumping is routine and
 free; this loop is its only cost.
 
+The snapshot side has a version of its own, `proc::snapshot::FORMAT_VERSION`
+(in `proc/src/snapshot.rs`), covering the `*.snapshot` half of each fixture
+pair. It advances independently of the bundle's, and a bump to it runs the
+same loop: the fixture-backed tests fail to load (`VersionMismatch`) until
+`capture-snapshots.sh` recaptures every set.
+
 ## The loop
 
 Ordering matters: the capture host builds the commit at `HEAD`, and
