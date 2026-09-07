@@ -9,6 +9,7 @@ use hansei_runtime::capture;
 use hansei_runtime::heap::umem::UmemHeap;
 use hansei_runtime::heap::view::{GateCounts, HeapView};
 use hansei_runtime::tokio::graph::{self as rt_graph, Analysis};
+use hansei_runtime::tokio::observe::ReadContext;
 use hansei_runtime::tokio::{bundle, census, contract};
 use proc::{Proc, Target};
 
@@ -1653,7 +1654,11 @@ impl<'b, T: Target> Session<'b, T> {
 
     fn census(&self) -> &census::FutureCensus {
         let census = self.census.get_or_init(|| {
-            census::census_bounded(&self.ctx, &self.tasks, self.bounds, self.umem())
+            let view = self.heap_view();
+            let read = ReadContext {
+                heap: view.as_ref().map(|view| view as &dyn reify::Heap),
+            };
+            census::census_bounded(&self.ctx, &self.tasks, self.bounds, &read)
         });
         if first_audit(self.audit, &self.audited) {
             let violations = census.audit(&self.tasks);
@@ -2164,7 +2169,15 @@ fn warm_worker(
     // corroborates its finds against.
     let umem = UmemHeap::build(proc);
     let extents = ctx.task_extents(tasks);
-    let census = census::census_bounded(&ctx, tasks, bounds, umem.as_ref());
+    // The worker's census refuses through the same bridge the session's
+    // renders read through; its gate tally is its own and is not
+    // reported, since the census counts what it refused itself.
+    let gates = GateCounts::default();
+    let view = umem.as_ref().map(|umem| HeapView::new(umem, proc, &gates));
+    let read = ReadContext {
+        heap: view.as_ref().map(|view| view as &dyn reify::Heap),
+    };
+    let census = census::census_bounded(&ctx, tasks, bounds, &read);
     Some(Box::new(Warmed {
         extents,
         census,

@@ -32,6 +32,7 @@
 //! cross-version coverage is behavioral, not declarative.
 
 use super::bundle::Context;
+use super::observe::ReadContext;
 
 use anyhow::{Context as _, Result, anyhow, bail};
 use hansei_bundle::{
@@ -293,10 +294,19 @@ impl<'b, T: Target> Bound<'_, 'b, T> {
         }
     }
 
-    /// Execute the recorded steps from `root`.
+    /// Execute the recorded steps from `root`, uncorroborated: the
+    /// runtime's own structures are what these roles navigate, and the
+    /// census corroborates what it finds in them separately.
     pub fn walk(&self, root: Value<'b>) -> Result<Walked<'b>> {
+        self.walk_with(&ReadContext::none(), root)
+    }
+
+    /// Execute the recorded steps from `root` under `read`: a
+    /// dereference into memory the allocator has taken back, or past
+    /// the live block holding it, is refused before it is read.
+    pub fn walk_with(&self, read: &ReadContext<'_>, root: Value<'b>) -> Result<Walked<'b>> {
         match self.steps() {
-            Ok(steps) => walk_steps(self.ctx, root, steps)
+            Ok(steps) => execute_steps(self.ctx, read, root, steps)
                 .with_context(|| format!("walk path {}", self.name())),
             Err(reason) => bail!("walk path {}: {reason}", self.name()),
         }
@@ -379,11 +389,31 @@ fn member_at<'b>(
     Some(members[index])
 }
 
-/// Execute recorded steps over target memory, literally: a member or
-/// variant step descends exactly the level it names, with no wrapper
-/// peeling — recorded bindings spell every level explicitly.
+/// Execute recorded steps over target memory, uncorroborated: the
+/// walk contract's own accessors, whose referents are the runtime's
+/// structures. See [`execute_steps`].
 fn walk_steps<'b, T: Target>(
     ctx: &Context<'b, T>,
+    cur: Value<'b>,
+    steps: &[Step],
+) -> Result<Walked<'b>> {
+    execute_steps(ctx, &ReadContext::none(), cur, steps)
+}
+
+/// Execute literal steps over target memory: a member or variant step
+/// descends exactly the level it names, with no wrapper peeling —
+/// recorded bindings and semantic paths spell every level explicitly.
+/// The one executor every navigation by declaration goes through: the
+/// walk contract's roles, and the semantic and discovery routes that
+/// pass their own [`ReadContext`].
+///
+/// Arithmetic is checked before a slice is taken, and a dereference is
+/// held to the pointee's exact typed range: the pointer's own bytes,
+/// then the allocator's word on the referent, then a read of exactly
+/// that many bytes — never a prefix taken for the whole.
+pub(crate) fn execute_steps<'b, T: Target>(
+    ctx: &Context<'b, T>,
+    read: &ReadContext<'_>,
     cur: Value<'b>,
     steps: &[Step],
 ) -> Result<Walked<'b>> {
@@ -391,16 +421,18 @@ fn walk_steps<'b, T: Target>(
         return Ok(Walked::At(cur));
     };
     let slice = |offset: u64, size: u64| -> Result<&[u8]> {
-        cur.bytes
-            .get(offset as usize..(offset + size) as usize)
-            .ok_or_else(|| {
-                anyhow!(
-                    "bytes {offset}..{} do not fit {} bytes of {}",
-                    offset + size,
-                    cur.bytes.len(),
-                    cur.ty.name()
-                )
-            })
+        let range = offset
+            .checked_add(size)
+            .and_then(|end| Some(usize::try_from(offset).ok()?..usize::try_from(end).ok()?))
+            .ok_or_else(|| anyhow!("offset {offset} + {size} overflows in {}", cur.ty.name()))?;
+        cur.bytes.get(range).ok_or_else(|| {
+            anyhow!(
+                "bytes {offset}..{} do not fit {} bytes of {}",
+                offset.saturating_add(size),
+                cur.bytes.len(),
+                cur.ty.name()
+            )
+        })
     };
     match step {
         Step::Member(at) => {
@@ -416,8 +448,12 @@ fn walk_steps<'b, T: Target>(
                 }
             })?;
             let bytes = slice(member.offset(), member.ty().size())?;
-            let next = Value::new(member.ty(), cur.addr + member.offset(), bytes);
-            walk_steps(ctx, next, rest)
+            let addr = cur
+                .addr
+                .checked_add(member.offset())
+                .ok_or_else(|| anyhow!("{:#x} + {} overflows", cur.addr, member.offset()))?;
+            let next = Value::new(member.ty(), addr, bytes);
+            execute_steps(ctx, read, next, rest)
         }
         Step::Variant(name) => {
             let name = ctx
@@ -432,8 +468,12 @@ fn walk_steps<'b, T: Target>(
                 Some(Ok(None)) => Ok(Walked::Inactive(name)),
                 Some(Ok(Some((payload, offset)))) => {
                     let bytes = slice(offset, payload.size())?;
-                    let next = Value::new(payload, cur.addr + offset, bytes);
-                    walk_steps(ctx, next, rest)
+                    let addr = cur
+                        .addr
+                        .checked_add(offset)
+                        .ok_or_else(|| anyhow!("{:#x} + {offset} overflows", cur.addr))?;
+                    let next = Value::new(payload, addr, bytes);
+                    execute_steps(ctx, read, next, rest)
                 }
             }
         }
@@ -444,8 +484,12 @@ fn walk_steps<'b, T: Target>(
             }
             Some(Ok(active)) => {
                 let bytes = slice(active.offset, active.ty.size())?;
-                let next = Value::new(active.ty, cur.addr + active.offset, bytes);
-                walk_steps(ctx, next, rest)
+                let addr = cur
+                    .addr
+                    .checked_add(active.offset)
+                    .ok_or_else(|| anyhow!("{:#x} + {} overflows", cur.addr, active.offset))?;
+                let next = Value::new(active.ty, addr, bytes);
+                execute_steps(ctx, read, next, rest)
             }
         },
         Step::Deref => {
@@ -463,9 +507,12 @@ fn walk_steps<'b, T: Target>(
             if addr == 0 {
                 return Ok(Walked::Null);
             }
+            if let Some(refusal) = read.refusal(addr, target.size()) {
+                bail!("dereferencing {}: {refusal}", cur.ty.name());
+            }
             let pointee = Value::read(ctx.proc, target, addr)
                 .map_err(|e| anyhow!(e).context(format!("dereferencing {}", cur.ty.name())))?;
-            walk_steps(ctx, pointee, rest)
+            execute_steps(ctx, read, pointee, rest)
         }
     }
 }
@@ -737,6 +784,169 @@ pub fn version_ceiling_notice(meta: &Meta) -> Option<String> {
          layouts, untested against {version}",
         ceiling.name, ceiling.major, ceiling.minor
     ))
+}
+
+#[cfg(test)]
+mod executor_tests {
+    use super::*;
+    use crate::heap::umem::tests::freeing;
+    use crate::heap::view::{GateCounts, HeapView};
+    use crate::testkit;
+    use crate::testkit::heap::FakeHeap;
+
+    use hansei_bundle::{Bundle, BundleTypeId, TypeDef};
+    use proc::snapshot::Snapshot;
+
+    /// A pointer-typed value at a fixed address whose bytes point at a
+    /// task header of the pair: the one dereference every check below
+    /// is about, built rather than found so the referent is known.
+    struct Pointer<'a> {
+        ctx: Context<'a, Snapshot>,
+        ty: BundleTypeId,
+        target: u64,
+        size: u64,
+        bytes: [u8; 8],
+    }
+
+    impl<'a> Pointer<'a> {
+        fn new(bundle: &'a Bundle, snapshot: &'a Snapshot) -> Self {
+            let ctx = testkit::context(bundle, snapshot);
+            let header = bundle.infra.header;
+            let ty = bundle
+                .types
+                .types
+                .iter()
+                .position(|def| matches!(def, TypeDef::Pointer { target, .. } if *target == header))
+                .map(|i| BundleTypeId(i as u32))
+                .expect("the bundle has a pointer to the task Header");
+            let target = testkit::tasks(&ctx, snapshot).tasks[0].addr.0;
+            let size = bundle.types.size_of(header).expect("the Header is sized");
+            Pointer {
+                ctx,
+                ty,
+                target,
+                size,
+                bytes: target.to_le_bytes(),
+            }
+        }
+
+        fn value(&self) -> Value<'_> {
+            Value::new(self.ctx.view.ty(self.ty).unwrap(), 0x1000, &self.bytes)
+        }
+
+        fn deref(&self, read: &ReadContext<'_>) -> Result<Walked<'_>> {
+            execute_steps(&self.ctx, read, self.value(), &[Step::Deref])
+        }
+    }
+
+    /// The error a refused walk carries.
+    fn refused(walked: Result<Walked<'_>>) -> anyhow::Error {
+        match walked {
+            Err(e) => e,
+            Ok(_) => panic!("the walk was expected to refuse"),
+        }
+    }
+
+    /// A dereference reads exactly the pointee's typed range, and only
+    /// where the allocator permits it: a freed referent is refused
+    /// before the read, a live block too short for the type is refused,
+    /// a live block that holds the whole type is read, and no evidence
+    /// at all permits the read uncorroborated.
+    #[test]
+    fn test_a_dereference_is_held_to_the_allocator_and_the_typed_range() {
+        let (bundle, snapshot) = testkit::load_any("unordered");
+        let p = Pointer::new(&bundle, &snapshot);
+        let (target, size) = (p.target, p.size);
+
+        let Walked::At(value) = p.deref(&ReadContext::none()).unwrap() else {
+            panic!("a nonzero pointer dereferences");
+        };
+        assert_eq!(value.addr, target);
+        assert_eq!(value.bytes.len() as u64, size);
+
+        let freed = FakeHeap::new().freed(target..target + size);
+        let err = refused(p.deref(&ReadContext::with_heap(&freed)));
+        assert!(format!("{err:#}").contains("taken back"), "{err:#}");
+
+        let short = FakeHeap::new().live(target..target + size - 8);
+        let err = refused(p.deref(&ReadContext::with_heap(&short)));
+        assert!(format!("{err:#}").contains("run past"), "{err:#}");
+
+        for heap in [
+            FakeHeap::new().live(target..target + size),
+            FakeHeap::new().live(target - 64..target + size + 64),
+            FakeHeap::new(),
+        ] {
+            let Walked::At(value) = p.deref(&ReadContext::with_heap(&heap)).unwrap() else {
+                panic!("a permitted dereference reads");
+            };
+            assert_eq!(value.addr, target);
+            assert_eq!(value.bytes.len() as u64, size);
+        }
+        // The refusals were the executor's own, before any gate the
+        // renderer would count.
+        assert_eq!(freed.counts(), (0, 0, 0));
+    }
+
+    /// The same refusal through the real bridge over the real index.
+    #[test]
+    fn test_a_dereference_refuses_through_the_umem_bridge() {
+        let (bundle, snapshot) = testkit::load_any("unordered");
+        let p = Pointer::new(&bundle, &snapshot);
+        let heap = freeing(p.target..p.target + 1);
+        let gates = GateCounts::default();
+        let view = HeapView::new(&heap, &snapshot, &gates);
+        let err = refused(p.deref(&ReadContext::with_heap(&view)));
+        assert!(format!("{err:#}").contains("taken back"), "{err:#}");
+        assert!(p.deref(&ReadContext::none()).is_ok());
+    }
+
+    /// A null pointer is the null outcome under any evidence, never a
+    /// refusal or a read.
+    #[test]
+    fn test_a_null_pointer_is_null_under_any_evidence() {
+        let (bundle, snapshot) = testkit::load_any("unordered");
+        let mut p = Pointer::new(&bundle, &snapshot);
+        p.bytes = [0; 8];
+        let freed = FakeHeap::new().freed(0..0x10000);
+        for read in [ReadContext::none(), ReadContext::with_heap(&freed)] {
+            assert!(matches!(p.deref(&read).unwrap(), Walked::Null));
+        }
+    }
+
+    /// A member step lands at the root plus the member's recorded
+    /// offset — the same place under either entry point — and an
+    /// address that would overflow doing so is an error, not a wrap.
+    #[test]
+    fn test_member_steps_keep_typed_offsets_and_check_their_arithmetic() {
+        let (bundle, snapshot) = testkit::load_any("unordered");
+        let ctx = testkit::context(&bundle, &snapshot);
+        let header_ty = ctx.view.ty(bundle.infra.header).unwrap();
+        let addr = testkit::tasks(&ctx, &snapshot).tasks[0].addr.0;
+        let header = Value::read(&snapshot, header_ty, addr).unwrap();
+        let bound = ctx.walk(WalkRole::HeaderVtable);
+        let offset = bound
+            .member_offset(header_ty)
+            .expect("Header.vtable is a member path");
+        assert!(
+            offset > 0,
+            "the vtable pointer is not the first member here"
+        );
+        let plain = bound.walk_at(header).unwrap();
+        let read = bound
+            .walk_with(&ReadContext::with_heap(&FakeHeap::new()), header)
+            .unwrap()
+            .at("Header.vtable")
+            .unwrap();
+        assert_eq!(plain.addr, addr + offset);
+        assert_eq!(read.addr, plain.addr);
+        assert_eq!(read.bytes, plain.bytes);
+
+        let bytes = vec![0u8; header_ty.size() as usize];
+        let wrapped = Value::new(header_ty, u64::MAX - 1, &bytes);
+        let err = refused(bound.walk(wrapped));
+        assert!(format!("{err:#}").contains("overflows"), "{err:#}");
+    }
 }
 
 #[cfg(test)]

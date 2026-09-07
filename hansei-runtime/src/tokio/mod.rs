@@ -16,6 +16,7 @@ pub mod census;
 pub mod contract;
 pub mod graph;
 mod model;
+pub mod observe;
 pub mod registers;
 mod semantics;
 pub mod stackjoin;

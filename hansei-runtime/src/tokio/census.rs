@@ -40,7 +40,7 @@ use super::bundle::{AwaitChain, ChainEnd, Context, TaskList, TaskStage, WaitKind
 // (omicron's `ParallelTaskSet`, which pairs it with a semaphore) is
 // reached by the same scan, since it holds its `JoinSet` by value.
 use super::contract::is_dyn_future_pointee;
-use crate::heap::umem::{Liveness, UmemHeap};
+use super::observe::ReadContext;
 
 use anyhow::{Context as _, Result, anyhow, ensure};
 use foldhash::{HashMap, HashSet};
@@ -691,10 +691,11 @@ enum Find<'b> {
 struct Walker<'a, 'b, T> {
     ctx: &'a Context<'b, T>,
     list: &'a TaskList,
-    /// The allocator's own account of what is still handed out, where
-    /// the target has one to read; `None` everywhere else, which is
-    /// every target whose malloc is not libumem.
-    heap: Option<&'a UmemHeap>,
+    /// What the walk's reads are held to: the allocator's own account
+    /// of what is still handed out, where the target has one to read,
+    /// and nothing everywhere else, which is every target whose malloc
+    /// is not libumem.
+    read: ReadContext<'a>,
     sets: Vec<FutureSet>,
     join_sets: Vec<JoinSet>,
     held: Vec<HeldFuture>,
@@ -729,7 +730,7 @@ struct Walker<'a, 'b, T> {
 /// those failures already surface wherever the task itself is asked
 /// about — while a *found* set or future whose walk fails is reported.
 pub fn census<T: Target>(ctx: &Context<'_, T>, list: &TaskList) -> FutureCensus {
-    census_bounded(ctx, list, Bounds::default(), None)
+    census_bounded(ctx, list, Bounds::default(), &ReadContext::none())
 }
 
 /// Where the walk's two hard limits sit, as values rather than as the
@@ -755,25 +756,25 @@ impl Default for Bounds {
     }
 }
 
-/// [`census`], with the bounds and the allocator index as arguments.
+/// [`census`], with the bounds and the read context as arguments.
 ///
-/// `heap` is what the target's own malloc says is still handed out,
-/// where there is one to ask. The walk consults it wherever it is
+/// `read` carries what the target's own malloc says is still handed
+/// out, where there is one to ask. The walk consults it wherever it is
 /// about to believe a pointer — the referent a boxed find lies at, a
 /// set's next node — and refuses what the allocator has taken back,
 /// because those bytes belong to whoever holds the block now and
-/// decode into a future that is not there. `None` is the ordinary
-/// case, and the walk is then exactly the walk it was.
+/// decode into a future that is not there. An empty context is the
+/// ordinary case, and the walk is then exactly the walk it was.
 pub fn census_bounded<T: Target>(
     ctx: &Context<'_, T>,
     list: &TaskList,
     bounds: Bounds,
-    heap: Option<&UmemHeap>,
+    read: &ReadContext<'_>,
 ) -> FutureCensus {
     let mut walker = Walker {
         ctx,
         list,
-        heap,
+        read: *read,
         sets: Vec::new(),
         join_sets: Vec::new(),
         held: Vec::new(),
@@ -847,8 +848,7 @@ impl<'b, T: Target> Walker<'_, 'b, T> {
     /// pointer at it is as wrong as the refused one. This corroborates
     /// where it can and is quiet where it cannot.
     fn taken_back(&self, addr: u64) -> bool {
-        self.heap
-            .is_some_and(|heap| matches!(heap.locate(addr), Liveness::Freed { .. }))
+        self.read.taken_back(addr)
     }
 
     /// Scan every frame of `chain` for sets and held futures, recursing
@@ -1608,7 +1608,9 @@ impl<'b, T: Target> Walker<'_, 'b, T> {
 mod tests {
     use super::*;
 
+    use crate::heap::umem::UmemHeap;
     use crate::heap::umem::tests::freeing;
+    use crate::heap::view::{GateCounts, HeapView};
     use crate::testkit;
 
     use super::super::contract::{FUTURES_UNORDERED, JOIN_SET};
@@ -2391,7 +2393,14 @@ mod tests {
         let (bundle, snapshot) = testkit::load_any("unordered");
         let ctx = testkit::context(&bundle, &snapshot);
         let list = testkit::tasks(&ctx, &snapshot);
-        let census = census_bounded(&ctx, &list, bounds, heap);
+        // Through the same bridge a session hands the walk: the real
+        // adapter, over the real index.
+        let gates = GateCounts::default();
+        let view = heap.map(|heap| HeapView::new(heap, &snapshot, &gates));
+        let read = ReadContext {
+            heap: view.as_ref().map(|view| view as &dyn reify::Heap),
+        };
+        let census = census_bounded(&ctx, &list, bounds, &read);
         // A healthy capture passes both audit classes, bounded or not
         // — and a refusal must not change that. It removes rows, and
         // every invariant is over the rows that are there.
@@ -2440,6 +2449,45 @@ mod tests {
     /// fixture's `nested_hold` is the shape that shows it — a held
     /// future whose own frames hold `inner` — and one refusal is
     /// counted for it, not two, because the second was never reached.
+    /// The heap double refuses exactly as the real index does: the
+    /// same find, the same subtree gone with it, the same count — so a
+    /// scan's refusal behaviour can be asserted where no core carries
+    /// allocator metadata.
+    #[test]
+    fn test_the_heap_double_refuses_like_the_real_index() {
+        let full = unordered_census(Bounds::default());
+        let stale = held_at(&full, "nested_hold").addr;
+        let real = unordered_census_with(Bounds::default(), Some(&freeing(stale..stale + 1)));
+
+        let (bundle, snapshot) = testkit::load_any("unordered");
+        let ctx = testkit::context(&bundle, &snapshot);
+        let list = testkit::tasks(&ctx, &snapshot);
+        let double = testkit::heap::FakeHeap::new().freed(stale..stale + 1);
+        let faked = census_bounded(
+            &ctx,
+            &list,
+            Bounds::default(),
+            &ReadContext::with_heap(&double),
+        );
+        assert_eq!(held_rows(&faked), held_rows(&real));
+        assert_eq!(faked.refused, real.refused);
+        assert_eq!(faked.refused, 1);
+        assert_eq!(faked.sets.len(), real.sets.len());
+        // The refusal is the census's own count, not a renderer gate.
+        assert_eq!(double.counts(), (0, 0, 0));
+        // And a double that frees nothing the walk touches changes
+        // nothing.
+        let elsewhere = testkit::heap::FakeHeap::new().freed(1..2);
+        let same = census_bounded(
+            &ctx,
+            &list,
+            Bounds::default(),
+            &ReadContext::with_heap(&elsewhere),
+        );
+        assert_eq!(held_rows(&same), held_rows(&full));
+        assert_eq!(same.refused, 0);
+    }
+
     #[test]
     fn test_a_find_in_freed_memory_takes_its_subtree_with_it() {
         let full = unordered_census(Bounds::default());
@@ -2598,7 +2646,14 @@ mod tests {
         let (owner, stale, length) = (set.addr, set.children[0].entry, set.length);
 
         let heap = freeing(stale..stale + 1);
-        let census = census_bounded(&ctx, &list, Bounds::default(), Some(&heap));
+        let gates = GateCounts::default();
+        let view = HeapView::new(&heap, &snapshot, &gates);
+        let census = census_bounded(
+            &ctx,
+            &list,
+            Bounds::default(),
+            &ReadContext::with_heap(&view),
+        );
         let gated = census
             .join_sets
             .iter()
@@ -2761,7 +2816,7 @@ mod tests {
         Walker {
             ctx,
             list,
-            heap: None,
+            read: ReadContext::none(),
             sets: Vec::new(),
             join_sets: Vec::new(),
             held: Vec::new(),

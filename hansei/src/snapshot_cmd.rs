@@ -232,7 +232,7 @@ pub(crate) fn exec_snapshot<T: proc::Target>(
         // that find's chain needs out of the snapshot, and the replay,
         // which refuses nothing, would then read what is not there.
         // The capture reads the whole walk; the gate is a session's.
-        None,
+        &hansei_runtime::tokio::observe::ReadContext::none(),
     );
 
     // The threads listings' reads: stacks, contexts, parkers, pool.

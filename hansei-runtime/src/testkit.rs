@@ -19,6 +19,7 @@ use proc::{LwpInfo, Target};
 use std::path::PathBuf;
 
 pub mod delegation;
+pub mod heap;
 
 /// Every checked-in set of pairs, named for its capture's coordinates.
 ///
