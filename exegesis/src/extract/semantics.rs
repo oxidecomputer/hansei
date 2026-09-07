@@ -626,7 +626,76 @@ fn coroutine_states(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bundle::{MemberDef, VariantDef, VariantShape};
+    use crate::bundle::{MemberDef, VariantDef, VariantShape, WalkBinding};
+
+    fn binding(roots: &[u32], bound: bool) -> WalkBinding {
+        WalkBinding {
+            roots: if bound {
+                roots.iter().map(|&r| BundleTypeId(r)).collect()
+            } else {
+                Vec::new()
+            },
+            steps: Vec::new(),
+            outcome: if bound {
+                WalkOutcome::Bound {
+                    spelling: 0,
+                    spellings: 1,
+                    note: None,
+                }
+            } else {
+                WalkOutcome::Absent {
+                    reason: "none".to_owned(),
+                }
+            },
+        }
+    }
+
+    fn ids(roots: &[u32]) -> BTreeSet<BundleTypeId> {
+        roots.iter().map(|&r| BundleTypeId(r)).collect()
+    }
+
+    /// A kind binds at the types every one of its roles bound at — the
+    /// intersection, never the union — and at none when a role is
+    /// unbound or a chained route below them is.
+    #[test]
+    fn test_bound_roots_intersects_roles_and_requires_every_route() {
+        use WalkRole::*;
+        let mut walks = WalksTable::default();
+        walks
+            .entries
+            .insert(SleepDeadline, binding(&[1, 2, 3], true));
+        walks
+            .entries
+            .insert(JoinHandleRaw, binding(&[2, 3, 4], true));
+        walks.entries.insert(IoReadShared, binding(&[9], true));
+        walks.entries.insert(IoWriteAllShared, binding(&[], false));
+        assert_eq!(
+            bound_roots(&walks, &[SleepDeadline, JoinHandleRaw], &[]),
+            ids(&[2, 3])
+        );
+        assert_eq!(bound_roots(&walks, &[SleepDeadline], &[]), ids(&[1, 2, 3]));
+        // A route only has to be bound; it roots elsewhere.
+        assert_eq!(
+            bound_roots(&walks, &[SleepDeadline], &[IoReadShared]),
+            ids(&[1, 2, 3])
+        );
+        // An entry that recorded roots but no `Bound` outcome — which
+        // the bundle validator forbids, so only a hand-built table has
+        // one — binds nothing either: the outcome decides, not the list.
+        let mut stale = binding(&[1, 2], true);
+        stale.outcome = WalkOutcome::Broken {
+            errors: vec!["moved".to_owned()],
+        };
+        walks.entries.insert(AcquireQueued, stale);
+        assert!(bound_roots(&walks, &[AcquireQueued], &[]).is_empty());
+        assert!(bound_roots(&walks, &[SleepDeadline], &[AcquireQueued]).is_empty());
+        // An unbound route, an unbound role, or a role never recorded
+        // binds nothing.
+        assert!(bound_roots(&walks, &[SleepDeadline], &[IoWriteAllShared]).is_empty());
+        assert!(bound_roots(&walks, &[SleepDeadline, IoWriteAllShared], &[]).is_empty());
+        assert!(bound_roots(&walks, &[SleepDeadline, AcquireNode], &[]).is_empty());
+        assert!(bound_roots(&walks, &[SleepDeadline], &[AcquireNode]).is_empty());
+    }
 
     /// A coroutine env spelled the way rustc does: numbered variants whose
     /// payload structs carry the state names, with the member sets the

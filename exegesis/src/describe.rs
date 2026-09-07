@@ -795,13 +795,13 @@ pub fn explain_future(bundle: &Bundle, want: &str) -> String {
     let s = |r| bundle.strings.get(r).unwrap_or("<bad strref>");
     let table = describe_semantics(bundle);
     let mut out = String::new();
-    let mut matched = 0;
+    let mut matched = false;
     for &(name, id) in &bundle.types.name_index {
         let name = s(name);
         if !name.contains(want) {
             continue;
         }
-        matched += 1;
+        matched = true;
         let prefix = format!("{name} ::");
         match table.lines().find(|line| line.starts_with(&prefix)) {
             Some(line) => {
@@ -818,7 +818,7 @@ pub fn explain_future(bundle: &Bundle, want: &str) -> String {
         }
         let _ = id;
     }
-    if matched == 0 {
+    if !matched {
         let _ = writeln!(
             out,
             "no emitted type's name contains {want:?}; --include-type pulls in one \

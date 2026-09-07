@@ -1789,6 +1789,38 @@ mod tests {
         }
     }
 
+    /// Every kind of stop counts toward the total the warning reports,
+    /// and any one of them alone makes the listing incomplete.
+    #[test]
+    fn test_every_cap_counts() {
+        let capped = Capped {
+            deep: 1,
+            distant: 2,
+            unavailable: 4,
+        };
+        assert_eq!(capped.total(), 7);
+        assert!(capped.any());
+        for one in [
+            Capped {
+                deep: 1,
+                ..Capped::default()
+            },
+            Capped {
+                distant: 1,
+                ..Capped::default()
+            },
+            Capped {
+                unavailable: 1,
+                ..Capped::default()
+            },
+        ] {
+            assert_eq!(one.total(), 1);
+            assert!(one.any());
+        }
+        assert!(!Capped::default().any());
+        assert_eq!(Capped::default().total(), 0);
+    }
+
     /// A coroutine env the bundle declares unreadable — an unreviewed
     /// compiler's, say — is stopped at and counted, not scanned as the
     /// enum it is shaped as: the future its active variant holds is not

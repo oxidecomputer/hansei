@@ -743,7 +743,7 @@ fn assert_library_bindings(program: &str, bundle: &Bundle) {
             continue;
         }
         match hansei_bundle::names::coroutine_kind(name) {
-            Some("async fn") | Some("async block") => {
+            Some(kind @ ("async fn" | "async block")) => {
                 let layout = record.coroutine.as_ref().unwrap_or_else(|| {
                     let issues: Vec<String> = record
                         .issues
@@ -764,6 +764,17 @@ fn assert_library_bindings(program: &str, bundle: &Bundle) {
                     "{program}: {name} lacks coroutine evidence"
                 );
                 assert!(layout.states.len() >= 3, "{program}: {name}");
+                // Each kind under its own rule: a block is not an fn's
+                // rule with different states.
+                let expected = if kind == "async fn" {
+                    SemanticRuleKind::RustcAsyncFn
+                } else {
+                    SemanticRuleKind::RustcAsyncBlock
+                };
+                assert_eq!(
+                    bundle.semantics.rules[layout.rule.0 as usize].kind, expected,
+                    "{program}: {name}"
+                );
             }
             _ => {
                 assert!(
@@ -820,6 +831,22 @@ fn assert_library_bindings(program: &str, bundle: &Bundle) {
             binding.class, expected,
             "{program}: task {index} ({scheduler})"
         );
+    }
+    // The class routes' spellings: an `Arc`'s data past its counts, or
+    // the blocking schedule's hooks, never an empty path that would bind
+    // at the `S` type itself.
+    for (role, path) in [
+        (WalkRole::MtSchedulerHandle, "ptr.pointer.*.data"),
+        (WalkRole::CtSchedulerHandle, "ptr.pointer.*.data"),
+        (WalkRole::LocalSchedulerShared, "ptr.pointer.*.data"),
+        (WalkRole::BlockingScheduleHooks, "hooks"),
+    ] {
+        if matches!(
+            bundle.walks.entries[&role].outcome,
+            WalkOutcome::Bound { .. }
+        ) {
+            assert_walk(program, bundle, role, path);
+        }
     }
 }
 
@@ -1767,6 +1794,107 @@ fn run_golden(program: &str) {
                 ResourceKind::SemaphoreAcquire,
             ),
             "local-set-io" => {
+                // The rendered table is what `tokio-info dump` prints and
+                // the matrix catalogs: pin its origin lines and one record
+                // line, and the diagnostic a reader asks for by name.
+                let table = exegesis::describe::describe_semantics(&bundle);
+                let tokio = bundle.meta.tokio_version.as_ref().unwrap();
+                assert!(
+                    table.contains(&format!(
+                        "origin 0: rustc rustc-coroutine-1.97 (clang LLVM (rustc version {}))\n",
+                        bundle.meta.rustc_version
+                    )),
+                    "{program}: {table}"
+                );
+                assert!(
+                    table.contains(&format!(
+                        "origin 1: layout tokio {tokio} family {} (ReviewedRange)\n",
+                        exegesis::detect::Family::select(Some(tokio)).name()
+                    )),
+                    "{program}: {table}"
+                );
+                assert!(
+                    table.contains(
+                        "local_set_io::local_reader::{async_fn_env#0} :: states \
+                         future[task 0, coroutine rule 0] continuation unknown (NoRule) \
+                         coroutine rule 0 {0:Unresumed[ready,stream]() 1:Returned[]() \
+                         2:Panicked[]() 3:Suspended[stream,buf,__awaitee,__3]()}\n"
+                    ),
+                    "{program}: {table}"
+                );
+                assert!(
+                    table.contains(
+                        "tokio::runtime::io::scheduled_io::Readiness :: members \
+                         future[poll] continuation rule "
+                    ) && table.contains(" primitive resource IoOperation(Readiness) rule "),
+                    "{program}: {table}"
+                );
+                assert!(
+                    table.contains(
+                        "task 0: scheduler alloc::sync::Arc<tokio::task::local::Shared, \
+                         alloc::alloc::Global> :: LocalSet rule "
+                    ),
+                    "{program}: {table}"
+                );
+                let none = "no semantic record — no task entry, poll symbol or delegation \
+                            names it, it is not a compiler-storage candidate, and no \
+                            reviewed resource, container or scheduler route bound at it";
+                // The reader and its reference have no record on any
+                // platform. `Read<Gated>` has one exactly where its `poll`
+                // survived as a symbol (ELF keeps it, Mach-O inlines it),
+                // and then only poll evidence: never a resource, never a
+                // continuation.
+                let gated = exegesis::describe::explain_future(&bundle, "Gated");
+                let lines: Vec<&str> = gated.lines().collect();
+                assert_eq!(lines.len(), 3, "{program}: {gated}");
+                assert_eq!(
+                    lines[0],
+                    format!("&mut local_set_io::Gated :: {none}"),
+                    "{program}"
+                );
+                assert_eq!(
+                    lines[1],
+                    format!("local_set_io::Gated :: {none}"),
+                    "{program}"
+                );
+                assert!(
+                    lines[2]
+                        == format!("tokio::io::util::read::Read<local_set_io::Gated> :: {none}")
+                        || lines[2]
+                            == "tokio::io::util::read::Read<local_set_io::Gated> :: members \
+                                future[poll] continuation unknown (NoRule)",
+                    "{program}: {}",
+                    lines[2]
+                );
+                // A substring covers the environment and everything named
+                // after it — its states, the cell around it — and each
+                // gets its own line: one record, the rest explained absent.
+                let explained =
+                    exegesis::describe::explain_future(&bundle, "local_reader::{async_fn_env#0}");
+                let lines: Vec<&str> = explained.lines().collect();
+                assert!(lines.len() > 1, "{program}: {explained}");
+                assert_eq!(
+                    lines
+                        .iter()
+                        .filter(|l| l
+                            .starts_with("local_set_io::local_reader::{async_fn_env#0} :: states"))
+                        .count(),
+                    1,
+                    "{program}: {explained}"
+                );
+                assert!(
+                    lines
+                        .iter()
+                        .filter(|l| !l.contains(":: states"))
+                        .all(|l| l.ends_with(none)),
+                    "{program}: {explained}"
+                );
+                assert_eq!(
+                    exegesis::describe::explain_future(&bundle, "no::such::type"),
+                    "no emitted type's name contains \"no::such::type\"; --include-type pulls \
+                     in one nothing else reaches\n",
+                    "{program}"
+                );
                 // An async fn: arguments in `Unresumed`, the locals live
                 // across the one await in `Suspend0` — the awaitee, the
                 // buffer, the stream moved off its argument slot, and

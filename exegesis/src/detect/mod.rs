@@ -1463,6 +1463,49 @@ mod tests {
         TypeId(UnitSectionOffset(offset))
     }
 
+    /// Where a version stands against the reviewed range, for the
+    /// layout origins: unknown without a version, below the oldest
+    /// floor, above the ceiling, and reviewed at both edges inclusive.
+    #[test]
+    fn test_layout_selection_bounds() {
+        use crate::bundle::LayoutSelection;
+        let v = |s: &str| semver::Version::parse(s).unwrap();
+        assert_eq!(
+            Family::layout_selection(None),
+            LayoutSelection::VersionUnknown
+        );
+        let (floor_major, floor_minor) = Family::ALL[0].floor();
+        let (ceil_major, ceil_minor) = Family::REVIEWED_CEILING;
+        for (version, expected) in [
+            (
+                format!("{floor_major}.{}.9", floor_minor - 1),
+                LayoutSelection::BelowFloor,
+            ),
+            (
+                format!("{floor_major}.{floor_minor}.0"),
+                LayoutSelection::ReviewedRange,
+            ),
+            (
+                format!("{ceil_major}.{ceil_minor}.9"),
+                LayoutSelection::ReviewedRange,
+            ),
+            (
+                format!("{ceil_major}.{}.0", ceil_minor + 1),
+                LayoutSelection::AboveReviewedRange,
+            ),
+            (
+                format!("{}.0.0", ceil_major + 1),
+                LayoutSelection::AboveReviewedRange,
+            ),
+        ] {
+            assert_eq!(
+                Family::layout_selection(Some(&v(&version))),
+                expected,
+                "{version}"
+            );
+        }
+    }
+
     /// Version-keyed family selection: highest floor at or below the
     /// version, the newest family for anything newer or unrecovered, and
     /// the oldest for anything below every floor.

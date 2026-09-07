@@ -3535,6 +3535,48 @@ mod tests {
         assert!(ctx.is_future(ty), "{}", ty.name());
     }
 
+    /// Storage the bundle declares unreadable is reported as such from
+    /// the record, and nothing else: the fixtures bind every coroutine,
+    /// so the unbound case is constructed by unbinding one — which also
+    /// takes its identity with it, leaving a value the census stops at.
+    #[test]
+    fn test_unavailable_storage_is_read_from_the_record() {
+        use hansei_bundle::{SemanticIssue, SemanticIssueKind, StoragePolicy};
+        let (bundle, snapshot) = unordered();
+        let ctx = testkit::context(bundle, snapshot);
+        assert!(
+            bundle
+                .semantics
+                .types
+                .iter()
+                .all(|r| !ctx.storage_unavailable(r.ty)),
+            "the fixture bundle binds every candidate"
+        );
+        let mut bundle = bundle.clone();
+        let record = bundle
+            .semantics
+            .types
+            .iter_mut()
+            .find(|r| r.coroutine.is_some())
+            .expect("a bound coroutine");
+        let ty = record.ty;
+        record.coroutine = None;
+        record.future = None;
+        record.storage = StoragePolicy::Unavailable(SemanticIssue {
+            kind: SemanticIssueKind::UnsupportedOrigin,
+            detail: None,
+        });
+        bundle.validate().unwrap();
+        let ctx = testkit::context(&bundle, snapshot);
+        assert!(ctx.storage_unavailable(ty));
+        assert!(!ctx.recognized_future(ty));
+        assert_eq!(
+            crate::tokio::census::Recognize::recognize(&ctx, ty),
+            crate::tokio::census::Recognized::Unavailable
+        );
+        assert!(!ctx.storage_unavailable(BundleTypeId(u32::MAX)));
+    }
+
     /// Plain data is not a future, and neither is a multi-member
     /// container that merely holds them: the unwrap step follows a
     /// *sole* sized member, never guesses among several. A set bound as

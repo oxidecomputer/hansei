@@ -2701,6 +2701,132 @@ mod tests {
         assert_eq!(note.as_deref(), Some("2 types"));
     }
 
+    /// A reviewed-operation root counts its instantiations the way a
+    /// leaf does: none is an expected absence, one is unnoted, more are
+    /// noted — and an instantiation over an unreviewed reader is not a
+    /// root at all, however many there are.
+    #[test]
+    fn test_leaf_over_root_admits_and_counts_only_reviewed_instantiations() {
+        let mut reader = DwReader::default();
+        let read_ns = ns(&mut reader, "tokio::io::util::read");
+        let unix = type_id(1);
+        let tcp = type_id(2);
+        let custom = type_id(3);
+        insert_struct(
+            &mut reader,
+            unix,
+            Some(read_ns),
+            "Read<tokio::net::unix::stream::UnixStream>",
+            &[],
+        );
+        insert_struct(
+            &mut reader,
+            tcp,
+            Some(read_ns),
+            "Read<tokio::net::tcp::stream::TcpStream>",
+            &[],
+        );
+        insert_struct(
+            &mut reader,
+            custom,
+            Some(read_ns),
+            "Read<app::Gated<tokio::net::unix::stream::UnixStream>>",
+            &[],
+        );
+        let roots = context_roots(unix);
+        let root = WalkRoot::LeafOver(IO_READ, IO_SOCKETS);
+
+        let mut em = Emitter::new(&reader, BTreeMap::new(), None, None);
+        em.reserve(custom);
+        assert!(matches!(
+            resolve_root(&em, &roots, &BTreeMap::new(), &root),
+            Roots::Absent(_)
+        ));
+
+        let mut em = Emitter::new(&reader, BTreeMap::new(), None, None);
+        em.reserve(custom);
+        em.reserve(unix);
+        let Roots::Types { types, note } = resolve_root(&em, &roots, &BTreeMap::new(), &root)
+        else {
+            panic!("one reviewed instantiation resolves");
+        };
+        assert_eq!(types.len(), 1);
+        assert_eq!(note, None);
+
+        let mut em = Emitter::new(&reader, BTreeMap::new(), None, None);
+        em.reserve(custom);
+        em.reserve(unix);
+        em.reserve(tcp);
+        let Roots::Types { types, note } = resolve_root(&em, &roots, &BTreeMap::new(), &root)
+        else {
+            panic!("two reviewed instantiations resolve");
+        };
+        assert_eq!(types.len(), 2);
+        assert_eq!(note.as_deref(), Some("2 types"));
+    }
+
+    /// The scheduler roots likewise: the `Arc` over exactly the flavor
+    /// handle, with or without the allocator parameter, counted past one.
+    #[test]
+    fn test_arc_root_matches_exactly_and_counts_past_one() {
+        let mut reader = DwReader::default();
+        let sync_ns = ns(&mut reader, "alloc::sync");
+        let plain = type_id(1);
+        let with_alloc = type_id(2);
+        let other = type_id(3);
+        insert_struct(
+            &mut reader,
+            plain,
+            Some(sync_ns),
+            "Arc<tokio::runtime::scheduler::current_thread::Handle>",
+            &[],
+        );
+        insert_struct(
+            &mut reader,
+            with_alloc,
+            Some(sync_ns),
+            "Arc<tokio::runtime::scheduler::current_thread::Handle, alloc::alloc::Global>",
+            &[],
+        );
+        insert_struct(
+            &mut reader,
+            other,
+            Some(sync_ns),
+            "Arc<tokio::runtime::scheduler::current_thread::HandleInner>",
+            &[],
+        );
+        let roots = context_roots(plain);
+        let root = WalkRoot::ArcOf(CT_HANDLE);
+
+        let mut em = Emitter::new(&reader, BTreeMap::new(), None, None);
+        em.reserve(other);
+        assert!(matches!(
+            resolve_root(&em, &roots, &BTreeMap::new(), &root),
+            Roots::Absent(_)
+        ));
+
+        let mut em = Emitter::new(&reader, BTreeMap::new(), None, None);
+        em.reserve(other);
+        em.reserve(plain);
+        let Roots::Types { types, note } = resolve_root(&em, &roots, &BTreeMap::new(), &root)
+        else {
+            panic!("one Arc resolves");
+        };
+        assert_eq!(types.len(), 1);
+        assert_eq!(note, None);
+
+        let mut em = Emitter::new(&reader, BTreeMap::new(), None, None);
+        em.reserve(other);
+        em.reserve(plain);
+        em.reserve(with_alloc);
+        let Roots::Types { types, note } = resolve_root(&em, &roots, &BTreeMap::new(), &root)
+        else {
+            panic!("both spellings resolve");
+        };
+        assert_eq!(types.len(), 2);
+        assert_eq!(note.as_deref(), Some("2 types"));
+    }
+
     #[test]
     fn test_task_cell_root_counts_the_opaque_cells_it_skips() {
         let (reader, ctx) = context_fixture();
