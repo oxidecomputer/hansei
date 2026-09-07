@@ -20,188 +20,17 @@
 //! snapshot's layout.
 
 use hansei_bundle::{Bundle, BundleType, BundleTypeId, BundleView, DiscrValue, WalkRole};
+use hansei_runtime::testkit::corrupt::Corrupt;
 use hansei_runtime::testkit::{self, load_any, tasks as tasks_of};
 use hansei_runtime::tokio::bundle::{ChainEnd, Context, TaskList, TaskStage};
 use hansei_runtime::tokio::{census, graph};
+use proc::Target;
 use proc::snapshot::{Recorder, Snapshot};
-use proc::{LwpInfo, Mappings, Regs, SymbolBuf, Target};
 
 use std::ops::Range;
 
 /// An address nothing in a small test program's address space reaches.
 const NOWHERE: u64 = 0xdead_beef_0000;
-
-/// A captured snapshot with faults baked into memory of its own: a
-/// denied range is cut out of the segments, so every read touching it
-/// fails, a blanked range is kept and zeroed, and a patched word is
-/// written over, so every read of it sees the lie.
-///
-/// The faults live in the bytes rather than in a `read_bytes` that
-/// doctors what it serves, because the renderer reads by borrowing: a
-/// lent slice carries a corruption only if the storage behind it does.
-struct Corrupt<'a> {
-    inner: &'a Snapshot,
-    /// The snapshot's captured runs, copied so they can be damaged, each
-    /// as `(address, bytes)` and in ascending address order.
-    memory: Vec<(u64, Vec<u8>)>,
-}
-
-impl<'a> Corrupt<'a> {
-    fn new(inner: &'a Snapshot) -> Self {
-        let memory = inner
-            .segments()
-            .map(|seg| {
-                let bytes = inner
-                    .read_bytes(seg.start, seg.end - seg.start)
-                    .expect("a recorded segment")
-                    .to_vec();
-                (seg.start, bytes)
-            })
-            .collect();
-        Corrupt { inner, memory }
-    }
-
-    /// Reads overlapping `range` fail, as if the pages were not dumped.
-    fn deny(self, range: Range<u64>) -> Self {
-        let memory = self
-            .memory
-            .into_iter()
-            .flat_map(|(addr, bytes)| {
-                let len = bytes.len() as u64;
-                // What the hole leaves of this run: the part before it
-                // and the part after it, either of which may be empty.
-                let head = range.start.saturating_sub(addr).min(len) as usize;
-                let tail = range.end.saturating_sub(addr).min(len) as usize;
-                [
-                    (head > 0).then(|| (addr, bytes[..head].to_vec())),
-                    (tail < bytes.len()).then(|| (addr + tail as u64, bytes[tail..].to_vec())),
-                ]
-            })
-            .flatten()
-            .collect();
-        Corrupt { memory, ..self }
-    }
-
-    /// The target range will be zeroed, as if the dump had recorded the
-    /// mapping at full length and written nothing into it, mimicking a
-    /// truncated core.
-    fn blank(mut self, range: Range<u64>) -> Self {
-        let mut blanked = 0;
-        for (base, bytes) in &mut self.memory {
-            let len = bytes.len() as u64;
-            let from = range.start.saturating_sub(*base).min(len) as usize;
-            let to = range.end.saturating_sub(*base).min(len) as usize;
-            if let Some(slot) = bytes.get_mut(from..to) {
-                slot.fill(0);
-                blanked += slot.len();
-            }
-        }
-        assert!(blanked > 0, "no recorded segment holds {range:#x?}");
-        self
-    }
-
-    /// The word at `addr` reads back as `value`.
-    fn patch(mut self, addr: u64, value: u64) -> Self {
-        let patched = self.write(addr, value);
-        assert!(patched, "no recorded segment holds {addr:#x}");
-        self
-    }
-
-    /// Every recorded aligned word equal to `value` reads back as
-    /// `lie` — how a pointer *to* a structure is corrupted when only
-    /// the target's own memory says where that pointer lives (a shard
-    /// head, an intrusive link).
-    fn patch_words_equal(mut self, value: u64, lie: u64) -> Self {
-        let mut patched = 0;
-        for (addr, bytes) in &mut self.memory {
-            let skew = (addr.next_multiple_of(8) - *addr) as usize;
-            let Some(aligned) = bytes.get_mut(skew..) else {
-                continue;
-            };
-            for word in aligned.as_chunks_mut::<8>().0 {
-                if u64::from_le_bytes(*word) == value {
-                    *word = lie.to_le_bytes();
-                    patched += 1;
-                }
-            }
-        }
-        assert!(patched > 0, "no recorded word holds {value:#x}");
-        self
-    }
-
-    /// Write `value` over the word at `addr`, reporting whether any
-    /// captured run holds it.
-    fn write(&mut self, addr: u64, value: u64) -> bool {
-        for (base, bytes) in &mut self.memory {
-            let Some(start) = addr.checked_sub(*base).map(|o| o as usize) else {
-                continue;
-            };
-            if let Some(word) = bytes
-                .get_mut(start..)
-                .and_then(<[u8]>::first_chunk_mut::<8>)
-            {
-                *word = value.to_le_bytes();
-                return true;
-            }
-        }
-        false
-    }
-
-    /// The captured run holding `addr`, if the faults left one.
-    fn segment(&self, addr: u64) -> Option<(u64, &[u8])> {
-        self.memory
-            .iter()
-            .map(|(base, bytes)| (*base, &bytes[..]))
-            .find(|(base, bytes)| addr >= *base && addr - base < bytes.len() as u64)
-    }
-}
-
-impl Target for Corrupt<'_> {
-    fn read_bytes(&self, addr: u64, len: u64) -> proc::Result<&[u8]> {
-        let lent = || {
-            let end = addr.checked_add(len)?;
-            let (base, bytes) = self.segment(addr)?;
-            (end - base <= bytes.len() as u64)
-                .then(|| &bytes[(addr - base) as usize..(end - base) as usize])
-        };
-        lent().ok_or_else(|| proc::Error::unmapped(addr, len))
-    }
-
-    fn readable_len(&self, addr: u64, max: u64) -> u64 {
-        match self.segment(addr) {
-            Some((base, bytes)) => (base + bytes.len() as u64 - addr).min(max),
-            None => 0,
-        }
-    }
-
-    fn lookup_symbol_by_addr(&self, addr: u64) -> Option<SymbolBuf> {
-        self.inner.lookup_symbol_by_addr(addr)
-    }
-
-    fn lookup_symbol_by_name(&self, name: &str) -> Option<SymbolBuf> {
-        self.inner.lookup_symbol_by_name(name)
-    }
-
-    fn symbols(&self) -> proc::Result<Vec<SymbolBuf>> {
-        self.inner.symbols()
-    }
-
-    fn object_symbols(&self) -> proc::Result<Vec<SymbolBuf>> {
-        self.inner.object_symbols()
-    }
-
-    fn mappings(&self) -> proc::Result<Mappings> {
-        self.inner.mappings()
-    }
-
-    fn lwps(&self) -> proc::Result<Vec<LwpInfo>> {
-        self.inner.lwps()
-    }
-
-    fn tls_var_addr(&self, regs: &Regs, sym: &SymbolBuf) -> proc::Result<Option<u64>> {
-        self.inner.tls_var_addr(regs, sym)
-    }
-}
 
 /// The healthy pipeline, run first to learn the addresses a corruption
 /// should land on.
@@ -1007,7 +836,7 @@ fn campaign_run(
                     },
                     _ => 0,
                 };
-                let _ = corrupt.write(addr, value);
+                let _ = corrupt.try_patch(addr, value);
             }
         }
     }

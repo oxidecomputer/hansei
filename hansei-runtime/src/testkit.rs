@@ -18,6 +18,7 @@ use proc::{LwpInfo, Target};
 
 use std::path::PathBuf;
 
+pub mod corrupt;
 pub mod delegation;
 pub mod heap;
 
