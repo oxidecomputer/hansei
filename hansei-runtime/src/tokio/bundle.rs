@@ -22,9 +22,9 @@ use anyhow::{Context as _, Result, anyhow, bail, ensure};
 use hansei_bundle::symbols::normalized_v0_key;
 use hansei_bundle::tokio::semaphore;
 use hansei_bundle::{
-    BundleType, BundleTypeId, BundleView, DynPointer, FutureKind, StaticRole, SymbolLookup,
-    TaskEntryId, TaskFutureEntry, TypeDef, TypeSemantics, WalkOutcome, WalkRole,
-    strip_build_prefix, strip_llvm_suffix,
+    BundleType, BundleTypeId, BundleView, ContainerKind, DynPointer, FutureKind, ResourceKind,
+    StaticRole, SymbolLookup, TaskEntryId, TaskFutureEntry, TypeDef, TypeSemantics, WalkOutcome,
+    WalkRole, strip_build_prefix, strip_llvm_suffix,
 };
 use proc::{LwpInfo, Mappings, SymbolBuf, Target};
 use reify::Value;
@@ -49,21 +49,6 @@ const MAX_WRAPPER_DEPTH: usize = 8;
 /// method is `poll`, so it is slot 3.
 const VTABLE_SLOT_DROP: u64 = 0;
 const VTABLE_SLOT_FUTURE_POLL: u64 = 3;
-
-/// The leaf-future knowledge base: the wait primitives hansei
-/// can interpret, keyed by leaf type name
-/// ([`contract::leaf_matches`]). It grows one row (and one reader fn)
-/// at a time, with no structural change.
-///
-/// The chain walker consults it too: a matching awaitee is a leaf even
-/// when it peels to a pointer — a `JoinHandle` peels to the joined
-/// task's `NonNull<Header>`, and following that would walk into another
-/// task entirely.
-const LEAF_FUTURES: &[(&str, LeafKind)] = &[
-    (contract::SLEEP, LeafKind::Sleep),
-    (contract::JOIN_HANDLE, LeafKind::JoinHandle),
-    (contract::ACQUIRE, LeafKind::SemaphoreAcquire),
-];
 
 /// The io resource types the fd join recognizes: the fully-qualified
 /// name a frame member (or its pointee) must bear, and the two walk
@@ -164,13 +149,6 @@ fn arc_of(name: &str, inner: &str) -> bool {
     rest.starts_with(',') || rest.starts_with('>')
 }
 
-pub(crate) fn leaf_kind(name: &str) -> Option<LeafKind> {
-    LEAF_FUTURES
-        .iter()
-        .find(|(key, _)| contract::leaf_matches(key, name))
-        .map(|(_, kind)| *kind)
-}
-
 /// Awaiter-frame prefixes naming the primitive whose semaphore an
 /// `Acquire` leaf is queued on.
 const SEMAPHORE_OWNERS: &[(&str, &str)] = &[
@@ -252,11 +230,6 @@ pub struct Context<'b, T> {
     task_lookups: Memo<String, SymbolLookup<TaskEntryId>>,
     /// The same memo for the dyn-future join.
     dyn_future_lookups: Memo<String, SymbolLookup<BundleTypeId>>,
-    /// Every type the bundle recorded a `Future::poll` impl for, which is
-    /// what lets the await chain tell a wrapper's inner future from the
-    /// rest of its members. Collected once: the walk asks per member of
-    /// per frame of per task.
-    futures: HashSet<BundleTypeId>,
     semantics: SemanticIndex,
     /// The walk contract resolved against this bundle at attach time.
     contract: ContractReport,
@@ -293,7 +266,6 @@ impl<'b, T: Target> Context<'b, T> {
             stopped: RefCell::new(None),
             task_lookups: Memo::default(),
             dyn_future_lookups: Memo::default(),
-            futures: view.future_type_ids().collect(),
             semantics,
             contract,
         })
@@ -1210,7 +1182,7 @@ impl<'b, T: Target> Context<'b, T> {
             // A recognized wait primitive is where the chain ends
             // whatever it holds inside, since [`Context::wait_target`]
             // reads it as the thing being waited on.
-            let is_primitive = leaf_kind(cur.ty.name()).is_some();
+            let is_primitive = self.leaf_kind(cur.ty.id()).is_some();
 
             // A future that *is* a dyn wide pointer (a spawned
             // `Pin<Box<dyn Future>>`): resolve the concrete type through
@@ -1404,7 +1376,7 @@ impl<'b, T: Target> Context<'b, T> {
                 Err(e) => Follow::Stop(ChainEnd::Error(e)),
             };
         }
-        if leaf_kind(awaitee.ty.name()).is_none() && peeled.ty.pointer_target().is_some()
+        if self.leaf_kind(awaitee.ty.id()).is_none() && peeled.ty.pointer_target().is_some()
         // A recognized wait primitive is a leaf regardless of its
         // shape; [`Context::wait_target`] interprets it.
         {
@@ -1480,11 +1452,33 @@ impl<'b, T: Target> Context<'b, T> {
     /// that is a future decides. Testing only the fully unwrapped type
     /// would walk past `IntoFuture` and the connection inside it alike,
     /// and land on the `Option` at the bottom of both.
-    /// The bundle's poll table: the types whose `<T as Future>::poll`
-    /// extraction recorded. A floor, not a census — an inlined-away
-    /// `poll` leaves no symbol and so no entry.
-    pub(crate) fn known_futures(&self) -> &HashSet<BundleTypeId> {
-        &self.futures
+    /// Whether the bundle positively recognizes `id` as a future: a
+    /// task entry, a recorded `poll`, a bound coroutine layout or a
+    /// delegation names it, or a reviewed resource layout binds it (a
+    /// `Sleep` is tokio's `Sleep` by its layout, and that is a future).
+    /// Absence is not proof of the opposite — an inlined-away `poll`
+    /// leaves no symbol, an unreviewed compiler no layout — which is why
+    /// callers degrade rather than conclude.
+    pub(crate) fn recognized_future(&self, id: BundleTypeId) -> bool {
+        self.type_semantics(id)
+            .is_some_and(|record| record.future.is_some() || record.resource.is_some())
+    }
+
+    /// The container a type is bound as, if any.
+    pub(crate) fn container_kind(&self, id: BundleTypeId) -> Option<ContainerKind> {
+        self.type_semantics(id)?.container.as_ref().map(|c| c.kind)
+    }
+
+    /// The wait primitive a type is bound as — what [`Context::wait_target`]
+    /// knows how to read. An io operation binding is a resource too, but
+    /// no reader interprets it yet, so it is no leaf here.
+    pub(crate) fn leaf_kind(&self, id: BundleTypeId) -> Option<LeafKind> {
+        match self.type_semantics(id)?.resource.as_ref()?.kind {
+            ResourceKind::Sleep => Some(LeafKind::Sleep),
+            ResourceKind::JoinHandle => Some(LeafKind::JoinHandle),
+            ResourceKind::SemaphoreAcquire => Some(LeafKind::SemaphoreAcquire),
+            ResourceKind::IoOperation(_) => None,
+        }
     }
 
     fn is_future(&self, ty: BundleType<'b>) -> bool {
@@ -1493,10 +1487,7 @@ impl<'b, T: Target> Context<'b, T> {
             if let Some(dp) = ty.dyn_pointer() {
                 return contract::is_dyn_future_pointee(dp.pointee.name());
             }
-            if self.futures.contains(&ty.id())
-                || ty.is_coroutine()
-                || leaf_kind(ty.name()).is_some()
-            {
+            if self.recognized_future(ty.id()) {
                 return true;
             }
             // Not one itself: unwrap one layer, the way `peel` does, and
@@ -1590,7 +1581,7 @@ impl<'b, T: Target> Context<'b, T> {
             return None;
         }
         let leaf = chain.frames.last()?;
-        let kind = leaf_kind(leaf.future.ty.name())?;
+        let kind = self.leaf_kind(leaf.future.ty.id())?;
         Some(match kind {
             LeafKind::Sleep => self.read_sleep(leaf.future),
             LeafKind::JoinHandle => self.read_join_handle(leaf.future, list),
@@ -3047,7 +3038,7 @@ impl<'b, T: Target> Context<'b, T> {
             .filter(|_| matches!(chain.end, ChainEnd::Leaf))
             .filter(|f| {
                 matches!(
-                    leaf_kind(f.future.ty.name()),
+                    self.leaf_kind(f.future.ty.id()),
                     Some(LeafKind::SemaphoreAcquire)
                 )
             })
@@ -3123,7 +3114,7 @@ impl<'b, T: Target> Context<'b, T> {
         }
         let leaf = chain.frames.last()?;
         if !matches!(
-            leaf_kind(leaf.future.ty.name()),
+            self.leaf_kind(leaf.future.ty.id()),
             Some(LeafKind::SemaphoreAcquire)
         ) {
             return None;
@@ -3416,47 +3407,78 @@ mod tests {
         let (bundle, snapshot) = walk_shapes();
         let ctx = testkit::context(bundle, snapshot);
         let ty = find_ty(bundle, |t| t.name().starts_with("walk_shapes::WrapZ<"));
-        assert!(!ctx.known_futures().contains(&ty.id()), "never polled");
+        assert!(!ctx.recognized_future(ty.id()), "no fact names the wrapper");
         assert!(ctx.is_future(ty), "{}", ty.name());
     }
 
     /// A coroutine whose `poll` rustc inlined out of the symtab has no
-    /// poll-table entry, and must still screen as a future on
-    /// `is_coroutine` alone. Every debug-build fixture records every
-    /// poll, so the documented condition — no symbol, no entry — is
-    /// constructed here by taking the id out of the table.
+    /// poll symbol, and must still screen as a future on its bound
+    /// layout's evidence alone. Every debug-build fixture records every
+    /// poll, so the documented condition — no symbol — is constructed
+    /// here by taking the poll evidence out of the record.
     #[test]
     fn test_a_coroutine_off_the_poll_table_is_still_a_future() {
-        let mut ctx = unordered_ctx();
-        let (bundle, _) = unordered();
-        let ty = find_ty(bundle, |t| {
-            t.is_coroutine() && leaf_kind(t.name()).is_none()
-        });
-        ctx.futures.remove(&ty.id());
+        let (bundle, snapshot) = unordered();
+        let mut bundle = bundle.clone();
+        // A coroutine no task was spawned with, so once its poll symbol
+        // is gone only the layout's evidence names it.
+        let record = bundle
+            .semantics
+            .types
+            .iter_mut()
+            .find(|r| {
+                r.coroutine.is_some()
+                    && r.future.as_ref().is_some_and(|f| {
+                        !f.evidence
+                            .iter()
+                            .any(|e| matches!(e, hansei_bundle::FutureEvidence::TaskEntry(_)))
+                    })
+            })
+            .expect("the fixture bundle binds coroutine layouts");
+        let ty = record.ty;
+        let facts = record.future.as_mut().unwrap();
+        facts
+            .evidence
+            .retain(|e| !matches!(e, hansei_bundle::FutureEvidence::PollSymbol(_)));
+        assert!(
+            !facts.evidence.is_empty()
+                && facts
+                    .evidence
+                    .iter()
+                    .all(|e| matches!(e, hansei_bundle::FutureEvidence::Coroutine(_)))
+        );
+        bundle.validate().unwrap();
+        let ctx = testkit::context(&bundle, snapshot);
+        let ty = ctx.view.ty(ty).unwrap();
         assert!(ctx.is_future(ty), "{}", ty.name());
     }
 
-    /// The poll table alone is also enough: a hand-written future that
-    /// is no coroutine and no named wait primitive screens on its
-    /// recorded `poll`.
+    /// A recorded `poll` alone is also enough: a hand-written future
+    /// that is no coroutine and no bound resource screens on it.
     #[test]
     fn test_a_poll_table_type_alone_is_a_future() {
         let ctx = unordered_ctx();
         let (bundle, _) = unordered();
         let ty = find_ty(bundle, |t| {
-            ctx.known_futures().contains(&t.id())
-                && !t.is_coroutine()
-                && leaf_kind(t.name()).is_none()
-                && t.dyn_pointer().is_none()
+            ctx.type_semantics(t.id()).is_some_and(|r| {
+                r.coroutine.is_none()
+                    && r.resource.is_none()
+                    && r.future.as_ref().is_some_and(|f| {
+                        f.evidence
+                            .iter()
+                            .all(|e| matches!(e, hansei_bundle::FutureEvidence::PollSymbol(_)))
+                    })
+            }) && t.dyn_pointer().is_none()
         });
         assert!(ctx.is_future(ty), "{}", ty.name());
     }
 
-    /// Every coroutine is a future, named leaf or not: the screen's
-    /// routes are alternatives, not conjuncts. Asserted over the whole
-    /// bundle rather than one witness, because a single frame can be
-    /// rescued through the unwrap loop (its sole member chains to a
-    /// poll-table type) and hide a broken screen.
+    /// Every coroutine is a future, and every coroutine-shaped enum in
+    /// the fixture has the bound layout that says so: the shape the
+    /// runtime used to screen on is now a fact of the bundle. Asserted
+    /// over the whole bundle rather than one witness, because a single
+    /// frame can be rescued through the unwrap loop (its sole member
+    /// chains to a recognized type) and hide a broken screen.
     #[test]
     fn test_every_coroutine_is_a_future() {
         let ctx = unordered_ctx();
@@ -3469,6 +3491,12 @@ mod tests {
             };
             if t.is_coroutine() {
                 coroutines += 1;
+                assert!(
+                    ctx.type_semantics(t.id())
+                        .is_some_and(|r| r.coroutine.is_some()),
+                    "{} has no bound layout",
+                    t.name()
+                );
                 assert!(ctx.is_future(t), "{}", t.name());
             }
         }
@@ -3486,11 +3514,7 @@ mod tests {
         let ctx = unordered_ctx();
         let (bundle, _) = unordered();
         let ty = find_ty(bundle, |t| {
-            if ctx.known_futures().contains(&t.id())
-                || t.is_coroutine()
-                || leaf_kind(t.name()).is_some()
-                || t.dyn_pointer().is_some()
-            {
+            if ctx.recognized_future(t.id()) || t.dyn_pointer().is_some() {
                 return false;
             }
             let mut sized = t.members().map(|m| m.ty()).filter(|m| m.size() > 0);
@@ -3504,7 +3528,8 @@ mod tests {
 
     /// Plain data is not a future, and neither is a multi-member
     /// container that merely holds them: the unwrap step follows a
-    /// *sole* sized member, never guesses among several.
+    /// *sole* sized member, never guesses among several. A set bound as
+    /// a container is a container, not a future.
     #[test]
     fn test_is_future_declines_plain_data_and_containers() {
         let ctx = unordered_ctx();
@@ -3515,6 +3540,10 @@ mod tests {
             t.name()
                 .starts_with("futures_util::stream::futures_unordered::FuturesUnordered<")
         });
+        assert_eq!(
+            ctx.container_kind(set.id()),
+            Some(ContainerKind::FuturesUnordered)
+        );
         assert!(!ctx.is_future(set), "{}", set.name());
     }
 

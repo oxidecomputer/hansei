@@ -2664,6 +2664,7 @@ mod cli_tests {
                     allow_missing_infra,
                     explain_format,
                     explain_walk,
+                    explain_future,
                 },
         }) = cli.cmd
         else {
@@ -2680,6 +2681,7 @@ mod cli_tests {
         assert!(!allow_missing_infra);
         assert_eq!(explain_format.as_deref(), Some("Notify"));
         assert_eq!(explain_walk, None);
+        assert_eq!(explain_future, None);
     }
 
     /// The two sides are alternatives, not layers: a session's flags

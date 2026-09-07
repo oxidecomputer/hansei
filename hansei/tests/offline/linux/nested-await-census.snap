@@ -5,9 +5,9 @@ description: "`census` over linux/nested-await"
 Threads: 3 lwps, 3 in runtime 0 @ 0xADDR
 
 COUNT  RT  ROLE             STATE            LWPS
-    1  0   worker           in driver        3967379
-    1  0   worker           parked           3967378
-    1  0   entered runtime  block_on caller  3967376
+    1  0   worker           in driver        77440
+    1  0   worker           parked           77439
+    1  0   entered runtime  block_on caller  77437
     0  0   blocking pool    0 idle, 0 busy   —
 [3 lwps]
 

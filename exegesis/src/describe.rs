@@ -786,6 +786,48 @@ pub fn describe_semantics(bundle: &Bundle) -> String {
     out
 }
 
+/// `--explain-future`: every emitted type whose name contains `want`,
+/// with its semantic record rendered as [`describe_semantics`] does, or
+/// the reasons a type without one has none — no positive evidence, not
+/// a compiler-storage candidate, no reviewed layout route bound at it.
+pub fn explain_future(bundle: &Bundle, want: &str) -> String {
+    use std::fmt::Write;
+    let s = |r| bundle.strings.get(r).unwrap_or("<bad strref>");
+    let table = describe_semantics(bundle);
+    let mut out = String::new();
+    let mut matched = 0;
+    for &(name, id) in &bundle.types.name_index {
+        let name = s(name);
+        if !name.contains(want) {
+            continue;
+        }
+        matched += 1;
+        let prefix = format!("{name} ::");
+        match table.lines().find(|line| line.starts_with(&prefix)) {
+            Some(line) => {
+                let _ = writeln!(out, "{line}");
+            }
+            None => {
+                let _ = writeln!(
+                    out,
+                    "{name} :: no semantic record — no task entry, poll symbol or \
+                     delegation names it, it is not a compiler-storage candidate, and \
+                     no reviewed resource, container or scheduler route bound at it"
+                );
+            }
+        }
+        let _ = id;
+    }
+    if matched == 0 {
+        let _ = writeln!(
+            out,
+            "no emitted type's name contains {want:?}; --include-type pulls in one \
+             nothing else reaches"
+        );
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

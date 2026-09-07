@@ -1,0 +1,26 @@
+---
+source: hansei-runtime/tests/matrix.rs
+---
+program: ct-runtime
+origin 0: rustc rustc-coroutine-1.97 (clang LLVM (rustc version 1.98.0 (88d9e12ae 2026-08-18)))
+origin 1: layout tokio 1.52.4 family v1_49 (ReviewedRange)
+rule 0: RustcAsyncFn rev 1 origin 0
+rule 1: TokioSleep rev 1 origin 1
+rule 2: TokioAcquire rev 1 origin 1
+rule 3: RustcAsyncBlock rev 1 origin 0
+rule 4: TokioJoinHandle rev 1 origin 1
+rule 5: TokioCurrentThreadScheduler rev 1 origin 1
+ct_runtime::sleeper::{async_fn_env#0} :: states future[task 0, coroutine rule 0] continuation unknown (NoRule) coroutine rule 0 {0:Unresumed[ready]() 1:Returned[]() 2:Panicked[]() 3:Suspended[__awaitee,__1]()}
+tokio::time::sleep::Sleep :: members future[poll] continuation rule 1 primitive resource Sleep rule 1
+ct_runtime::acquirer::{async_fn_env#0} :: states future[task 1, coroutine rule 0] continuation unknown (NoRule) coroutine rule 0 {0:Unresumed[ready,semaphore]() 1:Returned[]() 2:Panicked[]() 3:Suspended[__awaitee,__1]()}
+tokio::sync::semaphore::{impl#0}::acquire::{async_fn_env#0} :: states future[coroutine rule 0] continuation unknown (NoRule) coroutine rule 0 {0:Unresumed[self]() 1:Returned[]() 2:Panicked[]() 3:Suspended[self,__awaitee]()}
+tokio::sync::batch_semaphore::Acquire :: members future[poll] continuation rule 2 primitive resource SemaphoreAcquire rule 2
+tokio::sync::oneshot::Receiver<()> :: members future[poll, poll] continuation unknown (NoRule)
+ct_runtime::main::{async_block_env#0} :: states future[coroutine rule 3] continuation unknown (NoRule) coroutine rule 3 {0:Unresumed[]() 1:Returned[]() 2:Panicked[]() 3:Suspended[ready_b_rx,_sleeper,_acquirer,__awaitee,__4,__5,__6,__7]() 4:Suspended[_sleeper,_acquirer,__awaitee,__3,__4,__5,__6]() 5:Suspended[_sleeper,_acquirer,__awaitee,__3,__4,__5,__6]()}
+tokio::runtime::task::join::JoinHandle<u32> :: members resource JoinHandle rule 4
+tokio::sync::notify::Notified :: members future[poll] continuation unknown (NoRule)
+&mut tokio::sync::oneshot::Receiver<()> :: members future[poll] continuation unknown (NoRule)
+core::future::poll_fn::PollFn<tokio::runtime::scheduler::current_thread::{impl#0}::block_on::{closure#0}::{closure_env#0}<ct_runtime::main::{async_block_env#0}>> :: members future[poll] continuation unknown (NoRule)
+core::pin::Pin<&mut ct_runtime::main::{async_block_env#0}> :: members future[poll] continuation unknown (NoRule)
+task 0: scheduler alloc::sync::Arc<tokio::runtime::scheduler::current_thread::Handle, alloc::alloc::Global> :: CurrentThread rule 5
+task 1: scheduler alloc::sync::Arc<tokio::runtime::scheduler::current_thread::Handle, alloc::alloc::Global> :: CurrentThread rule 5

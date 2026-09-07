@@ -1,0 +1,57 @@
+---
+source: hansei-runtime/tests/matrix.rs
+---
+program: delegation-cases
+origin 0: rustc rustc-coroutine-1.97 (clang LLVM (rustc version 1.98.0 (88d9e12ae 2026-08-18)))
+origin 1: layout tokio 1.52.4 family v1_49 (ReviewedRange)
+rule 0: RustcAsyncBlock rev 1 origin 0
+rule 1: TokioCurrentThreadScheduler rev 1 origin 1
+rule 2: TokioMultiThreadScheduler rev 1 origin 1
+rule 3: TokioBlockingScheduler rev 1 origin 1
+delegation_cases::main::{async_block_env#1} :: states future[task 0, task 1, coroutine rule 0] continuation unknown (NoRule) coroutine rule 0 {0:Unresumed[after]() 1:Returned[]() 2:Panicked[]()}
+core::pin::Pin<alloc::boxed::Box<core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output=()> + core::marker::Send), alloc::alloc::Global>>, alloc::alloc::Global>> :: members future[task 2, task 3, poll] continuation unknown (NoRule)
+core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output=()> + core::marker::Send), alloc::alloc::Global>> :: members future[poll] continuation unknown (NoRule)
+core::pin::Pin<alloc::boxed::Box<alloc::boxed::Box<delegation_cases::Probe<6>, alloc::alloc::Global>, alloc::alloc::Global>> :: members future[task 4, task 5, poll] continuation unknown (NoRule)
+alloc::boxed::Box<delegation_cases::Probe<6>, alloc::alloc::Global> :: members future[poll] continuation unknown (NoRule)
+delegation_cases::Probe<6> :: members future[poll] continuation unknown (NoRule)
+core::pin::Pin<alloc::boxed::Box<tracing::instrument::Instrumented<delegation_cases::Probe<8>>, alloc::alloc::Global>> :: members future[task 6, task 7, poll] continuation unknown (NoRule)
+tracing::instrument::Instrumented<delegation_cases::Probe<8>> :: members future[poll] continuation unknown (NoRule)
+delegation_cases::Probe<8> :: members future[poll] continuation unknown (NoRule)
+core::pin::Pin<alloc::boxed::Box<delegation_cases::RawHolder, alloc::alloc::Global>> :: members future[task 8, task 9, poll] continuation unknown (NoRule)
+delegation_cases::RawHolder :: members future[poll] continuation unknown (NoRule)
+core::pin::Pin<alloc::boxed::Box<delegation_cases::Gated<1>, alloc::alloc::Global>> :: members future[task 10, task 11, poll] continuation unknown (NoRule)
+delegation_cases::Gated<1> :: members future[poll] continuation unknown (NoRule)
+delegation_cases::Probe<1> :: members future[poll] continuation unknown (NoRule)
+core::pin::Pin<alloc::boxed::Box<delegation_cases::Retained, alloc::alloc::Global>> :: members future[task 12, task 13, poll] continuation unknown (NoRule)
+delegation_cases::Retained :: members future[poll] continuation unknown (NoRule)
+core::pin::Pin<alloc::boxed::Box<&mut delegation_cases::Probe<5>, alloc::alloc::Global>> :: members future[task 14, task 15, poll] continuation unknown (NoRule)
+&mut delegation_cases::Probe<5> :: members future[poll] continuation unknown (NoRule)
+delegation_cases::Probe<5> :: members future[poll] continuation unknown (NoRule)
+core::pin::Pin<alloc::boxed::Box<delegation_cases::Gated<2>, alloc::alloc::Global>> :: members future[task 16, task 17, poll] continuation unknown (NoRule)
+delegation_cases::Gated<2> :: members future[poll] continuation unknown (NoRule)
+delegation_cases::Probe<2> :: members future[poll] continuation unknown (NoRule)
+tokio::runtime::blocking::task::BlockingTask<tokio::runtime::scheduler::multi_thread::worker::{impl#0}::launch::{closure_env#0}> :: members future[task 18, poll] continuation unknown (NoRule)
+delegation_cases::Probe<7> :: members future[poll] continuation unknown (NoRule)
+tokio::sync::oneshot::Receiver<()> :: members future[poll] continuation unknown (NoRule)
+tokio::sync::notify::Notified :: members future[poll] continuation unknown (NoRule)
+&mut tokio::sync::oneshot::Receiver<()> :: members future[poll] continuation unknown (NoRule)
+core::future::poll_fn::PollFn<tokio::runtime::scheduler::current_thread::{impl#0}::block_on::{closure#0}::{closure_env#0}<core::future::pending::Pending<()>>> :: members future[poll] continuation unknown (NoRule)
+task 0: scheduler alloc::sync::Arc<tokio::runtime::scheduler::current_thread::Handle, alloc::alloc::Global> :: CurrentThread rule 1
+task 1: scheduler alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle, alloc::alloc::Global> :: MultiThread rule 2
+task 2: scheduler alloc::sync::Arc<tokio::runtime::scheduler::current_thread::Handle, alloc::alloc::Global> :: CurrentThread rule 1
+task 3: scheduler alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle, alloc::alloc::Global> :: MultiThread rule 2
+task 4: scheduler alloc::sync::Arc<tokio::runtime::scheduler::current_thread::Handle, alloc::alloc::Global> :: CurrentThread rule 1
+task 5: scheduler alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle, alloc::alloc::Global> :: MultiThread rule 2
+task 6: scheduler alloc::sync::Arc<tokio::runtime::scheduler::current_thread::Handle, alloc::alloc::Global> :: CurrentThread rule 1
+task 7: scheduler alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle, alloc::alloc::Global> :: MultiThread rule 2
+task 8: scheduler alloc::sync::Arc<tokio::runtime::scheduler::current_thread::Handle, alloc::alloc::Global> :: CurrentThread rule 1
+task 9: scheduler alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle, alloc::alloc::Global> :: MultiThread rule 2
+task 10: scheduler alloc::sync::Arc<tokio::runtime::scheduler::current_thread::Handle, alloc::alloc::Global> :: CurrentThread rule 1
+task 11: scheduler alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle, alloc::alloc::Global> :: MultiThread rule 2
+task 12: scheduler alloc::sync::Arc<tokio::runtime::scheduler::current_thread::Handle, alloc::alloc::Global> :: CurrentThread rule 1
+task 13: scheduler alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle, alloc::alloc::Global> :: MultiThread rule 2
+task 14: scheduler alloc::sync::Arc<tokio::runtime::scheduler::current_thread::Handle, alloc::alloc::Global> :: CurrentThread rule 1
+task 15: scheduler alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle, alloc::alloc::Global> :: MultiThread rule 2
+task 16: scheduler alloc::sync::Arc<tokio::runtime::scheduler::current_thread::Handle, alloc::alloc::Global> :: CurrentThread rule 1
+task 17: scheduler alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle, alloc::alloc::Global> :: MultiThread rule 2
+task 18: scheduler tokio::runtime::blocking::schedule::BlockingSchedule :: Blocking rule 3

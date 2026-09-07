@@ -53,6 +53,12 @@ pub enum BundleCmd {
         /// name contains this substring (e.g. "Sleep.deadline").
         #[arg(long, value_name = "ROLE")]
         explain_walk: Option<String>,
+        /// Report the semantic facts bound for every emitted type whose
+        /// fully-qualified name contains this substring: future
+        /// evidence, continuation, coroutine states, resource, container
+        /// and the reasons a binding was declined.
+        #[arg(long, value_name = "FQN")]
+        explain_future: Option<String>,
     },
     /// Print summary statistics for a tokio-info file.
     Stats {
@@ -83,6 +89,7 @@ pub fn exec(cmd: BundleCmd) -> Result<()> {
             allow_missing_infra,
             explain_format,
             explain_walk,
+            explain_future,
         } => extract(
             &binary,
             debug_info.as_deref(),
@@ -92,6 +99,7 @@ pub fn exec(cmd: BundleCmd) -> Result<()> {
             allow_missing_infra,
             explain_format,
             explain_walk,
+            explain_future,
         ),
         BundleCmd::Stats { tokio_info } => stats(&tokio_info),
         BundleCmd::Dump { tokio_info } => dump(&tokio_info),
@@ -182,6 +190,7 @@ fn extract(
     allow_missing_infra: bool,
     explain_format: Option<String>,
     explain_walk: Option<String>,
+    explain_future: Option<String>,
 ) -> Result<()> {
     let explaining = explain_format.clone();
     let explaining_walk = explain_walk.clone();
@@ -203,6 +212,7 @@ fn extract(
             print_stats,
             explaining,
             explaining_walk,
+            explain_future,
         )
     })
     .with_context(|| match debug_info {
@@ -223,6 +233,7 @@ fn write_extracted(
     print_stats: bool,
     explaining: Option<String>,
     explaining_walk: Option<String>,
+    explain_future: Option<String>,
 ) -> Result<()> {
     for warning in warnings(&stats) {
         eprintln!("{warning}");
@@ -267,6 +278,9 @@ fn write_extracted(
                 None => println!("  => no binding recorded"),
             }
         }
+    }
+    if let Some(wanted) = explain_future {
+        print!("{}", exegesis::describe::explain_future(&bundle, &wanted));
     }
     if print_stats {
         print!("{stats}");
@@ -584,6 +598,7 @@ mod tests {
             allow_missing_infra: true,
             explain_format: None,
             explain_walk: None,
+            explain_future: None,
         }
     }
 

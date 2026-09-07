@@ -32,14 +32,14 @@
 //! pointer and a set's node list are the deliberate exceptions).
 
 use super::TaskState;
-use super::bundle::{AwaitChain, ChainEnd, Context, TaskList, TaskStage, WaitKind, leaf_kind};
+use super::bundle::{AwaitChain, ChainEnd, Context, TaskList, TaskStage, WaitKind};
 // The by-value types sets and join sets are recognized as; the trailing
 // `<` keeps each match on the real generic, not a lookalike suffix. A
 // `JoinSet` holds *tasks* rather than futures, so it is walked and
 // reported apart from a set of futures; anything built on one
 // (omicron's `ParallelTaskSet`, which pairs it with a semaphore) is
 // reached by the same scan, since it holds its `JoinSet` by value.
-use super::contract::{FUTURES_UNORDERED, JOIN_SET, is_dyn_future_pointee};
+use super::contract::is_dyn_future_pointee;
 use crate::heap::umem::{Liveness, UmemHeap};
 
 use anyhow::{Context as _, Result, anyhow, ensure};
@@ -873,7 +873,7 @@ impl<'b, T: Target> Walker<'_, 'b, T> {
                 let mut found = Vec::new();
                 scan_value(
                     local,
-                    self.ctx.known_futures(),
+                    self.ctx,
                     0,
                     self.bounds.scan_depth,
                     Path::default(),
@@ -1095,6 +1095,35 @@ impl<'b, T: Target> Walker<'_, 'b, T> {
 /// scan asks short of an enum's active variant is a fact of the type,
 /// and the scan visits millions of values but only thousands of
 /// distinct types.
+/// What the bundle's facts make of a type the scan meets: one of the
+/// two containers it walks by their own contracts, a future it chains
+/// rather than descends, or neither. The scan asks about types, never
+/// about names or shapes; what it is told comes from the semantic table.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub(crate) enum Recognized {
+    Set,
+    JoinSet,
+    Future,
+    Other,
+}
+
+/// The source of those facts — the attached [`Context`] in production,
+/// a hand-built table in the tests below.
+pub(crate) trait Recognize {
+    fn recognize(&self, id: BundleTypeId) -> Recognized;
+}
+
+impl<T: Target> Recognize for Context<'_, T> {
+    fn recognize(&self, id: BundleTypeId) -> Recognized {
+        match self.container_kind(id) {
+            Some(hansei_bundle::ContainerKind::FuturesUnordered) => Recognized::Set,
+            Some(hansei_bundle::ContainerKind::JoinSet) => Recognized::JoinSet,
+            None if self.recognized_future(id) => Recognized::Future,
+            None => Recognized::Other,
+        }
+    }
+}
+
 #[derive(Clone)]
 enum ScanPlan {
     Set,
@@ -1119,16 +1148,12 @@ enum ScanPlan {
 /// `<T as Future>::poll` extraction recorded — so a future the chain
 /// walk would follow is one the census counts, even where rustc left
 /// no coroutine shape or leaf name to recognize it by.
-fn scan_plan(value: Value<'_>, futures: &HashSet<BundleTypeId>) -> ScanPlan {
-    let name = value.ty.name();
-    if name.starts_with(FUTURES_UNORDERED) {
-        return ScanPlan::Set;
-    }
-    if name.starts_with(JOIN_SET) {
-        return ScanPlan::JoinSet;
-    }
-    if value.ty.is_coroutine() || leaf_kind(name).is_some() || futures.contains(&value.ty.id()) {
-        return ScanPlan::Future;
+fn scan_plan(value: Value<'_>, facts: &dyn Recognize) -> ScanPlan {
+    match facts.recognize(value.ty.id()) {
+        Recognized::Set => return ScanPlan::Set,
+        Recognized::JoinSet => return ScanPlan::JoinSet,
+        Recognized::Future => return ScanPlan::Future,
+        Recognized::Other => {}
     }
     // The pointee must *be* a future trait object itself, not a dyn
     // whose generics merely mention one.
@@ -1196,7 +1221,7 @@ struct Path {
 #[expect(clippy::too_many_arguments, reason = "internal recursion")]
 fn scan_value<'b>(
     value: Value<'b>,
-    futures: &HashSet<BundleTypeId>,
+    facts: &dyn Recognize,
     depth: usize,
     max_depth: usize,
     path: Path,
@@ -1217,13 +1242,13 @@ fn scan_value<'b>(
         match plans.get(&value.ty.id()) {
             Some(plan) => plan.clone(),
             None => {
-                let plan = scan_plan(value, futures);
+                let plan = scan_plan(value, facts);
                 plans.insert(value.ty.id(), plan.clone());
                 plan
             }
         }
     } else {
-        scan_plan(value, futures)
+        scan_plan(value, facts)
     };
     if matches!(plan, ScanPlan::Set | ScanPlan::JoinSet | ScanPlan::Future) {
         if path.descended {
@@ -1250,7 +1275,7 @@ fn scan_value<'b>(
                 let child = Value::new(value.ty.related_type(ty), value.addr + offset, bytes);
                 scan_value(
                     child,
-                    futures,
+                    facts,
                     depth + 1,
                     max_depth,
                     path,
@@ -1278,7 +1303,7 @@ fn scan_value<'b>(
                 // is what costs a level, the way it always did when
                 // the payload arrived pre-peeled.
                 scan_value(
-                    payload, futures, depth, max_depth, path, found, deep, plans, stats,
+                    payload, facts, depth, max_depth, path, found, deep, plans, stats,
                 );
             }
         }
@@ -1571,6 +1596,7 @@ mod tests {
     use crate::heap::umem::tests::freeing;
     use crate::testkit;
 
+    use super::super::contract::{FUTURES_UNORDERED, JOIN_SET};
     use hansei_bundle::{Bundle, BundleMember, BundleType, BundleView, DiscrValue, TypeDef};
 
     use std::sync::OnceLock;
@@ -1606,18 +1632,62 @@ mod tests {
             .expect("the fixture bundle has such a type")
     }
 
-    /// A poll table naming exactly `ids`: the extraction's record of
-    /// which types have a `poll`, which the scan takes as proof of a
-    /// future however the type is spelled.
-    fn poll_table(ids: impl IntoIterator<Item = BundleTypeId>) -> HashSet<BundleTypeId> {
-        ids.into_iter().collect()
+    /// The facts a test hands the scan: the fixture bundle's own
+    /// container bindings and future identities, plus exactly `futures`
+    /// as further recognized futures — a poll table naming types the
+    /// bundle's own evidence does not, which the scan takes as proof
+    /// however the type is spelled.
+    struct Facts {
+        containers: HashMap<BundleTypeId, hansei_bundle::ContainerKind>,
+        futures: HashSet<BundleTypeId>,
+    }
+
+    impl Recognize for Facts {
+        fn recognize(&self, id: BundleTypeId) -> Recognized {
+            match self.containers.get(&id) {
+                Some(hansei_bundle::ContainerKind::FuturesUnordered) => Recognized::Set,
+                Some(hansei_bundle::ContainerKind::JoinSet) => Recognized::JoinSet,
+                None if self.futures.contains(&id) => Recognized::Future,
+                None => Recognized::Other,
+            }
+        }
+    }
+
+    fn facts(bundle: &Bundle, ids: impl IntoIterator<Item = BundleTypeId>) -> Facts {
+        let mut futures: HashSet<BundleTypeId> = ids.into_iter().collect();
+        futures.extend(
+            bundle
+                .semantics
+                .types
+                .iter()
+                .filter(|r| r.future.is_some() || r.resource.is_some())
+                .map(|r| r.ty),
+        );
+        Facts {
+            containers: bundle
+                .semantics
+                .types
+                .iter()
+                .filter_map(|r| Some((r.ty, r.container.as_ref()?.kind)))
+                .collect(),
+            futures,
+        }
+    }
+
+    /// A poll table naming exactly `ids`, over the `unordered` fixture's
+    /// containers.
+    fn poll_table(ids: impl IntoIterator<Item = BundleTypeId>) -> Facts {
+        facts(unordered(), ids)
     }
 
     /// A poll table naming every type there is — so a value screened as
     /// anything other than a future was screened by the order of the
     /// tests in [`scan_plan`], not by what the table knows.
-    fn every_type(bundle: &Bundle) -> HashSet<BundleTypeId> {
-        poll_table((0..bundle.types.types.len() as u32).map(BundleTypeId))
+    fn every_type(bundle: &Bundle) -> Facts {
+        facts(
+            bundle,
+            (0..bundle.types.types.len() as u32).map(BundleTypeId),
+        )
     }
 
     /// The sized member lying furthest into a type.
@@ -1663,15 +1733,15 @@ mod tests {
         }
     }
 
-    fn scan<'b>(value: Value<'b>, futures: &HashSet<BundleTypeId>) -> Scanned<'b> {
-        scan_from(value, futures, 0, HashMap::default())
+    fn scan<'b>(value: Value<'b>, facts: &dyn Recognize) -> Scanned<'b> {
+        scan_from(value, facts, 0, HashMap::default())
     }
 
     /// A scan started part-way down, and over a memo a previous scan
     /// left behind.
     fn scan_from<'b>(
         value: Value<'b>,
-        futures: &HashSet<BundleTypeId>,
+        facts: &dyn Recognize,
         depth: usize,
         mut plans: HashMap<BundleTypeId, ScanPlan>,
     ) -> Scanned<'b> {
@@ -1680,7 +1750,7 @@ mod tests {
         let mut stats = Stats::default();
         scan_value(
             value,
-            futures,
+            facts,
             depth,
             MAX_SCAN_DEPTH,
             Path::default(),
@@ -1794,6 +1864,16 @@ mod tests {
             if ty.size() <= 8 || ty.dyn_pointer().is_some() {
                 return false;
             }
+            // A wrapper the bundle's facts already name a future is found
+            // as one directly; the peel is exercised by a plain holder.
+            if bundle
+                .semantics
+                .types
+                .iter()
+                .any(|r| r.ty == ty.id() && (r.future.is_some() || r.resource.is_some()))
+            {
+                return false;
+            }
             let bytes = vec![0u8; ty.size() as usize];
             Value::new(ty, AT, &bytes)
                 .peel()
@@ -1903,14 +1983,17 @@ mod tests {
     fn test_a_zero_sized_member_is_not_scanned() {
         let bundle = unordered();
         let mut zst = None;
+        let known = every_type(bundle);
         let ty = find_ty(bundle, |ty| {
-            // A plain struct the scan would descend into, not one any
-            // earlier screen takes for a future or a set.
+            // A plain struct the scan would descend into, not one the
+            // bundle's own facts take for a future or a set.
             if !matches!(ty.def(), TypeDef::Struct { .. })
-                || ty.is_coroutine()
-                || leaf_kind(ty.name()).is_some()
-                || ty.name().starts_with(FUTURES_UNORDERED)
-                || ty.name().starts_with(JOIN_SET)
+                || known.containers.contains_key(&ty.id())
+                || bundle
+                    .semantics
+                    .types
+                    .iter()
+                    .any(|r| r.ty == ty.id() && (r.future.is_some() || r.resource.is_some()))
             {
                 return false;
             }

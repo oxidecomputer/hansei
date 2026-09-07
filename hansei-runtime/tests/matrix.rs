@@ -52,7 +52,7 @@
 //! checked-in files as the macOS rendering until a second platform
 //! needs them.
 
-use exegesis::describe::describe_debug_format;
+use exegesis::describe::{describe_debug_format, describe_semantics};
 use exegesis::detect::Family;
 use exegesis::extract::{ExtractOptions, extract_file};
 use exegesis::summary::portable_summary;
@@ -387,6 +387,19 @@ fn formats_report(bundles: &[(&str, Bundle)]) -> String {
 }
 
 /// The portable extraction summary for every program, concatenated.
+/// The semantic catalog: every origin, rule and record per program, as
+/// `tokio-info dump` prints them. Single-target like the other reports,
+/// so it names the rule ids and task indexes a bundle actually assigned.
+fn semantics_report(bundles: &[(&str, Bundle)]) -> String {
+    let mut out = String::new();
+    for (program, bundle) in bundles {
+        writeln!(out, "program: {program}").unwrap();
+        write!(out, "{}", describe_semantics(bundle)).unwrap();
+        writeln!(out).unwrap();
+    }
+    out
+}
+
 fn summary_report(bundles: &[(&str, Bundle)]) -> String {
     let mut out = String::new();
     for (program, bundle) in bundles {
@@ -477,6 +490,12 @@ fn test_matrix() {
         check_golden(&name, "walk", &walk_report(&bundles), &mut failures);
         check_golden(&name, "formats", &formats_report(&bundles), &mut failures);
         check_golden(&name, "summary", &summary_report(&bundles), &mut failures);
+        check_golden(
+            &name,
+            "semantics",
+            &semantics_report(&bundles),
+            &mut failures,
+        );
         eprintln!("matrix: checked cell {name}");
     }
 
