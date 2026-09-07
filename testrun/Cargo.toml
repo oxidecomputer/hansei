@@ -9,8 +9,6 @@ publish = false
 
 [dependencies]
 blake3.workspace = true
-gimli.workspace = true
-object.workspace = true
 serde.workspace = true
 toml.workspace = true
 

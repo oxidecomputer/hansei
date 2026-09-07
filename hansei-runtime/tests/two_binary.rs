@@ -60,7 +60,7 @@ use std::path::Path;
 fn source_digest(set: &str, program: &str) -> String {
     let dir = test_programs_dir();
     let matrix = matrix::Matrix::read(&dir);
-    let recipe = matrix.capture_recipe(set, program);
+    let recipe = matrix.capture_recipe(set);
     let expected = recipe.capture_record(&dir, &matrix, set, program);
     let path = hansei_runtime::testkit::fixture(set, &format!("{program}.capture"));
     let recorded = std::fs::read_to_string(&path)
@@ -80,12 +80,12 @@ fn checked_source_digest(recorded: &str, expected: &str, set: &str, program: &st
 fn test_flag_only_stale_capture_is_rejected_before_blessing() {
     let dir = test_programs_dir();
     let matrix = matrix::Matrix::read(&dir);
-    let recipe = matrix.capture_recipe("linux", "delegation-cases");
+    let recipe = matrix.capture_recipe("linux");
     let recorded = recipe.capture_record(&dir, &matrix, "linux", "delegation-cases");
     assert!(!checked_source_digest(&recorded, &recorded, "linux", "delegation-cases").is_empty());
 
     let mut changed = recipe.clone();
-    changed.dwarf_version = 4;
+    changed.dwp = true;
     let expected = changed.capture_record(&dir, &matrix, "linux", "delegation-cases");
     assert!(
         std::panic::catch_unwind(|| {

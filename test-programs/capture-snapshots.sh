@@ -48,18 +48,12 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 TOKIO=""
-DWARF_OVERRIDE=""
 while [[ "${1:-}" == --* ]]; do
     case "$1" in
         --tokio) TOKIO="${2:?missing Tokio version}"; shift 2 ;;
-        --bundle-dwarf-version) DWARF_OVERRIDE="${2:?missing DWARF version}"; shift 2 ;;
         *) echo "capture-snapshots.sh: unknown option $1" >&2; exit 2 ;;
     esac
 done
-case "$DWARF_OVERRIDE" in
-    ""|4|5) ;;
-    *) echo "capture-snapshots.sh: --bundle-dwarf-version must be 4 or 5" >&2; exit 2 ;;
-esac
 
 # Each system that can core a process keeps a set of its own, named for
 # itself, and `testkit::FIXTURE_SET` reads the one matching the build.
@@ -94,15 +88,6 @@ if [[ $# -gt 1 ]]; then
 fi
 (cd .. && cargo build -q -p testrun --example capture-recipe)
 RECIPE=../target/debug/examples/capture-recipe
-DWARF_VERSIONS=()
-for p in "${PROGRAMS[@]}"; do
-    declared="$($RECIPE dwarf-version "$PWD" "$SET" "$p")"
-    if [[ "$OUT" == "$DEFAULT_OUT" && -n "$DWARF_OVERRIDE" && "$DWARF_OVERRIDE" != "$declared" ]]; then
-        echo "capture-snapshots.sh: $p declares DWARF $declared; conflicting override refused" >&2
-        exit 2
-    fi
-    DWARF_VERSIONS+=("${DWARF_OVERRIDE:-$declared}")
-done
 marker() {
     case "$1" in
         # Deadlocked for good once the background task drops the lock
@@ -128,16 +113,8 @@ if [[ -n "$TOKIO" ]]; then
 fi
 REGEN_BIN_DIR="$FIXTURES/bin-a" REGEN_TARGET_DIR="$FIXTURES/target-a" \
     ./regen.sh --no-debug-info "${TOKIO_ARGS[@]}" "${PROGRAMS[@]}"
-for version in 4 5; do
-    batch=()
-    for i in "${!PROGRAMS[@]}"; do
-        [[ "${DWARF_VERSIONS[$i]}" == "$version" ]] && batch+=("${PROGRAMS[$i]}")
-    done
-    if [[ ${#batch[@]} -gt 0 ]]; then
-        REGEN_BIN_DIR="$FIXTURES/bin-b-$SET-dw$version" \
-            ./regen.sh "${TOKIO_ARGS[@]}" --dwarf-version "$version" "${batch[@]}"
-    fi
-done
+BIN_B="$FIXTURES/bin-b-$SET"
+REGEN_BIN_DIR="$BIN_B" ./regen.sh "${TOKIO_ARGS[@]}" "${PROGRAMS[@]}"
 
 # The capture tool itself comes from the workspace as-is, except that
 # `snapshot` is not in a default hansei: it makes test data rather than
@@ -145,10 +122,7 @@ done
 (cd .. && cargo build -p hansei --features snapshot)
 HANSEI=../target/debug/hansei
 
-for i in "${!PROGRAMS[@]}"; do
-    p="${PROGRAMS[$i]}"
-    version="${DWARF_VERSIONS[$i]}"
-    BIN_B="$FIXTURES/bin-b-$SET-dw$version"
+for p in "${PROGRAMS[@]}"; do
     "$HANSEI" tokio-info extract "$BIN_B/$p" -o "$OUT/$p.tinfo"
 
     fifo="$(mktemp -u)"
@@ -186,7 +160,7 @@ for i in "${!PROGRAMS[@]}"; do
     trap - EXIT
 
     "$RECIPE" "$PWD" "$SET" "$p" "$FIXTURES/bin-a/$p.recipe" \
-        "$BIN_B/$p.recipe" "$OUT/$p.capture" "$version"
+        "$BIN_B/$p.recipe" "$OUT/$p.capture"
 
     echo "capture-snapshots.sh: $p -> $OUT/$p.{tinfo,snapshot}"
 done

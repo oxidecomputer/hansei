@@ -8,25 +8,14 @@ use std::path::Path;
 
 fn main() {
     let args: Vec<_> = std::env::args().skip(1).collect();
-    if args.first().map(String::as_str) == Some("dwarf-version") {
-        assert_eq!(args.len(), 4);
-        let matrix = Matrix::read(Path::new(&args[1]));
-        println!(
-            "{}",
-            matrix.capture_recipe(&args[2], &args[3]).dwarf_version
-        );
-        return;
-    }
     assert_eq!(
         args.len(),
-        7,
-        "expected fixture-dir set program target-recipe bundle-recipe output dwarf-version"
+        6,
+        "expected fixture-dir set program target-recipe bundle-recipe output"
     );
     let dir = Path::new(&args[0]);
     let matrix = Matrix::read(dir);
-    let mut recipe = matrix.capture_recipe(&args[1], &args[2]);
-    recipe.dwarf_version = args[6].parse().expect("actual bundle DWARF version");
-    assert!(matches!(recipe.dwarf_version, 4 | 5));
+    let recipe = matrix.capture_recipe(&args[1]);
     for (path, expected) in [
         (&args[3], recipe.target_recipe().text()),
         (&args[4], recipe.text()),

@@ -125,8 +125,6 @@ fn cells(m: &Matrix) -> Vec<Cell> {
         tokio,
         unstable,
         ct_only,
-        dwarf_version: 4,
-        programs: None,
     };
     let mut cells = Vec::new();
     for tokio in &m.tokio.versions {
@@ -146,16 +144,6 @@ fn cells(m: &Matrix) -> Vec<Cell> {
     for tokio in roles(m, &m.cells.ct_only_tokio) {
         cells.push(cell(&m.primary.toolchain, tokio, false, true));
     }
-    for provenance in &m.provenance {
-        cells.push(Cell {
-            toolchain: provenance.toolchain.clone(),
-            tokio: provenance.tokio.clone(),
-            unstable: provenance.unstable,
-            ct_only: false,
-            dwarf_version: provenance.dwarf_version,
-            programs: Some(provenance.programs.clone()),
-        });
-    }
     cells
 }
 
@@ -171,8 +159,6 @@ struct Cell {
     /// only `ct-runtime` compiles, so the cell holds one fixture, and
     /// its goldens pin the multi_thread rows as flavor absences.
     ct_only: bool,
-    dwarf_version: u8,
-    programs: Option<Vec<String>>,
 }
 
 impl Cell {
@@ -186,21 +172,14 @@ impl Cell {
         } else {
             "stable"
         };
-        let suffix = if self.dwarf_version == 4 {
-            String::new()
-        } else {
-            format!("-dw{}", self.dwarf_version)
-        };
-        format!("rust-{}-tokio-{}-{cfg}{suffix}", self.toolchain, self.tokio)
+        format!("rust-{}-tokio-{}-{cfg}", self.toolchain, self.tokio)
     }
 
     /// The fixtures the cell builds and extracts: everything, except
     /// that a ct-only build compiles only the fixture that never asks
     /// for the multi_thread scheduler.
     fn programs(&self) -> Vec<&str> {
-        if let Some(programs) = &self.programs {
-            programs.iter().map(String::as_str).collect()
-        } else if self.ct_only {
+        if self.ct_only {
             vec!["ct-runtime"]
         } else {
             PROGRAMS.to_vec()
@@ -208,10 +187,7 @@ impl Cell {
     }
 
     fn is_primary(&self, m: &Matrix) -> bool {
-        self.dwarf_version == 4
-            && self.unstable
-            && self.tokio == m.primary.tokio
-            && self.toolchain == m.primary.toolchain
+        self.unstable && self.tokio == m.primary.tokio && self.toolchain == m.primary.toolchain
     }
 
     /// Where `regen.sh` lands this cell's binaries.
@@ -256,7 +232,6 @@ impl Cell {
             unstable: self.unstable,
             ct_only: self.ct_only,
             debug_info: true,
-            dwarf_version: self.dwarf_version,
             dwp: false,
         };
         testrun::once_per_run(
@@ -275,7 +250,6 @@ impl Cell {
                     .arg(&self.tokio)
                     .arg("--toolchain")
                     .arg(&self.toolchain)
-                    .args(["--dwarf-version", &self.dwarf_version.to_string()])
                     .args(if self.ct_only {
                         &["--ct-only"][..]
                     } else if self.unstable {
@@ -469,7 +443,6 @@ fn test_matrix() {
                 if *program == "delegation-cases" {
                     let found = exegesis::testkit::assert_instrumented_sources(
                         &cell.dwarf_path(&matrix, program),
-                        u16::from(cell.dwarf_version),
                     );
                     assert_eq!(
                         found,

@@ -6,7 +6,6 @@ use crate::Inputs;
 
 use serde::Deserialize;
 
-use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 #[derive(Deserialize)]
@@ -16,10 +15,6 @@ pub struct Matrix {
     pub tokio: Axis,
     pub toolchain: Axis,
     pub cells: Cells,
-    #[serde(default)]
-    pub provenance: Vec<Provenance>,
-    #[serde(default)]
-    pub capture: BTreeMap<String, Capture>,
 }
 
 #[derive(Deserialize)]
@@ -44,22 +39,6 @@ pub struct Cells {
     pub ct_only_tokio: Vec<String>,
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Provenance {
-    pub toolchain: String,
-    pub tokio: String,
-    pub unstable: bool,
-    pub dwarf_version: u8,
-    pub programs: Vec<String>,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Capture {
-    pub dwarf_version: u8,
-}
-
 impl Matrix {
     pub fn load() -> Self {
         Self::read(&PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../test-programs"))
@@ -68,20 +47,7 @@ impl Matrix {
     pub fn read(dir: &Path) -> Self {
         let path = dir.join("matrix.toml");
         let text = std::fs::read_to_string(&path).expect("read fixture matrix");
-        let matrix: Self = toml::from_str(&text).expect("parse fixture matrix");
-        for cell in &matrix.provenance {
-            assert!(matches!(cell.dwarf_version, 4 | 5), "invalid DWARF version");
-            assert!(matrix.toolchain.versions.contains(&cell.toolchain));
-            assert!(matrix.tokio.versions.contains(&cell.tokio));
-            assert!(!cell.programs.is_empty());
-        }
-        for recipe in matrix.capture.values() {
-            assert!(
-                matches!(recipe.dwarf_version, 4 | 5),
-                "invalid DWARF version"
-            );
-        }
-        matrix
+        toml::from_str(&text).expect("parse fixture matrix")
     }
 
     pub fn primary_recipe(&self) -> Recipe {
@@ -91,12 +57,15 @@ impl Matrix {
             unstable: true,
             ct_only: false,
             debug_info: true,
-            dwarf_version: 4,
             dwp: false,
         }
     }
 
-    pub fn capture_recipe(&self, set: &str, program: &str) -> Recipe {
+    /// The recipe every pair in `set` is captured with: the primary
+    /// build, or the floor's lockfile for the version-endpoint set. The
+    /// program is not a parameter — every program in a set shares its
+    /// recipe.
+    pub fn capture_recipe(&self, set: &str) -> Recipe {
         assert!(
             matches!(set, "illumos" | "linux" | "linux-floor"),
             "unknown capture set {set}"
@@ -104,9 +73,6 @@ impl Matrix {
         let mut recipe = self.primary_recipe();
         if set.ends_with("-floor") {
             recipe.tokio = self.tokio.floor.clone();
-        }
-        if let Some(capture) = self.capture.get(program) {
-            recipe.dwarf_version = capture.dwarf_version;
         }
         recipe
     }
@@ -124,53 +90,25 @@ pub struct Recipe {
     pub unstable: bool,
     pub ct_only: bool,
     pub debug_info: bool,
-    pub dwarf_version: u8,
     pub dwp: bool,
 }
 
 impl Recipe {
-    pub fn source_checksums(&self) -> &'static str {
-        if self.debug_info && self.dwarf_version == 5 && !self.dwp {
-            "compiler-assembly-v1"
-        } else {
-            "none"
-        }
-    }
-
     pub fn text(&self) -> String {
         format!(
-            "toolchain={}\ntokio={}\nunstable={}\nct_only={}\ndebug_info={}\ndwarf_version={}\ndwp={}\nsource_checksums={}\n",
+            "toolchain={}\ntokio={}\nunstable={}\nct_only={}\ndebug_info={}\ndwp={}\n",
             self.toolchain,
             self.tokio,
             u8::from(self.unstable),
             u8::from(self.ct_only),
             u8::from(self.debug_info),
-            self.dwarf_version,
             u8::from(self.dwp),
-            self.source_checksums()
         )
-    }
-
-    pub fn cell_name(&self) -> String {
-        let cfg = if self.ct_only {
-            "ctonly"
-        } else if self.unstable {
-            "unstable"
-        } else {
-            "stable"
-        };
-        let suffix = if self.dwarf_version == 4 {
-            String::new()
-        } else {
-            format!("-dw{}", self.dwarf_version)
-        };
-        format!("rust-{}-tokio-{}-{cfg}{suffix}", self.toolchain, self.tokio)
     }
 
     pub fn target_recipe(&self) -> Self {
         Self {
             debug_info: false,
-            dwarf_version: 4,
             dwp: false,
             ..self.clone()
         }
@@ -199,16 +137,6 @@ impl Recipe {
         inputs
             .file(&dir.join(self.lockfile(matrix)))
             .file(&dir.join("src/bin").join(format!("{program}.rs")));
-        if self.source_checksums() != "none" {
-            for path in [
-                "../testrun/src/bin/checksum-linker.rs",
-                "../testrun/Cargo.toml",
-                "../Cargo.toml",
-                "../Cargo.lock",
-            ] {
-                inputs.file(&dir.join(path));
-            }
-        }
         inputs.finish()
     }
 
@@ -233,11 +161,9 @@ mod tests {
         let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../test-programs");
         let mut recipe = Matrix::read(&dir).primary_recipe();
         recipe.debug_info = true;
-        recipe.dwarf_version = 5;
         recipe.dwp = true;
         let target = recipe.target_recipe();
         assert!(!target.debug_info);
-        assert_eq!(target.dwarf_version, 4);
         assert!(!target.dwp);
         assert_eq!(target.toolchain, recipe.toolchain);
         assert_eq!(target.tokio, recipe.tokio);
@@ -245,22 +171,23 @@ mod tests {
         assert_eq!(target.ct_only, recipe.ct_only);
     }
 
+    /// A bundle-only flag is part of the recipe: flipping it changes the
+    /// reuse digest and the capture record, while the target recipe,
+    /// which never carries it, stays what it was.
     #[test]
-    fn test_dwarf_only_change_invalidates_reuse_and_capture() {
+    fn test_flag_only_change_invalidates_reuse_and_capture() {
         let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../test-programs");
         let matrix = Matrix::read(&dir);
         let mut recipe = matrix.primary_recipe();
         let before = recipe.inputs(&dir, &matrix, "simple-await");
         let capture = recipe.capture_record(&dir, &matrix, "linux", "simple-await");
-        let name = recipe.cell_name();
-        recipe.dwarf_version = 5;
+        recipe.dwp = true;
         assert_ne!(before, recipe.inputs(&dir, &matrix, "simple-await"));
         assert_ne!(
             capture,
             recipe.capture_record(&dir, &matrix, "linux", "simple-await")
         );
-        assert_ne!(name, recipe.cell_name());
-        assert_eq!(recipe.target_recipe().dwarf_version, 4);
+        assert!(!recipe.target_recipe().dwp);
 
         let temporary = tempfile::tempdir().unwrap();
         let stamp = temporary.path().join("build");

@@ -47,13 +47,3 @@ secondary_toolchain_tokio = ["floor", "primary", "latest"]
 # bound" shape the flavor capability machinery emits. Only ct-runtime
 # builds without that scheduler, so the cell holds one fixture.
 ct_only_tokio = ["primary"]
-
-[[provenance]]
-toolchain = "1.98.0"
-tokio = "1.52.4"
-unstable = true
-dwarf_version = 5
-programs = ["delegation-cases"]
-
-[capture.delegation-cases]
-dwarf_version = 5

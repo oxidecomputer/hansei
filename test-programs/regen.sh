@@ -39,14 +39,6 @@
 #                    .dwp package side by side under fixtures/bin/dwp.
 #                    ELF hosts only — this is the Linux split shape; the
 #                    dSYM covers the same ground on macOS.
-#   --dwarf-version 4|5
-#                    select the line-table version (default 4). Full,
-#                    unsplit DWARF-5 builds reassemble saved compiler
-#                    assembly to retain its real source-file checksums;
-#                    see testrun/src/bin/checksum-linker.rs. This needs
-#                    clang and the native C linker driver (gcc on illumos,
-#                    cc elsewhere). No-debug and packed builds omit this
-#                    checksum capability.
 #
 # The tokio/toolchain/unstable axes come from matrix.toml. A build with
 # any non-primary axis value is a matrix *cell*: it is compiled from a
@@ -71,7 +63,6 @@ UNSTABLE=1
 CT_ONLY=0
 DEBUG_INFO=1
 DWP=0
-DWARF_VERSION=4
 PROGRAMS=()
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -81,15 +72,10 @@ while [[ $# -gt 0 ]]; do
         --ct-only) CT_ONLY=1; UNSTABLE=0; shift ;;
         --no-debug-info) DEBUG_INFO=0; shift ;;
         --dwp) DWP=1; shift ;;
-        --dwarf-version) DWARF_VERSION="${2:-}"; shift 2 ;;
         --*) echo "regen.sh: unknown option $1" >&2; exit 2 ;;
         *) PROGRAMS+=("$1"); shift ;;
     esac
 done
-case "$DWARF_VERSION" in
-    4|5) ;;
-    *) echo "regen.sh: --dwarf-version must be 4 or 5" >&2; exit 2 ;;
-esac
 if [[ ${#PROGRAMS[@]} -eq 0 ]]; then
     if [[ "$CT_ONLY" == 1 ]]; then
         PROGRAMS=(ct-runtime)
@@ -138,14 +124,9 @@ else
     CFG_SUFFIX=stable
 fi
 CELL="rust-$TOOLCHAIN-tokio-$TOKIO-$CFG_SUFFIX"
-DWARF_SUFFIX=""
-if [[ "$DWARF_VERSION" != 4 ]]; then
-    DWARF_SUFFIX="-dw$DWARF_VERSION"
-    CELL="$CELL$DWARF_SUFFIX"
-fi
 
 if [[ "$LOCK" == "Cargo.lock" && "$TOOLCHAIN" == "$PRIMARY_TOOLCHAIN" \
-      && "$UNSTABLE" == 1 && "$DWARF_VERSION" == 4 ]]; then
+      && "$UNSTABLE" == 1 ]]; then
     # The primary build: in place, with the everyday dirs, exactly the
     # recipe the golden tests and the dev loop have always used.
     BIN_DIR="${REGEN_BIN_DIR:-$FIXTURES/bin}"
@@ -155,7 +136,7 @@ else
     # lockfile. One copy and one target dir per (toolchain, unstable)
     # pair — switching tokio versions inside a pair swaps only the
     # lockfile, so the pair's std/dep cache is shared.
-    PAIR="rust-$TOOLCHAIN-$CFG_SUFFIX$DWARF_SUFFIX"
+    PAIR="rust-$TOOLCHAIN-$CFG_SUFFIX"
     CRATE_DIR="$FIXTURES/cells/$PAIR/crate"
     mkdir -p "$CRATE_DIR"
     rsync -a --delete Cargo.toml src "$CRATE_DIR/"
@@ -188,38 +169,15 @@ else
     export RUSTFLAGS=""
     FEATURES=(--no-default-features --features full-tokio)
 fi
-export RUSTFLAGS="$RUSTFLAGS -C dwarf-version=$DWARF_VERSION"
 export CARGO_PROFILE_RELEASE_DEBUG=$((DEBUG_INFO ? 2 : 0))
 export CARGO_TARGET_DIR="$TARGET_DIR"
 
-SOURCE_CHECKSUMS=none
-if [[ "$DWARF_VERSION" == 5 && "$DEBUG_INFO" == 1 && "$DWP" == 0 ]]; then
-    SOURCE_CHECKSUMS=compiler-assembly-v1
-    cargo build --locked --manifest-path "$PWD/../Cargo.toml" \
-        --target-dir "$FIXTURES/host-tools" -p testrun --bin checksum-linker
-    CHECKSUM_TOOL="$FIXTURES/host-tools/debug/checksum-linker"
-    CHECKSUM_ID="$("$CHECKSUM_TOOL" --recipe-id)"
-    CHECKSUM_LINKER="$FIXTURES/host-tools/checksum-linker-$CHECKSUM_ID"
-    # Cargo fingerprints the linker argument, not that executable's bytes.
-    # A content-specific path makes a helper change actually relink B.
-    if [[ ! -f "$CHECKSUM_LINKER" ]]; then
-        cp "$CHECKSUM_TOOL" "$CHECKSUM_LINKER.tmp$$"
-        mv "$CHECKSUM_LINKER.tmp$$" "$CHECKSUM_LINKER"
-    fi
-    for p in "${PROGRAMS[@]}"; do
-        (cd "$CRATE_DIR" && \
-            cargo "+$TOOLCHAIN" rustc --locked --release "${FEATURES[@]}" --bin "$p" -- \
-                --emit=asm,link -C save-temps \
-                -C "linker=$CHECKSUM_LINKER")
-    done
-else
-    bins=()
-    for p in "${PROGRAMS[@]}"; do
-        bins+=(--bin "$p")
-    done
-    (cd "$CRATE_DIR" && \
-        cargo "+$TOOLCHAIN" build --locked --release "${FEATURES[@]}" "${bins[@]}")
-fi
+bins=()
+for p in "${PROGRAMS[@]}"; do
+    bins+=(--bin "$p")
+done
+(cd "$CRATE_DIR" && \
+    cargo "+$TOOLCHAIN" build --locked --release "${FEATURES[@]}" "${bins[@]}")
 
 mkdir -p "$BIN_DIR"
 
@@ -265,9 +223,7 @@ tokio=$TOKIO
 unstable=$UNSTABLE
 ct_only=$CT_ONLY
 debug_info=$DEBUG_INFO
-dwarf_version=$DWARF_VERSION
 dwp=$DWP
-source_checksums=$SOURCE_CHECKSUMS
 EOF
     mv -f "$BIN_DIR/$p.recipe.tmp$$" "$BIN_DIR/$p.recipe"
 done

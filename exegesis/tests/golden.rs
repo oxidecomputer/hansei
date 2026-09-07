@@ -2101,53 +2101,19 @@ fn test_golden_blocking_pool() {
 
 /// The one `Instrumented` future the fixture holds wraps `Probe<8>`, so
 /// the source inventory covers exactly that `poll` and nothing else in
-/// tracing's `instrument.rs`.
-fn assert_instrumented_poll(dwarf: &Path, version: u16) {
-    let found = exegesis::testkit::assert_instrumented_sources(dwarf, version);
+/// tracing's `instrument.rs` — the declaration-to-source association a
+/// third-party delegation rule's origin evidence is read from.
+#[test]
+fn test_golden_delegation_cases() {
+    run_golden("delegation-cases");
+    let dwarf = dwarf_path("delegation-cases");
+    let found = exegesis::testkit::assert_instrumented_sources(&dwarf);
     assert_eq!(
         found,
         std::collections::BTreeSet::from(["poll<delegation_cases::Probe<8>>".to_owned()]),
         "{}: Instrumented inventory covered the wrong functions",
         dwarf.display()
     );
-}
-
-#[test]
-fn test_golden_delegation_cases() {
-    run_golden("delegation-cases");
-    assert_instrumented_poll(&dwarf_path("delegation-cases"), 4);
-}
-
-#[test]
-fn test_delegation_source_checksums() {
-    assert!(
-        toolchain_installed(),
-        "the positive provenance fixture requires {TOOLCHAIN}"
-    );
-    let dir = test_programs_dir();
-    let matrix = testrun::fixture::Matrix::read(&dir);
-    let mut recipe = matrix.primary_recipe();
-    recipe.dwarf_version = 5;
-    testrun::once_per_run(
-        &built_stamp("delegation-cases-dw5"),
-        || recipe.inputs(&dir, &matrix, "delegation-cases"),
-        || {
-            let status = Command::new(dir.join("regen.sh"))
-                .args(["--dwarf-version", "5", "delegation-cases"])
-                .status()
-                .unwrap();
-            assert!(status.success());
-        },
-    );
-    let binary = dir
-        .join("fixtures/bin")
-        .join(recipe.cell_name())
-        .join("delegation-cases");
-    let dsym = binary
-        .with_extension("dSYM")
-        .join("Contents/Resources/DWARF/delegation-cases");
-    let dwarf = if dsym.exists() { dsym } else { binary };
-    assert_instrumented_poll(&dwarf, 5);
 }
 
 #[test]

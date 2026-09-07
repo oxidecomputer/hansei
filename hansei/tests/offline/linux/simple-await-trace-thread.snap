@@ -2,5 +2,5 @@
 source: hansei/src/offline.rs
 description: "`trace` over linux/simple-await"
 ---
-lwp 3779842 native stack:
+lwp 1652504 native stack:
 0xADDR

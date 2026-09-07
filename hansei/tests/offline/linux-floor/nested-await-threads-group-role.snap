@@ -3,6 +3,6 @@ source: hansei/src/offline.rs
 description: "`threads --group role` over linux-floor/nested-await"
 ---
 COUNT  ROLE             LWPS
-    2  worker           3784233, 3784234
-    1  entered runtime  3784231
+    2  worker           1657960, 1657961
+    1  entered runtime  1657958
 [2 groups]

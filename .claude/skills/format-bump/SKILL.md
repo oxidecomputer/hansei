@@ -23,12 +23,13 @@ payloads so git can delta consecutive recaptures (see the module docs);
 a change to the file container alone, not the payload, can convert the
 checked-in files in place instead of recapturing.
 
-A recapture can also be forced from outside the fixtures: the DWARF-5
-`delegation-cases` bundle recipe hashes the workspace `Cargo.lock` among
-its inputs (`testrun/src/fixture.rs`), so a workspace dependency change
-stales that program's `.capture` receipt on every set, and
+Each pair's `.capture` receipt digests what built it: the program's
+source, the test-programs manifest, lockfile and scripts
+(`Recipe::inputs` in `testrun/src/fixture.rs`). Editing any of those
+stales every receipt that hashes it, and
 `test_fixtures_record_the_current_programs` refuses to bless SOURCES
-until `capture-snapshots.sh <set dir> delegation-cases` reruns there.
+until the affected pairs are recaptured. Nothing outside `test-programs`
+is an input.
 
 ## The loop
 
