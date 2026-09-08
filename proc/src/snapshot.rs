@@ -107,13 +107,15 @@ pub enum RecordedHeapEvidence {
 
 /// The resource bounds a capture runs under.
 ///
-/// The recorder logs every successful read, duplicates included until
-/// the snapshot merges them, so a capture that walks an allocator's
-/// caches and slabs can log far more than the merged memory it ends
-/// up holding. These bound that log and the written file. They are
-/// bounds on resources, not on evidence: reaching one fails the
-/// capture (see [`LimitExceeded`]) rather than trimming what it records
-/// or relaxing what its reads were gated by.
+/// The recorder logs every successful read that reaches memory no
+/// logged read covers whole, so a capture that walks an allocator's
+/// caches and slabs, or reads the same wait queue once per task parked
+/// on it, logs each byte about once — but a log of partial overlaps
+/// can still hold more than the merged memory it ends up as. These
+/// bound that log and the written file. They are bounds on resources,
+/// not on evidence: reaching one fails the capture (see
+/// [`LimitExceeded`]) rather than trimming what it records or relaxing
+/// what its reads were gated by.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct CaptureLimits {
     /// Bytes the read log may hold, charged per read before the bytes
@@ -446,7 +448,8 @@ impl Target for Snapshot {
 pub struct Recorder<'a, T> {
     target: &'a T,
     limits: CaptureLimits,
-    /// Every successful read, in order; overlaps are resolved at
+    /// Every successful read that reached memory no earlier read
+    /// covers whole, in order; partial overlaps are resolved at
     /// [`Recorder::snapshot`] time (later reads win).
     log: Mutex<ReadLog>,
     by_addr: Mutex<BTreeMap<u64, Option<SymbolBuf>>>,
@@ -460,12 +463,49 @@ pub struct Recorder<'a, T> {
 struct ReadLog {
     reads: Vec<Segment>,
     bytes: u64,
+    /// The memory the log holds so far, as disjoint maximal runs keyed
+    /// by start: what says a read is already recorded whole. An
+    /// analysis reads the same bytes many times over — a wait queue
+    /// once per task parked on it, a slab per buffer in it — and the
+    /// snapshot they merge into is the same whether the log holds each
+    /// read once or a thousand times; only the log's size is not. A
+    /// target that changes between two reads of the same bytes would
+    /// replay the first — no capture is taken from one.
+    covered: BTreeMap<u64, u64>,
     /// The first limit the log exceeded. Set once and never cleared:
     /// from then on the log admits nothing and no snapshot assembles.
     failed: Option<LimitExceeded>,
 }
 
 impl ReadLog {
+    /// Whether `addr..end` lies whole inside one run already logged.
+    fn covers(&self, addr: u64, end: u64) -> bool {
+        self.covered
+            .range(..=addr)
+            .next_back()
+            .is_some_and(|(_, &run_end)| end <= run_end)
+    }
+
+    /// Fold `addr..end` into the runs, merging every run it touches.
+    fn cover(&mut self, addr: u64, end: u64) {
+        let (mut start, mut stop) = (addr, end);
+        // The runs are disjoint and sorted, so those touching this one
+        // are the last few starting at or before its end.
+        let touching: Vec<u64> = self
+            .covered
+            .range(..=stop)
+            .rev()
+            .take_while(|&(_, &run_end)| run_end >= start)
+            .map(|(&run_start, _)| run_start)
+            .collect();
+        for run_start in touching {
+            let run_end = self.covered.remove(&run_start).unwrap();
+            start = start.min(run_start);
+            stop = stop.max(run_end);
+        }
+        self.covered.insert(start, stop);
+    }
+
     /// Admit a read of `len` bytes, or say which limit it would take
     /// the log past. Charged before the bytes are copied, so a read the
     /// log cannot afford costs nothing but the check.
@@ -617,15 +657,26 @@ impl<T: Target> Target for Recorder<'_, T> {
         // hand back the wrapped target's own storage. The copy is
         // charged against the limits first, and a read the log cannot
         // afford fails here — the wrapped target's answer is not lent
-        // either, since a capture that reaches a limit is over.
+        // either, since a capture that reaches a limit is over. A read
+        // the log already holds whole is lent without a copy or a
+        // charge, but only while the capture is still one: past a
+        // limit every read is refused, recorded or not.
         let bytes = self.target.read_bytes(addr, len)?;
         let mut log = self.log.lock().unwrap();
+        if let Some(failed) = log.failed {
+            return Err(TargetError::capture_limit(failed));
+        }
+        let end = addr.saturating_add(bytes.len() as u64);
+        if log.covers(addr, end) {
+            return Ok(bytes);
+        }
         log.charge(&self.limits, bytes.len() as u64)
             .map_err(TargetError::capture_limit)?;
         log.reads.push(Segment {
             addr,
             bytes: bytes.to_vec(),
         });
+        log.cover(addr, end);
         Ok(bytes)
     }
 
@@ -988,6 +1039,83 @@ mod tests {
         );
     }
 
+    /// A read a logged run already covers whole is lent without being
+    /// logged or charged again — and a run is what the reads merged
+    /// into, so an overlap that joins two runs covers what spans them.
+    /// A partial overlap is a new read, logged as ever. The snapshot is
+    /// the same either way; the account is what differs.
+    #[test]
+    fn test_a_covered_read_is_not_logged_again() {
+        let target = FakeTarget::new();
+        let rec = Recorder::new(&target);
+        let size = |bytes, entries| ReadLogSize { bytes, entries };
+        rec.read_bytes(0x1000, 8).unwrap();
+        assert_eq!(rec.charged(), size(8, 1));
+        // The same read, and reads inside it: nothing new.
+        rec.read_bytes(0x1000, 8).unwrap();
+        rec.read_bytes(0x1002, 4).unwrap();
+        rec.read_bytes(0x1007, 1).unwrap();
+        assert_eq!(rec.charged(), size(8, 1));
+        // A partial overlap reaches memory the log lacks: logged whole.
+        rec.read_bytes(0x1004, 8).unwrap();
+        assert_eq!(rec.charged(), size(16, 2));
+        // An adjacent run joins the merged one, and a read spanning
+        // what were three reads is now covered by the one run.
+        rec.read_bytes(0x100c, 4).unwrap();
+        assert_eq!(rec.charged(), size(20, 3));
+        rec.read_bytes(0x1000, 16).unwrap();
+        assert_eq!(rec.charged(), size(20, 3));
+        // A read bridging two separate runs is logged, and the runs
+        // become one.
+        rec.read_bytes(0x1020, 8).unwrap();
+        rec.read_bytes(0x1010, 16).unwrap();
+        assert_eq!(rec.charged(), size(44, 5));
+        rec.read_bytes(0x1000, 40).unwrap();
+        assert_eq!(rec.charged(), size(44, 5));
+        assert_eq!(
+            rec.log.lock().unwrap().covered,
+            BTreeMap::from([(0x1000, 0x1028)])
+        );
+
+        let snap = rec.snapshot(RecordedHeapEvidence::Unavailable).unwrap();
+        assert_eq!(
+            snap.read_bytes(0x1000, 40).unwrap(),
+            target.at(0x1000, 40).unwrap()
+        );
+        assert_eq!(snap.segments().collect::<Vec<_>>(), vec![0x1000..0x1028]);
+    }
+
+    /// Past a limit, a covered read is refused like any other: the
+    /// capture is over, and lending recorded bytes would let an
+    /// analysis run on past the point the snapshot stops recording it.
+    #[test]
+    fn test_a_covered_read_is_refused_past_the_limit() {
+        let target = FakeTarget::new();
+        let rec = Recorder::with_limits(
+            &target,
+            CaptureLimits {
+                read_log_entries: 1,
+                ..CaptureLimits::default()
+            },
+        );
+        rec.read_bytes(0x1000, 8).unwrap();
+        rec.read_bytes(0x1000, 8).unwrap();
+        let err = rec.read_bytes(0x1100, 8).unwrap_err();
+        let exceeded = rec
+            .failure()
+            .expect("the second distinct read is the violation");
+        assert_eq!(err.to_string(), exceeded.to_string());
+        let err = rec.read_bytes(0x1000, 8).unwrap_err();
+        assert_eq!(err.to_string(), exceeded.to_string());
+        assert_eq!(
+            rec.charged(),
+            ReadLogSize {
+                bytes: 8,
+                entries: 1
+            }
+        );
+    }
+
     #[test]
     fn test_later_reads_win_overlaps() {
         use std::sync::atomic::{AtomicUsize, Ordering};
@@ -1265,8 +1393,9 @@ mod tests {
             },
         );
         rec.read_bytes(0x1000, 32).unwrap();
-        // Served no bytes: an entry, but no charge against the bytes.
-        rec.read_bytes(0x1000, 0).unwrap();
+        // Served no bytes, from memory nothing logged covers: an
+        // entry, but no charge against the bytes.
+        rec.read_bytes(0x2000, 0).unwrap();
         assert_eq!(
             rec.charged(),
             ReadLogSize {
@@ -1274,9 +1403,9 @@ mod tests {
                 entries: 2
             }
         );
-        assert_eq!(rec.read_bytes(0x1000, 8).unwrap().len(), 8);
+        assert_eq!(rec.read_bytes(0x1100, 8).unwrap().len(), 8);
 
-        let err = rec.read_bytes(0x1000, 1).unwrap_err();
+        let err = rec.read_bytes(0x1200, 1).unwrap_err();
         let exceeded = LimitExceeded {
             limit: Limit::ReadLogBytes,
             charged: 41,
