@@ -401,7 +401,6 @@ fn render_chain(out: &mut String, chain: &AwaitChain<'_>) {
         }
     }
     let end = match &chain.end {
-        ChainEnd::Leaf => "leaf".to_owned(),
         ChainEnd::Primitive => "primitive".to_owned(),
         ChainEnd::Unresumed => "unresumed".to_owned(),
         ChainEnd::Returned => "returned".to_owned(),

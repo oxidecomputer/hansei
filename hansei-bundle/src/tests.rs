@@ -2,13 +2,13 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+use crate::Encoding;
 use crate::Error;
 use crate::io::{FORMAT_VERSION, MAGIC};
 use crate::schema::*;
 use crate::strings::{StrRef, StringInterner};
-use crate::{BundleView, Encoding};
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 mod semantics;
 
@@ -1596,9 +1596,6 @@ fn test_exact_symbol_collisions_survive_roundtrip() {
         b.dyn_futures.candidates(COLLIDING_SYMBOL),
         b.dyn_futures.by_symbol[COLLIDING_SYMBOL].as_slice()
     ));
-    let view = BundleView::new(&b);
-    let ids: BTreeSet<_> = view.future_type_ids().collect();
-    assert_eq!(ids, BTreeSet::from([BundleTypeId(0), BundleTypeId(1)]));
 }
 
 #[test]

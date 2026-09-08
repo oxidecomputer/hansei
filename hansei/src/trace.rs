@@ -848,7 +848,7 @@ fn print_chain_end(
     out: &mut dyn io::Write,
 ) -> Result<()> {
     match &chain.end {
-        bundle::ChainEnd::Leaf | bundle::ChainEnd::Primitive => {}
+        bundle::ChainEnd::Primitive => {}
         bundle::ChainEnd::Unresumed => {
             writeln!(out, "the chain ends in a future that has never been polled")?;
         }
@@ -1598,7 +1598,6 @@ mod chain_end_tests {
     /// A leaf ended the chain normally: there is nothing to explain.
     #[test]
     fn test_a_leaf_prints_nothing() {
-        assert_eq!(rendered(ChainEnd::Leaf), "");
         assert_eq!(rendered(ChainEnd::Primitive), "");
     }
 
@@ -2950,7 +2949,6 @@ mod trace_render_tests {
             future: reify::Value::new(ty, 0, &[]),
             state: None,
             dyn_symbol: None,
-            inner: None,
         };
         let theme = output::Theme::plain();
         assert_eq!(super::frame_detail(&frame, 0, &theme), None);

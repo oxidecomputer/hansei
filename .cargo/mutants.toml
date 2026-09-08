@@ -168,25 +168,6 @@ exclude_re = [
     # local-set-io listing), this only stops the sweep from reporting
     # the one gate no input can distinguish.
     "replace < with <= in Context<'b, T>::discover_hidden_tasks",
-    # Weakening the member filter of abandoned_acquires' frame scan
-    # (`size == 0 || starts_with("__")` to `&&`) admits compiler slots
-    # and ZSTs to local_acquire, and neither can become a row: a ZST
-    # has no bytes to decode an acquire from, and a sized `__` member
-    # is the active awaitee, whose chain bottoms at the active leaf —
-    # an acquire there is the very node the active_node/queued filter
-    # drops, and a chain that fails before the leaf fails local_acquire
-    # the same way. Equivalent on every reachable input.
-    "replace \\|\\| with && in Context<'b, T>::abandoned_acquires",
-    # rustc's DWARF lays every enum variant payload at the enum's own
-    # address — variant members carry enum-relative offsets, and the
-    # decoded payload offset is structurally zero, for coroutine state
-    # enums and repr(C) enums alike (walk_shapes pins the convention).
-    # Adding or subtracting a zero offset is the same address, so the
-    # mutant on await_chain's payload placement cannot be told apart on
-    # any input a rustc-built target produces. (The regex also matches
-    # the payload slice bound a few lines up; that one every chain test
-    # kills, so skipping its report costs nothing.)
-    "bundle.rs.*replace \\+ with - in Context<'b, T>::await_chain",
     # The engine slices a coroutine's variant payload at the state's
     # address plus the payload's offset, which rustc lays at zero for
     # every coroutine state (the discriminant sits among the members):

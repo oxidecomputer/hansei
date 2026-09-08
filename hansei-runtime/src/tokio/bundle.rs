@@ -28,10 +28,9 @@ use anyhow::{Context as _, Result, anyhow, bail, ensure};
 use hansei_bundle::symbols::normalized_v0_key;
 use hansei_bundle::tokio::{semaphore, timer};
 use hansei_bundle::{
-    AccessKind, BundleType, BundleTypeId, BundleView, ContainerKind, DynPointer, FutureKind,
-    IoOperationKind, ResourceKind, StaticRole, Step, StoragePolicy, SymbolLookup, TaskEntryId,
-    TaskFutureEntry, TypeDef, TypeSemantics, WalkOutcome, WalkRole, strip_build_prefix,
-    strip_llvm_suffix,
+    AccessKind, BundleType, BundleTypeId, BundleView, ContainerKind, FutureKind, IoOperationKind,
+    ResourceKind, StaticRole, Step, StoragePolicy, SymbolLookup, TaskEntryId, TaskFutureEntry,
+    TypeDef, TypeSemantics, WalkOutcome, WalkRole, strip_build_prefix, strip_llvm_suffix,
 };
 use proc::{LwpInfo, Mappings, SymbolBuf, Target};
 use reify::Value;
@@ -45,17 +44,6 @@ use std::collections::BTreeMap;
 /// memory (or a pathological program), and the walk must report it
 /// rather than hang.
 pub(crate) const MAX_AWAIT_DEPTH: usize = 64;
-
-/// How far to unwrap a member's type looking for the future inside it
-/// (see [`Context::is_future`]). Real wrapper stacks are two or three
-/// deep; the bound is what keeps a recursive type from spinning.
-const MAX_WRAPPER_DEPTH: usize = 8;
-
-/// Rust vtables place the drop-in-place glue in slot 0, size and align
-/// in slots 1 and 2, and the trait's methods after; `Future`'s only
-/// method is `poll`, so it is slot 3.
-const VTABLE_SLOT_DROP: u64 = 0;
-const VTABLE_SLOT_FUTURE_POLL: u64 = 3;
 
 /// The io resource types the fd join recognizes: the fully-qualified
 /// name a frame member (or its pointee) must bear, and the two walk
@@ -122,13 +110,6 @@ mod blocking_filter_tests {
             "tokio::runtime::whatever"
         ));
     }
-}
-
-#[derive(Copy, Clone, Debug)]
-pub(crate) enum LeafKind {
-    Sleep,
-    JoinHandle,
-    SemaphoreAcquire,
 }
 
 /// The list a task's recorded scheduler `S` binds it into — see
@@ -1205,341 +1186,6 @@ impl<'b, T: Target> Context<'b, T> {
     // Task tracing
     // -----------------------------------------------------------------------
 
-    /// Decode a task's `Stage<T>`: the future lives at
-    /// `header_addr + offset(Cell.core) + offset(Core.stage)`, and the
-    /// stage's discriminant says whether the state machine is resident.
-    ///
-    /// Requires the future type to have been resolved; an unknown
-    /// future has no `Cell` layout to interpret the memory with, and we
-    /// never guess.
-    pub fn task_stage(&self, task: &Task) -> Result<TaskStage<'b>> {
-        let known = match &task.future {
-            FutureInfo::Known(known) => known,
-            FutureInfo::Unknown { poll_symbol } => {
-                let sym = poll_symbol
-                    .as_ref()
-                    .map(|s| format!(" (poll symbol {s})"))
-                    .unwrap_or_default();
-                bail!(
-                    "the task's future type is not in the tokio info{sym}; nothing can be traced"
-                );
-            }
-            FutureInfo::Ambiguous { symbol, candidates } => bail!(
-                "the task's future symbol {symbol} is ambiguous: {}; nothing can be traced",
-                candidates
-                    .iter()
-                    .map(|c| format!("{} (type {})", c.name, c.ty.0))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ),
-        };
-        let entry = self.task_entry(known.entry);
-        let cell_ty = self.infra_ty(entry.cell, &format!("the Cell of {}", known.display_name))?;
-        let cell = Value::read(self.proc, cell_ty, task.addr.0)
-            .with_context(|| format!("failed to read the task Cell at {:?}", task.addr))?;
-        // Cell.core.stage peels through CoreStage and the UnsafeCells down
-        // to the Stage<T> enum.
-        let stage = self.walk(WalkRole::CellStage).walk_at(cell)?;
-        let (state, payload) = stage
-            .active_variant()
-            .context("failed to decode the task's Stage")?;
-        match state {
-            // The payload peels to its single sized member: T itself for
-            // Running, Result<T::Output, JoinError> for Finished.
-            contract::STAGE_RUNNING => Ok(TaskStage::Running(payload)),
-            contract::STAGE_FINISHED => Ok(TaskStage::Finished(payload)),
-            contract::STAGE_CONSUMED => Ok(TaskStage::Consumed),
-            other => bail!("unexpected Stage variant {other:?}"),
-        }
-    }
-
-    /// Walk a resident future's await chain, outermost future first.
-    ///
-    /// The walk never fails outright: whatever decoded cleanly is in
-    /// [`AwaitChain::frames`], and [`AwaitChain::end`] says why it
-    /// stopped. Corrupt memory is contained by the depth bound and an
-    /// (address, type) cycle guard.
-    pub fn await_chain(&self, root: Value<'b>) -> AwaitChain<'b> {
-        let mut frames: Vec<AwaitFrame<'b>> = Vec::new();
-        let mut visited: HashSet<(u64, BundleTypeId)> = HashSet::default();
-        let mut cur = root;
-        // The dyn-vtable symbol that identified `cur`, when it was not
-        // reached structurally.
-        let mut dyn_symbol: Option<String> = None;
-
-        let end = loop {
-            if frames.len() >= MAX_AWAIT_DEPTH {
-                break ChainEnd::DepthLimit;
-            }
-            if !visited.insert((cur.addr, cur.ty.id())) {
-                break ChainEnd::Cycle { addr: cur.addr };
-            }
-            // A recognized wait primitive is where the chain ends
-            // whatever it holds inside, since [`Context::wait_target`]
-            // reads it as the thing being waited on.
-            let is_primitive = self.leaf_kind(cur.ty.id()).is_some();
-
-            // A future that *is* a dyn wide pointer (a spawned
-            // `Pin<Box<dyn Future>>`): resolve the concrete type through
-            // its vtable before decoding anything.
-            if let Some(dp) = cur.peel().ty.dyn_pointer() {
-                match self.resolve_dyn_future(cur.peel(), &dp) {
-                    Ok(DynAwaitee::Resolved { future, symbol }) => {
-                        cur = future;
-                        dyn_symbol = Some(symbol);
-                        continue;
-                    }
-                    Ok(DynAwaitee::Unknown { poll_symbol }) => {
-                        break ChainEnd::UnknownDyn {
-                            pointee: dp.pointee.name().to_owned(),
-                            poll_symbol,
-                        };
-                    }
-                    Ok(DynAwaitee::Ambiguous { symbol, candidates }) => {
-                        break ChainEnd::AmbiguousDyn {
-                            pointee: dp.pointee.name().to_owned(),
-                            symbol,
-                            candidates,
-                        };
-                    }
-                    Err(e) => break ChainEnd::Error(e),
-                }
-            }
-
-            // Decode the coroutine state. Non-enums are sync primitives,
-            // I/O futures and combinator structs: none has a suspend
-            // state, so none names an awaitee. A wrapper holding exactly
-            // one future is still a step of the chain — see
-            // [`Context::sole_inner_future`] — so it is followed; a
-            // genuine leaf ends the walk.
-            let decoded = match cur.ty.active_variant(cur.bytes) {
-                None => {
-                    let inner = self.sole_inner_future(cur).filter(|_| !is_primitive);
-                    frames.push(AwaitFrame {
-                        future: cur,
-                        state: None,
-                        dyn_symbol: dyn_symbol.take(),
-                        inner: inner.as_ref().map(|(name, _)| *name),
-                    });
-                    let Some((_, inner)) = inner else {
-                        break ChainEnd::Leaf;
-                    };
-                    match inner {
-                        Follow::Next { future, symbol } => {
-                            cur = future;
-                            dyn_symbol = symbol;
-                            continue;
-                        }
-                        Follow::Stop(end) => break end,
-                    }
-                }
-                Some(Ok(v)) => v,
-                Some(Err(e)) => {
-                    let err = anyhow!(e).context(format!(
-                        "failed to decode the state of {} at {:#x}",
-                        cur.ty.name(),
-                        cur.addr,
-                    ));
-                    frames.push(AwaitFrame {
-                        future: cur,
-                        state: None,
-                        dyn_symbol,
-                        inner: None,
-                    });
-                    break ChainEnd::Error(err);
-                }
-            };
-
-            // Coroutine variant members are numbered; their state names
-            // live on the payload structs. An ordinary enum is a
-            // combinator written by hand — `futures_util`'s `Map` is an
-            // `Incomplete { future, f }` — so it names no awaitee, and
-            // what it holds decides whether the chain goes on.
-            let is_coroutine_state =
-                !decoded.name.is_empty() && decoded.name.bytes().all(|b| b.is_ascii_digit());
-
-            // Slice out the variant payload *without* peeling: its
-            // members are the state's live locals.
-            let start = decoded.offset as usize;
-            let size = decoded.ty.size() as usize;
-            let Some(bytes) = cur.bytes.get(start..start + size) else {
-                let err = anyhow!(
-                    "variant payload {}..{} does not fit {} bytes of {}",
-                    start,
-                    start + size,
-                    cur.bytes.len(),
-                    cur.ty.name(),
-                );
-                frames.push(AwaitFrame {
-                    future: cur,
-                    state: None,
-                    dyn_symbol,
-                    inner: None,
-                });
-                break ChainEnd::Error(err);
-            };
-            let payload = Value::new(decoded.ty, cur.addr + decoded.offset, bytes);
-            frames.push(AwaitFrame {
-                future: cur,
-                state: Some(FrameState {
-                    name: decoded.state_name(),
-                    await_loc: decoded.await_loc(),
-                    payload,
-                }),
-                dyn_symbol: dyn_symbol.take(),
-                inner: None,
-            });
-            if !is_coroutine_state {
-                // The variant's payload holds the combinator's live
-                // futures, so the same arity rule decides: one and the
-                // chain goes on through it, none or several and it ends
-                // here.
-                let frame = frames.last_mut().unwrap();
-                let payload = frame.state.as_ref().unwrap().payload;
-                let inner = self.sole_inner_future(payload).filter(|_| !is_primitive);
-                frame.inner = inner.as_ref().map(|(name, _)| *name);
-                match inner {
-                    Some((_, Follow::Next { future, symbol })) => {
-                        cur = future;
-                        dyn_symbol = symbol;
-                        continue;
-                    }
-                    Some((_, Follow::Stop(end))) => break end,
-                    None => break ChainEnd::Leaf,
-                }
-            }
-
-            // A suspended coroutine stores what it awaits in the
-            // variant's `__awaitee` member; states that aren't waiting
-            // (Unresumed, Returned, Panicked) have none.
-            let payload = frames.last().unwrap().state.as_ref().unwrap().payload;
-            let Some(member) = payload.ty.member("__awaitee") else {
-                break ChainEnd::Leaf;
-            };
-            let start = member.offset() as usize;
-            let size = member.ty().size() as usize;
-            let Some(bytes) = payload.bytes.get(start..start + size) else {
-                break ChainEnd::Error(anyhow!(
-                    "__awaitee {}..{} does not fit {} bytes of {}",
-                    start,
-                    start + size,
-                    payload.bytes.len(),
-                    payload.ty.name(),
-                ));
-            };
-            let awaitee = Value::new(member.ty(), payload.addr + member.offset(), bytes);
-
-            match self.follow(awaitee) {
-                Follow::Next { future, symbol } => {
-                    cur = future;
-                    dyn_symbol = symbol;
-                }
-                Follow::Stop(end) => break end,
-            }
-        };
-
-        AwaitChain {
-            frames,
-            edges: Vec::new(),
-            end,
-        }
-    }
-
-    /// Follow one future the chain reached to the frame it stands for.
-    ///
-    /// Wrappers (`Pin`, mainly) hide what the pointer-shaped ones really
-    /// are; plain ones keep their own type so the chain reports e.g.
-    /// `oneshot::Receiver<u32>` rather than whatever its innards peel
-    /// down to.
-    fn follow(&self, awaitee: Value<'b>) -> Follow<'b> {
-        let peeled = awaitee.peel();
-        if let Some(dp) = peeled.ty.dyn_pointer() {
-            // A boxed trait object: only its vtable knows the concrete
-            // type.
-            return match self.resolve_dyn_future(peeled, &dp) {
-                Ok(DynAwaitee::Resolved { future, symbol }) => Follow::Next {
-                    future,
-                    symbol: Some(symbol),
-                },
-                Ok(DynAwaitee::Unknown { poll_symbol }) => Follow::Stop(ChainEnd::UnknownDyn {
-                    pointee: dp.pointee.name().to_owned(),
-                    poll_symbol,
-                }),
-                Ok(DynAwaitee::Ambiguous { symbol, candidates }) => {
-                    Follow::Stop(ChainEnd::AmbiguousDyn {
-                        pointee: dp.pointee.name().to_owned(),
-                        symbol,
-                        candidates,
-                    })
-                }
-                Err(e) => Follow::Stop(ChainEnd::Error(e)),
-            };
-        }
-        if self.leaf_kind(awaitee.ty.id()).is_none() && peeled.ty.pointer_target().is_some()
-        // A recognized wait primitive is a leaf regardless of its
-        // shape; [`Context::wait_target`] interprets it.
-        {
-            // `(&mut fut).await`, `Box<fut>`: follow the thin pointer.
-            return match peeled.deref_ptr(self.proc) {
-                Ok(future) => Follow::Next {
-                    future,
-                    symbol: None,
-                },
-                Err(e) => Follow::Stop(ChainEnd::Error(
-                    anyhow!(e).context("failed to follow an awaited pointer"),
-                )),
-            };
-        }
-        Follow::Next {
-            future: awaitee,
-            symbol: None,
-        }
-    }
-
-    /// The one future a non-coroutine frame holds, where holding exactly
-    /// one is what it means.
-    ///
-    /// A future that is not a coroutine has no suspend state and so names
-    /// no `__awaitee`, but that does not make it the end of the chain: a
-    /// wrapper written by hand — `Instrumented`, `Map`, `MapErr`, the
-    /// `poll` that delegates to one inner future — is as much a step as a
-    /// suspended `async fn`, and stopping at one leaves a task reported as
-    /// waiting on a combinator rather than on whatever it wraps.
-    ///
-    /// What separates a wrapper from a leaf is arity, not spelling, so
-    /// nothing here is keyed by name: a wrapper holds exactly one member
-    /// that is itself a future, while a real leaf (`Notified`, an io
-    /// readiness future) holds none and a combinator that polls several
-    /// (`select!`, `Timeout`, a stream fold) holds more than one. Only the
-    /// first can extend a chain that is a list, so the other two end it.
-    ///
-    /// `scan` is the value whose members are the candidates: the future
-    /// itself where it is a plain struct, and the active variant's
-    /// payload where it is an enum, since that is where a combinator's
-    /// live futures sit.
-    ///
-    /// A type whose `poll` rustc inlined out of the symtab is not in the
-    /// bundle's future set, so a wrapper around it declines and the chain
-    /// ends exactly where it did before — the miss costs the old
-    /// behaviour, not a wrong one.
-    fn sole_inner_future(&self, scan: Value<'b>) -> Option<(&'b str, Follow<'b>)> {
-        let mut sole = None;
-        for member in scan.ty.members() {
-            if !self.is_future(member.ty()) {
-                continue;
-            }
-            if sole.is_some() {
-                return None;
-            }
-            sole = Some(member);
-        }
-        let member = sole?;
-        let start = member.offset() as usize;
-        let bytes = scan.bytes.get(start..start + member.ty().size() as usize)?;
-        let follow = self.follow(Value::new(member.ty(), scan.addr + member.offset(), bytes));
-        Some((member.name(), follow))
-    }
-
     /// Whether a type is a future: one whose `poll` extraction recorded,
     /// a coroutine (whose `poll` may be inlined away, but whose numbered
     /// variants say what it is), a recognized wait primitive, or a boxed
@@ -1592,125 +1238,9 @@ impl<'b, T: Target> Context<'b, T> {
         self.type_semantics(id)?.container.as_ref().map(|c| c.kind)
     }
 
-    /// The wait primitive a type is bound as — what [`Context::wait_target`]
-    /// knows how to read. An io operation binding is a resource too, but
-    /// no reader interprets it yet, so it is no leaf here.
-    pub(crate) fn leaf_kind(&self, id: BundleTypeId) -> Option<LeafKind> {
-        match self.type_semantics(id)?.resource.as_ref()?.kind {
-            ResourceKind::Sleep => Some(LeafKind::Sleep),
-            ResourceKind::JoinHandle => Some(LeafKind::JoinHandle),
-            ResourceKind::SemaphoreAcquire => Some(LeafKind::SemaphoreAcquire),
-            ResourceKind::IoOperation(_) => None,
-        }
-    }
-
-    fn is_future(&self, ty: BundleType<'b>) -> bool {
-        let mut ty = ty;
-        for _ in 0..MAX_WRAPPER_DEPTH {
-            if let Some(dp) = ty.dyn_pointer() {
-                return contract::is_dyn_future_pointee(dp.pointee.name());
-            }
-            if self.recognized_future(ty.id()) {
-                return true;
-            }
-            // Not one itself: unwrap one layer, the way `peel` does, and
-            // ask again. Anything that is not a single-field wrapper
-            // ends the search.
-            let mut sized = ty.members().map(|m| m.ty()).filter(|t| t.size() > 0);
-            match (sized.next(), sized.next()) {
-                (Some(inner), None) => ty = inner,
-                _ => return false,
-            }
-        }
-        false
-    }
-
-    /// Resolve a `dyn Future` wide pointer: read its data and
-    /// vtable pointers from the already-read payload bytes, resolve the
-    /// vtable's poll fn — or its drop glue, for polls internalized out of
-    /// the symtab — through the *target's* symtab, and join the mangled
-    /// symbol against the bundle's dyn-future table. Never guesses.
-    fn resolve_dyn_future(&self, ptr: Value<'b>, dp: &DynPointer<'b>) -> Result<DynAwaitee<'b>> {
-        let word = |off: u64| -> Result<u64> {
-            let bytes = ptr
-                .bytes
-                .get(off as usize..off as usize + 8)
-                .ok_or_else(|| anyhow!("wide-pointer bytes truncated at +{off:#x}"))?;
-            Ok(u64::from_le_bytes(bytes.try_into().unwrap()))
-        };
-        let data = word(dp.data_offset)?;
-        let vtable = word(dp.vtable_offset)?;
-        ensure!(
-            self.mappings.contains_addr(data),
-            "dyn future data pointer {data:#x} is unmapped"
-        );
-        ensure!(
-            self.mappings.contains_addr(vtable),
-            "dyn future vtable pointer {vtable:#x} is unmapped"
-        );
-
-        let mut poll_symbol = None;
-        for slot in [VTABLE_SLOT_FUTURE_POLL, VTABLE_SLOT_DROP] {
-            let fn_addr = self.proc.read_u64(vtable + slot * 8).map_err(|e| {
-                anyhow!(e).context(format!("failed to read slot {slot} of vtable {vtable:#x}"))
-            })?;
-            let Some(symbol) = self.symbol_at(fn_addr) else {
-                continue;
-            };
-            if slot == VTABLE_SLOT_FUTURE_POLL {
-                poll_symbol = Some(symbol.clone());
-            }
-            match self.dyn_future_ids_memoized(&symbol) {
-                SymbolLookup::Unique(id) => {
-                    let ty = self.view.ty(id).expect("validated bundle type id");
-                    let future = Value::read(self.proc, ty, data)
-                        .with_context(|| format!("failed to read {} at {data:#x}", ty.name()))?;
-                    return Ok(DynAwaitee::Resolved { future, symbol });
-                }
-                SymbolLookup::Ambiguous(ids) => {
-                    let candidates = ids
-                        .into_iter()
-                        .filter_map(|id| self.view.ty(id))
-                        .map(|ty| TypeCandidate {
-                            name: ty.name().to_owned(),
-                            ty: ty.id(),
-                        })
-                        .collect();
-                    return Ok(DynAwaitee::Ambiguous { symbol, candidates });
-                }
-                SymbolLookup::Missing => {}
-            }
-        }
-        Ok(DynAwaitee::Unknown { poll_symbol })
-    }
-
     // -----------------------------------------------------------------------
     // The leaf-future knowledge base
     // -----------------------------------------------------------------------
-
-    /// What the chain's leaf future is waiting on, when it is a
-    /// recognized primitive. `list` is the enumerated task list, so a
-    /// join edge can say whether its target is a task any listing shows.
-    ///
-    /// `None` for incomplete chains and unrecognized leaves; `Some(Err)`
-    /// when the leaf was recognized but its innards could not be read
-    /// (torn memory, or a tokio whose internals moved).
-    pub fn wait_target(
-        &self,
-        chain: &AwaitChain<'b>,
-        list: &TaskList,
-    ) -> Option<Result<WaitTarget>> {
-        if !matches!(chain.end, ChainEnd::Leaf) {
-            return None;
-        }
-        let leaf = chain.frames.last()?;
-        let kind = self.leaf_kind(leaf.future.ty.id())?;
-        Some(match kind {
-            LeafKind::Sleep => self.read_sleep(leaf.future),
-            LeafKind::JoinHandle => self.read_join_handle(leaf.future, list),
-            LeafKind::SemaphoreAcquire => self.read_acquire(leaf.future, chain),
-        })
-    }
 
     /// The fd of the io resource registered as `scheduled_io`, where a
     /// known resource type held in `frames` owns that registration —
@@ -1778,19 +1308,6 @@ impl<'b, T: Target> Context<'b, T> {
         Some(None)
     }
 
-    /// `tokio::time::Sleep`: the deadline its timer entry registered.
-    /// Where this tokio keeps it was the binder's business at
-    /// extraction; the recorded steps already spell the route.
-    fn read_sleep(&self, sleep: Value<'b>) -> Result<WaitTarget> {
-        let deadline = self
-            .sleep_deadline(sleep, &ReadContext::none())?
-            .ok_or_else(|| anyhow!("the sleep's timer is of a flavor the walk does not read"))?;
-        Ok(WaitTarget::Timer {
-            deadline,
-            stopped: self.stopped_at(),
-        })
-    }
-
     /// The deadline a `Sleep` caches, on the target's monotonic clock:
     /// the std `Timespec` inside tokio's `Instant`, wherever this
     /// tokio keeps it. `None` where the recorded route enters a timer
@@ -1817,32 +1334,6 @@ impl<'b, T: Target> Context<'b, T> {
             tv_sec: tv_sec as u64,
             tv_nsec,
         }))
-    }
-
-    /// A `JoinHandle<T>`: the task being awaited — a dependency edge
-    /// between tasks.
-    fn read_join_handle(&self, handle: Value<'b>, list: &TaskList) -> Result<WaitTarget> {
-        // JoinHandle.raw: RawTask, which peels to the NonNull<Header>.
-        let addr: u64 = self.walk(WalkRole::JoinHandleRaw).read(handle)?;
-        let (task_id, state) = self
-            .header_task_ref(addr)
-            .context("failed to identify the joined task")?;
-        let listed = list.contains(addr);
-        // An unlisted task gets classified by its cell's recorded
-        // scheduler type — a definite statement where the vtable join
-        // resolves, silence where it does not.
-        let kind = if listed {
-            None
-        } else {
-            self.header_unlisted_kind(addr)
-        };
-        Ok(WaitTarget::Task {
-            addr,
-            task_id,
-            state,
-            listed,
-            kind,
-        })
     }
 
     /// Resolve a bare task `Header` pointer from target memory to its
@@ -1941,82 +1432,6 @@ impl<'b, T: Target> Context<'b, T> {
             .collect();
         spans.sort_unstable();
         TaskExtents { spans }
-    }
-
-    /// `batch_semaphore::Acquire`: queued on the semaphore that backs
-    /// tokio's Mutex, RwLock, and Semaphore. The semaphore address
-    /// identifies the contended resource; the frame that awaits the
-    /// Acquire names which primitive wraps it.
-    fn read_acquire(&self, acquire: Value<'b>, chain: &AwaitChain<'b>) -> Result<WaitTarget> {
-        let semaphore = self.walk(WalkRole::AcquireSemaphore).walk_at(acquire)?;
-        let addr: u64 = semaphore.parse(self.proc)?;
-        let num_permits: u64 = self.walk(WalkRole::AcquireNumPermits).read(acquire)?;
-        // Read the pointee as its own type, not deref_ptr's peeled view:
-        // the semaphore walks root at the Semaphore itself.
-        let sem_ty = semaphore
-            .ty
-            .pointer_target()
-            .ok_or_else(|| anyhow!("Acquire.semaphore is not pointer-shaped"))?;
-        let sem = Value::read(self.proc, sem_ty, addr).context("failed to read the Semaphore")?;
-        // `permits` keeps the available count shifted above the CLOSED
-        // bit.
-        let raw: u64 = self.walk(WalkRole::SemaphorePermits).read(sem)?;
-        let owner = semaphore_owner(chain);
-        let waiters = self
-            .semaphore_waiters(sem)
-            .context("failed to walk the semaphore's wait queue")?;
-        Ok(WaitTarget::Semaphore {
-            addr,
-            owner,
-            num_permits,
-            available: raw >> semaphore::PERMIT_SHIFT,
-            closed: raw & semaphore::CLOSED != 0,
-            waiters,
-        })
-    }
-
-    /// Walk a semaphore's wait queue: who its permits will wake, in wake
-    /// order. tokio enqueues waiters at the list head and wakes from the
-    /// tail, so the walk runs front-to-back and is reversed at the end.
-    fn semaphore_waiters(&self, sem: Value<'b>) -> Result<Vec<SemaphoreWaiter>> {
-        // Semaphore.waiters is a loom Mutex over the Waitlist; both the
-        // parking_lot and std mutexes beneath it spell the payload
-        // member `data`.
-        let Some(head) = self
-            .walk(WalkRole::SemaphoreQueueHead)
-            .walk(sem)?
-            .optional()
-        else {
-            return Ok(Vec::new());
-        };
-        // The Some payload peels through the NonNull to the raw Waiter
-        // pointer: its target is the layout each node decodes with.
-        let waiter_ty = head
-            .ty
-            .pointer_target()
-            .ok_or_else(|| anyhow!("the wait-queue head is not pointer-shaped"))?;
-
-        let mut waiters = Vec::new();
-        let mut visited = HashSet::default();
-        let mut cur = Some(head.parse::<u64>(self.proc)?);
-        while let Some(addr) = cur {
-            ensure!(
-                self.mappings.contains_addr(addr),
-                "wait-queue pointer {addr:#x} is unmapped"
-            );
-            ensure!(visited.insert(addr), "wait-queue cycle at {addr:#x}");
-            let node = Value::read(self.proc, waiter_ty, addr)
-                .with_context(|| format!("failed to read the Waiter at {addr:#x}"))?;
-            waiters.push(self.queue_node(node, &ReadContext::none())?);
-            cur = self
-                .walk(WalkRole::WaiterNext)
-                .walk(node)?
-                .optional()
-                .map(|ptr| ptr.parse(self.proc).map_err(anyhow::Error::from))
-                .transpose()?;
-        }
-        waiters.reverse();
-        Ok(waiters)
     }
 
     /// One wait-queue node as a listing carries it: the permits it
@@ -3238,129 +2653,6 @@ impl<'b, T: Target> Context<'b, T> {
     // -----------------------------------------------------------------------
     // Off-path lock futures (RFD 609 futurelock)
     // -----------------------------------------------------------------------
-
-    /// Scan a chain's frames for lock futures parked in locals, off the
-    /// active poll path.
-    ///
-    /// The `__awaitee` spine is the only thing a suspended task will
-    /// poll next; a `batch_semaphore::Acquire` reachable instead
-    /// through some frame's saved locals belongs to a future the task
-    /// stopped polling (an abandoned `select!` arm, typically). If
-    /// that acquire is still queued — or worse, was already granted
-    /// its permits — the task holds a place in line for a resource it
-    /// can never take or release until the active await completes:
-    /// the RFD 609 futurelock.
-    ///
-    /// Most locals are not futures; those are expected and skipped, as
-    /// are trait objects whose concrete type is not in the bundle.
-    /// Each local's own await chain is inspected, but the scan does
-    /// not recurse into *its* locals.
-    pub fn abandoned_acquires(&self, chain: &AwaitChain<'b>) -> Vec<AbandonedAcquire> {
-        // The chain's own leaf acquire, when there is one: the same
-        // future may also be reachable as a local (`&mut fut` in a
-        // still-active select! arm), and that is not abandonment.
-        let active_node = chain
-            .frames
-            .last()
-            .filter(|_| matches!(chain.end, ChainEnd::Leaf))
-            .filter(|f| {
-                matches!(
-                    self.leaf_kind(f.future.ty.id()),
-                    Some(LeafKind::SemaphoreAcquire)
-                )
-            })
-            .and_then(|f| {
-                let node = self.walk(WalkRole::AcquireNode).walk_at(f.future).ok()?;
-                Some(node.addr)
-            });
-
-        let mut found = Vec::new();
-        for frame in &chain.frames {
-            let Some(state) = &frame.state else { continue };
-            let payload = state.payload;
-            // The same positional slicing as the locals display: a
-            // coroutine state may alias an upvar and a saved local.
-            let mut seen = HashSet::default();
-            for m in payload.ty.members() {
-                if m.ty().size() == 0
-                    || m.name().starts_with("__")
-                    || !seen.insert((m.name(), m.offset()))
-                {
-                    continue;
-                }
-                let start = m.offset() as usize;
-                let Some(bytes) = payload.bytes.get(start..start + m.ty().size() as usize) else {
-                    continue;
-                };
-                let local = Value::new(m.ty(), payload.addr + m.offset(), bytes);
-                let Some((future, owner, fields)) = self.local_acquire(local) else {
-                    continue;
-                };
-                if Some(fields.node) == active_node || !fields.queued {
-                    // On the poll path after all, or never enqueued:
-                    // it holds nothing.
-                    continue;
-                }
-                found.push(AbandonedAcquire {
-                    frame: frame.future.ty.name().to_owned(),
-                    state: state.name.to_owned(),
-                    await_loc: state.await_loc.map(|(file, line)| (file.to_owned(), line)),
-                    local: m.name().to_owned(),
-                    future,
-                    owner,
-                    semaphore: fields.semaphore,
-                    node: fields.node,
-                    num_permits: fields.num_permits,
-                    needed: fields.needed,
-                });
-            }
-        }
-        found
-    }
-
-    /// Interpret one local as a future and check whether its await
-    /// chain bottoms out in a semaphore acquire.
-    fn local_acquire(
-        &self,
-        local: Value<'b>,
-    ) -> Option<(String, Option<&'static str>, AcquireFields)> {
-        let peeled = local.peel();
-        let root = if let Some(dp) = peeled.ty.dyn_pointer() {
-            match self.resolve_dyn_future(peeled, &dp) {
-                Ok(DynAwaitee::Resolved { future, .. }) => future,
-                Ok(DynAwaitee::Unknown { .. } | DynAwaitee::Ambiguous { .. }) | Err(_) => {
-                    return None;
-                }
-            }
-        } else {
-            local
-        };
-        let chain = self.await_chain(root);
-        if !matches!(chain.end, ChainEnd::Leaf) {
-            return None;
-        }
-        let leaf = chain.frames.last()?;
-        if !matches!(
-            self.leaf_kind(leaf.future.ty.id()),
-            Some(LeafKind::SemaphoreAcquire)
-        ) {
-            return None;
-        }
-        let fields = self.read_acquire_fields(leaf.future).ok()?;
-        let future = chain.frames.first()?.future.ty.name().to_owned();
-        Some((future, semaphore_owner(&chain), fields))
-    }
-
-    /// The raw fields of a `batch_semaphore::Acquire`, read in place.
-    fn read_acquire_fields(&self, acquire: Value<'b>) -> Result<AcquireFields> {
-        Ok(AcquireFields {
-            semaphore: self.walk(WalkRole::AcquireSemaphore).read(acquire)?,
-            node: self.walk(WalkRole::AcquireNode).walk_at(acquire)?.addr,
-            num_permits: self.walk(WalkRole::AcquireNumPermits).read(acquire)?,
-            needed: self.walk(WalkRole::AcquireNeeded).read(acquire)?,
-            queued: self.walk(WalkRole::AcquireQueued).read(acquire)?,
-        })
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -4008,22 +3300,6 @@ fn word_of(bytes: &[u8]) -> u64 {
     u64::from_le_bytes(word)
 }
 
-/// The raw fields of a `batch_semaphore::Acquire` future.
-struct AcquireFields {
-    /// Address of the contended `Semaphore`.
-    semaphore: u64,
-    /// Address of the `Waiter` node embedded in the acquire.
-    node: u64,
-    num_permits: u64,
-    /// `Waiter.state`: permits still needed; 0 once fully granted.
-    needed: u64,
-    /// Whether the node was enqueued and has not since been dequeued
-    /// by a completing poll or a drop. Stays stale-`true` after a
-    /// grant until the future is polled again — which is exactly what
-    /// makes an abandoned grant observable.
-    queued: bool,
-}
-
 /// The normalized v0 key of every symbol, demangled across however many
 /// threads the machine offers.
 ///
@@ -4119,37 +3395,13 @@ struct HeaderIdentity {
     vtable: TaskVtable,
 }
 
-/// Where following one step of an await chain led: the next frame, or
-/// the reason there is not one.
-enum Follow<'b> {
-    Next {
-        future: Value<'b>,
-        /// The dyn-vtable symbol that identified `future`, when it was
-        /// not reached structurally.
-        symbol: Option<String>,
-    },
-    Stop(ChainEnd),
-}
-
-/// The outcome of resolving one `dyn Future` awaitee.
-enum DynAwaitee<'b> {
-    /// The vtable joined: the concrete future, read from target memory,
-    /// and the symbol that identified it.
-    Resolved { future: Value<'b>, symbol: String },
-    /// No vtable symbol joined the bundle's dyn-future table.
-    Unknown { poll_symbol: Option<String> },
-    /// The symbol joined more than one concrete bundle type.
-    Ambiguous {
-        symbol: String,
-        candidates: Vec<TypeCandidate>,
-    },
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     use crate::testkit;
+    use crate::tokio::assess::AssessmentPass;
+    use crate::tokio::chain::InspectionMode;
 
     use hansei_bundle::Bundle;
     use proc::snapshot::Snapshot;
@@ -4167,38 +3419,6 @@ mod tests {
     fn unordered_ctx() -> Context<'static, Snapshot> {
         let (bundle, snapshot) = unordered();
         testkit::context(bundle, snapshot)
-    }
-
-    #[test]
-    fn test_type_semantics_borrows_records_without_changing_production_chains() {
-        let (bundle, snapshot) = unordered();
-        let ctx = testkit::context(bundle, snapshot);
-        assert!(!bundle.semantics.types.is_empty());
-        for record in &bundle.semantics.types {
-            assert!(std::ptr::eq(ctx.type_semantics(record.ty).unwrap(), record));
-        }
-        assert!(ctx.type_semantics(BundleTypeId(u32::MAX)).is_none());
-        let mut without = bundle.clone();
-        without.semantics = Default::default();
-        for entry in &mut without.tasks.entries {
-            entry.scheduler_binding = None;
-        }
-        without.validate().unwrap();
-        let other = testkit::context(&without, snapshot);
-        let tasks = testkit::tasks(&ctx, snapshot);
-        let mut compared = 0;
-        for task in &tasks.tasks {
-            if let TaskStage::Running(root) = ctx.task_stage(task).unwrap() {
-                let TaskStage::Running(other_root) = other.task_stage(task).unwrap() else {
-                    panic!("same resident task")
-                };
-                let actual = ctx.await_chain(root);
-                let expected = other.await_chain(other_root);
-                assert_eq!(format!("{actual:?}"), format!("{expected:?}"));
-                compared += 1;
-            }
-        }
-        assert!(compared > 0);
     }
 
     #[test]
@@ -4261,150 +3481,6 @@ mod tests {
         assert_eq!(future.symbol, "unique_dealloc");
     }
 
-    /// The first bundle type satisfying `pred`, scanned in id order so
-    /// one frozen fixture always yields the same type.
-    fn find_ty<'b>(
-        bundle: &'b Bundle,
-        mut pred: impl FnMut(BundleType<'b>) -> bool,
-    ) -> BundleType<'b> {
-        let view = BundleView::new(bundle);
-        (0..bundle.types.types.len() as u32)
-            .filter_map(|i| view.ty(BundleTypeId(i)))
-            .find(|ty| pred(*ty))
-            .expect("the fixture bundle has such a type")
-    }
-
-    /// The `walk-shapes` pair, for the wrapper shapes the unordered
-    /// fixture has no reason to carry.
-    fn walk_shapes() -> &'static (Bundle, Snapshot) {
-        static PAIR: OnceLock<(Bundle, Snapshot)> = OnceLock::new();
-        PAIR.get_or_init(|| testkit::load_any("walk-shapes"))
-    }
-
-    /// The wrapper unwrap steps over zero-sized members: `WrapZ`'s only
-    /// sized member is a future beside a `PhantomData`, and a filter
-    /// that counts the marker sees two members and declines the whole
-    /// stack.
-    #[test]
-    fn test_is_future_steps_over_zero_sized_members() {
-        let (bundle, snapshot) = walk_shapes();
-        let ctx = testkit::context(bundle, snapshot);
-        let ty = find_ty(bundle, |t| t.name().starts_with("walk_shapes::WrapZ<"));
-        assert!(!ctx.recognized_future(ty.id()), "no fact names the wrapper");
-        assert!(ctx.is_future(ty), "{}", ty.name());
-    }
-
-    /// A coroutine whose `poll` rustc inlined out of the symtab has no
-    /// poll symbol, and must still screen as a future on its bound
-    /// layout's evidence alone. Every debug-build fixture records every
-    /// poll, so the documented condition — no symbol — is constructed
-    /// here by taking the poll evidence out of the record.
-    #[test]
-    fn test_a_coroutine_off_the_poll_table_is_still_a_future() {
-        let (bundle, snapshot) = unordered();
-        let mut bundle = bundle.clone();
-        // A coroutine no task was spawned with, so once its poll symbol
-        // is gone only the layout's evidence names it.
-        let record = bundle
-            .semantics
-            .types
-            .iter_mut()
-            .find(|r| {
-                r.coroutine.is_some()
-                    && r.future.as_ref().is_some_and(|f| {
-                        !f.evidence
-                            .iter()
-                            .any(|e| matches!(e, hansei_bundle::FutureEvidence::TaskEntry(_)))
-                    })
-            })
-            .expect("the fixture bundle binds coroutine layouts");
-        let ty = record.ty;
-        let facts = record.future.as_mut().unwrap();
-        // Its poll symbol and whatever parent delegated to it: only the
-        // layout's own evidence stays.
-        facts
-            .evidence
-            .retain(|e| matches!(e, hansei_bundle::FutureEvidence::Coroutine(_)));
-        assert!(!facts.evidence.is_empty());
-        bundle.validate().unwrap();
-        let ctx = testkit::context(&bundle, snapshot);
-        let ty = ctx.view.ty(ty).unwrap();
-        assert!(ctx.is_future(ty), "{}", ty.name());
-    }
-
-    /// A recorded `poll` alone is also enough: a hand-written future
-    /// that is no coroutine and no bound resource screens on it.
-    #[test]
-    fn test_a_poll_table_type_alone_is_a_future() {
-        let ctx = unordered_ctx();
-        let (bundle, _) = unordered();
-        let ty = find_ty(bundle, |t| {
-            ctx.type_semantics(t.id()).is_some_and(|r| {
-                r.coroutine.is_none()
-                    && r.resource.is_none()
-                    && r.future.as_ref().is_some_and(|f| {
-                        f.evidence
-                            .iter()
-                            .all(|e| matches!(e, hansei_bundle::FutureEvidence::PollSymbol(_)))
-                    })
-            }) && t.dyn_pointer().is_none()
-        });
-        assert!(ctx.is_future(ty), "{}", ty.name());
-    }
-
-    /// Every coroutine is a future, and every coroutine-shaped enum in
-    /// the fixture has the bound layout that says so: the shape the
-    /// runtime used to screen on is now a fact of the bundle. Asserted
-    /// over the whole bundle rather than one witness, because a single
-    /// frame can be rescued through the unwrap loop (its sole member
-    /// chains to a recognized type) and hide a broken screen.
-    #[test]
-    fn test_every_coroutine_is_a_future() {
-        let ctx = unordered_ctx();
-        let (bundle, _) = unordered();
-        let view = BundleView::new(bundle);
-        let mut coroutines = 0;
-        for i in 0..bundle.types.types.len() as u32 {
-            let Some(t) = view.ty(BundleTypeId(i)) else {
-                continue;
-            };
-            if t.is_coroutine() {
-                coroutines += 1;
-                assert!(
-                    ctx.type_semantics(t.id())
-                        .is_some_and(|r| r.coroutine.is_some()),
-                    "{} has no bound layout",
-                    t.name()
-                );
-                assert!(ctx.is_future(t), "{}", t.name());
-            }
-        }
-        assert!(coroutines > 0, "the fixture bundle has coroutines");
-    }
-
-    /// A wrapper that is not a future by any direct route answers by
-    /// unwrapping its sole *sized* member — a filter that keeps ZSTs
-    /// instead finds nothing to follow, and a step that never recurses
-    /// never reaches the future inside. The witness is found by the
-    /// unwrap contract itself, so it cannot silently degrade into a
-    /// type the direct routes already accept.
-    #[test]
-    fn test_is_future_unwraps_the_sole_sized_member() {
-        let ctx = unordered_ctx();
-        let (bundle, _) = unordered();
-        let ty = find_ty(bundle, |t| {
-            if ctx.recognized_future(t.id()) || t.dyn_pointer().is_some() {
-                return false;
-            }
-            let mut sized = t.members().map(|m| m.ty()).filter(|m| m.size() > 0);
-            match (sized.next(), sized.next()) {
-                (Some(inner), None) => ctx.is_future(inner),
-                _ => false,
-            }
-        });
-        assert!(ctx.is_future(ty), "{}", ty.name());
-    }
-
     /// Storage the bundle declares unreadable is reported as such from
     /// the record, and nothing else: the fixtures bind every coroutine,
     /// so the unbound case is constructed by unbinding one — which also
@@ -4465,84 +3541,6 @@ mod tests {
         assert!(!ctx.storage_unavailable(BundleTypeId(u32::MAX)));
     }
 
-    /// Plain data is not a future, and neither is a multi-member
-    /// container that merely holds them: the unwrap step follows a
-    /// *sole* sized member, never guesses among several. A set bound as
-    /// a container is a container, not a future.
-    #[test]
-    fn test_is_future_declines_plain_data_and_containers() {
-        let ctx = unordered_ctx();
-        let (bundle, _) = unordered();
-        let scalar = find_ty(bundle, |t| t.name() == "u32");
-        assert!(!ctx.is_future(scalar));
-        let set = find_ty(bundle, |t| {
-            t.name()
-                .starts_with("futures_util::stream::futures_unordered::FuturesUnordered<")
-        });
-        assert_eq!(
-            ctx.container_kind(set.id()),
-            Some(ContainerKind::FuturesUnordered)
-        );
-        assert!(!ctx.is_future(set), "{}", set.name());
-    }
-
-    /// Where every hand-laid value is placed.
-    const AT: u64 = 0x1000;
-
-    /// The chain steps through a wrapper holding exactly one future,
-    /// and the step lands at the member's own address. The witness is
-    /// an enum variant payload whose sole future member sits at a
-    /// nonzero offset, so a step that mis-adds the offset lands
-    /// somewhere else and fails here rather than fabricating a frame.
-    #[test]
-    fn test_a_sole_inner_future_is_followed_at_its_member_offset() {
-        let ctx = unordered_ctx();
-        let (bundle, _) = unordered();
-        let ty = find_ty(bundle, |t| {
-            t.name().starts_with("core::option::Option<unordered::leaf")
-                && t.name().ends_with("::Some")
-        });
-        let member = ty.members().next().expect("Some has a payload");
-        assert!(member.offset() > 0, "the witness must not sit at zero");
-        let bytes = vec![0u8; ty.size() as usize];
-        let value = Value::new(ty, AT, &bytes);
-        let (name, follow) = ctx
-            .sole_inner_future(value)
-            .expect("exactly one member is a future");
-        assert_eq!(name, member.name());
-        let Follow::Next { future, .. } = follow else {
-            panic!("a by-value coroutine is followed, not stopped at");
-        };
-        assert_eq!(future.addr, AT + member.offset());
-        assert_eq!(future.ty.id(), member.ty().id());
-    }
-
-    /// Two candidate futures and the rule declines: a combinator with
-    /// several arms is a chain end, not a guess between them.
-    #[test]
-    fn test_two_candidate_futures_end_the_chain() {
-        let ctx = unordered_ctx();
-        let (bundle, _) = unordered();
-        let ty = find_ty(bundle, |t| {
-            t.name().starts_with("unordered::driver") && t.name().ends_with("::Suspend0")
-        });
-        let bytes = vec![0u8; ty.size() as usize];
-        assert!(ctx.sole_inner_future(Value::new(ty, AT, &bytes)).is_none());
-    }
-
-    /// A buffer too short to hold the member's bytes declines rather
-    /// than slicing out of range.
-    #[test]
-    fn test_a_short_buffer_declines_the_follow() {
-        let ctx = unordered_ctx();
-        let (bundle, _) = unordered();
-        let ty = find_ty(bundle, |t| {
-            t.name().starts_with("core::option::Option<unordered::leaf")
-                && t.name().ends_with("::Some")
-        });
-        let bytes = vec![0u8; 1];
-        assert!(ctx.sole_inner_future(Value::new(ty, AT, &bytes)).is_none());
-    }
     /// The `local-set-io` fixture pair: a `LocalSet` parked on I/O,
     /// anchored both in the discovery statics and in its thread's TLS.
     fn local_set_io() -> &'static (Bundle, Snapshot) {
@@ -4722,19 +3720,31 @@ mod tests {
         PAIR.get_or_init(|| testkit::load_any("futurelock"))
     }
 
-    /// The leaf future of `task`'s chain: the value its chain bottoms
-    /// out in, which the observers are asked about.
-    fn leaf_of<'a, T: Target>(ctx: &Context<'a, T>, task: &Task) -> Value<'a> {
-        let TaskStage::Running(root) = ctx.task_stage(task).unwrap() else {
+    /// A listed task's own chain, walked by its programs.
+    fn chain_of<'a, T: Target>(ctx: &Context<'a, T>, task: &Task) -> AwaitChain<'a> {
+        let TaskStage::Running(root) = ctx.task_root(task, &ReadContext::none()).unwrap() else {
             panic!("the task's future is resident");
         };
-        let chain = ctx.await_chain(root);
-        assert!(matches!(chain.end, ChainEnd::Leaf), "{:?}", chain.end);
-        chain.frames.last().unwrap().future
+        let lifecycle = task.state.lifecycle();
+        ctx.inspect_future(
+            root,
+            InspectionMode::Task { lifecycle },
+            &ReadContext::none(),
+        )
+        .chain
     }
 
-    /// The listed task whose chain bottoms out in a value of a type
-    /// named `leaf`.
+    /// The primitive `task`'s chain ends in, which the observers are
+    /// asked about.
+    fn leaf_of<'a, T: Target>(ctx: &Context<'a, T>, task: &Task) -> Value<'a> {
+        let chain = chain_of(ctx, task);
+        chain
+            .primitive_leaf()
+            .unwrap_or_else(|| panic!("the chain ends in a primitive: {:?}", chain.end))
+    }
+
+    /// The listed task whose chain ends in a primitive of a type named
+    /// `leaf`.
     fn task_parked_on<'a, T: Target>(
         ctx: &Context<'a, T>,
         list: &'a TaskList,
@@ -4743,16 +3753,38 @@ mod tests {
         list.tasks
             .iter()
             .filter_map(|task| {
-                let TaskStage::Running(root) = ctx.task_stage(task).ok()? else {
-                    return None;
-                };
-                let chain = ctx.await_chain(root);
-                let value = chain.frames.last()?.future;
-                (matches!(chain.end, ChainEnd::Leaf) && value.ty.name().starts_with(leaf))
-                    .then_some((task, value))
+                let value = chain_of(ctx, task).primitive_leaf()?;
+                value.ty.name().starts_with(leaf).then_some((task, value))
             })
             .next()
             .unwrap_or_else(|| panic!("a task is parked on a {leaf}"))
+    }
+
+    /// The target an observation describes, read under no protocol.
+    fn described<'a, T: Target>(ctx: &Context<'a, T>, list: &TaskList, task: &Task) -> WaitTarget {
+        let TaskStage::Running(root) = ctx.task_root(task, &ReadContext::none()).unwrap() else {
+            panic!("the task's future is resident");
+        };
+        let lifecycle = task.state.lifecycle();
+        let inspection = ctx.inspect_future(
+            root,
+            InspectionMode::Task { lifecycle },
+            &ReadContext::none(),
+        );
+        let observation = inspection
+            .primitive
+            .value
+            .as_ref()
+            .expect("a primitive observed");
+        let mut pass = AssessmentPass::new();
+        ctx.observed_target(
+            &mut pass,
+            observation,
+            &inspection.chain,
+            list,
+            &ReadContext::none(),
+        )
+        .expect("the observation describes")
     }
 
     /// A `JoinHandle` observes as the header it names and nothing
@@ -4809,7 +3841,7 @@ mod tests {
 
         // A value with no resource binding is no observation and no
         // issue: the coroutine frame itself, say.
-        let TaskStage::Running(root) = ctx.task_stage(joiner).unwrap() else {
+        let TaskStage::Running(root) = ctx.task_root(joiner, &ReadContext::none()).unwrap() else {
             unreachable!()
         };
         let observed = ctx.observe_resource(root, &ReadContext::none());
@@ -4832,12 +3864,8 @@ mod tests {
             panic!("a Sleep observes as a timer: {:?}", observed.value);
         };
         assert_eq!(timer.future, ValueKey::of(sleep));
-        let TaskStage::Running(root) = ctx.task_stage(sleeper).unwrap() else {
-            unreachable!()
-        };
-        let chain = ctx.await_chain(root);
-        let Some(Ok(WaitTarget::Timer { deadline, .. })) = ctx.wait_target(&chain, &list) else {
-            panic!("the wait reader reads the same sleep");
+        let WaitTarget::Timer { deadline, .. } = described(&ctx, &list, sleeper) else {
+            panic!("the description spells the same sleep");
         };
         assert_eq!(timer.deadline, Some(deadline));
         assert!(observed.issues.is_empty(), "{:?}", observed.issues);
@@ -4957,20 +3985,16 @@ mod tests {
             }
         }
 
-        // The same order and nodes the wait reader spells.
-        let TaskStage::Running(root) = ctx.task_stage(task).unwrap() else {
-            unreachable!()
+        // The same order and nodes the description spells.
+        let WaitTarget::Semaphore { waiters, .. } = described(&ctx, &list, task) else {
+            panic!("the description spells the same semaphore");
         };
-        let chain = ctx.await_chain(root);
-        let Some(Ok(WaitTarget::Semaphore { waiters, .. })) = ctx.wait_target(&chain, &list) else {
-            panic!("the wait reader reads the same semaphore");
-        };
-        let legacy: Vec<u64> = waiters.iter().map(|w| w.addr).collect();
+        let spelled: Vec<u64> = waiters.iter().map(|w| w.addr).collect();
         let observed: Vec<u64> = queue.waiters.iter().map(|w| w.addr).collect();
-        assert_eq!(observed, legacy);
+        assert_eq!(observed, spelled);
         assert_eq!(
             queue.position(acq.node),
-            legacy.iter().position(|&a| a == acq.node)
+            spelled.iter().position(|&a| a == acq.node)
         );
     }
 
@@ -5014,7 +4038,7 @@ mod tests {
         let (bundle, snapshot) = futurelock();
         let ctx = testkit::context(bundle, snapshot);
         let list = testkit::tasks(&ctx, snapshot);
-        let (task, acquire) = task_parked_on(&ctx, &list, "tokio::sync::batch_semaphore::Acquire");
+        let (_, acquire) = task_parked_on(&ctx, &list, "tokio::sync::batch_semaphore::Acquire");
         let Some(ResourceObservation::Acquire(acq)) =
             ctx.observe_resource(acquire, &ReadContext::none()).value
         else {
@@ -5025,14 +4049,12 @@ mod tests {
 
         // The granted acquire left the queue: an established walk says
         // so, and places it nowhere.
-        let TaskStage::Running(root) = ctx.task_stage(task).unwrap() else {
-            unreachable!()
+        let analysis = crate::tokio::graph::analyze(&ctx, &list, &ReadContext::none());
+        let [barrier] = analysis.barriers.as_slice() else {
+            panic!("one barrier: {:?}", analysis.barriers);
         };
-        let chain = ctx.await_chain(root);
-        let abandoned = ctx.abandoned_acquires(&chain);
-        assert_eq!(abandoned.len(), 1, "{abandoned:?}");
-        assert!(abandoned[0].granted());
-        let granted = abandoned[0].node;
+        assert!(barrier.granted());
+        let granted = barrier.acquire.node;
         let queue = ctx.observe_semaphore_queue(
             acq.semaphore,
             &ReadContext::none(),
@@ -5357,9 +4379,17 @@ mod tests {
             }
         }
 
-        // `Read<Gated>` holds a socket and is not an operation on one.
+        // `Read<Gated>` holds a socket and is not an operation on one:
+        // the chain ends at it with its continuation unknown, and it
+        // observes as nothing.
         let gated = task_named(list, "local_gated_reader");
-        let read = leaf_of(&ctx, gated);
+        let chain = chain_of(&ctx, gated);
+        assert!(
+            matches!(chain.end, ChainEnd::UnknownContinuation { .. }),
+            "{:?}",
+            chain.end
+        );
+        let read = chain.frames.last().unwrap().future;
         assert!(read.ty.name().contains("Gated"));
         let observed = ctx.observe_resource(read, &ReadContext::none());
         assert!(observed.value.is_none());

@@ -585,7 +585,6 @@ impl<'b, T: Target> Context<'b, T> {
                     future: cur,
                     state: None,
                     dyn_symbol: dyn_symbol.take(),
-                    inner: None,
                 });
                 break ChainEnd::ActivePoll;
             }
@@ -594,7 +593,6 @@ impl<'b, T: Target> Context<'b, T> {
                 future: cur,
                 state,
                 dyn_symbol: dyn_symbol.take(),
-                inner: None,
             });
             match next {
                 NextFuture::Next {
@@ -700,11 +698,11 @@ mod tests {
                     "{}",
                     root.ty.name()
                 );
-                let TaskStage::Running(peeled) = ctx.task_stage(task).unwrap() else {
+                let TaskStage::Running(again) = ctx.task_root(task, &ReadContext::none()).unwrap()
+                else {
                     unreachable!()
                 };
-                assert_eq!(peeled.addr, root.addr);
-                assert_eq!(peeled.ty.id() != root.ty.id(), boxed);
+                assert_eq!(again.addr, root.addr);
             }
         }
     }

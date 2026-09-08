@@ -231,9 +231,6 @@ pub enum IncompleteReason {
     DepthLimit,
     Cycle,
     Error,
-    /// The legacy walker's leaf end, which says nothing about the
-    /// continuation; gone with that walker.
-    Legacy,
     /// No chain was walked: the task's future type is not known, or
     /// its stage holds no resident future.
     NoRoot,
@@ -271,10 +268,6 @@ impl ContinuationStatus {
             ChainEnd::Error(e) => ContinuationStatus::Incomplete {
                 reason: IncompleteReason::Error,
                 detail: Some(format!("{e:#}")),
-            },
-            ChainEnd::Leaf => ContinuationStatus::Incomplete {
-                reason: IncompleteReason::Legacy,
-                detail: None,
             },
         }
     }
@@ -442,12 +435,6 @@ impl<'b, T: Target> Context<'b, T> {
                 );
             }
             ChainEnd::Primitive => {}
-            ChainEnd::Leaf => {
-                return Assessed::unknown(
-                    WaitUnknownReason::Continuation,
-                    "the chain was walked without its programs",
-                );
-            }
             ChainEnd::UnknownContinuation { reason, .. } => {
                 let last = chain
                     .frames
@@ -1893,10 +1880,6 @@ mod tests {
             (ChainEnd::Returned, "Returned"),
             (ChainEnd::Panicked, "Panicked"),
             (ChainEnd::ActivePoll, "ActivePoll"),
-            (
-                ChainEnd::Leaf,
-                "Incomplete { reason: Legacy, detail: None }",
-            ),
             (
                 ChainEnd::DepthLimit,
                 "Incomplete { reason: DepthLimit, detail: None }",

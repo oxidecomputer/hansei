@@ -36,8 +36,8 @@ pub struct Case {
 }
 
 /// Read the fixture's independent poll registry and the exact registered
-/// values. The latter reads let later semantic tests inspect the same stable
-/// addresses even when the legacy walker never visits a retained child.
+/// values. The latter reads let the semantic tests inspect the same stable
+/// addresses even where no program visits a retained child.
 pub fn read_from<T: Target>(target: &T) -> Option<Result<Vec<Case>>> {
     let symbol = target.lookup_symbol_by_name(SYMBOL)?;
     Some((|| {

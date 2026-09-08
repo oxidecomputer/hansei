@@ -727,7 +727,9 @@ pub struct KnownFuture {
 #[derive(Debug)]
 pub enum TaskStage<'b> {
     /// The state machine is resident; walk it with
-    /// [`Context::await_chain`].
+    /// [`Context::inspect_future`].
+    ///
+    /// [`Context::inspect_future`]: super::bundle::Context::inspect_future
     Running(Value<'b>),
     /// `Result<T::Output, JoinError>`: the task returned, panicked, or
     /// was cancelled, and the output has not been consumed yet.
@@ -742,34 +744,14 @@ pub struct AwaitChain<'b> {
     pub frames: Vec<AwaitFrame<'b>>,
     /// One edge per continuation the walk followed, `edges[i]` from
     /// `frames[i]` to `frames[i + 1]`: the recorded route it ran and
-    /// the reviewed exclusivity of that hop. Filled by the explicit
-    /// engine ([`Context::inspect_future`]); the legacy walker
-    /// ([`Context::await_chain`]) records none.
-    ///
-    /// [`Context::inspect_future`]: super::bundle::Context::inspect_future
-    /// [`Context::await_chain`]: super::bundle::Context::await_chain
+    /// the reviewed exclusivity of that hop.
     pub edges: Vec<ChainEdge<'b>>,
-    /// Why the walk stopped; anything but [`ChainEnd::Leaf`] left the
-    /// chain incomplete.
+    /// Why the walk stopped: the terminal it reached, or what cut it
+    /// short.
     pub end: ChainEnd,
 }
 
 impl<'b> AwaitChain<'b> {
-    /// The type this chain bottoms out in — the future actually parked
-    /// on, whether or not it is one of the primitives
-    /// [`Context::wait_target`] decodes.
-    ///
-    /// `None` where the walk stopped short of a leaf, since the last
-    /// frame it did reach is then a future awaiting something unread
-    /// rather than the thing being waited on, and reporting it as the
-    /// leaf would say the chain ended where it was merely cut off.
-    pub fn leaf(&self) -> Option<&str> {
-        match self.end {
-            ChainEnd::Leaf => self.frames.last().map(|f| f.future.ty.name()),
-            _ => None,
-        }
-    }
-
     /// The primitive the chain ends in, when it ends in one: the only
     /// value a resource observation may be read from as a candidate
     /// wait. Any other end — a terminal state, an unknown continuation,
@@ -822,14 +804,6 @@ pub struct AwaitFrame<'b> {
     /// The mangled symbol that identified this frame, when it was
     /// reached through a `dyn Future` vtable in target memory.
     pub dyn_symbol: Option<String>,
-    /// The member the chain descended through, when this frame is a
-    /// wrapper whose one inner future is the next frame rather than a
-    /// suspended coroutine naming an `__awaitee`.
-    ///
-    /// A consumer walking a frame's locals must skip it for the same
-    /// reason it skips `__awaitee`: it is the next frame, counted there,
-    /// not a future held beside the chain.
-    pub inner: Option<&'b str>,
 }
 
 /// A coroutine frame's decoded state.
@@ -848,10 +822,6 @@ pub struct FrameState<'b> {
 /// Why an await-chain walk stopped.
 #[derive(Debug)]
 pub enum ChainEnd {
-    /// Bottomed out normally: a non-coroutine leaf future, or a state
-    /// with nothing awaited. The legacy walker's end; the explicit
-    /// engine says which of the ends below it reached instead.
-    Leaf,
     /// The last frame is a bound primitive — a `Sleep`, a `JoinHandle`,
     /// an `Acquire`, a socket operation — whose program says its poll
     /// reads a resource rather than another future. The one end a
@@ -1028,42 +998,6 @@ pub struct SemaphoreWaiter {
     pub needed: u64,
     /// Who waking this node schedules.
     pub waker: QueuedWaker,
-}
-
-/// A lock future parked in a suspended frame's locals, off the active
-/// poll path, still queued on — or already granted — a semaphore
-/// (RFD 609; see [`Context::abandoned_acquires`]).
-#[derive(Clone, Debug)]
-pub struct AbandonedAcquire {
-    /// Type name of the frame whose locals hold the future.
-    pub frame: String,
-    /// The suspend state that frame is parked in, and the awaited
-    /// expression it is suspended at, when recorded.
-    pub state: String,
-    pub await_loc: Option<(String, u32)>,
-    /// The local's name in that frame.
-    pub local: String,
-    /// The held future's concrete type (dyn-resolved when boxed).
-    pub future: String,
-    /// The primitive wrapping the semaphore, when the future's own
-    /// chain names it.
-    pub owner: Option<&'static str>,
-    /// Address of the contended `Semaphore`.
-    pub semaphore: u64,
-    /// The abandoned `Waiter` node (it appears in the semaphore's wake
-    /// queue while still ungranted).
-    pub node: u64,
-    /// Permits the acquire asked for, and how many it still needs.
-    pub num_permits: u64,
-    pub needed: u64,
-}
-
-impl AbandonedAcquire {
-    /// Whether the acquire was granted everything it asked for: the
-    /// future holds the resource and, unpolled, can never release it.
-    pub fn granted(&self) -> bool {
-        self.needed == 0
-    }
 }
 
 /// The waker registered in a wait-queue node.
@@ -1456,25 +1390,5 @@ mod tests {
             .collect();
         assert_eq!(io, [(0x30, IoSlot::Reader)]);
         assert!(registries.io_of(0x9999).next().is_none());
-    }
-
-    /// Granted means nothing more is needed — the future holds the
-    /// resource, not merely a place in line.
-    #[test]
-    fn test_granted_is_needed_zero() {
-        let acquire = |needed| AbandonedAcquire {
-            frame: "frame".to_owned(),
-            state: "Suspend0".to_owned(),
-            await_loc: None,
-            local: "fut".to_owned(),
-            future: "Acquire".to_owned(),
-            owner: None,
-            semaphore: 0x10,
-            node: 0x20,
-            num_permits: 2,
-            needed,
-        };
-        assert!(acquire(0).granted());
-        assert!(!acquire(1).granted());
     }
 }
