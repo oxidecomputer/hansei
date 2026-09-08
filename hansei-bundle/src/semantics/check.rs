@@ -182,6 +182,11 @@ impl<'a> Check<'a> {
             rule.kind,
             TokioSleepState | TokioJoinHandleState | TokioAcquireState | TokioIoState
         ) {
+            // Layout validation alone cannot authorize a state protocol:
+            // revision 1 of each is the reading the runtime's assessor
+            // was reviewed against, and it binds only where the origin
+            // records a version inside the reviewed range — a guessed
+            // family observes and never assesses.
             require(
                 matches!(
                     origin,
@@ -192,9 +197,6 @@ impl<'a> Check<'a> {
                 ),
                 "state rule requires a reviewed range",
             )?;
-            // Layout validation alone cannot authorize a state protocol. Add
-            // revisions here only alongside their reviewed state assessors.
-            return require(false, "no reviewed state protocol revision is enabled");
         }
         Ok(())
     }
@@ -379,9 +381,11 @@ impl<'a> Check<'a> {
             };
             self.rule(rule, &[kind])?;
         }
-        // No terminal has a reviewed exclusive-pending effect guarantee yet.
+        // Whether a pending primitive polls nothing else is a fact about
+        // its reviewed implementation, and the state protocol is the
+        // review: a layout binding alone carries no such guarantee.
         require(
-            !binding.exclusive_pending,
+            !binding.exclusive_pending || binding.state_rule.is_some(),
             "unreviewed exclusive-pending guarantee",
         )
     }

@@ -14,7 +14,7 @@
 //! version outside every reviewed range gets no rule at all, however
 //! familiar its layout looks.
 
-use crate::bundle::LayoutSelection;
+use crate::bundle::{LayoutSelection, ResourceKind, SemanticRuleKind};
 use crate::provenance::rustc_version;
 
 /// One reviewed rustc convention: its name, as the bundle's `Rustc`
@@ -207,6 +207,127 @@ pub fn tracing_instrumented_convention(
     }
 }
 
+/// One reviewed tokio state protocol: how a bound resource's raw words
+/// are to be read as readiness or a wait, reviewed against the tokio
+/// sources for an inclusive `(major, minor)` range. A layout binding
+/// says where the words are; only a protocol says what they mean, and
+/// the read side's assessor refuses to call a resource ready or waited
+/// on without one. Separate from the layout families on purpose: a
+/// family is selected for every version, newest as a guess, while a
+/// protocol binds inside its reviewed range and nowhere else.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub struct StateProtocol {
+    pub kind: SemanticRuleKind,
+    pub floor: (u64, u64),
+    pub ceiling: (u64, u64),
+}
+
+impl StateProtocol {
+    fn covers(&self, version: &semver::Version) -> bool {
+        let version = (version.major, version.minor);
+        version >= self.floor && version <= self.ceiling
+    }
+}
+
+/// `batch_semaphore::Acquire`'s protocol, tokio 1.47 through 1.53
+/// (`sync/batch_semaphore.rs`, unchanged across the range but for the
+/// queue's type alias, the closed bit surviving `forget_permits`'
+/// compare-exchange from 1.53, and the trace hook's signature):
+/// `Acquire::poll` forwards to `poll_acquire` with the node embedded in
+/// the future; a `Pending` sets `queued` and a `Ready(Ok)` clears it,
+/// so `queued` records that a poll linked the node and outlives the
+/// grant. `poll_acquire` returns the closed error on the permit word's
+/// low bit or the wait list's own flag, takes what the permit word
+/// holds, and — with permits still needed — stores the task's waker
+/// in the node and pushes it at the list's front, under the list's
+/// lock. `add_permits_locked` assigns released permits to the list's
+/// back node, pops it and takes its waker once its counter reaches
+/// zero, and hands leftovers back to the permit word only when the
+/// list is empty; `close` sets both closed flags and pops every node.
+/// Hence: a node whose counter is zero has been granted whole and
+/// left the queue; a node still needing permits is queued exactly when
+/// `queued` is set and the semaphore is open; and a nonzero permit
+/// word beside a nonempty quiescent queue is a state the protocol
+/// never produces.
+pub const TOKIO_ACQUIRE_STATE_V1_47: StateProtocol = StateProtocol {
+    kind: SemanticRuleKind::TokioAcquireState,
+    floor: (1, 47),
+    ceiling: (1, 53),
+};
+
+/// `JoinHandle<T>`'s protocol, tokio 1.47 through 1.53
+/// (`runtime/task/join.rs` and `runtime/task/harness.rs`, the harness
+/// byte-identical across the range): `poll` calls the raw task's
+/// `try_read_output`, which reads the output only once the header's
+/// `COMPLETE` bit is set, and otherwise stores the polling task's waker
+/// in the trailer — setting `JOIN_WAKER` — and returns `Pending`. The
+/// cooperative budget check precedes it, so a task can also park with
+/// nothing stored and a deferred wake pending.
+pub const TOKIO_JOIN_HANDLE_STATE_V1_47: StateProtocol = StateProtocol {
+    kind: SemanticRuleKind::TokioJoinHandleState,
+    floor: (1, 47),
+    ceiling: (1, 53),
+};
+
+/// `time::Sleep`'s protocol, tokio 1.47 through 1.53 (`time/sleep.rs`
+/// and `runtime/time/entry.rs`; 1.53 moved the entry's registration
+/// into the state word's cache and the layout family follows it, but
+/// `StateCell::poll`, `read_state`, `mark_pending` and `fire` are the
+/// same across the range): `poll_elapsed` registers the entry on its
+/// first poll, then registers the waker and reads the state word —
+/// `Ready` exactly when the word is the deregistered sentinel, which
+/// the driver's `fire` writes after `mark_pending` has moved it from
+/// the deadline tick to the pending-fire sentinel. A word below the
+/// sentinels is the tick the entry sits in the wheel for.
+pub const TOKIO_SLEEP_STATE_V1_47: StateProtocol = StateProtocol {
+    kind: SemanticRuleKind::TokioSleepState,
+    floor: (1, 47),
+    ceiling: (1, 53),
+};
+
+/// The io operations' protocol, tokio 1.47 through 1.53
+/// (`runtime/io/scheduled_io.rs`, `runtime/io/registration.rs`,
+/// `runtime/io/driver.rs`, `io/util/read.rs`, `io/util/write_all.rs`,
+/// unchanged across the range but for a list type alias): the
+/// registration's readiness word packs the delivered `Ready` bits in
+/// its low sixteen, a tick above them and the shutdown flag at bit 31.
+/// A reviewed stream's `poll_read`/`poll_write` goes through
+/// `Registration::poll_io`, which polls readiness before touching the
+/// buffer — so an empty read buffer parks like any other — and
+/// `poll_readiness` returns `Pending` only when the direction's mask
+/// (readable or read-closed; writable or write-closed) finds no
+/// delivered bit and shutdown is clear, having stored the task's
+/// waker in that direction's slot under the waiters lock. `WriteAll`
+/// returns before polling when its buffer is exhausted. `Readiness`
+/// moves from `Init` to `Done` when its interest is already delivered
+/// or the resource is shut down, else pushes its own node at the
+/// list's front and enters `Waiting`; in `Waiting` it returns `Ready`
+/// once the node's `is_ready` flag is set, which the resource's wake
+/// path sets under the lock while taking the waker of every node whose
+/// interest the event satisfies. Shutdown wakes every node.
+pub const TOKIO_IO_STATE_V1_47: StateProtocol = StateProtocol {
+    kind: SemanticRuleKind::TokioIoState,
+    floor: (1, 47),
+    ceiling: (1, 53),
+};
+
+/// The reviewed state protocol for a resource kind at a recovered tokio
+/// version: `None` when no version was recovered or it falls outside
+/// the protocol's range. A layout family is selected regardless; a
+/// protocol is not.
+pub fn tokio_state_protocol(
+    kind: ResourceKind,
+    version: Option<&semver::Version>,
+) -> Option<&'static StateProtocol> {
+    let protocol = match kind {
+        ResourceKind::Sleep => &TOKIO_SLEEP_STATE_V1_47,
+        ResourceKind::JoinHandle => &TOKIO_JOIN_HANDLE_STATE_V1_47,
+        ResourceKind::SemaphoreAcquire => &TOKIO_ACQUIRE_STATE_V1_47,
+        ResourceKind::IoOperation(_) => &TOKIO_IO_STATE_V1_47,
+    };
+    protocol.covers(version?).then_some(protocol)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -297,5 +418,55 @@ mod tests {
         assert!(family.reviewed_checksum(&family.checksums[0].1));
         assert!(family.reviewed_checksum(&family.checksums[1].1));
         assert!(!family.reviewed_checksum(&[0; 16]));
+    }
+
+    /// A state protocol binds inside its reviewed tokio range and for
+    /// no other version — not below the floor, not above the ceiling,
+    /// and never for a target whose version was not recovered, however
+    /// its layouts bound.
+    #[test]
+    fn test_state_protocols_bind_only_inside_the_reviewed_tokio_range() {
+        use crate::bundle::IoOperationKind;
+        let v = |s: &str| semver::Version::parse(s).unwrap();
+        let kinds = [
+            (ResourceKind::Sleep, SemanticRuleKind::TokioSleepState),
+            (
+                ResourceKind::JoinHandle,
+                SemanticRuleKind::TokioJoinHandleState,
+            ),
+            (
+                ResourceKind::SemaphoreAcquire,
+                SemanticRuleKind::TokioAcquireState,
+            ),
+            (
+                ResourceKind::IoOperation(IoOperationKind::Read),
+                SemanticRuleKind::TokioIoState,
+            ),
+            (
+                ResourceKind::IoOperation(IoOperationKind::WriteAll),
+                SemanticRuleKind::TokioIoState,
+            ),
+            (
+                ResourceKind::IoOperation(IoOperationKind::Readiness),
+                SemanticRuleKind::TokioIoState,
+            ),
+        ];
+        for (kind, rule) in kinds {
+            for version in ["1.47.0", "1.47.5", "1.49.0", "1.52.4", "1.53.1", "1.53.9"] {
+                assert_eq!(
+                    tokio_state_protocol(kind, Some(&v(version))).map(|p| p.kind),
+                    Some(rule),
+                    "{kind:?} at {version}"
+                );
+            }
+            for version in ["1.46.9", "1.54.0", "2.0.0"] {
+                assert_eq!(
+                    tokio_state_protocol(kind, Some(&v(version))),
+                    None,
+                    "{kind:?} at {version}"
+                );
+            }
+            assert_eq!(tokio_state_protocol(kind, None), None, "{kind:?}");
+        }
     }
 }

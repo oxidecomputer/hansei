@@ -39,7 +39,7 @@ use crate::detect::Family;
 use crate::detect::adapters::{self, InstrumentedLayout, Pointee, StdAdapter};
 use crate::detect::semantics::{
     RustcConvention, rustc_coroutine_convention, rustc_dyn_future_abi_convention,
-    rustc_std_adapter_convention, tracing_instrumented_convention,
+    rustc_std_adapter_convention, tokio_state_protocol, tracing_instrumented_convention,
 };
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -851,11 +851,24 @@ pub(super) fn bind_semantics(
                 .find(|(k, _)| *k == kind)
                 .map(|(_, rule)| *rule)
                 .expect("every resource kind has a rule");
+            // The layout rule binds under whatever family was selected;
+            // the state protocol only inside its reviewed range, which
+            // the one tokio origin's selection records — so a guessed
+            // family observes and never assesses. Each reviewed
+            // primitive polls nothing else while pending, which is the
+            // exclusive-pending guarantee the barrier proof needs.
+            let rule = rules.rule(&RuleKey::Library(rule_kind), strings, library);
+            let state_rule = tokio_state_protocol(kind, library.tokio_version)
+                .filter(|_| {
+                    Family::layout_selection(library.tokio_version)
+                        == LayoutSelection::ReviewedRange
+                })
+                .map(|protocol| rules.rule(&RuleKey::Library(protocol.kind), strings, library));
             ResourceBinding {
-                rule: rules.rule(&RuleKey::Library(rule_kind), strings, library),
+                rule,
                 kind,
-                state_rule: None,
-                exclusive_pending: false,
+                state_rule,
+                exclusive_pending: state_rule.is_some(),
             }
         });
         let container = draft.container.map(|kind| {

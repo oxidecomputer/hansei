@@ -540,8 +540,6 @@ fn assert_resource(program: &str, bundle: &Bundle, key: &str, kind: hansei_bundl
             .as_ref()
             .unwrap_or_else(|| panic!("{program}: {name} has no resource binding"));
         assert_eq!(resource.kind, kind, "{program}: {name}");
-        assert!(resource.state_rule.is_none(), "{program}: {name}");
-        assert!(!resource.exclusive_pending, "{program}: {name}");
         let rule = &bundle.semantics.rules[resource.rule.0 as usize];
         assert!(
             matches!(
@@ -550,6 +548,36 @@ fn assert_resource(program: &str, bundle: &Bundle, key: &str, kind: hansei_bundl
             ),
             "{program}: {name}"
         );
+        // The fixtures build against a tokio inside every protocol's
+        // reviewed range, so each resource carries its state protocol —
+        // a distinct rule of the state kind, under the same tokio
+        // origin, recording a reviewed selection — and the
+        // exclusive-pending guarantee that protocol reviews.
+        let state_rule = resource
+            .state_rule
+            .unwrap_or_else(|| panic!("{program}: {name} has no state protocol"));
+        assert_ne!(state_rule, resource.rule, "{program}: {name}");
+        let state = &bundle.semantics.rules[state_rule.0 as usize];
+        use hansei_bundle::{ResourceKind, SemanticRuleKind};
+        let expected = match kind {
+            ResourceKind::Sleep => SemanticRuleKind::TokioSleepState,
+            ResourceKind::JoinHandle => SemanticRuleKind::TokioJoinHandleState,
+            ResourceKind::SemaphoreAcquire => SemanticRuleKind::TokioAcquireState,
+            ResourceKind::IoOperation(_) => SemanticRuleKind::TokioIoState,
+        };
+        assert_eq!(state.kind, expected, "{program}: {name}");
+        assert_eq!(state.origin, rule.origin, "{program}: {name}");
+        assert!(
+            matches!(
+                bundle.semantics.origins[state.origin.0 as usize],
+                hansei_bundle::SemanticOrigin::LibraryLayout {
+                    selection: hansei_bundle::LayoutSelection::ReviewedRange,
+                    ..
+                }
+            ),
+            "{program}: {name}"
+        );
+        assert!(resource.exclusive_pending, "{program}: {name}");
         if let Some(facts) = &record.future {
             assert!(
                 matches!(
@@ -941,19 +969,29 @@ fn assert_library_bindings(program: &str, bundle: &Bundle) {
             other => panic!("{program}: unexpected semantic origin {other:?}"),
         }
     }
-    // No state protocol is reviewed yet; every other kind may appear.
+    // A state protocol binds only under the reviewed tokio origin — the
+    // one origin whose selection the assertion above pinned.
     for rule in &bundle.semantics.rules {
-        assert!(
-            !matches!(
-                rule.kind,
-                SemanticRuleKind::TokioSleepState
-                    | SemanticRuleKind::TokioJoinHandleState
-                    | SemanticRuleKind::TokioAcquireState
-                    | SemanticRuleKind::TokioIoState
-            ),
-            "{program}: unexpected rule {:?}",
-            rule.kind
-        );
+        if matches!(
+            rule.kind,
+            SemanticRuleKind::TokioSleepState
+                | SemanticRuleKind::TokioJoinHandleState
+                | SemanticRuleKind::TokioAcquireState
+                | SemanticRuleKind::TokioIoState
+        ) {
+            assert!(
+                matches!(
+                    &bundle.semantics.origins[rule.origin.0 as usize],
+                    SemanticOrigin::LibraryLayout {
+                        package,
+                        selection: LayoutSelection::ReviewedRange,
+                        ..
+                    } if s(*package) == "tokio"
+                ),
+                "{program}: {:?} under an unreviewed origin",
+                rule.kind
+            );
+        }
     }
     let rule_kind = |id: hansei_bundle::SemanticRuleId| bundle.semantics.rules[id.0 as usize].kind;
     // The reviewed control-flow guarantee, by rule kind: what a
@@ -2186,7 +2224,8 @@ fn run_golden(program: &str) {
                     readiness.starts_with(
                         "tokio::runtime::io::scheduled_io::Readiness :: members future[poll"
                     ) && readiness.ends_with(
-                        "] continuation rule # primitive resource IoOperation(Readiness) rule #"
+                        "] continuation rule # primitive resource IoOperation(Readiness) rule # \
+                         state rule # exclusive-pending"
                     ),
                     "{program}: {readiness}"
                 );

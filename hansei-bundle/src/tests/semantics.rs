@@ -688,6 +688,10 @@ fn test_semantic_resource_layout_is_separate_from_state_and_exclusivity() {
     let mut b = resource();
     b.semantics.types[0].resource = None;
     bad(&b, "primitive has no compatible resource");
+    // A state protocol binds only where the origin's version sits inside
+    // the reviewed range; a guessed family observes and never assesses.
+    // With the protocol bound, the exclusive-pending guarantee it
+    // reviews is admitted too — and only then.
     for selection in [
         LayoutSelection::BelowFloor,
         LayoutSelection::AboveReviewedRange,
@@ -704,14 +708,20 @@ fn test_semantic_resource_layout_is_separate_from_state_and_exclusivity() {
             origin: SemanticOriginId(0),
         });
         b.semantics.types[0].resource.as_mut().unwrap().state_rule = Some(SemanticRuleId(1));
-        bad(
-            &b,
-            if selection == LayoutSelection::ReviewedRange {
-                "no reviewed state protocol"
-            } else {
-                "state rule requires a reviewed range"
-            },
-        );
+        if selection == LayoutSelection::ReviewedRange {
+            b.validate().unwrap();
+            b.semantics.types[0]
+                .resource
+                .as_mut()
+                .unwrap()
+                .exclusive_pending = true;
+            b.validate().unwrap();
+            // The protocol's kind must be the resource's own.
+            b.semantics.rules[1].kind = SemanticRuleKind::TokioAcquireState;
+            bad(&b, "incompatible capability");
+        } else {
+            bad(&b, "state rule requires a reviewed range");
+        }
     }
 }
 
