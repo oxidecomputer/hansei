@@ -376,3 +376,46 @@ fn test_every_program_has_a_command_golden() {
     ];
     assert_eq!(COVERED, PROGRAMS);
 }
+
+/// A snapshot that claims an allocator index its reads cannot rebuild
+/// does not attach: the claim means the capture's discovery and census
+/// were gated by that index, and a session that read the same pair
+/// ungated would see a population the capture never established. The
+/// refusal is the attach's, before anything is gated.
+#[test]
+fn test_a_snapshot_claiming_an_index_it_cannot_rebuild_does_not_attach() {
+    use hansei_bundle::BundleView;
+    use proc::snapshot::{RecordedHeapEvidence, Recorder};
+
+    let (bundle, snapshot) = testkit::load("linux", "simple-await");
+    // Everything the attach reads, recorded — except an allocator walk,
+    // which this capture never made — under the claim that one was.
+    let recorder = Recorder::new(&snapshot);
+    let ctx = bundle::Context::new(&recorder, BundleView::new(&bundle)).unwrap();
+    let list = testkit::tasks(&ctx, &recorder);
+    let _ = testkit::census(&ctx, &list);
+    let claimed = recorder.snapshot(RecordedHeapEvidence::Available).unwrap();
+
+    let args = session_args("linux", "simple-await");
+    let err = match Session::attach(&claimed, &bundle, &args) {
+        Ok(_) => panic!("the claim is not honored"),
+        Err(e) => e,
+    };
+    assert!(
+        format!("{err:#}").contains("records an allocator index its replay cannot rebuild"),
+        "{err:#}"
+    );
+    // The same reads under the neutral policy attach as the fixture
+    // itself does.
+    let neutral = {
+        let recorder = Recorder::new(&snapshot);
+        let ctx = bundle::Context::new(&recorder, BundleView::new(&bundle)).unwrap();
+        let list = testkit::tasks(&ctx, &recorder);
+        let _ = testkit::census(&ctx, &list);
+        recorder
+            .snapshot(RecordedHeapEvidence::Unavailable)
+            .unwrap()
+    };
+    let session = Session::attach(&neutral, &bundle, &args).expect("the neutral pair attaches");
+    assert!(session.umem().is_none());
+}

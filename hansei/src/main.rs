@@ -6,8 +6,7 @@ use anyhow::{Context as _, Result};
 use clap::{ArgGroup, Args, Parser, Subcommand};
 use hansei_bundle::{Bundle, BundleView};
 use hansei_runtime::capture;
-use hansei_runtime::heap::umem::UmemHeap;
-use hansei_runtime::heap::view::{GateCounts, HeapView};
+use hansei_runtime::heap::{self, umem::UmemHeap, view::GateCounts, view::HeapView};
 use hansei_runtime::tokio::graph::{self as rt_graph, Analysis};
 use hansei_runtime::tokio::observe::ReadContext;
 use hansei_runtime::tokio::{bundle, census, contract};
@@ -1473,9 +1472,11 @@ pub struct Session<'b, T: Target> {
     /// asked for.
     stacks: OnceCell<BTreeMap<u32, unwind::Backtrace>>,
     /// What the target's allocator says is live, where its allocator is
-    /// libumem and says anything at all. `None` inside the cell is a
-    /// target without umem, which is most of them.
-    umem: OnceCell<Option<UmemHeap>>,
+    /// libumem and says anything at all — prepared at attach, before
+    /// anything is gated by it, under the policy the target records
+    /// ([`hansei_runtime::heap::prepare`]). `None` means only that
+    /// allocator evidence is unavailable, which is most targets.
+    umem: Option<UmemHeap>,
     /// How often each render gate has refused something the bytes alone
     /// would have allowed, over the whole session. A gate that fires
     /// prints nothing, so this is the only account of what it did.
@@ -1565,30 +1566,43 @@ impl<'b, T: Target> Session<'b, T> {
         }
         check_fingerprint(&ctx, args.force)?;
 
-        let lwps = proc.lwps().context("failed to read lwps")?;
-        let workers = discover_workers(&lwps, &ctx)?;
-        let mut runtimes = ctx.find_runtimes(&workers)?;
-        // The runtimes a selection leaves out: discovery must not hand
-        // them back, or `--runtime` would stop being a filter.
-        let mut excluded = Vec::new();
-        if let Some(index) = args.runtime {
-            if index >= runtimes.len() {
-                let listed: Vec<String> = runtimes
-                    .iter()
-                    .enumerate()
-                    .map(|(i, r)| format!("{i}: {}", r.flavor))
-                    .collect();
-                anyhow::bail!(
-                    "--runtime {index}: the target has {} runtime(s): {}",
-                    runtimes.len(),
-                    listed.join(", ")
-                );
-            }
-            let selected = runtimes.swap_remove(index);
-            excluded = runtimes.iter().map(|r| r.handle.addr).collect();
-            runtimes = vec![selected];
-        }
-        let mut tasks = ctx.enumerate_all_tasks(&runtimes)?;
+        // The allocator index is prepared beside the owner enumeration:
+        // it reads nothing the bundle describes and nothing the
+        // enumeration reads, so the two overlap, and it is joined
+        // before hidden-task discovery — the first thing gated by it.
+        // The session's own context stays on this thread; the walk
+        // needs only the target.
+        let (umem, lwps, workers, mut runtimes, excluded, mut tasks) =
+            std::thread::scope(|scope| -> Result<_> {
+                let heap = scope.spawn(|| heap::prepare(proc));
+                let lwps = proc.lwps().context("failed to read lwps")?;
+                let workers = discover_workers(&lwps, &ctx)?;
+                let mut runtimes = ctx.find_runtimes(&workers)?;
+                // The runtimes a selection leaves out: discovery must
+                // not hand them back, or `--runtime` would stop being
+                // a filter.
+                let mut excluded = Vec::new();
+                if let Some(index) = args.runtime {
+                    if index >= runtimes.len() {
+                        let listed: Vec<String> = runtimes
+                            .iter()
+                            .enumerate()
+                            .map(|(i, r)| format!("{i}: {}", r.flavor))
+                            .collect();
+                        anyhow::bail!(
+                            "--runtime {index}: the target has {} runtime(s): {}",
+                            runtimes.len(),
+                            listed.join(", ")
+                        );
+                    }
+                    let selected = runtimes.swap_remove(index);
+                    excluded = runtimes.iter().map(|r| r.handle.addr).collect();
+                    runtimes = vec![selected];
+                }
+                let tasks = ctx.enumerate_all_tasks(&runtimes)?;
+                let umem = heap.join().expect("the allocator walk panicked")?;
+                Ok((umem, lwps, workers, runtimes, excluded, tasks))
+            })?;
         // Runtimes nothing is currently inside, and local sets, merge
         // into the same population: the runtimes join the list above,
         // the sets are tagged as groups after every runtime.
@@ -1616,7 +1630,7 @@ impl<'b, T: Target> Session<'b, T> {
             census: OnceCell::new(),
             census_tree: OnceCell::new(),
             stacks: OnceCell::new(),
-            umem: OnceCell::new(),
+            umem,
             gates: GateCounts::default(),
             audited: Cell::new(false),
             bounds: census::Bounds {
@@ -1651,7 +1665,6 @@ impl<'b, T: Target> Session<'b, T> {
     fn adopt(&self, warmed: Warmed) {
         let _ = self.extents.set(warmed.extents);
         let _ = self.census.set(warmed.census);
-        let _ = self.umem.set(warmed.umem);
     }
 
     fn extents(&self) -> &bundle::TaskExtents {
@@ -1712,11 +1725,7 @@ impl<'b, T: Target> Session<'b, T> {
     /// it is being written, while the tally it counts into is the
     /// session's and outlives every one of them.
     pub fn heap_view(&self) -> Option<HeapView<'_, T>> {
-        let umem = self
-            .umem
-            .get_or_init(|| UmemHeap::build(self.proc))
-            .as_ref()?;
-        Some(HeapView::new(umem, self.proc, &self.gates))
+        Some(HeapView::new(self.umem.as_ref()?, self.proc, &self.gates))
     }
 
     /// The index alone, for the answers that are about the allocator
@@ -2163,9 +2172,9 @@ fn session(
 /// census, come last, once the worker is joined.
 fn warm_listings(session: &Session<'_, Proc>, proc: &Proc, bundle: &Bundle) {
     std::thread::scope(|scope| {
-        let tasks = &session.tasks;
+        let (tasks, umem) = (&session.tasks, session.umem.as_ref());
         let (policy, bounds) = (session.policy, session.bounds);
-        let worker = scope.spawn(move || warm_worker(proc, bundle, policy, tasks, bounds));
+        let worker = scope.spawn(move || warm_worker(proc, bundle, policy, tasks, bounds, umem));
         tasks::rows(session);
         threads::rows(session);
         // A worker that panicked has left the cells empty, and the
@@ -2192,40 +2201,34 @@ fn first_audit(audit: bool, audited: &Cell<bool>) -> bool {
 struct Warmed {
     extents: bundle::TaskExtents,
     census: census::FutureCensus,
-    umem: Option<UmemHeap>,
 }
 
+/// `umem` is the session's prepared allocator evidence, borrowed: the
+/// worker gates its census by the same index the attach's discovery
+/// was gated by, and builds nothing of its own.
 fn warm_worker(
     proc: &Proc,
     bundle: &Bundle,
     policy: contract::WalkPolicy,
     tasks: &bundle::TaskList,
     bounds: census::Bounds,
+    umem: Option<&UmemHeap>,
 ) -> Option<Box<Warmed>> {
     // The attach already proved this constructor over the same inputs;
     // a failure here means the session is degraded in a way its own
     // accessors will report, so the worker just stands down.
     let ctx = bundle::Context::with_policy(proc, BundleView::new(bundle), policy).ok()?;
-    // The allocator index first: it is the only one of the three that
-    // reads nothing the bundle describes — so a target whose layouts
-    // have drifted still gets it — and what the census below
-    // corroborates its finds against.
-    let umem = UmemHeap::build(proc);
     let extents = ctx.task_extents(tasks);
     // The worker's census refuses through the same bridge the session's
     // renders read through; its gate tally is its own and is not
     // reported, since the census counts what it refused itself.
     let gates = GateCounts::default();
-    let view = umem.as_ref().map(|umem| HeapView::new(umem, proc, &gates));
+    let view = umem.map(|umem| HeapView::new(umem, proc, &gates));
     let read = ReadContext {
         heap: view.as_ref().map(|view| view as &dyn reify::Heap),
     };
     let census = census::census_bounded(&ctx, tasks, bounds, &read);
-    Some(Box::new(Warmed {
-        extents,
-        census,
-        umem,
-    }))
+    Some(Box::new(Warmed { extents, census }))
 }
 
 /// The attach summary: what is being read, and how well the two files

@@ -8,8 +8,11 @@
 //! Nothing on a session's path calls this. See [`FIXTURE_SET`] for why
 //! there is more than one set.
 
+use crate::heap::umem::UmemHeap;
+use crate::heap::view::{GateCounts, HeapView};
 use crate::tokio::bundle::{Context, LocalSetRef, Registries, RuntimeRef, TaskList, Worker};
-use crate::tokio::census::FutureCensus;
+use crate::tokio::census::{self as census_mod, Bounds, FutureCensus};
+use crate::tokio::observe::ReadContext;
 
 use anyhow::Context as _;
 use hansei_bundle::{Bundle, BundleView};
@@ -138,6 +141,15 @@ pub struct Enumeration<'b> {
     ///
     /// [`discover`]: Enumeration::discover
     pub registries: Registries,
+    /// The allocator evidence the pair reads under, prepared the way a
+    /// session prepares it ([`crate::heap::prepare`]): the recorded
+    /// policy of a snapshot, honored before anything is gated by it.
+    pub heap: Option<UmemHeap>,
+    /// What the gates refused through [`with_read`], for as long as
+    /// this enumeration is read.
+    ///
+    /// [`with_read`]: Enumeration::with_read
+    pub gates: GateCounts,
 }
 
 /// Enumerate, stopping before discovery. Panics on a stage failure
@@ -165,16 +177,34 @@ pub fn try_enumerate<'b, T: Target>(
     let list = ctx
         .enumerate_all_tasks(&runtimes)
         .context("the owned-task walk failed")?;
+    let heap = crate::heap::prepare(target).context("allocator evidence preparation failed")?;
     Ok(Enumeration {
         lwps,
         workers,
         runtimes,
         list,
         registries: Registries::default(),
+        heap,
+        gates: GateCounts::default(),
     })
 }
 
 impl<'b> Enumeration<'b> {
+    /// Run `f` under the read context a session would read this pair
+    /// under: the prepared allocator evidence bridged through
+    /// [`HeapView`] over `target`, or no heap at all where none was
+    /// prepared.
+    pub fn with_read<T: Target, R>(&self, target: &T, f: impl FnOnce(&ReadContext<'_>) -> R) -> R {
+        let view = self
+            .heap
+            .as_ref()
+            .map(|heap| HeapView::new(heap, target, &self.gates));
+        let read = ReadContext {
+            heap: view.as_ref().map(|view| view as &dyn reify::Heap),
+        };
+        f(&read)
+    }
+
     /// Run hidden-task discovery — the sweep `discover_hidden_tasks`
     /// performs — mutating the runtimes and list the way a session
     /// does, and returning the local sets it admitted.
@@ -205,14 +235,26 @@ pub struct Run<'a> {
     pub ctx: Context<'a, Snapshot>,
     pub list: TaskList,
     pub census: FutureCensus,
+    /// The allocator evidence the census was gated by, prepared under
+    /// the snapshot's recorded policy: `Some` on a pair whose capture
+    /// built an index, `None` on one that recorded none.
+    pub heap: Option<UmemHeap>,
 }
 
-/// Run the pipeline over a loaded pair.
+/// Run the pipeline over a loaded pair, gated the way a session gates
+/// it: discovery and the census read under the pair's prepared
+/// allocator evidence.
 pub fn run<'a>(bundle: &'a Bundle, snapshot: &'a Snapshot) -> Run<'a> {
     let ctx = context(bundle, snapshot);
-    let list = tasks(&ctx, snapshot);
-    let census = census(&ctx, &list);
-    Run { ctx, list, census }
+    let mut e = enumerate(&ctx, snapshot);
+    e.discover(&ctx, &[]);
+    let census = e.with_read(snapshot, |read| census_with(&ctx, &e.list, read));
+    Run {
+        ctx,
+        list: e.list,
+        census,
+        heap: e.heap,
+    }
 }
 
 impl Run<'_> {
@@ -267,11 +309,18 @@ pub fn tasks<T: Target>(ctx: &Context<'_, T>, target: &T) -> TaskList {
 /// every test census — healthy pair and fault campaign alike — runs
 /// through here. Errors and caps come back intact; a test over a
 /// healthy pair asserts on those (and the healthy-only audit) itself.
-pub fn census<T: Target>(
+pub fn census<T: Target>(ctx: &Context<'_, T>, list: &TaskList) -> FutureCensus {
+    census_with(ctx, list, &ReadContext::none())
+}
+
+/// [`census`] under an explicit read context — the gated form, for a
+/// pipeline reading under prepared allocator evidence.
+pub fn census_with<T: Target>(
     ctx: &Context<'_, T>,
     list: &TaskList,
-) -> crate::tokio::census::FutureCensus {
-    let census = crate::tokio::census::census(ctx, list);
+    read: &ReadContext<'_>,
+) -> FutureCensus {
+    let census = census_mod::census_bounded(ctx, list, Bounds::default(), read);
     let violations = census.audit_total(list);
     assert!(violations.is_empty(), "census audit: {violations:#?}");
     census

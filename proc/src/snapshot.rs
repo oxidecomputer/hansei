@@ -441,6 +441,10 @@ impl Target for Snapshot {
     fn exec_bias(&self) -> Option<u64> {
         self.exec_bias
     }
+
+    fn recorded_heap_evidence(&self) -> Option<RecordedHeapEvidence> {
+        Some(self.heap_evidence)
+    }
 }
 
 /// A [`Target`] wrapper that records everything read through it, so a
@@ -738,6 +742,14 @@ impl<T: Target> Target for Recorder<'_, T> {
 
     fn exec_bias(&self) -> Option<u64> {
         self.target.exec_bias()
+    }
+
+    fn recorded_heap_evidence(&self) -> Option<RecordedHeapEvidence> {
+        // Forwarded: what the wrapped target records is what a driver
+        // recapturing it prepares under. The recorder labels nothing
+        // itself — the policy of the snapshot it assembles is the
+        // argument to `snapshot`.
+        self.target.recorded_heap_evidence()
     }
 }
 

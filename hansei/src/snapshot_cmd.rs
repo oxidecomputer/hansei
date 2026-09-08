@@ -9,7 +9,9 @@ use crate::{Session, discover_workers, print_warnings};
 
 use anyhow::{Context as _, Result};
 use hansei_bundle::BundleView;
+use hansei_runtime::heap::{self, view::GateCounts, view::HeapView};
 use hansei_runtime::tokio::graph as rt_graph;
+use hansei_runtime::tokio::observe::ReadContext;
 use hansei_runtime::tokio::{bundle, census};
 use proc::snapshot::{CaptureLimits, RecordedHeapEvidence, Recorder};
 
@@ -29,11 +31,17 @@ use std::path::Path;
 /// e.g. `bounded::Receiver`'s compact `MpscRx` form, which peeling would
 /// strip away). The two read slightly different page sets, so warming
 /// both keeps the snapshot faithful to either rendering path.
+///
+/// Rendered under the capture's own allocator evidence, as a session
+/// renders: the gates read malloc tags to corroborate a buffer's base,
+/// and those reads belong in the snapshot for the replay's gates to
+/// make. Nothing here adds to the recorded inventory — it is bytes
+/// for inspection, and the replay discovers for itself.
 fn warm_frame_values<T: proc::Target>(
     ctx: &bundle::Context<'_, T>,
     chain: &bundle::AwaitChain<'_>,
+    heap: Option<&dyn reify::Heap>,
 ) {
-    const WARM_DEPTH: usize = 200;
     for frame in &chain.frames {
         let payload = match &frame.state {
             Some(state) => state.payload,
@@ -49,10 +57,26 @@ fn warm_frame_values<T: proc::Target>(
                 continue;
             };
             let v = reify::Value::new(m.ty(), payload.addr + m.offset(), bytes);
-            let _ = format!("{:#}", v.display_from_target(ctx.proc, WARM_DEPTH));
-            let _ = format!("{:#}", v.peel().display_from_target(ctx.proc, WARM_DEPTH));
+            warm_render(ctx, v, heap);
+            warm_render(ctx, v.peel(), heap);
         }
     }
+}
+
+/// One warming render of `v`, discarded: the reads it makes are the
+/// point.
+fn warm_render<T: proc::Target>(
+    ctx: &bundle::Context<'_, T>,
+    v: reify::Value<'_>,
+    heap: Option<&dyn reify::Heap>,
+) {
+    const WARM_DEPTH: usize = 200;
+    let display = v.display_from_target(ctx.proc, WARM_DEPTH);
+    let display = match heap {
+        Some(heap) => display.heap(heap),
+        None => display,
+    };
+    let _ = format!("{display:#}");
 }
 
 /// Drive every read the `threads` listings make, discarding the
@@ -73,8 +97,8 @@ fn warm_threads<T: proc::Target>(
     lwps: &[proc::LwpInfo],
     workers: &[bundle::Worker],
     runtimes: &[bundle::RuntimeRef<'_>],
+    heap: Option<&dyn reify::Heap>,
 ) {
-    const WARM_DEPTH: usize = 200;
     for lwp in lwps {
         let len = lwp.stack_range.end.saturating_sub(lwp.stack_range.start);
         let runs = proc::readable_runs(lwp.stack_range.start, len, |addr, max| {
@@ -96,12 +120,12 @@ fn warm_threads<T: proc::Target>(
         };
         for field in ["thread_id", "runtime", "budget"] {
             if let Ok(value) = info.member(field) {
-                let _ = format!("{:#}", value.display_from_target(ctx.proc, WARM_DEPTH));
+                warm_render(ctx, value, heap);
             }
         }
         if let Ok(Some(worker_ctx)) = ctx.worker_context(worker) {
             let _ = ctx.worker_index(worker_ctx);
-            warm_scheduler_ctx(ctx, worker_ctx);
+            warm_scheduler_ctx(ctx, worker_ctx, heap);
         }
         if let Ok(Some(ct_ctx)) = ctx.ct_worker_context(worker) {
             if let Some(rt) = runtimes
@@ -110,7 +134,7 @@ fn warm_threads<T: proc::Target>(
             {
                 let _ = ctx.ct_park_state(rt.handle, ct_ctx, worker.current_task_id);
             }
-            warm_scheduler_ctx(ctx, ct_ctx);
+            warm_scheduler_ctx(ctx, ct_ctx, heap);
         }
     }
 }
@@ -118,16 +142,19 @@ fn warm_threads<T: proc::Target>(
 /// The reads under one scheduler context's block: the deferred wakers
 /// and the checked-in `Core`, rendered the way `thread` renders
 /// them.
-fn warm_scheduler_ctx<T: proc::Target>(ctx: &bundle::Context<'_, T>, sched_ctx: reify::Value<'_>) {
-    const WARM_DEPTH: usize = 200;
+fn warm_scheduler_ctx<T: proc::Target>(
+    ctx: &bundle::Context<'_, T>,
+    sched_ctx: reify::Value<'_>,
+    heap: Option<&dyn reify::Heap>,
+) {
     if let Ok(defer) = sched_ctx.member("defer") {
-        let _ = format!("{:#}", defer.display_from_target(ctx.proc, WARM_DEPTH));
+        warm_render(ctx, defer, heap);
     }
     if let Ok(core) = sched_ctx.member("core").and_then(|c| c.member("value"))
         && let Ok(Some(boxed)) = core.try_select_variant("Some")
         && let Ok(core) = boxed.deref_ptr(ctx.proc)
     {
-        let _ = format!("{:#}", core.display_from_target(ctx.proc, WARM_DEPTH));
+        warm_render(ctx, core, heap);
     }
 }
 
@@ -158,6 +185,26 @@ pub(crate) fn exec_snapshot<T: proc::Target>(
     // failed. This is for the reads it makes, which belong in the
     // snapshot like any other.
     let _ = ctx.validate_fingerprint();
+
+    // The allocator index first, through the recorder: the symbol
+    // queries and metadata reads that build it are what lets the
+    // replay rebuild the same index and gate the same reads. The walk
+    // answers "no index" to any read it cannot make, a limit's refusal
+    // included, so the recorder's own account is checked before the
+    // answer is read as anything about the target.
+    let prepared = heap::prepare(&recorder);
+    if let Some(exceeded) = recorder.failure() {
+        return Err(
+            anyhow::Error::new(exceeded).context("the allocator walk reached a capture limit")
+        );
+    }
+    let umem = prepared.context("failed to prepare the allocator evidence")?;
+    let gates = GateCounts::default();
+    let view = umem
+        .as_ref()
+        .map(|umem| HeapView::new(umem, &recorder, &gates));
+    let heap = view.as_ref().map(|view| view as &dyn reify::Heap);
+    let read = ReadContext { heap };
 
     let lwps = proc.lwps().context("failed to read lwps")?;
     let workers = discover_workers(&lwps, &ctx)?;
@@ -195,7 +242,7 @@ pub(crate) fn exec_snapshot<T: proc::Target>(
                 // Drive reify's value renderer over the frame locals too,
                 // so the pages behind formatted values are recorded for
                 // the offline render tests.
-                warm_frame_values(&ctx, &chain);
+                warm_frame_values(&ctx, &chain, heap);
                 chains += 1;
             }
             Ok(_) => {}
@@ -219,7 +266,10 @@ pub(crate) fn exec_snapshot<T: proc::Target>(
     // `--search-depth` reads deeper than the default walk would, and
     // its snapshot has to carry those pages; one that lowered it still
     // captures everything the offline tests replay, which is what the
-    // warming is for.
+    // warming is for. Gated by the capture's own allocator evidence,
+    // exactly as the replay's census is gated by the index it rebuilds
+    // from these reads: a find refused here is refused there, and the
+    // pages behind it are not the snapshot's to hold.
     let _ = census::census_bounded(
         &ctx,
         &list,
@@ -230,18 +280,11 @@ pub(crate) fn exec_snapshot<T: proc::Target>(
                 .max(census::Bounds::default().scan_depth),
             ..session.bounds
         },
-        // Deliberately uncorroborated, whatever this target's
-        // allocator says. A snapshot holds the pages the capture read,
-        // and the offline replay of it has no umem metadata to consult
-        // — so a walk that refused a find here would leave the pages
-        // that find's chain needs out of the snapshot, and the replay,
-        // which refuses nothing, would then read what is not there.
-        // The capture reads the whole walk; the gate is a session's.
-        &hansei_runtime::tokio::observe::ReadContext::none(),
+        &read,
     );
 
     // The threads listings' reads: stacks, contexts, parkers, pool.
-    warm_threads(&ctx, &lwps, &workers, &runtimes);
+    warm_threads(&ctx, &lwps, &workers, &runtimes, heap);
 
     // The fixture's ground-truth registry, when the target carries one:
     // driving the read through the recorder is what puts its bytes (and
@@ -258,13 +301,18 @@ pub(crate) fn exec_snapshot<T: proc::Target>(
         result.context("failed to record the delegation fixture ground truth")?;
     }
 
-    // This capture builds no allocator index of its own — its census
-    // above read ungated — so it records that none is available: a
-    // replay gates nothing on evidence the capture did not gather. A
-    // capture that reached a limit assembles nothing, whatever it
-    // recorded before: the recorder checks its own account first.
+    // The policy the replay reads under is what this capture did:
+    // an index built above, whose every read is in the log, or none —
+    // in which case the replay gates nothing on evidence the capture
+    // did not gather. A capture that reached a limit assembles
+    // nothing, whatever it recorded before: the recorder checks its
+    // own account first.
+    let evidence = match umem {
+        Some(_) => RecordedHeapEvidence::Available,
+        None => RecordedHeapEvidence::Unavailable,
+    };
     let snapshot = recorder
-        .snapshot(RecordedHeapEvidence::Unavailable)
+        .snapshot(evidence)
         .context("failed to assemble snapshot")?;
     let charged = recorder.charged();
     snapshot

@@ -255,6 +255,15 @@ pub trait Target: Sync {
         None
     }
 
+    /// What the target records about its own allocator evidence. A
+    /// snapshot says whether its capture built an allocator index —
+    /// and so recorded the reads that rebuild it — while a target that
+    /// records nothing about the question (a core, a live process)
+    /// answers `None` and is asked directly.
+    fn recorded_heap_evidence(&self) -> Option<snapshot::RecordedHeapEvidence> {
+        None
+    }
+
     /// The target's memory mappings.
     fn mappings(&self) -> Result<Mappings>;
 

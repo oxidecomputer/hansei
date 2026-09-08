@@ -196,6 +196,13 @@ impl Target for Corrupt<'_> {
     fn tls_var_addr(&self, regs: &Regs, sym: &SymbolBuf) -> proc::Result<Option<u64>> {
         self.inner.tls_var_addr(regs, sym)
     }
+
+    fn recorded_heap_evidence(&self) -> Option<proc::snapshot::RecordedHeapEvidence> {
+        // The policy is the capture's, not the damage's: a snapshot
+        // whose allocator metadata this double denies still claims the
+        // index, which is exactly the mismatch a replay has to refuse.
+        self.inner.recorded_heap_evidence()
+    }
 }
 
 #[cfg(test)]
