@@ -1039,6 +1039,69 @@ fn test_semantic_primitives_require_each_essential_role() {
     }
 }
 
+/// The stage route lands on the entry's recorded future, exactly: a
+/// route bound at an entry's cell whose endpoint is any other type —
+/// a payload one level short, a peeled member one level past — does
+/// not load. A route bound at other cells says nothing about this one.
+#[test]
+fn test_the_stage_route_ends_at_the_entrys_future() {
+    let mut b = resource();
+    // The cell stands in for the enum: the route selects its one variant
+    // and the payload's member, landing on `CHILD`.
+    b.tasks.entries.push(TaskFutureEntry {
+        future: CHILD,
+        cell: STATE,
+        stage: STATE,
+        scheduler: CHILD,
+        scheduler_binding: None,
+        display_name: StrRef(3),
+    });
+    b.tasks
+        .by_symbol
+        .insert("_RINvNtNtNtC_5tokio_pollE".into(), vec![TaskEntryId(0)]);
+    b.provenance.entries.push(Provenance {
+        decl: None,
+        kind: FutureKind::Manual,
+    });
+    b.semantics.types[0].ty = CHILD;
+    let evidence = &mut b.semantics.types[0].future.as_mut().unwrap().evidence;
+    evidence.insert(0, FutureEvidence::TaskEntry(TaskEntryId(0)));
+    b.walks
+        .entries
+        .get_mut(&WalkRole::JoinHandleRaw)
+        .unwrap()
+        .roots = vec![CHILD];
+    let route = |roots: Vec<BundleTypeId>, steps: Vec<Step>| WalkBinding {
+        roots,
+        steps,
+        outcome: WalkOutcome::Bound {
+            spelling: 0,
+            spellings: 1,
+            note: None,
+        },
+    };
+    b.walks.entries.insert(
+        WalkRole::CellStageRunning,
+        route(vec![STATE], vec![Step::Variant(VARIANT), named(FIELD)]),
+    );
+    b.validate().unwrap();
+    // One level short: the payload, not the future.
+    b.walks.entries.insert(
+        WalkRole::CellStageRunning,
+        route(vec![STATE], vec![Step::Variant(VARIANT)]),
+    );
+    bad(
+        &b,
+        "stage route lands on type [3], not the entry's future 1",
+    );
+    // Bound at some other cell: nothing is said about this entry.
+    b.walks.entries.insert(
+        WalkRole::CellStageRunning,
+        route(vec![PARENT], vec![named(FIELD)]),
+    );
+    b.validate().unwrap();
+}
+
 /// A task entry's scheduler class is a layout fact about its own `S`:
 /// the class's route must have bound at exactly that type.
 #[test]

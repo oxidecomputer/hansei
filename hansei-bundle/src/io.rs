@@ -1403,6 +1403,27 @@ impl Bundle {
         let StaticsTable { entries: _ } = &self.statics; // plain strings, nothing to check
 
         check_walks(self)?;
+        // The stage route's endpoint is the entry's recorded future: the
+        // nominal root the read side extracts through it is exactly the
+        // type the entry names, with no peeling standing in between.
+        if let Some(binding) = self.walks.entries.get(&crate::WalkRole::CellStageRunning)
+            && matches!(binding.outcome, WalkOutcome::Bound { .. })
+        {
+            for (i, e) in self.tasks.entries.iter().enumerate() {
+                if !binding.roots.contains(&e.cell) {
+                    continue;
+                }
+                let what = format!("task entry {i}: stage route");
+                let targets = walk_targets(self, e.cell, &binding.steps, &what, &mut vec![e.cell])?;
+                if targets != [e.future] {
+                    return corrupt(format!(
+                        "{what} lands on type {:?}, not the entry's future {}",
+                        targets.iter().map(|t| t.0).collect::<Vec<_>>(),
+                        e.future.0
+                    ));
+                }
+            }
+        }
         crate::semantics::check::check_semantics(self)?;
 
         let infra = &self.infra;
