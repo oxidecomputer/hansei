@@ -6,6 +6,7 @@
 //! beside the tasks' own await chains, listed as one population rather
 //! than under the tasks that hold them.
 
+use crate::runtimes::RowOwner;
 use crate::tasks::{
     self, CensusTree, Cmp, EMPTY_BUCKET, Entry, Finds, Listing, alternatives, census_tree,
     listing_footer, print_future_entry, resolve_rt, task_id,
@@ -57,8 +58,9 @@ pub(crate) struct FutureRow {
     /// task list, and as `tasks` names it.
     pub(crate) owner: usize,
     pub(crate) task: String,
-    /// The owner's group index (`runtimes`).
-    pub(crate) rt: usize,
+    /// The owner's group index (`runtimes`), or the word for an owner
+    /// that is no group.
+    pub(crate) rt: RowOwner,
     pub(crate) kind: Kind,
     /// The `HELD IN` cell: `frame N, \`local\`` for a held future,
     /// `set 0x…` for a child, either with `, via …` appended when the
@@ -89,9 +91,14 @@ pub(crate) struct FutureRow {
 /// The census is the cost, and every later command that wants it pays
 /// nothing more.
 pub(crate) fn rows<'s, T: proc::Target>(session: &'s Session<'_, T>) -> &'s [FutureRow] {
-    session
-        .future_rows
-        .get_or_init(|| build_rows(&session.tasks, session.census(), &session.impl_fold))
+    session.future_rows.get_or_init(|| {
+        build_rows(
+            &session.tasks,
+            &session.owners,
+            session.census(),
+            &session.impl_fold,
+        )
+    })
 }
 
 /// Build every row from what it prints — taken apart from the session
@@ -104,12 +111,14 @@ pub(crate) fn rows<'s, T: proc::Target>(session: &'s Session<'_, T>) -> &'s [Fut
 /// gets no row.
 pub(crate) fn build_rows(
     list: &bundle::TaskList,
+    owners: &bundle::OwnerIndex,
     census: &census::FutureCensus,
     impls: &names::ImplFold,
 ) -> Vec<FutureRow> {
     let tree = census_tree(census.into());
     let rows = Rows {
         list,
+        owners,
         census,
         tree: &tree,
         impls,
@@ -143,6 +152,7 @@ const PARALLEL_ROWS: usize = 64;
 /// named from.
 struct Rows<'a> {
     list: &'a bundle::TaskList,
+    owners: &'a bundle::OwnerIndex,
     census: &'a census::FutureCensus,
     tree: &'a CensusTree,
     impls: &'a names::ImplFold,
@@ -215,7 +225,7 @@ impl Rows<'_> {
             addr: h.addr,
             owner: h.owner,
             task: task_id(self.list, h.owner),
-            rt: self.list.tasks[h.owner].group,
+            rt: RowOwner::of(&self.list.tasks[h.owner], self.owners),
             kind: Kind::Held,
             held_in: format!(
                 "frame {}, `{}`{}",
@@ -256,7 +266,7 @@ impl Rows<'_> {
             addr: c.node,
             owner: s.owner,
             task: task_id(self.list, s.owner),
-            rt: self.list.tasks[s.owner].group,
+            rt: RowOwner::of(&self.list.tasks[s.owner], self.owners),
             kind: Kind::Child,
             held_in: format!("set {:#x}{}", s.addr, via_suffix(self.census, s.via)),
             frame: None,
@@ -373,6 +383,7 @@ fn print_future_table(
 /// set names its members from.
 struct Blocks<'a> {
     list: &'a bundle::TaskList,
+    owners: &'a bundle::OwnerIndex,
     census: &'a census::FutureCensus,
     tree: &'a CensusTree,
     impls: &'a names::ImplFold,
@@ -431,8 +442,10 @@ impl Blocks<'_> {
                 )?
             }
         }
-        if let Some(tag) = self.group_tags.get(row.rt) {
-            writeln!(out, "    owner: {tag}")?;
+        if let Some(owner) =
+            RowOwner::detail(&self.list.tasks[row.owner], self.owners, &self.group_tags)
+        {
+            writeln!(out, "    owner: {owner}")?;
         }
         if let Some(state) = &row.state {
             writeln!(out, "    state: {state}")?;
@@ -484,6 +497,7 @@ pub(crate) fn print_future<T: proc::Target>(
     let census = session.census();
     let blocks = Blocks {
         list: &session.tasks,
+        owners: &session.owners,
         census,
         tree: session.census_tree(),
         impls: &session.impl_fold,
@@ -632,8 +646,8 @@ enum Matcher {
     Addr(u64),
     /// An exact frame number: `frame`.
     Frame(usize),
-    /// A resolved group index: `rt`.
-    Rt(usize),
+    /// A resolved owner cell: `rt`.
+    Rt(RowOwner),
     /// `'>N'` / `'<N'` / `'=N'`: `depth`, `holds`, `sets`.
     Cmp(Cmp),
 }
@@ -831,7 +845,7 @@ pub(crate) fn exec_futures<T: proc::Target>(
         );
     }
 
-    let groups = !session.group_tags().is_empty();
+    let groups = session.owner_column();
     let selected: Vec<&FutureRow> = survivors.iter().map(|&i| &rows[i]).collect();
     print_future_table(
         &selected,
@@ -966,11 +980,27 @@ mod tests {
 
     use crate::trace::FutureAt;
 
+    use crate::runtimes::RowOwner;
     use hansei_bundle::BundleTypeId;
     use hansei_runtime::tokio::assess::ContinuationStatus;
-    use hansei_runtime::tokio::bundle::{FutureInfo, Task, TaskList, WaitKind};
+    use hansei_runtime::tokio::bundle::{
+        FutureInfo, OwnerIndex, OwnerKey, OwnerResolution, RuntimeFlavor, Task, TaskKind, TaskList,
+        WaitKind,
+    };
     use hansei_runtime::tokio::census::{self, FutureCensus, Via};
     use hansei_runtime::tokio::{TaskAddr, TaskState};
+
+    const GROUPS: [OwnerKey; 2] = [
+        OwnerKey::Runtime {
+            flavor: RuntimeFlavor::MultiThread,
+            handle: 0x10,
+        },
+        OwnerKey::LocalSet { shared: 0x20 },
+    ];
+
+    fn owners() -> OwnerIndex {
+        OwnerIndex::from_keys(GROUPS.to_vec(), 1)
+    }
 
     fn task(id: u64, group: usize) -> Task {
         Task {
@@ -980,18 +1010,15 @@ mod tests {
             task_id: Some(id),
             spawn_location: None,
             future: FutureInfo::Unknown { poll_symbol: None },
-            group,
-            blocking: false,
+            kind: TaskKind::Async,
+            owner: OwnerResolution::Known(GROUPS[group]),
         }
     }
 
     /// Two tasks in two groups, with ids one of which spells a prefix
     /// of the other — so an exact match and a regex disagree.
     fn list() -> TaskList {
-        TaskList {
-            tasks: vec![task(1, 0), task(12, 1)],
-            errors: vec![],
-        }
+        TaskList::new(vec![task(1, 0), task(12, 1)])
     }
 
     fn held(owner: usize, addr: u64, via: Option<Via>) -> census::HeldFuture {
@@ -1071,7 +1098,12 @@ mod tests {
     }
 
     fn rows_of(census: &FutureCensus) -> Vec<FutureRow> {
-        build_rows(&list(), census, &hansei_bundle::names::ImplFold::default())
+        build_rows(
+            &list(),
+            &owners(),
+            census,
+            &hansei_bundle::names::ImplFold::default(),
+        )
     }
 
     /// Rows come in task order with a task's held futures ahead of its
@@ -1108,7 +1140,7 @@ mod tests {
         assert_eq!(direct.held_in, "frame 1, `arm`");
         assert_eq!(direct.future, "async fn app::work");
         assert_eq!(direct.waiting_kind.as_deref(), Some("timer"));
-        assert_eq!(direct.rt, 0);
+        assert_eq!(direct.rt, RowOwner::Group(0));
 
         let nested = &rows[2];
         assert_eq!(nested.held_in, "frame 1, `arm`, via set child at 0x4000");
@@ -1128,7 +1160,7 @@ mod tests {
         assert_eq!(direct.sets_summary, "2 (0 tasks and 0 futures)");
 
         let other = &rows[3];
-        assert_eq!((other.task.as_str(), other.rt), ("12", 1));
+        assert_eq!((other.task.as_str(), other.rt), ("12", RowOwner::Group(1)));
     }
 
     fn clause(field: &str, arg: &str, negate: bool) -> Clause {

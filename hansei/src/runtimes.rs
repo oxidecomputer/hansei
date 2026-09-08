@@ -76,6 +76,159 @@ pub(crate) fn local_set_label(index: usize, set: &bundle::LocalSetRef<'_>) -> St
     format!("local set {index} @ {:#x}", set.shared.addr)
 }
 
+/// How an owner key is named: the label `runtimes` (or the local-set
+/// tag) prints for it where the session's index numbers it, and the
+/// key's own spelling — the flavor and address — for one it does not,
+/// which is how an owner in a conflict is named even when it is not a
+/// group of this session.
+pub(crate) fn owner_label(key: bundle::OwnerKey, owners: &bundle::OwnerIndex) -> String {
+    match (key, owners.group_of_key(key)) {
+        (bundle::OwnerKey::Runtime { handle, .. }, Some(group)) => {
+            format!("runtime {group} @ {handle:#x}")
+        }
+        (bundle::OwnerKey::LocalSet { shared }, Some(group)) => {
+            format!("local set {} @ {shared:#x}", group - owners.runtimes())
+        }
+        (key, None) => key.to_string(),
+    }
+}
+
+/// The owner cell a task or future row carries: the group index
+/// `runtimes` prints, or the word for an owner nobody established or
+/// several claimed. A `Known` owner the session does not number —
+/// one it excluded, or one that was named but never admitted — reads
+/// as unknown here; the row's detail says which.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum RowOwner {
+    Group(usize),
+    Unknown,
+    Conflict,
+}
+
+impl RowOwner {
+    pub(crate) fn of(task: &bundle::Task, owners: &bundle::OwnerIndex) -> Self {
+        match &task.owner {
+            bundle::OwnerResolution::Conflict(_) => RowOwner::Conflict,
+            bundle::OwnerResolution::Unknown | bundle::OwnerResolution::Known(_) => {
+                match owners.group_of(task) {
+                    Some(group) => RowOwner::Group(group),
+                    None => RowOwner::Unknown,
+                }
+            }
+        }
+    }
+
+    /// The `owner:` detail line under a task or future block: the
+    /// group's tag where the listings tag their groups at all, and —
+    /// always, whatever the tags — the reason for an owner that is
+    /// no group.
+    pub(crate) fn detail(
+        task: &bundle::Task,
+        owners: &bundle::OwnerIndex,
+        group_tags: &[String],
+    ) -> Option<String> {
+        match &task.owner {
+            bundle::OwnerResolution::Conflict(keys) => {
+                let names: Vec<String> = keys.iter().map(|k| owner_label(*k, owners)).collect();
+                Some(format!("conflict ({})", names.join("; ")))
+            }
+            bundle::OwnerResolution::Unknown => {
+                Some("unknown (no list, queue or cell scheduler established one)".to_string())
+            }
+            bundle::OwnerResolution::Known(key) => match owners.group_of_key(*key) {
+                Some(group) => group_tags.get(group).cloned(),
+                None => Some(format!("unknown ({key} is not a group of this session)")),
+            },
+        }
+    }
+}
+
+impl std::fmt::Display for RowOwner {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Group(group) => write!(f, "{group}"),
+            Self::Unknown => f.write_str("unknown"),
+            Self::Conflict => f.write_str("conflict"),
+        }
+    }
+}
+
+impl serde::Serialize for RowOwner {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.to_string())
+    }
+}
+
+/// How many tasks and futures in flight each owner holds, counted
+/// against the complete index — every runtime, then every local set —
+/// with the tasks no group owns counted apart rather than dropped.
+pub(crate) struct OwnerCounts {
+    /// Per group, in index order.
+    pub(crate) tasks: Vec<usize>,
+    pub(crate) futures: Vec<usize>,
+    /// Tasks whose owner nobody established, and whose owners
+    /// conflict; their futures likewise.
+    pub(crate) unknown_tasks: usize,
+    pub(crate) conflict_tasks: usize,
+    pub(crate) unowned_futures: usize,
+}
+
+impl OwnerCounts {
+    /// The three populations counted are the census's own — the
+    /// tasks, what their frames hold beside their await chains, and
+    /// what their `FuturesUnordered` hold — attributed to an owner
+    /// through the task that owns each find. Counting them the way
+    /// [`crate::summary`] counts them is deliberate: these rows sum
+    /// to the number a census prints, rather than to a second
+    /// differently-drawn one.
+    pub(crate) fn count(
+        list: &bundle::TaskList,
+        census: &census::FutureCensus,
+        owners: &bundle::OwnerIndex,
+    ) -> Self {
+        let mut counts = OwnerCounts {
+            tasks: vec![0; owners.len()],
+            futures: vec![0; owners.len()],
+            unknown_tasks: 0,
+            conflict_tasks: 0,
+            unowned_futures: 0,
+        };
+        let group_of: Vec<Option<usize>> = list.tasks.iter().map(|t| owners.group_of(t)).collect();
+        for (task, group) in list.tasks.iter().zip(&group_of) {
+            match (group, &task.owner) {
+                (Some(group), _) => {
+                    counts.tasks[*group] += 1;
+                    counts.futures[*group] += 1;
+                }
+                (None, bundle::OwnerResolution::Conflict(_)) => {
+                    counts.conflict_tasks += 1;
+                    counts.unowned_futures += 1;
+                }
+                (None, _) => {
+                    counts.unknown_tasks += 1;
+                    counts.unowned_futures += 1;
+                }
+            }
+        }
+        // A find is its owner's, and its owner's group is the task's:
+        // the census records held futures and sets by the task whose
+        // frames they were found in, however many hops away.
+        let mut held_by = |owner: usize, n: usize| match group_of.get(owner) {
+            Some(Some(group)) => counts.futures[*group] += n,
+            Some(None) => counts.unowned_futures += n,
+            None => {}
+        };
+        for held in &census.held {
+            held_by(held.owner, 1);
+        }
+        for set in &census.sets {
+            let live = set.children.iter().filter(|c| c.future.is_some()).count();
+            held_by(set.owner, live);
+        }
+        counts
+    }
+}
+
 /// Every runtime in the target, in the order tasks are stamped with.
 ///
 /// It takes the discovery results rather than a session so the offline
@@ -85,11 +238,11 @@ pub(crate) fn local_set_label(index: usize, set: &bundle::LocalSetRef<'_>) -> St
 pub(crate) fn groups<T: proc::Target>(
     ctx: &bundle::Context<'_, T>,
     runtimes: &[bundle::RuntimeRef<'_>],
+    owners: &bundle::OwnerIndex,
     list: &bundle::TaskList,
     census: &census::FutureCensus,
 ) -> Vec<Group> {
-    let futures = futures_by_group(list, census, runtimes.len());
-    let tasks = |group: usize| list.tasks.iter().filter(|t| t.group == group).count();
+    let counts = OwnerCounts::count(list, census, owners);
     runtimes
         .iter()
         .enumerate()
@@ -97,8 +250,8 @@ pub(crate) fn groups<T: proc::Target>(
             index: i,
             flavor: rt.flavor.to_string(),
             addr: rt.handle.addr,
-            tasks: tasks(i),
-            futures: futures[i],
+            tasks: counts.tasks[i],
+            futures: counts.futures[i],
             workers: worker_count(ctx, rt),
             threads: rt.worker_tids.len(),
             route: rt.route.to_string(),
@@ -122,50 +275,12 @@ fn worker_count<T: proc::Target>(
     }
 }
 
-/// How many futures in flight each of the first `groups` groups holds
-/// — the runtimes, numbered ahead of the local sets, whose finds fall
-/// off the end and are not counted.
-///
-/// The three populations counted are the census's own — the tasks, what
-/// their frames hold beside their await chains, and what their
-/// `FuturesUnordered` hold — attributed to a group through the task
-/// that owns each find. Counting them the way [`crate::summary`] counts
-/// them is deliberate: these rows sum to the number a census prints
-/// for the runtimes, rather than to a second differently-drawn one.
-fn futures_by_group(
-    list: &bundle::TaskList,
-    census: &census::FutureCensus,
-    groups: usize,
-) -> Vec<usize> {
-    let mut counts = vec![0; groups];
-    for task in &list.tasks {
-        if let Some(count) = counts.get_mut(task.group) {
-            *count += 1;
-        }
-    }
-    // A find is its owner's, and its owner's group is the task's: the
-    // census records held futures and sets by the task whose frames they
-    // were found in, however many hops away.
-    let mut held_by = |owner: usize, n: usize| {
-        if let Some(count) = list.tasks.get(owner).and_then(|t| counts.get_mut(t.group)) {
-            *count += n;
-        }
-    };
-    for held in &census.held {
-        held_by(held.owner, 1);
-    }
-    for set in &census.sets {
-        let live = set.children.iter().filter(|c| c.future.is_some()).count();
-        held_by(set.owner, live);
-    }
-    counts
-}
-
 /// The rows over a session: every runtime the target holds.
 fn rows<T: proc::Target>(session: &Session<'_, T>) -> Vec<Group> {
     groups(
         &session.ctx,
         &session.runtimes,
+        &session.owners,
         &session.tasks,
         session.census(),
     )
@@ -671,11 +786,12 @@ fn no_such_runtime<T: proc::Target>(
 #[cfg(test)]
 mod runtimes_tests {
     use super::{
-        Field, Group, groups, parse_clauses, position, print_groups, survives, threads_line,
+        Field, Group, OwnerCounts, groups, parse_clauses, position, print_groups, survives,
+        threads_line,
     };
     use crate::RuntimeScope;
     use hansei_runtime::testkit;
-    use hansei_runtime::tokio::census;
+    use hansei_runtime::tokio::{bundle, census};
 
     /// A scope names a runtime by index or by handle address, and the
     /// two spellings cannot be confused for one another: an index is
@@ -696,10 +812,11 @@ mod runtimes_tests {
         let (bundle, snapshot) = testkit::load_any(program);
         let ctx = testkit::context(&bundle, &snapshot);
         let mut e = testkit::enumerate(&ctx, &snapshot);
-        e.discover(&ctx, &[]);
+        let sets = e.discover(&ctx, &[]);
+        let owners = bundle::OwnerIndex::new(&e.runtimes, &sets);
         let (runtimes, list) = (e.runtimes, e.list);
         let census = census::census(&ctx, &list);
-        groups(&ctx, &runtimes, &list, &census)
+        groups(&ctx, &runtimes, &owners, &list, &census)
     }
 
     /// The futures column counts what the census found through each
@@ -710,7 +827,8 @@ mod runtimes_tests {
         let (bundle, snapshot) = testkit::load_any("unordered");
         let ctx = testkit::context(&bundle, &snapshot);
         let mut e = testkit::enumerate(&ctx, &snapshot);
-        e.discover(&ctx, &[]);
+        let sets = e.discover(&ctx, &[]);
+        let owners = bundle::OwnerIndex::new(&e.runtimes, &sets);
         let (runtimes, list) = (e.runtimes, e.list);
         let census = census::census(&ctx, &list);
         assert!(
@@ -723,8 +841,18 @@ mod runtimes_tests {
             .iter()
             .map(|s| s.children.iter().filter(|c| c.future.is_some()).count())
             .sum();
-        let rows = groups(&ctx, &runtimes, &list, &census);
+        let rows = groups(&ctx, &runtimes, &owners, &list, &census);
         let total: usize = rows.iter().map(|g| g.futures).sum();
+        let counts = OwnerCounts::count(&list, &census, &owners);
+        assert_eq!(
+            (
+                counts.unknown_tasks,
+                counts.conflict_tasks,
+                counts.unowned_futures
+            ),
+            (0, 0, 0),
+            "every find of this fixture is a runtime's"
+        );
         assert_eq!(total, list.tasks.len() + census.held.len() + live);
     }
 

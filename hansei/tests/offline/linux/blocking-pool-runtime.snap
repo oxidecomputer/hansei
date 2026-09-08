@@ -4,8 +4,8 @@ description: "`runtime` over linux/blocking-pool"
 ---
 runtime 0 @ 0xADDR
     flavor: multi_thread
-    tasks: 5
-    futures: 5
+    tasks: 4
+    futures: 4
     workers: 2
     threads: 4 (lwp 2403324, 2403328, 2403327, 2403326)
     found via: a thread's runtime context

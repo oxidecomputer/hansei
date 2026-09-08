@@ -33,7 +33,8 @@ use hansei_runtime::tokio::assess::{
     ContinuationStatus, NotWaitingReason, RunnableReason, WaitAssessment,
 };
 use hansei_runtime::tokio::bundle::{
-    BlockingPool, CtActivity, CtParkState, ParkState, ParkStates, Task, TaskList, WaitKind,
+    BlockingPool, CtActivity, CtParkState, OwnerResolution, ParkState, ParkStates, Task, TaskList,
+    WaitKind,
 };
 use hansei_runtime::tokio::census::{FutureSet, HeldFuture};
 use hansei_runtime::tokio::graph::TaskWait;
@@ -152,6 +153,38 @@ impl Facts<'_> {
             ),
         }
     }
+}
+
+/// The `Tasks` heading's count: every task is the executors' where
+/// every task's owner is one of them, and where some task's owner is
+/// nobody's — no list, queue or scheduler established one — or in
+/// conflict, those are counted apart, so the number beside the
+/// executors is the number they own.
+fn owned_heading(facts: &Facts<'_>) -> String {
+    let tasks = &facts.tasks.tasks;
+    let unknown = tasks
+        .iter()
+        .filter(|t| matches!(t.owner, OwnerResolution::Unknown))
+        .count();
+    let conflict = tasks
+        .iter()
+        .filter(|t| matches!(t.owner, OwnerResolution::Conflict(_)))
+        .count();
+    if unknown == 0 && conflict == 0 {
+        return format!("{} owned by {}", tasks.len(), facts.whole());
+    }
+    let mut parts = vec![format!(
+        "{} owned by {}",
+        tasks.len() - unknown - conflict,
+        facts.whole()
+    )];
+    if unknown > 0 {
+        parts.push(format!("{unknown} with no established owner"));
+    }
+    if conflict > 0 {
+        parts.push(format!("{conflict} with conflicting owners"));
+    }
+    format!("{}: {}", tasks.len(), parts.join(", "))
 }
 
 /// Which of the three sections to print.
@@ -589,12 +622,7 @@ fn tasks(
     out: &mut dyn io::Write,
 ) -> Result<()> {
     let list = facts.tasks;
-    heading(
-        theme,
-        "Tasks",
-        &format!("{} owned by {}", list.tasks.len(), facts.whole()),
-        out,
-    )?;
+    heading(theme, "Tasks", &owned_heading(facts), out)?;
 
     // State first: every task is in exactly one of these, so it is
     // the one table that adds up to the total above it. The spelling
@@ -1063,7 +1091,10 @@ mod tests {
     use hansei_runtime::tokio::assess::{
         IncompleteReason, NotWaitingReason, VerifiedWait, WaitAssessment, WaitUnknownReason,
     };
-    use hansei_runtime::tokio::bundle::{FutureInfo, KnownFuture, Task, WaitTarget};
+    use hansei_runtime::tokio::bundle::{
+        FutureInfo, KnownFuture, OwnerKey, OwnerResolution, RuntimeFlavor, Task, TaskKind,
+        WaitTarget,
+    };
     use hansei_runtime::tokio::census::SetChild;
     use hansei_runtime::tokio::graph::TaskRef;
     use hansei_runtime::tokio::{Location, RawInstant, TaskAddr, TaskState};
@@ -1099,9 +1130,38 @@ mod tests {
                 decl: None,
                 symbol: "_ZN1x".to_string(),
             }),
-            group: 0,
-            blocking: false,
+            kind: TaskKind::Async,
+            owner: OwnerResolution::Known(RUNTIME),
         }
+    }
+
+    /// The one runtime the test facts hold, as the tasks' owner key.
+    const RUNTIME: OwnerKey = OwnerKey::Runtime {
+        flavor: RuntimeFlavor::MultiThread,
+        handle: 0x1000,
+    };
+
+    /// The heading counts the tasks the executors own; the ones no
+    /// owner was established for, and the ones several claimed, are
+    /// counted apart rather than filed under the runtime.
+    #[test]
+    fn test_the_tasks_heading_counts_unowned_tasks_apart() {
+        let mut unknown = task(2, 0, "x", "x.rs");
+        unknown.owner = OwnerResolution::Unknown;
+        let mut conflict = task(3, 0, "x", "x.rs");
+        conflict.owner =
+            OwnerResolution::Conflict(vec![RUNTIME, OwnerKey::LocalSet { shared: 0x2000 }]);
+        let list = TaskList::new(vec![task(1, 0, "x", "x.rs"), unknown, conflict]);
+        assert_eq!(
+            owned_heading(&facts(&list, &[])),
+            "3: 1 owned by runtime 0 @ 0x1000, 1 with no established owner, \
+             1 with conflicting owners"
+        );
+        let owned = TaskList::new(vec![task(1, 0, "x", "x.rs")]);
+        assert_eq!(
+            owned_heading(&facts(&owned, &[])),
+            "1 owned by runtime 0 @ 0x1000"
+        );
     }
 
     /// A task assessed as verified-waiting on `target`, or — with no
@@ -1275,10 +1335,7 @@ mod tests {
     }
 
     fn empty() -> TaskList {
-        TaskList {
-            tasks: Vec::new(),
-            errors: Vec::new(),
-        }
+        TaskList::new(Vec::new())
     }
 
     /// A code the fault table does not name is still evidence — it is
@@ -1683,10 +1740,7 @@ mod tests {
     fn test_unnamed_futures_are_a_type_row() {
         let mut unnamed = task(1, 0, "x", "x.rs");
         unnamed.future = FutureInfo::Unknown { poll_symbol: None };
-        let list = TaskList {
-            tasks: vec![unnamed],
-            errors: Vec::new(),
-        };
+        let list = TaskList::new(vec![unnamed]);
         let waits = [wait(1, None, 1)];
         let page = census(&facts(&list, &waits), 5);
         assert!(
@@ -1699,10 +1753,7 @@ mod tests {
     /// counting it among the chains that stopped short.
     #[test]
     fn test_complete_tasks_wait_on_nothing() {
-        let list = TaskList {
-            tasks: vec![task(1, COMPLETE, "x", "x.rs")],
-            errors: Vec::new(),
-        };
+        let list = TaskList::new(vec![task(1, COMPLETE, "x", "x.rs")]);
         let mut complete = wait(1, None, 1);
         complete.assessment = WaitAssessment::NotWaiting(NotWaitingReason::Complete);
         let waits = [complete];
@@ -1720,12 +1771,11 @@ mod tests {
     fn test_each_wait_bucket_counts_its_own() {
         use hansei_runtime::tokio::assess::{ReadyReason, RunnableReason};
 
-        let list = TaskList {
-            tasks: (1..=5)
+        let list = TaskList::new(
+            (1..=5)
                 .map(|id| task(id, JOIN_INTEREST, "x::fut", "x.rs"))
                 .collect(),
-            errors: Vec::new(),
-        };
+        );
         let assessed = |id, assessment| {
             let mut wait = wait(id, None, 1);
             wait.assessment = assessment;
@@ -1824,18 +1874,15 @@ mod tests {
     /// bucket it.
     #[test]
     fn test_task_tallies_count_every_task_once() {
-        let list = TaskList {
-            tasks: vec![
-                task(1, JOIN_INTEREST, "a::fut", "a.rs"),
-                task(2, JOIN_INTEREST, "a::fut", "a.rs"),
-                task(3, JOIN_INTEREST | RUNNING, "b::fut", "b.rs"),
-                task(4, NOTIFIED | CANCELLED, "b::fut", "b.rs"),
-                task(5, JOIN_INTEREST, "c::fut", "c.rs"),
-                task(6, JOIN_INTEREST, "c::fut", "c.rs"),
-                task(7, JOIN_INTEREST, "c::fut", "c.rs"),
-            ],
-            errors: Vec::new(),
-        };
+        let list = TaskList::new(vec![
+            task(1, JOIN_INTEREST, "a::fut", "a.rs"),
+            task(2, JOIN_INTEREST, "a::fut", "a.rs"),
+            task(3, JOIN_INTEREST | RUNNING, "b::fut", "b.rs"),
+            task(4, NOTIFIED | CANCELLED, "b::fut", "b.rs"),
+            task(5, JOIN_INTEREST, "c::fut", "c.rs"),
+            task(6, JOIN_INTEREST, "c::fut", "c.rs"),
+            task(7, JOIN_INTEREST, "c::fut", "c.rs"),
+        ]);
         let waits = vec![
             wait(1, Some(timer(10, 4)), 3),
             wait(2, Some(timer(4, 10)), 2),
@@ -1881,11 +1928,8 @@ mod tests {
     #[test]
     fn test_blocking_tasks_are_a_state_row() {
         let mut blocking = task(1, RUNNING, "x", "x.rs");
-        blocking.blocking = true;
-        let list = TaskList {
-            tasks: vec![blocking, task(2, 0, "x", "x.rs")],
-            errors: Vec::new(),
-        };
+        blocking.kind = TaskKind::Blocking;
+        let list = TaskList::new(vec![blocking, task(2, 0, "x", "x.rs")]);
         let page = census(&facts(&list, &[]), 5);
         assert!(
             page.contains("COUNT  STATE\n    1  blocking (running)\n    1  idle\n[2 tasks]\n"),
@@ -1912,10 +1956,7 @@ mod tests {
         tasks.push(task(id, JOIN_INTEREST, "f", "f.rs"));
         waits.push(wait(id, Some(timer(10, 4)), 1));
 
-        let list = TaskList {
-            tasks,
-            errors: Vec::new(),
-        };
+        let list = TaskList::new(tasks);
         let page = census(&facts(&list, &waits), 2);
         assert!(
             page.contains(
@@ -1933,15 +1974,12 @@ mod tests {
     /// rule covers counted as unknown beside the verified waits.
     #[test]
     fn test_every_type_gets_its_breakdown() {
-        let list = TaskList {
-            tasks: vec![
-                task(1, JOIN_INTEREST, "a::fut", "a.rs"),
-                task(2, JOIN_INTEREST, "a::fut", "a.rs"),
-                task(3, JOIN_INTEREST, "b::fut", "b.rs"),
-                task(4, JOIN_INTEREST, "b::fut", "b.rs"),
-            ],
-            errors: Vec::new(),
-        };
+        let list = TaskList::new(vec![
+            task(1, JOIN_INTEREST, "a::fut", "a.rs"),
+            task(2, JOIN_INTEREST, "a::fut", "a.rs"),
+            task(3, JOIN_INTEREST, "b::fut", "b.rs"),
+            task(4, JOIN_INTEREST, "b::fut", "b.rs"),
+        ]);
         let waits = vec![
             wait(1, None, 1),
             wait(2, None, 1),
@@ -1980,10 +2018,7 @@ mod tests {
                 ));
             }
         }
-        let list = TaskList {
-            tasks,
-            errors: Vec::new(),
-        };
+        let list = TaskList::new(tasks);
         let page = census(&facts(&list, &[]), 2);
 
         assert!(
@@ -2010,13 +2045,10 @@ mod tests {
     /// rather than as more of it.
     #[test]
     fn test_future_populations_do_not_overlap() {
-        let list = TaskList {
-            tasks: vec![
-                task(1, JOIN_INTEREST, "a::fut", "a.rs"),
-                task(2, JOIN_INTEREST, "b::fut", "b.rs"),
-            ],
-            errors: Vec::new(),
-        };
+        let list = TaskList::new(vec![
+            task(1, JOIN_INTEREST, "a::fut", "a.rs"),
+            task(2, JOIN_INTEREST, "b::fut", "b.rs"),
+        ]);
         let waits = vec![wait(1, None, 3), wait(2, None, 2)];
         let held = vec![held("held::fut", Some(WaitKind::Task { addr: 0x7100 }))];
         let sets = vec![FutureSet {
@@ -2145,10 +2177,7 @@ mod tests {
     /// narrowed page starts on its heading and ends on its last footer.
     #[test]
     fn test_named_sections_print_alone() {
-        let list = TaskList {
-            tasks: vec![task(1, 0, "one::fut", "src/a.rs")],
-            errors: Vec::new(),
-        };
+        let list = TaskList::new(vec![task(1, 0, "one::fut", "src/a.rs")]);
         let waits = vec![wait(1, Some(timer(9, 1)), 2)];
         let mut facts = facts(&list, &waits);
         facts.lwps = vec![11];

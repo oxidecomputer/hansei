@@ -316,7 +316,9 @@ mod graph_tests {
         ContinuationStatus, IncompleteReason, PollingBarrier, VerifiedWait, WaitAssessment,
         WaitUnknownReason,
     };
-    use hansei_runtime::tokio::bundle::{FutureInfo, Task, TaskList, WaitKind, WaitTarget};
+    use hansei_runtime::tokio::bundle::{
+        FutureInfo, OwnerResolution, Task, TaskKind, TaskList, WaitKind, WaitTarget,
+    };
     use hansei_runtime::tokio::census;
     use hansei_runtime::tokio::graph::{Analysis, TaskRef, TaskWait};
     use hansei_runtime::tokio::observe::{AcquireObservation, ValueKey};
@@ -337,8 +339,8 @@ mod graph_tests {
             task_id: Some(id),
             spawn_location: None,
             future: FutureInfo::Unknown { poll_symbol: None },
-            group: 0,
-            blocking: false,
+            kind: TaskKind::Async,
+            owner: OwnerResolution::Unknown,
         }
     }
 
@@ -465,10 +467,7 @@ mod graph_tests {
         join_sets: &[census::JoinSet],
         limit: Option<usize>,
     ) -> String {
-        let list = TaskList {
-            tasks,
-            errors: Vec::new(),
-        };
+        let list = TaskList::new(tasks);
         let analysis = Analysis {
             waits,
             barriers,

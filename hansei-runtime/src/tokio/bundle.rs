@@ -11,15 +11,17 @@
 //! each LWP's fast-TSD slots to find that thread's
 //! `tokio::runtime::context::Context`.
 
-use super::Lifecycle;
 pub use super::model::*;
 
 use super::contract::{self, ContractReport, WalkPolicy, Walked};
+use super::discovery::{
+    DiscoveryIssue, Observation, OwnerClaim, OwnerEvidence, TaskRecordId, TaskSource,
+};
 use super::observe::{
     AcquireObservation, Consistency, IoFutureState, IoObservation, JoinObservation, Observed,
     QueueObservation, ReadContext, ReferenceSink, ReferenceSource, ResourceObservation, ScanBudget,
-    ScanLimits, TimerObservation, TimerRegistrationState, ValueKey, WalkIssue, WalkIssueKind,
-    issue_of, lock_consistency,
+    ScanLimits, TaskReference, TimerObservation, TimerRegistrationState, ValueKey, WalkIssue,
+    WalkIssueKind, issue_of, lock_consistency,
 };
 use super::semantics::SemanticIndex;
 use super::{Location, RawInstant, TaskAddr, TaskState};
@@ -29,8 +31,9 @@ use hansei_bundle::symbols::normalized_v0_key;
 use hansei_bundle::tokio::{semaphore, timer};
 use hansei_bundle::{
     AccessKind, BundleType, BundleTypeId, BundleView, ContainerKind, FutureKind, IoOperationKind,
-    ResourceKind, StaticRole, Step, StoragePolicy, SymbolLookup, TaskEntryId, TaskFutureEntry,
-    TypeDef, TypeSemantics, WalkOutcome, WalkRole, strip_build_prefix, strip_llvm_suffix,
+    ResourceKind, SchedulerClass, StaticRole, Step, StoragePolicy, SymbolLookup, TaskEntryId,
+    TaskFutureEntry, TypeDef, TypeSemantics, WalkOutcome, WalkRole, strip_build_prefix,
+    strip_llvm_suffix,
 };
 use proc::{LwpInfo, Mappings, SymbolBuf, Target};
 use reify::Value;
@@ -82,59 +85,39 @@ const IO_RESOURCES: &[(&str, WalkRole, WalkRole)] = &[
     ),
 ];
 
-/// Whether a blocking cell is the runtime's own machinery riding its
-/// pool — a worker being launched — rather than target work. The
-/// parameter names what the closure is: everything the runtime
-/// spawns onto its own pool lives under `tokio::runtime::`.
-fn runtime_internal_blocking(display_name: &str) -> bool {
-    display_name.starts_with("tokio::runtime::blocking::task::BlockingTask<tokio::runtime::")
+/// One route's find, before the store takes it: a header some value
+/// or registry named, or an entry of a runtime's blocking-pool queue.
+/// Both are merged by [`Context::observe_candidate`], which decodes
+/// the header once per address and bootstraps the owner a fresh
+/// reference's cell records.
+#[derive(Debug)]
+pub(crate) enum Candidate {
+    Reference {
+        reference: TaskReference,
+        route: DiscoveryRoute,
+    },
+    Queued {
+        addr: u64,
+        owner: OwnerKey,
+        queue: ValueKey,
+        entry: u64,
+    },
 }
 
-#[cfg(test)]
-mod blocking_filter_tests {
-    /// The pool lists target work and skips the runtime launching its
-    /// own workers through itself — the one cell whose presence is
-    /// capture timing rather than target state.
-    #[test]
-    fn test_runtime_internal_blocking_screens_on_the_parameter() {
-        assert!(super::runtime_internal_blocking(
-            "tokio::runtime::blocking::task::BlockingTask<\
-             tokio::runtime::scheduler::multi_thread::worker::Launch::launch::{closure_env#0}>"
-        ));
-        assert!(!super::runtime_internal_blocking(
-            "tokio::runtime::blocking::task::BlockingTask<\
-             blocking_pool::main::{async_block#0}::{closure_env#0}>"
-        ));
-        // Only a blocking cell's spelling is screened at all.
-        assert!(!super::runtime_internal_blocking(
-            "tokio::runtime::whatever"
-        ));
+impl Candidate {
+    pub(crate) fn addr(&self) -> u64 {
+        match self {
+            Self::Reference { reference, .. } => reference.target.0,
+            Self::Queued { addr, .. } => *addr,
+        }
     }
-}
 
-/// The list a task's recorded scheduler `S` binds it into — see
-/// [`Context::scheduler_kind`].
-#[derive(Copy, Clone, Debug)]
-enum SchedulerKind {
-    LocalSet,
-    Blocking,
-    MultiThread,
-    CurrentThread,
-    Unknown,
-}
-
-/// Whether an `Arc<…>` type name's first parameter is exactly `inner`.
-/// The next character must close the parameter — `,` before the
-/// allocator or `>` without one — so a name cannot take a lookalike
-/// sibling with it, the same exactness the leaf keys keep.
-fn arc_of(name: &str, inner: &str) -> bool {
-    let Some(rest) = name.strip_prefix("alloc::sync::Arc<") else {
-        return false;
-    };
-    let Some(rest) = rest.strip_prefix(inner) else {
-        return false;
-    };
-    rest.starts_with(',') || rest.starts_with('>')
+    fn route(&self) -> DiscoveryRoute {
+        match self {
+            Self::Reference { route, .. } => *route,
+            Self::Queued { .. } => DiscoveryRoute::BlockingQueue,
+        }
+    }
 }
 
 /// Awaiter-frame prefixes naming the primitive whose semaphore an
@@ -585,6 +568,7 @@ impl<'b, T: Target> Context<'b, T> {
                 None => runtimes.push(RuntimeRef {
                     flavor,
                     handle,
+                    owned_id: self.owned_list_id(handle)?,
                     worker_tids: vec![worker.tid],
                     route: DiscoveryRoute::WorkerContext,
                 }),
@@ -641,26 +625,26 @@ impl<'b, T: Target> Context<'b, T> {
         self.walk(WalkRole::HandleShared).walk_at(runtime.handle)
     }
 
+    /// The id the global owned-list counter gave a runtime's list, from
+    /// its handle: what every task it owns carries as `Header.owner_id`,
+    /// and what a claim that this runtime owns a task is held to.
+    /// `None` where the row did not bind against this target.
+    fn owned_list_id(&self, handle: Value<'b>) -> Result<Option<u64>> {
+        let shared = self.walk(WalkRole::HandleShared).walk_at(handle)?;
+        self.walk(WalkRole::SchedulerOwnedId).try_read(shared)
+    }
+
     /// Every discovered runtime's tasks, merged into one list with the
     /// per-runtime enumeration's own ordering applied across the whole.
-    /// Each task is stamped with the index of the runtime that owns it,
-    /// so a listing over the merge can still say which is whose.
+    /// Each task's record names the runtime whose list links it, so a
+    /// listing over the merge can still say which is whose.
     pub fn enumerate_all_tasks(&self, runtimes: &[RuntimeRef<'b>]) -> Result<TaskList> {
-        let mut all = TaskList {
-            tasks: Vec::new(),
-            errors: Vec::new(),
-        };
-        for (index, runtime) in runtimes.iter().enumerate() {
+        let mut all = TaskList::default();
+        for runtime in runtimes {
             let shared = self.find_shared(runtime)?;
-            let mut list = self.enumerate_tasks(shared)?;
-            for task in &mut list.tasks {
-                task.group = index;
-            }
-            all.tasks.extend(list.tasks);
-            all.errors.extend(list.errors);
+            self.enumerate_owned(shared, runtime.owner_key(), runtime.owned_id, &mut all)?;
         }
-        all.tasks
-            .sort_by_key(|t| (t.task_id.is_none(), t.task_id, t.addr.0));
+        all.reproject(&[]);
         Ok(all)
     }
 
@@ -799,17 +783,34 @@ impl<'b, T: Target> Context<'b, T> {
     // Task enumeration
     // -----------------------------------------------------------------------
 
-    /// Walk `Shared.owned`'s sharded intrusive lists and parse every task.
+    /// Walk `Shared.owned`'s sharded intrusive lists and file every task
+    /// as one `owner`'s list links: a source for each and — where the
+    /// list's id `owned_id` is known and is the task's own
+    /// `Header.owner_id` — a validated owner claim. A list whose id did
+    /// not bind links its members with no owner established, and says
+    /// so once.
     ///
     /// Corrupt memory degrades per shard: the failing shard contributes an
     /// error, the rest of the listing is unaffected.
-    pub fn enumerate_tasks(&self, shared: Value<'b>) -> Result<TaskList> {
+    fn enumerate_owned(
+        &self,
+        shared: Value<'b>,
+        owner: OwnerKey,
+        owned_id: Option<u64>,
+        list: &mut TaskList,
+    ) -> Result<()> {
         let lists = self.walk(WalkRole::OwnedLists).walk_at(shared)?;
+        if owned_id.is_none() {
+            list.errors.push(anyhow!(
+                "the owned list of {owner} records no id this tokio info can read; \
+                 the tasks it links are listed with no owner established"
+            ));
+        }
 
-        let mut tasks = Vec::new();
-        let mut errors = Vec::new();
         // Guards against cycles from corrupt memory, across shards: the
-        // same Header must never appear twice.
+        // same Header must never appear twice in one list walk. A
+        // Header met again through another route is that route's
+        // business, and the store's to reconcile.
         let mut visited = HashSet::default();
 
         let shards = lists
@@ -835,29 +836,29 @@ impl<'b, T: Target> Context<'b, T> {
             };
             self.walk_owned_list(
                 head_addr,
+                owner,
+                owned_id,
                 &mut visited,
-                &mut tasks,
-                &mut errors,
+                list,
                 &format!("shard {this_shard}"),
             );
         }
-
-        tasks.sort_by_key(|t| (t.task_id.is_none(), t.task_id, t.addr.0));
-        Ok(TaskList { tasks, errors })
+        Ok(())
     }
 
-    /// Walk one intrusive owned-task list from its head, appending every
-    /// parsed task. Corrupt memory degrades per list: the failing node
-    /// contributes an error under `what`'s name, the rest of the
-    /// caller's enumeration is unaffected. The caller owns the cycle
-    /// guard, so lists that (corruptly) share a node are caught across
-    /// calls.
+    /// Walk one intrusive owned-task list from its head, filing every
+    /// parsed task as `owner`'s. Corrupt memory degrades per list: the
+    /// failing node contributes an error under `what`'s name, the rest
+    /// of the caller's enumeration is unaffected. The caller owns the
+    /// cycle guard, so lists that (corruptly) share a node are caught
+    /// across calls.
     fn walk_owned_list(
         &self,
         head_addr: u64,
+        owner: OwnerKey,
+        owned_id: Option<u64>,
         visited: &mut HashSet<u64>,
-        tasks: &mut Vec<Task>,
-        errors: &mut Vec<anyhow::Error>,
+        list: &mut TaskList,
         what: &str,
     ) {
         let mut cur = Some(head_addr);
@@ -874,16 +875,63 @@ impl<'b, T: Target> Context<'b, T> {
                 let next = self
                     .owned_next(addr + header.trailer_offset)
                     .context("failed to read Trailer.owned links")?;
-                tasks.push(header.into_task());
+                self.observe_listed(header, owner, head_addr, owned_id, list);
                 Ok(next)
             })();
             match step {
                 Ok(next) => cur = next,
                 Err(e) => {
-                    errors.push(e.context(format!("task walk failed in {what} at {addr:#x}")));
+                    list.errors
+                        .push(e.context(format!("task walk failed in {what} at {addr:#x}")));
                     break;
                 }
             }
+        }
+    }
+
+    /// File a task an owner's list links. The list is its source and
+    /// — where the list's id is the task's `owner_id` — its owner. A
+    /// task carrying some other id is linked here all the same, since
+    /// the list is the ground truth for membership, but the owner it
+    /// names is not established, and the mismatch is kept.
+    fn observe_listed(
+        &self,
+        header: DecodedTaskHeader,
+        owner: OwnerKey,
+        head: u64,
+        owned_id: Option<u64>,
+        list: &mut TaskList,
+    ) {
+        let addr = header.addr;
+        let found = header.owner_id;
+        let claim = match owned_id {
+            Some(id) if found == Some(id) => Some(OwnerClaim {
+                owner,
+                evidence: OwnerEvidence::OwnedList { head, owner_id: id },
+            }),
+            _ => None,
+        };
+        let kind = self.header_kind(&header);
+        let effect = list.records.observe(
+            header,
+            Observation {
+                source: TaskSource::OwnedList { owner, head },
+                kind,
+                claim,
+            },
+        );
+        if let Some(expected) = owned_id
+            && found != Some(expected)
+        {
+            list.records.issue(
+                effect.record,
+                DiscoveryIssue::OwnerIdMismatch {
+                    addr,
+                    owner,
+                    expected,
+                    found,
+                },
+            );
         }
     }
 
@@ -1514,58 +1562,57 @@ impl<'b, T: Target> Context<'b, T> {
     // Local-set discovery
     // -----------------------------------------------------------------------
 
-    /// Classify a task entry by its recorded scheduler type — the `S`
-    /// of its `Cell<T, S>`, resolved in the type table. Name-keyed and
-    /// fail safe like the leaf keys: an unrecognized spelling is
-    /// `Unknown`, never a guess.
-    fn scheduler_kind(&self, entry: &TaskFutureEntry) -> SchedulerKind {
-        let Some(ty) = self.view.ty(entry.scheduler) else {
-            return SchedulerKind::Unknown;
+    /// The class the tokio info recorded for a task entry's scheduler
+    /// `S` — bound at extraction against the reviewed scheduler
+    /// layouts, never read off a type name here. `None` is a scheduler
+    /// the extraction did not classify, which selects nothing.
+    pub(crate) fn scheduler_class(&self, entry: &TaskFutureEntry) -> Option<SchedulerClass> {
+        entry
+            .scheduler_binding
+            .as_ref()
+            .map(|binding| binding.class)
+    }
+
+    /// The class of a decoded header's cell, through the vtable join:
+    /// `None` when the future is unknown or ambiguous, never a guess.
+    fn header_class(&self, header: &DecodedTaskHeader) -> Option<SchedulerClass> {
+        let FutureInfo::Known(known) = &header.future else {
+            return None;
         };
-        let name = ty.name();
-        if arc_of(name, "tokio::task::local::Shared") {
-            SchedulerKind::LocalSet
-        } else if name == "tokio::runtime::blocking::schedule::BlockingSchedule" {
-            SchedulerKind::Blocking
-        } else if arc_of(
-            name,
-            "tokio::runtime::scheduler::multi_thread::handle::Handle",
-        ) {
-            SchedulerKind::MultiThread
-        } else if arc_of(name, "tokio::runtime::scheduler::current_thread::Handle") {
-            SchedulerKind::CurrentThread
-        } else {
-            SchedulerKind::Unknown
-        }
+        self.scheduler_class(self.task_entry(known.entry))
     }
 
-    /// The task-table entry behind a bare Header pointer, via the
-    /// vtable join — `None` when the future is unknown or ambiguous,
-    /// never a guess.
-    fn header_entry(&self, addr: u64) -> Result<Option<TaskEntryId>> {
-        let identity = self.header_identity(addr, &ReadContext::none())?;
-        match self.resolve_future(&identity.vtable) {
-            FutureInfo::Known(known) => Ok(Some(known.entry)),
-            FutureInfo::Unknown { .. } | FutureInfo::Ambiguous { .. } => Ok(None),
-        }
+    /// The kind of task a decoded header heads, by its cell's recorded
+    /// scheduler class — type-level evidence, which no owner needs to
+    /// validate.
+    pub(crate) fn header_kind(&self, header: &DecodedTaskHeader) -> Option<TaskKind> {
+        self.header_class(header).map(|class| match class {
+            SchedulerClass::Blocking => TaskKind::Blocking,
+            SchedulerClass::MultiThread
+            | SchedulerClass::CurrentThread
+            | SchedulerClass::LocalSet => TaskKind::Async,
+        })
     }
 
-    /// [`Context::scheduler_kind`] for a bare unlisted Header, as
+    /// [`Context::scheduler_class`] for a bare unlisted Header, as
     /// [`UnlistedTaskKind`] words it. `None` when the join cannot
-    /// resolve the future or a read on the way fails — the
-    /// classification is extra information, never worth an error.
+    /// resolve the future, the class is unclassified, or a read on the
+    /// way fails — the classification is extra information, never
+    /// worth an error.
     pub(crate) fn header_unlisted_kind(&self, addr: u64) -> Option<UnlistedTaskKind> {
-        let entry_id = self.header_entry(addr).ok().flatten()?;
-        match self.scheduler_kind(self.task_entry(entry_id)) {
-            SchedulerKind::LocalSet => Some(UnlistedTaskKind::LocalSet),
-            SchedulerKind::Blocking => Some(UnlistedTaskKind::Blocking),
-            SchedulerKind::MultiThread => {
+        let identity = self.header_identity(addr, &ReadContext::none()).ok()?;
+        let FutureInfo::Known(known) = self.resolve_future(&identity.vtable) else {
+            return None;
+        };
+        match self.scheduler_class(self.task_entry(known.entry))? {
+            SchedulerClass::LocalSet => Some(UnlistedTaskKind::LocalSet),
+            SchedulerClass::Blocking => Some(UnlistedTaskKind::Blocking),
+            SchedulerClass::MultiThread => {
                 Some(UnlistedTaskKind::OtherRuntime(RuntimeFlavor::MultiThread))
             }
-            SchedulerKind::CurrentThread => {
+            SchedulerClass::CurrentThread => {
                 Some(UnlistedTaskKind::OtherRuntime(RuntimeFlavor::CurrentThread))
             }
-            SchedulerKind::Unknown => None,
         }
     }
 
@@ -1576,37 +1623,50 @@ impl<'b, T: Target> Context<'b, T> {
     /// Route 3 reads each LWP's `task::local::CURRENT` anchor —
     /// populated only while a thread is mid-poll of a set. Route 1
     /// takes every task-shaped pointer in the enumerated tasks'
-    /// storage that lands outside the list — a `JoinHandle`'s target,
-    /// a task waker queued on a semaphore or parked on an io
-    /// registration the task holds, a `JoinSet` entry — through its
-    /// cell's recorded scheduler, which says what owns it: an
+    /// storage — a `JoinHandle`'s target, a task waker queued on a
+    /// semaphore or parked on an io registration the task holds, a
+    /// `JoinSet` entry — and files it as a reference to the task it
+    /// names; a task no list claims is then followed home through
+    /// its cell's recorded scheduler, which says what owns it: an
     /// `Arc<task::local::Shared>` is a set's, an `Arc` of either
     /// flavor `Handle` a runtime's, and either way the list must claim
     /// the task that led there (its own id equal to the task's
-    /// `Header.owner_id`) before it is admitted. Its input is the
-    /// reference scan over each task's initialized storage
+    /// `Header.owner_id`) before the record credits it. Its input is
+    /// the reference scan over each task's initialized storage
     /// ([`Context::scan_references`], under `read`'s allocator
     /// evidence), which finds a reference wherever it sits — a held
     /// handle as much as an awaited one, behind the adapters whose
     /// routes the bundle records — without diagnosing what the holder
-    /// waits on. Route 2 harvests the discovered runtimes' registries of
-    /// parked tasks — the timer wheel, then the io driver's
+    /// waits on. Route 2 harvests the discovered runtimes' registries
+    /// of parked tasks — the timer wheel, then the io driver's
     /// registrations — which hold a task's waker whatever list owns
     /// it, and so are the only route that reaches a set no enumerated
-    /// task points at. Every route converges on the owner's address
-    /// and dedups there.
+    /// task points at; and then each runtime's blocking-pool queue,
+    /// whose entries are the `spawn_blocking` cells no list carries.
+    /// Every route converges on the owner's address and dedups there.
     ///
     /// Each admitted list is then walked like one more shard and merged
     /// — including into further rounds of the sweep, since what it owns
     /// can point at the next hidden list, and a runtime it admits
     /// brings its own drivers to harvest.
     ///
+    /// Every route contributes what it observed to `list.records`,
+    /// one record per header ([`TaskStore::observe`]): a source, kind
+    /// evidence, and the owner claim it validated, if any. Which
+    /// route met a task first decides nothing about its row — a
+    /// blocking cell met through a handle and then through its queue
+    /// reads exactly as one met the other way round — and what the
+    /// routes disagreed on stays a diagnostic in `list.errors`. The
+    /// rows are rebuilt from the records when the sweep ends.
+    ///
     /// `runtimes` grows with what discovery finds; `excluded` names the
     /// handles it must leave alone, which is how a `--runtime`
-    /// selection keeps meaning what it says. Failures degrade per
-    /// candidate into `list.errors`; the returned sets are in admission
-    /// order, and the group each task is stamped with is its owner's
-    /// position in `runtimes`, or `runtimes.len()` plus its set's.
+    /// selection keeps meaning what it says: an excluded runtime's
+    /// population is never walked, and a task its list claims is not a
+    /// row of the selection. Failures degrade per candidate into
+    /// `list.errors`; the returned sets are in admission order.
+    ///
+    /// [`TaskStore::observe`]: super::discovery::TaskStore::observe
     pub fn discover_hidden_tasks(
         &self,
         lwps: &[LwpInfo],
@@ -1669,15 +1729,13 @@ impl<'b, T: Target> Context<'b, T> {
         match self.local_tls_probe(lwps) {
             Ok(found) => {
                 for (tid, shared) in found {
-                    self.admit_local_set(
-                        shared,
-                        None,
-                        Some(tid),
-                        DiscoveryRoute::Tls,
-                        &thread_ids,
-                        &mut sets,
-                        &mut list.errors,
-                    );
+                    if sets.iter().any(|set| set.shared.addr == shared.addr) {
+                        continue;
+                    }
+                    match self.read_local_set(shared, Some(tid), DiscoveryRoute::Tls, &thread_ids) {
+                        Ok(set) => sets.push(set),
+                        Err(e) => list.errors.push(e),
+                    }
                 }
             }
             Err(e) => list
@@ -1686,10 +1744,11 @@ impl<'b, T: Target> Context<'b, T> {
         }
 
         // Routes 1 and 2, to a fixed point: enumerate what was admitted,
-        // produce more candidates from what was enumerated, admit what
+        // produce more candidates from what was enumerated, merge what
         // they found. Both sides are monotone and bounded — owners dedup
-        // by address, tasks by the lists' own cycle guards — so the loop
-        // ends; the round cap is a backstop against nothing real.
+        // by address, records by header address, and each record's
+        // storage is scanned once — so the loop ends; the round cap is
+        // a backstop against nothing real.
         //
         // The scan goes first, so a list an enumerated task points at
         // is credited to that reference rather than to whichever of its
@@ -1697,81 +1756,60 @@ impl<'b, T: Target> Context<'b, T> {
         // follow, each over the runtimes no earlier round harvested: a
         // registry's contents do not change as lists are enumerated,
         // but a runtime admitted from one brings drivers of its own.
-        //
-        // A set's tasks cannot be stamped as they are enumerated, since
-        // their group sits above every runtime and discovery is still
-        // free to find more; the blocks each set contributed are
-        // recorded and stamped once the count is final.
-        let listed = list.tasks.len();
-        let mut walked = 0;
+        // The pool queues come last: their cells bootstrap nothing — a
+        // blocking cell's scheduler names no list — so the round they
+        // fill yields no candidates past the cells themselves.
         let mut enumerated_runtimes = runtimes.len();
         let mut enumerated_sets = 0;
         let mut wheeled = 0;
         let mut ioed = 0;
         let mut pooled = 0;
-        let mut local_blocks: Vec<(usize, std::ops::Range<usize>)> = Vec::new();
         for _round in 0..64 {
             while enumerated_runtimes < runtimes.len() {
                 let runtime = &runtimes[enumerated_runtimes];
-                match self
-                    .find_shared(runtime)
-                    .and_then(|shared| self.enumerate_tasks(shared))
-                {
-                    Ok(mut found) => {
-                        for task in &mut found.tasks {
-                            task.group = enumerated_runtimes;
-                        }
-                        list.tasks.append(&mut found.tasks);
-                        list.errors.append(&mut found.errors);
-                    }
-                    Err(e) => list.errors.push(e.context(format!(
+                if let Err(e) = self.find_shared(runtime).and_then(|shared| {
+                    self.enumerate_owned(shared, runtime.owner_key(), runtime.owned_id, list)
+                }) {
+                    list.errors.push(e.context(format!(
                         "failed to enumerate the runtime at {:#x}",
                         runtime.handle.addr
-                    ))),
+                    )));
                 }
                 enumerated_runtimes += 1;
             }
             while enumerated_sets < sets.len() {
                 let set = &sets[enumerated_sets];
-                match self.enumerate_local_tasks(set) {
-                    Ok(mut local) => {
-                        let start = list.tasks.len();
-                        list.tasks.append(&mut local.tasks);
-                        list.errors.append(&mut local.errors);
-                        local_blocks.push((enumerated_sets, start..list.tasks.len()));
-                    }
-                    Err(e) => list.errors.push(e.context(format!(
+                if let Err(e) = self.enumerate_local(set, list) {
+                    list.errors.push(e.context(format!(
                         "failed to enumerate the local set at {:#x}",
                         set.shared.addr
-                    ))),
+                    )));
                 }
                 enumerated_sets += 1;
             }
-            let found = if walked < list.tasks.len() {
-                let range = walked..list.tasks.len();
-                walked = list.tasks.len();
-                let mut found = Vec::new();
-                self.scanned_task_pointers(list, range, read, &mut budget, &mut found);
-                found
+            let unscanned: Vec<TaskRecordId> = list
+                .records
+                .records()
+                .filter(|(_, record)| record.resident() && !record.scanned)
+                .map(|(id, _)| id)
+                .collect();
+            let found = if !unscanned.is_empty() {
+                self.scan_records(&unscanned, list, read, &mut budget)
             } else if wheeled < runtimes.len() {
                 let (found, errors) =
-                    self.wheel_task_pointers(&runtimes[wheeled..], list, &mut registries);
+                    self.wheel_task_pointers(&runtimes[wheeled..], &mut registries);
                 wheeled = runtimes.len();
                 list.errors.extend(errors);
                 found
             } else if ioed < runtimes.len() {
-                let (found, errors) =
-                    self.io_task_pointers(&runtimes[ioed..], list, &mut registries);
+                let (found, errors) = self.io_task_pointers(&runtimes[ioed..], &mut registries);
                 ioed = runtimes.len();
                 list.errors.extend(errors);
                 found
             } else if pooled < runtimes.len() {
-                // The blocking pool's queue: the spawn_blocking cells
-                // no task list carries, listed as rows of their own.
-                // They bootstrap nothing — a blocking cell's scheduler
-                // names no list — so the round yields no candidates.
-                for (offset, runtime) in runtimes[pooled..].iter().enumerate() {
-                    if let Err(e) = self.list_queued_blocking(runtime, pooled + offset, list) {
+                let mut found = Vec::new();
+                for runtime in &runtimes[pooled..] {
+                    if let Err(e) = self.queued_blocking(runtime, &mut found, &mut list.errors) {
                         list.errors.push(e.context(format!(
                             "failed to walk the blocking queue of the runtime at {:#x}",
                             runtime.handle.addr
@@ -1779,32 +1817,28 @@ impl<'b, T: Target> Context<'b, T> {
                     }
                 }
                 pooled = runtimes.len();
-                Vec::new()
+                found
             } else {
                 break;
             };
-            for (addr, route) in found {
-                self.bootstrap_unlisted(
-                    addr,
-                    route,
+            for candidate in found {
+                self.observe_candidate(
+                    candidate,
                     excluded,
                     &thread_ids,
                     runtimes,
                     &mut sets,
                     list,
+                    read,
                 );
             }
         }
-        for (index, range) in local_blocks {
-            let group = runtimes.len() + index;
-            for task in &mut list.tasks[range] {
-                task.group = group;
-            }
-        }
-        if list.tasks.len() != listed {
-            list.tasks
-                .sort_by_key(|t| (t.task_id.is_none(), t.task_id, t.addr.0));
-        }
+        list.reproject(excluded);
+        // What the routes disagreed on, beside the rows: every standing
+        // diagnostic of every record, in record order.
+        let issues: Vec<String> = list.records.issues().map(ToString::to_string).collect();
+        list.errors
+            .extend(issues.into_iter().map(|issue| anyhow!(issue)));
         // A spent budget is reported, never absorbed: the caps are
         // there to bound a corrupt or pathological target, and a
         // healthy one that reaches them is a fact to raise the cap on.
@@ -1825,59 +1859,59 @@ impl<'b, T: Target> Context<'b, T> {
         (sets, registries)
     }
 
-    /// Route 1's input: every task-Header pointer the reference scan
-    /// finds in the storage of `list.tasks[range]` that no enumerated
-    /// task claims, appended to `found` once each. Scan issues are not
-    /// reported here — a stop the scan cannot get past is a bounded
-    /// loss of this input, and the registry harvests still run — but
-    /// the run-wide budget is `budget`'s, and its exhaustion is the
-    /// sweep's to report.
-    fn scanned_task_pointers(
+    /// Route 1's input: every reference the scan finds in the storage
+    /// of the records `ids` name, each of which is marked scanned
+    /// whatever the scan made of it. Scan issues are not reported here
+    /// — a stop the scan cannot get past is a bounded loss of this
+    /// input, and the registry harvests still run — but the run-wide
+    /// budget is `budget`'s, and its exhaustion is the sweep's to
+    /// report.
+    fn scan_records(
         &self,
-        list: &TaskList,
-        range: std::ops::Range<usize>,
+        ids: &[TaskRecordId],
+        list: &mut TaskList,
         read: &ReadContext<'_>,
         budget: &mut ScanBudget,
-        found: &mut Vec<(u64, DiscoveryRoute)>,
-    ) {
-        /// The sink feeding the candidate queue: a target outside the
-        /// list, once, with the storage that referenced it as its
-        /// route. Nothing else the scan reports is kept.
-        struct Candidates<'l> {
-            list: &'l TaskList,
-            seen: HashSet<u64>,
-            found: Vec<(u64, DiscoveryRoute)>,
-        }
+    ) -> Vec<Candidate> {
+        /// The sink feeding the candidate queue: every reference, with
+        /// the storage that held it as its route. Nothing else the
+        /// scan reports is kept.
+        struct Candidates(Vec<Candidate>);
 
-        impl ReferenceSink for Candidates<'_> {
+        impl ReferenceSink for Candidates {
             fn reference(
                 &mut self,
                 target: TaskAddr,
                 source: ReferenceSource,
-                _: Option<ValueKey>,
-                _: Option<TaskAddr>,
-                _: &[hansei_bundle::Step],
+                source_value: Option<ValueKey>,
+                root_task: Option<TaskAddr>,
+                path: &[hansei_bundle::Step],
             ) {
-                if !self.list.contains(target.0) && self.seen.insert(target.0) {
-                    self.found.push((target.0, DiscoveryRoute::Scanned(source)));
-                }
+                self.0.push(Candidate::Reference {
+                    reference: TaskReference {
+                        target,
+                        source,
+                        source_value,
+                        root_task,
+                        path: path.to_vec(),
+                    },
+                    route: DiscoveryRoute::Scanned(source),
+                });
             }
 
             fn issue(&mut self, _: WalkIssue) {}
         }
 
-        let mut sink = Candidates {
-            list,
-            seen: found.iter().map(|(addr, _)| *addr).collect(),
-            found: Vec::new(),
-        };
-        for task in &list.tasks[range] {
-            let Ok(TaskStage::Running(future)) = self.task_root(task, read) else {
+        let mut sink = Candidates(Vec::new());
+        for &id in ids {
+            list.records.mark_scanned(id);
+            let task = list.records.record(id).task();
+            let Ok(TaskStage::Running(future)) = self.task_root(&task, read) else {
                 continue;
             };
             let _ = self.scan_references(future, task.addr, read, budget, &mut sink);
         }
-        found.append(&mut sink.found);
+        sink.0
     }
 
     /// The tokio thread id a worker's `Context` records — what a
@@ -1962,8 +1996,8 @@ impl<'b, T: Target> Context<'b, T> {
         self.view.ty(*binding.roots.first()?)
     }
 
-    /// Route 2: the task-Header pointers armed on timer entries parked
-    /// in `runtimes`' own wheels that no enumerated task claims.
+    /// Route 2: every task-Header pointer armed on a timer entry parked
+    /// in `runtimes`' own wheels, as a reference from the entry.
     ///
     /// The wheel is a registry of parked tasks whatever list owns them:
     /// every `tokio::time::Sleep` registers its `TimerShared` into it
@@ -1972,8 +2006,7 @@ impl<'b, T: Target> Context<'b, T> {
     /// visible here and nowhere else. What identifies a waker as a
     /// task's is the same address-equality join on tokio's
     /// `WAKER_VTABLE` static that the wait-queue readers make; a waker
-    /// that is not a task's, or a task that is already listed, is
-    /// simply not a candidate.
+    /// that is not a task's is simply not a candidate.
     ///
     /// Failures degrade at the finest grain the walk allows: a runtime
     /// whose wheel cannot be reached costs its own wheel, a corrupt
@@ -1982,23 +2015,17 @@ impl<'b, T: Target> Context<'b, T> {
     fn wheel_task_pointers(
         &self,
         runtimes: &[RuntimeRef<'b>],
-        list: &TaskList,
         registries: &mut Registries,
-    ) -> (Vec<(u64, DiscoveryRoute)>, Vec<anyhow::Error>) {
+    ) -> (Vec<Candidate>, Vec<anyhow::Error>) {
         let mut found = Vec::new();
         let mut errors = Vec::new();
         // Across the whole harvest: the same entry is in exactly one
         // slot, so a repeat is corrupt memory, not a second sighting.
         let mut visited = HashSet::default();
         for runtime in runtimes {
-            if let Err(e) = self.harvest_wheel(
-                runtime,
-                list,
-                &mut visited,
-                &mut found,
-                &mut errors,
-                registries,
-            ) {
+            if let Err(e) =
+                self.harvest_wheel(runtime, &mut visited, &mut found, &mut errors, registries)
+            {
                 errors.push(e.context(format!(
                     "failed to walk the timer wheel of the runtime at {:#x}",
                     runtime.handle.addr
@@ -2011,13 +2038,11 @@ impl<'b, T: Target> Context<'b, T> {
     /// Walk one runtime's wheel: six levels of 64 slots, each slot an
     /// intrusive list of `TimerShared`s. The levels and slots are plain
     /// arrays, read whole and iterated; only the lists are walked.
-    #[allow(clippy::too_many_arguments)]
     fn harvest_wheel(
         &self,
         runtime: &RuntimeRef<'b>,
-        list: &TaskList,
         visited: &mut HashSet<u64>,
-        found: &mut Vec<(u64, DiscoveryRoute)>,
+        found: &mut Vec<Candidate>,
         errors: &mut Vec<anyhow::Error>,
         registries: &mut Registries,
     ) -> Result<()> {
@@ -2041,9 +2066,7 @@ impl<'b, T: Target> Context<'b, T> {
                     .ty
                     .pointer_target()
                     .ok_or_else(|| anyhow!("a wheel slot's head is not pointer-shaped"))?;
-                if let Err(e) =
-                    self.walk_wheel_slot(addr, entry_ty, list, visited, found, registries)
-                {
+                if let Err(e) = self.walk_wheel_slot(addr, entry_ty, visited, found, registries) {
                     errors.push(e.context(format!("failed to walk the wheel slot at {addr:#x}")));
                 }
             }
@@ -2057,9 +2080,8 @@ impl<'b, T: Target> Context<'b, T> {
         &self,
         head: u64,
         entry_ty: BundleType<'b>,
-        list: &TaskList,
         visited: &mut HashSet<u64>,
-        found: &mut Vec<(u64, DiscoveryRoute)>,
+        found: &mut Vec<Candidate>,
         registries: &mut Registries,
     ) -> Result<()> {
         let mut cur = Some(head);
@@ -2078,7 +2100,13 @@ impl<'b, T: Target> Context<'b, T> {
                 .walk(entry)?
                 .optional()
             {
-                Some(raw) => self.registry_waker(raw, DiscoveryRoute::Wheel, list, found)?,
+                Some(raw) => self.registry_waker(
+                    raw,
+                    entry,
+                    ReferenceSource::TimerWaker,
+                    DiscoveryRoute::Wheel,
+                    found,
+                )?,
                 None => None,
             };
             // Enrichment beside the harvest's real business: a torn or
@@ -2103,9 +2131,9 @@ impl<'b, T: Target> Context<'b, T> {
         Ok(())
     }
 
-    /// Route 2's other registry: the task-Header pointers held by io
-    /// resources registered with `runtimes`' own drivers that no
-    /// enumerated task claims.
+    /// Route 2's other registry: every task-Header pointer held by an
+    /// io resource registered with `runtimes`' own drivers, as a
+    /// reference from the resource.
     ///
     /// The argument is the wheel's, for tasks waiting on a socket rather
     /// than on time: every io resource the runtime knows about is in the
@@ -2122,9 +2150,8 @@ impl<'b, T: Target> Context<'b, T> {
     pub(crate) fn io_task_pointers(
         &self,
         runtimes: &[RuntimeRef<'b>],
-        list: &TaskList,
         registries: &mut Registries,
-    ) -> (Vec<(u64, DiscoveryRoute)>, Vec<anyhow::Error>) {
+    ) -> (Vec<Candidate>, Vec<anyhow::Error>) {
         let mut found = Vec::new();
         let mut errors = Vec::new();
         // Across the whole harvest, for both node kinds: a registration
@@ -2132,14 +2159,9 @@ impl<'b, T: Target> Context<'b, T> {
         // so a repeat is corrupt memory, not a second sighting.
         let mut visited = HashSet::default();
         for runtime in runtimes {
-            if let Err(e) = self.harvest_io(
-                runtime,
-                list,
-                &mut visited,
-                &mut found,
-                &mut errors,
-                registries,
-            ) {
+            if let Err(e) =
+                self.harvest_io(runtime, &mut visited, &mut found, &mut errors, registries)
+            {
                 errors.push(e.context(format!(
                     "failed to walk the io registrations of the runtime at {:#x}",
                     runtime.handle.addr
@@ -2151,13 +2173,11 @@ impl<'b, T: Target> Context<'b, T> {
 
     /// Walk one runtime's registration list, taking each resource's
     /// waiters as they come.
-    #[allow(clippy::too_many_arguments)]
     fn harvest_io(
         &self,
         runtime: &RuntimeRef<'b>,
-        list: &TaskList,
         visited: &mut HashSet<u64>,
-        found: &mut Vec<(u64, DiscoveryRoute)>,
+        found: &mut Vec<Candidate>,
         errors: &mut Vec<anyhow::Error>,
         registries: &mut Registries,
     ) -> Result<()> {
@@ -2200,9 +2220,7 @@ impl<'b, T: Target> Context<'b, T> {
                 consistency: self.io_guard(registration, &ReadContext::none()),
                 waiters: Vec::new(),
             };
-            if let Err(e) =
-                self.harvest_io_waiters(registration, list, visited, found, &mut resource)
-            {
+            if let Err(e) = self.harvest_io_waiters(registration, visited, found, &mut resource) {
                 errors.push(e.context(format!(
                     "failed to walk the waiters of the io registration at {addr:#x}"
                 )));
@@ -2227,9 +2245,8 @@ impl<'b, T: Target> Context<'b, T> {
     fn harvest_io_waiters(
         &self,
         registration: Value<'b>,
-        list: &TaskList,
         visited: &mut HashSet<u64>,
-        found: &mut Vec<(u64, DiscoveryRoute)>,
+        found: &mut Vec<Candidate>,
         resource: &mut IoResourceInfo,
     ) -> Result<()> {
         let waiters = self
@@ -2241,7 +2258,13 @@ impl<'b, T: Target> Context<'b, T> {
         ] {
             // A direction nobody is awaiting holds no waker.
             if let Some(raw) = self.walk(role).walk(waiters)?.optional() {
-                let task = self.registry_waker(raw, DiscoveryRoute::Io, list, found)?;
+                let task = self.registry_waker(
+                    raw,
+                    registration,
+                    ReferenceSource::IoWaker,
+                    DiscoveryRoute::Io,
+                    found,
+                )?;
                 resource.waiters.push(IoWaiterInfo {
                     slot,
                     task,
@@ -2269,7 +2292,13 @@ impl<'b, T: Target> Context<'b, T> {
             // A node whose future has not been polled since it was
             // linked carries no waker yet.
             if let Some(raw) = self.walk(WalkRole::IoWaiterWaker).walk(node)?.optional() {
-                let task = self.registry_waker(raw, DiscoveryRoute::Io, list, found)?;
+                let task = self.registry_waker(
+                    raw,
+                    node,
+                    ReferenceSource::IoWaker,
+                    DiscoveryRoute::Io,
+                    found,
+                )?;
                 let interest = self
                     .walk(WalkRole::IoWaiterInterest)
                     .try_read::<u64>(node)
@@ -2303,35 +2332,45 @@ impl<'b, T: Target> Context<'b, T> {
     }
 
     /// Decode one waker a registry holds and file its discovery
-    /// candidate: a task's waker on a task no list claims is route 2's
-    /// find. The task it names — listed or not — is returned either
-    /// way, for the registries' retention; anything that is not a task
-    /// waker (a `block_on` thread's parker waker, say) is `None`.
+    /// candidate: a reference of kind `source` from `holder` — the
+    /// entry or node the waker sits in — to the task it names, by
+    /// `route`. The task's address is returned either way, for the
+    /// registries' retention; anything that is not a task waker (a
+    /// `block_on` thread's parker waker, say) is `None`.
     fn registry_waker(
         &self,
         raw: Value<'b>,
+        holder: Value<'b>,
+        source: ReferenceSource,
         route: DiscoveryRoute,
-        list: &TaskList,
-        found: &mut Vec<(u64, DiscoveryRoute)>,
+        found: &mut Vec<Candidate>,
     ) -> Result<Option<u64>> {
         let QueuedWaker::Task { addr, .. } = self.raw_waker(raw)? else {
             return Ok(None);
         };
-        if !list.contains(addr) {
-            found.push((addr, route));
-        }
+        found.push(Candidate::Reference {
+            reference: TaskReference {
+                target: TaskAddr(addr),
+                source,
+                source_value: Some(ValueKey::of(holder)),
+                root_task: None,
+                path: Vec::new(),
+            },
+            route,
+        });
         Ok(Some(addr))
     }
 
-    /// The spawn_blocking cells parked in one runtime's pool queue,
-    /// listed as rows under `group`. The queue is a `VecDeque` ring:
-    /// the recorded element layout strides it, and each element's
-    /// `UnownedTask` names the Header that identifies the cell.
-    fn list_queued_blocking(
+    /// The spawn_blocking cells parked in one runtime's pool queue, as
+    /// candidates naming the queue and the runtime it belongs to. The
+    /// queue is a `VecDeque` ring: the recorded element layout strides
+    /// it, and each element's `UnownedTask` names the Header that
+    /// identifies the cell.
+    fn queued_blocking(
         &self,
         runtime: &RuntimeRef<'b>,
-        group: usize,
-        list: &mut TaskList,
+        found: &mut Vec<Candidate>,
+        errors: &mut Vec<anyhow::Error>,
     ) -> Result<()> {
         let Some(queue) = self
             .walk(WalkRole::BlockingQueue)
@@ -2366,212 +2405,310 @@ impl<'b, T: Target> Context<'b, T> {
                 self.walk(WalkRole::BlockingTaskHeader).read(value)
             })();
             match step {
-                Ok(header) => self.list_blocking(header, group, list),
-                Err(e) => list
-                    .errors
-                    .push(e.context(format!("failed to read blocking-queue slot {slot}"))),
+                Ok(header) => found.push(Candidate::Queued {
+                    addr: header,
+                    owner: runtime.owner_key(),
+                    queue: ValueKey::of(queue),
+                    entry: addr,
+                }),
+                Err(e) => {
+                    errors.push(e.context(format!("failed to read blocking-queue slot {slot}")))
+                }
             }
         }
         Ok(())
     }
 
-    /// List one blocking cell as a row, wherever it was found: decode
-    /// its Header like any task's and mark it. A complete cell is left
-    /// to the join edge that found it — off the pool, alive only
-    /// through its handle — and a listed one is already a row. The
-    /// runtime's own cells are skipped: tokio launches its worker
-    /// threads through the pool, and whether a capture catches one of
-    /// those mid-launch is pure timing, not target work. A blocking
-    /// cell is in no owned list, so its Trailer links are never read.
-    fn list_blocking(&self, addr: u64, group: usize, list: &mut TaskList) {
-        if list.contains(addr) {
+    /// Take one candidate into the store.
+    ///
+    /// An address already decoded merges the source — and a queue
+    /// entry's owner claim — without a second decode of the header. A
+    /// new one is decoded under `read` (a candidate in memory the
+    /// allocator has taken back is refused, not filed), filed with
+    /// its cell's recorded scheduler class as kind evidence, and, for
+    /// a scheduler-owned task, followed home through that scheduler
+    /// to the owner it names — which must claim the task (its list id
+    /// the task's `owner_id`) before the record credits it. A blocking
+    /// cell has no list to follow home; the header is the whole find.
+    /// A task the tokio info cannot classify (an unresolvable future)
+    /// is a record with no kind and no owner, and only a genuine read
+    /// failure reports.
+    #[allow(clippy::too_many_arguments)]
+    fn observe_candidate(
+        &self,
+        candidate: Candidate,
+        excluded: &[u64],
+        thread_ids: &[(u64, u32)],
+        runtimes: &mut Vec<RuntimeRef<'b>>,
+        sets: &mut Vec<LocalSetRef<'b>>,
+        list: &mut TaskList,
+        read: &ReadContext<'_>,
+    ) {
+        let addr = candidate.addr();
+        let route = candidate.route();
+        let (source, claim) = match candidate {
+            Candidate::Reference { reference, .. } => (TaskSource::Reference(reference), None),
+            Candidate::Queued {
+                owner,
+                queue,
+                entry,
+                ..
+            } => (
+                TaskSource::BlockingQueue {
+                    owner,
+                    queue,
+                    entry,
+                },
+                Some(OwnerClaim {
+                    owner,
+                    evidence: OwnerEvidence::BlockingQueue { queue, entry },
+                }),
+            ),
+        };
+        if let Some(id) = list.records.lookup(addr) {
+            list.records.observe_at(
+                id,
+                Observation {
+                    source,
+                    kind: None,
+                    claim,
+                },
+            );
             return;
         }
-        match self.read_task_header(TaskAddr(addr), &ReadContext::none()) {
-            Ok(header) => {
-                let mut task = header.into_task();
-                if task.state.lifecycle() == Lifecycle::Complete {
-                    return;
-                }
-                if let FutureInfo::Known(known) = &task.future
-                    && runtime_internal_blocking(&known.display_name)
-                {
-                    return;
-                }
-                task.blocking = true;
-                task.group = group;
-                list.tasks.push(task);
+        let header = match self.read_task_header(TaskAddr(addr), read) {
+            Ok(header) => header,
+            Err(e) => {
+                list.errors.push(e.context(format!(
+                    "failed to decode the task at {addr:#x} that {route} named"
+                )));
+                return;
             }
-            Err(e) => list
-                .errors
-                .push(e.context(format!("failed to list the blocking task at {addr:#x}"))),
+        };
+        let class = self.header_class(&header);
+        let kind = self.header_kind(&header);
+        let effect = list.records.observe(
+            header,
+            Observation {
+                source,
+                kind,
+                claim,
+            },
+        );
+        let Some(class) = class else {
+            return;
+        };
+        if class == SchedulerClass::Blocking {
+            return;
+        }
+        match self.cell_owner_claim(
+            effect.record,
+            class,
+            route,
+            excluded,
+            thread_ids,
+            runtimes,
+            sets,
+            list,
+        ) {
+            Ok(Some(claim)) => {
+                list.records.claim(effect.record, claim);
+            }
+            Ok(None) => {}
+            Err(e) => list.errors.push(e.context(format!(
+                "failed to follow the task at {addr:#x} home through its scheduler"
+            ))),
         }
     }
 
-    /// Route 1's tail: follow one unlisted Header home through its
-    /// cell's scheduler, whatever that scheduler turns out to be. A
-    /// blocking cell has no list to follow home and becomes a row of
-    /// its own; a task the bundle cannot classify (an unresolvable
-    /// future) is the common, silent case, and only a genuine read
-    /// failure reports.
+    /// Follow a fresh record home through its cell's recorded
+    /// scheduler: the `Arc` the cell holds, crossed to the owner it
+    /// points at, which is admitted (or already was) and must claim
+    /// the task. The validated claim, or `None` with the mismatch
+    /// filed on the record.
     #[allow(clippy::too_many_arguments)]
-    fn bootstrap_unlisted(
+    fn cell_owner_claim(
         &self,
-        addr: u64,
+        id: TaskRecordId,
+        class: SchedulerClass,
         route: DiscoveryRoute,
         excluded: &[u64],
         thread_ids: &[(u64, u32)],
         runtimes: &mut Vec<RuntimeRef<'b>>,
         sets: &mut Vec<LocalSetRef<'b>>,
         list: &mut TaskList,
-    ) {
-        let step = (|| -> Result<Option<(SchedulerKind, Value<'b>, u64)>> {
-            ensure!(
-                self.mappings.contains_addr(addr),
-                "task Header pointer {addr:#x} is unmapped"
-            );
-            let header_ty = self.infra_ty(self.view.bundle().infra.header, "task Header")?;
-            let header = Value::read(self.proc, header_ty, addr)?;
-            let vtable_addr: u64 = self.walk(WalkRole::HeaderVtable).read(header)?;
-            let vtable = self.task_vtable(vtable_addr)?;
-            let FutureInfo::Known(known) = self.resolve_future(&vtable) else {
-                return Ok(None);
-            };
-            let entry = self.task_entry(known.entry);
-            let kind = self.scheduler_kind(entry);
-            // A blocking cell has no owner list to walk to; the header
-            // itself is the whole find.
-            if matches!(kind, SchedulerKind::Blocking) {
-                return Ok(Some((kind, header, 0)));
+    ) -> Result<Option<OwnerClaim>> {
+        let header = &list.records.record(id).header;
+        let addr = header.addr;
+        let FutureInfo::Known(known) = &header.future else {
+            return Ok(None);
+        };
+        let entry = self.task_entry(known.entry);
+        let cell_ty = self.infra_ty(entry.cell, &format!("the Cell of {}", known.display_name))?;
+        let owner_id = header
+            .owner_id
+            .ok_or_else(|| anyhow!("the task at {addr:?} records no owner_id to check"))?;
+        let cell = Value::read(self.proc, cell_ty, addr.0)?;
+        let scheduler = self.walk(WalkRole::CellScheduler).walk_at(cell)?;
+        let owner = self
+            .arc_data(scheduler)
+            .context("failed to follow the cell's scheduler Arc")?;
+        let validated = match class {
+            SchedulerClass::LocalSet => {
+                self.local_set_claim(owner, owner_id, addr, route, thread_ids, sets)?
             }
-            if !matches!(
-                kind,
-                SchedulerKind::LocalSet | SchedulerKind::MultiThread | SchedulerKind::CurrentThread
-            ) {
-                return Ok(None);
-            }
-            let cell_ty =
-                self.infra_ty(entry.cell, &format!("the Cell of {}", known.display_name))?;
-            let cell = Value::read(self.proc, cell_ty, addr)?;
-            let scheduler = self.walk(WalkRole::CellScheduler).walk_at(cell)?;
-            let owner = self
-                .arc_data(scheduler)
-                .context("failed to follow the cell's scheduler Arc")?;
-            let owner_id: Option<u64> = self.walk(WalkRole::HeaderOwnerId).read(header)?;
-            let claim = owner_id
-                .ok_or_else(|| anyhow!("the task at {addr:#x} records no owner_id to check"))?;
-            Ok(Some((kind, owner, claim)))
-        })();
-        match step {
-            Ok(Some((SchedulerKind::Blocking, ..))) => {
-                self.list_blocking(addr, 0, list);
-            }
-            Ok(Some((SchedulerKind::LocalSet, shared, claim))) => {
-                let errors = &mut list.errors;
-                self.admit_local_set(shared, Some(claim), None, route, thread_ids, sets, errors);
-            }
-            Ok(Some((SchedulerKind::MultiThread, handle, claim))) => self.admit_hidden_runtime(
-                handle,
+            SchedulerClass::MultiThread => self.runtime_claim(
+                owner,
                 RuntimeFlavor::MultiThread,
-                claim,
+                owner_id,
+                addr,
                 route,
                 excluded,
                 runtimes,
-                &mut list.errors,
-            ),
-            Ok(Some((SchedulerKind::CurrentThread, handle, claim))) => self.admit_hidden_runtime(
-                handle,
+            )?,
+            SchedulerClass::CurrentThread => self.runtime_claim(
+                owner,
                 RuntimeFlavor::CurrentThread,
-                claim,
+                owner_id,
+                addr,
                 route,
                 excluded,
                 runtimes,
-                &mut list.errors,
-            ),
-            Ok(Some(_)) | Ok(None) => {}
-            Err(e) => list.errors.push(e.context(format!(
-                "failed to follow the unlisted task at {addr:#x} home"
-            ))),
-        }
+            )?,
+            SchedulerClass::Blocking => return Ok(None),
+        };
+        Ok(match validated {
+            Ok(key) => Some(OwnerClaim {
+                owner: key,
+                evidence: OwnerEvidence::CellScheduler {
+                    scheduler: ValueKey::of(owner),
+                    owner_id,
+                },
+            }),
+            Err(mismatch) => {
+                list.records.issue(id, mismatch);
+                None
+            }
+        })
     }
 
-    /// Admit a runtime handle route 1 reached from a task's own cell:
-    /// dedup by handle address, then the decisive check — the
-    /// scheduler's owned list must claim the very task that led there,
-    /// exactly as a set's does.
-    ///
-    /// A handle already in `runtimes` is a runtime some thread's
-    /// `Context` reached (or an earlier candidate of this loop), and one
-    /// in `excluded` is a runtime the operator asked not to see; neither
-    /// is news.
+    /// The claim a task's cell makes on a runtime, held to the
+    /// runtime's list claiming the task back: the key, or the mismatch
+    /// to file. The runtime may be one a thread's `Context` reached,
+    /// one an earlier candidate admitted, one the operator excluded —
+    /// whose list id is read and whose population is not — or one this
+    /// find admits, which it does only when the list claims the task.
+    /// A runtime already known under the other flavor is keyed by the
+    /// flavor this cell records: one address seen two ways is a
+    /// conflict for the record, not a second runtime.
     #[allow(clippy::too_many_arguments)]
-    fn admit_hidden_runtime(
+    fn runtime_claim(
         &self,
         handle: Value<'b>,
         flavor: RuntimeFlavor,
-        claim: u64,
+        owner_id: u64,
+        addr: TaskAddr,
         route: DiscoveryRoute,
         excluded: &[u64],
         runtimes: &mut Vec<RuntimeRef<'b>>,
-        errors: &mut Vec<anyhow::Error>,
-    ) {
-        if runtimes.iter().any(|r| r.handle.addr == handle.addr) || excluded.contains(&handle.addr)
-        {
-            return;
-        }
-        let step = (|| -> Result<RuntimeRef<'b>> {
-            let shared = self.walk(WalkRole::HandleShared).walk_at(handle)?;
-            let owned_id: Option<u64> = self.walk(WalkRole::SchedulerOwnedId).try_read(shared)?;
-            let owned_id = owned_id.ok_or_else(|| {
-                anyhow!("the scheduler owned list's id did not bind against this target")
-            })?;
-            ensure!(
-                claim == owned_id,
-                "the runtime's owned-list id {owned_id} does not claim the task \
-                 (owner_id {claim}) that led there"
-            );
-            Ok(RuntimeRef {
-                flavor,
-                handle,
-                worker_tids: Vec::new(),
-                route,
-            })
-        })();
-        match step {
-            Ok(runtime) => runtimes.push(runtime),
-            Err(e) => errors.push(e.context(format!(
-                "found a {flavor} runtime at {:#x} (via {route}) but could not read it",
-                handle.addr
-            ))),
-        }
+    ) -> Result<std::result::Result<OwnerKey, DiscoveryIssue>> {
+        let key = OwnerKey::Runtime {
+            flavor,
+            handle: handle.addr,
+        };
+        let mismatch = |expected: u64| DiscoveryIssue::OwnerIdMismatch {
+            addr,
+            owner: key,
+            expected,
+            found: Some(owner_id),
+        };
+        let unbound = || anyhow!("the scheduler owned list's id did not bind against this target");
+        let list_id = match runtimes.iter().find(|r| r.handle.addr == handle.addr) {
+            Some(runtime) => runtime.owned_id,
+            None if excluded.contains(&handle.addr) => self.owned_list_id(handle)?,
+            None => {
+                let step = (|| -> Result<std::result::Result<RuntimeRef<'b>, DiscoveryIssue>> {
+                    let owned_id = self.owned_list_id(handle)?.ok_or_else(unbound)?;
+                    if owned_id != owner_id {
+                        return Ok(Err(mismatch(owned_id)));
+                    }
+                    Ok(Ok(RuntimeRef {
+                        flavor,
+                        handle,
+                        owned_id: Some(owned_id),
+                        worker_tids: Vec::new(),
+                        route,
+                    }))
+                })();
+                return match step {
+                    Ok(Ok(runtime)) => {
+                        runtimes.push(runtime);
+                        Ok(Ok(key))
+                    }
+                    Ok(Err(mismatch)) => Ok(Err(mismatch)),
+                    Err(e) => Err(e.context(format!(
+                        "found a {flavor} runtime at {:#x} (via {route}) but could not read it",
+                        handle.addr
+                    ))),
+                };
+            }
+        };
+        let list_id = list_id.ok_or_else(unbound)?;
+        Ok(match list_id == owner_id {
+            true => Ok(key),
+            false => Err(mismatch(list_id)),
+        })
     }
 
-    /// Admit a `Shared` some route reached: dedup by address, read the
-    /// set's identity, and hold route 1's finds to the decisive check —
-    /// the set must claim the very task that led there.
-    #[allow(clippy::too_many_arguments)]
-    fn admit_local_set(
+    /// The claim a task's cell makes on a local set, held to the set's
+    /// list claiming the task back — the set's sibling of
+    /// [`Context::runtime_claim`]: a set already admitted is checked,
+    /// a new one is read and admitted only when it claims the task.
+    fn local_set_claim(
         &self,
         shared: Value<'b>,
-        claim: Option<u64>,
-        tls_tid: Option<u32>,
+        owner_id: u64,
+        addr: TaskAddr,
         route: DiscoveryRoute,
         thread_ids: &[(u64, u32)],
         sets: &mut Vec<LocalSetRef<'b>>,
-        errors: &mut Vec<anyhow::Error>,
-    ) {
-        if sets.iter().any(|set| set.shared.addr == shared.addr) {
-            return;
+    ) -> Result<std::result::Result<OwnerKey, DiscoveryIssue>> {
+        let key = OwnerKey::LocalSet {
+            shared: shared.addr,
+        };
+        let mismatch = |expected: u64| DiscoveryIssue::OwnerIdMismatch {
+            addr,
+            owner: key,
+            expected,
+            found: Some(owner_id),
+        };
+        if let Some(set) = sets.iter().find(|set| set.shared.addr == shared.addr) {
+            return Ok(match set.owned_id == owner_id {
+                true => Ok(key),
+                false => Err(mismatch(set.owned_id)),
+            });
         }
+        let set = self.read_local_set(shared, None, route, thread_ids)?;
+        if set.owned_id != owner_id {
+            return Ok(Err(mismatch(set.owned_id)));
+        }
+        sets.push(set);
+        Ok(Ok(key))
+    }
+
+    /// Read a `Shared` some route reached as a set: its owned-list id,
+    /// the thread it is pinned to, and the LWP that is — `tls_tid`
+    /// where the TLS probe found it, else the worker whose thread id
+    /// the set records.
+    fn read_local_set(
+        &self,
+        shared: Value<'b>,
+        tls_tid: Option<u32>,
+        route: DiscoveryRoute,
+        thread_ids: &[(u64, u32)],
+    ) -> Result<LocalSetRef<'b>> {
         let step = (|| -> Result<LocalSetRef<'b>> {
             let owned_id: u64 = self.walk(WalkRole::LocalOwnedId).read(shared)?;
-            if let Some(claim) = claim {
-                ensure!(
-                    claim == owned_id,
-                    "the set's owned-list id {owned_id} does not claim the task \
-                     (owner_id {claim}) that led there"
-                );
-            }
             let owner: Option<u64> = self.walk(WalkRole::LocalSetOwner).try_read(shared)?;
             let owner_tid = tls_tid.or_else(|| {
                 owner.and_then(|owner| {
@@ -2589,24 +2726,22 @@ impl<'b, T: Target> Context<'b, T> {
                 route,
             })
         })();
-        match step {
-            Ok(set) => sets.push(set),
-            Err(e) => errors.push(e.context(format!(
+        step.map_err(|e| {
+            e.context(format!(
                 "found a local set at {:#x} (via {route}) but could not read it",
                 shared.addr
-            ))),
-        }
+            ))
+        })
     }
 
     /// Walk a discovered set's `LocalOwnedTasks` list — one more shard
     /// with a different root: the nodes are ordinary task Headers,
     /// linked through the same `Trailer.owned` pointers the scheduler's
     /// shards use. Every node must carry the set's `owned.id` as its
-    /// `Header.owner_id`; a mismatch is reported and the task kept,
-    /// since the list itself is the ground truth for membership.
-    pub fn enumerate_local_tasks(&self, set: &LocalSetRef<'b>) -> Result<TaskList> {
-        let mut tasks = Vec::new();
-        let mut errors = Vec::new();
+    /// `Header.owner_id` to be credited to the set; a mismatch is kept
+    /// on the record and the task listed all the same, since the list
+    /// itself is the ground truth for membership.
+    fn enumerate_local(&self, set: &LocalSetRef<'b>, list: &mut TaskList) -> Result<()> {
         let mut visited = HashSet::default();
         let what = format!("the local set at {:#x}", set.shared.addr);
         match self.walk(WalkRole::LocalOwnedHead).walk(set.shared)? {
@@ -2614,26 +2749,20 @@ impl<'b, T: Target> Context<'b, T> {
                 let head_addr = head
                     .parse::<u64>(self.proc)
                     .with_context(|| format!("failed to read the list head of {what}"))?;
-                self.walk_owned_list(head_addr, &mut visited, &mut tasks, &mut errors, &what);
+                self.walk_owned_list(
+                    head_addr,
+                    set.owner_key(),
+                    Some(set.owned_id),
+                    &mut visited,
+                    list,
+                    &what,
+                );
             }
             // An empty set.
             Walked::Inactive(_) | Walked::Null => {}
         }
-        for task in &tasks {
-            if task.owner_id != Some(set.owned_id) {
-                errors.push(anyhow!(
-                    "the task at {:#x} in {what} carries owner_id {}, not the set's {}",
-                    task.addr.0,
-                    task.owner_id
-                        .map_or("<none>".to_owned(), |id| id.to_string()),
-                    set.owned_id
-                ));
-            }
-        }
-        tasks.sort_by_key(|t| (t.task_id.is_none(), t.task_id, t.addr.0));
-        Ok(TaskList { tasks, errors })
+        Ok(())
     }
-
     /// Cross an `Arc<T>` value to the `T` inside its `ArcInner`: the
     /// `ptr` member, the deref, the `data` member — the std layout the
     /// recorded discovery paths (`Context.handle`,
@@ -3400,6 +3529,7 @@ mod tests {
     use super::*;
 
     use crate::testkit;
+    use crate::tokio::Lifecycle;
     use crate::tokio::assess::AssessmentPass;
     use crate::tokio::chain::InspectionMode;
 
@@ -3654,8 +3784,8 @@ mod tests {
             task_id: None,
             spawn_location: None,
             future: FutureInfo::Unknown { poll_symbol: None },
-            group: 0,
-            blocking: false,
+            kind: TaskKind::Unknown,
+            owner: OwnerResolution::Unknown,
         };
         let ext = ctx.task_extent(&erased).expect("the vtable route");
         assert_eq!(ext.start, known.addr.0);
@@ -4495,8 +4625,8 @@ mod discovery_scan_tests {
 
     /// The scan offers the owner a held handle names: on the
     /// foreign-runtime pair the joiner's `JoinHandle` names a task no
-    /// enumerated list owns, and the scan offers that Header once, by
-    /// the reference's own kind, with no wait diagnosed. In the rounds
+    /// enumerated list owns, and the scan offers that Header, by the
+    /// reference's own kind, with no wait diagnosed. In the rounds
     /// after admission the hidden runtime's own tasks are scanned in
     /// turn, and reference nothing outside the list.
     #[test]
@@ -4508,11 +4638,19 @@ mod discovery_scan_tests {
             let listed = e.list.tasks.len();
             let read = ReadContext::none();
 
-            let mut alone = Vec::new();
+            let ids: Vec<TaskRecordId> = e.list.records.records().map(|(id, _)| id).collect();
             let mut budget = ScanBudget::default();
-            ctx.scanned_task_pointers(&e.list, 0..listed, &read, &mut budget, &mut alone);
+            let found = ctx.scan_records(&ids, &mut e.list, &read, &mut budget);
             assert!(budget.inline_visits > 0, "[{set}] the scan visited");
+            let alone: Vec<(u64, DiscoveryRoute)> = found
+                .iter()
+                .filter(|c| !e.list.contains(c.addr()))
+                .map(|c| (c.addr(), c.route()))
+                .collect();
 
+            // The scan above marked every record scanned, so the
+            // sweep is driven over a fresh enumeration.
+            let mut e = testkit::enumerate(&ctx, &snapshot);
             e.discover(&ctx, &[]);
             let joined = named(&e.list, "foreign_runtime::joined").addr.0;
             assert_eq!(
@@ -4525,26 +4663,33 @@ mod discovery_scan_tests {
                 "a JoinHandle scanned in an enumerated task's storage"
             );
 
-            // The later round: what the admitted runtime owns is scanned
-            // as new storage, and references only what is listed.
-            let mut later = Vec::new();
-            let before = budget.inline_visits;
-            ctx.scanned_task_pointers(
-                &e.list,
-                listed..e.list.tasks.len(),
-                &read,
-                &mut budget,
-                &mut later,
-            );
+            // The later round: what the admitted runtime owns was
+            // scanned as new storage, and references only what is
+            // listed — walked again here to look at what it offers.
+            let hidden = e.runtimes[1].owner_key();
+            let later_ids: Vec<TaskRecordId> = e
+                .list
+                .records
+                .records()
+                .filter(|(_, r)| r.owner().known() == Some(hidden))
+                .map(|(id, _)| id)
+                .collect();
             assert!(
-                e.list.tasks.len() > listed,
+                e.list.tasks.len() > listed && !later_ids.is_empty(),
                 "[{set}] discovery admitted tasks"
             );
+            let before = budget.inline_visits;
+            let later = ctx.scan_records(&later_ids, &mut e.list, &read, &mut budget);
             assert!(
                 budget.inline_visits > before,
                 "[{set}] the later round scanned"
             );
-            assert!(later.is_empty(), "[{set}] {later:?}");
+            let outside: Vec<u64> = later
+                .iter()
+                .map(Candidate::addr)
+                .filter(|addr| !e.list.contains(*addr))
+                .collect();
+            assert!(outside.is_empty(), "[{set}] {outside:x?}");
         }
     }
 

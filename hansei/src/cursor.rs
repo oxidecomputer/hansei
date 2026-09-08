@@ -1321,7 +1321,7 @@ mod tests {
     /// worker whose current word matches its id.
     #[test]
     fn test_only_a_running_task_names_the_lwp_polling_it() {
-        use hansei_runtime::tokio::bundle::{FutureInfo, Task, Worker};
+        use hansei_runtime::tokio::bundle::{FutureInfo, OwnerResolution, Task, TaskKind, Worker};
         use hansei_runtime::tokio::{TaskAddr, TaskState};
 
         let task = |state: u64, task_id: Option<u64>| Task {
@@ -1331,8 +1331,8 @@ mod tests {
             task_id,
             spawn_location: None,
             future: FutureInfo::Unknown { poll_symbol: None },
-            group: 0,
-            blocking: false,
+            kind: TaskKind::Async,
+            owner: OwnerResolution::Unknown,
         };
         let worker = |tid, current_task_id| Worker {
             tid,

@@ -734,7 +734,8 @@ mod sync_tests {
         WaitUnknownReason,
     };
     use hansei_runtime::tokio::bundle::{
-        FutureInfo, QueuedWaker, SemaphoreWaiter, Task, TaskList, WaitTarget,
+        FutureInfo, OwnerResolution, QueuedWaker, SemaphoreWaiter, Task, TaskKind, TaskList,
+        WaitTarget,
     };
     use hansei_runtime::tokio::census;
     use hansei_runtime::tokio::graph::{Analysis, TaskRef, TaskWait};
@@ -763,8 +764,8 @@ mod sync_tests {
             task_id: Some(id),
             spawn_location: None,
             future: FutureInfo::Unknown { poll_symbol: None },
-            group: 0,
-            blocking: false,
+            kind: TaskKind::Async,
+            owner: OwnerResolution::Unknown,
         }
     }
 
@@ -874,13 +875,12 @@ mod sync_tests {
     /// The default population behind the semaphore tests: one task per
     /// wait, so the relation index has rows to land on.
     fn list_for(waits: &[TaskWait]) -> TaskList {
-        TaskList {
-            tasks: waits
+        TaskList::new(
+            waits
                 .iter()
                 .map(|w| task(w.task.task_id.unwrap()))
                 .collect(),
-            errors: Vec::new(),
-        }
+        )
     }
 
     struct Fixture {

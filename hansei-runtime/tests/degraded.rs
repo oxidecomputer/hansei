@@ -137,7 +137,8 @@ fn test_an_unreadable_task_degrades_only_its_shard() {
     assert!(
         errs.iter()
             .skip(1)
-            .all(|e| e.contains("failed to follow the unlisted task")),
+            .all(|e| e.contains("failed to decode the task at")
+                && e.contains("a JoinSet entry scanned in an enumerated task's storage")),
         "{errs:?}"
     );
 

@@ -16,6 +16,7 @@ pub mod bundle;
 pub mod census;
 pub mod chain;
 pub mod contract;
+pub mod discovery;
 pub mod graph;
 mod model;
 pub mod observe;

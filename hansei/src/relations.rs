@@ -210,7 +210,9 @@ mod relations_tests {
     use hansei_runtime::tokio::assess::{
         ContinuationStatus, IncompleteReason, VerifiedWait, WaitAssessment, WaitUnknownReason,
     };
-    use hansei_runtime::tokio::bundle::{FutureInfo, Task, TaskList, WaitKind, WaitTarget};
+    use hansei_runtime::tokio::bundle::{
+        FutureInfo, OwnerResolution, Task, TaskKind, TaskList, WaitKind, WaitTarget,
+    };
     use hansei_runtime::tokio::census;
     use hansei_runtime::tokio::graph::{Analysis, TaskRef, TaskWait};
     use hansei_runtime::tokio::{TaskAddr, TaskState};
@@ -229,8 +231,8 @@ mod relations_tests {
             task_id: Some(id),
             spawn_location: None,
             future: FutureInfo::Unknown { poll_symbol: None },
-            group: 0,
-            blocking: false,
+            kind: TaskKind::Async,
+            owner: OwnerResolution::Unknown,
         }
     }
 
@@ -313,10 +315,7 @@ mod relations_tests {
         held: &[census::HeldFuture],
         join_sets: &[census::JoinSet],
     ) -> Relations {
-        let list = TaskList {
-            tasks,
-            errors: Vec::new(),
-        };
+        let list = TaskList::new(tasks);
         let analysis = Analysis {
             waits,
             barriers: Vec::new(),

@@ -43,10 +43,11 @@ use hansei_bundle::{Bundle, BundleView};
 use hansei_runtime::testkit::{FIXTURE_SETS, PROGRAMS, load, load_any, mask, matrix};
 use hansei_runtime::tokio::Lifecycle;
 use hansei_runtime::tokio::bundle::{
-    AwaitChain, ChainEnd, Context, DiscoveryRoute, FutureInfo, RuntimeFlavor, Task, TaskStage,
-    UnlistedTaskKind,
+    AwaitChain, ChainEnd, Context, DiscoveryRoute, FutureInfo, OwnerResolution, RuntimeFlavor,
+    Task, TaskKind, TaskStage, UnlistedTaskKind,
 };
 use hansei_runtime::tokio::chain::InspectionMode;
+use hansei_runtime::tokio::discovery::{OwnerEvidence, TaskSource};
 use hansei_runtime::tokio::observe::{ReadContext, ReferenceSource};
 use hansei_runtime::tokio::{census, graph};
 use proc::Target;
@@ -488,6 +489,91 @@ fn test_sleep_join_offline() {
 #[test]
 fn test_blocking_pool_offline() {
     assert_summary("blocking-pool");
+}
+
+/// What the records say about the pool's cells, whichever route met
+/// them first: the queued cell is named by its waiter's `JoinHandle`
+/// (the scan runs first) and then by the pool queue, and the queue is
+/// what establishes its owner — the handle establishes nothing but
+/// the cell's kind. The claimed cell is in no queue and no list, so
+/// nobody established its owner: it stays a row, of unknown ownership,
+/// filed under no runtime.
+#[test]
+fn test_blocking_pool_records_reconcile_handle_and_queue() {
+    for set in FIXTURE_SETS {
+        let (bundle, snapshot) = load(set, "blocking-pool");
+        let ctx = hansei_runtime::testkit::context(&bundle, &snapshot);
+        let mut e = hansei_runtime::testkit::enumerate(&ctx, &snapshot);
+        e.discover(&ctx, &[]);
+        let list = &e.list;
+        assert!(list.errors.is_empty(), "[{set}] {:?}", list.errors);
+        let runtime = e.runtimes[0].owner_key();
+
+        let cells: Vec<&Task> = list.tasks.iter().filter(|t| t.is_blocking()).collect();
+        assert_eq!(cells.len(), 3, "[{set}] {cells:#?}");
+        let mut owners: Vec<(Lifecycle, OwnerResolution)> = cells
+            .iter()
+            .map(|t| (t.state.lifecycle(), t.owner.clone()))
+            .collect();
+        owners.sort_by_key(|(lifecycle, _)| *lifecycle != Lifecycle::Running);
+        assert_eq!(
+            owners,
+            [
+                (Lifecycle::Running, OwnerResolution::Unknown),
+                (Lifecycle::Queued, OwnerResolution::Known(runtime)),
+                (Lifecycle::Queued, OwnerResolution::Known(runtime)),
+            ],
+            "[{set}]"
+        );
+
+        // The queued cell the waiter joins: a reference source from the
+        // waiter's handle and a queue source, one claim — the queue's.
+        let queued = cells
+            .iter()
+            .find(|t| t.state.lifecycle() == Lifecycle::Queued)
+            .expect("a queued cell");
+        let record = list.record(queued.addr.0).expect("a record per row");
+        let sources: Vec<&str> = record
+            .sources
+            .iter()
+            .map(|s| match s {
+                TaskSource::Reference(r) if r.source == ReferenceSource::JoinHandle => "handle",
+                TaskSource::Reference(_) => "reference",
+                TaskSource::BlockingQueue { .. } => "queue",
+                TaskSource::OwnedList { .. } => "list",
+            })
+            .collect();
+        assert!(
+            sources.contains(&"queue") && sources.len() <= 2,
+            "[{set}] {sources:?}"
+        );
+        assert!(
+            record
+                .owner_claims
+                .iter()
+                .all(|c| matches!(c.evidence, OwnerEvidence::BlockingQueue { .. })),
+            "[{set}] {:#?}",
+            record.owner_claims
+        );
+        assert_eq!(record.kind(), TaskKind::Blocking, "[{set}]");
+
+        // The running cell: only its waiter's handle names it.
+        let running = cells
+            .iter()
+            .find(|t| t.state.lifecycle() == Lifecycle::Running)
+            .expect("a running cell");
+        let record = list.record(running.addr.0).expect("a record per row");
+        assert!(record.owner_claims.is_empty(), "[{set}] {record:#?}");
+        assert!(
+            record
+                .sources
+                .iter()
+                .all(|s| matches!(s, TaskSource::Reference(_))),
+            "[{set}] {:#?}",
+            record.sources
+        );
+        assert_eq!(record.kind(), TaskKind::Blocking, "[{set}]");
+    }
 }
 
 #[test]
@@ -1202,8 +1288,12 @@ fn test_local_set_offline() {
     assert_ne!(set.owned_id, 0);
 
     assert_eq!(list.tasks.len(), 3, "{:#?}", list.tasks);
-    let group = e.runtimes.len();
-    let local: Vec<&Task> = list.tasks.iter().filter(|t| t.group == group).collect();
+    let owner = Some(set.owner_key());
+    let local: Vec<&Task> = list
+        .tasks
+        .iter()
+        .filter(|t| t.owner.known() == owner)
+        .collect();
     assert_eq!(local.len(), 2, "{local:#?}");
     // Every member carries the set's owned-list id — the cross-check
     // that says the set claims them — and the scheduler task keeps its
@@ -1230,7 +1320,7 @@ fn test_local_set_offline() {
         .tasks
         .iter()
         .zip(&analysis.waits)
-        .filter(|(task, _)| task.group == group)
+        .filter(|(task, _)| task.owner.known() == owner)
         .map(|(task, wait)| {
             let target = wait
                 .verified()
@@ -1307,8 +1397,12 @@ fn test_local_set_timer_offline() {
     // scheduler's own task keeps its runtime's, and the harvest did not
     // take the listed task its own wheel entry names.
     assert_eq!(list.tasks.len(), 3, "{:#?}", list.tasks);
-    let group = e.runtimes.len();
-    let local: Vec<&Task> = list.tasks.iter().filter(|t| t.group == group).collect();
+    let owner = Some(set.owner_key());
+    let local: Vec<&Task> = list
+        .tasks
+        .iter()
+        .filter(|t| t.owner.known() == owner)
+        .collect();
     assert_eq!(local.len(), 2, "{local:#?}");
     for task in &local {
         assert_eq!(task.owner_id, Some(set.owned_id), "{task:#?}");
@@ -1335,7 +1429,7 @@ fn test_local_set_timer_offline() {
         .tasks
         .iter()
         .zip(&analysis.waits)
-        .filter(|(task, _)| task.group == group)
+        .filter(|(task, _)| task.owner.known() == owner)
         .map(|(task, wait)| {
             let target = wait
                 .verified()
@@ -1401,8 +1495,12 @@ fn test_local_set_io_offline() {
     // and is reached only through the set's own list once one of the
     // three has found the set.
     assert_eq!(list.tasks.len(), 5, "{:#?}", list.tasks);
-    let group = e.runtimes.len();
-    let local: Vec<&Task> = list.tasks.iter().filter(|t| t.group == group).collect();
+    let owner = Some(set.owner_key());
+    let local: Vec<&Task> = list
+        .tasks
+        .iter()
+        .filter(|t| t.owner.known() == owner)
+        .collect();
     assert_eq!(local.len(), 4, "{local:#?}");
     let mut names: Vec<&str> = local.iter().map(|t| known_name(t)).collect();
     names.sort_unstable();
@@ -1502,7 +1600,11 @@ fn test_foreign_runtime_offline() {
     // Both of its tasks are enumerated under its group — the one the
     // joiner named, and the one nothing outside its list points at.
     assert_eq!(list.tasks.len(), 4, "{:#?}", list.tasks);
-    let mut hidden_tasks: Vec<&Task> = list.tasks.iter().filter(|t| t.group == 1).collect();
+    let mut hidden_tasks: Vec<&Task> = list
+        .tasks
+        .iter()
+        .filter(|t| t.owner.known() == Some(hidden.owner_key()))
+        .collect();
     hidden_tasks.sort_by_key(|t| known_name(t));
     let names: Vec<&str> = hidden_tasks.iter().map(|t| known_name(t)).collect();
     assert_eq!(
@@ -1517,14 +1619,44 @@ fn test_foreign_runtime_offline() {
         hidden_tasks.iter().any(|t| t.addr.0 == joined),
         "{hidden_tasks:#?}"
     );
+    // The joined task was met twice — through the joiner's handle,
+    // whose cell scheduler names the hidden runtime, and then in that
+    // runtime's own list — and the two claims name one owner: the
+    // handle's referent, not the slot that held it.
+    let record = list.record(joined).expect("a record per row");
+    let mut evidence: Vec<&str> = record
+        .owner_claims
+        .iter()
+        .map(|c| match c.evidence {
+            OwnerEvidence::CellScheduler { .. } => "cell scheduler",
+            OwnerEvidence::OwnedList { .. } => "owned list",
+            OwnerEvidence::BlockingQueue { .. } => "queue",
+        })
+        .collect();
+    evidence.sort_unstable();
+    assert_eq!(evidence, ["cell scheduler", "owned list"], "{record:#?}");
+    assert_eq!(record.owner(), OwnerResolution::Known(hidden.owner_key()));
+    // Its sibling, which nothing outside the list names, has the list
+    // alone to thank.
+    let detached = hidden_tasks
+        .iter()
+        .find(|t| known_name(t).contains("detached"))
+        .expect("the detached task");
+    let record = list.record(detached.addr.0).expect("a record per row");
+    assert_eq!(record.owner_claims.len(), 1, "{record:#?}");
+    assert_eq!(record.owner(), OwnerResolution::Known(hidden.owner_key()));
 
     // And the set, which only the hidden runtime's own wheel names.
     let [set] = sets.as_slice() else {
         panic!("expected one local set, got {}", sets.len());
     };
     assert_eq!(set.route, DiscoveryRoute::Wheel);
-    let group = e.runtimes.len();
-    let local: Vec<&Task> = list.tasks.iter().filter(|t| t.group == group).collect();
+    let owner = Some(set.owner_key());
+    let local: Vec<&Task> = list
+        .tasks
+        .iter()
+        .filter(|t| t.owner.known() == owner)
+        .collect();
     let [member] = local.as_slice() else {
         panic!("expected the set's one member, got {local:#?}");
     };

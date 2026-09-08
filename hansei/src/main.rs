@@ -1437,10 +1437,13 @@ pub struct Session<'b, T: Target> {
     /// session can say it is one rather than reading as a target with
     /// fewer runtimes than it has.
     excluded: Vec<u64>,
-    /// Every `LocalSet` discovery reached, in the group order their
-    /// tasks are stamped with (after the runtimes). Empty on targets
+    /// Every `LocalSet` discovery reached, in the order the owner
+    /// index numbers them (after the runtimes). Empty on targets
     /// whose bundle shows no local-set machinery linked.
     local_sets: Vec<bundle::LocalSetRef<'b>>,
+    /// The owner keys the tasks carry, numbered as the listings print
+    /// them: every runtime above in order, then every local set.
+    owners: bundle::OwnerIndex,
     tasks: bundle::TaskList,
     /// What the registry harvests retained at attach: every wheel
     /// entry and io waiter, joined to rows by task address.
@@ -1616,6 +1619,9 @@ impl<'b, T: Target> Session<'b, T> {
         let (local_sets, registries) =
             ctx.discover_hidden_tasks(&lwps, &workers, &mut runtimes, &excluded, &mut tasks, &read);
         print_warnings(&tasks.errors)?;
+        // Numbered only now: discovery is done finding owners, so the
+        // numbers the listings print are final.
+        let owners = bundle::OwnerIndex::new(&runtimes, &local_sets);
 
         Ok(Session {
             ctx,
@@ -1629,6 +1635,7 @@ impl<'b, T: Target> Session<'b, T> {
             runtimes,
             excluded,
             local_sets,
+            owners,
             tasks,
             registries,
             blocking_lwps: OnceCell::new(),
@@ -1808,7 +1815,7 @@ impl<'b, T: Target> Session<'b, T> {
     /// be looked up there and handed straight back to `--runtime` or
     /// to `runtime`.
     fn group_tags(&self) -> Vec<String> {
-        if self.runtimes.len() + self.local_sets.len() <= 1 {
+        if self.owners.len() <= 1 {
             return Vec::new();
         }
         let mut tags: Vec<String> = self
@@ -1834,6 +1841,20 @@ impl<'b, T: Target> Session<'b, T> {
                 }),
         );
         tags
+    }
+
+    /// Whether the task and future tables print their owner column:
+    /// on the targets holding more than one group, and on any target
+    /// where some task's owner is no group at all — an owner nobody
+    /// established, or several claimed — since a row that cannot be
+    /// filed under the one runtime has to say so.
+    fn owner_column(&self) -> bool {
+        !self.group_tags().is_empty()
+            || self
+                .tasks
+                .tasks
+                .iter()
+                .any(|task| self.owners.group_of(task).is_none())
     }
 }
 

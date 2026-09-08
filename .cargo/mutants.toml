@@ -158,14 +158,15 @@ exclude_re = [
     # unobservable. If a resource walk ever needs the member's own
     # address, delete this entry and pin the arithmetic instead.
     "replace \\+ with [*-] in Context<'b, T>::resource_member",
-    # The io-route gate re-armed (`<` to `<=`) only re-runs the io
-    # sweep over an empty runtime slice until the 64-round cap ends
-    # the loop where the `break` would have: identical output, bounded
-    # no-op work — an equivalent mutant, since io is the chain's last
-    # arm and starves only the break. The regex necessarily covers the
-    # function's other `<` gates too; those stay caught by the
-    # population tests themselves (a starved io arm shortens the
-    # local-set-io listing), this only stops the sweep from reporting
+    # The pool-queue gate re-armed (`<` to `<=`) only re-runs the
+    # queue walk over an empty runtime slice until the 64-round cap
+    # ends the loop where the `break` would have: identical output,
+    # bounded no-op work — an equivalent mutant, since the pool queue
+    # is the chain's last arm and starves only the break. The regex
+    # necessarily covers the function's other `<` gates too; those
+    # stay caught by the population tests themselves (a starved wheel
+    # or io arm shortens the local-set listings, a starved pool arm
+    # the blocking-pool one), this only stops the sweep from reporting
     # the one gate no input can distinguish.
     "replace < with <= in Context<'b, T>::discover_hidden_tasks",
     # The engine slices a coroutine's variant payload at the state's

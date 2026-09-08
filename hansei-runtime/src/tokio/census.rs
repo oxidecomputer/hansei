@@ -3325,14 +3325,14 @@ mod tests {
     // nowhere.
 
     use super::super::TaskAddr;
-    use super::super::bundle::{FutureInfo, Task};
+    use super::super::bundle::{FutureInfo, OwnerResolution, Task, TaskKind};
 
     use anyhow::anyhow;
 
     /// A list of `n` tasks at distinct addresses, for owners to name.
     fn task_list(n: usize) -> TaskList {
-        TaskList {
-            tasks: (0..n)
+        TaskList::new(
+            (0..n)
                 .map(|i| Task {
                     addr: TaskAddr(0x100 + i as u64 * 0x40),
                     state: TaskState(0),
@@ -3340,12 +3340,11 @@ mod tests {
                     task_id: None,
                     spawn_location: None,
                     future: FutureInfo::Unknown { poll_symbol: None },
-                    group: 0,
-                    blocking: false,
+                    kind: TaskKind::Async,
+                    owner: OwnerResolution::Unknown,
                 })
                 .collect(),
-            errors: Vec::new(),
-        }
+        )
     }
 
     fn blank() -> FutureCensus {
@@ -3852,8 +3851,8 @@ mod tests {
                 decl: None,
                 symbol: String::new(),
             }),
-            group: 0,
-            blocking: false,
+            kind: TaskKind::Async,
+            owner: OwnerResolution::Unknown,
         }
     }
 

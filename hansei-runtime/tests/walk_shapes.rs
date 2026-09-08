@@ -15,7 +15,8 @@ use hansei_bundle::{
 use hansei_runtime::testkit::{self, load_any, tasks as tasks_of};
 use hansei_runtime::tokio::assess::{ContinuationStatus, WaitAssessment, WaitUnknownReason};
 use hansei_runtime::tokio::bundle::{
-    AwaitChain, ChainEnd, Context, DiscoveryRoute, FutureInfo, Task, TaskList, TaskStage,
+    AwaitChain, ChainEnd, Context, DiscoveryRoute, FutureInfo, OwnerIndex, Task, TaskList,
+    TaskStage,
 };
 use hansei_runtime::tokio::chain::InspectionMode;
 use hansei_runtime::tokio::graph;
@@ -314,14 +315,18 @@ fn test_a_by_value_acquire_behind_an_unknown_chain_is_no_barrier() {
 fn test_local_blocks_group_past_the_runtimes() {
     let (bundle, snapshot) = pair();
     let ctx = testkit::context(&bundle, &snapshot);
-    let list = tasks_of(&ctx, &snapshot);
-    let parker = &list.tasks[task_by_name(&list, "local_parker")];
-    let side = &list.tasks[task_by_name(&list, "side_parker")];
+    let mut e = testkit::enumerate(&ctx, &snapshot);
+    let sets = e.discover(&ctx, &[]);
+    let index = OwnerIndex::new(&e.runtimes, &sets);
+    let list = &e.list;
+    let parker = &list.tasks[task_by_name(list, "local_parker")];
+    let side = &list.tasks[task_by_name(list, "side_parker")];
     // Two runtimes (the main one and the hidden one), then the local
     // blocks in discovery order.
-    let mut groups = [parker.group, side.group];
+    let mut groups = [index.group_of(parker), index.group_of(side)];
     groups.sort();
-    assert_eq!(groups, [2, 3], "{:#?}", (parker, side));
+    assert_eq!(groups, [Some(2), Some(3)], "{:#?}", (parker, side));
+    assert_eq!((index.runtimes(), index.len()), (2, 4));
 }
 
 /// The side set is anchored in its thread's TLS and nowhere else: no
@@ -367,8 +372,17 @@ fn test_the_wake_queue_is_the_hidden_runtimes_only_edge() {
     );
     e.discover(&ctx, &[]);
     let x = &e.list.tasks[task_by_name(&e.list, "hidden_blocked")];
-    let rt = &e.runtimes[x.group];
-    assert!(x.group >= enumerated, "{:#?}", (x.group, enumerated));
+    let owner = x
+        .owner
+        .known()
+        .expect("the hidden task's owner is established");
+    let (position, rt) = e
+        .runtimes
+        .iter()
+        .enumerate()
+        .find(|(_, r)| r.owner_key() == owner)
+        .expect("the owner is an admitted runtime");
+    assert!(position >= enumerated, "{:#?}", (position, enumerated));
     assert!(
         matches!(
             rt.route,

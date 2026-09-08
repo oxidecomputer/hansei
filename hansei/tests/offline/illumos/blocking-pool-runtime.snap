@@ -4,8 +4,8 @@ description: "`runtime` over illumos/blocking-pool"
 ---
 runtime 0 @ 0xADDR
     flavor: multi_thread
-    tasks: 5
-    futures: 5
+    tasks: 4
+    futures: 4
     workers: 2
     threads: 4 (lwp 1, 2, 3, 4)
     found via: a thread's runtime context

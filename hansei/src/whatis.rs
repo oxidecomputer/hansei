@@ -25,6 +25,7 @@ pub(crate) fn exec_whatis<T: proc::Target>(
         &session.ctx.view,
         &session.runtimes,
         &session.local_sets,
+        &session.owners,
         &session.tasks,
         session.extents(),
         session.census(),
@@ -142,6 +143,7 @@ fn report_whatis(
     view: &BundleView<'_>,
     runtimes: &[bundle::RuntimeRef<'_>],
     local_sets: &[bundle::LocalSetRef<'_>],
+    owners: &bundle::OwnerIndex,
     list: &bundle::TaskList,
     extents: &bundle::TaskExtents,
     census: &census::FutureCensus,
@@ -155,7 +157,12 @@ fn report_whatis(
     out: &mut dyn io::Write,
 ) -> Result<()> {
     let mut blocks = 0;
-    let owned = |group: usize| list.tasks.iter().filter(|t| t.group == group).count();
+    let owned = |group: usize| {
+        list.tasks
+            .iter()
+            .filter(|t| owners.group_of(t) == Some(group))
+            .count()
+    };
 
     // The allocation, in the terms the allocation has rather than the
     // allocator's: which cache a block came from is a fact about
@@ -456,7 +463,9 @@ mod whatis_tests {
     use crate::parse_hex_addr;
     use hansei_bundle::BundleView;
     use hansei_runtime::testkit;
-    use hansei_runtime::tokio::bundle::{LocalSetRef, RuntimeRef, TaskExtents, TaskList};
+    use hansei_runtime::tokio::bundle::{
+        LocalSetRef, OwnerIndex, RuntimeRef, TaskExtents, TaskList,
+    };
     use hansei_runtime::tokio::census::{self, FutureCensus};
 
     /// Everything a report is made from: the whole of what an attach
@@ -508,6 +517,7 @@ mod whatis_tests {
             &target.view,
             &target.runtimes,
             &target.local_sets,
+            &OwnerIndex::new(&target.runtimes, &target.local_sets),
             &target.list,
             &target.extents,
             &target.census,

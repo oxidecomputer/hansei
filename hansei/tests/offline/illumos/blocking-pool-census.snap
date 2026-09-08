@@ -11,7 +11,7 @@ COUNT  RT  ROLE             STATE                     LWPS
     1  0   entered runtime  block_on caller           —
 [4 lwps]
 
-Tasks: 5 owned by runtime 0 @ 0xADDR
+Tasks: 5: 4 owned by runtime 0 @ 0xADDR, 1 with no established owner
 
 COUNT  STATE
     2  blocking (queued)

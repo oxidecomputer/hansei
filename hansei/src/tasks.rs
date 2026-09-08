@@ -5,6 +5,7 @@
 //! The `tasks` and `census` commands: the task listing and the counts
 //! over it, plus the naming helpers every listing shares.
 
+use crate::runtimes::RowOwner;
 use crate::{Session, output, print_warnings, repl, summary};
 
 use anyhow::{Context as _, Result};
@@ -519,7 +520,7 @@ pub(crate) fn task_state(
     blocking_lwps: &HashMap<u64, u32>,
 ) -> String {
     let lwp = task_lwp(task, polling, blocking_lwps);
-    if task.blocking {
+    if task.is_blocking() {
         return blocking_state(task, lwp);
     }
     match (task.state.lifecycle(), lwp) {
@@ -543,7 +544,7 @@ pub(crate) fn task_lwp(
     task.task_id
         .and_then(|id| polling.get(&id))
         .or_else(|| {
-            task.blocking
+            task.is_blocking()
                 .then(|| blocking_lwps.get(&task.addr.0))
                 .flatten()
         })
@@ -615,10 +616,11 @@ pub(crate) struct TaskRow {
     /// The lifecycle, with ` (cancelled)` appended when the cancel
     /// bit is set.
     pub(crate) state: String,
-    /// The group index `runtimes` prints (runtimes and local
-    /// sets share the space); the column prints only on targets
-    /// holding more than one group.
-    pub(crate) rt: usize,
+    /// The owner cell: the group index `runtimes` prints (runtimes
+    /// and local sets share the space), or the word for an owner that
+    /// is no group. The column prints only on targets holding more
+    /// than one group, or a task no group owns.
+    pub(crate) rt: RowOwner,
     /// The leaf await site — the line of the reader's own code the
     /// task is parked behind.
     pub(crate) awaiting_at: Option<String>,
@@ -679,6 +681,7 @@ pub(crate) fn rows<'s, T: proc::Target>(session: &'s Session<'_, T>) -> &'s [Tas
         let analysis = session.analysis();
         build_rows(
             &session.tasks,
+            &session.owners,
             &analysis.waits,
             &analysis.join_wakers,
             &polling,
@@ -694,6 +697,7 @@ pub(crate) fn rows<'s, T: proc::Target>(session: &'s Session<'_, T>) -> &'s [Tas
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn build_rows(
     list: &bundle::TaskList,
+    owners: &bundle::OwnerIndex,
     waits: &[rt_graph::TaskWait],
     joins: &[rt_graph::JoinWaker],
     polling: &HashMap<u64, u32>,
@@ -711,7 +715,7 @@ pub(crate) fn build_rows(
             TaskRow {
                 id: task_id(list, index),
                 state: row_state(task, lwp),
-                rt: task.group,
+                rt: RowOwner::of(task, owners),
                 awaiting_at: waits
                     .get(index)
                     .and_then(|w| w.site.as_ref())
@@ -848,7 +852,7 @@ pub(crate) fn blocking_lwps<'s, T: proc::Target>(
             .tasks
             .tasks
             .iter()
-            .filter(|t| t.blocking && t.state.lifecycle() == Lifecycle::Running)
+            .filter(|t| t.is_blocking() && t.state.lifecycle() == Lifecycle::Running)
             .collect();
         if running.is_empty() {
             return HashMap::new();
@@ -891,7 +895,7 @@ fn blocking_state(task: &bundle::Task, lwp: Option<u32>) -> String {
 /// spelling — and the cancel bit, which any lifecycle can carry,
 /// appended rather than replacing it.
 pub(crate) fn row_state(task: &bundle::Task, lwp: Option<u32>) -> String {
-    let state = match task.blocking {
+    let state = match task.is_blocking() {
         true => blocking_state(task, lwp),
         false => task.state.lifecycle().to_string(),
     };
@@ -916,7 +920,7 @@ fn waiting_on(
 ) -> String {
     // A blocking cell waits on a pool thread, not on a future — its
     // STATE says which; the cell has nothing to add.
-    if task.blocking {
+    if task.is_blocking() {
         return "—".to_string();
     }
     if task.state.lifecycle() == Lifecycle::Running {
@@ -1019,7 +1023,7 @@ pub(crate) fn unknown_reason(reason: WaitUnknownReason) -> &'static str {
 /// assessment's, except that a blocking cell and a running task wait
 /// on nothing and land in the empty bucket.
 fn waiting_kind(task: &bundle::Task, wait: Option<&rt_graph::TaskWait>) -> Option<String> {
-    if task.blocking || task.state.lifecycle() == Lifecycle::Running {
+    if task.is_blocking() || task.state.lifecycle() == Lifecycle::Running {
         return None;
     }
     assessment_kind(&wait?.assessment)
@@ -1089,6 +1093,8 @@ pub(crate) struct TaskView<'a> {
     pub(crate) list: &'a bundle::TaskList,
     pub(crate) rows: &'a [TaskRow],
     pub(crate) impls: &'a names::ImplFold,
+    /// The owner keys numbered as the listings print them.
+    pub(crate) owners: &'a bundle::OwnerIndex,
     /// Each task's group — its runtime, or the local set that owns it
     /// — on the targets holding more than one, and empty for the rest.
     pub(crate) group_tags: &'a [String],
@@ -1137,9 +1143,9 @@ pub(crate) fn print_task_view(
     )?;
     // A mid-poll task waits on nothing, so it gets no wait line; the
     // table's wait cell says why.
-    let polled = !task.blocking && task.state.lifecycle() == Lifecycle::Running;
-    if let Some(tag) = view.group_tags.get(task.group) {
-        writeln!(out, "    owner: {tag}")?;
+    let polled = !task.is_blocking() && task.state.lifecycle() == Lifecycle::Running;
+    if let Some(owner) = RowOwner::detail(task, view.owners, view.group_tags) {
+        writeln!(out, "    owner: {owner}")?;
     }
     writeln!(out, "    type: {}", row.future)?;
     if let Some(loc) = &row.awaiting_at {
@@ -1226,6 +1232,7 @@ pub(crate) fn print_task<T: proc::Target>(
         list: &session.tasks,
         rows: rows(session),
         impls: &session.impl_fold,
+        owners: &session.owners,
         group_tags: &session.group_tags(),
         polling: &polling,
         blocking_lwps: blocking_lwps(session),
@@ -1449,8 +1456,8 @@ enum Matcher {
     Exact(String),
     /// Exact lwp: `lwp`.
     Lwp(u32),
-    /// A resolved group index: `rt`.
-    Rt(usize),
+    /// A resolved owner cell: `rt`.
+    Rt(RowOwner),
     /// `'>N'` / `'<N'` / `'=N'`: `holds`, `sets`, `futures`.
     Cmp(Cmp),
 }
@@ -1571,9 +1578,15 @@ fn matcher(field: Field, arg: &str, handles: &[u64]) -> Result<Matcher> {
 
 /// Resolve an `rt` argument — a group index, or a runtime's `0x`
 /// handle as `runtimes` prints it, with or without a leading
-/// `@` — to the group index rows carry. Exact, and an unknown handle
-/// is an error rather than an empty match.
-pub(crate) fn resolve_rt(arg: &str, handles: &[u64]) -> Result<usize> {
+/// `@`, or the word `unknown` or `conflict` — to the owner cell rows
+/// carry. Exact, and an unknown handle is an error rather than an
+/// empty match.
+pub(crate) fn resolve_rt(arg: &str, handles: &[u64]) -> Result<RowOwner> {
+    match arg {
+        "unknown" => return Ok(RowOwner::Unknown),
+        "conflict" => return Ok(RowOwner::Conflict),
+        _ => {}
+    }
     let addr = arg.strip_prefix('@').unwrap_or(arg);
     if let Some(digits) = addr.strip_prefix("0x").or_else(|| addr.strip_prefix("0X")) {
         let addr = u64::from_str_radix(digits, 16)
@@ -1581,12 +1594,14 @@ pub(crate) fn resolve_rt(arg: &str, handles: &[u64]) -> Result<usize> {
         return handles
             .iter()
             .position(|&h| h == addr)
+            .map(RowOwner::Group)
             .ok_or_else(|| anyhow::anyhow!("no runtime has the handle {addr:#x}"));
     }
-    arg.parse().map_err(|_| {
+    arg.parse().map(RowOwner::Group).map_err(|_| {
         anyhow::anyhow!(
             "a runtime is named by its index in `runtimes` or by the \
-             handle address printed beside it there, got {arg:?}"
+             handle address printed beside it there (or `unknown` or \
+             `conflict` for a task no group owns), got {arg:?}"
         )
     })
 }
@@ -1771,7 +1786,7 @@ pub(crate) fn exec_tasks<T: proc::Target>(
         .iter()
         .map(|&i| (&rows[i], counts_of(&counts, i).futures()))
         .collect();
-    let groups = !session.group_tags().is_empty();
+    let groups = session.owner_column();
     print_task_table(
         &listed,
         groups,
@@ -2115,7 +2130,9 @@ mod table_tests {
         ContinuationStatus, IncompleteReason, NotWaitingReason, VerifiedWait, WaitAssessment,
         WaitUnknownReason,
     };
-    use hansei_runtime::tokio::bundle::{FutureInfo, Task, TaskList, WaitTarget};
+    use hansei_runtime::tokio::bundle::{
+        FutureInfo, OwnerResolution, Task, TaskKind, TaskList, WaitTarget,
+    };
     use hansei_runtime::tokio::graph::{TaskRef, TaskWait};
     use hansei_runtime::tokio::{RawInstant, TaskAddr, TaskState};
 
@@ -2133,8 +2150,8 @@ mod table_tests {
             task_id: Some(id),
             spawn_location: None,
             future: FutureInfo::Unknown { poll_symbol: None },
-            group: 0,
-            blocking: false,
+            kind: TaskKind::Async,
+            owner: OwnerResolution::Unknown,
         }
     }
 
@@ -2174,12 +2191,10 @@ mod table_tests {
         waits: Vec<TaskWait>,
         polling: HashMap<u64, u32>,
     ) -> Vec<super::TaskRow> {
-        let list = TaskList {
-            tasks,
-            errors: vec![],
-        };
+        let list = TaskList::new(tasks);
         build_rows(
             &list,
+            &Default::default(),
             &waits,
             &[],
             &polling,
@@ -2281,7 +2296,7 @@ mod table_tests {
     #[test]
     fn test_blocking_rows_spell_queue_and_thread() {
         let blocking = |id: u64, state: u64| Task {
-            blocking: true,
+            kind: TaskKind::Blocking,
             ..task(id, state)
         };
         let rows = rows_of(
@@ -2297,10 +2312,8 @@ mod table_tests {
 
         // The stacks named the lwp running it.
         let with_lwp = build_rows(
-            &TaskList {
-                tasks: vec![blocking(2, RUNNING)],
-                errors: vec![],
-            },
+            &TaskList::new(vec![blocking(2, RUNNING)]),
+            &Default::default(),
             &[],
             &[],
             &HashMap::new(),
@@ -2401,12 +2414,10 @@ mod table_tests {
                 task_id: Some(1),
             },
         }];
-        let list = TaskList {
-            tasks: vec![task(1, 0), task(2, 0)],
-            errors: vec![],
-        };
+        let list = TaskList::new(vec![task(1, 0), task(2, 0)]);
         let rows = build_rows(
             &list,
+            &Default::default(),
             &waits,
             &joins,
             &HashMap::new(),
@@ -2558,8 +2569,8 @@ mod table_tests {
 #[cfg(test)]
 mod filter_tests {
     use super::{
-        Clause, Cmp, Counts, EMPTY_BUCKET, Field, TaskRow, alternatives, group_value, matcher,
-        member_sample, parse_clauses, refuse_positional_ids, resolve_rt, survives,
+        Clause, Cmp, Counts, EMPTY_BUCKET, Field, RowOwner, TaskRow, alternatives, group_value,
+        matcher, member_sample, parse_clauses, refuse_positional_ids, resolve_rt, survives,
     };
 
     use std::collections::BTreeMap;
@@ -2568,7 +2579,7 @@ mod filter_tests {
         TaskRow {
             id: id.to_string(),
             state: "idle".to_string(),
-            rt: 0,
+            rt: RowOwner::Group(0),
             awaiting_at: None,
             waiting_on: "—".to_string(),
             waiting_kind: None,
@@ -2632,7 +2643,7 @@ mod filter_tests {
     fn test_the_exact_fields_are_exact() {
         let mut r = row("129");
         r.lwp = Some(115);
-        r.rt = 1;
+        r.rt = RowOwner::Group(1);
         assert!(keeps(&clause("id", "129"), &r));
         assert!(!keeps(&clause("id", "12"), &r));
         assert!(keeps(&clause("lwp", "115"), &r));
@@ -2641,8 +2652,16 @@ mod filter_tests {
         assert!(keeps(&clause("rt", "1"), &r));
         assert!(!keeps(&clause("rt", "0"), &r));
 
-        assert_eq!(resolve_rt("@0x7f11c0", &[0x10, 0x7f11c0]).unwrap(), 1);
-        assert_eq!(resolve_rt("0x7f11c0", &[0x10, 0x7f11c0]).unwrap(), 1);
+        assert_eq!(
+            resolve_rt("@0x7f11c0", &[0x10, 0x7f11c0]).unwrap(),
+            RowOwner::Group(1)
+        );
+        assert_eq!(
+            resolve_rt("0x7f11c0", &[0x10, 0x7f11c0]).unwrap(),
+            RowOwner::Group(1)
+        );
+        assert_eq!(resolve_rt("unknown", &[]).unwrap(), RowOwner::Unknown);
+        assert_eq!(resolve_rt("conflict", &[]).unwrap(), RowOwner::Conflict);
         assert!(resolve_rt("@0xdead", &[0x10]).is_err());
         assert!(resolve_rt("nope", &[]).is_err());
         assert!(matcher(Field::Lwp, "x", &[]).is_err());
@@ -3198,10 +3217,7 @@ mod census_listing_tests {
         joined_set.ty = format!("JoinSet<{long}>");
         let join_sets = [joined_set];
         let nested = HashMap::new();
-        let list = bundle::TaskList {
-            tasks: vec![],
-            errors: vec![],
-        };
+        let list = bundle::TaskList::new(vec![]);
         let polling = HashMap::new();
         let blocking = HashMap::new();
         let impls = hansei_bundle::names::ImplFold::default();
@@ -3273,10 +3289,7 @@ mod census_listing_tests {
     #[test]
     fn test_short_join_set_row_reports_the_recorded_length() {
         let nested = HashMap::new();
-        let list = bundle::TaskList {
-            tasks: vec![],
-            errors: vec![],
-        };
+        let list = bundle::TaskList::new(vec![]);
         let polling = HashMap::new();
         let blocking = HashMap::new();
         let impls = hansei_bundle::names::ImplFold::default();
@@ -3324,7 +3337,7 @@ mod census_listing_tests {
 mod task_state_tests {
     use super::task_state;
 
-    use hansei_runtime::tokio::bundle::{FutureInfo, Task};
+    use hansei_runtime::tokio::bundle::{FutureInfo, OwnerResolution, Task, TaskKind};
     use hansei_runtime::tokio::{TaskAddr, TaskState};
 
     use std::collections::HashMap;
@@ -3338,8 +3351,8 @@ mod task_state_tests {
             task_id,
             spawn_location: None,
             future: FutureInfo::Unknown { poll_symbol: None },
-            group: 0,
-            blocking: false,
+            kind: TaskKind::Async,
+            owner: OwnerResolution::Unknown,
         }
     }
 
@@ -3359,10 +3372,7 @@ mod task_state_tests {
 
         const RUNNING: u64 = 0b0001;
         const IDLE: u64 = 0;
-        let list = |state: u64, task_id: Option<u64>| TaskList {
-            tasks: vec![task(state, task_id)],
-            errors: vec![],
-        };
+        let list = |state: u64, task_id: Option<u64>| TaskList::new(vec![task(state, task_id)]);
 
         // The listing shows task 7 running: the word is believed.
         assert_eq!(polled_task(Some(7), &list(RUNNING, Some(7))), Some(7));

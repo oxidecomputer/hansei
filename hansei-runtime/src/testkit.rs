@@ -868,9 +868,13 @@ pub fn io_candidates<T: Target>(ctx: &Context<'_, T>, snapshot: &Snapshot) -> Ve
     let list = ctx
         .enumerate_all_tasks(&runtimes)
         .expect("the owned-task walk");
-    let (found, errors) = ctx.io_task_pointers(&runtimes, &list, &mut Registries::default());
+    let (found, errors) = ctx.io_task_pointers(&runtimes, &mut Registries::default());
     assert!(errors.is_empty(), "{errors:?}");
-    found.into_iter().map(|(addr, _)| addr).collect()
+    found
+        .iter()
+        .map(|candidate| candidate.addr())
+        .filter(|addr| !list.contains(*addr))
+        .collect()
 }
 
 /// The `test-programs/matrix.toml` manifest: the supported-versions

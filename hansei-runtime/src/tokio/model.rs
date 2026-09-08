@@ -7,6 +7,9 @@
 //! reads a target; [`bundle`](super::bundle) builds these, and the
 //! census, graph, and every command consume them.
 
+pub use super::discovery::{
+    OwnerIndex, OwnerKey, OwnerResolution, TaskKind, TaskRecord, TaskStore,
+};
 use super::observe::{Consistency, ReferenceSource, ValueKey};
 use super::{Lifecycle, Location, RawInstant, TaskAddr, TaskState};
 
@@ -42,7 +45,7 @@ pub struct Worker {
 }
 
 /// Which scheduler a discovered runtime runs.
-#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub enum RuntimeFlavor {
     MultiThread,
     CurrentThread,
@@ -67,12 +70,28 @@ impl fmt::Display for RuntimeFlavor {
 pub struct RuntimeRef<'b> {
     pub flavor: RuntimeFlavor,
     pub handle: Value<'b>,
+    /// The id the global owned-list counter gave this scheduler's
+    /// list — what every task it owns carries as its `Header.owner_id`,
+    /// and what an owner claim on this runtime is held to. `None`
+    /// where the row did not bind against this target, in which case
+    /// nothing validates as owned by it.
+    pub owned_id: Option<u64>,
     /// The tids of the workers whose `Context` reaches this handle, in
     /// discovery order. Empty on a runtime no thread is currently in —
     /// see [`DiscoveryRoute::WorkerContext`].
     pub worker_tids: Vec<u32>,
     /// How the runtime was found.
     pub route: DiscoveryRoute,
+}
+
+impl RuntimeRef<'_> {
+    /// The stable key discovery files this runtime's tasks under.
+    pub fn owner_key(&self) -> OwnerKey {
+        OwnerKey::Runtime {
+            flavor: self.flavor,
+            handle: self.handle.addr,
+        }
+    }
 }
 
 /// One `tokio::task::LocalSet` discovered in the target: the
@@ -99,6 +118,15 @@ pub struct LocalSetRef<'b> {
     pub route: DiscoveryRoute,
 }
 
+impl LocalSetRef<'_> {
+    /// The stable key discovery files this set's tasks under.
+    pub fn owner_key(&self) -> OwnerKey {
+        OwnerKey::LocalSet {
+            shared: self.shared.addr,
+        }
+    }
+}
+
 /// Which route found a task list's owner — a [`LocalSetRef`], or a
 /// [`RuntimeRef`] no thread's `Context` points at.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
@@ -119,6 +147,10 @@ pub enum DiscoveryRoute {
     /// The thread's `task::local::CURRENT` anchor, populated only while
     /// a set is being polled (or held entered).
     Tls,
+    /// An entry of a discovered runtime's blocking-pool queue: a
+    /// `spawn_blocking` cell waiting for a pool thread, which no task
+    /// list carries.
+    BlockingQueue,
     /// The reference scan over an enumerated task's initialized
     /// storage ([`Context::scan_references`]) met a reference of this
     /// kind to one of its tasks — wherever in that storage it sat, not
@@ -137,6 +169,7 @@ impl fmt::Display for DiscoveryRoute {
                 f.write_str("a task waker on an io resource registered with a runtime's driver")
             }
             Self::Tls => f.write_str("the polling thread's TLS anchor"),
+            Self::BlockingQueue => f.write_str("a runtime's blocking-pool queue"),
             Self::Scanned(source) => write!(f, "{source} scanned in an enumerated task's storage"),
         }
     }
@@ -574,22 +607,50 @@ fn spell_bits(f: &mut fmt::Formatter<'_>, word: u64, names: &[(u64, &str)]) -> f
 }
 
 /// The result of walking every owned-task shard.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct TaskList {
-    /// Sorted by task id (tasks with no readable id last, by address).
+    /// The rows: every resident record of `records` the session's
+    /// selection keeps, sorted by task id (tasks with no readable id
+    /// last, by address). Rebuilt from the records whenever discovery
+    /// adds to them ([`TaskList::reproject`]).
     pub tasks: Vec<Task>,
     /// Per-shard walk failures; the shards that produced `tasks` are
     /// unaffected by these.
     pub errors: Vec<anyhow::Error>,
+    /// Everything discovery established about every header it met —
+    /// the rows above and the headers that are nobody's row (a
+    /// complete task a handle keeps alive), with each one's sources,
+    /// owner claims and diagnostics.
+    pub records: TaskStore,
 }
 
 impl TaskList {
+    /// A list of rows with no records behind them — for a caller
+    /// laying out a population no target holds.
+    pub fn new(tasks: Vec<Task>) -> Self {
+        TaskList {
+            tasks,
+            ..Default::default()
+        }
+    }
+
     /// Whether the walk enumerated a task whose Header is at `addr`. A
     /// live Header this returns false for belongs to something the
     /// scheduler's owned list never carries: a `spawn_blocking` task,
     /// or a task of some other runtime in the process.
     pub fn contains(&self, addr: u64) -> bool {
         self.tasks.iter().any(|t| t.addr.0 == addr)
+    }
+
+    /// The record behind a row — or behind a header that is no row.
+    pub fn record(&self, addr: u64) -> Option<&TaskRecord> {
+        self.records.record_at(addr)
+    }
+
+    /// Rebuild the rows from the records: every resident record not
+    /// owned by a runtime in `excluded` (by handle address).
+    pub(crate) fn reproject(&mut self, excluded: &[u64]) {
+        self.tasks = self.records.project(excluded);
     }
 }
 
@@ -623,7 +684,7 @@ impl TaskExtents {
 /// task that has left its list still identifies it.
 ///
 /// [`Context::read_task_header`]: super::bundle::Context::read_task_header
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct DecodedTaskHeader {
     pub addr: TaskAddr,
     pub state: TaskState,
@@ -640,9 +701,9 @@ pub struct DecodedTaskHeader {
 }
 
 impl DecodedTaskHeader {
-    /// The header as a listing row, before any list claims it: owned by
-    /// group 0 and not a blocking cell until an enumeration says
-    /// otherwise.
+    /// The header as a task before any route has said what it is: a
+    /// kind and an owner nobody has established. What a record
+    /// reconciles from every route is [`TaskRecord::task`].
     pub fn into_task(self) -> Task {
         Task {
             addr: self.addr,
@@ -651,14 +712,14 @@ impl DecodedTaskHeader {
             task_id: self.task_id,
             spawn_location: self.spawn_location,
             future: self.future,
-            group: 0,
-            blocking: false,
+            kind: TaskKind::Unknown,
+            owner: OwnerResolution::Unknown,
         }
     }
 }
 
 /// One enumerated task.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Task {
     pub addr: TaskAddr,
     pub state: TaskState,
@@ -668,22 +729,31 @@ pub struct Task {
     /// (`tokio_unstable` task instrumentation).
     pub spawn_location: Option<Location>,
     pub future: FutureInfo,
-    /// Which group owns it: an index into the merged population's group
-    /// space — every [`RuntimeRef`], those a thread's context reaches
-    /// first and those discovery found after, then the
-    /// [`LocalSetRef`]s — stamped by [`Context::enumerate_all_tasks`]
-    /// and [`Context::discover_hidden_tasks`]. 0 on the single-runtime,
-    /// no-local-set targets that are nearly all of them.
-    pub group: usize,
-    /// A `spawn_blocking` cell rather than a scheduler-owned task:
-    /// found in the pool's queue, or through a `JoinHandle` whose
-    /// cell records the blocking scheduler. Its STATE spells queued
-    /// or running, never idle — the pool has no parked state.
-    pub blocking: bool,
+    /// What kind of task it is, from the evidence that said so: a
+    /// scheduler-owned task, a `spawn_blocking` cell (whose STATE
+    /// spells queued or running, never idle — the pool has no parked
+    /// state), or neither established. See [`TaskKind`].
+    pub kind: TaskKind,
+    /// Who owns it, reconciled from every validated claim — a list
+    /// that links it, a cell scheduler whose list id it carries, a
+    /// pool queue it is an entry of. An owner nobody established is
+    /// `Unknown`, never runtime 0; the listings number a `Known`
+    /// owner through the session's [`OwnerIndex`].
+    ///
+    /// [`OwnerIndex`]: super::discovery::OwnerIndex
+    pub owner: OwnerResolution,
+}
+
+impl Task {
+    /// Whether the task is a `spawn_blocking` cell — exactly that, so
+    /// a kind nobody established reads as neither kind.
+    pub fn is_blocking(&self) -> bool {
+        self.kind == TaskKind::Blocking
+    }
 }
 
 /// The task's concrete future type, resolved via the symbol join — or not.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum FutureInfo {
     Known(KnownFuture),
     /// No vtable fn symbol matched the bundle's task table. The raw symbol
@@ -711,7 +781,7 @@ pub struct TypeCandidate {
 }
 
 /// A future resolved through the bundle's task join table.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct KnownFuture {
     pub entry: TaskEntryId,
     /// Demangled name of the future type (display only).

@@ -32,8 +32,8 @@
 //! consumer from turning a weaker relation into one.
 
 use super::bundle::{
-    AwaitChain, ChainEnd, Context, IoResourceInfo, IoSlot, QueuedWaker, Task, TaskList, WaitTarget,
-    semaphore_owner,
+    AwaitChain, ChainEnd, Context, IoResourceInfo, IoSlot, QueuedWaker, Task, TaskKind, TaskList,
+    WaitTarget, semaphore_owner,
 };
 use super::chain::{FutureInspection, InspectionMode};
 use super::observe::{
@@ -273,13 +273,16 @@ impl ContinuationStatus {
     }
 }
 
-/// The assessed task's own facts: its identity and state word. Read
-/// off a listed task or a decoded header alike.
+/// The assessed task's own facts: its identity, state word and kind.
+/// Read off a listed task or a decoded header alike.
 #[derive(Copy, Clone, Debug)]
 pub struct TaskFacts {
     pub addr: TaskAddr,
     pub task_id: Option<u64>,
     pub state: TaskState,
+    /// What discovery established the task to be — a kind in
+    /// conflict prevents the diagnoses that depend on one.
+    pub kind: TaskKind,
 }
 
 impl From<&Task> for TaskFacts {
@@ -288,6 +291,7 @@ impl From<&Task> for TaskFacts {
             addr: task.addr,
             task_id: task.task_id,
             state: task.state,
+            kind: task.kind,
         }
     }
 }
@@ -418,6 +422,16 @@ impl<'b, T: Target> Context<'b, T> {
                 return Assessed::of(WaitAssessment::Runnable(RunnableReason::Scheduled));
             }
             Lifecycle::Idle => {}
+        }
+        // A task claimed as both a scheduler-owned task and a blocking
+        // cell is neither for the purpose of a wait: what its storage
+        // holds is read, but no wait is diagnosed from it.
+        if task.kind == TaskKind::Conflict {
+            return Assessed::unknown(
+                WaitUnknownReason::TaskKind,
+                "the task's kind is in conflict: it was claimed as both a scheduler-owned \
+                 task and a blocking cell",
+            );
         }
         let chain = &inspection.chain;
         match &chain.end {

@@ -2671,6 +2671,7 @@ mod future_trace_tests {
             .expect("the id names a task");
         let rows = crate::tasks::build_rows(
             list,
+            &Default::default(),
             &[],
             &[],
             &HashMap::new(),
@@ -2684,10 +2685,12 @@ mod future_trace_tests {
             join_sets,
         };
         let tree = census_tree(finds);
+        let owners = Default::default();
         let view = TaskView {
             list,
             rows: &rows,
             impls: &hansei_bundle::names::ImplFold::default(),
+            owners: &owners,
             group_tags: &[],
             polling: &HashMap::new(),
             blocking_lwps: &HashMap::new(),
