@@ -18,7 +18,8 @@ use super::std::dyn_pointer_layout;
 use super::{struct_of, unique_member};
 use crate::bundle::names::{generic_args, is_future_trait_object};
 use crate::extract::{fq_name, ns_path};
-use crate::{DwReader, TypeId};
+use crate::raw_types::RawPointer;
+use crate::{DwReader, StrId, TypeId};
 
 /// What a thin or wide pointer adapter points at.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -82,12 +83,31 @@ fn agreed_pointer(
     id: TypeId,
     expect: impl Fn(&str, TypeId) -> bool,
 ) -> Option<TypeId> {
+    // Definitions agree on the canonical target, not the DIE: each unit
+    // emits its own copy of the pointee.
+    let definitions = reader.type_definitions(id).map(|die| {
+        reader.pointer_definition(die).map(|pointer| RawPointer {
+            name: pointer.name,
+            target_type_id: reader.canonicalize(pointer.target_type_id),
+        })
+    });
+    agreed_target(definitions, |name, target| {
+        expect(reader.strings.get(name), target)
+    })
+}
+
+/// The target every definition agrees on, each definition named and
+/// satisfying `expect`; a missing definition, a nameless one, one
+/// `expect` refuses, or two naming different targets decline.
+fn agreed_target(
+    definitions: impl Iterator<Item = Option<RawPointer<StrId>>>,
+    expect: impl Fn(StrId, TypeId) -> bool,
+) -> Option<TypeId> {
     let mut agreed = None;
-    for die in reader.type_definitions(id) {
-        let pointer = reader.pointer_definition(die)?;
-        let target = reader.canonicalize(pointer.target_type_id);
-        let name = reader.strings.get(pointer.name?);
-        if !expect(name, target) {
+    for pointer in definitions {
+        let pointer = pointer?;
+        let target = pointer.target_type_id;
+        if !expect(pointer.name?, target) {
             return None;
         }
         match agreed {
@@ -140,11 +160,10 @@ fn wide(
     if !is_future_trait_object(&pointee) || !expect(&fq_name(reader, id)?, &pointee) {
         return None;
     }
-    let (pointer_index, pointer) = unique_member(reader, &st.members, "pointer")?;
-    let (vtable_index, vtable) = unique_member(reader, &st.members, "vtable")?;
-    if pointer_index != layout.pointer || vtable_index != layout.vtable {
-        return None;
-    }
+    // The layout found each member by name and shape; the members are
+    // then addressed by name, which has to be unique for that.
+    let (_, pointer) = unique_member(reader, &st.members, "pointer")?;
+    let (_, vtable) = unique_member(reader, &st.members, "vtable")?;
     Some(WidePointer {
         wide: reader.canonicalize(id),
         pointer: "pointer".to_owned(),
@@ -455,6 +474,51 @@ mod tests {
             fx.pointer(REF, name, FUT);
             assert_eq!(std_adapter(&fx.reader, REF), None, "{name:?}");
         }
+    }
+
+    /// Every definition of a pointer has to say the same thing: two
+    /// definitions naming different targets are no adapter, and neither
+    /// is a definition with no name or one the screen refuses.
+    #[test]
+    fn test_pointer_definitions_must_agree_on_the_target() {
+        let mut fx = Fx::default();
+        let name = fx.reader.strings.intern("&mut app::Fut");
+        let def = |target: TypeId| {
+            Some(RawPointer {
+                name: Some(name),
+                target_type_id: target,
+            })
+        };
+        let accept = |_: StrId, _: TypeId| true;
+        assert_eq!(
+            agreed_target([def(FUT), def(FUT)].into_iter(), accept),
+            Some(FUT)
+        );
+        assert_eq!(
+            agreed_target([def(FUT), def(DYN)].into_iter(), accept),
+            None
+        );
+        assert_eq!(
+            agreed_target([def(DYN), def(FUT)].into_iter(), accept),
+            None
+        );
+        assert_eq!(agreed_target([def(FUT), None].into_iter(), accept), None);
+        assert_eq!(
+            agreed_target(
+                [Some(RawPointer {
+                    name: None,
+                    target_type_id: FUT,
+                })]
+                .into_iter(),
+                accept
+            ),
+            None
+        );
+        assert_eq!(
+            agreed_target([def(FUT)].into_iter(), |_, target| target != FUT),
+            None
+        );
+        assert_eq!(agreed_target(std::iter::empty(), accept), None);
     }
 
     #[test]

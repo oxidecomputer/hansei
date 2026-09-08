@@ -819,6 +819,15 @@ fn test_semantic_dynamic_targets_validate_bases_fields_trait_and_slots() {
         *size = 8;
     }
     bad(&b, "not a Future trait object");
+    if let TypeDef::Struct { size, members, .. } = &mut b.types.types[6] {
+        *size = 0;
+        members.push(MemberDef {
+            name: FIELD,
+            ty: BundleTypeId(0),
+            offset: 0,
+        });
+    }
+    bad(&b, "not a Future trait object");
     let mut b = dynamic();
     dyn_layout(&mut b).poll_slot = 4;
     bad(&b, "dyn ABI slots");

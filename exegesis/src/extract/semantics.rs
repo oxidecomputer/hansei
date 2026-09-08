@@ -2019,7 +2019,29 @@ mod tests {
                 },
             );
         }
-        let _ = reference;
+        let box_ref = add(
+            "alloc::boxed::Box<&mut app::Fut, alloc::alloc::Global>",
+            TypeDef::Pointer {
+                name: Some(
+                    strings.intern("alloc::boxed::Box<&mut app::Fut, alloc::alloc::Global>"),
+                ),
+                target: reference,
+            },
+        );
+        add(
+            "core::pin::Pin<alloc::boxed::Box<&mut app::Fut, alloc::alloc::Global>>",
+            TypeDef::Struct {
+                name: strings.intern(
+                    "core::pin::Pin<alloc::boxed::Box<&mut app::Fut, alloc::alloc::Global>>",
+                ),
+                size: 8,
+                members: vec![MemberDef {
+                    name: strings.intern("pointer"),
+                    ty: box_ref,
+                    offset: 0,
+                }],
+            },
+        );
         Adapters {
             types: TypeTable {
                 types,
@@ -2039,6 +2061,8 @@ mod tests {
     const WIDE: BundleTypeId = BundleTypeId(8);
     const PIN_BOX: BundleTypeId = BundleTypeId(9);
     const PIN_WIDE: BundleTypeId = BundleTypeId(10);
+    const BOX_REF: BundleTypeId = BundleTypeId(11);
+    const PIN_BOX_REF: BundleTypeId = BundleTypeId(12);
 
     fn dyn_seed() -> DynSeed {
         DynSeed {
@@ -2315,10 +2339,303 @@ mod tests {
             ])
             .contains("declared in both")
         );
+        let mismatch = declined(&[source(REGISTRY, Some([0xab; 16]))]);
         assert!(
-            declined(&[source(REGISTRY, Some([0xab; 16]))])
-                .contains("not a reviewed revision of tracing-instrumented-0.1.40")
+            mismatch.contains(&format!(
+                "has checksum {}, not a reviewed revision of tracing-instrumented-0.1.40",
+                "ab".repeat(16)
+            )),
+            "{mismatch}"
         );
+    }
+
+    /// A route is held to the type it claims to land on: the same steps
+    /// declared for another endpoint decline, and so do steps the table
+    /// cannot walk at all.
+    #[test]
+    fn test_checked_paths_land_on_the_declared_target() {
+        let mut a = adapters();
+        let pointer = a.strings.intern("pointer");
+        let steps = vec![Step::Member(MemberRef::Named(pointer)), Step::Deref];
+        let path = checked_path(&a.types, PIN_BOX, steps.clone(), FUT).unwrap();
+        assert_eq!(path.target, FUT);
+        let (kind, detail) = checked_path(&a.types, PIN_BOX, steps.clone(), DYN).unwrap_err();
+        assert_eq!(kind, SemanticIssueKind::MissingLayout);
+        assert!(detail.contains("another type than declared"), "{detail}");
+        let (kind, _) = checked_path(&a.types, FUT, steps, FUT).unwrap_err();
+        assert_eq!(kind, SemanticIssueKind::MissingLayout);
+    }
+
+    /// An adapter whose storage the bundle cannot read plans nothing: no
+    /// route is attempted through an opaque type, so its record carries
+    /// no layout decline, only the storage boundary.
+    #[test]
+    fn test_an_adapter_over_unavailable_storage_plans_nothing() {
+        let mut a = adapters();
+        a.types.types[PIN_BOX.0 as usize] = TypeDef::Opaque {
+            name: a
+                .strings
+                .intern("core::pin::Pin<alloc::boxed::Box<app::Fut, alloc::alloc::Global>>"),
+            size: Some(8),
+        };
+        let library = Library {
+            walks: &WalksTable::default(),
+            tokio_version: None,
+            family: Family::select(None),
+        };
+        let mut seeds = SemanticSeeds::new();
+        seeds.insert(
+            PIN_BOX,
+            Seed {
+                adapter: Some(seed(
+                    AdapterKind::PinBox,
+                    Some(("pointer", BOX)),
+                    PointeeSeed::Sized(FUT),
+                )),
+                ..Default::default()
+            },
+        );
+        let mut tasks = vec![TaskFutureEntry {
+            future: PIN_BOX,
+            cell: BundleTypeId(0),
+            stage: BundleTypeId(0),
+            scheduler: BundleTypeId(0),
+            scheduler_binding: None,
+            display_name: a.strings.intern("task"),
+        }];
+        let table = bind_semantics(
+            seeds,
+            &a.types,
+            &a.names,
+            &mut a.strings,
+            &mut tasks,
+            &library,
+        );
+        let record = table.types.iter().find(|r| r.ty == PIN_BOX).unwrap();
+        assert!(matches!(
+            record.storage,
+            StoragePolicy::Unavailable(SemanticIssue {
+                kind: SemanticIssueKind::MissingLayout,
+                ..
+            })
+        ));
+        assert!(record.issues.is_empty(), "{:?}", record.issues);
+        assert!(matches!(
+            record.future.as_ref().unwrap().continuation,
+            Continuation::Unknown(SemanticIssue {
+                kind: SemanticIssueKind::NoRule,
+                ..
+            })
+        ));
+        assert!(record.access.is_none());
+        assert!(table.rules.is_empty());
+    }
+
+    /// Evidence crosses every bound hop: the pin over a box over a
+    /// reference proves the reference a future, whose own rule then
+    /// proves the future it points at.
+    #[test]
+    fn test_evidence_closes_transitively_over_two_hops() {
+        let mut a = adapters();
+        let library = Library {
+            walks: &WalksTable::default(),
+            tokio_version: None,
+            family: Family::select(None),
+        };
+        let mut seeds = SemanticSeeds::new();
+        seeds.insert(
+            PIN_BOX_REF,
+            Seed {
+                adapter: Some(seed(
+                    AdapterKind::PinBox,
+                    Some(("pointer", BOX_REF)),
+                    PointeeSeed::Sized(REF),
+                )),
+                ..Default::default()
+            },
+        );
+        seeds.insert(
+            REF,
+            Seed {
+                adapter: Some(seed(AdapterKind::MutRef, None, PointeeSeed::Sized(FUT))),
+                ..Default::default()
+            },
+        );
+        let mut tasks = vec![TaskFutureEntry {
+            future: PIN_BOX_REF,
+            cell: BundleTypeId(0),
+            stage: BundleTypeId(0),
+            scheduler: BundleTypeId(0),
+            scheduler_binding: None,
+            display_name: a.strings.intern("task"),
+        }];
+        let table = bind_semantics(
+            seeds,
+            &a.types,
+            &a.names,
+            &mut a.strings,
+            &mut tasks,
+            &library,
+        );
+        let evidence = |ty: BundleTypeId| {
+            table
+                .types
+                .iter()
+                .find(|r| r.ty == ty)
+                .and_then(|r| r.future.as_ref())
+                .map(|f| f.evidence.clone())
+        };
+        assert_eq!(
+            evidence(REF),
+            Some(vec![FutureEvidence::DelegatedBy {
+                parent: PIN_BOX_REF
+            }])
+        );
+        assert_eq!(
+            evidence(FUT),
+            Some(vec![FutureEvidence::DelegatedBy { parent: REF }])
+        );
+        let bound = |ty: BundleTypeId| {
+            matches!(
+                table
+                    .types
+                    .iter()
+                    .find(|r| r.ty == ty)
+                    .unwrap()
+                    .future
+                    .as_ref()
+                    .unwrap()
+                    .continuation,
+                Continuation::Bound { .. }
+            )
+        };
+        assert!(bound(PIN_BOX_REF) && bound(REF) && !bound(FUT));
+    }
+
+    /// Two coroutines awaiting each other — async recursion through a
+    /// box, as the type graph sees it — close in one pass: each proves
+    /// the other, and the fixed point stops where the evidence stops
+    /// changing.
+    #[test]
+    fn test_evidence_closes_over_a_delegation_cycle() {
+        let mut strings = StringInterner::new();
+        let mut names: Vec<Option<String>> = Vec::new();
+        let mut types: Vec<TypeDef> = Vec::new();
+        let u32_t = strings.intern("u32");
+        names.push(Some("u32".into()));
+        types.push(TypeDef::Base {
+            name: u32_t,
+            size: 4,
+            encoding: crate::Encoding::Unsigned,
+        });
+        // Each env: 4 payloads then the enum, so A's enum is id 5 and
+        // B's is id 10; Suspend0 of each awaits the other's enum.
+        const A_ENUM: BundleTypeId = BundleTypeId(5);
+        const B_ENUM: BundleTypeId = BundleTypeId(10);
+        for (env_name, awaitee) in [
+            ("app::a::{async_fn_env#0}", B_ENUM),
+            ("app::b::{async_fn_env#0}", A_ENUM),
+        ] {
+            let mut variants = Vec::new();
+            for (index, state) in ["Unresumed", "Returned", "Panicked", "Suspend0"]
+                .into_iter()
+                .enumerate()
+            {
+                let payload = BundleTypeId(types.len() as u32);
+                let name = format!("{env_name}::{state}");
+                let members = if state == "Suspend0" {
+                    vec![MemberDef {
+                        name: strings.intern("__awaitee"),
+                        ty: awaitee,
+                        offset: 0,
+                    }]
+                } else {
+                    Vec::new()
+                };
+                types.push(TypeDef::Struct {
+                    name: strings.intern(&name),
+                    size: 8,
+                    members,
+                });
+                names.push(Some(name));
+                let key = strings.intern(&index.to_string());
+                variants.push(VariantDef {
+                    name: key,
+                    discr_values: None,
+                    payload: MemberDef {
+                        name: key,
+                        ty: payload,
+                        offset: 0,
+                    },
+                    decl: None,
+                    await_site: None,
+                });
+            }
+            names.push(Some(env_name.into()));
+            types.push(TypeDef::Enum {
+                name: strings.intern(env_name),
+                size: 8,
+                shape: VariantShape {
+                    discr: None,
+                    variants,
+                },
+            });
+        }
+        let types = TypeTable {
+            types,
+            ..Default::default()
+        };
+        let library = Library {
+            walks: &WalksTable::default(),
+            tokio_version: None,
+            family: Family::select(None),
+        };
+        let mut seeds = SemanticSeeds::new();
+        for env in [A_ENUM, B_ENUM] {
+            seeds.insert(
+                env,
+                Seed {
+                    coroutine_candidate: true,
+                    compiler: Some(supported(&crate::detect::semantics::RUSTC_COROUTINE_V1_97)),
+                    ..Default::default()
+                },
+            );
+        }
+        let mut tasks = vec![TaskFutureEntry {
+            future: A_ENUM,
+            cell: BundleTypeId(0),
+            stage: BundleTypeId(0),
+            scheduler: BundleTypeId(0),
+            scheduler_binding: None,
+            display_name: strings.intern("task"),
+        }];
+        let table = bind_semantics(seeds, &types, &names, &mut strings, &mut tasks, &library);
+        let record = |ty: BundleTypeId| table.types.iter().find(|r| r.ty == ty).unwrap();
+        let rule = record(A_ENUM).coroutine.as_ref().unwrap().rule;
+        assert_eq!(
+            record(A_ENUM).future.as_ref().unwrap().evidence,
+            [
+                FutureEvidence::TaskEntry(TaskEntryId(0)),
+                FutureEvidence::Coroutine(rule),
+                FutureEvidence::DelegatedBy { parent: B_ENUM },
+            ]
+        );
+        assert_eq!(
+            record(B_ENUM).future.as_ref().unwrap().evidence,
+            [
+                FutureEvidence::Coroutine(rule),
+                FutureEvidence::DelegatedBy { parent: A_ENUM },
+            ]
+        );
+        for env in [A_ENUM, B_ENUM] {
+            assert!(matches!(
+                record(env).future.as_ref().unwrap().continuation,
+                Continuation::Bound {
+                    program: PollProgram::MatchVariant { .. },
+                    ..
+                }
+            ));
+        }
     }
 
     /// `inner` reaches the future through std's `ManuallyDrop` and
@@ -2636,5 +2953,36 @@ mod tests {
             ]
         );
         assert_eq!(plan.static_children(), [BundleTypeId(0)]);
+        // An `__awaitee` the convention lists as uncertain — an async
+        // block's capture at the slot its `Unresumed` state keeps it at —
+        // is not a delegate: stale bytes are not a future being polled.
+        let mut e = env(
+            "async_block",
+            &[
+                ("Unresumed", &["__awaitee"]),
+                ("Returned", &[]),
+                ("Panicked", &[]),
+                ("Suspend0", &["__awaitee"]),
+            ],
+            &[],
+        );
+        let states = coroutine_states(e.env, true, &e.types, &e.names, &e.strings).unwrap();
+        assert_eq!(render(&e, &states)[3], "3:Suspended[](__awaitee)");
+        let layout = CoroutineLayout {
+            rule: SemanticRuleId(u32::MAX),
+            states,
+        };
+        let plan = coroutine_plan(e.env, &rule, &layout, &e.types, &mut e.strings);
+        let Delegation::Coroutine { cases } = &plan.program else {
+            panic!("coroutine")
+        };
+        assert!(matches!(
+            cases[3].1,
+            CaseAction::Unknown(SemanticIssue {
+                kind: SemanticIssueKind::MissingLayout,
+                ..
+            })
+        ));
+        assert!(plan.static_children().is_empty());
     }
 }
