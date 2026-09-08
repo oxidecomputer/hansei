@@ -312,6 +312,18 @@ exclude_re = [
     # census_warning_tests) — a captured-stdout test cannot see whether
     # the call happened, the same gap as print_warnings above.
     "replace print_census_warnings",
+    # The same stderr glue once more, for the census's uncertain-locals
+    # notice: its sentence is pinned one call in
+    # (census_uncertain_warning, in census_warning_tests), and the
+    # census's own count of uncertain locals is pinned per fixture in
+    # hansei-runtime's two_binary suite.
+    "replace warn_census_uncertain",
+    # A frame's positional locals are keyed by (name, offset), mirroring
+    # the locals display, so a member listed twice is sliced once. No
+    # bundle lists one twice — a struct's members are unique by name
+    # and offset — so the guard never declines, and a mutant that
+    # skips it is indistinguishable on every fixture.
+    "replace && with \\|\\| in Walker<'_, 'b, T>::frame_locals",
     # The interactive REPL loop wants a terminal on stdin, which no
     # automated test has: every scripted path through the same dispatch
     # is exercised through stdin scripts, and what this adds — reedline,

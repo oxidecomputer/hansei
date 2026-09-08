@@ -2257,6 +2257,23 @@ mod table_tests {
         assert_eq!(known[0].defined.as_deref(), Some("src/app.rs:7"));
     }
 
+    /// A ready resource's row says `ready` in the cell and, in its
+    /// detail, what the resource has already done — the assessor's
+    /// words for the reason, not a bare label.
+    #[test]
+    fn test_a_ready_row_says_what_was_delivered() {
+        use hansei_runtime::tokio::assess::ReadyReason;
+
+        let ready = assessed(1, WaitAssessment::ResourceReady(ReadyReason::JoinComplete));
+        let rows = rows_of(vec![task(1, 0)], vec![ready], HashMap::new());
+        assert_eq!(rows[0].waiting_on, "ready");
+        assert_eq!(rows[0].waiting_kind.as_deref(), Some("ready"));
+        assert_eq!(
+            rows[0].wait_detail,
+            ["ready: the joined task is complete; its output awaits the next poll"]
+        );
+    }
+
     /// A blocking cell's STATE spells where it is in the pool — queued,
     /// running, or plain `blocking` where the stacks name the lwp
     /// running it, which the row's thread then carries — its wait
@@ -2912,7 +2929,7 @@ mod filter_tests {
 
 #[cfg(test)]
 mod census_warning_tests {
-    use super::{census_capped_warning, census_refused_warning};
+    use super::{census_capped_warning, census_refused_warning, census_uncertain_warning};
 
     use hansei_runtime::tokio::census::Capped;
 
@@ -3018,6 +3035,21 @@ mod census_warning_tests {
             census_refused_warning(3, "counted").expect("a refusing walk warns"),
             "the allocator has taken back the memory 3 find(s) lay in; \
              they and anything they held are not counted"
+        );
+    }
+
+    /// A walk that read every local it was offered says nothing; one
+    /// that skipped locals the layout could not vouch for says how
+    /// many, why, and what the listing it shortened was claiming to
+    /// cover.
+    #[test]
+    fn test_uncertain_locals_are_counted_in_the_warning() {
+        assert_eq!(census_uncertain_warning(0, "listed"), None);
+        assert_eq!(
+            census_uncertain_warning(2, "counted").expect("an uncertain walk warns"),
+            "the census did not read 2 locals whose initialization the tokio info cannot \
+             vouch for (an async block's captures after its first poll); a future held \
+             in one is not counted"
         );
     }
 

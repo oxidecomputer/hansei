@@ -1,38 +1,38 @@
 ---
 source: hansei-runtime/tests/two_binary.rs
 ---
-fingerprint 19/19
+fingerprint 25/25
 workers 2
 task 1 idle core::pin::Pin<alloc::boxed::Box<delegation_cases::Gated<1>, alloc::alloc::Global>>
-  spawned src/bin/delegation-cases.rs:124:8
+  spawned src/bin/delegation-cases.rs:174:8
   defined -
   await core::pin::Pin<alloc::boxed::Box<delegation_cases::Gated<1>, alloc::alloc::Global>>
   await delegation_cases::Gated<1>
   end unknown continuation (NoRule)
   assessed Unknown(Continuation)
 task 2 idle core::pin::Pin<alloc::boxed::Box<delegation_cases::Gated<2>, alloc::alloc::Global>>
-  spawned src/bin/delegation-cases.rs:124:8
+  spawned src/bin/delegation-cases.rs:174:8
   defined -
   await core::pin::Pin<alloc::boxed::Box<delegation_cases::Gated<2>, alloc::alloc::Global>>
   await delegation_cases::Gated<2>
   end unknown continuation (NoRule)
   assessed Unknown(Continuation)
 task 3 idle core::pin::Pin<alloc::boxed::Box<delegation_cases::Retained, alloc::alloc::Global>>
-  spawned src/bin/delegation-cases.rs:124:8
+  spawned src/bin/delegation-cases.rs:174:8
   defined -
   await core::pin::Pin<alloc::boxed::Box<delegation_cases::Retained, alloc::alloc::Global>>
   await delegation_cases::Retained
   end unknown continuation (NoRule)
   assessed Unknown(Continuation)
 task 4 idle core::pin::Pin<alloc::boxed::Box<delegation_cases::RawHolder, alloc::alloc::Global>>
-  spawned src/bin/delegation-cases.rs:124:8
+  spawned src/bin/delegation-cases.rs:174:8
   defined -
   await core::pin::Pin<alloc::boxed::Box<delegation_cases::RawHolder, alloc::alloc::Global>>
   await delegation_cases::RawHolder
   end unknown continuation (NoRule)
   assessed Unknown(Continuation)
 task 5 idle core::pin::Pin<alloc::boxed::Box<&mut delegation_cases::Probe<5>, alloc::alloc::Global>>
-  spawned src/bin/delegation-cases.rs:124:8
+  spawned src/bin/delegation-cases.rs:174:8
   defined -
   await core::pin::Pin<alloc::boxed::Box<&mut delegation_cases::Probe<5>, alloc::alloc::Global>>
   await &mut delegation_cases::Probe<5>
@@ -40,7 +40,7 @@ task 5 idle core::pin::Pin<alloc::boxed::Box<&mut delegation_cases::Probe<5>, al
   end unknown continuation (NoRule)
   assessed Unknown(Continuation)
 task 6 idle core::pin::Pin<alloc::boxed::Box<alloc::boxed::Box<delegation_cases::Probe<6>, alloc::alloc::Global>, alloc::alloc::Global>>
-  spawned src/bin/delegation-cases.rs:124:8
+  spawned src/bin/delegation-cases.rs:174:8
   defined -
   await core::pin::Pin<alloc::boxed::Box<alloc::boxed::Box<delegation_cases::Probe<6>, alloc::alloc::Global>, alloc::alloc::Global>>
   await alloc::boxed::Box<delegation_cases::Probe<6>, alloc::alloc::Global>
@@ -48,7 +48,7 @@ task 6 idle core::pin::Pin<alloc::boxed::Box<alloc::boxed::Box<delegation_cases:
   end unknown continuation (NoRule)
   assessed Unknown(Continuation)
 task 7 idle core::pin::Pin<alloc::boxed::Box<core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output=()> + core::marker::Send), alloc::alloc::Global>>, alloc::alloc::Global>>
-  spawned src/bin/delegation-cases.rs:124:8
+  spawned src/bin/delegation-cases.rs:174:8
   defined -
   await core::pin::Pin<alloc::boxed::Box<core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output=()> + core::marker::Send), alloc::alloc::Global>>, alloc::alloc::Global>>
   await core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output=()> + core::marker::Send), alloc::alloc::Global>>
@@ -56,10 +56,35 @@ task 7 idle core::pin::Pin<alloc::boxed::Box<core::pin::Pin<alloc::boxed::Box<(d
   end unknown continuation (NoRule)
   assessed Unknown(Continuation)
 task 8 idle core::pin::Pin<alloc::boxed::Box<tracing::instrument::Instrumented<delegation_cases::Probe<8>>, alloc::alloc::Global>>
-  spawned src/bin/delegation-cases.rs:124:8
+  spawned src/bin/delegation-cases.rs:174:8
   defined -
   await core::pin::Pin<alloc::boxed::Box<tracing::instrument::Instrumented<delegation_cases::Probe<8>>, alloc::alloc::Global>>
   await tracing::instrument::Instrumented<delegation_cases::Probe<8>>
   await delegation_cases::Probe<8>
   end unknown continuation (NoRule)
+  assessed Unknown(Continuation)
+task 9 idle core::pin::Pin<alloc::boxed::Box<delegation_cases::Holder<delegation_cases::main::{async_block_env#0}>, alloc::alloc::Global>>
+  spawned src/bin/delegation-cases.rs:174:8
+  defined -
+  await core::pin::Pin<alloc::boxed::Box<delegation_cases::Holder<delegation_cases::main::{async_block_env#0}>, alloc::alloc::Global>>
+  await delegation_cases::Holder<delegation_cases::main::{async_block_env#0}>
+  end unknown continuation (NoRule)
+  assessed Unknown(Continuation)
+task 10 idle core::pin::Pin<alloc::boxed::Box<delegation_cases::Handle, alloc::alloc::Global>>
+  spawned src/bin/delegation-cases.rs:174:8
+  defined -
+  await core::pin::Pin<alloc::boxed::Box<delegation_cases::Handle, alloc::alloc::Global>>
+  await delegation_cases::Handle
+  end unknown continuation (NoRule)
+  assessed Unknown(Continuation)
+task 11 idle core::pin::Pin<alloc::boxed::Box<delegation_cases::main::{async_block_env#2}, alloc::alloc::Global>>
+  spawned src/bin/delegation-cases.rs:174:8
+  defined -
+  await core::pin::Pin<alloc::boxed::Box<delegation_cases::main::{async_block_env#2}, alloc::alloc::Global>>
+  await delegation_cases::main::{async_block_env#2} Suspend0 @ src/bin/delegation-cases.rs:346 locals [inner, ready]
+  await core::pin::Pin<&mut delegation_cases::main::{async_block_env#1}>
+  await delegation_cases::main::{async_block_env#1} Suspend0 @ src/bin/delegation-cases.rs:339 locals [tag]
+  await core::future::pending::Pending<()>
+  end unknown continuation (NoRule)
+  site src/bin/delegation-cases.rs:346
   assessed Unknown(Continuation)

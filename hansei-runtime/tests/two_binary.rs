@@ -496,7 +496,7 @@ fn test_delegation_cases_offline() {
         let (bundle, snapshot) = load(set, "delegation-cases");
         let ctx = hansei_runtime::testkit::context(&bundle, &snapshot);
         let tasks = hansei_runtime::testkit::tasks(&ctx, &snapshot);
-        assert_eq!(tasks.tasks.len(), 8);
+        assert_eq!(tasks.tasks.len(), 11);
         assert!(
             tasks
                 .tasks
@@ -506,7 +506,7 @@ fn test_delegation_cases_offline() {
         let cases = hansei_runtime::testkit::delegation::read_from(&snapshot)
             .expect("fixture registry symbol")
             .expect("post-poll ground truth");
-        assert_eq!(cases.len(), 8);
+        assert_eq!(cases.len(), 11);
         let instrumented = &cases[7];
         assert!(instrumented.child >= instrumented.root);
         assert!(
@@ -515,7 +515,7 @@ fn test_delegation_cases_offline() {
         );
         assert_eq!(
             cases.iter().map(|c| c.child_polls).collect::<Vec<_>>(),
-            [0, 1, 0, 0, 1, 1, 1, 1]
+            [0, 1, 0, 0, 1, 1, 1, 1, 0, 0, 0]
         );
         exegesis_free_origin_check(&bundle);
         // Every task's root is a `Pin<Box<F>>` whose program lands on the
@@ -548,10 +548,18 @@ fn test_delegation_cases_offline() {
             match case.name {
                 // No rule looks past a hand-written wrapper, whatever it
                 // holds: a closed gate, an open one polled earlier, a
-                // retained enum payload, a raw pointer.
-                "gated" | "previously-polled" | "enum-retained" | "raw-pointer" => {
+                // retained enum payload, a raw pointer, a boxed block it
+                // never polls, another task's handle.
+                "gated" | "previously-polled" | "enum-retained" | "raw-pointer" | "holder"
+                | "handle" => {
                     let err = child.unwrap_err().to_string();
                     assert!(err.contains("continuation unknown"), "{set}: {err}");
+                }
+                // A coroutine root is no direct delegation at all: its
+                // program matches its state.
+                "alias" => {
+                    let err = child.unwrap_err().to_string();
+                    assert!(err.contains("not a direct delegation"), "{set}: {err}");
                 }
                 "reference" | "boxed" => {
                     let Followed::Static {
@@ -590,7 +598,7 @@ fn test_delegation_cases_offline() {
             }
             reached.insert(case.name);
         }
-        assert_eq!(reached.len(), 8, "{set}: every case's root was a task");
+        assert_eq!(reached.len(), 11, "{set}: every case's root was a task");
     }
     assert_summary("delegation-cases");
 }
@@ -869,6 +877,64 @@ fn known_name(task: &Task) -> &str {
     match &task.future {
         FutureInfo::Known(known) => known.display_name.as_str(),
         other => panic!("unresolved future: {other:?}"),
+    }
+}
+
+/// The census's own accounting, exact per fixture: the finds it
+/// counted as a frame of the chain they were scanned out of, the
+/// locals it declined for want of a vouched initialization, and the
+/// finds it reached through a descent or an active variant. Pinned to
+/// the number rather than to "some": a tally that drifts to zero is a
+/// count no longer kept, which no listing would show.
+#[test]
+fn test_the_census_accounting_is_exact_per_program() {
+    // (program, uncertain locals, chain hits, descent finds, variant finds)
+    const ACCOUNTING: &[(&str, usize, usize, usize, usize)] = &[
+        ("simple-await", 0, 1, 0, 0),
+        ("nested-await", 0, 3, 0, 0),
+        ("dyn-future", 0, 4, 0, 0),
+        ("futurelock", 2, 10, 0, 0),
+        ("sleep-join", 0, 2, 0, 0),
+        ("channels", 0, 3, 0, 0),
+        ("unordered", 0, 4, 3, 2),
+        ("joinset", 0, 7, 0, 0),
+        ("ct-runtime", 0, 3, 0, 0),
+        ("local-set", 0, 4, 0, 0),
+        ("local-set-timer", 0, 4, 0, 0),
+        ("local-set-io", 0, 9, 0, 0),
+        ("foreign-runtime", 0, 4, 0, 0),
+        ("gen-0007", 0, 2, 1, 1),
+        ("walk-shapes", 2, 18, 1, 0),
+        ("blocking-pool", 0, 2, 0, 0),
+        ("delegation-cases", 2, 14, 1, 0),
+    ];
+    let named: Vec<&str> = ACCOUNTING.iter().map(|row| row.0).collect();
+    assert_eq!(named, PROGRAMS, "every program is accounted for");
+    for set in FIXTURE_SETS {
+        for &(program, uncertain, chain_hits, descend_finds, enum_finds) in ACCOUNTING {
+            let (bundle, snapshot) = load(set, program);
+            let (_ctx, _list, census) = census_of(&bundle, &snapshot);
+            assert_eq!(
+                (
+                    census.uncertain,
+                    census.refused,
+                    census.capped,
+                    census.stats
+                ),
+                (
+                    uncertain,
+                    0,
+                    census::Capped::default(),
+                    census::Stats {
+                        descend_finds,
+                        enum_finds,
+                        dedup_hits: 0,
+                        chain_hits,
+                    }
+                ),
+                "{set}: {program}"
+            );
+        }
     }
 }
 

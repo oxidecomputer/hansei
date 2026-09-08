@@ -737,7 +737,8 @@ mod tests {
                 assert_eq!(inner.ty.size(), case.root_size, "{set}: {}", case.name);
                 assert_eq!(chain.edges.len(), chain.frames.len() - 1);
                 match case.name {
-                    "gated" | "previously-polled" | "enum-retained" | "raw-pointer" => {
+                    "gated" | "previously-polled" | "enum-retained" | "raw-pointer" | "holder"
+                    | "handle" => {
                         assert_eq!(chain.frames.len(), 2, "{set}: {:?}", names(chain));
                         let ChainEnd::UnknownContinuation { at, reason } = &chain.end else {
                             panic!("{set}: {} ends unknown: {:?}", case.name, chain.end);
@@ -774,12 +775,28 @@ mod tests {
                             Some(_) | None
                         ));
                     }
+                    // A coroutine root awaiting a `Pin` reference to the
+                    // registered child: the block, the reference, the
+                    // child, and the child's own awaitee no rule covers.
+                    "alias" => {
+                        assert_eq!(chain.frames.len(), 5, "{set}: {:?}", names(chain));
+                        let child = chain.frames[3].future;
+                        assert_eq!((child.addr, child.ty.size()), (case.child, case.child_size));
+                        assert!(chain.all_exclusive());
+                        assert!(matches!(
+                            chain.end,
+                            ChainEnd::UnknownContinuation {
+                                reason: SemanticIssueKind::NoRule,
+                                ..
+                            }
+                        ));
+                    }
                     other => panic!("{set}: unexpected case {other}"),
                 }
                 assert!(inspection.primitive.value.is_none());
                 reached.insert(case.name);
             }
-            assert_eq!(reached.len(), 8, "{set}");
+            assert_eq!(reached.len(), 11, "{set}");
         }
     }
 

@@ -3,5 +3,5 @@ source: hansei/src/offline.rs
 description: "`tasks --group waiting-on` over linux-floor/delegation-cases"
 ---
 COUNT  WAITING ON  TASKS
-    8  unknown     1, 2, 3, …
+   11  unknown     1, 2, 3, …
 [1 group]

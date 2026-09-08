@@ -2,13 +2,16 @@
 source: hansei/src/offline.rs
 description: "`tasks` over linux/delegation-cases"
 ---
-ID  STATE  FUTURES  AWAITING AT  WAITING ON  TYPE
-1   idle         1  —            unknown     future Pin<Box<delegation_cases::Gated<1>>>
-2   idle         1  —            unknown     future Pin<Box<delegation_cases::Gated<2>>>
-3   idle         0  —            unknown     future Pin<Box<delegation_cases::Retained>>
-4   idle         0  —            unknown     future Pin<Box<delegation_cases::RawHolder>>
-5   idle         0  —            unknown     future Pin<Box<&mut delegation_cases::Probe<5>>>
-6   idle         0  —            unknown     future Pin<Box<Box<delegation_cases::Probe<6>>>>
-7   idle         0  —            unknown     future Pin<Box<Pin<Box<(dyn Future<Output=()> + Send)>>>>
-8   idle         0  —            unknown     future Pin<Box<tracing::instrument::Instrumented<delegation_cases::Probe<8>>>>
-[8 tasks]
+ID  STATE  FUTURES  AWAITING AT                      WAITING ON  TYPE
+1   idle         1  —                                unknown     future Pin<Box<delegation_cases::Gated<1>>>
+2   idle         1  —                                unknown     future Pin<Box<delegation_cases::Gated<2>>>
+3   idle         0  —                                unknown     future Pin<Box<delegation_cases::Retained>>
+4   idle         0  —                                unknown     future Pin<Box<delegation_cases::RawHolder>>
+5   idle         0  —                                unknown     future Pin<Box<&mut delegation_cases::Probe<5>>>
+6   idle         0  —                                unknown     future Pin<Box<Box<delegation_cases::Probe<6>>>>
+7   idle         0  —                                unknown     future Pin<Box<Pin<Box<(dyn Future<Output=()> + Send)>>>>
+8   idle         0  —                                unknown     future Pin<Box<tracing::instrument::Instrumented<delegation_cases::Probe<8>>>>
+9   idle         1  —                                unknown     future Pin<Box<delegation_cases::Holder<delegation_cases::main>>>
+10  idle         1  —                                unknown     future Pin<Box<delegation_cases::Handle>>
+11  idle         0  src/bin/delegation-cases.rs:346  unknown     future Pin<Box<delegation_cases::main::{async_block_env#2}>>
+[11 tasks]

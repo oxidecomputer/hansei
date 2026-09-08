@@ -1,8 +1,8 @@
 ---
 source: hansei/src/offline.rs
-description: "`whatis 0x55d447347400` over linux/delegation-cases"
+description: "`whatis 0x561df6a8f400` over linux/delegation-cases"
 ---
 Task 1: future Pin<Box<delegation_cases::Gated<1>>>
     At: offset 0xADDR in the task's allocation (header 0xADDR)
     State: idle
-    Spawned at: src/bin/delegation-cases.rs:124:8
+    Spawned at: src/bin/delegation-cases.rs:174:8

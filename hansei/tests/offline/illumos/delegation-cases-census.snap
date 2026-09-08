@@ -10,11 +10,11 @@ COUNT  RT  ROLE             STATE           LWPS
     1  —   entered runtime  —               1
 [2 lwps]
 
-Tasks: 8 owned by runtime 0 @ 0xADDR
+Tasks: 11 owned by runtime 0 @ 0xADDR
 
 COUNT  STATE
-    8  idle
-[8 tasks]
+   11  idle
+[11 tasks]
 
 COUNT  TYPE / WAITING ON
     1  future Pin<Box<&mut delegation_cases::Probe<5>>>
@@ -27,20 +27,24 @@ COUNT  TYPE / WAITING ON
        └─ 1  unknown
     1  future Pin<Box<delegation_cases::Gated<2>>>
        └─ 1  unknown
-    3  (3 more types)
-[8 types, 5 shown]
+    6  (6 more types)
+[11 types, 5 shown]
 
-Futures: 10 in flight, on 22 await-chain frames, up to 3 deep
+Futures: 15 in flight, on 34 await-chain frames, up to 5 deep
 
 COUNT  HELD IN
-    8  task (its own await chain)
-    2  frame (off any await chain)
+   11  task (its own await chain)
+    4  frame (off any await chain)
     0  set (0 FuturesUnordered)
-[10 futures]
+[15 futures]
 
 COUNT  TYPE / WAITING ON
+    1  async block delegation_cases::main
+       └─ 1  — (unresumed)
     1  future delegation_cases::Probe<1>
        └─ 1  unknown
     1  future delegation_cases::Probe<2>
        └─ 1  unknown
-[2 types]
+    1  future tokio::runtime::task::join::JoinHandle<()>
+       └─ 1  task
+[4 types]

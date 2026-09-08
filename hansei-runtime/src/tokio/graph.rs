@@ -299,3 +299,141 @@ pub fn analyze<T: Target>(
         errors,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::super::assess::VerifiedWait;
+    use super::super::observe::{AcquireObservation, ValueKey};
+    use super::*;
+
+    use hansei_bundle::BundleTypeId;
+
+    fn key(addr: u64) -> ValueKey {
+        ValueKey {
+            addr,
+            ty: BundleTypeId(0),
+        }
+    }
+
+    fn semaphore(addr: u64) -> WaitTarget {
+        WaitTarget::Semaphore {
+            addr,
+            owner: None,
+            num_permits: 1,
+            available: 0,
+            closed: false,
+            waiters: Vec::new(),
+        }
+    }
+
+    /// Task `id`, verified waiting on `target` at wake-order
+    /// `position`, where the queue placed it.
+    fn wait(id: u64, target: WaitTarget, position: Option<usize>) -> TaskWait {
+        TaskWait {
+            task: TaskRef {
+                addr: TaskAddr(0x1000 + id * 0x100),
+                task_id: Some(id),
+            },
+            assessment: WaitAssessment::Waiting(VerifiedWait::testkit(target, position)),
+            continuation: ContinuationStatus::Primitive,
+            depth: 1,
+            site: None,
+            observation: None,
+            notes: Vec::new(),
+        }
+    }
+
+    /// The waiters every case below is judged over: on the semaphore
+    /// at 0x5000, one placed behind position 1, one ahead of it, one
+    /// at it, one the queue did not place; and one on another
+    /// semaphore altogether.
+    fn waits() -> Vec<TaskWait> {
+        vec![
+            wait(1, semaphore(0x5000), Some(2)),
+            wait(2, semaphore(0x5000), Some(0)),
+            wait(3, semaphore(0x5000), Some(1)),
+            wait(4, semaphore(0x5000), None),
+            wait(5, semaphore(0x6000), Some(3)),
+        ]
+    }
+
+    /// A barrier holding an acquire on `semaphore` that still needs
+    /// `needed` permits, queued at `position`.
+    fn barrier(semaphore: u64, needed: u64, position: Option<usize>) -> PollingBarrier {
+        PollingBarrier {
+            holder: TaskAddr(0x9000),
+            holder_id: Some(9),
+            frame: 0,
+            frame_type: "h::fut".to_string(),
+            state: "Suspend0".to_string(),
+            await_loc: None,
+            local: "held".to_string(),
+            candidate: key(0x9100),
+            future: "h::acquire".to_string(),
+            owner: None,
+            acquire: AcquireObservation {
+                future: key(0x9100),
+                semaphore: key(semaphore),
+                node: 0x9200,
+                requested: 1,
+                needed,
+                queued: needed > 0,
+                queue_position: position,
+            },
+            primitive: key(0x9300),
+            terminal: "h::leaf".to_string(),
+            edges: Vec::new(),
+        }
+    }
+
+    fn analysis(barrier: PollingBarrier) -> Analysis {
+        Analysis {
+            waits: waits(),
+            barriers: vec![barrier],
+            join_wakers: Vec::new(),
+            errors: Vec::new(),
+        }
+    }
+
+    /// The relations as (waiter's task id, relation).
+    fn relations(analysis: &Analysis) -> Vec<(u64, BarrierRelation)> {
+        analysis
+            .behind()
+            .into_iter()
+            .map(|b| {
+                assert_eq!(b.barrier, 0);
+                (analysis.waits[b.waiter].task.task_id.unwrap(), b.relation)
+            })
+            .collect()
+    }
+
+    /// A queued acquire reaches exactly the waiters at greater
+    /// wake-order positions in its own queue: not the one ahead of it,
+    /// not the one at its own position, not one the queue did not
+    /// place, and nothing on another semaphore. A queued acquire the
+    /// queue did not place reaches no one.
+    #[test]
+    fn test_a_queued_acquire_is_behind_only_the_positions_past_its_own() {
+        assert_eq!(
+            relations(&analysis(barrier(0x5000, 1, Some(1)))),
+            [(1, BarrierRelation::QueueOrder)]
+        );
+        assert_eq!(relations(&analysis(barrier(0x5000, 1, None))), []);
+    }
+
+    /// A granted acquire is a reservation every waiter on its
+    /// semaphore is short of, placed or not — and still nothing to a
+    /// waiter on another semaphore.
+    #[test]
+    fn test_a_granted_acquire_is_a_reservation_every_waiter_is_behind() {
+        assert_eq!(
+            relations(&analysis(barrier(0x5000, 0, None))),
+            [
+                (1, BarrierRelation::Reservation),
+                (2, BarrierRelation::Reservation),
+                (3, BarrierRelation::Reservation),
+                (4, BarrierRelation::Reservation),
+            ]
+        );
+    }
+}

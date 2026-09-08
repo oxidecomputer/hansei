@@ -854,6 +854,31 @@ mod tests {
         assert!(handle.addr > root.addr && handle.addr < root.addr + root.ty.size());
     }
 
+    /// A resource the scan reaches only through an adapter — another
+    /// task's `JoinHandle` behind a pinned box of `dyn Future`, held by
+    /// a hand-written future no rule looks past — is an origin of its
+    /// own, observed once: the holder references the task the handle
+    /// names, and nothing else.
+    #[test]
+    fn test_a_resource_behind_an_adapter_is_observed_as_an_origin() {
+        let (bundle, snapshot) = testkit::load_any("delegation-cases");
+        let ctx = testkit::context(&bundle, &snapshot);
+        let list = testkit::tasks(&ctx, &snapshot);
+        let handle = task_named(&list, "delegation_cases::Handle");
+        let holder = task_named(&list, "delegation_cases::Holder<");
+        let (completion, sink) = scan_task(&ctx, handle);
+        assert!(completion.complete, "{:?}", sink.issues);
+        assert!(sink.issues.is_empty(), "{:?}", sink.issues);
+        let [reference] = sink.references.as_slice() else {
+            panic!("one reference: {:?}", sink.references);
+        };
+        assert_eq!(reference.target, holder.addr);
+        assert!(matches!(reference.source, ReferenceSource::JoinHandle));
+        // Two expansions: the pin over the box, to the hand-written
+        // future, and the pin over the boxed dyn, to the handle.
+        assert_eq!(completion.referent_expansions, 2);
+    }
+
     /// The scan is independent of the wait: the same handle references
     /// the same task after the sleeper has completed and left its list,
     /// and the reference is found whether or not anything awaits it.

@@ -2810,6 +2810,121 @@ mod tests {
         assert_eq!(census.refused, 1);
     }
 
+    /// The `delegation-cases` census over the given heap evidence, with
+    /// the registry its program wrote down: each case's root and the
+    /// child it holds, by the addresses the program itself recorded.
+    fn delegation_census(
+        heap: Option<&testkit::heap::FakeHeap>,
+    ) -> (FutureCensus, Vec<testkit::delegation::Case>) {
+        let (bundle, snapshot) = testkit::load_any("delegation-cases");
+        let ctx = testkit::context(&bundle, &snapshot);
+        let list = testkit::tasks(&ctx, &snapshot);
+        let read = match heap {
+            Some(heap) => ReadContext::with_heap(heap),
+            None => ReadContext::none(),
+        };
+        let census = census_bounded(&ctx, &list, Bounds::default(), &read);
+        let cases = testkit::delegation::read_from(&snapshot)
+            .expect("the fixture registers its cases")
+            .expect("the registry is post-poll ground truth");
+        (census, cases)
+    }
+
+    fn delegation_case<'a>(
+        cases: &'a [testkit::delegation::Case],
+        name: &str,
+    ) -> &'a testkit::delegation::Case {
+        cases
+            .iter()
+            .find(|c| c.name == name)
+            .unwrap_or_else(|| panic!("the fixture registers the {name} case"))
+    }
+
+    /// A find behind an owned box is listed where the box points —
+    /// the box is an adapter, not a future, and what it holds is the
+    /// find — and weighed there: an index that has taken the pointee
+    /// back refuses the find, and the box's slot lists nothing.
+    #[test]
+    fn test_a_find_behind_an_owned_box_is_listed_where_the_box_points() {
+        let (full, cases) = delegation_census(None);
+        let holder = delegation_case(&cases, "holder");
+        let held = held_at(&full, "held");
+        assert_eq!(held.addr, holder.child);
+        assert!(held.future.contains("{async_block"), "{}", held.future);
+        assert_eq!(full.refused, 0);
+
+        let freed = testkit::heap::FakeHeap::new().freed(holder.child..holder.child + 1);
+        let (census, _) = delegation_census(Some(&freed));
+        assert!(
+            !census.held.iter().any(|h| h.local == "held"),
+            "{:#?}",
+            census.held
+        );
+        assert_eq!(census.refused, 1);
+        assert_eq!(census.uncertain, full.uncertain);
+        let kept: Vec<(&str, u64)> = held_rows(&full)
+            .into_iter()
+            .filter(|&(local, _)| local != "held")
+            .collect();
+        assert_eq!(held_rows(&census), kept);
+    }
+
+    /// A box whose pointer word leads off the map holds nothing the
+    /// census can list, and nothing the allocator refused either: the
+    /// slot lists nothing and the refusal count is untouched.
+    #[test]
+    fn test_a_box_pointing_off_the_map_is_neither_listed_nor_refused() {
+        const NOWHERE: u64 = 0xdead_beef_0000;
+        let (bundle, snapshot) = testkit::load_any("delegation-cases");
+        let ctx = testkit::context(&bundle, &snapshot);
+        let list = testkit::tasks(&ctx, &snapshot);
+        let holder = list
+            .tasks
+            .iter()
+            .find(|t| matches!(&t.future, FutureInfo::Known(k) if k.display_name.contains("delegation_cases::Holder<")))
+            .expect("the holder is a task");
+        // The pin over the box forwards to the holder itself, whose
+        // `held` member is the box's pointer word.
+        let root = match ctx.task_root(holder, &ReadContext::none()).unwrap() {
+            TaskStage::Running(root) => root,
+            other => panic!("the holder is resident: {other:?}"),
+        };
+        let testkit::delegation::Followed::Static { value: holder, .. } =
+            testkit::delegation::follow(&ctx, root).unwrap()
+        else {
+            panic!("the pin forwards statically");
+        };
+        let slot = holder.addr + holder.ty.member("held").expect("Holder::held").offset();
+
+        let cut = testkit::corrupt::Corrupt::new(&snapshot).patch(slot, NOWHERE);
+        let ctx = Context::new(&cut, BundleView::new(&bundle)).unwrap();
+        let census = census_bounded(&ctx, &list, Bounds::default(), &ReadContext::none());
+        assert!(
+            !census.held.iter().any(|h| h.local == "held"),
+            "{:#?}",
+            census.held
+        );
+        assert_eq!(census.refused, 0);
+    }
+
+    /// A pinned box in a frame's locals whose pointee is a frame of
+    /// that chain — the chain went through a `Pin` reference to the
+    /// same block — is that frame, counted there, and not a future
+    /// held beside the chain.
+    #[test]
+    fn test_a_box_aliasing_a_frame_of_its_chain_is_counted_as_that_frame() {
+        let (full, cases) = delegation_census(None);
+        let alias = delegation_case(&cases, "alias");
+        assert!(
+            !full
+                .held
+                .iter()
+                .any(|h| h.local == "inner" || h.addr == alias.child),
+            "{:#?}",
+            full.held
+        );
+    }
+
     /// An index that has taken back nothing the census reads changes
     /// nothing about the census — which is the whole of what a healthy
     /// target must see, and what the fixtures and every real target

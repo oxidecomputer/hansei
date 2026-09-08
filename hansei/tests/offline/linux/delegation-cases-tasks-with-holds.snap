@@ -5,4 +5,6 @@ description: "`tasks --with holds >0` over linux/delegation-cases"
 ID  STATE  FUTURES  AWAITING AT  WAITING ON  TYPE
 1   idle         1  —            unknown     future Pin<Box<delegation_cases::Gated<1>>>
 2   idle         1  —            unknown     future Pin<Box<delegation_cases::Gated<2>>>
-[2 tasks]
+9   idle         1  —            unknown     future Pin<Box<delegation_cases::Holder<delegation_cases::main>>>
+10  idle         1  —            unknown     future Pin<Box<delegation_cases::Handle>>
+[4 tasks]

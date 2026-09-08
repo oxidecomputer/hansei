@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicU64, Ordering::SeqCst};
 use std::sync::mpsc::{self, Sender};
 use std::task::{Context, Poll, Waker};
 
-const CASES: usize = 8;
+const CASES: usize = 11;
 
 // A separate registry records poll behavior independently of the legacy
 // census's containment/continuation interpretation. Each row contains root
@@ -104,6 +104,56 @@ impl Future for RawHolder {
     fn poll(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<()> {
         std::hint::black_box(self.child);
         acknowledge(3, &self.ready);
+        Poll::Pending
+    }
+}
+
+// A hand-written future holding a boxed future it never polls, beside
+// a zero-sized one. The box is an owned adapter and no future of its
+// own (its pointee is not `Unpin`), so what the census lists is the
+// pointee, where the box points; the zero-sized member is storage the
+// scan must not offer as a local.
+struct Holder<F> {
+    held: Box<F>,
+    idle: std::future::Pending<()>,
+    ready: Sender<usize>,
+}
+
+impl<F: Future> Future for Holder<F> {
+    type Output = ();
+    #[inline(never)]
+    fn poll(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<()> {
+        // Name the pointee's `poll` without calling it: a future nothing
+        // ever polls has no `poll` in the binary, and the box over it
+        // would then wrap no known future at all.
+        std::hint::black_box(
+            <F as Future>::poll as fn(Pin<&mut F>, &mut Context<'_>) -> Poll<F::Output>,
+        );
+        std::hint::black_box(&self.idle);
+        acknowledge(8, &self.ready);
+        Poll::Pending
+    }
+}
+
+// A hand-written future holding another task's `JoinHandle` behind a
+// pinned box of `dyn Future`: a resource reached only through an
+// adapter, never by value.
+struct Handle {
+    handle: Pin<Box<dyn Future<Output = Result<(), tokio::task::JoinError>> + Send>>,
+    ready: Sender<usize>,
+}
+
+impl Future for Handle {
+    type Output = ();
+    #[inline(never)]
+    fn poll(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<()> {
+        // Name the pin's `poll` without calling it, as `Holder` does.
+        std::hint::black_box(
+            <Pin<Box<dyn Future<Output = Result<(), tokio::task::JoinError>> + Send>> as Future>::poll
+                as fn(_, &mut Context<'_>) -> Poll<Result<(), tokio::task::JoinError>>,
+        );
+        std::hint::black_box(&self.handle);
+        acknowledge(9, &self.ready);
         Poll::Pending
     }
 }
@@ -235,13 +285,68 @@ fn main() {
     let instrumented = Box::pin(
         Probe::<8> {
             case: 7,
-            ready: Some(ready),
+            ready: Some(ready.clone()),
             tag: 8,
         }
         .instrument(tracing::Span::none()),
     );
     let child = location(instrumented.inner());
     tasks.push(register(&rt, 7, instrumented, child, 1));
+
+    // A never-polled async block behind a plain box: listed where the
+    // box points, and its one capture is a local the layout cannot
+    // vouch for until the block is first polled.
+    let tag = 8u64;
+    let holder = Holder {
+        held: Box::new(async move {
+            std::hint::black_box(tag);
+            std::future::pending::<()>().await;
+        }),
+        idle: std::future::pending(),
+        ready: ready.clone(),
+    };
+    let child = location(&*holder.held);
+    test_programs::census_expect::held(child.0, "delegation_cases::main::{async_block");
+    let holder = register(&rt, 8, Box::pin(holder), child, 0);
+
+    // The holder's own `JoinHandle`, behind a pinned box of `dyn
+    // Future`: a held find whose chain ends in the handle.
+    let joined = Box::pin(holder);
+    let child = location(&*joined);
+    let handle = Box::pin(Handle {
+        handle: joined,
+        ready: ready.clone(),
+    });
+    // A find held by value is keyed by its slot: the pin in the frame,
+    // not the handle it points at.
+    test_programs::census_expect::held(
+        &handle.handle as *const _ as u64,
+        "tokio::runtime::task::join::JoinHandle",
+    );
+    tasks.push(register(&rt, 9, handle, child, 0));
+
+    // A pinned box awaited through `as_mut()`: the awaitee is a `Pin`
+    // reference to the boxed block, and the box itself sits in the
+    // root's locals pointing at a frame of the root's own chain — an
+    // alias of the chain, not a future held beside it. It is rebound
+    // as a body local because a capture, once the block is polled, is
+    // storage the layout cannot vouch for and the census does not
+    // read. The zero-sized future carried across the await is a
+    // layout local the scan must not offer.
+    let tag = 10u64;
+    let inner = Box::pin(async move {
+        std::hint::black_box(tag);
+        std::future::pending::<()>().await;
+    });
+    let child = location(&*inner);
+    let alias = async move {
+        let mut inner = inner;
+        let idle = std::future::pending::<()>();
+        acknowledge(10, &ready);
+        inner.as_mut().await;
+        let _ = std::hint::black_box(idle);
+    };
+    tasks.push(register(&rt, 10, Box::pin(alias), child, 0));
 
     let handle = rt.handle().clone();
     std::thread::spawn(move || rt.block_on(std::future::pending::<()>()));

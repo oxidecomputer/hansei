@@ -2,4 +2,6 @@
 source: hansei/src/offline.rs
 description: "`graph` over illumos/delegation-cases"
 ---
-
+TASK                          STATE  WAITING ON
+10                            idle   unknown
+└─ 9 [its handle held above]  idle   unknown

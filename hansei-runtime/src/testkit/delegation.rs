@@ -13,7 +13,7 @@ use reify::Value;
 
 pub const SYMBOL: &str = "HANSEI_DELEGATION_CASES";
 
-pub const NAMES: [&str; 8] = [
+pub const NAMES: [&str; 11] = [
     "gated",
     "previously-polled",
     "enum-retained",
@@ -22,7 +22,14 @@ pub const NAMES: [&str; 8] = [
     "boxed",
     "dynamic",
     "instrumented",
+    "holder",
+    "handle",
+    "alias",
 ];
+
+/// How many times each case's child was polled, which the fixture
+/// asserts against its own expectation before it parks.
+const CHILD_POLLS: [u64; NAMES.len()] = [0, 1, 0, 0, 1, 1, 1, 1, 0, 0, 0];
 
 #[derive(Debug)]
 pub struct Case {
@@ -41,7 +48,7 @@ pub struct Case {
 pub fn read_from<T: Target>(target: &T) -> Option<Result<Vec<Case>>> {
     let symbol = target.lookup_symbol_by_name(SYMBOL)?;
     Some((|| {
-        let bytes = super::expect::read_run(target, symbol.st_value, 8 * 8 * 8)?;
+        let bytes = super::expect::read_run(target, symbol.st_value, NAMES.len() as u64 * 8 * 8)?;
         let mut cases = Vec::new();
         for (index, row) in bytes.as_chunks::<64>().0.iter().enumerate() {
             let fields: Vec<_> = row
@@ -59,7 +66,7 @@ pub fn read_from<T: Target>(target: &T) -> Option<Result<Vec<Case>>> {
                 fields[4] == if index == 1 { 2 } else { 1 },
                 "unexpected parent poll count"
             );
-            let expected = [0, 1, 0, 0, 1, 1, 1, 1][index];
+            let expected = CHILD_POLLS[index];
             ensure!(
                 fields[5] == expected && fields[6] == expected,
                 "unexpected child poll count"
@@ -168,14 +175,18 @@ mod tests {
     use super::*;
     use crate::testkit::fake::FakeTarget;
 
+    /// Where the fake registry's rows end: the sixteen bytes after them
+    /// are the one registered root and child, and nothing past those
+    /// is mapped.
+    const TAIL: u64 = 0x1000 + NAMES.len() as u64 * 64;
+
     fn memory() -> FakeTarget {
         let mut bytes = Vec::new();
-        for index in 0..8 {
-            let count = [0, 1, 0, 0, 1, 1, 1, 1][index];
+        for (index, &count) in CHILD_POLLS.iter().enumerate() {
             for word in [
-                0x1200u64,
+                TAIL,
                 8,
-                0x1208,
+                TAIL + 8,
                 8,
                 if index == 1 { 2 } else { 1 },
                 count,
@@ -197,19 +208,19 @@ mod tests {
     #[test]
     fn test_poll_registry_requires_post_poll_counts_and_readable_values() {
         let target = memory();
-        assert_eq!(read_from(&target).unwrap().unwrap().len(), 8);
+        assert_eq!(read_from(&target).unwrap().unwrap().len(), NAMES.len());
         for (field, value) in [
             (0, 0),
             (1, 0),
             (1, 65537),
-            (2, 0x1210),
+            (2, TAIL + 0x10),
             (4, 2),
             (5, 1),
             (6, 1),
             (7, 0),
         ] {
             let mut target = memory();
-            target.bytes[field * 8..field * 8 + 8].copy_from_slice(&(value as u64).to_le_bytes());
+            target.bytes[field * 8..field * 8 + 8].copy_from_slice(&value.to_le_bytes());
             assert!(
                 read_from(&target).unwrap().is_err(),
                 "field {field} accepted {value}"

@@ -4,7 +4,7 @@ description: "`info` over linux/delegation-cases"
 ---
 core:       <snapshot>
 tokio info: <tokio info>
-symbols resolved: 19/19
+symbols resolved: 25/25
 allocator evidence: unavailable
 process: not recorded by this target
 signal: none recorded

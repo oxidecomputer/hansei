@@ -1710,6 +1710,75 @@ mod tests {
         assert!(page.contains("└─ 1  — (complete)\n"), "{page}");
     }
 
+    /// Every bucket a task can land in short of a verified wait counts
+    /// on its own: a ready resource, a mid-poll assessment, a returned
+    /// or panicked root and a never-polled one each print their own
+    /// row with their own count — and a held future lands in the same
+    /// rows by its continuation, so none of them can stand in for
+    /// another.
+    #[test]
+    fn test_each_wait_bucket_counts_its_own() {
+        use hansei_runtime::tokio::assess::{ReadyReason, RunnableReason};
+
+        let list = TaskList {
+            tasks: (1..=5)
+                .map(|id| task(id, JOIN_INTEREST, "x::fut", "x.rs"))
+                .collect(),
+            errors: Vec::new(),
+        };
+        let assessed = |id, assessment| {
+            let mut wait = wait(id, None, 1);
+            wait.assessment = assessment;
+            wait
+        };
+        let waits = [
+            assessed(1, WaitAssessment::ResourceReady(ReadyReason::JoinComplete)),
+            assessed(2, WaitAssessment::Runnable(RunnableReason::ActivePoll)),
+            assessed(3, WaitAssessment::NotWaiting(NotWaitingReason::Returned)),
+            assessed(4, WaitAssessment::NotWaiting(NotWaitingReason::Panicked)),
+            assessed(5, WaitAssessment::Unresumed),
+        ];
+        let continued = |continuation| {
+            let mut held = held("h::fut", None);
+            held.continuation = continuation;
+            held
+        };
+        let held = [
+            continued(ContinuationStatus::Returned),
+            continued(ContinuationStatus::Panicked),
+            continued(ContinuationStatus::ActivePoll),
+            continued(ContinuationStatus::Unresumed),
+        ];
+        let mut facts = facts(&list, &waits);
+        facts.held = &held;
+
+        let tasks = sections(&facts, Sections::select(false, true, false), 10);
+        assert!(
+            tasks.contains(
+                "COUNT  TYPE / WAITING ON\n    \
+                 5  future x::fut\n       \
+                 ├─ 2  — (returned)\n       \
+                 ├─ 1  ready\n       \
+                 ├─ 1  — (mid-poll)\n       \
+                 └─ 1  — (unresumed)\n\
+                 [1 type]\n"
+            ),
+            "{tasks}"
+        );
+        let futures = sections(&facts, Sections::select(false, false, true), 10);
+        assert!(
+            futures.contains(
+                "COUNT  TYPE / WAITING ON\n    \
+                 4  future h::fut\n       \
+                 ├─ 2  — (returned)\n       \
+                 ├─ 1  — (mid-poll)\n       \
+                 └─ 1  — (unresumed)\n\
+                 [1 type]\n"
+            ),
+            "{futures}"
+        );
+    }
+
     /// At exactly `top` leaves nothing is summarized, and no leaf row
     /// is pinned to the bottom: every row still ranks among the others.
     #[test]

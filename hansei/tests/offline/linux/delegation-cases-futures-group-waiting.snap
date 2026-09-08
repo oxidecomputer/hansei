@@ -4,4 +4,6 @@ description: "`futures --group waiting-on` over linux/delegation-cases"
 ---
 COUNT  WAITING ON  FUTURES
     2  unknown     0xADDR, 0xADDR
-[1 group]
+    1  <empty>     0xADDR
+    1  task 9      0xADDR
+[3 groups]
