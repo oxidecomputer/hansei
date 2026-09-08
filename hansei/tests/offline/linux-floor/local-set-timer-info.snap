@@ -5,5 +5,6 @@ description: "`info` over linux-floor/local-set-timer"
 core:       <snapshot>
 tokio info: <tokio info>
 symbols resolved: 5/5
+allocator evidence: unavailable
 process: not recorded by this target
 signal: none recorded

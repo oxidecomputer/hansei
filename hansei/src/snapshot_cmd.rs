@@ -392,4 +392,40 @@ mod tests {
         let out = String::from_utf8(out).unwrap();
         assert!(out.contains("the read log held"), "{out}");
     }
+
+    /// A pair whose capture built an allocator index recaptures with
+    /// one: the index is rebuilt through the recorder, so the reads
+    /// that rebuild it are in the new file, which records `Available`
+    /// and attaches with the index in hand — and the census the
+    /// session then gates by it is the census the capture gated.
+    #[test]
+    fn test_a_recapture_carries_its_allocator_index() {
+        let (bundle, snapshot) = testkit::load("illumos", "joinset");
+        assert_eq!(snapshot.heap_evidence(), RecordedHeapEvidence::Available);
+        let args = session_args("illumos", "joinset");
+        let session = Session::attach(&snapshot, &bundle, &args).expect("the pair attaches");
+        assert!(session.umem().is_some());
+        let dir = tempfile::tempdir().unwrap();
+        let output = dir.path().join("recapture.snapshot");
+        let mut out = Vec::new();
+        exec_snapshot(&session, &output, CaptureLimits::default(), &mut out)
+            .expect("the capture fits its default limits");
+
+        let recaptured = Snapshot::load(&output).expect("the published file is a snapshot");
+        assert_eq!(recaptured.heap_evidence(), RecordedHeapEvidence::Available);
+        let replay = Session::attach(&recaptured, &bundle, &args).expect("the recapture attaches");
+        let index = replay.umem().expect("the recapture rebuilds its index");
+        assert_eq!(index.stats().slabs, session.umem().unwrap().stats().slabs);
+        let population = |s: &Session<'_, Snapshot>| {
+            let census = s.census();
+            (
+                census.held.len(),
+                census.sets.len(),
+                census.join_sets.len(),
+                census.refused,
+                s.tasks.tasks.len(),
+            )
+        };
+        assert_eq!(population(&replay), population(&session));
+    }
 }

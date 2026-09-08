@@ -5,5 +5,6 @@ description: "`info` over linux/gen-0007"
 core:       <snapshot>
 tokio info: <tokio info>
 symbols resolved: 11/11
+allocator evidence: unavailable
 process: not recorded by this target
 signal: none recorded

@@ -5,5 +5,6 @@ description: "`info` over illumos/foreign-runtime"
 core:       <snapshot>
 tokio info: <tokio info>
 symbols resolved: 20/20
+allocator evidence: libumem index (58 caches, 33 slabs)
 process: not recorded by this target
 signal: none recorded

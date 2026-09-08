@@ -35,6 +35,21 @@ fn attach<T: Target>(session: &Session<'_, T>, out: &mut dyn io::Write) -> Resul
         fp.total,
         if fp.is_complete() { "" } else { " (forced)" }
     )?;
+    // What every gated read this session makes is corroborated by.
+    // The neutral spelling is deliberate: no index means only that
+    // allocator evidence is unavailable — not that the target has no
+    // allocator, which nothing here can tell.
+    match session.umem() {
+        Some(heap) => {
+            let stats = heap.stats();
+            writeln!(
+                out,
+                "allocator evidence: libumem index ({} caches, {} slabs)",
+                stats.caches, stats.slabs
+            )?;
+        }
+        None => writeln!(out, "allocator evidence: unavailable")?,
+    }
     Ok(())
 }
 
