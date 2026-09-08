@@ -874,6 +874,7 @@ fn extract_from_view(
         seeds,
         fut_polls,
         explicit_polls,
+        poll_sources,
         coroutine_candidates,
         drop_glues,
         glue_by_name,
@@ -1266,15 +1267,16 @@ fn extract_from_view(
         }
     }
 
-    // Which reviewed compiler convention, if any, each coroutine
-    // candidate's defining units agree on. Decided here, where the
+    // Which reviewed compiler convention, if any, a candidate's defining
+    // units agree on — the coroutine convention for a coroutine, the
+    // adapter or vtable one for a std pointer. Decided here, where the
     // reader's unit origins are at hand; the binder sees only verdicts.
-    let compiler_verdict = |raw: TypeId| {
+    let compiler_verdict = |raw: TypeId, reviewed: semantics::Reviewed| {
         let convention = reader.type_convention(raw, |_, origin| {
             origin
                 .producer
                 .map(|p| reader.strings.get(p))
-                .and_then(crate::detect::semantics::rustc_coroutine_convention)
+                .and_then(|producer| reviewed.select(producer))
         });
         match convention {
             Ok(convention) => {
@@ -1300,6 +1302,7 @@ fn extract_from_view(
     let seeds = semantics::collect_semantic_seeds(
         &em,
         &explicit_polls,
+        &poll_sources,
         &coroutine_candidates,
         compiler_verdict,
     );

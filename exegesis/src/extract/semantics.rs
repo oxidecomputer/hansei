@@ -2,30 +2,47 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-//! Sparse identity seeds and the library-layout bindings. Compiler
-//! candidates retain an unavailable storage boundary until a reviewed
-//! defining-origin convention can bind them; Tokio and futures-util
-//! resource, container and scheduler facts bind from the walk contract's
-//! own roots, so each is a layout fact about the exact type it names.
+//! Sparse identity seeds, the library-layout bindings, and the reviewed
+//! poll programs. Compiler candidates retain an unavailable storage
+//! boundary until a reviewed defining-origin convention can bind them;
+//! Tokio and futures-util resource, container and scheduler facts bind
+//! from the walk contract's own roots, so each is a layout fact about the
+//! exact type it names.
+//!
+//! A poll program is emitted only under a reviewed rule — a compiler
+//! coroutine's suspended states, the four std pointer adapters, tracing's
+//! `Instrumented` — whose origin and layout both check out on this
+//! binary, and only for a type that is positively a future: a task's
+//! root, a `Future::poll` self type, a bound coroutine, or the static
+//! delegate of a parent whose own program is bound. That closure is a
+//! least fixed point over the emitted programs; nothing about a
+//! wrapper's shape, member count or drop glue seeds it.
 
 use super::emitter::Emitter;
 use super::passes::{members_of, state_name};
+use super::sweep::PollSource;
 use crate::TypeId;
 use crate::bundle::names::coroutine_kind;
+use crate::bundle::origin::registry_origin;
 use crate::bundle::{
-    BundleTypeId, ContainerBinding, ContainerKind, Continuation, CoroutineLayout, CoroutinePhase,
-    CoroutineState, FutureEvidence, FutureFacts, IoOperationKind, LayoutSelection, PollAction,
-    PollProgram, ResourceBinding, ResourceKind, SchedulerBinding, SchedulerClass, SemanticIssue,
+    AccessBinding, AccessKind, BundleTypeId, ContainerBinding, ContainerKind, Continuation,
+    CoroutineLayout, CoroutinePhase, CoroutineState, DynFutureLayout, FutureEvidence, FutureFacts,
+    FutureTarget, IoOperationKind, LayoutSelection, MemberRef, PollAction, PollCase, PollProgram,
+    ResourceBinding, ResourceKind, SchedulerBinding, SchedulerClass, Selector, SemanticIssue,
     SemanticIssueKind, SemanticOrigin, SemanticOriginId, SemanticRule, SemanticRuleId,
-    SemanticRuleKind, SemanticTable, StoragePolicy, StrRef, StringInterner, TaskEntryId,
-    TaskFutureEntry, TypeDef, TypeSemantics, TypeTable, WalkOutcome, WalkRole, WalksTable,
-    container_roles, container_routes, required_resource_roles, required_resource_routes,
-    scheduler_role,
+    SemanticRuleKind, SemanticTable, SourceFileEvidence, Step, StoragePolicy, StrRef,
+    StringInterner, TaskEntryId, TaskFutureEntry, TypeDef, TypeSemantics, TypeTable, TypedPath,
+    WalkOutcome, WalkRole, WalksTable, container_roles, container_routes, required_resource_roles,
+    required_resource_routes, scheduler_role, semantic_path_target,
 };
 use crate::detect::Family;
-use crate::detect::semantics::RustcConvention;
+use crate::detect::adapters::{self, InstrumentedLayout, Pointee, StdAdapter};
+use crate::detect::semantics::{
+    RustcConvention, rustc_coroutine_convention, rustc_dyn_future_abi_convention,
+    rustc_std_adapter_convention, tracing_instrumented_convention,
+};
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 /// What the defining units of a compiler-storage candidate said about
 /// the convention its layout follows, decided where the reader's origins
@@ -42,13 +59,121 @@ pub(super) enum CompilerVerdict {
     Declined(String),
 }
 
+/// Which reviewed compiler convention a verdict is asked under: each is
+/// a separate review of a separate fact, over the same defining units.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub(super) enum Reviewed {
+    Coroutine,
+    StdAdapters,
+    DynFutureAbi,
+}
+
+impl Reviewed {
+    /// The convention selector the verdict runs a producer through.
+    pub(super) fn select(self, producer: &str) -> Option<&'static RustcConvention> {
+        match self {
+            Reviewed::Coroutine => rustc_coroutine_convention(producer),
+            Reviewed::StdAdapters => rustc_std_adapter_convention(producer),
+            Reviewed::DynFutureAbi => rustc_dyn_future_abi_convention(producer),
+        }
+    }
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum AdapterKind {
+    Box,
+    MutRef,
+    PinBox,
+    PinMutRef,
+}
+
+impl AdapterKind {
+    fn poll_rule(self) -> SemanticRuleKind {
+        match self {
+            AdapterKind::Box => SemanticRuleKind::StdBoxPoll,
+            AdapterKind::MutRef => SemanticRuleKind::StdMutRefPoll,
+            AdapterKind::PinBox => SemanticRuleKind::StdPinBoxPoll,
+            AdapterKind::PinMutRef => SemanticRuleKind::StdPinMutRefPoll,
+        }
+    }
+
+    fn access_rule(self) -> SemanticRuleKind {
+        match self {
+            AdapterKind::Box => SemanticRuleKind::StdBoxAccess,
+            AdapterKind::MutRef => SemanticRuleKind::StdMutRefAccess,
+            AdapterKind::PinBox => SemanticRuleKind::StdPinBoxAccess,
+            AdapterKind::PinMutRef => SemanticRuleKind::StdPinMutRefAccess,
+        }
+    }
+
+    fn access(self) -> AccessKind {
+        match self {
+            AdapterKind::Box | AdapterKind::PinBox => AccessKind::Owned,
+            AdapterKind::MutRef | AdapterKind::PinMutRef => AccessKind::Borrowed,
+        }
+    }
+}
+
+/// A wide pointer to a bare `dyn Future`, by bundle id: the struct, its
+/// two members and their types, the trait object, and the verdict on the
+/// vtable ABI the struct's defining units were compiled under.
+#[derive(Clone, Debug)]
+struct DynSeed {
+    wide: BundleTypeId,
+    pointer: String,
+    vtable: String,
+    data_ptr: BundleTypeId,
+    vtable_ptr: BundleTypeId,
+    trait_ty: BundleTypeId,
+    abi: CompilerVerdict,
+}
+
+#[derive(Clone, Debug)]
+enum PointeeSeed {
+    Sized(BundleTypeId),
+    Dyn(DynSeed),
+}
+
+/// A std adapter as the raw screen saw it, carried by bundle id: the
+/// kind, the `Pin` member and its `Ptr` where there is one, what it
+/// points at, and the verdict on the adapter convention.
+#[derive(Clone, Debug)]
+struct AdapterSeed {
+    kind: AdapterKind,
+    pin: Option<(String, BundleTypeId)>,
+    pointee: PointeeSeed,
+    compiler: CompilerVerdict,
+}
+
+#[derive(Clone, Debug)]
+struct InstrumentedSeed {
+    inner: String,
+    future: BundleTypeId,
+}
+
 #[derive(Default)]
 pub(super) struct Seed {
     polls: BTreeSet<String>,
+    poll_sources: BTreeSet<PollSource>,
     coroutine_candidate: bool,
     compiler: Option<CompilerVerdict>,
     resource: Option<ResourceKind>,
     container: Option<ContainerKind>,
+    adapter: Option<AdapterSeed>,
+    instrumented: Option<InstrumentedSeed>,
+}
+
+impl Seed {
+    /// Whether the seed alone puts a record in the table: identity,
+    /// storage or a library binding, as opposed to an adapter or
+    /// wrapper screen that only matters once something proves the type
+    /// a future or its pointee interesting.
+    fn is_own_record(&self) -> bool {
+        !self.polls.is_empty()
+            || self.coroutine_candidate
+            || self.resource.is_some()
+            || self.container.is_some()
+    }
 }
 
 pub(super) type SemanticSeeds = BTreeMap<BundleTypeId, Seed>;
@@ -64,36 +189,108 @@ pub(super) struct Library<'a> {
 pub(super) fn collect_semantic_seeds(
     em: &Emitter<'_>,
     polls: &BTreeMap<TypeId, BTreeSet<String>>,
+    poll_sources: &BTreeMap<TypeId, BTreeSet<PollSource>>,
     coroutines: &BTreeSet<TypeId>,
-    mut verdict: impl FnMut(TypeId) -> CompilerVerdict,
+    mut verdict: impl FnMut(TypeId, Reviewed) -> CompilerVerdict,
 ) -> SemanticSeeds {
     let mut seeds = SemanticSeeds::new();
-    for (raw, _) in em.emitted_named() {
-        let Some(ty) = em.bundle_id_of(raw) else {
+    let reader = em.reader;
+    let bundle_id = |raw: TypeId| em.bundle_id_of(raw);
+    for (raw, name) in em.emitted_named() {
+        let Some(ty) = bundle_id(raw) else {
             continue;
         };
-        let name = em
-            .reader
+        let canonical = reader
             .canonical_type(raw)
             .and_then(|t| t.name())
-            .map(|n| em.reader.strings.get(n))
+            .map(|n| reader.strings.get(n))
             .unwrap_or_default();
         let candidate =
-            coroutines.contains(&raw) || crate::bundle::names::is_coroutine_candidate(name);
+            coroutines.contains(&raw) || crate::bundle::names::is_coroutine_candidate(canonical);
         if candidate {
             let seed = seeds.entry(ty).or_default();
             seed.coroutine_candidate = true;
-            seed.compiler = Some(verdict(raw));
+            seed.compiler = Some(verdict(raw, Reviewed::Coroutine));
+        }
+        // The adapter and wrapper screens run on the shapes their names
+        // announce; the screen decides, the name only saves the walk.
+        if name.starts_with("core::pin::Pin<")
+            || name.starts_with("alloc::boxed::Box<")
+            || name.starts_with("&mut ")
+        {
+            if let Some(adapter) = adapters::std_adapter(reader, raw) {
+                let compiler = verdict(raw, Reviewed::StdAdapters);
+                let mut pointee = |pointee: Pointee| -> Option<PointeeSeed> {
+                    Some(match pointee {
+                        Pointee::Sized(f) => PointeeSeed::Sized(bundle_id(f)?),
+                        Pointee::Dyn(w) => PointeeSeed::Dyn(DynSeed {
+                            abi: verdict(w.wide, Reviewed::DynFutureAbi),
+                            wide: bundle_id(w.wide)?,
+                            pointer: w.pointer,
+                            vtable: w.vtable,
+                            data_ptr: bundle_id(w.data_ptr)?,
+                            vtable_ptr: bundle_id(w.vtable_ptr)?,
+                            trait_ty: bundle_id(w.trait_ty)?,
+                        }),
+                    })
+                };
+                let seed = match adapter {
+                    StdAdapter::Box(p) => pointee(p).map(|pointee| AdapterSeed {
+                        kind: AdapterKind::Box,
+                        pin: None,
+                        pointee,
+                        compiler,
+                    }),
+                    StdAdapter::MutRef(p) => pointee(p).map(|pointee| AdapterSeed {
+                        kind: AdapterKind::MutRef,
+                        pin: None,
+                        pointee,
+                        compiler,
+                    }),
+                    StdAdapter::PinBox {
+                        member,
+                        boxed,
+                        pointee: p,
+                    } => pointee(p)
+                        .zip(bundle_id(boxed))
+                        .map(|(pointee, boxed)| AdapterSeed {
+                            kind: AdapterKind::PinBox,
+                            pin: Some((member, boxed)),
+                            pointee,
+                            compiler,
+                        }),
+                    StdAdapter::PinMutRef {
+                        member,
+                        reference,
+                        pointee: p,
+                    } => pointee(p)
+                        .zip(bundle_id(reference))
+                        .map(|(pointee, reference)| AdapterSeed {
+                            kind: AdapterKind::PinMutRef,
+                            pin: Some((member, reference)),
+                            pointee,
+                            compiler,
+                        }),
+                };
+                if let Some(seed) = seed {
+                    seeds.entry(ty).or_default().adapter = Some(seed);
+                }
+            }
+        } else if name.starts_with("tracing::instrument::Instrumented<")
+            && let Some(InstrumentedLayout { inner, future }) = adapters::instrumented(reader, raw)
+            && let Some(future) = bundle_id(future)
+        {
+            seeds.entry(ty).or_default().instrumented = Some(InstrumentedSeed { inner, future });
         }
     }
     for (raw, symbols) in polls {
         // Poll roots have already been emitted through the dynamic table.
-        if let Some(ty) = em.bundle_id_of(*raw) {
-            seeds
-                .entry(ty)
-                .or_default()
-                .polls
-                .extend(symbols.iter().cloned());
+        if let Some(ty) = bundle_id(*raw) {
+            let seed = seeds.entry(ty).or_default();
+            seed.polls.extend(symbols.iter().cloned());
+            if let Some(sources) = poll_sources.get(raw) {
+                seed.poll_sources.extend(sources.iter().cloned());
+            }
         }
     }
     seeds
@@ -184,22 +381,72 @@ fn bound_roots(
     roots.unwrap_or_default()
 }
 
-/// The origins and rules a bundle applied, interned on first use in a
-/// fixed kind order.
+/// A third-party delegation origin as the binder established it: the
+/// crate and version the declaration path spells, the family that
+/// version selected, the anchored path, and whatever checksums the file
+/// tables carried for the implementing file.
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
+struct DelegationOrigin {
+    package: &'static str,
+    version: String,
+    family: &'static str,
+    source: String,
+    files: Vec<(String, [u8; 16])>,
+}
+
+/// A rule as a plan names it, before ids exist: enough to intern the
+/// origin and the rule once each, in the order the records are emitted.
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
+enum RuleKey {
+    /// A tokio or futures-util layout rule under the bundle's one
+    /// origin for that library.
+    Library(SemanticRuleKind),
+    /// A compiler rule under the origin of one producer and one
+    /// reviewed family: two producers inside one range are two origins,
+    /// and two families over one producer are two as well.
+    Rustc {
+        kind: SemanticRuleKind,
+        producer: String,
+        family: &'static str,
+    },
+    Delegation {
+        kind: SemanticRuleKind,
+        origin: DelegationOrigin,
+    },
+}
+
+/// The origins and rules a bundle applied, interned on first use in
+/// record order.
 struct Rules {
     origins: Vec<SemanticOrigin>,
     rules: Vec<SemanticRule>,
-    by_kind: Vec<(SemanticRuleKind, SemanticRuleId)>,
+    by_key: BTreeMap<RuleKey, SemanticRuleId>,
     tokio: Option<SemanticOriginId>,
     futures_util: Option<SemanticOriginId>,
-    /// Compiler origins by producer string, and the rules under each:
-    /// two producers inside one reviewed range are two origins.
-    rustc: Vec<(String, SemanticOriginId)>,
-    rustc_rules: Vec<(SemanticRuleKind, SemanticOriginId, SemanticRuleId)>,
+    rustc: BTreeMap<(String, &'static str), SemanticOriginId>,
+    delegation: BTreeMap<DelegationOrigin, SemanticOriginId>,
 }
 
 impl Rules {
-    fn origin(
+    fn new() -> Self {
+        Rules {
+            origins: Vec::new(),
+            rules: Vec::new(),
+            by_key: BTreeMap::new(),
+            tokio: None,
+            futures_util: None,
+            rustc: BTreeMap::new(),
+            delegation: BTreeMap::new(),
+        }
+    }
+
+    fn push_origin(&mut self, origin: SemanticOrigin) -> SemanticOriginId {
+        let id = SemanticOriginId(u32::try_from(self.origins.len()).expect("origin overflow"));
+        self.origins.push(origin);
+        id
+    }
+
+    fn library_origin(
         &mut self,
         kind: SemanticRuleKind,
         strings: &mut StringInterner,
@@ -236,64 +483,188 @@ impl Rules {
         id
     }
 
-    /// The rule of a compiler kind under the origin of one producer,
-    /// interned on first use.
-    fn rustc_rule(
-        &mut self,
-        kind: SemanticRuleKind,
-        producer: &str,
-        convention: &RustcConvention,
-        strings: &mut StringInterner,
-    ) -> SemanticRuleId {
-        let origin = match self.rustc.iter().find(|(p, _)| p == producer) {
-            Some((_, id)) => *id,
-            None => {
-                let id =
-                    SemanticOriginId(u32::try_from(self.origins.len()).expect("origin overflow"));
-                self.origins.push(SemanticOrigin::Rustc {
-                    producer: strings.intern(producer),
-                    family: strings.intern(convention.family),
-                });
-                self.rustc.push((producer.to_owned(), id));
-                id
-            }
-        };
-        if let Some((_, _, id)) = self
-            .rustc_rules
-            .iter()
-            .find(|(k, o, _)| *k == kind && *o == origin)
-        {
-            return *id;
-        }
-        let id = SemanticRuleId(u32::try_from(self.rules.len()).expect("rule overflow"));
-        self.rules.push(SemanticRule {
-            kind,
-            revision: 1,
-            origin,
-        });
-        self.rustc_rules.push((kind, origin, id));
-        id
-    }
-
+    /// The rule a key names, interned on first use with its origin.
     fn rule(
         &mut self,
-        kind: SemanticRuleKind,
+        key: &RuleKey,
         strings: &mut StringInterner,
         library: &Library<'_>,
     ) -> SemanticRuleId {
-        if let Some((_, id)) = self.by_kind.iter().find(|(k, _)| *k == kind) {
+        if let Some(id) = self.by_key.get(key) {
             return *id;
         }
-        let origin = self.origin(kind, strings, library);
+        let (kind, origin) = match key {
+            RuleKey::Library(kind) => (*kind, self.library_origin(*kind, strings, library)),
+            RuleKey::Rustc {
+                kind,
+                producer,
+                family,
+            } => {
+                let origin = match self.rustc.get(&(producer.clone(), *family)) {
+                    Some(id) => *id,
+                    None => {
+                        let id = self.push_origin(SemanticOrigin::Rustc {
+                            producer: strings.intern(producer),
+                            family: strings.intern(family),
+                        });
+                        self.rustc.insert((producer.clone(), family), id);
+                        id
+                    }
+                };
+                (*kind, origin)
+            }
+            RuleKey::Delegation { kind, origin } => {
+                let id = match self.delegation.get(origin) {
+                    Some(id) => *id,
+                    None => {
+                        let id = self.push_origin(SemanticOrigin::LibraryDelegation {
+                            package: strings.intern(origin.package),
+                            version: strings.intern(&origin.version),
+                            family: strings.intern(origin.family),
+                            source: strings.intern(&origin.source),
+                            files: origin
+                                .files
+                                .iter()
+                                .map(|(file, md5)| SourceFileEvidence {
+                                    file: strings.intern(file),
+                                    md5: *md5,
+                                })
+                                .collect(),
+                        });
+                        self.delegation.insert(origin.clone(), id);
+                        id
+                    }
+                };
+                (*kind, id)
+            }
+        };
         let id = SemanticRuleId(u32::try_from(self.rules.len()).expect("rule overflow"));
         self.rules.push(SemanticRule {
             kind,
             revision: 1,
             origin,
         });
-        self.by_kind.push((kind, id));
+        self.by_key.insert(key.clone(), id);
         id
     }
+}
+
+/// Where a planned delegation lands, before the dyn ABI rule has an id.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Target {
+    Value(TypedPath),
+    Dynamic {
+        pointer: TypedPath,
+        data: TypedPath,
+        vtable: TypedPath,
+        trait_ty: BundleTypeId,
+        abi: RuleKey,
+    },
+}
+
+impl Target {
+    /// The static type a delegation proves a future, if it names one.
+    fn static_child(&self) -> Option<BundleTypeId> {
+        match self {
+            Target::Value(path) => Some(path.target),
+            Target::Dynamic { .. } => None,
+        }
+    }
+
+    fn into_future_target(
+        self,
+        rules: &mut Rules,
+        strings: &mut StringInterner,
+        library: &Library<'_>,
+    ) -> FutureTarget {
+        match self {
+            Target::Value(path) => FutureTarget::Value(path),
+            Target::Dynamic {
+                pointer,
+                data,
+                vtable,
+                trait_ty,
+                abi,
+            } => FutureTarget::Dynamic {
+                pointer,
+                layout: DynFutureLayout {
+                    abi: rules.rule(&abi, strings, library),
+                    data,
+                    vtable,
+                    trait_ty,
+                    drop_slot: 0,
+                    size_slot: 1,
+                    align_slot: 2,
+                    poll_slot: 3,
+                },
+            },
+        }
+    }
+}
+
+/// One coroutine state's planned action.
+#[derive(Clone, Debug)]
+enum CaseAction {
+    Unresumed,
+    Returned,
+    Panicked,
+    Delegate(Box<Target>),
+    Unknown(SemanticIssue),
+}
+
+/// A program as planned: its rule, and either one action or a case per
+/// coroutine state. Every path in it has been held to the validator's
+/// rule over the final table already.
+#[derive(Clone, Debug)]
+struct Plan {
+    rule: RuleKey,
+    program: Delegation,
+    /// The storage access the same route establishes, for an adapter.
+    access: Option<(RuleKey, AccessKind, Target)>,
+}
+
+#[derive(Clone, Debug)]
+enum Delegation {
+    Direct { target: Target, exclusive: bool },
+    Coroutine { cases: Vec<(StrRef, CaseAction)> },
+}
+
+impl Plan {
+    fn static_children(&self) -> Vec<BundleTypeId> {
+        match &self.program {
+            Delegation::Direct { target, .. } => target.static_child().into_iter().collect(),
+            Delegation::Coroutine { cases } => cases
+                .iter()
+                .filter_map(|(_, action)| match action {
+                    CaseAction::Delegate(target) => target.static_child(),
+                    _ => None,
+                })
+                .collect(),
+        }
+    }
+}
+
+type Decline = (SemanticIssueKind, String);
+
+/// A record in the making: everything decided about one type before the
+/// rules are numbered.
+#[derive(Default)]
+struct Draft {
+    storage: Option<StoragePolicy>,
+    coroutine: Option<CoroutineLayout>,
+    coroutine_rule: Option<RuleKey>,
+    issues: Vec<Decline>,
+    evidence: BTreeSet<FutureEvidence>,
+    resource: Option<ResourceKind>,
+    container: Option<ContainerKind>,
+    plan: Option<Plan>,
+    /// Why no program was planned, when a reviewed shape was screened
+    /// and declined: the continuation's reason, over the bare `NoRule`.
+    decline: Option<Decline>,
+    /// The type an adapter's storage leads to, for deciding whether an
+    /// adapter with no future evidence still earns a record.
+    pointee: Option<BundleTypeId>,
+    own_record: bool,
 }
 
 /// Run after type demotion and coroutine member pruning, while strings can
@@ -309,22 +680,15 @@ pub(super) fn bind_semantics(
     tasks: &mut [TaskFutureEntry],
     library: &Library<'_>,
 ) -> SemanticTable {
-    let mut rules = Rules {
-        origins: Vec::new(),
-        rules: Vec::new(),
-        by_kind: Vec::new(),
-        tokio: None,
-        futures_util: None,
-        rustc: Vec::new(),
-        rustc_rules: Vec::new(),
-    };
-    let mut task_evidence: BTreeMap<_, Vec<_>> = BTreeMap::new();
+    let mut rules = Rules::new();
+    let mut drafts: BTreeMap<BundleTypeId, Draft> = BTreeMap::new();
     for (i, task) in tasks.iter().enumerate() {
         seeds.entry(task.future).or_default();
-        task_evidence
+        drafts
             .entry(task.future)
             .or_default()
-            .push(FutureEvidence::TaskEntry(TaskEntryId(
+            .evidence
+            .insert(FutureEvidence::TaskEntry(TaskEntryId(
                 u32::try_from(i).expect("task table overflow"),
             )));
     }
@@ -342,84 +706,270 @@ pub(super) fn bind_semantics(
             seeds.entry(ty).or_default().container = Some(kind);
         }
     }
-    let issue = |kind| SemanticIssue { kind, detail: None };
-    let mut records = Vec::with_capacity(seeds.len());
-    for (ty, seed) in seeds {
-        let mut evidence = task_evidence.remove(&ty).unwrap_or_default();
-        evidence.extend(
-            seed.polls
-                .iter()
-                .map(|symbol| FutureEvidence::PollSymbol(strings.intern(symbol))),
-        );
-        let mut issues = Vec::new();
-        let mut coroutine = None;
+
+    // Phase A: decide storage, layout and the candidate program of every
+    // seed, without numbering anything.
+    for (&ty, seed) in &seeds {
+        let draft = drafts.entry(ty).or_default();
+        draft.own_record = seed.is_own_record() || !draft.evidence.is_empty();
+        for symbol in &seed.polls {
+            draft
+                .evidence
+                .insert(FutureEvidence::PollSymbol(strings.intern(symbol)));
+        }
         let storage = if seed.coroutine_candidate {
             // A compiler candidate reads its states only under a reviewed
             // convention that its every defining unit supports and whose
             // shape this enum then actually has; anything less leaves the
             // storage unavailable, with the reason beside it.
-            match bind_coroutine(ty, &seed, types, names, strings, &mut rules) {
+            match bind_coroutine(ty, seed, types, names, strings) {
                 Ok((rule, layout)) => {
-                    evidence.push(FutureEvidence::Coroutine(rule));
-                    coroutine = Some(layout);
+                    draft.plan = Some(coroutine_plan(ty, &rule, &layout, types, strings));
+                    draft.coroutine = Some(layout);
+                    draft.coroutine_rule = Some(rule);
                     StoragePolicy::CoroutineStates
                 }
-                Err((kind, detail)) => {
-                    let detail = strings.intern(&detail);
-                    issues.push(SemanticIssue {
-                        kind,
-                        detail: Some(detail),
-                    });
+                Err(decline) => {
+                    draft.issues.push(decline.clone());
                     StoragePolicy::Unavailable(SemanticIssue {
-                        kind,
-                        detail: Some(detail),
+                        kind: decline.0,
+                        detail: Some(strings.intern(&decline.1)),
                     })
                 }
             }
         } else if matches!(types.get(ty), Some(TypeDef::Opaque { .. })) {
-            StoragePolicy::Unavailable(issue(SemanticIssueKind::MissingLayout))
+            StoragePolicy::Unavailable(SemanticIssue {
+                kind: SemanticIssueKind::MissingLayout,
+                detail: None,
+            })
         } else {
             StoragePolicy::DeclaredMembers
         };
-        evidence.sort();
-        evidence.dedup();
         // A capability needs readable storage; a route cannot have bound
         // at a type without it, so this only guards the record's shape.
         let readable = matches!(storage, StoragePolicy::DeclaredMembers);
-        let resource = seed.resource.filter(|_| readable).map(|kind| {
+        draft.resource = seed.resource.filter(|_| readable);
+        draft.container = seed.container.filter(|_| readable);
+        if readable && draft.plan.is_none() {
+            if let Some(adapter) = &seed.adapter {
+                match plan_adapter(ty, adapter, types, strings) {
+                    Ok(plan) => {
+                        draft.pointee = adapter_pointee(adapter);
+                        draft.plan = Some(plan);
+                    }
+                    Err(decline) => draft.decline = Some(decline),
+                }
+            } else if let Some(instrumented) = &seed.instrumented {
+                match plan_instrumented(ty, instrumented, seed, types, names, strings) {
+                    Ok(plan) => draft.plan = Some(plan),
+                    Err(decline) => draft.decline = Some(decline),
+                }
+            }
+        }
+        draft.storage = Some(storage);
+    }
+
+    // Phase B: the least fixed point over the bound delegations. A type
+    // with positive evidence and a planned program proves each static
+    // delegate a future; a delegate so proved runs its own plan, if it
+    // has one. An adapter with no evidence proves nothing.
+    let mut queue: VecDeque<BundleTypeId> = drafts
+        .iter()
+        .filter(|(_, d)| !d.evidence.is_empty() && d.plan.is_some())
+        .map(|(&ty, _)| ty)
+        .collect();
+    while let Some(parent) = queue.pop_front() {
+        let children = drafts[&parent]
+            .plan
+            .as_ref()
+            .map(Plan::static_children)
+            .unwrap_or_default();
+        for child in children {
+            let draft = drafts.entry(child).or_default();
+            let was_future = !draft.evidence.is_empty();
+            draft
+                .evidence
+                .insert(FutureEvidence::DelegatedBy { parent });
+            if !was_future && draft.plan.is_some() {
+                queue.push_back(child);
+            }
+        }
+    }
+
+    // Phase C: which drafts become records. A seed with identity,
+    // storage or a library binding always does; a future does; an
+    // adapter whose storage leads to a record does, so that discovery
+    // can follow the owned route to it.
+    let mut included: BTreeSet<BundleTypeId> = drafts
+        .iter()
+        .filter(|(_, d)| d.own_record || !d.evidence.is_empty())
+        .map(|(&ty, _)| ty)
+        .collect();
+    loop {
+        let more: Vec<BundleTypeId> = drafts
+            .iter()
+            .filter(|(ty, d)| {
+                !included.contains(ty)
+                    && d.plan.as_ref().is_some_and(|p| p.access.is_some())
+                    && d.pointee.is_some_and(|p| included.contains(&p))
+            })
+            .map(|(&ty, _)| ty)
+            .collect();
+        if more.is_empty() {
+            break;
+        }
+        included.extend(more);
+    }
+
+    // Phase D: number the rules in record order and emit.
+    let issue = |kind| SemanticIssue { kind, detail: None };
+    let mut records = Vec::with_capacity(included.len());
+    for ty in included {
+        let draft = drafts.remove(&ty).expect("included drafts exist");
+        let storage = draft.storage.unwrap_or_else(|| {
+            // A type that entered through a delegation alone: its storage
+            // is whatever its layout says, like any other seed.
+            if matches!(types.get(ty), Some(TypeDef::Opaque { .. })) {
+                StoragePolicy::Unavailable(issue(SemanticIssueKind::MissingLayout))
+            } else if names
+                .get(ty.0 as usize)
+                .and_then(|n| n.as_deref())
+                .is_some_and(crate::bundle::names::is_coroutine_candidate)
+            {
+                StoragePolicy::Unavailable(SemanticIssue {
+                    kind: SemanticIssueKind::UnsupportedOrigin,
+                    detail: Some(strings.intern("no defining unit recorded")),
+                })
+            } else {
+                StoragePolicy::DeclaredMembers
+            }
+        });
+        let readable = matches!(storage, StoragePolicy::DeclaredMembers);
+        let resource = draft.resource.map(|kind| {
             let rule_kind = RESOURCE_KINDS
                 .iter()
                 .find(|(k, _)| *k == kind)
                 .map(|(_, rule)| *rule)
                 .expect("every resource kind has a rule");
             ResourceBinding {
-                rule: rules.rule(rule_kind, strings, library),
+                rule: rules.rule(&RuleKey::Library(rule_kind), strings, library),
                 kind,
                 state_rule: None,
                 exclusive_pending: false,
             }
         });
-        let container = seed.container.filter(|_| readable).map(|kind| {
+        let container = draft.container.map(|kind| {
             let rule_kind = CONTAINER_KINDS
                 .iter()
                 .find(|(k, _)| *k == kind)
                 .map(|(_, rule)| *rule)
                 .expect("every container kind has a rule");
             ContainerBinding {
-                rule: rules.rule(rule_kind, strings, library),
+                rule: rules.rule(&RuleKey::Library(rule_kind), strings, library),
                 kind,
             }
         });
+        let coroutine = draft.coroutine.map(|layout| CoroutineLayout {
+            rule: rules.rule(
+                draft
+                    .coroutine_rule
+                    .as_ref()
+                    .expect("a coroutine layout has its rule"),
+                strings,
+                library,
+            ),
+            states: layout.states,
+        });
+        let mut evidence: Vec<FutureEvidence> = draft.evidence.into_iter().collect();
+        if let Some(layout) = &coroutine {
+            evidence.push(FutureEvidence::Coroutine(layout.rule));
+            evidence.sort();
+        }
+        let mut issues: Vec<SemanticIssue> = draft
+            .issues
+            .iter()
+            .map(|(kind, detail)| SemanticIssue {
+                kind: *kind,
+                detail: Some(strings.intern(detail)),
+            })
+            .collect();
+        let mut access = None;
+        // A program is a fact about polling, so it needs a future to be
+        // about: an adapter nothing proves a future keeps its storage
+        // access and no continuation, and numbers no poll rule.
+        let program = match draft.plan.filter(|_| readable || coroutine.is_some()) {
+            Some(plan) => {
+                if let Some((access_rule, kind, target)) = plan.access {
+                    access = Some(AccessBinding {
+                        rule: rules.rule(&access_rule, strings, library),
+                        kind,
+                        target: target.into_future_target(&mut rules, strings, library),
+                    });
+                }
+                if evidence.is_empty() {
+                    None
+                } else {
+                    let rule = rules.rule(&plan.rule, strings, library);
+                    let program = match plan.program {
+                        Delegation::Direct { target, exclusive } => {
+                            PollProgram::Direct(PollAction::Delegate {
+                                target: target.into_future_target(&mut rules, strings, library),
+                                exclusive,
+                            })
+                        }
+                        Delegation::Coroutine { cases } => PollProgram::MatchVariant {
+                            state: TypedPath {
+                                steps: Vec::new(),
+                                target: ty,
+                            },
+                            cases: cases
+                                .into_iter()
+                                .map(|(variant, action)| PollCase {
+                                    variant,
+                                    action: match action {
+                                        CaseAction::Unresumed => PollAction::Unresumed,
+                                        CaseAction::Returned => PollAction::Returned,
+                                        CaseAction::Panicked => PollAction::Panicked,
+                                        CaseAction::Delegate(target) => PollAction::Delegate {
+                                            target: target
+                                                .into_future_target(&mut rules, strings, library),
+                                            exclusive: true,
+                                        },
+                                        CaseAction::Unknown(issue) => PollAction::Unknown(issue),
+                                    },
+                                })
+                                .collect(),
+                        },
+                    };
+                    Some((rule, program))
+                }
+            }
+            None => None,
+        };
         // A resource that is positively a future polls its own state and
         // nothing else: its continuation is the primitive boundary. What
         // that state means — ready, pending, closed — is the state
         // rule's to say, and none is bound here.
-        let continuation = match &resource {
-            Some(resource) => Continuation::Bound {
+        let continuation = match (&resource, program) {
+            (Some(resource), _) => Continuation::Bound {
                 rule: resource.rule,
                 program: PollProgram::Direct(PollAction::Primitive),
             },
-            None => Continuation::Unknown(issue(SemanticIssueKind::NoRule)),
+            (None, Some((rule, program))) => Continuation::Bound { rule, program },
+            (None, None) => match &draft.decline {
+                Some((kind, detail)) => {
+                    let detail = strings.intern(detail);
+                    issues.push(SemanticIssue {
+                        kind: *kind,
+                        detail: Some(detail),
+                    });
+                    Continuation::Unknown(SemanticIssue {
+                        kind: *kind,
+                        detail: Some(detail),
+                    })
+                }
+                None => Continuation::Unknown(issue(SemanticIssueKind::NoRule)),
+            },
         };
         records.push(TypeSemantics {
             ty,
@@ -429,7 +979,7 @@ pub(super) fn bind_semantics(
                 continuation,
             }),
             coroutine,
-            access: None,
+            access,
             resource,
             container,
             issues,
@@ -445,7 +995,7 @@ pub(super) fn bind_semantics(
         task.scheduler_binding = match (classes.next(), classes.next()) {
             (Some((class, rule_kind)), None) => Some(SchedulerBinding {
                 class: *class,
-                rule: rules.rule(*rule_kind, strings, library),
+                rule: rules.rule(&RuleKey::Library(*rule_kind), strings, library),
             }),
             _ => None,
         };
@@ -454,6 +1004,416 @@ pub(super) fn bind_semantics(
         origins: rules.origins,
         rules: rules.rules,
         types: records,
+    }
+}
+
+fn adapter_pointee(adapter: &AdapterSeed) -> Option<BundleTypeId> {
+    match &adapter.pointee {
+        PointeeSeed::Sized(f) => Some(*f),
+        PointeeSeed::Dyn(_) => None,
+    }
+}
+
+/// Hold a planned path to the validator's own rule over the final table:
+/// named members only, in bounds, landing on exactly the type claimed.
+fn checked_path(
+    types: &TypeTable,
+    root: BundleTypeId,
+    steps: Vec<Step>,
+    target: BundleTypeId,
+) -> Result<TypedPath, Decline> {
+    match semantic_path_target(types, root, &Selector(steps.clone())) {
+        Ok(landed) if landed == target => Ok(TypedPath { steps, target }),
+        Ok(_) => Err((
+            SemanticIssueKind::MissingLayout,
+            "the route lands on another type than declared".to_owned(),
+        )),
+        Err(e) => Err((SemanticIssueKind::MissingLayout, e.to_string())),
+    }
+}
+
+/// The unique member of `ty` named `name`, with its type.
+fn member_named(
+    types: &TypeTable,
+    strings: &StringInterner,
+    ty: BundleTypeId,
+    name: &str,
+) -> Option<(StrRef, BundleTypeId, u64)> {
+    let mut found = members_of(types, ty)
+        .iter()
+        .filter(|m| strings.get(m.name) == Some(name));
+    let member = found.next()?;
+    found
+        .next()
+        .is_none()
+        .then_some((member.name, member.ty, member.offset))
+}
+
+fn supported(verdict: &CompilerVerdict) -> Result<(&str, &'static RustcConvention), Decline> {
+    match verdict {
+        CompilerVerdict::Supported {
+            producer,
+            convention,
+        } => Ok((producer, convention)),
+        CompilerVerdict::Declined(detail) => {
+            Err((SemanticIssueKind::UnsupportedOrigin, detail.clone()))
+        }
+    }
+}
+
+/// Plan a std adapter's delegation: the compiler verdict on its
+/// defining units, then the route the screen described held to the
+/// final table — the `Pin` member that is its `Ptr`, the thin pointer
+/// whose pointee is the declared `F`, or the wide pointer whose data
+/// and vtable words are where the screen found them.
+fn plan_adapter(
+    ty: BundleTypeId,
+    adapter: &AdapterSeed,
+    types: &TypeTable,
+    strings: &mut StringInterner,
+) -> Result<Plan, Decline> {
+    let (producer, convention) = supported(&adapter.compiler)?;
+    let rule = |kind| RuleKey::Rustc {
+        kind,
+        producer: producer.to_owned(),
+        family: convention.family,
+    };
+    let mut steps = Vec::new();
+    let mut current = ty;
+    if let Some((member, ptr)) = &adapter.pin {
+        let Some(TypeDef::Struct { members, .. }) = types.get(ty) else {
+            return Err((
+                SemanticIssueKind::MissingLayout,
+                "Pin is not a struct in the final table".to_owned(),
+            ));
+        };
+        let (name, member_ty, offset) = member_named(types, strings, ty, member).ok_or((
+            SemanticIssueKind::AmbiguousLayout,
+            format!("Pin has no unique member {member:?}"),
+        ))?;
+        if members.len() != 1 || member_ty != *ptr || offset != 0 {
+            return Err((
+                SemanticIssueKind::MissingLayout,
+                "Pin's member is not its declared pointer".to_owned(),
+            ));
+        }
+        steps.push(Step::Member(MemberRef::Named(name)));
+        current = *ptr;
+    }
+    let target = match &adapter.pointee {
+        PointeeSeed::Sized(f) => {
+            if !matches!(types.get(current), Some(TypeDef::Pointer { target, .. }) if target == f) {
+                return Err((
+                    SemanticIssueKind::MissingLayout,
+                    "the adapter's pointer does not target its declared future".to_owned(),
+                ));
+            }
+            steps.push(Step::Deref);
+            Target::Value(checked_path(types, ty, steps, *f)?)
+        }
+        PointeeSeed::Dyn(d) => {
+            let (abi_producer, abi) = supported(&d.abi)?;
+            if current != d.wide {
+                return Err((
+                    SemanticIssueKind::MissingLayout,
+                    "the adapter's wide pointer is not the one screened".to_owned(),
+                ));
+            }
+            let (pointer, data_ptr, _) =
+                member_named(types, strings, d.wide, &d.pointer).ok_or((
+                    SemanticIssueKind::AmbiguousLayout,
+                    "no unique data pointer member".to_owned(),
+                ))?;
+            let (vtable, vtable_ptr, _) =
+                member_named(types, strings, d.wide, &d.vtable).ok_or((
+                    SemanticIssueKind::AmbiguousLayout,
+                    "no unique vtable member".to_owned(),
+                ))?;
+            let wide_shape = data_ptr == d.data_ptr
+                && vtable_ptr == d.vtable_ptr
+                && matches!(types.get(d.data_ptr), Some(TypeDef::Pointer { target, .. }) if *target == d.trait_ty)
+                && matches!(
+                    types.get(d.trait_ty),
+                    Some(TypeDef::Struct { size: 0, members, .. }) if members.is_empty()
+                )
+                && types.size_of(d.data_ptr) == Some(crate::bundle::POINTER_SIZE)
+                && types.size_of(d.vtable_ptr) == Some(crate::bundle::POINTER_SIZE);
+            if !wide_shape {
+                return Err((
+                    SemanticIssueKind::MissingLayout,
+                    "the wide pointer's words or trait object moved in the final table".to_owned(),
+                ));
+            }
+            Target::Dynamic {
+                pointer: checked_path(types, ty, steps, d.wide)?,
+                data: checked_path(
+                    types,
+                    d.wide,
+                    vec![Step::Member(MemberRef::Named(pointer))],
+                    d.data_ptr,
+                )?,
+                vtable: checked_path(
+                    types,
+                    d.wide,
+                    vec![Step::Member(MemberRef::Named(vtable))],
+                    d.vtable_ptr,
+                )?,
+                trait_ty: d.trait_ty,
+                abi: RuleKey::Rustc {
+                    kind: SemanticRuleKind::DynFutureAbi,
+                    producer: abi_producer.to_owned(),
+                    family: abi.family,
+                },
+            }
+        }
+    };
+    Ok(Plan {
+        rule: rule(adapter.kind.poll_rule()),
+        access: Some((
+            rule(adapter.kind.access_rule()),
+            adapter.kind.access(),
+            target.clone(),
+        )),
+        program: Delegation::Direct {
+            target,
+            exclusive: true,
+        },
+    })
+}
+
+/// Plan `Instrumented<F>`'s delegation: the origin first — every
+/// declaration of its `poll` on a cargo registry path naming `tracing`
+/// at one version inside the reviewed range, any checksum the file
+/// tables carried among the reviewed revisions — then the storage
+/// route, `inner` and whatever std wrappers hold `F` inside it, held to
+/// the final table. The forwarded poll runs the span's subscriber
+/// callbacks around it, so the delegation is not exclusive.
+fn plan_instrumented(
+    ty: BundleTypeId,
+    layout: &InstrumentedSeed,
+    seed: &Seed,
+    types: &TypeTable,
+    names: &[Option<String>],
+    strings: &mut StringInterner,
+) -> Result<Plan, Decline> {
+    let origin = instrumented_origin(&seed.poll_sources)?;
+    let (name, inner_ty, _) = member_named(types, strings, ty, &layout.inner).ok_or((
+        SemanticIssueKind::AmbiguousLayout,
+        format!("Instrumented has no unique member {:?}", layout.inner),
+    ))?;
+    let mut steps = vec![Step::Member(MemberRef::Named(name))];
+    let mut current = inner_ty;
+    // `inner` is `ManuallyDrop<F>`, which std currently lays out as
+    // `{ value: MaybeDangling<F> }` over `{ __0: F }`: each a transparent
+    // wrapper with one member at offset zero, entered by name, and
+    // nothing else is.
+    const WRAPPERS: [&str; 2] = [
+        "core::mem::manually_drop::ManuallyDrop<",
+        "core::mem::maybe_dangling::MaybeDangling<",
+    ];
+    for _ in 0..WRAPPERS.len() {
+        if current == layout.future {
+            break;
+        }
+        let name = names
+            .get(current.0 as usize)
+            .and_then(|n| n.as_deref())
+            .unwrap_or_default();
+        if !WRAPPERS.iter().any(|w| name.starts_with(w)) {
+            return Err((
+                SemanticIssueKind::MissingLayout,
+                format!("inner holds {name:?}, not a reviewed std wrapper of the future"),
+            ));
+        }
+        let [member] = members_of(types, current) else {
+            return Err((
+                SemanticIssueKind::MissingLayout,
+                format!("{name} is not a one-member wrapper"),
+            ));
+        };
+        if member.offset != 0 {
+            return Err((
+                SemanticIssueKind::MissingLayout,
+                format!("{name}'s member is not at offset zero"),
+            ));
+        }
+        steps.push(Step::Member(MemberRef::Named(member.name)));
+        current = member.ty;
+    }
+    if current != layout.future {
+        return Err((
+            SemanticIssueKind::MissingLayout,
+            "inner does not reach the declared future through reviewed wrappers".to_owned(),
+        ));
+    }
+    let path = checked_path(types, ty, steps, layout.future)?;
+    Ok(Plan {
+        rule: RuleKey::Delegation {
+            kind: SemanticRuleKind::TracingInstrumented,
+            origin,
+        },
+        program: Delegation::Direct {
+            target: Target::Value(path),
+            exclusive: false,
+        },
+        access: None,
+    })
+}
+
+/// The origin an `Instrumented` instantiation's poll declarations
+/// establish. Every declaration has to lie on a cargo registry path
+/// naming `tracing`; they have to agree on one such path; its version
+/// has to fall inside the reviewed range; and a checksum, where a file
+/// table carried one, has to be a reviewed revision. No declaration at
+/// all is no origin: the implementation may be inlined away, but then
+/// nothing says which one it was.
+fn instrumented_origin(sources: &BTreeSet<PollSource>) -> Result<DelegationOrigin, Decline> {
+    let decline = |detail: String| (SemanticIssueKind::UnsupportedOrigin, detail);
+    if sources.is_empty() {
+        return Err(decline(
+            "no poll declaration records where this instantiation's implementation lives"
+                .to_owned(),
+        ));
+    }
+    let mut agreed: Option<(String, semver::Version)> = None;
+    let mut files: Vec<(String, [u8; 16])> = Vec::new();
+    for source in sources {
+        let Some(origin) = registry_origin(&source.path) else {
+            return Err(decline(format!(
+                "declared in {}, which is not a cargo registry path",
+                source.path
+            )));
+        };
+        if origin.package != "tracing" {
+            return Err(decline(format!(
+                "declared in {}, which is not the tracing crate",
+                source.path
+            )));
+        }
+        match &agreed {
+            Some((path, _)) if path != origin.path => {
+                return Err(decline(format!(
+                    "declared in both {path} and {}",
+                    origin.path
+                )));
+            }
+            Some(_) => {}
+            None => agreed = Some((origin.path.to_owned(), origin.version)),
+        }
+        if let Some(md5) = source.md5 {
+            files.push((origin.path.to_owned(), md5));
+        }
+    }
+    let (source, version) = agreed.expect("at least one source");
+    let convention = match tracing_instrumented_convention(&version) {
+        Ok(convention) => convention,
+        Err(side) => {
+            let side = match side {
+                LayoutSelection::BelowFloor => "below",
+                _ => "above",
+            };
+            return Err(decline(format!(
+                "tracing {version} is {side} the reviewed range {}",
+                crate::detect::semantics::TRACING_INSTRUMENTED_V0_1_40.range()
+            )));
+        }
+    };
+    files.sort();
+    files.dedup();
+    for (file, md5) in &files {
+        if !convention.reviewed_checksum(md5) {
+            return Err(decline(format!(
+                "{file} has checksum {}, not a reviewed revision of {}",
+                hex(md5),
+                convention.family
+            )));
+        }
+    }
+    Ok(DelegationOrigin {
+        package: convention.package,
+        version: version.to_string(),
+        family: convention.family,
+        source,
+        files,
+    })
+}
+
+fn hex(md5: &[u8; 16]) -> String {
+    md5.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// The program a bound coroutine layout spells: one case per state, a
+/// suspended state delegating to its `__awaitee` — the one member the
+/// convention names as the future being awaited — and to nothing else.
+/// A suspended state without one keeps an unknown case: the layout is
+/// still read, the continuation not guessed.
+fn coroutine_plan(
+    ty: BundleTypeId,
+    rule: &RuleKey,
+    layout: &CoroutineLayout,
+    types: &TypeTable,
+    strings: &mut StringInterner,
+) -> Plan {
+    let awaitee = strings.intern("__awaitee");
+    let Some(TypeDef::Enum { shape, .. }) = types.get(ty) else {
+        unreachable!("a bound coroutine is an enum");
+    };
+    let cases = layout
+        .states
+        .iter()
+        .map(|state| {
+            let action = match state.stage {
+                CoroutinePhase::Unresumed => CaseAction::Unresumed,
+                CoroutinePhase::Returned => CaseAction::Returned,
+                CoroutinePhase::Panicked => CaseAction::Panicked,
+                CoroutinePhase::Unknown => CaseAction::Unknown(SemanticIssue {
+                    kind: SemanticIssueKind::UnsupportedState,
+                    detail: None,
+                }),
+                CoroutinePhase::Suspended => {
+                    let payload = shape
+                        .variants
+                        .iter()
+                        .find(|v| v.name == state.variant)
+                        .map(|v| v.payload.ty);
+                    let member = payload.and_then(|payload| {
+                        let mut found = members_of(types, payload)
+                            .iter()
+                            .filter(|m| m.name == awaitee);
+                        let member = found.next()?;
+                        (found.next().is_none() && state.locals.contains(&awaitee))
+                            .then_some(member.ty)
+                    });
+                    match member {
+                        Some(target) => match checked_path(
+                            types,
+                            ty,
+                            vec![
+                                Step::Variant(state.variant),
+                                Step::Member(MemberRef::Named(awaitee)),
+                            ],
+                            target,
+                        ) {
+                            Ok(path) => CaseAction::Delegate(Box::new(Target::Value(path))),
+                            Err((kind, detail)) => CaseAction::Unknown(SemanticIssue {
+                                kind,
+                                detail: Some(strings.intern(&detail)),
+                            }),
+                        },
+                        None => CaseAction::Unknown(SemanticIssue {
+                            kind: SemanticIssueKind::MissingLayout,
+                            detail: Some(strings.intern("the suspended state lists no __awaitee")),
+                        }),
+                    }
+                }
+            };
+            (state.variant, action)
+        })
+        .collect();
+    Plan {
+        rule: rule.clone(),
+        program: Delegation::Coroutine { cases },
+        access: None,
     }
 }
 
@@ -467,8 +1427,6 @@ fn expected_state(index: usize) -> (CoroutinePhase, String) {
         n => (CoroutinePhase::Suspended, format!("Suspend{}", n - 3)),
     }
 }
-
-type Decline = (SemanticIssueKind, String);
 
 /// Bind a compiler candidate's states under its reviewed convention, or
 /// say why not. The verdict on its defining units comes first; the enum
@@ -484,8 +1442,7 @@ fn bind_coroutine(
     types: &TypeTable,
     names: &[Option<String>],
     strings: &mut StringInterner,
-    rules: &mut Rules,
-) -> Result<(SemanticRuleId, CoroutineLayout), Decline> {
+) -> Result<(RuleKey, CoroutineLayout), Decline> {
     let (producer, convention) = match &seed.compiler {
         Some(CompilerVerdict::Supported {
             producer,
@@ -522,8 +1479,19 @@ fn bind_coroutine(
         names,
         strings,
     )?;
-    let rule = rules.rustc_rule(kind, producer, convention, strings);
-    Ok((rule, CoroutineLayout { rule, states }))
+    let rule = RuleKey::Rustc {
+        kind,
+        producer: producer.clone(),
+        family: convention.family,
+    };
+    Ok((
+        rule,
+        CoroutineLayout {
+            // Numbered when the record is emitted.
+            rule: SemanticRuleId(u32::MAX),
+            states,
+        },
+    ))
 }
 
 /// Hold the final enum to the convention's shape and class each state's
@@ -627,6 +1595,7 @@ fn coroutine_states(
 mod tests {
     use super::*;
     use crate::bundle::{MemberDef, VariantDef, VariantShape, WalkBinding};
+    use crate::detect::semantics::{RUSTC_DYN_FUTURE_ABI_V1_97, RUSTC_STD_ADAPTERS_V1_97};
 
     fn binding(roots: &[u32], bound: bool) -> WalkBinding {
         WalkBinding {
@@ -912,5 +1881,760 @@ mod tests {
             size: Some(32),
         };
         assert_eq!(decline(&e), SemanticIssueKind::MissingLayout);
+    }
+
+    const PRODUCER: &str = "clang LLVM (rustc version 1.98.0 (88d9e12ae 2026-08-18))";
+
+    fn supported(convention: &'static RustcConvention) -> CompilerVerdict {
+        CompilerVerdict::Supported {
+            producer: PRODUCER.to_owned(),
+            convention,
+        }
+    }
+
+    /// A final type table with a future `app::Fut` (id 1), a `dyn Future`
+    /// (2) with its data (3) and vtable (5) pointers, a sized box (6), a
+    /// reference (7), a wide box (8), and `Pin`s over the box (9) and the
+    /// wide box (10).
+    struct Adapters {
+        types: TypeTable,
+        names: Vec<Option<String>>,
+        strings: StringInterner,
+    }
+
+    fn adapters() -> Adapters {
+        let mut strings = StringInterner::new();
+        let mut names = Vec::new();
+        let mut types = Vec::new();
+        let mut add = |name: &str, def: TypeDef| {
+            names.push(Some(name.to_owned()));
+            types.push(def);
+            BundleTypeId(types.len() as u32 - 1)
+        };
+        let usize_t = add(
+            "usize",
+            TypeDef::Base {
+                name: strings.intern("usize"),
+                size: 8,
+                encoding: crate::Encoding::Unsigned,
+            },
+        );
+        let fut = add(
+            "app::Fut",
+            TypeDef::Struct {
+                name: strings.intern("app::Fut"),
+                size: 16,
+                members: vec![MemberDef {
+                    name: strings.intern("state"),
+                    ty: usize_t,
+                    offset: 0,
+                }],
+            },
+        );
+        let dyn_name = "(dyn core::future::future::Future<Output=()> + core::marker::Send)";
+        let dyn_t = add(
+            dyn_name,
+            TypeDef::Struct {
+                name: strings.intern(dyn_name),
+                size: 0,
+                members: Vec::new(),
+            },
+        );
+        let data = add(
+            "*const dyn",
+            TypeDef::Pointer {
+                name: None,
+                target: dyn_t,
+            },
+        );
+        let slots = add(
+            "[usize; 4]",
+            TypeDef::Array {
+                elem: usize_t,
+                count: 4,
+            },
+        );
+        let vtable = add(
+            "&[usize; 4]",
+            TypeDef::Pointer {
+                name: Some(strings.intern("&[usize; 4]")),
+                target: slots,
+            },
+        );
+        let boxed = add(
+            "alloc::boxed::Box<app::Fut, alloc::alloc::Global>",
+            TypeDef::Pointer {
+                name: Some(strings.intern("alloc::boxed::Box<app::Fut, alloc::alloc::Global>")),
+                target: fut,
+            },
+        );
+        let reference = add(
+            "&mut app::Fut",
+            TypeDef::Pointer {
+                name: Some(strings.intern("&mut app::Fut")),
+                target: fut,
+            },
+        );
+        let wide_name = "alloc::boxed::Box<(dyn core::future::future::Future<Output=()> + core::marker::Send), alloc::alloc::Global>";
+        let wide = add(
+            wide_name,
+            TypeDef::Struct {
+                name: strings.intern(wide_name),
+                size: 16,
+                members: vec![
+                    MemberDef {
+                        name: strings.intern("pointer"),
+                        ty: data,
+                        offset: 0,
+                    },
+                    MemberDef {
+                        name: strings.intern("vtable"),
+                        ty: vtable,
+                        offset: 8,
+                    },
+                ],
+            },
+        );
+        for (name, inner) in [
+            (
+                "core::pin::Pin<alloc::boxed::Box<app::Fut, alloc::alloc::Global>>",
+                boxed,
+            ),
+            (
+                "core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output=()> + core::marker::Send), alloc::alloc::Global>>",
+                wide,
+            ),
+        ] {
+            let size = if inner == wide { 16 } else { 8 };
+            add(
+                name,
+                TypeDef::Struct {
+                    name: strings.intern(name),
+                    size,
+                    members: vec![MemberDef {
+                        name: strings.intern("pointer"),
+                        ty: inner,
+                        offset: 0,
+                    }],
+                },
+            );
+        }
+        let _ = reference;
+        Adapters {
+            types: TypeTable {
+                types,
+                ..Default::default()
+            },
+            names,
+            strings,
+        }
+    }
+
+    const FUT: BundleTypeId = BundleTypeId(1);
+    const DYN: BundleTypeId = BundleTypeId(2);
+    const DATA: BundleTypeId = BundleTypeId(3);
+    const VTABLE: BundleTypeId = BundleTypeId(5);
+    const BOX: BundleTypeId = BundleTypeId(6);
+    const REF: BundleTypeId = BundleTypeId(7);
+    const WIDE: BundleTypeId = BundleTypeId(8);
+    const PIN_BOX: BundleTypeId = BundleTypeId(9);
+    const PIN_WIDE: BundleTypeId = BundleTypeId(10);
+
+    fn dyn_seed() -> DynSeed {
+        DynSeed {
+            wide: WIDE,
+            pointer: "pointer".into(),
+            vtable: "vtable".into(),
+            data_ptr: DATA,
+            vtable_ptr: VTABLE,
+            trait_ty: DYN,
+            abi: supported(&RUSTC_DYN_FUTURE_ABI_V1_97),
+        }
+    }
+
+    fn seed(
+        kind: AdapterKind,
+        pin: Option<(&str, BundleTypeId)>,
+        pointee: PointeeSeed,
+    ) -> AdapterSeed {
+        AdapterSeed {
+            kind,
+            pin: pin.map(|(m, p)| (m.to_owned(), p)),
+            pointee,
+            compiler: supported(&RUSTC_STD_ADAPTERS_V1_97),
+        }
+    }
+
+    fn steps_of(a: &Adapters, target: &Target) -> String {
+        let s = |r: StrRef| a.strings.get(r).unwrap().to_owned();
+        let render = |p: &TypedPath| {
+            p.steps
+                .iter()
+                .map(|step| match step {
+                    Step::Member(MemberRef::Named(n)) => s(*n),
+                    Step::Deref => "*".to_owned(),
+                    Step::Variant(n) => format!("::{}", s(*n)),
+                    other => format!("{other:?}"),
+                })
+                .collect::<Vec<_>>()
+                .join(".")
+                + &format!(" -> {}", a.names[p.target.0 as usize].as_deref().unwrap())
+        };
+        match target {
+            Target::Value(p) => render(p),
+            Target::Dynamic {
+                pointer,
+                data,
+                vtable,
+                ..
+            } => format!(
+                "dyn {} [{} | {}]",
+                render(pointer),
+                render(data),
+                render(vtable)
+            ),
+        }
+    }
+
+    /// Each adapter's route is the one std declares — the `Pin` member,
+    /// then the thin pointer's dereference or the wide pointer's two
+    /// words — held to the final table, and the same route is the
+    /// adapter's storage access.
+    #[test]
+    fn test_adapter_plans_follow_the_declared_route() {
+        let mut a = adapters();
+        let cases = [
+            (
+                BOX,
+                seed(AdapterKind::Box, None, PointeeSeed::Sized(FUT)),
+                "* -> app::Fut",
+                SemanticRuleKind::StdBoxPoll,
+                AccessKind::Owned,
+            ),
+            (
+                REF,
+                seed(AdapterKind::MutRef, None, PointeeSeed::Sized(FUT)),
+                "* -> app::Fut",
+                SemanticRuleKind::StdMutRefPoll,
+                AccessKind::Borrowed,
+            ),
+            (
+                PIN_BOX,
+                seed(
+                    AdapterKind::PinBox,
+                    Some(("pointer", BOX)),
+                    PointeeSeed::Sized(FUT),
+                ),
+                "pointer.* -> app::Fut",
+                SemanticRuleKind::StdPinBoxPoll,
+                AccessKind::Owned,
+            ),
+            (
+                PIN_WIDE,
+                seed(
+                    AdapterKind::PinBox,
+                    Some(("pointer", WIDE)),
+                    PointeeSeed::Dyn(dyn_seed()),
+                ),
+                "dyn pointer -> alloc::boxed::Box<(dyn core::future::future::Future<Output=()> + core::marker::Send), alloc::alloc::Global> [pointer -> *const dyn | vtable -> &[usize; 4]]",
+                SemanticRuleKind::StdPinBoxPoll,
+                AccessKind::Owned,
+            ),
+        ];
+        for (ty, seed, expected, rule, access) in cases {
+            let plan = plan_adapter(ty, &seed, &a.types, &mut a.strings)
+                .unwrap_or_else(|e| panic!("{expected}: {e:?}"));
+            let Delegation::Direct { target, exclusive } = &plan.program else {
+                panic!("adapters delegate directly");
+            };
+            assert!(exclusive, "{expected}");
+            assert_eq!(steps_of(&a, target), expected);
+            assert!(matches!(&plan.rule, RuleKey::Rustc { kind, family, .. }
+                if *kind == rule && *family == "rustc-std-adapters-1.97"));
+            let (_, kind, access_target) = plan.access.as_ref().unwrap();
+            assert_eq!(*kind, access);
+            assert_eq!(access_target, target);
+            if let Target::Dynamic { abi, .. } = target {
+                assert!(
+                    matches!(abi, RuleKey::Rustc { kind: SemanticRuleKind::DynFutureAbi, family, .. }
+                    if *family == "rustc-dyn-future-abi-1.97")
+                );
+            }
+        }
+    }
+
+    /// A route that the final table does not bear out declines with the
+    /// reason, as does an adapter compiled outside the reviewed range or
+    /// a wide pointer whose ABI was.
+    #[test]
+    fn test_adapter_plans_decline_layout_and_origin_departures() {
+        let mut a = adapters();
+        let kind_of = |result: Result<Plan, Decline>| result.unwrap_err().0;
+        // The declared pointee is not what the pointer targets.
+        let s = seed(AdapterKind::Box, None, PointeeSeed::Sized(DYN));
+        assert_eq!(
+            kind_of(plan_adapter(BOX, &s, &a.types, &mut a.strings)),
+            SemanticIssueKind::MissingLayout
+        );
+        // Pin's member is not its declared pointer.
+        let s = seed(
+            AdapterKind::PinBox,
+            Some(("pointer", REF)),
+            PointeeSeed::Sized(FUT),
+        );
+        assert_eq!(
+            kind_of(plan_adapter(PIN_BOX, &s, &a.types, &mut a.strings)),
+            SemanticIssueKind::MissingLayout
+        );
+        // The wide pointer's trait object grew a member.
+        let mut grown = adapters();
+        if let TypeDef::Struct { members, .. } = &mut grown.types.types[DYN.0 as usize] {
+            members.push(MemberDef {
+                name: grown.strings.intern("x"),
+                ty: BundleTypeId(0),
+                offset: 0,
+            });
+        }
+        let s = seed(AdapterKind::Box, None, PointeeSeed::Dyn(dyn_seed()));
+        assert_eq!(
+            kind_of(plan_adapter(WIDE, &s, &grown.types, &mut grown.strings)),
+            SemanticIssueKind::MissingLayout
+        );
+        // Outside the reviewed toolchains, on either review.
+        let mut s = seed(AdapterKind::Box, None, PointeeSeed::Sized(FUT));
+        s.compiler = CompilerVerdict::Declined("rustc 1.99".into());
+        assert_eq!(
+            kind_of(plan_adapter(BOX, &s, &a.types, &mut a.strings)),
+            SemanticIssueKind::UnsupportedOrigin
+        );
+        let mut d = dyn_seed();
+        d.abi = CompilerVerdict::Declined("rustc 1.99".into());
+        let s = seed(AdapterKind::Box, None, PointeeSeed::Dyn(d));
+        assert_eq!(
+            kind_of(plan_adapter(WIDE, &s, &a.types, &mut a.strings)),
+            SemanticIssueKind::UnsupportedOrigin
+        );
+        // The supported case still plans, so the declines above were
+        // the departures and not the fixture.
+        let s = seed(AdapterKind::Box, None, PointeeSeed::Dyn(dyn_seed()));
+        plan_adapter(WIDE, &s, &a.types, &mut a.strings).unwrap();
+    }
+
+    fn source(path: &str, md5: Option<[u8; 16]>) -> PollSource {
+        PollSource {
+            path: path.to_owned(),
+            md5,
+        }
+    }
+
+    const REGISTRY: &str = "/home/u/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tracing-0.1.40/src/instrument.rs";
+
+    /// The origin is what every poll declaration agrees on: a registry
+    /// path naming tracing at a reviewed version, with any checksum a
+    /// reviewed one. Each departure declines and says which.
+    #[test]
+    fn test_instrumented_origin_reads_the_registry_path() {
+        let reviewed = crate::detect::semantics::TRACING_INSTRUMENTED_V0_1_40.checksums[0].1;
+        let origin = instrumented_origin(&BTreeSet::from([source(REGISTRY, None)])).unwrap();
+        assert_eq!(
+            origin,
+            DelegationOrigin {
+                package: "tracing",
+                version: "0.1.40".into(),
+                family: "tracing-instrumented-0.1.40",
+                source:
+                    "registry/src/index.crates.io-1949cf8c6b5b557f/tracing-0.1.40/src/instrument.rs"
+                        .into(),
+                files: Vec::new(),
+            }
+        );
+        // A checksum the table carried is recorded when reviewed.
+        let origin =
+            instrumented_origin(&BTreeSet::from([source(REGISTRY, Some(reviewed))])).unwrap();
+        assert_eq!(origin.files.len(), 1);
+        assert_eq!(origin.files[0].1, reviewed);
+        // Two declarations on the same path agree.
+        instrumented_origin(&BTreeSet::from([
+            source(REGISTRY, None),
+            source(REGISTRY, Some(reviewed)),
+        ]))
+        .unwrap();
+        let declined = |sources: &[PollSource]| {
+            let (kind, detail) =
+                instrumented_origin(&sources.iter().cloned().collect()).unwrap_err();
+            assert_eq!(kind, SemanticIssueKind::UnsupportedOrigin, "{detail}");
+            detail
+        };
+        assert!(declined(&[]).contains("no poll declaration"));
+        assert!(
+            declined(&[source(
+                "/build/vendor/tracing-0.1.40/src/instrument.rs",
+                None
+            )])
+            .contains("not a cargo registry path")
+        );
+        assert!(
+            declined(&[source(
+                "/home/u/.cargo/git/checkouts/tracing-1a2b3c4d5e6f7a8b/0123abc/tracing/src/instrument.rs",
+                None
+            )])
+            .contains("not a cargo registry path")
+        );
+        assert!(
+            declined(&[source("/home/u/tracing/src/instrument.rs", None)])
+                .contains("not a cargo registry path")
+        );
+        assert!(
+            declined(&[source(
+                "/home/u/.cargo/registry/src/idx/tracing-core-0.1.40/src/instrument.rs",
+                None
+            )])
+            .contains("not the tracing crate")
+        );
+        assert!(
+            declined(&[source(
+                "/home/u/.cargo/registry/src/idx/tracing-0.1.39/src/instrument.rs",
+                None
+            )])
+            .contains("0.1.39 is below the reviewed range 0.1.40–0.1.44")
+        );
+        assert!(
+            declined(&[source(
+                "/home/u/.cargo/registry/src/idx/tracing-0.1.45/src/instrument.rs",
+                None
+            )])
+            .contains("0.1.45 is above the reviewed range 0.1.40–0.1.44")
+        );
+        assert!(
+            declined(&[
+                source(REGISTRY, None),
+                source(
+                    "/home/u/.cargo/registry/src/idx/tracing-0.1.41/src/instrument.rs",
+                    None
+                ),
+            ])
+            .contains("declared in both")
+        );
+        assert!(
+            declined(&[source(REGISTRY, Some([0xab; 16]))])
+                .contains("not a reviewed revision of tracing-instrumented-0.1.40")
+        );
+    }
+
+    /// `inner` reaches the future through std's `ManuallyDrop` and
+    /// `MaybeDangling` wrappers by name, each a one-member struct at
+    /// offset zero; anything else in the way declines.
+    #[test]
+    fn test_instrumented_plan_enters_only_the_reviewed_wrappers() {
+        let mut strings = StringInterner::new();
+        let mut names = Vec::new();
+        let mut types = Vec::new();
+        let mut add = |name: &str, def: TypeDef| {
+            names.push(Some(name.to_owned()));
+            types.push(def);
+            BundleTypeId(types.len() as u32 - 1)
+        };
+        let fut = add(
+            "app::Fut",
+            TypeDef::Struct {
+                name: strings.intern("app::Fut"),
+                size: 8,
+                members: Vec::new(),
+            },
+        );
+        let dangling = add(
+            "core::mem::maybe_dangling::MaybeDangling<app::Fut>",
+            TypeDef::Struct {
+                name: strings.intern("core::mem::maybe_dangling::MaybeDangling<app::Fut>"),
+                size: 8,
+                members: vec![MemberDef {
+                    name: strings.intern("__0"),
+                    ty: fut,
+                    offset: 0,
+                }],
+            },
+        );
+        let manually = add(
+            "core::mem::manually_drop::ManuallyDrop<app::Fut>",
+            TypeDef::Struct {
+                name: strings.intern("core::mem::manually_drop::ManuallyDrop<app::Fut>"),
+                size: 8,
+                members: vec![MemberDef {
+                    name: strings.intern("value"),
+                    ty: dangling,
+                    offset: 0,
+                }],
+            },
+        );
+        let span = add(
+            "tracing::span::Span",
+            TypeDef::Struct {
+                name: strings.intern("tracing::span::Span"),
+                size: 40,
+                members: Vec::new(),
+            },
+        );
+        let inst = add(
+            "tracing::instrument::Instrumented<app::Fut>",
+            TypeDef::Struct {
+                name: strings.intern("tracing::instrument::Instrumented<app::Fut>"),
+                size: 48,
+                members: vec![
+                    MemberDef {
+                        name: strings.intern("span"),
+                        ty: span,
+                        offset: 0,
+                    },
+                    MemberDef {
+                        name: strings.intern("inner"),
+                        ty: manually,
+                        offset: 40,
+                    },
+                ],
+            },
+        );
+        let types = TypeTable {
+            types,
+            ..Default::default()
+        };
+        let layout = InstrumentedSeed {
+            inner: "inner".into(),
+            future: fut,
+        };
+        let seed = Seed {
+            poll_sources: BTreeSet::from([source(REGISTRY, None)]),
+            ..Default::default()
+        };
+        let plan = plan_instrumented(inst, &layout, &seed, &types, &names, &mut strings).unwrap();
+        let Delegation::Direct { target, exclusive } = &plan.program else {
+            panic!("direct")
+        };
+        assert!(
+            !exclusive,
+            "a span's callbacks are not reviewed control flow"
+        );
+        assert!(plan.access.is_none());
+        let s = |r: StrRef| strings.get(r).unwrap().to_owned();
+        let Target::Value(path) = target else {
+            panic!("static")
+        };
+        let spelled: Vec<String> = path
+            .steps
+            .iter()
+            .map(|step| match step {
+                Step::Member(MemberRef::Named(n)) => s(*n),
+                other => format!("{other:?}"),
+            })
+            .collect();
+        assert_eq!(spelled, ["inner", "value", "__0"]);
+        assert_eq!(path.target, fut);
+        assert!(
+            matches!(&plan.rule, RuleKey::Delegation { kind: SemanticRuleKind::TracingInstrumented, origin }
+            if origin.family == "tracing-instrumented-0.1.40" && origin.version == "0.1.40")
+        );
+        // A wrapper that is not one of the two, or one that grew a
+        // member, stops the route.
+        let mut other = types.clone();
+        if let TypeDef::Struct { name, .. } = &mut other.types[dangling.0 as usize] {
+            *name = strings.intern("app::Cell<app::Fut>");
+        }
+        let mut other_names = names.clone();
+        other_names[dangling.0 as usize] = Some("app::Cell<app::Fut>".into());
+        let (kind, detail) =
+            plan_instrumented(inst, &layout, &seed, &other, &other_names, &mut strings)
+                .unwrap_err();
+        assert_eq!(kind, SemanticIssueKind::MissingLayout);
+        assert!(detail.contains("not a reviewed std wrapper"), "{detail}");
+        let mut grown = types.clone();
+        if let TypeDef::Struct { members, .. } = &mut grown.types[manually.0 as usize] {
+            members.push(MemberDef {
+                name: strings.intern("extra"),
+                ty: fut,
+                offset: 0,
+            });
+        }
+        let (kind, _) =
+            plan_instrumented(inst, &layout, &seed, &grown, &names, &mut strings).unwrap_err();
+        assert_eq!(kind, SemanticIssueKind::MissingLayout);
+        // And an unsupported origin never reaches the layout.
+        let seed = Seed::default();
+        let (kind, _) =
+            plan_instrumented(inst, &layout, &seed, &types, &names, &mut strings).unwrap_err();
+        assert_eq!(kind, SemanticIssueKind::UnsupportedOrigin);
+    }
+
+    /// Evidence closes over bound delegations from seeded types only: a
+    /// task root's `Pin<Box<F>>` proves `F` a future, whose own program
+    /// then proves its delegate; a `Pin<Box<G>>` nothing points at
+    /// proves nothing, and appears only as the owned route to a `G`
+    /// that has a record of its own.
+    #[test]
+    fn test_evidence_closes_over_seeded_delegations_only() {
+        let mut a = adapters();
+        let library = Library {
+            walks: &WalksTable::default(),
+            tokio_version: None,
+            family: Family::select(None),
+        };
+        let mut seeds = SemanticSeeds::new();
+        let boxed = |pin: Option<(&str, BundleTypeId)>, kind, pointee| Seed {
+            adapter: Some(seed(kind, pin, pointee)),
+            ..Default::default()
+        };
+        // A task root: Pin<Box<Fut>> over the sized box over Fut.
+        seeds.insert(
+            PIN_BOX,
+            boxed(
+                Some(("pointer", BOX)),
+                AdapterKind::PinBox,
+                PointeeSeed::Sized(FUT),
+            ),
+        );
+        seeds.insert(BOX, boxed(None, AdapterKind::Box, PointeeSeed::Sized(FUT)));
+        // A reference nothing points at, over the same future.
+        seeds.insert(
+            REF,
+            boxed(None, AdapterKind::MutRef, PointeeSeed::Sized(FUT)),
+        );
+        // A wide box nothing points at: no static child, no record.
+        seeds.insert(
+            WIDE,
+            boxed(None, AdapterKind::Box, PointeeSeed::Dyn(dyn_seed())),
+        );
+        let mut tasks = vec![TaskFutureEntry {
+            future: PIN_BOX,
+            cell: BundleTypeId(0),
+            stage: BundleTypeId(0),
+            scheduler: BundleTypeId(0),
+            scheduler_binding: None,
+            display_name: a.strings.intern("task"),
+        }];
+        let table = bind_semantics(
+            seeds,
+            &a.types,
+            &a.names,
+            &mut a.strings,
+            &mut tasks,
+            &library,
+        );
+        let record = |ty: BundleTypeId| table.types.iter().find(|r| r.ty == ty);
+        let evidence = |ty: BundleTypeId| {
+            record(ty)
+                .and_then(|r| r.future.as_ref())
+                .map(|f| f.evidence.clone())
+        };
+        assert_eq!(
+            evidence(PIN_BOX),
+            Some(vec![FutureEvidence::TaskEntry(TaskEntryId(0))])
+        );
+        // Pin<Box<Fut>> delegates to Fut directly; the box's own record
+        // is the owned route to a future that has one.
+        assert_eq!(
+            evidence(FUT),
+            Some(vec![FutureEvidence::DelegatedBy { parent: PIN_BOX }])
+        );
+        assert!(matches!(
+            record(FUT).unwrap().future.as_ref().unwrap().continuation,
+            Continuation::Unknown(SemanticIssue {
+                kind: SemanticIssueKind::NoRule,
+                ..
+            })
+        ));
+        assert_eq!(evidence(BOX), None);
+        assert!(record(BOX).unwrap().access.is_some());
+        assert_eq!(evidence(REF), None);
+        assert!(record(REF).unwrap().access.is_some());
+        assert!(record(WIDE).is_none());
+        // The rules: the pin's poll and access, the box's and the
+        // reference's access, each once, under one rustc origin.
+        let kinds: BTreeSet<SemanticRuleKind> = table.rules.iter().map(|r| r.kind).collect();
+        assert_eq!(
+            kinds,
+            BTreeSet::from([
+                SemanticRuleKind::StdPinBoxPoll,
+                SemanticRuleKind::StdPinBoxAccess,
+                SemanticRuleKind::StdBoxAccess,
+                SemanticRuleKind::StdMutRefAccess,
+            ])
+        );
+        assert_eq!(table.origins.len(), 1);
+        assert!(matches!(table.origins[0], SemanticOrigin::Rustc { .. }));
+        let Continuation::Bound { program, .. } = &record(PIN_BOX)
+            .unwrap()
+            .future
+            .as_ref()
+            .unwrap()
+            .continuation
+        else {
+            panic!("the root's program is bound")
+        };
+        assert!(matches!(
+            program,
+            PollProgram::Direct(PollAction::Delegate {
+                target: FutureTarget::Value(TypedPath { target: FUT, .. }),
+                exclusive: true,
+            })
+        ));
+    }
+
+    /// A bound coroutine's program matches its states: the fixed three
+    /// and, per suspended state, a delegation to the listed `__awaitee`
+    /// or an unknown case where none is listed.
+    #[test]
+    fn test_coroutine_plan_delegates_only_to_a_listed_awaitee() {
+        let mut e = env(
+            "async_fn",
+            &[
+                ("Unresumed", &["arg"]),
+                ("Returned", &[]),
+                ("Panicked", &[]),
+                ("Suspend0", &["local", "__awaitee"]),
+                ("Suspend1", &["local"]),
+            ],
+            &[],
+        );
+        let states = coroutine_states(e.env, false, &e.types, &e.names, &e.strings).unwrap();
+        let layout = CoroutineLayout {
+            rule: SemanticRuleId(u32::MAX),
+            states,
+        };
+        let rule = RuleKey::Rustc {
+            kind: SemanticRuleKind::RustcAsyncFn,
+            producer: PRODUCER.into(),
+            family: "rustc-coroutine-1.97",
+        };
+        let plan = coroutine_plan(e.env, &rule, &layout, &e.types, &mut e.strings);
+        let Delegation::Coroutine { cases } = &plan.program else {
+            panic!("coroutine")
+        };
+        let spelled: Vec<String> = cases
+            .iter()
+            .map(|(variant, action)| {
+                let s = e.strings.get(*variant).unwrap();
+                match action {
+                    CaseAction::Unresumed => format!("{s}:unresumed"),
+                    CaseAction::Returned => format!("{s}:returned"),
+                    CaseAction::Panicked => format!("{s}:panicked"),
+                    CaseAction::Delegate(target) => match target.as_ref() {
+                        Target::Value(p) => {
+                            format!("{s}:delegate {} steps -> {}", p.steps.len(), p.target.0)
+                        }
+                        Target::Dynamic { .. } => format!("{s}:dyn"),
+                    },
+                    CaseAction::Unknown(i) => format!("{s}:unknown {:?}", i.kind),
+                }
+            })
+            .collect();
+        assert_eq!(
+            spelled,
+            [
+                "0:unresumed",
+                "1:returned",
+                "2:panicked",
+                "3:delegate 2 steps -> 0",
+                "4:unknown MissingLayout",
+            ]
+        );
+        assert_eq!(plan.static_children(), [BundleTypeId(0)]);
     }
 }

@@ -99,13 +99,27 @@ impl<'a> Check<'a> {
             SemanticOrigin::LibraryDelegation {
                 package,
                 version: v,
+                family,
+                source,
                 files,
             } => {
-                self.string(*package)?;
-                version(*v)?;
+                let package = self.string(*package)?;
+                let v = self.string(*v)?;
+                self.string(*family)?;
+                // The recorded path is the anchored tail, so a reader
+                // re-parses exactly what the producer parsed, and it has
+                // to say what the origin says.
+                let origin =
+                    crate::origin::registry_origin(self.string(*source)?).ok_or_else(|| {
+                        Error::Corrupt("semantics: delegation source is not a registry path".into())
+                    })?;
                 require(
-                    !files.is_empty(),
-                    "delegation origin has no source checksums",
+                    origin.path == self.string(*source)?,
+                    "delegation source is not anchored at its registry segment",
+                )?;
+                require(
+                    origin.package == package && origin.version.to_string() == v,
+                    "delegation source names another crate or version",
                 )?;
                 let mut names = BTreeSet::new();
                 for file in files {
@@ -202,7 +216,8 @@ impl<'a> Check<'a> {
                 }
             }
         }
-        let target = crate::io::semantic_path_target(self.0, root, &Selector(path.steps.clone()))?;
+        let target =
+            crate::io::semantic_path_target(&self.0.types, root, &Selector(path.steps.clone()))?;
         require(
             target == path.target,
             "path endpoint type differs from recorded target",
@@ -246,13 +261,20 @@ impl<'a> Check<'a> {
                     matches!(self.ty(layout.data.target)?, TypeDef::Pointer { target, .. } if *target == layout.trait_ty),
                     "dyn data pointer has the wrong pointee",
                 )?;
-                let TypeDef::Opaque { name, .. } = self.ty(layout.trait_ty)? else {
-                    return require(false, "dyn pointee is not a Future trait object");
+                // rustc spells a trait object as an empty zero-sized
+                // struct; a hand-built table may leave it opaque. Either
+                // way it has no members of its own to read.
+                let name = match self.ty(layout.trait_ty)? {
+                    TypeDef::Opaque { name, .. } => name,
+                    TypeDef::Struct {
+                        name,
+                        size: 0,
+                        members,
+                    } if members.is_empty() => name,
+                    _ => return require(false, "dyn pointee is not a Future trait object"),
                 };
-                let name = self.string(*name)?;
-                let name = name.strip_prefix('(').unwrap_or(name);
                 require(
-                    name.starts_with("dyn core::future::future::Future<"),
+                    crate::names::is_future_trait_object(self.string(*name)?),
                     "dyn pointee is not a Future trait object",
                 )?;
                 require(
@@ -443,7 +465,7 @@ impl<'a> Check<'a> {
         use SemanticRuleKind::*;
         match action {
             PollAction::Delegate { target, exclusive } => {
-                self.rule(
+                let binding = self.rule(
                     rule,
                     &[
                         RustcAsyncFn,
@@ -457,9 +479,22 @@ impl<'a> Check<'a> {
                 )?;
                 self.target(record.ty, target)?;
                 // The wire bit cannot promote a structurally valid path into
-                // reviewed control flow. Enable individual revisions only
-                // with source review and independent behavioral controls.
-                require(!exclusive, "unreviewed delegation exclusivity")?;
+                // reviewed control flow: only a rule revision whose reviewed
+                // implementation polls nothing but its delegate may carry
+                // it. A coroutine resumes into its awaitee alone; the std
+                // adapters forward one poll and nothing else. `Instrumented`
+                // enters a span around its poll, running subscriber
+                // callbacks the review does not bound, so it stays false.
+                let reviewed = matches!(
+                    binding.kind,
+                    RustcAsyncFn
+                        | RustcAsyncBlock
+                        | StdBoxPoll
+                        | StdMutRefPoll
+                        | StdPinBoxPoll
+                        | StdPinMutRefPoll
+                );
+                require(!exclusive || reviewed, "unreviewed delegation exclusivity")?;
                 let path = match target {
                     FutureTarget::Value(p) => p,
                     FutureTarget::Dynamic { pointer, .. } => pointer,

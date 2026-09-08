@@ -213,7 +213,7 @@ pub struct SemanticRule {
     pub origin: SemanticOriginId,
 }
 
-#[derive(Copy, Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug, Serialize, Deserialize)]
 pub enum SemanticRuleKind {
     RustcAsyncFn,
     RustcAsyncBlock,
@@ -255,9 +255,21 @@ pub enum SemanticOrigin {
         family: StrRef,
         selection: LayoutSelection,
     },
+    /// A third-party implementation a reviewed delegation rule forwards
+    /// through, identified the way its family was selected: the crate
+    /// and version its declaration file's cargo registry path spells.
     LibraryDelegation {
         package: StrRef,
         version: StrRef,
+        /// The reviewed implementation family the version selected.
+        family: StrRef,
+        /// The declaration file the origin was read from, cut to its
+        /// `registry/src/` tail (see [`crate::origin::registry_origin`]).
+        source: StrRef,
+        /// Line-table checksums corroborating the reviewed revision, when
+        /// the unit's file table carried any. rustc's DWARF 4 builds carry
+        /// none, and the list is then empty: the registry path is the
+        /// evidence the rule runs on, a checksum a check on top of it.
         files: Vec<SourceFileEvidence>,
     },
 }

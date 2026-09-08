@@ -323,6 +323,61 @@ pub fn is_coroutine_candidate(name: &str) -> bool {
     .any(|prefix| last.starts_with(prefix) && last.ends_with('}'))
 }
 
+/// The spelling of a future trait object's pointee, as rustc names the
+/// zero-sized type behind a `dyn Future` wide pointer.
+pub const DYN_FUTURE: &str = "dyn core::future::future::Future<";
+
+/// Whether a dyn pointee *is* a future trait object — anchored at the
+/// front, past the parenthesized spelling, since any dyn whose generics
+/// merely mention a future (a `dyn FnOnce(..) -> BoxFuture`) would
+/// otherwise match. The one test the producer, the validator and the
+/// read side answer this question with.
+pub fn is_future_trait_object(pointee: &str) -> bool {
+    pointee
+        .strip_prefix('(')
+        .unwrap_or(pointee)
+        .starts_with(DYN_FUTURE)
+}
+
+/// Split a type name into its path and top-level generic arguments:
+/// `a::B<C, D<E, F>, G>` gives `("a::B", ["C", "D<E, F>", "G"])`. `None`
+/// for a name with no argument list, an unbalanced one, or anything
+/// after its closing `>`; an argument keeps its own spelling whole. `->`
+/// inside an argument (an `fn` pointer's return) does not close a list.
+pub fn generic_args(name: &str) -> Option<(&str, Vec<&str>)> {
+    let open = name.find('<')?;
+    if !name.ends_with('>') {
+        return None;
+    }
+    let inner = &name[open + 1..name.len() - 1];
+    let mut args = Vec::new();
+    let mut depth = 0usize;
+    let mut start = 0;
+    let mut prev = '\0';
+    for (i, c) in inner.char_indices() {
+        match c {
+            '<' | '(' | '[' => depth += 1,
+            '>' if prev == '-' => {}
+            '>' | ')' | ']' => depth = depth.checked_sub(1)?,
+            ',' if depth == 0 => {
+                args.push(inner[start..i].trim());
+                start = i + 1;
+            }
+            _ => {}
+        }
+        prev = c;
+    }
+    if depth != 0 {
+        return None;
+    }
+    let last = inner[start..].trim();
+    if last.is_empty() {
+        return None;
+    }
+    args.push(last);
+    Some((&name[..open], args))
+}
+
 fn outer_path(name: &str) -> String {
     let mut outer = String::with_capacity(name.len());
     let mut generic_depth = 0usize;
@@ -557,6 +612,44 @@ mod tests {
             let once = fold_type_name(name).into_owned();
             assert_eq!(fold_type_name(&once), once, "folding {name:?}");
         }
+    }
+
+    #[test]
+    fn test_generic_args_split_at_the_top_level_only() {
+        assert_eq!(
+            super::generic_args("alloc::boxed::Box<app::Fut<u32, ()>, alloc::alloc::Global>"),
+            Some((
+                "alloc::boxed::Box",
+                vec!["app::Fut<u32, ()>", "alloc::alloc::Global"]
+            ))
+        );
+        assert_eq!(
+            super::generic_args("core::pin::Pin<&mut app::Fut>"),
+            Some(("core::pin::Pin", vec!["&mut app::Fut"]))
+        );
+        // A tuple, an array and an `fn` pointer's `->` keep their commas
+        // and angles to themselves.
+        assert_eq!(
+            super::generic_args("W<(u8, u16), [u8; 4], fn(u8) -> Poll<()>>"),
+            Some(("W", vec!["(u8, u16)", "[u8; 4]", "fn(u8) -> Poll<()>"]))
+        );
+        for name in ["app::Plain", "W<", "W<>", "W<a>b", "W<a<b>", "W<a,>"] {
+            assert_eq!(super::generic_args(name), None, "{name}");
+        }
+    }
+
+    #[test]
+    fn test_future_trait_objects_are_named_at_the_front() {
+        assert!(super::is_future_trait_object(
+            "dyn core::future::future::Future<Output=()>"
+        ));
+        assert!(super::is_future_trait_object(
+            "(dyn core::future::future::Future<Output=()> + core::marker::Send)"
+        ));
+        assert!(!super::is_future_trait_object(
+            "dyn core::ops::function::FnOnce<()> -> Box<dyn core::future::future::Future<Output=()>>"
+        ));
+        assert!(!super::is_future_trait_object("tokio::time::sleep::Sleep"));
     }
 
     #[test]

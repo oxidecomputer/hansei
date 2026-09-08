@@ -5,9 +5,9 @@ description: "`census` over linux-floor/unordered"
 Threads: 3 lwps, 3 in runtime 0 @ 0xADDR
 
 COUNT  RT  ROLE             STATE            LWPS
-    1  0   worker           in driver        2725825
-    1  0   worker           parked           2725824
-    1  0   entered runtime  block_on caller  2725822
+    1  0   worker           in driver        3648877
+    1  0   worker           parked           3648878
+    1  0   entered runtime  block_on caller  3648875
     0  0   blocking pool    0 idle, 0 busy   —
 [3 lwps]
 

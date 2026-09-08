@@ -650,17 +650,235 @@ fn assert_container(program: &str, bundle: &Bundle, key: &str, kind: hansei_bund
     assert!(seen > 0, "{program}: no type named {key}");
 }
 
-/// What every fixture's library bindings must satisfy: a layout rule
+/// The semantic table's line for the type `prefix` names, with every
+/// rule and task index masked to `#`: ids are assigned in record order,
+/// which the platform's type set decides, and the assertions here are
+/// about routes and evidence, not numbering.
+fn semantic_line(table: &str, prefix: &str) -> String {
+    let line = table
+        .lines()
+        .find(|line| line.starts_with(prefix))
+        .unwrap_or_else(|| panic!("no semantic line for {prefix}"));
+    let mut out = String::with_capacity(line.len());
+    let mut rest = line;
+    while let Some(at) = rest.find(|c: char| c.is_ascii_digit()) {
+        let (head, tail) = rest.split_at(at);
+        out.push_str(head);
+        let end = tail
+            .find(|c: char| !c.is_ascii_digit())
+            .unwrap_or(tail.len());
+        let masked = head.ends_with("rule ") || head.ends_with("task ");
+        out.push_str(if masked { "#" } else { &tail[..end] });
+        rest = &tail[end..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// The delegation fixture's programs, one per reviewed rule, and its
+/// negatives, as the semantic table spells them. Each case's task root
+/// is a `Pin<Box<F>>`, so every case exercises the pin rule; what `F`
+/// then does is the case. Ordinary forwarding and exclusive forwarding
+/// are asserted apart: the std adapters carry the bit, `Instrumented`
+/// forwards without it.
+fn assert_delegation_programs(program: &str, bundle: &Bundle) {
+    use hansei_bundle::{Continuation, PollAction, PollProgram, SemanticRuleKind};
+    let table = exegesis::describe::describe_semantics(bundle);
+    let line = |prefix: &str| semantic_line(&table, prefix);
+    const DYN: &str =
+        "(dyn core::future::future::Future<Output=()> + core::marker::Send), alloc::alloc::Global>";
+    // A pin over a box over a sized `F` delegates straight to `F`, and
+    // the same route is its owned storage access.
+    let pin_box = |inner: &str| {
+        format!(
+            "core::pin::Pin<alloc::boxed::Box<{inner}, alloc::alloc::Global>> :: members \
+             future[task #, task #, poll] continuation rule # delegate (exclusive) \
+             pointer.*@+0 -> {inner} access Owned rule # pointer.*@+0 -> {inner}"
+        )
+    };
+    for inner in [
+        "delegation_cases::Gated<1>",
+        "delegation_cases::Gated<2>",
+        "delegation_cases::Retained",
+        "delegation_cases::RawHolder",
+        "&mut delegation_cases::Probe<5>",
+        "alloc::boxed::Box<delegation_cases::Probe<6>, alloc::alloc::Global>",
+        "tracing::instrument::Instrumented<delegation_cases::Probe<8>>",
+    ] {
+        assert_eq!(
+            line(&format!(
+                "core::pin::Pin<alloc::boxed::Box<{inner}, alloc::alloc::Global>> ::"
+            )),
+            pin_box(inner),
+            "{program}: {inner}"
+        );
+    }
+    // The dynamic case: the outer pin delegates to the inner
+    // `Pin<Box<dyn Future>>`, which delegates through the box's two
+    // words under the vtable ABI rule.
+    assert_eq!(
+        line(&format!(
+            "core::pin::Pin<alloc::boxed::Box<core::pin::Pin<alloc::boxed::Box<{DYN}>, alloc::alloc::Global>> ::"
+        )),
+        pin_box(&format!("core::pin::Pin<alloc::boxed::Box<{DYN}>")),
+        "{program}"
+    );
+    assert_eq!(
+        line(&format!("core::pin::Pin<alloc::boxed::Box<{DYN}> ::")),
+        format!(
+            "core::pin::Pin<alloc::boxed::Box<{DYN}> :: members future[poll, delegated by \
+             core::pin::Pin<alloc::boxed::Box<core::pin::Pin<alloc::boxed::Box<{DYN}>, \
+             alloc::alloc::Global>>] continuation rule # delegate (exclusive) dyn pointer@+0 -> \
+             alloc::boxed::Box<{DYN} access Owned rule # dyn pointer@+0 -> alloc::boxed::Box<{DYN}"
+        ),
+        "{program}"
+    );
+    // The concrete future behind the dyn pointer is the vtable join's to
+    // name: no static evidence reaches it.
+    assert_eq!(
+        line("delegation_cases::Probe<7> ::"),
+        "delegation_cases::Probe<7> :: members future[poll] continuation unknown (NoRule)",
+        "{program}"
+    );
+    // The reference and the box forward one poll each, exclusively, to
+    // the probe they point at, which then has no rule of its own.
+    assert_eq!(
+        line("&mut delegation_cases::Probe<5> ::"),
+        "&mut delegation_cases::Probe<5> :: members future[poll, delegated by \
+         core::pin::Pin<alloc::boxed::Box<&mut delegation_cases::Probe<5>, alloc::alloc::Global>>] \
+         continuation rule # delegate (exclusive) *@+0 -> delegation_cases::Probe<5> access \
+         Borrowed rule # *@+0 -> delegation_cases::Probe<5>",
+        "{program}"
+    );
+    assert_eq!(
+        line("alloc::boxed::Box<delegation_cases::Probe<6>, alloc::alloc::Global> ::"),
+        "alloc::boxed::Box<delegation_cases::Probe<6>, alloc::alloc::Global> :: members \
+         future[poll, delegated by core::pin::Pin<alloc::boxed::Box<alloc::boxed::Box<\
+         delegation_cases::Probe<6>, alloc::alloc::Global>, alloc::alloc::Global>>] \
+         continuation rule # delegate (exclusive) *@+0 -> delegation_cases::Probe<6> access \
+         Owned rule # *@+0 -> delegation_cases::Probe<6>",
+        "{program}"
+    );
+    for (probe, parent) in [
+        ("5", "&mut delegation_cases::Probe<5>"),
+        (
+            "6",
+            "alloc::boxed::Box<delegation_cases::Probe<6>, alloc::alloc::Global>",
+        ),
+        (
+            "8",
+            "tracing::instrument::Instrumented<delegation_cases::Probe<8>>",
+        ),
+    ] {
+        assert_eq!(
+            line(&format!("delegation_cases::Probe<{probe}> ::")),
+            format!(
+                "delegation_cases::Probe<{probe}> :: members future[poll, delegated by {parent}] \
+                 continuation unknown (NoRule)"
+            ),
+            "{program}"
+        );
+    }
+    // `Instrumented` forwards through std's `ManuallyDrop` to the probe
+    // it holds — ordinary forwarding, without the exclusive bit, under
+    // the delegation origin read off its registry path.
+    assert_eq!(
+        line("tracing::instrument::Instrumented<delegation_cases::Probe<8>> ::"),
+        "tracing::instrument::Instrumented<delegation_cases::Probe<8>> :: members future[poll, \
+         delegated by core::pin::Pin<alloc::boxed::Box<tracing::instrument::Instrumented<\
+         delegation_cases::Probe<8>>, alloc::alloc::Global>>] continuation rule # delegate \
+         inner.value.__0@+40 -> delegation_cases::Probe<8>",
+        "{program}"
+    );
+    let source = exegesis::testkit::assert_instrumented_origin(bundle);
+    assert!(
+        table.contains(&format!(
+            "delegation tracing 0.1.40 family tracing-instrumented-0.1.40 from {source} \
+             (0 checksummed files)"
+        )),
+        "{program}: {table}"
+    );
+    // The hand-written wrappers have no rule: a gate that is not a
+    // future, a retained enum, a raw pointer. Their probes are proved
+    // futures by their own polls only, never by delegation.
+    for (wrapper, probe) in [
+        (
+            "delegation_cases::Gated<1>",
+            Some("delegation_cases::Probe<1>"),
+        ),
+        (
+            "delegation_cases::Gated<2>",
+            Some("delegation_cases::Probe<2>"),
+        ),
+        ("delegation_cases::Retained", None),
+        ("delegation_cases::RawHolder", None),
+    ] {
+        assert_eq!(
+            line(&format!("{wrapper} ::")),
+            format!(
+                "{wrapper} :: members future[poll, delegated by core::pin::Pin<alloc::boxed::Box<\
+                 {wrapper}, alloc::alloc::Global>>] continuation unknown (NoRule)"
+            ),
+            "{program}"
+        );
+        if let Some(probe) = probe {
+            assert_eq!(
+                line(&format!("{probe} ::")),
+                format!("{probe} :: members future[poll] continuation unknown (NoRule)"),
+                "{program}"
+            );
+        }
+    }
+    // Structurally: every exclusive delegation is under a std or
+    // compiler rule, every `Instrumented` delegation is not exclusive,
+    // and both kinds of forwarding are present.
+    let mut exclusive = 0;
+    let mut ordinary = 0;
+    for record in &bundle.semantics.types {
+        let Some(facts) = &record.future else {
+            continue;
+        };
+        let Continuation::Bound { rule, program: p } = &facts.continuation else {
+            continue;
+        };
+        let kind = bundle.semantics.rules[rule.0 as usize].kind;
+        let actions: Vec<&PollAction> = match p {
+            PollProgram::Direct(a) => vec![a],
+            PollProgram::MatchVariant { cases, .. } => cases.iter().map(|c| &c.action).collect(),
+        };
+        for action in actions {
+            if let PollAction::Delegate { exclusive: e, .. } = action {
+                if *e {
+                    exclusive += 1;
+                    assert_ne!(kind, SemanticRuleKind::TracingInstrumented, "{program}");
+                } else {
+                    ordinary += 1;
+                    assert_eq!(kind, SemanticRuleKind::TracingInstrumented, "{program}");
+                }
+            }
+        }
+    }
+    assert!(
+        exclusive > 0 && ordinary == 1,
+        "{program}: {exclusive} / {ordinary}"
+    );
+}
+
+/// What every fixture's semantic bindings must satisfy: a layout rule
 /// per kind actually bound, every rule under a versioned tokio origin
-/// inside the reviewed range (or futures-util's unversioned one), no
-/// delegation anywhere, and every task entry's scheduler class bound
-/// and agreeing with the name of its `S` — the cross-check that keeps
-/// the route-based binding honest against the spelling the runtime
-/// still classifies by.
+/// inside the reviewed range (or futures-util's unversioned one), every
+/// compiler rule under one of the reviewed rustc families for the
+/// target's own producer, a delegation origin only for the pinned
+/// tracing, every bound program of the shape its rule kind allows —
+/// primitive on a resource, a match on a coroutine, a single delegation
+/// on an adapter or wrapper, exclusive only under a rule reviewed for
+/// it — and every task entry's scheduler class bound and agreeing with
+/// the name of its `S` — the cross-check that keeps the route-based
+/// binding honest against the spelling the runtime still classifies by.
 fn assert_library_bindings(program: &str, bundle: &Bundle) {
     use hansei_bundle::{
-        Continuation, LayoutSelection, PollAction, PollProgram, SchedulerClass, SemanticOrigin,
-        SemanticRuleKind,
+        Continuation, FutureTarget, LayoutSelection, PollAction, PollProgram, SchedulerClass,
+        SemanticOrigin, SemanticRuleKind,
     };
     let s = |id| bundle.strings.get(id).unwrap();
     for origin in &bundle.semantics.origins {
@@ -672,10 +890,28 @@ fn assert_library_bindings(program: &str, bundle: &Bundle) {
                     s(*producer),
                     bundle.meta.rustc_version
                 );
+                use exegesis::detect::semantics::{
+                    RUSTC_COROUTINE_V1_97, RUSTC_DYN_FUTURE_ABI_V1_97, RUSTC_STD_ADAPTERS_V1_97,
+                };
+                assert!(
+                    [
+                        RUSTC_COROUTINE_V1_97.family,
+                        RUSTC_STD_ADAPTERS_V1_97.family,
+                        RUSTC_DYN_FUTURE_ABI_V1_97.family,
+                    ]
+                    .contains(&s(*family)),
+                    "{program}: unexpected compiler family {:?}",
+                    s(*family)
+                );
+            }
+            SemanticOrigin::LibraryDelegation {
+                package, version, ..
+            } => {
+                assert_eq!(s(*package), "tracing", "{program}");
+                assert_eq!(s(*version), "0.1.40", "{program}");
                 assert_eq!(
-                    s(*family),
-                    exegesis::detect::semantics::RUSTC_COROUTINE_V1_97.family,
-                    "{program}"
+                    program, "delegation-cases",
+                    "{program}: only the delegation fixture instruments a future"
                 );
             }
             SemanticOrigin::LibraryLayout {
@@ -705,27 +941,39 @@ fn assert_library_bindings(program: &str, bundle: &Bundle) {
             other => panic!("{program}: unexpected semantic origin {other:?}"),
         }
     }
+    // No state protocol is reviewed yet; every other kind may appear.
     for rule in &bundle.semantics.rules {
         assert!(
-            matches!(
+            !matches!(
                 rule.kind,
-                SemanticRuleKind::RustcAsyncFn
-                    | SemanticRuleKind::RustcAsyncBlock
-                    | SemanticRuleKind::TokioSleep
-                    | SemanticRuleKind::TokioJoinHandle
-                    | SemanticRuleKind::TokioAcquire
-                    | SemanticRuleKind::TokioIoOperation
-                    | SemanticRuleKind::TokioJoinSet
-                    | SemanticRuleKind::FuturesUnordered
-                    | SemanticRuleKind::TokioMultiThreadScheduler
-                    | SemanticRuleKind::TokioCurrentThreadScheduler
-                    | SemanticRuleKind::TokioLocalScheduler
-                    | SemanticRuleKind::TokioBlockingScheduler
+                SemanticRuleKind::TokioSleepState
+                    | SemanticRuleKind::TokioJoinHandleState
+                    | SemanticRuleKind::TokioAcquireState
+                    | SemanticRuleKind::TokioIoState
             ),
             "{program}: unexpected rule {:?}",
             rule.kind
         );
     }
+    let rule_kind = |id: hansei_bundle::SemanticRuleId| bundle.semantics.rules[id.0 as usize].kind;
+    // The reviewed control-flow guarantee, by rule kind: what a
+    // coroutine's resumption and the std adapters' forwarding were
+    // reviewed to be, and what a span-entering wrapper was not.
+    let exclusive_kinds = [
+        SemanticRuleKind::RustcAsyncFn,
+        SemanticRuleKind::RustcAsyncBlock,
+        SemanticRuleKind::StdBoxPoll,
+        SemanticRuleKind::StdMutRefPoll,
+        SemanticRuleKind::StdPinBoxPoll,
+        SemanticRuleKind::StdPinMutRefPoll,
+    ];
+    let delegate_kinds = [
+        SemanticRuleKind::StdBoxPoll,
+        SemanticRuleKind::StdMutRefPoll,
+        SemanticRuleKind::StdPinBoxPoll,
+        SemanticRuleKind::StdPinMutRefPoll,
+        SemanticRuleKind::TracingInstrumented,
+    ];
     // Compiler storage: every async fn or async block environment binds
     // its states under the reviewed convention (the fixtures' toolchains
     // are all inside it), carries the matching evidence, and every other
@@ -786,17 +1034,92 @@ fn assert_library_bindings(program: &str, bundle: &Bundle) {
         }
     }
     for record in &bundle.semantics.types {
+        if let Some(access) = &record.access {
+            assert!(
+                matches!(
+                    rule_kind(access.rule),
+                    SemanticRuleKind::StdBoxAccess
+                        | SemanticRuleKind::StdMutRefAccess
+                        | SemanticRuleKind::StdPinBoxAccess
+                        | SemanticRuleKind::StdPinMutRefAccess
+                ),
+                "{program}: access under {:?}",
+                rule_kind(access.rule)
+            );
+        }
         let Some(facts) = &record.future else {
             continue;
         };
         match &facts.continuation {
             Continuation::Unknown(_) => assert!(record.resource.is_none()),
-            Continuation::Bound { program: p, .. } => assert!(
-                matches!(p, PollProgram::Direct(PollAction::Primitive))
-                    && record.resource.is_some(),
+            Continuation::Bound {
+                rule,
+                program: PollProgram::Direct(PollAction::Primitive),
+            } => assert!(
+                record.resource.as_ref().is_some_and(|r| r.rule == *rule),
                 "{program}: {:?}",
                 facts.continuation
             ),
+            Continuation::Bound {
+                rule,
+                program: PollProgram::Direct(PollAction::Delegate { target, exclusive }),
+            } => {
+                let kind = rule_kind(*rule);
+                assert!(
+                    delegate_kinds.contains(&kind),
+                    "{program}: a direct delegation under {kind:?}"
+                );
+                assert_eq!(
+                    *exclusive,
+                    exclusive_kinds.contains(&kind),
+                    "{program}: exclusivity under {kind:?}"
+                );
+                assert_eq!(
+                    kind == SemanticRuleKind::TracingInstrumented,
+                    record.access.is_none(),
+                    "{program}: an adapter's program is also its storage access"
+                );
+                if let Some(access) = &record.access {
+                    assert_eq!(&access.target, target, "{program}");
+                }
+                if let FutureTarget::Dynamic { layout, .. } = target {
+                    assert_eq!(rule_kind(layout.abi), SemanticRuleKind::DynFutureAbi);
+                }
+            }
+            Continuation::Bound {
+                rule,
+                program: PollProgram::MatchVariant { state, cases },
+            } => {
+                let layout = record
+                    .coroutine
+                    .as_ref()
+                    .unwrap_or_else(|| panic!("{program}: a match program on a non-coroutine"));
+                assert_eq!(layout.rule, *rule, "{program}");
+                assert!(
+                    state.steps.is_empty() && state.target == record.ty,
+                    "{program}"
+                );
+                assert_eq!(cases.len(), layout.states.len(), "{program}");
+                for case in cases {
+                    if let PollAction::Delegate { exclusive, .. } = &case.action {
+                        assert!(
+                            *exclusive,
+                            "{program}: a coroutine's resumption is exclusive"
+                        );
+                    }
+                }
+            }
+            other => panic!("{program}: unexpected continuation {other:?}"),
+        }
+        if let Some(layout) = &record.coroutine {
+            assert!(
+                matches!(
+                    &facts.continuation,
+                    Continuation::Bound { rule, program: PollProgram::MatchVariant { .. } }
+                        if *rule == layout.rule
+                ),
+                "{program}: a bound coroutine has its match program"
+            );
         }
     }
     for (index, entry) in bundle.tasks.entries.iter().enumerate() {
@@ -1827,27 +2150,45 @@ fn run_golden(program: &str) {
                     "{program}: {table}"
                 );
                 assert!(
-                    table.contains(&format!(
-                        "origin 1: layout tokio {tokio} family {} (ReviewedRange)\n",
-                        exegesis::detect::Family::select(Some(tokio)).name()
-                    )),
+                    table.lines().any(|line| line.starts_with("origin ")
+                        && line.ends_with(&format!(
+                            ": layout tokio {tokio} family {} (ReviewedRange)",
+                            exegesis::detect::Family::select(Some(tokio)).name()
+                        ))),
                     "{program}: {table}"
                 );
+                // The reader's coroutine: its states under the compiler
+                // rule, and a program that resumes into the one awaitee
+                // of its one suspended state — the `Read` over the
+                // stream — and nothing else.
+                let reader = semantic_line(
+                    &table,
+                    "local_set_io::local_reader::{async_fn_env#0} :: states",
+                );
                 assert!(
-                    table.contains(
-                        "local_set_io::local_reader::{async_fn_env#0} :: states \
-                         future[task 0, coroutine rule 0] continuation unknown (NoRule) \
-                         coroutine rule 0 {0:Unresumed[ready,stream]() 1:Returned[]() \
-                         2:Panicked[]() 3:Suspended[stream,buf,__awaitee,__3]()}\n"
+                    reader.contains(
+                        "future[task #, coroutine rule #] continuation rule # match <self>@+0 \
+                         -> local_set_io::local_reader::{async_fn_env#0} {0: unresumed} \
+                         {1: returned} {2: panicked} {3: delegate (exclusive) {3}.__awaitee@+"
+                    ) && reader.contains(
+                        " -> tokio::io::util::read::Read<tokio::net::unix::stream::UnixStream>} \
+                         coroutine rule # {0:Unresumed[ready,stream]() 1:Returned[]() \
+                         2:Panicked[]() 3:Suspended[stream,buf,__awaitee,__3]()}"
                     ),
-                    "{program}: {table}"
+                    "{program}: {reader}"
                 );
+                // The readiness primitive: its own poll, and — where a
+                // coroutine's await lands on it, as the stream's
+                // `writable` does — that delegation too.
+                let readiness =
+                    semantic_line(&table, "tokio::runtime::io::scheduled_io::Readiness ::");
                 assert!(
-                    table.contains(
-                        "tokio::runtime::io::scheduled_io::Readiness :: members \
-                         future[poll] continuation rule "
-                    ) && table.contains(" primitive resource IoOperation(Readiness) rule "),
-                    "{program}: {table}"
+                    readiness.starts_with(
+                        "tokio::runtime::io::scheduled_io::Readiness :: members future[poll"
+                    ) && readiness.ends_with(
+                        "] continuation rule # primitive resource IoOperation(Readiness) rule #"
+                    ),
+                    "{program}: {readiness}"
                 );
                 assert!(
                     table.contains(
@@ -1860,10 +2201,11 @@ fn run_golden(program: &str) {
                             names it, it is not a compiler-storage candidate, and no \
                             reviewed resource, container or scheduler route bound at it";
                 // The reader and its reference have no record on any
-                // platform. `Read<Gated>` has one exactly where its `poll`
-                // survived as a symbol (ELF keeps it, Mach-O inlines it),
-                // and then only poll evidence: never a resource, never a
-                // continuation.
+                // platform. `Read<Gated>` is a future on every platform —
+                // the gated reader's coroutine awaits it, and that
+                // delegation proves it one whether or not its own `poll`
+                // survived as a symbol (ELF keeps it, Mach-O inlines it)
+                // — and never a resource, never a continuation.
                 let gated = exegesis::describe::explain_future(&bundle, "Gated");
                 let lines: Vec<&str> = gated.lines().collect();
                 assert_eq!(lines.len(), 3, "{program}: {gated}");
@@ -1877,12 +2219,16 @@ fn run_golden(program: &str) {
                     format!("local_set_io::Gated :: {none}"),
                     "{program}"
                 );
+                let delegated = |evidence: &str| {
+                    format!(
+                        "tokio::io::util::read::Read<local_set_io::Gated> :: members \
+                         future[{evidence}delegated by \
+                         local_set_io::local_gated_reader::{{async_fn_env#0}}] \
+                         continuation unknown (NoRule)"
+                    )
+                };
                 assert!(
-                    lines[2]
-                        == format!("tokio::io::util::read::Read<local_set_io::Gated> :: {none}")
-                        || lines[2]
-                            == "tokio::io::util::read::Read<local_set_io::Gated> :: members \
-                                future[poll] continuation unknown (NoRule)",
+                    lines[2] == delegated("") || lines[2] == delegated("poll, "),
                     "{program}: {}",
                     lines[2]
                 );
@@ -1978,6 +2324,7 @@ fn run_golden(program: &str) {
                 );
                 assert_no_resource(program, &bundle, "tokio::net::unix::stream::UnixStream");
             }
+            "delegation-cases" => assert_delegation_programs(program, &bundle),
             "joinset" => assert_container(
                 program,
                 &bundle,

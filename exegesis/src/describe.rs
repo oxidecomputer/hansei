@@ -665,11 +665,15 @@ pub fn describe_semantics(bundle: &Bundle) -> String {
             SemanticOrigin::LibraryDelegation {
                 package,
                 version,
+                family,
+                source,
                 files,
             } => format!(
-                "delegation {} {} ({} checksummed files)",
+                "delegation {} {} family {} from {} ({} checksummed files)",
                 s(*package),
                 s(*version),
+                s(*family),
+                s(*source),
                 files.len()
             ),
         };
@@ -740,7 +744,17 @@ pub fn describe_semantics(bundle: &Bundle) -> String {
             );
         }
         if let Some(access) = &record.access {
-            let _ = write!(line, " access {:?} rule {}", access.kind, access.rule.0);
+            let target = match &access.target {
+                FutureTarget::Value(p) => path(record.ty, p),
+                FutureTarget::Dynamic { pointer, .. } => {
+                    format!("dyn {}", path(record.ty, pointer))
+                }
+            };
+            let _ = write!(
+                line,
+                " access {:?} rule {} {target}",
+                access.kind, access.rule.0
+            );
         }
         if let Some(resource) = &record.resource {
             let _ = write!(

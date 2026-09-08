@@ -508,12 +508,25 @@ pub(super) fn instant_alias_node(emitter: &mut Emitter<'_>, id: TypeId) -> Optio
     transparent(emitter, &st.members, member)
 }
 
-/// Recognize rustc's DWARF representation of a Rust trait-object wide
-/// pointer. The bundle records both member indices and the vtable header
-/// ordering so reify never guesses from the private field name or bakes in
-/// rustc's slot numbers independently.
-pub(super) fn dyn_pointer_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
-    let reader = emitter.reader;
+/// The members of a wide pointer, found by shape: which is the data
+/// pointer, which the vtable pointer, where the `dyn` tail sits in the
+/// pointee and how many words the vtable array declares.
+pub(crate) struct WidePointerLayout {
+    pub(crate) pointer: usize,
+    pub(crate) vtable: usize,
+    /// The data pointer's pointee: the `dyn Trait` itself when
+    /// `tail_prefixes` is empty, else the unsized aggregate around it.
+    pub(crate) pointee: TypeId,
+    pub(crate) tail_prefixes: Vec<u64>,
+    pub(crate) vtable_words: u64,
+}
+
+/// Screen `id` as rustc's DWARF representation of a Rust trait-object
+/// wide pointer: a struct with one member `pointer` whose pointee has a
+/// `dyn` tail and one member `vtable` pointing at a `[usize; N]` of at
+/// least the three header words. Both found by shape, under their
+/// private names.
+pub(crate) fn dyn_pointer_layout(reader: &DwReader<'_>, id: TypeId) -> Option<WidePointerLayout> {
     let st = struct_of(reader, id)?;
 
     let mut data_matches = st.members.iter().enumerate().filter_map(|(index, member)| {
@@ -524,50 +537,72 @@ pub(super) fn dyn_pointer_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<
             return None;
         };
         let tail_prefixes = dyn_tail_prefixes(reader, pointer.target_type_id, &mut Vec::new())?;
-        Some((index, tail_prefixes))
+        Some((
+            index,
+            reader.canonicalize(pointer.target_type_id),
+            tail_prefixes,
+        ))
     });
-    let (pointer_index, tail_prefixes) = data_matches.next()?;
+    let (pointer_index, pointee, tail_prefixes) = data_matches.next()?;
     if data_matches.next().is_some() {
         return None;
     }
 
-    let mut vtable_matches = st.members.iter().enumerate().filter(|(_, member)| {
+    let mut vtable_matches = st.members.iter().enumerate().filter_map(|(index, member)| {
         if member.name.map(|name| reader.strings.get(name)) != Some("vtable") {
-            return false;
+            return None;
         }
-        let Some(RawType::Pointer(pointer)) = reader.canonical_type(member.type_id) else {
-            return false;
+        let RawType::Pointer(pointer) = reader.canonical_type(member.type_id)? else {
+            return None;
         };
-        let Some(RawType::Array(array)) = reader.canonical_type(pointer.target_type_id) else {
-            return false;
+        let RawType::Array(array) = reader.canonical_type(pointer.target_type_id)? else {
+            return None;
         };
         if array.count < 3 {
-            return false;
+            return None;
         }
-        let Some(RawType::Base(base)) = reader.canonical_type(array.elem_type_id) else {
-            return false;
+        let RawType::Base(base) = reader.canonical_type(array.elem_type_id)? else {
+            return None;
         };
-        base.size == crate::bundle::POINTER_SIZE
+        (base.size == crate::bundle::POINTER_SIZE
             && base.encoding == Encoding::Unsigned
-            && base.name.map(|name| reader.strings.get(name)) == Some("usize")
+            && base.name.map(|name| reader.strings.get(name)) == Some("usize"))
+        .then_some((index, array.count))
     });
-    let (vtable_index, _) = vtable_matches.next()?;
+    let (vtable_index, vtable_words) = vtable_matches.next()?;
     if vtable_matches.next().is_some() || pointer_index == vtable_index {
         return None;
     }
+    Some(WidePointerLayout {
+        pointer: pointer_index,
+        vtable: vtable_index,
+        pointee,
+        tail_prefixes,
+        vtable_words,
+    })
+}
+
+/// Recognize rustc's DWARF representation of a Rust trait-object wide
+/// pointer. The bundle records both member indices and the vtable header
+/// ordering so reify never guesses from the private field name or bakes in
+/// rustc's slot numbers independently.
+pub(super) fn dyn_pointer_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
+    let reader = emitter.reader;
+    let st = struct_of(reader, id)?;
+    let layout = dyn_pointer_layout(reader, id)?;
 
     // Both members were found by shape — the screens above are what identify
     // them — so their addresses come from the one place a found member becomes
     // an address.
-    let pointer = emitter.address(&st.members, pointer_index as u32);
-    let vtable = emitter.address(&st.members, vtable_index as u32);
+    let pointer = emitter.address(&st.members, layout.pointer as u32);
+    let vtable = emitter.address(&st.members, layout.vtable as u32);
     Some(DisplayNode::DynPointer {
         pointer: Selector(vec![Step::Member(pointer)]),
         vtable: Selector(vec![Step::Member(vtable)]),
         drop_in_place: 0,
         size: 1,
         align: 2,
-        tail_prefixes,
+        tail_prefixes: layout.tail_prefixes,
     })
 }
 

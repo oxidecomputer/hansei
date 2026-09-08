@@ -3,6 +3,6 @@ source: hansei/src/offline.rs
 description: "`threads --group role` over linux-floor/dyn-future"
 ---
 COUNT  ROLE             LWPS
-    2  worker           2725072, 2725073
-    1  entered runtime  2725070
+    2  worker           3648127, 3648128
+    1  entered runtime  3648125
 [2 groups]

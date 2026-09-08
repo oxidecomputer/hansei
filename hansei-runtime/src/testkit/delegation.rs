@@ -2,8 +2,14 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-use anyhow::{Result, ensure};
+use crate::tokio::bundle::Context;
+use crate::tokio::contract::{Walked, execute_steps};
+use crate::tokio::observe::ReadContext;
+
+use anyhow::{Context as _, Result, anyhow, bail, ensure};
+use hansei_bundle::{Continuation, FutureTarget, PollAction, PollProgram};
 use proc::Target;
+use reify::Value;
 
 pub const SYMBOL: &str = "HANSEI_DELEGATION_CASES";
 
@@ -80,6 +86,81 @@ pub fn read_from<T: Target>(target: &T) -> Option<Result<Vec<Case>>> {
         }
         Ok(cases)
     })())
+}
+
+/// Where one bound direct delegation led, followed over target memory.
+#[derive(Debug)]
+pub enum Followed<'b> {
+    /// A static delegate: the value at the route's end, of the type the
+    /// program declared.
+    Static { value: Value<'b>, exclusive: bool },
+    /// A dynamic delegate: the data pointer's word. The concrete type
+    /// behind it is the vtable join's to name, not this seam's.
+    Dynamic { data: u64, exclusive: bool },
+}
+
+/// Follow the one direct delegation `value`'s type binds, literally,
+/// over the target — the way a fixture test checks an emitted program
+/// against the addresses the program registered. A test seam only: the
+/// production continuation engine and its guards are a later phase's.
+/// A type with no bound direct delegation is an error naming why.
+pub fn follow<'b, T: Target>(ctx: &Context<'b, T>, value: Value<'b>) -> Result<Followed<'b>> {
+    let record = ctx
+        .type_semantics(value.ty.id())
+        .ok_or_else(|| anyhow!("{} has no semantic record", value.ty.name()))?;
+    let facts = record
+        .future
+        .as_ref()
+        .ok_or_else(|| anyhow!("{} is not a future", value.ty.name()))?;
+    let (target, exclusive) = match &facts.continuation {
+        Continuation::Bound {
+            program: PollProgram::Direct(PollAction::Delegate { target, exclusive }),
+            ..
+        } => (target, *exclusive),
+        Continuation::Unknown(issue) => {
+            bail!(
+                "{}: continuation unknown ({:?})",
+                value.ty.name(),
+                issue.kind
+            )
+        }
+        other => bail!("{}: not a direct delegation: {other:?}", value.ty.name()),
+    };
+    let at = |root: Value<'b>, steps: &[hansei_bundle::Step]| -> Result<Value<'b>> {
+        match execute_steps(ctx, &ReadContext::none(), root, steps)? {
+            Walked::At(value) => Ok(value),
+            Walked::Inactive(name) => bail!("variant {name} is not active"),
+            Walked::Null => bail!("null pointer on the route"),
+        }
+    };
+    match target {
+        FutureTarget::Value(path) => {
+            let landed = at(value, &path.steps).context("static delegate")?;
+            ensure!(
+                landed.ty.id() == path.target,
+                "the route landed on {} rather than the declared target",
+                landed.ty.name()
+            );
+            Ok(Followed::Static {
+                value: landed,
+                exclusive,
+            })
+        }
+        FutureTarget::Dynamic { pointer, layout } => {
+            let wide = at(value, &pointer.steps).context("wide pointer")?;
+            ensure!(wide.ty.id() == pointer.target, "the wide pointer moved");
+            let data = at(wide, &layout.data.steps).context("data pointer")?;
+            let word: [u8; 8] = data
+                .bytes
+                .get(..8)
+                .and_then(|b| b.try_into().ok())
+                .ok_or_else(|| anyhow!("short data pointer"))?;
+            Ok(Followed::Dynamic {
+                data: u64::from_le_bytes(word),
+                exclusive,
+            })
+        }
+    }
 }
 
 #[cfg(test)]

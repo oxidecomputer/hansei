@@ -456,6 +456,11 @@ fn test_matrix() {
                 };
                 let (bundle, _stats) = extract_file(&cell.dwarf_path(&matrix, program), &opts)
                     .unwrap_or_else(|e| panic!("extract failed for {name}/{program}: {e}"));
+                if *program == "delegation-cases" {
+                    // Every cell is a DWARF 4 registry build of the pinned
+                    // tracing: the rule binds on its path in each.
+                    exegesis::testkit::assert_instrumented_origin(&bundle);
+                }
                 (*program, bundle)
             })
             .collect();

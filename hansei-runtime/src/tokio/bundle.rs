@@ -4302,16 +4302,12 @@ mod tests {
             .expect("the fixture bundle binds coroutine layouts");
         let ty = record.ty;
         let facts = record.future.as_mut().unwrap();
+        // Its poll symbol and whatever parent delegated to it: only the
+        // layout's own evidence stays.
         facts
             .evidence
-            .retain(|e| !matches!(e, hansei_bundle::FutureEvidence::PollSymbol(_)));
-        assert!(
-            !facts.evidence.is_empty()
-                && facts
-                    .evidence
-                    .iter()
-                    .all(|e| matches!(e, hansei_bundle::FutureEvidence::Coroutine(_)))
-        );
+            .retain(|e| matches!(e, hansei_bundle::FutureEvidence::Coroutine(_)));
+        assert!(!facts.evidence.is_empty());
         bundle.validate().unwrap();
         let ctx = testkit::context(&bundle, snapshot);
         let ty = ctx.view.ty(ty).unwrap();
@@ -4422,6 +4418,24 @@ mod tests {
             kind: SemanticIssueKind::UnsupportedOrigin,
             detail: None,
         });
+        // Unbinding it also unbinds its program, so nothing it delegated
+        // to is proved a future by it any more: withdraw that evidence,
+        // and the identity of anything it alone proved, transitively.
+        let mut withdrawn = vec![ty];
+        while let Some(parent) = withdrawn.pop() {
+            for record in &mut bundle.semantics.types {
+                let Some(facts) = &mut record.future else {
+                    continue;
+                };
+                facts.evidence.retain(
+                    |e| !matches!(e, hansei_bundle::FutureEvidence::DelegatedBy { parent: p } if *p == parent),
+                );
+                if facts.evidence.is_empty() {
+                    record.future = None;
+                    withdrawn.push(record.ty);
+                }
+            }
+        }
         bundle.validate().unwrap();
         let ctx = testkit::context(&bundle, snapshot);
         assert!(ctx.storage_unavailable(ty));

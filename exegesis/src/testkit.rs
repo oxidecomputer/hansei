@@ -2,6 +2,8 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+use crate::bundle::{Bundle, SemanticOrigin, SemanticRuleKind};
+use crate::detect::semantics::TRACING_INSTRUMENTED_V0_1_40;
 use crate::{DwReader, ReadArgs};
 
 use object::{Object, ObjectSection};
@@ -85,4 +87,63 @@ pub fn assert_instrumented_sources(path: &Path) -> BTreeSet<String> {
         );
         found
     })
+}
+
+/// The `Instrumented` rule's origin as a bundle extracted from the
+/// `delegation-cases` fixture must record it: exactly one tracing
+/// delegation origin, naming the pinned crate version, the family that
+/// version selected, and a cargo registry path for `instrument.rs`
+/// that re-parses to the same crate and version — with a
+/// `TracingInstrumented` rule under it. Returns the recorded source
+/// path. A bundle whose rule declined everywhere fails here: this is
+/// the positive assertion, not an inventory.
+pub fn assert_instrumented_origin(bundle: &Bundle) -> String {
+    let s = |r| bundle.strings.get(r).unwrap_or("<bad strref>");
+    let origins: Vec<(usize, &SemanticOrigin)> = bundle
+        .semantics
+        .origins
+        .iter()
+        .enumerate()
+        .filter(|(_, o)| matches!(o, SemanticOrigin::LibraryDelegation { .. }))
+        .collect();
+    let [(index, origin)] = origins.as_slice() else {
+        panic!("expected exactly one delegation origin, found {origins:?}");
+    };
+    let SemanticOrigin::LibraryDelegation {
+        package,
+        version,
+        family,
+        source,
+        files,
+    } = origin
+    else {
+        unreachable!()
+    };
+    assert_eq!(s(*package), "tracing");
+    assert_eq!(s(*version), "0.1.40", "the fixture pins tracing 0.1.40");
+    assert_eq!(s(*family), TRACING_INSTRUMENTED_V0_1_40.family);
+    let source = s(*source).to_owned();
+    let parsed = crate::bundle::origin::registry_origin(&source)
+        .unwrap_or_else(|| panic!("{source} is not a registry path"));
+    assert_eq!(parsed.package, "tracing");
+    assert_eq!(parsed.version.to_string(), "0.1.40");
+    assert!(
+        source.ends_with("/tracing-0.1.40/src/instrument.rs"),
+        "{source}"
+    );
+    // rustc emits no line-table checksums today; a build that carried
+    // them would have to carry a reviewed one to have bound at all.
+    for file in files {
+        assert!(TRACING_INSTRUMENTED_V0_1_40.reviewed_checksum(&file.md5));
+    }
+    assert!(
+        bundle
+            .semantics
+            .rules
+            .iter()
+            .any(|r| r.kind == SemanticRuleKind::TracingInstrumented
+                && r.origin.0 as usize == *index),
+        "no TracingInstrumented rule under the delegation origin"
+    );
+    source
 }

@@ -14,8 +14,8 @@
 
 use crate::schema::{
     Bundle, BundleTypeId, DisplayNode, Field, FieldRender, MapEntries, MemberDef, MemberRef,
-    Notation, ScalarDecode, Selector, StaticsTable, Step, Stmt, TypeDef, ValueExpr, WalkOutcome,
-    strip_llvm_suffix,
+    Notation, ScalarDecode, Selector, StaticsTable, Step, Stmt, TypeDef, TypeTable, ValueExpr,
+    WalkOutcome, strip_llvm_suffix,
 };
 use crate::shape::{Addressed, Shape};
 use crate::strings::StrRef;
@@ -30,7 +30,7 @@ pub const MAGIC: [u8; 8] = *b"exegesis";
 
 /// The current bundle format version. Bump on any schema change, including
 /// indirect ones (e.g. new [`crate::Encoding`] variants).
-pub const FORMAT_VERSION: u32 = 54;
+pub const FORMAT_VERSION: u32 = 55;
 
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -93,37 +93,41 @@ fn selector_target(
     sel: &Selector,
     what: &str,
 ) -> Result<BundleTypeId> {
-    selector_target_with_policy(bundle, root, sel, what, false)
+    selector_target_with_policy(&bundle.types, root, sel, what, false)
 }
 
-/// Semantic paths use the same graph traversal with stricter storage rules.
-pub(crate) fn semantic_path_target(
-    bundle: &Bundle,
+/// Semantic paths use the same graph traversal with stricter storage
+/// rules: named members only, no union crossing, every inline member
+/// sized and in bounds, a sized endpoint. Over a bare type table so the
+/// producer can hold a path it is about to record to the same rule the
+/// validator applies, and decline instead of emitting what would not
+/// load.
+pub fn semantic_path_target(
+    types: &TypeTable,
     root: BundleTypeId,
     sel: &Selector,
 ) -> Result<BundleTypeId> {
-    selector_target_with_policy(bundle, root, sel, "semantic path", true)
+    selector_target_with_policy(types, root, sel, "semantic path", true)
 }
 
 fn selector_target_with_policy(
-    bundle: &Bundle,
+    types: &TypeTable,
     root: BundleTypeId,
     sel: &Selector,
     what: &str,
     semantic: bool,
 ) -> Result<BundleTypeId> {
     let mut current = root;
-    let mut def = bundle
-        .types
+    let mut def = types
         .get(root)
-        .expect("root type validated before formats");
+        .ok_or_else(|| Error::Corrupt(format!("{what}: invalid root type {}", root.0)))?;
     let mut seen = vec![root];
     let mut offset = 0u64;
     let inline = |parent, member: &MemberDef, offset: u64| -> Result<u64> {
-        let size = bundle.types.size_of(member.ty);
+        let size = types.size_of(member.ty);
         let end = size.and_then(|size| member.offset.checked_add(size));
         if end
-            .zip(bundle.types.size_of(parent))
+            .zip(types.size_of(parent))
             .is_none_or(|(end, size)| end > size)
         {
             return Err(Error::Corrupt(format!(
@@ -172,10 +176,9 @@ fn selector_target_with_policy(
                 }
                 seen.push(member.ty);
                 current = member.ty;
-                def = bundle
-                    .types
+                def = types
                     .get(member.ty)
-                    .expect("member type validated before formats");
+                    .ok_or_else(|| Error::Corrupt(format!("{what}: invalid member type")))?;
             }
             Step::Deref => {
                 let TypeDef::Pointer { target, .. } = def else {
@@ -185,10 +188,9 @@ fn selector_target_with_policy(
                     )));
                 };
                 current = *target;
-                def = bundle
-                    .types
+                def = types
                     .get(*target)
-                    .expect("pointer target validated before formats");
+                    .ok_or_else(|| Error::Corrupt(format!("{what}: invalid pointer target")))?;
                 seen = vec![current];
                 offset = 0;
             }
@@ -216,10 +218,9 @@ fn selector_target_with_policy(
                 }
                 seen.push(variant.payload.ty);
                 current = variant.payload.ty;
-                def = bundle
-                    .types
+                def = types
                     .get(variant.payload.ty)
-                    .expect("variant payload validated before formats");
+                    .ok_or_else(|| Error::Corrupt(format!("{what}: invalid variant payload")))?;
             }
             Step::ActiveVariant => {
                 // Which variant is live is a runtime fact; only a walk
@@ -234,7 +235,7 @@ fn selector_target_with_policy(
             }
         }
     }
-    if semantic && bundle.types.size_of(current).is_none() {
+    if semantic && types.size_of(current).is_none() {
         return Err(Error::Corrupt(format!(
             "{what}: unsized or opaque endpoint"
         )));

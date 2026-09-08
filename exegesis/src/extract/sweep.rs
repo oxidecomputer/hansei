@@ -49,6 +49,11 @@ pub(super) struct Sweep {
     pub(super) fut_polls: BTreeMap<TypeId, BTreeSet<String>>,
     /// Exact Future-trait poll evidence, independent of resume-function shape.
     pub(super) explicit_polls: BTreeMap<TypeId, BTreeSet<String>>,
+    /// Where each explicit poll was declared: the implementing file, as
+    /// the line table spells it, with its checksum when the table
+    /// carries one. A third-party rule reads its origin — which crate,
+    /// which version — off this path.
+    pub(super) poll_sources: BTreeMap<TypeId, BTreeSet<PollSource>>,
     /// Resume shapes requiring a reviewed compiler convention before they
     /// establish future identity or initialized storage.
     pub(super) coroutine_candidates: BTreeSet<TypeId>,
@@ -72,6 +77,48 @@ pub(super) struct Sweep {
     pub(super) impl_selfs: BTreeMap<NsId, Option<String>>,
 }
 
+/// One `poll`'s declaration file: the full path the unit's line table
+/// spells for it, and the MD5 the table carries beside it, if any.
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
+pub(super) struct PollSource {
+    pub(super) path: String,
+    pub(super) md5: Option<[u8; 16]>,
+}
+
+/// The declaration file of `func`, joined the way the line table meant
+/// it: an absolute file as is, a relative one under its directory, a
+/// relative directory under the unit's compilation directory. `None`
+/// when the function records no file.
+fn poll_source(reader: &DwReader<'_>, func: &Func<'_>) -> Option<PollSource> {
+    let loc = func.raw().source_loc.as_deref()?;
+    let file = reader.strings.get(loc.file?);
+    let dir = loc
+        .dir
+        .map(|d| reader.strings.get(d))
+        .filter(|d| !d.is_empty());
+    let comp_dir = loc
+        .comp_dir
+        .map(|d| reader.strings.get(d))
+        .filter(|d| !d.is_empty());
+    let path = if file.starts_with('/') {
+        file.to_owned()
+    } else {
+        let under_dir = match dir {
+            Some(dir) => format!("{dir}/{file}"),
+            None => file.to_owned(),
+        };
+        match comp_dir {
+            Some(comp_dir) if !under_dir.starts_with('/') => format!("{comp_dir}/{under_dir}"),
+            _ => under_dir,
+        }
+    };
+    let md5 = loc
+        .file_id
+        .and_then(|id| reader.source_file(id))
+        .and_then(|file| file.md5);
+    Some(PollSource { path, md5 })
+}
+
 impl Sweep {
     /// Fold another worker's contributions in. Called in chunk (i.e. source)
     /// order, so the "first wins" fields resolve exactly as a serial sweep.
@@ -92,6 +139,9 @@ impl Sweep {
         }
         for (t, syms) in other.explicit_polls {
             self.explicit_polls.entry(t).or_default().extend(syms);
+        }
+        for (t, sources) in other.poll_sources {
+            self.poll_sources.entry(t).or_default().extend(sources);
         }
         self.coroutine_candidates.extend(other.coroutine_candidates);
         for (t, syms) in other.drop_glues {
@@ -299,6 +349,9 @@ fn sweep_function(
                     .entry(t)
                     .or_default()
                     .insert(strip(linkage).to_owned());
+                if let Some(source) = poll_source(reader, func) {
+                    out.poll_sources.entry(t).or_default().insert(source);
+                }
                 out.fut_polls
                     .entry(t)
                     .or_default()
@@ -920,6 +973,92 @@ mod tests {
             )])
         );
         assert!(sweep.coroutine_candidates.is_empty());
+    }
+
+    /// An explicit poll's declaration file is recorded beside its symbol,
+    /// joined as the line table meant it: a relative directory under the
+    /// unit's compilation directory, an absolute one as is. A poll with no
+    /// declaration records no source, and merging keeps every source.
+    #[test]
+    fn test_sweep_records_where_explicit_polls_are_declared() {
+        let mut reader = DwReader::default();
+        let future = type_id(0x10);
+        insert_struct(&mut reader, future, None, "Instrumented<F>", &[]);
+        let pin = insert_pin_of(&mut reader, type_id(0x20), type_id(0x30), future);
+        let linkage = "<Instrumented<F> as core::future::future::Future>::poll";
+        for (id, dir, comp_dir) in [
+            (
+                0x100,
+                Some("/home/u/.cargo/registry/src/idx/tracing-0.1.40"),
+                Some("/build"),
+            ),
+            (0x110, Some("vendor/tracing-0.1.40"), Some("/build")),
+            (0x120, None, None),
+        ] {
+            insert_func(
+                &mut reader,
+                func_id(id),
+                None,
+                "poll",
+                Some(linkage),
+                &[],
+                &[pin],
+                None,
+            );
+            let file = reader.strings.intern("src/instrument.rs");
+            let dir = dir.map(|d| reader.strings.intern(d));
+            let comp_dir = comp_dir.map(|d| reader.strings.intern(d));
+            reader.functions.get_mut(&func_id(id)).unwrap().source_loc =
+                Some(Box::new(crate::raw_types::SourceLoc {
+                    file: Some(file),
+                    dir,
+                    comp_dir,
+                    ..Default::default()
+                }));
+        }
+        // And one poll with no declaration at all.
+        insert_func(
+            &mut reader,
+            func_id(0x130),
+            None,
+            "poll",
+            Some(linkage),
+            &[],
+            &[pin],
+            None,
+        );
+        let view = reader.view();
+        let sweep = sweep_functions(&view, None, None);
+        let paths: Vec<(&str, Option<[u8; 16]>)> = sweep.poll_sources[&future]
+            .iter()
+            .map(|s| (s.path.as_str(), s.md5))
+            .collect();
+        assert_eq!(
+            paths,
+            [
+                ("/build/vendor/tracing-0.1.40/src/instrument.rs", None),
+                (
+                    "/home/u/.cargo/registry/src/idx/tracing-0.1.40/src/instrument.rs",
+                    None
+                ),
+                ("src/instrument.rs", None),
+            ]
+        );
+        let mut merged = Sweep::default();
+        merged.merge(sweep);
+        let mut again = Sweep::default();
+        again.merge(Sweep {
+            poll_sources: BTreeMap::from([(
+                future,
+                BTreeSet::from([PollSource {
+                    path: "src/instrument.rs".into(),
+                    md5: Some([1; 16]),
+                }]),
+            )]),
+            ..Default::default()
+        });
+        again.merge(merged);
+        assert_eq!(again.poll_sources[&future].len(), 4);
     }
 
     #[test]

@@ -59,7 +59,7 @@ pub const FUTURES_UNORDERED: &str = "futures_util::stream::futures_unordered::Fu
 pub const JOIN_SET: &str = "tokio::task::join_set::JoinSet<";
 
 /// The spelling of a future trait object's pointee.
-pub const DYN_FUTURE: &str = "dyn core::future::future::Future<";
+pub const DYN_FUTURE: &str = hansei_bundle::names::DYN_FUTURE;
 
 /// Whether a dyn pointee *is* a future trait object — anchored at the
 /// front, past the parenthesized spelling, since any dyn whose generics
@@ -67,10 +67,7 @@ pub const DYN_FUTURE: &str = "dyn core::future::future::Future<";
 /// otherwise match. The one test both the chain walk and the census
 /// answer this question with.
 pub fn is_dyn_future_pointee(pointee: &str) -> bool {
-    pointee
-        .strip_prefix('(')
-        .unwrap_or(pointee)
-        .starts_with(DYN_FUTURE)
+    hansei_bundle::names::is_future_trait_object(pointee)
 }
 
 /// Whether `name` is a type a leaf key names. A key ending in `<` is a

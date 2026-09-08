@@ -483,30 +483,143 @@ fn test_delegation_cases_offline() {
             cases.iter().map(|c| c.child_polls).collect::<Vec<_>>(),
             [0, 1, 0, 0, 1, 1, 1, 1]
         );
-        // Layout rules bind the resources and schedulers; no delegation
-        // rule and no delegating program exists yet, so nothing claims
-        // that any parent here polls its child.
-        assert!(
-            bundle
-                .semantics
-                .rules
+        exegesis_free_origin_check(&bundle);
+        // Every task's root is a `Pin<Box<F>>` whose program lands on the
+        // registered root `F`; then the case's own rule, or none, decides
+        // whether the registered child is reached — the emitted routes
+        // executed over the captured bytes, against addresses the
+        // program wrote down itself.
+        use hansei_runtime::testkit::delegation::{Followed, follow};
+        let mut reached = BTreeSet::new();
+        for task in &tasks.tasks {
+            let TaskStage::Running(peeled) = ctx.task_stage(task).unwrap() else {
+                panic!("{set}: every fixture task is resident");
+            };
+            // The stage decode still peels the root to its sole member, so
+            // the nominal `Pin<Box<F>>` is re-read at the same address from
+            // the entry's own type: the program is bound to the nominal
+            // root, and executes from it.
+            let FutureInfo::Known(known) = &task.future else {
+                panic!("{set}: every fixture task's future is known");
+            };
+            let nominal = ctx
+                .view
+                .ty(bundle.tasks.entries[known.entry.0 as usize].future)
+                .unwrap();
+            let root = reify::Value::read(&snapshot, nominal, peeled.addr).unwrap();
+            let Followed::Static {
+                value: inner,
+                exclusive: true,
+            } = follow(&ctx, root).unwrap()
+            else {
+                panic!("{set}: a pin over a box forwards exclusively to its pointee");
+            };
+            let case = cases
                 .iter()
-                .all(|rule| rule.kind != hansei_bundle::SemanticRuleKind::TracingInstrumented)
-        );
-        assert!(bundle.semantics.types.iter().all(|record| {
-            record
-                .future
-                .as_ref()
-                .is_none_or(|facts| match &facts.continuation {
-                    hansei_bundle::Continuation::Unknown(_) => true,
-                    hansei_bundle::Continuation::Bound { program, .. } => matches!(
-                        program,
-                        hansei_bundle::PollProgram::Direct(hansei_bundle::PollAction::Primitive)
-                    ),
-                })
-        }));
+                .find(|c| c.root == inner.addr)
+                .unwrap_or_else(|| panic!("{set}: no case registered at {:#x}", inner.addr));
+            assert_eq!(inner.ty.size(), case.root_size, "{set}: {}", case.name);
+            let child = follow(&ctx, inner);
+            match case.name {
+                // No rule looks past a hand-written wrapper, whatever it
+                // holds: a closed gate, an open one polled earlier, a
+                // retained enum payload, a raw pointer.
+                "gated" | "previously-polled" | "enum-retained" | "raw-pointer" => {
+                    let err = child.unwrap_err().to_string();
+                    assert!(err.contains("continuation unknown"), "{set}: {err}");
+                }
+                "reference" | "boxed" => {
+                    let Followed::Static {
+                        value: child,
+                        exclusive: true,
+                    } = child.unwrap()
+                    else {
+                        panic!("{set}: {} forwards exclusively", case.name)
+                    };
+                    assert_eq!((child.addr, child.ty.size()), (case.child, case.child_size));
+                    // And the probe itself has no rule.
+                    assert!(follow(&ctx, child).is_err());
+                }
+                "dynamic" => {
+                    let Followed::Dynamic {
+                        data,
+                        exclusive: true,
+                    } = child.unwrap()
+                    else {
+                        panic!("{set}: the inner pin over the boxed dyn is dynamic")
+                    };
+                    assert_eq!(data, case.child);
+                }
+                "instrumented" => {
+                    let Followed::Static {
+                        value: child,
+                        exclusive: false,
+                    } = child.unwrap()
+                    else {
+                        panic!("{set}: Instrumented forwards, but not exclusively")
+                    };
+                    assert_eq!((child.addr, child.ty.size()), (case.child, case.child_size));
+                    assert!(follow(&ctx, child).is_err());
+                }
+                other => panic!("{set}: unexpected case {other}"),
+            }
+            reached.insert(case.name);
+        }
+        assert_eq!(reached.len(), 8, "{set}: every case's root was a task");
     }
     assert_summary("delegation-cases");
+}
+
+/// The captured bundle's delegation origin, without exegesis: the one
+/// tracing origin names the pinned version on a registry path and has
+/// the `Instrumented` rule under it.
+fn exegesis_free_origin_check(bundle: &Bundle) {
+    use hansei_bundle::{SemanticOrigin, SemanticRuleKind};
+    let s = |r| bundle.strings.get(r).unwrap();
+    let delegations: Vec<_> = bundle
+        .semantics
+        .origins
+        .iter()
+        .enumerate()
+        .filter_map(|(i, o)| match o {
+            SemanticOrigin::LibraryDelegation {
+                package,
+                version,
+                family,
+                source,
+                files,
+            } => Some((
+                i,
+                s(*package),
+                s(*version),
+                s(*family),
+                s(*source),
+                files.len(),
+            )),
+            _ => None,
+        })
+        .collect();
+    let [(index, package, version, family, source, checksums)] = delegations.as_slice() else {
+        panic!("expected one delegation origin: {delegations:?}");
+    };
+    assert_eq!(
+        (*package, *version, *family),
+        ("tracing", "0.1.40", "tracing-instrumented-0.1.40")
+    );
+    let parsed = hansei_bundle::origin::registry_origin(source).expect("registry path");
+    assert_eq!(
+        (parsed.package, parsed.version.to_string().as_str()),
+        ("tracing", "0.1.40")
+    );
+    assert_eq!(*checksums, 0, "rustc's DWARF 4 carries no checksums");
+    assert!(
+        bundle
+            .semantics
+            .rules
+            .iter()
+            .any(|r| r.kind == SemanticRuleKind::TracingInstrumented
+                && r.origin.0 as usize == *index)
+    );
 }
 
 /// The registry join never overwrites a decoded primitive: a task

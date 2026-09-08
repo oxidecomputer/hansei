@@ -22,6 +22,7 @@
 //!   release moved, dispatched per target by the recovered tokio
 //!   version (see [`Family`]).
 
+pub(crate) mod adapters;
 mod crates;
 pub mod semantics;
 mod std;
@@ -1384,7 +1385,7 @@ fn is_byte_array(
 /// Zero and several both give `None`: a wrapper with two candidate members is
 /// not one this can see through, so an ambiguous layout fails closed the same
 /// way a renamed member does.
-fn zero_offset_member(
+pub(crate) fn zero_offset_member(
     reader: &DwReader<'_>,
     members: &[crate::raw_types::RawMember<crate::StrId>],
     name: Option<&str>,

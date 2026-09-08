@@ -9,6 +9,7 @@
 
 mod io;
 pub mod names;
+pub mod origin;
 mod schema;
 mod semantics;
 mod shape;
@@ -17,7 +18,7 @@ pub mod symbols;
 pub mod tokio;
 mod view;
 
-pub use io::{Error, FORMAT_VERSION, Result};
+pub use io::{Error, FORMAT_VERSION, Result, semantic_path_target};
 pub use schema::{
     Arm, BinaryIdent, BitField, Bundle, BundleTypeId, DebugSourceIdent, DiscrDef, DiscrValue,
     DiscrValues, DisplayNode, DynFutureTable, FamilyCeiling, Field, FieldRender, FutureKind,

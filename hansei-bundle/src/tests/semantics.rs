@@ -58,6 +58,10 @@ fn base() -> Bundle {
         "data",
         "vtable",
         "dyn core::future::future::Future<Output=()>",
+        "tracing-instrumented-0.1.40",
+        "registry/src/index.crates.io-1949cf8c6b5b557f/tracing-0.1.40/src/instrument.rs",
+        "vendor/tracing-0.1.40/src/instrument.rs",
+        "registry/src/index.crates.io-1949cf8c6b5b557f/tracing-0.1.50/src/instrument.rs",
     ] {
         strings.intern(s);
     }
@@ -297,14 +301,7 @@ fn test_semantic_ids_evidence_and_rule_validation() {
             }
         }),
         ("compiler origin", |b| {
-            b.semantics.origins[0] = SemanticOrigin::LibraryDelegation {
-                package: StrRef(12),
-                version: StrRef(13),
-                files: vec![SourceFileEvidence {
-                    file: StrRef(11),
-                    md5: [7; 16],
-                }],
-            }
+            b.semantics.origins[0] = delegation_origin(StrRef(18));
         }),
         ("missing delegation parent", |b| {
             b.semantics.types[0].future.as_mut().unwrap().evidence =
@@ -415,17 +412,38 @@ fn test_semantic_delegation_can_reach_another_value_of_the_same_type() {
     bad(&b, "empty self delegation");
 }
 
-#[test]
-fn test_semantic_exclusivity_requires_more_than_a_single_path() {
-    let mut b = forwarding();
+fn set_exclusive(b: &mut Bundle) {
     let Continuation::Bound {
         program: PollProgram::Direct(PollAction::Delegate { exclusive, .. }),
         ..
-    } = continuation(&mut b)
+    } = continuation(b)
     else {
         unreachable!()
     };
     *exclusive = true;
+}
+
+/// The bit is a property of the rule revision, not of the path: the
+/// reviewed std adapters and compiler coroutines may carry it, a
+/// callback-bearing wrapper under the same single-path program may not.
+#[test]
+fn test_semantic_exclusivity_is_reviewed_per_rule_kind() {
+    for kind in [
+        SemanticRuleKind::StdPinBoxPoll,
+        SemanticRuleKind::StdBoxPoll,
+        SemanticRuleKind::StdMutRefPoll,
+        SemanticRuleKind::StdPinMutRefPoll,
+    ] {
+        let mut b = forwarding();
+        b.semantics.rules[0].kind = kind;
+        set_exclusive(&mut b);
+        b.validate().unwrap_or_else(|e| panic!("{kind:?}: {e}"));
+    }
+    let mut b = forwarding();
+    b.semantics.rules[0].kind = SemanticRuleKind::TracingInstrumented;
+    b.semantics.origins[0] = delegation_origin(StrRef(18));
+    b.validate().unwrap();
+    set_exclusive(&mut b);
     bad(&b, "unreviewed delegation exclusivity");
 }
 
@@ -697,18 +715,31 @@ fn test_semantic_resource_layout_is_separate_from_state_and_exclusivity() {
     }
 }
 
-#[test]
-fn test_semantic_delegation_origin_requires_unique_source_evidence() {
-    let mut b = forwarding();
-    b.semantics.rules[0].kind = SemanticRuleKind::TracingInstrumented;
-    b.semantics.origins[0] = SemanticOrigin::LibraryDelegation {
+/// A tracing delegation origin over the given source path: the crate,
+/// version and family the fixture strings spell, with one checksum.
+fn delegation_origin(source: StrRef) -> SemanticOrigin {
+    SemanticOrigin::LibraryDelegation {
         package: StrRef(12),
         version: StrRef(13),
+        family: StrRef(17),
+        source,
         files: vec![SourceFileEvidence {
             file: StrRef(11),
             md5: [7; 16],
         }],
-    };
+    }
+}
+
+/// The origin is the registry path: it has to parse under the cargo
+/// convention, anchored at its `registry/src/` segment, and name the
+/// crate and version the record claims. Checksums corroborate when a
+/// file table carried them and are absent otherwise; a file listed
+/// twice is still malformed.
+#[test]
+fn test_semantic_delegation_origin_is_its_registry_path() {
+    let mut b = forwarding();
+    b.semantics.rules[0].kind = SemanticRuleKind::TracingInstrumented;
+    b.semantics.origins[0] = delegation_origin(StrRef(18));
     b.validate().unwrap();
     let mut bytes = Vec::new();
     b.write_to(&mut bytes).unwrap();
@@ -720,7 +751,13 @@ fn test_semantic_delegation_origin_requires_unique_source_evidence() {
     if let SemanticOrigin::LibraryDelegation { files, .. } = &mut b.semantics.origins[0] {
         files.clear();
     }
-    bad(&b, "no source checksums");
+    b.validate().unwrap();
+    // A vendored tree is not an origin; a registry path that spells
+    // another version is somebody else's review.
+    b.semantics.origins[0] = delegation_origin(StrRef(19));
+    bad(&b, "not a registry path");
+    b.semantics.origins[0] = delegation_origin(StrRef(20));
+    bad(&b, "another crate or version");
 }
 
 fn dynamic() -> Bundle {
@@ -770,6 +807,19 @@ fn test_semantic_dynamic_targets_validate_bases_fields_trait_and_slots() {
     let mut bytes = Vec::new();
     b.write_to(&mut bytes).unwrap();
     assert_eq!(Bundle::read_from(bytes.as_slice()).unwrap(), b);
+    // rustc spells the pointee as an empty zero-sized struct; a member
+    // or a size makes it something else.
+    b.types.types[6] = TypeDef::Struct {
+        name: StrRef(16),
+        size: 0,
+        members: Vec::new(),
+    };
+    b.validate().unwrap();
+    if let TypeDef::Struct { size, .. } = &mut b.types.types[6] {
+        *size = 8;
+    }
+    bad(&b, "not a Future trait object");
+    let mut b = dynamic();
     dyn_layout(&mut b).poll_slot = 4;
     bad(&b, "dyn ABI slots");
     let mut b = dynamic();
