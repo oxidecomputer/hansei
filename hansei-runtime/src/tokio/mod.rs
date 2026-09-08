@@ -11,8 +11,10 @@
 //! runtime holds is read through the bundle's own layouts, so it needs
 //! no mirror struct here to be described.
 
+pub mod assess;
 pub mod bundle;
 pub mod census;
+pub mod chain;
 pub mod contract;
 pub mod graph;
 mod model;

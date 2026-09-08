@@ -43,7 +43,7 @@ use std::collections::BTreeMap;
 /// Hard bound on await-chain depth: anything deeper indicates corrupt
 /// memory (or a pathological program), and the walk must report it
 /// rather than hang.
-const MAX_AWAIT_DEPTH: usize = 64;
+pub(crate) const MAX_AWAIT_DEPTH: usize = 64;
 
 /// How far to unwrap a member's type looking for the future inside it
 /// (see [`Context::is_future`]). Real wrapper stacks are two or three
@@ -171,7 +171,7 @@ const SEMAPHORE_OWNERS: &[(&str, &str)] = &[
 /// `Map`) can sit between `Mutex::lock`'s coroutine and the `Acquire` it
 /// awaits, and a fixed offset would read that wrapper and report a
 /// semaphore nobody owns.
-fn semaphore_owner(chain: &AwaitChain<'_>) -> Option<&'static str> {
+pub(crate) fn semaphore_owner(chain: &AwaitChain<'_>) -> Option<&'static str> {
     chain.frames.iter().rev().skip(1).find_map(|frame| {
         let name = frame.future.ty.name();
         SEMAPHORE_OWNERS
@@ -287,7 +287,7 @@ impl<'b, T: Target> Context<'b, T> {
 
     /// Borrow the bundle's independent type facts. Missing facts establish no
     /// semantic capability; lookup does not inspect names or display formats.
-    pub fn type_semantics(&self, ty: BundleTypeId) -> Option<&TypeSemantics> {
+    pub fn type_semantics(&self, ty: BundleTypeId) -> Option<&'b TypeSemantics> {
         self.semantics
             .get(ty)
             .map(|index| &self.view.bundle().semantics.types[index])
@@ -299,7 +299,7 @@ impl<'b, T: Target> Context<'b, T> {
     /// was dumped — "now" as of everything else this session reads. `None` when no
     /// lwp reports a usable stamp — a Linux core records no stop times, and
     /// its reader fills the field with zero, which no real clock reads.
-    fn stopped_at(&self) -> Option<RawInstant> {
+    pub(crate) fn stopped_at(&self) -> Option<RawInstant> {
         *self.stopped.borrow_mut().get_or_insert_with(|| {
             let zero = proc::Timespec {
                 tv_sec: 0,
@@ -317,7 +317,7 @@ impl<'b, T: Target> Context<'b, T> {
 
     /// Resolve an infra type id to a usable layout, rejecting the opaque
     /// placeholders `--allow-missing-infra` extraction leaves behind.
-    fn infra_ty(&self, id: BundleTypeId, what: &str) -> Result<BundleType<'b>> {
+    pub(crate) fn infra_ty(&self, id: BundleTypeId, what: &str) -> Result<BundleType<'b>> {
         let ty = self
             .view
             .ty(id)
@@ -332,7 +332,7 @@ impl<'b, T: Target> Context<'b, T> {
     }
 
     /// The mangled symtab name covering `addr`, if any (cached).
-    fn symbol_at(&self, addr: u64) -> Option<String> {
+    pub(crate) fn symbol_at(&self, addr: u64) -> Option<String> {
         self.symbols.get_or(&addr, || {
             self.proc.lookup_symbol_by_addr(addr).map(|s| s.name)
         })
@@ -340,7 +340,7 @@ impl<'b, T: Target> Context<'b, T> {
 
     /// [`BundleView::task_ids_for_symbol`], answered from
     /// [`Context::task_lookups`] when the symbol has been asked before.
-    fn task_ids_memoized(&self, symbol: &str) -> SymbolLookup<TaskEntryId> {
+    pub(crate) fn task_ids_memoized(&self, symbol: &str) -> SymbolLookup<TaskEntryId> {
         self.task_lookups
             .get_or(symbol, || self.view.task_ids_for_symbol(symbol))
     }
@@ -348,7 +348,7 @@ impl<'b, T: Target> Context<'b, T> {
     /// [`BundleView::dyn_future_ids_for_symbol`], answered from
     /// [`Context::dyn_future_lookups`] when the symbol has been asked
     /// before.
-    fn dyn_future_ids_memoized(&self, symbol: &str) -> SymbolLookup<BundleTypeId> {
+    pub(crate) fn dyn_future_ids_memoized(&self, symbol: &str) -> SymbolLookup<BundleTypeId> {
         self.dyn_future_lookups
             .get_or(symbol, || self.view.dyn_future_ids_for_symbol(symbol))
     }
@@ -1085,7 +1085,7 @@ impl<'b, T: Target> Context<'b, T> {
         Ok(())
     }
 
-    fn task_entry(&self, id: TaskEntryId) -> &'b TaskFutureEntry {
+    pub(crate) fn task_entry(&self, id: TaskEntryId) -> &'b TaskFutureEntry {
         // Ids handed out by task_ids_for_symbol always index the table.
         &self.view.bundle().tasks.entries[id.0 as usize]
     }
@@ -1393,7 +1393,11 @@ impl<'b, T: Target> Context<'b, T> {
             }
         };
 
-        AwaitChain { frames, end }
+        AwaitChain {
+            frames,
+            edges: Vec::new(),
+            end,
+        }
     }
 
     /// Follow one future the chain reached to the frame it stands for.
@@ -1983,7 +1987,7 @@ impl<'b, T: Target> Context<'b, T> {
     /// wait queue, a timer entry's `AtomicWaker`. The two halves are read
     /// through the same recorded steps in either case, since the landing
     /// type is the same `RawWaker`.
-    fn raw_waker(&self, raw: Value<'b>) -> Result<QueuedWaker> {
+    pub(crate) fn raw_waker(&self, raw: Value<'b>) -> Result<QueuedWaker> {
         let data: u64 = self.walk(WalkRole::WakerData).read(raw)?;
         let vtable: u64 = self.walk(WalkRole::WakerVtable).read(raw)?;
         self.task_waker(data, vtable)
@@ -2075,7 +2079,7 @@ impl<'b, T: Target> Context<'b, T> {
     /// [`UnlistedTaskKind`] words it. `None` when the join cannot
     /// resolve the future or a read on the way fails — the
     /// classification is extra information, never worth an error.
-    fn header_unlisted_kind(&self, addr: u64) -> Option<UnlistedTaskKind> {
+    pub(crate) fn header_unlisted_kind(&self, addr: u64) -> Option<UnlistedTaskKind> {
         let entry_id = self.header_entry(addr).ok().flatten()?;
         match self.scheduler_kind(self.task_entry(entry_id)) {
             SchedulerKind::LocalSet => Some(UnlistedTaskKind::LocalSet),
@@ -3951,7 +3955,7 @@ impl<'b, T: Target> Context<'b, T> {
     /// Read the value a key names, as its nominal type, held to `read`:
     /// the type must exist, the address must be mapped, and the
     /// allocator must permit the typed range.
-    fn read_keyed(&self, key: ValueKey, read: &ReadContext<'_>) -> Result<Value<'b>> {
+    pub(crate) fn read_keyed(&self, key: ValueKey, read: &ReadContext<'_>) -> Result<Value<'b>> {
         let ty = self
             .view
             .ty(key.ty)

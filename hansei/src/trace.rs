@@ -790,7 +790,34 @@ fn print_chain_end(
     out: &mut dyn io::Write,
 ) -> Result<()> {
     match &chain.end {
-        bundle::ChainEnd::Leaf => {}
+        bundle::ChainEnd::Leaf | bundle::ChainEnd::Primitive => {}
+        bundle::ChainEnd::Unresumed => {
+            writeln!(out, "the chain ends in a future that has never been polled")?;
+        }
+        bundle::ChainEnd::Returned => {
+            writeln!(out, "the chain ends in a future that has returned")?;
+        }
+        bundle::ChainEnd::Panicked => {
+            writeln!(out, "the chain ends in a future that panicked")?;
+        }
+        bundle::ChainEnd::UnknownContinuation { reason, .. } => {
+            let last = chain
+                .frames
+                .last()
+                .map(|f| names::fold_type_name(f.future.ty.name(), impls))
+                .unwrap_or(std::borrow::Cow::Borrowed("the root"));
+            writeln!(
+                out,
+                "what {last} polls is not established ({}); the chain ends there",
+                continuation_reason(*reason)
+            )?;
+        }
+        bundle::ChainEnd::ActivePoll => {
+            writeln!(
+                out,
+                "the task is mid-poll: its saved state below the root is not read as a chain"
+            )?;
+        }
         bundle::ChainEnd::UnknownDyn {
             pointee,
             poll_symbol,
@@ -846,6 +873,22 @@ fn print_chain_end(
         }
     }
     Ok(())
+}
+
+/// Why a continuation is unknown, as the chain end spells it: the
+/// semantic issue's kind in words a reader of the tokio info's
+/// `--explain-future` output would recognize.
+fn continuation_reason(reason: hansei_bundle::SemanticIssueKind) -> &'static str {
+    use hansei_bundle::SemanticIssueKind::*;
+    match reason {
+        NoRule => "no reviewed rule covers its implementation",
+        UnsupportedOrigin => "its implementation's origin is not reviewed",
+        MissingLayout => "its layout is not in the tokio info",
+        AmbiguousLayout => "its layout is ambiguous",
+        UnsupportedState => "its state is one no rule covers",
+        MultipleChildren => "it polls more than one future",
+        PossiblyUninitialized => "its storage may not be initialized",
+    }
 }
 
 /// Print a mid-poll task's native continuation above its chain: find
@@ -1502,6 +1545,7 @@ mod chain_end_tests {
     fn rendered(end: ChainEnd) -> String {
         let chain = AwaitChain {
             frames: Vec::new(),
+            edges: Vec::new(),
             end,
         };
         let mut out = Vec::new();

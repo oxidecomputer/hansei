@@ -15,10 +15,16 @@
 //! futurelocked (RFD 609), even when — especially when — the holder
 //! is the blocked task itself.
 
+use super::assess::{
+    Assessed, AssessmentPass, ContinuationStatus, PollingBarrier, TaskFacts, WaitAssessment,
+    WaitUnknownReason,
+};
 use super::bundle::{
     AbandonedAcquire, Context, FutureInfo, Interest, QueuedWaker, Registries, TaskList, TaskStage,
     WaitTarget,
 };
+use super::chain::InspectionMode;
+use super::observe::{ReadContext, ResourceObservation};
 use super::{Lifecycle, TaskAddr};
 
 use proc::Target;
@@ -249,6 +255,145 @@ pub fn analyze<T: Target>(
         waits,
         futurelocks,
         join_wakers,
+        errors,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The assessed analysis
+// ---------------------------------------------------------------------------
+
+/// One task's assessment: the compact projection of its inspection a
+/// listing keeps after the chain itself is dropped.
+#[derive(Debug)]
+pub struct TaskAssessment {
+    pub task: TaskRef,
+    pub assessment: WaitAssessment,
+    pub continuation: ContinuationStatus,
+    /// How many futures deep the chain ran; see [`TaskWait::depth`].
+    pub depth: usize,
+    /// The outermost live await site; see [`TaskWait::site`].
+    pub site: Option<(String, u32)>,
+    /// The raw observation read from the chain's primitive, whatever
+    /// the assessment made of it.
+    pub observation: Option<ResourceObservation>,
+    /// What the protocol read that decided or declined the assessment.
+    pub notes: Vec<String>,
+}
+
+/// The assessed analysis of a task list: every task inspected once by
+/// its programs and assessed under its resources' protocols, and the
+/// conditional polling barriers the exclusive chains establish. The
+/// explicit engine's counterpart of [`Analysis`], which the legacy
+/// walker still produces for every command.
+#[derive(Debug)]
+pub struct AssessedAnalysis<'b> {
+    /// One entry per task, in [`TaskList`] order.
+    pub tasks: Vec<TaskAssessment>,
+    pub barriers: Vec<PollingBarrier<'b>>,
+    /// Per-task failures to reach a root; the entries above still
+    /// carry an assessment for those tasks.
+    pub errors: Vec<anyhow::Error>,
+}
+
+/// Inspect and assess every task in `list` under `read`, sharing one
+/// pass's queue and registration observations across them.
+pub fn assess<'b, T: Target>(
+    ctx: &Context<'b, T>,
+    list: &TaskList,
+    read: &ReadContext<'_>,
+) -> AssessedAnalysis<'b> {
+    let mut pass = AssessmentPass::new();
+    let mut tasks = Vec::with_capacity(list.tasks.len());
+    let mut barriers = Vec::new();
+    let mut errors = Vec::new();
+    for task in &list.tasks {
+        let tref = TaskRef {
+            addr: task.addr,
+            task_id: task.task_id,
+        };
+        let facts = TaskFacts::from(task);
+        let lifecycle = task.state.lifecycle();
+        let unknown = |reason, note: String, continuation| TaskAssessment {
+            task: tref,
+            assessment: WaitAssessment::Unknown(reason),
+            continuation,
+            depth: 0,
+            site: None,
+            observation: None,
+            notes: vec![note],
+        };
+        let no_root = ContinuationStatus::Incomplete {
+            reason: super::assess::IncompleteReason::NoRoot,
+            detail: None,
+        };
+        if !matches!(task.future, FutureInfo::Known(_)) {
+            tasks.push(unknown(
+                WaitUnknownReason::Continuation,
+                "the task's future type is not in the tokio info".to_owned(),
+                no_root,
+            ));
+            continue;
+        }
+        // A complete task's storage is dropped: nothing is read.
+        if lifecycle == Lifecycle::Complete {
+            tasks.push(TaskAssessment {
+                task: tref,
+                assessment: WaitAssessment::NotWaiting(super::assess::NotWaitingReason::Complete),
+                continuation: no_root,
+                depth: 0,
+                site: None,
+                observation: None,
+                notes: Vec::new(),
+            });
+            continue;
+        }
+        let root = match ctx.task_root(task, read) {
+            Ok(TaskStage::Running(root)) => root,
+            Ok(TaskStage::Finished(_) | TaskStage::Consumed) => {
+                tasks.push(unknown(
+                    WaitUnknownReason::Lifecycle,
+                    "the stage holds no resident future, yet the state word is not complete"
+                        .to_owned(),
+                    no_root,
+                ));
+                continue;
+            }
+            Err(e) => {
+                tasks.push(unknown(
+                    WaitUnknownReason::ResourceUnreadable,
+                    format!("the root did not read: {e:#}"),
+                    ContinuationStatus::Incomplete {
+                        reason: super::assess::IncompleteReason::Error,
+                        detail: Some(format!("{e:#}")),
+                    },
+                ));
+                errors.push(e.context(format!("failed to read the root of {tref}")));
+                continue;
+            }
+        };
+        let inspection = ctx.inspect_future(root, InspectionMode::Task { lifecycle }, read);
+        let Assessed { assessment, notes } =
+            ctx.assess_wait(&mut pass, &inspection, &facts, list, read);
+        barriers.extend(ctx.polling_barriers(&mut pass, &inspection, &facts, read));
+        let chain = &inspection.chain;
+        tasks.push(TaskAssessment {
+            task: tref,
+            assessment,
+            continuation: ContinuationStatus::of(&chain.end),
+            depth: chain.frames.len(),
+            site: chain
+                .frames
+                .iter()
+                .find_map(|frame| frame.state.as_ref()?.await_loc)
+                .map(|(file, line)| (file.to_string(), line)),
+            observation: inspection.primitive.value,
+            notes,
+        });
+    }
+    AssessedAnalysis {
+        tasks,
+        barriers,
         errors,
     }
 }

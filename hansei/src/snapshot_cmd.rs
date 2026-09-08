@@ -261,6 +261,11 @@ pub(crate) fn exec_snapshot<T: proc::Target>(
     // off-path acquire scan — so its reads are in the snapshot. Its
     // failures duplicate the per-task warnings above.
     let analysis = rt_graph::analyze(&ctx, &list, &registries);
+    // And the assessed analysis — the explicit engine's chains through
+    // every vtable word it checks, the protocols' queue, registration
+    // and trailer reads, the held chains behind the polling barriers —
+    // so the offline pairs replay what the legacy walk never touched.
+    let _ = rt_graph::assess(&ctx, &list, &read);
 
     // And the sub-executor census, so the set node chains and child
     // futures it reads replay offline as well. A session that raised

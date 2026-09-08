@@ -7,11 +7,11 @@
 //! reads a target; [`bundle`](super::bundle) builds these, and the
 //! census, graph, and every command consume them.
 
-use super::observe::{Consistency, ReferenceSource};
+use super::observe::{Consistency, ReferenceSource, ValueKey};
 use super::{Lifecycle, Location, RawInstant, TaskAddr, TaskState};
 
 use hansei_bundle::tokio::timer;
-use hansei_bundle::{BundleTypeId, FutureKind, TaskEntryId};
+use hansei_bundle::{BundleTypeId, FutureKind, FutureTarget, SemanticIssueKind, TaskEntryId};
 use reify::Value;
 
 use std::collections::HashMap;
@@ -747,12 +747,21 @@ pub enum TaskStage<'b> {
 #[derive(Debug)]
 pub struct AwaitChain<'b> {
     pub frames: Vec<AwaitFrame<'b>>,
+    /// One edge per continuation the walk followed, `edges[i]` from
+    /// `frames[i]` to `frames[i + 1]`: the recorded route it ran and
+    /// the reviewed exclusivity of that hop. Filled by the explicit
+    /// engine ([`Context::inspect_future`]); the legacy walker
+    /// ([`Context::await_chain`]) records none.
+    ///
+    /// [`Context::inspect_future`]: super::bundle::Context::inspect_future
+    /// [`Context::await_chain`]: super::bundle::Context::await_chain
+    pub edges: Vec<ChainEdge<'b>>,
     /// Why the walk stopped; anything but [`ChainEnd::Leaf`] left the
     /// chain incomplete.
     pub end: ChainEnd,
 }
 
-impl AwaitChain<'_> {
+impl<'b> AwaitChain<'b> {
     /// The type this chain bottoms out in — the future actually parked
     /// on, whether or not it is one of the primitives
     /// [`Context::wait_target`] decodes.
@@ -767,6 +776,47 @@ impl AwaitChain<'_> {
             _ => None,
         }
     }
+
+    /// The primitive the chain ends in, when it ends in one: the only
+    /// value a resource observation may be read from as a candidate
+    /// wait. Any other end — a terminal state, an unknown continuation,
+    /// a cut — has no primitive, and its last frame is not one.
+    pub fn primitive_leaf(&self) -> Option<Value<'b>> {
+        match self.end {
+            ChainEnd::Primitive => self.frames.last().map(|f| f.future),
+            _ => None,
+        }
+    }
+
+    /// Whether every edge the walk followed carries the reviewed
+    /// exclusive bit — the control-flow half of a polling barrier.
+    /// True of a chain with no edges.
+    pub fn all_exclusive(&self) -> bool {
+        self.edges.iter().all(|e| e.exclusive)
+    }
+
+    /// The identity of every frame the chain reached: the concrete
+    /// referents, whatever route reached them — an aliasing pointer
+    /// route lands on the same key.
+    pub fn referents(&self) -> impl Iterator<Item = ValueKey> + '_ {
+        self.frames.iter().map(|f| ValueKey::of(f.future))
+    }
+}
+
+/// One hop of an await chain as the explicit engine followed it.
+#[derive(Debug)]
+pub struct ChainEdge<'b> {
+    /// Frame indexes into the chain: the future polled, and the future
+    /// its program delegated to.
+    pub from: u32,
+    pub to: u32,
+    /// The recorded route the hop ran, borrowed from the bundle.
+    pub selected: &'b FutureTarget,
+    /// The reviewed control-flow guarantee of this hop: while the
+    /// delegate stays pending, polling `from` polls nothing but it.
+    pub exclusive: bool,
+    pub source: ValueKey,
+    pub target: ValueKey,
 }
 
 /// One future in an await chain.
@@ -806,8 +856,33 @@ pub struct FrameState<'b> {
 #[derive(Debug)]
 pub enum ChainEnd {
     /// Bottomed out normally: a non-coroutine leaf future, or a state
-    /// with nothing awaited.
+    /// with nothing awaited. The legacy walker's end; the explicit
+    /// engine says which of the ends below it reached instead.
     Leaf,
+    /// The last frame is a bound primitive — a `Sleep`, a `JoinHandle`,
+    /// an `Acquire`, a socket operation — whose program says its poll
+    /// reads a resource rather than another future. The one end a
+    /// resource observation may be read from as a candidate wait.
+    Primitive,
+    /// The last frame is a coroutine that has never been polled: its
+    /// storage holds arguments, and nothing is awaited.
+    Unresumed,
+    /// The last frame is a coroutine that has returned.
+    Returned,
+    /// The last frame is a coroutine that panicked.
+    Panicked,
+    /// The last frame's continuation is not established: no semantic
+    /// record, no rule for its shape, a state its rule declined, or a
+    /// case its program has no action for. What it holds may still be
+    /// inspected; what it polls is not known.
+    UnknownContinuation {
+        /// The frame whose continuation is unknown.
+        at: ValueKey,
+        reason: SemanticIssueKind,
+    },
+    /// The root belongs to a task mid-poll: its saved discriminants may
+    /// be mid-mutation, so nothing below the root is read as a chain.
+    ActivePoll,
     /// A `dyn Future` awaitee whose vtable symbols joined nothing in the
     /// bundle; the raw poll symbol is reported and nothing is guessed.
     UnknownDyn {
