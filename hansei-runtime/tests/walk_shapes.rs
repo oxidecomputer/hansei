@@ -9,10 +9,17 @@
 //! reaches; the pair is quarantined from the golden, matrix, and
 //! acceptance lists (see the fixture's header).
 
-use hansei_bundle::{Bundle, WalkRole};
+use hansei_bundle::{
+    Bundle, BundleType, BundleTypeId, BundleView, FutureTarget, SemanticIssueKind, WalkRole,
+};
 use hansei_runtime::testkit::{self, load_any, tasks as tasks_of};
-use hansei_runtime::tokio::bundle::{ChainEnd, DiscoveryRoute, FutureInfo, TaskList, TaskStage};
+use hansei_runtime::tokio::assess::{ContinuationStatus, WaitAssessment, WaitUnknownReason};
+use hansei_runtime::tokio::bundle::{
+    AwaitChain, ChainEnd, Context, DiscoveryRoute, FutureInfo, Task, TaskList, TaskStage,
+};
+use hansei_runtime::tokio::chain::InspectionMode;
 use hansei_runtime::tokio::graph;
+use hansei_runtime::tokio::observe::{ReadContext, ReferenceSource, ResourceObservation};
 use proc::snapshot::Snapshot;
 
 /// The fixture pair, attached the way every offline suite attaches.
@@ -33,48 +40,130 @@ fn task_by_name(list: &TaskList, name: &str) -> usize {
     hits[0]
 }
 
-/// The chain must step through both hand-written wrappers — the plain
-/// struct and the named-variant enum — and each step lands at the
-/// member's own place: the struct's `inner` past its tag, the enum's
-/// `Running` payload past its `repr(C, u8)` discriminant. A step that
-/// stops at a wrapper, classifies the named variant as a coroutine
-/// state, or mis-adds an offset changes the frames this walks.
+/// The type whose name satisfies `pred`, once.
+fn type_by_name<'a>(bundle: &'a Bundle, pred: impl Fn(&str) -> bool) -> BundleType<'a> {
+    let view = BundleView::new(bundle);
+    let hits: Vec<BundleType<'a>> = (0..bundle.types.types.len() as u32)
+        .filter_map(|i| view.ty(BundleTypeId(i)))
+        .filter(|ty| pred(ty.name()))
+        .collect();
+    assert_eq!(
+        hits.len(),
+        1,
+        "one such type: {:?}",
+        hits.iter().map(|t| t.name()).collect::<Vec<_>>()
+    );
+    hits[0]
+}
+
+/// A listed task's own chain, walked by its programs.
+fn chain_of<'a>(ctx: &Context<'a, Snapshot>, task: &Task) -> AwaitChain<'a> {
+    let TaskStage::Running(root) = ctx.task_root(task, &ReadContext::none()).unwrap() else {
+        panic!("the task is parked");
+    };
+    let lifecycle = task.state.lifecycle();
+    ctx.inspect_future(
+        root,
+        InspectionMode::Task { lifecycle },
+        &ReadContext::none(),
+    )
+    .chain
+}
+
+/// The hand-written wrappers, `WrapS` (a plain struct) and `WrapE` (a
+/// named-variant enum), are no reviewed implementation: the production
+/// context ends the chain at the first with its continuation unknown,
+/// and its `inner` — the enum, and the coroutine inside that — stays
+/// discoverable rather than being stepped into by shape.
+///
+/// Under explicit test bindings for the two — a direct delegation
+/// through the struct's `inner`, a variant match on the enum whose
+/// `Running` case delegates through its `inner` — the same engine
+/// steps through both, and each step lands at the member's own place:
+/// the struct's `inner` past its tag, the enum's `Running` payload past
+/// its `repr(C, u8)` discriminant. The bindings go through the bundle's
+/// own validator; a route landing off its recorded target would refuse.
 #[test]
 fn test_the_chain_steps_through_hand_written_wrappers() {
     let (bundle, snapshot) = pair();
     let ctx = testkit::context(&bundle, &snapshot);
     let list = tasks_of(&ctx, &snapshot);
     let chained = &list.tasks[task_by_name(&list, "chained")];
-    let TaskStage::Running(root) = ctx.task_stage(chained).unwrap() else {
-        panic!("the chained task is parked");
-    };
-    let chain = ctx.await_chain(root);
-    assert!(matches!(chain.end, ChainEnd::Leaf), "{:?}", chain.end);
+
+    // Production: the chain ends at the struct wrapper, unknown.
+    let chain = chain_of(&ctx, chained);
+    let names: Vec<&str> = chain.frames.iter().map(|f| f.future.ty.name()).collect();
+    assert_eq!(names.len(), 2, "{names:#?}");
+    assert!(names[1].starts_with("walk_shapes::WrapS<"), "{names:#?}");
+    assert!(
+        matches!(
+            chain.end,
+            ChainEnd::UnknownContinuation {
+                reason: SemanticIssueKind::NoRule,
+                ..
+            }
+        ),
+        "{:?}",
+        chain.end
+    );
+    // What the wrapper holds is still discoverable: the census lists
+    // the coroutine inside it, under the wrapper's frame.
+    let census = testkit::census(&ctx, &list);
+    let owner = task_by_name(&list, "chained");
+    assert!(
+        census
+            .held
+            .iter()
+            .any(|h| h.owner == owner && h.future.contains("::deep::") && h.local == "inner"),
+        "{:#?}",
+        census.held
+    );
+
+    // The bindings: one rule of a reviewed forwarding kind under the
+    // bundle's compiler origin, and the two records naming it.
+    let (bindings, rules) = testkit::walk_shapes_bindings(&bundle);
+    let wrap_s = type_by_name(&bundle, |n| {
+        n.starts_with("walk_shapes::WrapS<") && !n.contains(">::")
+    });
+    let deep = type_by_name(&bundle, |n| n.contains("::deep::") && n.ends_with('}'));
+    let bound = Context::with_test_bindings(&snapshot, BundleView::new(&bundle), &bindings, &rules)
+        .expect("the test bindings validate");
+    let chain = chain_of(&bound, chained);
+    // Through both wrappers to the coroutine inside, and on to the
+    // `Notified` it awaits — which no reviewed rule covers, so the
+    // chain ends there, unknown, as it should.
+    assert!(
+        matches!(
+            chain.end,
+            ChainEnd::UnknownContinuation {
+                reason: SemanticIssueKind::NoRule,
+                ..
+            }
+        ),
+        "{:?}",
+        chain.end
+    );
     let names: Vec<&str> = chain.frames.iter().map(|f| f.future.ty.name()).collect();
     assert_eq!(names.len(), 5, "{names:#?}");
     assert!(names[1].starts_with("walk_shapes::WrapS<"), "{names:#?}");
     assert!(names[2].starts_with("walk_shapes::WrapE<"), "{names:#?}");
     assert!(names[3].contains("::deep::"), "{names:#?}");
     assert!(names[4].contains("Notified"), "{names:#?}");
+    assert_eq!(chain.edges.len(), 4);
+    assert!(chain.edges.iter().skip(1).take(2).all(|e| !e.exclusive));
 
     // The struct wrapper: a plain frame whose `inner` member is the
     // next frame, one tag past the start.
-    let wrap_s = &chain.frames[1];
-    assert_eq!(wrap_s.inner, Some("inner"));
-    assert!(wrap_s.state.is_none());
-    let inner = wrap_s
-        .future
-        .ty
-        .members()
-        .find(|m| m.name() == "inner")
-        .expect("WrapS declares inner");
+    let wrap_s_frame = &chain.frames[1];
+    assert!(wrap_s_frame.state.is_none());
+    let inner = wrap_s.member("inner").expect("WrapS declares inner");
     assert!(
         inner.offset() > 0,
         "the witness member must not sit at zero"
     );
     assert_eq!(
         chain.frames[2].future.addr,
-        wrap_s.future.addr + inner.offset()
+        wrap_s_frame.future.addr + inner.offset()
     );
 
     // The enum wrapper: a named variant, decoded as a frame state.
@@ -82,11 +171,10 @@ fn test_the_chain_steps_through_hand_written_wrappers() {
     // gives the members enum-relative offsets — so the payload starts
     // where the future does, and the discriminant shows up as the
     // members starting past zero instead.
-    let wrap_e = &chain.frames[2];
-    assert_eq!(wrap_e.inner, Some("inner"));
-    let state = wrap_e.state.as_ref().expect("a decoded variant");
+    let wrap_e_frame = &chain.frames[2];
+    let state = wrap_e_frame.state.as_ref().expect("a decoded variant");
     assert_eq!(state.name, "Running");
-    assert_eq!(state.payload.addr, wrap_e.future.addr);
+    assert_eq!(state.payload.addr, wrap_e_frame.future.addr);
     let inner = state
         .payload
         .ty
@@ -101,30 +189,72 @@ fn test_the_chain_steps_through_hand_written_wrappers() {
         chain.frames[3].future.addr,
         state.payload.addr + inner.offset()
     );
+
+    // A binding whose route lands off its recorded target is refused by
+    // the validator, not run.
+    use hansei_bundle::{
+        Continuation, FutureFacts, MemberRef, PollAction, PollProgram, Step, TypedPath,
+    };
+    let s_inner = wrap_s
+        .member("inner")
+        .expect("WrapS declares inner")
+        .name_ref();
+    let mut wrong = bindings.clone();
+    let Some(FutureFacts {
+        continuation:
+            Continuation::Bound {
+                program: PollProgram::Direct(PollAction::Delegate { target, .. }),
+                ..
+            },
+        ..
+    }) = &mut wrong[0].future
+    else {
+        unreachable!()
+    };
+    *target = FutureTarget::Value(TypedPath {
+        steps: vec![Step::Member(MemberRef::Named(s_inner))],
+        target: deep.id(),
+    });
+    assert!(
+        Context::with_test_bindings(&snapshot, BundleView::new(&bundle), &wrong, &rules).is_err()
+    );
 }
 
-/// The abandoned acquire held *by value*: the analysis derives its
-/// waiter node from the frame member's own address, and that node must
-/// be the same one a walk from the member reaches independently.
+/// The acquire held *by value* in the abandoner's frame is no polling
+/// barrier: the abandoner's own chain ends at a `Notified`, which no
+/// reviewed rule covers, so nothing proves it cannot poll the acquire
+/// again — and the analysis says nothing rather than something. The
+/// acquire is still there to inspect: the census lists it under the
+/// frame's `fut`, and a held inspection observes it queued on the
+/// semaphore, at the node a walk from the member reaches independently.
 #[test]
-fn test_a_by_value_abandoned_acquire_names_its_own_node() {
+fn test_a_by_value_acquire_behind_an_unknown_chain_is_no_barrier() {
     let (bundle, snapshot) = pair();
     let ctx = testkit::context(&bundle, &snapshot);
     let list = tasks_of(&ctx, &snapshot);
-    let analysis = graph::analyze(&ctx, &list, &Default::default());
+    let analysis = graph::analyze(&ctx, &list, &ReadContext::none());
     assert!(analysis.errors.is_empty(), "{:?}", analysis.errors);
-    let fl = analysis
-        .futurelocks
-        .iter()
-        .find(|fl| fl.acquire.local == "fut")
-        .expect("the by-value abandoned acquire is diagnosed");
-
-    // Re-reach the same waiter node from the frame member itself.
     let abandoner = &list.tasks[task_by_name(&list, "abandoner")];
-    let TaskStage::Running(root) = ctx.task_stage(abandoner).unwrap() else {
-        panic!("the abandoner is parked");
-    };
-    let chain = ctx.await_chain(root);
+    assert!(
+        !analysis.barriers.iter().any(|b| b.holder == abandoner.addr),
+        "{:#?}",
+        analysis.barriers
+    );
+    let wait = analysis
+        .waits
+        .iter()
+        .find(|w| w.task.addr == abandoner.addr)
+        .unwrap();
+    assert!(
+        matches!(
+            wait.assessment,
+            WaitAssessment::Unknown(WaitUnknownReason::Continuation)
+        ),
+        "{wait:#?}"
+    );
+
+    // The frame member itself, inspected as a held value.
+    let chain = chain_of(&ctx, abandoner);
     let frame = &chain.frames[0];
     let payload = &frame.state.as_ref().expect("a suspended frame").payload;
     let member = payload
@@ -135,18 +265,45 @@ fn test_a_by_value_abandoned_acquire_names_its_own_node() {
     let start = member.offset() as usize;
     let bytes = &payload.bytes[start..start + member.ty().size() as usize];
     let fut = reify::Value::new(member.ty(), payload.addr + member.offset(), bytes);
-    let lock_chain = ctx.await_chain(fut);
+    let held = ctx.inspect_future(fut, InspectionMode::Held, &ReadContext::none());
     assert!(
-        matches!(lock_chain.end, ChainEnd::Leaf),
+        matches!(held.chain.end, ChainEnd::Primitive),
         "{:?}",
-        lock_chain.end
+        held.chain.end
     );
-    let leaf = lock_chain.frames.last().expect("the acquire leaf");
+    let Some(ResourceObservation::Acquire(acquire)) = held.primitive.value else {
+        panic!(
+            "the held future is parked on an acquire: {:?}",
+            held.primitive
+        );
+    };
+    assert!(acquire.queued);
+    let leaf = held.chain.frames.last().expect("the acquire leaf");
     let node = ctx
         .walk(WalkRole::AcquireNode)
         .walk_at(leaf.future)
         .expect("the acquire holds its waiter node");
-    assert_eq!(fl.acquire.node, node.addr);
+    assert_eq!(acquire.node, node.addr);
+
+    // And the census lists it where it is held.
+    let census = testkit::census(&ctx, &list);
+    let owner = task_by_name(&list, "abandoner");
+    let found = census
+        .held
+        .iter()
+        .find(|h| h.owner == owner && h.local == "fut")
+        .unwrap_or_else(|| panic!("the census lists `fut`: {:#?}", census.held));
+    assert!(
+        matches!(found.continuation, ContinuationStatus::Primitive),
+        "{found:#?}"
+    );
+    assert!(
+        found
+            .waiting_on
+            .as_deref()
+            .is_some_and(|w| w.contains("semaphore")),
+        "{found:#?}"
+    );
 }
 
 /// Two local blocks in one population: the `run_until` set and the
@@ -213,7 +370,10 @@ fn test_the_wake_queue_is_the_hidden_runtimes_only_edge() {
     let rt = &e.runtimes[x.group];
     assert!(x.group >= enumerated, "{:#?}", (x.group, enumerated));
     assert!(
-        matches!(rt.route, DiscoveryRoute::QueuedWaker),
+        matches!(
+            rt.route,
+            DiscoveryRoute::Scanned(ReferenceSource::SemaphoreWaker)
+        ),
         "{:?}",
         rt.route
     );

@@ -778,7 +778,7 @@ mod runtimes_tests {
             "{shown}"
         );
         assert!(
-            lines[2].ends_with("  a JoinHandle held by an enumerated task"),
+            lines[2].ends_with("  a JoinHandle scanned in an enumerated task's storage"),
             "{shown}"
         );
         assert_eq!(lines[3], "[2 runtimes]", "{shown}");

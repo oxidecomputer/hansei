@@ -2,7 +2,7 @@
 source: hansei/src/offline.rs
 description: "`tasks --group waiting-on` over linux-floor/local-set-io"
 ---
-COUNT  WAITING ON                                               TASKS
-    4  io                                                       1, 2, 3, …
-    1  future tokio::io::util::read::Read<local_set_io::Gated>  4
+COUNT  WAITING ON  TASKS
+    4  io          1, 2, 3, …
+    1  unknown     4
 [2 groups]

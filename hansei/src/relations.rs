@@ -12,12 +12,24 @@ use hansei_runtime::tokio::{bundle, census, graph};
 
 use std::collections::HashMap;
 
-/// Why one task's graph row hangs under another's.
+/// Why one task's graph row hangs under another's. Only `Waiting` is
+/// a verified dependency; every other kind is a weaker relation the
+/// row is marked with, and none of them can close a wait cycle.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub(crate) enum EdgeKind {
-    /// The task is awaiting it right now — the row's own `WAITING ON`
-    /// says how, so the edge needs no mark of its own.
+    /// The task's verified wait names it — a joined task — and the
+    /// row's own `WAITING ON` says how, so the edge needs no mark.
     Waiting,
+    /// The task's verified semaphore wait is short of permits a
+    /// polling barrier's acquire holds granted in a future the task
+    /// below cannot poll until its own terminal completes: a
+    /// reservation the waiter is behind, not proof it is blocked by
+    /// that holder alone.
+    Reservation,
+    /// The task's verified semaphore wait sits behind a barrier's
+    /// still-queued acquire in the semaphore's wake order: the permit
+    /// that reaches the queue reaches that node first.
+    QueueOrder,
     /// It is a member of a `JoinSet` the task holds. The task will join
     /// it, though its own wait says whether it is doing so yet.
     JoinSet,
@@ -25,7 +37,7 @@ pub(crate) enum EdgeKind {
     /// its await chain: it can join or abort it, and may be doing
     /// neither.
     Handle,
-    // Both marks say "above" rather than "its": the mark is printed on
+    // The marks say "above" rather than "its": the mark is printed on
     // the row of the task being waited *for*, so a possessive there
     // reads as that task's own set or handle — the opposite of what it
     // means, and in opposite directions for the two of them.
@@ -35,9 +47,17 @@ impl EdgeKind {
     pub(crate) fn mark(self) -> &'static str {
         match self {
             Self::Waiting => "",
+            Self::Reservation => " [holds permits awaited above]",
+            Self::QueueOrder => " [queued ahead of the task above]",
             Self::JoinSet => " [in the JoinSet above]",
             Self::Handle => " [its handle held above]",
         }
+    }
+
+    /// Whether the edge is a verified wait: the only kind that can
+    /// close a cycle.
+    pub(crate) fn is_wait(self) -> bool {
+        matches!(self, Self::Waiting)
     }
 }
 
@@ -51,12 +71,14 @@ pub(crate) struct Edge {
 /// The relation index, everything by index into the [`bundle::TaskList`]
 /// it was built from.
 ///
-/// Three things relate one task to another. Two are the task's own
-/// wait: a `JoinHandle` names the task being joined outright, and a
-/// contended semaphore names whoever the futurelock analysis found
-/// holding an acquire on it — the only case where a holder is knowable
-/// at all, since a tokio `Mutex` records no owner. A timer names
-/// nobody, and neither does a leaf hansei does not decode.
+/// Three things relate one task to another. Two come from the
+/// analysis: a verified join wait names the task being joined
+/// outright, and a verified semaphore wait stands behind whatever
+/// polling barrier the analysis found holding an acquire on the same
+/// semaphore — granted, a reservation; still queued ahead, a place in
+/// the wake order — the only case where a holder is knowable at all,
+/// since a tokio `Mutex` records no owner. A timer names nobody, and
+/// neither does an unknown continuation.
 ///
 /// The third is what the census found in the task's frames: the members
 /// of a `JoinSet` it drives, and the tasks it holds a `JoinHandle` to
@@ -102,31 +124,27 @@ impl Relations {
         // wait's own text says as much where it came from a wait.
         let resolve = |addr: u64| index.get(&addr).copied();
         for (from, wait) in analysis.waits.iter().enumerate() {
-            match &wait.target {
-                Some(bundle::WaitTarget::Task { addr, .. }) => {
-                    if let Some(to) = resolve(*addr) {
-                        edges[from].push(Edge {
-                            to,
-                            kind: EdgeKind::Waiting,
-                        });
-                        waited_by[to].push(from);
-                    }
-                }
-                Some(bundle::WaitTarget::Semaphore { addr, .. }) => {
-                    for fl in analysis
-                        .futurelocks
-                        .iter()
-                        .filter(|fl| fl.acquire.semaphore == *addr)
-                    {
-                        if let Some(to) = resolve(fl.holder.addr.0) {
-                            edges[from].push(Edge {
-                                to,
-                                kind: EdgeKind::Waiting,
-                            });
-                        }
-                    }
-                }
-                _ => {}
+            if let Some(bundle::WaitTarget::Task { addr, .. }) =
+                wait.verified().map(|verified| verified.target())
+                && let Some(to) = resolve(*addr)
+            {
+                edges[from].push(Edge {
+                    to,
+                    kind: EdgeKind::Waiting,
+                });
+                waited_by[to].push(from);
+            }
+        }
+        for behind in analysis.behind() {
+            let holder = analysis.barriers[behind.barrier].holder;
+            if let Some(to) = resolve(holder.0) {
+                edges[behind.waiter].push(Edge {
+                    to,
+                    kind: match behind.relation {
+                        graph::BarrierRelation::Reservation => EdgeKind::Reservation,
+                        graph::BarrierRelation::QueueOrder => EdgeKind::QueueOrder,
+                    },
+                });
             }
         }
         for set in join_sets {
@@ -153,7 +171,8 @@ impl Relations {
         }
         for from in &mut edges {
             // By task, then by kind, so a task named twice keeps the
-            // most direct claim: an await it is actually in, over a set
+            // most direct claim: an await it is actually in, over a
+            // reservation or queue place it stands behind, over a set
             // it is merely a member of, over a handle someone merely
             // holds.
             from.sort_unstable();
@@ -188,6 +207,9 @@ mod relations_tests {
     use super::{EdgeKind, Relations};
 
     use hansei_bundle::BundleTypeId;
+    use hansei_runtime::tokio::assess::{
+        ContinuationStatus, IncompleteReason, VerifiedWait, WaitAssessment, WaitUnknownReason,
+    };
     use hansei_runtime::tokio::bundle::{FutureInfo, Task, TaskList, WaitKind, WaitTarget};
     use hansei_runtime::tokio::census;
     use hansei_runtime::tokio::graph::{Analysis, TaskRef, TaskWait};
@@ -212,16 +234,26 @@ mod relations_tests {
         }
     }
 
+    /// A task assessed as verified-waiting on `target`, or — with no
+    /// target — with its continuation unknown.
     fn wait(id: u64, target: Option<WaitTarget>) -> TaskWait {
         TaskWait {
             task: TaskRef {
                 addr: addr(id),
                 task_id: Some(id),
             },
-            target,
+            assessment: match target {
+                Some(target) => WaitAssessment::Waiting(VerifiedWait::testkit(target, None)),
+                None => WaitAssessment::Unknown(WaitUnknownReason::Continuation),
+            },
+            continuation: ContinuationStatus::Incomplete {
+                reason: IncompleteReason::NoRoot,
+                detail: None,
+            },
             depth: 1,
-            leaf: None,
             site: None,
+            observation: None,
+            notes: Vec::new(),
         }
     }
 
@@ -249,7 +281,7 @@ mod relations_tests {
             state: None,
             waiting_on: None,
             wait: Some(WaitKind::Task { addr: addr(id).0 }),
-            leaf: None,
+            continuation: ContinuationStatus::Primitive,
         }
     }
 
@@ -287,7 +319,7 @@ mod relations_tests {
         };
         let analysis = Analysis {
             waits,
-            futurelocks: Vec::new(),
+            barriers: Vec::new(),
             join_wakers: Vec::new(),
             errors: Vec::new(),
         };

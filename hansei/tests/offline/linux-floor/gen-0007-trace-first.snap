@@ -2,6 +2,9 @@
 source: hansei/src/offline.rs
 description: "`trace 3 -n` over linux-floor/gen-0007"
 ---
+Waiting on: unknown
+
+what gen_0007::GfSel3<core::future::pending::Pending<u64>, core::future::pending::Pending<u64>, core::future::pending::Pending<u64>> polls is not established (no reviewed rule covers its implementation); the chain ends there
 #0  future        gen_0007::GfSel3<core::future::pending::Pending<u64>, core::future::pending::Pending<u64>, core::future::pending::Pending<u64>>
       (<no_state>, 0 locals)
 #1  async fn      gen_0007::driver_00

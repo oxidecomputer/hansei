@@ -5,7 +5,7 @@ description: "`runtime` over illumos/channels"
 runtime 0 @ 0xADDR
     flavor: multi_thread
     tasks: 2
-    futures: 3
+    futures: 2
     workers: 2
     threads: 3 (lwp 1, 2, 3)
     found via: a thread's runtime context

@@ -1,0 +1,11 @@
+---
+source: hansei/src/offline.rs
+description: "`future 0x55f51c478048` over linux-floor/delegation-cases"
+---
+future 0xADDR
+    type: future delegation_cases::Probe<1>
+    held by: task 1 (frame 0, `child`)
+    depth: 1 frame
+    waiting on: unknown
+    held futures: 0
+    join sets: 0

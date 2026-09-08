@@ -19,9 +19,9 @@ COUNT  STATE
 
 COUNT  TYPE / WAITING ON
     5  async fn joinset::member
-       └─ 5  future tokio::sync::notify::Notified
+       └─ 5  unknown
     1  async fn joinset::driver
-       └─ 1  future tokio::util::idle_notified_set::IdleNotifiedSet<tokio::runtime::task::join::JoinHandle<u32>>
+       └─ 1  unknown
 [2 types]
 
 Futures: 6 in flight, on 13 await-chain frames, up to 3 deep

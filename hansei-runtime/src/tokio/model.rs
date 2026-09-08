@@ -107,11 +107,6 @@ pub enum DiscoveryRoute {
     /// found, and the only one that also says which threads run it. No
     /// local set is ever found this way.
     WorkerContext,
-    /// A `JoinHandle` on an enumerated task's await chain pointed at
-    /// one of its tasks.
-    JoinHandle,
-    /// A task waker in a walked waiter queue pointed at one of them.
-    QueuedWaker,
     /// A timer entry parked in a discovered runtime's own wheel was
     /// armed with one of their wakers — a registry of parked tasks
     /// whatever list owns them, and so a route to a list nothing
@@ -137,8 +132,6 @@ impl fmt::Display for DiscoveryRoute {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::WorkerContext => f.write_str("a thread's runtime context"),
-            Self::JoinHandle => f.write_str("a JoinHandle held by an enumerated task"),
-            Self::QueuedWaker => f.write_str("a task waker in a walked waiter queue"),
             Self::Wheel => f.write_str("a task waker on a timer parked in a runtime's wheel"),
             Self::Io => {
                 f.write_str("a task waker on an io resource registered with a runtime's driver")

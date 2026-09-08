@@ -7,21 +7,25 @@ task 3 idle dyn_future::driver::{async_fn_env#0}
   spawned src/bin/dyn-future.rs:57:21
   defined src/bin/dyn-future.rs:24
   await dyn_future::driver::{async_fn_env#0} Suspend0 @ src/bin/dyn-future.rs:40 locals [set]
+  await core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output=u32> + core::marker::Send), alloc::alloc::Global>>
   await dyn_future::boxed_leaf::{async_fn_env#0} [dyn] Suspend0 @ src/bin/dyn-future.rs:16
   await tokio::sync::oneshot::Receiver<u32>
-  end leaf
+  end unknown continuation (NoRule)
   site src/bin/dyn-future.rs:40
+  assessed Unknown(Continuation)
 task 4 idle dyn_future::hold_aligned::{async_fn_env#0}
   spawned src/bin/dyn-future.rs:61:23
   defined src/bin/dyn-future.rs:92
   await dyn_future::hold_aligned::{async_fn_env#0} Suspend0 @ src/bin/dyn-future.rs:97 locals [padded, aligned]
   await tokio::sync::oneshot::Receiver<u32>
-  end leaf
+  end unknown continuation (NoRule)
   site src/bin/dyn-future.rs:97
+  assessed Unknown(Continuation)
 task 5 idle dyn_future::set_member::{async_fn_env#0}
   spawned src/bin/dyn-future.rs:32:9
   defined src/bin/dyn-future.rs:19
   await dyn_future::set_member::{async_fn_env#0} Suspend0 @ src/bin/dyn-future.rs:21
   await tokio::sync::oneshot::Receiver<u32>
-  end leaf
+  end unknown continuation (NoRule)
   site src/bin/dyn-future.rs:21
+  assessed Unknown(Continuation)

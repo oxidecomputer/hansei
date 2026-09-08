@@ -20,6 +20,7 @@ use crate::tasks::{self, no_such_task};
 use crate::{RenderOpts, Session, TraceOpts, TraceTarget, futures, output, threads, trace};
 
 use anyhow::{Result, anyhow};
+use hansei_runtime::tokio::chain::InspectionMode;
 use hansei_runtime::tokio::{Lifecycle, bundle, census};
 use reify::Value;
 
@@ -119,9 +120,8 @@ pub(crate) fn select_task<T: proc::Target>(
     };
     let task = &list.tasks[index];
     let root = task_root(task);
-    let (frame, last_addr) = match session.ctx.task_stage(task).ok() {
-        Some(bundle::TaskStage::Running(future)) => {
-            let chain = session.ctx.await_chain(future);
+    let (frame, last_addr) = match task_chain(session, task) {
+        Some(chain) => {
             // Selection lands on the leaf — displayed #0, the most
             // recently polled frame. An address deeper than the header
             // lands on the deepest chain frame containing it, the way
@@ -132,7 +132,7 @@ pub(crate) fn select_task<T: proc::Target>(
                     .frames
                     .last()
                     .map(|f| f.future.addr)
-                    .unwrap_or(future.addr),
+                    .unwrap_or(task.addr.0),
             );
             match target {
                 TraceTarget::Future(addr) if addr != task.addr.0 => {
@@ -155,6 +155,27 @@ pub(crate) fn select_task<T: proc::Target>(
         last_addr: Some(last_addr),
     };
     Ok(index)
+}
+
+/// A listed task's own chain, walked by its programs under the
+/// session's read context; `None` where the task has no resident
+/// future to walk.
+fn task_chain<'b, T: proc::Target>(
+    session: &Session<'b, T>,
+    task: &bundle::Task,
+) -> Option<bundle::AwaitChain<'b>> {
+    session.read_with(|read| {
+        let bundle::TaskStage::Running(future) = session.ctx.task_root(task, read).ok()? else {
+            return None;
+        };
+        let lifecycle = task.state.lifecycle();
+        Some(
+            session
+                .ctx
+                .inspect_future(future, InspectionMode::Task { lifecycle }, read)
+                .chain,
+        )
+    })
 }
 
 /// How a task roots the cursor: by id, or — for a task the target
@@ -285,14 +306,9 @@ fn frame_base<T: proc::Target>(
     task: &bundle::Task,
     n: usize,
 ) -> Option<u64> {
-    match session.ctx.task_stage(task).ok()? {
-        bundle::TaskStage::Running(future) => {
-            let chain = session.ctx.await_chain(future);
-            let i = chain.frames.len().checked_sub(n + 1)?;
-            chain.frames.get(i).map(|f| f.future.addr)
-        }
-        _ => None,
-    }
+    let chain = task_chain(session, task)?;
+    let i = chain.frames.len().checked_sub(n + 1)?;
+    chain.frames.get(i).map(|f| f.future.addr)
 }
 
 /// Scope the cursor to one task at frame #0 — the most recently
@@ -539,6 +555,10 @@ pub(crate) struct ResolvedChain<'b> {
     /// `None` for a task's own chain; the held-future or set-child
     /// origin for a lone root's.
     origin: Option<census::Via>,
+    /// What the chain waits on, as the trace's header spells it: the
+    /// task's assessment for a task's own chain, the observed resource
+    /// for a lone root's.
+    pub(crate) wait: Option<trace::WaitHeader>,
 }
 
 /// Resolve the cursor root to its await chain. A `Future` root at a
@@ -551,12 +571,23 @@ pub(crate) fn chain_of<'b, T: proc::Target>(
 ) -> Result<ResolvedChain<'b>> {
     let task_chain = |index: usize| -> Result<ResolvedChain<'b>> {
         let task = &session.tasks.tasks[index];
-        match session.ctx.task_stage(task)? {
-            bundle::TaskStage::Running(future) => Ok(ResolvedChain {
-                chain: session.ctx.await_chain(future),
-                owner: index,
-                origin: None,
-            }),
+        let stage = session.read_with(|read| session.ctx.task_root(task, read))?;
+        match stage {
+            bundle::TaskStage::Running(future) => {
+                let lifecycle = task.state.lifecycle();
+                let chain = session.read_with(|read| {
+                    session
+                        .ctx
+                        .inspect_future(future, InspectionMode::Task { lifecycle }, read)
+                        .chain
+                });
+                Ok(ResolvedChain {
+                    chain,
+                    owner: index,
+                    origin: None,
+                    wait: trace::assessed_header(&session.analysis().waits[index]),
+                })
+            }
             bundle::TaskStage::Finished(_) | bundle::TaskStage::Consumed => {
                 Err(anyhow!("no await chain ({})", task.state.lifecycle()))
             }
@@ -606,10 +637,18 @@ pub(crate) fn chain_of<'b, T: proc::Target>(
                 })?;
             let value = Value::read(session.ctx.proc, ty, root.addr)
                 .map_err(|e| anyhow!("failed to read the future at {:#x}: {e}", root.addr))?;
+            let (chain, wait) = session.read_with(|read| {
+                let inspection = session
+                    .ctx
+                    .inspect_future(value, InspectionMode::Held, read);
+                let wait = trace::observed_header(&session.ctx, &inspection, &session.tasks, read);
+                (inspection.chain, wait)
+            });
             Ok(ResolvedChain {
-                chain: session.ctx.await_chain(value),
+                chain,
                 owner,
                 origin: Some(origin),
+                wait,
             })
         }
     }
@@ -668,7 +707,7 @@ fn print_cursor_frame<T: proc::Target>(
         heap: heap.as_ref().map(|view| view as &dyn reify::Heap),
     };
     let wait = match Some(n) == chain.frames.len().checked_sub(1) {
-        true => trace::wait_line(&session.ctx, chain, &session.tasks)?,
+        true => resolved.wait.as_ref(),
         false => None,
     };
     let holds = trace::frame_holds(
@@ -695,7 +734,7 @@ fn print_cursor_frame<T: proc::Target>(
         chain,
         n,
         trace::chain_num_width(chain),
-        wait.as_deref(),
+        wait,
         &holds,
         &opts,
         &session.impl_fold,
@@ -985,9 +1024,7 @@ mod tests {
         // the frame, not on the held future. Computed here from the
         // chain itself so nothing under test corroborates itself.
         let task = &session.tasks.tasks[owner];
-        let stage = session.ctx.task_stage(task).expect("the stage reads");
-        if let hansei_runtime::tokio::bundle::TaskStage::Running(future) = stage {
-            let chain = session.ctx.await_chain(future);
+        if let Some(chain) = task_chain(&session, task) {
             let inner = chain.frames.len().checked_sub(frame + 1);
             if let Some(f) = inner.and_then(|i| chain.frames.get(i)) {
                 assert_eq!(c.last_addr, Some(f.future.addr));
@@ -1078,11 +1115,7 @@ mod tests {
         let args = session_args("linux", "nested-await");
         let session = Session::attach(&snapshot, &bundle, &args).expect("the pair attaches");
         let task = &session.tasks.tasks[0];
-        let stage = session.ctx.task_stage(task).expect("the stage reads");
-        let hansei_runtime::tokio::bundle::TaskStage::Running(future) = stage else {
-            panic!("the fixture's task is suspended mid-chain");
-        };
-        let chain = session.ctx.await_chain(future);
+        let chain = task_chain(&session, task).expect("the fixture's task is suspended mid-chain");
         assert!(chain.frames.len() >= 2, "nested-await nests");
         let f0 = chain.frames[0].future.addr;
         let f0_end = f0 + chain.frames[0].future.ty.size();
@@ -1363,10 +1396,7 @@ mod tests {
                 continue;
             };
             if resolved.chain.frames.len() >= 2
-                && trace::wait_line(&session.ctx, &resolved.chain, &session.tasks)
-                    .ok()
-                    .flatten()
-                    .is_some()
+                && resolved.wait.as_ref().is_some_and(|wait| wait.at_leaf)
             {
                 picked = Some((id, resolved.chain.frames.len()));
                 break;

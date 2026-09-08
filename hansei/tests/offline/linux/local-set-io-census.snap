@@ -17,7 +17,7 @@ COUNT  STATE
 
 COUNT  TYPE / WAITING ON
     1  async fn local_set_io::local_gated_reader
-       └─ 1  future tokio::io::util::read::Read<local_set_io::Gated>
+       └─ 1  unknown
     1  async fn local_set_io::local_reader
        └─ 1  io
     1  async fn local_set_io::local_watcher

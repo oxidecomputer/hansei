@@ -2,4 +2,19 @@
 source: hansei/src/offline.rs
 description: "`futures --exec trace -l 1` over linux/delegation-cases"
 ---
-[Executed against 0 futures, 0 failed]
+future 0xADDR
+future 0xADDR: future delegation_cases::Probe<1>
+Held by: task 1 — future Pin<Box<delegation_cases::Gated<1>>> (frame 0, `child`)
+
+what delegation_cases::Probe<1> polls is not established (no reviewed rule covers its implementation); the chain ends there
+#0  future        delegation_cases::Probe<1>
+      (<no_state>, 3 locals)
+
+future 0xADDR
+future 0xADDR: future delegation_cases::Probe<2>
+Held by: task 2 — future Pin<Box<delegation_cases::Gated<2>>> (frame 0, `child`)
+
+what delegation_cases::Probe<2> polls is not established (no reviewed rule covers its implementation); the chain ends there
+#0  future        delegation_cases::Probe<2>
+      (<no_state>, 3 locals)
+[Executed against 2 futures, 0 failed]

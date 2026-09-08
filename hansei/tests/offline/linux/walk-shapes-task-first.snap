@@ -7,10 +7,12 @@ task 1
     thread: <none>
     owner: runtime 0 @ 0xADDR (current_thread)
     type: async fn walk_shapes::chained
-    awaiting at: src/bin/walk-shapes.rs:107
-    waiting on: future tokio::sync::notify::Notified
+    awaiting at: src/bin/walk-shapes.rs:116
+    waiting on: unknown
     waker: <empty>
-    spawned at: src/bin/walk-shapes.rs:249:9
-    defined at: src/bin/walk-shapes.rs:96
-    held futures: 1
+        unknown: the chain does not end in a primitive
+        what walk_shapes::WrapS<walk_shapes::WrapE<walk_shapes::deep::{async_fn_env#0}>> polls is not established: no reviewed rule covers its implementation
+    spawned at: src/bin/walk-shapes.rs:258:9
+    defined at: src/bin/walk-shapes.rs:105
+    held futures: 2
     join sets: 0

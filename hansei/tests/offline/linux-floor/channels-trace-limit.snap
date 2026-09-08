@@ -2,6 +2,9 @@
 source: hansei/src/offline.rs
 description: "`trace 3 -l 1` over linux-floor/channels"
 ---
+Waiting on: unknown
+
+what tokio::sync::notify::Notified polls is not established (no reviewed rule covers its implementation); the chain ends there
 #0  future        tokio::sync::notify::Notified
       (<no_state>, 4 locals)
-[2 frames, 1 shown]
+[3 frames, 1 shown]

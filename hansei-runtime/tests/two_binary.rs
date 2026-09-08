@@ -46,7 +46,8 @@ use hansei_runtime::tokio::bundle::{
     AwaitChain, ChainEnd, Context, DiscoveryRoute, FutureInfo, RuntimeFlavor, Task, TaskStage,
     UnlistedTaskKind,
 };
-use hansei_runtime::tokio::observe::Consistency;
+use hansei_runtime::tokio::chain::InspectionMode;
+use hansei_runtime::tokio::observe::{ReadContext, ReferenceSource};
 use hansei_runtime::tokio::{census, graph};
 use proc::Target;
 use proc::snapshot::Snapshot;
@@ -258,7 +259,8 @@ fn interpret(bundle: &Bundle, snapshot: &Snapshot) -> String {
 
     // The dependency analysis: wait targets come from it so
     // the per-task lines and the diagnoses agree by construction.
-    let analysis = graph::analyze(&ctx, &list, &Default::default());
+    let read = ReadContext::none();
+    let analysis = graph::analyze(&ctx, &list, &read);
     assert!(
         analysis.errors.is_empty(),
         "graph analysis reported errors: {:?}",
@@ -295,14 +297,21 @@ fn interpret(bundle: &Bundle, snapshot: &Snapshot) -> String {
         )
         .unwrap();
 
-        match ctx.task_stage(task).expect("stage decodes") {
+        match ctx.task_root(task, &read).expect("stage decodes") {
             TaskStage::Running(future) => {
-                render_chain(&mut out, &ctx.await_chain(future));
+                let lifecycle = task.state.lifecycle();
+                let inspection =
+                    ctx.inspect_future(future, InspectionMode::Task { lifecycle }, &read);
+                render_chain(&mut out, &inspection.chain);
                 if let Some((file, line)) = &wait.site {
                     writeln!(out, "  site {file}:{line}").unwrap();
                 }
-                if let Some(target) = &wait.target {
-                    writeln!(out, "  waiting on {}", mask(&target.to_string())).unwrap();
+                match wait.verified() {
+                    Some(verified) => {
+                        writeln!(out, "  waiting on {}", mask(&verified.target().to_string()))
+                            .unwrap()
+                    }
+                    None => writeln!(out, "  assessed {:?}", wait.assessment).unwrap(),
                 }
             }
             TaskStage::Finished(_) => writeln!(out, "  finished").unwrap(),
@@ -310,33 +319,46 @@ fn interpret(bundle: &Bundle, snapshot: &Snapshot) -> String {
         }
     }
 
-    for fl in &analysis.futurelocks {
-        let acq = &fl.acquire;
-        let grant = if acq.granted() {
+    let behind = analysis.behind();
+    for (index, barrier) in analysis.barriers.iter().enumerate() {
+        let acq = &barrier.acquire;
+        let grant = if barrier.granted() {
             "granted"
         } else {
             "queued for"
         };
-        let owner = acq.owner.map(|o| format!("the {o} ")).unwrap_or_default();
-        let loc = acq
+        let owner = barrier
+            .owner
+            .map(|o| format!("the {o} "))
+            .unwrap_or_default();
+        let loc = barrier
             .await_loc
             .as_ref()
             .map(|(file, line)| format!(" @ {file}:{line}"))
             .unwrap_or_default();
-        let blocked: Vec<String> = fl.blocked.iter().map(ToString::to_string).collect();
+        let holder = barrier.holder_id.expect("the holder has an id");
+        let behind: Vec<String> = behind
+            .iter()
+            .filter(|b| b.barrier == index)
+            .map(|b| format!("{} ({:?})", analysis.waits[b.waiter].task, b.relation))
+            .collect();
         writeln!(
             out,
-            "futurelock: {} holds `{}` ({}), {grant} {} permit(s) of {}semaphore {}",
-            fl.holder,
-            acq.local,
-            acq.future,
-            acq.num_permits,
+            "barrier: task {holder} holds `{}` ({}), {grant} {} permit(s) of {}semaphore {}",
+            barrier.local,
+            barrier.future,
+            acq.requested,
             owner,
-            mask(&format!("{:#x}", acq.semaphore)),
+            mask(&format!("{:#x}", acq.semaphore.addr)),
         )
         .unwrap();
-        writeln!(out, "  held across {} {}{loc}", acq.frame, acq.state).unwrap();
-        writeln!(out, "  blocked: [{}]", blocked.join(", ")).unwrap();
+        writeln!(
+            out,
+            "  held across frame #{} state {}{loc}",
+            barrier.frame, barrier.state
+        )
+        .unwrap();
+        writeln!(out, "  behind: [{}]", behind.join(", ")).unwrap();
     }
     out
 }
@@ -378,10 +400,23 @@ fn render_chain(out: &mut String, chain: &AwaitChain<'_>) {
             writeln!(out, " locals [{}]", locals.join(", ")).unwrap();
         }
     }
-    match &chain.end {
-        ChainEnd::Leaf => writeln!(out, "  end leaf").unwrap(),
-        other => writeln!(out, "  end {other:?}").unwrap(),
-    }
+    let end = match &chain.end {
+        ChainEnd::Leaf => "leaf".to_owned(),
+        ChainEnd::Primitive => "primitive".to_owned(),
+        ChainEnd::Unresumed => "unresumed".to_owned(),
+        ChainEnd::Returned => "returned".to_owned(),
+        ChainEnd::Panicked => "panicked".to_owned(),
+        ChainEnd::ActivePoll => "active poll".to_owned(),
+        ChainEnd::UnknownContinuation { reason, .. } => {
+            format!("unknown continuation ({reason:?})")
+        }
+        ChainEnd::UnknownDyn { pointee, .. } => format!("unknown dyn {pointee}"),
+        ChainEnd::AmbiguousDyn { pointee, .. } => format!("ambiguous dyn {pointee}"),
+        ChainEnd::DepthLimit => "depth limit".to_owned(),
+        ChainEnd::Cycle { .. } => "cycle".to_owned(),
+        ChainEnd::Error(e) => mask(&format!("error: {e:#}")),
+    };
+    writeln!(out, "  end {end}").unwrap();
 }
 
 /// Diff a program's analysis against the golden for the set this build
@@ -492,21 +527,12 @@ fn test_delegation_cases_offline() {
         use hansei_runtime::testkit::delegation::{Followed, follow};
         let mut reached = BTreeSet::new();
         for task in &tasks.tasks {
-            let TaskStage::Running(peeled) = ctx.task_stage(task).unwrap() else {
+            // The nominal `Pin<Box<F>>` root: the program is bound to
+            // it, and executes from it.
+            let TaskStage::Running(root) = ctx.task_root(task, &ReadContext::none()).unwrap()
+            else {
                 panic!("{set}: every fixture task is resident");
             };
-            // The stage decode still peels the root to its sole member, so
-            // the nominal `Pin<Box<F>>` is re-read at the same address from
-            // the entry's own type: the program is bound to the nominal
-            // root, and executes from it.
-            let FutureInfo::Known(known) = &task.future else {
-                panic!("{set}: every fixture task's future is known");
-            };
-            let nominal = ctx
-                .view
-                .ty(bundle.tasks.entries[known.entry.0 as usize].future)
-                .unwrap();
-            let root = reify::Value::read(&snapshot, nominal, peeled.addr).unwrap();
             let Followed::Static {
                 value: inner,
                 exclusive: true,
@@ -622,55 +648,6 @@ fn exegesis_free_origin_check(bundle: &Bundle) {
     );
 }
 
-/// The registry join never overwrites a decoded primitive: a task
-/// whose chain already names its wait keeps it even when a doctored
-/// registry parks an io waker for it — the io upgrade fires only for
-/// a task nothing else decoded. The goldens cannot reach this guard,
-/// since no capture parks one task on both a primitive and a socket.
-#[test]
-fn test_registry_io_never_overwrites_a_decoded_wait() {
-    use hansei_runtime::tokio::bundle::{IoResourceInfo, IoSlot, IoWaiterInfo, WaitTarget};
-
-    let (bundle, snapshot) = load_any("sleep-join");
-    let ctx = hansei_runtime::testkit::context(&bundle, &snapshot);
-    let mut e = hansei_runtime::testkit::enumerate(&ctx, &snapshot);
-    let _sets = e.discover(&ctx, &[]);
-    let mut registries = e.registries;
-    for task in &e.list.tasks {
-        registries.io.push(IoResourceInfo {
-            addr: 0x9990,
-            readiness: None,
-            consistency: Consistency::Unknown,
-            waiters: vec![IoWaiterInfo {
-                slot: IoSlot::Reader,
-                task: Some(task.addr.0),
-                node: None,
-                ready: None,
-            }],
-        });
-    }
-    let analysis = graph::analyze(&ctx, &e.list, &registries);
-    let target_of = |id: u64| {
-        let index = e
-            .list
-            .tasks
-            .iter()
-            .position(|t| t.task_id == Some(id))
-            .unwrap_or_else(|| panic!("no task {id}"));
-        analysis.waits[index].target.as_ref()
-    };
-    assert!(
-        matches!(target_of(3), Some(WaitTarget::Timer { .. })),
-        "{:#?}",
-        target_of(3)
-    );
-    assert!(
-        matches!(target_of(4), Some(WaitTarget::Task { .. })),
-        "{:#?}",
-        target_of(4)
-    );
-}
-
 /// The fd join's two member shapes, each pinned alone: a frame whose
 /// resource is held by value (the watcher's `stream` local) and one
 /// holding only a reference (the reader's `Read` future's `&mut`).
@@ -685,7 +662,8 @@ fn test_io_resource_fd_member_shapes() {
     let ctx = hansei_runtime::testkit::context(&bundle, &snapshot);
     let mut e = hansei_runtime::testkit::enumerate(&ctx, &snapshot);
     let _sets = e.discover(&ctx, &[]);
-    let analysis = graph::analyze(&ctx, &e.list, &e.registries);
+    let read = ReadContext::none();
+    let analysis = graph::analyze(&ctx, &e.list, &read);
 
     let case = |name_part: &str, last_frame: bool| {
         let index = e
@@ -694,20 +672,24 @@ fn test_io_resource_fd_member_shapes() {
             .iter()
             .position(|t| known_name(t).contains(name_part))
             .unwrap_or_else(|| panic!("no task named {name_part}"));
-        let Some(WaitTarget::Io { addr, fd, .. }) = &analysis.waits[index].target else {
+        let Some(WaitTarget::Io { addr, fd, .. }) =
+            analysis.waits[index].verified().map(|w| w.target())
+        else {
             panic!(
                 "{name_part} decodes no io wait: {:?}",
                 analysis.waits[index]
             );
         };
         let fd = fd.unwrap_or_else(|| panic!("{name_part} resolved no fd"));
-        let TaskStage::Running(future) = ctx
-            .task_stage(&e.list.tasks[index])
-            .expect("the stage decodes")
+        let task = &e.list.tasks[index];
+        let TaskStage::Running(future) = ctx.task_root(task, &read).expect("the stage decodes")
         else {
             panic!("{name_part} is not running");
         };
-        let chain = ctx.await_chain(future);
+        let lifecycle = task.state.lifecycle();
+        let chain = ctx
+            .inspect_future(future, InspectionMode::Task { lifecycle }, &read)
+            .chain;
         let frame = match last_frame {
             true => chain.frames.last().expect("a chain frame"),
             false => chain.frames.first().expect("a chain frame"),
@@ -767,7 +749,9 @@ fn test_futurelock_census_offline() {
         .expect("the root type is in the bundle");
     let root =
         reify::Value::read(ctx.proc, ty, future1.addr).expect("the recorded root reads back");
-    let chain = ctx.await_chain(root);
+    let chain = ctx
+        .inspect_future(root, InspectionMode::Held, &ReadContext::none())
+        .chain;
     let first = chain.frames.first().expect("the re-rooted chain decodes");
     assert_eq!(first.future.ty.name(), future1.future, "{future1:#?}");
 }
@@ -925,7 +909,9 @@ fn test_unordered_census_offline() {
         .ty(root.ty)
         .expect("the root type is in the bundle");
     let future = reify::Value::read(ctx.proc, ty, root.addr).expect("the recorded root reads back");
-    let chain = ctx.await_chain(future);
+    let chain = ctx
+        .inspect_future(future, InspectionMode::Held, &ReadContext::none())
+        .chain;
     assert_eq!(
         chain
             .frames
@@ -1064,7 +1050,7 @@ fn test_ct_runtime_offline() {
     let list = e.list;
     assert!(list.errors.is_empty(), "{:?}", list.errors);
 
-    let analysis = graph::analyze(&ctx, &list, &e.registries);
+    let analysis = graph::analyze(&ctx, &list, &ReadContext::none());
     assert!(analysis.errors.is_empty(), "{:?}", analysis.errors);
 
     // The two spawned tasks parked at their leaves, decoded through the
@@ -1076,8 +1062,8 @@ fn test_ct_runtime_offline() {
             continue;
         }
         let target = wait
-            .target
-            .as_ref()
+            .verified()
+            .map(|w| w.target())
             .unwrap_or_else(|| panic!("{name} decodes no wait target"));
         leaves.push((name.to_owned(), mask(&target.to_string())));
     }
@@ -1119,9 +1105,9 @@ fn test_local_set_offline() {
     // joins is not in any list this session can show.
     assert_eq!(e.list.tasks.len(), 1, "{:#?}", e.list.tasks);
     let joiner = e.list.tasks[0].addr;
-    let joined = match graph::analyze(&ctx, &e.list, &e.registries).waits[0]
-        .target
-        .clone()
+    let joined = match graph::analyze(&ctx, &e.list, &ReadContext::none()).waits[0]
+        .verified()
+        .map(|w| w.target().clone())
     {
         Some(hansei_runtime::tokio::bundle::WaitTarget::Task {
             addr, listed, kind, ..
@@ -1144,7 +1130,10 @@ fn test_local_set_offline() {
     let [set] = sets.as_slice() else {
         panic!("expected one local set, got {}", sets.len());
     };
-    assert_eq!(set.route, DiscoveryRoute::JoinHandle);
+    assert_eq!(
+        set.route,
+        DiscoveryRoute::Scanned(ReferenceSource::JoinHandle)
+    );
     assert_ne!(set.owned_id, 0);
 
     assert_eq!(list.tasks.len(), 3, "{:#?}", list.tasks);
@@ -1170,7 +1159,7 @@ fn test_local_set_offline() {
 
     // And the local tasks read like any other: both leaves decode
     // through the readers the scheduler-owned fixtures exercise.
-    let analysis = graph::analyze(&ctx, &list, &e.registries);
+    let analysis = graph::analyze(&ctx, &list, &ReadContext::none());
     assert!(analysis.errors.is_empty(), "{:?}", analysis.errors);
     let mut leaves: Vec<String> = list
         .tasks
@@ -1179,8 +1168,8 @@ fn test_local_set_offline() {
         .filter(|(task, _)| task.group == group)
         .map(|(task, wait)| {
             let target = wait
-                .target
-                .as_ref()
+                .verified()
+                .map(|w| w.target())
                 .unwrap_or_else(|| panic!("{} decodes no wait target", known_name(task)));
             mask(&target.to_string())
         })
@@ -1197,13 +1186,13 @@ fn test_local_set_offline() {
 
     // The joined task is now simply listed — the third `listed: false`
     // case the plan called for, closed by discovery rather than worded.
-    let rejoined = graph::analyze(&ctx, &list, &e.registries);
+    let rejoined = graph::analyze(&ctx, &list, &ReadContext::none());
     let joiner_wait = rejoined
         .waits
         .iter()
         .find(|wait| wait.task.addr == joiner)
         .expect("the joiner is still in the population");
-    match &joiner_wait.target {
+    match joiner_wait.verified().map(|w| w.target()) {
         Some(hansei_runtime::tokio::bundle::WaitTarget::Task { listed, .. }) => {
             assert!(listed, "the joined local task is listed after discovery");
         }
@@ -1232,9 +1221,9 @@ fn test_local_set_timer_offline() {
     // own, which is what makes the wheel the only way in.
     assert_eq!(e.list.tasks.len(), 1, "{:#?}", e.list.tasks);
     let scheduler_task = e.list.tasks[0].addr;
-    match graph::analyze(&ctx, &e.list, &e.registries).waits[0]
-        .target
-        .clone()
+    match graph::analyze(&ctx, &e.list, &ReadContext::none()).waits[0]
+        .verified()
+        .map(|w| w.target().clone())
     {
         Some(hansei_runtime::tokio::bundle::WaitTarget::Timer { .. }) => {}
         other => panic!("the spawned task does not await a timer: {other:?}"),
@@ -1275,7 +1264,7 @@ fn test_local_set_timer_offline() {
     // Both members read like any listed task, including the one the
     // wheel never named: nothing outside the set points at the
     // semaphore waiter, and it is listed all the same.
-    let analysis = graph::analyze(&ctx, &list, &e.registries);
+    let analysis = graph::analyze(&ctx, &list, &ReadContext::none());
     assert!(analysis.errors.is_empty(), "{:?}", analysis.errors);
     let mut leaves: Vec<String> = list
         .tasks
@@ -1284,8 +1273,8 @@ fn test_local_set_timer_offline() {
         .filter(|(task, _)| task.group == group)
         .map(|(task, wait)| {
             let target = wait
-                .target
-                .as_ref()
+                .verified()
+                .map(|w| w.target())
                 .unwrap_or_else(|| panic!("{} decodes no wait target", known_name(task)));
             mask(&target.to_string())
         })
@@ -1413,9 +1402,9 @@ fn test_foreign_runtime_offline() {
     assert_eq!(e.runtimes.len(), 1, "{:#?}", e.runtimes);
     assert_eq!(e.list.tasks.len(), 1, "{:#?}", e.list.tasks);
     let joiner = e.list.tasks[0].addr;
-    let joined = match graph::analyze(&ctx, &e.list, &e.registries).waits[0]
-        .target
-        .clone()
+    let joined = match graph::analyze(&ctx, &e.list, &ReadContext::none()).waits[0]
+        .verified()
+        .map(|w| w.target().clone())
     {
         Some(hansei_runtime::tokio::bundle::WaitTarget::Task {
             addr, listed, kind, ..
@@ -1439,7 +1428,10 @@ fn test_foreign_runtime_offline() {
     let [_main, hidden] = e.runtimes.as_slice() else {
         panic!("expected two runtimes, got {}", e.runtimes.len());
     };
-    assert_eq!(hidden.route, DiscoveryRoute::JoinHandle);
+    assert_eq!(
+        hidden.route,
+        DiscoveryRoute::Scanned(ReferenceSource::JoinHandle)
+    );
     assert!(hidden.worker_tids.is_empty(), "{hidden:#?}");
 
     // Both of its tasks are enumerated under its group — the one the
@@ -1484,7 +1476,7 @@ fn test_foreign_runtime_offline() {
         1,
         "the main runtime's own task is not duplicated"
     );
-    let analysis = graph::analyze(&ctx, &list, &e.registries);
+    let analysis = graph::analyze(&ctx, &list, &ReadContext::none());
     assert!(analysis.errors.is_empty(), "{:?}", analysis.errors);
     let joiner_wait = list
         .tasks
@@ -1493,7 +1485,7 @@ fn test_foreign_runtime_offline() {
         .find(|(t, _)| t.addr == joiner)
         .map(|(_, wait)| wait)
         .expect("the joiner is still in the population");
-    match joiner_wait.target.as_ref() {
+    match joiner_wait.verified().map(|w| w.target()) {
         Some(hansei_runtime::tokio::bundle::WaitTarget::Task { listed, .. }) => {
             assert!(listed, "the joined task is listed now: {joiner_wait:?}");
         }

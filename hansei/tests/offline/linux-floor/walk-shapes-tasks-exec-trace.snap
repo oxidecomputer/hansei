@@ -3,28 +3,31 @@ source: hansei/src/offline.rs
 description: "`tasks --exec trace -n` over linux-floor/walk-shapes"
 ---
 task 1
-#0  future        tokio::sync::notify::Notified
-      (<no_state>, 4 locals)
-#1  async fn      walk_shapes::deep
-      awaiting at src/bin/walk-shapes.rs:92 (Suspend0, 1 local)
-#2  future        walk_shapes::WrapE<walk_shapes::deep>
-      constructed at src/bin/walk-shapes.rs:91 (Running, 2 locals)
-#3  future        walk_shapes::WrapS<walk_shapes::WrapE<walk_shapes::deep>>
-      (<no_state>, 2 locals)
-#4  async fn      walk_shapes::chained
-      awaiting at src/bin/walk-shapes.rs:107 (Suspend0, 1 local; holds 1 pending future)
+Waiting on: unknown
+
+what walk_shapes::WrapS<walk_shapes::WrapE<walk_shapes::deep>> polls is not established (no reviewed rule covers its implementation); the chain ends there
+#0  future        walk_shapes::WrapS<walk_shapes::WrapE<walk_shapes::deep>>
+      (<no_state>, 2 locals; holds 1 pending future)
+#1  async fn      walk_shapes::chained
+      awaiting at src/bin/walk-shapes.rs:116 (Suspend0, 1 local; holds 1 pending future)
 
 task 2
+Waiting on: unknown
+
+what tokio::sync::notify::Notified polls is not established (no reviewed rule covers its implementation); the chain ends there
 #0  future        tokio::sync::notify::Notified
       (<no_state>, 4 locals)
 #1  async fn      walk_shapes::holder
-      awaiting at src/bin/walk-shapes.rs:129 (Suspend1, 3 locals)
+      awaiting at src/bin/walk-shapes.rs:138 (Suspend1, 3 locals)
 
 task 3
+Waiting on: unknown
+
+what tokio::sync::notify::Notified polls is not established (no reviewed rule covers its implementation); the chain ends there
 #0  future        tokio::sync::notify::Notified
       (<no_state>, 4 locals)
 #1  async fn      walk_shapes::abandoner
-      awaiting at src/bin/walk-shapes.rs:151 (Suspend1, 4 locals; holds 1 pending future)
+      awaiting at src/bin/walk-shapes.rs:160 (Suspend1, 4 locals; holds 1 pending future)
 
 task 4
 Waiting on: a tokio::sync::Mutex (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: a non-task waiter, task 4
@@ -38,7 +41,7 @@ Waiting on: a tokio::sync::Mutex (semaphore 0xADDR): 1 permit requested, 0 avail
 #3  async fn      tokio::sync::mutex::Mutex::lock<()>
       awaiting at tokio-1.47.5/src/sync/mutex.rs:455 (Suspend0, 0 locals)
 #4  async fn      walk_shapes::victim
-      awaiting at src/bin/walk-shapes.rs:159 (Suspend1, 1 local)
+      awaiting at src/bin/walk-shapes.rs:168 (Suspend1, 1 local)
 
 task 5
 Waiting on: a tokio::sync::Semaphore (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 5, task 6, task 10
@@ -48,7 +51,7 @@ Waiting on: a tokio::sync::Semaphore (semaphore 0xADDR): 1 permit requested, 0 a
 #1  async fn      tokio::sync::semaphore::Semaphore::acquire
       awaiting at tokio-1.47.5/src/sync/semaphore.rs:591 (Suspend0, 1 local)
 #2  async fn      walk_shapes::blocked
-      awaiting at src/bin/walk-shapes.rs:165 (Suspend0, 1 local)
+      awaiting at src/bin/walk-shapes.rs:174 (Suspend0, 1 local)
 
 task 6
 Waiting on: a tokio::sync::Semaphore (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 5, task 6, task 10
@@ -58,13 +61,16 @@ Waiting on: a tokio::sync::Semaphore (semaphore 0xADDR): 1 permit requested, 0 a
 #1  async fn      tokio::sync::semaphore::Semaphore::acquire
       awaiting at tokio-1.47.5/src/sync/semaphore.rs:591 (Suspend0, 1 local)
 #2  async fn      walk_shapes::blocked
-      awaiting at src/bin/walk-shapes.rs:165 (Suspend0, 1 local)
+      awaiting at src/bin/walk-shapes.rs:174 (Suspend0, 1 local)
 
 task 7
+Waiting on: unknown
+
+what tokio::sync::notify::Notified polls is not established (no reviewed rule covers its implementation); the chain ends there
 #0  future        tokio::sync::notify::Notified
       (<no_state>, 4 locals)
 #1  async fn      walk_shapes::local_parker
-      awaiting at src/bin/walk-shapes.rs:198 (Suspend0, 1 local)
+      awaiting at src/bin/walk-shapes.rs:207 (Suspend0, 1 local)
 
 task 8
 Waiting on: task 7
@@ -72,9 +78,12 @@ Waiting on: task 7
 #0  future        tokio::runtime::task::join::JoinHandle<u32>
       waiting on task 7
 #1  async fn      walk_shapes::joiner
-      awaiting at src/bin/walk-shapes.rs:205 (Suspend0, 0 locals)
+      awaiting at src/bin/walk-shapes.rs:214 (Suspend0, 0 locals)
 
 task 9
+Waiting on: — (queued)
+
+the chain ends in a future that has never been polled
 #0  async fn      walk_shapes::side_parker
       state Unresumed
 
@@ -86,5 +95,5 @@ Waiting on: a tokio::sync::Semaphore (semaphore 0xADDR): 1 permit requested, 0 a
 #1  async fn      tokio::sync::semaphore::Semaphore::acquire
       awaiting at tokio-1.47.5/src/sync/semaphore.rs:591 (Suspend0, 1 local)
 #2  async fn      walk_shapes::hidden_blocked
-      awaiting at src/bin/walk-shapes.rs:171 (Suspend0, 1 local)
+      awaiting at src/bin/walk-shapes.rs:180 (Suspend0, 1 local)
 [Executed against 10 tasks, 0 failed]

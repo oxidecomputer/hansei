@@ -3,8 +3,11 @@ source: hansei/src/offline.rs
 description: "`tasks --exec trace -n` over linux/unordered"
 ---
 task 3
-#0  future        futures_util::stream::futures_unordered::FuturesUnordered<unordered::set_member>
-      (<no_state>, 3 locals)
+Waiting on: unknown
+
+what futures_util::stream::stream::next::Next<futures_util::stream::futures_unordered::FuturesUnordered<unordered::set_member>> polls is not established (no reviewed rule covers its implementation); the chain ends there
+#0  future        futures_util::stream::stream::next::Next<futures_util::stream::futures_unordered::FuturesUnordered<unordered::set_member>>
+      (<no_state>, 1 local)
 #1  async fn      unordered::driver
       awaiting at src/bin/unordered.rs:119 (Suspend0, 8 locals; holds 5 pending futures)
 [Executed against 1 task, 0 failed]

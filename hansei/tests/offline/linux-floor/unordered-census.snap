@@ -19,10 +19,10 @@ COUNT  STATE
 
 COUNT  TYPE / WAITING ON
     1  async fn unordered::driver
-       └─ 1  future futures_util::stream::futures_unordered::FuturesUnordered<unordered::set_member>
+       └─ 1  unknown
 [1 type]
 
-Futures: 15 in flight, on 19 await-chain frames, up to 2 deep
+Futures: 15 in flight, on 20 await-chain frames, up to 2 deep
 
 COUNT  HELD IN
     1  task (its own await chain)
@@ -32,8 +32,10 @@ COUNT  HELD IN
 
 COUNT  TYPE / WAITING ON
     8  async fn unordered::leaf
+       └─ 8  — (unresumed)
     5  async fn unordered::set_member
-       ├─ 3  future tokio::sync::notify::Notified
-       └─ 2  async fn unordered::set_member
+       ├─ 3  unknown
+       └─ 2  — (unresumed)
     1  async fn unordered::holder<unordered::leaf>
+       └─ 1  — (unresumed)
 [3 types]

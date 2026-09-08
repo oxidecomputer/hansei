@@ -43,6 +43,15 @@ impl<F: Future> Future for WrapS<F> {
     type Output = F::Output;
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<F::Output> {
         assert_eq!(self.tag, 7);
+        // Ground truth for the census diff, registered from the one
+        // place its address is known: no reviewed rule covers this
+        // wrapper, so the chain ends here and what it holds is a held
+        // find in the frame awaiting it. Once, on the first poll.
+        static REGISTERED: std::sync::atomic::AtomicBool =
+            std::sync::atomic::AtomicBool::new(false);
+        if !REGISTERED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            census_expect::held(&self.inner as *const _ as u64, "walk_shapes::WrapE");
+        }
         // SAFETY: `inner` is pinned structurally and never moved out.
         unsafe { self.map_unchecked_mut(|w| &mut w.inner) }.poll(cx)
     }

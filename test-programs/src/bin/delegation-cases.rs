@@ -147,6 +147,10 @@ fn main() {
         ready: ready.clone(),
     });
     let child = location(&gated.child);
+    // Ground truth for the census diff: no rule covers the gate, so its
+    // chain ends there and the initialized child inside it is a held
+    // find of the task's root frame — discoverable, never polled.
+    test_programs::census_expect::held(child.0, "delegation_cases::Probe");
     tasks.push(register(&rt, 0, gated, child, 0));
 
     let mut previous = Box::pin(Gated {
@@ -169,6 +173,7 @@ fn main() {
     assert_eq!(receive.recv().unwrap(), 1);
     previous.gate.open = false;
     let child = location(&previous.child);
+    test_programs::census_expect::held(child.0, "delegation_cases::Probe");
     tasks.push(register(&rt, 1, previous, child, 1));
 
     let retained = Box::pin(Retained::Parked {

@@ -21,6 +21,7 @@ use crate::output::Theme;
 use crate::{Session, SessionArgs, dispatch, repl};
 
 use hansei_runtime::testkit::{self, FIXTURE_SETS, PROGRAMS, mask};
+use hansei_runtime::tokio::chain::InspectionMode;
 use hansei_runtime::tokio::{bundle, census};
 
 use std::path::Path;
@@ -139,14 +140,15 @@ fn commands(
     // inside its awaiter's JoinHandle frame, so it is an address every
     // such capture proves the scan can find; --kind address forces the
     // referenced-by reading past the task-allocation answer.
-    if let Some(joined) = session
-        .analysis()
-        .waits
-        .iter()
-        .find_map(|w| match &w.target {
-            Some(bundle::WaitTarget::Task { addr, .. }) => Some(*addr),
-            _ => None,
-        })
+    if let Some(joined) =
+        session
+            .analysis()
+            .waits
+            .iter()
+            .find_map(|w| match w.verified().map(|v| v.target()) {
+                Some(bundle::WaitTarget::Task { addr, .. }) => Some(*addr),
+                _ => None,
+            })
     {
         list.push(("sync-ref", format!("sync {joined:#x} --kind address")));
     }
@@ -263,10 +265,18 @@ fn first_frame_member(
     session: &Session<'_, proc::snapshot::Snapshot>,
     task: &hansei_runtime::tokio::bundle::Task,
 ) -> Option<String> {
-    let bundle::TaskStage::Running(future) = session.ctx.task_stage(task).ok()? else {
-        return None;
-    };
-    let chain = session.ctx.await_chain(future);
+    let chain = session.read_with(|read| {
+        let bundle::TaskStage::Running(future) = session.ctx.task_root(task, read).ok()? else {
+            return None;
+        };
+        let lifecycle = task.state.lifecycle();
+        Some(
+            session
+                .ctx
+                .inspect_future(future, InspectionMode::Task { lifecycle }, read)
+                .chain,
+        )
+    })?;
     let frame = chain.frames.last()?;
     let payload = match &frame.state {
         Some(state) => state.payload,

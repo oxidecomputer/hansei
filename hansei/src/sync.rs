@@ -16,8 +16,10 @@ use crate::{Session, print_warnings};
 
 use anyhow::{Result, bail};
 use hansei_bundle::names;
+use hansei_runtime::tokio::assess::PollingBarrier;
 use hansei_runtime::tokio::bundle::{QueuedWaker, SemaphoreWaiter, WaitTarget};
-use hansei_runtime::tokio::graph::{Analysis, Futurelock, TaskRef};
+use hansei_runtime::tokio::chain::InspectionMode;
+use hansei_runtime::tokio::graph::{Analysis, BarrierRelation, TaskRef};
 use hansei_runtime::tokio::{Lifecycle, bundle, census};
 
 use std::collections::BTreeMap;
@@ -419,10 +421,21 @@ fn collect_references<T: proc::Target>(
         if !matches!(task.future, bundle::FutureInfo::Known(_)) {
             continue;
         }
-        let Ok(bundle::TaskStage::Running(future)) = session.ctx.task_stage(task) else {
+        let chain = session.read_with(|read| {
+            let bundle::TaskStage::Running(future) = session.ctx.task_root(task, read).ok()? else {
+                return None;
+            };
+            let lifecycle = task.state.lifecycle();
+            Some(
+                session
+                    .ctx
+                    .inspect_future(future, InspectionMode::Task { lifecycle }, read)
+                    .chain,
+            )
+        });
+        let Some(chain) = chain else {
             continue;
         };
-        let chain = session.ctx.await_chain(future);
         for (n, frame) in chain.frames.iter().enumerate() {
             let value = match &frame.state {
                 Some(state) => state.payload,
@@ -483,24 +496,33 @@ fn print_references(addr: u64, lines: &[String], out: &mut dyn io::Write) -> Res
 // ---------------------------------------------------------------------------
 
 /// One contended semaphore, assembled from every place the analysis
-/// mentions it: the tasks whose active chains are blocked on it (each
-/// carrying a snapshot of its state), and the futurelock diagnoses
-/// whose abandoned acquires touch it.
+/// mentions it: the tasks whose verified waits are on it (each
+/// carrying a snapshot of its state), and the polling barriers whose
+/// held acquires touch it.
 struct SemaphoreBlock<'a> {
     addr: u64,
     /// The primitive wrapping it, from the first observer that named
     /// one — every acquire of one Mutex names the Mutex.
     owner: Option<&'static str>,
-    /// The semaphore's own state, from the first blocked task's
-    /// snapshot. `None` for a semaphore only a futurelock reached: an
-    /// abandoned acquire records what *it* holds, not the queue.
+    /// The semaphore's own state, from the first waiting task's
+    /// snapshot. `None` for a semaphore only a barrier reached: a held
+    /// acquire records what *it* holds, not the queue.
     seen: Option<Seen<'a>>,
-    /// The tasks actively blocked on it, in task-list order, each with
+    /// The tasks verified waiting on it, in task-list order, each with
     /// the permits its acquire asked for.
     blocked: Vec<(TaskRef, u64)>,
-    /// The futurelock diagnoses on it: abandoned acquires holding
-    /// permits, or places in its queue, that no poll will ever release.
-    locks: Vec<&'a Futurelock>,
+    /// The polling barriers on it: held acquires holding permits, or
+    /// places in its queue, that their holder cannot poll until its
+    /// own terminal completes — each with the holder and the waiters
+    /// standing behind it.
+    locks: Vec<Barrier<'a>>,
+}
+
+/// One barrier as the block prints it.
+struct Barrier<'a> {
+    holder: TaskRef,
+    barrier: &'a PollingBarrier,
+    behind: Vec<(TaskRef, BarrierRelation)>,
 }
 
 /// A semaphore's state as one blocked task's wait target recorded it.
@@ -536,7 +558,7 @@ fn blocks(analysis: &Analysis) -> BTreeMap<u64, SemaphoreBlock<'_>> {
             available,
             closed,
             waiters,
-        }) = &wait.target
+        }) = wait.verified().map(|w| w.target())
         else {
             continue;
         };
@@ -549,10 +571,22 @@ fn blocks(analysis: &Analysis) -> BTreeMap<u64, SemaphoreBlock<'_>> {
         });
         entry.blocked.push((wait.task, *num_permits));
     }
-    for fl in &analysis.futurelocks {
-        let entry = block(&mut blocks, fl.acquire.semaphore);
-        entry.owner = entry.owner.or(fl.acquire.owner);
-        entry.locks.push(fl);
+    let behind = analysis.behind();
+    for (index, barrier) in analysis.barriers.iter().enumerate() {
+        let entry = block(&mut blocks, barrier.acquire.semaphore.addr);
+        entry.owner = entry.owner.or(barrier.owner);
+        entry.locks.push(Barrier {
+            holder: TaskRef {
+                addr: barrier.holder,
+                task_id: barrier.holder_id,
+            },
+            barrier,
+            behind: behind
+                .iter()
+                .filter(|b| b.barrier == index)
+                .map(|b| (analysis.waits[b.waiter].task, b.relation))
+                .collect(),
+        });
     }
     blocks
 }
@@ -581,36 +615,49 @@ fn print_semaphore(
             )?;
         }
         None => {
-            // Reached only through an abandoned acquire, which records
-            // what it holds, not the semaphore's own state.
+            // Reached only through a held acquire, which records what
+            // it holds, not the semaphore's own state.
             writeln!(out, "{name}: state not read (no task is blocked on it)")?;
         }
     }
 
     // A tokio semaphore records no owner, so a holder is knowable only
-    // where the futurelock analysis found an abandoned acquire holding
-    // permits; an ungranted one holds a place in the queue instead.
-    for fl in &block.locks {
-        let acq = &fl.acquire;
-        let future = names::display_future_name(&acq.future, impls);
-        if acq.granted() {
+    // where the analysis found a polling barrier over an acquire
+    // holding permits; an ungranted one holds a place in the queue
+    // instead. Either is conditional: the holder cannot poll it until
+    // the terminal of its own chain completes.
+    for lock in &block.locks {
+        let barrier = lock.barrier;
+        let acq = &barrier.acquire;
+        let future = names::display_future_name(&barrier.future, impls);
+        let terminal = names::display_future_name(&barrier.terminal, impls);
+        if barrier.granted() {
             writeln!(
                 out,
                 "    Held by: {} — {} granted to `{}` ({future}), \
-                 a future it stopped polling",
-                fl.holder,
-                counted(acq.num_permits as usize, "permit"),
-                acq.local,
+                 a future it cannot poll until the {terminal} it awaits completes",
+                lock.holder,
+                counted(acq.requested as usize, "permit"),
+                barrier.local,
             )?;
         } else {
             writeln!(
                 out,
-                "    Abandoned in its queue: {}'s `{}` ({future}), \
-                 still waiting for {}",
-                fl.holder,
-                acq.local,
+                "    Queued by: {}'s `{}` ({future}), still waiting for {}, \
+                 a future it cannot poll until the {terminal} it awaits completes",
+                lock.holder,
+                barrier.local,
                 counted(acq.needed as usize, "permit"),
             )?;
+        }
+        let queued: Vec<String> = lock
+            .behind
+            .iter()
+            .filter(|(_, relation)| *relation == BarrierRelation::QueueOrder)
+            .map(|(task, _)| task.to_string())
+            .collect();
+        if !queued.is_empty() {
+            writeln!(out, "    Queued behind it: {}", queued.join(", "))?;
         }
     }
 
@@ -632,8 +679,11 @@ fn print_semaphore(
     if let Some(seen) = &block.seen
         && !seen.waiters.is_empty()
     {
-        let nodes: std::collections::HashSet<u64> =
-            block.locks.iter().map(|fl| fl.acquire.node).collect();
+        let nodes: std::collections::HashSet<u64> = block
+            .locks
+            .iter()
+            .map(|lock| lock.barrier.acquire.node)
+            .collect();
         let queue = seen
             .waiters
             .iter()
@@ -648,9 +698,9 @@ fn print_semaphore(
 /// How one wake-queue entry reads: who waking it schedules, in the
 /// spelling the trace's inline queue uses, plus what this listing can
 /// say about the node itself — that its acquire was granted everything
-/// it asked for and merely awaits a poll, and that the futurelock
-/// analysis proved that poll will never come.
-fn waiter_name(w: &SemaphoreWaiter, abandoned: bool) -> String {
+/// it asked for and merely awaits a poll, and that a polling barrier
+/// holds that poll off until its holder's terminal completes.
+fn waiter_name(w: &SemaphoreWaiter, held: bool) -> String {
     let mut name = match &w.waker {
         QueuedWaker::Task {
             task_id: Some(id), ..
@@ -662,7 +712,7 @@ fn waiter_name(w: &SemaphoreWaiter, abandoned: bool) -> String {
         QueuedWaker::Other { .. } => "a non-task waiter".to_string(),
         QueuedWaker::Unarmed => "an unarmed waiter".to_string(),
     };
-    let marks: Vec<&str> = [(w.needed == 0, "granted"), (abandoned, "abandoned")]
+    let marks: Vec<&str> = [(w.needed == 0, "granted"), (held, "held off")]
         .into_iter()
         .filter_map(|(on, mark)| on.then_some(mark))
         .collect();
@@ -678,12 +728,17 @@ mod sync_tests {
 
     use crate::relations::Relations;
 
-    use hansei_bundle::names;
+    use hansei_bundle::{BundleTypeId, names};
+    use hansei_runtime::tokio::assess::{
+        ContinuationStatus, IncompleteReason, PollingBarrier, VerifiedWait, WaitAssessment,
+        WaitUnknownReason,
+    };
     use hansei_runtime::tokio::bundle::{
-        AbandonedAcquire, FutureInfo, QueuedWaker, SemaphoreWaiter, Task, TaskList, WaitTarget,
+        FutureInfo, QueuedWaker, SemaphoreWaiter, Task, TaskList, WaitTarget,
     };
     use hansei_runtime::tokio::census;
-    use hansei_runtime::tokio::graph::{Analysis, Futurelock, TaskRef, TaskWait};
+    use hansei_runtime::tokio::graph::{Analysis, TaskRef, TaskWait};
+    use hansei_runtime::tokio::observe::{AcquireObservation, ValueKey};
     use hansei_runtime::tokio::{TaskAddr, TaskState};
 
     const REF_ONE: u64 = 1 << 6;
@@ -713,13 +768,33 @@ mod sync_tests {
         }
     }
 
-    fn wait(id: u64, target: Option<WaitTarget>) -> TaskWait {
+    /// A task assessed as verified-waiting on `target` at `position`
+    /// in its semaphore's wake order, or — with no target — with its
+    /// continuation unknown.
+    fn wait_at(id: u64, target: Option<WaitTarget>, position: Option<usize>) -> TaskWait {
         TaskWait {
             task: task_ref(id),
-            target,
+            assessment: match target {
+                Some(target) => WaitAssessment::Waiting(VerifiedWait::testkit(target, position)),
+                None => WaitAssessment::Unknown(WaitUnknownReason::Continuation),
+            },
+            continuation: no_chain(),
             depth: 1,
-            leaf: None,
             site: None,
+            observation: None,
+            notes: Vec::new(),
+        }
+    }
+
+    fn wait(id: u64, target: Option<WaitTarget>) -> TaskWait {
+        wait_at(id, target, None)
+    }
+
+    /// The continuation of a find laid out by hand.
+    fn no_chain() -> ContinuationStatus {
+        ContinuationStatus::Incomplete {
+            reason: IncompleteReason::NoRoot,
+            detail: None,
         }
     }
 
@@ -758,24 +833,42 @@ mod sync_tests {
     }
 
     /// The task holding an acquire on the semaphore, granted or not,
-    /// in a future it stopped polling.
-    fn futurelock(holder: u64, node: u64, needed: u64) -> Futurelock {
-        Futurelock {
-            holder: task_ref(holder),
-            acquire: AbandonedAcquire {
-                frame: "worker::{async_fn_env#0}".to_string(),
-                state: "Suspend0".to_string(),
-                await_loc: None,
-                local: "lock".to_string(),
-                future: "Mutex::lock::{async_fn_env#0}".to_string(),
-                owner: Some("tokio::sync::Mutex"),
-                semaphore: SEMAPHORE,
+    /// in a future its exclusive chain cannot poll until its terminal
+    /// completes; `position` is the node's place in the wake order
+    /// where the queue established one.
+    fn barrier_at(holder: u64, node: u64, needed: u64, position: Option<usize>) -> PollingBarrier {
+        let key = |addr: u64| ValueKey {
+            addr,
+            ty: BundleTypeId(0),
+        };
+        PollingBarrier {
+            holder: addr(holder),
+            holder_id: Some(holder),
+            frame: 0,
+            frame_type: "worker::{async_fn_env#0}".to_string(),
+            state: "Suspend0".to_string(),
+            await_loc: None,
+            local: "lock".to_string(),
+            candidate: key(node),
+            future: "Mutex::lock::{async_fn_env#0}".to_string(),
+            owner: Some("tokio::sync::Mutex"),
+            acquire: AcquireObservation {
+                future: key(node),
+                semaphore: key(SEMAPHORE),
                 node,
-                num_permits: 1,
+                requested: 1,
                 needed,
+                queued: true,
+                queue_position: position,
             },
-            blocked: Vec::new(),
+            primitive: key(0xb000),
+            terminal: "tokio::sync::batch_semaphore::Acquire".to_string(),
+            edges: Vec::new(),
         }
+    }
+
+    fn barrier(holder: u64, node: u64, needed: u64) -> PollingBarrier {
+        barrier_at(holder, node, needed, None)
     }
 
     /// The default population behind the semaphore tests: one task per
@@ -798,13 +891,13 @@ mod sync_tests {
     }
 
     impl Fixture {
-        fn new(waits: Vec<TaskWait>, futurelocks: Vec<Futurelock>) -> Fixture {
+        fn new(waits: Vec<TaskWait>, barriers: Vec<PollingBarrier>) -> Fixture {
             let list = list_for(&waits);
             Fixture {
                 list,
                 analysis: Analysis {
                     waits,
-                    futurelocks,
+                    barriers,
                     join_wakers: Vec::new(),
                     errors: Vec::new(),
                 },
@@ -851,17 +944,17 @@ mod sync_tests {
 
     fn sync(
         waits: Vec<TaskWait>,
-        futurelocks: Vec<Futurelock>,
+        barriers: Vec<PollingBarrier>,
         select: Option<u64>,
     ) -> anyhow::Result<String> {
-        Fixture::new(waits, futurelocks).print(select, Some(Kind::Semaphore))
+        Fixture::new(waits, barriers).print(select, Some(Kind::Semaphore))
     }
 
     /// The whole block of a contended, futurelocked Mutex: the holder
-    /// named from the diagnosis, the blocked tasks with what each
-    /// asked for, and the wake queue in wake order with the granted
-    /// abandoned node marked — the RFD 609 shape read off the
-    /// resource.
+    /// named from the barrier with the condition it holds under, the
+    /// waiting tasks with what each asked for, and the wake queue in
+    /// wake order with the granted, held-off node marked — the RFD 609
+    /// shape read off the resource.
     #[test]
     fn test_a_contended_mutex_gets_one_block() {
         let waits = vec![
@@ -876,39 +969,54 @@ mod sync_tests {
             wait(41, Some(semaphore(Vec::new()))),
             wait(9, None),
         ];
-        let out = sync(waits, vec![futurelock(7, 0xa000, 0)], None).unwrap();
+        let out = sync(waits, vec![barrier(7, 0xa000, 0)], None).unwrap();
         assert_eq!(
             out,
             "a tokio::sync::Mutex (semaphore 0x9000): 0 permits available\n    \
              Held by: task 7 — 1 permit granted to `lock` (async fn Mutex::lock), \
-             a future it stopped polling\n    \
+             a future it cannot poll until the future \
+             tokio::sync::batch_semaphore::Acquire it awaits completes\n    \
              Blocked on it: task 40 (1 permit requested), task 41 (1 permit requested)\n    \
-             Wake queue: task 40, task 41, task 7 (granted, abandoned)\n"
+             Wake queue: task 40, task 41, task 7 (granted, held off)\n"
         );
     }
 
-    /// An abandoned acquire the semaphore has not granted yet holds a
+    /// A held-off acquire the semaphore has not granted yet holds a
     /// place in the queue, not permits: the diagnosis line says what it
-    /// still waits for, and its node is marked without a granted claim.
+    /// still waits for, the waiter behind it in wake order is named as
+    /// queued behind it, and its node is marked without a granted
+    /// claim.
     #[test]
-    fn test_an_ungranted_abandoned_acquire_is_marked_in_the_queue() {
-        let waits = vec![wait(
+    fn test_an_ungranted_held_acquire_is_marked_in_the_queue() {
+        let waits = vec![wait_at(
             40,
             Some(semaphore(vec![waiter(7, 0xa000, 1), waiter(40, 0xe100, 1)])),
+            Some(1),
         )];
-        let out = sync(waits, vec![futurelock(7, 0xa000, 1)], None).unwrap();
+        let out = sync(waits, vec![barrier_at(7, 0xa000, 1, Some(0))], None).unwrap();
         assert!(
             out.contains(
-                "    Abandoned in its queue: task 7's `lock` (async fn Mutex::lock), \
-                 still waiting for 1 permit\n"
+                "    Queued by: task 7's `lock` (async fn Mutex::lock), \
+                 still waiting for 1 permit, a future it cannot poll until the future \
+                 tokio::sync::batch_semaphore::Acquire it awaits completes\n    \
+                 Queued behind it: task 40\n"
             ),
             "{out}"
         );
         assert!(
-            out.contains("    Wake queue: task 7 (abandoned), task 40\n"),
+            out.contains("    Wake queue: task 7 (held off), task 40\n"),
             "{out}"
         );
         assert!(!out.contains("Held by"), "{out}");
+
+        // With no established wake order nothing is queued behind it:
+        // a reversed partial prefix places nobody.
+        let waits = vec![wait(
+            40,
+            Some(semaphore(vec![waiter(7, 0xa000, 1), waiter(40, 0xe100, 1)])),
+        )];
+        let out = sync(waits, vec![barrier(7, 0xa000, 1)], None).unwrap();
+        assert!(!out.contains("Queued behind it"), "{out}");
     }
 
     /// Blocks print in address order, a blank line between them; a
@@ -958,19 +1066,20 @@ mod sync_tests {
         );
     }
 
-    /// A semaphore only a futurelock reached has no snapshot to spell
-    /// permits or a queue from — the abandoned acquire records what it
+    /// A semaphore only a barrier reached has no snapshot to spell
+    /// permits or a queue from — the held acquire records what it
     /// holds, not the semaphore's state — so the block says that
     /// rather than printing zeros read from nothing.
     #[test]
-    fn test_a_futurelock_only_semaphore_prints_a_reduced_block() {
-        let out = sync(Vec::new(), vec![futurelock(7, 0xa000, 0)], None).unwrap();
+    fn test_a_barrier_only_semaphore_prints_a_reduced_block() {
+        let out = sync(Vec::new(), vec![barrier(7, 0xa000, 0)], None).unwrap();
         assert_eq!(
             out,
             "a tokio::sync::Mutex (semaphore 0x9000): state not read \
              (no task is blocked on it)\n    \
              Held by: task 7 — 1 permit granted to `lock` (async fn Mutex::lock), \
-             a future it stopped polling\n"
+             a future it cannot poll until the future \
+             tokio::sync::batch_semaphore::Acquire it awaits completes\n"
         );
     }
 
@@ -992,7 +1101,7 @@ mod sync_tests {
     #[test]
     fn test_scoped_sync_prints_what_the_task_is_party_to() {
         let waits = vec![wait(40, Some(semaphore(Vec::new()))), wait(7, None)];
-        let fixture = Fixture::new(waits, vec![futurelock(7, 0xa000, 0)]);
+        let fixture = Fixture::new(waits, vec![barrier(7, 0xa000, 0)]);
         let blocked = fixture.print_scoped(0, None).unwrap();
         assert!(blocked.starts_with("a tokio::sync::Mutex"), "{blocked}");
         assert!(!blocked.contains("party to no"), "{blocked}");
@@ -1004,7 +1113,7 @@ mod sync_tests {
         // family the task is not party to answers the one-liner.
         let fixture = Fixture::new(
             vec![wait(40, Some(semaphore(Vec::new()))), wait(7, None)],
-            vec![futurelock(7, 0xa000, 0)],
+            vec![barrier(7, 0xa000, 0)],
         );
         let sem_only = fixture.print_scoped(0, Some(Kind::Semaphore)).unwrap();
         assert!(sem_only.starts_with("a tokio::sync::Mutex"), "{sem_only}");
@@ -1081,7 +1190,7 @@ mod sync_tests {
                 state: None,
                 waiting_on: None,
                 wait: None,
-                leaf: None,
+                continuation: no_chain(),
             }],
         }];
         assert_eq!(
@@ -1219,7 +1328,7 @@ mod sync_tests {
                     state: None,
                     waiting_on: None,
                     wait: None,
-                    leaf: None,
+                    continuation: ContinuationStatus::Unresumed,
                 },
                 census::SetChild {
                     node: 0xc100,
@@ -1229,7 +1338,7 @@ mod sync_tests {
                     state: None,
                     waiting_on: None,
                     wait: None,
-                    leaf: None,
+                    continuation: no_chain(),
                 },
             ],
         }];

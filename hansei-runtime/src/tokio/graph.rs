@@ -2,34 +2,35 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-//! Waker-based task dependency analysis: what every task is waiting
-//! on, who wakes whom, and the futurelocks those edges reveal.
+//! The task dependency analysis: what every task is assessed to be
+//! waiting on, who wakes whom, and the conditional polling barriers
+//! the exclusive chains establish.
 //!
-//! The edges come from three reads the bundle backend already makes:
-//! `JoinHandle` leaves name the awaited task, semaphore leaves carry
-//! the contended semaphore and its wake queue (each queued waker
-//! resolved back to a task), and the off-path acquire scan finds lock
-//! futures a task holds but will never poll again. Assembling them
-//! per-runtime turns individual traces into a diagnosis: a task
-//! blocked on a semaphore whose permit sits in an abandoned future is
-//! futurelocked (RFD 609), even when — especially when — the holder
-//! is the blocked task itself.
+//! Every task is inspected once by its programs ([`Context::
+//! inspect_future`]) and assessed under its resources' protocols
+//! ([`Context::assess_wait`]); the join edge is also read from the
+//! awaited side, off the trailer waker the joined task holds. A
+//! `Waiting` assessment is the only definite dependency here. A
+//! polling barrier — an acquire a task holds in a future its own
+//! exclusive chain cannot poll until its terminal completes — is a
+//! conditional diagnosis (RFD 609's futurelock, with the condition
+//! spelled), and what it says about the other tasks queued on that
+//! semaphore is a reservation or a queue-order relation, never a wait.
+//!
+//! [`Context::inspect_future`]: super::bundle::Context::inspect_future
+//! [`Context::assess_wait`]: super::bundle::Context::assess_wait
 
 use super::assess::{
-    Assessed, AssessmentPass, ContinuationStatus, PollingBarrier, TaskFacts, WaitAssessment,
-    WaitUnknownReason,
+    Assessed, AssessmentPass, ContinuationStatus, IncompleteReason, NotWaitingReason,
+    PollingBarrier, TaskFacts, VerifiedWait, WaitAssessment, WaitUnknownReason,
 };
-use super::bundle::{
-    AbandonedAcquire, Context, FutureInfo, Interest, QueuedWaker, Registries, TaskList, TaskStage,
-    WaitTarget,
-};
+use super::bundle::{Context, FutureInfo, QueuedWaker, TaskList, TaskStage, WaitTarget};
 use super::chain::InspectionMode;
 use super::observe::{ReadContext, ResourceObservation};
 use super::{Lifecycle, TaskAddr};
 
 use proc::Target;
 
-use std::collections::HashMap;
 use std::fmt;
 
 /// A task, named by id when it has one.
@@ -48,24 +49,22 @@ impl fmt::Display for TaskRef {
     }
 }
 
-/// One task's wait edge.
+/// One task's assessment: the compact projection of its inspection a
+/// listing keeps after the chain itself is dropped.
 #[derive(Debug)]
 pub struct TaskWait {
     pub task: TaskRef,
-    /// What the task's await chain bottoms out in, when it is running
-    /// and the leaf is a recognized primitive.
-    pub target: Option<WaitTarget>,
+    /// The one interpretation of the task's chain and resource: a
+    /// verified wait, a ready resource, a terminal or runnable state,
+    /// or unknown with its reason.
+    pub assessment: WaitAssessment,
+    /// How the chain ended, owned.
+    pub continuation: ContinuationStatus,
     /// How many futures deep the task's await chain runs — the future
     /// it was spawned with, plus everything it is awaiting through, so
     /// a task awaiting nothing is 1. Zero where there is no resident
-    /// chain to walk: a finished task, or one whose stage did not
-    /// decode.
+    /// chain to walk: a finished task, or one whose root did not read.
     pub depth: usize,
-    /// The type the chain bottoms out in, however ordinary a future it
-    /// is; see [`AwaitChain::leaf`]. `target` says what that leaf *is*
-    /// for the few primitives hansei decodes, so this is what a task
-    /// waits on where nothing decoded it.
-    pub leaf: Option<String>,
     /// The outermost live await site on the chain: the first frame,
     /// walking from the root, whose live state records one — the line
     /// of the task's own code it is suspended behind, rather than of
@@ -76,19 +75,18 @@ pub struct TaskWait {
     /// no frame records one: no resident chain (never polled,
     /// finished), or a chain of plain futures end to end.
     pub site: Option<(String, u32)>,
+    /// The raw observation read from the chain's primitive, whatever
+    /// the assessment made of it.
+    pub observation: Option<ResourceObservation>,
+    /// What the protocol read that decided or declined the assessment.
+    pub notes: Vec<String>,
 }
 
-/// A diagnosed futurelock (RFD 609): an abandoned acquire clogging a
-/// semaphore.
-#[derive(Debug)]
-pub struct Futurelock {
-    /// The task whose locals hold the abandoned acquire.
-    pub holder: TaskRef,
-    pub acquire: AbandonedAcquire,
-    /// Tasks whose active await chains are blocked on the same
-    /// semaphore. The holder itself commonly appears here — the
-    /// self-deadlock shape.
-    pub blocked: Vec<TaskRef>,
+impl TaskWait {
+    /// The verified wait, when the assessment is one.
+    pub fn verified(&self) -> Option<&VerifiedWait> {
+        self.assessment.verified()
+    }
 }
 
 /// A waker parked in a task's `Trailer`: the join edge read from the
@@ -101,12 +99,38 @@ pub struct JoinWaker {
     pub waiter: TaskRef,
 }
 
+/// How a verified semaphore wait stands to a polling barrier's acquire
+/// on the same semaphore. Neither is a wait on the barrier's holder:
+/// capacity, other holders and releases decide whether the waiter
+/// progresses, and nothing here proves it cannot.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum BarrierRelation {
+    /// The barrier's acquire was granted whole: it holds permits, a
+    /// reservation every waiter on the semaphore is short of.
+    Reservation,
+    /// The barrier's acquire is still queued, at a wake-order position
+    /// ahead of the waiter's: the permit that reaches its node reaches
+    /// it first.
+    QueueOrder,
+}
+
+/// One verified semaphore wait standing behind one barrier's acquire.
+#[derive(Copy, Clone, Debug)]
+pub struct Behind {
+    /// Index into [`Analysis::waits`].
+    pub waiter: usize,
+    /// Index into [`Analysis::barriers`].
+    pub barrier: usize,
+    pub relation: BarrierRelation,
+}
+
 /// The runtime-wide analysis.
 #[derive(Debug)]
 pub struct Analysis {
     /// One entry per task, in [`TaskList`] order.
     pub waits: Vec<TaskWait>,
-    pub futurelocks: Vec<Futurelock>,
+    /// The conditional polling barriers the exclusive chains establish.
+    pub barriers: Vec<PollingBarrier>,
     /// Every armed task waker parked in a listed task's `Trailer`.
     pub join_wakers: Vec<JoinWaker>,
     /// Per-task analysis failures; the entries above are unaffected
@@ -114,94 +138,65 @@ pub struct Analysis {
     pub errors: Vec<anyhow::Error>,
 }
 
-/// Walk every task's await chain and assemble the dependency edges and
-/// futurelock diagnoses.
+impl Analysis {
+    /// Every verified semaphore wait behind a barrier's acquire on its
+    /// semaphore: the typed relations a consumer draws, in place of
+    /// any same-semaphore cross product of its own. A reservation
+    /// reaches every waiter; a queued acquire reaches only the waiters
+    /// at greater wake-order positions in the same established queue —
+    /// with no position on either side, nothing.
+    pub fn behind(&self) -> Vec<Behind> {
+        let mut out = Vec::new();
+        for (barrier, held) in self.barriers.iter().enumerate() {
+            for (waiter, wait) in self.waits.iter().enumerate() {
+                let Some(verified) = wait.verified() else {
+                    continue;
+                };
+                let WaitTarget::Semaphore { addr, .. } = verified.target() else {
+                    continue;
+                };
+                if *addr != held.acquire.semaphore.addr {
+                    continue;
+                }
+                let relation = if held.granted() {
+                    BarrierRelation::Reservation
+                } else {
+                    match (held.acquire.queue_position, verified.queue_position()) {
+                        (Some(ahead), Some(behind)) if ahead < behind => {
+                            BarrierRelation::QueueOrder
+                        }
+                        _ => continue,
+                    }
+                };
+                out.push(Behind {
+                    waiter,
+                    barrier,
+                    relation,
+                });
+            }
+        }
+        out
+    }
+}
+
+/// Inspect and assess every task in `list` under `read`, sharing one
+/// pass's queue and registration observations across them, and read
+/// the join edges off the awaited side.
 pub fn analyze<T: Target>(
     ctx: &Context<'_, T>,
     list: &TaskList,
-    registries: &Registries,
+    read: &ReadContext<'_>,
 ) -> Analysis {
-    let mut waits = Vec::new();
-    let mut errors = Vec::new();
-    let mut abandoned: Vec<(TaskRef, AbandonedAcquire)> = Vec::new();
+    let mut pass = AssessmentPass::new();
+    let mut waits = Vec::with_capacity(list.tasks.len());
+    let mut barriers = Vec::new();
     let mut join_wakers = Vec::new();
-
+    let mut errors = Vec::new();
     for task in &list.tasks {
         let tref = TaskRef {
             addr: task.addr,
             task_id: task.task_id,
         };
-        let mut target = None;
-        let mut depth = 0;
-        let mut leaf = None;
-        let mut site = None;
-        let mut frames = Vec::new();
-        // Unknown futures cannot be traced (the task listing already
-        // calls them out); finished tasks wait on nothing.
-        if matches!(task.future, FutureInfo::Known(_)) {
-            match ctx.task_stage(task) {
-                Ok(TaskStage::Running(future)) => {
-                    let chain = ctx.await_chain(future);
-                    depth = chain.frames.len();
-                    frames = chain
-                        .frames
-                        .iter()
-                        .map(|frame| match &frame.state {
-                            Some(state) => state.payload,
-                            None => frame.future,
-                        })
-                        .collect();
-                    leaf = chain.leaf().map(str::to_string);
-                    site = chain
-                        .frames
-                        .iter()
-                        .find_map(|frame| frame.state.as_ref()?.await_loc)
-                        .map(|(file, line)| (file.to_string(), line));
-                    match ctx.wait_target(&chain, list) {
-                        Some(Ok(t)) => target = Some(t),
-                        Some(Err(e)) => {
-                            errors.push(e.context(format!("failed to read what {tref} waits on")))
-                        }
-                        None => {}
-                    }
-                    for acquire in ctx.abandoned_acquires(&chain) {
-                        abandoned.push((tref, acquire));
-                    }
-                }
-                Ok(_) => {}
-                Err(e) => {
-                    errors.push(e.context(format!("failed to read the stage of {tref}")));
-                }
-            }
-        }
-        // The registry join: a parked task whose chain decoded no
-        // primitive but whose waker sits on exactly one io resource is
-        // waiting on that resource — the driver's own registration
-        // list says so. A task also armed on a timer (a `select!` over
-        // both) keeps its leaf spelling, since naming one arm of a
-        // race as the wait would mislead; `-v` lists every entry.
-        if target.is_none()
-            && !matches!(
-                task.state.lifecycle(),
-                Lifecycle::Running | Lifecycle::Complete
-            )
-            && registries.timers_of(task.addr.0).next().is_none()
-        {
-            let io: Vec<_> = registries.io_of(task.addr.0).collect();
-            if let Some((first, _)) = io.first()
-                && io.iter().all(|(res, _)| res.addr == first.addr)
-            {
-                let interest = io
-                    .iter()
-                    .filter_map(|(_, waiter)| waiter.slot.interest())
-                    .reduce(Interest::union);
-                target = Some(WaitTarget::Io {
-                    addr: first.addr,
-                    fd: ctx.io_resource_fd(&frames, first.addr),
-                    interest,
-                });
-            }
-        }
         // The join edge from the awaited side: whatever the task's own
         // chain says, its Trailer holds the waker of any task awaiting
         // its `JoinHandle` — armed by that task's first poll of the
@@ -218,103 +213,9 @@ pub fn analyze<T: Target>(
             Ok(_) => {}
             Err(e) => errors.push(e.context(format!("failed to read {tref}'s trailer waker"))),
         }
-        waits.push(TaskWait {
-            task: tref,
-            target,
-            depth,
-            leaf,
-            site,
-        });
-    }
-
-    // Who is actively blocked on which semaphore.
-    let mut blocked_on: HashMap<u64, Vec<TaskRef>> = HashMap::new();
-    for wait in &waits {
-        if let Some(WaitTarget::Semaphore { addr, .. }) = &wait.target {
-            blocked_on.entry(*addr).or_default().push(wait.task);
-        }
-    }
-
-    // Every abandoned acquire is a diagnosis: a granted one holds the
-    // resource outright, and an ungranted one still holds a place in
-    // the wake queue that the permit will eventually be wasted on —
-    // whether or not anything is blocked behind it yet.
-    let futurelocks = abandoned
-        .into_iter()
-        .map(|(holder, acquire)| Futurelock {
-            blocked: blocked_on
-                .get(&acquire.semaphore)
-                .cloned()
-                .unwrap_or_default(),
-            holder,
-            acquire,
-        })
-        .collect();
-
-    Analysis {
-        waits,
-        futurelocks,
-        join_wakers,
-        errors,
-    }
-}
-
-// ---------------------------------------------------------------------------
-// The assessed analysis
-// ---------------------------------------------------------------------------
-
-/// One task's assessment: the compact projection of its inspection a
-/// listing keeps after the chain itself is dropped.
-#[derive(Debug)]
-pub struct TaskAssessment {
-    pub task: TaskRef,
-    pub assessment: WaitAssessment,
-    pub continuation: ContinuationStatus,
-    /// How many futures deep the chain ran; see [`TaskWait::depth`].
-    pub depth: usize,
-    /// The outermost live await site; see [`TaskWait::site`].
-    pub site: Option<(String, u32)>,
-    /// The raw observation read from the chain's primitive, whatever
-    /// the assessment made of it.
-    pub observation: Option<ResourceObservation>,
-    /// What the protocol read that decided or declined the assessment.
-    pub notes: Vec<String>,
-}
-
-/// The assessed analysis of a task list: every task inspected once by
-/// its programs and assessed under its resources' protocols, and the
-/// conditional polling barriers the exclusive chains establish. The
-/// explicit engine's counterpart of [`Analysis`], which the legacy
-/// walker still produces for every command.
-#[derive(Debug)]
-pub struct AssessedAnalysis<'b> {
-    /// One entry per task, in [`TaskList`] order.
-    pub tasks: Vec<TaskAssessment>,
-    pub barriers: Vec<PollingBarrier<'b>>,
-    /// Per-task failures to reach a root; the entries above still
-    /// carry an assessment for those tasks.
-    pub errors: Vec<anyhow::Error>,
-}
-
-/// Inspect and assess every task in `list` under `read`, sharing one
-/// pass's queue and registration observations across them.
-pub fn assess<'b, T: Target>(
-    ctx: &Context<'b, T>,
-    list: &TaskList,
-    read: &ReadContext<'_>,
-) -> AssessedAnalysis<'b> {
-    let mut pass = AssessmentPass::new();
-    let mut tasks = Vec::with_capacity(list.tasks.len());
-    let mut barriers = Vec::new();
-    let mut errors = Vec::new();
-    for task in &list.tasks {
-        let tref = TaskRef {
-            addr: task.addr,
-            task_id: task.task_id,
-        };
         let facts = TaskFacts::from(task);
         let lifecycle = task.state.lifecycle();
-        let unknown = |reason, note: String, continuation| TaskAssessment {
+        let unknown = |reason, note: String, continuation| TaskWait {
             task: tref,
             assessment: WaitAssessment::Unknown(reason),
             continuation,
@@ -324,11 +225,11 @@ pub fn assess<'b, T: Target>(
             notes: vec![note],
         };
         let no_root = ContinuationStatus::Incomplete {
-            reason: super::assess::IncompleteReason::NoRoot,
+            reason: IncompleteReason::NoRoot,
             detail: None,
         };
         if !matches!(task.future, FutureInfo::Known(_)) {
-            tasks.push(unknown(
+            waits.push(unknown(
                 WaitUnknownReason::Continuation,
                 "the task's future type is not in the tokio info".to_owned(),
                 no_root,
@@ -337,9 +238,9 @@ pub fn assess<'b, T: Target>(
         }
         // A complete task's storage is dropped: nothing is read.
         if lifecycle == Lifecycle::Complete {
-            tasks.push(TaskAssessment {
+            waits.push(TaskWait {
                 task: tref,
-                assessment: WaitAssessment::NotWaiting(super::assess::NotWaitingReason::Complete),
+                assessment: WaitAssessment::NotWaiting(NotWaitingReason::Complete),
                 continuation: no_root,
                 depth: 0,
                 site: None,
@@ -351,7 +252,7 @@ pub fn assess<'b, T: Target>(
         let root = match ctx.task_root(task, read) {
             Ok(TaskStage::Running(root)) => root,
             Ok(TaskStage::Finished(_) | TaskStage::Consumed) => {
-                tasks.push(unknown(
+                waits.push(unknown(
                     WaitUnknownReason::Lifecycle,
                     "the stage holds no resident future, yet the state word is not complete"
                         .to_owned(),
@@ -360,11 +261,11 @@ pub fn assess<'b, T: Target>(
                 continue;
             }
             Err(e) => {
-                tasks.push(unknown(
+                waits.push(unknown(
                     WaitUnknownReason::ResourceUnreadable,
                     format!("the root did not read: {e:#}"),
                     ContinuationStatus::Incomplete {
-                        reason: super::assess::IncompleteReason::Error,
+                        reason: IncompleteReason::Error,
                         detail: Some(format!("{e:#}")),
                     },
                 ));
@@ -377,7 +278,7 @@ pub fn assess<'b, T: Target>(
             ctx.assess_wait(&mut pass, &inspection, &facts, list, read);
         barriers.extend(ctx.polling_barriers(&mut pass, &inspection, &facts, read));
         let chain = &inspection.chain;
-        tasks.push(TaskAssessment {
+        waits.push(TaskWait {
             task: tref,
             assessment,
             continuation: ContinuationStatus::of(&chain.end),
@@ -391,9 +292,10 @@ pub fn assess<'b, T: Target>(
             notes,
         });
     }
-    AssessedAnalysis {
-        tasks,
+    Analysis {
+        waits,
         barriers,
+        join_wakers,
         errors,
     }
 }

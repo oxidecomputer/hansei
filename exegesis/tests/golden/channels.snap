@@ -12,20 +12,20 @@ task: channels::notify_waiter::{async_fn_env#0}
   stage: Stage<channels::notify_waiter::{async_fn_env#0}>
   variants:
     Unresumed @ channels.rs:22
-    Returned @ channels.rs:36
-    Panicked @ channels.rs:36
-    Suspend0 @ channels.rs:35
+    Returned @ channels.rs:33
+    Panicked @ channels.rs:33
+    Suspend0 @ channels.rs:32
 task: channels::hold::{async_fn_env#0}
   kind: AsyncFn
-  decl: channels.rs:41
+  decl: channels.rs:38
   entries: 2
   symbols-per-entry: 6,6
   stage: Stage<channels::hold::{async_fn_env#0}>
   variants:
-    Unresumed @ channels.rs:52
-    Returned @ channels.rs:56
-    Panicked @ channels.rs:56
-    Suspend0 @ channels.rs:55
+    Unresumed @ channels.rs:49
+    Returned @ channels.rs:53
+    Panicked @ channels.rs:53
+    Suspend0 @ channels.rs:52
 
 [dyn-futures]
 dyn: channels::hold::{async_fn_env#0} (poll, drop_glue)
@@ -35,8 +35,8 @@ dyn: core::future::poll_fn::PollFn<tokio::runtime::scheduler::current_thread::{i
 dyn: core::pin::Pin<&mut channels::main::{async_block_env#0}> (poll)
 
 [env-decls]
-env: channels::hold::{async_fn_env#0} @ channels.rs:41
-env: channels::main::{async_block_env#0} @ channels.rs:63
+env: channels::hold::{async_fn_env#0} @ channels.rs:38
+env: channels::main::{async_block_env#0} @ channels.rs:60
 env: channels::notify_waiter::{async_fn_env#0} @ channels.rs:22
 
 [infra]

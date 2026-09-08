@@ -6,8 +6,10 @@ task 1
     state: idle
     thread: <none>
     type: future Pin<Box<delegation_cases::Gated<1>>>
-    waiting on: future Box<delegation_cases::Gated<1>>
+    waiting on: unknown
     waker: <empty>
+        unknown: the chain does not end in a primitive
+        what delegation_cases::Gated<1> polls is not established: no reviewed rule covers its implementation
     spawned at: src/bin/delegation-cases.rs:124:8
-    held futures: 0
+    held futures: 1
     join sets: 0

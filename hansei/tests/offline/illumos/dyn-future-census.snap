@@ -19,14 +19,14 @@ COUNT  STATE
 
 COUNT  TYPE / WAITING ON
     1  async fn dyn_future::driver
-       └─ 1  future tokio::sync::oneshot::Receiver<u32>
+       └─ 1  unknown
     1  async fn dyn_future::hold_aligned
-       └─ 1  future tokio::sync::oneshot::Receiver<u32>
+       └─ 1  unknown
     1  async fn dyn_future::set_member
-       └─ 1  future tokio::sync::oneshot::Receiver<u32>
+       └─ 1  unknown
 [3 types]
 
-Futures: 3 in flight, on 7 await-chain frames, up to 3 deep
+Futures: 3 in flight, on 8 await-chain frames, up to 4 deep
 
 COUNT  HELD IN
     3  task (its own await chain)

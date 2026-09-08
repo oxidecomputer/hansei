@@ -2,9 +2,6 @@
 source: hansei/src/offline.rs
 description: "`locals` over linux-floor/joinset"
 ---
-lists: alloc::sync::Arc<tokio::loom::std::parking_lot::Mutex<tokio::util::idle_notified_set::ListsInner<tokio::runtime::task::join::JoinHandle<u32>>>, alloc::alloc::Global> = 0xADDR -> alloc::sync::ArcInner<tokio::loom::std::parking_lot::Mutex<tokio::util::idle_notified_set::ListsInner<tokio::runtime::task::join::JoinHandle<u32>>>> {
-          strong: 4,
-          weak: 1,
-          data: tokio::loom::std::parking_lot::Mutex<tokio::util::idle_notified_set::ListsInner<tokio::runtime::task::join::JoinHandle<u32>>> { .. } @ 0xADDR,
+f: tokio::task::join_set::{impl#1}::join_next::{async_fn#0}::{closure_env#0}<u32> = 0xADDR (task 3) -> tokio::task::join_set::JoinSet<u32> {
+          inner: tokio::util::idle_notified_set::IdleNotifiedSet<tokio::runtime::task::join::JoinHandle<u32>> { .. } @ 0xADDR (task 3),
       }
-length: usize = 3

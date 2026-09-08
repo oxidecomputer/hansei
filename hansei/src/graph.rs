@@ -2,15 +2,17 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-//! The `graph` command: the waker-based dependency graph and the
-//! futurelock diagnosis.
+//! The `graph` command: the assessed dependency graph and the
+//! conditional futurelock diagnosis.
 
 use crate::relations::{Edge, EdgeKind, Relations};
-use crate::tasks::task_id;
+use crate::tasks::{assessment_cell, task_id};
 use crate::{Session, output, print_warnings};
 
 use anyhow::Result;
 use hansei_bundle::names;
+use hansei_runtime::tokio::assess::PollingBarrier;
+use hansei_runtime::tokio::graph::{BarrierRelation, TaskRef};
 use hansei_runtime::tokio::{bundle, graph};
 
 use std::io;
@@ -27,7 +29,6 @@ pub(crate) fn exec_graph<T: proc::Target>(
         &session.tasks,
         analysis,
         session.relations(),
-        &session.impl_fold,
         limit,
         theme,
         out,
@@ -38,9 +39,19 @@ pub(crate) fn exec_graph<T: proc::Target>(
     // knows how to read, so an empty result is "none found here",
     // which is not the same as the "no futurelock detected" it used to
     // claim.
-    for fl in &analysis.futurelocks {
+    let behind = analysis.behind();
+    for (index, barrier) in analysis.barriers.iter().enumerate() {
         writeln!(out)?;
-        print_futurelock(fl, &session.impl_fold, out)?;
+        let behind: Vec<(TaskRef, BarrierRelation)> = behind
+            .iter()
+            .filter(|b| b.barrier == index)
+            .map(|b| (analysis.waits[b.waiter].task, b.relation))
+            .collect();
+        let holder = TaskRef {
+            addr: barrier.holder,
+            task_id: barrier.holder_id,
+        };
+        print_barrier(holder, barrier, &behind, &session.impl_fold, out)?;
     }
     Ok(())
 }
@@ -64,7 +75,6 @@ fn print_graph(
     list: &bundle::TaskList,
     analysis: &graph::Analysis,
     relations: &Relations,
-    impls: &names::ImplFold,
     limit: Option<usize>,
     theme: output::Theme,
     out: &mut dyn io::Write,
@@ -89,7 +99,6 @@ fn print_graph(
         printed: vec![false; list.tasks.len()],
         path: Vec::new(),
         rows: &mut rows,
-        impls,
     };
     // The tasks nothing waits for are the tops of the trees. What is
     // left over after them is in a cycle — a task joining itself, or two
@@ -149,11 +158,10 @@ struct GraphWalk<'a> {
     /// blocked on the semaphore one acquire holds — is spelled out once
     /// and referred back to after that.
     printed: Vec<bool>,
-    /// The tasks between the root and here, for spotting a wait that
-    /// closes back on one of them.
-    path: Vec<usize>,
+    /// The tasks between the root and here, each with the edge that
+    /// led to it, for spotting a wait that closes back on one of them.
+    path: Vec<(usize, EdgeKind)>,
     rows: &'a mut Vec<[String; 3]>,
-    impls: &'a names::ImplFold,
 }
 
 impl GraphWalk<'_> {
@@ -171,12 +179,20 @@ impl GraphWalk<'_> {
         let name = format!("{prefix}{glyph}{}{}", task_id(self.list, task), kind.mark());
         let state = self.list.tasks[task].state.lifecycle().to_string();
 
-        // A wait that closes back on the path is a cycle: the task is
-        // blocked on something that is blocked on it. A task joining
-        // itself is the one-node case of it.
-        if self.path.contains(&task) {
+        // A wait that closes back on the path is a cycle — the task is
+        // blocked on something that is blocked on it; a task joining
+        // itself is the one-node case — but only where every edge of
+        // the closing segment, this one included, is a verified wait.
+        // A reservation, a queue place, a set membership or a held
+        // handle on the way round is a relation, not a dependency, and
+        // the row is referred back to as one reached again. What lies
+        // before the segment does not decide: a containment edge can
+        // lead into a genuine cycle of waits.
+        if let Some(start) = self.path.iter().position(|(t, _)| *t == task) {
+            let closing = kind.is_wait() && self.path[start + 1..].iter().all(|(_, k)| k.is_wait());
+            let mark = if closing { "← cycle" } else { "(above)" };
             self.rows
-                .push([format!("{name} ← cycle"), state, String::new()]);
+                .push([format!("{name} {mark}"), state, String::new()]);
             return;
         }
         // Reached a second time by another route — two tasks blocked on
@@ -189,16 +205,12 @@ impl GraphWalk<'_> {
             return;
         }
 
-        // The primitive where hansei decodes one, and the type the
-        // chain bottoms out in otherwise — which is most rows on a real
-        // target. A `-` is for a task with no chain to have reached a
-        // leaf at all: one mid-poll, finished, or whose walk stopped
-        // short.
-        let wait = &self.analysis.waits[task];
-        let target = match (&wait.target, &wait.leaf) {
-            (Some(target), _) => target.to_string(),
-            (None, Some(leaf)) => names::display_future_name(leaf, self.impls),
-            (None, None) => "-".to_string(),
+        // What the analysis assessed the task to be waiting on, spelled
+        // the way the task table spells it. A `-` is for a task with no
+        // assessment at all.
+        let target = match self.analysis.waits.get(task) {
+            Some(wait) => assessment_cell(&wait.assessment),
+            None => "-".to_string(),
         };
         self.rows.push([name, state, target]);
         self.printed[task] = true;
@@ -208,7 +220,7 @@ impl GraphWalk<'_> {
             Some(true) => format!("{prefix}   "),
             Some(false) => format!("{prefix}│  "),
         };
-        self.path.push(task);
+        self.path.push((task, kind));
         let children = &self.edges[task];
         for (i, child) in children.iter().enumerate() {
             self.visit(child.to, &below, Some(i + 1 == children.len()), child.kind);
@@ -217,30 +229,42 @@ impl GraphWalk<'_> {
     }
 }
 
-/// Render one futurelock diagnosis: who holds what, where the
-/// abandoned future is parked, and who is stuck behind it.
-fn print_futurelock(
-    fl: &graph::Futurelock,
+/// Render one conditional futurelock diagnosis: who holds what, the
+/// condition under which it cannot poll it, where the future is
+/// parked, and who stands behind the reservation or the queue place.
+///
+/// The condition is spelled, not elided: an exclusive chain proves
+/// the holder cannot poll the acquire before its terminal completes,
+/// and nothing here proves the terminal never will, or that the
+/// waiters behind it depend on this holder alone.
+fn print_barrier(
+    holder: TaskRef,
+    barrier: &PollingBarrier,
+    behind: &[(TaskRef, BarrierRelation)],
     impls: &names::ImplFold,
     out: &mut dyn io::Write,
 ) -> Result<()> {
-    let acq = &fl.acquire;
-    let semaphore = match acq.owner {
-        Some(owner) => format!("a {owner} (semaphore {:#x})", acq.semaphore),
-        None => format!("the semaphore at {:#x}", acq.semaphore),
+    let acq = &barrier.acquire;
+    let semaphore = match barrier.owner {
+        Some(owner) => format!("a {owner} (semaphore {:#x})", acq.semaphore.addr),
+        None => format!("the semaphore at {:#x}", acq.semaphore.addr),
     };
-    let held = if acq.granted() {
-        let plural = if acq.num_permits == 1 { "" } else { "s" };
-        format!("{} granted permit{plural}", acq.num_permits)
+    let held = if barrier.granted() {
+        let plural = if acq.requested == 1 { "" } else { "s" };
+        format!("{} granted permit{plural}", acq.requested)
     } else {
-        "a place in the wake queue".to_string()
+        match acq.queue_position {
+            Some(position) => format!("place {position} in the wake queue"),
+            None => "a place in the wake queue".to_string(),
+        }
     };
     writeln!(
         out,
-        "futurelock: {} holds {held} of {semaphore} in a future it stopped polling:",
-        fl.holder
+        "futurelock: {holder} holds {held} of {semaphore} in a future it cannot poll \
+         until the {} it awaits completes:",
+        names::display_future_name(&barrier.terminal, impls)
     )?;
-    let loc = acq
+    let loc = barrier
         .await_loc
         .as_ref()
         .map(|(file, line)| format!(" — {file}:{line}"))
@@ -248,39 +272,54 @@ fn print_futurelock(
     writeln!(
         out,
         "  `{}` ({})",
-        acq.local,
-        names::display_future_name(&acq.future, impls)
+        barrier.local,
+        names::display_future_name(&barrier.future, impls)
     )?;
     writeln!(
         out,
         "  held across {} state {}{loc}",
-        names::display_future_name(&acq.frame, impls),
-        acq.state
+        names::display_future_name(&barrier.frame_type, impls),
+        barrier.state
     )?;
-    if fl.blocked.is_empty() {
-        writeln!(out, "  nothing is blocked behind it yet")?;
-    } else {
-        let blocked = fl
-            .blocked
-            .iter()
-            .map(ToString::to_string)
-            .collect::<Vec<_>>()
-            .join(", ");
-        writeln!(out, "  blocked behind it: {blocked}")?;
+    let reserved: Vec<String> = behind
+        .iter()
+        .filter(|(_, relation)| *relation == BarrierRelation::Reservation)
+        .map(|(task, _)| task.to_string())
+        .collect();
+    let queued: Vec<String> = behind
+        .iter()
+        .filter(|(_, relation)| *relation == BarrierRelation::QueueOrder)
+        .map(|(task, _)| task.to_string())
+        .collect();
+    if reserved.is_empty() && queued.is_empty() {
+        writeln!(out, "  nothing is waiting on the semaphore behind it yet")?;
+    }
+    if !reserved.is_empty() {
+        writeln!(
+            out,
+            "  waiting on the permits it holds: {}",
+            reserved.join(", ")
+        )?;
+    }
+    if !queued.is_empty() {
+        writeln!(out, "  queued behind it: {}", queued.join(", "))?;
     }
     Ok(())
 }
 
 #[cfg(test)]
 mod graph_tests {
-    use super::{names, print_futurelock, print_graph};
+    use super::{BarrierRelation, names, print_barrier, print_graph};
 
     use hansei_bundle::BundleTypeId;
-    use hansei_runtime::tokio::bundle::{
-        AbandonedAcquire, FutureInfo, Task, TaskList, WaitKind, WaitTarget,
+    use hansei_runtime::tokio::assess::{
+        ContinuationStatus, IncompleteReason, PollingBarrier, VerifiedWait, WaitAssessment,
+        WaitUnknownReason,
     };
+    use hansei_runtime::tokio::bundle::{FutureInfo, Task, TaskList, WaitKind, WaitTarget};
     use hansei_runtime::tokio::census;
-    use hansei_runtime::tokio::graph::{Analysis, Futurelock, TaskRef, TaskWait};
+    use hansei_runtime::tokio::graph::{Analysis, TaskRef, TaskWait};
+    use hansei_runtime::tokio::observe::{AcquireObservation, ValueKey};
     use hansei_runtime::tokio::{RawInstant, TaskAddr, TaskState};
 
     const REF_ONE: u64 = 1 << 6;
@@ -303,25 +342,27 @@ mod graph_tests {
         }
     }
 
+    /// A task assessed as verified-waiting on `target`, or — with no
+    /// target — with its continuation unknown: parked on a future no
+    /// reviewed rule covers.
     fn wait(id: u64, target: Option<WaitTarget>) -> TaskWait {
         TaskWait {
             task: TaskRef {
                 addr: addr(id),
                 task_id: Some(id),
             },
-            target,
+            assessment: match target {
+                Some(target) => WaitAssessment::Waiting(VerifiedWait::testkit(target, None)),
+                None => WaitAssessment::Unknown(WaitUnknownReason::Continuation),
+            },
+            continuation: ContinuationStatus::Incomplete {
+                reason: IncompleteReason::NoRoot,
+                detail: None,
+            },
             depth: 1,
-            leaf: None,
             site: None,
-        }
-    }
-
-    /// A task parked on an ordinary future rather than on one of the
-    /// primitives hansei decodes into a wait target.
-    fn leaf_wait(id: u64, leaf: &str) -> TaskWait {
-        TaskWait {
-            leaf: Some(leaf.to_string()),
-            ..wait(id, None)
+            observation: None,
+            notes: Vec::new(),
         }
     }
 
@@ -360,33 +401,43 @@ mod graph_tests {
         }
     }
 
-    /// The task holding an acquire on the semaphore in a future it
-    /// stopped polling — the edge that says who a lock's waiters are
-    /// really waiting for.
-    fn futurelock(holder: u64) -> Futurelock {
-        Futurelock {
-            holder: TaskRef {
-                addr: addr(holder),
-                task_id: Some(holder),
-            },
-            acquire: AbandonedAcquire {
-                frame: "worker::{async_fn_env#0}".to_string(),
-                state: "Suspend0".to_string(),
-                await_loc: None,
-                local: "lock".to_string(),
-                future: "Mutex::lock::{async_fn_env#0}".to_string(),
-                owner: Some("tokio::sync::Mutex"),
-                semaphore: SEMAPHORE,
+    /// The task holding a granted acquire on the semaphore in a future
+    /// its exclusive chain cannot poll until its terminal completes —
+    /// the relation that says whose reservation a lock's waiters stand
+    /// behind.
+    fn barrier(holder: u64) -> PollingBarrier {
+        let key = |addr: u64| ValueKey {
+            addr,
+            ty: BundleTypeId(0),
+        };
+        PollingBarrier {
+            holder: addr(holder),
+            holder_id: Some(holder),
+            frame: 0,
+            frame_type: "worker::{async_fn_env#0}".to_string(),
+            state: "Suspend0".to_string(),
+            await_loc: None,
+            local: "lock".to_string(),
+            candidate: key(0xa000),
+            future: "Mutex::lock::{async_fn_env#0}".to_string(),
+            owner: Some("tokio::sync::Mutex"),
+            acquire: AcquireObservation {
+                future: key(0xa000),
+                semaphore: key(SEMAPHORE),
                 node: 0xa000,
-                num_permits: 1,
+                requested: 1,
                 needed: 0,
+                queued: true,
+                queue_position: None,
             },
-            blocked: Vec::new(),
+            primitive: key(0xb000),
+            terminal: "tokio::sync::batch_semaphore::Acquire".to_string(),
+            edges: Vec::new(),
         }
     }
 
-    fn graph(tasks: Vec<Task>, waits: Vec<TaskWait>, futurelocks: Vec<Futurelock>) -> String {
-        graph_with(tasks, waits, futurelocks, &[], &[])
+    fn graph(tasks: Vec<Task>, waits: Vec<TaskWait>, barriers: Vec<PollingBarrier>) -> String {
+        graph_with(tasks, waits, barriers, &[], &[])
     }
 
     /// The same graph cut to its first `limit` trees.
@@ -399,17 +450,17 @@ mod graph_tests {
     fn graph_with(
         tasks: Vec<Task>,
         waits: Vec<TaskWait>,
-        futurelocks: Vec<Futurelock>,
+        barriers: Vec<PollingBarrier>,
         held: &[census::HeldFuture],
         join_sets: &[census::JoinSet],
     ) -> String {
-        graph_full(tasks, waits, futurelocks, held, join_sets, None)
+        graph_full(tasks, waits, barriers, held, join_sets, None)
     }
 
     fn graph_full(
         tasks: Vec<Task>,
         waits: Vec<TaskWait>,
-        futurelocks: Vec<Futurelock>,
+        barriers: Vec<PollingBarrier>,
         held: &[census::HeldFuture],
         join_sets: &[census::JoinSet],
         limit: Option<usize>,
@@ -420,7 +471,7 @@ mod graph_tests {
         };
         let analysis = Analysis {
             waits,
-            futurelocks,
+            barriers,
             join_wakers: Vec::new(),
             errors: Vec::new(),
         };
@@ -430,7 +481,6 @@ mod graph_tests {
             &list,
             &analysis,
             &relations,
-            &names::ImplFold::default(),
             limit,
             crate::output::Theme::plain(),
             &mut out,
@@ -478,14 +528,15 @@ mod graph_tests {
             state: None,
             waiting_on: None,
             wait: Some(WaitKind::Task { addr: addr(id).0 }),
-            leaf: None,
+            continuation: ContinuationStatus::Primitive,
         }
     }
 
     /// A chain of waits reads as one tree: the joiner at the margin, the
-    /// task it joins under it, and — since the futurelock analysis names
-    /// who holds the lock that task is blocked on — the holder under
-    /// that. Every task keeps its one row.
+    /// task it joins under it, and — since the analysis names who holds
+    /// permits of the lock that task waits on — the holder under that,
+    /// marked as the reservation it is rather than a wait. Every task
+    /// keeps its one row.
     #[test]
     fn test_a_wait_chain_nests_to_its_depth() {
         let page = graph(
@@ -495,15 +546,15 @@ mod graph_tests {
                 wait(40, Some(semaphore())),
                 wait(51, Some(timer())),
             ],
-            vec![futurelock(51)],
+            vec![barrier(51)],
         );
         assert_eq!(
             page,
             "\
-TASK      STATE  WAITING ON
-12        idle   task 40
-└─ 40     idle   a tokio::sync::Mutex (semaphore 0x9000): 1 permit requested, 0 available
-   └─ 51  idle   timer (deadline +10.000s)
+TASK                                    STATE  WAITING ON
+12                                      idle   task 40
+└─ 40                                   idle   a tokio::sync::Mutex (semaphore 0x9000): 1 permit requested, 0 available
+   └─ 51 [holds permits awaited above]  idle   timer (deadline +10.000s)
 "
         );
     }
@@ -528,9 +579,10 @@ TASK           STATE  WAITING ON
         );
     }
 
-    /// Two tasks blocked on the same lock both point at its holder. It
-    /// is spelled out under the first and referred back to under the
-    /// second, so its subtree is not printed twice.
+    /// Two tasks waiting on the same lock both stand behind its
+    /// holder's reservation. It is spelled out under the first and
+    /// referred back to under the second, so its subtree is not printed
+    /// twice.
     #[test]
     fn test_a_task_reached_twice_is_printed_once() {
         let page = graph(
@@ -540,16 +592,66 @@ TASK           STATE  WAITING ON
                 wait(41, Some(semaphore())),
                 wait(51, Some(timer())),
             ],
-            vec![futurelock(51)],
+            vec![barrier(51)],
         );
         assert_eq!(
             page,
             "\
-TASK           STATE  WAITING ON
-40             idle   a tokio::sync::Mutex (semaphore 0x9000): 1 permit requested, 0 available
-└─ 51          idle   timer (deadline +10.000s)
-41             idle   a tokio::sync::Mutex (semaphore 0x9000): 1 permit requested, 0 available
-└─ 51 (above)  idle   
+TASK                                         STATE  WAITING ON
+40                                           idle   a tokio::sync::Mutex (semaphore 0x9000): 1 permit requested, 0 available
+└─ 51 [holds permits awaited above]          idle   timer (deadline +10.000s)
+41                                           idle   a tokio::sync::Mutex (semaphore 0x9000): 1 permit requested, 0 available
+└─ 51 [holds permits awaited above] (above)  idle   
+"
+        );
+    }
+
+    /// A reservation that closes back on the path is no cycle: the
+    /// task waiting on a lock whose permits it holds itself — the
+    /// futurelock shape — is referred back to, not marked as blocked
+    /// on itself, since the relation is conditional on its own chain
+    /// and nothing proves that chain never completes.
+    #[test]
+    fn test_a_weak_edge_closing_the_path_is_no_cycle() {
+        let page = graph(
+            vec![task(40)],
+            vec![wait(40, Some(semaphore()))],
+            vec![barrier(40)],
+        );
+        assert_eq!(
+            page,
+            "\
+TASK                                         STATE  WAITING ON
+40                                           idle   a tokio::sync::Mutex (semaphore 0x9000): 1 permit requested, 0 available
+└─ 40 [holds permits awaited above] (above)  idle   
+"
+        );
+    }
+
+    /// A cycle of verified waits reached through a containment edge is
+    /// still a cycle: only the closing segment decides, and every edge
+    /// of it is a wait.
+    #[test]
+    fn test_a_wait_cycle_behind_a_held_handle_is_marked() {
+        let page = graph_with(
+            vec![task(7), task(8), task(9)],
+            vec![
+                wait(7, None),
+                wait(8, Some(joining(9))),
+                wait(9, Some(joining(8))),
+            ],
+            Vec::new(),
+            &[held_handle(0, 8)],
+            &[],
+        );
+        assert_eq!(
+            page,
+            "\
+TASK                          STATE  WAITING ON
+7                             idle   unknown
+└─ 8 [its handle held above]  idle   task 9
+   └─ 9                       idle   task 8
+      └─ 8 ← cycle            idle   
 "
         );
     }
@@ -571,9 +673,9 @@ TASK           STATE  WAITING ON
             page,
             "\
 TASK                         STATE  WAITING ON
-7                            idle   -
-├─ 8 [in the JoinSet above]  idle   -
-└─ 9 [in the JoinSet above]  idle   -
+7                            idle   unknown
+├─ 8 [in the JoinSet above]  idle   unknown
+└─ 9 [in the JoinSet above]  idle   unknown
 "
         );
     }
@@ -594,7 +696,7 @@ TASK                         STATE  WAITING ON
             page,
             "\
 TASK                          STATE  WAITING ON
-7                             idle   -
+7                             idle   unknown
 └─ 8 [its handle held above]  idle   timer (deadline +10.000s)
 "
         );
@@ -609,7 +711,7 @@ TASK                          STATE  WAITING ON
             vec![
                 wait(7, None),
                 wait(8, Some(timer())),
-                leaf_wait(1, "tokio::runtime::io::scheduled_io::Readiness"),
+                wait(1, None),
                 wait(2, None),
             ],
             Vec::new(),
@@ -620,23 +722,70 @@ TASK                          STATE  WAITING ON
             page,
             "\
 TASK                          STATE  WAITING ON
-7                             idle   -
+7                             idle   unknown
 └─ 8 [its handle held above]  idle   timer (deadline +10.000s)
 "
         );
     }
 
-    /// The diagnosis prose names the acquiring future and the frame it
-    /// is held across with the display fold applied: env marker gone,
-    /// kind word joined.
+    /// The diagnosis prose names the acquiring future, the frame it is
+    /// held across and the terminal whose completion is the condition,
+    /// with the display fold applied: env marker gone, kind word
+    /// joined — and says who stands behind the reservation, by the
+    /// relation they stand in.
     #[test]
     fn test_futurelock_prose_folds_its_names() {
         let mut out = Vec::new();
-        print_futurelock(&futurelock(51), &names::ImplFold::default(), &mut out).unwrap();
+        let holder = TaskRef {
+            addr: addr(51),
+            task_id: Some(51),
+        };
+        let behind = [(
+            TaskRef {
+                addr: addr(40),
+                task_id: Some(40),
+            },
+            BarrierRelation::Reservation,
+        )];
+        print_barrier(
+            holder,
+            &barrier(51),
+            &behind,
+            &names::ImplFold::default(),
+            &mut out,
+        )
+        .unwrap();
         let prose = String::from_utf8(out).unwrap();
+        assert!(
+            prose.starts_with(
+                "futurelock: task 51 holds 1 granted permit of a tokio::sync::Mutex \
+                 (semaphore 0x9000) in a future it cannot poll until the future \
+                 tokio::sync::batch_semaphore::Acquire it awaits completes:\n"
+            ),
+            "{prose}"
+        );
         assert!(prose.contains("`lock` (async fn Mutex::lock)"), "{prose}");
         assert!(
             prose.contains("held across async fn worker state Suspend0"),
+            "{prose}"
+        );
+        assert!(
+            prose.ends_with("  waiting on the permits it holds: task 40\n"),
+            "{prose}"
+        );
+
+        let mut out = Vec::new();
+        print_barrier(
+            holder,
+            &barrier(51),
+            &[],
+            &names::ImplFold::default(),
+            &mut out,
+        )
+        .unwrap();
+        let prose = String::from_utf8(out).unwrap();
+        assert!(
+            prose.ends_with("  nothing is waiting on the semaphore behind it yet\n"),
             "{prose}"
         );
     }
@@ -646,11 +795,7 @@ TASK                          STATE  WAITING ON
     /// with no edges to draw.
     #[test]
     fn test_a_target_with_no_edges_prints_no_table() {
-        let page = graph(
-            vec![task(1)],
-            vec![leaf_wait(1, "tokio::runtime::io::scheduled_io::Readiness")],
-            Vec::new(),
-        );
+        let page = graph(vec![task(1)], vec![wait(1, None)], Vec::new());
         assert_eq!(page, "");
     }
     /// `--limit` counts trees by their roots: the cut falls between

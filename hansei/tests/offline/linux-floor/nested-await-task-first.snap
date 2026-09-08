@@ -7,8 +7,10 @@ task 3
     thread: <none>
     type: async fn nested_await::outer
     awaiting at: src/bin/nested-await.rs:23
-    waiting on: future tokio::sync::oneshot::Receiver<u32>
+    waiting on: unknown
     waker: <empty>
+        unknown: the chain does not end in a primitive
+        what tokio::sync::oneshot::Receiver<u32> polls is not established: no reviewed rule covers its implementation
     spawned at: src/bin/nested-await.rs:37:21
     defined at: src/bin/nested-await.rs:20
     held futures: 0

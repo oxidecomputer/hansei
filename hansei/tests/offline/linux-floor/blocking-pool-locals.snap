@@ -2,4 +2,4 @@
 source: hansei/src/offline.rs
 description: "`locals` over linux-floor/blocking-pool"
 ---
-no locals
+func: core::option::Option<blocking_pool::main::{async_block#0}::{closure_env#0}>::None

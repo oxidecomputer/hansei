@@ -28,9 +28,10 @@ use anyhow::{Context as _, Result, anyhow, bail, ensure};
 use hansei_bundle::symbols::normalized_v0_key;
 use hansei_bundle::tokio::{semaphore, timer};
 use hansei_bundle::{
-    BundleType, BundleTypeId, BundleView, ContainerKind, DynPointer, FutureKind, IoOperationKind,
-    ResourceKind, StaticRole, Step, StoragePolicy, SymbolLookup, TaskEntryId, TaskFutureEntry,
-    TypeDef, TypeSemantics, WalkOutcome, WalkRole, strip_build_prefix, strip_llvm_suffix,
+    AccessKind, BundleType, BundleTypeId, BundleView, ContainerKind, DynPointer, FutureKind,
+    IoOperationKind, ResourceKind, StaticRole, Step, StoragePolicy, SymbolLookup, TaskEntryId,
+    TaskFutureEntry, TypeDef, TypeSemantics, WalkOutcome, WalkRole, strip_build_prefix,
+    strip_llvm_suffix,
 };
 use proc::{LwpInfo, Mappings, SymbolBuf, Target};
 use reify::Value;
@@ -237,6 +238,10 @@ pub struct Context<'b, T> {
     /// The same memo for the dyn-future join.
     dyn_future_lookups: Memo<String, SymbolLookup<BundleTypeId>>,
     semantics: SemanticIndex,
+    /// Records standing in for the bundle's own, for a test over a
+    /// shape the production binders decline; empty outside the tests
+    /// ([`Context::with_test_bindings`]).
+    test_bindings: &'b [TypeSemantics],
     /// The walk contract resolved against this bundle at attach time.
     contract: ContractReport,
 }
@@ -273,8 +278,45 @@ impl<'b, T: Target> Context<'b, T> {
             task_lookups: Memo::default(),
             dyn_future_lookups: Memo::default(),
             semantics,
+            test_bindings: &[],
             contract,
         })
+    }
+
+    /// Attach with explicit continuation bindings, for a test over a
+    /// hand-written shape the production binders decline: each record
+    /// in `bindings` stands in for the bundle's own record of its type,
+    /// and `rules` are appended to the bundle's rule table for the
+    /// bindings to name. The bindings are validated the way the
+    /// bundle's own are — paths, endpoints, state guards, rule kinds,
+    /// evidence closure — over a copy of the bundle carrying them, and
+    /// never reach the wire or a production context. `bindings` lives
+    /// as long as the context, so the routes the chain borrows do.
+    #[cfg(feature = "testkit")]
+    pub fn with_test_bindings(
+        proc: &'b T,
+        view: BundleView<'b>,
+        bindings: &'b [TypeSemantics],
+        rules: &[hansei_bundle::SemanticRule],
+    ) -> Result<Self> {
+        let mut checked = view.bundle().clone();
+        checked.semantics.rules.extend(rules.iter().cloned());
+        for binding in bindings {
+            match checked
+                .semantics
+                .types
+                .binary_search_by_key(&binding.ty, |record| record.ty)
+            {
+                Ok(i) => checked.semantics.types[i] = binding.clone(),
+                Err(i) => checked.semantics.types.insert(i, binding.clone()),
+            }
+        }
+        checked
+            .validate()
+            .context("the test bindings do not validate")?;
+        let mut ctx = Self::new(proc, view)?;
+        ctx.test_bindings = bindings;
+        Ok(ctx)
     }
 
     /// The walk contract as it resolved against this bundle: which
@@ -288,6 +330,9 @@ impl<'b, T: Target> Context<'b, T> {
     /// Borrow the bundle's independent type facts. Missing facts establish no
     /// semantic capability; lookup does not inspect names or display formats.
     pub fn type_semantics(&self, ty: BundleTypeId) -> Option<&'b TypeSemantics> {
+        if let Some(binding) = self.test_bindings.iter().find(|record| record.ty == ty) {
+            return Some(binding);
+        }
         self.semantics
             .get(ty)
             .map(|index| &self.view.bundle().semantics.types[index])
@@ -1518,6 +1563,21 @@ impl<'b, T: Target> Context<'b, T> {
             .is_some_and(|record| record.future.is_some() || record.resource.is_some())
     }
 
+    /// Whether a type is a supported owned pointer adapter that is not
+    /// itself a future: a `Box<F>` over a future that is not `Unpin`,
+    /// the `Box<dyn Future>` inside a pinned one. Its access binding
+    /// records the route to what it holds ([`Context::access_referent`]).
+    pub(crate) fn owned_adapter(&self, id: BundleTypeId) -> bool {
+        self.type_semantics(id).is_some_and(|record| {
+            record.future.is_none()
+                && record.resource.is_none()
+                && record
+                    .access
+                    .as_ref()
+                    .is_some_and(|access| access.kind == AccessKind::Owned)
+        })
+    }
+
     /// Whether the bundle declares a type's storage unreadable: a
     /// compiler-storage candidate no reviewed convention bound, or a
     /// layout extraction could not keep. Such a value is stopped at,
@@ -2108,16 +2168,13 @@ impl<'b, T: Target> Context<'b, T> {
     /// `Arc<task::local::Shared>` is a set's, an `Arc` of either
     /// flavor `Handle` a runtime's, and either way the list must claim
     /// the task that led there (its own id equal to the task's
-    /// `Header.owner_id`) before it is admitted. Two inputs feed that
-    /// route: the reference scan over each task's initialized storage
+    /// `Header.owner_id`) before it is admitted. Its input is the
+    /// reference scan over each task's initialized storage
     /// ([`Context::scan_references`], under `read`'s allocator
-    /// evidence), which finds a reference wherever it sits, and the
-    /// older sweep over each task's await chain and diagnosed wait,
-    /// which reaches what sits behind a boxed future the scan stops
-    /// at. The chain sweep is a temporary input, kept only until
-    /// explicit continuations give the scan that route, and it is
-    /// credited first, so what both find is attributed as it always
-    /// was. Route 2 harvests the discovered runtimes' registries of
+    /// evidence), which finds a reference wherever it sits — a held
+    /// handle as much as an awaited one, behind the adapters whose
+    /// routes the bundle records — without diagnosing what the holder
+    /// waits on. Route 2 harvests the discovered runtimes' registries of
     /// parked tasks — the timer wheel, then the io driver's
     /// registrations — which hold a task's waker whatever list owns
     /// it, and so are the only route that reaches a set no enumerated
@@ -2219,9 +2276,9 @@ impl<'b, T: Target> Context<'b, T> {
         // by address, tasks by the lists' own cycle guards — so the loop
         // ends; the round cap is a backstop against nothing real.
         //
-        // The chain sweep goes first, so a list an enumerated task
-        // points at is credited to that edge rather than to whichever
-        // of its members happens to hold a timer. The registry harvests
+        // The scan goes first, so a list an enumerated task points at
+        // is credited to that reference rather than to whichever of its
+        // members happens to hold a timer. The registry harvests
         // follow, each over the runtimes no earlier round harvested: a
         // registry's contents do not change as lists are enumerated,
         // but a runtime admitted from one brings drivers of its own.
@@ -2278,11 +2335,7 @@ impl<'b, T: Target> Context<'b, T> {
             let found = if walked < list.tasks.len() {
                 let range = walked..list.tasks.len();
                 walked = list.tasks.len();
-                // The chain sweep first, so an owner both inputs reach
-                // is credited to the edge it always was; then the scan,
-                // whose finds past the sweep's are the ones only it
-                // makes.
-                let mut found = self.unlisted_task_pointers(list, range.clone());
+                let mut found = Vec::new();
                 self.scanned_task_pointers(list, range, read, &mut budget, &mut found);
                 found
             } else if wheeled < runtimes.len() {
@@ -2357,12 +2410,11 @@ impl<'b, T: Target> Context<'b, T> {
         (sets, registries)
     }
 
-    /// Route 1's scan input: every task-Header pointer the reference
-    /// scan finds in the storage of `list.tasks[range]` that no
-    /// enumerated task claims, appended to `found` unless the chain
-    /// sweep already named it. Scan issues are not reported here — a
-    /// stop the scan cannot get past is a bounded loss of this input,
-    /// and the chain sweep and the registry harvests still run — but
+    /// Route 1's input: every task-Header pointer the reference scan
+    /// finds in the storage of `list.tasks[range]` that no enumerated
+    /// task claims, appended to `found` once each. Scan issues are not
+    /// reported here — a stop the scan cannot get past is a bounded
+    /// loss of this input, and the registry harvests still run — but
     /// the run-wide budget is `budget`'s, and its exhaustion is the
     /// sweep's to report.
     fn scanned_task_pointers(
@@ -2405,7 +2457,7 @@ impl<'b, T: Target> Context<'b, T> {
             found: Vec::new(),
         };
         for task in &list.tasks[range] {
-            let Ok(TaskStage::Running(future)) = self.task_stage(task) else {
+            let Ok(TaskStage::Running(future)) = self.task_root(task, read) else {
                 continue;
             };
             let _ = self.scan_references(future, task.addr, read, budget, &mut sink);
@@ -2493,44 +2545,6 @@ impl<'b, T: Target> Context<'b, T> {
             return None;
         }
         self.view.ty(*binding.roots.first()?)
-    }
-
-    /// The task-Header pointers reachable from the chains of
-    /// `list.tasks[range]` that no enumerated task claims: `JoinHandle`
-    /// targets, and armed task wakers in walked waiter queues. Chain
-    /// and stage failures are not reported here — the sweep is a
-    /// discovery pass, and the analyses that own those chains report
-    /// them.
-    fn unlisted_task_pointers(
-        &self,
-        list: &TaskList,
-        range: std::ops::Range<usize>,
-    ) -> Vec<(u64, DiscoveryRoute)> {
-        let mut found = Vec::new();
-        for task in &list.tasks[range] {
-            let Ok(TaskStage::Running(future)) = self.task_stage(task) else {
-                continue;
-            };
-            let chain = self.await_chain(future);
-            match self.wait_target(&chain, list) {
-                Some(Ok(WaitTarget::Task {
-                    addr,
-                    listed: false,
-                    ..
-                })) => found.push((addr, DiscoveryRoute::JoinHandle)),
-                Some(Ok(WaitTarget::Semaphore { waiters, .. })) => {
-                    for waiter in waiters {
-                        if let QueuedWaker::Task { addr, .. } = waiter.waker
-                            && !list.contains(addr)
-                        {
-                            found.push((addr, DiscoveryRoute::QueuedWaker));
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
-        found
     }
 
     /// Route 2: the task-Header pointers armed on timer entries parked
@@ -5436,8 +5450,7 @@ mod tests {
     }
 }
 
-/// Route 1's two inputs, side by side: the chain sweep and the
-/// reference scan over the same enumerated storage.
+/// Route 1's input: the reference scan over the enumerated storage.
 #[cfg(test)]
 mod discovery_scan_tests {
     use super::*;
@@ -5450,16 +5463,14 @@ mod discovery_scan_tests {
             .unwrap_or_else(|| panic!("a task named {name}"))
     }
 
-    /// The scan finds what the chain sweep finds: on the foreign-runtime
-    /// pair the joiner's held `JoinHandle` names a task no enumerated
-    /// list owns, and both inputs offer that Header — the sweep by the
-    /// diagnosed wait, the scan by the reference's own kind. Offered
-    /// after the sweep, the scan adds nothing the sweep already named;
-    /// offered alone, it names the same task. In the rounds after
-    /// admission the hidden runtime's own tasks are scanned in turn,
-    /// and reference nothing outside the list.
+    /// The scan offers the owner a held handle names: on the
+    /// foreign-runtime pair the joiner's `JoinHandle` names a task no
+    /// enumerated list owns, and the scan offers that Header once, by
+    /// the reference's own kind, with no wait diagnosed. In the rounds
+    /// after admission the hidden runtime's own tasks are scanned in
+    /// turn, and reference nothing outside the list.
     #[test]
-    fn test_the_scan_offers_what_the_chain_sweep_offers() {
+    fn test_the_scan_offers_the_referenced_owner() {
         for set in testkit::FIXTURE_SETS {
             let (bundle, snapshot) = testkit::load(set, "foreign-runtime");
             let ctx = testkit::context(&bundle, &snapshot);
@@ -5467,28 +5478,17 @@ mod discovery_scan_tests {
             let listed = e.list.tasks.len();
             let read = ReadContext::none();
 
-            let swept = ctx.unlisted_task_pointers(&e.list, 0..listed);
             let mut alone = Vec::new();
             let mut budget = ScanBudget::default();
             ctx.scanned_task_pointers(&e.list, 0..listed, &read, &mut budget, &mut alone);
-            let mut after = swept.clone();
-            ctx.scanned_task_pointers(&e.list, 0..listed, &read, &mut budget, &mut after);
             assert!(budget.inline_visits > 0, "[{set}] the scan visited");
 
             e.discover(&ctx, &[]);
             let joined = named(&e.list, "foreign_runtime::joined").addr.0;
-            assert!(
-                swept.iter().any(|(addr, _)| *addr == joined),
-                "[{set}] the sweep offers the joined task: {swept:?}"
-            );
             assert_eq!(
                 alone,
                 vec![(joined, DiscoveryRoute::Scanned(ReferenceSource::JoinHandle))],
-                "[{set}] the scan alone offers the joined task, once, by its kind"
-            );
-            assert_eq!(
-                after, swept,
-                "[{set}] after the sweep the scan adds nothing"
+                "[{set}] the scan offers the joined task, once, by its kind"
             );
             assert_eq!(
                 DiscoveryRoute::Scanned(ReferenceSource::JoinHandle).to_string(),
@@ -5519,9 +5519,9 @@ mod discovery_scan_tests {
     }
 
     /// A spent budget is reported, not absorbed: under a one-visit cap
-    /// the sweep says so in the list's errors and still finds every
-    /// owner through its other input, and under the defaults nothing
-    /// is spent and nothing is said.
+    /// the scan reaches no handle, the hidden runtime stays hidden, and
+    /// the list's errors say the budget was spent; under the defaults
+    /// nothing is spent and nothing is said.
     #[test]
     fn test_a_spent_scan_budget_is_reported() {
         let (bundle, snapshot) = testkit::load_any("foreign-runtime");
@@ -5553,8 +5553,12 @@ mod discovery_scan_tests {
             ..ScanLimits::default()
         };
         let (capped_runtimes, capped_sets, capped_list) = discover(capped);
-        assert_eq!((capped_runtimes, capped_sets), (runtimes, sets));
-        assert_eq!(capped_list.tasks.len(), list.tasks.len());
+        assert!(
+            runtimes > capped_runtimes,
+            "{runtimes} vs {capped_runtimes}"
+        );
+        assert!(sets > capped_sets, "{sets} vs {capped_sets}");
+        assert!(list.tasks.len() > capped_list.tasks.len());
         let budget: Vec<String> = capped_list
             .errors
             .iter()

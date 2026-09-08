@@ -10,6 +10,7 @@ use crate::{Session, discover_workers, print_warnings};
 use anyhow::{Context as _, Result};
 use hansei_bundle::BundleView;
 use hansei_runtime::heap::{self, view::GateCounts, view::HeapView};
+use hansei_runtime::tokio::chain::InspectionMode;
 use hansei_runtime::tokio::graph as rt_graph;
 use hansei_runtime::tokio::observe::ReadContext;
 use hansei_runtime::tokio::{bundle, census};
@@ -212,8 +213,7 @@ pub(crate) fn exec_snapshot<T: proc::Target>(
     let mut list = ctx.enumerate_all_tasks(&runtimes)?;
     // A snapshot records only the reads the capture performs, so
     // discovery must be driven here for the offline pairs to replay it.
-    let (_, registries) =
-        ctx.discover_hidden_tasks(&lwps, &workers, &mut runtimes, &[], &mut list, &read);
+    ctx.discover_hidden_tasks(&lwps, &workers, &mut runtimes, &[], &mut list, &read);
     print_warnings(&list.errors)?;
 
     let mut chains = 0usize;
@@ -221,51 +221,41 @@ pub(crate) fn exec_snapshot<T: proc::Target>(
         if !matches!(task.future, bundle::FutureInfo::Known(_)) {
             continue;
         }
-        match ctx.task_stage(task) {
+        match ctx.task_root(task, &read) {
             Ok(bundle::TaskStage::Running(future)) => {
-                let chain = ctx.await_chain(future);
-                if let bundle::ChainEnd::Error(e) = &chain.end {
+                let lifecycle = task.state.lifecycle();
+                let inspection =
+                    ctx.inspect_future(future, InspectionMode::Task { lifecycle }, &read);
+                if let bundle::ChainEnd::Error(e) = &inspection.chain.end {
                     writeln!(
                         io::stderr(),
                         "warning: await chain of task {:?} is incomplete: {e:#}",
                         task.addr
                     )?;
                 }
-                // Drive the leaf-future interpretation too, so its reads
-                // are in the snapshot for the offline tests.
-                if let Some(Err(e)) = ctx.wait_target(&chain, &list) {
-                    writeln!(
-                        io::stderr(),
-                        "warning: failed to read what task {:?} waits on: {e:#}",
-                        task.addr
-                    )?;
-                }
                 // Drive reify's value renderer over the frame locals too,
                 // so the pages behind formatted values are recorded for
                 // the offline render tests.
-                warm_frame_values(&ctx, &chain, heap);
+                warm_frame_values(&ctx, &inspection.chain, heap);
                 chains += 1;
             }
             Ok(_) => {}
             Err(e) => {
                 writeln!(
                     io::stderr(),
-                    "warning: failed to read the stage of task {:?}: {e:#}",
+                    "warning: failed to read the root of task {:?}: {e:#}",
                     task.addr
                 )?;
             }
         }
     }
 
-    // Drive the dependency analysis too — wake queues and the
-    // off-path acquire scan — so its reads are in the snapshot. Its
-    // failures duplicate the per-task warnings above.
-    let analysis = rt_graph::analyze(&ctx, &list, &registries);
-    // And the assessed analysis — the explicit engine's chains through
-    // every vtable word it checks, the protocols' queue, registration
-    // and trailer reads, the held chains behind the polling barriers —
-    // so the offline pairs replay what the legacy walk never touched.
-    let _ = rt_graph::assess(&ctx, &list, &read);
+    // Drive the analysis — the engine's chains through every vtable
+    // word it checks, the protocols' queue, registration and trailer
+    // reads, the held chains behind the polling barriers — so its
+    // reads are in the snapshot. Its failures duplicate the per-task
+    // warnings above.
+    let analysis = rt_graph::analyze(&ctx, &list, &read);
 
     // And the sub-executor census, so the set node chains and child
     // futures it reads replay offline as well. A session that raised
@@ -326,10 +316,10 @@ pub(crate) fn exec_snapshot<T: proc::Target>(
         .with_context(|| format!("failed to write {}", output.display()))?;
     writeln!(
         out,
-        "captured {} tasks ({chains} await chains, {} futurelocks) to {}; \
+        "captured {} tasks ({chains} await chains, {} polling barriers) to {}; \
          the read log held {} bytes in {} reads",
         list.tasks.len(),
-        analysis.futurelocks.len(),
+        analysis.barriers.len(),
         output.display(),
         charged.bytes,
         charged.entries,

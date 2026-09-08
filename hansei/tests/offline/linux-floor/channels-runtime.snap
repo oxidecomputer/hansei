@@ -5,9 +5,9 @@ description: "`runtime` over linux-floor/channels"
 runtime 0 @ 0xADDR
     flavor: multi_thread
     tasks: 2
-    futures: 3
+    futures: 2
     workers: 2
-    threads: 3 (lwp 2405990, 2405993, 2405992)
+    threads: 3 (lwp 2231170, 2231173, 2231172)
     found via: a thread's runtime context
     drivers:
       tokio::runtime::driver::Handle {

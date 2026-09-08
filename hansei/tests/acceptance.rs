@@ -2178,9 +2178,10 @@ fn test_spin_poll_acceptance() {
         // The provenance footer is gone: the section ends at its rows.
         assert!(!out.contains("scheduler frames above it omitted"), "{out}");
 
-        // Without --native the section is elided whole: the chain ends
-        // at its last committed frame, no mid-poll heading and no
-        // refusal spelling either.
+        // Without --native the section is elided whole: the chain is
+        // the root alone, since a mid-poll task's saved state may be
+        // mid-mutation, and the end says so — no native heading, no
+        // lwp, and no refusal spelling either.
         let bare = hansei(&bundle, core, &format!("trace {}", task.id));
         assert!(
             bare.status.success(),
@@ -2188,8 +2189,13 @@ fn test_spin_poll_acceptance() {
             String::from_utf8_lossy(&bare.stderr)
         );
         let bare = String::from_utf8(bare.stdout).expect("hansei output is UTF-8");
-        assert!(!bare.contains("mid-poll"), "{bare}");
+        assert!(
+            bare.contains("the task is mid-poll: its saved state below the root is not read"),
+            "{bare}"
+        );
+        assert!(!bare.contains("mid-poll on lwp"), "{bare}");
         assert!(!bare.contains(" native "), "{bare}");
+        assert_eq!(bare.matches("\n#").count(), 1, "{bare}");
 
         // The chain carries no register block of its own — that moved
         // to `regs` — which answers for this task because selecting a
@@ -3086,7 +3092,7 @@ fn test_several_runtimes_are_each_their_own_block() {
         assert!(one.starts_with("runtime 1 @ 0x"), "{one}");
         assert!(one.contains("\n    threads: none inside it\n"), "{one}");
         assert!(
-            one.contains("\n    found via: a JoinHandle held by an enumerated task\n"),
+            one.contains("\n    found via: a JoinHandle scanned in an enumerated task's storage\n"),
             "{one}"
         );
 
@@ -3259,21 +3265,25 @@ fn test_census_counts_a_set_and_what_is_held_beside_it() {
         // The leaves are what the nesting added: one per set child, two
         // the driver holds inside a tuple and an enum, the nested set's
         // own two children, and the one carried by the future the
-        // driver holds for it.
-        assert!(out.contains("    8  async fn unordered::leaf\n"), "{out}");
+        // driver holds for it — none of them ever polled.
+        assert!(
+            out.contains("    8  async fn unordered::leaf\n       └─ 8  — (unresumed)\n"),
+            "{out}"
+        );
         // What all five of them are — the set's children and the two
         // held beside them are the same async fn, the boxed one named
         // through the dyn join rather than by its pointer — and, under
         // it, what those five chains reach. The children park in the
-        // shared Notify, which is no primitive hansei decodes into a
-        // wait target, so the branch names the leaf their chains
-        // reached rather than counting them as something it could not
-        // identify; the two held beside them reach elsewhere, which is
-        // what leaves this branch at three of the five.
+        // shared Notify, which no reviewed rule covers, so their
+        // continuation is unknown rather than a wait target invented
+        // from the leaf's type; the two held beside them were never
+        // polled, which is what leaves the unknown branch at three of
+        // the five.
         assert!(
             out.contains(
                 "    5  async fn unordered::set_member\n       \
-                 ├─ 3  future tokio::sync::notify::Notified\n"
+                 ├─ 3  unknown\n       \
+                 └─ 2  — (unresumed)\n"
             ),
             "{out}"
         );
@@ -3575,13 +3585,12 @@ fn test_a_stale_pointer_is_not_expanded_into_what_the_bytes_say() {
 /// The census's half of the same claim, on the same target.
 ///
 /// `stale-local` also parks holding the wide pointer of a boxed future
-/// whose block it has handed back. That pointer is one the census's
-/// discovery *follows* — unlike the plain one above, which only the
-/// renderer reads — so without corroboration the future behind it is
-/// listed as one in flight, in a listing that then reads as complete.
-/// Where there is an allocator to ask it must be refused and the run
-/// must say so; on glibc there is nothing to ask, and it is listed like
-/// any other held future.
+/// whose block it has handed back — a raw `*mut dyn Future`, which is
+/// nobody's to follow: the census follows a pointer only by a
+/// contract, a set's node list or a supported adapter's recorded
+/// route, and a raw pointer has neither. So the future behind it is
+/// never read, on either allocator: nothing is listed, and nothing is
+/// refused, since the walk never stood at the far end.
 #[test]
 fn test_a_stale_future_is_not_counted_as_one_in_flight() {
     let bundle = fixtures().bundle("stale-local");
@@ -3593,25 +3602,11 @@ fn test_a_stale_future_is_not_counted_as_one_in_flight() {
         let stderr = String::from_utf8_lossy(&out.stderr);
         assert!(out.status.success(), "{stderr}\n{stdout}");
 
-        if hansei_ok(&bundle, core, "umem-audit").contains("no umem metadata in this target") {
-            assert_eq!(task.futures, "1", "{rows:?}");
-            assert!(stdout.contains("\n    held futures: 1\n"), "{stdout}");
-            assert!(stderr.is_empty(), "{stderr}");
-            return;
-        }
         // The count `task` prints and the listing under `--futures`
-        // are the same census, so both have to say none — a refusal
-        // that removed the row and left the count would be worse than
-        // not refusing at all.
+        // are the same census, so both say none.
         assert_eq!(task.futures, "0", "{rows:?}");
         assert!(stdout.contains("\n    held futures: 0\n"), "{stdout}");
-        assert!(
-            stderr.contains(
-                "the allocator has taken back the memory 1 find(s) lay in; \
-                 they and anything they held are not listed"
-            ),
-            "{stderr}"
-        );
+        assert!(stderr.is_empty(), "{stderr}");
     });
 }
 

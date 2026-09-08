@@ -2,5 +2,9 @@
 source: hansei/src/offline.rs
 description: "`trace 1 -l 1` over illumos/delegation-cases"
 ---
-#0  future        Box<delegation_cases::Gated<1>>
-      (<no_state>, 0 locals)
+Waiting on: unknown
+
+what delegation_cases::Gated<1> polls is not established (no reviewed rule covers its implementation); the chain ends there
+#0  future        delegation_cases::Gated<1>
+      (<no_state>, 3 locals; holds 1 pending future)
+[2 frames, 1 shown]

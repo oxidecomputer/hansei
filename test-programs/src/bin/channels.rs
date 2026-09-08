@@ -24,13 +24,10 @@ async fn notify_waiter(notify: Arc<Notify>, ready: oneshot::Sender<()>) {
     let notified = notify.notified();
     tokio::pin!(notified);
     notified.as_mut().enable();
-    // Ground truth for the census diff: the pinned leaf is a held find
-    // — what this frame awaits below is the `Pin` reference, not the
-    // `Notified` itself.
-    census_expect::held(
-        notified.as_ref().get_ref() as *const _ as u64,
-        "tokio::sync::notify::Notified",
-    );
+    // Not registered as a held find: what this frame awaits below is a
+    // `Pin` reference to it, so the pinned leaf is the chain's own last
+    // frame, reached through that reference, not a future held beside
+    // the chain.
     ready.send(()).expect("main waits for readiness");
     notified.await;
 }

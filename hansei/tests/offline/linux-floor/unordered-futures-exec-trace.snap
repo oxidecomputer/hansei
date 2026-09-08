@@ -6,6 +6,7 @@ future 0xADDR
 future 0xADDR: async fn unordered::set_member
 Held by: task 3 — async fn unordered::driver (frame 1, `held`)
 
+the chain ends in a future that has never been polled
 #0  async fn      unordered::set_member
       state Unresumed
 
@@ -13,6 +14,7 @@ future 0xADDR
 future 0xADDR: async fn unordered::set_member
 Held by: task 3 — async fn unordered::driver (frame 1, `boxed`)
 
+the chain ends in a future that has never been polled
 #0  async fn      unordered::set_member
       state Unresumed
 
@@ -20,6 +22,7 @@ future 0xADDR
 future 0xADDR: async fn unordered::leaf
 Held by: task 3 — async fn unordered::driver (frame 1, `pair`)
 
+the chain ends in a future that has never been polled
 #0  async fn      unordered::leaf
       state Unresumed
 
@@ -27,6 +30,7 @@ future 0xADDR
 future 0xADDR: async fn unordered::leaf
 Held by: task 3 — async fn unordered::driver (frame 1, `maybe`)
 
+the chain ends in a future that has never been polled
 #0  async fn      unordered::leaf
       state Unresumed
 
@@ -34,6 +38,7 @@ future 0xADDR
 future 0xADDR: async fn unordered::leaf
 Held by: task 3 — async fn unordered::driver (frame 0, `inner`, via held future at 0xADDR)
 
+the chain ends in a future that has never been polled
 #0  async fn      unordered::leaf
       state Unresumed
 
@@ -41,6 +46,7 @@ future 0xADDR
 future 0xADDR: async fn unordered::leaf
 Held by: task 3 — async fn unordered::driver (frame 0, `inner`, via held future at 0xADDR)
 
+the chain ends in a future that has never been polled
 #0  async fn      unordered::leaf
       state Unresumed
 
@@ -48,6 +54,7 @@ future 0xADDR
 future 0xADDR: async fn unordered::set_member
 Child of: futures_util::stream::futures_unordered::FuturesUnordered<unordered::set_member> at 0xADDR (frame 1, `set`), polled by task 3 — async fn unordered::driver
 
+what tokio::sync::notify::Notified polls is not established (no reviewed rule covers its implementation); the chain ends there
 #0  future        tokio::sync::notify::Notified
       (<no_state>, 4 locals)
 [2 frames, 1 shown]
@@ -56,6 +63,7 @@ future 0xADDR
 future 0xADDR: async fn unordered::leaf
 Held by: task 3 — async fn unordered::driver (frame 1, `held`, via set child at 0xADDR)
 
+the chain ends in a future that has never been polled
 #0  async fn      unordered::leaf
       state Unresumed
 
@@ -63,6 +71,7 @@ future 0xADDR
 future 0xADDR: async fn unordered::set_member
 Child of: futures_util::stream::futures_unordered::FuturesUnordered<unordered::set_member> at 0xADDR (frame 1, `set`), polled by task 3 — async fn unordered::driver
 
+what tokio::sync::notify::Notified polls is not established (no reviewed rule covers its implementation); the chain ends there
 #0  future        tokio::sync::notify::Notified
       (<no_state>, 4 locals)
 [2 frames, 1 shown]
@@ -71,6 +80,7 @@ future 0xADDR
 future 0xADDR: async fn unordered::leaf
 Held by: task 3 — async fn unordered::driver (frame 1, `held`, via set child at 0xADDR)
 
+the chain ends in a future that has never been polled
 #0  async fn      unordered::leaf
       state Unresumed
 
@@ -78,6 +88,7 @@ future 0xADDR
 future 0xADDR: async fn unordered::set_member
 Child of: futures_util::stream::futures_unordered::FuturesUnordered<unordered::set_member> at 0xADDR (frame 1, `set`), polled by task 3 — async fn unordered::driver
 
+what tokio::sync::notify::Notified polls is not established (no reviewed rule covers its implementation); the chain ends there
 #0  future        tokio::sync::notify::Notified
       (<no_state>, 4 locals)
 [2 frames, 1 shown]
@@ -86,6 +97,7 @@ future 0xADDR
 future 0xADDR: async fn unordered::leaf
 Held by: task 3 — async fn unordered::driver (frame 1, `held`, via set child at 0xADDR)
 
+the chain ends in a future that has never been polled
 #0  async fn      unordered::leaf
       state Unresumed
 
@@ -93,6 +105,7 @@ future 0xADDR
 future 0xADDR: async fn unordered::leaf
 Child of: futures_util::stream::futures_unordered::FuturesUnordered<unordered::leaf> at 0xADDR (frame 1, `inner`, via set child at 0xADDR), polled by task 3 — async fn unordered::driver
 
+the chain ends in a future that has never been polled
 #0  async fn      unordered::leaf
       state Unresumed
 
@@ -100,6 +113,7 @@ future 0xADDR
 future 0xADDR: async fn unordered::leaf
 Child of: futures_util::stream::futures_unordered::FuturesUnordered<unordered::leaf> at 0xADDR (frame 1, `inner`, via set child at 0xADDR), polled by task 3 — async fn unordered::driver
 
+the chain ends in a future that has never been polled
 #0  async fn      unordered::leaf
       state Unresumed
 [Executed against 14 futures, 0 failed]

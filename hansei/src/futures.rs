@@ -16,6 +16,7 @@ use crate::{Session, print_warnings, repl, summary};
 
 use anyhow::{Context as _, Result};
 use hansei_bundle::names;
+use hansei_runtime::tokio::assess::ContinuationStatus;
 use hansei_runtime::tokio::{bundle, census};
 
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
@@ -226,14 +227,11 @@ impl Rows<'_> {
             local: Some(h.local.clone()),
             via: h.via,
             state: h.state.clone(),
-            waiting_on: h.waiting_on.clone(),
-            waiting_kind: waiting_kind(
-                h.wait,
-                h.leaf.as_deref(),
-                self.list,
-                &self.task_at,
-                self.impls,
-            ),
+            waiting_on: h
+                .waiting_on
+                .clone()
+                .or_else(|| continuation_cell(&h.continuation)),
+            waiting_kind: waiting_kind(h.wait, &h.continuation, self.list, &self.task_at),
             future: names::display_future_name(&h.future, self.impls),
             depth: h.depth,
             holds: inside.held,
@@ -265,14 +263,11 @@ impl Rows<'_> {
             local: None,
             via: s.via,
             state: c.state.clone(),
-            waiting_on: c.waiting_on.clone(),
-            waiting_kind: waiting_kind(
-                c.wait,
-                c.leaf.as_deref(),
-                self.list,
-                &self.task_at,
-                self.impls,
-            ),
+            waiting_on: c
+                .waiting_on
+                .clone()
+                .or_else(|| continuation_cell(&c.continuation)),
+            waiting_kind: waiting_kind(c.wait, &c.continuation, self.list, &self.task_at),
             future: names::display_future_name(future, self.impls),
             depth: c.depth,
             holds: inside.held,
@@ -282,30 +277,44 @@ impl Rows<'_> {
     }
 }
 
-/// The bucket `--group waiting-on` files a row under: the primitive's
-/// kind where one decoded — with the identity that groups usefully,
-/// which task, which kind of lock — else the leaf type its chain
-/// bottoms out in, which is kind-level already.
+/// The `WAITING ON` cell a find's continuation earns where its chain
+/// ends in no described resource: `unknown` for a continuation nothing
+/// establishes or a chain cut short, and nothing — the dash — for a
+/// future that awaits nothing, never polled or run to its end.
+fn continuation_cell(continuation: &ContinuationStatus) -> Option<String> {
+    match continuation {
+        ContinuationStatus::Primitive
+        | ContinuationStatus::Unknown { .. }
+        | ContinuationStatus::Incomplete { .. } => Some("unknown".to_string()),
+        ContinuationStatus::Unresumed
+        | ContinuationStatus::Returned
+        | ContinuationStatus::Panicked
+        | ContinuationStatus::ActivePoll => None,
+    }
+}
+
+/// The bucket `--group waiting-on` files a row under: the resource's
+/// kind where its chain ends in one — with the identity that groups
+/// usefully, which task, which kind of lock — else what the
+/// continuation says instead, `unknown` or nothing.
 fn waiting_kind(
     wait: Option<bundle::WaitKind>,
-    leaf: Option<&str>,
+    continuation: &ContinuationStatus,
     list: &bundle::TaskList,
     task_at: &HashMap<u64, usize>,
-    impls: &names::ImplFold,
 ) -> Option<String> {
-    match (wait, leaf) {
-        (Some(bundle::WaitKind::Timer { .. }), _) => Some("timer".to_string()),
-        (Some(bundle::WaitKind::Task { addr }), _) => Some(match task_at.get(&addr) {
+    match wait {
+        Some(bundle::WaitKind::Timer { .. }) => Some("timer".to_string()),
+        Some(bundle::WaitKind::Task { addr }) => Some(match task_at.get(&addr) {
             Some(&index) => tasks::task_label(list, index),
             None => format!("the task at {addr:#x}"),
         }),
-        (Some(bundle::WaitKind::Io), _) => Some("io".to_string()),
-        (Some(bundle::WaitKind::Semaphore { owner }), _) => Some(match owner {
+        Some(bundle::WaitKind::Io) => Some("io".to_string()),
+        Some(bundle::WaitKind::Semaphore { owner }) => Some(match owner {
             Some(owner) => format!("a {owner} (semaphore)"),
             None => "a semaphore".to_string(),
         }),
-        (None, Some(leaf)) => Some(names::display_future_name(leaf, impls)),
-        (None, None) => None,
+        None => continuation_cell(continuation),
     }
 }
 
@@ -773,6 +782,7 @@ fn refuse_positional_addrs(addr: &[String]) -> Result<()> {
 fn print_census_warnings(census: &census::FutureCensus) -> Result<()> {
     print_warnings(&census.errors)?;
     tasks::warn_census_capped(census.capped, "listed")?;
+    tasks::warn_census_uncertain(census.uncertain, "listed")?;
     tasks::warn_census_refused(census.refused, "listed")?;
     Ok(())
 }
@@ -957,6 +967,7 @@ mod tests {
     use crate::trace::FutureAt;
 
     use hansei_bundle::BundleTypeId;
+    use hansei_runtime::tokio::assess::ContinuationStatus;
     use hansei_runtime::tokio::bundle::{FutureInfo, Task, TaskList, WaitKind};
     use hansei_runtime::tokio::census::{self, FutureCensus, Via};
     use hansei_runtime::tokio::{TaskAddr, TaskState};
@@ -997,7 +1008,7 @@ mod tests {
             state: Some("Suspend1 — src/app.rs:9".to_string()),
             waiting_on: Some("a timer".to_string()),
             wait: Some(WaitKind::Timer { past_due: None }),
-            leaf: None,
+            continuation: ContinuationStatus::Primitive,
         }
     }
 
@@ -1013,7 +1024,7 @@ mod tests {
             state: None,
             waiting_on: None,
             wait: Some(WaitKind::Task { addr: 0x1c00 }),
-            leaf: None,
+            continuation: ContinuationStatus::Unresumed,
         }
     }
 

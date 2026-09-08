@@ -2,6 +2,9 @@
 source: hansei/src/offline.rs
 description: "`trace 3 -n` over linux/nested-await"
 ---
+Waiting on: unknown
+
+what tokio::sync::oneshot::Receiver<u32> polls is not established (no reviewed rule covers its implementation); the chain ends there
 #0  future        tokio::sync::oneshot::Receiver<u32>
       (<no_state>, 1 local)
 #1  async fn      nested_await::leaf

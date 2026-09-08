@@ -22,7 +22,7 @@ COUNT  TYPE / WAITING ON
        └─ 1  a tokio::sync::Mutex (semaphore)
 [1 type]
 
-Futures: 2 in flight, on 12 await-chain frames, up to 7 deep
+Futures: 2 in flight, on 13 await-chain frames, up to 7 deep
 
 COUNT  HELD IN
     1  task (its own await chain)

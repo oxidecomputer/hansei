@@ -173,6 +173,35 @@ impl VerifiedWait {
     pub fn into_target(self) -> WaitTarget {
         self.target
     }
+
+    /// A verified wait laid out by hand, for a listing test over a
+    /// population no fixture holds. Test-only: production construction
+    /// is the assessor's alone.
+    #[cfg(feature = "testkit")]
+    pub fn testkit(target: WaitTarget, queue_position: Option<usize>) -> Self {
+        VerifiedWait {
+            target,
+            primitive: ValueKey {
+                addr: 0,
+                ty: hansei_bundle::BundleTypeId(0),
+            },
+            queue_position,
+        }
+    }
+}
+
+/// Why a continuation is not established, in words a listing prints.
+pub fn continuation_reason(reason: SemanticIssueKind) -> &'static str {
+    use SemanticIssueKind::*;
+    match reason {
+        NoRule => "no reviewed rule covers its implementation",
+        UnsupportedOrigin => "its implementation's origin is not reviewed",
+        MissingLayout => "its layout is not in the tokio info",
+        AmbiguousLayout => "its layout is ambiguous",
+        UnsupportedState => "its state is one no rule covers",
+        MultipleChildren => "it polls more than one future",
+        PossiblyUninitialized => "its storage may not be initialized",
+    }
 }
 
 /// A chain's end as an owned, compact status: what a task row keeps
@@ -256,6 +285,7 @@ impl ContinuationStatus {
 #[derive(Copy, Clone, Debug)]
 pub struct TaskFacts {
     pub addr: TaskAddr,
+    pub task_id: Option<u64>,
     pub state: TaskState,
 }
 
@@ -263,6 +293,7 @@ impl From<&Task> for TaskFacts {
     fn from(task: &Task) -> Self {
         TaskFacts {
             addr: task.addr,
+            task_id: task.task_id,
             state: task.state,
         }
     }
@@ -418,9 +449,17 @@ impl<'b, T: Target> Context<'b, T> {
                 );
             }
             ChainEnd::UnknownContinuation { reason, .. } => {
+                let last = chain
+                    .frames
+                    .last()
+                    .map(|f| f.future.ty.name())
+                    .unwrap_or("the root");
                 return Assessed::unknown(
                     WaitUnknownReason::Continuation,
-                    format!("the continuation is not established ({reason:?})"),
+                    format!(
+                        "what {last} polls is not established: {}",
+                        continuation_reason(*reason)
+                    ),
                 );
             }
             ChainEnd::UnknownDyn { .. }
@@ -471,7 +510,7 @@ impl<'b, T: Target> Context<'b, T> {
             ResourceObservation::Acquire(acquire) => {
                 self.assess_acquire(pass, acquire, task, chain, primitive, read)
             }
-            ResourceObservation::Io(io) => self.assess_io(pass, io, task, primitive, read),
+            ResourceObservation::Io(io) => self.assess_io(pass, io, task, chain, primitive, read),
             ResourceObservation::Timer(timer) => self.assess_timer(timer, primitive),
         }
     }
@@ -702,6 +741,7 @@ impl<'b, T: Target> Context<'b, T> {
         pass: &mut AssessmentPass,
         io: &IoObservation,
         task: &TaskFacts,
+        chain: &AwaitChain<'b>,
         primitive: ValueKey,
         read: &ReadContext<'_>,
     ) -> Assessed {
@@ -768,7 +808,7 @@ impl<'b, T: Target> Context<'b, T> {
         }
         let target = WaitTarget::Io {
             addr: io.scheduled_io.addr,
-            fd: None,
+            fd: self.io_resource_fd(&payloads(chain), io.scheduled_io.addr),
             interest: Some(io.interest),
         };
         let waiting = || {
@@ -887,21 +927,102 @@ impl<'b, T: Target> Context<'b, T> {
     }
 }
 
+impl<'b, T: Target> Context<'b, T> {
+    /// The structured target an observation names, read under no
+    /// protocol: what a listing prints beside a future parked on a
+    /// resource, whether or not the resource's protocol vouches for a
+    /// wait — a description of the resource, never a verified
+    /// dependency. `None` where the words that would spell it did not
+    /// read. The joined header, the semaphore's queue and the timer's
+    /// deadline are read the way the assessor reads them, the queue
+    /// once per pass.
+    pub fn observed_target(
+        &self,
+        pass: &mut AssessmentPass,
+        observation: &ResourceObservation,
+        chain: &AwaitChain<'b>,
+        list: &TaskList,
+        read: &ReadContext<'_>,
+    ) -> Option<WaitTarget> {
+        match observation {
+            ResourceObservation::Join(join) => {
+                let header = self.read_task_header(join.header, read).ok()?;
+                let addr = join.header.0;
+                let listed = list.contains(addr);
+                let kind = if listed {
+                    None
+                } else {
+                    self.header_unlisted_kind(addr)
+                };
+                Some(WaitTarget::Task {
+                    addr,
+                    task_id: header.task_id,
+                    state: header.state,
+                    listed,
+                    kind,
+                })
+            }
+            ResourceObservation::Acquire(acquire) => {
+                let queue = pass.queue(self, acquire.semaphore, read);
+                // The queue prints only where the walk established its
+                // order: a prefix in walk order is not a wake queue.
+                let waiters = if queue.established() {
+                    queue.waiters.clone()
+                } else {
+                    Vec::new()
+                };
+                Some(WaitTarget::Semaphore {
+                    addr: acquire.semaphore.addr,
+                    owner: semaphore_owner(chain),
+                    num_permits: acquire.requested,
+                    available: queue.available?,
+                    closed: queue.closed?,
+                    waiters,
+                })
+            }
+            ResourceObservation::Io(io) => Some(WaitTarget::Io {
+                addr: io.scheduled_io.addr,
+                fd: self.io_resource_fd(&payloads(chain), io.scheduled_io.addr),
+                interest: Some(io.interest),
+            }),
+            ResourceObservation::Timer(timer) => Some(WaitTarget::Timer {
+                deadline: timer.deadline?,
+                stopped: self.stopped_at(),
+            }),
+        }
+    }
+}
+
+/// Each frame's live storage — its state's payload, or the future
+/// itself where it keeps no state — the values a resource held in the
+/// frames is looked for in.
+fn payloads<'b>(chain: &AwaitChain<'b>) -> Vec<reify::Value<'b>> {
+    chain
+        .frames
+        .iter()
+        .map(|frame| match &frame.state {
+            Some(state) => state.payload,
+            None => frame.future,
+        })
+        .collect()
+}
+
 // ---------------------------------------------------------------------------
 // Conditional polling barriers
 // ---------------------------------------------------------------------------
 
 /// One edge of an owner's chain, copied out of it: the identities and
-/// flags a barrier's evidence rests on, with the route borrowed from
-/// the bundle rather than from the chain.
+/// flags a barrier's evidence rests on, with the route copied from
+/// the bundle rather than borrowed from the chain — a barrier is rare
+/// and outlives the chain it was proved from.
 #[derive(Clone, Debug)]
-pub struct BarrierEdge<'b> {
+pub struct BarrierEdge {
     pub from: u32,
     pub to: u32,
     pub exclusive: bool,
     pub source: ValueKey,
     pub target: ValueKey,
-    pub selected: &'b FutureTarget,
+    pub selected: FutureTarget,
 }
 
 /// What an exclusive chain proves about an acquire a task holds off
@@ -911,11 +1032,15 @@ pub struct BarrierEdge<'b> {
 /// can drive or drop it, not that anyone queued behind its reservation
 /// depends on this task.
 #[derive(Clone, Debug)]
-pub struct PollingBarrier<'b> {
-    /// The task whose chain holds the candidate.
+pub struct PollingBarrier {
+    /// The task whose chain holds the candidate, and its id where the
+    /// target records one.
     pub holder: TaskAddr,
-    /// The on-chain coroutine frame holding it, and that frame's state.
+    pub holder_id: Option<u64>,
+    /// The on-chain coroutine frame holding it — its index from the
+    /// root, its type — and that frame's state.
     pub frame: usize,
+    pub frame_type: String,
     pub state: String,
     pub await_loc: Option<(String, u32)>,
     /// The local, by name, and its identity.
@@ -929,12 +1054,14 @@ pub struct PollingBarrier<'b> {
     /// The acquire's observation, with its queue position filled from
     /// the pass's queue where the queue was established.
     pub acquire: AcquireObservation,
-    /// The owner chain's terminal, whose completion is the condition.
+    /// The owner chain's terminal, whose completion is the condition:
+    /// its identity, and its type for the diagnosis to name.
     pub primitive: ValueKey,
-    pub edges: Vec<BarrierEdge<'b>>,
+    pub terminal: String,
+    pub edges: Vec<BarrierEdge>,
 }
 
-impl PollingBarrier<'_> {
+impl PollingBarrier {
     /// Whether the held acquire was granted whole: it holds the
     /// permits, and its reservation is the resource itself.
     pub fn granted(&self) -> bool {
@@ -956,7 +1083,7 @@ impl<'b, T: Target> Context<'b, T> {
         inspection: &FutureInspection<'b>,
         task: &TaskFacts,
         read: &ReadContext<'_>,
-    ) -> Vec<PollingBarrier<'b>> {
+    ) -> Vec<PollingBarrier> {
         let chain = &inspection.chain;
         if task.state.lifecycle() != Lifecycle::Idle || !chain.all_exclusive() {
             return Vec::new();
@@ -973,7 +1100,7 @@ impl<'b, T: Target> Context<'b, T> {
         }
         let primitive = ValueKey::of(terminal);
         let referents: HashSet<ValueKey> = chain.referents().collect();
-        let edges: Vec<BarrierEdge<'b>> = chain
+        let edges: Vec<BarrierEdge> = chain
             .edges
             .iter()
             .map(|edge| BarrierEdge {
@@ -982,7 +1109,7 @@ impl<'b, T: Target> Context<'b, T> {
                 exclusive: edge.exclusive,
                 source: edge.source,
                 target: edge.target,
-                selected: edge.selected,
+                selected: edge.selected.clone(),
             })
             .collect();
         let mut barriers = Vec::new();
@@ -1067,7 +1194,9 @@ impl<'b, T: Target> Context<'b, T> {
                     .to_owned();
                 barriers.push(PollingBarrier {
                     holder: task.addr,
+                    holder_id: task.task_id,
                     frame: index,
+                    frame_type: frame.future.ty.name().to_owned(),
                     state: state.name.to_owned(),
                     await_loc: state.await_loc.map(|(file, line)| (file.to_owned(), line)),
                     local: self.view.str(name).unwrap_or("<bad strref>").to_owned(),
@@ -1076,6 +1205,7 @@ impl<'b, T: Target> Context<'b, T> {
                     owner: semaphore_owner(&held.chain),
                     acquire,
                     primitive,
+                    terminal: terminal.ty.name().to_owned(),
                     edges: edges.clone(),
                 });
             }
@@ -1090,7 +1220,7 @@ mod tests {
     use crate::testkit::corrupt::Corrupt;
     use crate::testkit::{self, load_any};
     use crate::tokio::bundle::{FutureInfo, TaskStage};
-    use crate::tokio::graph::{self, TaskAssessment};
+    use crate::tokio::graph::{self, TaskWait};
 
     use hansei_bundle::tokio::timer;
     use hansei_bundle::{BundleView, WalkRole};
@@ -1114,17 +1244,17 @@ mod tests {
     }
 
     /// The assessed rows of a target, by task address.
-    fn assessed<'a, T: Target>(
-        ctx: &Context<'a, T>,
-        target: &'a T,
-    ) -> (TaskList, Vec<TaskAssessment>, Vec<PollingBarrier<'a>>) {
+    fn assessed<T: Target>(
+        ctx: &Context<'_, T>,
+        target: &T,
+    ) -> (TaskList, Vec<TaskWait>, Vec<PollingBarrier>) {
         let list = testkit::tasks(ctx, target);
-        let analysis = graph::assess(ctx, &list, &ReadContext::none());
+        let analysis = graph::analyze(ctx, &list, &ReadContext::none());
         assert!(analysis.errors.is_empty(), "{:?}", analysis.errors);
-        (list, analysis.tasks, analysis.barriers)
+        (list, analysis.waits, analysis.barriers)
     }
 
-    fn row<'r>(rows: &'r [TaskAssessment], task: &Task) -> &'r TaskAssessment {
+    fn row<'r>(rows: &'r [TaskWait], task: &Task) -> &'r TaskWait {
         rows.iter().find(|r| r.task.addr == task.addr).unwrap()
     }
 
@@ -1856,7 +1986,12 @@ mod tests {
                 ..io.clone()
             };
             let mut pass = AssessmentPass::new();
-            let assessed = ctx.assess_io(&mut pass, &io, &facts, key, &ReadContext::none());
+            let chain = AwaitChain {
+                frames: Vec::new(),
+                edges: Vec::new(),
+                end: ChainEnd::Primitive,
+            };
+            let assessed = ctx.assess_io(&mut pass, &io, &facts, &chain, key, &ReadContext::none());
             assert_eq!(
                 format!("{:?}", assessed.assessment),
                 expected,
@@ -1958,7 +2093,9 @@ mod tests {
 
         let mut barrier = PollingBarrier {
             holder: holder.addr,
+            holder_id: holder.task_id,
             frame: 0,
+            frame_type: String::new(),
             state: String::new(),
             await_loc: None,
             local: String::new(),
@@ -1987,6 +2124,7 @@ mod tests {
                 addr: 4,
                 ty: acquire_ty,
             },
+            terminal: String::new(),
             edges: Vec::new(),
         };
         assert!(!barrier.granted());

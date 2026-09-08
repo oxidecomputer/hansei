@@ -19,28 +19,38 @@
 //! - a known leaf future (`Sleep`, `JoinHandle`, `Acquire`),
 //! - a `FuturesUnordered`, whose intrusive child list is then walked.
 //!
-//! Each find is chained (`await_chain`) for its concrete identity,
-//! suspend state, and recognized wait target — and its own frames are
-//! scanned in turn, so a set inside a held future inside a set is
-//! reached. What DWARF cannot say is whether an arbitrary struct
-//! implements `Future`, so a hand-written combinator is not itself
-//! listed — but the scan descends through it by value, and any
-//! coroutine inside it is.
+//! Each find is inspected by its programs (`inspect_future`, as a
+//! held value) for its concrete identity, suspend state, continuation
+//! and the resource it is parked on — and its own frames are scanned
+//! in turn, so a set inside a held future inside a set is reached.
+//! What DWARF cannot say is whether an arbitrary struct implements
+//! `Future`, so a hand-written combinator is not itself listed — but
+//! the scan descends through it by value, and any coroutine inside it
+//! is. A held value's inspection says what *it* is parked on; it never
+//! says its owner polls it.
+//!
+//! What a frame's scan looks at is its own storage: a coroutine's
+//! locals as its layout lists them for the active state, a plain
+//! future's members. What it leaves alone is the chain itself — a
+//! find whose identity is a frame of the chain being scanned is that
+//! frame, counted there, not a future held beside it — decided by
+//! exact identity, never by a member's name.
 //!
 //! Discovery never follows ordinary pointers: a future reachable only
 //! behind an unrecognized `Box`/`Arc` is not found (the dyn wide
 //! pointer and a set's node list are the deliberate exceptions).
 
 use super::TaskState;
-use super::bundle::{AwaitChain, ChainEnd, Context, TaskList, TaskStage, WaitKind};
+use super::assess::{AssessmentPass, ContinuationStatus};
+use super::bundle::{AwaitChain, Context, TaskList, TaskStage, WaitKind};
+use super::chain::{FutureInspection, InspectionMode, NextFuture};
 // The by-value types sets and join sets are recognized as; the trailing
 // `<` keeps each match on the real generic, not a lookalike suffix. A
 // `JoinSet` holds *tasks* rather than futures, so it is walked and
 // reported apart from a set of futures; anything built on one
 // (omicron's `ParallelTaskSet`, which pairs it with a semaphore) is
 // reached by the same scan, since it holds its `JoinSet` by value.
-use super::contract::is_dyn_future_pointee;
-use super::observe::{ReadContext, Refusal};
+use super::observe::{ReadContext, Refusal, ValueKey};
 
 use anyhow::{Context as _, Result, anyhow, ensure};
 use foldhash::{HashMap, HashSet};
@@ -78,6 +88,14 @@ pub struct FutureCensus {
     /// Where a hard limit stopped the walk short of where it would
     /// otherwise have gone.
     pub capped: Capped,
+    /// Locals the walk did not scan because the coroutine layout
+    /// cannot say they are initialized in the frame's state: an async
+    /// block's captures once it has been polled, whose slots the body
+    /// may have moved out of. Their bytes are there; whether they still
+    /// hold a live value is not known, so nothing is read from them.
+    /// Not a limit — no bound would have let the walk read them — but
+    /// a place the listing may be short.
+    pub uncertain: usize,
     /// How many finds the allocator's account of the heap refused; see
     /// [`Walker::taken_back`].
     ///
@@ -144,6 +162,10 @@ pub struct Stats {
     /// Finds dropped because their (address, type) was already
     /// recorded.
     pub dedup_hits: usize,
+    /// Finds dropped because they are a frame of the chain they were
+    /// scanned out of — the awaitee in its slot, a referent behind an
+    /// adapter — and are counted as that frame.
+    pub chain_hits: usize,
 }
 
 /// How the census reached a chain that is not an enumerated task's own:
@@ -268,9 +290,10 @@ pub struct SetChild {
     /// The same wait as a tally counts it, so a summary over thousands
     /// of children need not read the line back.
     pub wait: Option<WaitKind>,
-    /// The type the child's chain bottoms out in, whether or not it is
-    /// a primitive `wait` names; see [`AwaitChain::leaf`].
-    pub leaf: Option<String>,
+    /// How the child's chain ended: at a primitive (which `waiting_on`
+    /// then describes), in a terminal state, or without its
+    /// continuation established.
+    pub continuation: ContinuationStatus,
 }
 
 /// A future a frame holds off its task's active `__awaitee` spine: a
@@ -313,8 +336,8 @@ pub struct HeldFuture {
     pub waiting_on: Option<String>,
     /// The same wait as a tally counts it; see [`SetChild::wait`].
     pub wait: Option<WaitKind>,
-    /// The type its chain bottoms out in; see [`SetChild::leaf`].
-    pub leaf: Option<String>,
+    /// How its chain ended; see [`SetChild::continuation`].
+    pub continuation: ContinuationStatus,
 }
 
 impl FutureCensus {
@@ -334,6 +357,7 @@ impl FutureCensus {
             spans: Vec::new(),
             errors: Vec::new(),
             capped: Capped::default(),
+            uncertain: 0,
             refused: 0,
             stats: Stats::default(),
         }
@@ -386,7 +410,6 @@ impl FutureCensus {
                 held.state.is_some(),
                 held.waiting_on.is_some(),
                 held.wait.is_some(),
-                held.leaf.is_some(),
                 &mut v,
             );
         }
@@ -415,7 +438,6 @@ impl FutureCensus {
                     child.state.is_some(),
                     child.waiting_on.is_some(),
                     child.wait.is_some(),
-                    child.leaf.is_some(),
                     &mut v,
                 );
             }
@@ -667,10 +689,9 @@ fn check_summary(
     state: bool,
     waiting_on: bool,
     wait: bool,
-    leaf: bool,
     v: &mut Vec<String>,
 ) {
-    if depth == 0 && (state || waiting_on || wait || leaf) {
+    if depth == 0 && (state || waiting_on || wait) {
         v.push(format!("{what} stands on no frames but carries a summary"));
     }
     if wait != waiting_on {
@@ -685,6 +706,9 @@ enum Find<'b> {
     Set(Value<'b>),
     JoinSet(Value<'b>),
     Future(Value<'b>),
+    /// An owned adapter whose referent, by its recorded route, is the
+    /// find.
+    Adapter(Value<'b>),
 }
 
 /// The census walker: the context and task listing it scans over, and
@@ -697,12 +721,16 @@ struct Walker<'a, 'b, T> {
     /// and nothing everywhere else, which is every target whose malloc
     /// is not libumem.
     read: ReadContext<'a>,
+    /// The semaphore queues and io registrations the finds' resource
+    /// descriptions read, each once for the whole walk.
+    pass: AssessmentPass,
     sets: Vec<FutureSet>,
     join_sets: Vec<JoinSet>,
     held: Vec<HeldFuture>,
     spans: Vec<(u64, u64, usize, usize)>,
     errors: Vec<anyhow::Error>,
     capped: Capped,
+    uncertain: usize,
     refused: usize,
     stats: Stats,
     /// Where this walk's hard limits sit; [`Bounds::default`] outside
@@ -776,12 +804,14 @@ pub fn census_bounded<T: Target>(
         ctx,
         list,
         read: *read,
+        pass: AssessmentPass::new(),
         sets: Vec::new(),
         join_sets: Vec::new(),
         held: Vec::new(),
         spans: Vec::new(),
         errors: Vec::new(),
         capped: Capped::default(),
+        uncertain: 0,
         refused: 0,
         stats: Stats::default(),
         bounds,
@@ -790,11 +820,18 @@ pub fn census_bounded<T: Target>(
     };
 
     for (owner, task) in list.tasks.iter().enumerate() {
-        let Ok(TaskStage::Running(root)) = ctx.task_stage(task) else {
+        let Ok(TaskStage::Running(root)) = ctx.task_root(task, read) else {
             continue;
         };
-        let chain = ctx.await_chain(root);
-        walker.scan_chain(owner, None, &chain, 0);
+        let lifecycle = task.state.lifecycle();
+        let inspection = ctx.inspect_future(root, InspectionMode::Task { lifecycle }, read);
+        // A task mid-poll is mutating its frames: its saved state is
+        // not read as a chain, and its locals are not scanned for
+        // finds that may be half-written.
+        if matches!(inspection.chain.end, super::bundle::ChainEnd::ActivePoll) {
+            continue;
+        }
+        walker.scan_chain(owner, None, &inspection.chain, 0);
     }
 
     walker.spans.sort_unstable();
@@ -806,6 +843,7 @@ pub fn census_bounded<T: Target>(
         spans: walker.spans,
         errors: walker.errors,
         capped: walker.capped,
+        uncertain: walker.uncertain,
         refused: walker.refused,
         stats: walker.stats,
     }
@@ -855,6 +893,11 @@ impl<'b, T: Target> Walker<'_, 'b, T> {
     /// Scan every frame of `chain` for sets and held futures, recursing
     /// through what it finds. `via` says how the census reached this
     /// chain when it is not a task's own.
+    ///
+    /// What a frame offers the scan is its own storage
+    /// ([`Self::frame_locals`]); what the scan leaves alone is the
+    /// chain: a find whose identity is a frame of this chain is that
+    /// frame, counted there, told apart by exact identity.
     fn scan_chain(
         &mut self,
         owner: usize,
@@ -862,21 +905,9 @@ impl<'b, T: Target> Walker<'_, 'b, T> {
         chain: &AwaitChain<'b>,
         nesting: usize,
     ) {
+        let on_chain: HashSet<ValueKey> = chain.referents().collect();
         for (frame_index, frame) in chain.frames.iter().enumerate() {
-            let payload = match &frame.state {
-                Some(state) => &state.payload,
-                None => &frame.future,
-            };
-            for m in payload.ty.members() {
-                if !is_own_local(m.name(), m.ty().size(), frame.inner) {
-                    continue;
-                }
-                let start = m.offset() as usize;
-                let end = start + m.ty().size() as usize;
-                let Some(bytes) = payload.bytes.get(start..end) else {
-                    continue;
-                };
-                let local = Value::new(m.ty(), payload.addr + m.offset(), bytes);
+            for (name, local) in self.frame_locals(frame) {
                 let mut found = Vec::new();
                 scan_value(
                     local,
@@ -893,13 +924,84 @@ impl<'b, T: Target> Walker<'_, 'b, T> {
                     // Recorded display-numbered — #0 the most recently
                     // polled frame — the way every listing prints it.
                     let frame = chain.frames.len() - 1 - frame_index;
-                    self.record(owner, frame, m.name(), via, find, nesting);
+                    self.record(owner, frame, name, via, find, nesting, &on_chain);
                 }
             }
         }
     }
 
-    /// Record one find and recurse into it.
+    /// The values one frame offers the scan, each under the name a
+    /// listing prints for it.
+    ///
+    /// A coroutine frame offers the locals its layout lists as
+    /// initialized in the active state — by name, addressed on the
+    /// state's payload — and withholds the ones the layout cannot vouch
+    /// for, counted rather than guessed at. A frame that keeps no
+    /// state, or whose state no layout describes (a hand-written
+    /// enum), offers every sized member: a generic tuple field is real
+    /// storage, whatever its name. A frame whose storage the tokio
+    /// info declares unreadable offers nothing and is counted.
+    fn frame_locals(&mut self, frame: &super::bundle::AwaitFrame<'b>) -> Vec<(&'b str, Value<'b>)> {
+        let ctx = self.ctx;
+        if ctx.storage_unavailable(frame.future.ty.id()) {
+            self.capped.unavailable += 1;
+            return Vec::new();
+        }
+        let payload = match &frame.state {
+            Some(state) => state.payload,
+            None => frame.future,
+        };
+        let slice = |m: &hansei_bundle::BundleMember<'b>| -> Option<(&'b str, Value<'b>)> {
+            let start = m.offset() as usize;
+            let end = start + m.ty().size() as usize;
+            let bytes = payload.bytes.get(start..end)?;
+            Some((
+                m.name(),
+                Value::new(m.ty(), payload.addr + m.offset(), bytes),
+            ))
+        };
+        let layout = frame
+            .state
+            .as_ref()
+            .and_then(|_| ctx.type_semantics(frame.future.ty.id()))
+            .and_then(|record| record.coroutine.as_ref());
+        let Some(layout) = layout else {
+            // The same positional slicing as the locals display: a
+            // hand-written state may alias two names to one slot.
+            let mut seen = HashSet::default();
+            return payload
+                .ty
+                .members()
+                .filter(|m| m.ty().size() > 0 && seen.insert((m.name(), m.offset())))
+                .filter_map(|m| slice(&m))
+                .collect();
+        };
+        // The layout's states are keyed by variant, the frame's state
+        // by its display name: decode the key again.
+        let Some(Ok(active)) = frame.future.ty.active_variant(frame.future.bytes) else {
+            return Vec::new();
+        };
+        let Some(state) = layout
+            .states
+            .iter()
+            .find(|s| ctx.view.str(s.variant) == Some(active.name))
+        else {
+            return Vec::new();
+        };
+        self.uncertain += state.uncertain_locals.len();
+        state
+            .locals
+            .iter()
+            .filter_map(|&name| ctx.view.str(name))
+            .filter_map(|name| payload.ty.members().find(|m| m.name() == name))
+            .filter(|m| m.ty().size() > 0)
+            .filter_map(|m| slice(&m))
+            .collect()
+    }
+
+    /// Record one find and recurse into it. `on_chain` is the identity
+    /// of every frame of the chain the find was scanned out of.
+    #[allow(clippy::too_many_arguments)]
     fn record(
         &mut self,
         owner: usize,
@@ -908,9 +1010,13 @@ impl<'b, T: Target> Walker<'_, 'b, T> {
         via: Option<Via>,
         find: Find<'b>,
         nesting: usize,
+        on_chain: &HashSet<ValueKey>,
     ) {
         let value = match &find {
-            Find::Set(value) | Find::JoinSet(value) | Find::Future(value) => value,
+            Find::Set(value)
+            | Find::JoinSet(value)
+            | Find::Future(value)
+            | Find::Adapter(value) => value,
         };
         // Asked before the find is recorded rather than after the
         // listing is built, because the walk goes on *through* what it
@@ -930,17 +1036,69 @@ impl<'b, T: Target> Walker<'_, 'b, T> {
         match find {
             Find::Set(value) => self.record_set(owner, frame, local, via, value, nesting),
             Find::JoinSet(value) => self.record_join_set(owner, frame, local, via, value),
+            // The adapter's referent is the find — under the adapter's
+            // slot, so a `Box<F>` local lists `F` where the local is.
+            // A route that lands nowhere lists nothing: the adapter is
+            // not a future, and what it holds is not established.
+            Find::Adapter(value) => match self.ctx.access_referent(value, &self.read) {
+                Some(NextFuture::Next { future, .. }) => {
+                    self.record(
+                        owner,
+                        frame,
+                        local,
+                        via,
+                        Find::Future(future),
+                        nesting,
+                        on_chain,
+                    );
+                }
+                // The referent is what the allocator weighs: a route
+                // it refuses is a stale pointer, and the find behind
+                // it is not there.
+                Some(NextFuture::End(super::bundle::ChainEnd::Error(e))) if refused(&e) => {
+                    self.refused += 1;
+                }
+                _ => {}
+            },
             Find::Future(value) => {
+                // A frame of the chain itself, found in the slot the
+                // chain reached it through: counted as that frame, not
+                // as a future held beside it.
+                if on_chain.contains(&ValueKey::of(value)) {
+                    self.stats.chain_hits += 1;
+                    return;
+                }
                 let place = (value.addr, value.ty.id());
-                let chain = self.ctx.await_chain(value);
-                // The future itself when the chain decoded (behind a
-                // box, that is the heap allocation rather than the
-                // local's pointer slot); the slot when it did not.
-                let (addr, ty) = chain
-                    .frames
-                    .first()
-                    .map(|f| (f.future.addr, f.future.ty.id()))
-                    .unwrap_or(place);
+                let held = self
+                    .ctx
+                    .inspect_future(value, InspectionMode::Held, &self.read);
+                // An alias of a chain frame reached through a pointer
+                // route — the held chain lands on a frame of the
+                // owner's — is on the chain, whatever route led there.
+                if held.chain.referents().any(|key| on_chain.contains(&key)) {
+                    self.stats.chain_hits += 1;
+                    return;
+                }
+                // The future itself, past the adapters it was held
+                // through (behind a box, that is the heap allocation
+                // rather than the local's pointer slot). A find that is
+                // only its adapter — the route to the future it holds
+                // refused by the allocator before any future was
+                // reached — is a stale slot: the referent is what the
+                // allocator weighs, and the find is not there.
+                let (identity, frame_of) = self.identity_frame(&held.chain);
+                let adapter = self
+                    .ctx
+                    .type_semantics(frame_of.future.ty.id())
+                    .is_some_and(|record| record.access.is_some());
+                if adapter
+                    && let super::bundle::ChainEnd::Error(e) = &held.chain.end
+                    && refused(e)
+                {
+                    self.refused += 1;
+                    return;
+                }
+                let (addr, ty) = (frame_of.future.addr, frame_of.future.ty.id());
                 // What was recorded is that future, so that is what a
                 // later reference to it has to be deduped against —
                 // the slot key above is the pointer's, and two
@@ -962,7 +1120,7 @@ impl<'b, T: Target> Walker<'_, 'b, T> {
                         return;
                     }
                 }
-                let summary = self.summarize(&chain);
+                let summary = self.summarize(&held, identity);
                 let index = self.held.len();
                 self.held.push(HeldFuture {
                     owner,
@@ -977,10 +1135,10 @@ impl<'b, T: Target> Walker<'_, 'b, T> {
                     state: summary.state,
                     waiting_on: summary.waiting_on,
                     wait: summary.wait,
-                    leaf: summary.leaf,
+                    continuation: summary.continuation,
                 });
                 if nesting < self.bounds.nesting {
-                    self.scan_chain(owner, Some(Via::Held(index)), &chain, nesting + 1);
+                    self.scan_chain(owner, Some(Via::Held(index)), &held.chain, nesting + 1);
                 } else {
                     self.capped.distant += 1;
                 }
@@ -1012,17 +1170,18 @@ impl<'b, T: Target> Walker<'_, 'b, T> {
         // A walk that fails part-way (an unmapped node, the bound)
         // keeps what it found: the children up to the failure are real,
         // and the error says the list is incomplete.
-        let mut children = Vec::new();
-        if let Err(e) = self.walk_set(value, &mut children) {
+        let mut slots = Vec::new();
+        if let Err(e) = self.walk_set(value, &mut slots) {
             self.errors.push(e.context(format!(
                 "the FuturesUnordered at {:#x} lists only {} of its children",
                 value.addr,
-                children.len()
+                slots.len()
             )));
         }
         let mut scan = Vec::new();
-        for (child_index, (child, chain, extent)) in children.into_iter().enumerate() {
+        for (child_index, (cur, fut, extent)) in slots.into_iter().enumerate() {
             self.spans.push((extent.0, extent.1, index, child_index));
+            let (child, chain) = self.set_child(cur, fut);
             set.children.push(child);
             if chain.is_some() && nesting >= self.bounds.nesting {
                 self.capped.distant += 1;
@@ -1111,6 +1270,11 @@ pub(crate) enum Recognized {
     Set,
     JoinSet,
     Future,
+    /// A supported owned pointer adapter that is not itself a future —
+    /// a `Box<F>` over a future that is not `Unpin`, the `Box<dyn
+    /// Future>` inside a pinned one — whose access binding records the
+    /// route to what it holds.
+    Adapter,
     /// Storage the bundle declares unreadable, with no identity that
     /// would make the value a find: stopped at, never descended into.
     Unavailable,
@@ -1129,6 +1293,7 @@ impl<T: Target> Recognize for Context<'_, T> {
             Some(hansei_bundle::ContainerKind::FuturesUnordered) => Recognized::Set,
             Some(hansei_bundle::ContainerKind::JoinSet) => Recognized::JoinSet,
             None if self.recognized_future(id) => Recognized::Future,
+            None if self.owned_adapter(id) => Recognized::Adapter,
             None if self.storage_unavailable(id) => Recognized::Unavailable,
             None => Recognized::Other,
         }
@@ -1144,6 +1309,9 @@ enum ScanPlan {
     /// into, so its insides are attributed to it rather than to the
     /// frame holding it.
     Future,
+    /// An owned pointer adapter: followed by its recorded route to the
+    /// future it holds, which is then the find.
+    Adapter,
     /// Storage the bundle declares unreadable: counted as a place the
     /// scan stopped short, never scanned as the enum it is shaped as.
     Unavailable,
@@ -1158,24 +1326,18 @@ enum ScanPlan {
 }
 
 /// Decide [`ScanPlan`] for one value: the type-level tests of the scan,
-/// in order. `futures` is the bundle's poll table — the types whose
-/// `<T as Future>::poll` extraction recorded — so a future the chain
-/// walk would follow is one the census counts, even where rustc left
-/// no coroutine shape or leaf name to recognize it by.
+/// in order. What the bundle recognizes — a container, a future, an
+/// adapter — is the semantic table's answer; everything else is
+/// decided by the type's shape, and a plan is a fact of the type
+/// alone.
 fn scan_plan(value: Value<'_>, facts: &dyn Recognize) -> ScanPlan {
     match facts.recognize(value.ty.id()) {
         Recognized::Set => return ScanPlan::Set,
         Recognized::JoinSet => return ScanPlan::JoinSet,
         Recognized::Future => return ScanPlan::Future,
+        Recognized::Adapter => return ScanPlan::Adapter,
         Recognized::Unavailable => return ScanPlan::Unavailable,
         Recognized::Other => {}
-    }
-    // The pointee must *be* a future trait object itself, not a dyn
-    // whose generics merely mention one.
-    if let Some(dp) = value.peel().ty.dyn_pointer()
-        && is_dyn_future_pointee(dp.pointee.name())
-    {
-        return ScanPlan::Future;
     }
     match value.ty.classify() {
         TypeClass::Struct => ScanPlan::Descend(Rc::new(
@@ -1204,20 +1366,6 @@ fn scan_plan(value: Value<'_>, facts: &dyn Recognize) -> ScanPlan {
         TypeClass::Union => ScanPlan::Stop,
         _ => ScanPlan::Stop,
     }
-}
-
-/// Whether a frame member is one of the frame's own locals, which are
-/// all the scan looks at.
-///
-/// The rest is the machinery around them, and each piece of it is
-/// somewhere else in the listing already: the `__…` slots are the
-/// compiler's, and its `__awaitee` is the next frame, scanned as
-/// itself; a zero-sized member holds nothing; and a wrapper future's
-/// sole inner future (`inner`) is that wrapper's next frame, for the
-/// same reason. Counting any of them here would put one future in two
-/// of the three populations the census calls disjoint.
-pub(crate) fn is_own_local(name: &str, size: u64, inner: Option<&str>) -> bool {
-    !name.starts_with("__") && size > 0 && inner != Some(name)
 }
 
 /// The steps between the scanned local and the value in hand: whether
@@ -1249,23 +1397,18 @@ fn scan_value<'b>(
         capped.deep += 1;
         return;
     }
-    // A remembered plan is only valid for a buffer that covers the type
-    // exactly: `peel` stops early on a short buffer, so a truncated
-    // value's plan is its own. Every value the scan builds covers
-    // exactly; this guard keeps the memo honest rather than fast.
-    let plan = if value.bytes.len() as u64 == value.ty.size() {
-        match plans.get(&value.ty.id()) {
-            Some(plan) => plan.clone(),
-            None => {
-                let plan = scan_plan(value, facts);
-                plans.insert(value.ty.id(), plan.clone());
-                plan
-            }
+    let plan = match plans.get(&value.ty.id()) {
+        Some(plan) => plan.clone(),
+        None => {
+            let plan = scan_plan(value, facts);
+            plans.insert(value.ty.id(), plan.clone());
+            plan
         }
-    } else {
-        scan_plan(value, facts)
     };
-    if matches!(plan, ScanPlan::Set | ScanPlan::JoinSet | ScanPlan::Future) {
+    if matches!(
+        plan,
+        ScanPlan::Set | ScanPlan::JoinSet | ScanPlan::Future | ScanPlan::Adapter
+    ) {
         if path.descended {
             stats.descend_finds += 1;
         }
@@ -1277,6 +1420,7 @@ fn scan_value<'b>(
         ScanPlan::Set => found.push(Find::Set(value)),
         ScanPlan::JoinSet => found.push(Find::JoinSet(value)),
         ScanPlan::Future => found.push(Find::Future(value)),
+        ScanPlan::Adapter => found.push(Find::Adapter(value)),
         ScanPlan::Unavailable => capped.unavailable += 1,
         ScanPlan::Descend(members) => {
             let path = Path {
@@ -1327,7 +1471,15 @@ fn scan_value<'b>(
     }
 }
 
-/// One find's listing row, reduced from its await chain.
+/// Whether an error is the allocator's refusal, wherever in its chain
+/// of causes the refusal sits.
+fn refused(error: &anyhow::Error) -> bool {
+    error
+        .chain()
+        .any(|cause| cause.downcast_ref::<Refusal>().is_some())
+}
+
+/// One find's listing row, reduced from its inspection.
 struct Summary {
     /// How many frames the chain ran to, which is what lets a count of
     /// futures be told apart from a count of the frames they stand on.
@@ -1336,122 +1488,142 @@ struct Summary {
     state: Option<String>,
     waiting_on: Option<String>,
     wait: Option<WaitKind>,
-    leaf: Option<String>,
+    continuation: ContinuationStatus,
 }
 
 impl<'b, T: Target> Walker<'_, 'b, T> {
-    /// Reduce a future's await chain to one listing row. An empty chain
-    /// is a trait object the join could not resolve; the pointee is the
-    /// most that can be said of it.
-    fn summarize(&self, chain: &AwaitChain<'b>) -> Summary {
-        let Some(first) = chain.frames.first() else {
-            let future = match &chain.end {
-                ChainEnd::UnknownDyn { pointee, .. } | ChainEnd::AmbiguousDyn { pointee, .. } => {
-                    format!("<unresolved: {pointee}>")
-                }
-                _ => "<undecoded>".to_string(),
-            };
-            return Summary {
-                depth: 0,
-                future,
-                state: None,
-                waiting_on: None,
-                wait: None,
-                leaf: None,
-            };
-        };
-        let state = first.state.as_ref().map(|state| {
+    /// The frame a find is listed as: the first of its chain whose type
+    /// is not a supported adapter — past the `Pin`, the `Box`, the
+    /// reference the value was held through — or the root itself where
+    /// every frame is one (a trait object the join could not resolve
+    /// is listed as its wide pointer).
+    fn identity_frame<'c>(
+        &self,
+        chain: &'c AwaitChain<'b>,
+    ) -> (usize, &'c super::bundle::AwaitFrame<'b>) {
+        chain
+            .frames
+            .iter()
+            .enumerate()
+            .find(|(_, f)| {
+                self.ctx
+                    .type_semantics(f.future.ty.id())
+                    .is_none_or(|record| record.access.is_none())
+            })
+            .unwrap_or((0, &chain.frames[0]))
+    }
+
+    /// Reduce a future's inspection to one listing row: the identity
+    /// frame's type and state, the resource its chain ends in described
+    /// under no protocol, and how the chain ended.
+    fn summarize(&mut self, inspection: &FutureInspection<'b>, identity: usize) -> Summary {
+        let chain = &inspection.chain;
+        let frame = &chain.frames[identity];
+        let state = frame.state.as_ref().map(|state| {
             let loc = state
                 .await_loc
                 .map(|(file, line)| format!(" — {file}:{line}"))
                 .unwrap_or_default();
             format!("{}{loc}", state.name)
         });
-        let target = match self.ctx.wait_target(chain, self.list) {
-            Some(Ok(target)) => Some(target),
-            _ => None,
-        };
+        let target = inspection.primitive.value.as_ref().and_then(|observation| {
+            self.ctx
+                .observed_target(&mut self.pass, observation, chain, self.list, &self.read)
+        });
         Summary {
             depth: chain.frames.len(),
-            future: first.future.ty.name().to_string(),
+            future: frame.future.ty.name().to_string(),
             state,
             waiting_on: target.as_ref().map(|t| t.to_string()),
             wait: target.as_ref().map(|t| t.kind()),
-            leaf: chain.leaf().map(str::to_string),
+            continuation: ContinuationStatus::of(&chain.end),
         }
+    }
+
+    /// One set child as the listing carries it, and its chain for the
+    /// scan when the slot holds a future.
+    fn set_child(
+        &mut self,
+        node: u64,
+        fut: Option<Value<'b>>,
+    ) -> (SetChild, Option<AwaitChain<'b>>) {
+        let Some(fut) = fut else {
+            return (
+                SetChild {
+                    node,
+                    // A reaped slot holds no future, so it stands on
+                    // no frames either.
+                    depth: 0,
+                    future: None,
+                    root: None,
+                    state: None,
+                    waiting_on: None,
+                    wait: None,
+                    continuation: ContinuationStatus::Incomplete {
+                        reason: super::assess::IncompleteReason::NoRoot,
+                        detail: None,
+                    },
+                },
+                None,
+            );
+        };
+        let inspection = self
+            .ctx
+            .inspect_future(fut, InspectionMode::Held, &self.read);
+        // As for a held future: the future itself past its adapters
+        // (behind a box, the heap future rather than the slot).
+        let (identity, frame) = self.identity_frame(&inspection.chain);
+        let root = FutureRoot {
+            addr: frame.future.addr,
+            ty: frame.future.ty.id(),
+        };
+        let summary = self.summarize(&inspection, identity);
+        (
+            SetChild {
+                node,
+                depth: summary.depth,
+                future: Some(summary.future),
+                root: Some(root),
+                state: summary.state,
+                waiting_on: summary.waiting_on,
+                wait: summary.wait,
+                continuation: summary.continuation,
+            },
+            Some(inspection.chain),
+        )
     }
 }
 
-/// One walked child slot: the listing entry, the resident future's own
-/// chain (`None` for an empty slot), and the node's extent.
-type WalkedChild<'b> = (SetChild, Option<AwaitChain<'b>>, (u64, u64));
+/// One walked child slot: the node's address, the resident future
+/// (`None` for an empty slot), and the node's extent.
+type WalkedSlot<'b> = (u64, Option<Value<'b>>, (u64, u64));
 
 impl<'b, T: Target> Walker<'_, 'b, T> {
     /// Walk one set's intrusive `head_all` → `next_all` node list,
     /// pushing each child slot as it goes, so a caller keeps the prefix
     /// a failing walk found.
-    fn walk_set(&self, set: Value<'b>, children: &mut Vec<WalkedChild<'b>>) -> Result<()> {
+    fn walk_set(&self, set: Value<'b>, slots: &mut Vec<WalkedSlot<'b>>) -> Result<()> {
         let ctx = self.ctx;
         let visit = &mut |cur: u64, node: Value<'b>| -> std::result::Result<(), NodeStop> {
             // Task.future: UnsafeCell<Option<Fut>>; `None` is a completed
             // child the set has not reaped.
             let slot = ctx.walk(WalkRole::SetNodeFuture).walk_at(node)?;
             let (variant, payload) = slot
-                .active_variant()
+                .active_variant_raw()
                 .with_context(|| format!("failed to decode the child slot at {cur:#x}"))?;
-            let (child, chain) = if variant == "Some" {
-                // The payload peels to the future itself, whose own await
-                // chain gives the concrete (dyn-resolved) identity, the
-                // suspend state, and the recognized wait target.
-                let fut = payload.peel();
-                let slot_root = FutureRoot {
-                    addr: fut.addr,
-                    ty: fut.ty.id(),
-                };
-                let chain = ctx.await_chain(fut);
-                let summary = self.summarize(&chain);
-                // As for a held future: the chain root itself when the
-                // chain decoded (past a dyn wide pointer, that is the heap
-                // future), the slot when it did not.
-                let root = chain
-                    .frames
-                    .first()
-                    .map(|f| FutureRoot {
-                        addr: f.future.addr,
-                        ty: f.future.ty.id(),
-                    })
-                    .unwrap_or(slot_root);
-                (
-                    SetChild {
-                        node: cur,
-                        depth: summary.depth,
-                        future: Some(summary.future),
-                        root: Some(root),
-                        state: summary.state,
-                        waiting_on: summary.waiting_on,
-                        wait: summary.wait,
-                        leaf: summary.leaf,
-                    },
-                    Some(chain),
+            let fut = if variant == "Some" {
+                // The `Some` payload's one field is the future itself,
+                // read as its own nominal type: its program takes the
+                // first step, adapter or coroutine alike.
+                Some(
+                    payload
+                        .member("__0")
+                        .with_context(|| format!("the child slot at {cur:#x} holds no future"))?,
                 )
             } else {
-                (
-                    SetChild {
-                        node: cur,
-                        // A reaped slot holds no future, so it stands on
-                        // no frames either.
-                        depth: 0,
-                        future: None,
-                        root: None,
-                        state: None,
-                        waiting_on: None,
-                        wait: None,
-                        leaf: None,
-                    },
-                    None,
-                )
+                None
             };
-            children.push((child, chain, (cur, cur + node.ty.size())));
+            slots.push((cur, fut, (cur, cur + node.ty.size())));
             Ok(())
         };
         walk_set_nodes(ctx, &self.read, set, MAX_CHILDREN, visit).map_err(anyhow::Error::from)
@@ -1806,6 +1978,7 @@ mod tests {
     struct Facts {
         containers: HashMap<BundleTypeId, hansei_bundle::ContainerKind>,
         futures: HashSet<BundleTypeId>,
+        adapters: HashSet<BundleTypeId>,
         unavailable: HashSet<BundleTypeId>,
     }
 
@@ -1815,6 +1988,7 @@ mod tests {
                 Some(hansei_bundle::ContainerKind::FuturesUnordered) => Recognized::Set,
                 Some(hansei_bundle::ContainerKind::JoinSet) => Recognized::JoinSet,
                 None if self.futures.contains(&id) => Recognized::Future,
+                None if self.adapters.contains(&id) => Recognized::Adapter,
                 None if self.unavailable.contains(&id) => Recognized::Unavailable,
                 None => Recognized::Other,
             }
@@ -1831,6 +2005,19 @@ mod tests {
                 .filter(|r| r.future.is_some() || r.resource.is_some())
                 .map(|r| r.ty),
         );
+        let adapters = bundle
+            .semantics
+            .types
+            .iter()
+            .filter(|r| {
+                r.future.is_none()
+                    && r.resource.is_none()
+                    && r.access
+                        .as_ref()
+                        .is_some_and(|a| a.kind == hansei_bundle::AccessKind::Owned)
+            })
+            .map(|r| r.ty)
+            .collect();
         Facts {
             containers: bundle
                 .semantics
@@ -1839,6 +2026,7 @@ mod tests {
                 .filter_map(|r| Some((r.ty, r.container.as_ref()?.kind)))
                 .collect(),
             futures,
+            adapters,
             unavailable: HashSet::default(),
         }
     }
@@ -1895,12 +2083,13 @@ mod tests {
                 Find::Set(_) => "set",
                 Find::JoinSet(_) => "join set",
                 Find::Future(_) => "future",
+                Find::Adapter(_) => "adapter",
             }
         }
 
         fn value(&self) -> Value<'b> {
             match *self {
-                Find::Set(v) | Find::JoinSet(v) | Find::Future(v) => v,
+                Find::Set(v) | Find::JoinSet(v) | Find::Future(v) | Find::Adapter(v) => v,
             }
         }
     }
@@ -2175,34 +2364,6 @@ mod tests {
         })
     }
 
-    /// A struct that peels to a future trait object's wide pointer
-    /// without being one itself — the shape whose plan depends on the
-    /// bytes in hand, since `peel` stops short of a member the buffer
-    /// does not cover.
-    fn dyn_wrapper(bundle: &Bundle) -> BundleType<'_> {
-        find_ty(bundle, |ty| {
-            if ty.size() <= 8 || ty.dyn_pointer().is_some() {
-                return false;
-            }
-            // A wrapper the bundle's facts already name a future is found
-            // as one directly; the peel is exercised by a plain holder.
-            if bundle
-                .semantics
-                .types
-                .iter()
-                .any(|r| r.ty == ty.id() && (r.future.is_some() || r.resource.is_some()))
-            {
-                return false;
-            }
-            let bytes = vec![0u8; ty.size() as usize];
-            Value::new(ty, AT, &bytes)
-                .peel()
-                .ty
-                .dyn_pointer()
-                .is_some_and(|dp| is_dyn_future_pointee(dp.pointee.name()))
-        })
-    }
-
     /// A pointer to a set: something the scan would certainly have
     /// recorded had it been reached by value.
     fn pointer_to_set(bundle: &Bundle) -> BundleType<'_> {
@@ -2364,45 +2525,6 @@ mod tests {
         assert!(scanned.plans.is_empty());
     }
 
-    /// A plan is a fact of the type only for a buffer that covers the
-    /// type: `peel` stops early on a short one, so the plan a truncated
-    /// value computes is its own and must not be the one every later
-    /// value of that type inherits.
-    #[test]
-    fn test_a_truncated_value_does_not_poison_the_memo() {
-        let bundle = unordered();
-        let ty = dyn_wrapper(bundle);
-        let empty = poll_table([]);
-        let full = vec![0u8; ty.size() as usize];
-        let whole = Value::new(ty, AT, &full);
-        let short = Value::new(ty, AT, &full[..8]);
-
-        // Whole, the wrapper peels to the trait object's wide pointer.
-        let scanned = scan(whole, &empty);
-        assert!(
-            matches!(scanned.finds.as_slice(), [Find::Future(_)]),
-            "{:?}",
-            scanned.summary()
-        );
-        assert!(scanned.plans.contains_key(&ty.id()));
-
-        // Truncated, the peel stops short of that pointer and there is
-        // nothing to find — and nothing is remembered either.
-        let scanned = scan(short, &empty);
-        assert!(scanned.finds.is_empty(), "{:?}", scanned.summary());
-        assert!(scanned.plans.is_empty(), "a short buffer wrote a plan");
-
-        // So a whole value read after a truncated one is still planned
-        // for what it is.
-        let first = scan_from(short, &empty, 0, HashMap::default());
-        let second = scan_from(whole, &empty, 0, first.plans);
-        assert!(
-            matches!(second.finds.as_slice(), [Find::Future(_)]),
-            "{:?}",
-            second.summary()
-        );
-    }
-
     /// Discovery follows a dyn wide pointer and a set's node list, and
     /// no other pointer: a future reachable only through one is not
     /// found, however plainly its type says what it points at.
@@ -2494,29 +2616,6 @@ mod tests {
         // untouched.
         assert!(matches!(scanned.plans.get(&ty.id()), Some(ScanPlan::Stop)));
         assert_eq!(scanned.capped, 0);
-    }
-
-    /// Which frame members the scan looks at. Every fixture's chains
-    /// are coroutines, whose next frame is an `__awaitee` — none has a
-    /// wrapper future, whose sole inner future is its next frame under
-    /// a name of its own, so that arm of the rule is stated here or
-    /// nowhere.
-    #[test]
-    fn test_only_a_frame_s_own_locals_are_scanned() {
-        // A local of the frame, and nothing about it to skip.
-        assert!(is_own_local("held", 8, None));
-        assert!(is_own_local("held", 8, Some("value")));
-
-        // The compiler's slots, whatever else is true of them.
-        assert!(!is_own_local("__awaitee", 8, None));
-        assert!(!is_own_local("__0", 8, Some("__0")));
-
-        // Nothing to find in nothing.
-        assert!(!is_own_local("marker", 0, None));
-
-        // The wrapper's inner future is the wrapper's next frame, and
-        // is listed there.
-        assert!(!is_own_local("value", 8, Some("value")));
     }
 
     /// The whole census of the `unordered` pair, walked with the given
@@ -2966,12 +3065,14 @@ mod tests {
             ctx,
             list,
             read: ReadContext::none(),
+            pass: AssessmentPass::new(),
             sets: Vec::new(),
             join_sets: Vec::new(),
             held: Vec::new(),
             spans: Vec::new(),
             errors: Vec::new(),
             capped: Capped::default(),
+            uncertain: 0,
             refused: 0,
             stats: Stats::default(),
             bounds: nesting(0),
@@ -2999,11 +3100,27 @@ mod tests {
         let value = Value::read(ctx.proc, ty, held.addr).expect("the held future reads back");
 
         let mut walker = shallow_walker(&ctx, &list);
-        walker.record(0, 0, "held", None, Find::Future(value), 0);
+        walker.record(
+            0,
+            0,
+            "held",
+            None,
+            Find::Future(value),
+            0,
+            &HashSet::default(),
+        );
         assert_eq!(walker.held.len(), 1, "{:#?}", walker.held);
         assert_eq!(walker.stats.dedup_hits, 0);
 
-        walker.record(0, 0, "held_again", None, Find::Future(value), 0);
+        walker.record(
+            0,
+            0,
+            "held_again",
+            None,
+            Find::Future(value),
+            0,
+            &HashSet::default(),
+        );
         assert_eq!(walker.held.len(), 1, "{:#?}", walker.held);
         assert_eq!(walker.stats.dedup_hits, 1);
     }
@@ -3027,10 +3144,17 @@ mod tests {
         // The slot value as the scan built it: the owner's frame
         // payload, entered through the holding local's member.
         let task = &list.tasks[held.owner];
-        let Ok(TaskStage::Running(root)) = ctx.task_stage(task) else {
+        let Ok(TaskStage::Running(root)) = ctx.task_root(task, &ReadContext::none()) else {
             panic!("the owner task is running");
         };
-        let chain = ctx.await_chain(root);
+        let lifecycle = task.state.lifecycle();
+        let chain = ctx
+            .inspect_future(
+                root,
+                InspectionMode::Task { lifecycle },
+                &ReadContext::none(),
+            )
+            .chain;
         let frame = &chain.frames[chain.frames.len() - 1 - held.frame];
         let payload = match &frame.state {
             Some(state) => &state.payload,
@@ -3047,14 +3171,30 @@ mod tests {
         assert_eq!(slot.addr, held.slot);
 
         let mut walker = shallow_walker(&ctx, &list);
-        walker.record(0, 0, "boxed", None, Find::Future(slot), 0);
+        walker.record(
+            0,
+            0,
+            "boxed",
+            None,
+            Find::Future(slot),
+            0,
+            &HashSet::default(),
+        );
         assert_eq!(walker.held.len(), 1, "{:#?}", walker.held);
         assert_eq!(walker.stats.dedup_hits, 0);
 
         // The same wide pointer read out of a different slot: a fresh
         // slot key over the same future behind it.
         let alias = Value::new(m.ty(), AT, bytes);
-        walker.record(0, 0, "alias", None, Find::Future(alias), 0);
+        walker.record(
+            0,
+            0,
+            "alias",
+            None,
+            Find::Future(alias),
+            0,
+            &HashSet::default(),
+        );
         assert_eq!(walker.held.len(), 1, "{:#?}", walker.held);
         assert_eq!(walker.stats.dedup_hits, 1);
     }
@@ -3101,6 +3241,7 @@ mod tests {
             spans: Vec::new(),
             errors: Vec::new(),
             capped: Capped::default(),
+            uncertain: 0,
             refused: 0,
             stats: Stats::default(),
         }
@@ -3120,7 +3261,15 @@ mod tests {
             state: None,
             waiting_on: None,
             wait: None,
-            leaf: None,
+            continuation: no_chain(),
+        }
+    }
+
+    /// The continuation of a find laid out by hand: no chain was walked.
+    fn no_chain() -> ContinuationStatus {
+        ContinuationStatus::Incomplete {
+            reason: super::super::assess::IncompleteReason::NoRoot,
+            detail: None,
         }
     }
 
@@ -3136,7 +3285,7 @@ mod tests {
             state: None,
             waiting_on: None,
             wait: None,
-            leaf: None,
+            continuation: no_chain(),
         }
     }
 
@@ -3419,7 +3568,7 @@ mod tests {
         for leftovers in [
             (|held: &mut HeldFuture| held.waiting_on = Some("a Notify".to_string()))
                 as fn(&mut HeldFuture),
-            |held| held.leaf = Some("tokio::sync::notify::Notified".to_string()),
+            |held| held.wait = Some(WaitKind::Io),
         ] {
             let mut census = blank();
             census.held.push({

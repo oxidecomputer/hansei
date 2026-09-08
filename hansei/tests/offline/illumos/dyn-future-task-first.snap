@@ -7,8 +7,10 @@ task 3
     thread: <none>
     type: async fn dyn_future::driver
     awaiting at: src/bin/dyn-future.rs:40
-    waiting on: future tokio::sync::oneshot::Receiver<u32>
+    waiting on: unknown
     waker: <empty>
+        unknown: the chain does not end in a primitive
+        what tokio::sync::oneshot::Receiver<u32> polls is not established: no reviewed rule covers its implementation
     spawned at: src/bin/dyn-future.rs:57:21
     defined at: src/bin/dyn-future.rs:24
     held futures: 0

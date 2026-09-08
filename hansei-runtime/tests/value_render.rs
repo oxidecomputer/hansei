@@ -23,6 +23,8 @@
 use hansei_bundle::Bundle;
 use hansei_runtime::testkit::load;
 use hansei_runtime::tokio::bundle::{Context, TaskStage};
+use hansei_runtime::tokio::chain::InspectionMode;
+use hansei_runtime::tokio::observe::ReadContext;
 use proc::snapshot::Snapshot;
 use reify::Value;
 
@@ -53,10 +55,14 @@ fn render_local(
         .iter()
         .find(|t| t.task_id == Some(task_id))
         .unwrap_or_else(|| panic!("no task {task_id}"));
-    let TaskStage::Running(future) = ctx.task_stage(task).unwrap() else {
+    let read = ReadContext::none();
+    let TaskStage::Running(future) = ctx.task_root(task, &read).unwrap() else {
         panic!("task {task_id} is not running");
     };
-    let chain = ctx.await_chain(future);
+    let lifecycle = task.state.lifecycle();
+    let chain = ctx
+        .inspect_future(future, InspectionMode::Task { lifecycle }, &read)
+        .chain;
     let frame = chain.frames.first().expect("a running frame");
     let payload = match &frame.state {
         Some(state) => state.payload,

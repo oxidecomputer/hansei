@@ -25,6 +25,134 @@ pub mod corrupt;
 pub mod delegation;
 pub mod heap;
 
+/// Explicit continuation bindings for the `walk-shapes` pair's two
+/// hand-written wrappers — `WrapS`, a plain struct whose `inner` is the
+/// future it polls, and `WrapE`, a named-variant enum whose `Running`
+/// case polls its `inner` — under one rule of a reviewed forwarding
+/// kind on the bundle's compiler origin. The production binders decline
+/// both (no reviewed implementation covers them); a test that wants the
+/// engine to step through them attaches with these through
+/// [`Context::with_test_bindings`], which validates them the way the
+/// bundle's own records are validated.
+pub fn walk_shapes_bindings(
+    bundle: &Bundle,
+) -> (
+    Vec<hansei_bundle::TypeSemantics>,
+    Vec<hansei_bundle::SemanticRule>,
+) {
+    use hansei_bundle::{
+        BundleType, BundleTypeId, Continuation, FutureEvidence, FutureFacts, FutureTarget,
+        MemberRef, PollAction, PollCase, PollProgram, SemanticIssue, SemanticIssueKind,
+        SemanticOrigin, SemanticOriginId, SemanticRule, SemanticRuleId, SemanticRuleKind, Step,
+        StoragePolicy, TypeSemantics, TypedPath,
+    };
+    let view = BundleView::new(bundle);
+    let type_by_name = |pred: &dyn Fn(&str) -> bool| -> BundleType<'_> {
+        let hits: Vec<BundleType<'_>> = (0..bundle.types.types.len() as u32)
+            .filter_map(|i| view.ty(BundleTypeId(i)))
+            .filter(|ty| pred(ty.name()))
+            .collect();
+        assert_eq!(
+            hits.len(),
+            1,
+            "one such type: {:?}",
+            hits.iter().map(|t| t.name()).collect::<Vec<_>>()
+        );
+        hits[0]
+    };
+    let wrap_s = type_by_name(&|n| n.starts_with("walk_shapes::WrapS<") && !n.contains(">::"));
+    let wrap_e = type_by_name(&|n| n.starts_with("walk_shapes::WrapE<") && !n.contains(">::"));
+    let deep = type_by_name(&|n| n.contains("::deep::") && n.ends_with('}'));
+    let chained = type_by_name(&|n| n.contains("::chained::") && n.ends_with('}'));
+    let origin = bundle
+        .semantics
+        .origins
+        .iter()
+        .position(|o| matches!(o, SemanticOrigin::Rustc { .. }))
+        .expect("a compiler origin");
+    let rule = SemanticRuleId(bundle.semantics.rules.len() as u32);
+    let rules = vec![SemanticRule {
+        kind: SemanticRuleKind::StdBoxPoll,
+        revision: 1,
+        origin: SemanticOriginId(origin as u32),
+    }];
+    let running = wrap_e.variant_name_ref("Running").expect("WrapE::Running");
+    // Every variant of the state needs a case: `Done` polls nothing,
+    // which no action spells, so its case is an unknown continuation.
+    let done = wrap_e.variant_name_ref("Done").expect("WrapE::Done");
+    let running_inner = wrap_e
+        .variants()
+        .find(|v| v.name == "Running")
+        .and_then(|v| v.ty.members().find(|m| m.name() == "inner"))
+        .expect("Running declares inner")
+        .name_ref();
+    let s_inner = wrap_s
+        .member("inner")
+        .expect("WrapS declares inner")
+        .name_ref();
+    let record = |ty: BundleType<'_>, parent: BundleType<'_>, program: PollProgram| TypeSemantics {
+        ty: ty.id(),
+        storage: StoragePolicy::DeclaredMembers,
+        future: Some(FutureFacts {
+            evidence: vec![FutureEvidence::DelegatedBy {
+                parent: parent.id(),
+            }],
+            continuation: Continuation::Bound { rule, program },
+        }),
+        coroutine: None,
+        access: None,
+        resource: None,
+        container: None,
+        issues: Vec::new(),
+    };
+    let bindings = vec![
+        record(
+            wrap_s,
+            chained,
+            PollProgram::Direct(PollAction::Delegate {
+                target: FutureTarget::Value(TypedPath {
+                    steps: vec![Step::Member(MemberRef::Named(s_inner))],
+                    target: wrap_e.id(),
+                }),
+                exclusive: false,
+            }),
+        ),
+        record(
+            wrap_e,
+            wrap_s,
+            PollProgram::MatchVariant {
+                state: TypedPath {
+                    steps: Vec::new(),
+                    target: wrap_e.id(),
+                },
+                cases: vec![
+                    PollCase {
+                        variant: running,
+                        action: PollAction::Delegate {
+                            target: FutureTarget::Value(TypedPath {
+                                steps: vec![
+                                    Step::Variant(running),
+                                    Step::Member(MemberRef::Named(running_inner)),
+                                ],
+                                target: deep.id(),
+                            }),
+                            exclusive: false,
+                        },
+                    },
+                    PollCase {
+                        variant: done,
+                        action: PollAction::Unknown(SemanticIssue {
+                            kind: SemanticIssueKind::UnsupportedState,
+                            detail: None,
+                        }),
+                    },
+                ],
+            },
+        ),
+    ];
+    (bindings, rules)
+}
+
 /// Every checked-in set of pairs, named for its capture's coordinates.
 ///
 /// The first axis is the capturing system. A pair is only as good as

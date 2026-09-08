@@ -2,4 +2,10 @@
 source: hansei/src/offline.rs
 description: "`locals` over illumos/delegation-cases"
 ---
-no locals
+gate: delegation_cases::Gate = false
+child: delegation_cases::Probe<1> {
+      case: 0,
+      ready: core::option::Option<std::sync::mpsc::Sender<usize>>::None,
+      tag: 1,
+  }
+ready: std::sync::mpsc::Sender<usize> = std::sync::mpmc::SenderFlavor<usize>::List(0xADDR -> std::sync::mpmc::counter::Counter<std::sync::mpmc::list::Channel<usize>> { .. })

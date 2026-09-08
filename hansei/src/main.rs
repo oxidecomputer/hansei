@@ -1705,11 +1705,7 @@ impl<'b, T: Target> Session<'b, T> {
 
     fn census(&self) -> &census::FutureCensus {
         let census = self.census.get_or_init(|| {
-            let view = self.heap_view();
-            let read = ReadContext {
-                heap: view.as_ref().map(|view| view as &dyn reify::Heap),
-            };
-            census::census_bounded(&self.ctx, &self.tasks, self.bounds, &read)
+            self.read_with(|read| census::census_bounded(&self.ctx, &self.tasks, self.bounds, read))
         });
         if first_audit(self.audit, &self.audited) {
             let violations = census.audit(&self.tasks);
@@ -1765,7 +1761,18 @@ impl<'b, T: Target> Session<'b, T> {
 
     fn analysis(&self) -> &Analysis {
         self.analysis
-            .get_or_init(|| rt_graph::analyze(&self.ctx, &self.tasks, &self.registries))
+            .get_or_init(|| self.read_with(|read| rt_graph::analyze(&self.ctx, &self.tasks, read)))
+    }
+
+    /// Run `f` under the read context every walk of this session reads
+    /// under: the allocator's evidence bridged through the render gate
+    /// tally, or no heap at all on a target without one.
+    pub(crate) fn read_with<R>(&self, f: impl FnOnce(&ReadContext<'_>) -> R) -> R {
+        let view = self.heap_view();
+        let read = ReadContext {
+            heap: view.as_ref().map(|view| view as &dyn reify::Heap),
+        };
+        f(&read)
     }
 
     /// The relation index, built from the analysis and the census on

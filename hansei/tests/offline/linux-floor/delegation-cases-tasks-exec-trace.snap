@@ -3,34 +3,82 @@ source: hansei/src/offline.rs
 description: "`tasks --exec trace -n` over linux-floor/delegation-cases"
 ---
 task 1
-#0  future        Box<delegation_cases::Gated<1>>
-      (<no_state>, 0 locals)
+Waiting on: unknown
+
+what delegation_cases::Gated<1> polls is not established (no reviewed rule covers its implementation); the chain ends there
+#0  future        delegation_cases::Gated<1>
+      (<no_state>, 3 locals; holds 1 pending future)
+#1  future        Pin<Box<delegation_cases::Gated<1>>>
+      (<no_state>, 1 local)
 
 task 2
-#0  future        Box<delegation_cases::Gated<2>>
-      (<no_state>, 0 locals)
+Waiting on: unknown
+
+what delegation_cases::Gated<2> polls is not established (no reviewed rule covers its implementation); the chain ends there
+#0  future        delegation_cases::Gated<2>
+      (<no_state>, 3 locals; holds 1 pending future)
+#1  future        Pin<Box<delegation_cases::Gated<2>>>
+      (<no_state>, 1 local)
 
 task 3
-#0  future        Box<delegation_cases::Retained>
+Waiting on: unknown
+
+what delegation_cases::Retained polls is not established (no reviewed rule covers its implementation); the chain ends there
+#0  future        delegation_cases::Retained
       (<no_state>, 0 locals)
+#1  future        Pin<Box<delegation_cases::Retained>>
+      (<no_state>, 1 local)
 
 task 4
-#0  future        Box<delegation_cases::RawHolder>
-      (<no_state>, 0 locals)
+Waiting on: unknown
+
+what delegation_cases::RawHolder polls is not established (no reviewed rule covers its implementation); the chain ends there
+#0  future        delegation_cases::RawHolder
+      (<no_state>, 2 locals)
+#1  future        Pin<Box<delegation_cases::RawHolder>>
+      (<no_state>, 1 local)
 
 task 5
-#0  future        Box<&mut delegation_cases::Probe<5>>
+Waiting on: unknown
+
+what delegation_cases::Probe<5> polls is not established (no reviewed rule covers its implementation); the chain ends there
+#0  future        delegation_cases::Probe<5>
+      (<no_state>, 3 locals)
+#1  future        &mut delegation_cases::Probe<5>
       (<no_state>, 0 locals)
+#2  future        Pin<Box<&mut delegation_cases::Probe<5>>>
+      (<no_state>, 1 local)
 
 task 6
-#0  future        Box<Box<delegation_cases::Probe<6>>>
+Waiting on: unknown
+
+what delegation_cases::Probe<6> polls is not established (no reviewed rule covers its implementation); the chain ends there
+#0  future        delegation_cases::Probe<6>
+      (<no_state>, 3 locals)
+#1  future        Box<delegation_cases::Probe<6>>
       (<no_state>, 0 locals)
+#2  future        Pin<Box<Box<delegation_cases::Probe<6>>>>
+      (<no_state>, 1 local)
 
 task 7
-#0  future        Box<Pin<Box<(dyn Future<Output=()> + Send)>>>
-      (<no_state>, 0 locals)
+Waiting on: unknown
+
+what delegation_cases::Probe<7> polls is not established (no reviewed rule covers its implementation); the chain ends there
+#0  future        delegation_cases::Probe<7> [dyn]
+      (<no_state>, 3 locals)
+#1  future        Pin<Box<(dyn Future<Output=()> + Send)>>
+      (<no_state>, 1 local)
+#2  future        Pin<Box<Pin<Box<(dyn Future<Output=()> + Send)>>>>
+      (<no_state>, 1 local)
 
 task 8
-#0  future        Box<tracing::instrument::Instrumented<delegation_cases::Probe<8>>>
-      (<no_state>, 0 locals)
+Waiting on: unknown
+
+what delegation_cases::Probe<8> polls is not established (no reviewed rule covers its implementation); the chain ends there
+#0  future        delegation_cases::Probe<8>
+      (<no_state>, 3 locals)
+#1  future        tracing::instrument::Instrumented<delegation_cases::Probe<8>>
+      (<no_state>, 2 locals)
+#2  future        Pin<Box<tracing::instrument::Instrumented<delegation_cases::Probe<8>>>>
+      (<no_state>, 1 local)
 [Executed against 8 tasks, 0 failed]

@@ -2,8 +2,16 @@
 source: hansei/src/offline.rs
 description: "`print` over linux-floor/delegation-cases"
 ---
-0xADDR -> delegation_cases::Gated<1> {
-        gate: delegation_cases::Gate { .. } @ 0xADDR,
-        child: delegation_cases::Probe<1> { .. } @ 0xADDR,
-        ready: std::sync::mpsc::Sender<usize> { .. } @ 0xADDR,
-    }
+delegation_cases::Gated<1> {
+    gate: delegation_cases::Gate {
+        open: false,
+    },
+    child: delegation_cases::Probe<1> {
+        case: 0,
+        ready: core::option::Option<std::sync::mpsc::Sender<usize>> { .. } @ 0xADDR,
+        tag: 1,
+    },
+    ready: std::sync::mpsc::Sender<usize> {
+        inner: std::sync::mpmc::Sender<usize> { .. } @ 0xADDR,
+    },
+}

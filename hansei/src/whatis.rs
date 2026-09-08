@@ -834,7 +834,9 @@ mod whatis_tests {
             );
             assert!(shown.contains("    Threads: none inside it"), "{shown}");
             assert!(
-                shown.contains("    Found via: a JoinHandle held by an enumerated task"),
+                shown.contains(
+                    "    Found via: a JoinHandle scanned in an enumerated task's storage"
+                ),
                 "{shown}"
             );
 
@@ -902,7 +904,7 @@ mod whatis_tests {
             state: None,
             waiting_on: None,
             wait: None,
-            leaf: None,
+            continuation: hansei_runtime::tokio::assess::ContinuationStatus::Unresumed,
         };
         census.sets.push(census::FutureSet {
             owner: 0,

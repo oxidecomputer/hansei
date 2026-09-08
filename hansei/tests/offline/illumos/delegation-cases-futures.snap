@@ -2,4 +2,7 @@
 source: hansei/src/offline.rs
 description: "`futures` over illumos/delegation-cases"
 ---
-[0 futures]
+ADDR       TASK  HELD IN           STATE  WAITING ON  TYPE
+0xADDR  1     frame 0, `child`  —      unknown     future delegation_cases::Probe<1>
+0xADDR  2     frame 0, `child`  —      unknown     future delegation_cases::Probe<2>
+[2 futures]

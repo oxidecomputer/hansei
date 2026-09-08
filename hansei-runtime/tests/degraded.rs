@@ -22,7 +22,12 @@
 use hansei_bundle::{Bundle, BundleType, BundleTypeId, BundleView, DiscrValue, WalkRole};
 use hansei_runtime::testkit::corrupt::Corrupt;
 use hansei_runtime::testkit::{self, load_any, tasks as tasks_of};
+use hansei_runtime::tokio::assess::{
+    ContinuationStatus, IncompleteReason, WaitAssessment, WaitUnknownReason,
+};
 use hansei_runtime::tokio::bundle::{ChainEnd, Context, TaskList, TaskStage};
+use hansei_runtime::tokio::chain::InspectionMode;
+use hansei_runtime::tokio::observe::ReadContext;
 use hansei_runtime::tokio::{census, graph};
 use proc::Target;
 use proc::snapshot::{RecordedHeapEvidence, Recorder, Snapshot};
@@ -141,7 +146,7 @@ fn test_an_unreadable_task_degrades_only_its_shard() {
     assert_eq!(degraded.tasks.len(), list.tasks.len() - 1);
 
     // The analysis takes the degraded list in stride.
-    let analysis = graph::analyze(&ctx, &degraded, &Default::default());
+    let analysis = graph::analyze(&ctx, &degraded, &ReadContext::none());
     assert!(analysis.errors.is_empty(), "{:?}", analysis.errors);
 }
 
@@ -209,7 +214,7 @@ fn test_an_unreadable_cell_fails_the_stage_read() {
 
     let corrupt = Corrupt::new(&snapshot).deny(task.addr.0..task.addr.0 + 0x2000);
     let ctx = Context::new(&corrupt, BundleView::new(&bundle)).unwrap();
-    assert!(ctx.task_stage(task).is_err());
+    assert!(ctx.task_root(task, &ReadContext::none()).is_err());
 }
 
 /// A dyn future whose box was overwritten ends its chain with
@@ -227,10 +232,7 @@ fn test_a_corrupted_dyn_box_ends_the_chain_with_an_error() {
 
     // The healthy chain locates the wide pointer: the driver frame's
     // `__awaitee` is the `Pin<Box<dyn Future>>` itself.
-    let TaskStage::Running(future) = ctx.task_stage(driver).unwrap() else {
-        panic!("the driver is parked");
-    };
-    let chain = ctx.await_chain(future);
+    let chain = task_chain(&ctx, driver);
     let state = chain.frames[0].state.as_ref().expect("a suspended driver");
     let awaitee = state
         .payload
@@ -245,10 +247,7 @@ fn test_a_corrupted_dyn_box_ends_the_chain_with_an_error() {
         .patch(wide, NOWHERE)
         .patch(wide + 8, NOWHERE);
     let ctx = Context::new(&corrupt, BundleView::new(&bundle)).unwrap();
-    let TaskStage::Running(future) = ctx.task_stage(driver).unwrap() else {
-        panic!("the driver is parked");
-    };
-    let chain = ctx.await_chain(future);
+    let chain = task_chain(&ctx, driver);
 
     assert!(!chain.frames.is_empty(), "the outer frame still decodes");
     let ChainEnd::Error(e) = &chain.end else {
@@ -263,26 +262,44 @@ fn test_a_corrupted_dyn_box_ends_the_chain_with_an_error() {
 
 /// An unreadable semaphore splits the analysis along its data's
 /// provenance: the held acquire — read out of the holder's own frame —
-/// is still diagnosed, while the wait queue behind the dead semaphore
-/// degrades to an error and an empty blocked list rather than a
-/// fabricated one.
+/// still establishes the polling barrier, while the holder's own wait
+/// on the dead semaphore degrades to unknown with the read failure as
+/// its reason, so nothing stands behind the barrier rather than
+/// something fabricated.
 #[test]
 fn test_an_unreadable_semaphore_degrades_the_analysis() {
     let (bundle, snapshot) = load_any("futurelock");
     let (ctx, list) = healthy(&bundle, &snapshot);
-    let analysis = graph::analyze(&ctx, &list, &Default::default());
+    let analysis = graph::analyze(&ctx, &list, &ReadContext::none());
     assert!(analysis.errors.is_empty(), "{:?}", analysis.errors);
-    assert!(!analysis.futurelocks[0].blocked.is_empty());
-    let semaphore = analysis.futurelocks[0].acquire.semaphore;
+    assert!(!analysis.behind().is_empty(), "{:#?}", analysis.barriers);
+    let semaphore = analysis.barriers[0].acquire.semaphore.addr;
 
     let corrupt = Corrupt::new(&snapshot).deny(semaphore..semaphore + 0x100);
     let ctx = Context::new(&corrupt, BundleView::new(&bundle)).unwrap();
-    let degraded = graph::analyze(&ctx, &list, &Default::default());
+    let degraded = graph::analyze(&ctx, &list, &ReadContext::none());
 
-    let errs: Vec<String> = degraded.errors.iter().map(|e| format!("{e:#}")).collect();
-    assert!(errs.iter().any(|e| e.contains("waits on")), "{errs:?}");
-    let fl = &degraded.futurelocks[0];
-    assert!(fl.blocked.is_empty(), "{fl:#?}");
+    assert_eq!(degraded.barriers.len(), 1, "{:#?}", degraded.barriers);
+    assert!(degraded.behind().is_empty(), "{:#?}", degraded.barriers);
+    let holder = degraded
+        .waits
+        .iter()
+        .find(|w| w.task.addr == degraded.barriers[0].holder)
+        .expect("the holder is listed");
+    assert!(
+        matches!(
+            holder.assessment,
+            WaitAssessment::Unknown(WaitUnknownReason::ResourceUnreadable)
+        ),
+        "{holder:#?}"
+    );
+    assert!(
+        holder
+            .notes
+            .iter()
+            .any(|n| n.contains("permit word did not read")),
+        "{holder:#?}"
+    );
 }
 
 /// An unreadable set node stops the set walk where it stands: the
@@ -325,10 +342,7 @@ fn held_slot(bundle: &Bundle, snapshot: &Snapshot, local: &str) -> (u64, u64) {
     assert!(held.depth > 0, "the healthy chain resolves: {held:#?}");
 
     let task = &list.tasks[held.owner];
-    let TaskStage::Running(root) = ctx.task_stage(task).unwrap() else {
-        panic!("the holder is parked");
-    };
-    let chain = ctx.await_chain(root);
+    let chain = task_chain(&ctx, task);
     let frame = &chain.frames[chain.frames.len() - 1 - held.frame];
     let payload = match &frame.state {
         Some(state) => &state.payload,
@@ -342,8 +356,25 @@ fn held_slot(bundle: &Bundle, snapshot: &Snapshot, local: &str) -> (u64, u64) {
     (payload.addr + member.offset(), held.addr)
 }
 
+/// A listed task's own chain, walked by its programs.
+fn task_chain<'a, T: Target>(
+    ctx: &Context<'a, T>,
+    task: &hansei_runtime::tokio::bundle::Task,
+) -> hansei_runtime::tokio::bundle::AwaitChain<'a> {
+    let TaskStage::Running(root) = ctx.task_root(task, &ReadContext::none()).unwrap() else {
+        panic!("the task is parked");
+    };
+    let lifecycle = task.state.lifecycle();
+    ctx.inspect_future(
+        root,
+        InspectionMode::Task { lifecycle },
+        &ReadContext::none(),
+    )
+    .chain
+}
+
 /// The census's own view of one held future, by the local holding it.
-fn held_row(census: &census::FutureCensus, local: &str) -> (String, usize) {
+fn held_row(census: &census::FutureCensus, local: &str) -> (String, usize, ContinuationStatus) {
     let held = census
         .held
         .iter()
@@ -351,15 +382,16 @@ fn held_row(census: &census::FutureCensus, local: &str) -> (String, usize) {
         .unwrap_or_else(|| panic!("no held `{local}` in {:#?}", census.held));
     assert!(held.state.is_none(), "{held:#?}");
     assert!(held.waiting_on.is_none(), "{held:#?}");
-    (held.future.clone(), held.depth)
+    (held.future.clone(), held.depth, held.continuation.clone())
 }
 
-/// A held future whose box points nowhere is still *found* — a wide
-/// pointer is one by its type — and still listed. What the census
-/// cannot say is what it is: the row degrades to `<undecoded>` and
-/// stands on no frames, rather than the find being dropped.
+/// A held future whose box points nowhere is still *found* — the
+/// pinned box is a future by its record — and still listed, as the
+/// slot it is: one frame, the pin itself, with its continuation the
+/// error the route ran into, rather than the find being dropped or a
+/// future invented behind the dead pointer.
 #[test]
-fn test_a_held_future_with_an_unmapped_box_is_listed_undecoded() {
+fn test_a_held_future_with_an_unmapped_box_is_listed_as_its_slot() {
     let (bundle, snapshot) = load_any("futurelock");
     let (wide, _) = held_slot(&bundle, &snapshot, "future1");
 
@@ -368,37 +400,49 @@ fn test_a_held_future_with_an_unmapped_box_is_listed_undecoded() {
     let list = tasks_of(&ctx, &corrupt);
     let degraded = testkit::census(&ctx, &list);
 
-    assert_eq!(
-        held_row(&degraded, "future1"),
-        ("<undecoded>".to_string(), 0)
-    );
+    let (future, depth, continuation) = held_row(&degraded, "future1");
+    assert!(future.starts_with("core::pin::Pin<"), "{future}");
+    assert_eq!(depth, 1, "{future}");
+    let ContinuationStatus::Incomplete {
+        reason: IncompleteReason::Error,
+        detail: Some(detail),
+    } = continuation
+    else {
+        panic!("the slot's continuation is the route's error: {continuation:?}");
+    };
+    assert!(detail.contains("unmapped"), "{detail}");
 }
 
-/// A held future whose vtable no longer names a future it knows is
-/// listed as the trait object it is: the pointee's own type, which is
-/// all a failed join leaves to say.
+/// A held future whose vtable word points at something that is no
+/// vtable is listed as the slot it is, its continuation the error the
+/// ABI check raised — the words a vtable records for its type's size
+/// and alignment are checked before any slot is joined, so garbage
+/// there is an error naming the vtable, never a guessed type.
 #[test]
-fn test_a_held_future_with_an_unjoinable_vtable_is_listed_unresolved() {
+fn test_a_held_future_with_a_garbage_vtable_is_listed_with_the_error() {
     let (bundle, snapshot) = load_any("futurelock");
     let (wide, boxed) = held_slot(&bundle, &snapshot, "future1");
 
-    // The vtable word now names the boxed future's own allocation, and
-    // the two slots the join reads there — drop at +0, poll at +24 —
-    // are zeroed, so neither resolves to a symbol any future was
-    // extracted under. Both pointers stay mapped, which is what keeps
-    // this an unresolved join rather than a read failure.
-    let corrupt = Corrupt::new(&snapshot)
-        .patch(wide + 8, boxed)
-        .patch(boxed, 0)
-        .patch(boxed + 24, 0);
+    // The vtable word now names the boxed future's own allocation,
+    // whose words are a future's, not a vtable's. Both pointers stay
+    // mapped, which is what makes this the ABI check's refusal rather
+    // than a read failure.
+    let corrupt = Corrupt::new(&snapshot).patch(wide + 8, boxed);
     let ctx = Context::new(&corrupt, BundleView::new(&bundle)).unwrap();
     let list = tasks_of(&ctx, &corrupt);
     let degraded = testkit::census(&ctx, &list);
 
-    let (future, depth) = held_row(&degraded, "future1");
-    assert_eq!(depth, 0, "{future}");
-    assert!(future.starts_with("<unresolved: "), "{future}");
+    let (future, depth, continuation) = held_row(&degraded, "future1");
+    assert_eq!(depth, 1, "{future}");
     assert!(future.contains("dyn "), "{future}");
+    let ContinuationStatus::Incomplete {
+        reason: IncompleteReason::Error,
+        detail: Some(detail),
+    } = continuation
+    else {
+        panic!("the slot's continuation is the ABI check's error: {continuation:?}");
+    };
+    assert!(detail.contains("vtable"), "{detail}");
 }
 
 /// Two slots naming one future are one row: a find is deduped by the
@@ -685,7 +729,16 @@ fn test_a_reaped_set_slot_lists_without_a_future() {
     assert_eq!(reaped.root.map(|r| r.addr), None, "{reaped:#?}");
     assert_eq!(reaped.depth, 0, "{reaped:#?}");
     assert_eq!(reaped.state, None, "{reaped:#?}");
-    assert_eq!(reaped.leaf, None, "{reaped:#?}");
+    assert!(
+        matches!(
+            reaped.continuation,
+            ContinuationStatus::Incomplete {
+                reason: IncompleteReason::NoRoot,
+                ..
+            }
+        ),
+        "{reaped:#?}"
+    );
 
     // Its neighbours are untouched, and only what the reaped child was
     // holding is gone: the future it held along with the set.
@@ -791,7 +844,7 @@ fn healthy_read_set(bundle: &Bundle, snapshot: &Snapshot) -> Vec<Range<u64>> {
     let recorder = Recorder::new(snapshot);
     let ctx = Context::new(&recorder, BundleView::new(bundle)).expect("snapshot has mappings");
     let list = tasks_of(&ctx, &recorder);
-    let _ = graph::analyze(&ctx, &list, &Default::default());
+    let _ = graph::analyze(&ctx, &list, &ReadContext::none());
     let _ = testkit::census(&ctx, &list);
     recorder
         .snapshot(RecordedHeapEvidence::Unavailable)
@@ -866,7 +919,9 @@ fn campaign_run(
         return false;
     };
     e.discover(&ctx, &[]);
-    let _ = graph::analyze(&ctx, &e.list, &e.registries);
+    e.with_read(&corrupt, |read| {
+        let _ = graph::analyze(&ctx, &e.list, read);
+    });
     let _ = testkit::census(&ctx, &e.list);
     true
 }
@@ -946,8 +1001,8 @@ fn ty_by_name<'b>(bundle: &'b Bundle, pred: impl Fn(&str) -> bool) -> BundleType
 fn test_a_patched_permit_word_decodes_count_and_closed_bit() {
     let (bundle, snapshot) = load_any("futurelock");
     let (ctx, list) = healthy(&bundle, &snapshot);
-    let analysis = graph::analyze(&ctx, &list, &Default::default());
-    let sem_addr = analysis.futurelocks[0].acquire.semaphore;
+    let analysis = graph::analyze(&ctx, &list, &ReadContext::none());
+    let sem_addr = analysis.barriers[0].acquire.semaphore.addr;
     let sem_ty = ty_by_name(&bundle, |n| {
         n.starts_with("tokio::sync::batch_semaphore::Semaphore")
     });
@@ -1068,10 +1123,7 @@ fn test_an_unjoined_dyn_reports_the_poll_slots_symbol() {
         .find(|h| h.local == "future1" && h.via.is_none())
         .expect("the boxed future is still found");
     let task = &list.tasks[held.owner];
-    let TaskStage::Running(root) = ctx.task_stage(task).unwrap() else {
-        panic!("the holder is parked");
-    };
-    let chain = ctx.await_chain(root);
+    let chain = task_chain(&ctx, task);
     let frame = &chain.frames[chain.frames.len() - 1 - held.frame];
     let payload = match &frame.state {
         Some(state) => &state.payload,
@@ -1085,7 +1137,9 @@ fn test_an_unjoined_dyn_reports_the_poll_slots_symbol() {
     let start = member.offset() as usize;
     let bytes = &payload.bytes[start..start + member.ty().size() as usize];
     let value = reify::Value::new(member.ty(), payload.addr + member.offset(), bytes);
-    let inner = ctx.await_chain(value);
+    let inner = ctx
+        .inspect_future(value, InspectionMode::Held, &ReadContext::none())
+        .chain;
     let ChainEnd::UnknownDyn { poll_symbol, .. } = &inner.end else {
         panic!("the join runs and misses: {:?}", inner.end);
     };

@@ -6,10 +6,12 @@ task 4
     state: idle
     thread: <none>
     type: async fn channels::hold
-    awaiting at: src/bin/channels.rs:55
-    waiting on: future tokio::sync::oneshot::Receiver<u32>
+    awaiting at: src/bin/channels.rs:52
+    waiting on: unknown
     waker: <empty>
-    spawned at: src/bin/channels.rs:103:23
-    defined at: src/bin/channels.rs:41
+        unknown: the chain does not end in a primitive
+        what tokio::sync::oneshot::Receiver<u32> polls is not established: no reviewed rule covers its implementation
+    spawned at: src/bin/channels.rs:100:23
+    defined at: src/bin/channels.rs:38
     held futures: 0
     join sets: 0

@@ -3,5 +3,5 @@ source: hansei/src/offline.rs
 description: "`runtimes` over linux/delegation-cases"
 ---
 ID  FLAVOR          HANDLE          TASKS  FUTURES  WORKERS  THREADS  FOUND VIA
-0   current_thread  0xADDR      8        8        1        1  a thread's runtime context
+0   current_thread  0xADDR      8       10        1        1  a thread's runtime context
 [1 runtime]

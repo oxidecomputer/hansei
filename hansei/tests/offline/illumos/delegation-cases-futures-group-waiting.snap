@@ -2,4 +2,6 @@
 source: hansei/src/offline.rs
 description: "`futures --group waiting-on` over illumos/delegation-cases"
 ---
-[0 groups]
+COUNT  WAITING ON  FUTURES
+    2  unknown     0xADDR, 0xADDR
+[1 group]

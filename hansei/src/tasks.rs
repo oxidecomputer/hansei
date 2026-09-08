@@ -9,6 +9,9 @@ use crate::{Session, output, print_warnings, repl, summary};
 
 use anyhow::{Context as _, Result};
 use hansei_bundle::names;
+use hansei_runtime::tokio::assess::{
+    NotWaitingReason, ReadyReason, RunnableReason, WaitAssessment, WaitUnknownReason,
+};
 use hansei_runtime::tokio::graph as rt_graph;
 use hansei_runtime::tokio::{Lifecycle, bundle, census};
 
@@ -235,6 +238,29 @@ fn census_capped_warning(capped: census::Capped, fate: &str) -> Option<String> {
 }
 
 /// A census that dropped finds looks like completeness too.
+/// Say what the walk left unread: the locals whose initialization the
+/// coroutine layout cannot vouch for — an async block's captures once
+/// it has been polled — which no bound would have let it read.
+pub(crate) fn warn_census_uncertain(uncertain: usize, fate: &str) -> io::Result<()> {
+    if let Some(warning) = census_uncertain_warning(uncertain, fate) {
+        writeln!(io::stderr(), "warning: {warning}")?;
+    }
+    Ok(())
+}
+
+/// What a walk that skipped uncertain locals has to say for itself,
+/// or `None` when it skipped none.
+fn census_uncertain_warning(uncertain: usize, fate: &str) -> Option<String> {
+    (uncertain > 0).then(|| {
+        format!(
+            "the census did not read {} whose initialization the tokio info cannot \
+             vouch for (an async block's captures after its first poll); a future held \
+             in one is not {fate}",
+            summary::counted(uncertain, "local")
+        )
+    })
+}
+
 pub(crate) fn warn_census_refused(refused: usize, fate: &str) -> io::Result<()> {
     if let Some(warning) = census_refused_warning(refused, fate) {
         writeln!(io::stderr(), "warning: {warning}")?;
@@ -599,8 +625,8 @@ pub(crate) struct TaskRow {
     /// What the task waits on, spelled the way `graph` spells it.
     pub(crate) waiting_on: String,
     /// The kind-level bucket `--group waiting-on` files the row under
-    /// ([`WaitTarget::group_label`], or the leaf future's name), `None`
-    /// where the row waits on nothing nameable — mid-poll included.
+    /// ([`assessment_kind`]), `None` where the row waits on nothing
+    /// nameable — mid-poll included.
     pub(crate) waiting_kind: Option<String>,
     /// The `-v` detail lines under the wait: what the registries hold
     /// for the task — its wheel entries, the io slots its waker is
@@ -690,9 +716,9 @@ pub(crate) fn build_rows(
                     .get(index)
                     .and_then(|w| w.site.as_ref())
                     .map(|(file, line)| format!("{file}:{line}")),
-                waiting_on: waiting_on(task, waits.get(index), polling, impls),
-                waiting_kind: waiting_kind(task, waits.get(index), impls),
-                wait_detail: wait_detail(task, registries),
+                waiting_on: waiting_on(task, waits.get(index), polling),
+                waiting_kind: waiting_kind(task, waits.get(index)),
+                wait_detail: wait_detail(task, waits.get(index), registries),
                 waker,
                 waker_kind,
                 waker_detail,
@@ -730,7 +756,7 @@ impl QueuedSlots {
         for wait in waits {
             let Some(bundle::WaitTarget::Semaphore {
                 addr: sem, waiters, ..
-            }) = &wait.target
+            }) = wait.verified().map(|w| w.target())
             else {
                 continue;
             };
@@ -875,15 +901,18 @@ pub(crate) fn row_state(task: &bundle::Task, lwp: Option<u32>) -> String {
     }
 }
 
-/// The `WAITING ON` cell: what `graph` computes for the task — the
-/// decoded primitive, else the leaf type the chain bottoms out in —
-/// except that a mid-poll task names the lwp polling it, since a
-/// running task is not waiting at all.
+/// The `WAITING ON` cell: what the analysis assessed the task to be
+/// waiting on — the verified target where there is one, and otherwise
+/// the one word for what there is instead: `ready` for a resource that
+/// has already given what was asked, `unknown` where the continuation
+/// or the resource's state is not established, and a dash with the
+/// reason for a task that waits on nothing at all — except that a
+/// mid-poll task names the lwp polling it, since a running task is not
+/// waiting at all.
 fn waiting_on(
     task: &bundle::Task,
     wait: Option<&rt_graph::TaskWait>,
     polling: &HashMap<u64, u32>,
-    impls: &names::ImplFold,
 ) -> String {
     // A blocking cell waits on a pool thread, not on a future — its
     // STATE says which; the cell has nothing to add.
@@ -896,38 +925,117 @@ fn waiting_on(
             None => "— (mid-poll)".to_string(),
         };
     }
-    match wait.map(|w| (&w.target, &w.leaf)) {
-        Some((Some(target), _)) => target.to_string(),
-        Some((None, Some(leaf))) => names::display_future_name(leaf, impls),
-        _ => "—".to_string(),
+    match wait {
+        Some(wait) => assessment_cell(&wait.assessment),
+        None => "—".to_string(),
     }
 }
 
-/// The bucket `--group waiting-on` files the row under: the target's
-/// kind-level label, else the leaf's spelling (already kind-level — a
-/// type names every waiter on it alike). A running task waits on
-/// nothing, so it lands in the empty bucket, not a value.
-fn waiting_kind(
-    task: &bundle::Task,
-    wait: Option<&rt_graph::TaskWait>,
-    impls: &names::ImplFold,
-) -> Option<String> {
+/// The one-word (or one-target) spelling of an assessment: the
+/// `WAITING ON` cell every listing shares, so a task, a future and a
+/// tally agree on what a wait is called.
+pub(crate) fn assessment_cell(assessment: &WaitAssessment) -> String {
+    match assessment {
+        WaitAssessment::Waiting(wait) => wait.target().to_string(),
+        WaitAssessment::ResourceReady(_) => "ready".to_string(),
+        WaitAssessment::Unknown(_) => "unknown".to_string(),
+        WaitAssessment::Unresumed => "— (unresumed)".to_string(),
+        WaitAssessment::NotWaiting(NotWaitingReason::Returned) => "— (returned)".to_string(),
+        WaitAssessment::NotWaiting(NotWaitingReason::Panicked) => "— (panicked)".to_string(),
+        WaitAssessment::NotWaiting(NotWaitingReason::Complete) => "—".to_string(),
+        WaitAssessment::Runnable(RunnableReason::Scheduled) => "— (queued)".to_string(),
+        WaitAssessment::Runnable(RunnableReason::ActivePoll) => "— (mid-poll)".to_string(),
+    }
+}
+
+/// The bucket `--group waiting-on` files an assessment under: the
+/// verified target's kind-level label, `ready` or `unknown` as the
+/// cell spells them, and nothing for a task that waits on nothing —
+/// complete, runnable, never polled, returned — which is the empty
+/// bucket rather than a value.
+pub(crate) fn assessment_kind(assessment: &WaitAssessment) -> Option<String> {
+    match assessment {
+        WaitAssessment::Waiting(wait) => Some(wait.target().group_label()),
+        WaitAssessment::ResourceReady(_) => Some("ready".to_string()),
+        WaitAssessment::Unknown(_) => Some("unknown".to_string()),
+        WaitAssessment::Unresumed | WaitAssessment::NotWaiting(_) | WaitAssessment::Runnable(_) => {
+            None
+        }
+    }
+}
+
+/// The `-v` detail lines an assessment earns: why a ready resource is
+/// ready, why an unknown one is unknown — what the protocol read, in
+/// the assessor's words. A verified wait and a task that waits on
+/// nothing say it all in the cell.
+pub(crate) fn assessment_detail(wait: &rt_graph::TaskWait) -> Vec<String> {
+    match &wait.assessment {
+        WaitAssessment::ResourceReady(reason) => vec![format!("ready: {}", ready_reason(*reason))],
+        WaitAssessment::Unknown(reason) => {
+            let mut lines = vec![format!("unknown: {}", unknown_reason(*reason))];
+            lines.extend(wait.notes.iter().cloned());
+            lines
+        }
+        WaitAssessment::Waiting(_)
+        | WaitAssessment::Unresumed
+        | WaitAssessment::NotWaiting(_)
+        | WaitAssessment::Runnable(_) => Vec::new(),
+    }
+}
+
+/// What a ready resource has already done, in words.
+pub(crate) fn ready_reason(reason: ReadyReason) -> &'static str {
+    match reason {
+        ReadyReason::JoinComplete => "the joined task is complete; its output awaits the next poll",
+        ReadyReason::PermitsGranted => {
+            "the acquire has been granted every permit it asked for; the next poll takes them"
+        }
+        ReadyReason::SemaphoreClosed => "the semaphore is closed; the next poll returns the error",
+        ReadyReason::IoReady => {
+            "readiness the operation wants has been delivered; the next poll attempts it"
+        }
+        ReadyReason::IoShutdown => "the io driver has shut the resource down",
+        ReadyReason::IoNotified => "the readiness await's own node has been notified",
+        ReadyReason::TimerFired => "the timer has fired; the next poll reads it",
+        ReadyReason::TimerPendingFire => "the timer is marked to fire; the wake is on its way",
+    }
+}
+
+/// Why an assessment is unknown, in words.
+pub(crate) fn unknown_reason(reason: WaitUnknownReason) -> &'static str {
+    match reason {
+        WaitUnknownReason::Continuation => "the chain does not end in a primitive",
+        WaitUnknownReason::ResourceUnreadable => "the resource could not be read",
+        WaitUnknownReason::ResourceStateUnproven => {
+            "the resource's state is not one its protocol vouches for"
+        }
+        WaitUnknownReason::Lifecycle => "the task's state word and its storage disagree",
+        WaitUnknownReason::TaskKind => "the task's kind is in conflict",
+        WaitUnknownReason::ConflictingEvidence => "what was read contradicts the protocol",
+    }
+}
+
+/// The bucket `--group waiting-on` files the row under: the
+/// assessment's, except that a blocking cell and a running task wait
+/// on nothing and land in the empty bucket.
+fn waiting_kind(task: &bundle::Task, wait: Option<&rt_graph::TaskWait>) -> Option<String> {
     if task.blocking || task.state.lifecycle() == Lifecycle::Running {
         return None;
     }
-    match wait.map(|w| (&w.target, &w.leaf)) {
-        Some((Some(target), _)) => Some(target.group_label()),
-        Some((None, Some(leaf))) => Some(names::display_future_name(leaf, impls)),
-        _ => None,
-    }
+    assessment_kind(&wait?.assessment)
 }
 
-/// The `-v` detail lines under a row's wait: every wheel entry armed
-/// with the task's waker, then every io slot holding it — the
+/// The `-v` detail lines under a row's wait: what the assessment has
+/// to say for itself beyond the cell, then every wheel entry armed
+/// with the task's waker and every io slot holding it — the
 /// registries' whole answer, whatever the row's one-line spelling
 /// chose to name.
-fn wait_detail(task: &bundle::Task, registries: &bundle::Registries) -> Vec<String> {
-    let mut lines = Vec::new();
+fn wait_detail(
+    task: &bundle::Task,
+    wait: Option<&rt_graph::TaskWait>,
+    registries: &bundle::Registries,
+) -> Vec<String> {
+    let mut lines = wait.map(assessment_detail).unwrap_or_default();
     for timer in registries.timers_of(task.addr.0) {
         let state = match timer.wheel_state() {
             Some(state) => format!(", {state}"),
@@ -1110,6 +1218,7 @@ pub(crate) fn print_task<T: proc::Target>(
     if futures {
         print_warnings(&census.errors)?;
         warn_census_capped(census.capped, "listed")?;
+        warn_census_uncertain(census.uncertain, "listed")?;
         warn_census_refused(census.refused, "listed")?;
     }
     let polling = polling_map(session);
@@ -1823,6 +1932,7 @@ pub(crate) fn exec_census<T: proc::Target>(
     // completeness in a count, so it says so.
     if let Some(census) = census {
         warn_census_capped(census.capped, "counted")?;
+        warn_census_uncertain(census.uncertain, "counted")?;
         warn_census_refused(census.refused, "counted")?;
     }
 
@@ -2001,6 +2111,10 @@ fn optional<T>(read: Result<T>, what: &str) -> Result<Option<T>> {
 mod table_tests {
     use super::{build_rows, listing_footer, print_task_table};
 
+    use hansei_runtime::tokio::assess::{
+        ContinuationStatus, IncompleteReason, NotWaitingReason, VerifiedWait, WaitAssessment,
+        WaitUnknownReason,
+    };
     use hansei_runtime::tokio::bundle::{FutureInfo, Task, TaskList, WaitTarget};
     use hansei_runtime::tokio::graph::{TaskRef, TaskWait};
     use hansei_runtime::tokio::{RawInstant, TaskAddr, TaskState};
@@ -2024,17 +2138,35 @@ mod table_tests {
         }
     }
 
-    fn wait(id: u64, target: Option<WaitTarget>) -> TaskWait {
+    /// A task with an explicit assessment.
+    fn assessed(id: u64, assessment: WaitAssessment) -> TaskWait {
         TaskWait {
             task: TaskRef {
                 addr: TaskAddr(0x1000 + id * 0x100),
                 task_id: Some(id),
             },
-            target,
+            assessment,
+            continuation: ContinuationStatus::Incomplete {
+                reason: IncompleteReason::NoRoot,
+                detail: None,
+            },
             depth: 1,
-            leaf: None,
             site: None,
+            observation: None,
+            notes: Vec::new(),
         }
+    }
+
+    /// A task assessed as verified-waiting on `target`, or — with no
+    /// target — with its continuation unknown.
+    fn wait(id: u64, target: Option<WaitTarget>) -> TaskWait {
+        assessed(
+            id,
+            match target {
+                Some(target) => WaitAssessment::Waiting(VerifiedWait::testkit(target, None)),
+                None => WaitAssessment::Unknown(WaitUnknownReason::Continuation),
+            },
+        )
     }
 
     fn rows_of(
@@ -2058,9 +2190,10 @@ mod table_tests {
     }
 
     /// Each cell says what its column promises: the site as
-    /// `file:line`, the wait as `graph` spells it, the leaf type where
-    /// no primitive decoded, `—` where there is nothing to say, and
-    /// the cancel bit appended to whatever lifecycle carries it.
+    /// `file:line`, the wait as `graph` spells it, `unknown` where the
+    /// continuation is not established, `—` where there is nothing to
+    /// say, and the cancel bit appended to whatever lifecycle carries
+    /// it.
     #[test]
     fn test_rows_spell_site_wait_and_cancellation() {
         let timer = WaitTarget::Timer {
@@ -2072,13 +2205,12 @@ mod table_tests {
         };
         let mut sited = wait(1, Some(timer));
         sited.site = Some(("src/app.rs".to_string(), 42));
-        let mut leafed = wait(2, None);
-        leafed.leaf = Some("app::child::{async_fn_env#0}".to_string());
-        let bare = wait(3, None);
+        let unknown = wait(2, None);
+        let bare = assessed(3, WaitAssessment::NotWaiting(NotWaitingReason::Complete));
 
         let rows = rows_of(
             vec![task(1, 0), task(2, CANCELLED), task(3, 0)],
-            vec![sited, leafed, bare],
+            vec![sited, unknown, bare],
             HashMap::new(),
         );
 
@@ -2092,9 +2224,13 @@ mod table_tests {
         assert_eq!(rows[0].state, "idle");
 
         assert_eq!(rows[1].state, "idle (cancelled)");
-        assert_eq!(rows[1].waiting_on, "async fn app::child");
-        assert_eq!(rows[1].waiting_kind.as_deref(), Some("async fn app::child"));
+        assert_eq!(rows[1].waiting_on, "unknown");
+        assert_eq!(rows[1].waiting_kind.as_deref(), Some("unknown"));
         assert_eq!(rows[1].awaiting_at, None);
+        assert_eq!(
+            rows[1].wait_detail,
+            ["unknown: the chain does not end in a primitive"]
+        );
 
         assert_eq!(rows[2].waiting_on, "—");
         assert_eq!(rows[2].waiting_kind, None);
@@ -2910,6 +3046,7 @@ mod census_warning_tests {
 #[cfg(test)]
 mod census_listing_tests {
     use super::{Entry, Finds, Listing, bundle, census, census_counts, print_future_entry};
+    use hansei_runtime::tokio::assess::ContinuationStatus;
 
     use hansei_bundle::BundleTypeId;
     use hansei_runtime::tokio::TaskState;
@@ -2931,7 +3068,7 @@ mod census_listing_tests {
             state: None,
             waiting_on: None,
             wait: None,
-            leaf: None,
+            continuation: ContinuationStatus::Unresumed,
         }
     }
 
@@ -2944,7 +3081,7 @@ mod census_listing_tests {
             state: None,
             waiting_on: None,
             wait: None,
-            leaf: None,
+            continuation: ContinuationStatus::Unresumed,
         }
     }
 

@@ -29,6 +29,9 @@ use crate::tasks::{future_name, listing_footer, row_state};
 use anyhow::Result;
 use hansei_bundle::names;
 use hansei_runtime::tokio::Lifecycle;
+use hansei_runtime::tokio::assess::{
+    ContinuationStatus, NotWaitingReason, RunnableReason, WaitAssessment,
+};
 use hansei_runtime::tokio::bundle::{
     BlockingPool, CtActivity, CtParkState, ParkState, ParkStates, Task, TaskList, WaitKind,
 };
@@ -627,7 +630,7 @@ fn tasks(
             .or_default();
         *count += 1;
         if let Some(wait) = facts.waits.get(index) {
-            waits.add_task(task, wait, facts.impls);
+            waits.add_task(task, wait);
         }
     }
     let futures = types
@@ -647,63 +650,68 @@ struct Waits {
     /// Keyed by the primitive wrapping the semaphore, which is `None`
     /// where the awaiting frame did not name one (a channel's, say).
     semaphores: BTreeMap<Option<&'static str>, usize>,
-    /// Every other leaf, by the type it is: the futures a target is
-    /// actually parked on, which on any real one outnumber the
-    /// primitives above by two orders of magnitude.
-    leaves: BTreeMap<String, usize>,
+    /// Parked on a resource that has already given what was asked of
+    /// it: the next poll takes it.
+    ready: usize,
     /// Mid-poll on a worker: it is running, not waiting.
     running: usize,
+    /// In a run queue: runnable, not waiting.
+    queued: usize,
     /// Finished, waiting to be joined rather than on anything.
     complete: usize,
-    /// A chain that stopped short of any leaf, so there is nothing to
-    /// name — an unresolved `dyn Future`, most often.
-    undecoded: usize,
+    /// Never polled: its storage holds arguments and awaits nothing.
+    unresumed: usize,
+    /// Its root has run to a terminal state.
+    returned: usize,
+    /// No definite answer: the continuation is not established at some
+    /// future no reviewed rule covers, the chain was cut short, or the
+    /// resource's state is not one its protocol vouches for. On any
+    /// real target this is most of them.
+    unknown: usize,
 }
 
 impl Waits {
-    /// Bucket one task by what it is parked on. A task with no wait
-    /// target is not one more thing to wait on: it is mid-poll,
-    /// finished, or parked on an ordinary future — and that last one is
-    /// most of them on any real target, so it is named by the leaf its
-    /// chain reached rather than lumped under a bucket saying only that
-    /// hansei has no primitive for it.
-    fn add_task(&mut self, task: &Task, wait: &TaskWait, impls: &names::ImplFold) {
-        match wait.target.as_ref() {
-            Some(target) => self.add(target.kind()),
-            None => match (task.state.lifecycle(), &wait.leaf) {
-                (Lifecycle::Running, _) => self.running += 1,
-                (Lifecycle::Complete, _) => self.complete += 1,
-                (_, Some(leaf)) => {
-                    *self
-                        .leaves
-                        .entry(names::display_future_name(leaf, impls))
-                        .or_default() += 1
-                }
-                (_, None) => self.undecoded += 1,
-            },
+    /// Bucket one task by what the analysis assessed it to be waiting
+    /// on: a verified wait by the resource's kind, and everything else
+    /// by what there is instead — ready, runnable, finished, never
+    /// polled, returned, or unknown. A mid-poll task counts as running
+    /// whatever its assessment, the way its row spells it.
+    fn add_task(&mut self, task: &Task, wait: &TaskWait) {
+        if task.state.lifecycle() == Lifecycle::Running {
+            self.running += 1;
+            return;
+        }
+        match &wait.assessment {
+            WaitAssessment::Waiting(verified) => self.add(verified.target().kind()),
+            WaitAssessment::ResourceReady(_) => self.ready += 1,
+            WaitAssessment::Runnable(RunnableReason::ActivePoll) => self.running += 1,
+            WaitAssessment::Runnable(RunnableReason::Scheduled) => self.queued += 1,
+            WaitAssessment::NotWaiting(NotWaitingReason::Complete) => self.complete += 1,
+            WaitAssessment::NotWaiting(_) => self.returned += 1,
+            WaitAssessment::Unresumed => self.unresumed += 1,
+            WaitAssessment::Unknown(_) => self.unknown += 1,
         }
     }
 
     /// Bucket one future the census named — held in a frame, or a set's
     /// child — by what it is parked on. It has no lifecycle of its own
-    /// to be mid-poll or finished by, so the two buckets that reason
-    /// about one cannot arise: what is left is the primitive, the leaf,
-    /// or a chain that reached neither.
-    fn add_future(
-        &mut self,
-        wait: Option<WaitKind>,
-        leaf: &Option<String>,
-        impls: &names::ImplFold,
-    ) {
-        match (wait, leaf) {
+    /// to be mid-poll or finished by, so those buckets cannot arise:
+    /// what is left is the resource its chain ends in, a terminal
+    /// state, or a continuation nothing establishes.
+    fn add_future(&mut self, wait: Option<WaitKind>, continuation: &ContinuationStatus) {
+        match (wait, continuation) {
             (Some(wait), _) => self.add(wait),
-            (None, Some(leaf)) => {
-                *self
-                    .leaves
-                    .entry(names::display_future_name(leaf, impls))
-                    .or_default() += 1
+            (None, ContinuationStatus::Unresumed) => self.unresumed += 1,
+            (None, ContinuationStatus::Returned | ContinuationStatus::Panicked) => {
+                self.returned += 1
             }
-            (None, None) => self.undecoded += 1,
+            (None, ContinuationStatus::ActivePoll) => self.running += 1,
+            (
+                None,
+                ContinuationStatus::Primitive
+                | ContinuationStatus::Unknown { .. }
+                | ContinuationStatus::Incomplete { .. },
+            ) => self.unknown += 1,
         }
     }
 
@@ -721,16 +729,12 @@ impl Waits {
 
     /// The tally as printable rows, commonest first, each spelled as
     /// the `WAITING ON` column spells the wait at kind level — `io`,
-    /// `timer`, `task`, the semaphore by the primitive wrapping it —
-    /// and a task waiting on nothing by why: `— (mid-poll)`, `—
-    /// (complete)`, or the bare dash of a chain that reached no leaf.
-    ///
-    /// `top` bounds the leaf types only. The rows above them are a
-    /// closed set — three primitives and three reasons there is nothing
-    /// to say — so cutting one would drop a fact rather than a long
-    /// tail, while the leaves run to as many types as the target has
-    /// ways of waiting.
-    fn rows(&self, top: usize) -> Vec<Row> {
+    /// `timer`, `task`, the semaphore by the primitive wrapping it,
+    /// `ready`, `unknown` — and a task waiting on nothing by why: `—
+    /// (mid-poll)`, `— (queued)`, `— (complete)`, `— (unresumed)`, `—
+    /// (returned)`. A closed set, so every nonzero row prints and
+    /// `top` cuts nothing.
+    fn rows(&self, _top: usize) -> Vec<Row> {
         // A deadline already passed at the moment the target stopped is
         // a wakeup that was owed and had not been delivered, which is
         // worth saying wherever the timer count is said.
@@ -742,9 +746,13 @@ impl Waits {
             Row::new(self.timer, timer),
             Row::new(self.task, "task"),
             Row::new(self.io, "io"),
+            Row::new(self.ready, "ready"),
+            Row::new(self.unknown, "unknown"),
             Row::new(self.running, "— (mid-poll)"),
+            Row::new(self.queued, "— (queued)"),
             Row::new(self.complete, "— (complete)"),
-            Row::new(self.undecoded, "—"),
+            Row::new(self.unresumed, "— (unresumed)"),
+            Row::new(self.returned, "— (returned)"),
         ];
         for (owner, count) in &self.semaphores {
             let what = match owner {
@@ -753,18 +761,7 @@ impl Waits {
             };
             rows.push(Row::new(*count, what));
         }
-        let Ranked {
-            rows: mut leaves,
-            total,
-            ..
-        } = ranked(tally(self.leaves.clone()), top, |n| format!("({n} more)"));
-        // The `(N more)` row ranking left last stays last, under the
-        // rows it summarizes rather than sorted in among them.
-        let rest = (total > top).then(|| leaves.pop()).flatten();
-        rows.append(&mut leaves);
-        let mut rows = rank(rows);
-        rows.extend(rest);
-        rows
+        rank(rows)
     }
 }
 
@@ -860,18 +857,18 @@ fn futures(
         .sets
         .iter()
         .flat_map(|s| &s.children)
-        .filter_map(|c| Some((c.future.as_ref()?, c.wait, &c.leaf)));
-    for (future, wait, leaf) in facts
+        .filter_map(|c| Some((c.future.as_ref()?, c.wait, &c.continuation)));
+    for (future, wait, continuation) in facts
         .held
         .iter()
-        .map(|h| (&h.future, h.wait, &h.leaf))
+        .map(|h| (&h.future, h.wait, &h.continuation))
         .chain(children)
     {
         let (count, waits) = types
             .entry(names::display_future_name(future, facts.impls))
             .or_default();
         *count += 1;
-        waits.add_future(wait, leaf, facts.impls);
+        waits.add_future(wait, continuation);
     }
     let futures = types
         .into_iter()
@@ -897,20 +894,10 @@ fn more_types(n: usize) -> String {
     format!("({n} more types)")
 }
 
-/// One future type as a row, with what the chains rooted at it reach
-/// hanging off it.
-///
-/// A type whose chains all reached no further than that same type has
-/// nothing to hang: a lone branch repeating the name above it says only
-/// that, at the width of the name. Where there is more to say the row
-/// stays, itself among the rest.
+/// One future type as a row, with what the chains rooted at it are
+/// assessed to wait on hanging off it.
 fn chained(name: String, count: usize, waits: &Waits, top: usize) -> Row {
-    let under = waits.rows(top);
-    let under = match under.as_slice() {
-        [only] if only.what == name => Vec::new(),
-        _ => under,
-    };
-    Row::new(count, name).under(under)
+    Row::new(count, name).under(waits.rows(top))
 }
 
 /// A count and the noun it counts, pluralized.
@@ -1073,6 +1060,9 @@ mod tests {
     use super::*;
 
     use hansei_bundle::{BundleTypeId, FutureKind, TaskEntryId};
+    use hansei_runtime::tokio::assess::{
+        IncompleteReason, NotWaitingReason, VerifiedWait, WaitAssessment, WaitUnknownReason,
+    };
     use hansei_runtime::tokio::bundle::{FutureInfo, KnownFuture, Task, WaitTarget};
     use hansei_runtime::tokio::census::SetChild;
     use hansei_runtime::tokio::graph::TaskRef;
@@ -1114,27 +1104,27 @@ mod tests {
         }
     }
 
+    /// A task assessed as verified-waiting on `target`, or — with no
+    /// target — with its continuation unknown: parked on a future no
+    /// reviewed rule covers.
     fn wait(id: u64, target: Option<WaitTarget>, depth: usize) -> TaskWait {
-        leaf_wait(id, target, depth, None)
-    }
-
-    /// A wait whose chain reached an ordinary future rather than one of
-    /// the primitives hansei decodes.
-    fn leaf_wait(
-        id: u64,
-        target: Option<WaitTarget>,
-        depth: usize,
-        leaf: Option<&str>,
-    ) -> TaskWait {
         TaskWait {
             task: TaskRef {
                 addr: TaskAddr(0x1000 + id * 0x100),
                 task_id: Some(id),
             },
-            target,
+            assessment: match target {
+                Some(target) => WaitAssessment::Waiting(VerifiedWait::testkit(target, None)),
+                None => WaitAssessment::Unknown(WaitUnknownReason::Continuation),
+            },
+            continuation: ContinuationStatus::Incomplete {
+                reason: IncompleteReason::NoRoot,
+                detail: None,
+            },
             depth,
-            leaf: leaf.map(str::to_string),
             site: None,
+            observation: None,
+            notes: Vec::new(),
         }
     }
 
@@ -1177,7 +1167,10 @@ mod tests {
             state: None,
             waiting_on: wait.map(|_| "something".to_string()),
             wait,
-            leaf: None,
+            continuation: match wait {
+                Some(_) => ContinuationStatus::Primitive,
+                None => ContinuationStatus::Unresumed,
+            },
         }
     }
 
@@ -1194,7 +1187,10 @@ mod tests {
             state: None,
             waiting_on: wait.map(|_| "something".to_string()),
             wait,
-            leaf: None,
+            continuation: match wait {
+                Some(_) => ContinuationStatus::Primitive,
+                None => ContinuationStatus::Unresumed,
+            },
         }
     }
 
@@ -1707,7 +1703,9 @@ mod tests {
             tasks: vec![task(1, COMPLETE, "x", "x.rs")],
             errors: Vec::new(),
         };
-        let waits = [wait(1, None, 1)];
+        let mut complete = wait(1, None, 1);
+        complete.assessment = WaitAssessment::NotWaiting(NotWaitingReason::Complete);
+        let waits = [complete];
         let page = census(&facts(&list, &waits), 5);
         assert!(page.contains("└─ 1  — (complete)\n"), "{page}");
     }
@@ -1715,13 +1713,15 @@ mod tests {
     /// At exactly `top` leaves nothing is summarized, and no leaf row
     /// is pinned to the bottom: every row still ranks among the others.
     #[test]
-    fn test_exactly_top_leaves_still_rank_among_the_rows() {
-        let mut waits = Waits::default();
-        waits.leaves.insert("hot".to_string(), 5);
-        waits.leaves.insert("warm".to_string(), 2);
-        waits.undecoded = 1;
+    fn test_the_wait_rows_rank_by_count_and_cut_nothing() {
+        let waits = Waits {
+            unknown: 5,
+            ready: 2,
+            unresumed: 1,
+            ..Waits::default()
+        };
         let whats: Vec<String> = waits.rows(2).into_iter().map(|r| r.what).collect();
-        assert_eq!(whats, ["hot", "warm", "—"]);
+        assert_eq!(whats, ["unknown", "ready", "— (unresumed)"]);
     }
 
     /// `top` truncates only past itself: at exactly `top` entries there
@@ -1767,17 +1767,16 @@ mod tests {
             ],
             errors: Vec::new(),
         };
-        let io = "tokio::runtime::io::scheduled_io::Readiness";
         let waits = vec![
             wait(1, Some(timer(10, 4)), 3),
             wait(2, Some(timer(4, 10)), 2),
             wait(3, None, 1),
             wait(4, Some(mutex()), 1),
-            leaf_wait(5, None, 4, Some(io)),
-            leaf_wait(6, None, 4, Some(io)),
-            // A chain that stopped short names no leaf, and is not
-            // counted as though it had reached one.
-            leaf_wait(7, None, 2, None),
+            // Parked on futures no rule covers: unknown, whatever type
+            // the chain stopped at.
+            wait(5, None, 4),
+            wait(6, None, 4),
+            wait(7, None, 2),
         ];
         let page = sections(
             &facts(&list, &waits),
@@ -1797,8 +1796,7 @@ mod tests {
              \n\
              COUNT  TYPE / WAITING ON\n\
              \x20   3  future c::fut\n\
-             \x20      ├─ 2  future tokio::runtime::io::scheduled_io::Readiness\n\
-             \x20      └─ 1  —\n\
+             \x20      └─ 3  unknown\n\
              \x20   2  future a::fut\n\
              \x20      └─ 2  timer (1 past due)\n\
              \x20   2  future b::fut\n\
@@ -1826,18 +1824,18 @@ mod tests {
         );
     }
 
-    /// The leaf branches are the ones `--limit` bounds: the primitives
-    /// and the three reasons there is nothing to say are a closed set,
-    /// so cutting one would drop a fact rather than a long tail.
+    /// The wait rows are a closed set — the primitives and the reasons
+    /// there is nothing to say — so `--limit` bounds none of them:
+    /// cutting one would drop a fact rather than a long tail.
     #[test]
-    fn test_top_bounds_the_leaf_rows_and_not_the_rest() {
+    fn test_top_bounds_none_of_the_wait_rows() {
         let mut tasks = Vec::new();
         let mut waits = Vec::new();
         for i in 0..4 {
             for _ in 0..=i {
                 let id = tasks.len() as u64;
                 tasks.push(task(id, JOIN_INTEREST, "f", "f.rs"));
-                waits.push(leaf_wait(id, None, 1, Some(&format!("leaf{i}"))));
+                waits.push(wait(id, None, 1));
             }
         }
         // One task on a timer, which no bound may cut.
@@ -1854,23 +1852,18 @@ mod tests {
             page.contains(
                 "COUNT  TYPE / WAITING ON\n   \
                  11  future f\n       \
-                 ├─ 4  future leaf3\n       \
-                 ├─ 3  future leaf2\n       \
-                 ├─ 1  timer\n       \
-                 └─ 3  (2 more)\n\
+                 ├─ 10  unknown\n       \
+                 └─  1  timer\n\
                  [1 type]\n"
             ),
             "{page}"
         );
     }
 
-    /// A type whose every task is parked on that same type gets no
-    /// breakdown: the chains reached no further than the future the
-    /// task runs, and a lone branch repeating the name above it says
-    /// only that. A type with more than one thing to say keeps them
-    /// all, itself among them.
+    /// Every type gets its breakdown, the tasks parked on futures no
+    /// rule covers counted as unknown beside the verified waits.
     #[test]
-    fn test_a_type_parked_on_itself_gets_no_breakdown() {
+    fn test_every_type_gets_its_breakdown() {
         let list = TaskList {
             tasks: vec![
                 task(1, JOIN_INTEREST, "a::fut", "a.rs"),
@@ -1881,9 +1874,9 @@ mod tests {
             errors: Vec::new(),
         };
         let waits = vec![
-            leaf_wait(1, None, 1, Some("a::fut")),
-            leaf_wait(2, None, 1, Some("a::fut")),
-            leaf_wait(3, None, 1, Some("b::fut")),
+            wait(1, None, 1),
+            wait(2, None, 1),
+            wait(3, None, 1),
             wait(4, Some(timer(10, 4)), 1),
         ];
         let page = census(&facts(&list, &waits), 5);
@@ -1891,10 +1884,11 @@ mod tests {
         assert!(
             page.contains(
                 "COUNT  TYPE / WAITING ON\n    \
-                 2  future a::fut\n    \
+                 2  future a::fut\n       \
+                 └─ 2  unknown\n    \
                  2  future b::fut\n       \
-                 ├─ 1  future b::fut\n       \
-                 └─ 1  timer\n\
+                 ├─ 1  timer\n       \
+                 └─ 1  unknown\n\
                  [2 types]\n"
             ),
             "{page}"
@@ -2002,11 +1996,13 @@ mod tests {
     fn test_future_types_tally_the_held_and_the_resident() {
         let list = empty();
         let held: Vec<HeldFuture> = (0..3).map(|_| held("hot::fut", None)).collect();
-        // One child's chain reached a leaf: its type's branch names it,
-        // display-folded, rather than counting it among the chains that
-        // stopped short.
+        // One child's continuation is not established: its type's
+        // branch counts it as unknown rather than among the unpolled.
         let mut with_leaf = child(Some("cold::fut"), None);
-        with_leaf.leaf = Some("cold::park::{async_fn_env#0}".to_string());
+        with_leaf.continuation = ContinuationStatus::Incomplete {
+            reason: IncompleteReason::DepthLimit,
+            detail: None,
+        };
         let sets = vec![FutureSet {
             owner: 0,
             frame: 0,
@@ -2030,9 +2026,9 @@ mod tests {
             page.contains(
                 "COUNT  TYPE / WAITING ON\n    \
                  4  future hot::fut\n       \
-                 └─ 4  —\n    \
+                 └─ 4  — (unresumed)\n    \
                  1  future cold::fut\n       \
-                 └─ 1  async fn cold::park\n    \
+                 └─ 1  unknown\n    \
                  1  (1 more types)\n\
                  [3 types, 2 shown]\n"
             ),

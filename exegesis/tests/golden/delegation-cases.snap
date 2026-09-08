@@ -48,14 +48,14 @@ task: core::pin::Pin<alloc::boxed::Box<delegation_cases::Gated<2>, alloc::alloc:
   stage: Stage<core::pin::Pin<alloc::boxed::Box<delegation_cases::Gated<2>, alloc::alloc::Global>>>
 task: delegation_cases::main::{async_block_env#1}
   kind: AsyncBlock
-  decl: delegation-cases.rs:253
+  decl: delegation-cases.rs:258
   entries: 2
   symbols-per-entry: 6,6
   stage: Stage<delegation_cases::main::{async_block_env#1}>
   variants:
-    Unresumed @ delegation-cases.rs:253
-    Returned @ delegation-cases.rs:255
-    Panicked @ delegation-cases.rs:255
+    Unresumed @ delegation-cases.rs:258
+    Returned @ delegation-cases.rs:260
+    Panicked @ delegation-cases.rs:260
 
 [dyn-futures]
 dyn: core::pin::Pin<alloc::boxed::Box<&mut delegation_cases::Probe<5>, alloc::alloc::Global>> (poll, drop_glue)
@@ -79,7 +79,7 @@ dyn: delegation_cases::main::{async_block_env#1} (poll, drop_glue)
 dyn: tracing::instrument::Instrumented<delegation_cases::Probe<8>> (poll, drop_glue)
 
 [env-decls]
-env: delegation_cases::main::{async_block_env#1} @ delegation-cases.rs:253
+env: delegation_cases::main::{async_block_env#1} @ delegation-cases.rs:258
 
 [infra]
 header: ok

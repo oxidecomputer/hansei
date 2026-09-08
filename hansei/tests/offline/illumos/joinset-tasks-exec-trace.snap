@@ -3,38 +3,56 @@ source: hansei/src/offline.rs
 description: "`tasks --exec trace -n` over illumos/joinset"
 ---
 task 3
-#0  future        tokio::util::idle_notified_set::IdleNotifiedSet<tokio::runtime::task::join::JoinHandle<u32>>
-      (<no_state>, 2 locals)
+Waiting on: unknown
+
+what core::future::poll_fn::PollFn<tokio::task::join_set::JoinSet::join_next::{async_fn#0}::{closure_env#0}<u32>> polls is not established (no reviewed rule covers its implementation); the chain ends there
+#0  future        core::future::poll_fn::PollFn<tokio::task::join_set::JoinSet::join_next::{async_fn#0}::{closure_env#0}<u32>>
+      constructed at tokio-1.52.4/src/task/join_set.rs:297 (<no_state>, 1 local)
 #1  async fn      tokio::task::join_set::JoinSet::join_next<u32>
       awaiting at tokio-1.52.4/src/task/join_set.rs:297 (Suspend0, 0 locals)
 #2  async fn      joinset::driver
       awaiting at src/bin/joinset.rs:83 (Suspend1, 6 locals)
 
 task 4
+Waiting on: unknown
+
+what tokio::sync::notify::Notified polls is not established (no reviewed rule covers its implementation); the chain ends there
 #0  future        tokio::sync::notify::Notified
       (<no_state>, 4 locals)
 #1  async fn      joinset::member
       awaiting at src/bin/joinset.rs:34 (Suspend1, 2 locals)
 
 task 5
+Waiting on: unknown
+
+what tokio::sync::notify::Notified polls is not established (no reviewed rule covers its implementation); the chain ends there
 #0  future        tokio::sync::notify::Notified
       (<no_state>, 4 locals)
 #1  async fn      joinset::member
       awaiting at src/bin/joinset.rs:34 (Suspend1, 2 locals)
 
 task 6
+Waiting on: unknown
+
+what tokio::sync::notify::Notified polls is not established (no reviewed rule covers its implementation); the chain ends there
 #0  future        tokio::sync::notify::Notified
       (<no_state>, 4 locals)
 #1  async fn      joinset::member
       awaiting at src/bin/joinset.rs:34 (Suspend1, 2 locals)
 
 task 7
+Waiting on: unknown
+
+what tokio::sync::notify::Notified polls is not established (no reviewed rule covers its implementation); the chain ends there
 #0  future        tokio::sync::notify::Notified
       (<no_state>, 4 locals)
 #1  async fn      joinset::member
       awaiting at src/bin/joinset.rs:34 (Suspend1, 2 locals)
 
 task 8
+Waiting on: unknown
+
+what tokio::sync::notify::Notified polls is not established (no reviewed rule covers its implementation); the chain ends there
 #0  future        tokio::sync::notify::Notified
       (<no_state>, 4 locals)
 #1  async fn      joinset::member

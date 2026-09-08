@@ -12,6 +12,10 @@ use crate::{Session, TraceOpts, TraceTarget, output};
 use anyhow::{Context as _, Result};
 use hansei_bundle::names;
 use hansei_bundle::{BundleMember, BundleType, BundleTypeId, BundleView, SymbolLookup};
+use hansei_runtime::tokio::assess::continuation_reason;
+use hansei_runtime::tokio::chain::{FutureInspection, InspectionMode};
+use hansei_runtime::tokio::graph::TaskWait;
+use hansei_runtime::tokio::observe::ReadContext;
 use hansei_runtime::tokio::{Lifecycle, bundle, census, stackjoin};
 use reify::Value;
 
@@ -123,19 +127,26 @@ fn exec_trace_task<T: proc::Target>(
         )?;
     }
 
-    match ctx.task_stage(task)? {
+    let stage = session.read_with(|read| ctx.task_root(task, read))?;
+    match stage {
         bundle::TaskStage::Running(future) => {
-            let chain = ctx.await_chain(future);
-            // A mid-poll task's chain stops at the last *committed*
-            // await; the truth of what the poll is doing right now is
-            // on the polling thread's native stack, joined on above
-            // the chain under `-n` — and without it left to `threads`
-            // whole, heading and refusal spellings included.
+            let lifecycle = task.state.lifecycle();
+            let inspection = session.read_with(|read| {
+                ctx.inspect_future(future, InspectionMode::Task { lifecycle }, read)
+            });
+            let chain = &inspection.chain;
+            // A mid-poll task's chain is its root alone — the saved
+            // state below it may be mid-mutation; the truth of what the
+            // poll is doing right now is on the polling thread's native
+            // stack, joined on above the chain under `-n` — and without
+            // it left to `threads` whole, heading and refusal spellings
+            // included.
             if task.state.lifecycle() == Lifecycle::Running && opts.native {
-                print_native_continuation(session, task, task_id, &chain, opts, out)?;
+                print_native_continuation(session, task, task_id, chain, opts, out)?;
                 writeln!(out)?;
             }
-            print_trace_chain(session, &chain, index, None, opts, out)?;
+            let wait = assessed_header(&session.analysis().waits[index]);
+            print_trace_chain(session, chain, index, None, wait, opts, out)?;
         }
         bundle::TaskStage::Finished(result) => {
             // Result<T::Output, JoinError>: Ok is a normal return, Err a
@@ -262,9 +273,21 @@ fn exec_trace_future<T: proc::Target>(
     let value = Value::read(ctx.proc, ty, root.addr)
         .with_context(|| format!("failed to read the future at {:#x}", root.addr))?;
 
-    let chain = ctx.await_chain(value);
+    let (inspection, wait) = session.read_with(|read| {
+        let inspection = ctx.inspect_future(value, InspectionMode::Held, read);
+        let wait = observed_header(ctx, &inspection, list, read);
+        (inspection, wait)
+    });
     writeln!(out)?;
-    print_trace_chain(session, &chain, owner, Some(origin), opts, out)
+    print_trace_chain(
+        session,
+        &inspection.chain,
+        owner,
+        Some(origin),
+        wait,
+        opts,
+        out,
+    )
 }
 
 /// What a future address resolved to: the census row that names it, as
@@ -370,16 +393,17 @@ pub(crate) fn future_at(
 /// chain or the held-future/set-child origin for a `trace 0x…` chain —
 /// so each frame can carry the tally of futures the census found parked
 /// beside it.
+#[allow(clippy::too_many_arguments)]
 fn print_trace_chain<'b, T: proc::Target>(
     session: &Session<'b, T>,
     chain: &bundle::AwaitChain<'b>,
     owner: usize,
     origin: Option<census::Via>,
+    wait: Option<WaitHeader>,
     opts: &TraceOpts<'_>,
     out: &mut dyn io::Write,
 ) -> Result<()> {
     let list = &session.tasks;
-    let wait = wait_line(&session.ctx, chain, list)?;
     let holds = frame_holds(session.census(), owner, origin, chain.frames.len());
     let lookups = opts.verbose.then(|| (session.extents(), session.census()));
     let annotate = lookups.map(|(extents, census)| {
@@ -399,7 +423,7 @@ fn print_trace_chain<'b, T: proc::Target>(
         &session.ctx,
         chain,
         opts,
-        wait.as_deref(),
+        wait.as_ref(),
         &holds,
         &session.impl_fold,
         annotate,
@@ -407,27 +431,54 @@ fn print_trace_chain<'b, T: proc::Target>(
     )
 }
 
-/// The deepest frame's decoded wait target, formatted once: it prints
-/// twice, in the header's `Waiting on:` line and again as the leaf
-/// frame's detail, and reading the target twice for that would be
-/// waste. A leaf that was recognized but failed to read warns on stderr
-/// rather than failing the trace.
-pub(crate) fn wait_line<T: proc::Target>(
-    ctx: &bundle::Context<'_, T>,
-    chain: &bundle::AwaitChain<'_>,
+/// What a trace's header says the chain waits on: the `Waiting on:`
+/// line, the notes under it, and whether the line is repeated as the
+/// leaf frame's own detail — which it is for a resource the chain
+/// verifiably or observably ends in, and not for an assessment that
+/// names no resource.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct WaitHeader {
+    pub(crate) line: String,
+    pub(crate) notes: Vec<String>,
+    pub(crate) at_leaf: bool,
+}
+
+/// A task's header, from its assessment: the cell every listing
+/// spells, with the assessor's notes where the cell is `ready` or
+/// `unknown` — except that an unknown continuation is already
+/// explained where the chain ends, and says nothing twice.
+pub(crate) fn assessed_header(wait: &TaskWait) -> Option<WaitHeader> {
+    use hansei_runtime::tokio::assess::{WaitAssessment, WaitUnknownReason};
+    let line = crate::tasks::assessment_cell(&wait.assessment);
+    let notes = match wait.assessment {
+        WaitAssessment::Unknown(WaitUnknownReason::Continuation) => Vec::new(),
+        _ => crate::tasks::assessment_detail(wait),
+    };
+    Some(WaitHeader {
+        line,
+        notes,
+        at_leaf: wait.verified().is_some(),
+    })
+}
+
+/// A held future's header: the resource its chain ends in, described
+/// under no protocol — what it is parked on, with nothing said about
+/// whether anything polls it. `None` where the chain ends in no
+/// resource, or the resource did not read.
+pub(crate) fn observed_header<'b, T: proc::Target>(
+    ctx: &bundle::Context<'b, T>,
+    inspection: &FutureInspection<'b>,
     list: &bundle::TaskList,
-) -> Result<Option<String>> {
-    match ctx.wait_target(chain, list) {
-        Some(Ok(target)) => Ok(Some(target.to_string())),
-        Some(Err(e)) => {
-            writeln!(
-                io::stderr(),
-                "warning: failed to read what the leaf future waits on: {e:#}"
-            )?;
-            Ok(None)
-        }
-        None => Ok(None),
-    }
+    read: &ReadContext<'_>,
+) -> Option<WaitHeader> {
+    let observation = inspection.primitive.value.as_ref()?;
+    let mut pass = hansei_runtime::tokio::assess::AssessmentPass::new();
+    let target = ctx.observed_target(&mut pass, observation, &inspection.chain, list, read)?;
+    Some(WaitHeader {
+        line: target.to_string(),
+        notes: Vec::new(),
+        at_leaf: true,
+    })
 }
 
 /// How many census-found futures each frame of this chain holds beside
@@ -479,14 +530,17 @@ fn print_await_chain<'b, T: proc::Target>(
     ctx: &bundle::Context<'b, T>,
     chain: &bundle::AwaitChain<'b>,
     opts: &TraceOpts<'_>,
-    wait: Option<&str>,
+    wait: Option<&WaitHeader>,
     holds: &[usize],
     impls: &names::ImplFold,
     annotate: Option<&reify::AddrAnnotator<'_>>,
     out: &mut dyn io::Write,
 ) -> Result<()> {
     if let Some(wait) = wait {
-        writeln!(out, "Waiting on: {}", opts.theme.bold(wait))?;
+        writeln!(out, "Waiting on: {}", opts.theme.bold(&wait.line))?;
+        for note in &wait.notes {
+            writeln!(out, "  {note}")?;
+        }
         writeln!(out)?;
     }
 
@@ -526,7 +580,7 @@ pub(crate) fn print_frame<'b, T: proc::Target>(
     chain: &bundle::AwaitChain<'b>,
     i: usize,
     num_width: usize,
-    wait: Option<&str>,
+    wait: Option<&WaitHeader>,
     holds: &[usize],
     opts: &TraceOpts<'_>,
     impls: &names::ImplFold,
@@ -558,8 +612,12 @@ pub(crate) fn print_frame<'b, T: proc::Target>(
 
     let held = holds.get(i).copied().unwrap_or(0);
     match wait {
-        Some(wait) if Some(i) == last => {
-            writeln!(out, "{DETAIL_INDENT}waiting on {}", opts.theme.bold(wait))?;
+        Some(wait) if Some(i) == last && wait.at_leaf => {
+            writeln!(
+                out,
+                "{DETAIL_INDENT}waiting on {}",
+                opts.theme.bold(&wait.line)
+            )?;
         }
         _ => {
             if let Some(detail) = frame_detail(frame, held, &opts.theme) {
@@ -873,22 +931,6 @@ fn print_chain_end(
         }
     }
     Ok(())
-}
-
-/// Why a continuation is unknown, as the chain end spells it: the
-/// semantic issue's kind in words a reader of the tokio info's
-/// `--explain-future` output would recognize.
-fn continuation_reason(reason: hansei_bundle::SemanticIssueKind) -> &'static str {
-    use hansei_bundle::SemanticIssueKind::*;
-    match reason {
-        NoRule => "no reviewed rule covers its implementation",
-        UnsupportedOrigin => "its implementation's origin is not reviewed",
-        MissingLayout => "its layout is not in the tokio info",
-        AmbiguousLayout => "its layout is ambiguous",
-        UnsupportedState => "its state is one no rule covers",
-        MultipleChildren => "it polls more than one future",
-        PossiblyUninitialized => "its storage may not be initialized",
-    }
 }
 
 /// Print a mid-poll task's native continuation above its chain: find
@@ -2292,14 +2334,17 @@ mod variable_format_tests {
 /// extracted bundle joined against a real captured snapshot.
 #[cfg(test)]
 mod future_trace_tests {
-    use super::{FutureAt, TraceOpts, frame_holds, future_at, print_await_chain, wait_line};
+    use super::{FutureAt, TraceOpts, frame_holds, future_at, observed_header, print_await_chain};
     use crate::tasks::{Finds, TaskView, census_tree, future_name, print_task_view};
     use crate::{RenderOpts, output};
     use crate::{TraceTarget, parse_trace_target};
     use hansei_runtime::testkit;
     use hansei_runtime::tokio::TaskState;
+    use hansei_runtime::tokio::assess::ContinuationStatus;
     use hansei_runtime::tokio::bundle::{self, Context, TaskExtents, TaskList};
     use hansei_runtime::tokio::census::{self, FutureCensus};
+    use hansei_runtime::tokio::chain::InspectionMode;
+    use hansei_runtime::tokio::observe::ReadContext;
     use proc::snapshot::Snapshot;
     use reify::Value;
 
@@ -2548,14 +2593,16 @@ mod future_trace_tests {
                 .expect("the root type is in the bundle");
             let root =
                 Value::read(ctx.proc, ty, future1.addr).expect("the recorded root reads back");
-            let chain = ctx.await_chain(root);
+            let read = ReadContext::none();
+            let inspection = ctx.inspect_future(root, InspectionMode::Held, &read);
+            let chain = &inspection.chain;
             let holds = frame_holds(
                 census,
                 future1.owner,
                 Some(census::Via::Held(index)),
                 chain.frames.len(),
             );
-            let wait = wait_line(ctx, &chain, list).expect("the wait target reads");
+            let wait = observed_header(ctx, &inspection, list, &read);
 
             let mut out = Vec::new();
             let opts = TraceOpts {
@@ -2574,9 +2621,9 @@ mod future_trace_tests {
             };
             print_await_chain(
                 ctx,
-                &chain,
+                chain,
                 &opts,
-                wait.as_deref(),
+                wait.as_ref(),
                 &holds,
                 &hansei_bundle::names::ImplFold::default(),
                 None,
@@ -2719,7 +2766,7 @@ mod future_trace_tests {
                         state: Some("Suspend0 — step.rs:9".to_string()),
                         waiting_on: None,
                         wait: None,
-                        leaf: None,
+                        continuation: ContinuationStatus::Unresumed,
                     },
                     census::SetChild {
                         depth: 1,
@@ -2729,7 +2776,7 @@ mod future_trace_tests {
                         state: None,
                         waiting_on: None,
                         wait: None,
-                        leaf: None,
+                        continuation: ContinuationStatus::Unresumed,
                     },
                 ],
             }];
@@ -2746,7 +2793,7 @@ mod future_trace_tests {
                 state: None,
                 waiting_on: None,
                 wait: None,
-                leaf: None,
+                continuation: ContinuationStatus::Unresumed,
             }];
 
             let rendered = render(list, &held, &sets, true, id);
@@ -2880,11 +2927,13 @@ mod future_trace_tests {
 /// while it is being changed.
 #[cfg(test)]
 mod trace_render_tests {
-    use super::{TraceOpts, frame_holds, print_await_chain, wait_line};
+    use super::{TraceOpts, frame_holds, observed_header, print_await_chain};
     use crate::{RenderOpts, output};
     use hansei_runtime::testkit;
     use hansei_runtime::tokio::bundle::TaskStage;
     use hansei_runtime::tokio::census;
+    use hansei_runtime::tokio::chain::InspectionMode;
+    use hansei_runtime::tokio::observe::ReadContext;
 
     /// A coroutine frame whose state did not decode says nothing about
     /// state — only what the census parked in it, which is the one
@@ -2929,7 +2978,23 @@ mod trace_render_tests {
     ) -> String {
         let (bundle, snapshot) = testkit::load_any(program);
         let ctx = testkit::context(&bundle, &snapshot);
-        let list = testkit::tasks(&ctx, &snapshot);
+        trace_ctx(&ctx, &bundle, &snapshot, future, verbose, theme, limit, fit)
+    }
+
+    /// The same, over a context the caller attached — with test
+    /// bindings, say.
+    #[allow(clippy::too_many_arguments)]
+    fn trace_ctx(
+        ctx: &hansei_runtime::tokio::bundle::Context<'_, proc::snapshot::Snapshot>,
+        bundle: &hansei_bundle::Bundle,
+        snapshot: &proc::snapshot::Snapshot,
+        future: &str,
+        verbose: bool,
+        theme: output::Theme,
+        limit: Option<usize>,
+        fit: Option<usize>,
+    ) -> String {
+        let list = testkit::tasks(ctx, snapshot);
 
         let (index, task) = list
             .tasks
@@ -2942,15 +3007,20 @@ mod trace_render_tests {
                 _ => false,
             })
             .unwrap_or_else(|| panic!("no task running {future}"));
-        let TaskStage::Running(root) = ctx.task_stage(task).expect("the task's stage decodes")
+        let read = ReadContext::none();
+        let TaskStage::Running(root) = ctx
+            .task_root(task, &read)
+            .expect("the task's stage decodes")
         else {
             panic!("{future} is not running");
         };
 
-        let chain = ctx.await_chain(root);
-        let census = census::census(&ctx, &list);
+        let lifecycle = task.state.lifecycle();
+        let inspection = ctx.inspect_future(root, InspectionMode::Task { lifecycle }, &read);
+        let chain = &inspection.chain;
+        let census = census::census(ctx, &list);
         let holds = frame_holds(&census, index, None, chain.frames.len());
-        let wait = wait_line(&ctx, &chain, &list).expect("the wait target reads");
+        let wait = observed_header(ctx, &inspection, &list, &read);
         let mut out = Vec::new();
         let opts = TraceOpts {
             verbose,
@@ -2967,14 +3037,14 @@ mod trace_render_tests {
             heap: None,
         };
         print_await_chain(
-            &ctx,
-            &chain,
+            ctx,
+            chain,
             &opts,
-            wait.as_deref(),
+            wait.as_ref(),
             &holds,
             // The fixture bundle's own substitutions, like a session's:
             // the tokio frames of these chains print impl-folded.
-            &hansei_bundle::names::ImplFold::for_bundle(&bundle),
+            &hansei_bundle::names::ImplFold::for_bundle(bundle),
             None,
             &mut out,
         )
@@ -3000,7 +3070,8 @@ mod trace_render_tests {
                 "walk_shapes::side_parker::{async_fn_env#0}",
                 false
             ),
-            "#0  async fn      walk_shapes::side_parker
+            "the chain ends in a future that has never been polled
+#0  async fn      walk_shapes::side_parker
       state Unresumed
 "
         );
@@ -3010,9 +3081,13 @@ mod trace_render_tests {
     /// state is `awaiting at` its resume point, a wrapper frame with no
     /// decoded state has no detail at all — the reading convention
     /// (frame N sits in frame N+1's live state) carries the chain — and
-    /// a plain enum's decoded variant is `state:`, which claims no
-    /// resume point. Frame 0 also holds `wz` — a future the chain does
-    /// not run through — which its detail line tallies.
+    /// a plain enum's decoded variant is `constructed at`, which claims
+    /// no resume point. Frame 4 also holds `wz` — a future the chain
+    /// does not run through — which its detail line tallies.
+    ///
+    /// The hand-written wrappers are no reviewed implementation, so the
+    /// chain steps through them only under the test bindings; the
+    /// production context ends at the first of them, and says so.
     #[test]
     fn test_wrapper_frames_read_by_position() {
         assert_eq!(
@@ -3021,16 +3096,47 @@ mod trace_render_tests {
                 "walk_shapes::chained::{async_fn_env#0}",
                 false
             ),
-            "#0  future        tokio::sync::notify::Notified
+            "what walk_shapes::WrapS<walk_shapes::WrapE<walk_shapes::deep>> polls is not \
+             established (no reviewed rule covers its implementation); the chain ends there
+#0  future        walk_shapes::WrapS<walk_shapes::WrapE<walk_shapes::deep>>
+      (<no_state>, 2 locals; holds 1 pending future)
+#1  async fn      walk_shapes::chained
+      awaiting at src/bin/walk-shapes.rs:116 (Suspend0, 1 local; holds 1 pending future)
+"
+        );
+
+        let (bundle, snapshot) = testkit::load_any("walk-shapes");
+        let (bindings, rules) = testkit::walk_shapes_bindings(&bundle);
+        let bound = hansei_runtime::tokio::bundle::Context::with_test_bindings(
+            &snapshot,
+            hansei_bundle::BundleView::new(&bundle),
+            &bindings,
+            &rules,
+        )
+        .expect("the test bindings validate");
+        assert_eq!(
+            trace_ctx(
+                &bound,
+                &bundle,
+                &snapshot,
+                "walk_shapes::chained::{async_fn_env#0}",
+                false,
+                output::Theme::plain(),
+                None,
+                None,
+            ),
+            "what tokio::sync::notify::Notified polls is not established \
+             (no reviewed rule covers its implementation); the chain ends there
+#0  future        tokio::sync::notify::Notified
       (<no_state>, 4 locals)
 #1  async fn      walk_shapes::deep
-      awaiting at src/bin/walk-shapes.rs:92 (Suspend0, 1 local)
+      awaiting at src/bin/walk-shapes.rs:101 (Suspend0, 1 local)
 #2  future        walk_shapes::WrapE<walk_shapes::deep>
-      constructed at src/bin/walk-shapes.rs:91 (Running, 2 locals)
+      constructed at src/bin/walk-shapes.rs:100 (Running, 2 locals)
 #3  future        walk_shapes::WrapS<walk_shapes::WrapE<walk_shapes::deep>>
       (<no_state>, 2 locals)
 #4  async fn      walk_shapes::chained
-      awaiting at src/bin/walk-shapes.rs:107 (Suspend0, 1 local; holds 1 pending future)
+      awaiting at src/bin/walk-shapes.rs:116 (Suspend0, 1 local; holds 1 pending future)
 "
         );
     }
@@ -3046,7 +3152,9 @@ mod trace_render_tests {
                 "simple_await::work::{async_fn_env#0}",
                 false
             ),
-            "#0  future        tokio::sync::oneshot::Receiver<u32>
+            "what tokio::sync::oneshot::Receiver<u32> polls is not established \
+             (no reviewed rule covers its implementation); the chain ends there
+#0  future        tokio::sync::oneshot::Receiver<u32>
       (<no_state>, 1 local)
 #1  async fn      simple_await::work
       awaiting at src/bin/simple-await.rs:47 (Suspend1, 13 locals)
@@ -3122,11 +3230,15 @@ mod trace_render_tests {
     fn test_dyn_frames_keep_their_marker() {
         assert_eq!(
             trace("dyn-future", "dyn_future::driver::{async_fn_env#0}", false),
-            "#0  future        tokio::sync::oneshot::Receiver<u32>
+            "what tokio::sync::oneshot::Receiver<u32> polls is not established \
+             (no reviewed rule covers its implementation); the chain ends there
+#0  future        tokio::sync::oneshot::Receiver<u32>
       (<no_state>, 1 local)
 #1  async fn      dyn_future::boxed_leaf [dyn]
       awaiting at src/bin/dyn-future.rs:16 (Suspend0, 0 locals)
-#2  async fn      dyn_future::driver
+#2  future        Pin<Box<(dyn Future<Output=u32> + Send)>>
+      (<no_state>, 1 local)
+#3  async fn      dyn_future::driver
       awaiting at src/bin/dyn-future.rs:40 (Suspend0, 1 local)
 "
         );
@@ -3148,11 +3260,15 @@ mod trace_render_tests {
                 None,
                 Some(40),
             ),
-            "#0  future        tokio::sync::oneshot:…
+            "what tokio::sync::oneshot::Receiver<u32> polls is not established \
+             (no reviewed rule covers its implementation); the chain ends there
+#0  future        tokio::sync::oneshot:…
       (<no_state>, 1 local)
 #1  async fn      dyn_future::box… [dyn]
       awaiting at src/bin/dyn-future.rs:16 (Suspend0, 0 locals)
-#2  async fn      dyn_future::driver
+#2  future        Pin<Box<(dyn Future<O…
+      (<no_state>, 1 local)
+#3  async fn      dyn_future::driver
       awaiting at src/bin/dyn-future.rs:40 (Suspend0, 1 local)
 "
         );
@@ -3173,7 +3289,10 @@ mod trace_render_tests {
             .iter()
             .find(|t| t.task_id == Some(4))
             .expect("the joiner is task 4");
-        let TaskStage::Running(root) = ctx.task_stage(joiner).expect("the joiner's stage decodes")
+        let read = ReadContext::none();
+        let TaskStage::Running(root) = ctx
+            .task_root(joiner, &read)
+            .expect("the joiner's stage decodes")
         else {
             panic!("the joiner is not running");
         };
@@ -3184,8 +3303,10 @@ mod trace_render_tests {
             list.tasks[index].task_id.map(|id| format!("task {id}"))
         };
 
-        let chain = ctx.await_chain(root);
-        let wait = wait_line(&ctx, &chain, &list).expect("the wait target reads");
+        let lifecycle = joiner.state.lifecycle();
+        let inspection = ctx.inspect_future(root, InspectionMode::Task { lifecycle }, &read);
+        let chain = &inspection.chain;
+        let wait = observed_header(&ctx, &inspection, &list, &read);
         let mut out = Vec::new();
         let opts = TraceOpts {
             verbose: true,
@@ -3203,9 +3324,9 @@ mod trace_render_tests {
         };
         print_await_chain(
             &ctx,
-            &chain,
+            chain,
             &opts,
-            wait.as_deref(),
+            wait.as_ref(),
             &[],
             &hansei_bundle::names::ImplFold::default(),
             Some(&annotate),

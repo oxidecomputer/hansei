@@ -3,14 +3,22 @@ source: hansei/src/offline.rs
 description: "`tasks --exec trace -n` over illumos/channels"
 ---
 task 3
+Waiting on: unknown
+
+what tokio::sync::notify::Notified polls is not established (no reviewed rule covers its implementation); the chain ends there
 #0  future        tokio::sync::notify::Notified
       (<no_state>, 4 locals)
-#1  async fn      channels::notify_waiter
-      awaiting at src/bin/channels.rs:35 (Suspend0, 2 locals; holds 1 pending future)
+#1  future        Pin<&mut tokio::sync::notify::Notified>
+      (<no_state>, 1 local)
+#2  async fn      channels::notify_waiter
+      awaiting at src/bin/channels.rs:32 (Suspend0, 2 locals)
 
 task 4
+Waiting on: unknown
+
+what tokio::sync::oneshot::Receiver<u32> polls is not established (no reviewed rule covers its implementation); the chain ends there
 #0  future        tokio::sync::oneshot::Receiver<u32>
       (<no_state>, 1 local)
 #1  async fn      channels::hold
-      awaiting at src/bin/channels.rs:55 (Suspend0, 8 locals)
+      awaiting at src/bin/channels.rs:52 (Suspend0, 8 locals)
 [Executed against 2 tasks, 0 failed]

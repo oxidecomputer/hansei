@@ -5,9 +5,9 @@ description: "`census` over linux-floor/channels"
 Threads: 3 lwps, 3 in runtime 0 @ 0xADDR
 
 COUNT  RT  ROLE             STATE            LWPS
-    1  0   worker           in driver        2405992
-    1  0   worker           parked           2405993
-    1  0   entered runtime  block_on caller  2405990
+    1  0   worker           in driver        2231172
+    1  0   worker           parked           2231173
+    1  0   entered runtime  block_on caller  2231170
     0  0   blocking pool    0 idle, 0 busy   —
 [3 lwps]
 
@@ -19,19 +19,17 @@ COUNT  STATE
 
 COUNT  TYPE / WAITING ON
     1  async fn channels::hold
-       └─ 1  future tokio::sync::oneshot::Receiver<u32>
+       └─ 1  unknown
     1  async fn channels::notify_waiter
-       └─ 1  future tokio::sync::notify::Notified
+       └─ 1  unknown
 [2 types]
 
-Futures: 3 in flight, on 5 await-chain frames, up to 2 deep
+Futures: 2 in flight, on 5 await-chain frames, up to 3 deep
 
 COUNT  HELD IN
     2  task (its own await chain)
-    1  frame (off any await chain)
+    0  frame (off any await chain)
     0  set (0 FuturesUnordered)
-[3 futures]
+[2 futures]
 
-COUNT  TYPE / WAITING ON
-    1  future tokio::sync::notify::Notified
-[1 type]
+[0 types]

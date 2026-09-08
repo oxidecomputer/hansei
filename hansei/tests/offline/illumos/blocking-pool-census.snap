@@ -27,9 +27,9 @@ COUNT  TYPE / WAITING ON
     1  future tokio::runtime::blocking::task::BlockingTask<blocking_pool::main::{async_block#0}::{closure_env#0}>
        └─ 1  — (mid-poll)
     1  future tokio::runtime::blocking::task::BlockingTask<blocking_pool::main::{async_block#0}::{closure_env#1}>
-       └─ 1  future Option<blocking_pool::main::{async_block#0}::{closure_env#1}>
+       └─ 1  — (queued)
     1  future tokio::runtime::blocking::task::BlockingTask<blocking_pool::main::{async_block#0}::{closure_env#2}>
-       └─ 1  future Option<blocking_pool::main::{async_block#0}::{closure_env#2}>
+       └─ 1  — (queued)
 [5 types]
 
 Futures: 5 in flight, on 7 await-chain frames, up to 2 deep

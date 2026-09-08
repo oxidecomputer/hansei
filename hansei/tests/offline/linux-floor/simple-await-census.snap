@@ -19,7 +19,7 @@ COUNT  STATE
 
 COUNT  TYPE / WAITING ON
     1  async fn simple_await::work
-       └─ 1  future tokio::sync::oneshot::Receiver<u32>
+       └─ 1  unknown
 [1 type]
 
 Futures: 1 in flight, on 2 await-chain frames, up to 2 deep

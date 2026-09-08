@@ -6,10 +6,12 @@ task 3
     state: idle
     thread: <none>
     type: async fn channels::notify_waiter
-    awaiting at: src/bin/channels.rs:35
-    waiting on: future tokio::sync::notify::Notified
+    awaiting at: src/bin/channels.rs:32
+    waiting on: unknown
     waker: <empty>
-    spawned at: src/bin/channels.rs:95:23
+        unknown: the chain does not end in a primitive
+        what tokio::sync::notify::Notified polls is not established: no reviewed rule covers its implementation
+    spawned at: src/bin/channels.rs:92:23
     defined at: src/bin/channels.rs:22
-    held futures: 1
+    held futures: 0
     join sets: 0

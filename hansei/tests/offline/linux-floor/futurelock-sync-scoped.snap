@@ -3,6 +3,6 @@ source: hansei/src/offline.rs
 description: "`sync` over linux-floor/futurelock"
 ---
 a tokio::sync::Mutex (semaphore 0xADDR): 0 permits available
-    Held by: task 5 — 1 permit granted to `future1` (async fn futurelock::do_async_thing), a future it stopped polling
+    Held by: task 5 — 1 permit granted to `future1` (async fn futurelock::do_async_thing), a future it cannot poll until the future tokio::sync::batch_semaphore::Acquire it awaits completes
     Blocked on it: task 5 (1 permit requested)
     Wake queue: task 5

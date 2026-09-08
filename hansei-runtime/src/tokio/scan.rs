@@ -29,21 +29,21 @@
 //! like any other — not a stop.
 //!
 //! What the scan does *not* follow is as deliberate as what it does.
-//! An owned referent — a boxed future, a `Pin<Box<dyn Future>>` — is
-//! a boundary until the bundle carries an access binding authorizing
-//! that specific pointer; no bundle does yet, so every pointer is a
-//! stop and the legacy chain-based discovery remains the route to
-//! whatever sits behind one. A borrowed referent is followed only by a
-//! container or continuation contract, never by the scan itself.
+//! A pointer is followed only by a contract: a container's node list,
+//! or the access binding of a supported adapter — a `Box<F>`, a
+//! `Pin<Box<F>>`, a `&mut F`, a `Pin<Box<dyn Future>>` — whose
+//! recorded route reaches the referent as its nominal type, through
+//! the dyn-future join where the route is dynamic. A pointer with no
+//! such binding is a stop, whatever it looks like.
 //!
 //! Hidden-task discovery ([`Context::discover_hidden_tasks`]) runs
-//! this scan over every enumerated task's storage as one of its two
-//! candidate inputs, beside that chain sweep, under the session's
-//! allocator evidence.
+//! this scan over every enumerated task's storage as its candidate
+//! input, under the session's allocator evidence.
 
 use super::TaskAddr;
-use super::bundle::Context;
+use super::bundle::{ChainEnd, Context};
 use super::census::{NodeStop, join_set_entry_task, walk_join_set_entries, walk_set_nodes};
+use super::chain::NextFuture;
 use super::contract::{self, Walked};
 use super::observe::{
     ReadContext, ReferenceSink, ReferenceSource, ResourceObservation, ScanBudget, ScanCompletion,
@@ -53,8 +53,8 @@ use super::observe::{
 use anyhow::anyhow;
 use foldhash::HashSet;
 use hansei_bundle::{
-    ContainerKind, CoroutineLayout, CoroutinePhase, MemberRef, SemanticIssueKind, Step,
-    StoragePolicy, TypeClass, WalkRole,
+    ContainerKind, CoroutineLayout, CoroutinePhase, FutureTarget, MemberRef, SemanticIssueKind,
+    Step, StoragePolicy, TypeClass, WalkRole,
 };
 use proc::Target;
 use reify::Value;
@@ -209,25 +209,47 @@ impl<'b, T: Target> Scanner<'_, 'b, T> {
         }
         let record = self.ctx.type_semantics(value.ty.id());
 
+        // A resource or container met inside a value is an origin of
+        // its own for identity's sake: one held by value in a frame
+        // and reached again through a borrowed adapter further down
+        // the chain is observed and walked once. An origin (`depth`
+        // zero) was already entered by `root`.
+        let once = |scanner: &mut Self| depth == 0 || scanner.seen.insert(key);
+
         // 1. A bound resource: observed whole, its interior the
         // observer's. The registrations and queues it names are read
         // for the tasks they hold.
         if record.is_some_and(|r| r.resource.is_some()) {
-            self.resource(value, key);
+            if once(self) {
+                self.resource(value, key);
+            }
             return;
         }
 
         // 2. A recognized container: walked by its own contract.
         match self.ctx.container_kind(value.ty.id()) {
             Some(ContainerKind::FuturesUnordered) => {
-                self.set(value, key, frame);
+                if once(self) {
+                    self.set(value, key, frame);
+                }
                 return;
             }
             Some(ContainerKind::JoinSet) => {
-                self.join_set(value, key);
+                if once(self) {
+                    self.join_set(value, key);
+                }
                 return;
             }
             None => {}
+        }
+
+        // 3. A supported pointer adapter: its referent by the route its
+        // access binding records, one referent expansion and one link
+        // further down the chain. The pointer word itself the members
+        // descent below would stop at.
+        if record.is_some_and(|r| r.access.is_some()) {
+            self.adapter(value, key, frame);
+            return;
         }
 
         // 4. Storage the bundle cannot vouch for stops here: a
@@ -466,6 +488,62 @@ impl<'b, T: Target> Scanner<'_, 'b, T> {
         self.path.pop();
     }
 
+    /// A supported pointer adapter: the referent its access binding's
+    /// route reaches, scanned as a new origin. A route that lands
+    /// nowhere — a trait object the join cannot resolve, a read the
+    /// allocator refuses — is reported and stops.
+    fn adapter(&mut self, value: Value<'b>, key: ValueKey, frame: Frame) {
+        if frame.chain >= self.budget.limits.max_chain_depth {
+            self.report(WalkIssue::new(
+                key,
+                WalkIssueKind::DepthLimit,
+                format!(
+                    "the chain depth limit ({}) was reached",
+                    self.budget.limits.max_chain_depth
+                ),
+            ));
+            return;
+        }
+        if !self.budget.charge_referent() {
+            let stop = Self::spent(self.budget);
+            self.node_stop(key, stop);
+            return;
+        }
+        let Some(next) = self.ctx.access_referent(value, &self.read) else {
+            return;
+        };
+        match next {
+            NextFuture::Next {
+                future, selected, ..
+            } => {
+                let steps: Vec<Step> = match selected {
+                    FutureTarget::Value(path) => path.steps.clone(),
+                    FutureTarget::Dynamic { pointer, .. } => {
+                        let mut steps = pointer.steps.clone();
+                        steps.push(Step::Deref);
+                        steps
+                    }
+                };
+                let depth = self.path.len();
+                self.path.extend(steps);
+                self.root(future, frame.linked());
+                self.path.truncate(depth);
+            }
+            NextFuture::End(ChainEnd::Error(e)) => self.report(issue_of(key, &e)),
+            NextFuture::End(ChainEnd::UnknownDyn { pointee, .. }) => self.report(WalkIssue::new(
+                key,
+                WalkIssueKind::UnknownDynamicType,
+                format!("the concrete type behind the {pointee} is not in the tokio info"),
+            )),
+            NextFuture::End(ChainEnd::AmbiguousDyn { pointee, .. }) => self.report(WalkIssue::new(
+                key,
+                WalkIssueKind::AmbiguousDynamicType,
+                format!("the concrete type behind the {pointee} is ambiguous"),
+            )),
+            NextFuture::End(_) => {}
+        }
+    }
+
     /// A bound resource: observed, and the tasks its observation names
     /// — directly, or through the queue or registration it identifies
     /// — emitted as references.
@@ -685,9 +763,9 @@ mod tests {
             .unwrap_or_else(|| panic!("the fixture lists a task named {name}"))
     }
 
-    /// The resident future a task's stage holds.
+    /// The resident future a task's stage holds, as its nominal root.
     fn root_of<'a, T: Target>(ctx: &Context<'a, T>, task: &Task) -> Value<'a> {
-        match ctx.task_stage(task).unwrap() {
+        match ctx.task_root(task, &ReadContext::none()).unwrap() {
             TaskStage::Running(root) => root,
             other => panic!("the task's future is resident: {other:?}"),
         }
@@ -823,8 +901,10 @@ mod tests {
     /// An acquire reached through an unsupported wrapper — the tokio
     /// lock's own async block, whose captured `self` reference the
     /// layout cannot vouch for — still yields the queue's task wakers,
-    /// with the uncertain capture reported rather than read and every
-    /// pointer on the way (`future1`'s box, the `Arc`) a silent stop.
+    /// with the uncertain capture reported rather than read. The held
+    /// `future1` is followed through its box by the pin's access
+    /// binding, and its own lock's async block reports the same
+    /// capture; the `Arc` on the way is a silent stop.
     #[test]
     fn test_an_acquire_references_the_queued_wakers() {
         let (bundle, snapshot) = testkit::load_any("futurelock");
@@ -833,12 +913,18 @@ mod tests {
         let task = task_named(&list, "futurelock::main");
         let (completion, sink) = scan_task(&ctx, task);
         assert!(!completion.complete);
-        assert_eq!(kinds(&sink.issues), [WalkIssueKind::UnknownInitialization]);
+        assert_eq!(
+            kinds(&sink.issues),
+            [
+                WalkIssueKind::UnknownInitialization,
+                WalkIssueKind::UnknownInitialization
+            ]
+        );
         assert!(
-            sink.issues[0]
+            sink.issues.iter().all(|i| i
                 .detail
                 .as_deref()
-                .is_some_and(|d| d.contains("_ref__self")),
+                .is_some_and(|d| d.contains("_ref__self"))),
             "{:?}",
             sink.issues
         );
@@ -858,8 +944,9 @@ mod tests {
             path.iter().filter(|s| *s == ".__awaitee").count() >= 5,
             "{path:?}"
         );
-        // The semaphore and its one queue node, one dereference each.
-        assert_eq!(completion.referent_expansions, 2);
+        // The semaphore and its one queue node, one dereference each,
+        // and `future1`'s box.
+        assert_eq!(completion.referent_expansions, 3);
     }
 
     /// The tasks a `JoinSet` holds are references through its entries,
@@ -894,7 +981,10 @@ mod tests {
         listed.sort_unstable();
         assert!(!listed.is_empty());
         assert_eq!(found, listed);
-        assert_eq!(completion.referent_expansions, listed.len() as u64);
+        // One expansion per entry, and one for the `&mut JoinSet` the
+        // `join_next` frame borrows — which lands on the set the driver
+        // holds by value, walked once.
+        assert_eq!(completion.referent_expansions, listed.len() as u64 + 1);
 
         // A set whose own count disagrees with its lists says so.
         {
@@ -1039,7 +1129,11 @@ mod tests {
         // nothing here names a task.
         assert!(sink.references.is_empty(), "{:?}", sink.references);
         assert!(completion.complete, "{:?}", sink.issues);
-        assert_eq!(completion.referent_expansions, total as u64);
+        // One expansion per child, plus the two adapters the driver's
+        // frames hold: the `boxed` local's pin, and the `&mut
+        // FuturesUnordered` the `Next` awaitee borrows — which lands on
+        // the set held by value, walked once.
+        assert_eq!(completion.referent_expansions, total as u64 + 2);
         let visits = completion.inline_visits;
 
         // Every child scanned once: a second scan of the same root
@@ -1128,8 +1222,10 @@ mod tests {
         assert!(!completion.complete);
         assert!(kinds(&sink.issues).contains(&WalkIssueKind::HopLimit));
         assert!(completion.inline_visits < visits);
-        // The nested set sits inside a child, so it is never walked.
-        assert!(completion.referent_expansions < total as u64);
+        // The nested set sits inside a child, so it is never walked:
+        // its nodes are the expansions the unbounded scan made and
+        // this one did not.
+        assert!(completion.referent_expansions < total as u64 + 2);
 
         // One hop allowed: the children are scanned, the set nested in
         // one of them is walked, and its own children are the limit.
@@ -1144,7 +1240,7 @@ mod tests {
         );
         assert!(!completion.complete);
         assert!(kinds(&sink.issues).contains(&WalkIssueKind::HopLimit));
-        assert_eq!(completion.referent_expansions, total as u64);
+        assert_eq!(completion.referent_expansions, total as u64 + 2);
         assert!(completion.inline_visits < visits);
 
         // A future held beside a chain is one hop of its own: the
@@ -1339,7 +1435,9 @@ mod tests {
 
     /// A coroutine chain is bounded by its own limit, not the nesting
     /// one: the futurelock's acquire sits five awaitees down, and a
-    /// chain limit of two stops short of it with the reason.
+    /// chain limit of two stops short of it with the reason — on the
+    /// task's own chain, and again on the chain of the `future1` it
+    /// holds, followed through its box.
     #[test]
     fn test_the_chain_depth_limit_bounds_a_deep_await_chain() {
         let (bundle, snapshot) = testkit::load_any("futurelock");
@@ -1362,14 +1460,13 @@ mod tests {
             .iter()
             .filter(|i| i.kind == WalkIssueKind::DepthLimit)
             .collect();
-        assert_eq!(limits.len(), 1, "{:?}", sink.issues);
+        assert_eq!(limits.len(), 2, "{:?}", sink.issues);
         assert!(
-            limits[0]
+            limits.iter().all(|l| l
                 .detail
                 .as_deref()
-                .is_some_and(|d| d.contains("chain depth limit (2)")),
-            "{:?}",
-            limits[0]
+                .is_some_and(|d| d.contains("chain depth limit (2)"))),
+            "{limits:?}"
         );
         // The nesting limit, at the same value, does not bind the
         // chain at all.
@@ -1384,7 +1481,8 @@ mod tests {
         );
         assert_eq!(sink.references.len(), 1);
         assert!(!kinds(&sink.issues).contains(&WalkIssueKind::HopLimit));
-        assert_eq!(completion.referent_expansions, 2);
+        // The semaphore, its queue node, and `future1`'s box.
+        assert_eq!(completion.referent_expansions, 3);
     }
 
     /// An array of aggregates is reported as unscanned rather than

@@ -180,6 +180,20 @@ impl<'b, T: Target> Context<'b, T> {
         self.continuation(value, read).1
     }
 
+    /// The referent a supported pointer adapter reaches — a `Box<F>`,
+    /// a `Pin<Box<F>>`, a `&mut F`, a `Pin<Box<dyn Future>>` — by the
+    /// route its access binding records, whether or not the adapter is
+    /// itself a future. `None` for a value with no such binding: the
+    /// pointer word is then nobody's to follow.
+    pub(crate) fn access_referent(
+        &self,
+        value: Value<'b>,
+        read: &ReadContext<'_>,
+    ) -> Option<NextFuture<'b>> {
+        let access = self.type_semantics(value.ty.id())?.access.as_ref()?;
+        Some(self.delegate(value, &access.target, false, read))
+    }
+
     /// [`Context::next_future`], keeping the decoded state of a
     /// variant-matched frame for the chain's display.
     fn continuation(
