@@ -7,7 +7,7 @@
 //! reads a target; [`bundle`](super::bundle) builds these, and the
 //! census, graph, and every command consume them.
 
-use super::observe::Consistency;
+use super::observe::{Consistency, ReferenceSource};
 use super::{Lifecycle, Location, RawInstant, TaskAddr, TaskState};
 
 use hansei_bundle::tokio::timer;
@@ -124,6 +124,13 @@ pub enum DiscoveryRoute {
     /// The thread's `task::local::CURRENT` anchor, populated only while
     /// a set is being polled (or held entered).
     Tls,
+    /// The reference scan over an enumerated task's initialized
+    /// storage ([`Context::scan_references`]) met a reference of this
+    /// kind to one of its tasks — wherever in that storage it sat, not
+    /// only at the end of an await chain.
+    ///
+    /// [`Context::scan_references`]: super::bundle::Context::scan_references
+    Scanned(ReferenceSource),
 }
 
 impl fmt::Display for DiscoveryRoute {
@@ -137,6 +144,7 @@ impl fmt::Display for DiscoveryRoute {
                 f.write_str("a task waker on an io resource registered with a runtime's driver")
             }
             Self::Tls => f.write_str("the polling thread's TLS anchor"),
+            Self::Scanned(source) => write!(f, "{source} scanned in an enumerated task's storage"),
         }
     }
 }

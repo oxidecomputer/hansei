@@ -1605,9 +1605,16 @@ impl<'b, T: Target> Session<'b, T> {
             })?;
         // Runtimes nothing is currently inside, and local sets, merge
         // into the same population: the runtimes join the list above,
-        // the sets are tagged as groups after every runtime.
+        // the sets are tagged as groups after every runtime. Discovery
+        // reads under the prepared allocator evidence; what its gates
+        // refuse is its own account, not the session's render tally.
+        let gates = GateCounts::default();
+        let view = umem.as_ref().map(|umem| HeapView::new(umem, proc, &gates));
+        let read = ReadContext {
+            heap: view.as_ref().map(|view| view as &dyn reify::Heap),
+        };
         let (local_sets, registries) =
-            ctx.discover_hidden_tasks(&lwps, &workers, &mut runtimes, &excluded, &mut tasks);
+            ctx.discover_hidden_tasks(&lwps, &workers, &mut runtimes, &excluded, &mut tasks, &read);
         print_warnings(&tasks.errors)?;
 
         Ok(Session {

@@ -1,7 +1,11 @@
 ---
 source: hansei/src/offline.rs
-description: "`whatis 0x1299800` over illumos/delegation-cases"
+description: "`whatis 0x1686800` over illumos/delegation-cases"
 ---
+Status: live
+Size:   272 byte block
+Offset: +16 in block
+
 Task 1: future Pin<Box<delegation_cases::Gated<1>>>
     At: offset 0xADDR in the task's allocation (header 0xADDR)
     State: idle

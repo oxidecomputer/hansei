@@ -1,7 +1,11 @@
 ---
 source: hansei/src/offline.rs
-description: "`whatis 0x1424500` over illumos/local-set-io"
+description: "`whatis 0x1638500` over illumos/local-set-io"
 ---
+Status: live
+Size:   272 byte block
+Offset: +16 in block
+
 Task 1: async fn local_set_io::local_reader
     At: offset 0xADDR in the task's allocation (header 0xADDR)
     State: idle

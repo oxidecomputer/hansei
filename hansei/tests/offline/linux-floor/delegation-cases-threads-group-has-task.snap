@@ -3,5 +3,5 @@ source: hansei/src/offline.rs
 description: "`threads --without role ^worker --group has-task` over linux-floor/delegation-cases"
 ---
 COUNT  HAS TASK  LWPS
-    2  no        1660720, 1660722
+    2  no        2727646, 2727648
 [1 group]

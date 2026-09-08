@@ -102,7 +102,10 @@ fn test_a_blank_worker_context_drops_only_that_thread() {
 
 /// An unreadable task degrades its own shard and nothing else: the
 /// error names the shard and the address, the other tasks still list,
-/// and the analysis still runs over what remains.
+/// and the analysis still runs over what remains. Every error is about
+/// the victim: the shard walk's, and — where another listed task's
+/// storage still references the victim, as a `JoinSet` entry does —
+/// discovery's, for the same header it then cannot follow home.
 #[test]
 fn test_an_unreadable_task_degrades_only_its_shard() {
     let (bundle, snapshot) = load_any("joinset");
@@ -113,10 +116,25 @@ fn test_an_unreadable_task_degrades_only_its_shard() {
     let ctx = Context::new(&corrupt, BundleView::new(&bundle)).unwrap();
     let degraded = tasks_of(&ctx, &corrupt);
 
-    assert_eq!(degraded.errors.len(), 1, "{:?}", degraded.errors);
-    let err = format!("{:#}", degraded.errors[0]);
-    assert!(err.contains("task walk failed in shard"), "{err}");
-    assert!(err.contains(&format!("{victim:#x}")), "{err}");
+    let errs: Vec<String> = degraded.errors.iter().map(|e| format!("{e:#}")).collect();
+    assert!(!errs.is_empty() && errs.len() <= 2, "{errs:?}");
+    assert!(
+        errs.iter().all(|e| e.contains(&format!("{victim:#x}"))),
+        "{errs:?}"
+    );
+    assert_eq!(
+        errs.iter()
+            .filter(|e| e.contains("task walk failed in shard"))
+            .count(),
+        1,
+        "{errs:?}"
+    );
+    assert!(
+        errs.iter()
+            .skip(1)
+            .all(|e| e.contains("failed to follow the unlisted task")),
+        "{errs:?}"
+    );
 
     // The victim is gone; every other task survived.
     assert!(degraded.tasks.iter().all(|t| t.addr.0 != victim));

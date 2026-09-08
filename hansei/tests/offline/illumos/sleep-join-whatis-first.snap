@@ -1,7 +1,11 @@
 ---
 source: hansei/src/offline.rs
-description: "`whatis 0x1077600` over illumos/sleep-join"
+description: "`whatis 0x1514600` over illumos/sleep-join"
 ---
+Status: live
+Size:   272 byte block
+Offset: +16 in block
+
 Task 3: async fn sleep_join::sleeper
     At: offset 0xADDR in the task's allocation (header 0xADDR)
     State: idle

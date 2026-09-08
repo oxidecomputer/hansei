@@ -392,6 +392,19 @@ pub enum ReferenceSource {
     JoinSetEntry,
 }
 
+impl std::fmt::Display for ReferenceSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::JoinHandle => "a JoinHandle",
+            Self::SemaphoreWaker => "a task waker queued on a semaphore",
+            Self::TimerWaker => "a task waker armed on a timer",
+            Self::IoWaker => "a task waker parked on an io registration",
+            Self::JoinTrailerWaker => "a join waker in a task's Trailer",
+            Self::JoinSetEntry => "a JoinSet entry",
+        })
+    }
+}
+
 /// Something a walk could not do, at the value it could not do it to.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct WalkIssue {

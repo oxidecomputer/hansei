@@ -1,7 +1,11 @@
 ---
 source: hansei/src/offline.rs
-description: "`whatis 0x10f1880` over illumos/blocking-pool"
+description: "`whatis 0x149d880` over illumos/blocking-pool"
 ---
+Status: live
+Size:   272 byte block
+Offset: +16 in block
+
 Task 3: future tokio::runtime::blocking::task::BlockingTask<blocking_pool::main::{async_block#0}::{closure_env#0}>
     At: offset 0xADDR in the task's allocation (header 0xADDR)
     State: running

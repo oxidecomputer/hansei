@@ -17,8 +17,9 @@ pub use super::model::*;
 use super::contract::{self, ContractReport, WalkPolicy, Walked};
 use super::observe::{
     AcquireObservation, Consistency, IoFutureState, IoObservation, JoinObservation, Observed,
-    QueueObservation, ReadContext, ResourceObservation, ScanBudget, TimerObservation,
-    TimerRegistrationState, ValueKey, WalkIssue, WalkIssueKind, issue_of, lock_consistency,
+    QueueObservation, ReadContext, ReferenceSink, ReferenceSource, ResourceObservation, ScanBudget,
+    ScanLimits, TimerObservation, TimerRegistrationState, ValueKey, WalkIssue, WalkIssueKind,
+    issue_of, lock_consistency,
 };
 use super::semantics::SemanticIndex;
 use super::{Location, RawInstant, TaskAddr, TaskState};
@@ -2095,19 +2096,29 @@ impl<'b, T: Target> Context<'b, T> {
     ///
     /// Route 3 reads each LWP's `task::local::CURRENT` anchor —
     /// populated only while a thread is mid-poll of a set. Route 1
-    /// walks the enumerated tasks' await chains and follows every
-    /// task-shaped pointer that lands outside the list — a
-    /// `JoinHandle`'s target, an armed task waker in a walked waiter
-    /// queue — through its cell's recorded scheduler, which says what
-    /// owns it: an `Arc<task::local::Shared>` is a set's, an `Arc` of
-    /// either flavor `Handle` a runtime's, and either way the list must
-    /// claim the task that led there (its own id equal to the task's
-    /// `Header.owner_id`) before it is admitted. Route 2 harvests the
-    /// discovered runtimes' registries of parked tasks — the timer
-    /// wheel, then the io driver's registrations — which hold a task's
-    /// waker whatever list owns it, and so are the only route that
-    /// reaches a set no enumerated task points at. Every route
-    /// converges on the owner's address and dedups there.
+    /// takes every task-shaped pointer in the enumerated tasks'
+    /// storage that lands outside the list — a `JoinHandle`'s target,
+    /// a task waker queued on a semaphore or parked on an io
+    /// registration the task holds, a `JoinSet` entry — through its
+    /// cell's recorded scheduler, which says what owns it: an
+    /// `Arc<task::local::Shared>` is a set's, an `Arc` of either
+    /// flavor `Handle` a runtime's, and either way the list must claim
+    /// the task that led there (its own id equal to the task's
+    /// `Header.owner_id`) before it is admitted. Two inputs feed that
+    /// route: the reference scan over each task's initialized storage
+    /// ([`Context::scan_references`], under `read`'s allocator
+    /// evidence), which finds a reference wherever it sits, and the
+    /// older sweep over each task's await chain and diagnosed wait,
+    /// which reaches what sits behind a boxed future the scan stops
+    /// at. The chain sweep is a temporary input, kept only until
+    /// explicit continuations give the scan that route, and it is
+    /// credited first, so what both find is attributed as it always
+    /// was. Route 2 harvests the discovered runtimes' registries of
+    /// parked tasks — the timer wheel, then the io driver's
+    /// registrations — which hold a task's waker whatever list owns
+    /// it, and so are the only route that reaches a set no enumerated
+    /// task points at. Every route converges on the owner's address
+    /// and dedups there.
     ///
     /// Each admitted list is then walked like one more shard and merged
     /// — including into further rounds of the sweep, since what it owns
@@ -2127,9 +2138,41 @@ impl<'b, T: Target> Context<'b, T> {
         runtimes: &mut Vec<RuntimeRef<'b>>,
         excluded: &[u64],
         list: &mut TaskList,
+        read: &ReadContext<'_>,
+    ) -> (Vec<LocalSetRef<'b>>, Registries) {
+        self.discover_hidden_tasks_with(
+            lwps,
+            workers,
+            runtimes,
+            excluded,
+            list,
+            read,
+            ScanLimits::default(),
+        )
+    }
+
+    /// [`discover_hidden_tasks`] under explicit scan limits. The
+    /// defaults are safety caps no healthy target reaches; a run that
+    /// spends one says so in `list.errors` rather than trimming
+    /// quietly, and this is how a test drives that report.
+    ///
+    /// [`discover_hidden_tasks`]: Context::discover_hidden_tasks
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn discover_hidden_tasks_with(
+        &self,
+        lwps: &[LwpInfo],
+        workers: &[Worker],
+        runtimes: &mut Vec<RuntimeRef<'b>>,
+        excluded: &[u64],
+        list: &mut TaskList,
+        read: &ReadContext<'_>,
+        limits: ScanLimits,
     ) -> (Vec<LocalSetRef<'b>>, Registries) {
         let mut sets: Vec<LocalSetRef<'b>> = Vec::new();
         let mut registries = Registries::default();
+        // One budget for the whole run: the scan's visit and referent
+        // caps are per discovery, not per task.
+        let mut budget = ScanBudget::new(limits);
 
         // The owner → LWP join table: each worker's own thread id, as
         // tokio's counter numbers it.
@@ -2231,7 +2274,13 @@ impl<'b, T: Target> Context<'b, T> {
             let found = if walked < list.tasks.len() {
                 let range = walked..list.tasks.len();
                 walked = list.tasks.len();
-                self.unlisted_task_pointers(list, range)
+                // The chain sweep first, so an owner both inputs reach
+                // is credited to the edge it always was; then the scan,
+                // whose finds past the sweep's are the ones only it
+                // makes.
+                let mut found = self.unlisted_task_pointers(list, range.clone());
+                self.scanned_task_pointers(list, range, read, &mut budget, &mut found);
+                found
             } else if wheeled < runtimes.len() {
                 let (found, errors) =
                     self.wheel_task_pointers(&runtimes[wheeled..], list, &mut registries);
@@ -2284,7 +2333,80 @@ impl<'b, T: Target> Context<'b, T> {
             list.tasks
                 .sort_by_key(|t| (t.task_id.is_none(), t.task_id, t.addr.0));
         }
+        // A spent budget is reported, never absorbed: the caps are
+        // there to bound a corrupt or pathological target, and a
+        // healthy one that reaches them is a fact to raise the cap on.
+        if budget.inline_visits >= budget.limits.max_inline_visits {
+            list.errors.push(anyhow!(
+                "the reference scan spent its budget of {} inline visits; \
+                 references past it were not followed",
+                budget.limits.max_inline_visits
+            ));
+        }
+        if budget.referent_expansions >= budget.limits.max_referent_expansions {
+            list.errors.push(anyhow!(
+                "the reference scan spent its budget of {} referent expansions; \
+                 references past it were not followed",
+                budget.limits.max_referent_expansions
+            ));
+        }
         (sets, registries)
+    }
+
+    /// Route 1's scan input: every task-Header pointer the reference
+    /// scan finds in the storage of `list.tasks[range]` that no
+    /// enumerated task claims, appended to `found` unless the chain
+    /// sweep already named it. Scan issues are not reported here — a
+    /// stop the scan cannot get past is a bounded loss of this input,
+    /// and the chain sweep and the registry harvests still run — but
+    /// the run-wide budget is `budget`'s, and its exhaustion is the
+    /// sweep's to report.
+    fn scanned_task_pointers(
+        &self,
+        list: &TaskList,
+        range: std::ops::Range<usize>,
+        read: &ReadContext<'_>,
+        budget: &mut ScanBudget,
+        found: &mut Vec<(u64, DiscoveryRoute)>,
+    ) {
+        /// The sink feeding the candidate queue: a target outside the
+        /// list, once, with the storage that referenced it as its
+        /// route. Nothing else the scan reports is kept.
+        struct Candidates<'l> {
+            list: &'l TaskList,
+            seen: HashSet<u64>,
+            found: Vec<(u64, DiscoveryRoute)>,
+        }
+
+        impl ReferenceSink for Candidates<'_> {
+            fn reference(
+                &mut self,
+                target: TaskAddr,
+                source: ReferenceSource,
+                _: Option<ValueKey>,
+                _: Option<TaskAddr>,
+                _: &[hansei_bundle::Step],
+            ) {
+                if !self.list.contains(target.0) && self.seen.insert(target.0) {
+                    self.found.push((target.0, DiscoveryRoute::Scanned(source)));
+                }
+            }
+
+            fn issue(&mut self, _: WalkIssue) {}
+        }
+
+        let mut sink = Candidates {
+            list,
+            seen: found.iter().map(|(addr, _)| *addr).collect(),
+            found: Vec::new(),
+        };
+        for task in &list.tasks[range] {
+            let Ok(TaskStage::Running(future)) = self.task_stage(task) else {
+                continue;
+            };
+            let _ = self.scan_references(future, task.addr, read, budget, &mut sink);
+        }
+        found.append(&mut sink.found);
     }
 
     /// The tokio thread id a worker's `Context` records — what a
@@ -5293,5 +5415,138 @@ mod tests {
         // The v0 spelling of `task::raw::poll`, however the future
         // type parameter mangles.
         assert!(sym.name.contains("3raw4poll"), "{}", sym.name);
+    }
+}
+
+/// Route 1's two inputs, side by side: the chain sweep and the
+/// reference scan over the same enumerated storage.
+#[cfg(test)]
+mod discovery_scan_tests {
+    use super::*;
+    use crate::testkit;
+
+    fn named<'l>(list: &'l TaskList, name: &str) -> &'l Task {
+        list.tasks
+            .iter()
+            .find(|t| matches!(&t.future, FutureInfo::Known(k) if k.display_name.contains(name)))
+            .unwrap_or_else(|| panic!("a task named {name}"))
+    }
+
+    /// The scan finds what the chain sweep finds: on the foreign-runtime
+    /// pair the joiner's held `JoinHandle` names a task no enumerated
+    /// list owns, and both inputs offer that Header — the sweep by the
+    /// diagnosed wait, the scan by the reference's own kind. Offered
+    /// after the sweep, the scan adds nothing the sweep already named;
+    /// offered alone, it names the same task. In the rounds after
+    /// admission the hidden runtime's own tasks are scanned in turn,
+    /// and reference nothing outside the list.
+    #[test]
+    fn test_the_scan_offers_what_the_chain_sweep_offers() {
+        for set in testkit::FIXTURE_SETS {
+            let (bundle, snapshot) = testkit::load(set, "foreign-runtime");
+            let ctx = testkit::context(&bundle, &snapshot);
+            let mut e = testkit::enumerate(&ctx, &snapshot);
+            let listed = e.list.tasks.len();
+            let read = ReadContext::none();
+
+            let swept = ctx.unlisted_task_pointers(&e.list, 0..listed);
+            let mut alone = Vec::new();
+            let mut budget = ScanBudget::default();
+            ctx.scanned_task_pointers(&e.list, 0..listed, &read, &mut budget, &mut alone);
+            let mut after = swept.clone();
+            ctx.scanned_task_pointers(&e.list, 0..listed, &read, &mut budget, &mut after);
+            assert!(budget.inline_visits > 0, "[{set}] the scan visited");
+
+            e.discover(&ctx, &[]);
+            let joined = named(&e.list, "foreign_runtime::joined").addr.0;
+            assert!(
+                swept.iter().any(|(addr, _)| *addr == joined),
+                "[{set}] the sweep offers the joined task: {swept:?}"
+            );
+            assert_eq!(
+                alone,
+                vec![(joined, DiscoveryRoute::Scanned(ReferenceSource::JoinHandle))],
+                "[{set}] the scan alone offers the joined task, once, by its kind"
+            );
+            assert_eq!(
+                after, swept,
+                "[{set}] after the sweep the scan adds nothing"
+            );
+            assert_eq!(
+                DiscoveryRoute::Scanned(ReferenceSource::JoinHandle).to_string(),
+                "a JoinHandle scanned in an enumerated task's storage"
+            );
+
+            // The later round: what the admitted runtime owns is scanned
+            // as new storage, and references only what is listed.
+            let mut later = Vec::new();
+            let before = budget.inline_visits;
+            ctx.scanned_task_pointers(
+                &e.list,
+                listed..e.list.tasks.len(),
+                &read,
+                &mut budget,
+                &mut later,
+            );
+            assert!(
+                e.list.tasks.len() > listed,
+                "[{set}] discovery admitted tasks"
+            );
+            assert!(
+                budget.inline_visits > before,
+                "[{set}] the later round scanned"
+            );
+            assert!(later.is_empty(), "[{set}] {later:?}");
+        }
+    }
+
+    /// A spent budget is reported, not absorbed: under a one-visit cap
+    /// the sweep says so in the list's errors and still finds every
+    /// owner through its other input, and under the defaults nothing
+    /// is spent and nothing is said.
+    #[test]
+    fn test_a_spent_scan_budget_is_reported() {
+        let (bundle, snapshot) = testkit::load_any("foreign-runtime");
+        let ctx = testkit::context(&bundle, &snapshot);
+        let discover = |limits: ScanLimits| {
+            let mut e = testkit::enumerate(&ctx, &snapshot);
+            let (sets, _) = ctx.discover_hidden_tasks_with(
+                &e.lwps,
+                &e.workers,
+                &mut e.runtimes,
+                &[],
+                &mut e.list,
+                &ReadContext::none(),
+                limits,
+            );
+            (e.runtimes.len(), sets.len(), e.list)
+        };
+        let (runtimes, sets, list) = discover(ScanLimits::default());
+        let budget: Vec<String> = list
+            .errors
+            .iter()
+            .map(|e| e.to_string())
+            .filter(|e| e.contains("reference scan spent"))
+            .collect();
+        assert!(budget.is_empty(), "{budget:?}");
+
+        let capped = ScanLimits {
+            max_inline_visits: 1,
+            ..ScanLimits::default()
+        };
+        let (capped_runtimes, capped_sets, capped_list) = discover(capped);
+        assert_eq!((capped_runtimes, capped_sets), (runtimes, sets));
+        assert_eq!(capped_list.tasks.len(), list.tasks.len());
+        let budget: Vec<String> = capped_list
+            .errors
+            .iter()
+            .map(|e| e.to_string())
+            .filter(|e| e.contains("reference scan spent"))
+            .collect();
+        assert_eq!(
+            budget,
+            ["the reference scan spent its budget of 1 inline visits; \
+              references past it were not followed"]
+        );
     }
 }

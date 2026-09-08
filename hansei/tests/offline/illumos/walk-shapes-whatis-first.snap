@@ -1,7 +1,11 @@
 ---
 source: hansei/src/offline.rs
-description: "`whatis 0xf20580` over illumos/walk-shapes"
+description: "`whatis 0x173d580` over illumos/walk-shapes"
 ---
+Status: live
+Size:   400 byte block
+Offset: +16 in block
+
 Task 1: async fn walk_shapes::chained
     At: offset 0xADDR in the task's allocation (header 0xADDR)
     State: idle

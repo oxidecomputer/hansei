@@ -212,7 +212,8 @@ pub(crate) fn exec_snapshot<T: proc::Target>(
     let mut list = ctx.enumerate_all_tasks(&runtimes)?;
     // A snapshot records only the reads the capture performs, so
     // discovery must be driven here for the offline pairs to replay it.
-    let (_, registries) = ctx.discover_hidden_tasks(&lwps, &workers, &mut runtimes, &[], &mut list);
+    let (_, registries) =
+        ctx.discover_hidden_tasks(&lwps, &workers, &mut runtimes, &[], &mut list, &read);
     print_warnings(&list.errors)?;
 
     let mut chains = 0usize;

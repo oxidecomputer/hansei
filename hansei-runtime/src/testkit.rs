@@ -145,10 +145,11 @@ pub struct Enumeration<'b> {
     /// session prepares it ([`crate::heap::prepare`]): the recorded
     /// policy of a snapshot, honored before anything is gated by it.
     pub heap: Option<UmemHeap>,
-    /// What the gates refused through [`with_read`], for as long as
-    /// this enumeration is read.
+    /// What the gates refused through [`with_read`] and [`discover`],
+    /// for as long as this enumeration is read.
     ///
     /// [`with_read`]: Enumeration::with_read
+    /// [`discover`]: Enumeration::discover
     pub gates: GateCounts,
 }
 
@@ -207,18 +208,27 @@ impl<'b> Enumeration<'b> {
 
     /// Run hidden-task discovery — the sweep `discover_hidden_tasks`
     /// performs — mutating the runtimes and list the way a session
-    /// does, and returning the local sets it admitted.
+    /// does, under the prepared allocator evidence the way a session
+    /// reads, and returning the local sets it admitted.
     pub fn discover<T: Target>(
         &mut self,
         ctx: &Context<'b, T>,
         exclude: &[u64],
     ) -> Vec<LocalSetRef<'b>> {
+        let view = self
+            .heap
+            .as_ref()
+            .map(|heap| HeapView::new(heap, ctx.proc, &self.gates));
+        let read = ReadContext {
+            heap: view.as_ref().map(|view| view as &dyn reify::Heap),
+        };
         let (sets, registries) = ctx.discover_hidden_tasks(
             &self.lwps,
             &self.workers,
             &mut self.runtimes,
             exclude,
             &mut self.list,
+            &read,
         );
         self.registries = registries;
         sets

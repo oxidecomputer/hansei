@@ -35,6 +35,11 @@
 //! stop and the legacy chain-based discovery remains the route to
 //! whatever sits behind one. A borrowed referent is followed only by a
 //! container or continuation contract, never by the scan itself.
+//!
+//! Hidden-task discovery ([`Context::discover_hidden_tasks`]) runs
+//! this scan over every enumerated task's storage as one of its two
+//! candidate inputs, beside that chain sweep, under the session's
+//! allocator evidence.
 
 use super::TaskAddr;
 use super::bundle::Context;

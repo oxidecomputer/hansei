@@ -1,7 +1,11 @@
 ---
 source: hansei/src/offline.rs
-description: "`whatis 0x145fa80` over illumos/foreign-runtime"
+description: "`whatis 0x11eca80` over illumos/foreign-runtime"
 ---
+Status: live
+Size:   272 byte block
+Offset: +16 in block
+
 Task 1: async fn foreign_runtime::joined
     At: offset 0xADDR in the task's allocation (header 0xADDR)
     State: idle

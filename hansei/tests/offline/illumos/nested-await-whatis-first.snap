@@ -1,7 +1,11 @@
 ---
 source: hansei/src/offline.rs
-description: "`whatis 0x10ad600` over illumos/nested-await"
+description: "`whatis 0x170d600` over illumos/nested-await"
 ---
+Status: live
+Size:   272 byte block
+Offset: +16 in block
+
 Task 3: async fn nested_await::outer
     At: offset 0xADDR in the task's allocation (header 0xADDR)
     State: idle
