@@ -1128,6 +1128,27 @@ mod tests {
         );
     }
 
+    /// A recorder answers the question about allocator evidence the
+    /// way the target it wraps does: a snapshot's recorded policy, or
+    /// nothing for a target that records none — so a driver
+    /// recapturing a pair prepares under the policy the pair records.
+    #[test]
+    fn test_the_recorder_forwards_the_recorded_heap_policy() {
+        let target = FakeTarget::new();
+        assert_eq!(Recorder::new(&target).recorded_heap_evidence(), None);
+        for evidence in [
+            RecordedHeapEvidence::Available,
+            RecordedHeapEvidence::Unavailable,
+        ] {
+            let snap = Recorder::new(&target).snapshot(evidence).unwrap();
+            assert_eq!(snap.recorded_heap_evidence(), Some(evidence));
+            assert_eq!(
+                Recorder::new(&snap).recorded_heap_evidence(),
+                Some(evidence)
+            );
+        }
+    }
+
     #[test]
     fn test_later_reads_win_overlaps() {
         use std::sync::atomic::{AtomicUsize, Ordering};
