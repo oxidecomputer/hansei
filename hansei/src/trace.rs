@@ -1557,6 +1557,72 @@ mod chain_end_tests {
     #[test]
     fn test_a_leaf_prints_nothing() {
         assert_eq!(rendered(ChainEnd::Leaf), "");
+        assert_eq!(rendered(ChainEnd::Primitive), "");
+    }
+
+    /// The explicit engine's ends say what they found: a terminal
+    /// coroutine state, a mid-poll root, or a continuation nothing
+    /// establishes — with the reason in words, and the frame it stopped
+    /// at where the chain has one.
+    #[test]
+    fn test_the_engine_ends_say_why() {
+        use hansei_bundle::SemanticIssueKind;
+        use hansei_runtime::tokio::observe::ValueKey;
+        assert_eq!(
+            rendered(ChainEnd::Unresumed),
+            "the chain ends in a future that has never been polled\n"
+        );
+        assert_eq!(
+            rendered(ChainEnd::Returned),
+            "the chain ends in a future that has returned\n"
+        );
+        assert_eq!(
+            rendered(ChainEnd::Panicked),
+            "the chain ends in a future that panicked\n"
+        );
+        assert_eq!(
+            rendered(ChainEnd::ActivePoll),
+            "the task is mid-poll: its saved state below the root is not read as a chain\n"
+        );
+        let at = ValueKey {
+            addr: 0x40,
+            ty: hansei_bundle::BundleTypeId(0),
+        };
+        for (reason, words) in [
+            (
+                SemanticIssueKind::NoRule,
+                "no reviewed rule covers its implementation",
+            ),
+            (
+                SemanticIssueKind::UnsupportedOrigin,
+                "origin is not reviewed",
+            ),
+            (
+                SemanticIssueKind::MissingLayout,
+                "layout is not in the tokio info",
+            ),
+            (SemanticIssueKind::AmbiguousLayout, "layout is ambiguous"),
+            (
+                SemanticIssueKind::UnsupportedState,
+                "state is one no rule covers",
+            ),
+            (
+                SemanticIssueKind::MultipleChildren,
+                "polls more than one future",
+            ),
+            (
+                SemanticIssueKind::PossiblyUninitialized,
+                "may not be initialized",
+            ),
+        ] {
+            let out = rendered(ChainEnd::UnknownContinuation { at, reason });
+            assert!(
+                out.starts_with("what the root polls is not established (")
+                    && out.contains(words)
+                    && out.ends_with("); the chain ends there\n"),
+                "{reason:?}: {out}"
+            );
+        }
     }
 
     /// The dyn continuations name the pointee — display-folded like

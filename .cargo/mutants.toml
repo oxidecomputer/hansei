@@ -187,6 +187,13 @@ exclude_re = [
     # the payload slice bound a few lines up; that one every chain test
     # kills, so skipping its report costs nothing.)
     "bundle.rs.*replace \\+ with - in Context<'b, T>::await_chain",
+    # The engine slices a coroutine's variant payload at the state's
+    # address plus the payload's offset, which rustc lays at zero for
+    # every coroutine state (the discriminant sits among the members):
+    # no fixture, and no reviewed program, reaches a payload past
+    # offset zero, so subtracting it reads the same bytes. The `*`
+    # mutant on the same expression is caught (address times zero).
+    "chain.rs.*replace \\+ with - in Context<'b, T>::continuation",
     # The same structurally-zero offset at the step interpreter's two
     # variant arms: subtracting a zero payload offset is the same
     # address on any input a rustc-built bundle produces. The `*`

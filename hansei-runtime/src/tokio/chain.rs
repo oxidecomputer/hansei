@@ -738,6 +738,7 @@ mod tests {
                         let child = chain.frames[2].future;
                         assert_eq!((child.addr, child.ty.size()), (case.child, case.child_size));
                         assert_eq!(chain.edges[1].exclusive, case.name != "instrumented");
+                        assert_eq!(chain.all_exclusive(), case.name != "instrumented");
                         assert!(chain.frames[2].dyn_symbol.is_none());
                         assert!(matches!(
                             chain.end,
@@ -805,8 +806,16 @@ mod tests {
         // edge, and the state decoded on the frame that is a coroutine.
         assert_eq!(joiner.chain.frames.len(), 2, "{:?}", names(&joiner.chain));
         assert_eq!(joiner.chain.edges.len(), 1);
-        assert!(joiner.chain.frames[0].state.is_some());
+        let state = joiner.chain.frames[0]
+            .state
+            .as_ref()
+            .expect("a coroutine's state");
         assert!(joiner.chain.frames[1].state.is_none());
+        // rustc lays a coroutine's variant payload at the enum's own
+        // address; the payload is sliced there, without peeling.
+        assert_eq!(state.payload.addr, joiner.chain.frames[0].future.addr);
+        assert!(state.name.starts_with("Suspend"), "{}", state.name);
+        assert!(state.await_loc.is_some());
 
         let (bundle, snapshot) = load_any("futurelock");
         let ctx = testkit::context(&bundle, &snapshot);
@@ -1060,6 +1069,127 @@ mod tests {
         let resolved = &inspection.chain.frames[2];
         assert!(
             resolved.future.ty.name().contains("set_member"),
+            "{:?} {:?}",
+            names(&inspection.chain),
+            inspection.chain.end
+        );
+    }
+
+    /// A route is held to its recorded target: a program whose path
+    /// claims another endpoint than the one the route lands on ends
+    /// the chain with an error, whatever the landed value looks like.
+    #[test]
+    fn test_a_route_landing_off_its_recorded_target_is_an_error() {
+        let (mut bundle, snapshot) = load_any("sleep-join");
+        let ctx = testkit::context(&bundle, &snapshot);
+        let list = testkit::tasks(&ctx, &snapshot);
+        let root_ty = root_of(&ctx, task_named(&list, "sleeper")).ty.id();
+        let join_ty = root_of(&ctx, task_named(&list, "joiner")).ty.id();
+        drop(ctx);
+        // The sleeper's delegating case now claims to land on the
+        // joiner's coroutine.
+        let record = bundle
+            .semantics
+            .types
+            .iter_mut()
+            .find(|r| r.ty == root_ty)
+            .unwrap();
+        let Continuation::Bound {
+            program: PollProgram::MatchVariant { cases, .. },
+            ..
+        } = &mut record.future.as_mut().unwrap().continuation
+        else {
+            panic!("a coroutine matches its states");
+        };
+        let mut retargeted = 0;
+        for case in cases.iter_mut() {
+            if let PollAction::Delegate {
+                target: FutureTarget::Value(path),
+                ..
+            } = &mut case.action
+            {
+                path.target = join_ty;
+                retargeted += 1;
+            }
+        }
+        assert!(retargeted > 0);
+        let ctx = testkit::context(&bundle, &snapshot);
+        let list = testkit::tasks(&ctx, &snapshot);
+        let inspection = inspect(&ctx, task_named(&list, "sleeper"));
+        assert_eq!(inspection.chain.frames.len(), 1);
+        assert!(inspection.chain.edges.is_empty());
+        let ChainEnd::Error(e) = &inspection.chain.end else {
+            panic!("an error end: {:?}", inspection.chain.end);
+        };
+        assert!(
+            format!("{e:#}").contains("rather than its recorded target"),
+            "{e:#}"
+        );
+    }
+
+    /// A poll symbol ambiguous in the task table between entries of one
+    /// future is that future's identity, not an ambiguity: the entries
+    /// name one type.
+    #[test]
+    fn test_task_entries_of_one_future_are_one_identity() {
+        let (mut bundle, snapshot) = load_any("dyn-future");
+        let ctx = testkit::context(&bundle, &snapshot);
+        let list = testkit::tasks(&ctx, &snapshot);
+        let (_, _, vtable) = wide_pointer(&ctx, &list);
+        let member = task_named(&list, "set_member");
+        let FutureInfo::Known(known) = &member.future else {
+            unreachable!()
+        };
+        let entry_id = known.entry;
+        let header_ty = ctx
+            .infra_ty(ctx.view.bundle().infra.header, "task Header")
+            .unwrap();
+        let header = Value::read(&snapshot, header_ty, member.addr.0).unwrap();
+        let member_vtable: u64 = ctx.walk(WalkRole::HeaderVtable).read(header).unwrap();
+        let member_poll: u64 = ctx
+            .walk(WalkRole::VtablePoll)
+            .read(
+                Value::read(
+                    &snapshot,
+                    ctx.infra_ty(ctx.view.bundle().infra.vtable, "task Vtable")
+                        .unwrap(),
+                    member_vtable,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        drop(ctx);
+        // A second entry of the same future under the same symbol.
+        let twin = bundle.tasks.entries[entry_id.0 as usize].clone();
+        bundle.tasks.entries.push(twin);
+        let twin_id = hansei_bundle::TaskEntryId(bundle.tasks.entries.len() as u32 - 1);
+        // Under every symbol that names the entry: the vtable's poll
+        // is one of them, whichever spelling the target's symtab uses.
+        let mut keyed = 0;
+        for ids in bundle.tasks.by_symbol.values_mut() {
+            if ids.contains(&entry_id) {
+                ids.push(twin_id);
+                keyed += 1;
+            }
+        }
+        assert!(keyed > 0, "the member's symbols are in the task table");
+        bundle.tasks.by_normalized_symbol =
+            hansei_bundle::symbols::normalized_candidate_index(&bundle.tasks.by_symbol);
+        let (corrupt, list) = corrupted(&bundle, &snapshot, |c| {
+            c.patch(vtable + 3 * 8, member_poll).patch(vtable, 0)
+        });
+        let ctx = Context::new(&corrupt, BundleView::new(&bundle)).unwrap();
+        assert!(matches!(
+            ctx.task_ids_memoized(&ctx.symbol_at(member_poll).unwrap()),
+            SymbolLookup::Ambiguous(_)
+        ));
+        let inspection = inspect(&ctx, task_named(&list, "driver"));
+        assert!(
+            inspection.chain.frames[2]
+                .future
+                .ty
+                .name()
+                .contains("set_member"),
             "{:?} {:?}",
             names(&inspection.chain),
             inspection.chain.end

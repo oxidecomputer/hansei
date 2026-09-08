@@ -1667,6 +1667,15 @@ mod tests {
                 "{what}: {spelled} {:?}",
                 row.notes
             );
+            // The note names what was read: the lock held, or the
+            // slot's task.
+            match what {
+                "locked" => assert!(row.notes[0].contains("locked"), "{:?}", row.notes),
+                "another task's waker in the slot" => {
+                    assert!(row.notes[0].contains("not this one"), "{:?}", row.notes)
+                }
+                _ => {}
+            }
         }
 
         // The readiness await: its node notified is ready; its state
@@ -1685,6 +1694,24 @@ mod tests {
             row(&rows2, task_named(&list2, "local_watcher")).assessment,
             WaitAssessment::ResourceReady(ReadyReason::IoNotified)
         ));
+        // Another task's waker on the listed node: a contradiction, not
+        // a wait on this task's behalf.
+        let raw = ctx
+            .walk(WalkRole::ReadinessWaiterWaker)
+            .walk(node)
+            .unwrap()
+            .optional()
+            .expect("the node is armed");
+        let data = ctx.walk(WalkRole::WakerData).walk_at(raw).unwrap();
+        let patched = Corrupt::new(&snapshot).patch(data.addr, other);
+        let ctx5 = Context::new(&patched, BundleView::new(&bundle)).unwrap();
+        let (list5, rows5, _) = assessed(&ctx5, &patched);
+        let row5 = row(&rows5, task_named(&list5, "local_watcher"));
+        assert!(matches!(
+            row5.assessment,
+            WaitAssessment::Unknown(WaitUnknownReason::ConflictingEvidence)
+        ));
+        assert!(row5.notes[0].contains("not this one"), "{:?}", row5.notes);
         let state = ctx.walk(WalkRole::ReadinessState).walk_at(await_).unwrap();
         assert_eq!(state.ty.enumerator_name(state.bytes), Some("Waiting"));
         let done = (0u8..8)
@@ -1780,5 +1807,190 @@ mod tests {
             unreachable!()
         };
         assert!(matches!(wait.into_target(), WaitTarget::Io { addr: 7, .. }));
+    }
+
+    /// The direction masks are tokio's: a readable interest accepts
+    /// readable or read-closed, a writable one writable or
+    /// write-closed, and any other bit only itself.
+    #[test]
+    fn test_direction_masks_follow_tokios() {
+        assert_eq!(ready::direction_mask(0), 0);
+        assert_eq!(ready::direction_mask(ready::READABLE), 0b101);
+        assert_eq!(ready::direction_mask(ready::WRITABLE), 0b1010);
+        assert_eq!(ready::direction_mask(0b11), 0b1111);
+        assert_eq!(ready::direction_mask(0b10_0000), 0b10_0000);
+        assert_eq!(
+            ready::direction_mask(ready::READ_CLOSED),
+            ready::READ_CLOSED
+        );
+    }
+
+    /// A readiness await's own state word, short of `Waiting`, is its
+    /// own answer: never parked, notified, a word no state names, or
+    /// unread — each before the registration is consulted.
+    #[test]
+    fn test_a_readiness_awaits_state_word_is_assessed_first() {
+        let (bundle, snapshot) = load_any("local-set-io");
+        let ctx = testkit::context(&bundle, &snapshot);
+        let list = testkit::tasks(&ctx, &snapshot);
+        let watcher = task_named(&list, "local_watcher");
+        let await_ = primitive_of(&ctx, watcher);
+        let observed = ctx.observe_resource(await_, &ReadContext::none());
+        let Some(ResourceObservation::Io(io)) = observed.value else {
+            panic!("a readiness await observes as io");
+        };
+        assert_eq!(io.readiness_state, Some(IoFutureState::Waiting));
+        let facts = TaskFacts::from(watcher);
+        let key = ValueKey::of(await_);
+        for (state, expected) in [
+            (Some(IoFutureState::Init), "Unknown(ConflictingEvidence)"),
+            (Some(IoFutureState::Done), "ResourceReady(IoNotified)"),
+            (
+                Some(IoFutureState::Unknown(7)),
+                "Unknown(ResourceStateUnproven)",
+            ),
+            (None, "Unknown(ResourceUnreadable)"),
+        ] {
+            let io = IoObservation {
+                readiness_state: state,
+                ..io.clone()
+            };
+            let mut pass = AssessmentPass::new();
+            let assessed = ctx.assess_io(&mut pass, &io, &facts, key, &ReadContext::none());
+            assert_eq!(
+                format!("{:?}", assessed.assessment),
+                expected,
+                "{state:?}: {:?}",
+                assessed.notes
+            );
+        }
+    }
+
+    /// A queued node whose waker names another task is a contradiction
+    /// for this one; the walk-shapes victim's node, re-armed for the
+    /// abandoner, says so.
+    #[test]
+    fn test_a_queued_node_must_carry_this_tasks_waker() {
+        let (bundle, snapshot) = load_any("walk-shapes");
+        let ctx = testkit::context(&bundle, &snapshot);
+        let list = testkit::tasks(&ctx, &snapshot);
+        let victim = task_named(&list, "victim");
+        let other = task_named(&list, "abandoner").addr.0;
+        let acquire = primitive_of(&ctx, victim);
+        let node = ctx.walk(WalkRole::AcquireNode).walk_at(acquire).unwrap();
+        let raw = ctx
+            .walk(WalkRole::WaiterWaker)
+            .walk(node)
+            .unwrap()
+            .optional()
+            .expect("the victim's node is armed");
+        let data = ctx.walk(WalkRole::WakerData).walk_at(raw).unwrap();
+        assert_eq!(
+            u64::from_le_bytes(data.bytes.try_into().unwrap()),
+            victim.addr.0
+        );
+        let patched = Corrupt::new(&snapshot).patch(data.addr, other);
+        let ctx = Context::new(&patched, BundleView::new(&bundle)).unwrap();
+        let (list, rows, _) = assessed(&ctx, &patched);
+        let row = row(&rows, task_named(&list, "victim"));
+        assert!(
+            matches!(
+                row.assessment,
+                WaitAssessment::Unknown(WaitUnknownReason::ConflictingEvidence)
+            ),
+            "{:?}",
+            row.assessment
+        );
+        assert!(row.notes[0].contains("not this one"), "{:?}", row.notes);
+    }
+
+    /// A barrier needs an idle owner and a terminal whose protocol
+    /// excludes other polling while pending: the futurelock holder
+    /// scheduled, or its acquire's binding without that guarantee,
+    /// proves none — while the wait itself still verifies in the
+    /// latter case. And a barrier's grant is its counter's.
+    #[test]
+    fn test_a_barrier_needs_an_idle_owner_and_an_exclusive_pending_terminal() {
+        let (mut bundle, snapshot) = load_any("futurelock");
+        let ctx = testkit::context(&bundle, &snapshot);
+        let (list, rows, barriers) = assessed(&ctx, &snapshot);
+        assert_eq!(barriers.len(), 1);
+        let holder = list
+            .tasks
+            .iter()
+            .find(|t| t.addr == barriers[0].holder)
+            .unwrap();
+        let acquire_ty = primitive_of(&ctx, holder).ty.id();
+        assert!(matches!(
+            row(&rows, holder).assessment,
+            WaitAssessment::Waiting(_)
+        ));
+
+        let scheduled = with_state(&snapshot, &ctx, holder, NOTIFIED);
+        let ctx2 = Context::new(&scheduled, BundleView::new(&bundle)).unwrap();
+        let (_, rows2, barriers2) = assessed(&ctx2, &scheduled);
+        assert!(barriers2.is_empty(), "{barriers2:#?}");
+        assert!(matches!(
+            rows2
+                .iter()
+                .find(|r| r.task.addr == holder.addr)
+                .unwrap()
+                .assessment,
+            WaitAssessment::Runnable(RunnableReason::Scheduled)
+        ));
+        drop(ctx);
+
+        let record = bundle
+            .semantics
+            .types
+            .iter_mut()
+            .find(|r| r.ty == acquire_ty)
+            .unwrap();
+        record.resource.as_mut().unwrap().exclusive_pending = false;
+        let ctx3 = testkit::context(&bundle, &snapshot);
+        let (list3, rows3, barriers3) = assessed(&ctx3, &snapshot);
+        assert!(barriers3.is_empty(), "{barriers3:#?}");
+        let holder3 = list3.tasks.iter().find(|t| t.addr == holder.addr).unwrap();
+        assert!(matches!(
+            row(&rows3, holder3).assessment,
+            WaitAssessment::Waiting(_)
+        ));
+
+        let mut barrier = PollingBarrier {
+            holder: holder.addr,
+            frame: 0,
+            state: String::new(),
+            await_loc: None,
+            local: String::new(),
+            candidate: ValueKey {
+                addr: 1,
+                ty: acquire_ty,
+            },
+            future: String::new(),
+            owner: None,
+            acquire: AcquireObservation {
+                future: ValueKey {
+                    addr: 1,
+                    ty: acquire_ty,
+                },
+                semaphore: ValueKey {
+                    addr: 2,
+                    ty: acquire_ty,
+                },
+                node: 3,
+                requested: 2,
+                needed: 1,
+                queued: true,
+                queue_position: None,
+            },
+            primitive: ValueKey {
+                addr: 4,
+                ty: acquire_ty,
+            },
+            edges: Vec::new(),
+        };
+        assert!(!barrier.granted());
+        barrier.acquire.needed = 0;
+        assert!(barrier.granted());
     }
 }
