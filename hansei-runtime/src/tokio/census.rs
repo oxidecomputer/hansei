@@ -2724,6 +2724,32 @@ mod tests {
     /// same find, the same subtree gone with it, the same count — so a
     /// scan's refusal behaviour can be asserted where no core carries
     /// allocator metadata.
+    /// The census's count of withheld locals is at least what the
+    /// tasks' own frames withhold — it scans the chains of what it
+    /// finds as well — and walk-shapes withholds some.
+    #[test]
+    fn test_uncertain_locals_are_summed_over_the_frames() {
+        let (bundle, snapshot) = testkit::load_any("walk-shapes");
+        let ctx = testkit::context(&bundle, &snapshot);
+        let list = testkit::tasks(&ctx, &snapshot);
+        let census = census(&ctx, &list);
+        let mut expected = 0;
+        for task in &list.tasks {
+            let Ok(Some(inspection)) = ctx.inspect_task(task, &ReadContext::none()) else {
+                continue;
+            };
+            for frame in &inspection.chain.frames {
+                expected += frame_locals(&ctx, frame).uncertain;
+            }
+        }
+        assert!(expected > 0);
+        assert!(
+            census.uncertain >= expected,
+            "{} < {expected}",
+            census.uncertain
+        );
+    }
+
     #[test]
     fn test_the_heap_double_refuses_like_the_real_index() {
         let full = unordered_census(Bounds::default());

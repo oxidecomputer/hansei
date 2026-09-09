@@ -268,11 +268,22 @@ impl<T: Target> census::Recognize for Branching<'_, '_, T> {
     }
 }
 
-/// The scan plans one analysis shares across every stop frame it
-/// enumerates: a plan is a fact of the type.
-#[derive(Default)]
-pub struct BranchPlans {
+/// What one analysis carries across every stop frame it enumerates:
+/// the scan plans, which are facts of the types, and the listing cap.
+pub struct BranchScan {
     plans: HashMap<BundleTypeId, ScanPlan>,
+    /// How many branches a stop lists before counting the rest;
+    /// [`MAX_BRANCHES`] outside the tests.
+    pub max_branches: usize,
+}
+
+impl Default for BranchScan {
+    fn default() -> Self {
+        BranchScan {
+            plans: HashMap::default(),
+            max_branches: MAX_BRANCHES,
+        }
+    }
 }
 
 /// Whether `addr` lies in `value`'s storage.
@@ -290,7 +301,7 @@ impl<'b, T: Target> Context<'b, T> {
         &self,
         frame: &AwaitFrame<'b>,
         read: &ReadContext<'_>,
-        plans: &mut BranchPlans,
+        scan: &mut BranchScan,
     ) -> (Vec<Branch<'b>>, usize) {
         let mut branches = Vec::new();
         let mut capped = 0;
@@ -307,7 +318,7 @@ impl<'b, T: Target> Context<'b, T> {
                 Path::default(),
                 &mut found,
                 &mut counts,
-                &mut plans.plans,
+                &mut scan.plans,
                 &mut stats,
             );
             for find in found {
@@ -322,7 +333,7 @@ impl<'b, T: Target> Context<'b, T> {
                     // here is not a branch of this task's waker.
                     Find::Set(_) | Find::JoinSet(_) => continue,
                 };
-                if branches.len() >= MAX_BRANCHES {
+                if branches.len() >= scan.max_branches {
                     capped += 1;
                     continue;
                 }
@@ -360,30 +371,19 @@ impl<'b, T: Target> Context<'b, T> {
         None
     }
 
-    /// The wait set at an unknown stop: the stop frame's branches, each
-    /// inspected and assessed under `task`'s identity, joined to the
-    /// wheel entries and io waiters `registries` attribute to the task.
-    /// Only for a chain ending in [`ChainEnd::UnknownContinuation`]:
-    /// every other end already says what the task is doing.
-    #[allow(clippy::too_many_arguments)]
-    pub fn wait_set(
+    /// Each branch inspected and assessed under `task`'s identity, as
+    /// an unarmed member beside its own chain — a branch that is a
+    /// frame of the task's chain is that frame and no member, and a
+    /// branch reached twice is one.
+    fn members_of(
         &self,
         pass: &mut AssessmentPass,
-        inspection: &FutureInspection<'b>,
+        chain: &AwaitChain<'b>,
         task: &TaskFacts,
         list: &TaskList,
-        registries: &Registries,
         read: &ReadContext<'_>,
-        plans: &mut BranchPlans,
-    ) -> Branches {
-        let chain = &inspection.chain;
-        let ChainEnd::UnknownContinuation { at, reason } = &chain.end else {
-            return Branches::None;
-        };
-        let Some(stop) = chain.frames.last() else {
-            return Branches::None;
-        };
-        let (branches, capped) = self.branches_at(stop, read, plans);
+        branches: Vec<Branch<'b>>,
+    ) -> (Vec<WaitMember>, Vec<AwaitChain<'b>>) {
         let on_chain: HashSet<ValueKey> = chain.referents().collect();
         let mut seen: HashSet<ValueKey> = HashSet::default();
         let mut members: Vec<WaitMember> = Vec::new();
@@ -432,6 +432,35 @@ impl<'b, T: Target> Context<'b, T> {
             });
             chains.push(held.chain);
         }
+
+        (members, chains)
+    }
+
+    /// The wait set at an unknown stop: the stop frame's branches, each
+    /// inspected and assessed under `task`'s identity, joined to the
+    /// wheel entries and io waiters `registries` attribute to the task.
+    /// Only for a chain ending in [`ChainEnd::UnknownContinuation`]:
+    /// every other end already says what the task is doing.
+    #[allow(clippy::too_many_arguments)]
+    pub fn wait_set(
+        &self,
+        pass: &mut AssessmentPass,
+        inspection: &FutureInspection<'b>,
+        task: &TaskFacts,
+        list: &TaskList,
+        registries: &Registries,
+        read: &ReadContext<'_>,
+        scan: &mut BranchScan,
+    ) -> Branches {
+        let chain = &inspection.chain;
+        let ChainEnd::UnknownContinuation { at, reason } = &chain.end else {
+            return Branches::None;
+        };
+        let Some(stop) = chain.frames.last() else {
+            return Branches::None;
+        };
+        let (branches, capped) = self.branches_at(stop, read, scan);
+        let (mut members, chains) = self.members_of(pass, chain, task, list, read, branches);
 
         // The slots: each placed in the branch whose storage holds it,
         // or listed on its own.
@@ -617,7 +646,7 @@ mod tests {
             list,
             registries,
             &ReadContext::none(),
-            &mut BranchPlans::default(),
+            &mut BranchScan::default(),
         )
     }
 
@@ -904,5 +933,285 @@ mod tests {
         assert_eq!(unread.detail(), "this task's waker in wheel entry 0x10");
         assert_eq!(SlotRef::Protocol.cell_entry(), None);
         assert_eq!(SlotRef::Protocol.kind(), None);
+    }
+
+    /// The branch scan's recognition is the census's with one row
+    /// more: a borrowed adapter is followed. Judged over every type of
+    /// every pair against the semantics records themselves, so the
+    /// expectation is not the code under test restated.
+    #[test]
+    fn test_recognition_admits_borrowed_adapters_and_nothing_else() {
+        use crate::tokio::census::{Recognize, Recognized};
+        use hansei_bundle::{ContainerKind, StoragePolicy};
+
+        let (mut borrowed, mut unavailable, mut plain) = (0, 0, 0);
+        for program in testkit::PROGRAMS {
+            let (bundle, snapshot) = load_any(program);
+            let ctx = testkit::context(&bundle, &snapshot);
+            let facts = Branching(&ctx);
+            for id in (0..bundle.types.types.len() as u32).map(BundleTypeId) {
+                let record = ctx.type_semantics(id);
+                let expected = match record {
+                    Some(r)
+                        if r.container.as_ref().map(|c| c.kind)
+                            == Some(ContainerKind::FuturesUnordered) =>
+                    {
+                        Recognized::Set
+                    }
+                    Some(r)
+                        if r.container.as_ref().map(|c| c.kind) == Some(ContainerKind::JoinSet) =>
+                    {
+                        Recognized::JoinSet
+                    }
+                    Some(r) if r.future.is_some() || r.resource.is_some() => Recognized::Future,
+                    Some(r) if r.access.is_some() => {
+                        if r.access.as_ref().unwrap().kind == AccessKind::Borrowed {
+                            borrowed += 1;
+                        }
+                        Recognized::Adapter
+                    }
+                    Some(r) if matches!(r.storage, StoragePolicy::Unavailable(_)) => {
+                        unavailable += 1;
+                        Recognized::Unavailable
+                    }
+                    _ => {
+                        plain += 1;
+                        Recognized::Other
+                    }
+                };
+                let got = facts.recognize(id);
+                assert!(
+                    std::mem::discriminant(&got) == std::mem::discriminant(&expected),
+                    "type {}: {got:?} against {expected:?}",
+                    ctx.view
+                        .ty(id)
+                        .map(|t| t.name().to_owned())
+                        .unwrap_or_default()
+                );
+                // Against the census's own recognition, the one difference.
+                let census = ctx.recognize(id);
+                let same = std::mem::discriminant(&got) == std::mem::discriminant(&census);
+                let differs_on_borrow = matches!(got, Recognized::Adapter)
+                    && matches!(census, Recognized::Other)
+                    && ctx.any_adapter(id)
+                    && !ctx.owned_adapter(id);
+                assert!(
+                    same || differs_on_borrow,
+                    "type {id:?}: {got:?} vs {census:?}"
+                );
+            }
+        }
+        assert!(borrowed > 0, "some pair holds a borrowed adapter");
+        assert!(plain > 0);
+        // No captured pair declares storage unavailable, so that row is
+        // held to the record where it occurs and nowhere yet.
+        let _ = unavailable;
+    }
+
+    /// A borrowed adapter is followed to the future behind it, and the
+    /// route remembers the borrow; an owned one is followed and does
+    /// not.
+    #[test]
+    fn test_adapters_are_followed_to_their_future() {
+        let (bundle, snapshot) = load_any("delegation-cases");
+        let ctx = testkit::context(&bundle, &snapshot);
+        let list = testkit::tasks(&ctx, &snapshot);
+        let access = |ty: BundleTypeId| {
+            ctx.type_semantics(ty)
+                .and_then(|r| r.access.as_ref())
+                .map(|a| a.kind)
+        };
+        let mut seen = (false, false);
+        for task in &list.tasks {
+            let Ok(Some(inspection)) = ctx.inspect_task(task, &ReadContext::none()) else {
+                continue;
+            };
+            for (i, frame) in inspection.chain.frames.iter().enumerate() {
+                let Some(kind) = access(frame.future.ty.id()) else {
+                    continue;
+                };
+                let Some((future, borrowed)) =
+                    ctx.follow_adapters(frame.future, &ReadContext::none())
+                else {
+                    panic!("{} leads to a future", frame.future.ty.name());
+                };
+                assert!(ctx.recognized_future(future.ty.id()));
+                // The first future past the adapter is what the chain
+                // itself reached next — an adapter that is also a
+                // future (a pinned `dyn`) included.
+                let (skipped, next) = inspection.chain.frames[i + 1..]
+                    .iter()
+                    .enumerate()
+                    .find(|(_, f)| ctx.recognized_future(f.future.ty.id()))
+                    .expect("the chain crosses the adapter");
+                assert_eq!(ValueKey::of(future), ValueKey::of(next.future));
+                let borrow_on_route = inspection.chain.frames[i..=i + skipped]
+                    .iter()
+                    .any(|f| access(f.future.ty.id()) == Some(AccessKind::Borrowed));
+                assert_eq!(borrowed, borrow_on_route, "{}", frame.future.ty.name());
+                match kind {
+                    AccessKind::Borrowed => seen.0 = true,
+                    AccessKind::Owned => seen.1 = true,
+                }
+            }
+        }
+        assert_eq!(
+            seen,
+            (true, true),
+            "a borrowed and an owned adapter were followed"
+        );
+    }
+
+    /// Storage is a half-open range: its first byte is in, the byte
+    /// past its end is not.
+    #[test]
+    fn test_containment_is_half_open() {
+        let (bundle, snapshot) = load_any("walk-shapes");
+        let ctx = testkit::context(&bundle, &snapshot);
+        let list = testkit::tasks(&ctx, &snapshot);
+        let task = task_named(&list, "chained");
+        let root = ctx
+            .inspect_task(task, &ReadContext::none())
+            .unwrap()
+            .unwrap()
+            .chain
+            .frames[0]
+            .future;
+        let end = root.addr + root.bytes.len() as u64;
+        assert!(contains(root, root.addr));
+        assert!(contains(root, end - 1));
+        assert!(!contains(root, end));
+        assert!(!contains(root, root.addr - 1));
+    }
+
+    /// Branches past the cap are counted, not inspected: with the cap
+    /// at zero the one branch is a count, the stop is held with no
+    /// members, and a slot inside the uninspected branch is a member
+    /// on its own — nothing places it, since nothing was inspected.
+    #[test]
+    fn test_the_cap_counts_what_it_does_not_inspect() {
+        let (bundle, snapshot) = load_any("walk-shapes");
+        let ctx = testkit::context(&bundle, &snapshot);
+        let list = testkit::tasks(&ctx, &snapshot);
+        let task = task_named(&list, "chained");
+        let inspection = ctx
+            .inspect_task(task, &ReadContext::none())
+            .unwrap()
+            .unwrap();
+        let capped_to_zero = |registries: &Registries| {
+            ctx.wait_set(
+                &mut AssessmentPass::new(),
+                &inspection,
+                &TaskFacts::from(task),
+                &list,
+                registries,
+                &ReadContext::none(),
+                &mut BranchScan {
+                    max_branches: 0,
+                    ..BranchScan::default()
+                },
+            )
+        };
+        let Branches::Held { members, capped } = capped_to_zero(&Registries::default()) else {
+            panic!("held");
+        };
+        assert!(members.is_empty());
+        assert_eq!(capped, 1);
+        let stop = inspection.chain.frames.last().unwrap().future;
+        let Branches::Set(set) = capped_to_zero(&Registries::new(
+            vec![wheel(stop.addr + 8, task)],
+            Vec::new(),
+        )) else {
+            panic!("a set");
+        };
+        assert_eq!(set.capped, 1);
+        assert_eq!(set.members.len(), 1);
+        assert!(matches!(set.members[0].route, MemberRoute::SlotOnly { .. }));
+    }
+
+    /// A branch reached twice is one member; a branch that is a frame
+    /// of the task's own chain is none; a branch found through a
+    /// borrow is a borrowed member whatever its own chain says.
+    #[test]
+    fn test_members_dedup_and_keep_the_borrow() {
+        let (bundle, snapshot) = load_any("walk-shapes");
+        let ctx = testkit::context(&bundle, &snapshot);
+        let list = testkit::tasks(&ctx, &snapshot);
+        let task = task_named(&list, "chained");
+        let inspection = ctx
+            .inspect_task(task, &ReadContext::none())
+            .unwrap()
+            .unwrap();
+        let stop = inspection.chain.frames.last().unwrap();
+        let (found, _) = ctx.branches_at(stop, &ReadContext::none(), &mut BranchScan::default());
+        assert_eq!(found.len(), 1);
+        let branch = |borrowed: bool| Branch {
+            local: found[0].local.clone(),
+            borrowed,
+            value: found[0].value,
+        };
+        let root = Branch {
+            local: "root".to_string(),
+            borrowed: false,
+            value: inspection.chain.frames[0].future,
+        };
+        let (members, chains) = ctx.members_of(
+            &mut AssessmentPass::new(),
+            &inspection.chain,
+            &TaskFacts::from(task),
+            &list,
+            &ReadContext::none(),
+            vec![root, branch(true), branch(false)],
+        );
+        assert_eq!(members.len(), 1, "{members:#?}");
+        assert_eq!(chains.len(), 1);
+        assert!(
+            matches!(
+                &members[0].route,
+                MemberRoute::Branch { borrowed: true, .. }
+            ),
+            "{members:#?}"
+        );
+    }
+
+    /// A stop with no branch and no slot has no set and nothing held.
+    #[test]
+    fn test_a_bare_stop_has_nothing() {
+        let (bundle, snapshot) = load_any("delegation-cases");
+        let ctx = testkit::context(&bundle, &snapshot);
+        let list = testkit::tasks(&ctx, &snapshot);
+        let task = task_named(&list, "Retained");
+        assert!(matches!(
+            branches_of(&ctx, &list, task, &Registries::default()),
+            Branches::None
+        ));
+    }
+
+    /// The analysis carries the slot diagnostics onto a verified wait's
+    /// notes.
+    #[test]
+    fn test_the_analysis_notes_a_slot_beside_a_verified_wait() {
+        let (bundle, snapshot) = load_any("sleep-join");
+        let ctx = testkit::context(&bundle, &snapshot);
+        let list = testkit::tasks(&ctx, &snapshot);
+        let task = task_named(&list, "sleeper");
+        let registries = Registries::new(vec![wheel(0x4000, task)], Vec::new());
+        let analysis = crate::tokio::graph::analyze(&ctx, &list, &registries, &ReadContext::none());
+        let row = analysis
+            .waits
+            .iter()
+            .find(|w| w.task.addr == task.addr)
+            .unwrap();
+        assert!(matches!(row.assessment, WaitAssessment::Waiting(_)));
+        assert_eq!(row.notes.len(), 1, "{:?}", row.notes);
+        assert!(row.notes[0].contains("wheel entry 0x4000 also holds this task's waker"));
+        let quiet =
+            crate::tokio::graph::analyze(&ctx, &list, &Registries::default(), &ReadContext::none());
+        let row = quiet
+            .waits
+            .iter()
+            .find(|w| w.task.addr == task.addr)
+            .unwrap();
+        assert!(row.notes.is_empty(), "{:?}", row.notes);
     }
 }

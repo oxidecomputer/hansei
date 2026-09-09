@@ -2600,14 +2600,15 @@ mod table_tests {
                 ready: None,
             }),
         };
-        let set = assessed(
-            1,
-            one_of(vec![
-                branch("a", verified, true),
-                branch("b", unknown(), false),
-                slot,
-            ]),
-        );
+        let mut set = one_of(vec![
+            branch("a", verified, true),
+            branch("b", unknown(), false),
+            slot,
+        ]);
+        if let WaitAssessment::Set(set) = &mut set {
+            set.capped = 1;
+        }
+        let set = assessed(1, set);
         let mut held = wait(2, None);
         held.continuation = ContinuationStatus::Unknown {
             at: ValueKey {
@@ -2631,12 +2632,13 @@ mod table_tests {
         assert_eq!(
             rows[0].wait_detail,
             [
-                "wait set: 2 of 3 members hold this task's waker; any one of them wakes it",
+                "wait set: 2 of 4 members hold this task's waker; any one of them wakes it",
                 "a: x::branch at 0x6000 — timer (deadline +10.000s); its protocol read this \
                  task's waker",
                 "b: x::branch at 0x6000 — unknown; held, not armed",
                 "io 0x7000 (readable): this task's waker in the read-waiter slot of io 0x7000, \
                  inside #1's storage at +0x10; no branch of the stop holds it",
+                "1 more branches not inspected",
             ]
         );
         assert_eq!(rows[1].waiting_on, "unknown (holds 3 futures)");

@@ -26,7 +26,7 @@ use super::assess::{
 };
 use super::bundle::{Context, FutureInfo, QueuedWaker, Registries, TaskList, WaitTarget};
 use super::observe::{ReadContext, ResourceObservation};
-use super::waitset::{BranchPlans, Branches, WaitMember};
+use super::waitset::{BranchScan, Branches, WaitMember};
 use super::{Lifecycle, TaskAddr};
 
 use proc::Target;
@@ -199,7 +199,7 @@ pub fn analyze<T: Target>(
     read: &ReadContext<'_>,
 ) -> Analysis {
     let mut pass = AssessmentPass::new();
-    let mut plans = BranchPlans::default();
+    let mut scan = BranchScan::default();
     let mut waits = Vec::with_capacity(list.tasks.len());
     let mut barriers = Vec::new();
     let mut join_wakers = Vec::new();
@@ -308,7 +308,7 @@ pub fn analyze<T: Target>(
                     list,
                     registries,
                     read,
-                    &mut plans,
+                    &mut scan,
                 ) {
                     Branches::Set(set) => assessment = WaitAssessment::Set(set),
                     Branches::Held { members, capped } => {
