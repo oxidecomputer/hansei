@@ -3,5 +3,5 @@ source: hansei/src/offline.rs
 description: "`tasks --group lwp` over linux-floor/channels"
 ---
 COUNT  LWP      TASKS
-    2  <empty>  3, 4
+    3  <empty>  3, 4, 5
 [1 group]

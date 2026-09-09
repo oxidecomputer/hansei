@@ -171,7 +171,11 @@ impl<'a> Check<'a> {
             | TokioMultiThreadScheduler
             | TokioCurrentThreadScheduler
             | TokioLocalScheduler
-            | TokioBlockingScheduler => "tokio",
+            | TokioBlockingScheduler
+            | TokioMpscRecv
+            | TokioMpscRecvState
+            | TokioNotified
+            | TokioNotifiedState => "tokio",
         };
         require(
             matches!(origin, SemanticOrigin::LibraryLayout { package: p, .. }
@@ -180,7 +184,12 @@ impl<'a> Check<'a> {
         )?;
         if matches!(
             rule.kind,
-            TokioSleepState | TokioJoinHandleState | TokioAcquireState | TokioIoState
+            TokioSleepState
+                | TokioJoinHandleState
+                | TokioAcquireState
+                | TokioIoState
+                | TokioMpscRecvState
+                | TokioNotifiedState
         ) {
             // Layout validation alone cannot authorize a state protocol:
             // revision 1 of each is the reading the runtime's assessor
@@ -368,6 +377,8 @@ impl<'a> Check<'a> {
             ResourceKind::JoinHandle => TokioJoinHandle,
             ResourceKind::SemaphoreAcquire => TokioAcquire,
             ResourceKind::IoOperation(_) => TokioIoOperation,
+            ResourceKind::MpscRecv => TokioMpscRecv,
+            ResourceKind::Notified => TokioNotified,
         };
         self.rule(binding.rule, &[kind])?;
         self.roles(ty, required_resource_roles(binding.kind))?;
@@ -378,6 +389,8 @@ impl<'a> Check<'a> {
                 ResourceKind::JoinHandle => TokioJoinHandleState,
                 ResourceKind::SemaphoreAcquire => TokioAcquireState,
                 ResourceKind::IoOperation(_) => TokioIoState,
+                ResourceKind::MpscRecv => TokioMpscRecvState,
+                ResourceKind::Notified => TokioNotifiedState,
             };
             self.rule(rule, &[kind])?;
         }
@@ -519,7 +532,14 @@ impl<'a> Check<'a> {
             PollAction::Primitive => {
                 self.rule(
                     rule,
-                    &[TokioSleep, TokioJoinHandle, TokioAcquire, TokioIoOperation],
+                    &[
+                        TokioSleep,
+                        TokioJoinHandle,
+                        TokioAcquire,
+                        TokioIoOperation,
+                        TokioMpscRecv,
+                        TokioNotified,
+                    ],
                 )?;
                 require(
                     record
@@ -562,6 +582,8 @@ impl<'a> Check<'a> {
                 TokioJoinHandle,
                 TokioAcquire,
                 TokioIoOperation,
+                TokioMpscRecv,
+                TokioNotified,
             ],
         )?;
         require(
@@ -660,6 +682,8 @@ pub fn required_resource_roles(kind: ResourceKind) -> &'static [WalkRole] {
         ResourceKind::IoOperation(IoOperationKind::Readiness) => {
             &[ReadinessScheduledIo, ReadinessState, ReadinessWaiter]
         }
+        ResourceKind::MpscRecv => &[MpscRecvRx],
+        ResourceKind::Notified => &[NotifiedNotify, NotifiedState, NotifiedCalls, NotifiedWaiter],
     }
 }
 
@@ -678,6 +702,35 @@ pub fn required_resource_routes(kind: ResourceKind) -> &'static [WalkRole] {
             ReadinessWaiterWaker,
             ReadinessWaiterInterest,
             ReadinessWaiterReady,
+        ],
+        // The channel behind the receiver's `Rx`, and every word the
+        // recv protocol reads from it: the sender count, the two list
+        // positions, the block chain the head names, the receiver's
+        // close flag and its registered waker. The bounded semaphore's
+        // permit word and bound serve one branch (a receiver closed
+        // from its own side) and are enrichment, not identity.
+        ResourceKind::MpscRecv => &[
+            MpscRecvChan,
+            ChanTxCount,
+            ChanTailPosition,
+            ChanRxIndex,
+            ChanRxHead,
+            ChanRxClosed,
+            ChanRxWakerState,
+            ChanRxWaker,
+            BlockStartIndex,
+            BlockNext,
+            BlockReadySlots,
+        ],
+        // The `Notify` the future borrowed and its wait list, whose
+        // nodes carry the waker, the successor and the notification
+        // word the protocol reads on the embedded node too.
+        ResourceKind::Notified => &[
+            NotifyState,
+            NotifyQueueHead,
+            NotifyWaiterNext,
+            NotifyWaiterWaker,
+            NotifyWaiterNotification,
         ],
     }
 }

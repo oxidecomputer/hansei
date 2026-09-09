@@ -989,6 +989,30 @@ pub enum WaitTarget {
         /// The semaphore's wait queue, in wake order.
         waiters: Vec<SemaphoreWaiter>,
     },
+    /// A bounded mpsc `Receiver::recv`, parked on an empty channel
+    /// with its waker in the channel's receiver slot.
+    Channel {
+        /// The `Chan` behind the receiver's `Arc`.
+        addr: u64,
+        /// Live senders.
+        senders: u64,
+        /// The channel's capacity.
+        capacity: Option<u64>,
+        /// Slots claimed past the read index: messages queued, or
+        /// being written — for a verified wait, only the latter.
+        unread: u64,
+    },
+    /// A `Notified`, queued on its `Notify` with this task's waker.
+    /// The list itself stays with the observation: a `Notify` behind a
+    /// cancellation token collects thousands of waiters, and the
+    /// listing prints one row per waiter.
+    Notify {
+        addr: u64,
+        /// Nodes in the wait list, where the list was walked: a
+        /// verified wait walked it; a held future's description reads
+        /// nothing past the future.
+        waiters: Option<usize>,
+    },
 }
 
 /// The bucket a wait falls in: what a tally counts, without the
@@ -1011,6 +1035,10 @@ pub enum WaitKind {
     /// A semaphore, named by the primitive wrapping it where the frame
     /// awaiting it says which (`tokio::sync::Mutex`, …).
     Semaphore { owner: Option<&'static str> },
+    /// A bounded mpsc receiver's channel.
+    Channel,
+    /// A `Notify`.
+    Notify,
 }
 
 impl WaitTarget {
@@ -1030,6 +1058,10 @@ impl WaitTarget {
                 Some(owner) => format!("a {owner} (semaphore {addr:#x})"),
                 None => format!("the semaphore at {addr:#x}"),
             },
+            // A channel has one receiver, so its address groups nothing;
+            // a `Notify` is waited on by many, so its address does.
+            Self::Channel { .. } => "mpsc rx".to_string(),
+            Self::Notify { addr, .. } => format!("the Notify at {addr:#x}"),
         }
     }
 
@@ -1044,6 +1076,8 @@ impl WaitTarget {
             Self::Task { addr, .. } => WaitKind::Task { addr: *addr },
             Self::Io { .. } => WaitKind::Io,
             Self::Semaphore { owner, .. } => WaitKind::Semaphore { owner: *owner },
+            Self::Channel { .. } => WaitKind::Channel,
+            Self::Notify { .. } => WaitKind::Notify,
         }
     }
 }
@@ -1058,6 +1092,18 @@ pub struct SemaphoreWaiter {
     /// here, so 0 means the waiter has been granted everything it asked
     /// for and merely awaits its next poll.
     pub needed: u64,
+    /// Who waking this node schedules.
+    pub waker: QueuedWaker,
+}
+
+/// One node in a `Notify`'s wait list.
+#[derive(Clone, Debug)]
+pub struct NotifyWaiter {
+    /// The `Waiter` node's address; it lives inside the `Notified`
+    /// future itself.
+    pub addr: u64,
+    /// The node's notification word: zero until a wake unlinks it.
+    pub notification: u64,
     /// Who waking this node schedules.
     pub waker: QueuedWaker,
 }
@@ -1185,25 +1231,54 @@ impl fmt::Display for WaitTarget {
                 }
                 if !waiters.is_empty() {
                     write!(f, "; wake queue:")?;
-                    for (i, w) in waiters.iter().enumerate() {
-                        let sep = if i == 0 { " " } else { ", " };
-                        match &w.waker {
-                            QueuedWaker::Task {
-                                task_id: Some(id), ..
-                            } => write!(f, "{sep}task {id}")?,
-                            QueuedWaker::Task {
-                                addr,
-                                task_id: None,
-                            } => write!(f, "{sep}the task at {addr:#x}")?,
-                            QueuedWaker::Other { .. } => write!(f, "{sep}a non-task waiter")?,
-                            QueuedWaker::Unarmed => write!(f, "{sep}an unarmed waiter")?,
-                        }
-                    }
+                    wake_queue(f, waiters.iter().map(|w| &w.waker))?;
+                }
+                Ok(())
+            }
+            Self::Channel {
+                addr,
+                senders,
+                capacity,
+                unread,
+            } => {
+                let plural = if *senders == 1 { "" } else { "s" };
+                write!(f, "mpsc rx {addr:#x}: {senders} sender{plural}")?;
+                if let Some(capacity) = capacity {
+                    write!(f, ", capacity {capacity}")?;
+                }
+                write!(f, ", {unread} unread")
+            }
+            Self::Notify { addr, waiters } => {
+                write!(f, "the Notify at {addr:#x}")?;
+                if let Some(waiters) = waiters {
+                    write!(f, ": {waiters} queued")?;
                 }
                 Ok(())
             }
         }
     }
+}
+
+/// A wait queue's wakers, in wake order, each by the task it wakes.
+fn wake_queue<'a>(
+    f: &mut fmt::Formatter<'_>,
+    wakers: impl Iterator<Item = &'a QueuedWaker>,
+) -> fmt::Result {
+    for (i, waker) in wakers.enumerate() {
+        let sep = if i == 0 { " " } else { ", " };
+        match waker {
+            QueuedWaker::Task {
+                task_id: Some(id), ..
+            } => write!(f, "{sep}task {id}")?,
+            QueuedWaker::Task {
+                addr,
+                task_id: None,
+            } => write!(f, "{sep}the task at {addr:#x}")?,
+            QueuedWaker::Other { .. } => write!(f, "{sep}a non-task waiter")?,
+            QueuedWaker::Unarmed => write!(f, "{sep}an unarmed waiter")?,
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

@@ -5,10 +5,10 @@ description: "`census` over linux-floor/foreign-runtime"
 Threads: 2 lwps, 2 in 2 runtimes
 
 COUNT  RT  ROLE             STATE           LWPS
-    1  0   block_on thread  in driver       2407259
+    1  0   block_on thread  in driver       1803787
     0  0   blocking pool    0 idle, 0 busy  —
     0  1   blocking pool    0 idle, 0 busy  —
-    1  —   entered runtime  —               2407261
+    1  —   entered runtime  —               1803789
 [2 lwps]
 
 Tasks: 4 owned by 2 runtimes and 1 local set

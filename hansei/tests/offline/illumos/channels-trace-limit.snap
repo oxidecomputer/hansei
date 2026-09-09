@@ -2,9 +2,8 @@
 source: hansei/src/offline.rs
 description: "`trace 3 -l 1` over illumos/channels"
 ---
-Waiting on: unknown at tokio::sync::notify::Notified
+Waiting on: the Notify at 0xADDR: 1 queued
 
-what tokio::sync::notify::Notified polls is not established (no reviewed rule covers its implementation); the chain ends there
 #0  future        tokio::sync::notify::Notified
-      (<no_state>, 4 locals)
+      waiting on the Notify at 0xADDR: 1 queued
 [3 frames, 1 shown]

@@ -34,7 +34,7 @@ COUNT  TYPE / WAITING ON
     8  async fn unordered::leaf
        └─ 8  — (unresumed)
     5  async fn unordered::set_member
-       ├─ 3  unknown
+       ├─ 3  a Notify
        └─ 2  — (unresumed)
     1  async fn unordered::holder<unordered::leaf>
        └─ 1  — (unresumed)

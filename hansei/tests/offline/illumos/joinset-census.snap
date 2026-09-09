@@ -19,7 +19,7 @@ COUNT  STATE
 
 COUNT  TYPE / WAITING ON
     5  async fn joinset::member
-       └─ 5  unknown
+       └─ 5  a Notify
     1  async fn joinset::driver
        └─ 1  unknown
 [2 types]

@@ -38,3 +38,53 @@ pub mod semaphore {
     /// The available permit count occupies the bits above the closed bit.
     pub const PERMIT_SHIFT: u8 = 1;
 }
+
+/// The `sync::task::AtomicWaker` state word, which the bounded mpsc
+/// channel keeps its receiver's waker behind.
+pub mod atomic_waker {
+    /// No registration or wake in progress: the waker cell is at rest.
+    pub const WAITING: u64 = 0;
+    /// A `register` is writing the cell.
+    pub const REGISTERING: u64 = 0b01;
+    /// A `wake` is taking the cell.
+    pub const WAKING: u64 = 0b10;
+}
+
+/// The mpsc block list (`sync::mpsc::block`): a block's `ready_slots`
+/// word packs one ready bit per slot below two flags.
+pub mod mpsc {
+    /// Slots per block.
+    pub const BLOCK_CAP: u64 = 32;
+    /// The slot at index `i` lives in the block whose `start_index`
+    /// is `i` with these bits cleared.
+    pub const BLOCK_MASK: u64 = !(BLOCK_CAP - 1);
+    /// The offset within a block of slot `i`.
+    pub const SLOT_MASK: u64 = BLOCK_CAP - 1;
+    /// The block has been released by the sender side.
+    pub const RELEASED: u64 = 1 << BLOCK_CAP;
+    /// Every sender is gone: `Tx::close` claimed a slot in this block
+    /// and set the flag instead of writing it.
+    pub const TX_CLOSED: u64 = RELEASED << 1;
+    /// The ready bits.
+    pub const READY_MASK: u64 = RELEASED - 1;
+}
+
+/// `sync::notify::Notify`'s state word and a waiter's notification word.
+pub mod notify {
+    /// The low two bits of `Notify.state`: no waiters and no pending
+    /// `notify_one`, waiters queued, or one `notify_one` stored for
+    /// the next waiter.
+    pub const EMPTY: u64 = 0;
+    pub const WAITING: u64 = 1;
+    pub const NOTIFIED: u64 = 2;
+    pub const STATE_MASK: u64 = 0b11;
+    /// The count of `notify_waiters` calls sits above the state bits.
+    pub const CALLS_SHIFT: u8 = 2;
+
+    /// A waiter's `notification` word: nothing yet, or which call
+    /// notified it and unlinked its node.
+    pub const NOTIFICATION_NONE: u64 = 0b000;
+    pub const NOTIFICATION_ONE: u64 = 0b001;
+    pub const NOTIFICATION_LAST: u64 = 0b101;
+    pub const NOTIFICATION_ALL: u64 = 0b010;
+}

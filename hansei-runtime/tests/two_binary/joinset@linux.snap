@@ -17,38 +17,38 @@ task 4 idle joinset::member::{async_fn_env#0}
   defined src/bin/joinset.rs:31
   await joinset::member::{async_fn_env#0} Suspend1 @ src/bin/joinset.rs:34 locals [started, notify]
   await tokio::sync::notify::Notified
-  end unknown continuation (NoRule)
+  end primitive
   site src/bin/joinset.rs:34
-  assessed Unknown(Continuation)
+  waiting on the Notify at 0xADDR: 5 queued
 task 5 idle joinset::member::{async_fn_env#0}
   spawned src/bin/joinset.rs:54:13
   defined src/bin/joinset.rs:31
   await joinset::member::{async_fn_env#0} Suspend1 @ src/bin/joinset.rs:34 locals [started, notify]
   await tokio::sync::notify::Notified
-  end unknown continuation (NoRule)
+  end primitive
   site src/bin/joinset.rs:34
-  assessed Unknown(Continuation)
+  waiting on the Notify at 0xADDR: 5 queued
 task 6 idle joinset::member::{async_fn_env#0}
   spawned src/bin/joinset.rs:54:13
   defined src/bin/joinset.rs:31
   await joinset::member::{async_fn_env#0} Suspend1 @ src/bin/joinset.rs:34 locals [started, notify]
   await tokio::sync::notify::Notified
-  end unknown continuation (NoRule)
+  end primitive
   site src/bin/joinset.rs:34
-  assessed Unknown(Continuation)
+  waiting on the Notify at 0xADDR: 5 queued
 task 7 idle joinset::member::{async_fn_env#0}
   spawned src/bin/joinset.rs:62:14
   defined src/bin/joinset.rs:31
   await joinset::member::{async_fn_env#0} Suspend1 @ src/bin/joinset.rs:34 locals [started, notify]
   await tokio::sync::notify::Notified
-  end unknown continuation (NoRule)
+  end primitive
   site src/bin/joinset.rs:34
-  assessed Unknown(Continuation)
+  waiting on the Notify at 0xADDR: 5 queued
 task 8 idle joinset::member::{async_fn_env#0}
   spawned src/bin/joinset.rs:62:14
   defined src/bin/joinset.rs:31
   await joinset::member::{async_fn_env#0} Suspend1 @ src/bin/joinset.rs:34 locals [started, notify]
   await tokio::sync::notify::Notified
-  end unknown continuation (NoRule)
+  end primitive
   site src/bin/joinset.rs:34
-  assessed Unknown(Continuation)
+  waiting on the Notify at 0xADDR: 5 queued

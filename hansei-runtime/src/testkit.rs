@@ -539,6 +539,10 @@ pub fn outcomes(census: &crate::tokio::census::FutureCensus) -> Vec<(&'static st
             "a timer wait",
             waits.iter().any(|w| matches!(w, WaitKind::Timer { .. })),
         ),
+        (
+            "a notify wait",
+            waits.iter().any(|w| matches!(w, WaitKind::Notify)),
+        ),
     ]
 }
 

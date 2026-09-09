@@ -3274,15 +3274,13 @@ fn test_census_counts_a_set_and_what_is_held_beside_it() {
         // held beside them are the same async fn, the boxed one named
         // through the dyn join rather than by its pointer — and, under
         // it, what those five chains reach. The children park in the
-        // shared Notify, which no reviewed rule covers, so their
-        // continuation is unknown rather than a wait target invented
-        // from the leaf's type; the two held beside them were never
-        // polled, which is what leaves the unknown branch at three of
-        // the five.
+        // shared Notify, the resource their chains end in under its
+        // rule; the two held beside them were never polled, which is
+        // what leaves the Notify branch at three of the five.
         assert!(
             out.contains(
                 "    5  async fn unordered::set_member\n       \
-                 ├─ 3  unknown\n       \
+                 ├─ 3  a Notify\n       \
                  └─ 2  — (unresumed)\n"
             ),
             "{out}"

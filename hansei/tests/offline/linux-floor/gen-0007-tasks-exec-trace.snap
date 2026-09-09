@@ -12,11 +12,10 @@ what gen_0007::GfSel3<core::future::pending::Pending<u64>, core::future::pending
       awaiting at src/bin/gen-0007.rs:129 (Suspend0, 5 locals)
 
 task 4
-Waiting on: unknown at tokio::sync::notify::Notified
+Waiting on: the Notify at 0xADDR: 1 queued
 
-what tokio::sync::notify::Notified polls is not established (no reviewed rule covers its implementation); the chain ends there
 #0  future        tokio::sync::notify::Notified
-      (<no_state>, 4 locals)
+      waiting on the Notify at 0xADDR: 1 queued
 #1  async fn      gen_0007::member_02
       awaiting at src/bin/gen-0007.rs:148 (Suspend0, 3 locals)
 

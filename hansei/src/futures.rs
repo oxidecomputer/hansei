@@ -327,6 +327,8 @@ fn waiting_kind(
             Some(owner) => format!("a {owner} (semaphore)"),
             None => "a semaphore".to_string(),
         }),
+        Some(bundle::WaitKind::Channel) => Some("mpsc rx".to_string()),
+        Some(bundle::WaitKind::Notify) => Some("a Notify".to_string()),
         None => tasks::continuation_bucket(continuation, stops),
     }
 }

@@ -5,10 +5,10 @@ description: "`census` over linux/walk-shapes"
 Threads: 3 lwps, 3 in 2 runtimes
 
 COUNT  RT  ROLE             STATE           LWPS
-    1  0   block_on thread  in driver       2230728
+    1  0   block_on thread  in driver       1799511
     0  0   blocking pool    0 idle, 0 busy  —
     0  1   blocking pool    0 idle, 0 busy  —
-    2  —   entered runtime  —               2230731, 2230730
+    2  —   entered runtime  —               1799514, 1799513
 [3 lwps]
 
 Tasks: 10 owned by 2 runtimes and 2 local sets
@@ -22,13 +22,13 @@ COUNT  TYPE / WAITING ON
     2  async fn walk_shapes::blocked
        └─ 2  a tokio::sync::Semaphore (semaphore)
     1  async fn walk_shapes::abandoner
-       └─ 1  unknown
+       └─ 1  a Notify
     1  async fn walk_shapes::chained
        └─ 1  unknown
     1  async fn walk_shapes::hidden_blocked
        └─ 1  a tokio::sync::Semaphore (semaphore)
     1  async fn walk_shapes::holder
-       └─ 1  unknown
+       └─ 1  a Notify
     4  (4 more types)
 [9 types, 5 shown]
 

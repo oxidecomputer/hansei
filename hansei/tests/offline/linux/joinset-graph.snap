@@ -4,8 +4,8 @@ description: "`graph` over linux/joinset"
 ---
 TASK                         STATE  WAITING ON
 3                            idle   unknown at core::future::poll_fn::PollFn
-├─ 4 [in the JoinSet above]  idle   unknown at tokio::sync::notify::Notified
-├─ 5 [in the JoinSet above]  idle   unknown at tokio::sync::notify::Notified
-├─ 6 [in the JoinSet above]  idle   unknown at tokio::sync::notify::Notified
-├─ 7 [in the JoinSet above]  idle   unknown at tokio::sync::notify::Notified
-└─ 8 [in the JoinSet above]  idle   unknown at tokio::sync::notify::Notified
+├─ 4 [in the JoinSet above]  idle   the Notify at 0xADDR: 5 queued
+├─ 5 [in the JoinSet above]  idle   the Notify at 0xADDR: 5 queued
+├─ 6 [in the JoinSet above]  idle   the Notify at 0xADDR: 5 queued
+├─ 7 [in the JoinSet above]  idle   the Notify at 0xADDR: 5 queued
+└─ 8 [in the JoinSet above]  idle   the Notify at 0xADDR: 5 queued

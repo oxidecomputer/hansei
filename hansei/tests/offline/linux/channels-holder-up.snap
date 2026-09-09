@@ -3,4 +3,4 @@ source: hansei/src/offline.rs
 description: "`up` over linux/channels"
 ---
 #1  async fn      channels::hold
-      awaiting at src/bin/channels.rs:52 (Suspend0, 8 locals)
+      awaiting at src/bin/channels.rs:66 (Suspend0, 9 locals)

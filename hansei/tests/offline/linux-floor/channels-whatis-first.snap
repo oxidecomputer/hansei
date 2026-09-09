@@ -1,8 +1,8 @@
 ---
 source: hansei/src/offline.rs
-description: "`whatis 0x561cfc4f7300` over linux-floor/channels"
+description: "`whatis 0x559e1f9d8300` over linux-floor/channels"
 ---
 Task 3: async fn channels::notify_waiter
     At: offset 0xADDR in the task's allocation (header 0xADDR)
     State: idle
-    Spawned at: src/bin/channels.rs:92:23
+    Spawned at: src/bin/channels.rs:106:23

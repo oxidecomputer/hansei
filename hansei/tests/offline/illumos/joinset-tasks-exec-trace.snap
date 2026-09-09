@@ -14,47 +14,42 @@ what core::future::poll_fn::PollFn<tokio::task::join_set::JoinSet::join_next::{a
       awaiting at src/bin/joinset.rs:83 (Suspend1, 6 locals)
 
 task 4
-Waiting on: unknown at tokio::sync::notify::Notified
+Waiting on: the Notify at 0xADDR: 5 queued
 
-what tokio::sync::notify::Notified polls is not established (no reviewed rule covers its implementation); the chain ends there
 #0  future        tokio::sync::notify::Notified
-      (<no_state>, 4 locals)
+      waiting on the Notify at 0xADDR: 5 queued
 #1  async fn      joinset::member
       awaiting at src/bin/joinset.rs:34 (Suspend1, 2 locals)
 
 task 5
-Waiting on: unknown at tokio::sync::notify::Notified
+Waiting on: the Notify at 0xADDR: 5 queued
 
-what tokio::sync::notify::Notified polls is not established (no reviewed rule covers its implementation); the chain ends there
 #0  future        tokio::sync::notify::Notified
-      (<no_state>, 4 locals)
+      waiting on the Notify at 0xADDR: 5 queued
 #1  async fn      joinset::member
       awaiting at src/bin/joinset.rs:34 (Suspend1, 2 locals)
 
 task 6
-Waiting on: unknown at tokio::sync::notify::Notified
+Waiting on: the Notify at 0xADDR: 5 queued
 
-what tokio::sync::notify::Notified polls is not established (no reviewed rule covers its implementation); the chain ends there
 #0  future        tokio::sync::notify::Notified
-      (<no_state>, 4 locals)
+      waiting on the Notify at 0xADDR: 5 queued
 #1  async fn      joinset::member
       awaiting at src/bin/joinset.rs:34 (Suspend1, 2 locals)
 
 task 7
-Waiting on: unknown at tokio::sync::notify::Notified
+Waiting on: the Notify at 0xADDR: 5 queued
 
-what tokio::sync::notify::Notified polls is not established (no reviewed rule covers its implementation); the chain ends there
 #0  future        tokio::sync::notify::Notified
-      (<no_state>, 4 locals)
+      waiting on the Notify at 0xADDR: 5 queued
 #1  async fn      joinset::member
       awaiting at src/bin/joinset.rs:34 (Suspend1, 2 locals)
 
 task 8
-Waiting on: unknown at tokio::sync::notify::Notified
+Waiting on: the Notify at 0xADDR: 5 queued
 
-what tokio::sync::notify::Notified polls is not established (no reviewed rule covers its implementation); the chain ends there
 #0  future        tokio::sync::notify::Notified
-      (<no_state>, 4 locals)
+      waiting on the Notify at 0xADDR: 5 queued
 #1  async fn      joinset::member
       awaiting at src/bin/joinset.rs:34 (Suspend1, 2 locals)
 [Executed against 6 tasks, 0 failed]

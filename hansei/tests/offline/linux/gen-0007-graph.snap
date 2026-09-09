@@ -4,7 +4,7 @@ description: "`graph` over linux/gen-0007"
 ---
 TASK                            STATE  WAITING ON
 3                               idle   unknown at gen_0007::GfSel3
-├─ 4 [in the JoinSet above]     idle   unknown at tokio::sync::notify::Notified
+├─ 4 [in the JoinSet above]     idle   the Notify at 0xADDR: 1 queued
 └─ 5 [in the JoinSet above]     idle   timer (deadline TS on the target's monotonic clock)
    ├─ 6 [in the JoinSet above]  idle   unknown at gen_0007::GfSel2
    └─ 7 [in the JoinSet above]  idle   unknown at gen_0007::GfSel2

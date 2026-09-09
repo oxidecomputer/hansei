@@ -590,6 +590,36 @@ impl<'b, T: Target> Scanner<'_, 'b, T> {
                     }
                 }
             }
+            Some(ResourceObservation::Recv(recv)) => {
+                if !self.queues.insert(recv.chan) {
+                    return;
+                }
+                let channel = self.ctx.observe_channel(recv.chan, &self.read, self.budget);
+                for issue in channel.issues {
+                    self.report(issue);
+                }
+                if let Some(task) = channel.waker.as_ref().and_then(|w| w.task()) {
+                    self.reference(TaskAddr(task), ReferenceSource::ChannelWaker, key);
+                }
+            }
+            Some(ResourceObservation::Notified(notified)) => {
+                if !self.queues.insert(notified.notify) {
+                    return;
+                }
+                let mut issues = Vec::new();
+                let tasks = self.ctx.notify_waiter_tasks(
+                    notified.notify,
+                    &self.read,
+                    self.budget,
+                    &mut issues,
+                );
+                for issue in issues {
+                    self.report(issue);
+                }
+                for task in tasks {
+                    self.reference(TaskAddr(task), ReferenceSource::NotifyWaker, key);
+                }
+            }
             // A timer entry's waker is the wheel's to hand over: the
             // sleep names no task itself.
             Some(ResourceObservation::Timer(_)) | None => {}
@@ -746,7 +776,7 @@ mod tests {
     use crate::testkit;
     use crate::testkit::corrupt::Corrupt;
     use crate::testkit::heap::FakeHeap;
-    use crate::tokio::bundle::{FutureInfo, Task, TaskList, TaskStage};
+    use crate::tokio::bundle::{FutureInfo, Task, TaskList, TaskStage, WaitKind};
     use crate::tokio::observe::{CollectedReferences, ScanLimits, TaskReference};
 
     use hansei_bundle::{BundleView, SemanticIssue, StoragePolicy};
@@ -1150,16 +1180,27 @@ mod tests {
         assert!(total > 2);
 
         let (completion, sink) = scan_task(&run.ctx, driver);
-        // The children park in a `Notify`, which no reader observes;
-        // nothing here names a task.
+        // The children park in one `Notify`, whose wait list holds the
+        // set's own waker on every node, not a task's: nothing here
+        // names a task.
         assert!(sink.references.is_empty(), "{:?}", sink.references);
         assert!(completion.complete, "{:?}", sink.issues);
         // One expansion per child, plus the two adapters the driver's
         // frames hold: the `boxed` local's pin, and the `&mut
         // FuturesUnordered` the `Next` awaitee borrows — which lands on
-        // the set held by value, walked once.
+        // the set held by value, walked once. The `Notify` the
+        // children park in costs nothing here: the sweep that built
+        // `run` walked its list, and the tasks it names are kept per
+        // target.
+        assert!(
+            run.census
+                .sets
+                .iter()
+                .flat_map(|s| s.children.iter())
+                .any(|c| matches!(c.wait, Some(WaitKind::Notify)))
+        );
         assert_eq!(completion.referent_expansions, total as u64 + 2);
-        let visits = completion.inline_visits;
+        let (expansions, visits) = (completion.referent_expansions, completion.inline_visits);
 
         // Every child scanned once: a second scan of the same root
         // costs the same visits.
@@ -1201,7 +1242,7 @@ mod tests {
             "{:?}",
             sink.issues
         );
-        assert!(completion.referent_expansions < total as u64);
+        assert!(completion.referent_expansions < expansions);
         assert!(completion.inline_visits < visits);
 
         // Looped: the first node's link back to itself.
@@ -1253,7 +1294,9 @@ mod tests {
         assert!(completion.referent_expansions < total as u64 + 2);
 
         // One hop allowed: the children are scanned, the set nested in
-        // one of them is walked, and its own children are the limit.
+        // one of them is walked, and its own children are the limit —
+        // every node expanded, the `Notify` and its list read once
+        // through the children that were scanned.
         let (completion, sink) = scan_task_with(
             &run.ctx,
             driver,
@@ -1265,7 +1308,7 @@ mod tests {
         );
         assert!(!completion.complete);
         assert!(kinds(&sink.issues).contains(&WalkIssueKind::HopLimit));
-        assert_eq!(completion.referent_expansions, total as u64 + 2);
+        assert_eq!(completion.referent_expansions, expansions);
         assert!(completion.inline_visits < visits);
 
         // A future held beside a chain is one hop of its own: the

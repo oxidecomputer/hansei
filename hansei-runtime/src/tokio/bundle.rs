@@ -18,10 +18,11 @@ use super::discovery::{
     DiscoveryIssue, Observation, OwnerClaim, OwnerEvidence, TaskRecordId, TaskSource, list_claim,
 };
 use super::observe::{
-    AcquireObservation, Consistency, IoFutureState, IoObservation, JoinObservation, Observed,
-    QueueObservation, ReadContext, ReferenceSink, ReferenceSource, ResourceObservation, ScanBudget,
-    ScanLimits, TaskReference, TimerObservation, TimerRegistrationState, ValueKey, WalkIssue,
-    WalkIssueKind, issue_of, lock_consistency,
+    AcquireObservation, ChannelObservation, Consistency, IoFutureState, IoObservation,
+    JoinObservation, NotifiedObservation, NotifiedState, NotifyObservation, Observed,
+    QueueObservation, ReadContext, RecvObservation, ReferenceSink, ReferenceSource,
+    ResourceObservation, ScanBudget, ScanLimits, SlotState, TaskReference, TimerObservation,
+    TimerRegistrationState, ValueKey, WalkIssue, WalkIssueKind, issue_of, lock_consistency,
 };
 use super::semantics::SemanticIndex;
 use super::work::{DiscoveryWorld, Registry, Roots, sweep};
@@ -202,6 +203,12 @@ pub struct Context<'b, T> {
     task_lookups: Memo<String, SymbolLookup<TaskEntryId>>,
     /// The same memo for the dyn-future join.
     dyn_future_lookups: Memo<String, SymbolLookup<BundleTypeId>>,
+    /// The tasks a `Notify`'s wait list names, per `Notify`: the
+    /// reference scan meets the same few `Notify`s — a cancellation
+    /// token's, with thousands of waiters — from thousands of tasks,
+    /// and walks each list once for the target rather than once per
+    /// task.
+    notify_waiters: Memo<ValueKey, Vec<u64>>,
     semantics: SemanticIndex,
     /// Records standing in for the bundle's own, for a test over a
     /// shape the production binders decline; empty outside the tests
@@ -242,6 +249,7 @@ impl<'b, T: Target> Context<'b, T> {
             stopped: RefCell::new(None),
             task_lookups: Memo::default(),
             dyn_future_lookups: Memo::default(),
+            notify_waiters: Memo::default(),
             semantics,
             test_bindings: &[],
             contract,
@@ -2770,6 +2778,12 @@ impl<'b, T: Target> Context<'b, T> {
             ResourceKind::IoOperation(operation) => self
                 .observe_io(value, operation, read)
                 .map(ResourceObservation::Io),
+            ResourceKind::MpscRecv => self
+                .observe_recv(value, read)
+                .map(ResourceObservation::Recv),
+            ResourceKind::Notified => self
+                .observe_notified(value, read)
+                .map(ResourceObservation::Notified),
         };
         match observed {
             Ok(observation) => Observed::of(observation),
@@ -2824,6 +2838,83 @@ impl<'b, T: Target> Context<'b, T> {
                 .walk(WalkRole::AcquireQueued)
                 .read_with(read, acquire)?,
             queue_position: None,
+        })
+    }
+
+    /// A bounded receiver's `recv`: the channel behind the `Rx` its
+    /// closure borrowed. The `Rx` is read through the borrow under
+    /// `read`, and the channel is keyed by the `Chan`'s own nominal
+    /// type, so the words read from it decode with the layout this
+    /// receiver was compiled against.
+    fn observe_recv(&self, poll_fn: Value<'b>, read: &ReadContext<'_>) -> Result<RecvObservation> {
+        let rx = self
+            .walk(WalkRole::MpscRecvRx)
+            .walk_at_with(read, poll_fn)?;
+        let rx_ty = rx
+            .ty
+            .pointer_target()
+            .ok_or_else(|| anyhow!("the recv closure's Rx capture is not pointer-shaped"))?;
+        let rx_addr: u64 = rx.parse(self.proc)?;
+        ensure!(rx_addr != 0, "the recv closure's Rx pointer is null");
+        let rx = self.read_keyed(
+            ValueKey {
+                addr: rx_addr,
+                ty: rx_ty.id(),
+            },
+            read,
+        )?;
+        let chan = self.walk(WalkRole::MpscRecvChan).walk_at_with(read, rx)?;
+        Ok(RecvObservation {
+            future: ValueKey::of(poll_fn),
+            chan: ValueKey::of(chan),
+        })
+    }
+
+    /// A `Notified`: the `Notify` it borrowed, its state, the count it
+    /// was created at, and its embedded node's notification word, all
+    /// read in place.
+    fn observe_notified(
+        &self,
+        notified: Value<'b>,
+        read: &ReadContext<'_>,
+    ) -> Result<NotifiedObservation> {
+        let notify = self
+            .walk(WalkRole::NotifiedNotify)
+            .walk_at_with(read, notified)?;
+        let notify_ty = notify
+            .ty
+            .pointer_target()
+            .ok_or_else(|| anyhow!("Notified.notify is not pointer-shaped"))?;
+        let notify_addr: u64 = notify.parse(self.proc)?;
+        ensure!(notify_addr != 0, "the Notified's Notify pointer is null");
+        let state = self
+            .walk(WalkRole::NotifiedState)
+            .walk_at_with(read, notified)?;
+        let state = match state.ty.enumerator_name(state.bytes) {
+            Some("Init") => NotifiedState::Init,
+            Some("Waiting") => NotifiedState::Waiting,
+            Some("Done") => NotifiedState::Done,
+            _ => NotifiedState::Unknown(word_of(state.bytes)),
+        };
+        let node = self
+            .walk(WalkRole::NotifiedWaiter)
+            .walk_at_with(read, notified)?;
+        let notification: u64 = self
+            .walk(WalkRole::NotifyWaiterNotification)
+            .read_with(read, node)?;
+        let calls: u64 = self
+            .walk(WalkRole::NotifiedCalls)
+            .read_with(read, notified)?;
+        Ok(NotifiedObservation {
+            future: ValueKey::of(notified),
+            notify: ValueKey {
+                addr: notify_addr,
+                ty: notify_ty.id(),
+            },
+            state,
+            node: node.addr,
+            notification,
+            calls,
         })
     }
 
@@ -3065,6 +3156,333 @@ impl<'b, T: Target> Context<'b, T> {
             Err(issue) => queue.issues.push(issue),
         }
         queue
+    }
+
+    /// Read one bounded mpsc channel, on explicit demand: every word
+    /// the recv protocol reads, each on its own so one that fails to
+    /// read costs itself and nothing else. The slot the receiver would
+    /// pop is found the way `Rx::pop` finds it — the block chain walked
+    /// from the head to the block holding the read index, then that
+    /// block's ready word — each block's dereference charged to
+    /// `budget` and held to `read`.
+    pub fn observe_channel(
+        &self,
+        chan: ValueKey,
+        read: &ReadContext<'_>,
+        budget: &mut ScanBudget,
+    ) -> ChannelObservation {
+        use hansei_bundle::tokio::semaphore;
+        let mut channel = ChannelObservation {
+            chan,
+            senders: None,
+            tail_position: None,
+            index: None,
+            rx_closed: None,
+            slot: SlotState::Unknown,
+            capacity: None,
+            available: None,
+            semaphore_closed: None,
+            waker_state: None,
+            waker: None,
+            issues: Vec::new(),
+        };
+        if !budget.charge_referent() {
+            channel.issues.push(spent(chan, budget));
+            return channel;
+        }
+        let value = match self.read_keyed(chan, read) {
+            Ok(value) => value,
+            Err(e) => {
+                channel.issues.push(issue_of(chan, &e));
+                return channel;
+            }
+        };
+        let word = |role: WalkRole, issues: &mut Vec<WalkIssue>| -> Option<u64> {
+            match self.walk(role).read_with::<u64>(read, value) {
+                Ok(word) => Some(word),
+                Err(e) => {
+                    issues.push(issue_of(chan, &e));
+                    None
+                }
+            }
+        };
+        channel.senders = word(WalkRole::ChanTxCount, &mut channel.issues);
+        channel.tail_position = word(WalkRole::ChanTailPosition, &mut channel.issues);
+        channel.index = word(WalkRole::ChanRxIndex, &mut channel.issues);
+        channel.waker_state = word(WalkRole::ChanRxWakerState, &mut channel.issues);
+        match self
+            .walk(WalkRole::ChanRxClosed)
+            .read_with::<bool>(read, value)
+        {
+            Ok(closed) => channel.rx_closed = Some(closed),
+            Err(e) => channel.issues.push(issue_of(chan, &e)),
+        }
+        // The bounded semaphore's words are enrichment: a build whose
+        // member names moved costs the receiver-closed branch, not the wait.
+        match self
+            .walk(WalkRole::ChanSemaphoreBound)
+            .try_read::<u64>(value)
+        {
+            Ok(bound) => channel.capacity = bound,
+            Err(e) => channel.issues.push(issue_of(chan, &e)),
+        }
+        match self
+            .walk(WalkRole::ChanSemaphorePermits)
+            .try_read::<u64>(value)
+        {
+            Ok(Some(raw)) => {
+                channel.semaphore_closed = Some(raw & semaphore::CLOSED != 0);
+                channel.available = Some(raw >> semaphore::PERMIT_SHIFT);
+            }
+            Ok(None) => {}
+            Err(e) => channel.issues.push(issue_of(chan, &e)),
+        }
+        match self.walk(WalkRole::ChanRxWaker).walk_with(read, value) {
+            Ok(walked) => match walked.optional() {
+                Some(raw) => match self.raw_waker(raw) {
+                    Ok(waker) => channel.waker = Some(waker),
+                    Err(e) => channel.issues.push(issue_of(chan, &e)),
+                },
+                None => channel.waker = Some(QueuedWaker::Unarmed),
+            },
+            Err(e) => channel.issues.push(issue_of(chan, &e)),
+        }
+        if let Some(index) = channel.index {
+            match self.observe_slot(value, index, read, budget) {
+                Ok(slot) => channel.slot = slot,
+                Err(issue) => channel.issues.push(issue),
+            }
+        }
+        channel
+    }
+
+    /// What `Rx::pop` would find at `index`: the block chain from the
+    /// list's head to the block whose `start_index` is the index's,
+    /// then that block's ready word — the slot's bit, else the senders'
+    /// close marker, else nothing. A chain that ends first is nothing
+    /// to read; one that loops or outruns the budget is an issue.
+    fn observe_slot(
+        &self,
+        chan: Value<'b>,
+        index: u64,
+        read: &ReadContext<'_>,
+        budget: &mut ScanBudget,
+    ) -> std::result::Result<SlotState, WalkIssue> {
+        use hansei_bundle::tokio::mpsc;
+        let at = ValueKey::of(chan);
+        let head = self
+            .walk(WalkRole::ChanRxHead)
+            .walk_at_with(read, chan)
+            .map_err(|e| issue_of(at, &e))?;
+        let block_ty = head.ty.pointer_target().ok_or_else(|| {
+            WalkIssue::new(
+                at,
+                WalkIssueKind::InvalidLayout,
+                "the list head is not pointer-shaped",
+            )
+        })?;
+        let mut cur: u64 = head
+            .parse(self.proc)
+            .map_err(|e| issue_of(at, &anyhow!(e)))?;
+        let wanted = index & mpsc::BLOCK_MASK;
+        let mut visited = HashSet::default();
+        loop {
+            if cur == 0 {
+                return Ok(SlotState::NoBlock);
+            }
+            let key = ValueKey {
+                addr: cur,
+                ty: block_ty.id(),
+            };
+            if !visited.insert(cur) {
+                return Err(WalkIssue::new(
+                    key,
+                    WalkIssueKind::Cycle,
+                    format!("block-list cycle at {cur:#x}"),
+                ));
+            }
+            if !budget.charge_referent() {
+                return Err(spent(key, budget));
+            }
+            let block = self.read_keyed(key, read).map_err(|e| issue_of(key, &e))?;
+            let start: u64 = self
+                .walk(WalkRole::BlockStartIndex)
+                .read_with(read, block)
+                .map_err(|e| issue_of(key, &e))?;
+            if start == wanted {
+                let ready: u64 = self
+                    .walk(WalkRole::BlockReadySlots)
+                    .read_with(read, block)
+                    .map_err(|e| issue_of(key, &e))?;
+                let bit = 1u64 << (index & mpsc::SLOT_MASK);
+                return Ok(if ready & bit != 0 {
+                    SlotState::Value
+                } else if ready & mpsc::TX_CLOSED != 0 {
+                    SlotState::Closed
+                } else {
+                    SlotState::Empty
+                });
+            }
+            cur = self
+                .walk(WalkRole::BlockNext)
+                .read_with(read, block)
+                .map_err(|e| issue_of(key, &e))?;
+        }
+    }
+
+    /// Read one `Notify`, on explicit demand: its state word, the
+    /// guard around its wait list, and the list itself, walked like a
+    /// semaphore's queue — newest first, reversed into `notify_one`'s
+    /// wake order only when it reached the end.
+    pub fn observe_notify(
+        &self,
+        notify: ValueKey,
+        read: &ReadContext<'_>,
+        budget: &mut ScanBudget,
+    ) -> NotifyObservation {
+        let mut observation = NotifyObservation {
+            notify,
+            state: None,
+            waiters: Vec::new(),
+            complete: false,
+            consistency: Consistency::Unknown,
+            issues: Vec::new(),
+        };
+        if !budget.charge_referent() {
+            observation.issues.push(spent(notify, budget));
+            return observation;
+        }
+        let value = match self.read_keyed(notify, read) {
+            Ok(value) => value,
+            Err(e) => {
+                observation.issues.push(issue_of(notify, &e));
+                return observation;
+            }
+        };
+        match self
+            .walk(WalkRole::NotifyState)
+            .read_with::<u64>(read, value)
+        {
+            Ok(state) => observation.state = Some(state),
+            Err(e) => observation.issues.push(issue_of(notify, &e)),
+        }
+        match self.walk(WalkRole::NotifyLock).try_walk_with(read, value) {
+            Ok(Some(Walked::At(lock))) => observation.consistency = lock_consistency(lock),
+            Ok(Some(_)) | Ok(None) => {}
+            Err(e) => observation.issues.push(issue_of(notify, &e)),
+        }
+        match self.observe_notify_nodes(value, read, budget, &mut observation.waiters) {
+            Ok(()) => {
+                observation.complete = true;
+                observation.waiters.reverse();
+            }
+            Err(issue) => observation.issues.push(issue),
+        }
+        observation
+    }
+
+    /// The task headers a `Notify`'s wait list names, walked once per
+    /// target: the list read on the first demand, its issues handed to
+    /// that caller, and the tasks alone kept for every later one.
+    pub fn notify_waiter_tasks(
+        &self,
+        notify: ValueKey,
+        read: &ReadContext<'_>,
+        budget: &mut ScanBudget,
+        issues: &mut Vec<WalkIssue>,
+    ) -> Vec<u64> {
+        self.notify_waiters.get_or(&notify, || {
+            let list = self.observe_notify(notify, read, budget);
+            issues.extend(list.issues);
+            list.waiters.iter().filter_map(|w| w.waker.task()).collect()
+        })
+    }
+
+    /// The wait list of one `Notify`, node by node in walk order,
+    /// pushed as each is reached so a failing walk leaves its prefix.
+    fn observe_notify_nodes(
+        &self,
+        notify: Value<'b>,
+        read: &ReadContext<'_>,
+        budget: &mut ScanBudget,
+        waiters: &mut Vec<NotifyWaiter>,
+    ) -> std::result::Result<(), WalkIssue> {
+        let at = ValueKey::of(notify);
+        let head = self
+            .walk(WalkRole::NotifyQueueHead)
+            .walk_with(read, notify)
+            .map_err(|e| issue_of(at, &e))?;
+        let Some(head) = head.optional() else {
+            return Ok(());
+        };
+        let waiter_ty = head.ty.pointer_target().ok_or_else(|| {
+            WalkIssue::new(
+                at,
+                WalkIssueKind::InvalidLayout,
+                "the wait-list head is not pointer-shaped",
+            )
+        })?;
+        let mut visited = HashSet::default();
+        let mut cur = Some(
+            head.parse::<u64>(self.proc)
+                .map_err(|e| issue_of(at, &anyhow!(e)))?,
+        );
+        while let Some(addr) = cur {
+            let key = ValueKey {
+                addr,
+                ty: waiter_ty.id(),
+            };
+            if !visited.insert(addr) {
+                return Err(WalkIssue::new(
+                    key,
+                    WalkIssueKind::Cycle,
+                    format!("wait-list cycle at {addr:#x}"),
+                ));
+            }
+            if waiters.len() >= budget.limits.max_children as usize {
+                return Err(WalkIssue::new(
+                    key,
+                    WalkIssueKind::VisitLimit,
+                    format!("the walk stopped at {} nodes", budget.limits.max_children),
+                ));
+            }
+            if !budget.charge_referent() {
+                return Err(spent(key, budget));
+            }
+            let node = self.read_keyed(key, read).map_err(|e| issue_of(key, &e))?;
+            waiters.push(
+                self.notify_node(node, read)
+                    .map_err(|e| issue_of(key, &e))?,
+            );
+            cur = self
+                .walk(WalkRole::NotifyWaiterNext)
+                .walk_with(read, node)
+                .map_err(|e| issue_of(key, &e))?
+                .optional()
+                .map(|ptr| ptr.parse(self.proc).map_err(|e| issue_of(key, &anyhow!(e))))
+                .transpose()?;
+        }
+        Ok(())
+    }
+
+    /// One `Notify` wait-list node: its notification word and the
+    /// waker it holds.
+    fn notify_node(&self, node: Value<'b>, read: &ReadContext<'_>) -> Result<NotifyWaiter> {
+        let waker = match self
+            .walk(WalkRole::NotifyWaiterWaker)
+            .walk_with(read, node)?
+            .optional()
+        {
+            Some(raw) => self.raw_waker(raw)?,
+            None => QueuedWaker::Unarmed,
+        };
+        Ok(NotifyWaiter {
+            addr: node.addr,
+            notification: self
+                .walk(WalkRole::NotifyWaiterNotification)
+                .read_with(read, node)?,
+            waker,
+        })
     }
 
     /// The wait list of one semaphore, node by node in walk order,

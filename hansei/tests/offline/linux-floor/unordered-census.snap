@@ -5,9 +5,9 @@ description: "`census` over linux-floor/unordered"
 Threads: 3 lwps, 3 in runtime 0 @ 0xADDR
 
 COUNT  RT  ROLE             STATE            LWPS
-    1  0   worker           in driver        2406173
-    1  0   worker           parked           2406174
-    1  0   entered runtime  block_on caller  2406171
+    1  0   worker           in driver        1802699
+    1  0   worker           parked           1802700
+    1  0   entered runtime  block_on caller  1802697
     0  0   blocking pool    0 idle, 0 busy   —
 [3 lwps]
 
@@ -34,7 +34,7 @@ COUNT  TYPE / WAITING ON
     8  async fn unordered::leaf
        └─ 8  — (unresumed)
     5  async fn unordered::set_member
-       ├─ 3  unknown
+       ├─ 3  a Notify
        └─ 2  — (unresumed)
     1  async fn unordered::holder<unordered::leaf>
        └─ 1  — (unresumed)

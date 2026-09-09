@@ -4,7 +4,7 @@ description: "`info` over linux-floor/channels"
 ---
 core:       <snapshot>
 tokio info: <tokio info>
-symbols resolved: 5/5
+symbols resolved: 7/7
 allocator evidence: unavailable
 process: not recorded by this target
 signal: none recorded

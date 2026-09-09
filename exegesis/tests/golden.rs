@@ -514,7 +514,9 @@ fn types_named<'a>(
         .iter()
         .filter_map(move |&(name, id)| {
             let name = bundle.strings.get(name)?;
-            let matches = if prefix.ends_with('<') {
+            // A key cut inside a generic list or an impl index is a
+            // prefix; anything else is the whole name.
+            let matches = if prefix.ends_with('<') || prefix.ends_with('#') {
                 name.starts_with(prefix)
             } else {
                 name == prefix
@@ -564,6 +566,8 @@ fn assert_resource(program: &str, bundle: &Bundle, key: &str, kind: hansei_bundl
             ResourceKind::JoinHandle => SemanticRuleKind::TokioJoinHandleState,
             ResourceKind::SemaphoreAcquire => SemanticRuleKind::TokioAcquireState,
             ResourceKind::IoOperation(_) => SemanticRuleKind::TokioIoState,
+            ResourceKind::MpscRecv => SemanticRuleKind::TokioMpscRecvState,
+            ResourceKind::Notified => SemanticRuleKind::TokioNotifiedState,
         };
         assert_eq!(state.kind, expected, "{program}: {name}");
         assert_eq!(state.origin, rule.origin, "{program}: {name}");
@@ -1929,6 +1933,23 @@ fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
                     .is_some_and(|n| { !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()) })),
             "{program}: unexpected impl path {sender_impl:?} for the mpsc Sender"
         );
+        // The channel protocols bind at the receiver's `recv` future —
+        // the `PollFn` over its closure, under whatever impl index the
+        // compiler gave the block — and at the borrowed `Notified`;
+        // the receiver itself is a handle, not an operation.
+        assert_resource(
+            program,
+            bundle,
+            "core::future::poll_fn::PollFn<tokio::sync::mpsc::bounded::{impl#",
+            hansei_bundle::ResourceKind::MpscRecv,
+        );
+        assert_resource(
+            program,
+            bundle,
+            "tokio::sync::notify::Notified",
+            hansei_bundle::ResourceKind::Notified,
+        );
+        assert_no_resource(program, bundle, "tokio::sync::mpsc::bounded::Receiver<u32>");
         // The tokio-sync formatters have no fixture elsewhere, and are the
         // most intricate detectors (multi-path, cross-pointer, waiter queues).
         // Assert their fully-resolved paths so a wrong-member navigation trips

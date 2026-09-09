@@ -24,7 +24,7 @@
 //! the census's — so no caller inherits the renderer's implicit
 //! peeling or an unstated heap by accident.
 
-use super::bundle::{Interest, SemaphoreWaiter};
+use super::bundle::{Interest, NotifyWaiter, QueuedWaker, SemaphoreWaiter};
 use super::{RawInstant, TaskAddr};
 
 use hansei_bundle::{BundleTypeId, IoOperationKind, Step};
@@ -302,6 +302,44 @@ pub enum TimerRegistrationState {
     Unknown,
 }
 
+/// The bounded mpsc receiver's `recv` future: the `PollFn` itself holds
+/// nothing but a reference to the receiver's `Rx`, so the observation
+/// is the channel that `Rx` shares — everything the protocol reads is
+/// in it, read on demand ([`ChannelObservation`]).
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct RecvObservation {
+    pub future: ValueKey,
+    /// The `Chan<T, S>` behind the receiver's `Arc`, keyed by its
+    /// nominal type.
+    pub chan: ValueKey,
+}
+
+/// A `Notified`: what its own storage says, read in place. The `Notify`
+/// it borrowed is read on demand ([`NotifyObservation`]).
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct NotifiedObservation {
+    pub future: ValueKey,
+    /// The `Notify` the future borrowed, keyed by its nominal type.
+    pub notify: ValueKey,
+    pub state: NotifiedState,
+    /// The `Waiter` node embedded in the future.
+    pub node: u64,
+    /// The node's notification word: which wake, if any, unlinked it.
+    pub notification: u64,
+    /// The `notify_waiters` count the future was created at.
+    pub calls: u64,
+}
+
+/// A `Notified`'s `State`, as its own enumeration names it.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum NotifiedState {
+    Init,
+    Waiting,
+    Done,
+    /// A word no enumerator claims.
+    Unknown(u64),
+}
+
 /// What one resource value was observed to be.
 #[derive(Clone, PartialEq, Debug)]
 pub enum ResourceObservation {
@@ -309,6 +347,97 @@ pub enum ResourceObservation {
     Acquire(AcquireObservation),
     Timer(TimerObservation),
     Io(IoObservation),
+    Recv(RecvObservation),
+    Notified(NotifiedObservation),
+}
+
+/// What a pop at the receiver's read index would find, as `Rx::pop`
+/// finds it: the block holding the index, then its ready word.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum SlotState {
+    /// A written value sits at the index.
+    Value,
+    /// No value at the index and the block carries the senders' close
+    /// marker: the channel is closed and drained.
+    Closed,
+    /// No value at the index and no close marker: nothing to read,
+    /// whether or not a sender has claimed the slot.
+    Empty,
+    /// No block holds the index yet: nothing to read.
+    NoBlock,
+    /// The block chain could not be walked to the index; the issues
+    /// say why.
+    Unknown,
+}
+
+/// A bounded mpsc channel as one read found it: every word the recv
+/// protocol reads, read on explicit demand from the `Chan` a recv
+/// observation named. Each word is `None` where it did not read, with
+/// the failure in `issues`.
+#[derive(Debug)]
+pub struct ChannelObservation {
+    pub chan: ValueKey,
+    /// Live `Sender`s (`tx_count`); weak senders are not counted.
+    pub senders: Option<u64>,
+    /// The next slot a sender claims.
+    pub tail_position: Option<u64>,
+    /// The next slot the receiver reads.
+    pub index: Option<u64>,
+    /// Whether the receiver closed the channel from its own side.
+    pub rx_closed: Option<bool>,
+    pub slot: SlotState,
+    /// The bounded semaphore's bound: the channel's capacity.
+    pub capacity: Option<u64>,
+    /// Permits free in the bounded semaphore: capacity less the
+    /// messages queued or in flight.
+    pub available: Option<u64>,
+    pub semaphore_closed: Option<bool>,
+    /// The `AtomicWaker`'s state word; anything but at rest means a
+    /// registration or a wake is mid-flight.
+    pub waker_state: Option<u64>,
+    /// The waker the receiver registered, or none.
+    pub waker: Option<QueuedWaker>,
+    pub issues: Vec<WalkIssue>,
+}
+
+/// A `Notify`'s state word and wait list as one walk found it, read on
+/// explicit demand from the `Notify` a `Notified` borrowed. Like a
+/// semaphore's queue, only a complete walk under an unlocked guard
+/// establishes membership or wake order.
+#[derive(Debug)]
+pub struct NotifyObservation {
+    pub notify: ValueKey,
+    /// The state word: the list state in its low bits, the
+    /// `notify_waiters` count above them.
+    pub state: Option<u64>,
+    /// The nodes reached: in `notify_one`'s wake order when
+    /// `complete`, in walk order — newest first — otherwise.
+    pub waiters: Vec<NotifyWaiter>,
+    pub complete: bool,
+    pub consistency: Consistency,
+    pub issues: Vec<WalkIssue>,
+}
+
+impl NotifyObservation {
+    /// Whether the walk established the list: complete, and read
+    /// outside its lock.
+    pub fn established(&self) -> bool {
+        self.complete && self.consistency == Consistency::Quiescent
+    }
+
+    /// The node's place in `notify_one`'s wake order, if established.
+    pub fn position(&self, node: u64) -> Option<usize> {
+        if !self.established() {
+            return None;
+        }
+        self.waiters.iter().position(|w| w.addr == node)
+    }
+
+    /// Whether the list holds the node, if established.
+    pub fn contains(&self, node: u64) -> Option<bool> {
+        self.established()
+            .then(|| self.waiters.iter().any(|w| w.addr == node))
+    }
 }
 
 /// A semaphore's wait queue as one walk found it, read on explicit
@@ -390,6 +519,10 @@ pub enum ReferenceSource {
     JoinTrailerWaker,
     /// A `JoinSet` entry's handle.
     JoinSetEntry,
+    /// The task waker a bounded mpsc receiver registered on its channel.
+    ChannelWaker,
+    /// A task waker queued on a `Notify`.
+    NotifyWaker,
 }
 
 impl std::fmt::Display for ReferenceSource {
@@ -401,6 +534,8 @@ impl std::fmt::Display for ReferenceSource {
             Self::IoWaker => "a task waker parked on an io registration",
             Self::JoinTrailerWaker => "a join waker in a task's Trailer",
             Self::JoinSetEntry => "a JoinSet entry",
+            Self::ChannelWaker => "a task waker registered by a channel receiver",
+            Self::NotifyWaker => "a task waker queued on a Notify",
         })
     }
 }

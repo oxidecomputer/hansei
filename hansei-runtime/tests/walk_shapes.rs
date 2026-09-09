@@ -13,13 +13,13 @@ use hansei_bundle::{
     Bundle, BundleType, BundleTypeId, BundleView, FutureTarget, SemanticIssueKind, WalkRole,
 };
 use hansei_runtime::testkit::{self, load_any, tasks as tasks_of};
-use hansei_runtime::tokio::assess::{ContinuationStatus, WaitAssessment, WaitUnknownReason};
+use hansei_runtime::tokio::assess::{ContinuationStatus, WaitAssessment};
 use hansei_runtime::tokio::bundle::{
     AwaitChain, ChainEnd, Context, DiscoveryRoute, FutureInfo, OwnerIndex, Task, TaskList,
-    TaskStage,
+    TaskStage, WaitTarget,
 };
 use hansei_runtime::tokio::chain::InspectionMode;
-use hansei_runtime::tokio::graph;
+use hansei_runtime::tokio::graph::{self, BarrierRelation};
 use hansei_runtime::tokio::observe::{ReadContext, ReferenceSource, ResourceObservation};
 use proc::snapshot::Snapshot;
 
@@ -131,21 +131,11 @@ fn test_the_chain_steps_through_hand_written_wrappers() {
         .expect("the test bindings validate");
     let chain = chain_of(&bound, chained);
     // Through both wrappers to the coroutine inside, and on to the
-    // `Notified` it awaits — which no reviewed rule covers, so the
-    // chain ends there, unknown, as it should.
-    assert!(
-        matches!(
-            chain.end,
-            ChainEnd::UnknownContinuation {
-                reason: SemanticIssueKind::NoRule,
-                ..
-            }
-        ),
-        "{:?}",
-        chain.end
-    );
+    // `Notified` it awaits, the primitive its rule makes of it.
+    assert!(matches!(chain.end, ChainEnd::Primitive), "{:?}", chain.end);
     let names: Vec<&str> = chain.frames.iter().map(|f| f.future.ty.name()).collect();
     assert_eq!(names.len(), 5, "{names:#?}");
+    assert_eq!(names[4], "tokio::sync::notify::Notified", "{names:#?}");
     assert!(names[1].starts_with("walk_shapes::WrapS<"), "{names:#?}");
     assert!(names[2].starts_with("walk_shapes::WrapE<"), "{names:#?}");
     assert!(names[3].contains("::deep::"), "{names:#?}");
@@ -221,37 +211,66 @@ fn test_the_chain_steps_through_hand_written_wrappers() {
     );
 }
 
-/// The acquire held *by value* in the abandoner's frame is no polling
-/// barrier: the abandoner's own chain ends at a `Notified`, which no
-/// reviewed rule covers, so nothing proves it cannot poll the acquire
-/// again — and the analysis says nothing rather than something. The
-/// acquire is still there to inspect: the census lists it under the
-/// frame's `fut`, and a held inspection observes it queued on the
-/// semaphore, at the node a walk from the member reaches independently.
+/// The acquire held *by value* in the abandoner's frame is a polling
+/// barrier: the abandoner's own chain ends at a `Notified`, complete
+/// under its rule with every edge exclusive, so within that chain the
+/// acquire — polled once against a waker that wakes nobody, queued and
+/// ungranted — is not polled before the `Notify` wakes the task. The
+/// victim, queued on the same mutex after it, is behind it in wake
+/// order and nothing more. The acquire is also there to inspect: the
+/// census lists it under the frame's `fut`, and a held inspection
+/// observes it queued on the semaphore, at the node a walk from the
+/// member reaches independently.
 #[test]
-fn test_a_by_value_acquire_behind_an_unknown_chain_is_no_barrier() {
+fn test_a_by_value_acquire_behind_a_notified_chain_is_a_barrier() {
     let (bundle, snapshot) = pair();
     let ctx = testkit::context(&bundle, &snapshot);
     let list = tasks_of(&ctx, &snapshot);
     let analysis = graph::analyze(&ctx, &list, &ReadContext::none());
     assert!(analysis.errors.is_empty(), "{:?}", analysis.errors);
     let abandoner = &list.tasks[task_by_name(&list, "abandoner")];
-    assert!(
-        !analysis.barriers.iter().any(|b| b.holder == abandoner.addr),
-        "{:#?}",
-        analysis.barriers
-    );
+    let barrier = analysis
+        .barriers
+        .iter()
+        .position(|b| b.holder == abandoner.addr)
+        .unwrap_or_else(|| panic!("{:#?}", analysis.barriers));
+    let held_off = &analysis.barriers[barrier];
+    assert_eq!(held_off.local, "fut");
+    assert_eq!(held_off.owner, Some("tokio::sync::Mutex"));
+    assert!(!held_off.granted());
+    assert!(held_off.acquire.queued);
+    assert_eq!(held_off.acquire.needed, 1);
+    assert_eq!(held_off.acquire.queue_position, Some(0));
+    assert!(held_off.edges.iter().all(|e| e.exclusive));
     let wait = analysis
         .waits
         .iter()
         .find(|w| w.task.addr == abandoner.addr)
         .unwrap();
+    let WaitAssessment::Waiting(verified) = &wait.assessment else {
+        panic!("{wait:#?}");
+    };
     assert!(
-        matches!(
-            wait.assessment,
-            WaitAssessment::Unknown(WaitUnknownReason::Continuation)
-        ),
+        matches!(verified.target(), WaitTarget::Notify { .. }),
         "{wait:#?}"
+    );
+    let victim = task_by_name(&list, "victim");
+    let behind: Vec<_> = analysis
+        .behind()
+        .into_iter()
+        .map(|b| (b.waiter, b.barrier, b.relation))
+        .collect();
+    assert_eq!(
+        behind,
+        vec![(
+            analysis
+                .waits
+                .iter()
+                .position(|w| w.task.addr == list.tasks[victim].addr)
+                .unwrap(),
+            barrier,
+            BarrierRelation::QueueOrder
+        )]
     );
 
     // The frame member itself, inspected as a held value.

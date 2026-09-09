@@ -165,6 +165,32 @@ pub fn classify(role: WalkRole) -> Class {
         // queued io waiter's interest. Enrichment only — a bundle
         // without them still lists and discovers.
         TimerSharedState | ScheduledIoReadiness | IoWaiterInterest => Class::Optional,
+        // The channel and notify protocols' readers: leaf readers like
+        // the acquire's, absent wherever the target awaits neither.
+        MpscRecvRx
+        | MpscRecvChan
+        | ChanTxCount
+        | ChanTailPosition
+        | ChanRxIndex
+        | ChanRxHead
+        | ChanRxClosed
+        | ChanRxWakerState
+        | ChanRxWaker
+        | ChanSemaphorePermits
+        | ChanSemaphoreBound
+        | BlockStartIndex
+        | BlockNext
+        | BlockReadySlots
+        | NotifiedNotify
+        | NotifiedState
+        | NotifiedCalls
+        | NotifiedWaiter
+        | NotifyState
+        | NotifyLock
+        | NotifyQueueHead
+        | NotifyWaiterNext
+        | NotifyWaiterWaker
+        | NotifyWaiterNotification => Class::Optional,
         // The net resources' registration and fd, for spelling an io
         // wait as the fd the reader knows. Each roots at its resource
         // type, absent wherever the target reaches none — and an io

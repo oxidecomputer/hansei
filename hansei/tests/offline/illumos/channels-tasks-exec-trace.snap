@@ -3,22 +3,31 @@ source: hansei/src/offline.rs
 description: "`tasks --exec trace -n` over illumos/channels"
 ---
 task 3
-Waiting on: unknown at tokio::sync::notify::Notified
+Waiting on: the Notify at 0xADDR: 1 queued
 
-what tokio::sync::notify::Notified polls is not established (no reviewed rule covers its implementation); the chain ends there
 #0  future        tokio::sync::notify::Notified
-      (<no_state>, 4 locals)
+      waiting on the Notify at 0xADDR: 1 queued
 #1  future        Pin<&mut tokio::sync::notify::Notified>
       (<no_state>, 1 local)
 #2  async fn      channels::notify_waiter
-      awaiting at src/bin/channels.rs:32 (Suspend0, 2 locals)
+      awaiting at src/bin/channels.rs:34 (Suspend0, 2 locals)
 
 task 4
+Waiting on: mpsc rx 0xADDR: 1 sender, capacity 4, 0 unread
+
+#0  future        core::future::poll_fn::PollFn<tokio::sync::mpsc::bounded::Receiver::recv::{async_fn#0}::{closure_env#0}<u32>>
+      waiting on mpsc rx 0xADDR: 1 sender, capacity 4, 0 unread
+#1  async fn      tokio::sync::mpsc::bounded::Receiver::recv<u32>
+      awaiting at tokio-1.52.4/src/sync/mpsc/bounded.rs:245 (Suspend0, 0 locals)
+#2  async fn      channels::recv_waiter
+      awaiting at src/bin/channels.rs:45 (Suspend0, 1 local)
+
+task 5
 Waiting on: unknown at tokio::sync::oneshot::Receiver
 
 what tokio::sync::oneshot::Receiver<u32> polls is not established (no reviewed rule covers its implementation); the chain ends there
 #0  future        tokio::sync::oneshot::Receiver<u32>
       (<no_state>, 1 local)
 #1  async fn      channels::hold
-      awaiting at src/bin/channels.rs:52 (Suspend0, 8 locals)
-[Executed against 2 tasks, 0 failed]
+      awaiting at src/bin/channels.rs:66 (Suspend0, 9 locals)
+[Executed against 3 tasks, 0 failed]

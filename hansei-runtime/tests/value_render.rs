@@ -97,12 +97,12 @@ fn interpret(bundle: &Bundle, snapshot: &Snapshot) -> String {
 
     // (header, task id, local, depth) — one entry per formatter exercised.
     let cases = [
-        ("mpsc::bounded::Receiver (_rx)", 4, "_rx", 20),
-        ("Arc<Semaphore> (_sem)", 4, "_sem", 20),
-        ("Arc<Notify> (_notify)", 4, "_notify", 20),
-        ("watch::Receiver (_watch_rx)", 4, "_watch_rx", 20),
-        ("mpsc::bounded::Sender (_tx)", 4, "_tx", 20),
-        ("watch::Sender (_watch_tx)", 4, "_watch_tx", 20),
+        ("mpsc::bounded::Receiver (_rx)", 5, "_rx", 20),
+        ("Arc<Semaphore> (_sem)", 5, "_sem", 20),
+        ("Arc<Notify> (_notify)", 5, "_notify", 20),
+        ("watch::Receiver (_watch_rx)", 5, "_watch_rx", 20),
+        ("mpsc::bounded::Sender (_tx)", 5, "_tx", 20),
+        ("watch::Sender (_watch_tx)", 5, "_watch_tx", 20),
     ];
 
     let mut out = String::new();

@@ -2,7 +2,7 @@
 source: hansei-runtime/tests/matrix.rs
 ---
 program: futurelock
-walk contract (tokio 1.53.1, rustc 1.97.1 (8bab26f4f 2026-07-14)): 133 entries, 0 broken, 40 absent
+walk contract (tokio 1.53.1, rustc 1.97.1 (8bab26f4f 2026-07-14)): 157 entries, 0 broken, 54 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -136,9 +136,33 @@ walk contract (tokio 1.53.1, rustc 1.97.1 (8bab26f4f 2026-07-14)): 133 entries, 
   ok      BlockingSchedule.hooks
   ok      Sleep.timer.state (family v1_53)
   ok      ScheduledIo.waiters.lock (spelling 1 of 2)
+  absent  mpsc::recv.rx — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  mpsc::Rx.inner.data — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Chan.tx_count — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Chan.tx.tail_position — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Chan.rx_fields.list.index — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Chan.rx_fields.list.head — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Chan.rx_fields.rx_closed — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Chan.rx_waker.state — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Chan.rx_waker.waker — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Chan.semaphore.permits — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Chan.semaphore.bound — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Block.header.start_index — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Block.header.next — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Block.header.ready_slots — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  ok      Notified.notify
+  ok      Notified.state
+  ok      Notified.notify_waiters_calls
+  ok      Notified.waiter
+  ok      Notify.state
+  ok      Notify.waiters.lock (spelling 1 of 2)
+  ok      Notify.waiters.head
+  ok      notify::Waiter.next
+  ok      notify::Waiter.waker
+  ok      notify::Waiter.notification
 
 program: simple-await
-walk contract (tokio 1.53.1, rustc 1.97.1 (8bab26f4f 2026-07-14)): 133 entries, 0 broken, 56 absent
+walk contract (tokio 1.53.1, rustc 1.97.1 (8bab26f4f 2026-07-14)): 157 entries, 0 broken, 70 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -272,9 +296,33 @@ walk contract (tokio 1.53.1, rustc 1.97.1 (8bab26f4f 2026-07-14)): 133 entries, 
   ok      BlockingSchedule.hooks
   absent  Sleep.timer.state — no tokio::time::sleep::Sleep… type in the tokio info (the target does not reach one)
   ok      ScheduledIo.waiters.lock (spelling 1 of 2)
+  absent  mpsc::recv.rx — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  mpsc::Rx.inner.data — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Chan.tx_count — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Chan.tx.tail_position — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Chan.rx_fields.list.index — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Chan.rx_fields.list.head — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Chan.rx_fields.rx_closed — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Chan.rx_waker.state — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Chan.rx_waker.waker — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Chan.semaphore.permits — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Chan.semaphore.bound — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Block.header.start_index — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Block.header.next — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Block.header.ready_slots — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  ok      Notified.notify
+  ok      Notified.state
+  ok      Notified.notify_waiters_calls
+  ok      Notified.waiter
+  ok      Notify.state
+  ok      Notify.waiters.lock (spelling 1 of 2)
+  ok      Notify.waiters.head
+  ok      notify::Waiter.next
+  ok      notify::Waiter.waker
+  ok      notify::Waiter.notification
 
 program: nested-await
-walk contract (tokio 1.53.1, rustc 1.97.1 (8bab26f4f 2026-07-14)): 133 entries, 0 broken, 56 absent
+walk contract (tokio 1.53.1, rustc 1.97.1 (8bab26f4f 2026-07-14)): 157 entries, 0 broken, 70 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -408,9 +456,33 @@ walk contract (tokio 1.53.1, rustc 1.97.1 (8bab26f4f 2026-07-14)): 133 entries, 
   ok      BlockingSchedule.hooks
   absent  Sleep.timer.state — no tokio::time::sleep::Sleep… type in the tokio info (the target does not reach one)
   ok      ScheduledIo.waiters.lock (spelling 1 of 2)
+  absent  mpsc::recv.rx — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  mpsc::Rx.inner.data — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Chan.tx_count — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Chan.tx.tail_position — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Chan.rx_fields.list.index — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Chan.rx_fields.list.head — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Chan.rx_fields.rx_closed — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Chan.rx_waker.state — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Chan.rx_waker.waker — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Chan.semaphore.permits — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Chan.semaphore.bound — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Block.header.start_index — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Block.header.next — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Block.header.ready_slots — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  ok      Notified.notify
+  ok      Notified.state
+  ok      Notified.notify_waiters_calls
+  ok      Notified.waiter
+  ok      Notify.state
+  ok      Notify.waiters.lock (spelling 1 of 2)
+  ok      Notify.waiters.head
+  ok      notify::Waiter.next
+  ok      notify::Waiter.waker
+  ok      notify::Waiter.notification
 
 program: dyn-future
-walk contract (tokio 1.53.1, rustc 1.97.1 (8bab26f4f 2026-07-14)): 133 entries, 0 broken, 50 absent
+walk contract (tokio 1.53.1, rustc 1.97.1 (8bab26f4f 2026-07-14)): 157 entries, 0 broken, 64 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -544,9 +616,33 @@ walk contract (tokio 1.53.1, rustc 1.97.1 (8bab26f4f 2026-07-14)): 133 entries, 
   ok      BlockingSchedule.hooks
   absent  Sleep.timer.state — no tokio::time::sleep::Sleep… type in the tokio info (the target does not reach one)
   ok      ScheduledIo.waiters.lock (spelling 1 of 2)
+  absent  mpsc::recv.rx — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  mpsc::Rx.inner.data — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Chan.tx_count — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Chan.tx.tail_position — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Chan.rx_fields.list.index — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Chan.rx_fields.list.head — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Chan.rx_fields.rx_closed — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Chan.rx_waker.state — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Chan.rx_waker.waker — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Chan.semaphore.permits — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Chan.semaphore.bound — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Block.header.start_index — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Block.header.next — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Block.header.ready_slots — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  ok      Notified.notify
+  ok      Notified.state
+  ok      Notified.notify_waiters_calls
+  ok      Notified.waiter
+  ok      Notify.state
+  ok      Notify.waiters.lock (spelling 1 of 2)
+  ok      Notify.waiters.head
+  ok      notify::Waiter.next
+  ok      notify::Waiter.waker
+  ok      notify::Waiter.notification
 
 program: select-combinator
-walk contract (tokio 1.53.1, rustc 1.97.1 (8bab26f4f 2026-07-14)): 133 entries, 0 broken, 56 absent
+walk contract (tokio 1.53.1, rustc 1.97.1 (8bab26f4f 2026-07-14)): 157 entries, 0 broken, 70 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -680,9 +776,33 @@ walk contract (tokio 1.53.1, rustc 1.97.1 (8bab26f4f 2026-07-14)): 133 entries, 
   ok      BlockingSchedule.hooks
   absent  Sleep.timer.state — no tokio::time::sleep::Sleep… type in the tokio info (the target does not reach one)
   ok      ScheduledIo.waiters.lock (spelling 1 of 2)
+  absent  mpsc::recv.rx — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  mpsc::Rx.inner.data — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Chan.tx_count — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Chan.tx.tail_position — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Chan.rx_fields.list.index — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Chan.rx_fields.list.head — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Chan.rx_fields.rx_closed — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Chan.rx_waker.state — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Chan.rx_waker.waker — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Chan.semaphore.permits — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Chan.semaphore.bound — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Block.header.start_index — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Block.header.next — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Block.header.ready_slots — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  ok      Notified.notify
+  ok      Notified.state
+  ok      Notified.notify_waiters_calls
+  ok      Notified.waiter
+  ok      Notify.state
+  ok      Notify.waiters.lock (spelling 1 of 2)
+  ok      Notify.waiters.head
+  ok      notify::Waiter.next
+  ok      notify::Waiter.waker
+  ok      notify::Waiter.notification
 
 program: many-tasks
-walk contract (tokio 1.53.1, rustc 1.97.1 (8bab26f4f 2026-07-14)): 133 entries, 0 broken, 57 absent
+walk contract (tokio 1.53.1, rustc 1.97.1 (8bab26f4f 2026-07-14)): 157 entries, 0 broken, 71 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -816,9 +936,33 @@ walk contract (tokio 1.53.1, rustc 1.97.1 (8bab26f4f 2026-07-14)): 133 entries, 
   ok      BlockingSchedule.hooks
   absent  Sleep.timer.state — no tokio::time::sleep::Sleep… type in the tokio info (the target does not reach one)
   ok      ScheduledIo.waiters.lock (spelling 1 of 2)
+  absent  mpsc::recv.rx — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  mpsc::Rx.inner.data — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Chan.tx_count — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Chan.tx.tail_position — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Chan.rx_fields.list.index — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Chan.rx_fields.list.head — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Chan.rx_fields.rx_closed — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Chan.rx_waker.state — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Chan.rx_waker.waker — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Chan.semaphore.permits — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Chan.semaphore.bound — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Block.header.start_index — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Block.header.next — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Block.header.ready_slots — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  ok      Notified.notify
+  ok      Notified.state
+  ok      Notified.notify_waiters_calls
+  ok      Notified.waiter
+  ok      Notify.state
+  ok      Notify.waiters.lock (spelling 1 of 2)
+  ok      Notify.waiters.head
+  ok      notify::Waiter.next
+  ok      notify::Waiter.waker
+  ok      notify::Waiter.notification
 
 program: sleep-join
-walk contract (tokio 1.53.1, rustc 1.97.1 (8bab26f4f 2026-07-14)): 133 entries, 0 broken, 52 absent
+walk contract (tokio 1.53.1, rustc 1.97.1 (8bab26f4f 2026-07-14)): 157 entries, 0 broken, 66 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -952,9 +1096,33 @@ walk contract (tokio 1.53.1, rustc 1.97.1 (8bab26f4f 2026-07-14)): 133 entries, 
   ok      BlockingSchedule.hooks
   ok      Sleep.timer.state (family v1_53)
   ok      ScheduledIo.waiters.lock (spelling 1 of 2)
+  absent  mpsc::recv.rx — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  mpsc::Rx.inner.data — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Chan.tx_count — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Chan.tx.tail_position — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Chan.rx_fields.list.index — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Chan.rx_fields.list.head — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Chan.rx_fields.rx_closed — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Chan.rx_waker.state — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Chan.rx_waker.waker — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Chan.semaphore.permits — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Chan.semaphore.bound — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Block.header.start_index — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Block.header.next — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Block.header.ready_slots — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  ok      Notified.notify
+  ok      Notified.state
+  ok      Notified.notify_waiters_calls
+  ok      Notified.waiter
+  ok      Notify.state
+  ok      Notify.waiters.lock (spelling 1 of 2)
+  ok      Notify.waiters.head
+  ok      notify::Waiter.next
+  ok      notify::Waiter.waker
+  ok      notify::Waiter.notification
 
 program: channels
-walk contract (tokio 1.53.1, rustc 1.97.1 (8bab26f4f 2026-07-14)): 133 entries, 0 broken, 44 absent
+walk contract (tokio 1.53.1, rustc 1.97.1 (8bab26f4f 2026-07-14)): 157 entries, 0 broken, 44 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -996,17 +1164,17 @@ walk contract (tokio 1.53.1, rustc 1.97.1 (8bab26f4f 2026-07-14)): 133 entries, 
   ok      Location.file (spelling 1 of 3)
   ok      Location.line
   ok      Location.col
-  ok      Cell.stage (5 cells)
-  ok      Cell.stage_running (5 cells)
-  ok      Cell.stage_finished (5 cells)
-  ok      Cell.stage_consumed (5 cells)
-  ok      Cell.trailer (5 cells)
-  ok      Cell.task_id (5 cells)
-  ok      Cell.scheduler (5 cells)
+  ok      Cell.stage (7 cells)
+  ok      Cell.stage_running (7 cells)
+  ok      Cell.stage_finished (7 cells)
+  ok      Cell.stage_consumed (7 cells)
+  ok      Cell.trailer (7 cells)
+  ok      Cell.task_id (7 cells)
+  ok      Cell.scheduler (7 cells)
   absent  Sleep.deadline — no tokio::time::sleep::Sleep… type in the tokio info (the target does not reach one)
   absent  Sleep.deadline.tv_sec — no tokio::time::sleep::Sleep… type in the tokio info (the target does not reach one)
   absent  Sleep.deadline.tv_nsec — no tokio::time::sleep::Sleep… type in the tokio info (the target does not reach one)
-  ok      JoinHandle.raw (2 types)
+  ok      JoinHandle.raw (3 types)
   ok      Acquire.semaphore
   ok      Acquire.num_permits
   ok      Acquire.node
@@ -1088,9 +1256,33 @@ walk contract (tokio 1.53.1, rustc 1.97.1 (8bab26f4f 2026-07-14)): 133 entries, 
   ok      BlockingSchedule.hooks
   absent  Sleep.timer.state — no tokio::time::sleep::Sleep… type in the tokio info (the target does not reach one)
   ok      ScheduledIo.waiters.lock (spelling 1 of 2)
+  ok      mpsc::recv.rx
+  ok      mpsc::Rx.inner.data
+  ok      Chan.tx_count
+  ok      Chan.tx.tail_position
+  ok      Chan.rx_fields.list.index
+  ok      Chan.rx_fields.list.head
+  ok      Chan.rx_fields.rx_closed
+  ok      Chan.rx_waker.state
+  ok      Chan.rx_waker.waker
+  ok      Chan.semaphore.permits
+  ok      Chan.semaphore.bound
+  ok      Block.header.start_index
+  ok      Block.header.next
+  ok      Block.header.ready_slots
+  ok      Notified.notify
+  ok      Notified.state
+  ok      Notified.notify_waiters_calls
+  ok      Notified.waiter
+  ok      Notify.state
+  ok      Notify.waiters.lock (spelling 1 of 2)
+  ok      Notify.waiters.head
+  ok      notify::Waiter.next
+  ok      notify::Waiter.waker
+  ok      notify::Waiter.notification
 
 program: unordered
-walk contract (tokio 1.53.1, rustc 1.97.1 (8bab26f4f 2026-07-14)): 133 entries, 0 broken, 53 absent
+walk contract (tokio 1.53.1, rustc 1.97.1 (8bab26f4f 2026-07-14)): 157 entries, 0 broken, 67 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -1224,9 +1416,33 @@ walk contract (tokio 1.53.1, rustc 1.97.1 (8bab26f4f 2026-07-14)): 133 entries, 
   ok      BlockingSchedule.hooks
   absent  Sleep.timer.state — no tokio::time::sleep::Sleep… type in the tokio info (the target does not reach one)
   ok      ScheduledIo.waiters.lock (spelling 1 of 2)
+  absent  mpsc::recv.rx — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  mpsc::Rx.inner.data — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Chan.tx_count — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Chan.tx.tail_position — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Chan.rx_fields.list.index — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Chan.rx_fields.list.head — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Chan.rx_fields.rx_closed — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Chan.rx_waker.state — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Chan.rx_waker.waker — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Chan.semaphore.permits — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Chan.semaphore.bound — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Block.header.start_index — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Block.header.next — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Block.header.ready_slots — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  ok      Notified.notify
+  ok      Notified.state
+  ok      Notified.notify_waiters_calls
+  ok      Notified.waiter
+  ok      Notify.state
+  ok      Notify.waiters.lock (spelling 1 of 2)
+  ok      Notify.waiters.head
+  ok      notify::Waiter.next
+  ok      notify::Waiter.waker
+  ok      notify::Waiter.notification
 
 program: joinset
-walk contract (tokio 1.53.1, rustc 1.97.1 (8bab26f4f 2026-07-14)): 133 entries, 0 broken, 38 absent
+walk contract (tokio 1.53.1, rustc 1.97.1 (8bab26f4f 2026-07-14)): 157 entries, 0 broken, 38 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -1360,9 +1576,33 @@ walk contract (tokio 1.53.1, rustc 1.97.1 (8bab26f4f 2026-07-14)): 133 entries, 
   ok      BlockingSchedule.hooks
   absent  Sleep.timer.state — no tokio::time::sleep::Sleep… type in the tokio info (the target does not reach one)
   ok      ScheduledIo.waiters.lock (spelling 1 of 2)
+  ok      mpsc::recv.rx
+  ok      mpsc::Rx.inner.data
+  ok      Chan.tx_count
+  ok      Chan.tx.tail_position
+  ok      Chan.rx_fields.list.index
+  ok      Chan.rx_fields.list.head
+  ok      Chan.rx_fields.rx_closed
+  ok      Chan.rx_waker.state
+  ok      Chan.rx_waker.waker
+  ok      Chan.semaphore.permits
+  ok      Chan.semaphore.bound
+  ok      Block.header.start_index
+  ok      Block.header.next
+  ok      Block.header.ready_slots
+  ok      Notified.notify
+  ok      Notified.state
+  ok      Notified.notify_waiters_calls
+  ok      Notified.waiter
+  ok      Notify.state
+  ok      Notify.waiters.lock (spelling 1 of 2)
+  ok      Notify.waiters.head
+  ok      notify::Waiter.next
+  ok      notify::Waiter.waker
+  ok      notify::Waiter.notification
 
 program: ct-runtime
-walk contract (tokio 1.53.1, rustc 1.97.1 (8bab26f4f 2026-07-14)): 133 entries, 0 broken, 40 absent
+walk contract (tokio 1.53.1, rustc 1.97.1 (8bab26f4f 2026-07-14)): 157 entries, 0 broken, 54 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -1496,9 +1736,33 @@ walk contract (tokio 1.53.1, rustc 1.97.1 (8bab26f4f 2026-07-14)): 133 entries, 
   ok      BlockingSchedule.hooks
   ok      Sleep.timer.state (family v1_53)
   ok      ScheduledIo.waiters.lock (spelling 1 of 2)
+  absent  mpsc::recv.rx — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  mpsc::Rx.inner.data — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Chan.tx_count — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Chan.tx.tail_position — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Chan.rx_fields.list.index — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Chan.rx_fields.list.head — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Chan.rx_fields.rx_closed — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Chan.rx_waker.state — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Chan.rx_waker.waker — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Chan.semaphore.permits — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Chan.semaphore.bound — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Block.header.start_index — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Block.header.next — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Block.header.ready_slots — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  ok      Notified.notify
+  ok      Notified.state
+  ok      Notified.notify_waiters_calls
+  ok      Notified.waiter
+  ok      Notify.state
+  ok      Notify.waiters.lock (spelling 1 of 2)
+  ok      Notify.waiters.head
+  ok      notify::Waiter.next
+  ok      notify::Waiter.waker
+  ok      notify::Waiter.notification
 
 program: local-set
-walk contract (tokio 1.53.1, rustc 1.97.1 (8bab26f4f 2026-07-14)): 133 entries, 0 broken, 33 absent
+walk contract (tokio 1.53.1, rustc 1.97.1 (8bab26f4f 2026-07-14)): 157 entries, 0 broken, 47 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   ok      statics.tls_local_set_key
@@ -1632,9 +1896,33 @@ walk contract (tokio 1.53.1, rustc 1.97.1 (8bab26f4f 2026-07-14)): 133 entries, 
   ok      BlockingSchedule.hooks
   ok      Sleep.timer.state (family v1_53)
   ok      ScheduledIo.waiters.lock (spelling 1 of 2)
+  absent  mpsc::recv.rx — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  mpsc::Rx.inner.data — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Chan.tx_count — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Chan.tx.tail_position — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Chan.rx_fields.list.index — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Chan.rx_fields.list.head — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Chan.rx_fields.rx_closed — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Chan.rx_waker.state — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Chan.rx_waker.waker — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Chan.semaphore.permits — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Chan.semaphore.bound — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Block.header.start_index — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Block.header.next — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Block.header.ready_slots — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  ok      Notified.notify
+  ok      Notified.state
+  ok      Notified.notify_waiters_calls
+  ok      Notified.waiter
+  ok      Notify.state
+  ok      Notify.waiters.lock (spelling 1 of 2)
+  ok      Notify.waiters.head
+  ok      notify::Waiter.next
+  ok      notify::Waiter.waker
+  ok      notify::Waiter.notification
 
 program: local-set-timer
-walk contract (tokio 1.53.1, rustc 1.97.1 (8bab26f4f 2026-07-14)): 133 entries, 0 broken, 33 absent
+walk contract (tokio 1.53.1, rustc 1.97.1 (8bab26f4f 2026-07-14)): 157 entries, 0 broken, 47 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   ok      statics.tls_local_set_key
@@ -1768,9 +2056,33 @@ walk contract (tokio 1.53.1, rustc 1.97.1 (8bab26f4f 2026-07-14)): 133 entries, 
   ok      BlockingSchedule.hooks
   ok      Sleep.timer.state (family v1_53)
   ok      ScheduledIo.waiters.lock (spelling 1 of 2)
+  absent  mpsc::recv.rx — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  mpsc::Rx.inner.data — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Chan.tx_count — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Chan.tx.tail_position — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Chan.rx_fields.list.index — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Chan.rx_fields.list.head — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Chan.rx_fields.rx_closed — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Chan.rx_waker.state — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Chan.rx_waker.waker — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Chan.semaphore.permits — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Chan.semaphore.bound — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Block.header.start_index — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Block.header.next — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Block.header.ready_slots — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  ok      Notified.notify
+  ok      Notified.state
+  ok      Notified.notify_waiters_calls
+  ok      Notified.waiter
+  ok      Notify.state
+  ok      Notify.waiters.lock (spelling 1 of 2)
+  ok      Notify.waiters.head
+  ok      notify::Waiter.next
+  ok      notify::Waiter.waker
+  ok      notify::Waiter.notification
 
 program: local-set-io
-walk contract (tokio 1.53.1, rustc 1.97.1 (8bab26f4f 2026-07-14)): 133 entries, 0 broken, 35 absent
+walk contract (tokio 1.53.1, rustc 1.97.1 (8bab26f4f 2026-07-14)): 157 entries, 0 broken, 49 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   ok      statics.tls_local_set_key
@@ -1904,9 +2216,33 @@ walk contract (tokio 1.53.1, rustc 1.97.1 (8bab26f4f 2026-07-14)): 133 entries, 
   ok      BlockingSchedule.hooks
   absent  Sleep.timer.state — no tokio::time::sleep::Sleep… type in the tokio info (the target does not reach one)
   ok      ScheduledIo.waiters.lock (spelling 1 of 2)
+  absent  mpsc::recv.rx — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  mpsc::Rx.inner.data — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Chan.tx_count — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Chan.tx.tail_position — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Chan.rx_fields.list.index — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Chan.rx_fields.list.head — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Chan.rx_fields.rx_closed — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Chan.rx_waker.state — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Chan.rx_waker.waker — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Chan.semaphore.permits — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Chan.semaphore.bound — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Block.header.start_index — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Block.header.next — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Block.header.ready_slots — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  ok      Notified.notify
+  ok      Notified.state
+  ok      Notified.notify_waiters_calls
+  ok      Notified.waiter
+  ok      Notify.state
+  ok      Notify.waiters.lock (spelling 1 of 2)
+  ok      Notify.waiters.head
+  ok      notify::Waiter.next
+  ok      notify::Waiter.waker
+  ok      notify::Waiter.notification
 
 program: foreign-runtime
-walk contract (tokio 1.53.1, rustc 1.97.1 (8bab26f4f 2026-07-14)): 133 entries, 0 broken, 33 absent
+walk contract (tokio 1.53.1, rustc 1.97.1 (8bab26f4f 2026-07-14)): 157 entries, 0 broken, 47 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   ok      statics.tls_local_set_key
@@ -2040,9 +2376,33 @@ walk contract (tokio 1.53.1, rustc 1.97.1 (8bab26f4f 2026-07-14)): 133 entries, 
   ok      BlockingSchedule.hooks
   ok      Sleep.timer.state (family v1_53)
   ok      ScheduledIo.waiters.lock (spelling 1 of 2)
+  absent  mpsc::recv.rx — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  mpsc::Rx.inner.data — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Chan.tx_count — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Chan.tx.tail_position — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Chan.rx_fields.list.index — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Chan.rx_fields.list.head — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Chan.rx_fields.rx_closed — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Chan.rx_waker.state — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Chan.rx_waker.waker — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Chan.semaphore.permits — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Chan.semaphore.bound — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Block.header.start_index — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Block.header.next — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Block.header.ready_slots — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  ok      Notified.notify
+  ok      Notified.state
+  ok      Notified.notify_waiters_calls
+  ok      Notified.waiter
+  ok      Notify.state
+  ok      Notify.waiters.lock (spelling 1 of 2)
+  ok      Notify.waiters.head
+  ok      notify::Waiter.next
+  ok      notify::Waiter.waker
+  ok      notify::Waiter.notification
 
 program: blocking-pool
-walk contract (tokio 1.53.1, rustc 1.97.1 (8bab26f4f 2026-07-14)): 133 entries, 0 broken, 56 absent
+walk contract (tokio 1.53.1, rustc 1.97.1 (8bab26f4f 2026-07-14)): 157 entries, 0 broken, 70 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -2176,9 +2536,33 @@ walk contract (tokio 1.53.1, rustc 1.97.1 (8bab26f4f 2026-07-14)): 133 entries, 
   ok      BlockingSchedule.hooks
   absent  Sleep.timer.state — no tokio::time::sleep::Sleep… type in the tokio info (the target does not reach one)
   ok      ScheduledIo.waiters.lock (spelling 1 of 2)
+  absent  mpsc::recv.rx — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  mpsc::Rx.inner.data — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Chan.tx_count — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Chan.tx.tail_position — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Chan.rx_fields.list.index — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Chan.rx_fields.list.head — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Chan.rx_fields.rx_closed — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Chan.rx_waker.state — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Chan.rx_waker.waker — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Chan.semaphore.permits — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Chan.semaphore.bound — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Block.header.start_index — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Block.header.next — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Block.header.ready_slots — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  ok      Notified.notify
+  ok      Notified.state
+  ok      Notified.notify_waiters_calls
+  ok      Notified.waiter
+  ok      Notify.state
+  ok      Notify.waiters.lock (spelling 1 of 2)
+  ok      Notify.waiters.head
+  ok      notify::Waiter.next
+  ok      notify::Waiter.waker
+  ok      notify::Waiter.notification
 
 program: delegation-cases
-walk contract (tokio 1.53.1, rustc 1.97.1 (8bab26f4f 2026-07-14)): 133 entries, 0 broken, 56 absent
+walk contract (tokio 1.53.1, rustc 1.97.1 (8bab26f4f 2026-07-14)): 157 entries, 0 broken, 70 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -2312,3 +2696,27 @@ walk contract (tokio 1.53.1, rustc 1.97.1 (8bab26f4f 2026-07-14)): 133 entries, 
   ok      BlockingSchedule.hooks
   absent  Sleep.timer.state — no tokio::time::sleep::Sleep… type in the tokio info (the target does not reach one)
   ok      ScheduledIo.waiters.lock (spelling 1 of 2)
+  absent  mpsc::recv.rx — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  mpsc::Rx.inner.data — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Chan.tx_count — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Chan.tx.tail_position — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Chan.rx_fields.list.index — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Chan.rx_fields.list.head — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Chan.rx_fields.rx_closed — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Chan.rx_waker.state — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Chan.rx_waker.waker — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Chan.semaphore.permits — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Chan.semaphore.bound — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Block.header.start_index — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Block.header.next — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Block.header.ready_slots — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  ok      Notified.notify
+  ok      Notified.state
+  ok      Notified.notify_waiters_calls
+  ok      Notified.waiter
+  ok      Notify.state
+  ok      Notify.waiters.lock (spelling 1 of 2)
+  ok      Notify.waiters.head
+  ok      notify::Waiter.next
+  ok      notify::Waiter.waker
+  ok      notify::Waiter.notification

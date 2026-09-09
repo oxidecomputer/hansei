@@ -1139,6 +1139,11 @@ pub(crate) fn ready_reason(reason: ReadyReason) -> &'static str {
         ReadyReason::IoNotified => "the readiness await's own node has been notified",
         ReadyReason::TimerFired => "the timer has fired; the next poll reads it",
         ReadyReason::TimerPendingFire => "the timer is marked to fire; the wake is on its way",
+        ReadyReason::MessageReady => "a message is queued; the next poll takes it",
+        ReadyReason::ChannelClosed => {
+            "the channel is closed and drained; the next poll returns None"
+        }
+        ReadyReason::Notified => "the Notified has been notified; the next poll returns",
     }
 }
 

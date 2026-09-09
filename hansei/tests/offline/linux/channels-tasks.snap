@@ -2,7 +2,8 @@
 source: hansei/src/offline.rs
 description: "`tasks` over linux/channels"
 ---
-ID  STATE  FUTURES  AWAITING AT             WAITING ON                                 TYPE
-3   idle         0  src/bin/channels.rs:32  unknown at tokio::sync::notify::Notified   async fn channels::notify_waiter
-4   idle         0  src/bin/channels.rs:52  unknown at tokio::sync::oneshot::Receiver  async fn channels::hold
-[2 tasks]
+ID  STATE  FUTURES  AWAITING AT             WAITING ON                                              TYPE
+3   idle         0  src/bin/channels.rs:34  the Notify at 0xADDR: 1 queued                  async fn channels::notify_waiter
+4   idle         0  src/bin/channels.rs:45  mpsc rx 0xADDR: 1 sender, capacity 4, 0 unread  async fn channels::recv_waiter
+5   idle         0  src/bin/channels.rs:66  unknown at tokio::sync::oneshot::Receiver               async fn channels::hold
+[3 tasks]

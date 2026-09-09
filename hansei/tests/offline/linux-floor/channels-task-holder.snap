@@ -1,17 +1,17 @@
 ---
 source: hansei/src/offline.rs
-description: "`task 4` over linux-floor/channels"
+description: "`task 5` over linux-floor/channels"
 ---
-task 4
+task 5
     state: idle
     thread: <none>
     type: async fn channels::hold
-    awaiting at: src/bin/channels.rs:52
+    awaiting at: src/bin/channels.rs:66
     waiting on: unknown at tokio::sync::oneshot::Receiver
     waker: <empty>
         unknown: the chain does not end in a primitive
         what tokio::sync::oneshot::Receiver<u32> polls is not established: no reviewed rule covers its implementation
-    spawned at: src/bin/channels.rs:100:23
-    defined at: src/bin/channels.rs:38
+    spawned at: src/bin/channels.rs:121:23
+    defined at: src/bin/channels.rs:51
     held futures: 0
     join sets: 0

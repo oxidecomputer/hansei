@@ -7,8 +7,10 @@ a tokio::sync::Semaphore (semaphore 0xADDR): 0 permits available
     Wake queue: task 5, task 6, task 10
 
 a tokio::sync::Mutex (semaphore 0xADDR): 0 permits available
+    Queued by: task 3's `fut` (async fn tokio::sync::mutex::Mutex::lock<()>), still waiting for 1 permit, a future it cannot poll until the future tokio::sync::notify::Notified it awaits completes
+    Queued behind it: task 4
     Blocked on it: task 4 (1 permit requested)
-    Wake queue: a non-task waiter, task 4
+    Wake queue: a non-task waiter (held off), task 4
 
 task 7 (async fn walk_shapes::local_parker): idle
     Waited by: task 8

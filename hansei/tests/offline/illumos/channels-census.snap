@@ -5,31 +5,33 @@ description: "`census` over illumos/channels"
 Threads: 3 lwps, 3 in runtime 0 @ 0xADDR
 
 COUNT  RT  ROLE             STATE            LWPS
-    1  0   worker           in driver        3
-    1  0   worker           parked           2
+    1  0   worker           in driver        2
+    1  0   worker           parked           3
     1  0   entered runtime  block_on caller  1
     0  0   blocking pool    0 idle, 0 busy   —
 [3 lwps]
 
-Tasks: 2 owned by runtime 0 @ 0xADDR
+Tasks: 3 owned by runtime 0 @ 0xADDR
 
 COUNT  STATE
-    2  idle
-[2 tasks]
+    3  idle
+[3 tasks]
 
 COUNT  TYPE / WAITING ON
     1  async fn channels::hold
        └─ 1  unknown
     1  async fn channels::notify_waiter
-       └─ 1  unknown
-[2 types]
+       └─ 1  a Notify
+    1  async fn channels::recv_waiter
+       └─ 1  mpsc rx
+[3 types]
 
-Futures: 2 in flight, on 5 await-chain frames, up to 3 deep
+Futures: 3 in flight, on 8 await-chain frames, up to 3 deep
 
 COUNT  HELD IN
-    2  task (its own await chain)
+    3  task (its own await chain)
     0  frame (off any await chain)
     0  set (0 FuturesUnordered)
-[2 futures]
+[3 futures]
 
 [0 types]

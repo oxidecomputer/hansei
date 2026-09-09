@@ -3172,10 +3172,10 @@ mod trace_render_tests {
                 None,
                 None,
             ),
-            "what tokio::sync::notify::Notified polls is not established \
-             (no reviewed rule covers its implementation); the chain ends there
+            "Waiting on: the Notify at 0xADDR
+
 #0  future        tokio::sync::notify::Notified
-      (<no_state>, 4 locals)
+      waiting on the Notify at 0xADDR
 #1  async fn      walk_shapes::deep
       awaiting at src/bin/walk-shapes.rs:101 (Suspend0, 1 local)
 #2  future        walk_shapes::WrapE<walk_shapes::deep>

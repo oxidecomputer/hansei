@@ -185,6 +185,11 @@ pub enum ResourceKind {
     JoinHandle,
     SemaphoreAcquire,
     IoOperation(IoOperationKind),
+    /// The bounded mpsc `Receiver::recv` future: the `PollFn` its
+    /// `async fn` awaits, whose closure holds the receiver's `Rx`.
+    MpscRecv,
+    /// `tokio::sync::notify::Notified`, the borrowed form.
+    Notified,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
@@ -241,6 +246,10 @@ pub enum SemanticRuleKind {
     TokioBlockingScheduler,
     FuturesUnordered,
     TracingInstrumented,
+    TokioMpscRecv,
+    TokioMpscRecvState,
+    TokioNotified,
+    TokioNotifiedState,
 }
 
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]

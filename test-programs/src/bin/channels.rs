@@ -8,9 +8,11 @@
 //! drained first), a `watch`, a `Semaphore`, and a `Notify` — the types
 //! the tokio-sync formatters (`MpscRx`/`MpscChan`/`MpscBlock`,
 //! `BoundedSemaphore`, `WatchState`, `Semaphore`, `Notify`) detect. A second
-//! task parks a waiter in the `Notify`'s queue. `READY` on stdout means every
-//! primitive has reached its parked state; there are no timing sleeps —
-//! readiness is signalled over oneshots.
+//! task parks a waiter in the `Notify`'s queue, and a third parks in
+//! `Receiver::recv` on an empty bounded channel whose sender the holder
+//! keeps alive. `READY` on stdout means every primitive has reached its
+//! parked state; there are no timing sleeps — readiness is signalled over
+//! oneshots.
 
 use std::sync::Arc;
 use test_programs::census_expect;
@@ -32,12 +34,24 @@ async fn notify_waiter(notify: Arc<Notify>, ready: oneshot::Sender<()>) {
     notified.await;
 }
 
+/// Park in `recv` on an empty bounded channel: the first poll registers
+/// this task's waker in the channel's receiver slot and parks until a
+/// message arrives or the last sender drops — and the holder keeps the
+/// sender alive. Readiness is signalled just ahead of the await, in the
+/// same poll that registers.
+async fn recv_waiter(mut rx: mpsc::Receiver<u32>, ready: oneshot::Sender<()>) -> Option<u32> {
+    census_expect::task("channels::recv_waiter");
+    ready.send(()).expect("main waits for readiness");
+    rx.recv().await
+}
+
 /// Park forever holding every primitive so their private layouts stay part of
 /// the fixture's async state on every target. Signals `ready` once parked.
 #[allow(clippy::too_many_arguments)]
 async fn hold(
     _tx: mpsc::Sender<u32>,
     _rx: mpsc::Receiver<u32>,
+    _recv_tx: mpsc::Sender<u32>,
     _closed_rx: mpsc::Receiver<u32>,
     _drained_rx: mpsc::Receiver<u32>,
     _watch_tx: watch::Sender<u32>,
@@ -92,6 +106,13 @@ fn main() {
         let _waiter = tokio::spawn(notify_waiter(notify.clone(), waiter_ready_tx));
         waiter_ready_rx.await.expect("waiter signals readiness");
 
+        // An empty bounded channel with a receiver parked in `recv` and
+        // its one sender held by the holder, so the receive never ends.
+        let (recv_tx, recv_rx) = mpsc::channel::<u32>(4);
+        let (recv_ready_tx, recv_ready_rx) = oneshot::channel();
+        let _recv_waiter = tokio::spawn(recv_waiter(recv_rx, recv_ready_tx));
+        recv_ready_rx.await.expect("receiver signals readiness");
+
         // Park the holder forever: its `park` sender is leaked so it is never
         // woken out of the steady state.
         let (holder_ready_tx, holder_ready_rx) = oneshot::channel();
@@ -100,6 +121,7 @@ fn main() {
         let _holder = tokio::spawn(hold(
             tx,
             rx,
+            recv_tx,
             closed_rx,
             drained_rx,
             watch_tx,

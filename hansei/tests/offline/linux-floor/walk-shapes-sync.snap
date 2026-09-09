@@ -3,8 +3,10 @@ source: hansei/src/offline.rs
 description: "`sync` over linux-floor/walk-shapes"
 ---
 a tokio::sync::Mutex (semaphore 0xADDR): 0 permits available
+    Queued by: task 3's `fut` (async fn tokio::sync::mutex::Mutex::lock<()>), still waiting for 1 permit, a future it cannot poll until the future tokio::sync::notify::Notified it awaits completes
+    Queued behind it: task 4
     Blocked on it: task 4 (1 permit requested)
-    Wake queue: a non-task waiter, task 4
+    Wake queue: a non-task waiter (held off), task 4
 
 a tokio::sync::Semaphore (semaphore 0xADDR): 0 permits available
     Blocked on it: task 5 (1 permit requested), task 6 (1 permit requested), task 10 (1 permit requested)

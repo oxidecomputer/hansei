@@ -54,9 +54,10 @@ future 0xADDR
 future 0xADDR: async fn unordered::set_member
 Child of: futures_util::stream::futures_unordered::FuturesUnordered<unordered::set_member> at 0xADDR (frame 1, `set`), polled by task 3 — async fn unordered::driver
 
-what tokio::sync::notify::Notified polls is not established (no reviewed rule covers its implementation); the chain ends there
+Waiting on: the Notify at 0xADDR
+
 #0  future        tokio::sync::notify::Notified
-      (<no_state>, 4 locals)
+      waiting on the Notify at 0xADDR
 [2 frames, 1 shown]
 
 future 0xADDR
@@ -71,9 +72,10 @@ future 0xADDR
 future 0xADDR: async fn unordered::set_member
 Child of: futures_util::stream::futures_unordered::FuturesUnordered<unordered::set_member> at 0xADDR (frame 1, `set`), polled by task 3 — async fn unordered::driver
 
-what tokio::sync::notify::Notified polls is not established (no reviewed rule covers its implementation); the chain ends there
+Waiting on: the Notify at 0xADDR
+
 #0  future        tokio::sync::notify::Notified
-      (<no_state>, 4 locals)
+      waiting on the Notify at 0xADDR
 [2 frames, 1 shown]
 
 future 0xADDR
@@ -88,9 +90,10 @@ future 0xADDR
 future 0xADDR: async fn unordered::set_member
 Child of: futures_util::stream::futures_unordered::FuturesUnordered<unordered::set_member> at 0xADDR (frame 1, `set`), polled by task 3 — async fn unordered::driver
 
-what tokio::sync::notify::Notified polls is not established (no reviewed rule covers its implementation); the chain ends there
+Waiting on: the Notify at 0xADDR
+
 #0  future        tokio::sync::notify::Notified
-      (<no_state>, 4 locals)
+      waiting on the Notify at 0xADDR
 [2 frames, 1 shown]
 
 future 0xADDR

@@ -311,6 +311,55 @@ pub const TOKIO_IO_STATE_V1_47: StateProtocol = StateProtocol {
     ceiling: (1, 53),
 };
 
+/// The bounded mpsc receiver's `recv` protocol, tokio 1.47 through 1.53
+/// (`sync/mpsc/chan.rs`, `sync/mpsc/list.rs`, `sync/mpsc/block.rs` and
+/// `sync/task/atomic_waker.rs`; across the range `chan.rs` differs only
+/// in the trace hook's signature and a `take_waker` on the receiver's
+/// drop, `list.rs` and `block.rs` only in `len`'s closed-marker
+/// accounting and `unsafe` block reflows — `pop`, `try_advancing_head`
+/// and `Block::read` are byte-identical — and `atomic_waker.rs` not at
+/// all): `Receiver::recv` awaits `poll_fn(|cx| self.chan.recv(cx))`,
+/// and `Rx::recv` checks the cooperative budget, then pops: the head
+/// block is advanced to the one whose `start_index` is the read index's
+/// block (a missing successor reads as nothing), and in that block the
+/// slot's bit in `ready_slots` yields the value, the `TX_CLOSED` flag
+/// yields `Closed`, and neither yields nothing. On nothing, the task's
+/// waker is stored by reference in `rx_waker` — an `AtomicWaker`, whose
+/// cell is written under its `REGISTERING` bit and taken under `WAKING`,
+/// both clear at rest — the pop is retried, and the receiver parks
+/// unless it closed itself (`rx_closed`) with the semaphore idle, every
+/// permit back, in which case it returns `None`. The last `Sender` to
+/// drop counts `tx_count` down to zero, claims one more slot with
+/// `TX_CLOSED` set on its block, and wakes the receiver.
+pub const TOKIO_MPSC_RECV_STATE_V1_47: StateProtocol = StateProtocol {
+    kind: SemanticRuleKind::TokioMpscRecvState,
+    floor: (1, 47),
+    ceiling: (1, 53),
+};
+
+/// `Notified`'s protocol, tokio 1.47 through 1.53 (`sync/notify.rs`;
+/// across the range the wait list's type alias changed, `notify_waiters`
+/// gained a guard type, and 1.53 re-checks the `notify_waiters` count
+/// under the lock in the `Waiting` arm): in `Init`, `poll_notified`
+/// consumes a stored `notify_one` — the state word's `NOTIFIED` — or a
+/// `notify_waiters` that ran since the future was created — the count
+/// above the state bits differs from the future's copy — and is `Done`;
+/// otherwise, under the waiters lock, it stores the task's waker in the
+/// `Waiter` embedded in the future, pushes that node at the list's
+/// front, moves the state word to `WAITING`, becomes `Waiting` and
+/// returns `Pending`. In `Waiting` it is `Ready` once the node's
+/// `notification` word is set, which `notify_one` (popping the back),
+/// `notify_last` (the front) and `notify_waiters` (every node) do under
+/// the lock after unlinking the node and taking its waker — the state
+/// word returns to `EMPTY` with the last node — and otherwise replaces
+/// a changed waker under the lock and stays `Pending`. `Done` is
+/// `Ready`.
+pub const TOKIO_NOTIFIED_STATE_V1_47: StateProtocol = StateProtocol {
+    kind: SemanticRuleKind::TokioNotifiedState,
+    floor: (1, 47),
+    ceiling: (1, 53),
+};
+
 /// The reviewed state protocol for a resource kind at a recovered tokio
 /// version: `None` when no version was recovered or it falls outside
 /// the protocol's range. A layout family is selected regardless; a
@@ -324,6 +373,8 @@ pub fn tokio_state_protocol(
         ResourceKind::JoinHandle => &TOKIO_JOIN_HANDLE_STATE_V1_47,
         ResourceKind::SemaphoreAcquire => &TOKIO_ACQUIRE_STATE_V1_47,
         ResourceKind::IoOperation(_) => &TOKIO_IO_STATE_V1_47,
+        ResourceKind::MpscRecv => &TOKIO_MPSC_RECV_STATE_V1_47,
+        ResourceKind::Notified => &TOKIO_NOTIFIED_STATE_V1_47,
     };
     protocol.covers(version?).then_some(protocol)
 }
@@ -450,6 +501,8 @@ mod tests {
                 ResourceKind::IoOperation(IoOperationKind::Readiness),
                 SemanticRuleKind::TokioIoState,
             ),
+            (ResourceKind::MpscRecv, SemanticRuleKind::TokioMpscRecvState),
+            (ResourceKind::Notified, SemanticRuleKind::TokioNotifiedState),
         ];
         for (kind, rule) in kinds {
             for version in ["1.47.0", "1.47.5", "1.49.0", "1.52.4", "1.53.1", "1.53.9"] {

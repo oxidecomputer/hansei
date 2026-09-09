@@ -37,9 +37,10 @@ use super::bundle::{
 };
 use super::chain::{FutureInspection, InspectionMode};
 use super::observe::{
-    AcquireObservation, Consistency, IoFutureState, IoObservation, JoinObservation, Observed,
-    QueueObservation, ReadContext, ResourceObservation, ScanBudget, TimerObservation,
-    TimerRegistrationState, ValueKey,
+    AcquireObservation, ChannelObservation, Consistency, IoFutureState, IoObservation,
+    JoinObservation, NotifiedObservation, NotifiedState, NotifyObservation, Observed,
+    QueueObservation, ReadContext, RecvObservation, ResourceObservation, ScanBudget, SlotState,
+    TimerObservation, TimerRegistrationState, ValueKey,
 };
 use super::{Lifecycle, TaskAddr, TaskState};
 
@@ -117,6 +118,15 @@ pub enum ReadyReason {
     TimerFired,
     /// The driver has marked the entry to fire; the wake is on its way.
     TimerPendingFire,
+    /// A message sits at the receiver's read index; the next poll
+    /// takes it.
+    MessageReady,
+    /// The channel is closed and drained: every sender is gone, or
+    /// the receiver closed it and every permit is back. The next poll
+    /// returns `None`.
+    ChannelClosed,
+    /// The `Notified` has been notified; the next poll returns.
+    Notified,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
@@ -326,6 +336,8 @@ impl Assessed {
 pub struct AssessmentPass {
     queues: HashMap<ValueKey, QueueObservation>,
     registrations: HashMap<ValueKey, Observed<IoResourceInfo>>,
+    channels: HashMap<ValueKey, ChannelObservation>,
+    notifies: HashMap<ValueKey, NotifyObservation>,
     pub budget: ScanBudget,
 }
 
@@ -340,8 +352,38 @@ impl AssessmentPass {
         AssessmentPass {
             queues: HashMap::default(),
             registrations: HashMap::default(),
+            channels: HashMap::default(),
+            notifies: HashMap::default(),
             budget: ScanBudget::default(),
         }
+    }
+
+    /// The channel at `chan`, read on first demand.
+    pub fn channel<'b, T: Target>(
+        &mut self,
+        ctx: &Context<'b, T>,
+        chan: ValueKey,
+        read: &ReadContext<'_>,
+    ) -> &ChannelObservation {
+        if !self.channels.contains_key(&chan) {
+            let channel = ctx.observe_channel(chan, read, &mut self.budget);
+            self.channels.insert(chan, channel);
+        }
+        &self.channels[&chan]
+    }
+
+    /// The `Notify` at `notify`, read on first demand.
+    pub fn notify<'b, T: Target>(
+        &mut self,
+        ctx: &Context<'b, T>,
+        notify: ValueKey,
+        read: &ReadContext<'_>,
+    ) -> &NotifyObservation {
+        if !self.notifies.contains_key(&notify) {
+            let list = ctx.observe_notify(notify, read, &mut self.budget);
+            self.notifies.insert(notify, list);
+        }
+        &self.notifies[&notify]
     }
 
     /// The queue of `semaphore`, read on first demand.
@@ -513,7 +555,300 @@ impl<'b, T: Target> Context<'b, T> {
             }
             ResourceObservation::Io(io) => self.assess_io(pass, io, task, chain, primitive, read),
             ResourceObservation::Timer(timer) => self.assess_timer(timer, primitive),
+            ResourceObservation::Recv(recv) => self.assess_recv(pass, recv, task, primitive, read),
+            ResourceObservation::Notified(notified) => {
+                self.assess_notified(pass, notified, task, primitive, read)
+            }
         }
+    }
+
+    /// The recv protocol: a value at the read index, or the senders'
+    /// close marker in its block, means the next poll returns; a
+    /// receiver that closed its own side with every permit back
+    /// returns too. Short of those, a wait needs the receiver's waker
+    /// cell at rest and holding this task's waker, and a sender still
+    /// alive — no sender left with no close marker is a drop in
+    /// progress, not a state the channel rests in.
+    fn assess_recv(
+        &self,
+        pass: &mut AssessmentPass,
+        recv: &RecvObservation,
+        task: &TaskFacts,
+        primitive: ValueKey,
+        read: &ReadContext<'_>,
+    ) -> Assessed {
+        use hansei_bundle::tokio::atomic_waker;
+        let channel = pass.channel(self, recv.chan, read);
+        let issues = || {
+            channel
+                .issues
+                .iter()
+                .map(|issue| issue.detail.clone().unwrap_or_default())
+                .collect::<Vec<_>>()
+                .join("; ")
+        };
+        let (Some(senders), Some(index), Some(tail), Some(rx_closed)) = (
+            channel.senders,
+            channel.index,
+            channel.tail_position,
+            channel.rx_closed,
+        ) else {
+            return Assessed::unknown(
+                WaitUnknownReason::ResourceUnreadable,
+                format!("the channel's words did not read: {}", issues()),
+            );
+        };
+        if index > tail {
+            return Assessed::unknown(
+                WaitUnknownReason::ConflictingEvidence,
+                format!("the read index {index} is past the claimed tail {tail}"),
+            );
+        }
+        match channel.slot {
+            SlotState::Value => {
+                return Assessed::of(WaitAssessment::ResourceReady(ReadyReason::MessageReady));
+            }
+            SlotState::Closed => {
+                return Assessed::of(WaitAssessment::ResourceReady(ReadyReason::ChannelClosed));
+            }
+            SlotState::Empty | SlotState::NoBlock => {}
+            SlotState::Unknown => {
+                return Assessed::unknown(
+                    WaitUnknownReason::ResourceUnreadable,
+                    format!(
+                        "the block holding the read index could not be reached: {}",
+                        issues()
+                    ),
+                );
+            }
+        }
+        if rx_closed {
+            match (channel.available, channel.capacity) {
+                (Some(available), Some(capacity)) if available == capacity => {
+                    return Assessed::of(WaitAssessment::ResourceReady(ReadyReason::ChannelClosed));
+                }
+                (Some(_), Some(_)) => {}
+                _ => {
+                    return Assessed::unknown(
+                        WaitUnknownReason::ResourceStateUnproven,
+                        "the receiver closed the channel and whether its permits are all \
+                         back did not read",
+                    );
+                }
+            }
+        }
+        match channel.waker_state {
+            Some(atomic_waker::WAITING) => {}
+            Some(state) => {
+                let doing = if state & atomic_waker::REGISTERING != 0 {
+                    "being registered"
+                } else {
+                    "being taken"
+                };
+                return Assessed::unknown(
+                    WaitUnknownReason::ResourceStateUnproven,
+                    format!("the receiver's waker is {doing} (state {state:#b})"),
+                );
+            }
+            None => {
+                return Assessed::unknown(
+                    WaitUnknownReason::ResourceUnreadable,
+                    format!("the receiver's waker state did not read: {}", issues()),
+                );
+            }
+        }
+        match &channel.waker {
+            Some(QueuedWaker::Task { addr, .. }) if *addr == task.addr.0 => {}
+            Some(QueuedWaker::Task { addr, .. }) => {
+                return Assessed::unknown(
+                    WaitUnknownReason::ConflictingEvidence,
+                    format!("the receiver's waker names the task at {addr:#x}, not this one"),
+                );
+            }
+            Some(QueuedWaker::Other { vtable }) => {
+                return Assessed::unknown(
+                    WaitUnknownReason::ResourceStateUnproven,
+                    format!("the receiver's waker is not a task's (vtable {vtable:#x})"),
+                );
+            }
+            Some(QueuedWaker::Unarmed) => {
+                return Assessed::unknown(
+                    WaitUnknownReason::ConflictingEvidence,
+                    "the receiver parked but registered no waker",
+                );
+            }
+            None => {
+                return Assessed::unknown(
+                    WaitUnknownReason::ResourceUnreadable,
+                    format!("the receiver's waker did not read: {}", issues()),
+                );
+            }
+        }
+        if senders == 0 {
+            return Assessed::unknown(
+                WaitUnknownReason::ConflictingEvidence,
+                "no sender is left and the channel carries no close marker",
+            );
+        }
+        Assessed::of(WaitAssessment::Waiting(VerifiedWait {
+            target: WaitTarget::Channel {
+                addr: recv.chan.addr,
+                senders,
+                capacity: channel.capacity,
+                unread: tail - index,
+            },
+            primitive,
+            queue_position: None,
+        }))
+    }
+
+    /// The notified protocol: `Done`, or a notification word on the
+    /// node, means the next poll returns; a wait needs `Waiting` with
+    /// the node unnotified, the `Notify` in its waiting state at the
+    /// `notify_waiters` count the future was created at, and the node
+    /// once in the quiescent list with this task's waker on it.
+    fn assess_notified(
+        &self,
+        pass: &mut AssessmentPass,
+        notified: &NotifiedObservation,
+        task: &TaskFacts,
+        primitive: ValueKey,
+        read: &ReadContext<'_>,
+    ) -> Assessed {
+        use hansei_bundle::tokio::notify;
+        match notified.state {
+            NotifiedState::Done => {
+                return Assessed::of(WaitAssessment::ResourceReady(ReadyReason::Notified));
+            }
+            NotifiedState::Init => {
+                return Assessed::unknown(
+                    WaitUnknownReason::ConflictingEvidence,
+                    "the chain is suspended on a Notified that has never been polled",
+                );
+            }
+            NotifiedState::Unknown(word) => {
+                return Assessed::unknown(
+                    WaitUnknownReason::ResourceStateUnproven,
+                    format!("the Notified's state word {word:#x} is no state"),
+                );
+            }
+            NotifiedState::Waiting => {}
+        }
+        match notified.notification {
+            notify::NOTIFICATION_NONE => {}
+            notify::NOTIFICATION_ONE | notify::NOTIFICATION_LAST | notify::NOTIFICATION_ALL => {
+                return Assessed::of(WaitAssessment::ResourceReady(ReadyReason::Notified));
+            }
+            word => {
+                return Assessed::unknown(
+                    WaitUnknownReason::ConflictingEvidence,
+                    format!("the node's notification word {word:#x} is none the protocol writes"),
+                );
+            }
+        }
+        let list = pass.notify(self, notified.notify, read);
+        let Some(state) = list.state else {
+            return Assessed::unknown(
+                WaitUnknownReason::ResourceUnreadable,
+                "the Notify's state word did not read",
+            );
+        };
+        match state & notify::STATE_MASK {
+            notify::WAITING => {}
+            notify::EMPTY => {
+                return Assessed::unknown(
+                    WaitUnknownReason::ConflictingEvidence,
+                    "the Notify's state says it has no waiters",
+                );
+            }
+            notify::NOTIFIED => {
+                return Assessed::unknown(
+                    WaitUnknownReason::ConflictingEvidence,
+                    "the Notify's state says it holds a notify_one and has no waiters",
+                );
+            }
+            other => {
+                return Assessed::unknown(
+                    WaitUnknownReason::ResourceStateUnproven,
+                    format!("the Notify's state {other:#b} is none the protocol writes"),
+                );
+            }
+        }
+        let calls = state >> notify::CALLS_SHIFT;
+        if calls != notified.calls {
+            return Assessed::unknown(
+                WaitUnknownReason::ConflictingEvidence,
+                format!(
+                    "notify_waiters has run {} times since this future was created and its \
+                     node was not notified",
+                    calls.wrapping_sub(notified.calls)
+                ),
+            );
+        }
+        if !list.established() {
+            let why = match list.consistency {
+                Consistency::Mutating => "its lock is held".to_owned(),
+                Consistency::Unknown => "its guard could not be decoded".to_owned(),
+                Consistency::Quiescent => format!(
+                    "the walk stopped short: {}",
+                    list.issues
+                        .iter()
+                        .map(|issue| issue.detail.clone().unwrap_or_default())
+                        .collect::<Vec<_>>()
+                        .join("; ")
+                ),
+            };
+            return Assessed::unknown(
+                WaitUnknownReason::ResourceStateUnproven,
+                format!("the wait list is not a quiescent snapshot: {why}"),
+            );
+        }
+        let mut listed = list.waiters.iter().filter(|w| w.addr == notified.node);
+        let Some(node) = listed.next() else {
+            return Assessed::unknown(
+                WaitUnknownReason::ConflictingEvidence,
+                format!(
+                    "the node at {:#x} is not in the Notify's wait list",
+                    notified.node
+                ),
+            );
+        };
+        if listed.next().is_some() {
+            return Assessed::unknown(
+                WaitUnknownReason::ConflictingEvidence,
+                "the node appears more than once in the wait list",
+            );
+        }
+        match &node.waker {
+            QueuedWaker::Task { addr, .. } if *addr == task.addr.0 => {}
+            QueuedWaker::Task { addr, .. } => {
+                return Assessed::unknown(
+                    WaitUnknownReason::ConflictingEvidence,
+                    format!("the node's waker names the task at {addr:#x}, not this one"),
+                );
+            }
+            QueuedWaker::Other { vtable } => {
+                return Assessed::unknown(
+                    WaitUnknownReason::ResourceStateUnproven,
+                    format!("the node's waker is not a task's (vtable {vtable:#x})"),
+                );
+            }
+            QueuedWaker::Unarmed => {
+                return Assessed::unknown(
+                    WaitUnknownReason::ConflictingEvidence,
+                    "the queued node holds no waker",
+                );
+            }
+        }
+        let queue_position = list.position(notified.node);
+        Assessed::of(WaitAssessment::Waiting(VerifiedWait {
+            target: WaitTarget::Notify {
+                addr: notified.notify.addr,
+                waiters: Some(list.waiters.len()),
+            },
+            primitive,
+            queue_position,
+        }))
     }
 
     /// The join protocol: the joined header's `COMPLETE` bit says the
@@ -989,6 +1324,23 @@ impl<'b, T: Target> Context<'b, T> {
             ResourceObservation::Timer(timer) => Some(WaitTarget::Timer {
                 deadline: timer.deadline?,
                 stopped: self.stopped_at(),
+            }),
+            ResourceObservation::Recv(recv) => {
+                let channel = pass.channel(self, recv.chan, read);
+                Some(WaitTarget::Channel {
+                    addr: recv.chan.addr,
+                    senders: channel.senders?,
+                    capacity: channel.capacity,
+                    unread: channel.tail_position?.saturating_sub(channel.index?),
+                })
+            }
+            // The `Notify` itself is not read here: a description of
+            // a held `Notified` names it and stops, since the tokens a
+            // workload holds thousands of would each walk a list of
+            // thousands to print one count.
+            ResourceObservation::Notified(notified) => Some(WaitTarget::Notify {
+                addr: notified.notify.addr,
+                waiters: None,
             }),
         }
     }
@@ -1643,32 +1995,343 @@ mod tests {
         ));
     }
 
-    /// A chain that ends short of a primitive — a `Notified`, which no
-    /// rule covers — assesses unknown and proves no barrier, however
-    /// plainly a granted acquire sits in the frame: the walk-shapes
-    /// abandoner holds one by value, and its chain does not qualify.
+    /// The address of the `Some` word a head route enters: the option
+    /// itself, whose zero is an empty list.
+    fn option_word(ctx: &Context<'_, Snapshot>, role: WalkRole, root: Value<'_>) -> u64 {
+        let steps = &ctx.view.bundle().walks.entries[&role].steps;
+        let option = steps
+            .iter()
+            .position(|s| matches!(s, Step::Variant(_)))
+            .expect("the head route enters Some");
+        let crate::tokio::contract::Walked::At(head) = crate::tokio::contract::execute_steps(
+            ctx,
+            &ReadContext::none(),
+            root,
+            &steps[..option],
+        )
+        .unwrap() else {
+            panic!("the option is reached");
+        };
+        head.addr
+    }
+
+    /// The `RawWaker` a registered waker walk lands on: its data and
+    /// vtable words.
+    fn raw_waker_words(ctx: &Context<'_, Snapshot>, role: WalkRole, root: Value<'_>) -> (u64, u64) {
+        let raw = ctx
+            .walk(role)
+            .walk(root)
+            .unwrap()
+            .optional()
+            .expect("armed");
+        let data = ctx.walk(WalkRole::WakerData).walk_at(raw).unwrap();
+        let vtable = ctx.walk(WalkRole::WakerVtable).walk_at(raw).unwrap();
+        (data.addr, vtable.addr)
+    }
+
+    /// Re-assess `task` over a patched target.
+    fn reassessed<T: Target>(
+        bundle: &hansei_bundle::Bundle,
+        patched: &T,
+        task: &Task,
+    ) -> (String, Vec<String>, bool) {
+        let ctx = Context::new(patched, BundleView::new(bundle)).unwrap();
+        let (list, rows, _) = assessed(&ctx, patched);
+        let task = list.tasks.iter().find(|t| t.addr == task.addr).unwrap();
+        let row = row(&rows, task);
+        (
+            format!("{:?}", row.assessment),
+            row.notes.clone(),
+            row.observation.is_some(),
+        )
+    }
+
+    /// The recv protocol on the channels fixture: the receiver parked
+    /// on an empty channel with its one sender held elsewhere waits,
+    /// with the sender count, the capacity and nothing unread. Then
+    /// each window the protocol distinguishes, frozen by hand: a
+    /// message written at the read index, the last sender gone and
+    /// the close marker set, that sender gone before the marker, the
+    /// receiver closed from its own side with every permit back and
+    /// with one still out, the waker cell mid-registration, the waker
+    /// another task's, and no waker at all.
     #[test]
-    fn test_an_unknown_chain_proves_no_wait_and_no_barrier() {
+    fn test_the_recv_protocol_reads_the_channel_and_its_head_block() {
+        use hansei_bundle::tokio::{atomic_waker, mpsc};
+        let (bundle, snapshot) = load_any("channels");
+        let ctx = testkit::context(&bundle, &snapshot);
+        let (list, rows, _) = assessed(&ctx, &snapshot);
+        let waiter = task_named(&list, "recv_waiter");
+        let parked = row(&rows, waiter);
+        let WaitAssessment::Waiting(wait) = &parked.assessment else {
+            panic!("recv waits: {:?} {:?}", parked.assessment, parked.notes);
+        };
+        let WaitTarget::Channel {
+            addr,
+            senders,
+            capacity,
+            unread,
+        } = wait.target()
+        else {
+            panic!("on a channel: {:?}", wait.target());
+        };
+        assert_eq!((*senders, *capacity, *unread), (1, Some(4), 0));
+        assert_eq!(wait.queue_position(), None);
+        let Some(ResourceObservation::Recv(recv)) = &parked.observation else {
+            unreachable!()
+        };
+        assert_eq!(recv.chan.addr, *addr);
+        assert_eq!(recv.future, wait.primitive());
+
+        let chan = ctx.read_keyed(recv.chan, &ReadContext::none()).unwrap();
+        let tx_count = ctx.walk(WalkRole::ChanTxCount).walk_at(chan).unwrap().addr;
+        let rx_closed = ctx.walk(WalkRole::ChanRxClosed).walk_at(chan).unwrap().addr;
+        let waker_state = ctx
+            .walk(WalkRole::ChanRxWakerState)
+            .walk_at(chan)
+            .unwrap()
+            .addr;
+        let permits = ctx
+            .walk(WalkRole::ChanSemaphorePermits)
+            .walk_at(chan)
+            .unwrap()
+            .addr;
+        let index: u64 = ctx.walk(WalkRole::ChanRxIndex).read(chan).unwrap();
+        let (data, vtable) = raw_waker_words(&ctx, WalkRole::ChanRxWaker, chan);
+        let head = ctx.walk(WalkRole::ChanRxHead).walk_at(chan).unwrap();
+        let block_ty = head.ty.pointer_target().unwrap();
+        let head: u64 = head.parse(&snapshot).unwrap();
+        let block = Value::read(&snapshot, block_ty, head).unwrap();
+        let start: u64 = ctx.walk(WalkRole::BlockStartIndex).read(block).unwrap();
+        assert_eq!(
+            start,
+            index & mpsc::BLOCK_MASK,
+            "the head block holds the index"
+        );
+        let ready = ctx.walk(WalkRole::BlockReadySlots).walk_at(block).unwrap();
+        let ready_word: u64 = ready.parse(&snapshot).unwrap();
+        assert_eq!(
+            ready_word & (1 << (index & mpsc::SLOT_MASK)),
+            0,
+            "nothing at the index"
+        );
+        let holder = task_named(&list, "channels::hold");
+        let cases: Vec<(&str, Corrupt<'_>, &str)> = vec![
+            (
+                "a message at the read index",
+                Corrupt::new(&snapshot)
+                    .patch(ready.addr, ready_word | (1 << (index & mpsc::SLOT_MASK))),
+                "ResourceReady(MessageReady)",
+            ),
+            (
+                "the last sender gone, the close marker set",
+                Corrupt::new(&snapshot)
+                    .patch(tx_count, 0)
+                    .patch(ready.addr, ready_word | mpsc::TX_CLOSED),
+                "ResourceReady(ChannelClosed)",
+            ),
+            (
+                "the last sender gone before its close marker",
+                Corrupt::new(&snapshot).patch(tx_count, 0),
+                "Unknown(ConflictingEvidence)",
+            ),
+            (
+                "the receiver closed with every permit back",
+                Corrupt::new(&snapshot).patch_byte(rx_closed, 1),
+                "ResourceReady(ChannelClosed)",
+            ),
+            (
+                "the receiver closed with a permit out",
+                Corrupt::new(&snapshot)
+                    .patch_byte(rx_closed, 1)
+                    .patch(permits, 3 << 1),
+                "Waiting(",
+            ),
+            (
+                "the waker cell mid-registration",
+                Corrupt::new(&snapshot).patch(waker_state, atomic_waker::REGISTERING),
+                "Unknown(ResourceStateUnproven)",
+            ),
+            (
+                "another task's waker",
+                Corrupt::new(&snapshot).patch(data, holder.addr.0),
+                "Unknown(ConflictingEvidence)",
+            ),
+            (
+                "no waker registered",
+                Corrupt::new(&snapshot).patch(vtable, 0),
+                "Unknown(ConflictingEvidence)",
+            ),
+        ];
+        for (what, patched, expected) in cases {
+            let (assessment, notes, observed) = reassessed(&bundle, &patched, waiter);
+            let matched = if expected.ends_with('(') {
+                assessment.starts_with(expected)
+            } else {
+                assessment == expected
+            };
+            assert!(matched, "{what}: {assessment} {notes:?}");
+            assert!(observed, "{what}: the observation is kept");
+        }
+    }
+
+    /// The notified protocol on the channels fixture: the waiter parked
+    /// on the `Notify` waits, first in a one-node list, with its node's
+    /// waker naming it. Then each window, frozen by hand: the future
+    /// `Done`, its node notified, the future never polled, the `Notify`
+    /// claiming no waiters, a `notify_waiters` since the future was
+    /// made, the list read under its lock, the list empty, and the
+    /// node's waker another task's.
+    #[test]
+    fn test_the_notified_protocol_reads_the_future_and_the_notify() {
+        use hansei_bundle::tokio::notify;
+        let (bundle, snapshot) = load_any("channels");
+        let ctx = testkit::context(&bundle, &snapshot);
+        let (list, rows, _) = assessed(&ctx, &snapshot);
+        let waiter = task_named(&list, "notify_waiter");
+        let parked = row(&rows, waiter);
+        let WaitAssessment::Waiting(wait) = &parked.assessment else {
+            panic!("notified waits: {:?} {:?}", parked.assessment, parked.notes);
+        };
+        let WaitTarget::Notify { addr, waiters } = wait.target() else {
+            panic!("on a Notify: {:?}", wait.target());
+        };
+        assert_eq!(*waiters, Some(1));
+        assert_eq!(wait.queue_position(), Some(0));
+        let Some(ResourceObservation::Notified(notified)) = &parked.observation else {
+            unreachable!()
+        };
+        assert_eq!(notified.notify.addr, *addr);
+        assert_eq!(
+            (notified.state, notified.notification),
+            (NotifiedState::Waiting, 0)
+        );
+        let wait_list = ctx.observe_notify(
+            notified.notify,
+            &ReadContext::none(),
+            &mut ScanBudget::default(),
+        );
+        assert!(wait_list.established());
+        assert_eq!(wait_list.waiters.len(), 1);
+        assert_eq!(wait_list.waiters[0].addr, notified.node);
+        assert_eq!(wait_list.waiters[0].waker.task(), Some(waiter.addr.0));
+        assert_eq!(wait_list.waiters[0].notification, notify::NOTIFICATION_NONE);
+
+        let future = primitive_of(&ctx, waiter);
+        let state = ctx
+            .walk(WalkRole::NotifiedState)
+            .walk_at(future)
+            .unwrap()
+            .addr;
+        let node = ctx.walk(WalkRole::NotifiedWaiter).walk_at(future).unwrap();
+        let notification = ctx
+            .walk(WalkRole::NotifyWaiterNotification)
+            .walk_at(node)
+            .unwrap()
+            .addr;
+        let (data, _) = raw_waker_words(&ctx, WalkRole::NotifyWaiterWaker, node);
+        let notify_value = ctx
+            .read_keyed(notified.notify, &ReadContext::none())
+            .unwrap();
+        let notify_state = ctx
+            .walk(WalkRole::NotifyState)
+            .walk_at(notify_value)
+            .unwrap();
+        let state_word: u64 = notify_state.parse(&snapshot).unwrap();
+        assert_eq!(state_word & notify::STATE_MASK, notify::WAITING);
+        let lock = ctx
+            .walk(WalkRole::NotifyLock)
+            .walk_at(notify_value)
+            .unwrap()
+            .addr;
+        let head = option_word(&ctx, WalkRole::NotifyQueueHead, notify_value);
+        let holder = task_named(&list, "channels::hold");
+        let cases: Vec<(&str, Corrupt<'_>, &str)> = vec![
+            (
+                "done",
+                Corrupt::new(&snapshot).patch_byte(state, 2),
+                "ResourceReady(Notified)",
+            ),
+            (
+                "the node notified",
+                Corrupt::new(&snapshot).patch(notification, notify::NOTIFICATION_ONE),
+                "ResourceReady(Notified)",
+            ),
+            (
+                "never polled",
+                Corrupt::new(&snapshot).patch_byte(state, 0),
+                "Unknown(ConflictingEvidence)",
+            ),
+            (
+                "the Notify claims no waiters",
+                Corrupt::new(&snapshot).patch(notify_state.addr, state_word & !notify::STATE_MASK),
+                "Unknown(ConflictingEvidence)",
+            ),
+            (
+                "notify_waiters ran since",
+                Corrupt::new(&snapshot)
+                    .patch(notify_state.addr, state_word + (1 << notify::CALLS_SHIFT)),
+                "Unknown(ConflictingEvidence)",
+            ),
+            (
+                "read under its lock",
+                Corrupt::new(&snapshot).patch_byte(lock, 0b01),
+                "Unknown(ResourceStateUnproven)",
+            ),
+            (
+                "absent from an empty list",
+                Corrupt::new(&snapshot).patch(head, 0),
+                "Unknown(ConflictingEvidence)",
+            ),
+            (
+                "another task's waker",
+                Corrupt::new(&snapshot).patch(data, holder.addr.0),
+                "Unknown(ConflictingEvidence)",
+            ),
+        ];
+        for (what, patched, expected) in cases {
+            let (assessment, notes, observed) = reassessed(&bundle, &patched, waiter);
+            assert_eq!(assessment, expected, "{what}: {notes:?}");
+            assert!(observed, "{what}: the observation is kept");
+        }
+    }
+
+    /// A chain that ends at a `Notified` is complete under its rule,
+    /// so a queued acquire held by value in the frame above it is a
+    /// polling barrier: the walk-shapes abandoner waits on its
+    /// `Notify`, and the acquire it polled once and left — queued,
+    /// ungranted — is held off its chain. The victim, parked on the
+    /// same mutex, waits too. A chain the rule leaves unknown proves
+    /// none of this, which is what the Notified windows in
+    /// [`test_the_notified_protocol_reads_the_future_and_the_notify`]
+    /// pin the other way round.
+    #[test]
+    fn test_a_notified_chain_proves_the_by_value_barrier() {
         let (bundle, snapshot) = load_any("walk-shapes");
         let ctx = testkit::context(&bundle, &snapshot);
         let (list, rows, barriers) = assessed(&ctx, &snapshot);
         let abandoner = row(&rows, task_named(&list, "abandoner"));
-        assert!(matches!(
-            abandoner.assessment,
-            WaitAssessment::Unknown(WaitUnknownReason::Continuation)
-        ));
+        let WaitAssessment::Waiting(wait) = &abandoner.assessment else {
+            panic!("{:?} {:?}", abandoner.assessment, abandoner.notes);
+        };
+        assert!(matches!(wait.target(), WaitTarget::Notify { .. }));
         assert!(matches!(
             abandoner.continuation,
-            ContinuationStatus::Unknown {
-                reason: SemanticIssueKind::NoRule,
-                ..
-            }
+            ContinuationStatus::Primitive
         ));
-        assert!(abandoner.observation.is_none());
-        assert!(
-            barriers.iter().all(|b| b.holder != abandoner.task.addr),
-            "{barriers:#?}"
-        );
+        assert!(matches!(
+            abandoner.observation,
+            Some(ResourceObservation::Notified(_))
+        ));
+        let barrier = barriers
+            .iter()
+            .find(|b| b.holder == abandoner.task.addr)
+            .unwrap_or_else(|| panic!("{barriers:#?}"));
+        assert_eq!(barrier.local, "fut");
+        assert!(!barrier.granted());
+        assert!(barrier.acquire.queued);
+        assert_eq!(barrier.acquire.needed, 1);
+        assert_eq!(barrier.primitive, wait.primitive());
         // The victim, parked on the same mutex, does wait.
         let victim = row(&rows, task_named(&list, "victim"));
         assert!(

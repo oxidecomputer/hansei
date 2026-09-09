@@ -3,7 +3,7 @@ source: hansei/src/offline.rs
 description: "`threads` over linux/sleep-join"
 ---
 LWP      NAME  ROLE                 TASK  FRAME 0
-2401320  —     entered runtime      —     0xADDR
-2401322  —     worker 0, parked     —     0xADDR
-2401323  —     worker 1, in driver  —     0xADDR
+1797690  —     entered runtime      —     0xADDR
+1797692  —     worker 0, in driver  —     0xADDR
+1797693  —     worker 1, parked     —     0xADDR
 [3 threads]

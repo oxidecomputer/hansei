@@ -5,9 +5,9 @@ description: "`census` over linux-floor/gen-0007"
 Threads: 3 lwps, 3 in runtime 0 @ 0xADDR
 
 COUNT  RT  ROLE             STATE            LWPS
-    1  0   worker           in driver        2407447
-    1  0   worker           parked           2407446
-    1  0   entered runtime  block_on caller  2407444
+    1  0   worker           in driver        1803974
+    1  0   worker           parked           1803973
+    1  0   entered runtime  block_on caller  1803971
     0  0   blocking pool    0 idle, 0 busy   —
 [3 lwps]
 
@@ -21,7 +21,7 @@ COUNT  TYPE / WAITING ON
     1  async fn gen_0007::driver_00
        └─ 1  unknown
     1  async fn gen_0007::member_02
-       └─ 1  unknown
+       └─ 1  a Notify
     1  async fn gen_0007::member_03
        └─ 1  timer
     1  async fn gen_0007::member_06

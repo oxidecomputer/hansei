@@ -675,6 +675,10 @@ struct Waits {
     timer_past_due: usize,
     task: usize,
     io: usize,
+    /// A bounded mpsc receiver parked on its channel.
+    channel: usize,
+    /// Queued on a `Notify`.
+    notify: usize,
     /// Keyed by the primitive wrapping the semaphore, which is `None`
     /// where the awaiting frame did not name one (a channel's, say).
     semaphores: BTreeMap<Option<&'static str>, usize>,
@@ -752,6 +756,8 @@ impl Waits {
             WaitKind::Task { .. } => self.task += 1,
             WaitKind::Io => self.io += 1,
             WaitKind::Semaphore { owner } => *self.semaphores.entry(owner).or_default() += 1,
+            WaitKind::Channel => self.channel += 1,
+            WaitKind::Notify => self.notify += 1,
         }
     }
 
@@ -774,6 +780,8 @@ impl Waits {
             Row::new(self.timer, timer),
             Row::new(self.task, "task"),
             Row::new(self.io, "io"),
+            Row::new(self.channel, "mpsc rx"),
+            Row::new(self.notify, "a Notify"),
             Row::new(self.ready, "ready"),
             Row::new(self.unknown, "unknown"),
             Row::new(self.running, "— (mid-poll)"),

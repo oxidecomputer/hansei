@@ -79,6 +79,9 @@ const IO_SOCKETS: &[&str] = &[
 /// An `Interest`-based readiness await: the future that pushes its own
 /// embedded `Waiter` node onto the resource's list.
 const READINESS: &str = "tokio::runtime::io::scheduled_io::Readiness";
+const NOTIFIED: &str = "tokio::sync::notify::Notified";
+/// The label a report gives the bounded receiver's `recv` future.
+const MPSC_RECV: &str = "PollFn<mpsc::bounded::Receiver::recv::{closure}>";
 /// The scheduler `S` of a task cell, per flavor: the flavor handles and
 /// the `LocalSet`'s shared state are `Arc`s, the blocking pool's is a
 /// plain struct.
@@ -113,6 +116,26 @@ fn leaf_matches(key: &str, name: &str) -> bool {
     } else {
         name == key
     }
+}
+
+/// The bounded mpsc receiver's `recv` future: `Receiver::recv` is an
+/// `async fn` awaiting `poll_fn(|cx| self.chan.recv(cx))`, and rustc
+/// names that closure's `PollFn`
+/// `core::future::poll_fn::PollFn<tokio::sync::mpsc::bounded::{impl#N}::recv::{async_fn#0}::{closure_env#0}<T>>`.
+/// The impl index is the compiler's numbering of the `Receiver` impl
+/// block and moves with tokio's source; the closure path after it does
+/// not, and `recv_many`'s closure — which captures the same `Rx` and
+/// two more locals — is a different path.
+fn mpsc_recv_poll_fn(name: &str) -> bool {
+    let Some(rest) =
+        name.strip_prefix("core::future::poll_fn::PollFn<tokio::sync::mpsc::bounded::{impl#")
+    else {
+        return false;
+    };
+    let path = rest.trim_start_matches(|c: char| c.is_ascii_digit());
+    path.len() < rest.len()
+        && path.starts_with("}::recv::{async_fn#0}::{closure_env#0}<")
+        && name.ends_with(">>")
 }
 
 // ---------------------------------------------------------------------------
@@ -202,6 +225,9 @@ enum WalkRoot {
     /// scheduler `S` for the flavors that are `Arc`s. Absent like a leaf
     /// when the target compiled no such cell.
     ArcOf(&'static str),
+    /// Every emitted type a predicate admits, labelled for the report:
+    /// a leaf whose name no prefix can pick out. Absent like a leaf.
+    LeafWhere(&'static str, fn(&str) -> bool),
     /// The (non-opaque) `Cell<T, S>` of every entry in the task table.
     TaskCells,
     /// Where another role's binding landed.
@@ -1680,6 +1706,277 @@ fn decls() -> Vec<WalkDecl> {
                 ]
             },
         ),
+        // The bounded mpsc receiver's `recv`. `Receiver::recv` awaits a
+        // `PollFn` whose closure captured `&mut self.chan` — rustc names
+        // the capture `_ref__self__chan` — and the `Rx` behind it holds
+        // the channel in an `Arc<Chan<T, S>>`. Everything the recv
+        // protocol reads is in the `Chan`: the sender count, the list's
+        // two positions (`tx.tail_position` claims slots, `rx_fields.
+        // list.index` is the next to read), the head block the index
+        // is read from, the receiver's own close flag, and the
+        // `AtomicWaker` the receiver parks in. `Chan`'s `tx` and
+        // `rx_waker` sit in a `CachePadded` (`value`); `rx_fields` in a
+        // loom `UnsafeCell` (`__0.value`). The bounded semaphore's
+        // permit word and bound serve the receiver-closed branch alone.
+        decl(
+            WalkRole::MpscRecvRx,
+            WalkRoot::LeafWhere(MPSC_RECV, mpsc_recv_poll_fn),
+            Pointer,
+            || vec![reach![Named("f"), Named("_ref__self__chan")]],
+        ),
+        decl(
+            WalkRole::MpscRecvChan,
+            Pointee(WalkRole::MpscRecvRx),
+            Aggregate,
+            || {
+                vec![reach![
+                    Named("inner"),
+                    Named("ptr"),
+                    Named("pointer"),
+                    Deref,
+                    Named("data"),
+                ]]
+            },
+        ),
+        decl(
+            WalkRole::ChanTxCount,
+            End(WalkRole::MpscRecvChan),
+            Word,
+            || vec![reach![Named("tx_count"), PeelTo(WORD)]],
+        ),
+        decl(
+            WalkRole::ChanTailPosition,
+            End(WalkRole::MpscRecvChan),
+            Word,
+            || {
+                vec![reach![
+                    Named("tx"),
+                    Named("value"),
+                    Named("tail_position"),
+                    PeelTo(WORD),
+                ]]
+            },
+        ),
+        decl(
+            WalkRole::ChanRxIndex,
+            End(WalkRole::MpscRecvChan),
+            Word,
+            || {
+                vec![reach![
+                    Named("rx_fields"),
+                    Named("__0"),
+                    Named("value"),
+                    Named("list"),
+                    Named("index"),
+                ]]
+            },
+        ),
+        decl(
+            WalkRole::ChanRxHead,
+            End(WalkRole::MpscRecvChan),
+            Pointer,
+            || {
+                vec![reach![
+                    Named("rx_fields"),
+                    Named("__0"),
+                    Named("value"),
+                    Named("list"),
+                    Named("head"),
+                    Named("pointer"),
+                ]]
+            },
+        ),
+        decl(
+            WalkRole::ChanRxClosed,
+            End(WalkRole::MpscRecvChan),
+            Word,
+            || {
+                vec![reach![
+                    Named("rx_fields"),
+                    Named("__0"),
+                    Named("value"),
+                    Named("rx_closed"),
+                ]]
+            },
+        ),
+        decl(
+            WalkRole::ChanRxWakerState,
+            End(WalkRole::MpscRecvChan),
+            Word,
+            || {
+                vec![reach![
+                    Named("rx_waker"),
+                    Named("value"),
+                    Named("state"),
+                    PeelTo(WORD),
+                ]]
+            },
+        ),
+        decl(
+            WalkRole::ChanRxWaker,
+            End(WalkRole::MpscRecvChan),
+            Aggregate,
+            || {
+                vec![reach![
+                    Named("rx_waker"),
+                    Named("value"),
+                    Named("waker"),
+                    Named("__0"),
+                    Named("value"),
+                    Variant("Some"),
+                    Named("__0"),
+                    Named("waker"),
+                ]]
+            },
+        ),
+        decl(
+            WalkRole::ChanSemaphorePermits,
+            End(WalkRole::MpscRecvChan),
+            Word,
+            || {
+                vec![reach![
+                    Named("semaphore"),
+                    Named("semaphore"),
+                    Named("permits"),
+                    PeelTo(WORD),
+                ]]
+            },
+        ),
+        decl(
+            WalkRole::ChanSemaphoreBound,
+            End(WalkRole::MpscRecvChan),
+            Word,
+            || vec![reach![Named("semaphore"), Named("bound")]],
+        ),
+        // A block of the list: where its slots start, the successor the
+        // receiver advances to, and the ready word whose bits say which
+        // slots hold a written value and whether the senders closed here.
+        decl(
+            WalkRole::BlockStartIndex,
+            Pointee(WalkRole::ChanRxHead),
+            Word,
+            || vec![reach![Named("header"), Named("start_index")]],
+        ),
+        decl(
+            WalkRole::BlockNext,
+            Pointee(WalkRole::ChanRxHead),
+            Pointer,
+            || {
+                vec![reach![
+                    Named("header"),
+                    Named("next"),
+                    PeelTo(Shape::Pointer)
+                ]]
+            },
+        ),
+        decl(
+            WalkRole::BlockReadySlots,
+            Pointee(WalkRole::ChanRxHead),
+            Word,
+            || vec![reach![Named("header"), Named("ready_slots"), PeelTo(WORD)]],
+        ),
+        // A `Notified`: the `Notify` it borrowed, its own state, the
+        // `notify_waiters` count it was created at, and the `Waiter`
+        // node embedded in the future — the exact list entry a pending
+        // wait must be found at. The `Notify`'s state word packs the
+        // waiter-list state below its `notify_waiters` count; its list
+        // is behind the loom mutex, whose guarded `LinkedList` is the
+        // mutex's type parameter, and its nodes are `Waiter`s linked
+        // through `pointers`, each holding a waker and the notification
+        // word a wake stores after unlinking it.
+        decl(
+            WalkRole::NotifiedNotify,
+            WalkRoot::Type(NOTIFIED),
+            Pointer,
+            || vec![reach![Named("notify")]],
+        ),
+        decl(
+            WalkRole::NotifiedState,
+            WalkRoot::Type(NOTIFIED),
+            Enum,
+            || vec![reach![Named("state")]],
+        ),
+        decl(
+            WalkRole::NotifiedCalls,
+            WalkRoot::Type(NOTIFIED),
+            Word,
+            || vec![reach![Named("notify_waiters_calls")]],
+        ),
+        decl(
+            WalkRole::NotifiedWaiter,
+            WalkRoot::Type(NOTIFIED),
+            Aggregate,
+            || vec![reach![Named("waiter")]],
+        ),
+        decl(
+            WalkRole::NotifyState,
+            Pointee(WalkRole::NotifiedNotify),
+            Word,
+            || vec![reach![Named("state"), PeelTo(WORD)]],
+        ),
+        decl(
+            WalkRole::NotifyLock,
+            Pointee(WalkRole::NotifiedNotify),
+            Aggregate,
+            || {
+                vec![
+                    reach![Named("waiters"), Named("__1"), Named("raw")],
+                    reach![Named("waiters"), Named("__0"), Named("inner")],
+                ]
+            },
+        ),
+        decl(
+            WalkRole::NotifyQueueHead,
+            Pointee(WalkRole::NotifiedNotify),
+            Pointer,
+            || {
+                vec![reach![
+                    Named("waiters"),
+                    FindParam,
+                    Named("head"),
+                    Variant("Some"),
+                    Named("__0"),
+                    Named("pointer"),
+                ]]
+            },
+        ),
+        decl(
+            WalkRole::NotifyWaiterNext,
+            Pointee(WalkRole::NotifyQueueHead),
+            Pointer,
+            || {
+                vec![reach![
+                    Named("pointers"),
+                    Named("inner"),
+                    Named("value"),
+                    Named("next"),
+                    Variant("Some"),
+                    Named("__0"),
+                    Named("pointer"),
+                ]]
+            },
+        ),
+        decl(
+            WalkRole::NotifyWaiterWaker,
+            Pointee(WalkRole::NotifyQueueHead),
+            Aggregate,
+            || {
+                vec![reach![
+                    Named("waker"),
+                    Named("__0"),
+                    Named("value"),
+                    Variant("Some"),
+                    Named("__0"),
+                    Named("waker"),
+                ]]
+            },
+        ),
+        decl(
+            WalkRole::NotifyWaiterNotification,
+            Pointee(WalkRole::NotifyQueueHead),
+            Word,
+            || vec![reach![Named("notification"), PeelTo(WORD)]],
+        ),
     ]
 }
 
@@ -2122,6 +2419,20 @@ fn resolve_root(
             let note = (types.len() > 1).then(|| format!("{} types", types.len()));
             Roots::Types { types, note }
         }
+        WalkRoot::LeafWhere(label, admits) => {
+            let types: Vec<(String, TypeId)> = em
+                .emitted_named()
+                .filter(|(_, name)| admits(name))
+                .map(|(tid, name)| (name.to_owned(), tid))
+                .collect();
+            if types.is_empty() {
+                return Roots::Absent(format!(
+                    "no {label} type in the tokio info (the target does not reach one)"
+                ));
+            }
+            let note = (types.len() > 1).then(|| format!("{} types", types.len()));
+            Roots::Types { types, note }
+        }
         WalkRoot::TaskCells => {
             let mut types = Vec::new();
             let mut opaque = 0usize;
@@ -2315,9 +2626,11 @@ pub fn leaf_rooted(role: WalkRole) -> bool {
         let is_leaf = match decl.root {
             // A type-rooted row is a leaf row for this purpose: which
             // net resources a binary keeps is the target's call too.
-            WalkRoot::Leaf(_) | WalkRoot::Type(_) | WalkRoot::LeafOver(..) | WalkRoot::ArcOf(_) => {
-                true
-            }
+            WalkRoot::Leaf(_)
+            | WalkRoot::Type(_)
+            | WalkRoot::LeafOver(..)
+            | WalkRoot::LeafWhere(..)
+            | WalkRoot::ArcOf(_) => true,
             WalkRoot::Infra(_) | WalkRoot::AnyHandle | WalkRoot::TaskCells => false,
             WalkRoot::End(parent) | WalkRoot::Pointee(parent) | WalkRoot::Elem(parent) => {
                 rooted.get(&parent).copied().unwrap_or(false)
@@ -2403,6 +2716,31 @@ mod tests {
             "tokio::io::util::read::Read",
         ] {
             assert!(!leaf_over(IO_READ, IO_SOCKETS, name), "{name}");
+        }
+    }
+
+    /// The bounded receiver's `recv` closure is admitted by its path
+    /// under whatever impl index the compiler gave the block; the
+    /// `recv_many` closure beside it, the unbounded receiver's, and a
+    /// `PollFn` over anything else are not.
+    #[test]
+    fn test_mpsc_recv_poll_fn_admits_only_the_bounded_recv_closure() {
+        for name in [
+            "core::future::poll_fn::PollFn<tokio::sync::mpsc::bounded::{impl#0}::recv::{async_fn#0}::{closure_env#0}<u32>>",
+            "core::future::poll_fn::PollFn<tokio::sync::mpsc::bounded::{impl#12}::recv::{async_fn#0}::{closure_env#0}<oxide::Event<nexus::Spec>>>",
+        ] {
+            assert!(mpsc_recv_poll_fn(name), "{name}");
+        }
+        for name in [
+            "core::future::poll_fn::PollFn<tokio::sync::mpsc::bounded::{impl#0}::recv_many::{async_fn#0}::{closure_env#0}<u32>>",
+            "core::future::poll_fn::PollFn<tokio::sync::mpsc::unbounded::{impl#0}::recv::{async_fn#0}::{closure_env#0}<u32>>",
+            "core::future::poll_fn::PollFn<tokio::sync::mpsc::bounded::{impl#}::recv::{async_fn#0}::{closure_env#0}<u32>>",
+            "core::future::poll_fn::PollFn<tokio::sync::mpsc::bounded::{impl#0}::recv::{async_fn#0}::{closure_env#1}<u32>>",
+            "core::future::poll_fn::PollFn<tokio::sync::mpsc::bounded::{impl#0}::recv::{async_fn#0}::{closure_env#0}<u32>",
+            "core::future::poll_fn::PollFn<fn(&mut core::task::wake::Context) -> core::task::poll::Poll<()>>",
+            "tokio::sync::mpsc::bounded::{impl#0}::recv::{async_fn#0}::{closure_env#0}<u32>",
+        ] {
+            assert!(!mpsc_recv_poll_fn(name), "{name}");
         }
     }
 
