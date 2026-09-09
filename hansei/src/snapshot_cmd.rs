@@ -10,7 +10,6 @@ use crate::{Session, discover_workers, print_warnings};
 use anyhow::{Context as _, Result};
 use hansei_bundle::BundleView;
 use hansei_runtime::heap::{self, view::GateCounts, view::HeapView};
-use hansei_runtime::tokio::chain::InspectionMode;
 use hansei_runtime::tokio::graph as rt_graph;
 use hansei_runtime::tokio::observe::ReadContext;
 use hansei_runtime::tokio::{bundle, census};
@@ -221,11 +220,8 @@ pub(crate) fn exec_snapshot<T: proc::Target>(
         if !matches!(task.future, bundle::FutureInfo::Known(_)) {
             continue;
         }
-        match ctx.task_root(task, &read) {
-            Ok(bundle::TaskStage::Running(future)) => {
-                let lifecycle = task.state.lifecycle();
-                let inspection =
-                    ctx.inspect_future(future, InspectionMode::Task { lifecycle }, &read);
+        match ctx.inspect_task(task, &read) {
+            Ok(Some(inspection)) => {
                 if let bundle::ChainEnd::Error(e) = &inspection.chain.end {
                     writeln!(
                         io::stderr(),
@@ -239,7 +235,7 @@ pub(crate) fn exec_snapshot<T: proc::Target>(
                 warm_frame_values(&ctx, &inspection.chain, heap);
                 chains += 1;
             }
-            Ok(_) => {}
+            Ok(None) => {}
             Err(e) => {
                 writeln!(
                     io::stderr(),

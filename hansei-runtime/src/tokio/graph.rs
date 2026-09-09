@@ -24,8 +24,7 @@ use super::assess::{
     Assessed, AssessmentPass, ContinuationStatus, IncompleteReason, NotWaitingReason,
     PollingBarrier, TaskFacts, VerifiedWait, WaitAssessment, WaitUnknownReason,
 };
-use super::bundle::{Context, FutureInfo, QueuedWaker, TaskList, TaskStage, WaitTarget};
-use super::chain::InspectionMode;
+use super::bundle::{Context, FutureInfo, QueuedWaker, TaskList, WaitTarget};
 use super::observe::{ReadContext, ResourceObservation};
 use super::{Lifecycle, TaskAddr};
 
@@ -249,9 +248,9 @@ pub fn analyze<T: Target>(
             });
             continue;
         }
-        let root = match ctx.task_root(task, read) {
-            Ok(TaskStage::Running(root)) => root,
-            Ok(TaskStage::Finished(_) | TaskStage::Consumed) => {
+        let inspection = match ctx.inspect_task(task, read) {
+            Ok(Some(inspection)) => inspection,
+            Ok(None) => {
                 waits.push(unknown(
                     WaitUnknownReason::Lifecycle,
                     "the stage holds no resident future, yet the state word is not complete"
@@ -273,7 +272,6 @@ pub fn analyze<T: Target>(
                 continue;
             }
         };
-        let inspection = ctx.inspect_future(root, InspectionMode::Task { lifecycle }, read);
         let Assessed { assessment, notes } =
             ctx.assess_wait(&mut pass, &inspection, &facts, list, read);
         barriers.extend(ctx.polling_barriers(&mut pass, &inspection, &facts, read));

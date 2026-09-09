@@ -42,7 +42,7 @@
 
 use super::TaskState;
 use super::assess::{AssessmentPass, ContinuationStatus};
-use super::bundle::{AwaitChain, Context, TaskList, TaskStage, WaitKind};
+use super::bundle::{AwaitChain, Context, TaskList, WaitKind};
 use super::chain::{FutureInspection, InspectionMode, NextFuture};
 // The by-value types sets and join sets are recognized as; the trailing
 // `<` keeps each match on the real generic, not a lookalike suffix. A
@@ -820,11 +820,9 @@ pub fn census_bounded<T: Target>(
     };
 
     for (owner, task) in list.tasks.iter().enumerate() {
-        let Ok(TaskStage::Running(root)) = ctx.task_root(task, read) else {
+        let Ok(Some(inspection)) = ctx.inspect_task(task, read) else {
             continue;
         };
-        let lifecycle = task.state.lifecycle();
-        let inspection = ctx.inspect_future(root, InspectionMode::Task { lifecycle }, read);
         // A task mid-poll is mutating its frames: its saved state is
         // not read as a chain, and its locals are not scanned for
         // finds that may be half-written.
@@ -1928,6 +1926,7 @@ pub(crate) fn join_set_entry_task<'b, T: Target>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tokio::bundle::TaskStage;
 
     use crate::heap::umem::UmemHeap;
     use crate::heap::umem::tests::freeing;
@@ -3259,16 +3258,10 @@ mod tests {
         // The slot value as the scan built it: the owner's frame
         // payload, entered through the holding local's member.
         let task = &list.tasks[held.owner];
-        let Ok(TaskStage::Running(root)) = ctx.task_root(task, &ReadContext::none()) else {
-            panic!("the owner task is running");
-        };
-        let lifecycle = task.state.lifecycle();
         let chain = ctx
-            .inspect_future(
-                root,
-                InspectionMode::Task { lifecycle },
-                &ReadContext::none(),
-            )
+            .inspect_task(task, &ReadContext::none())
+            .unwrap()
+            .expect("the owner task is running")
             .chain;
         let frame = &chain.frames[chain.frames.len() - 1 - held.frame];
         let payload = match &frame.state {

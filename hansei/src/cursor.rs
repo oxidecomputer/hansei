@@ -120,7 +120,7 @@ pub(crate) fn select_task<T: proc::Target>(
     };
     let task = &list.tasks[index];
     let root = task_root(task);
-    let (frame, last_addr) = match task_chain(session, task) {
+    let (frame, last_addr) = match session.task_chain(task) {
         Some(chain) => {
             // Selection lands on the leaf — displayed #0, the most
             // recently polled frame. An address deeper than the header
@@ -155,27 +155,6 @@ pub(crate) fn select_task<T: proc::Target>(
         last_addr: Some(last_addr),
     };
     Ok(index)
-}
-
-/// A listed task's own chain, walked by its programs under the
-/// session's read context; `None` where the task has no resident
-/// future to walk.
-fn task_chain<'b, T: proc::Target>(
-    session: &Session<'b, T>,
-    task: &bundle::Task,
-) -> Option<bundle::AwaitChain<'b>> {
-    session.read_with(|read| {
-        let bundle::TaskStage::Running(future) = session.ctx.task_root(task, read).ok()? else {
-            return None;
-        };
-        let lifecycle = task.state.lifecycle();
-        Some(
-            session
-                .ctx
-                .inspect_future(future, InspectionMode::Task { lifecycle }, read)
-                .chain,
-        )
-    })
 }
 
 /// How a task roots the cursor: by id, or — for a task the target
@@ -306,7 +285,7 @@ fn frame_base<T: proc::Target>(
     task: &bundle::Task,
     n: usize,
 ) -> Option<u64> {
-    let chain = task_chain(session, task)?;
+    let chain = session.task_chain(task)?;
     let i = chain.frames.len().checked_sub(n + 1)?;
     chain.frames.get(i).map(|f| f.future.addr)
 }
@@ -571,26 +550,14 @@ pub(crate) fn chain_of<'b, T: proc::Target>(
 ) -> Result<ResolvedChain<'b>> {
     let task_chain = |index: usize| -> Result<ResolvedChain<'b>> {
         let task = &session.tasks.tasks[index];
-        let stage = session.read_with(|read| session.ctx.task_root(task, read))?;
-        match stage {
-            bundle::TaskStage::Running(future) => {
-                let lifecycle = task.state.lifecycle();
-                let chain = session.read_with(|read| {
-                    session
-                        .ctx
-                        .inspect_future(future, InspectionMode::Task { lifecycle }, read)
-                        .chain
-                });
-                Ok(ResolvedChain {
-                    chain,
-                    owner: index,
-                    origin: None,
-                    wait: trace::assessed_header(&session.analysis().waits[index]),
-                })
-            }
-            bundle::TaskStage::Finished(_) | bundle::TaskStage::Consumed => {
-                Err(anyhow!("no await chain ({})", task.state.lifecycle()))
-            }
+        match session.read_with(|read| session.ctx.inspect_task(task, read))? {
+            Some(inspection) => Ok(ResolvedChain {
+                chain: inspection.chain,
+                owner: index,
+                origin: None,
+                wait: trace::assessed_header(&session.analysis().waits[index]),
+            }),
+            None => Err(anyhow!("no await chain ({})", task.state.lifecycle())),
         }
     };
     match root {
@@ -1024,7 +991,7 @@ mod tests {
         // the frame, not on the held future. Computed here from the
         // chain itself so nothing under test corroborates itself.
         let task = &session.tasks.tasks[owner];
-        if let Some(chain) = task_chain(&session, task) {
+        if let Some(chain) = session.task_chain(task) {
             let inner = chain.frames.len().checked_sub(frame + 1);
             if let Some(f) = inner.and_then(|i| chain.frames.get(i)) {
                 assert_eq!(c.last_addr, Some(f.future.addr));
@@ -1115,7 +1082,9 @@ mod tests {
         let args = session_args("linux", "nested-await");
         let session = Session::attach(&snapshot, &bundle, &args).expect("the pair attaches");
         let task = &session.tasks.tasks[0];
-        let chain = task_chain(&session, task).expect("the fixture's task is suspended mid-chain");
+        let chain = session
+            .task_chain(task)
+            .expect("the fixture's task is suspended mid-chain");
         assert!(chain.frames.len() >= 2, "nested-await nests");
         let f0 = chain.frames[0].future.addr;
         let f0_end = f0 + chain.frames[0].future.ty.size();

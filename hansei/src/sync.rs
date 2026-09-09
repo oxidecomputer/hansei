@@ -18,7 +18,6 @@ use anyhow::{Result, bail};
 use hansei_bundle::names;
 use hansei_runtime::tokio::assess::PollingBarrier;
 use hansei_runtime::tokio::bundle::{QueuedWaker, SemaphoreWaiter, WaitTarget};
-use hansei_runtime::tokio::chain::InspectionMode;
 use hansei_runtime::tokio::graph::{Analysis, BarrierRelation, TaskRef};
 use hansei_runtime::tokio::{Lifecycle, bundle, census};
 
@@ -421,19 +420,7 @@ fn collect_references<T: proc::Target>(
         if !matches!(task.future, bundle::FutureInfo::Known(_)) {
             continue;
         }
-        let chain = session.read_with(|read| {
-            let bundle::TaskStage::Running(future) = session.ctx.task_root(task, read).ok()? else {
-                return None;
-            };
-            let lifecycle = task.state.lifecycle();
-            Some(
-                session
-                    .ctx
-                    .inspect_future(future, InspectionMode::Task { lifecycle }, read)
-                    .chain,
-            )
-        });
-        let Some(chain) = chain else {
+        let Some(chain) = session.task_chain(task) else {
             continue;
         };
         for (n, frame) in chain.frames.iter().enumerate() {

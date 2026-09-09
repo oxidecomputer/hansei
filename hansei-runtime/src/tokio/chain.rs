@@ -168,16 +168,26 @@ impl<'b, T: Target> Context<'b, T> {
         }
     }
 
-    /// The one continuation entry point: where polling `value` goes
-    /// next, by its type's program. A direct program runs its action;
-    /// a variant program resolves its state path, decodes the active
-    /// variant once and runs exactly that case's action. Unknown
-    /// recognition or continuation, a state no case names, and a case
-    /// bound to no action all end the chain unknown; an invalid
-    /// discriminant, a route landing off its recorded target, an
-    /// inactive guard or a failed read end it with an error.
-    pub fn next_future(&self, value: Value<'b>, read: &ReadContext<'_>) -> NextFuture<'b> {
-        self.continuation(value, read).1
+    /// A listed task's resident root, inspected as that task's chain
+    /// under its own lifecycle — the one way every consumer walks a
+    /// task, so the analysis, the census, the cursor and a snapshot's
+    /// warm-up read the same frames. `Ok(None)` where the stage holds
+    /// no resident future: finished with its output waiting, or
+    /// consumed.
+    pub fn inspect_task(
+        &self,
+        task: &Task,
+        read: &ReadContext<'_>,
+    ) -> Result<Option<FutureInspection<'b>>> {
+        let TaskStage::Running(root) = self.task_root(task, read)? else {
+            return Ok(None);
+        };
+        let lifecycle = task.state.lifecycle();
+        Ok(Some(self.inspect_future(
+            root,
+            InspectionMode::Task { lifecycle },
+            read,
+        )))
     }
 
     /// The referent a supported pointer adapter reaches — a `Box<F>`,

@@ -1220,7 +1220,7 @@ mod tests {
     use super::*;
     use crate::testkit::corrupt::Corrupt;
     use crate::testkit::{self, load_any};
-    use crate::tokio::bundle::{FutureInfo, TaskStage};
+    use crate::tokio::bundle::FutureInfo;
     use crate::tokio::graph::{self, TaskWait};
 
     use hansei_bundle::tokio::timer;
@@ -1283,17 +1283,12 @@ mod tests {
     }
 
     fn primitive_of<'a, T: Target>(ctx: &Context<'a, T>, task: &Task) -> Value<'a> {
-        let TaskStage::Running(root) = ctx.task_root(task, &ReadContext::none()).unwrap() else {
-            panic!("resident");
-        };
-        let inspection = ctx.inspect_future(
-            root,
-            InspectionMode::Task {
-                lifecycle: task.state.lifecycle(),
-            },
-            &ReadContext::none(),
-        );
-        inspection.chain.primitive_leaf().expect("a primitive end")
+        ctx.inspect_task(task, &ReadContext::none())
+            .unwrap()
+            .expect("resident")
+            .chain
+            .primitive_leaf()
+            .expect("a primitive end")
     }
 
     /// The precedence's first two steps, on the joiner: the state word

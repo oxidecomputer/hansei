@@ -3475,7 +3475,7 @@ mod tests {
     use crate::testkit;
     use crate::tokio::Lifecycle;
     use crate::tokio::assess::AssessmentPass;
-    use crate::tokio::chain::InspectionMode;
+    use crate::tokio::chain::FutureInspection;
 
     use hansei_bundle::Bundle;
     use proc::snapshot::Snapshot;
@@ -3796,16 +3796,14 @@ mod tests {
 
     /// A listed task's own chain, walked by its programs.
     fn chain_of<'a, T: Target>(ctx: &Context<'a, T>, task: &Task) -> AwaitChain<'a> {
-        let TaskStage::Running(root) = ctx.task_root(task, &ReadContext::none()).unwrap() else {
-            panic!("the task's future is resident");
-        };
-        let lifecycle = task.state.lifecycle();
-        ctx.inspect_future(
-            root,
-            InspectionMode::Task { lifecycle },
-            &ReadContext::none(),
-        )
-        .chain
+        inspection_of(ctx, task).chain
+    }
+
+    /// A listed task's own inspection, walked by its programs.
+    fn inspection_of<'a, T: Target>(ctx: &Context<'a, T>, task: &Task) -> FutureInspection<'a> {
+        ctx.inspect_task(task, &ReadContext::none())
+            .unwrap()
+            .expect("the task's future is resident")
     }
 
     /// The primitive `task`'s chain ends in, which the observers are
@@ -3836,15 +3834,7 @@ mod tests {
 
     /// The target an observation describes, read under no protocol.
     fn described<'a, T: Target>(ctx: &Context<'a, T>, list: &TaskList, task: &Task) -> WaitTarget {
-        let TaskStage::Running(root) = ctx.task_root(task, &ReadContext::none()).unwrap() else {
-            panic!("the task's future is resident");
-        };
-        let lifecycle = task.state.lifecycle();
-        let inspection = ctx.inspect_future(
-            root,
-            InspectionMode::Task { lifecycle },
-            &ReadContext::none(),
-        );
+        let inspection = inspection_of(ctx, task);
         let observation = inspection
             .primitive
             .value

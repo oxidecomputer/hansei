@@ -205,14 +205,6 @@ pub struct ParkStates {
     pub driver_held: bool,
 }
 
-impl ParkStates {
-    /// The worker parked in the io driver, if one is. At most one can
-    /// be: parking there means holding the driver's lock.
-    pub fn in_driver(&self) -> Option<usize> {
-        self.workers.iter().position(|s| *s == ParkState::Driver)
-    }
-}
-
 /// A worker thread's park state, as its `Parker`'s state word records
 /// it. The words are tokio's own constants, folded into its code at
 /// compile time and so — as with [`TaskState`](super::TaskState)'s bits

@@ -1771,6 +1771,15 @@ impl<'b, T: Target> Session<'b, T> {
             .get_or_init(|| self.read_with(|read| rt_graph::analyze(&self.ctx, &self.tasks, read)))
     }
 
+    /// A listed task's own chain, walked by its programs under the
+    /// session's read context — the frames the analysis assessed,
+    /// walked again for a command that wants them whole. `None` where
+    /// the task has no resident future to walk, or its root did not
+    /// read.
+    pub(crate) fn task_chain(&self, task: &bundle::Task) -> Option<bundle::AwaitChain<'b>> {
+        self.read_with(|read| Some(self.ctx.inspect_task(task, read).ok()??.chain))
+    }
+
     /// Run `f` under the read context every walk of this session reads
     /// under: the allocator's evidence bridged through the render gate
     /// tally, or no heap at all on a target without one.
