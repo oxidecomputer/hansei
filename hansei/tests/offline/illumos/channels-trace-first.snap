@@ -2,7 +2,7 @@
 source: hansei/src/offline.rs
 description: "`trace 3 -n` over illumos/channels"
 ---
-Waiting on: unknown
+Waiting on: unknown at tokio::sync::notify::Notified
 
 what tokio::sync::notify::Notified polls is not established (no reviewed rule covers its implementation); the chain ends there
 #0  future        tokio::sync::notify::Notified

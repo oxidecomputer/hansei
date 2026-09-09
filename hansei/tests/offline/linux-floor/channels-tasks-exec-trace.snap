@@ -3,7 +3,7 @@ source: hansei/src/offline.rs
 description: "`tasks --exec trace -n` over linux-floor/channels"
 ---
 task 3
-Waiting on: unknown
+Waiting on: unknown at tokio::sync::notify::Notified
 
 what tokio::sync::notify::Notified polls is not established (no reviewed rule covers its implementation); the chain ends there
 #0  future        tokio::sync::notify::Notified
@@ -14,7 +14,7 @@ what tokio::sync::notify::Notified polls is not established (no reviewed rule co
       awaiting at src/bin/channels.rs:32 (Suspend0, 2 locals)
 
 task 4
-Waiting on: unknown
+Waiting on: unknown at tokio::sync::oneshot::Receiver
 
 what tokio::sync::oneshot::Receiver<u32> polls is not established (no reviewed rule covers its implementation); the chain ends there
 #0  future        tokio::sync::oneshot::Receiver<u32>

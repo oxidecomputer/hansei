@@ -3,5 +3,5 @@ source: hansei/src/offline.rs
 description: "`graph` over linux-floor/delegation-cases"
 ---
 TASK                          STATE  WAITING ON
-10                            idle   unknown
-└─ 9 [its handle held above]  idle   unknown
+10                            idle   unknown at delegation_cases::Handle
+└─ 9 [its handle held above]  idle   unknown at delegation_cases::Holder

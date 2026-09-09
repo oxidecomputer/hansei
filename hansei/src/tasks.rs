@@ -724,7 +724,7 @@ pub(crate) fn build_rows(
                     .get(index)
                     .and_then(|w| w.site.as_ref())
                     .map(|(file, line)| format!("{file}:{line}")),
-                waiting_on: waiting_on(task, waits.get(index), polling),
+                waiting_on: waiting_on(task, waits.get(index), polling, stops),
                 waiting_kind: waiting_kind(task, waits.get(index), stops),
                 wait_detail: wait_detail(task, waits.get(index), registries),
                 waker,
@@ -921,6 +921,7 @@ fn waiting_on(
     task: &bundle::Task,
     wait: Option<&rt_graph::TaskWait>,
     polling: &HashMap<u64, u32>,
+    stops: &StopNames<'_>,
 ) -> String {
     // A blocking cell waits on a pool thread, not on a future — its
     // STATE says which; the cell has nothing to add.
@@ -934,19 +935,20 @@ fn waiting_on(
         };
     }
     match wait {
-        Some(wait) => assessment_cell(&wait.assessment),
+        Some(wait) => assessment_cell(wait, stops),
         None => "—".to_string(),
     }
 }
 
 /// The one-word (or one-target) spelling of an assessment: the
 /// `WAITING ON` cell every listing shares, so a task, a future and a
-/// tally agree on what a wait is called.
-pub(crate) fn assessment_cell(assessment: &WaitAssessment) -> String {
-    match assessment {
-        WaitAssessment::Waiting(wait) => wait.target().to_string(),
+/// tally agree on what a wait is called. An unknown says what made
+/// it one ([`unknown_cell`]).
+pub(crate) fn assessment_cell(wait: &rt_graph::TaskWait, stops: &StopNames<'_>) -> String {
+    match &wait.assessment {
+        WaitAssessment::Waiting(verified) => verified.target().to_string(),
         WaitAssessment::ResourceReady(_) => "ready".to_string(),
-        WaitAssessment::Unknown(_) => "unknown".to_string(),
+        WaitAssessment::Unknown(_) => unknown_cell(wait, stops),
         WaitAssessment::Unresumed => "— (unresumed)".to_string(),
         WaitAssessment::NotWaiting(NotWaitingReason::Returned) => "— (returned)".to_string(),
         WaitAssessment::NotWaiting(NotWaitingReason::Panicked) => "— (panicked)".to_string(),
@@ -966,13 +968,24 @@ pub(crate) fn assessment_kind(wait: &rt_graph::TaskWait, stops: &StopNames<'_>) 
     match &wait.assessment {
         WaitAssessment::Waiting(verified) => Some(verified.target().group_label()),
         WaitAssessment::ResourceReady(_) => Some("ready".to_string()),
-        WaitAssessment::Unknown(WaitUnknownReason::Continuation) => Some(
-            continuation_bucket(&wait.continuation, stops).unwrap_or_else(|| "unknown".to_string()),
-        ),
-        WaitAssessment::Unknown(reason) => Some(format!("unknown ({})", unknown_word(*reason))),
+        WaitAssessment::Unknown(_) => Some(unknown_cell(wait, stops)),
         WaitAssessment::Unresumed | WaitAssessment::NotWaiting(_) | WaitAssessment::Runnable(_) => {
             None
         }
+    }
+}
+
+/// What an unknown assessment says for itself in the cell — the same
+/// words its bucket uses, since neither has a target to name: the
+/// type the chain stopped at, how it was cut short, or the reason a
+/// primitive's protocol declined.
+fn unknown_cell(wait: &rt_graph::TaskWait, stops: &StopNames<'_>) -> String {
+    match &wait.assessment {
+        WaitAssessment::Unknown(WaitUnknownReason::Continuation) => {
+            continuation_bucket(&wait.continuation, stops).unwrap_or_else(|| "unknown".to_string())
+        }
+        WaitAssessment::Unknown(reason) => format!("unknown ({})", unknown_word(*reason)),
+        _ => "unknown".to_string(),
     }
 }
 
@@ -2335,12 +2348,12 @@ mod table_tests {
         )
     }
 
-    /// The cell stays `unknown`; the bucket says what made it one — the
-    /// stop type where the chain stopped at one (bare `unknown` where
-    /// no bundle names it), how a chain was cut short, or the reason
-    /// where the chain reached a primitive its protocol could not vouch
-    /// for. A stop label is the type's path, generics dropped, with a
-    /// coroutine's kind word in front.
+    /// An unknown says what made it one, in the cell and in its bucket
+    /// alike — the stop type where the chain stopped at one (bare
+    /// `unknown` where no bundle names it), how a chain was cut short,
+    /// or the reason where the chain reached a primitive its protocol
+    /// could not vouch for. A stop label is the type's path, generics
+    /// dropped, with a coroutine's kind word in front.
     #[test]
     fn test_unknown_buckets_say_what_made_them_unknown() {
         let mut stopped = wait(1, None);
@@ -2365,16 +2378,13 @@ mod table_tests {
             vec![stopped, cut, unproven],
             HashMap::new(),
         );
-        assert!(rows.iter().all(|r| r.waiting_on == "unknown"), "{rows:?}");
-        assert_eq!(rows[0].waiting_kind.as_deref(), Some("unknown"));
-        assert_eq!(
-            rows[1].waiting_kind.as_deref(),
-            Some("unknown (ambiguous dyn future)")
-        );
-        assert_eq!(
-            rows[2].waiting_kind.as_deref(),
-            Some("unknown (resource state unproven)")
-        );
+        assert_eq!(rows[0].waiting_on, "unknown");
+        assert_eq!(rows[1].waiting_on, "unknown (ambiguous dyn future)");
+        assert_eq!(rows[2].waiting_on, "unknown (resource state unproven)");
+        // The bucket is the cell: an unknown has no target to fold to a kind.
+        for row in &rows {
+            assert_eq!(row.waiting_kind.as_deref(), Some(row.waiting_on.as_str()));
+        }
 
         let impls = hansei_bundle::names::ImplFold::default();
         assert_eq!(
@@ -2433,10 +2443,10 @@ mod table_tests {
         assert_eq!(rows[0].state, "idle");
 
         assert_eq!(rows[1].state, "idle (cancelled)");
-        assert_eq!(rows[1].waiting_on, "unknown");
+        assert_eq!(rows[1].waiting_on, "unknown (no root in the tokio info)");
         assert_eq!(
             rows[1].waiting_kind.as_deref(),
-            Some("unknown (no root in the tokio info)")
+            Some(rows[1].waiting_on.as_str())
         );
         assert_eq!(rows[1].awaiting_at, None);
         assert_eq!(

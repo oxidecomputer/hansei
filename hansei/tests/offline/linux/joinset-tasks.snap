@@ -2,11 +2,11 @@
 source: hansei/src/offline.rs
 description: "`tasks` over linux/joinset"
 ---
-ID  STATE  FUTURES  AWAITING AT            WAITING ON  TYPE
-3   idle         0  src/bin/joinset.rs:83  unknown     async fn joinset::driver
-4   idle         0  src/bin/joinset.rs:34  unknown     async fn joinset::member
-5   idle         0  src/bin/joinset.rs:34  unknown     async fn joinset::member
-6   idle         0  src/bin/joinset.rs:34  unknown     async fn joinset::member
-7   idle         0  src/bin/joinset.rs:34  unknown     async fn joinset::member
-8   idle         0  src/bin/joinset.rs:34  unknown     async fn joinset::member
+ID  STATE  FUTURES  AWAITING AT            WAITING ON                                TYPE
+3   idle         0  src/bin/joinset.rs:83  unknown at core::future::poll_fn::PollFn  async fn joinset::driver
+4   idle         0  src/bin/joinset.rs:34  unknown at tokio::sync::notify::Notified  async fn joinset::member
+5   idle         0  src/bin/joinset.rs:34  unknown at tokio::sync::notify::Notified  async fn joinset::member
+6   idle         0  src/bin/joinset.rs:34  unknown at tokio::sync::notify::Notified  async fn joinset::member
+7   idle         0  src/bin/joinset.rs:34  unknown at tokio::sync::notify::Notified  async fn joinset::member
+8   idle         0  src/bin/joinset.rs:34  unknown at tokio::sync::notify::Notified  async fn joinset::member
 [6 tasks]

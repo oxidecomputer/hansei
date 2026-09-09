@@ -2,7 +2,7 @@
 source: hansei/src/offline.rs
 description: "`trace 1 -n` over illumos/walk-shapes"
 ---
-Waiting on: unknown
+Waiting on: unknown at walk_shapes::WrapS
 
 what walk_shapes::WrapS<walk_shapes::WrapE<walk_shapes::deep>> polls is not established (no reviewed rule covers its implementation); the chain ends there
 #0  future        walk_shapes::WrapS<walk_shapes::WrapE<walk_shapes::deep>>

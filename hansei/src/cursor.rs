@@ -555,7 +555,7 @@ pub(crate) fn chain_of<'b, T: proc::Target>(
                 chain: inspection.chain,
                 owner: index,
                 origin: None,
-                wait: trace::assessed_header(&session.analysis().waits[index]),
+                wait: trace::assessed_header(session, index),
             }),
             None => Err(anyhow!("no await chain ({})", task.state.lifecycle())),
         }

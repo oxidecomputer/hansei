@@ -2,7 +2,7 @@
 source: hansei/src/offline.rs
 description: "`tasks --with state idle` over illumos/channels"
 ---
-ID  STATE  FUTURES  AWAITING AT             WAITING ON  TYPE
-3   idle         0  src/bin/channels.rs:32  unknown     async fn channels::notify_waiter
-4   idle         0  src/bin/channels.rs:52  unknown     async fn channels::hold
+ID  STATE  FUTURES  AWAITING AT             WAITING ON                                 TYPE
+3   idle         0  src/bin/channels.rs:32  unknown at tokio::sync::notify::Notified   async fn channels::notify_waiter
+4   idle         0  src/bin/channels.rs:52  unknown at tokio::sync::oneshot::Receiver  async fn channels::hold
 [2 tasks]

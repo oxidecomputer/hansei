@@ -245,7 +245,7 @@ impl Rows<'_> {
             waiting_on: h
                 .waiting_on
                 .clone()
-                .or_else(|| continuation_cell(&h.continuation)),
+                .or_else(|| tasks::continuation_bucket(&h.continuation, self.stops)),
             waiting_kind: waiting_kind(
                 h.wait,
                 &h.continuation,
@@ -287,7 +287,7 @@ impl Rows<'_> {
             waiting_on: c
                 .waiting_on
                 .clone()
-                .or_else(|| continuation_cell(&c.continuation)),
+                .or_else(|| tasks::continuation_bucket(&c.continuation, self.stops)),
             waiting_kind: waiting_kind(
                 c.wait,
                 &c.continuation,
@@ -301,22 +301,6 @@ impl Rows<'_> {
             sets: inside.sets + inside.join_sets,
             sets_summary: inside.sets_summary(),
         }
-    }
-}
-
-/// The `WAITING ON` cell a find's continuation earns where its chain
-/// ends in no described resource: `unknown` for a continuation nothing
-/// establishes or a chain cut short, and nothing — the dash — for a
-/// future that awaits nothing, never polled or run to its end.
-fn continuation_cell(continuation: &ContinuationStatus) -> Option<String> {
-    match continuation {
-        ContinuationStatus::Primitive
-        | ContinuationStatus::Unknown { .. }
-        | ContinuationStatus::Incomplete { .. } => Some("unknown".to_string()),
-        ContinuationStatus::Unresumed
-        | ContinuationStatus::Returned
-        | ContinuationStatus::Panicked
-        | ContinuationStatus::ActivePoll => None,
     }
 }
 
@@ -1127,9 +1111,9 @@ mod tests {
         )
     }
 
-    /// A find whose chain ends in no described resource reads
-    /// `unknown` in the cell and buckets by what cut its chain short,
-    /// the way a task row does.
+    /// A find whose chain ends in no described resource says what cut
+    /// its chain short, in the cell and in its bucket alike, the way a
+    /// task row does.
     #[test]
     fn test_a_cut_chain_buckets_by_how_it_was_cut() {
         let mut cut = held(0, 0x3000, None);
@@ -1140,11 +1124,11 @@ mod tests {
             detail: None,
         };
         let rows = rows_of(&census(vec![cut], vec![]));
-        assert_eq!(rows[0].waiting_on.as_deref(), Some("unknown"));
         assert_eq!(
-            rows[0].waiting_kind.as_deref(),
+            rows[0].waiting_on.as_deref(),
             Some("unknown (dyn future not in the tokio info)")
         );
+        assert_eq!(rows[0].waiting_kind, rows[0].waiting_on);
     }
 
     /// The owner counts are exact per group and count the unowned

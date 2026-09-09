@@ -7,7 +7,7 @@ future 0xADDR
     child of: futures_util::stream::futures_unordered::FuturesUnordered<unordered::set_member> at 0xADDR, polled by task 3
     state: Suspend0 — src/bin/unordered.rs:73
     depth: 2 frames
-    waiting on: unknown
+    waiting on: unknown at tokio::sync::notify::Notified
     held futures: 1
         (frame 1, `held`): 0xADDR  async fn unordered::leaf  Unresumed
     join sets: 0

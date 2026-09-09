@@ -6,7 +6,7 @@
 //! conditional futurelock diagnosis.
 
 use crate::relations::{Edge, EdgeKind, Relations};
-use crate::tasks::{assessment_cell, task_id};
+use crate::tasks::{StopNames, assessment_cell, task_id};
 use crate::{Session, output, print_warnings};
 
 use anyhow::Result;
@@ -29,6 +29,7 @@ pub(crate) fn exec_graph<T: proc::Target>(
         &session.tasks,
         analysis,
         session.relations(),
+        &StopNames::of(session),
         limit,
         theme,
         out,
@@ -75,6 +76,7 @@ fn print_graph(
     list: &bundle::TaskList,
     analysis: &graph::Analysis,
     relations: &Relations,
+    stops: &StopNames<'_>,
     limit: Option<usize>,
     theme: output::Theme,
     out: &mut dyn io::Write,
@@ -95,6 +97,7 @@ fn print_graph(
     let mut walk = GraphWalk {
         list,
         analysis,
+        stops,
         edges,
         printed: vec![false; list.tasks.len()],
         path: Vec::new(),
@@ -153,6 +156,7 @@ fn print_graph(
 struct GraphWalk<'a> {
     list: &'a bundle::TaskList,
     analysis: &'a graph::Analysis,
+    stops: &'a StopNames<'a>,
     edges: &'a [Vec<Edge>],
     /// Every task already given a row, so one reached twice — two tasks
     /// blocked on the semaphore one acquire holds — is spelled out once
@@ -209,7 +213,7 @@ impl GraphWalk<'_> {
         // the way the task table spells it. A `-` is for a task with no
         // assessment at all.
         let target = match self.analysis.waits.get(task) {
-            Some(wait) => assessment_cell(&wait.assessment),
+            Some(wait) => assessment_cell(wait, self.stops),
             None => "-".to_string(),
         };
         self.rows.push([name, state, target]);
@@ -309,7 +313,7 @@ fn print_barrier(
 
 #[cfg(test)]
 mod graph_tests {
-    use super::{BarrierRelation, names, print_barrier, print_graph};
+    use super::{BarrierRelation, StopNames, names, print_barrier, print_graph};
 
     use hansei_bundle::BundleTypeId;
     use hansei_runtime::tokio::assess::{
@@ -480,6 +484,7 @@ mod graph_tests {
             &list,
             &analysis,
             &relations,
+            &StopNames::none(&Default::default()),
             limit,
             crate::output::Theme::plain(),
             &mut out,
@@ -647,7 +652,7 @@ TASK                                         STATE  WAITING ON
             page,
             "\
 TASK                          STATE  WAITING ON
-7                             idle   unknown
+7                             idle   unknown (no root in the tokio info)
 └─ 8 [its handle held above]  idle   task 9
    └─ 9                       idle   task 8
       └─ 8 ← cycle            idle   
@@ -672,9 +677,9 @@ TASK                          STATE  WAITING ON
             page,
             "\
 TASK                         STATE  WAITING ON
-7                            idle   unknown
-├─ 8 [in the JoinSet above]  idle   unknown
-└─ 9 [in the JoinSet above]  idle   unknown
+7                            idle   unknown (no root in the tokio info)
+├─ 8 [in the JoinSet above]  idle   unknown (no root in the tokio info)
+└─ 9 [in the JoinSet above]  idle   unknown (no root in the tokio info)
 "
         );
     }
@@ -695,7 +700,7 @@ TASK                         STATE  WAITING ON
             page,
             "\
 TASK                          STATE  WAITING ON
-7                             idle   unknown
+7                             idle   unknown (no root in the tokio info)
 └─ 8 [its handle held above]  idle   timer (deadline +10.000s)
 "
         );
@@ -721,7 +726,7 @@ TASK                          STATE  WAITING ON
             page,
             "\
 TASK                          STATE  WAITING ON
-7                             idle   unknown
+7                             idle   unknown (no root in the tokio info)
 └─ 8 [its handle held above]  idle   timer (deadline +10.000s)
 "
         );

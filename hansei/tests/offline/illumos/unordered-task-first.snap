@@ -7,7 +7,7 @@ task 3
     thread: <none>
     type: async fn unordered::driver
     awaiting at: src/bin/unordered.rs:119
-    waiting on: unknown
+    waiting on: unknown at futures_util::stream::stream::next::Next
     waker: <empty>
         unknown: the chain does not end in a primitive
         what futures_util::stream::stream::next::Next<futures_util::stream::futures_unordered::FuturesUnordered<unordered::set_member::{async_fn_env#0}>> polls is not established: no reviewed rule covers its implementation

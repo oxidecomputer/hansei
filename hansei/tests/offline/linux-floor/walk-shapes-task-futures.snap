@@ -8,7 +8,7 @@ task 1
     owner: runtime 0 @ 0xADDR (current_thread)
     type: async fn walk_shapes::chained
     awaiting at: src/bin/walk-shapes.rs:116
-    waiting on: unknown
+    waiting on: unknown at walk_shapes::WrapS
     waker: <empty>
         unknown: the chain does not end in a primitive
         what walk_shapes::WrapS<walk_shapes::WrapE<walk_shapes::deep::{async_fn_env#0}>> polls is not established: no reviewed rule covers its implementation

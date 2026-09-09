@@ -145,7 +145,7 @@ fn exec_trace_task<T: proc::Target>(
                 print_native_continuation(session, task, task_id, chain, opts, out)?;
                 writeln!(out)?;
             }
-            let wait = assessed_header(&session.analysis().waits[index]);
+            let wait = assessed_header(session, index);
             print_trace_chain(session, chain, index, None, wait, opts, out)?;
         }
         bundle::TaskStage::Finished(result) => {
@@ -447,9 +447,13 @@ pub(crate) struct WaitHeader {
 /// spells, with the assessor's notes where the cell is `ready` or
 /// `unknown` — except that an unknown continuation is already
 /// explained where the chain ends, and says nothing twice.
-pub(crate) fn assessed_header(wait: &TaskWait) -> Option<WaitHeader> {
+pub(crate) fn assessed_header<T: proc::Target>(
+    session: &Session<'_, T>,
+    index: usize,
+) -> Option<WaitHeader> {
     use hansei_runtime::tokio::assess::{WaitAssessment, WaitUnknownReason};
-    let line = crate::tasks::assessment_cell(&wait.assessment);
+    let wait: &TaskWait = &session.analysis().waits[index];
+    let line = crate::tasks::assessment_cell(wait, &crate::tasks::StopNames::of(session));
     let notes = match wait.assessment {
         WaitAssessment::Unknown(WaitUnknownReason::Continuation) => Vec::new(),
         _ => crate::tasks::assessment_detail(wait),

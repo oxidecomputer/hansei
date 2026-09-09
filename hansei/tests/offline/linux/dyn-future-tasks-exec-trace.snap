@@ -3,7 +3,7 @@ source: hansei/src/offline.rs
 description: "`tasks --exec trace -n` over linux/dyn-future"
 ---
 task 3
-Waiting on: unknown
+Waiting on: unknown at tokio::sync::oneshot::Receiver
 
 what tokio::sync::oneshot::Receiver<u32> polls is not established (no reviewed rule covers its implementation); the chain ends there
 #0  future        tokio::sync::oneshot::Receiver<u32>
@@ -16,7 +16,7 @@ what tokio::sync::oneshot::Receiver<u32> polls is not established (no reviewed r
       awaiting at src/bin/dyn-future.rs:40 (Suspend0, 1 local)
 
 task 4
-Waiting on: unknown
+Waiting on: unknown at tokio::sync::oneshot::Receiver
 
 what tokio::sync::oneshot::Receiver<u32> polls is not established (no reviewed rule covers its implementation); the chain ends there
 #0  future        tokio::sync::oneshot::Receiver<u32>
@@ -25,7 +25,7 @@ what tokio::sync::oneshot::Receiver<u32> polls is not established (no reviewed r
       awaiting at src/bin/dyn-future.rs:97 (Suspend0, 2 locals)
 
 task 5
-Waiting on: unknown
+Waiting on: unknown at tokio::sync::oneshot::Receiver
 
 what tokio::sync::oneshot::Receiver<u32> polls is not established (no reviewed rule covers its implementation); the chain ends there
 #0  future        tokio::sync::oneshot::Receiver<u32>

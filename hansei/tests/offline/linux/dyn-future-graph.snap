@@ -3,5 +3,5 @@ source: hansei/src/offline.rs
 description: "`graph` over linux/dyn-future"
 ---
 TASK                         STATE  WAITING ON
-3                            idle   unknown
-└─ 5 [in the JoinSet above]  idle   unknown
+3                            idle   unknown at tokio::sync::oneshot::Receiver
+└─ 5 [in the JoinSet above]  idle   unknown at tokio::sync::oneshot::Receiver

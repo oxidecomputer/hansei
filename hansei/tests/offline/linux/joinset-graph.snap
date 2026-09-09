@@ -3,9 +3,9 @@ source: hansei/src/offline.rs
 description: "`graph` over linux/joinset"
 ---
 TASK                         STATE  WAITING ON
-3                            idle   unknown
-├─ 4 [in the JoinSet above]  idle   unknown
-├─ 5 [in the JoinSet above]  idle   unknown
-├─ 6 [in the JoinSet above]  idle   unknown
-├─ 7 [in the JoinSet above]  idle   unknown
-└─ 8 [in the JoinSet above]  idle   unknown
+3                            idle   unknown at core::future::poll_fn::PollFn
+├─ 4 [in the JoinSet above]  idle   unknown at tokio::sync::notify::Notified
+├─ 5 [in the JoinSet above]  idle   unknown at tokio::sync::notify::Notified
+├─ 6 [in the JoinSet above]  idle   unknown at tokio::sync::notify::Notified
+├─ 7 [in the JoinSet above]  idle   unknown at tokio::sync::notify::Notified
+└─ 8 [in the JoinSet above]  idle   unknown at tokio::sync::notify::Notified
