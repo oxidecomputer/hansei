@@ -15,8 +15,8 @@ use hansei_bundle::{
 use hansei_runtime::testkit::{self, load_any, tasks as tasks_of};
 use hansei_runtime::tokio::assess::{ContinuationStatus, WaitAssessment};
 use hansei_runtime::tokio::bundle::{
-    AwaitChain, ChainEnd, Context, DiscoveryRoute, FutureInfo, OwnerIndex, Task, TaskList,
-    TaskStage, WaitTarget,
+    AwaitChain, ChainEnd, Context, DiscoveryRoute, FutureInfo, OwnerIndex, Registries, Task,
+    TaskList, TaskStage, WaitTarget,
 };
 use hansei_runtime::tokio::chain::InspectionMode;
 use hansei_runtime::tokio::graph::{self, BarrierRelation};
@@ -226,7 +226,7 @@ fn test_a_by_value_acquire_behind_a_notified_chain_is_a_barrier() {
     let (bundle, snapshot) = pair();
     let ctx = testkit::context(&bundle, &snapshot);
     let list = tasks_of(&ctx, &snapshot);
-    let analysis = graph::analyze(&ctx, &list, &ReadContext::none());
+    let analysis = graph::analyze(&ctx, &list, &Registries::default(), &ReadContext::none());
     assert!(analysis.errors.is_empty(), "{:?}", analysis.errors);
     let abandoner = &list.tasks[task_by_name(&list, "abandoner")];
     let barrier = analysis

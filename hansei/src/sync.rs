@@ -771,6 +771,8 @@ mod sync_tests {
             site: None,
             observation: None,
             notes: Vec::new(),
+            held: Vec::new(),
+            held_capped: 0,
         }
     }
 

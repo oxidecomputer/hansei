@@ -3,5 +3,5 @@ source: hansei/src/offline.rs
 description: "`graph` over illumos/delegation-cases"
 ---
 TASK                          STATE  WAITING ON
-10                            idle   unknown at delegation_cases::Handle
-└─ 9 [its handle held above]  idle   unknown at delegation_cases::Holder
+10                            idle   unknown at delegation_cases::Handle (holds 1 future)
+└─ 9 [its handle held above]  idle   unknown at delegation_cases::Holder (holds 1 future)

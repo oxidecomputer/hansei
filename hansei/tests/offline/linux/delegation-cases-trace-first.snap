@@ -2,7 +2,9 @@
 source: hansei/src/offline.rs
 description: "`trace 1 -n` over linux/delegation-cases"
 ---
-Waiting on: unknown at delegation_cases::Gated
+Waiting on: unknown at delegation_cases::Gated (holds 1 future)
+  holds 1 future at its stop, none holding this task's waker:
+  child: delegation_cases::Probe at 0xADDR — unknown; held, not armed; what delegation_cases::Probe<1> polls is not established: no reviewed rule covers its implementation
 
 what delegation_cases::Gated<1> polls is not established (no reviewed rule covers its implementation); the chain ends there
 #0  future        delegation_cases::Gated<1>

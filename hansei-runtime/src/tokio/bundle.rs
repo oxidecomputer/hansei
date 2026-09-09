@@ -1263,6 +1263,17 @@ impl<'b, T: Target> Context<'b, T> {
         })
     }
 
+    /// Whether a type is a supported pointer adapter of either kind that
+    /// is not itself a future — the owned ones above, and a `&mut F`
+    /// borrowing a future kept elsewhere. What a frame *polls* through
+    /// a borrow is still its branch, which is why the wait set follows
+    /// both where the census follows only what a frame owns.
+    pub(crate) fn any_adapter(&self, id: BundleTypeId) -> bool {
+        self.type_semantics(id).is_some_and(|record| {
+            record.future.is_none() && record.resource.is_none() && record.access.is_some()
+        })
+    }
+
     /// Whether the bundle declares a type's storage unreadable: a
     /// compiler-storage candidate no reviewed convention bound, or a
     /// layout extraction could not keep. Such a value is stopped at,
@@ -3893,6 +3904,7 @@ mod tests {
     use crate::testkit;
     use crate::tokio::Lifecycle;
     use crate::tokio::assess::AssessmentPass;
+    use crate::tokio::bundle::Registries;
     use crate::tokio::chain::FutureInspection;
 
     use hansei_bundle::Bundle;
@@ -4531,7 +4543,8 @@ mod tests {
 
         // The granted acquire left the queue: an established walk says
         // so, and places it nowhere.
-        let analysis = crate::tokio::graph::analyze(&ctx, &list, &ReadContext::none());
+        let analysis =
+            crate::tokio::graph::analyze(&ctx, &list, &Registries::default(), &ReadContext::none());
         let [barrier] = analysis.barriers.as_slice() else {
             panic!("one barrier: {:?}", analysis.barriers);
         };

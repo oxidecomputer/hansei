@@ -453,10 +453,15 @@ pub(crate) fn assessed_header<T: proc::Target>(
 ) -> Option<WaitHeader> {
     use hansei_runtime::tokio::assess::{WaitAssessment, WaitUnknownReason};
     let wait: &TaskWait = &session.analysis().waits[index];
-    let line = crate::tasks::assessment_cell(wait, &crate::tasks::StopNames::of(session));
+    let stops = crate::tasks::StopNames::of(session);
+    let line = crate::tasks::assessment_cell(wait, &stops);
     let notes = match wait.assessment {
-        WaitAssessment::Unknown(WaitUnknownReason::Continuation) => Vec::new(),
-        _ => crate::tasks::assessment_detail(wait),
+        // The stop itself is explained where the chain ends; what it
+        // holds unarmed is not, and is said here.
+        WaitAssessment::Unknown(WaitUnknownReason::Continuation) => {
+            crate::tasks::held_lines(wait, &stops)
+        }
+        _ => crate::tasks::assessment_detail(wait, &stops),
     };
     Some(WaitHeader {
         line,

@@ -1767,8 +1767,9 @@ impl<'b, T: Target> Session<'b, T> {
     }
 
     fn analysis(&self) -> &Analysis {
-        self.analysis
-            .get_or_init(|| self.read_with(|read| rt_graph::analyze(&self.ctx, &self.tasks, read)))
+        self.analysis.get_or_init(|| {
+            self.read_with(|read| rt_graph::analyze(&self.ctx, &self.tasks, &self.registries, read))
+        })
     }
 
     /// A listed task's own chain, walked by its programs under the

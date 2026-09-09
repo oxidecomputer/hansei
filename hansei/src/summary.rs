@@ -682,6 +682,10 @@ struct Waits {
     /// Keyed by the primitive wrapping the semaphore, which is `None`
     /// where the awaiting frame did not name one (a channel's, say).
     semaphores: BTreeMap<Option<&'static str>, usize>,
+    /// Parked on several things at once — a `select!`, a hand-written
+    /// state machine — with its waker in at least one: any one wakes
+    /// it, and no one of them is its dependency.
+    one_of: usize,
     /// Parked on a resource that has already given what was asked of
     /// it: the next poll takes it.
     ready: usize,
@@ -715,6 +719,7 @@ impl Waits {
         }
         match &wait.assessment {
             WaitAssessment::Waiting(verified) => self.add(verified.target().kind()),
+            WaitAssessment::Set(_) => self.one_of += 1,
             WaitAssessment::ResourceReady(_) => self.ready += 1,
             WaitAssessment::Runnable(RunnableReason::ActivePoll) => self.running += 1,
             WaitAssessment::Runnable(RunnableReason::Scheduled) => self.queued += 1,
@@ -764,7 +769,8 @@ impl Waits {
     /// The tally as printable rows, commonest first, each spelled as
     /// the `WAITING ON` column spells the wait at kind level — `io`,
     /// `timer`, `task`, the semaphore by the primitive wrapping it,
-    /// `ready`, `unknown` — and a task waiting on nothing by why: `—
+    /// `one of several` for a wait set, `ready`, `unknown` — and a task
+    /// waiting on nothing by why: `—
     /// (mid-poll)`, `— (queued)`, `— (complete)`, `— (unresumed)`, `—
     /// (returned)`. A closed set, so every nonzero row prints and
     /// `top` cuts nothing.
@@ -782,6 +788,7 @@ impl Waits {
             Row::new(self.io, "io"),
             Row::new(self.channel, "mpsc rx"),
             Row::new(self.notify, "a Notify"),
+            Row::new(self.one_of, "one of several"),
             Row::new(self.ready, "ready"),
             Row::new(self.unknown, "unknown"),
             Row::new(self.running, "— (mid-poll)"),
@@ -1209,6 +1216,8 @@ mod tests {
             site: None,
             observation: None,
             notes: Vec::new(),
+            held: Vec::new(),
+            held_capped: 0,
         }
     }
 
@@ -1860,11 +1869,62 @@ mod tests {
         let waits = Waits {
             unknown: 5,
             ready: 2,
+            one_of: 3,
             unresumed: 1,
             ..Waits::default()
         };
         let whats: Vec<String> = waits.rows(2).into_iter().map(|r| r.what).collect();
-        assert_eq!(whats, ["unknown", "ready", "— (unresumed)"]);
+        assert_eq!(
+            whats,
+            ["unknown", "one of several", "ready", "— (unresumed)"]
+        );
+    }
+
+    /// A wait set is its own bucket — parked on several things, a
+    /// dependency on none — and never counts under any one member's
+    /// kind.
+    #[test]
+    fn test_a_wait_set_counts_as_one_of_several() {
+        use hansei_bundle::SemanticIssueKind;
+        use hansei_runtime::tokio::observe::ValueKey;
+        use hansei_runtime::tokio::waitset::{MemberRoute, SlotRef, WaitMember, WaitSet};
+
+        let list = TaskList::new(vec![task(1, JOIN_INTEREST, "x::fut", "x.rs")]);
+        let mut set = wait(1, None, 1);
+        set.assessment = WaitAssessment::Set(WaitSet {
+            at: ValueKey {
+                addr: 0x5000,
+                ty: BundleTypeId(7),
+            },
+            reason: SemanticIssueKind::NoRule,
+            members: vec![WaitMember {
+                route: MemberRoute::Branch {
+                    local: "a".to_string(),
+                    borrowed: false,
+                },
+                key: None,
+                future: None,
+                assessment: Some(WaitAssessment::Waiting(VerifiedWait::testkit(
+                    WaitTarget::Io {
+                        addr: 0x7000,
+                        fd: None,
+                        interest: None,
+                    },
+                    None,
+                ))),
+                notes: Vec::new(),
+                armed: Some(SlotRef::Protocol),
+            }],
+            capped: 0,
+        });
+        let waits = [set];
+        let facts = facts(&list, &waits);
+        let tasks = sections(&facts, Sections::select(false, true, false), 10);
+        assert!(
+            tasks.contains("1  future x::fut\n       └─ 1  one of several\n"),
+            "{tasks}"
+        );
+        assert!(!tasks.contains("io"), "{tasks}");
     }
 
     /// `top` truncates only past itself: at exactly `top` entries there

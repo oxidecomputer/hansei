@@ -42,6 +42,7 @@ use super::observe::{
     QueueObservation, ReadContext, RecvObservation, ResourceObservation, ScanBudget, SlotState,
     TimerObservation, TimerRegistrationState, ValueKey,
 };
+use super::waitset::WaitSet;
 use super::{Lifecycle, TaskAddr, TaskState};
 
 use hansei_bundle::{AccessKind, FutureTarget, IoOperationKind, SemanticIssueKind, Step};
@@ -68,6 +69,13 @@ pub enum WaitAssessment {
     /// The saved resource dependency the task's storage records, held
     /// to the resource's reviewed protocol.
     Waiting(VerifiedWait),
+    /// The continuation is unknown at a future that polls several
+    /// things, and this task's waker is parked in at least one of them:
+    /// the branches the stop frame polls and the registry slots
+    /// attributed to the task, any one of which wakes it. A
+    /// disjunction, not a dependency: it is no `Waiting` edge, closes
+    /// no cycle and establishes no polling barrier.
+    Set(WaitSet),
     /// No definite answer, for the reason given. The inspection still
     /// carries whatever was read.
     Unknown(WaitUnknownReason),
@@ -1572,7 +1580,7 @@ mod tests {
     use super::*;
     use crate::testkit::corrupt::Corrupt;
     use crate::testkit::{self, load_any};
-    use crate::tokio::bundle::FutureInfo;
+    use crate::tokio::bundle::{FutureInfo, Registries};
     use crate::tokio::graph::{self, TaskWait};
 
     use hansei_bundle::tokio::timer;
@@ -1602,7 +1610,7 @@ mod tests {
         target: &T,
     ) -> (TaskList, Vec<TaskWait>, Vec<PollingBarrier>) {
         let list = testkit::tasks(ctx, target);
-        let analysis = graph::analyze(ctx, &list, &ReadContext::none());
+        let analysis = graph::analyze(ctx, &list, &Registries::default(), &ReadContext::none());
         assert!(analysis.errors.is_empty(), "{:?}", analysis.errors);
         (list, analysis.waits, analysis.barriers)
     }

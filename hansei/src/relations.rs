@@ -8,6 +8,7 @@
 //! per session and shared, so no two commands can disagree about an
 //! edge.
 
+use hansei_runtime::tokio::assess::WaitAssessment;
 use hansei_runtime::tokio::{bundle, census, graph};
 
 use std::collections::HashMap;
@@ -20,6 +21,11 @@ pub(crate) enum EdgeKind {
     /// The task's verified wait names it — a joined task — and the
     /// row's own `WAITING ON` says how, so the edge needs no mark.
     Waiting,
+    /// The task's wait set names it: one of several things the task
+    /// is parked on, any one of which wakes it. The task is polling
+    /// the join, but nothing says it is blocked on this one, so the
+    /// edge is a relation and closes no cycle.
+    WaitingOneOf,
     /// The task's verified semaphore wait is short of permits a
     /// polling barrier's acquire holds granted in a future the task
     /// below cannot poll until its own terminal completes: a
@@ -47,6 +53,7 @@ impl EdgeKind {
     pub(crate) fn mark(self) -> &'static str {
         match self {
             Self::Waiting => "",
+            Self::WaitingOneOf => " [one of the waits above]",
             Self::Reservation => " [holds permits awaited above]",
             Self::QueueOrder => " [queued ahead of the task above]",
             Self::JoinSet => " [in the JoinSet above]",
@@ -133,6 +140,23 @@ impl Relations {
                     kind: EdgeKind::Waiting,
                 });
                 waited_by[to].push(from);
+            }
+            // A set's members: a join among them is a join the task is
+            // polling — its waker sits in the joined task's trailer —
+            // but one of several, so the edge is the weaker kind.
+            if let WaitAssessment::Set(set) = &wait.assessment {
+                for member in set.armed() {
+                    if let Some(WaitAssessment::Waiting(verified)) = &member.assessment
+                        && let bundle::WaitTarget::Task { addr, .. } = verified.target()
+                        && let Some(to) = resolve(*addr)
+                    {
+                        edges[from].push(Edge {
+                            to,
+                            kind: EdgeKind::WaitingOneOf,
+                        });
+                        waited_by[to].push(from);
+                    }
+                }
             }
         }
         for behind in analysis.behind() {
@@ -256,6 +280,8 @@ mod relations_tests {
             site: None,
             observation: None,
             notes: Vec::new(),
+            held: Vec::new(),
+            held_capped: 0,
         }
     }
 
@@ -267,6 +293,48 @@ mod relations_tests {
             listed: true,
             kind: None,
         }
+    }
+
+    /// A task parked on several things, a join on `id` armed among
+    /// them and another branch merely held.
+    fn one_of(task: u64, id: u64) -> TaskWait {
+        use hansei_bundle::SemanticIssueKind;
+        use hansei_runtime::tokio::observe::ValueKey;
+        use hansei_runtime::tokio::waitset::{MemberRoute, SlotRef, WaitMember, WaitSet};
+
+        let member = |local: &str, assessment, armed: bool| WaitMember {
+            route: MemberRoute::Branch {
+                local: local.to_string(),
+                borrowed: false,
+            },
+            key: None,
+            future: None,
+            assessment: Some(assessment),
+            notes: Vec::new(),
+            armed: armed.then_some(SlotRef::Protocol),
+        };
+        let mut wait = wait(task, None);
+        wait.assessment = WaitAssessment::Set(WaitSet {
+            at: ValueKey {
+                addr: 0x5000,
+                ty: BundleTypeId(0),
+            },
+            reason: SemanticIssueKind::NoRule,
+            members: vec![
+                member(
+                    "a",
+                    WaitAssessment::Waiting(VerifiedWait::testkit(joining(id), None)),
+                    true,
+                ),
+                member(
+                    "b",
+                    WaitAssessment::Unknown(WaitUnknownReason::Continuation),
+                    false,
+                ),
+            ],
+            capped: 0,
+        });
+        wait
     }
 
     fn held_handle(owner: usize, id: u64) -> census::HeldFuture {
@@ -373,6 +441,34 @@ mod relations_tests {
         for alone in [0, 4] {
             assert!(!rel.joined(alone), "task index {alone} is not joined");
         }
+    }
+
+    /// A join armed among a wait set's members is an edge of the weaker
+    /// kind — the task is polling it, one of several — reversed into
+    /// the joined task's `waited_by` like a verified join, and no
+    /// cycle can close over it. A join a member merely holds is not
+    /// an edge.
+    #[test]
+    fn test_a_set_members_join_is_a_one_of_edge() {
+        let rel = build(
+            vec![task(1), task(2)],
+            vec![one_of(1, 2), wait(2, None)],
+            &[],
+            &[],
+        );
+        assert_eq!(
+            rel.edges[0],
+            vec![super::Edge {
+                to: 1,
+                kind: EdgeKind::WaitingOneOf
+            }]
+        );
+        assert_eq!(rel.waited_by[1], vec![0]);
+        assert!(rel.joined(1));
+        assert!(!EdgeKind::WaitingOneOf.is_wait());
+        assert_eq!(EdgeKind::WaitingOneOf.mark(), " [one of the waits above]");
+        assert!(EdgeKind::Waiting < EdgeKind::WaitingOneOf);
+        assert!(EdgeKind::WaitingOneOf < EdgeKind::Reservation);
     }
 
     /// A task named by an edge but absent from the listing — completed

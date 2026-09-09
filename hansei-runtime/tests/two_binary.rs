@@ -43,8 +43,8 @@ use hansei_bundle::{Bundle, BundleView};
 use hansei_runtime::testkit::{FIXTURE_SETS, PROGRAMS, load, load_any, mask, matrix};
 use hansei_runtime::tokio::Lifecycle;
 use hansei_runtime::tokio::bundle::{
-    AwaitChain, ChainEnd, Context, DiscoveryRoute, FutureInfo, OwnerResolution, RuntimeFlavor,
-    Task, TaskKind, TaskStage, UnlistedTaskKind,
+    AwaitChain, ChainEnd, Context, DiscoveryRoute, FutureInfo, OwnerResolution, Registries,
+    RuntimeFlavor, Task, TaskKind, TaskStage, UnlistedTaskKind,
 };
 use hansei_runtime::tokio::chain::InspectionMode;
 use hansei_runtime::tokio::discovery::{OwnerEvidence, TaskSource};
@@ -261,7 +261,7 @@ fn interpret(bundle: &Bundle, snapshot: &Snapshot) -> String {
     // The dependency analysis: wait targets come from it so
     // the per-task lines and the diagnoses agree by construction.
     let read = ReadContext::none();
-    let analysis = graph::analyze(&ctx, &list, &read);
+    let analysis = graph::analyze(&ctx, &list, &Registries::default(), &read);
     assert!(
         analysis.errors.is_empty(),
         "graph analysis reported errors: {:?}",
@@ -760,7 +760,7 @@ fn test_io_resource_fd_member_shapes() {
     let mut e = hansei_runtime::testkit::enumerate(&ctx, &snapshot);
     let _sets = e.discover(&ctx, &[]);
     let read = ReadContext::none();
-    let analysis = graph::analyze(&ctx, &e.list, &read);
+    let analysis = graph::analyze(&ctx, &e.list, &e.registries, &read);
 
     let case = |name_part: &str, last_frame: bool| {
         let index = e
@@ -1209,7 +1209,7 @@ fn test_ct_runtime_offline() {
     let list = e.list;
     assert!(list.errors.is_empty(), "{:?}", list.errors);
 
-    let analysis = graph::analyze(&ctx, &list, &ReadContext::none());
+    let analysis = graph::analyze(&ctx, &list, &Registries::default(), &ReadContext::none());
     assert!(analysis.errors.is_empty(), "{:?}", analysis.errors);
 
     // The two spawned tasks parked at their leaves, decoded through the
@@ -1264,7 +1264,7 @@ fn test_local_set_offline() {
     // joins is not in any list this session can show.
     assert_eq!(e.list.tasks.len(), 1, "{:#?}", e.list.tasks);
     let joiner = e.list.tasks[0].addr;
-    let joined = match graph::analyze(&ctx, &e.list, &ReadContext::none()).waits[0]
+    let joined = match graph::analyze(&ctx, &e.list, &e.registries, &ReadContext::none()).waits[0]
         .verified()
         .map(|w| w.target().clone())
     {
@@ -1322,7 +1322,7 @@ fn test_local_set_offline() {
 
     // And the local tasks read like any other: both leaves decode
     // through the readers the scheduler-owned fixtures exercise.
-    let analysis = graph::analyze(&ctx, &list, &ReadContext::none());
+    let analysis = graph::analyze(&ctx, &list, &Registries::default(), &ReadContext::none());
     assert!(analysis.errors.is_empty(), "{:?}", analysis.errors);
     let mut leaves: Vec<String> = list
         .tasks
@@ -1349,7 +1349,7 @@ fn test_local_set_offline() {
 
     // The joined task is now simply listed — the third `listed: false`
     // case the plan called for, closed by discovery rather than worded.
-    let rejoined = graph::analyze(&ctx, &list, &ReadContext::none());
+    let rejoined = graph::analyze(&ctx, &list, &Registries::default(), &ReadContext::none());
     let joiner_wait = rejoined
         .waits
         .iter()
@@ -1384,7 +1384,7 @@ fn test_local_set_timer_offline() {
     // own, which is what makes the wheel the only way in.
     assert_eq!(e.list.tasks.len(), 1, "{:#?}", e.list.tasks);
     let scheduler_task = e.list.tasks[0].addr;
-    match graph::analyze(&ctx, &e.list, &ReadContext::none()).waits[0]
+    match graph::analyze(&ctx, &e.list, &e.registries, &ReadContext::none()).waits[0]
         .verified()
         .map(|w| w.target().clone())
     {
@@ -1431,7 +1431,7 @@ fn test_local_set_timer_offline() {
     // Both members read like any listed task, including the one the
     // wheel never named: nothing outside the set points at the
     // semaphore waiter, and it is listed all the same.
-    let analysis = graph::analyze(&ctx, &list, &ReadContext::none());
+    let analysis = graph::analyze(&ctx, &list, &Registries::default(), &ReadContext::none());
     assert!(analysis.errors.is_empty(), "{:?}", analysis.errors);
     let mut leaves: Vec<String> = list
         .tasks
@@ -1573,7 +1573,7 @@ fn test_foreign_runtime_offline() {
     assert_eq!(e.runtimes.len(), 1, "{:#?}", e.runtimes);
     assert_eq!(e.list.tasks.len(), 1, "{:#?}", e.list.tasks);
     let joiner = e.list.tasks[0].addr;
-    let joined = match graph::analyze(&ctx, &e.list, &ReadContext::none()).waits[0]
+    let joined = match graph::analyze(&ctx, &e.list, &e.registries, &ReadContext::none()).waits[0]
         .verified()
         .map(|w| w.target().clone())
     {
@@ -1681,7 +1681,7 @@ fn test_foreign_runtime_offline() {
         1,
         "the main runtime's own task is not duplicated"
     );
-    let analysis = graph::analyze(&ctx, &list, &ReadContext::none());
+    let analysis = graph::analyze(&ctx, &list, &Registries::default(), &ReadContext::none());
     assert!(analysis.errors.is_empty(), "{:?}", analysis.errors);
     let joiner_wait = list
         .tasks

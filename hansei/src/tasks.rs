@@ -15,6 +15,7 @@ use hansei_runtime::tokio::assess::{
     WaitAssessment, WaitUnknownReason,
 };
 use hansei_runtime::tokio::graph as rt_graph;
+use hansei_runtime::tokio::waitset::{MemberRoute, SlotRef, WaitMember};
 use hansei_runtime::tokio::{Lifecycle, bundle, census};
 
 use std::collections::{BTreeMap, HashMap};
@@ -726,7 +727,7 @@ pub(crate) fn build_rows(
                     .map(|(file, line)| format!("{file}:{line}")),
                 waiting_on: waiting_on(task, waits.get(index), polling, stops),
                 waiting_kind: waiting_kind(task, waits.get(index), stops),
-                wait_detail: wait_detail(task, waits.get(index), registries),
+                wait_detail: wait_detail(task, waits.get(index), registries, stops),
                 waker,
                 waker_kind,
                 waker_detail,
@@ -942,13 +943,20 @@ fn waiting_on(
 
 /// The one-word (or one-target) spelling of an assessment: the
 /// `WAITING ON` cell every listing shares, so a task, a future and a
-/// tally agree on what a wait is called. An unknown says what made
-/// it one ([`unknown_cell`]).
+/// tally agree on what a wait is called. A wait set lists its armed
+/// members joined with ` + `, so a set of one reads as the wait it
+/// is. An unknown says what made it one ([`unknown_cell`]), and one
+/// whose stop holds futures none of which is armed counts them.
 pub(crate) fn assessment_cell(wait: &rt_graph::TaskWait, stops: &StopNames<'_>) -> String {
     match &wait.assessment {
         WaitAssessment::Waiting(verified) => verified.target().to_string(),
+        WaitAssessment::Set(set) => set.cell(),
         WaitAssessment::ResourceReady(_) => "ready".to_string(),
-        WaitAssessment::Unknown(_) => unknown_cell(wait, stops),
+        WaitAssessment::Unknown(_) => match wait.held.len() + wait.held_capped {
+            0 => unknown_cell(wait, stops),
+            1 => format!("{} (holds 1 future)", unknown_cell(wait, stops)),
+            n => format!("{} (holds {n} futures)", unknown_cell(wait, stops)),
+        },
         WaitAssessment::Unresumed => "— (unresumed)".to_string(),
         WaitAssessment::NotWaiting(NotWaitingReason::Returned) => "— (returned)".to_string(),
         WaitAssessment::NotWaiting(NotWaitingReason::Panicked) => "— (panicked)".to_string(),
@@ -967,6 +975,7 @@ pub(crate) fn assessment_cell(wait: &rt_graph::TaskWait, stops: &StopNames<'_>) 
 pub(crate) fn assessment_kind(wait: &rt_graph::TaskWait, stops: &StopNames<'_>) -> Option<String> {
     match &wait.assessment {
         WaitAssessment::Waiting(verified) => Some(verified.target().group_label()),
+        WaitAssessment::Set(set) => Some(set.group_label()),
         WaitAssessment::ResourceReady(_) => Some("ready".to_string()),
         WaitAssessment::Unknown(_) => Some(unknown_cell(wait, stops)),
         WaitAssessment::Unresumed | WaitAssessment::NotWaiting(_) | WaitAssessment::Runnable(_) => {
@@ -1107,20 +1116,126 @@ fn incomplete_word(reason: IncompleteReason) -> &'static str {
 
 /// The `-v` detail lines an assessment earns: why a ready resource is
 /// ready, why an unknown one is unknown — what the protocol read, in
-/// the assessor's words. A verified wait and a task that waits on
-/// nothing say it all in the cell.
-pub(crate) fn assessment_detail(wait: &rt_graph::TaskWait) -> Vec<String> {
+/// the assessor's words — and, for a wait set, one line per member
+/// saying what it is, what its own protocol made of it and what arms
+/// it. A verified wait says it all in the cell, short of a registry
+/// slot beside it that the wait does not account for; a task that
+/// waits on nothing says nothing.
+pub(crate) fn assessment_detail(wait: &rt_graph::TaskWait, stops: &StopNames<'_>) -> Vec<String> {
     match &wait.assessment {
         WaitAssessment::ResourceReady(reason) => vec![format!("ready: {}", ready_reason(*reason))],
+        WaitAssessment::Set(set) => {
+            let armed = set.armed().count();
+            let total = set.members.len() + set.capped;
+            let mut lines = vec![format!(
+                "wait set: {armed} of {total} members hold this task's waker; any one of them \
+                 wakes it"
+            )];
+            lines.extend(wait.notes.iter().cloned());
+            lines.extend(set.members.iter().map(|m| member_line(m, stops)));
+            if set.capped > 0 {
+                lines.push(format!("{} more branches not inspected", set.capped));
+            }
+            lines
+        }
         WaitAssessment::Unknown(reason) => {
             let mut lines = vec![format!("unknown: {}", unknown_reason(*reason))];
             lines.extend(wait.notes.iter().cloned());
+            lines.extend(held_lines(wait, stops));
             lines
         }
-        WaitAssessment::Waiting(_)
-        | WaitAssessment::Unresumed
-        | WaitAssessment::NotWaiting(_)
-        | WaitAssessment::Runnable(_) => Vec::new(),
+        WaitAssessment::Waiting(_) => wait.notes.clone(),
+        WaitAssessment::Unresumed | WaitAssessment::NotWaiting(_) | WaitAssessment::Runnable(_) => {
+            Vec::new()
+        }
+    }
+}
+
+/// The lines for the futures an unknown stop holds with none of them
+/// armed: what the task has at its stop and, by everything read,
+/// awaits none of. Empty for every other row.
+pub(crate) fn held_lines(wait: &rt_graph::TaskWait, stops: &StopNames<'_>) -> Vec<String> {
+    if wait.held.is_empty() && wait.held_capped == 0 {
+        return Vec::new();
+    }
+    let mut lines = vec![format!(
+        "holds {} at its stop, none holding this task's waker:",
+        summary::counted(wait.held.len() + wait.held_capped, "future")
+    )];
+    lines.extend(wait.held.iter().map(|m| member_line(m, stops)));
+    if wait.held_capped > 0 {
+        lines.push(format!("{} more not inspected", wait.held_capped));
+    }
+    lines
+}
+
+/// One wait-set member's line: the branch — its local, whether it was
+/// borrowed, the future it is and where — with the engine's verdict on
+/// it and the evidence that arms it; or a slot in no branch, placed
+/// where it lies. An unknown continuation's verdict is the bare word:
+/// the note beside it says what was not established.
+fn member_line(member: &WaitMember, stops: &StopNames<'_>) -> String {
+    match &member.route {
+        MemberRoute::Branch { local, borrowed } => {
+            let via = if *borrowed { " (borrowed)" } else { "" };
+            let future = member
+                .key
+                .and_then(|key| stops.label(key.ty))
+                .or_else(|| member.future.clone())
+                .unwrap_or_default();
+            let at = member
+                .key
+                .map(|key| format!(" at {:#x}", key.addr))
+                .unwrap_or_default();
+            let verdict = match &member.assessment {
+                Some(WaitAssessment::Waiting(verified)) => verified.target().to_string(),
+                Some(WaitAssessment::Set(set)) => set.cell(),
+                Some(WaitAssessment::ResourceReady(reason)) => {
+                    format!("ready: {}", ready_reason(*reason))
+                }
+                Some(WaitAssessment::Unknown(WaitUnknownReason::Continuation)) => {
+                    "unknown".to_string()
+                }
+                Some(WaitAssessment::Unknown(reason)) => {
+                    format!("unknown ({})", unknown_word(*reason))
+                }
+                Some(WaitAssessment::Unresumed) => "never polled".to_string(),
+                Some(WaitAssessment::NotWaiting(NotWaitingReason::Returned)) => {
+                    "returned".to_string()
+                }
+                Some(WaitAssessment::NotWaiting(NotWaitingReason::Panicked)) => {
+                    "panicked".to_string()
+                }
+                Some(WaitAssessment::NotWaiting(NotWaitingReason::Complete)) => {
+                    "complete".to_string()
+                }
+                Some(WaitAssessment::Runnable(_)) => "runnable".to_string(),
+                None => "not inspected".to_string(),
+            };
+            let armed = match &member.armed {
+                Some(slot) => slot.detail(),
+                None => "held, not armed".to_string(),
+            };
+            let mut line = format!("{local}{via}: {future}{at} — {verdict}; {armed}");
+            for note in &member.notes {
+                line.push_str("; ");
+                line.push_str(note);
+            }
+            line
+        }
+        MemberRoute::SlotOnly { within } => {
+            let name = member.cell_entry().unwrap_or_else(|| "a slot".to_string());
+            let evidence = member
+                .armed
+                .as_ref()
+                .map(SlotRef::detail)
+                .unwrap_or_default();
+            let within = within
+                .as_ref()
+                .map(|w| format!(", {w}"))
+                .unwrap_or_default();
+            format!("{name}: {evidence}{within}; no branch of the stop holds it")
+        }
     }
 }
 
@@ -1184,8 +1299,11 @@ fn wait_detail(
     task: &bundle::Task,
     wait: Option<&rt_graph::TaskWait>,
     registries: &bundle::Registries,
+    stops: &StopNames<'_>,
 ) -> Vec<String> {
-    let mut lines = wait.map(assessment_detail).unwrap_or_default();
+    let mut lines = wait
+        .map(|wait| assessment_detail(wait, stops))
+        .unwrap_or_default();
     for timer in registries.timers_of(task.addr.0) {
         let state = match timer.wheel_state() {
             Some(state) => format!(", {state}"),
@@ -2282,6 +2400,7 @@ mod table_tests {
     };
     use hansei_runtime::tokio::graph::{TaskRef, TaskWait};
     use hansei_runtime::tokio::observe::ValueKey;
+    use hansei_runtime::tokio::waitset::{MemberRoute, SlotRef, WaitMember, WaitSet};
     use hansei_runtime::tokio::{RawInstant, TaskAddr, TaskState};
 
     use std::collections::HashMap;
@@ -2289,6 +2408,37 @@ mod table_tests {
     const REF_ONE: u64 = 1 << 6;
     const RUNNING: u64 = 0b0001;
     const CANCELLED: u64 = 0b100_000;
+
+    /// A branch of a stop frame, held in `local`, with the engine's
+    /// verdict on it and — armed — its protocol's word for the waker.
+    fn branch(local: &str, assessment: WaitAssessment, armed: bool) -> WaitMember {
+        WaitMember {
+            route: MemberRoute::Branch {
+                local: local.to_string(),
+                borrowed: false,
+            },
+            key: Some(ValueKey {
+                addr: 0x6000,
+                ty: BundleTypeId(0),
+            }),
+            future: Some("x::branch".to_string()),
+            assessment: Some(assessment),
+            notes: Vec::new(),
+            armed: armed.then_some(SlotRef::Protocol),
+        }
+    }
+
+    fn one_of(members: Vec<WaitMember>) -> WaitAssessment {
+        WaitAssessment::Set(WaitSet {
+            at: ValueKey {
+                addr: 0x5000,
+                ty: BundleTypeId(7),
+            },
+            reason: SemanticIssueKind::NoRule,
+            members,
+            capped: 0,
+        })
+    }
 
     fn task(id: u64, state: u64) -> Task {
         Task {
@@ -2319,6 +2469,8 @@ mod table_tests {
             site: None,
             observation: None,
             notes: Vec::new(),
+            held: Vec::new(),
+            held_capped: 0,
         }
     }
 
@@ -2410,6 +2562,94 @@ mod table_tests {
                 &impls
             ),
             "core::future::poll_fn::PollFn"
+        );
+    }
+
+    /// A wait set's cell is its armed members joined with ` + ` — the
+    /// verified target where a member's protocol produced one, the
+    /// slot's own entry where it did not — and its bucket the
+    /// distinct kinds; an unarmed branch is in neither, only in the
+    /// detail. A stop whose branches are all unarmed stays `unknown`
+    /// with their count in the cell and out of the bucket.
+    #[test]
+    fn test_a_wait_set_lists_its_armed_members() {
+        let timer = WaitTarget::Timer {
+            deadline: RawInstant {
+                tv_sec: 12,
+                tv_nsec: 0,
+            },
+            stopped: Some(RawInstant {
+                tv_sec: 2,
+                tv_nsec: 0,
+            }),
+        };
+        let verified = WaitAssessment::Waiting(VerifiedWait::testkit(timer, None));
+        let unknown = || WaitAssessment::Unknown(WaitUnknownReason::Continuation);
+        let slot = WaitMember {
+            route: MemberRoute::SlotOnly {
+                within: Some("inside #1's storage at +0x10".to_string()),
+            },
+            key: None,
+            future: None,
+            assessment: None,
+            notes: Vec::new(),
+            armed: Some(SlotRef::Io {
+                resource: 0x7000,
+                slot: hansei_runtime::tokio::bundle::IoSlot::Reader,
+                fd: None,
+                ready: None,
+            }),
+        };
+        let set = assessed(
+            1,
+            one_of(vec![
+                branch("a", verified, true),
+                branch("b", unknown(), false),
+                slot,
+            ]),
+        );
+        let mut held = wait(2, None);
+        held.continuation = ContinuationStatus::Unknown {
+            at: ValueKey {
+                addr: 0x5000,
+                ty: BundleTypeId(7),
+            },
+            reason: SemanticIssueKind::NoRule,
+        };
+        held.held = vec![branch("a", unknown(), false), branch("b", unknown(), false)];
+        held.held_capped = 1;
+        let rows = rows_of(
+            vec![task(1, 0), task(2, 0)],
+            vec![set, held],
+            HashMap::new(),
+        );
+        assert_eq!(
+            rows[0].waiting_on,
+            "timer (deadline +10.000s) + io 0x7000 (readable)"
+        );
+        assert_eq!(rows[0].waiting_kind.as_deref(), Some("io+timer"));
+        assert_eq!(
+            rows[0].wait_detail,
+            [
+                "wait set: 2 of 3 members hold this task's waker; any one of them wakes it",
+                "a: x::branch at 0x6000 — timer (deadline +10.000s); its protocol read this \
+                 task's waker",
+                "b: x::branch at 0x6000 — unknown; held, not armed",
+                "io 0x7000 (readable): this task's waker in the read-waiter slot of io 0x7000, \
+                 inside #1's storage at +0x10; no branch of the stop holds it",
+            ]
+        );
+        assert_eq!(rows[1].waiting_on, "unknown (holds 3 futures)");
+        assert_eq!(rows[1].waiting_kind.as_deref(), Some("unknown"));
+        assert_eq!(
+            rows[1].wait_detail,
+            [
+                "unknown: the chain does not end in a primitive",
+                "holds 3 futures at its stop, none holding this task's waker:",
+                "a: x::branch at 0x6000 — unknown; held, not armed",
+                "b: x::branch at 0x6000 — unknown; held, not armed",
+                "1 more not inspected",
+            ]
         );
     }
 

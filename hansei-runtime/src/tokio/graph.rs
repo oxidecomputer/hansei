@@ -24,8 +24,9 @@ use super::assess::{
     Assessed, AssessmentPass, ContinuationStatus, IncompleteReason, NotWaitingReason,
     PollingBarrier, TaskFacts, VerifiedWait, WaitAssessment, WaitUnknownReason,
 };
-use super::bundle::{Context, FutureInfo, QueuedWaker, TaskList, WaitTarget};
+use super::bundle::{Context, FutureInfo, QueuedWaker, Registries, TaskList, WaitTarget};
 use super::observe::{ReadContext, ResourceObservation};
+use super::waitset::{BranchPlans, Branches, WaitMember};
 use super::{Lifecycle, TaskAddr};
 
 use proc::Target;
@@ -79,6 +80,13 @@ pub struct TaskWait {
     pub observation: Option<ResourceObservation>,
     /// What the protocol read that decided or declined the assessment.
     pub notes: Vec<String>,
+    /// The stop frame's branches when the continuation is unknown and
+    /// no evidence arms any of them: futures the task holds at its
+    /// stop and, by everything read here, awaits none of. Empty for
+    /// every other assessment — a set carries its members itself.
+    pub held: Vec<WaitMember>,
+    /// Branches past the listing cap at such a stop, counted only.
+    pub held_capped: usize,
 }
 
 impl TaskWait {
@@ -180,13 +188,18 @@ impl Analysis {
 
 /// Inspect and assess every task in `list` under `read`, sharing one
 /// pass's queue and registration observations across them, and read
-/// the join edges off the awaited side.
+/// the join edges off the awaited side. `registries` are the wheel
+/// entries and io waiters the attach harvested: the slots a wait set
+/// is assembled from at an unknown stop, and the diagnostics beside a
+/// verified wait they do not belong to.
 pub fn analyze<T: Target>(
     ctx: &Context<'_, T>,
     list: &TaskList,
+    registries: &Registries,
     read: &ReadContext<'_>,
 ) -> Analysis {
     let mut pass = AssessmentPass::new();
+    let mut plans = BranchPlans::default();
     let mut waits = Vec::with_capacity(list.tasks.len());
     let mut barriers = Vec::new();
     let mut join_wakers = Vec::new();
@@ -222,6 +235,8 @@ pub fn analyze<T: Target>(
             site: None,
             observation: None,
             notes: vec![note],
+            held: Vec::new(),
+            held_capped: 0,
         };
         let no_root = ContinuationStatus::Incomplete {
             reason: IncompleteReason::NoRoot,
@@ -245,6 +260,8 @@ pub fn analyze<T: Target>(
                 site: None,
                 observation: None,
                 notes: Vec::new(),
+                held: Vec::new(),
+                held_capped: 0,
             });
             continue;
         }
@@ -272,10 +289,40 @@ pub fn analyze<T: Target>(
                 continue;
             }
         };
-        let Assessed { assessment, notes } =
-            ctx.assess_wait(&mut pass, &inspection, &facts, list, read);
+        let Assessed {
+            mut assessment,
+            mut notes,
+        } = ctx.assess_wait(&mut pass, &inspection, &facts, list, read);
         barriers.extend(ctx.polling_barriers(&mut pass, &inspection, &facts, read));
         let chain = &inspection.chain;
+        // Beside the assessment, the registries' slots: at an unknown
+        // stop they and the stop's branches make the wait set; beside
+        // a verified wait, one they do not belong to is a diagnostic.
+        let (mut held, mut held_capped) = (Vec::new(), 0);
+        match &assessment {
+            WaitAssessment::Unknown(WaitUnknownReason::Continuation) => {
+                match ctx.wait_set(
+                    &mut pass,
+                    &inspection,
+                    &facts,
+                    list,
+                    registries,
+                    read,
+                    &mut plans,
+                ) {
+                    Branches::Set(set) => assessment = WaitAssessment::Set(set),
+                    Branches::Held { members, capped } => {
+                        held = members;
+                        held_capped = capped;
+                    }
+                    Branches::None => {}
+                }
+            }
+            WaitAssessment::Waiting(verified) => {
+                notes.extend(ctx.slot_diagnostics(chain, verified.target(), &facts, registries));
+            }
+            _ => {}
+        }
         waits.push(TaskWait {
             task: tref,
             assessment,
@@ -288,6 +335,8 @@ pub fn analyze<T: Target>(
                 .map(|(file, line)| (file.to_string(), line)),
             observation: inspection.primitive.value,
             notes,
+            held,
+            held_capped,
         });
     }
     Analysis {
@@ -338,6 +387,8 @@ mod tests {
             site: None,
             observation: None,
             notes: Vec::new(),
+            held: Vec::new(),
+            held_capped: 0,
         }
     }
 

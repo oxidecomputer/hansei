@@ -369,6 +369,8 @@ mod graph_tests {
             site: None,
             observation: None,
             notes: Vec::new(),
+            held: Vec::new(),
+            held_capped: 0,
         }
     }
 
@@ -606,6 +608,49 @@ TASK                                         STATE  WAITING ON
 └─ 51 [holds permits awaited above]          idle   timer (deadline +10.000s)
 41                                           idle   a tokio::sync::Mutex (semaphore 0x9000): 1 permit requested, 0 available
 └─ 51 [holds permits awaited above] (above)  idle   
+"
+        );
+    }
+
+    /// A join that is one of several things a task is parked on closes
+    /// no cycle either: the task polling its own join among other
+    /// branches is referred back to, marked as the weaker relation,
+    /// and its cell names the set — here the one armed member.
+    #[test]
+    fn test_a_one_of_edge_closing_the_path_is_no_cycle() {
+        use hansei_bundle::SemanticIssueKind;
+        use hansei_runtime::tokio::waitset::{MemberRoute, SlotRef, WaitMember, WaitSet};
+
+        let mut set = wait(88, None);
+        set.assessment = WaitAssessment::Set(WaitSet {
+            at: ValueKey {
+                addr: 0x5000,
+                ty: BundleTypeId(0),
+            },
+            reason: SemanticIssueKind::NoRule,
+            members: vec![WaitMember {
+                route: MemberRoute::Branch {
+                    local: "a".to_string(),
+                    borrowed: false,
+                },
+                key: None,
+                future: None,
+                assessment: Some(WaitAssessment::Waiting(VerifiedWait::testkit(
+                    joining(88),
+                    None,
+                ))),
+                notes: Vec::new(),
+                armed: Some(SlotRef::Protocol),
+            }],
+            capped: 0,
+        });
+        let page = graph(vec![task(88)], vec![set], Vec::new());
+        assert_eq!(
+            page,
+            "\
+TASK                                    STATE  WAITING ON
+88                                      idle   task 88
+└─ 88 [one of the waits above] (above)  idle   
 "
         );
     }

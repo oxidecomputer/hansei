@@ -25,7 +25,7 @@ use hansei_runtime::testkit::{self, load_any, tasks as tasks_of};
 use hansei_runtime::tokio::assess::{
     ContinuationStatus, IncompleteReason, WaitAssessment, WaitUnknownReason,
 };
-use hansei_runtime::tokio::bundle::{ChainEnd, Context, TaskList, TaskStage};
+use hansei_runtime::tokio::bundle::{ChainEnd, Context, Registries, TaskList, TaskStage};
 use hansei_runtime::tokio::chain::InspectionMode;
 use hansei_runtime::tokio::observe::ReadContext;
 use hansei_runtime::tokio::{census, graph};
@@ -147,7 +147,12 @@ fn test_an_unreadable_task_degrades_only_its_shard() {
     assert_eq!(degraded.tasks.len(), list.tasks.len() - 1);
 
     // The analysis takes the degraded list in stride.
-    let analysis = graph::analyze(&ctx, &degraded, &ReadContext::none());
+    let analysis = graph::analyze(
+        &ctx,
+        &degraded,
+        &Registries::default(),
+        &ReadContext::none(),
+    );
     assert!(analysis.errors.is_empty(), "{:?}", analysis.errors);
 }
 
@@ -271,14 +276,14 @@ fn test_a_corrupted_dyn_box_ends_the_chain_with_an_error() {
 fn test_an_unreadable_semaphore_degrades_the_analysis() {
     let (bundle, snapshot) = load_any("futurelock");
     let (ctx, list) = healthy(&bundle, &snapshot);
-    let analysis = graph::analyze(&ctx, &list, &ReadContext::none());
+    let analysis = graph::analyze(&ctx, &list, &Registries::default(), &ReadContext::none());
     assert!(analysis.errors.is_empty(), "{:?}", analysis.errors);
     assert!(!analysis.behind().is_empty(), "{:#?}", analysis.barriers);
     let semaphore = analysis.barriers[0].acquire.semaphore.addr;
 
     let corrupt = Corrupt::new(&snapshot).deny(semaphore..semaphore + 0x100);
     let ctx = Context::new(&corrupt, BundleView::new(&bundle)).unwrap();
-    let degraded = graph::analyze(&ctx, &list, &ReadContext::none());
+    let degraded = graph::analyze(&ctx, &list, &Registries::default(), &ReadContext::none());
 
     assert_eq!(degraded.barriers.len(), 1, "{:#?}", degraded.barriers);
     assert!(degraded.behind().is_empty(), "{:#?}", degraded.barriers);
@@ -845,7 +850,7 @@ fn healthy_read_set(bundle: &Bundle, snapshot: &Snapshot) -> Vec<Range<u64>> {
     let recorder = Recorder::new(snapshot);
     let ctx = Context::new(&recorder, BundleView::new(bundle)).expect("snapshot has mappings");
     let list = tasks_of(&ctx, &recorder);
-    let _ = graph::analyze(&ctx, &list, &ReadContext::none());
+    let _ = graph::analyze(&ctx, &list, &Registries::default(), &ReadContext::none());
     let _ = testkit::census(&ctx, &list);
     recorder
         .snapshot(RecordedHeapEvidence::Unavailable)
@@ -921,7 +926,7 @@ fn campaign_run(
     };
     e.discover(&ctx, &[]);
     e.with_read(&corrupt, |read| {
-        let _ = graph::analyze(&ctx, &e.list, read);
+        let _ = graph::analyze(&ctx, &e.list, &e.registries, read);
     });
     let _ = testkit::census(&ctx, &e.list);
     true
@@ -1002,7 +1007,7 @@ fn ty_by_name<'b>(bundle: &'b Bundle, pred: impl Fn(&str) -> bool) -> BundleType
 fn test_a_patched_permit_word_decodes_count_and_closed_bit() {
     let (bundle, snapshot) = load_any("futurelock");
     let (ctx, list) = healthy(&bundle, &snapshot);
-    let analysis = graph::analyze(&ctx, &list, &ReadContext::none());
+    let analysis = graph::analyze(&ctx, &list, &Registries::default(), &ReadContext::none());
     let sem_addr = analysis.barriers[0].acquire.semaphore.addr;
     let sem_ty = ty_by_name(&bundle, |n| {
         n.starts_with("tokio::sync::batch_semaphore::Semaphore")

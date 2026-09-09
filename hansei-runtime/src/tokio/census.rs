@@ -67,7 +67,7 @@ use std::rc::Rc;
 const MAX_CHILDREN: usize = 65_536;
 
 /// How deep the locals scan descends through nested aggregates.
-const MAX_SCAN_DEPTH: usize = 12;
+pub(crate) const MAX_SCAN_DEPTH: usize = 12;
 
 /// How many held-future/set-child hops the census follows away from a
 /// task's own frames before it stops recursing.
@@ -701,8 +701,96 @@ fn check_summary(
     }
 }
 
+/// The values one frame offers a scan of its storage, each under the
+/// name a listing prints for it, and what the frame withheld.
+pub(crate) struct FrameLocals<'b> {
+    pub(crate) locals: Vec<(&'b str, Value<'b>)>,
+    /// The frame's storage is declared unreadable: it offered nothing.
+    pub(crate) unavailable: bool,
+    /// Locals the layout could not vouch for, withheld and counted.
+    pub(crate) uncertain: usize,
+}
+
+/// The values one frame offers the scan, each under the name a listing
+/// prints for it.
+///
+/// A coroutine frame offers the locals its layout lists as initialized
+/// in the active state — by name, addressed on the state's payload —
+/// and withholds the ones the layout cannot vouch for, counted rather
+/// than guessed at. A frame that keeps no state, or whose state no
+/// layout describes (a hand-written enum), offers every sized member:
+/// a generic tuple field is real storage, whatever its name. A frame
+/// whose storage the tokio info declares unreadable offers nothing and
+/// is counted.
+pub(crate) fn frame_locals<'b, T: Target>(
+    ctx: &Context<'b, T>,
+    frame: &super::bundle::AwaitFrame<'b>,
+) -> FrameLocals<'b> {
+    let mut out = FrameLocals {
+        locals: Vec::new(),
+        unavailable: false,
+        uncertain: 0,
+    };
+    if ctx.storage_unavailable(frame.future.ty.id()) {
+        out.unavailable = true;
+        return out;
+    }
+    let payload = match &frame.state {
+        Some(state) => state.payload,
+        None => frame.future,
+    };
+    let slice = |m: &hansei_bundle::BundleMember<'b>| -> Option<(&'b str, Value<'b>)> {
+        let start = m.offset() as usize;
+        let end = start + m.ty().size() as usize;
+        let bytes = payload.bytes.get(start..end)?;
+        Some((
+            m.name(),
+            Value::new(m.ty(), payload.addr + m.offset(), bytes),
+        ))
+    };
+    let layout = frame
+        .state
+        .as_ref()
+        .and_then(|_| ctx.type_semantics(frame.future.ty.id()))
+        .and_then(|record| record.coroutine.as_ref());
+    let Some(layout) = layout else {
+        // The same positional slicing as the locals display: a
+        // hand-written state may alias two names to one slot.
+        let mut seen = HashSet::default();
+        out.locals = payload
+            .ty
+            .members()
+            .filter(|m| m.ty().size() > 0 && seen.insert((m.name(), m.offset())))
+            .filter_map(|m| slice(&m))
+            .collect();
+        return out;
+    };
+    // The layout's states are keyed by variant, the frame's state by
+    // its display name: decode the key again.
+    let Some(Ok(active)) = frame.future.ty.active_variant(frame.future.bytes) else {
+        return out;
+    };
+    let Some(state) = layout
+        .states
+        .iter()
+        .find(|s| ctx.view.str(s.variant) == Some(active.name))
+    else {
+        return out;
+    };
+    out.uncertain = state.uncertain_locals.len();
+    out.locals = state
+        .locals
+        .iter()
+        .filter_map(|&name| ctx.view.str(name))
+        .filter_map(|name| payload.ty.members().find(|m| m.name() == name))
+        .filter(|m| m.ty().size() > 0)
+        .filter_map(|m| slice(&m))
+        .collect();
+    out
+}
+
 /// What one scan hit is; [`Walker::record`] decides what to do with it.
-enum Find<'b> {
+pub(crate) enum Find<'b> {
     Set(Value<'b>),
     JoinSet(Value<'b>),
     Future(Value<'b>),
@@ -893,7 +981,7 @@ impl<'b, T: Target> Walker<'_, 'b, T> {
     /// chain when it is not a task's own.
     ///
     /// What a frame offers the scan is its own storage
-    /// ([`Self::frame_locals`]); what the scan leaves alone is the
+    /// ([`frame_locals`]); what the scan leaves alone is the
     /// chain: a find whose identity is a frame of this chain is that
     /// frame, counted there, told apart by exact identity.
     fn scan_chain(
@@ -905,7 +993,12 @@ impl<'b, T: Target> Walker<'_, 'b, T> {
     ) {
         let on_chain: HashSet<ValueKey> = chain.referents().collect();
         for (frame_index, frame) in chain.frames.iter().enumerate() {
-            for (name, local) in self.frame_locals(frame) {
+            let locals = frame_locals(self.ctx, frame);
+            if locals.unavailable {
+                self.capped.unavailable += 1;
+            }
+            self.uncertain += locals.uncertain;
+            for (name, local) in locals.locals {
                 let mut found = Vec::new();
                 scan_value(
                     local,
@@ -926,75 +1019,6 @@ impl<'b, T: Target> Walker<'_, 'b, T> {
                 }
             }
         }
-    }
-
-    /// The values one frame offers the scan, each under the name a
-    /// listing prints for it.
-    ///
-    /// A coroutine frame offers the locals its layout lists as
-    /// initialized in the active state — by name, addressed on the
-    /// state's payload — and withholds the ones the layout cannot vouch
-    /// for, counted rather than guessed at. A frame that keeps no
-    /// state, or whose state no layout describes (a hand-written
-    /// enum), offers every sized member: a generic tuple field is real
-    /// storage, whatever its name. A frame whose storage the tokio
-    /// info declares unreadable offers nothing and is counted.
-    fn frame_locals(&mut self, frame: &super::bundle::AwaitFrame<'b>) -> Vec<(&'b str, Value<'b>)> {
-        let ctx = self.ctx;
-        if ctx.storage_unavailable(frame.future.ty.id()) {
-            self.capped.unavailable += 1;
-            return Vec::new();
-        }
-        let payload = match &frame.state {
-            Some(state) => state.payload,
-            None => frame.future,
-        };
-        let slice = |m: &hansei_bundle::BundleMember<'b>| -> Option<(&'b str, Value<'b>)> {
-            let start = m.offset() as usize;
-            let end = start + m.ty().size() as usize;
-            let bytes = payload.bytes.get(start..end)?;
-            Some((
-                m.name(),
-                Value::new(m.ty(), payload.addr + m.offset(), bytes),
-            ))
-        };
-        let layout = frame
-            .state
-            .as_ref()
-            .and_then(|_| ctx.type_semantics(frame.future.ty.id()))
-            .and_then(|record| record.coroutine.as_ref());
-        let Some(layout) = layout else {
-            // The same positional slicing as the locals display: a
-            // hand-written state may alias two names to one slot.
-            let mut seen = HashSet::default();
-            return payload
-                .ty
-                .members()
-                .filter(|m| m.ty().size() > 0 && seen.insert((m.name(), m.offset())))
-                .filter_map(|m| slice(&m))
-                .collect();
-        };
-        // The layout's states are keyed by variant, the frame's state
-        // by its display name: decode the key again.
-        let Some(Ok(active)) = frame.future.ty.active_variant(frame.future.bytes) else {
-            return Vec::new();
-        };
-        let Some(state) = layout
-            .states
-            .iter()
-            .find(|s| ctx.view.str(s.variant) == Some(active.name))
-        else {
-            return Vec::new();
-        };
-        self.uncertain += state.uncertain_locals.len();
-        state
-            .locals
-            .iter()
-            .filter_map(|&name| ctx.view.str(name))
-            .filter_map(|name| payload.ty.members().find(|m| m.name() == name))
-            .filter(|m| m.ty().size() > 0)
-            .filter_map(|m| slice(&m))
-            .collect()
     }
 
     /// Record one find and recurse into it. `on_chain` is the identity
@@ -1299,7 +1323,7 @@ impl<T: Target> Recognize for Context<'_, T> {
 }
 
 #[derive(Clone)]
-enum ScanPlan {
+pub(crate) enum ScanPlan {
     Set,
     JoinSet,
     /// A future outright: a coroutine env, a known leaf, or a wide
@@ -1370,7 +1394,7 @@ fn scan_plan(value: Value<'_>, facts: &dyn Recognize) -> ScanPlan {
 /// a struct descent or an active-variant step lies on the way, which
 /// is what the per-path find counters in [`Stats`] record.
 #[derive(Debug, Default, Clone, Copy)]
-struct Path {
+pub(crate) struct Path {
     descended: bool,
     variant: bool,
 }
@@ -1380,7 +1404,7 @@ struct Path {
 /// are never followed, so the scan stays inside the frame's own bytes
 /// and terminates.
 #[expect(clippy::too_many_arguments, reason = "internal recursion")]
-fn scan_value<'b>(
+pub(crate) fn scan_value<'b>(
     value: Value<'b>,
     facts: &dyn Recognize,
     depth: usize,
