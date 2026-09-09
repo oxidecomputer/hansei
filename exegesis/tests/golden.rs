@@ -780,8 +780,11 @@ fn assert_delegation_programs(program: &str, bundle: &Bundle) {
     const DYN_SYNC: &str = "(dyn core::future::future::Future<Output=()> + core::marker::Send + \
                             core::marker::Sync), alloc::alloc::Global>";
     assert_eq!(
-        line(&format!("core::pin::Pin<alloc::boxed::Box<{DYN_SYNC}> ::"))
-            .replacen("future[poll, delegated by", "future[delegated by", 1),
+        line(&format!("core::pin::Pin<alloc::boxed::Box<{DYN_SYNC}> ::")).replacen(
+            "future[poll, delegated by",
+            "future[delegated by",
+            1
+        ),
         format!(
             "core::pin::Pin<alloc::boxed::Box<{DYN_SYNC}> :: members future[delegated by \
              delegation_cases::main::{{async_block_env#1}}] continuation rule # delegate \
