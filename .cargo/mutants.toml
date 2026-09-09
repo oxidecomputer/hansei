@@ -95,13 +95,12 @@ exclude_globs = [
 ]
 
 exclude_re = [
-    # Throughput knobs, not behavior: the worker count and the in-flight
-    # CGU ceiling only decide how the parse fan-out is scheduled, and
-    # collection is order-independent by design (references are global
-    # offsets, dedup is deferred), so every spelling folds to the same
-    # DwReader. A count of 0 is "pick a default" to the pool builder.
+    # A throughput knob, not behavior: the worker count only decides how
+    # the parse fan-out is scheduled, and collection is order-independent
+    # by design (references are global offsets, dedup is deferred), so
+    # every spelling folds to the same DwReader. A count of 0 is "pick a
+    # default" to the pool builder.
     "replace default_parallelism",
-    "replace \\* with [+/] in DwReader<'dw>::read_types",
     # The same knob one layer down: the group-count threshold only routes
     # the partitioning between the inline and rayon paths, which produce
     # the same aliases (each id is in exactly one independent group).
@@ -133,16 +132,6 @@ exclude_re = [
     # is never empty. The arm stays as the graceful answer should a
     # refactor of the index build ever make an empty entry possible.
     "delete match arm 0 in Context<'b, T>::object_symbol",
-    # Equivalent mutant, the same shape as object_symbol above: the
-    # normalized index's entries are created by
-    # `entry(key).or_default().insert(value)` in normalized_value_index
-    # — creation and insert are one statement, so no entry is ever
-    # empty and the guard's non-empty screen never says no. Forcing it
-    # true changes the answer only for an entry no builder can produce.
-    # (Only the `with true` spelling is excluded; `with false` and the
-    # deleted `!` collapse Ambiguous into Missing, which the ambiguous-
-    # spelling lookup test catches.)
-    "replace match guard !ids\\.is_empty\\(\\) with true in lookup_symbol_id",
     # Equivalent mutant: the boundary loop is the fast half of a check
     # the per-string `get` sweep below it repeats. A decreasing end
     # inverts its own string's range and an out-of-bounds end overruns
@@ -155,7 +144,10 @@ exclude_re = [
     # resource walks consume only its bytes — the ScheduledIo address
     # comes from the Arc's pointer after a Deref, the fd from
     # byte-sliced newtypes — so skewing the candidate's own address is
-    # unobservable. If a resource walk ever needs the member's own
+    # unobservable. The regex necessarily covers the slice-end sum a
+    # few lines up too; the io fd join tests kill both of its
+    # spellings (confirmed by running them), so skipping their report
+    # costs nothing. If a resource walk ever needs the member's own
     # address, delete this entry and pin the arithmetic instead.
     "replace \\+ with [*-] in Context<'b, T>::resource_member",
     # The engine slices a coroutine's variant payload at the state's
@@ -165,15 +157,6 @@ exclude_re = [
     # offset zero, so subtracting it reads the same bytes. The `*`
     # mutant on the same expression is caught (address times zero).
     "chain.rs.*replace \\+ with - in Context<'b, T>::continuation",
-    # The same structurally-zero offset at the step interpreter's two
-    # variant arms: subtracting a zero payload offset is the same
-    # address on any input a rustc-built bundle produces. The `*`
-    # spellings are not equivalent (addr * 0 is 0) and the step tests'
-    # address assertions catch them. The regex necessarily covers the
-    # function's member-arm and slice-bound `-` too; the step tests
-    # kill both (a nonzero member offset, a short buffer), so skipping
-    # their report costs nothing.
-    "contract.rs.*replace \\+ with - in walk_steps",
     # A defensive filter on impossible input: task_extent only ever
     # returns start..start+size with a nonzero size (a Cell's size or
     # trailer_offset + trailer size), so no extent is empty and the
@@ -215,12 +198,6 @@ exclude_re = [
     # every string landing in one shard costs contention, never a wrong
     # answer. The same shape as rust_type_name_hash above.
     "replace shard_of",
-    # CLI print glue in the stats and dump subcommands: whether zero-count
-    # type kinds print, and whether an await site repeating the decl line
-    # is deduplicated, are judged by the person reading the output — no
-    # automated test drives the binary.
-    "main.rs.*replace > with [>=<]+ in stats",
-    "main.rs.*replace != with == in dump",
     # Equivalent mutants, the same disjoint-lanes argument: TaskState's
     # STATE_MASK is assembled from single-bit constants no two of which
     # share a bit, so or and xor agree on every pair. The anchor keeps
@@ -244,12 +221,6 @@ exclude_re = [
     # overflow check.) If a node kind that reads at a value's own address
     # ever lands, delete this entry and pin the arithmetic instead.
     "replace \\+ with \\* in eval_struct",
-    # Equivalent mutant: retrying the star one position earlier only
-    # repeats the previous widening's comparison — the stored backtrack
-    # still advances by one each retry, so the same start positions are
-    # tried either way and the answer never differs. (The wrapping-sub
-    # spelling dies on the underflow check via the leading-star case.)
-    "replace \\+ with \\* in glob_match",
     # Equivalent mutant: a named pointer's arm answers ty.name(), and
     # so does the `_` arm the deletion falls through to — the arm is
     # there to say a named pointer keeps its name rather than being
@@ -263,18 +234,6 @@ exclude_re = [
     # output.
     "replace << with >> in print_variable",
     "replace >= with < in print_variable::Stream",
-    # Equivalent mutant, the same shape as eval_struct's in reify: a
-    # local's own target address is threaded into the value for the
-    # node vocabulary's benefit, but no node consumes a value's own
-    # address terminally — every target read goes through pointer
-    # words in the bytes — so skewing it either way is unobservable
-    # (unlike eval_struct's, the minus spelling cannot even underflow:
-    # a member offset is small against a heap address). The regex also
-    # matches the indent-step sum a few lines down; that one the
-    # exact-string chain tests kill, so skipping its report costs
-    # nothing. If a consumer of a value's own address ever lands,
-    # delete this entry and pin the arithmetic instead.
-    "trace.rs.*replace \\+ with [*-] in print_await_chain",
     # The best-effort hint on a refused attach: the guard re-attaches
     # under the laxer policy to check the hint would be true, and only
     # a core/bundle pair whose non-essential walk paths are broken can
@@ -284,13 +243,6 @@ exclude_re = [
     "match guard !args\\.best_effort",
     "replace && with \\|\\| in Session<'b, T>::attach",
     "delete ! in Session<'b, T>::attach",
-    # The suspend table's empty-column screens. The locals half is
-    # pinned (the side_parker exact render has no locals column and an
-    # awaitee right after the location cell); the location half cannot
-    # be reached — rustc records a decl for every suspend state, so no
-    # fixture row lacks one, and with the column populated the two
-    # spellings agree. The regex necessarily covers both.
-    "replace > with >= in SuspendTable<'b>::print_range",
     # Two lines of stderr glue: the spelling is pinned one call in
     # (warning_lines), and which stream it goes to is not something a
     # captured-stdout test can see — the same gap as
@@ -347,7 +299,10 @@ exclude_re = [
     # use by the same cells, so the worker answering None, the adoption
     # or the whole warm-up replaced with () changes only when the work
     # runs, never any answer. The state itself — the census, the task
-    # extents, the rows — is what the rest of the suites pin.
+    # extents, the rows — is what the rest of the suites pin. The
+    # allocator evidence discovery gates on is built by the attach and
+    # only borrowed here, so the worker still builds nothing a later
+    # answer depends on.
     "replace warm_worker ",
     "replace warm_listings with \\(\\)",
     "replace Session<'b, T>::adopt with \\(\\)",
