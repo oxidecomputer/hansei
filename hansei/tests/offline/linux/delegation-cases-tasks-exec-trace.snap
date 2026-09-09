@@ -103,15 +103,30 @@ what delegation_cases::Handle polls is not established (no reviewed rule covers 
 task 11
 Waiting on: unknown
 
+what delegation_cases::Leaf polls is not established (no reviewed rule covers its implementation); the chain ends there
+#0  future        delegation_cases::Leaf [dyn]
+      (<no_state>, 3 locals)
+#1  future        Pin<Box<(dyn Future<Output=()> + Send + Sync)>>
+      (<no_state>, 1 local)
+#2  async block   delegation_cases::main::{async_block_env#1} [dyn]
+      awaiting at src/bin/delegation-cases.rs:361 (Suspend0, 1 local)
+#3  future        Pin<Box<(dyn Future<Output=()> + Send)>>
+      (<no_state>, 1 local)
+#4  future        Pin<Box<Pin<Box<(dyn Future<Output=()> + Send)>>>>
+      (<no_state>, 1 local)
+
+task 12
+Waiting on: unknown
+
 what core::future::pending::Pending<()> polls is not established (no reviewed rule covers its implementation); the chain ends there
 #0  future        core::future::pending::Pending<()>
       (<no_state>, 0 locals)
-#1  async block   delegation_cases::main::{async_block_env#1}
-      awaiting at src/bin/delegation-cases.rs:339 (Suspend0, 1 local)
-#2  future        Pin<&mut delegation_cases::main::{async_block_env#1}>
+#1  async block   delegation_cases::main::{async_block_env#2}
+      awaiting at src/bin/delegation-cases.rs:377 (Suspend0, 1 local)
+#2  future        Pin<&mut delegation_cases::main::{async_block_env#2}>
       (<no_state>, 1 local)
-#3  async block   delegation_cases::main::{async_block_env#2}
-      awaiting at src/bin/delegation-cases.rs:346 (Suspend0, 2 locals)
-#4  future        Pin<Box<delegation_cases::main::{async_block_env#2}>>
+#3  async block   delegation_cases::main::{async_block_env#3}
+      awaiting at src/bin/delegation-cases.rs:384 (Suspend0, 2 locals)
+#4  future        Pin<Box<delegation_cases::main::{async_block_env#3}>>
       (<no_state>, 1 local)
-[Executed against 11 tasks, 0 failed]
+[Executed against 12 tasks, 0 failed]

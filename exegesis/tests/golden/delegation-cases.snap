@@ -28,12 +28,12 @@ task: core::pin::Pin<alloc::boxed::Box<tracing::instrument::Instrumented<delegat
   entries: 2
   symbols-per-entry: 6,6
   stage: Stage<core::pin::Pin<alloc::boxed::Box<tracing::instrument::Instrumented<delegation_cases::Probe<8>>, alloc::alloc::Global>>>
-task: core::pin::Pin<alloc::boxed::Box<delegation_cases::main::{async_block_env#2}, alloc::alloc::Global>>
+task: core::pin::Pin<alloc::boxed::Box<delegation_cases::main::{async_block_env#3}, alloc::alloc::Global>>
   kind: Manual
   decl: <none>
   entries: 2
   symbols-per-entry: 6,6
-  stage: Stage<core::pin::Pin<alloc::boxed::Box<delegation_cases::main::{async_block_env#2}, alloc::alloc::Global>>>
+  stage: Stage<core::pin::Pin<alloc::boxed::Box<delegation_cases::main::{async_block_env#3}, alloc::alloc::Global>>>
 task: core::pin::Pin<alloc::boxed::Box<delegation_cases::Handle, alloc::alloc::Global>>
   kind: Manual
   decl: <none>
@@ -64,19 +64,19 @@ task: core::pin::Pin<alloc::boxed::Box<delegation_cases::Gated<2>, alloc::alloc:
   entries: 2
   symbols-per-entry: 5,5
   stage: Stage<core::pin::Pin<alloc::boxed::Box<delegation_cases::Gated<2>, alloc::alloc::Global>>>
-task: delegation_cases::main::{async_block_env#4}
+task: delegation_cases::main::{async_block_env#5}
   kind: AsyncBlock
-  decl: delegation-cases.rs:363
+  decl: delegation-cases.rs:401
   entries: 2
   symbols-per-entry: 6,6
-  stage: Stage<delegation_cases::main::{async_block_env#4}>
+  stage: Stage<delegation_cases::main::{async_block_env#5}>
   variants:
-    Unresumed @ delegation-cases.rs:363
-    Returned @ delegation-cases.rs:365
-    Panicked @ delegation-cases.rs:365
+    Unresumed @ delegation-cases.rs:401
+    Returned @ delegation-cases.rs:403
+    Panicked @ delegation-cases.rs:403
 
 [dyn-futures]
-dyn: core::pin::Pin<&mut delegation_cases::main::{async_block_env#1}> (poll)
+dyn: core::pin::Pin<&mut delegation_cases::main::{async_block_env#2}> (poll)
 dyn: core::pin::Pin<alloc::boxed::Box<&mut delegation_cases::Probe<5>, alloc::alloc::Global>> (poll, drop_glue)
 dyn: core::pin::Pin<alloc::boxed::Box<alloc::boxed::Box<delegation_cases::Probe<6>, alloc::alloc::Global>, alloc::alloc::Global>> (poll, drop_glue)
 dyn: core::pin::Pin<alloc::boxed::Box<delegation_cases::Gated<1>, alloc::alloc::Global>> (poll, drop_glue)
@@ -85,12 +85,13 @@ dyn: core::pin::Pin<alloc::boxed::Box<delegation_cases::Handle, alloc::alloc::Gl
 dyn: core::pin::Pin<alloc::boxed::Box<delegation_cases::Holder<delegation_cases::main::{async_block_env#0}>, alloc::alloc::Global>> (poll, drop_glue)
 dyn: core::pin::Pin<alloc::boxed::Box<delegation_cases::RawHolder, alloc::alloc::Global>> (poll, drop_glue)
 dyn: core::pin::Pin<alloc::boxed::Box<delegation_cases::Retained, alloc::alloc::Global>> (poll, drop_glue)
-dyn: core::pin::Pin<alloc::boxed::Box<delegation_cases::main::{async_block_env#2}, alloc::alloc::Global>> (poll, drop_glue)
+dyn: core::pin::Pin<alloc::boxed::Box<delegation_cases::main::{async_block_env#3}, alloc::alloc::Global>> (poll, drop_glue)
 dyn: core::pin::Pin<alloc::boxed::Box<tracing::instrument::Instrumented<delegation_cases::Probe<8>>, alloc::alloc::Global>> (poll, drop_glue)
 dyn: delegation_cases::Gated<1> (poll, drop_glue)
 dyn: delegation_cases::Gated<2> (poll, drop_glue)
 dyn: delegation_cases::Handle (poll, drop_glue)
 dyn: delegation_cases::Holder<delegation_cases::main::{async_block_env#0}> (poll, drop_glue)
+dyn: delegation_cases::Leaf (poll, drop_glue)
 dyn: delegation_cases::Probe<1> (poll, drop_glue)
 dyn: delegation_cases::Probe<2> (poll, drop_glue)
 dyn: delegation_cases::Probe<5> (poll, drop_glue)
@@ -100,16 +101,18 @@ dyn: delegation_cases::Probe<8> (poll, drop_glue)
 dyn: delegation_cases::RawHolder (poll, drop_glue)
 dyn: delegation_cases::Retained (poll, drop_glue)
 dyn: delegation_cases::main::{async_block_env#0} (poll)
-dyn: delegation_cases::main::{async_block_env#1} (poll)
-dyn: delegation_cases::main::{async_block_env#2} (poll, drop_glue)
-dyn: delegation_cases::main::{async_block_env#4} (poll, drop_glue)
+dyn: delegation_cases::main::{async_block_env#1} (poll, drop_glue)
+dyn: delegation_cases::main::{async_block_env#2} (poll)
+dyn: delegation_cases::main::{async_block_env#3} (poll, drop_glue)
+dyn: delegation_cases::main::{async_block_env#5} (poll, drop_glue)
 dyn: tracing::instrument::Instrumented<delegation_cases::Probe<8>> (poll, drop_glue)
 
 [env-decls]
-env: delegation_cases::main::{async_block_env#0} @ delegation-cases.rs:301
-env: delegation_cases::main::{async_block_env#1} @ delegation-cases.rs:337
-env: delegation_cases::main::{async_block_env#2} @ delegation-cases.rs:342
-env: delegation_cases::main::{async_block_env#4} @ delegation-cases.rs:363
+env: delegation_cases::main::{async_block_env#0} @ delegation-cases.rs:324
+env: delegation_cases::main::{async_block_env#1} @ delegation-cases.rs:361
+env: delegation_cases::main::{async_block_env#2} @ delegation-cases.rs:375
+env: delegation_cases::main::{async_block_env#3} @ delegation-cases.rs:380
+env: delegation_cases::main::{async_block_env#5} @ delegation-cases.rs:401
 
 [infra]
 header: ok

@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicU64, Ordering::SeqCst};
 use std::sync::mpsc::{self, Sender};
 use std::task::{Context, Poll, Waker};
 
-const CASES: usize = 11;
+const CASES: usize = 12;
 
 // A separate registry records poll behavior independently of the legacy
 // census's containment/continuation interpretation. Each row contains root
@@ -154,6 +154,29 @@ impl Future for Handle {
         );
         std::hint::black_box(&self.handle);
         acknowledge(9, &self.ready);
+        Poll::Pending
+    }
+}
+
+// The probe behind a second dyn hop. `Probe`'s drop glue is one function
+// for every `TAG`, and the linker folds identical glue into one symbol,
+// so a `Probe` here would join its vtable's drop slot to `Probe<7>`'s
+// and the hop would be ambiguous; a member with a drop of its own keeps
+// this glue distinct.
+struct Leaf {
+    case: usize,
+    ready: Sender<usize>,
+    name: String,
+}
+
+impl Future for Leaf {
+    type Output = ();
+
+    #[inline(never)]
+    fn poll(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<()> {
+        std::hint::black_box(&self.name);
+        HANSEI_DELEGATION_CASES[self.case][5].fetch_add(1, SeqCst);
+        acknowledge(self.case, &self.ready);
         Poll::Pending
     }
 }
@@ -324,6 +347,21 @@ fn main() {
         "tokio::runtime::task::join::JoinHandle",
     );
     tasks.push(register(&rt, 9, handle, child, 0));
+
+    // An async block reached only through a dyn hop — nothing delegates
+    // to it statically — awaiting the pinned box of `dyn Future` it
+    // captured. The block's own states are all that prove the box a
+    // future, so the box carries a record and the chain crosses it to
+    // the probe behind it.
+    let boxed: Pin<Box<dyn Future<Output = ()> + Send + Sync>> = Box::pin(Leaf {
+        case: 11,
+        ready: ready.clone(),
+        name: String::from("leaf"),
+    });
+    let dynamic = Box::pin(async move { boxed.await });
+    let child = location(&*dynamic);
+    let dynamic: Pin<Box<dyn Future<Output = ()> + Send>> = dynamic;
+    tasks.push(register(&rt, 11, Box::pin(dynamic), child, 1));
 
     // A pinned box awaited through `as_mut()`: the awaitee is a `Pin`
     // reference to the boxed block, and the box itself sits in the

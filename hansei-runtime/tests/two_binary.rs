@@ -582,7 +582,7 @@ fn test_delegation_cases_offline() {
         let (bundle, snapshot) = load(set, "delegation-cases");
         let ctx = hansei_runtime::testkit::context(&bundle, &snapshot);
         let tasks = hansei_runtime::testkit::tasks(&ctx, &snapshot);
-        assert_eq!(tasks.tasks.len(), 11);
+        assert_eq!(tasks.tasks.len(), 12);
         assert!(
             tasks
                 .tasks
@@ -592,7 +592,7 @@ fn test_delegation_cases_offline() {
         let cases = hansei_runtime::testkit::delegation::read_from(&snapshot)
             .expect("fixture registry symbol")
             .expect("post-poll ground truth");
-        assert_eq!(cases.len(), 11);
+        assert_eq!(cases.len(), 12);
         let instrumented = &cases[7];
         assert!(instrumented.child >= instrumented.root);
         assert!(
@@ -601,7 +601,7 @@ fn test_delegation_cases_offline() {
         );
         assert_eq!(
             cases.iter().map(|c| c.child_polls).collect::<Vec<_>>(),
-            [0, 1, 0, 0, 1, 1, 1, 1, 0, 0, 0]
+            [0, 1, 0, 0, 1, 1, 1, 1, 0, 0, 0, 1]
         );
         exegesis_free_origin_check(&bundle);
         // Every task's root is a `Pin<Box<F>>` whose program lands on the
@@ -659,7 +659,11 @@ fn test_delegation_cases_offline() {
                     // And the probe itself has no rule.
                     assert!(follow(&ctx, child).is_err());
                 }
-                "dynamic" => {
+                // The inner pin over the boxed dyn is dynamic either
+                // way; what the registered child then does — a probe's
+                // nothing, a block's await of a box of its own — is the
+                // chain engine's to walk (`chain::tests`).
+                "dynamic" | "dyn-block" => {
                     let Followed::Dynamic {
                         data,
                         exclusive: true,
@@ -684,7 +688,7 @@ fn test_delegation_cases_offline() {
             }
             reached.insert(case.name);
         }
-        assert_eq!(reached.len(), 11, "{set}: every case's root was a task");
+        assert_eq!(reached.len(), 12, "{set}: every case's root was a task");
     }
     assert_summary("delegation-cases");
 }
@@ -992,7 +996,10 @@ fn test_the_census_accounting_is_exact_per_program() {
         ("gen-0007", 0, 2, 1, 1),
         ("walk-shapes", 2, 18, 1, 0),
         ("blocking-pool", 0, 2, 0, 0),
-        ("delegation-cases", 2, 14, 1, 0),
+        // The dyn-block case adds two chain frames — the box the block
+        // awaits and the leaf behind it — and one uncertain local, the
+        // box at the block's unresumed slot.
+        ("delegation-cases", 3, 16, 1, 0),
     ];
     let named: Vec<&str> = ACCOUNTING.iter().map(|row| row.0).collect();
     assert_eq!(named, PROGRAMS, "every program is accounted for");

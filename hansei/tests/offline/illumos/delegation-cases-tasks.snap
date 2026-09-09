@@ -13,5 +13,6 @@ ID  STATE  FUTURES  AWAITING AT                      WAITING ON  TYPE
 8   idle         0  —                                unknown     future Pin<Box<tracing::instrument::Instrumented<delegation_cases::Probe<8>>>>
 9   idle         1  —                                unknown     future Pin<Box<delegation_cases::Holder<delegation_cases::main>>>
 10  idle         1  —                                unknown     future Pin<Box<delegation_cases::Handle>>
-11  idle         0  src/bin/delegation-cases.rs:346  unknown     future Pin<Box<delegation_cases::main::{async_block_env#2}>>
-[11 tasks]
+11  idle         0  src/bin/delegation-cases.rs:361  unknown     future Pin<Box<Pin<Box<(dyn Future<Output=()> + Send)>>>>
+12  idle         0  src/bin/delegation-cases.rs:384  unknown     future Pin<Box<delegation_cases::main::{async_block_env#3}>>
+[12 tasks]

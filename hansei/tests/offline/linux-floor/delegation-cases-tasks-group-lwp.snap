@@ -3,5 +3,5 @@ source: hansei/src/offline.rs
 description: "`tasks --group lwp` over linux-floor/delegation-cases"
 ---
 COUNT  LWP      TASKS
-   11  <empty>  1, 2, 3, …
+   12  <empty>  1, 2, 3, …
 [1 group]

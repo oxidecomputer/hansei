@@ -667,6 +667,15 @@ struct Draft {
     own_record: bool,
 }
 
+impl Draft {
+    /// Whether the type is positively a future: something proved it
+    /// one, or its storage is a bound coroutine's — which is proof in
+    /// itself, ahead of the rule number that spells it as evidence.
+    fn is_future(&self) -> bool {
+        !self.evidence.is_empty() || self.coroutine.is_some()
+    }
+}
+
 /// Run after type demotion and coroutine member pruning, while strings can
 /// still be interned. Identity survives an opaque executable layout; the
 /// library bindings attach to the exact types the walk contract bound
@@ -770,12 +779,15 @@ pub(super) fn bind_semantics(
     }
 
     // Phase B: the least fixed point over the bound delegations. A type
-    // with positive evidence and a planned program proves each static
-    // delegate a future; a delegate so proved runs its own plan, if it
-    // has one. An adapter with no evidence proves nothing.
+    // that is positively a future and has a planned program proves each
+    // static delegate a future; a delegate so proved runs its own plan,
+    // if it has one. An adapter with no evidence proves nothing. A
+    // bound coroutine is a future by its storage alone — its own
+    // evidence is numbered only at emit time, so the seed asks the
+    // draft, not the evidence set.
     let mut queue: VecDeque<BundleTypeId> = drafts
         .iter()
-        .filter(|(_, d)| !d.evidence.is_empty() && d.plan.is_some())
+        .filter(|(_, d)| d.is_future() && d.plan.is_some())
         .map(|(&ty, _)| ty)
         .collect();
     while let Some(parent) = queue.pop_front() {
@@ -786,7 +798,7 @@ pub(super) fn bind_semantics(
             .unwrap_or_default();
         for child in children {
             let draft = drafts.entry(child).or_default();
-            let was_future = !draft.evidence.is_empty();
+            let was_future = draft.is_future();
             draft
                 .evidence
                 .insert(FutureEvidence::DelegatedBy { parent });
@@ -2905,6 +2917,127 @@ mod tests {
                 exclusive: true,
             })
         ));
+    }
+
+    /// A bound coroutine seeds the fixed point by its storage alone: a
+    /// block nothing delegates to statically — one reached only through
+    /// a dyn hop at runtime — still proves the pinned wide box its
+    /// suspended state awaits a future, so the box carries a record the
+    /// chain can cross and the scan can enter. Before this was so, the
+    /// box had no record at all: its evidence was empty when the queue
+    /// was seeded, and the coroutine's own evidence is numbered only
+    /// at emit time.
+    #[test]
+    fn test_a_bound_coroutine_seeds_its_awaitee_without_evidence_of_its_own() {
+        let mut a = adapters();
+        let library = Library {
+            walks: &WalksTable::default(),
+            tokio_version: None,
+            family: Family::select(None),
+        };
+        // The env, appended to the adapter table: four payloads then
+        // the enum, its Suspend0 awaiting the wide pin.
+        let env_name = "app::dynamic::{async_block_env#0}";
+        let base = a.types.types.len() as u32;
+        let mut variants = Vec::new();
+        for (index, state) in ["Unresumed", "Returned", "Panicked", "Suspend0"]
+            .into_iter()
+            .enumerate()
+        {
+            let payload = BundleTypeId(a.types.types.len() as u32);
+            let name = format!("{env_name}::{state}");
+            let members = if state == "Suspend0" {
+                vec![MemberDef {
+                    name: a.strings.intern("__awaitee"),
+                    ty: PIN_WIDE,
+                    offset: 0,
+                }]
+            } else {
+                Vec::new()
+            };
+            a.types.types.push(TypeDef::Struct {
+                name: a.strings.intern(&name),
+                size: 16,
+                members,
+            });
+            a.names.push(Some(name));
+            let key = a.strings.intern(&index.to_string());
+            variants.push(VariantDef {
+                name: key,
+                discr_values: None,
+                payload: MemberDef {
+                    name: key,
+                    ty: payload,
+                    offset: 0,
+                },
+                decl: None,
+                await_site: None,
+            });
+        }
+        let env = BundleTypeId(base + 4);
+        a.types.types.push(TypeDef::Enum {
+            name: a.strings.intern(env_name),
+            size: 16,
+            shape: VariantShape {
+                discr: None,
+                variants,
+            },
+        });
+        a.names.push(Some(env_name.to_owned()));
+
+        let mut seeds = SemanticSeeds::new();
+        seeds.insert(
+            env,
+            Seed {
+                coroutine_candidate: true,
+                compiler: Some(supported(&crate::detect::semantics::RUSTC_COROUTINE_V1_97)),
+                ..Default::default()
+            },
+        );
+        seeds.insert(
+            PIN_WIDE,
+            Seed {
+                adapter: Some(seed(
+                    AdapterKind::PinBox,
+                    Some(("pointer", WIDE)),
+                    PointeeSeed::Dyn(dyn_seed()),
+                )),
+                ..Default::default()
+            },
+        );
+        // No task entry and no poll symbol anywhere: the block is a
+        // future only by being a bound coroutine.
+        let mut tasks = Vec::new();
+        let table = bind_semantics(
+            seeds,
+            &a.types,
+            &a.names,
+            &mut a.strings,
+            &mut tasks,
+            &library,
+        );
+        let record = |ty: BundleTypeId| table.types.iter().find(|r| r.ty == ty);
+        let rule = record(env).unwrap().coroutine.as_ref().unwrap().rule;
+        assert_eq!(
+            record(env).unwrap().future.as_ref().unwrap().evidence,
+            [FutureEvidence::Coroutine(rule)]
+        );
+        let pin = record(PIN_WIDE).expect("the awaited pin has a record");
+        assert_eq!(
+            pin.future.as_ref().unwrap().evidence,
+            [FutureEvidence::DelegatedBy { parent: env }]
+        );
+        assert!(matches!(
+            pin.future.as_ref().unwrap().continuation,
+            Continuation::Bound {
+                program: PollProgram::Direct(PollAction::Delegate {
+                    target: FutureTarget::Dynamic { .. },
+                    exclusive: true,
+                }),
+                ..
+            }
+        ));
+        assert!(pin.access.is_some(), "the owned route into the box");
     }
 
     /// A bound coroutine's program matches its states: the fixed three

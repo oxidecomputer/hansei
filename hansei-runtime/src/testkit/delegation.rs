@@ -13,7 +13,7 @@ use reify::Value;
 
 pub const SYMBOL: &str = "HANSEI_DELEGATION_CASES";
 
-pub const NAMES: [&str; 11] = [
+pub const NAMES: [&str; 12] = [
     "gated",
     "previously-polled",
     "enum-retained",
@@ -25,11 +25,12 @@ pub const NAMES: [&str; 11] = [
     "holder",
     "handle",
     "alias",
+    "dyn-block",
 ];
 
 /// How many times each case's child was polled, which the fixture
 /// asserts against its own expectation before it parks.
-const CHILD_POLLS: [u64; NAMES.len()] = [0, 1, 0, 0, 1, 1, 1, 1, 0, 0, 0];
+const CHILD_POLLS: [u64; NAMES.len()] = [0, 1, 0, 0, 1, 1, 1, 1, 0, 0, 0, 1];
 
 #[derive(Debug)]
 pub struct Case {

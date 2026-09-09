@@ -4,10 +4,10 @@ description: "`runtime` over linux/delegation-cases"
 ---
 runtime 0 @ 0xADDR
     flavor: current_thread
-    tasks: 11
-    futures: 15
+    tasks: 12
+    futures: 16
     workers: 1
-    threads: 1 (lwp 4051864)
+    threads: 1 (lwp 1204594)
     found via: a thread's runtime context
     drivers:
       tokio::runtime::driver::Handle {

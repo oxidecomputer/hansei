@@ -775,6 +775,41 @@ mod tests {
                             Some(_) | None
                         ));
                     }
+                    // A block reached through the dyn hop, awaiting a
+                    // pinned box of `dyn` in its suspended state: the
+                    // box is a frame of its own — the block's storage
+                    // proved it a future, with no poll symbol and no
+                    // static parent to — and the probe behind it is the
+                    // vtable's to name.
+                    "dyn-block" => {
+                        assert_eq!(chain.frames.len(), 5, "{set}: {:?}", names(chain));
+                        let block = chain.frames[2].future;
+                        assert_eq!((block.addr, block.ty.size()), (case.child, case.child_size));
+                        assert!(chain.frames[2].dyn_symbol.is_some(), "{set}");
+                        assert!(
+                            chain.frames[3].future.ty.name().starts_with(
+                                "core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::\
+                                 Future<Output=()> + core::marker::Send + core::marker::Sync)"
+                            ),
+                            "{set}: {:?}",
+                            names(chain)
+                        );
+                        assert!(chain.frames[3].dyn_symbol.is_none(), "{set}");
+                        assert!(
+                            chain.frames[4].future.ty.name() == "delegation_cases::Leaf",
+                            "{set}: {:?}",
+                            names(chain)
+                        );
+                        assert!(chain.frames[4].dyn_symbol.is_some(), "{set}");
+                        assert!(chain.all_exclusive());
+                        assert!(matches!(
+                            chain.end,
+                            ChainEnd::UnknownContinuation {
+                                reason: SemanticIssueKind::NoRule,
+                                ..
+                            }
+                        ));
+                    }
                     // A coroutine root awaiting a `Pin` reference to the
                     // registered child: the block, the reference, the
                     // child, and the child's own awaitee no rule covers.
@@ -796,7 +831,7 @@ mod tests {
                 assert!(inspection.primitive.value.is_none());
                 reached.insert(case.name);
             }
-            assert_eq!(reached.len(), 11, "{set}");
+            assert_eq!(reached.len(), 12, "{set}");
         }
     }
 

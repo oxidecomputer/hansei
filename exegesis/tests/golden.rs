@@ -768,6 +768,28 @@ fn assert_delegation_programs(program: &str, bundle: &Bundle) {
         "delegation_cases::Probe<7> :: members future[poll] continuation unknown (NoRule)",
         "{program}"
     );
+    // A block behind a dyn hop awaits a pinned box of `dyn` of its own.
+    // Nothing delegates to the block statically, so the block's storage
+    // is what proves the box a future: a bound coroutine seeds the
+    // delegation fixed point whether or not anything has proved *it* a
+    // future yet. Whether the box's own poll survives as a symbol is the
+    // target's call — the Mach-O build inlines it away, ELF keeps it —
+    // so the assertion masks that one word: on a build without it the
+    // delegation is the box's whole evidence, and without the seed the
+    // box has no record at all, with every chain and scan stopping at it.
+    const DYN_SYNC: &str = "(dyn core::future::future::Future<Output=()> + core::marker::Send + \
+                            core::marker::Sync), alloc::alloc::Global>";
+    assert_eq!(
+        line(&format!("core::pin::Pin<alloc::boxed::Box<{DYN_SYNC}> ::"))
+            .replacen("future[poll, delegated by", "future[delegated by", 1),
+        format!(
+            "core::pin::Pin<alloc::boxed::Box<{DYN_SYNC}> :: members future[delegated by \
+             delegation_cases::main::{{async_block_env#1}}] continuation rule # delegate \
+             (exclusive) dyn pointer@+0 -> alloc::boxed::Box<{DYN_SYNC} access Owned rule # \
+             dyn pointer@+0 -> alloc::boxed::Box<{DYN_SYNC}"
+        ),
+        "{program}"
+    );
     // The reference and the box forward one poll each, exclusively, to
     // the probe they point at, which then has no rule of its own.
     assert_eq!(

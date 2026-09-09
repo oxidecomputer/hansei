@@ -5,23 +5,23 @@ description: "`census` over linux-floor/delegation-cases"
 Threads: 2 lwps, 2 in runtime 0 @ 0xADDR
 
 COUNT  RT  ROLE             STATE           LWPS
-    1  0   block_on thread  in driver       4052678
+    1  0   block_on thread  in driver       1205712
     0  0   blocking pool    0 idle, 0 busy  —
-    1  —   entered runtime  —               4052676
+    1  —   entered runtime  —               1205710
 [2 lwps]
 
-Tasks: 11 owned by runtime 0 @ 0xADDR
+Tasks: 12 owned by runtime 0 @ 0xADDR
 
 COUNT  STATE
-   11  idle
-[11 tasks]
+   12  idle
+[12 tasks]
 
 COUNT  TYPE / WAITING ON
+    2  future Pin<Box<Pin<Box<(dyn Future<Output=()> + Send)>>>>
+       └─ 2  unknown
     1  future Pin<Box<&mut delegation_cases::Probe<5>>>
        └─ 1  unknown
     1  future Pin<Box<Box<delegation_cases::Probe<6>>>>
-       └─ 1  unknown
-    1  future Pin<Box<Pin<Box<(dyn Future<Output=()> + Send)>>>>
        └─ 1  unknown
     1  future Pin<Box<delegation_cases::Gated<1>>>
        └─ 1  unknown
@@ -30,13 +30,13 @@ COUNT  TYPE / WAITING ON
     6  (6 more types)
 [11 types, 5 shown]
 
-Futures: 15 in flight, on 34 await-chain frames, up to 5 deep
+Futures: 16 in flight, on 39 await-chain frames, up to 5 deep
 
 COUNT  HELD IN
-   11  task (its own await chain)
+   12  task (its own await chain)
     4  frame (off any await chain)
     0  set (0 FuturesUnordered)
-[15 futures]
+[16 futures]
 
 COUNT  TYPE / WAITING ON
     1  async block delegation_cases::main

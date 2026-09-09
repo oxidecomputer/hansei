@@ -1843,9 +1843,9 @@ fn test_delegation_cases_acceptance() {
         let cases = hansei_runtime::testkit::delegation::read_from(&proc)
             .expect("registry symbol")
             .unwrap();
-        assert_eq!(cases.len(), 11);
+        assert_eq!(cases.len(), 12);
         let rows = list_tasks(&bundle, core);
-        assert_eq!(rows.len(), 11, "{rows:#?}");
+        assert_eq!(rows.len(), 12, "{rows:#?}");
         assert!(rows.iter().all(|row| row.state == "idle"), "{rows:#?}");
     });
 }
