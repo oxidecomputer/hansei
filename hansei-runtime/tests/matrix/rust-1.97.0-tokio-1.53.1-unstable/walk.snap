@@ -2178,7 +2178,7 @@ walk contract (tokio 1.53.1, rustc 1.97.0 (2d8144b78 2026-07-07)): 133 entries, 
   ok      ScheduledIo.waiters.lock (spelling 1 of 2)
 
 program: delegation-cases
-walk contract (tokio 1.53.1, rustc 1.97.0 (2d8144b78 2026-07-07)): 133 entries, 0 broken, 57 absent
+walk contract (tokio 1.53.1, rustc 1.97.0 (2d8144b78 2026-07-07)): 133 entries, 0 broken, 56 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -2220,17 +2220,17 @@ walk contract (tokio 1.53.1, rustc 1.97.0 (2d8144b78 2026-07-07)): 133 entries, 
   ok      Location.file (spelling 1 of 3)
   ok      Location.line
   ok      Location.col
-  ok      Cell.stage (19 cells)
-  ok      Cell.stage_running (19 cells)
-  ok      Cell.stage_finished (19 cells)
-  ok      Cell.stage_consumed (19 cells)
-  ok      Cell.trailer (19 cells)
-  ok      Cell.task_id (19 cells)
-  ok      Cell.scheduler (19 cells)
+  ok      Cell.stage (25 cells)
+  ok      Cell.stage_running (25 cells)
+  ok      Cell.stage_finished (25 cells)
+  ok      Cell.stage_consumed (25 cells)
+  ok      Cell.trailer (25 cells)
+  ok      Cell.task_id (25 cells)
+  ok      Cell.scheduler (25 cells)
   absent  Sleep.deadline — no tokio::time::sleep::Sleep… type in the tokio info (the target does not reach one)
   absent  Sleep.deadline.tv_sec — no tokio::time::sleep::Sleep… type in the tokio info (the target does not reach one)
   absent  Sleep.deadline.tv_nsec — no tokio::time::sleep::Sleep… type in the tokio info (the target does not reach one)
-  absent  JoinHandle.raw — no tokio::runtime::task::join::JoinHandle<… type in the tokio info (the target does not reach one)
+  ok      JoinHandle.raw
   absent  Acquire.semaphore — no tokio::sync::batch_semaphore::Acquire… type in the tokio info (the target does not reach one)
   absent  Acquire.num_permits — no tokio::sync::batch_semaphore::Acquire… type in the tokio info (the target does not reach one)
   absent  Acquire.node — no tokio::sync::batch_semaphore::Acquire… type in the tokio info (the target does not reach one)

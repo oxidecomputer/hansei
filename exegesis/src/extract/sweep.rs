@@ -461,11 +461,75 @@ fn future_poll_self_type(
     if !name.starts_with("Pin<") {
         return Err(unresolved);
     }
-    let inner = pin.members.first().ok_or(SelfRecovery::DeclOnly)?;
+    let Some(inner) = pin.members.first() else {
+        // The pin is a declaration in every unit — the impl was
+        // inlined at each call and no unit needed the pin's layout —
+        // so the self type is recovered from the one place that still
+        // spells it, the mangled name.
+        return self_type_by_name(reader, func).ok_or(SelfRecovery::DeclOnly);
+    };
     let Some(RawType::Pointer(p)) = reader.canonical_type(inner.type_id) else {
         return Err(unresolved);
     };
     Ok(reader.canonicalize(p.target_type_id))
+}
+
+/// The `T` of a `<T as Future>::poll` whose `Pin<&mut T>` self type
+/// has no definition, from the impl's mangled name: the concrete half
+/// of the `<T as Trait>` it demangles to, joined to the defined
+/// canonical type carrying exactly that fully qualified name. The join
+/// is exact and must be unique — a name several defined types share
+/// recovers nothing — and a declaration-shaped type (no size, no
+/// members) is never a candidate, since the join exists to reach the
+/// definition the pin could not.
+fn self_type_by_name(reader: &DwReader<'_>, func: &Func<'_>) -> Option<TypeId> {
+    let linkage = func.linkage_name()?;
+    let demangled = format!("{:#}", rustc_demangle::demangle(linkage));
+    let (concrete, _) = crate::symbols::trait_object_pair(&demangled)?;
+    let short = reader.strings.find(short_type_name(concrete))?;
+    let wanted = crate::symbols::normalized_rust_type_name(concrete);
+    let mut found = reader
+        .types_by_name
+        .get(&short)?
+        .iter()
+        .copied()
+        .filter(|&id| reader.is_canonical(id))
+        .filter(|&id| match reader.canonical_type(id) {
+            Some(RawType::Struct(st)) => st.size > 0 || !st.members.is_empty(),
+            Some(RawType::Enum(en)) => en.size > 0,
+            _ => false,
+        })
+        .filter(|&id| {
+            super::fq_name(reader, id)
+                .is_some_and(|name| crate::symbols::normalized_rust_type_name(&name) == wanted)
+        });
+    match (found.next(), found.next()) {
+        (Some(id), None) => Some(id),
+        _ => None,
+    }
+}
+
+/// The last path segment of a fully qualified type name — what the
+/// type's own DIE is named — with the `::` inside its generic
+/// arguments left alone.
+fn short_type_name(name: &str) -> &str {
+    let mut depth = 0usize;
+    let mut start = 0;
+    let bytes = name.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'<' | b'(' | b'[' => depth += 1,
+            b'>' | b')' | b']' => depth = depth.saturating_sub(1),
+            b':' if depth == 0 && bytes.get(i + 1) == Some(&b':') => {
+                start = i + 2;
+                i += 1;
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    &name[start..]
 }
 
 /// Record the self type of the impl block enclosing `func`, when its
@@ -1119,6 +1183,118 @@ mod tests {
         assert!(sweep.fut_polls.is_empty());
         assert_eq!(sweep.dyn_decl_only_self, 1);
         assert_eq!(sweep.dyn_unresolved_self, 1);
+    }
+
+    /// A poll whose `Pin<&mut T>` self type is declared everywhere and
+    /// defined nowhere — the impl inlined at every call — still names
+    /// `T` in its mangled name, and the sweep joins that name to the
+    /// one defined type carrying it; a name two defined types share,
+    /// or one only a declaration carries, recovers nothing and counts
+    /// as before.
+    #[test]
+    fn test_sweep_recovers_a_declaration_only_self_type_by_name() {
+        let mut reader = DwReader::default();
+        let tracing = reader.strings.intern("tracing");
+        let tracing_ns = reader.namespaces.insert(None, tracing);
+        let instrument = reader.strings.intern("instrument");
+        let instrument_ns = reader.namespaces.insert(Some(tracing_ns), instrument);
+        let fut = type_id(0x10);
+        insert_struct(&mut reader, fut, None, "Fut", &[("state", fut)]);
+        let wrapped = type_id(0x20);
+        insert_struct(
+            &mut reader,
+            wrapped,
+            Some(instrument_ns),
+            "Instrumented<app::Fut>",
+            &[("inner", fut)],
+        );
+        // The pin: a declaration, no members.
+        let bare_pin = type_id(0x30);
+        insert_struct(
+            &mut reader,
+            bare_pin,
+            None,
+            "Pin<&mut tracing::instrument::Instrumented<app::Fut>>",
+            &[],
+        );
+        insert_func(
+            &mut reader,
+            func_id(0x100),
+            None,
+            "poll",
+            Some(
+                "<tracing::instrument::Instrumented<app::Fut> as core::future::future::Future>::poll",
+            ),
+            &[],
+            &[bare_pin],
+            None,
+        );
+        // A second defined type of the same name elsewhere: ambiguous,
+        // so a poll naming *it* recovers nothing.
+        let other = reader.strings.intern("other");
+        let other_ns = reader.namespaces.insert(None, other);
+        let twin_a = type_id(0x40);
+        let twin_b = type_id(0x41);
+        insert_struct(&mut reader, twin_a, Some(other_ns), "Twin", &[("a", fut)]);
+        insert_struct(&mut reader, twin_b, Some(other_ns), "Twin", &[("b", fut)]);
+        let twin_pin = type_id(0x42);
+        insert_struct(&mut reader, twin_pin, None, "Pin<&mut other::Twin>", &[]);
+        insert_func(
+            &mut reader,
+            func_id(0x110),
+            None,
+            "poll",
+            Some("<other::Twin as core::future::future::Future>::poll"),
+            &[],
+            &[twin_pin],
+            None,
+        );
+        // And one whose name only a declaration carries: no members,
+        // and no size either.
+        let ghost = type_id(0x50);
+        insert_struct(&mut reader, ghost, Some(other_ns), "Ghost", &[]);
+        if let Some(RawType::Struct(st)) = reader.types.get_mut(&ghost) {
+            st.size = 0;
+        }
+        let ghost_pin = type_id(0x51);
+        insert_struct(&mut reader, ghost_pin, None, "Pin<&mut other::Ghost>", &[]);
+        insert_func(
+            &mut reader,
+            func_id(0x120),
+            None,
+            "poll",
+            Some("<other::Ghost as core::future::future::Future>::poll"),
+            &[],
+            &[ghost_pin],
+            None,
+        );
+        reader.types_by_name = reader.index_type_names();
+
+        let view = reader.view();
+        let sweep = sweep_functions(&view, None, None);
+        assert_eq!(
+            symbols(&sweep.explicit_polls[&wrapped]),
+            ["<tracing::instrument::Instrumented<app::Fut> as core::future::future::Future>::poll"]
+        );
+        assert!(!sweep.explicit_polls.contains_key(&twin_a));
+        assert!(!sweep.explicit_polls.contains_key(&twin_b));
+        assert!(!sweep.explicit_polls.contains_key(&ghost));
+        assert_eq!(sweep.dyn_decl_only_self, 2);
+        assert_eq!(sweep.dyn_unresolved_self, 0);
+    }
+
+    #[test]
+    fn test_short_type_name_keeps_generic_paths_whole() {
+        assert_eq!(short_type_name("app::Fut"), "Fut");
+        assert_eq!(
+            short_type_name("tracing::instrument::Instrumented<delegation_cases::Probe<8>>"),
+            "Instrumented<delegation_cases::Probe<8>>"
+        );
+        assert_eq!(
+            short_type_name("core::pin::Pin<alloc::boxed::Box<(dyn a::B + c::D)>>"),
+            "Pin<alloc::boxed::Box<(dyn a::B + c::D)>>"
+        );
+        assert_eq!(short_type_name("Plain"), "Plain");
     }
 
     #[test]

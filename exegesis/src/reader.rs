@@ -555,7 +555,7 @@ impl<'dw> DwReader<'dw> {
     /// Every type under its name, ids ascending. Duplicates are
     /// included — which of them is canonical is not known until the
     /// alias passes this runs beside have finished.
-    fn index_type_names(&self) -> HashMap<StrId, Vec<TypeId>> {
+    pub(crate) fn index_type_names(&self) -> HashMap<StrId, Vec<TypeId>> {
         let mut by_name: HashMap<StrId, Vec<TypeId>> = HashMap::new();
         for (&id, ty) in &self.types {
             if let Some(name) = ty.name() {
