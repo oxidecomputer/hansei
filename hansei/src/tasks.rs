@@ -1242,7 +1242,7 @@ fn member_line(member: &WaitMember, stops: &StopNames<'_>) -> String {
                 .as_ref()
                 .map(|w| format!(", {w}"))
                 .unwrap_or_default();
-            format!("{name}: {evidence}{within}; no branch of the stop holds it")
+            format!("{name}: {evidence}{within}; in no branch of the stop")
         }
     }
 }
@@ -1301,8 +1301,9 @@ fn waiting_kind(
 /// The `-v` detail lines under a row's wait: what the assessment has
 /// to say for itself beyond the cell, then every wheel entry armed
 /// with the task's waker and every io slot holding it — the
-/// registries' whole answer, whatever the row's one-line spelling
-/// chose to name.
+/// registries' whole answer, whatever the row's one-line text chose
+/// to name. A wait set already lists every registry slot as a member,
+/// placed in a branch or on its own, so its rows say nothing twice.
 fn wait_detail(
     task: &bundle::Task,
     wait: Option<&rt_graph::TaskWait>,
@@ -1312,6 +1313,9 @@ fn wait_detail(
     let mut lines = wait
         .map(|wait| assessment_detail(wait, stops))
         .unwrap_or_default();
+    if wait.is_some_and(|wait| matches!(wait.assessment, WaitAssessment::Set(_))) {
+        return lines;
+    }
     for timer in registries.timers_of(task.addr.0) {
         let state = match timer.wheel_state() {
             Some(state) => format!(", {state}"),
@@ -2648,8 +2652,8 @@ mod table_tests {
                 "a: x::branch at 0x6000 — timer (deadline +10.000s); its protocol read this \
                  task's waker",
                 "b: x::branch at 0x6000 — unknown; held, not armed",
-                "io 0x7000 (readable): this task's waker in the read-waiter slot of io 0x7000, \
-                 inside #1's storage at +0x10; no branch of the stop holds it",
+                "io 0x7000 (readable): this task's waker in the read-waiter slot, inside #1's \
+                 storage at +0x10; in no branch of the stop",
                 "1 more branches not inspected",
             ]
         );

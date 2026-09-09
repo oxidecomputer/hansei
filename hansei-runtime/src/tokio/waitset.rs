@@ -218,22 +218,19 @@ impl SlotRef {
                 };
                 format!("this task's waker in wheel entry {entry:#x}{state}")
             }
-            Self::Io {
-                resource,
-                slot,
-                ready,
-                ..
-            } => {
+            // The resource is not named here: the line this sits on
+            // already names it, as the member's entry or its target.
+            Self::Io { slot, ready, .. } => {
                 let site = match slot {
-                    IoSlot::Reader => "the read-waiter slot".to_string(),
-                    IoSlot::Writer => "the write-waiter slot".to_string(),
-                    IoSlot::Listed { .. } => "a waiter node".to_string(),
+                    IoSlot::Reader => "the read-waiter slot",
+                    IoSlot::Writer => "the write-waiter slot",
+                    IoSlot::Listed { .. } => "a waiter node",
                 };
                 let ready = match ready {
                     Some(ready) => format!(", ready: {ready}"),
                     None => String::new(),
                 };
-                format!("this task's waker in {site} of io {resource:#x}{ready}")
+                format!("this task's waker in {site}{ready}")
             }
             Self::Protocol => "its protocol read this task's waker".to_string(),
         }
