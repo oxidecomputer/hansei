@@ -3143,6 +3143,69 @@ mod tests {
         assert_eq!(note.as_deref(), Some("2 types"));
     }
 
+    /// A predicate root admits every emitted type its predicate does —
+    /// the recv closure's `PollFn` under any impl index — is absent
+    /// when none is emitted, and is counted past one.
+    #[test]
+    fn test_leaf_where_root_admits_by_predicate_and_counts_past_one() {
+        let mut reader = DwReader::default();
+        let poll_fn_ns = ns(&mut reader, "core::future::poll_fn");
+        let recv_u32 = type_id(1);
+        let recv_str = type_id(2);
+        let other = type_id(3);
+        insert_struct(
+            &mut reader,
+            recv_u32,
+            Some(poll_fn_ns),
+            "PollFn<tokio::sync::mpsc::bounded::{impl#0}::recv::{async_fn#0}::{closure_env#0}<u32>>",
+            &[],
+        );
+        insert_struct(
+            &mut reader,
+            recv_str,
+            Some(poll_fn_ns),
+            "PollFn<tokio::sync::mpsc::bounded::{impl#12}::recv::{async_fn#0}::{closure_env#0}<alloc::string::String>>",
+            &[],
+        );
+        insert_struct(
+            &mut reader,
+            other,
+            Some(poll_fn_ns),
+            "PollFn<tokio::sync::mpsc::bounded::{impl#0}::recv_many::{async_fn#0}::{closure_env#0}<u32>>",
+            &[],
+        );
+        let roots = context_roots(recv_u32);
+        let root = WalkRoot::LeafWhere(MPSC_RECV, mpsc_recv_poll_fn);
+
+        let mut em = Emitter::new(&reader, BTreeMap::new(), None, None);
+        em.reserve(other);
+        assert!(matches!(
+            resolve_root(&em, &roots, &BTreeMap::new(), &root),
+            Roots::Absent(reason) if reason.contains(MPSC_RECV)
+        ));
+
+        let mut em = Emitter::new(&reader, BTreeMap::new(), None, None);
+        em.reserve(other);
+        em.reserve(recv_u32);
+        let Roots::Types { types, note } = resolve_root(&em, &roots, &BTreeMap::new(), &root)
+        else {
+            panic!("one recv closure resolves");
+        };
+        assert_eq!(types.len(), 1);
+        assert_eq!(note, None);
+
+        let mut em = Emitter::new(&reader, BTreeMap::new(), None, None);
+        em.reserve(other);
+        em.reserve(recv_u32);
+        em.reserve(recv_str);
+        let Roots::Types { types, note } = resolve_root(&em, &roots, &BTreeMap::new(), &root)
+        else {
+            panic!("two recv closures resolve");
+        };
+        assert_eq!(types.len(), 2);
+        assert_eq!(note.as_deref(), Some("2 types"));
+    }
+
     /// The scheduler roots likewise: the `Arc` over exactly the flavor
     /// handle, with or without the allocator parameter, counted past one.
     #[test]

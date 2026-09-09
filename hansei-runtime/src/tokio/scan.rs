@@ -953,6 +953,60 @@ mod tests {
         assert_eq!(completion.referent_expansions, 0);
     }
 
+    /// A receiver parked in `recv` and a `Notified` parked on its
+    /// `Notify` each reference the task whose waker they registered —
+    /// their own — through the channel's waker cell and the `Notify`'s
+    /// wait list, read once per scan; the list's tasks are kept per
+    /// target, so a second walk with no budget left still names them.
+    #[test]
+    fn test_a_receiver_and_a_notified_reference_their_registered_wakers() {
+        let (bundle, snapshot) = testkit::load_any("channels");
+        let ctx = testkit::context(&bundle, &snapshot);
+        let list = testkit::tasks(&ctx, &snapshot);
+        for (name, source) in [
+            ("recv_waiter", ReferenceSource::ChannelWaker),
+            ("notify_waiter", ReferenceSource::NotifyWaker),
+        ] {
+            let task = task_named(&list, name);
+            let (completion, sink) = scan_task(&ctx, task);
+            assert!(completion.complete, "{name}: {:?}", sink.issues);
+            let named: Vec<_> = sink
+                .references
+                .iter()
+                .filter(|r| r.source == source)
+                .map(|r| r.target)
+                .collect();
+            assert_eq!(named, [task.addr], "{name}: {:?}", sink.references);
+        }
+        let waiter = task_named(&list, "notify_waiter");
+        let read = ReadContext::none();
+        let Some(ResourceObservation::Notified(notified)) = ctx
+            .inspect_task(waiter, &read)
+            .unwrap()
+            .expect("resident")
+            .primitive
+            .value
+        else {
+            panic!("the waiter parks on a Notified");
+        };
+        let mut issues = Vec::new();
+        let first = ctx.notify_waiter_tasks(
+            notified.notify,
+            &read,
+            &mut ScanBudget::default(),
+            &mut issues,
+        );
+        assert_eq!(first, [waiter.addr.0]);
+        assert!(issues.is_empty(), "{issues:?}");
+        let mut spent = ScanBudget::new(ScanLimits {
+            max_referent_expansions: 0,
+            ..ScanLimits::default()
+        });
+        let again = ctx.notify_waiter_tasks(notified.notify, &read, &mut spent, &mut issues);
+        assert_eq!(again, first);
+        assert!(issues.is_empty(), "{issues:?}");
+    }
+
     /// An acquire reached through an unsupported wrapper — the tokio
     /// lock's own async block, whose captured `self` reference the
     /// layout cannot vouch for — still yields the queue's task wakers,

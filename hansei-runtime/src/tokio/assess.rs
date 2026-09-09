@@ -2096,7 +2096,10 @@ mod tests {
             .walk_at(chan)
             .unwrap()
             .addr;
-        let index: u64 = ctx.walk(WalkRole::ChanRxIndex).read(chan).unwrap();
+        let index_word = ctx.walk(WalkRole::ChanRxIndex).walk_at(chan).unwrap();
+        let tail_word = ctx.walk(WalkRole::ChanTailPosition).walk_at(chan).unwrap();
+        let index: u64 = index_word.parse(&snapshot).unwrap();
+        assert_eq!(index, 0, "the fixture's receiver has read nothing");
         let (data, vtable) = raw_waker_words(&ctx, WalkRole::ChanRxWaker, chan);
         let head = ctx.walk(WalkRole::ChanRxHead).walk_at(chan).unwrap();
         let block_ty = head.ty.pointer_target().unwrap();
@@ -2116,12 +2119,32 @@ mod tests {
             "nothing at the index"
         );
         let holder = task_named(&list, "channels::hold");
-        let cases: Vec<(&str, Corrupt<'_>, &str)> = vec![
+        // The windows move the read index off zero where its slot's
+        // bit or the unread count would otherwise be indistinguishable
+        // from a zero.
+        let cases: Vec<(&str, Corrupt<'_>, &str, &str)> = vec![
             (
                 "a message at the read index",
                 Corrupt::new(&snapshot)
-                    .patch(ready.addr, ready_word | (1 << (index & mpsc::SLOT_MASK))),
+                    .patch(index_word.addr, 1)
+                    .patch(tail_word.addr, 2)
+                    .patch(ready.addr, ready_word | (1 << 1)),
                 "ResourceReady(MessageReady)",
+                "",
+            ),
+            (
+                "two slots claimed and neither written",
+                Corrupt::new(&snapshot)
+                    .patch(index_word.addr, 1)
+                    .patch(tail_word.addr, 3),
+                "Waiting(",
+                "unread: 2",
+            ),
+            (
+                "the read index past the claimed tail",
+                Corrupt::new(&snapshot).patch(index_word.addr, 1),
+                "Unknown(ConflictingEvidence)",
+                "past the claimed tail",
             ),
             (
                 "the last sender gone, the close marker set",
@@ -2129,16 +2152,19 @@ mod tests {
                     .patch(tx_count, 0)
                     .patch(ready.addr, ready_word | mpsc::TX_CLOSED),
                 "ResourceReady(ChannelClosed)",
+                "",
             ),
             (
                 "the last sender gone before its close marker",
                 Corrupt::new(&snapshot).patch(tx_count, 0),
                 "Unknown(ConflictingEvidence)",
+                "no sender is left",
             ),
             (
                 "the receiver closed with every permit back",
                 Corrupt::new(&snapshot).patch_byte(rx_closed, 1),
                 "ResourceReady(ChannelClosed)",
+                "",
             ),
             (
                 "the receiver closed with a permit out",
@@ -2146,24 +2172,34 @@ mod tests {
                     .patch_byte(rx_closed, 1)
                     .patch(permits, 3 << 1),
                 "Waiting(",
+                "unread: 0",
             ),
             (
                 "the waker cell mid-registration",
                 Corrupt::new(&snapshot).patch(waker_state, atomic_waker::REGISTERING),
                 "Unknown(ResourceStateUnproven)",
+                "being registered",
+            ),
+            (
+                "the waker cell mid-wake",
+                Corrupt::new(&snapshot).patch(waker_state, atomic_waker::WAKING),
+                "Unknown(ResourceStateUnproven)",
+                "being taken",
             ),
             (
                 "another task's waker",
                 Corrupt::new(&snapshot).patch(data, holder.addr.0),
                 "Unknown(ConflictingEvidence)",
+                "not this one",
             ),
             (
                 "no waker registered",
                 Corrupt::new(&snapshot).patch(vtable, 0),
                 "Unknown(ConflictingEvidence)",
+                "registered no waker",
             ),
         ];
-        for (what, patched, expected) in cases {
+        for (what, patched, expected, said) in cases {
             let (assessment, notes, observed) = reassessed(&bundle, &patched, waiter);
             let matched = if expected.ends_with('(') {
                 assessment.starts_with(expected)
@@ -2171,8 +2207,61 @@ mod tests {
                 assessment == expected
             };
             assert!(matched, "{what}: {assessment} {notes:?}");
+            assert!(
+                assessment.contains(said) || notes.iter().any(|n| n.contains(said)),
+                "{what}: {assessment} {notes:?}"
+            );
             assert!(observed, "{what}: the observation is kept");
         }
+
+        // The semaphore's closed bit is read beside its permits, for
+        // the description's sake: the fixture's is open.
+        let read = ReadContext::none();
+        let open = ctx.observe_channel(recv.chan, &read, &mut ScanBudget::default());
+        assert_eq!(
+            (open.semaphore_closed, open.capacity),
+            (Some(false), Some(4))
+        );
+        let closed = Corrupt::new(&snapshot).patch(
+            permits,
+            (4 << hansei_bundle::tokio::semaphore::PERMIT_SHIFT)
+                | hansei_bundle::tokio::semaphore::CLOSED,
+        );
+        let ctx = Context::new(&closed, BundleView::new(&bundle)).unwrap();
+        let shut = ctx.observe_channel(recv.chan, &read, &mut ScanBudget::default());
+        assert_eq!(
+            (shut.semaphore_closed, shut.available),
+            (Some(true), Some(4))
+        );
+    }
+
+    /// Every waiter on one `Notify` gets its own place in wake order:
+    /// the joinset fixture parks five tasks on one, and their verified
+    /// waits take the five positions once each.
+    #[test]
+    fn test_notify_waiters_take_distinct_wake_positions() {
+        let (bundle, snapshot) = load_any("joinset");
+        let ctx = testkit::context(&bundle, &snapshot);
+        let (_, rows, _) = assessed(&ctx, &snapshot);
+        let mut positions: Vec<usize> = rows
+            .iter()
+            .filter_map(|r| r.assessment.verified())
+            .filter(|w| {
+                matches!(
+                    w.target(),
+                    WaitTarget::Notify {
+                        waiters: Some(5),
+                        ..
+                    }
+                )
+            })
+            .map(|w| {
+                w.queue_position()
+                    .expect("an established list places its node")
+            })
+            .collect();
+        positions.sort_unstable();
+        assert_eq!(positions, [0, 1, 2, 3, 4]);
     }
 
     /// The notified protocol on the channels fixture: the waiter parked

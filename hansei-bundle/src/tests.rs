@@ -3513,4 +3513,38 @@ mod node_validation {
         b.types.debug_formats.insert(MAP_HOLDER, node);
         rejects(&b, "map value type id 99 out of range");
     }
+
+    /// The tokio constants both layers decode, held to the values
+    /// tokio's sources fold into its code: the block list's masks and
+    /// flags around a 32-slot block, the `Notify` state bits, and the
+    /// `AtomicWaker` cell's two flags.
+    #[test]
+    fn test_tokio_constants_hold_the_values_tokio_folds_in() {
+        use crate::tokio::{atomic_waker, mpsc, notify};
+        assert_eq!(mpsc::BLOCK_CAP, 32);
+        assert_eq!(mpsc::BLOCK_MASK, !0x1f);
+        assert_eq!(mpsc::SLOT_MASK, 0x1f);
+        assert_eq!(mpsc::RELEASED, 1 << 32);
+        assert_eq!(mpsc::TX_CLOSED, 1 << 33);
+        assert_eq!(mpsc::READY_MASK, 0xffff_ffff);
+        assert_eq!(mpsc::BLOCK_MASK & mpsc::SLOT_MASK, 0);
+        assert_eq!(
+            (
+                notify::EMPTY,
+                notify::WAITING,
+                notify::NOTIFIED,
+                notify::STATE_MASK
+            ),
+            (0, 1, 2, 3)
+        );
+        assert_eq!(1u64 << notify::CALLS_SHIFT, notify::STATE_MASK + 1);
+        assert_eq!(
+            (
+                atomic_waker::WAITING,
+                atomic_waker::REGISTERING,
+                atomic_waker::WAKING
+            ),
+            (0, 1, 2)
+        );
+    }
 }

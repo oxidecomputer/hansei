@@ -432,12 +432,6 @@ impl NotifyObservation {
         }
         self.waiters.iter().position(|w| w.addr == node)
     }
-
-    /// Whether the list holds the node, if established.
-    pub fn contains(&self, node: u64) -> Option<bool> {
-        self.established()
-            .then(|| self.waiters.iter().any(|w| w.addr == node))
-    }
 }
 
 /// A semaphore's wait queue as one walk found it, read on explicit
