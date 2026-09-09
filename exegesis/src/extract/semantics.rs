@@ -2614,6 +2614,112 @@ mod tests {
         );
     }
 
+    /// Which screen a type is offered to is decided by where it is
+    /// defined, and the name that routes it is the exact one each
+    /// crate's own type has. A type under a name no rule claims is
+    /// offered to none, and a screen that refuses leaves no seed.
+    #[test]
+    fn test_library_seeds_route_by_the_definition_path() {
+        use crate::raw_types::{NsId, RawMember, RawStruct, RawType};
+        use gimli::UnitSectionOffset;
+
+        let mut reader = crate::DwReader::default();
+        let ns = |reader: &mut crate::DwReader<'static>, path: &'static str| -> NsId {
+            let mut at = None;
+            for segment in path.split("::") {
+                let name = reader.strings.intern(segment);
+                at = Some(reader.namespaces.insert(at, name));
+            }
+            at.expect("a namespace path has segments")
+        };
+        let sleep_mod = ns(&mut reader, "tokio::time::sleep");
+        let rt = ns(&mut reader, "hyper_util::rt::tokio");
+        let into_mod = ns(&mut reader, "futures_util::future::try_future::into_future");
+        let id = |offset: usize| TypeId(UnitSectionOffset(offset));
+        let (sleep, tokio_sleep, into, fut) = (id(1), id(2), id(3), id(4));
+        let strukt = |reader: &mut crate::DwReader<'static>,
+                      at: TypeId,
+                      namespace: NsId,
+                      name: &'static str,
+                      member: Option<(&'static str, TypeId)>,
+                      param: Option<(&'static str, TypeId)>| {
+            let name = Some(reader.strings.intern(name));
+            let members = member
+                .map(|(name, type_id)| RawMember {
+                    name: Some(reader.strings.intern(name)),
+                    offset: 0,
+                    type_id,
+                    source_loc: None,
+                })
+                .into_iter()
+                .collect();
+            let template_params = param
+                .map(|(name, type_id)| crate::raw_types::RawGenericParameter {
+                    name: Some(reader.strings.intern(name)),
+                    type_id,
+                })
+                .into_iter()
+                .collect();
+            reader.types.insert(
+                at,
+                RawType::Struct(RawStruct {
+                    name,
+                    namespace: Some(namespace),
+                    size: 8,
+                    members,
+                    template_params,
+                    source_loc: None,
+                }),
+            );
+        };
+        strukt(&mut reader, sleep, sleep_mod, "Sleep", None, None);
+        strukt(&mut reader, fut, sleep_mod, "Fut", None, None);
+        strukt(
+            &mut reader,
+            tokio_sleep,
+            rt,
+            "TokioSleep",
+            Some(("inner", sleep)),
+            None,
+        );
+        strukt(
+            &mut reader,
+            into,
+            into_mod,
+            "IntoFuture<tokio::time::sleep::Fut>",
+            Some(("future", fut)),
+            Some(("Fut", fut)),
+        );
+        let bundle_id = |raw: TypeId| Some(BundleTypeId(raw.0.0 as u32));
+        let seed = |raw, name: &str| library_seed(&reader, raw, name, bundle_id);
+        assert!(matches!(
+            seed(tokio_sleep, "hyper_util::rt::tokio::TokioSleep"),
+            Some(LibrarySeed::TokioSleep(member, _)) if member == "inner"
+        ));
+        assert!(matches!(
+            seed(
+                into,
+                "futures_util::future::try_future::into_future::IntoFuture<tokio::time::sleep::Fut>"
+            ),
+            Some(LibrarySeed::IntoFuture(member, _)) if member == "future"
+        ));
+        // The name is the route: the same layout under any other name
+        // reaches no screen, and a name whose screen refuses seeds
+        // nothing either.
+        for (raw, name) in [
+            (tokio_sleep, "hyper_util::rt::tokio::TokioSleeper"),
+            (tokio_sleep, "TokioSleep"),
+            (tokio_sleep, "app::TokioSleep"),
+            (sleep, "hyper_util::rt::tokio::TokioSleep"),
+            (
+                sleep,
+                "futures_util::future::try_future::into_future::IntoFuture<x>",
+            ),
+        ] {
+            assert!(seed(raw, name).is_none(), "{name}");
+        }
+    }
+
     /// Each reviewed third-party convention reads its origin off the
     /// registry path its own `poll` was declared on, and every
     /// departure declines with the reason: a tree that is not the

@@ -63,6 +63,12 @@ fn base() -> Bundle {
         "vendor/tracing-0.1.40/src/instrument.rs",
         "registry/src/index.crates.io-1949cf8c6b5b557f/tracing-0.1.50/src/instrument.rs",
         "dyn hyper::rt::timer::Sleep<Output=()>",
+        "futures-util",
+        "0.3.33",
+        "registry/src/index.crates.io-1949cf8c6b5b557f/futures-util-0.3.33/src/lib.rs",
+        "hyper-util",
+        "0.1.20",
+        "registry/src/index.crates.io-1949cf8c6b5b557f/hyper-util-0.1.20/src/rt/tokio.rs",
     ] {
         strings.intern(s);
     }
@@ -769,6 +775,48 @@ fn test_semantic_delegation_origin_is_its_registry_path() {
     bad(&b, "not a registry path");
     b.semantics.origins[0] = delegation_origin(StrRef(20));
     bad(&b, "another crate or version");
+    // Each delegation kind names the crate whose implementation it
+    // runs; another crate's origin, however well-formed, is not it.
+    for (kind, package, version, source) in [
+        (
+            SemanticRuleKind::FuturesUtilMap,
+            StrRef(22),
+            StrRef(23),
+            StrRef(24),
+        ),
+        (
+            SemanticRuleKind::FuturesUtilMapErr,
+            StrRef(22),
+            StrRef(23),
+            StrRef(24),
+        ),
+        (
+            SemanticRuleKind::FuturesUtilIntoFuture,
+            StrRef(22),
+            StrRef(23),
+            StrRef(24),
+        ),
+        (
+            SemanticRuleKind::HyperUtilTokioSleep,
+            StrRef(25),
+            StrRef(26),
+            StrRef(27),
+        ),
+    ] {
+        let mut b = forwarding();
+        b.semantics.rules[0].kind = kind;
+        b.semantics.origins[0] = SemanticOrigin::LibraryDelegation {
+            package,
+            version,
+            family: StrRef(17),
+            source,
+            files: Vec::new(),
+        };
+        b.validate().unwrap_or_else(|e| panic!("{kind:?}: {e}"));
+        // tracing's origin is somebody else's review.
+        b.semantics.origins[0] = delegation_origin(StrRef(18));
+        bad(&b, "third-party delegation needs source evidence");
+    }
 }
 
 fn dynamic() -> Bundle {
