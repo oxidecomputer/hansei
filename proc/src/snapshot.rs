@@ -423,6 +423,10 @@ impl Target for Snapshot {
         Ok(self.mappings.clone())
     }
 
+    fn captured_runs(&self) -> Option<Vec<std::ops::Range<u64>>> {
+        Some(self.segments().collect())
+    }
+
     fn lwps(&self) -> TargetResult<Vec<LwpInfo>> {
         Ok(self.lwps.clone())
     }
@@ -713,6 +717,10 @@ impl<T: Target> Target for Recorder<'_, T> {
 
     fn mappings(&self) -> TargetResult<Mappings> {
         self.target.mappings()
+    }
+
+    fn captured_runs(&self) -> Option<Vec<std::ops::Range<u64>>> {
+        self.target.captured_runs()
     }
 
     fn lwps(&self) -> TargetResult<Vec<LwpInfo>> {

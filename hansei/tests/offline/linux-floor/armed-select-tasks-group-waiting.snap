@@ -1,0 +1,10 @@
+---
+source: hansei/src/offline.rs
+description: "`tasks --group waiting-on` over linux-floor/armed-select"
+---
+COUNT  WAITING ON                                           TASKS
+    1  the Notify at 0xADDR                         5
+    1  timer                                                3
+    1  unknown at futures_util::stream::stream::next::Next  6
+    1  unknown at tokio::sync::oneshot::Receiver            4
+[4 groups]

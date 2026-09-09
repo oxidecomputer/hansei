@@ -1,0 +1,8 @@
+---
+source: hansei/src/offline.rs
+description: "`locals` over illumos/armed-select"
+---
+f: armed_select::selector::{async_fn#0}::{closure_env#0} {
+      _ref__disabled: 0xADDR (task 3) -> 0,
+      _ref__futures: 0xADDR (task 3) -> (&mut tokio::sync::oneshot::Receiver<u32>, &mut core::pin::Pin<&mut tokio::sync::mpsc::bounded::{impl#0}::recv::{async_fn_env#0}<u32>>, &mut core::pin::Pin<&mut tokio::sync::watch::{impl#4}::changed::{async_fn_env#0}<u32>>, &mut core::pin::Pin<&mut tokio::time::sleep::Sleep>) (..),
+  }

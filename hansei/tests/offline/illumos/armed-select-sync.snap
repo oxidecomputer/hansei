@@ -1,0 +1,6 @@
+---
+source: hansei/src/offline.rs
+description: "`sync` over illumos/armed-select"
+---
+a futures_util::stream::futures_unordered::FuturesUnordered<armed_select::child> (set 0xADDR): 2 children, driven by task 6 (`set`)
+    In flight: 2

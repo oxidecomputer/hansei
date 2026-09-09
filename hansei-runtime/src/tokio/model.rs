@@ -416,6 +416,9 @@ pub struct TimerEntryInfo {
     pub state: Option<u64>,
     /// The task the armed waker names, when it is a task's.
     pub task: Option<u64>,
+    /// Where the entry's waker pair sits, where one was decoded: the
+    /// slot the waker sweep must find again.
+    pub waker_at: Option<u64>,
     /// The deadline the registration word encodes, on the target's
     /// monotonic clock: the driver's epoch plus the tick, rounded up to
     /// the millisecond the way tokio registered it. `None` where the
@@ -509,6 +512,8 @@ pub struct IoWaiterInfo {
     pub slot: IoSlot,
     /// The task the waker names, when it is a task's.
     pub task: Option<u64>,
+    /// Where the waker pair sits, where one was decoded.
+    pub waker_at: Option<u64>,
     /// The `Waiter` node's address, for a listed waiter — the exact
     /// identity a readiness await's own embedded node is matched
     /// against. The direction slots are bare wakers with no node.
@@ -1120,6 +1125,8 @@ pub struct SemaphoreWaiter {
     pub needed: u64,
     /// Who waking this node schedules.
     pub waker: QueuedWaker,
+    /// Where the node's waker pair sits, where one is registered.
+    pub waker_at: Option<u64>,
 }
 
 /// One node in a `Notify`'s wait list.
@@ -1468,6 +1475,7 @@ mod tests {
             entry: 0x10,
             state,
             task: None,
+            waker_at: None,
             deadline: None,
         };
         assert_eq!(
@@ -1566,12 +1574,14 @@ mod tests {
                     entry: 0x10,
                     state: None,
                     task: Some(0x1000),
+                    waker_at: None,
                     deadline: None,
                 },
                 TimerEntryInfo {
                     entry: 0x20,
                     state: None,
                     task: None,
+                    waker_at: None,
                     deadline: None,
                 },
             ],
@@ -1583,12 +1593,14 @@ mod tests {
                     IoWaiterInfo {
                         slot: IoSlot::Reader,
                         task: Some(0x1000),
+                        waker_at: None,
                         node: None,
                         ready: None,
                     },
                     IoWaiterInfo {
                         slot: IoSlot::Writer,
                         task: Some(0x2000),
+                        waker_at: None,
                         node: None,
                         ready: None,
                     },

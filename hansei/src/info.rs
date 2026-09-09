@@ -50,7 +50,67 @@ fn attach<T: Target>(session: &Session<'_, T>, out: &mut dyn io::Write) -> Resul
         }
         None => writeln!(out, "allocator evidence: unavailable")?,
     }
+    waker_slots(session, out)
+}
+
+/// What the waker sweep swept and found: the patterns it knew, the
+/// memory it read, and its hits by where they sit — the admitted ones
+/// being the slots the listings may attribute, the rest the account of
+/// what was declined and why. How long it took is not printed: `info`
+/// is compared across sessions, and a duration is the one thing two
+/// sessions over one core never agree on.
+fn waker_slots<T: Target>(session: &Session<'_, T>, out: &mut dyn io::Write) -> Result<()> {
+    let slots = session.wakers();
+    let stats = &slots.stats;
+    if let Some(absent) = &stats.absent {
+        writeln!(out, "waker slots: not swept ({absent})")?;
+        return Ok(());
+    }
+    writeln!(
+        out,
+        "waker slots: {} of tokio's WAKER_VTABLE, {} set vtable{}; {} swept in {} chunk{}",
+        summary::counted(stats.task_vtables, "copy"),
+        stats.set_vtables,
+        if stats.set_vtables == 1 { "" } else { "s" },
+        bytes(stats.bytes),
+        stats.chunks,
+        if stats.chunks == 1 { "" } else { "s" },
+    )?;
+    writeln!(
+        out,
+        "    hits: {} task-pattern, {} set-pattern; {} admitted; {} unlisted header{}",
+        stats.task_hits,
+        stats.set_hits,
+        stats.admitted,
+        stats.unlisted,
+        if stats.unlisted == 1 { "" } else { "s" }
+    )?;
+    let classes: Vec<String> = stats
+        .by_class
+        .iter()
+        .filter(|(_, n)| **n > 0)
+        .map(|(class, n)| format!("{n} {}", class.name()))
+        .collect();
+    if !classes.is_empty() {
+        writeln!(out, "    by class: {}", classes.join(", "))?;
+    }
     Ok(())
+}
+
+/// A byte count in the unit that keeps it under four digits.
+fn bytes(n: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
+    let mut value = n as f64;
+    let mut unit = 0;
+    while value >= 1024.0 && unit + 1 < UNITS.len() {
+        value /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{n} B")
+    } else {
+        format!("{value:.1} {}", UNITS[unit])
+    }
 }
 
 /// The identity out of the core's own notes — mdb's `::status`,

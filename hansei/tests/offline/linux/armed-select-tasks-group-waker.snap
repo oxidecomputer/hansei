@@ -1,0 +1,8 @@
+---
+source: hansei/src/offline.rs
+description: "`tasks --group waker` over linux/armed-select"
+---
+COUNT  WAKER    TASKS
+    3  <empty>  4, 5, 6
+    1  timer    3
+[2 groups]

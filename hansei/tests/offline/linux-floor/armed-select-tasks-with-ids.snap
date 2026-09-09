@@ -1,0 +1,8 @@
+---
+source: hansei/src/offline.rs
+description: "`tasks --with id 3,6` over linux-floor/armed-select"
+---
+ID  STATE  FUTURES  AWAITING AT                  WAITING ON                                                     TYPE
+3   idle         4  src/bin/armed-select.rs:48   timer (deadline TS on the target's monotonic clock)  async fn armed_select::selector
+6   idle         2  src/bin/armed-select.rs:100  unknown at futures_util::stream::stream::next::Next            async fn armed_select::driver
+[2 tasks]

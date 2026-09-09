@@ -1,0 +1,11 @@
+---
+source: hansei/src/offline.rs
+description: "`futures --group waiting-on` over linux-floor/armed-select"
+---
+COUNT  WAITING ON                                 FUTURES
+    3  unknown at tokio::sync::oneshot::Receiver  0xADDR, 0xADDR, 0xADDR
+    2  a Notify                                   0xADDR, 0xADDR
+    1  mpsc rx                                    0xADDR
+    1  timer                                      0xADDR
+    1  unknown at tokio::task::coop::Coop         0xADDR
+[5 groups]

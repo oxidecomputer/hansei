@@ -52,7 +52,7 @@
 set -euo pipefail
 
 PRIMARY_TOOLCHAIN=1.98.0
-ALL_PROGRAMS=(futurelock simple-await nested-await dyn-future select-combinator many-tasks sleep-join channels park-target core-target unordered joinset ct-runtime local-set local-set-timer local-set-io foreign-runtime gen-0007 walk-shapes spin-poll ct-spin stale-local blocking-pool enum-reprs delegation-cases)
+ALL_PROGRAMS=(futurelock simple-await nested-await dyn-future select-combinator many-tasks sleep-join channels park-target core-target unordered joinset ct-runtime local-set local-set-timer local-set-io foreign-runtime gen-0007 walk-shapes spin-poll ct-spin stale-local blocking-pool enum-reprs delegation-cases armed-select)
 
 cd "$(dirname "$0")"
 FIXTURES="$PWD/fixtures"

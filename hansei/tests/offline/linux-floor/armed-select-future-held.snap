@@ -1,0 +1,11 @@
+---
+source: hansei/src/offline.rs
+description: "`future 0x559329edfe90` over linux-floor/armed-select"
+---
+future 0xADDR
+    type: future tokio::sync::oneshot::Receiver<u32>
+    held by: task 3 (frame 1, `once`)
+    depth: 1 frame
+    waiting on: unknown at tokio::sync::oneshot::Receiver
+    held futures: 0
+    join sets: 0

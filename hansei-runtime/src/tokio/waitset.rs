@@ -669,6 +669,7 @@ mod tests {
             entry,
             state: Some(1000),
             task: Some(task.addr.0),
+            waker_at: None,
             deadline: None,
         }
     }
@@ -684,6 +685,7 @@ mod tests {
                     None => IoSlot::Reader,
                 },
                 task: Some(task.addr.0),
+                waker_at: None,
                 node,
                 ready: None,
             }],

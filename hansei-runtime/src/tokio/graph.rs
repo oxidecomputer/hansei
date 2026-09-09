@@ -104,6 +104,8 @@ impl TaskWait {
 pub struct JoinWaker {
     pub task: TaskRef,
     pub waiter: TaskRef,
+    /// Where the trailer's waker pair sits.
+    pub waker_at: Option<u64>,
 }
 
 /// How a verified semaphore wait stands to a polling barrier's acquire
@@ -214,13 +216,14 @@ pub fn analyze<T: Target>(
         // its `JoinHandle` — armed by that task's first poll of the
         // handle, so the slot answers "what would wake the joiner"
         // even when the joiner's chain did not decode.
-        match ctx.trailer_waker(task) {
-            Ok(QueuedWaker::Task { addr, task_id }) => join_wakers.push(JoinWaker {
+        match ctx.trailer_waker_slot(task) {
+            Ok((QueuedWaker::Task { addr, task_id }, waker_at)) => join_wakers.push(JoinWaker {
                 task: tref,
                 waiter: TaskRef {
                     addr: TaskAddr(addr),
                     task_id,
                 },
+                waker_at,
             }),
             Ok(_) => {}
             Err(e) => errors.push(e.context(format!("failed to read {tref}'s trailer waker"))),

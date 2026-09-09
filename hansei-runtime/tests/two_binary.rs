@@ -963,6 +963,86 @@ fn test_joinset_offline() {
     assert_summary("joinset");
 }
 
+/// The waker sweep over the fixture built for it. A snapshot holds
+/// only what its capture read, so the hits here are the pairs the
+/// harvests, the protocols and the capture's value renderer reached:
+/// the selector's wheel entry and `Notified` node sit in its own frame,
+/// its channel's receiver slot in the channel's heap block; the
+/// waiter's node in its frame; and the holder's one slot is its
+/// oneshot's `rx_task`, in the `Inner` the renderer dereferenced —
+/// heap memory, admitted as a live buffer where an allocator index
+/// answers and as anonymous memory where none can. The holder's held
+/// `Notified` was never polled and carries no waker.
+#[test]
+fn test_armed_select_offline() {
+    for set in FIXTURE_SETS {
+        let (bundle, snapshot) = load(set, "armed-select");
+        let ctx = hansei_runtime::testkit::context(&bundle, &snapshot);
+        let mut e = hansei_runtime::testkit::enumerate(&ctx, &snapshot);
+        e.discover(&ctx, &[]);
+        let extents = ctx.task_extents(&e.list);
+        let census = hansei_runtime::testkit::census(&ctx, &e.list);
+        let slots = ctx.sweep_wakers(&hansei_runtime::tokio::wakers::Territory {
+            list: &e.list,
+            extents: &extents,
+            census: &census,
+            heap: e.heap.as_ref(),
+            lwps: &e.lwps,
+        });
+        assert!(
+            slots.stats.absent.is_none(),
+            "[{set}] {:?}",
+            slots.stats.absent
+        );
+        let by_name = |needle: &str| -> &Task {
+            e.list
+                .tasks
+                .iter()
+                .find(|t| known_name(t).contains(needle))
+                .unwrap_or_else(|| panic!("[{set}] no task named {needle}"))
+        };
+        let count = |task: &Task| slots.slots_of(task.addr.0).count();
+        let classes =
+            |task: &Task| -> Vec<_> { slots.slots_of(task.addr.0).map(|h| h.class).collect() };
+        let selector = by_name("selector");
+        assert!(
+            count(selector) >= 3,
+            "[{set}] the selector's slots: {:?}",
+            classes(selector)
+        );
+        assert!(
+            classes(selector)
+                .iter()
+                .filter(|c| **c == hansei_runtime::tokio::wakers::Class::TaskExtent)
+                .count()
+                >= 2,
+            "[{set}] the sleep and the notify node sit in the selector's frame: {:?}",
+            classes(selector)
+        );
+        assert!(
+            count(by_name("waiter")) >= 1,
+            "[{set}] the waiter's node: {:?}",
+            classes(by_name("waiter"))
+        );
+        let holder = classes(by_name("holder"));
+        assert_eq!(holder.len(), 1, "[{set}] {holder:?}");
+        assert!(
+            matches!(
+                holder[0],
+                hansei_runtime::tokio::wakers::Class::UmemLive
+                    | hansei_runtime::tokio::wakers::Class::Anon
+            ),
+            "[{set}] {holder:?}"
+        );
+        let registered = e
+            .registries
+            .timers
+            .iter()
+            .filter_map(|t| Some(("wheel entry", t.waker_at?, t.task?)));
+        assert_eq!(slots.audit(registered), Vec::<String>::new(), "[{set}]");
+    }
+}
+
 /// The resolved future name of a task the fixtures guarantee decodes.
 fn known_name(task: &Task) -> &str {
     match &task.future {
@@ -979,33 +1059,37 @@ fn known_name(task: &Task) -> &str {
 /// count no longer kept, which no listing would show.
 #[test]
 fn test_the_census_accounting_is_exact_per_program() {
-    // (program, uncertain locals, chain hits, descent finds, variant finds)
-    const ACCOUNTING: &[(&str, usize, usize, usize, usize)] = &[
-        ("simple-await", 0, 1, 0, 0),
-        ("nested-await", 0, 3, 0, 0),
-        ("dyn-future", 0, 4, 0, 0),
-        ("futurelock", 2, 10, 0, 0),
-        ("sleep-join", 0, 2, 0, 0),
-        ("channels", 0, 5, 0, 0),
-        ("unordered", 0, 4, 3, 2),
-        ("joinset", 0, 7, 0, 0),
-        ("ct-runtime", 0, 3, 0, 0),
-        ("local-set", 0, 4, 0, 0),
-        ("local-set-timer", 0, 4, 0, 0),
-        ("local-set-io", 0, 9, 0, 0),
-        ("foreign-runtime", 0, 4, 0, 0),
-        ("gen-0007", 0, 2, 1, 1),
-        ("walk-shapes", 2, 18, 1, 0),
-        ("blocking-pool", 0, 2, 0, 0),
+    // (program, uncertain locals, chain hits, descent finds, variant
+    // finds, dedup hits)
+    const ACCOUNTING: &[(&str, usize, usize, usize, usize, usize)] = &[
+        ("simple-await", 0, 1, 0, 0, 0),
+        ("nested-await", 0, 3, 0, 0, 0),
+        ("dyn-future", 0, 4, 0, 0, 0),
+        ("futurelock", 2, 10, 0, 0, 0),
+        ("sleep-join", 0, 2, 0, 0, 0),
+        ("channels", 0, 5, 0, 0, 0),
+        ("unordered", 0, 4, 3, 2, 0),
+        ("joinset", 0, 7, 0, 0, 0),
+        ("ct-runtime", 0, 3, 0, 0, 0),
+        ("local-set", 0, 4, 0, 0, 0),
+        ("local-set-timer", 0, 4, 0, 0, 0),
+        ("local-set-io", 0, 9, 0, 0, 0),
+        ("foreign-runtime", 0, 4, 0, 0, 0),
+        ("gen-0007", 0, 2, 1, 1, 0),
+        ("walk-shapes", 2, 18, 1, 0, 0),
+        ("blocking-pool", 0, 2, 0, 0, 0),
         // The dyn-block case adds two chain frames — the box the block
         // awaits and the leaf behind it — and one uncertain local, the
         // box at the block's unresumed slot.
-        ("delegation-cases", 3, 16, 1, 0),
+        ("delegation-cases", 3, 16, 1, 0, 0),
+        // Four branch futures reached by descent, each met again
+        // through the select's borrow of it, and their chains behind.
+        ("armed-select", 0, 9, 4, 0, 4),
     ];
     let named: Vec<&str> = ACCOUNTING.iter().map(|row| row.0).collect();
     assert_eq!(named, PROGRAMS, "every program is accounted for");
     for set in FIXTURE_SETS {
-        for &(program, uncertain, chain_hits, descend_finds, enum_finds) in ACCOUNTING {
+        for &(program, uncertain, chain_hits, descend_finds, enum_finds, dedup_hits) in ACCOUNTING {
             let (bundle, snapshot) = load(set, program);
             let (_ctx, _list, census) = census_of(&bundle, &snapshot);
             assert_eq!(
@@ -1022,7 +1106,7 @@ fn test_the_census_accounting_is_exact_per_program() {
                     census::Stats {
                         descend_finds,
                         enum_finds,
-                        dedup_hits: 0,
+                        dedup_hits,
                         chain_hits,
                     }
                 ),

@@ -9,7 +9,7 @@ use hansei_runtime::capture;
 use hansei_runtime::heap::{self, umem::UmemHeap, view::GateCounts, view::HeapView};
 use hansei_runtime::tokio::graph::{self as rt_graph, Analysis};
 use hansei_runtime::tokio::observe::ReadContext;
-use hansei_runtime::tokio::{bundle, census, contract};
+use hansei_runtime::tokio::{bundle, census, contract, wakers};
 use proc::{Proc, Target};
 
 #[cfg(not(target_os = "illumos"))]
@@ -1463,6 +1463,13 @@ pub struct Session<'b, T: Target> {
     /// place for a session nothing warmed, or whose worker died.
     extents: OnceCell<bundle::TaskExtents>,
     census: OnceCell<census::FutureCensus>,
+    /// Every waker slot in the target, swept once and classified
+    /// against the extents, the census and the allocator index — built
+    /// on the same worker, after the census it classifies against.
+    wakers: OnceCell<wakers::WakerSlots>,
+    /// Whether `--audit` has cross-checked the registries against the
+    /// sweep.
+    wakers_audited: Cell<bool>,
     /// The census as the tree the listings show — built once beside
     /// it, so `tasks --exec task` reads it per task rather than
     /// rebuilding it.
@@ -1642,6 +1649,8 @@ impl<'b, T: Target> Session<'b, T> {
             impl_fold: hansei_bundle::names::ImplFold::for_bundle(bundle),
             extents: OnceCell::new(),
             census: OnceCell::new(),
+            wakers: OnceCell::new(),
+            wakers_audited: Cell::new(false),
             census_tree: OnceCell::new(),
             stacks: OnceCell::new(),
             umem,
@@ -1679,11 +1688,37 @@ impl<'b, T: Target> Session<'b, T> {
     fn adopt(&self, warmed: Warmed) {
         let _ = self.extents.set(warmed.extents);
         let _ = self.census.set(warmed.census);
+        let _ = self.wakers.set(warmed.wakers);
     }
 
     fn extents(&self) -> &bundle::TaskExtents {
         self.extents
             .get_or_init(|| self.ctx.task_extents(&self.tasks))
+    }
+
+    /// The waker sweep, built on the launch worker or in place here.
+    /// Under `--audit`, the first ask cross-checks every waker the
+    /// registries and the analysis decoded against the sweep's hits.
+    pub(crate) fn wakers(&self) -> &wakers::WakerSlots {
+        let slots = self.wakers.get_or_init(|| {
+            self.ctx.sweep_wakers(&wakers::Territory {
+                list: &self.tasks,
+                extents: self.extents(),
+                census: self.census(),
+                heap: self.umem.as_ref(),
+                lwps: &self.lwps,
+            })
+        });
+        if first_audit(self.audit, &self.wakers_audited) {
+            let violations = slots.audit(registered_wakers(self));
+            if violations.is_empty() {
+                let _ = writeln!(io::stderr(), "waker audit: clean");
+            }
+            for violation in violations {
+                let _ = writeln!(io::stderr(), "warning: waker audit: {violation}");
+            }
+        }
+        slots
     }
 
     /// Every lwp's stack, unwound once per session on first use. A
@@ -2229,6 +2264,11 @@ fn warm_listings(session: &Session<'_, Proc>, proc: &Proc, bundle: &Bundle) {
         }
     });
     futures::rows(session);
+    // The registry cross-check is part of `--audit`, whether or not a
+    // command asks after the sweep.
+    if session.audit {
+        session.wakers();
+    }
 }
 
 /// Whether this `census()` call is the one that runs `--audit`'s
@@ -2246,6 +2286,40 @@ fn first_audit(audit: bool, audited: &Cell<bool>) -> bool {
 struct Warmed {
     extents: bundle::TaskExtents,
     census: census::FutureCensus,
+    wakers: wakers::WakerSlots,
+}
+
+/// Every waker pair a registry or the analysis decoded as a task's,
+/// with what it is and the task it names: what the sweep must have
+/// found again, since both read the same bytes.
+fn registered_wakers<'s, T: Target>(
+    session: &'s Session<'_, T>,
+) -> impl Iterator<Item = (&'static str, u64, u64)> + 's {
+    let timers = session
+        .registries
+        .timers
+        .iter()
+        .filter_map(|t| Some(("wheel entry", t.waker_at?, t.task?)));
+    let io = session.registries.io.iter().flat_map(|r| {
+        r.waiters
+            .iter()
+            .filter_map(|w| Some(("io waiter", w.waker_at?, w.task?)))
+    });
+    let analysis = session.analysis();
+    let joins = analysis
+        .join_wakers
+        .iter()
+        .filter_map(|j| Some(("trailer", j.waker_at?, j.waiter.addr.0)));
+    let queues = analysis.waits.iter().flat_map(|w| {
+        let waiters = match w.verified().map(|v| v.target()) {
+            Some(bundle::WaitTarget::Semaphore { waiters, .. }) => waiters.as_slice(),
+            _ => &[],
+        };
+        waiters
+            .iter()
+            .filter_map(|n| Some(("semaphore node", n.waker_at?, n.waker.task()?)))
+    });
+    timers.chain(io).chain(joins).chain(queues)
 }
 
 /// `umem` is the session's prepared allocator evidence, borrowed: the
@@ -2273,7 +2347,20 @@ fn warm_worker(
         heap: view.as_ref().map(|view| view as &dyn reify::Heap),
     };
     let census = census::census_bounded(&ctx, tasks, bounds, &read);
-    Some(Box::new(Warmed { extents, census }))
+    // The sweep last: it classifies against everything above.
+    let lwps = proc.lwps().unwrap_or_default();
+    let wakers = ctx.sweep_wakers(&wakers::Territory {
+        list: tasks,
+        extents: &extents,
+        census: &census,
+        heap: umem,
+        lwps: &lwps,
+    });
+    Some(Box::new(Warmed {
+        extents,
+        census,
+        wakers,
+    }))
 }
 
 /// The attach summary: what is being read, and how well the two files

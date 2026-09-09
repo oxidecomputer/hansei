@@ -1,0 +1,77 @@
+---
+source: hansei/src/offline.rs
+description: "`futures --exec trace -l 1` over linux-floor/armed-select"
+---
+future 0xADDR
+future 0xADDR: future tokio::sync::oneshot::Receiver<u32>
+Held by: task 3 — async fn armed_select::selector (frame 1, `once`)
+
+what tokio::sync::oneshot::Receiver<u32> polls is not established (no reviewed rule covers its implementation); the chain ends there
+#0  future        tokio::sync::oneshot::Receiver<u32>
+      (<no_state>, 1 local)
+
+future 0xADDR
+future 0xADDR: async fn tokio::sync::mpsc::bounded::Receiver::recv<u32>
+Held by: task 3 — async fn armed_select::selector (frame 1, `recv`)
+
+Waiting on: mpsc rx 0xADDR: 1 sender, capacity 4, 0 unread
+
+#0  future        core::future::poll_fn::PollFn<tokio::sync::mpsc::bounded::Receiver::recv::{async_fn#0}::{closure_env#0}<u32>>
+      waiting on mpsc rx 0xADDR: 1 sender, capacity 4, 0 unread
+[2 frames, 1 shown]
+
+future 0xADDR
+future 0xADDR: async fn tokio::sync::watch::Receiver::changed<u32>
+Held by: task 3 — async fn armed_select::selector (frame 1, `changed`)
+
+what tokio::task::coop::Coop<tokio::sync::watch::changed_impl<u32>> polls is not established (no reviewed rule covers its implementation); the chain ends there
+#0  future        tokio::task::coop::Coop<tokio::sync::watch::changed_impl<u32>>
+      constructed at tokio-1.47.5/src/sync/watch.rs:914 (<no_state>, 1 local; holds 1 pending future)
+[2 frames, 1 shown]
+
+future 0xADDR
+future 0xADDR: async fn tokio::sync::watch::changed_impl<u32>
+Held by: task 3 — async fn armed_select::selector (frame 0, `fut`, via held future at 0xADDR)
+
+Waiting on: the Notify at 0xADDR
+
+#0  future        tokio::sync::notify::Notified
+      waiting on the Notify at 0xADDR
+[2 frames, 1 shown]
+
+future 0xADDR
+future 0xADDR: future tokio::time::sleep::Sleep
+Held by: task 3 — async fn armed_select::selector (frame 1, `sleep`)
+
+Waiting on: timer (deadline TS on the target's monotonic clock)
+
+#0  future        tokio::time::sleep::Sleep
+      waiting on timer (deadline TS on the target's monotonic clock)
+
+future 0xADDR
+future 0xADDR: future tokio::sync::notify::Notified
+Held by: task 4 — async fn armed_select::holder (frame 1, `notified`)
+
+Waiting on: the Notify at 0xADDR
+
+#0  future        tokio::sync::notify::Notified
+      waiting on the Notify at 0xADDR
+
+future 0xADDR
+future 0xADDR: async fn armed_select::child
+Child of: futures_util::stream::futures_unordered::FuturesUnordered<armed_select::child> at 0xADDR (frame 1, `set`), polled by task 6 — async fn armed_select::driver
+
+what tokio::sync::oneshot::Receiver<u32> polls is not established (no reviewed rule covers its implementation); the chain ends there
+#0  future        tokio::sync::oneshot::Receiver<u32>
+      (<no_state>, 1 local)
+[2 frames, 1 shown]
+
+future 0xADDR
+future 0xADDR: async fn armed_select::child
+Child of: futures_util::stream::futures_unordered::FuturesUnordered<armed_select::child> at 0xADDR (frame 1, `set`), polled by task 6 — async fn armed_select::driver
+
+what tokio::sync::oneshot::Receiver<u32> polls is not established (no reviewed rule covers its implementation); the chain ends there
+#0  future        tokio::sync::oneshot::Receiver<u32>
+      (<no_state>, 1 local)
+[2 frames, 1 shown]
+[Executed against 8 futures, 0 failed]

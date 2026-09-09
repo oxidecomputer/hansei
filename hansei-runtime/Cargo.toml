@@ -33,11 +33,13 @@ regex.workspace = true
 semver.workspace = true
 
 [dependencies]
+aho-corasick.workspace = true
 anyhow.workspace = true
 foldhash.workspace = true
 hansei-bundle.workspace = true
 proc.workspace = true
 reify.workspace = true
+rustc-demangle.workspace = true
 # testkit's fixture recipes and output masker.
 regex = { workspace = true, optional = true }
 testrun = { workspace = true, optional = true }

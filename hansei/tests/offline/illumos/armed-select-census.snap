@@ -1,0 +1,51 @@
+---
+source: hansei/src/offline.rs
+description: "`census` over illumos/armed-select"
+---
+Threads: 3 lwps, 3 in runtime 0 @ 0xADDR
+
+COUNT  RT  ROLE             STATE            LWPS
+    1  0   worker           in driver        2
+    1  0   worker           parked           3
+    1  0   entered runtime  block_on caller  1
+    0  0   blocking pool    0 idle, 0 busy   —
+[3 lwps]
+
+Tasks: 4 owned by runtime 0 @ 0xADDR
+
+COUNT  STATE
+    4  idle
+[4 tasks]
+
+COUNT  TYPE / WAITING ON
+    1  async fn armed_select::driver
+       └─ 1  unknown
+    1  async fn armed_select::holder
+       └─ 1  unknown
+    1  async fn armed_select::selector
+       └─ 1  one of several
+    1  async fn armed_select::waiter
+       └─ 1  a Notify
+[4 types]
+
+Futures: 12 in flight, on 21 await-chain frames, up to 2 deep
+
+COUNT  HELD IN
+    4  task (its own await chain)
+    6  frame (off any await chain)
+    2  set (1 FuturesUnordered)
+[12 futures]
+
+COUNT  TYPE / WAITING ON
+    2  async fn armed_select::child
+       └─ 2  unknown
+    1  async fn tokio::sync::mpsc::bounded::Receiver::recv<u32>
+       └─ 1  mpsc rx
+    1  async fn tokio::sync::watch::Receiver::changed<u32>
+       └─ 1  unknown
+    1  async fn tokio::sync::watch::changed_impl<u32>
+       └─ 1  a Notify
+    1  future tokio::sync::notify::Notified
+       └─ 1  a Notify
+    2  (2 more types)
+[7 types, 5 shown]

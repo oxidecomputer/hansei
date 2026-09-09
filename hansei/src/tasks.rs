@@ -2833,6 +2833,7 @@ mod table_tests {
                 entry: 0xdd00,
                 state: None,
                 task: Some(t1),
+                waker_at: None,
                 deadline: None,
             }],
             vec![IoResourceInfo {
@@ -2842,6 +2843,7 @@ mod table_tests {
                 waiters: vec![IoWaiterInfo {
                     slot: IoSlot::Reader,
                     task: Some(t1),
+                    waker_at: None,
                     node: None,
                     ready: None,
                 }],
@@ -2857,6 +2859,7 @@ mod table_tests {
                 SemaphoreWaiter {
                     addr: 0xe100,
                     needed: 1,
+                    waker_at: None,
                     waker: QueuedWaker::Task {
                         addr: t1,
                         task_id: Some(1),
@@ -2865,6 +2868,7 @@ mod table_tests {
                 SemaphoreWaiter {
                     addr: 0xe200,
                     needed: 1,
+                    waker_at: None,
                     waker: QueuedWaker::Unarmed,
                 },
             ],
@@ -2881,6 +2885,7 @@ mod table_tests {
                 addr: TaskAddr(t1),
                 task_id: Some(1),
             },
+            waker_at: None,
         }];
         let list = TaskList::new(vec![task(1, 0), task(2, 0)]);
         let rows = build_rows(

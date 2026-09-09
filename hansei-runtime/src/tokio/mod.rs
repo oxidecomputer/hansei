@@ -25,6 +25,7 @@ pub mod scan;
 mod semantics;
 pub mod stackjoin;
 pub mod waitset;
+pub mod wakers;
 pub mod work;
 
 use std::fmt;

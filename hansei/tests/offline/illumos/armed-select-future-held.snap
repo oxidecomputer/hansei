@@ -1,0 +1,11 @@
+---
+source: hansei/src/offline.rs
+description: "`future 0x1257990` over illumos/armed-select"
+---
+future 0xADDR
+    type: future tokio::sync::oneshot::Receiver<u32>
+    held by: task 3 (frame 1, `once`)
+    depth: 1 frame
+    waiting on: unknown at tokio::sync::oneshot::Receiver
+    held futures: 0
+    join sets: 0

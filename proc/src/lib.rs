@@ -267,6 +267,16 @@ pub trait Target: Sync {
     /// The target's memory mappings.
     fn mappings(&self) -> Result<Mappings>;
 
+    /// The readable stretches of the target that do not follow from
+    /// its mappings, where a target has them: a snapshot holds exactly
+    /// the runs its capture read, which start wherever a read started
+    /// rather than at a page boundary, so a sweep over such a target
+    /// walks these instead of its mappings. `None` for a target whose
+    /// readable memory is what [`readable_runs`] finds in its mappings.
+    fn captured_runs(&self) -> Option<Vec<Range<u64>>> {
+        None
+    }
+
     /// The target's LWPs with their register state.
     fn lwps(&self) -> Result<Vec<LwpInfo>>;
 

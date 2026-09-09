@@ -2713,6 +2713,11 @@ fn test_golden_channels() {
 }
 
 #[test]
+fn test_golden_armed_select() {
+    run_golden("armed-select");
+}
+
+#[test]
 fn test_golden_unordered() {
     run_golden("unordered");
 }

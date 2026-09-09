@@ -786,6 +786,7 @@ mod tests {
         SemaphoreWaiter {
             addr,
             needed: 1,
+            waker_at: None,
             waker: QueuedWaker::Unarmed,
         }
     }

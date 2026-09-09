@@ -1,0 +1,5 @@
+---
+source: hansei/src/offline.rs
+description: "`print no_such_member` over illumos/armed-select"
+---
+error: type armed_select::selector::{async_fn#0}::{closure_env#0} has no member named no_such_member (members: _ref__disabled, _ref__futures)

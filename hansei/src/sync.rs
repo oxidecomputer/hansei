@@ -797,6 +797,7 @@ mod sync_tests {
                 addr: addr(id).0,
                 task_id: Some(id),
             },
+            waker_at: None,
         }
     }
 
@@ -1022,6 +1023,7 @@ mod sync_tests {
             waiters: vec![SemaphoreWaiter {
                 addr: 0xe300,
                 needed: 3,
+                waker_at: None,
                 waker: QueuedWaker::Unarmed,
             }],
         };

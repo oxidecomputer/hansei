@@ -629,6 +629,7 @@ dependencies = [
 name = "hansei-runtime"
 version = "0.1.0"
 dependencies = [
+ "aho-corasick",
  "anyhow",
  "blake3",
  "exegesis",
@@ -639,6 +640,7 @@ dependencies = [
  "proc",
  "regex",
  "reify",
+ "rustc-demangle",
  "semver",
  "testrun",
 ]

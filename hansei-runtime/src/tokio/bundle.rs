@@ -192,7 +192,7 @@ pub struct Context<'b, T> {
     vtables: RefCell<HashMap<u64, TaskVtable>>,
     /// Memoized address of tokio's task `WAKER_VTABLE` static in the
     /// target, including a cached diagnostic when resolution is ambiguous.
-    waker_vtable: RefCell<Option<std::result::Result<Option<u64>, String>>>,
+    waker_vtable: RefCell<Option<std::result::Result<Vec<u64>, String>>>,
     /// Memoized stop time of the target on its own monotonic clock (see
     /// [`Context::stopped_at`]).
     stopped: RefCell<Option<Option<RawInstant>>>,
@@ -369,6 +369,47 @@ impl<'b, T: Target> Context<'b, T> {
     pub(crate) fn dyn_future_ids_memoized(&self, symbol: &str) -> SymbolLookup<BundleTypeId> {
         self.dyn_future_lookups
             .get_or(symbol, || self.view.dyn_future_ids_for_symbol(symbol))
+    }
+
+    /// Every target address a named static resolves to: the exact name's
+    /// alone when the symtab has it, else every distinct address the
+    /// normalized v0 key's candidates sit at, sorted — for a join that
+    /// accepts any copy of the static.
+    fn object_symbol_addrs(&self, name: &str) -> Result<Vec<u64>> {
+        if let Some(symbol) = self.proc.lookup_symbol_by_name(name) {
+            return Ok(vec![symbol.st_value]);
+        }
+        let Some(key) = normalized_v0_key(name) else {
+            return Ok(Vec::new());
+        };
+        self.index_object_symbols()?;
+        let symbols = self.object_symbols.borrow();
+        let mut addrs: Vec<u64> = symbols
+            .as_ref()
+            .unwrap()
+            .get(&key)
+            .into_iter()
+            .flatten()
+            .map(|symbol| symbol.st_value)
+            .collect();
+        addrs.sort_unstable();
+        addrs.dedup();
+        Ok(addrs)
+    }
+
+    /// Build the normalized-key index over the target's object symbols,
+    /// once.
+    fn index_object_symbols(&self) -> Result<()> {
+        if self.object_symbols.borrow().is_none() {
+            let mut index: HashMap<String, Vec<SymbolBuf>> = HashMap::default();
+            for symbol in self.proc.object_symbols()? {
+                if let Some(key) = normalized_v0_key(&symbol.name) {
+                    index.entry(key).or_default().push(symbol);
+                }
+            }
+            *self.object_symbols.borrow_mut() = Some(index);
+        }
+        Ok(())
     }
 
     /// Resolve a named static exactly when possible, then by a normalized v0
@@ -1204,6 +1245,12 @@ impl<'b, T: Target> Context<'b, T> {
     /// Trailer's place is read from the task's own vtable, the way
     /// [`Context::task_extent`] places it.
     pub fn trailer_waker(&self, task: &Task) -> Result<QueuedWaker> {
+        Ok(self.trailer_waker_slot(task)?.0)
+    }
+
+    /// [`Context::trailer_waker`], with the address of the pair it
+    /// decoded — the slot the waker sweep must find again.
+    pub fn trailer_waker_slot(&self, task: &Task) -> Result<(QueuedWaker, Option<u64>)> {
         let header_ty = self.infra_ty(self.view.bundle().infra.header, "task Header")?;
         let header = Value::read(self.proc, header_ty, task.addr.0)
             .with_context(|| format!("failed to read the task Header at {:?}", task.addr))?;
@@ -1216,9 +1263,9 @@ impl<'b, T: Target> Context<'b, T> {
         let trailer = Value::read(self.proc, ty, trailer_addr)
             .with_context(|| format!("failed to read Trailer at {trailer_addr:#x}"))?;
         let Some(raw) = self.walk(WalkRole::TrailerWaker).walk(trailer)?.optional() else {
-            return Ok(QueuedWaker::Unarmed);
+            return Ok((QueuedWaker::Unarmed, None));
         };
-        self.raw_waker(raw)
+        Ok((self.raw_waker(raw)?, Some(raw.addr)))
     }
 
     // -----------------------------------------------------------------------
@@ -1494,25 +1541,32 @@ impl<'b, T: Target> Context<'b, T> {
     /// One wait-queue node as a listing carries it: the permits it
     /// still needs and the waker it holds.
     fn queue_node(&self, node: Value<'b>, read: &ReadContext<'_>) -> Result<SemaphoreWaiter> {
+        let (waker, waker_at) = self.read_queued_waker(node, read)?;
         Ok(SemaphoreWaiter {
             addr: node.addr,
             needed: self.walk(WalkRole::WaiterNeeded).read_with(read, node)?,
-            waker: self.read_queued_waker(node, read)?,
+            waker,
+            waker_at,
         })
     }
 
-    /// Decode the waker registered in a wait-queue node. Waiters keep
-    /// theirs in an `UnsafeCell<Option<Waker>>`, whose `Some` payload
-    /// peels through the `Waker` to the `RawWaker` pair.
-    fn read_queued_waker(&self, node: Value<'b>, read: &ReadContext<'_>) -> Result<QueuedWaker> {
+    /// Decode the waker registered in a wait-queue node, and where the
+    /// pair sits. Waiters keep theirs in an `UnsafeCell<Option<Waker>>`,
+    /// whose `Some` payload peels through the `Waker` to the `RawWaker`
+    /// pair.
+    fn read_queued_waker(
+        &self,
+        node: Value<'b>,
+        read: &ReadContext<'_>,
+    ) -> Result<(QueuedWaker, Option<u64>)> {
         let Some(raw) = self
             .walk(WalkRole::WaiterWaker)
             .walk_with(read, node)?
             .optional()
         else {
-            return Ok(QueuedWaker::Unarmed);
+            return Ok((QueuedWaker::Unarmed, None));
         };
-        self.raw_waker(raw)
+        Ok((self.raw_waker(raw)?, Some(raw.addr)))
     }
 
     /// Decode one `RawWaker`, wherever it was registered — a semaphore's
@@ -1531,7 +1585,7 @@ impl<'b, T: Target> Context<'b, T> {
     /// address-equality join against the target's own symtab, never a
     /// guess about what the data word points at.
     fn task_waker(&self, data: u64, vtable: u64) -> Result<QueuedWaker> {
-        if self.task_waker_vtable()? != Some(vtable) {
+        if !self.task_waker_vtables()?.contains(&vtable) {
             return Ok(QueuedWaker::Other { vtable });
         }
         let (task_id, _) = self
@@ -1543,15 +1597,17 @@ impl<'b, T: Target> Context<'b, T> {
         })
     }
 
-    /// The target address of tokio's task `WAKER_VTABLE` static,
-    /// resolved once through the target's symtab. The static may exist
-    /// only as an `.llvm.<hash>`-suffixed internalized copy, like any
-    /// other join symbol.
-    fn task_waker_vtable(&self) -> Result<Option<u64>> {
+    /// Every target address of tokio's task `WAKER_VTABLE` static,
+    /// resolved once through the target's symtab and sorted. The static
+    /// may exist only as `.llvm.<hash>`-suffixed internalized copies,
+    /// like any other join symbol, and a build may carry several; a
+    /// task waker's vtable word is any one of them. Empty where the
+    /// symtab names none.
+    pub fn task_waker_vtables(&self) -> Result<Vec<u64>> {
         if let Some(cached) = self.waker_vtable.borrow().as_ref() {
             return cached.clone().map_err(anyhow::Error::msg);
         }
-        let resolved: std::result::Result<Option<u64>, String> = (|| {
+        let resolved: std::result::Result<Vec<u64>, String> = (|| {
             let def = self
                 .view
                 .bundle()
@@ -1559,8 +1615,7 @@ impl<'b, T: Target> Context<'b, T> {
                 .entries
                 .get(&StaticRole::TaskWakerVtable)
                 .ok_or_else(|| "the tokio info records no task WAKER_VTABLE static".to_owned())?;
-            self.object_symbol(&def.symbol)
-                .map(|symbol| symbol.map(|s| s.st_value))
+            self.object_symbol_addrs(&def.symbol)
                 .map_err(|error| format!("{error:#}"))
         })();
         *self.waker_vtable.borrow_mut() = Some(resolved.clone());
@@ -2081,19 +2136,22 @@ impl<'b, T: Target> Context<'b, T> {
                 .with_context(|| format!("failed to read the TimerShared at {addr:#x}"))?;
             // An entry in the wheel with no waker registered has simply
             // not been polled since it was armed.
-            let task = match self
+            let (task, waker_at) = match self
                 .walk(WalkRole::TimerSharedWaker)
                 .walk(entry)?
                 .optional()
             {
-                Some(raw) => self.registry_waker(
-                    raw,
-                    entry,
-                    ReferenceSource::TimerWaker,
-                    DiscoveryRoute::Wheel,
-                    found,
-                )?,
-                None => None,
+                Some(raw) => (
+                    self.registry_waker(
+                        raw,
+                        entry,
+                        ReferenceSource::TimerWaker,
+                        DiscoveryRoute::Wheel,
+                        found,
+                    )?,
+                    Some(raw.addr),
+                ),
+                None => (None, None),
             };
             // Enrichment beside the harvest's real business: a torn or
             // unbound word costs the state, never the entry.
@@ -2106,6 +2164,7 @@ impl<'b, T: Target> Context<'b, T> {
                 entry: addr,
                 state,
                 task,
+                waker_at,
                 deadline: match (start, state) {
                     (Some(start), Some(state)) => TimerEntryInfo::wheel_deadline(start, state),
                     _ => None,
@@ -2257,6 +2316,7 @@ impl<'b, T: Target> Context<'b, T> {
                 resource.waiters.push(IoWaiterInfo {
                     slot,
                     task,
+                    waker_at: Some(raw.addr),
                     node: None,
                     ready: None,
                 });
@@ -2306,6 +2366,7 @@ impl<'b, T: Target> Context<'b, T> {
                 resource.waiters.push(IoWaiterInfo {
                     slot: IoSlot::Listed { interest },
                     task,
+                    waker_at: Some(raw.addr),
                     node: Some(addr),
                     ready,
                 });
@@ -3645,6 +3706,7 @@ impl<'b, T: Target> Context<'b, T> {
                             Ok(waker) => resource.waiters.push(IoWaiterInfo {
                                 slot,
                                 task: waker.task(),
+                                waker_at: Some(raw.addr),
                                 node: None,
                                 ready: None,
                             }),
@@ -3742,20 +3804,20 @@ impl<'b, T: Target> Context<'b, T> {
             let node = self.read_keyed(key, read).map_err(|e| issue_of(key, &e))?;
             // A node whose future has not been polled since it was
             // linked carries no waker yet; it is a node all the same.
-            let task = match self.walk(WalkRole::IoWaiterWaker).walk_with(read, node) {
+            let (task, waker_at) = match self.walk(WalkRole::IoWaiterWaker).walk_with(read, node) {
                 Ok(raw) => match raw.optional() {
                     Some(raw) => match self.raw_waker(raw) {
-                        Ok(waker) => waker.task(),
+                        Ok(waker) => (waker.task(), Some(raw.addr)),
                         Err(e) => {
                             issues.push(issue_of(key, &e));
-                            None
+                            (None, None)
                         }
                     },
-                    None => None,
+                    None => (None, None),
                 },
                 Err(e) => {
                     issues.push(issue_of(key, &e));
-                    None
+                    (None, None)
                 }
             };
             let interest = self
@@ -3772,6 +3834,7 @@ impl<'b, T: Target> Context<'b, T> {
             resource.waiters.push(IoWaiterInfo {
                 slot: IoSlot::Listed { interest },
                 task,
+                waker_at,
                 node: Some(addr),
                 ready,
             });

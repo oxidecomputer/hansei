@@ -1,0 +1,8 @@
+---
+source: hansei/src/offline.rs
+description: "`tasks --with holds >0` over illumos/armed-select"
+---
+ID  STATE  FUTURES  AWAITING AT                 WAITING ON                                 TYPE
+3   idle         4  src/bin/armed-select.rs:48  timer (deadline TS)                async fn armed_select::selector
+4   idle         1  src/bin/armed-select.rs:66  unknown at tokio::sync::oneshot::Receiver  async fn armed_select::holder
+[2 tasks]

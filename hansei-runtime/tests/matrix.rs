@@ -87,6 +87,7 @@ const PROGRAMS: &[&str] = &[
     "foreign-runtime",
     "blocking-pool",
     "delegation-cases",
+    "armed-select",
 ];
 
 fn test_programs_dir() -> PathBuf {

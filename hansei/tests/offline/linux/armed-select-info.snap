@@ -1,0 +1,13 @@
+---
+source: hansei/src/offline.rs
+description: "`info` over linux/armed-select"
+---
+core:       <snapshot>
+tokio info: <tokio info>
+symbols resolved: 9/9
+allocator evidence: unavailable
+waker slots: 1 copy of tokio's WAKER_VTABLE, 0 set vtables; 4.2 MiB swept in 47 chunks
+    hits: 12 task-pattern, 0 set-pattern; 7 admitted; 3 unlisted headers
+    by class: 3 task extent, 4 lwp stack, 4 anon, 1 unmapped companion
+process: not recorded by this target
+signal: none recorded
