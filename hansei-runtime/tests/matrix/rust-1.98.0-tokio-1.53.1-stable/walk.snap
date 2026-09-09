@@ -2,7 +2,7 @@
 source: hansei-runtime/tests/matrix.rs
 ---
 program: futurelock
-walk contract (tokio 1.53.1, rustc 1.98.0 (88d9e12ae 2026-08-18)): 157 entries, 0 broken, 55 absent
+walk contract (tokio 1.53.1, rustc 1.98.0 (88d9e12ae 2026-08-18)): 158 entries, 0 broken, 55 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -95,6 +95,7 @@ walk contract (tokio 1.53.1, rustc 1.98.0 (88d9e12ae 2026-08-18)): 157 entries, 
   ok      io::Waiter.next
   ok      io::Waiter.waker
   ok      TimerShared.state
+  ok      time::Handle.time_source.start_time
   ok      ScheduledIo.readiness
   ok      io::Waiter.interest
   absent  net::TcpStream.shared — no tokio::net::tcp::stream::TcpStream type in the tokio info (the target does not reach one)
@@ -162,7 +163,7 @@ walk contract (tokio 1.53.1, rustc 1.98.0 (88d9e12ae 2026-08-18)): 157 entries, 
   ok      notify::Waiter.notification
 
 program: simple-await
-walk contract (tokio 1.53.1, rustc 1.98.0 (88d9e12ae 2026-08-18)): 157 entries, 0 broken, 71 absent
+walk contract (tokio 1.53.1, rustc 1.98.0 (88d9e12ae 2026-08-18)): 158 entries, 0 broken, 71 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -255,6 +256,7 @@ walk contract (tokio 1.53.1, rustc 1.98.0 (88d9e12ae 2026-08-18)): 157 entries, 
   ok      io::Waiter.next
   ok      io::Waiter.waker
   ok      TimerShared.state
+  ok      time::Handle.time_source.start_time
   ok      ScheduledIo.readiness
   ok      io::Waiter.interest
   absent  net::TcpStream.shared — no tokio::net::tcp::stream::TcpStream type in the tokio info (the target does not reach one)
@@ -322,7 +324,7 @@ walk contract (tokio 1.53.1, rustc 1.98.0 (88d9e12ae 2026-08-18)): 157 entries, 
   ok      notify::Waiter.notification
 
 program: nested-await
-walk contract (tokio 1.53.1, rustc 1.98.0 (88d9e12ae 2026-08-18)): 157 entries, 0 broken, 71 absent
+walk contract (tokio 1.53.1, rustc 1.98.0 (88d9e12ae 2026-08-18)): 158 entries, 0 broken, 71 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -415,6 +417,7 @@ walk contract (tokio 1.53.1, rustc 1.98.0 (88d9e12ae 2026-08-18)): 157 entries, 
   ok      io::Waiter.next
   ok      io::Waiter.waker
   ok      TimerShared.state
+  ok      time::Handle.time_source.start_time
   ok      ScheduledIo.readiness
   ok      io::Waiter.interest
   absent  net::TcpStream.shared — no tokio::net::tcp::stream::TcpStream type in the tokio info (the target does not reach one)
@@ -482,7 +485,7 @@ walk contract (tokio 1.53.1, rustc 1.98.0 (88d9e12ae 2026-08-18)): 157 entries, 
   ok      notify::Waiter.notification
 
 program: dyn-future
-walk contract (tokio 1.53.1, rustc 1.98.0 (88d9e12ae 2026-08-18)): 157 entries, 0 broken, 65 absent
+walk contract (tokio 1.53.1, rustc 1.98.0 (88d9e12ae 2026-08-18)): 158 entries, 0 broken, 65 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -575,6 +578,7 @@ walk contract (tokio 1.53.1, rustc 1.98.0 (88d9e12ae 2026-08-18)): 157 entries, 
   ok      io::Waiter.next
   ok      io::Waiter.waker
   ok      TimerShared.state
+  ok      time::Handle.time_source.start_time
   ok      ScheduledIo.readiness
   ok      io::Waiter.interest
   absent  net::TcpStream.shared — no tokio::net::tcp::stream::TcpStream type in the tokio info (the target does not reach one)
@@ -642,7 +646,7 @@ walk contract (tokio 1.53.1, rustc 1.98.0 (88d9e12ae 2026-08-18)): 157 entries, 
   ok      notify::Waiter.notification
 
 program: select-combinator
-walk contract (tokio 1.53.1, rustc 1.98.0 (88d9e12ae 2026-08-18)): 157 entries, 0 broken, 71 absent
+walk contract (tokio 1.53.1, rustc 1.98.0 (88d9e12ae 2026-08-18)): 158 entries, 0 broken, 71 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -735,6 +739,7 @@ walk contract (tokio 1.53.1, rustc 1.98.0 (88d9e12ae 2026-08-18)): 157 entries, 
   ok      io::Waiter.next
   ok      io::Waiter.waker
   ok      TimerShared.state
+  ok      time::Handle.time_source.start_time
   ok      ScheduledIo.readiness
   ok      io::Waiter.interest
   absent  net::TcpStream.shared — no tokio::net::tcp::stream::TcpStream type in the tokio info (the target does not reach one)
@@ -802,7 +807,7 @@ walk contract (tokio 1.53.1, rustc 1.98.0 (88d9e12ae 2026-08-18)): 157 entries, 
   ok      notify::Waiter.notification
 
 program: many-tasks
-walk contract (tokio 1.53.1, rustc 1.98.0 (88d9e12ae 2026-08-18)): 157 entries, 0 broken, 72 absent
+walk contract (tokio 1.53.1, rustc 1.98.0 (88d9e12ae 2026-08-18)): 158 entries, 0 broken, 72 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -895,6 +900,7 @@ walk contract (tokio 1.53.1, rustc 1.98.0 (88d9e12ae 2026-08-18)): 157 entries, 
   ok      io::Waiter.next
   ok      io::Waiter.waker
   ok      TimerShared.state
+  ok      time::Handle.time_source.start_time
   ok      ScheduledIo.readiness
   ok      io::Waiter.interest
   absent  net::TcpStream.shared — no tokio::net::tcp::stream::TcpStream type in the tokio info (the target does not reach one)
@@ -962,7 +968,7 @@ walk contract (tokio 1.53.1, rustc 1.98.0 (88d9e12ae 2026-08-18)): 157 entries, 
   ok      notify::Waiter.notification
 
 program: sleep-join
-walk contract (tokio 1.53.1, rustc 1.98.0 (88d9e12ae 2026-08-18)): 157 entries, 0 broken, 67 absent
+walk contract (tokio 1.53.1, rustc 1.98.0 (88d9e12ae 2026-08-18)): 158 entries, 0 broken, 67 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -1055,6 +1061,7 @@ walk contract (tokio 1.53.1, rustc 1.98.0 (88d9e12ae 2026-08-18)): 157 entries, 
   ok      io::Waiter.next
   ok      io::Waiter.waker
   ok      TimerShared.state
+  ok      time::Handle.time_source.start_time
   ok      ScheduledIo.readiness
   ok      io::Waiter.interest
   absent  net::TcpStream.shared — no tokio::net::tcp::stream::TcpStream type in the tokio info (the target does not reach one)
@@ -1122,7 +1129,7 @@ walk contract (tokio 1.53.1, rustc 1.98.0 (88d9e12ae 2026-08-18)): 157 entries, 
   ok      notify::Waiter.notification
 
 program: channels
-walk contract (tokio 1.53.1, rustc 1.98.0 (88d9e12ae 2026-08-18)): 157 entries, 0 broken, 45 absent
+walk contract (tokio 1.53.1, rustc 1.98.0 (88d9e12ae 2026-08-18)): 158 entries, 0 broken, 45 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -1215,6 +1222,7 @@ walk contract (tokio 1.53.1, rustc 1.98.0 (88d9e12ae 2026-08-18)): 157 entries, 
   ok      io::Waiter.next
   ok      io::Waiter.waker
   ok      TimerShared.state
+  ok      time::Handle.time_source.start_time
   ok      ScheduledIo.readiness
   ok      io::Waiter.interest
   absent  net::TcpStream.shared — no tokio::net::tcp::stream::TcpStream type in the tokio info (the target does not reach one)
@@ -1282,7 +1290,7 @@ walk contract (tokio 1.53.1, rustc 1.98.0 (88d9e12ae 2026-08-18)): 157 entries, 
   ok      notify::Waiter.notification
 
 program: unordered
-walk contract (tokio 1.53.1, rustc 1.98.0 (88d9e12ae 2026-08-18)): 157 entries, 0 broken, 68 absent
+walk contract (tokio 1.53.1, rustc 1.98.0 (88d9e12ae 2026-08-18)): 158 entries, 0 broken, 68 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -1375,6 +1383,7 @@ walk contract (tokio 1.53.1, rustc 1.98.0 (88d9e12ae 2026-08-18)): 157 entries, 
   ok      io::Waiter.next
   ok      io::Waiter.waker
   ok      TimerShared.state
+  ok      time::Handle.time_source.start_time
   ok      ScheduledIo.readiness
   ok      io::Waiter.interest
   absent  net::TcpStream.shared — no tokio::net::tcp::stream::TcpStream type in the tokio info (the target does not reach one)
@@ -1442,7 +1451,7 @@ walk contract (tokio 1.53.1, rustc 1.98.0 (88d9e12ae 2026-08-18)): 157 entries, 
   ok      notify::Waiter.notification
 
 program: joinset
-walk contract (tokio 1.53.1, rustc 1.98.0 (88d9e12ae 2026-08-18)): 157 entries, 0 broken, 39 absent
+walk contract (tokio 1.53.1, rustc 1.98.0 (88d9e12ae 2026-08-18)): 158 entries, 0 broken, 39 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -1535,6 +1544,7 @@ walk contract (tokio 1.53.1, rustc 1.98.0 (88d9e12ae 2026-08-18)): 157 entries, 
   ok      io::Waiter.next
   ok      io::Waiter.waker
   ok      TimerShared.state
+  ok      time::Handle.time_source.start_time
   ok      ScheduledIo.readiness
   ok      io::Waiter.interest
   absent  net::TcpStream.shared — no tokio::net::tcp::stream::TcpStream type in the tokio info (the target does not reach one)
@@ -1602,7 +1612,7 @@ walk contract (tokio 1.53.1, rustc 1.98.0 (88d9e12ae 2026-08-18)): 157 entries, 
   ok      notify::Waiter.notification
 
 program: ct-runtime
-walk contract (tokio 1.53.1, rustc 1.98.0 (88d9e12ae 2026-08-18)): 157 entries, 0 broken, 55 absent
+walk contract (tokio 1.53.1, rustc 1.98.0 (88d9e12ae 2026-08-18)): 158 entries, 0 broken, 55 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -1695,6 +1705,7 @@ walk contract (tokio 1.53.1, rustc 1.98.0 (88d9e12ae 2026-08-18)): 157 entries, 
   ok      io::Waiter.next
   ok      io::Waiter.waker
   ok      TimerShared.state
+  ok      time::Handle.time_source.start_time
   ok      ScheduledIo.readiness
   ok      io::Waiter.interest
   absent  net::TcpStream.shared — no tokio::net::tcp::stream::TcpStream type in the tokio info (the target does not reach one)
@@ -1762,7 +1773,7 @@ walk contract (tokio 1.53.1, rustc 1.98.0 (88d9e12ae 2026-08-18)): 157 entries, 
   ok      notify::Waiter.notification
 
 program: local-set
-walk contract (tokio 1.53.1, rustc 1.98.0 (88d9e12ae 2026-08-18)): 157 entries, 0 broken, 48 absent
+walk contract (tokio 1.53.1, rustc 1.98.0 (88d9e12ae 2026-08-18)): 158 entries, 0 broken, 48 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   ok      statics.tls_local_set_key
@@ -1855,6 +1866,7 @@ walk contract (tokio 1.53.1, rustc 1.98.0 (88d9e12ae 2026-08-18)): 157 entries, 
   ok      io::Waiter.next
   ok      io::Waiter.waker
   ok      TimerShared.state
+  ok      time::Handle.time_source.start_time
   ok      ScheduledIo.readiness
   ok      io::Waiter.interest
   absent  net::TcpStream.shared — no tokio::net::tcp::stream::TcpStream type in the tokio info (the target does not reach one)
@@ -1922,7 +1934,7 @@ walk contract (tokio 1.53.1, rustc 1.98.0 (88d9e12ae 2026-08-18)): 157 entries, 
   ok      notify::Waiter.notification
 
 program: local-set-timer
-walk contract (tokio 1.53.1, rustc 1.98.0 (88d9e12ae 2026-08-18)): 157 entries, 0 broken, 48 absent
+walk contract (tokio 1.53.1, rustc 1.98.0 (88d9e12ae 2026-08-18)): 158 entries, 0 broken, 48 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   ok      statics.tls_local_set_key
@@ -2015,6 +2027,7 @@ walk contract (tokio 1.53.1, rustc 1.98.0 (88d9e12ae 2026-08-18)): 157 entries, 
   ok      io::Waiter.next
   ok      io::Waiter.waker
   ok      TimerShared.state
+  ok      time::Handle.time_source.start_time
   ok      ScheduledIo.readiness
   ok      io::Waiter.interest
   absent  net::TcpStream.shared — no tokio::net::tcp::stream::TcpStream type in the tokio info (the target does not reach one)
@@ -2082,7 +2095,7 @@ walk contract (tokio 1.53.1, rustc 1.98.0 (88d9e12ae 2026-08-18)): 157 entries, 
   ok      notify::Waiter.notification
 
 program: local-set-io
-walk contract (tokio 1.53.1, rustc 1.98.0 (88d9e12ae 2026-08-18)): 157 entries, 0 broken, 50 absent
+walk contract (tokio 1.53.1, rustc 1.98.0 (88d9e12ae 2026-08-18)): 158 entries, 0 broken, 50 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   ok      statics.tls_local_set_key
@@ -2175,6 +2188,7 @@ walk contract (tokio 1.53.1, rustc 1.98.0 (88d9e12ae 2026-08-18)): 157 entries, 
   ok      io::Waiter.next
   ok      io::Waiter.waker
   ok      TimerShared.state
+  ok      time::Handle.time_source.start_time
   ok      ScheduledIo.readiness
   ok      io::Waiter.interest
   absent  net::TcpStream.shared — no tokio::net::tcp::stream::TcpStream type in the tokio info (the target does not reach one)
@@ -2242,7 +2256,7 @@ walk contract (tokio 1.53.1, rustc 1.98.0 (88d9e12ae 2026-08-18)): 157 entries, 
   ok      notify::Waiter.notification
 
 program: foreign-runtime
-walk contract (tokio 1.53.1, rustc 1.98.0 (88d9e12ae 2026-08-18)): 157 entries, 0 broken, 48 absent
+walk contract (tokio 1.53.1, rustc 1.98.0 (88d9e12ae 2026-08-18)): 158 entries, 0 broken, 48 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   ok      statics.tls_local_set_key
@@ -2335,6 +2349,7 @@ walk contract (tokio 1.53.1, rustc 1.98.0 (88d9e12ae 2026-08-18)): 157 entries, 
   ok      io::Waiter.next
   ok      io::Waiter.waker
   ok      TimerShared.state
+  ok      time::Handle.time_source.start_time
   ok      ScheduledIo.readiness
   ok      io::Waiter.interest
   absent  net::TcpStream.shared — no tokio::net::tcp::stream::TcpStream type in the tokio info (the target does not reach one)
@@ -2402,7 +2417,7 @@ walk contract (tokio 1.53.1, rustc 1.98.0 (88d9e12ae 2026-08-18)): 157 entries, 
   ok      notify::Waiter.notification
 
 program: blocking-pool
-walk contract (tokio 1.53.1, rustc 1.98.0 (88d9e12ae 2026-08-18)): 157 entries, 0 broken, 71 absent
+walk contract (tokio 1.53.1, rustc 1.98.0 (88d9e12ae 2026-08-18)): 158 entries, 0 broken, 71 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -2495,6 +2510,7 @@ walk contract (tokio 1.53.1, rustc 1.98.0 (88d9e12ae 2026-08-18)): 157 entries, 
   ok      io::Waiter.next
   ok      io::Waiter.waker
   ok      TimerShared.state
+  ok      time::Handle.time_source.start_time
   ok      ScheduledIo.readiness
   ok      io::Waiter.interest
   absent  net::TcpStream.shared — no tokio::net::tcp::stream::TcpStream type in the tokio info (the target does not reach one)
@@ -2562,7 +2578,7 @@ walk contract (tokio 1.53.1, rustc 1.98.0 (88d9e12ae 2026-08-18)): 157 entries, 
   ok      notify::Waiter.notification
 
 program: delegation-cases
-walk contract (tokio 1.53.1, rustc 1.98.0 (88d9e12ae 2026-08-18)): 157 entries, 0 broken, 71 absent
+walk contract (tokio 1.53.1, rustc 1.98.0 (88d9e12ae 2026-08-18)): 158 entries, 0 broken, 71 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -2655,6 +2671,7 @@ walk contract (tokio 1.53.1, rustc 1.98.0 (88d9e12ae 2026-08-18)): 157 entries, 
   ok      io::Waiter.next
   ok      io::Waiter.waker
   ok      TimerShared.state
+  ok      time::Handle.time_source.start_time
   ok      ScheduledIo.readiness
   ok      io::Waiter.interest
   absent  net::TcpStream.shared — no tokio::net::tcp::stream::TcpStream type in the tokio info (the target does not reach one)

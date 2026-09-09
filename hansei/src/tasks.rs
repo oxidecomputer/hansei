@@ -1212,9 +1212,17 @@ fn member_line(member: &WaitMember, stops: &StopNames<'_>) -> String {
                 Some(WaitAssessment::Runnable(_)) => "runnable".to_string(),
                 None => "not inspected".to_string(),
             };
-            let armed = match &member.armed {
-                Some(slot) => slot.detail(),
-                None => "held, not armed".to_string(),
+            // A branch armed by a slot whose own verdict names no
+            // target prints the slot's entry — a wheel entry's
+            // deadline — ahead of the evidence, since nothing else on
+            // the line says when it fires.
+            let armed = match (&member.armed, &member.assessment) {
+                (Some(slot), Some(WaitAssessment::Waiting(_))) => slot.detail(),
+                (Some(slot), _) => match member.cell_entry() {
+                    Some(entry) => format!("{entry}: {}", slot.detail()),
+                    None => slot.detail(),
+                },
+                (None, _) => "held, not armed".to_string(),
             };
             let mut line = format!("{local}{via}: {future}{at} — {verdict}; {armed}");
             for note in &member.notes {
@@ -1309,8 +1317,12 @@ fn wait_detail(
             Some(state) => format!(", {state}"),
             None => String::new(),
         };
+        let due = match timer.deadline {
+            Some(deadline) => format!(", {}", bundle::deadline_text(deadline, registries.stopped)),
+            None => String::new(),
+        };
         lines.push(format!(
-            "timer entry {:#x} in the wheel{state}",
+            "timer entry {:#x} in the wheel{state}{due}",
             timer.entry
         ));
     }
@@ -2821,6 +2833,7 @@ mod table_tests {
                 entry: 0xdd00,
                 state: None,
                 task: Some(t1),
+                deadline: None,
             }],
             vec![IoResourceInfo {
                 addr: 0xaa00,

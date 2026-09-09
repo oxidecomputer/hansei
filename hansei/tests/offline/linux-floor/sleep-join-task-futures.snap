@@ -9,7 +9,7 @@ task 3
     awaiting at: src/bin/sleep-join.rs:16
     waiting on: timer (deadline TS on the target's monotonic clock)
     waker: timer 0xADDR
-        timer entry 0xADDR in the wheel, registered
+        timer entry 0xADDR in the wheel, registered, deadline TS on the target's monotonic clock
     spawned at: src/bin/sleep-join.rs:34:22
     defined at: src/bin/sleep-join.rs:13
     held futures: 0

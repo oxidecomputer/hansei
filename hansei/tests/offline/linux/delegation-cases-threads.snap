@@ -3,6 +3,6 @@ source: hansei/src/offline.rs
 description: "`threads` over linux/delegation-cases"
 ---
 LWP      NAME  ROLE             TASK  FRAME 0
-2086570  —     entered runtime  —     0xADDR
-2086572  —     block_on caller  —     0xADDR
+2015729  —     entered runtime  —     0xADDR
+2015731  —     block_on caller  —     0xADDR
 [2 threads]

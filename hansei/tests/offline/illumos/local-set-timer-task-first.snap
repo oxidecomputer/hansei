@@ -10,7 +10,7 @@ task 1
     awaiting at: src/bin/local-set-timer.rs:22
     waiting on: timer (deadline TS)
     waker: timer 0xADDR
-        timer entry 0xADDR in the wheel, registered
+        timer entry 0xADDR in the wheel, registered, deadline TS
     spawned at: src/bin/local-set-timer.rs:62:20
     defined at: src/bin/local-set-timer.rs:19
     held futures: 0

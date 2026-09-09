@@ -4,5 +4,5 @@ description: "`threads --without role ^worker --group has-task` over illumos/blo
 ---
 COUNT  HAS TASK  LWPS
     1  no        1
-    1  yes       3
+    1  yes       4
 [2 groups]

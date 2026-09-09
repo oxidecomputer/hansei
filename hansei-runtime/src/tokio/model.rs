@@ -330,6 +330,9 @@ pub struct Registries {
     pub timers: Vec<TimerEntryInfo>,
     /// Every io resource in a walked registration list.
     pub io: Vec<IoResourceInfo>,
+    /// The target's clock at the moment it stopped, where its lwps
+    /// stamp one — what a deadline is reported relative to.
+    pub stopped: Option<RawInstant>,
     /// The joins' index, built on the first lookup — so after the
     /// harvest has pushed its last entry, which is the only order the
     /// attach runs them in. A production target has tens of thousands
@@ -353,6 +356,7 @@ impl Registries {
         Registries {
             timers,
             io,
+            stopped: None,
             by_task: OnceLock::new(),
         }
     }
@@ -412,9 +416,31 @@ pub struct TimerEntryInfo {
     pub state: Option<u64>,
     /// The task the armed waker names, when it is a task's.
     pub task: Option<u64>,
+    /// The deadline the registration word encodes, on the target's
+    /// monotonic clock: the driver's epoch plus the tick, rounded up to
+    /// the millisecond the way tokio registered it. `None` where the
+    /// word is a sentinel, did not read, or the epoch did not.
+    pub deadline: Option<RawInstant>,
 }
 
 impl TimerEntryInfo {
+    /// The deadline a registration word encodes against the driver's
+    /// epoch: `start` plus the tick in milliseconds, or `None` for the
+    /// fired and deregistered sentinels, which are no tick.
+    pub fn wheel_deadline(start: RawInstant, state: u64) -> Option<RawInstant> {
+        if state == timer::STATE_DEREGISTERED || state == timer::STATE_PENDING_FIRE {
+            return None;
+        }
+        let ns = state.checked_mul(1_000_000)? as u128 + start.tv_nsec as u128;
+        let tv_sec = start
+            .tv_sec
+            .checked_add(u64::try_from(ns / 1_000_000_000).ok()?)?;
+        Some(RawInstant {
+            tv_sec,
+            tv_nsec: (ns % 1_000_000_000) as u32,
+        })
+    }
+
     /// The entry's decoded wheel state, where the word was readable.
     pub fn wheel_state(&self) -> Option<WheelState> {
         Some(match self.state? {
@@ -1130,37 +1156,41 @@ impl QueuedWaker {
     }
 }
 
+/// A deadline in words: relative to the stop instant when the lwps
+/// stamp one — the wait remaining as of the moment the target was
+/// observed, or overdue once the deadline has passed — else the
+/// absolute point on the target's monotonic clock, which is all there
+/// is to say.
+pub fn deadline_text(deadline: RawInstant, stopped: Option<RawInstant>) -> String {
+    match stopped {
+        Some(stopped) => {
+            let ns = |i: RawInstant| i.tv_sec as i128 * 1_000_000_000 + i.tv_nsec as i128;
+            let delta = ns(deadline) - ns(stopped);
+            let word = if delta < 0 {
+                "overdue by "
+            } else {
+                "deadline +"
+            };
+            let delta = delta.unsigned_abs();
+            format!(
+                "{word}{}.{:03}s",
+                delta / 1_000_000_000,
+                (delta % 1_000_000_000) / 1_000_000
+            )
+        }
+        None => format!(
+            "deadline {}.{:03}s on the target's monotonic clock",
+            deadline.tv_sec,
+            deadline.tv_nsec / 1_000_000
+        ),
+    }
+}
+
 impl fmt::Display for WaitTarget {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Timer { deadline, stopped } => {
-                // Relative to the stop instant when the lwps stamp one — the
-                // wait remaining as of the moment the target was observed
-                // (overdue once the deadline has passed) — else the absolute
-                // point, which is all there is to say.
-                if let Some(stopped) = stopped {
-                    let ns = |i: &RawInstant| i.tv_sec as i128 * 1_000_000_000 + i.tv_nsec as i128;
-                    let delta = ns(deadline) - ns(stopped);
-                    let word = if delta < 0 {
-                        "overdue by "
-                    } else {
-                        "deadline +"
-                    };
-                    let delta = delta.unsigned_abs();
-                    write!(
-                        f,
-                        "timer ({word}{}.{:03}s)",
-                        delta / 1_000_000_000,
-                        (delta % 1_000_000_000) / 1_000_000
-                    )
-                } else {
-                    write!(
-                        f,
-                        "timer (deadline {}.{:03}s on the target's monotonic clock)",
-                        deadline.tv_sec,
-                        deadline.tv_nsec / 1_000_000
-                    )
-                }
+                write!(f, "timer ({})", deadline_text(*deadline, *stopped))
             }
             Self::Task {
                 task_id,
@@ -1438,6 +1468,7 @@ mod tests {
             entry: 0x10,
             state,
             task: None,
+            deadline: None,
         };
         assert_eq!(
             entry(Some(1234)).wheel_state(),
@@ -1481,6 +1512,50 @@ mod tests {
         assert_eq!(res.ready(), Some(Readiness(0b10)));
     }
 
+    /// A registration word is a millisecond tick from the driver's
+    /// epoch, and the deadline it encodes carries into the seconds; the
+    /// fired and deregistered sentinels encode none.
+    #[test]
+    fn test_a_wheel_word_decodes_to_a_deadline_from_the_epoch() {
+        let start = RawInstant {
+            tv_sec: 100,
+            tv_nsec: 999_000_000,
+        };
+        assert_eq!(
+            TimerEntryInfo::wheel_deadline(start, 0),
+            Some(start),
+            "tick zero is the epoch"
+        );
+        assert_eq!(
+            TimerEntryInfo::wheel_deadline(start, 1_500),
+            Some(RawInstant {
+                tv_sec: 102,
+                tv_nsec: 499_000_000,
+            })
+        );
+        assert_eq!(
+            TimerEntryInfo::wheel_deadline(start, timer::STATE_DEREGISTERED),
+            None
+        );
+        assert_eq!(
+            TimerEntryInfo::wheel_deadline(start, timer::STATE_PENDING_FIRE),
+            None
+        );
+        assert_eq!(
+            deadline_text(
+                RawInstant {
+                    tv_sec: 40,
+                    tv_nsec: 369_000_000
+                },
+                Some(RawInstant {
+                    tv_sec: 12,
+                    tv_nsec: 0
+                })
+            ),
+            "deadline +28.369s"
+        );
+    }
+
     /// The registry joins hand back exactly the entries armed with the
     /// asked-for task's waker.
     #[test]
@@ -1491,11 +1566,13 @@ mod tests {
                     entry: 0x10,
                     state: None,
                     task: Some(0x1000),
+                    deadline: None,
                 },
                 TimerEntryInfo {
                     entry: 0x20,
                     state: None,
                     task: None,
+                    deadline: None,
                 },
             ],
             vec![IoResourceInfo {

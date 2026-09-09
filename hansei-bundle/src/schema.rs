@@ -1427,6 +1427,7 @@ walk_roles! {
     IoWaiterNext = "io::Waiter.next",
     IoWaiterWaker = "io::Waiter.waker",
     TimerSharedState = "TimerShared.state",
+    TimeSourceStart = "time::Handle.time_source.start_time",
     ScheduledIoReadiness = "ScheduledIo.readiness",
     IoWaiterInterest = "io::Waiter.interest",
     TcpStreamShared = "net::TcpStream.shared",

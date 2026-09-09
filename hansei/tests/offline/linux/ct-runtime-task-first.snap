@@ -9,7 +9,7 @@ task 1
     awaiting at: src/bin/ct-runtime.rs:17
     waiting on: timer (deadline TS on the target's monotonic clock)
     waker: timer 0xADDR
-        timer entry 0xADDR in the wheel, registered
+        timer entry 0xADDR in the wheel, registered, deadline TS on the target's monotonic clock
     spawned at: src/bin/ct-runtime.rs:37:24
     defined at: src/bin/ct-runtime.rs:14
     held futures: 0

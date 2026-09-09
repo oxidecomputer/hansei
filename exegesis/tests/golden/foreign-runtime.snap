@@ -146,6 +146,7 @@ ok      io::Waiters.writer
 ok      io::Waiter.next
 ok      io::Waiter.waker
 ok      TimerShared.state
+ok      time::Handle.time_source.start_time
 ok      ScheduledIo.readiness
 ok      io::Waiter.interest
 ok      blocking::Shared.queue (spelling 1 of 3)

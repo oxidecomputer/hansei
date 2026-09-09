@@ -1315,6 +1315,32 @@ fn decls() -> Vec<WalkDecl> {
             Word,
             || vec![reach![Named("state"), Named("state"), PeelTo(WORD)]],
         ),
+        // The time driver's epoch: the `Instant` its ticks count
+        // milliseconds from, so a wheel entry's registration word — a
+        // deadline tick — reads back as the deadline on the target's
+        // clock without reaching the `Sleep` that owns the entry. The
+        // same std `Timespec` `Sleep.deadline` peels to, so its two
+        // word readers serve here too. The driver `Handle` keeps its
+        // `time_source` beside the flavored `inner` the wheel path
+        // enters, so the route is the same on every family.
+        decl(
+            WalkRole::TimeSourceStart,
+            WalkRoot::AnyHandle,
+            Aggregate,
+            || {
+                vec![reach![
+                    Named("driver"),
+                    Named("time"),
+                    Variant("Some"),
+                    Named("__0"),
+                    Named("time_source"),
+                    Named("start_time"),
+                    Named("std"),
+                    Named("__0"),
+                    Named("t"),
+                ]]
+            },
+        ),
         // The resource's packed readiness word: what the driver has
         // delivered, against which the parked interests wait.
         decl(

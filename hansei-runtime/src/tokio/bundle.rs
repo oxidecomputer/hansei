@@ -1374,16 +1374,23 @@ impl<'b, T: Target> Context<'b, T> {
         else {
             return Ok(None);
         };
+        Ok(Some(self.timespec(deadline, read)?))
+    }
+
+    /// A std `Timespec` — the inside of every `Instant` tokio keeps —
+    /// as a raw instant, through the two word readers `Sleep.deadline`
+    /// declares: the same type wherever an instant is met.
+    fn timespec(&self, timespec: Value<'b>, read: &ReadContext<'_>) -> Result<RawInstant> {
         let tv_sec: i64 = self
             .walk(WalkRole::DeadlineTvSec)
-            .read_with(read, deadline)?;
+            .read_with(read, timespec)?;
         let tv_nsec: u32 = self
             .walk(WalkRole::DeadlineTvNsec)
-            .read_with(read, deadline)?;
-        Ok(Some(RawInstant {
+            .read_with(read, timespec)?;
+        Ok(RawInstant {
             tv_sec: tv_sec as u64,
             tv_nsec,
-        }))
+        })
     }
 
     /// Resolve a bare task `Header` pointer from target memory to its
@@ -2019,6 +2026,17 @@ impl<'b, T: Target> Context<'b, T> {
         else {
             return Ok(());
         };
+        // The driver's epoch, read once per wheel: enrichment beside
+        // the harvest, so an unbound or unreadable epoch costs every
+        // entry its deadline and nothing else.
+        let start = self
+            .walk(WalkRole::TimeSourceStart)
+            .try_walk(runtime.handle)
+            .ok()
+            .flatten()
+            .and_then(Walked::optional)
+            .and_then(|start| self.timespec(start, &ReadContext::none()).ok());
+        registries.stopped = self.stopped_at();
         for level in levels.elements(self.proc)?.iter() {
             let slots = self.walk(WalkRole::LevelSlots).walk_at(level)?;
             for slot in slots.elements(self.proc)?.iter() {
@@ -2030,7 +2048,9 @@ impl<'b, T: Target> Context<'b, T> {
                     .ty
                     .pointer_target()
                     .ok_or_else(|| anyhow!("a wheel slot's head is not pointer-shaped"))?;
-                if let Err(e) = self.walk_wheel_slot(addr, entry_ty, visited, found, registries) {
+                if let Err(e) =
+                    self.walk_wheel_slot(addr, entry_ty, start, visited, found, registries)
+                {
                     errors.push(e.context(format!("failed to walk the wheel slot at {addr:#x}")));
                 }
             }
@@ -2040,10 +2060,12 @@ impl<'b, T: Target> Context<'b, T> {
 
     /// Walk one slot's `TimerShared` list, collecting the task Headers
     /// its entries' wakers name.
+    #[allow(clippy::too_many_arguments)]
     fn walk_wheel_slot(
         &self,
         head: u64,
         entry_ty: BundleType<'b>,
+        start: Option<RawInstant>,
         visited: &mut HashSet<u64>,
         found: &mut Vec<Candidate>,
         registries: &mut Registries,
@@ -2084,6 +2106,10 @@ impl<'b, T: Target> Context<'b, T> {
                 entry: addr,
                 state,
                 task,
+                deadline: match (start, state) {
+                    (Some(start), Some(state)) => TimerEntryInfo::wheel_deadline(start, state),
+                    _ => None,
+                },
             });
             cur = self
                 .walk(WalkRole::TimerSharedNext)

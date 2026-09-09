@@ -164,7 +164,9 @@ pub fn classify(role: WalkRole) -> Class {
         // entry's registration word, an io resource's readiness and a
         // queued io waiter's interest. Enrichment only — a bundle
         // without them still lists and discovers.
-        TimerSharedState | ScheduledIoReadiness | IoWaiterInterest => Class::Optional,
+        TimerSharedState | TimeSourceStart | ScheduledIoReadiness | IoWaiterInterest => {
+            Class::Optional
+        }
         // The channel and notify protocols' readers: leaf readers like
         // the acquire's, absent wherever the target awaits neither.
         MpscRecvRx

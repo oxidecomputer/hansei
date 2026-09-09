@@ -29,10 +29,11 @@
 //! held, and a stop whose branches are all such prints `unknown` with
 //! their count.
 
+use super::RawInstant;
 use super::assess::{Assessed, AssessmentPass, TaskFacts, WaitAssessment};
 use super::bundle::{
     AwaitChain, AwaitFrame, ChainEnd, Context, IoSlot, Readiness, Registries, TaskList, WaitTarget,
-    WheelState,
+    WheelState, deadline_text,
 };
 use super::census::{self, Find, Path, ScanPlan};
 use super::chain::{FutureInspection, InspectionMode, NextFuture};
@@ -154,6 +155,10 @@ pub enum SlotRef {
     Wheel {
         entry: u64,
         state: Option<WheelState>,
+        /// The deadline the entry's registration word encodes, and
+        /// the target's stop instant it is reported against.
+        deadline: Option<RawInstant>,
+        stopped: Option<RawInstant>,
     },
     /// An io resource's waiter site holding the task's waker.
     Io {
@@ -170,9 +175,16 @@ pub enum SlotRef {
 
 impl SlotRef {
     /// The bare entry, for a member whose assessment names no
-    /// target: the slot kind and the resource.
+    /// target: a wheel entry's deadline where its word encodes one —
+    /// the text a verified `Sleep` prints — else the slot kind and
+    /// the resource.
     fn cell_entry(&self) -> Option<String> {
         match self {
+            Self::Wheel {
+                deadline: Some(deadline),
+                stopped,
+                ..
+            } => Some(format!("timer ({})", deadline_text(*deadline, *stopped))),
             Self::Wheel { entry, .. } => Some(format!("timer {entry:#x}")),
             Self::Io {
                 resource, slot, fd, ..
@@ -199,7 +211,7 @@ impl SlotRef {
     /// The evidence, in words, for a detail line.
     pub fn detail(&self) -> String {
         match self {
-            Self::Wheel { entry, state } => {
+            Self::Wheel { entry, state, .. } => {
                 let state = match state {
                     Some(state) => format!(", {state}"),
                     None => String::new(),
@@ -500,6 +512,8 @@ impl<'b, T: Target> Context<'b, T> {
             let slot = SlotRef::Wheel {
                 entry: timer.entry,
                 state: timer.wheel_state(),
+                deadline: timer.deadline,
+                stopped: self.stopped_at(),
             };
             arm(
                 &mut members,
@@ -655,6 +669,7 @@ mod tests {
             entry,
             state: Some(1000),
             task: Some(task.addr.0),
+            deadline: None,
         }
     }
 
@@ -918,6 +933,8 @@ mod tests {
         let registered = SlotRef::Wheel {
             entry: 0x10,
             state: Some(WheelState::Registered),
+            deadline: None,
+            stopped: None,
         };
         assert_eq!(
             registered.detail(),
@@ -926,11 +943,29 @@ mod tests {
                 timer::REGISTERED
             )
         );
+        assert_eq!(registered.cell_entry(), Some("timer 0x10".to_string()));
         let unread = SlotRef::Wheel {
             entry: 0x10,
             state: None,
+            deadline: None,
+            stopped: None,
         };
         assert_eq!(unread.detail(), "this task's waker in wheel entry 0x10");
+        // A word that encodes a deadline prints it the way a verified
+        // sleep does, in the cell and on the evidence line.
+        let at = |tv_sec| RawInstant { tv_sec, tv_nsec: 0 };
+        let due = SlotRef::Wheel {
+            entry: 0x10,
+            state: Some(WheelState::Registered),
+            deadline: Some(at(40)),
+            stopped: Some(at(12)),
+        };
+        assert_eq!(
+            due.cell_entry(),
+            Some("timer (deadline +28.000s)".to_string())
+        );
+        assert_eq!(due.kind(), Some("timer".to_string()));
+        assert_eq!(due.detail(), registered.detail());
         assert_eq!(SlotRef::Protocol.cell_entry(), None);
         assert_eq!(SlotRef::Protocol.kind(), None);
     }
@@ -1213,5 +1248,40 @@ mod tests {
             .find(|w| w.task.addr == task.addr)
             .unwrap();
         assert!(row.notes.is_empty(), "{:?}", row.notes);
+    }
+
+    /// The deadline the harvest reads off a wheel entry's word agrees
+    /// with the one the `Sleep` owning that entry caches, to the
+    /// millisecond tokio rounds a registration up to; the registries
+    /// carry the stop instant the analysis reports against.
+    #[test]
+    fn test_a_wheel_entrys_deadline_agrees_with_its_sleep() {
+        use crate::tokio::observe::ResourceObservation;
+
+        let (bundle, snapshot) = load_any("sleep-join");
+        let ctx = testkit::context(&bundle, &snapshot);
+        let mut e = testkit::enumerate(&ctx, &snapshot);
+        e.discover(&ctx, &[]);
+        let task = task_named(&e.list, "sleeper");
+        let inspection = ctx
+            .inspect_task(task, &ReadContext::none())
+            .unwrap()
+            .unwrap();
+        let sleep = inspection.chain.frames.last().unwrap().future;
+        let Some(ResourceObservation::Timer(timer)) = &inspection.primitive.value else {
+            panic!("the sleeper ends in a timer: {:?}", inspection.primitive);
+        };
+        let cached = timer.deadline.expect("the sleep caches its deadline");
+        let entries: Vec<_> = e.registries.timers_of(task.addr.0).collect();
+        assert_eq!(entries.len(), 1, "{entries:#?}");
+        let entry = entries[0];
+        assert!(contains(sleep, entry.entry), "the entry lies in the sleep");
+        let ns = |i: RawInstant| i.tv_sec as u128 * 1_000_000_000 + i.tv_nsec as u128;
+        let harvested = entry.deadline.expect("the epoch bound and the word read");
+        assert!(
+            ns(harvested) >= ns(cached) && ns(harvested) < ns(cached) + 1_000_000,
+            "harvested {harvested:?} against cached {cached:?}"
+        );
+        assert_eq!(e.registries.stopped, ctx.stopped_at());
     }
 }

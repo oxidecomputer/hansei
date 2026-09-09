@@ -3,7 +3,7 @@ source: hansei/src/offline.rs
 description: "`tasks --exec trace -n` over illumos/blocking-pool"
 ---
 task 3
-mid-poll, but lwp 3's walked stack holds no frame in the task's poll symbol (its walk ended: no CFI for /lib/amd64/libc.so.1 (none of its pages are in the core, and the backing file is not on this machine); the frame-pointer walk found nothing below 0xADDR); `threads 3` shows the raw stack
+mid-poll, but lwp 4's walked stack holds no frame in the task's poll symbol (its walk ended: no CFI for /lib/amd64/libc.so.1 (none of its pages are in the core, and the backing file is not on this machine); the frame-pointer walk found nothing below 0xADDR); `threads 4` shows the raw stack
 
 Waiting on: — (mid-poll)
 
