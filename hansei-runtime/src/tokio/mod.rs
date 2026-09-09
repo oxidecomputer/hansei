@@ -24,6 +24,7 @@ pub mod registers;
 pub mod scan;
 mod semantics;
 pub mod stackjoin;
+pub mod work;
 
 use std::fmt;
 use std::mem;

@@ -819,6 +819,60 @@ mod runtimes_tests {
         groups(&ctx, &runtimes, &owners, &list, &census)
     }
 
+    /// The owner buckets sum to the selected population on every
+    /// fixture pair: every task is in exactly one of its owner's
+    /// bucket, the unknown bucket or the conflict bucket, and every
+    /// future the census counts is in exactly one group's or the
+    /// unowned one. Local-set groups are counted against the complete
+    /// index, after the runtimes, never folded into a runtime's.
+    #[test]
+    fn test_owner_buckets_sum_to_the_population() {
+        let mut set_owned = 0;
+        for set in testkit::FIXTURE_SETS {
+            for program in testkit::PROGRAMS {
+                let (bundle, snapshot) = testkit::load(set, program);
+                let ctx = testkit::context(&bundle, &snapshot);
+                let mut e = testkit::enumerate(&ctx, &snapshot);
+                let sets = e.discover(&ctx, &[]);
+                let owners = bundle::OwnerIndex::new(&e.runtimes, &sets);
+                let list = e.list;
+                let census = census::census(&ctx, &list);
+                let counts = OwnerCounts::count(&list, &census, &owners);
+                assert_eq!(counts.tasks.len(), owners.len(), "{set}/{program}");
+                assert_eq!(counts.futures.len(), owners.len(), "{set}/{program}");
+                let tasks: usize = counts.tasks.iter().sum();
+                assert_eq!(
+                    tasks + counts.unknown_tasks + counts.conflict_tasks,
+                    list.tasks.len(),
+                    "{set}/{program}"
+                );
+                let live: usize = census
+                    .sets
+                    .iter()
+                    .map(|s| s.children.iter().filter(|c| c.future.is_some()).count())
+                    .sum();
+                let futures: usize = counts.futures.iter().sum();
+                assert_eq!(
+                    futures + counts.unowned_futures,
+                    list.tasks.len() + census.held.len() + live,
+                    "{set}/{program}"
+                );
+                // Every local-set group has a bucket past the runtimes',
+                // holding exactly the tasks the set claims.
+                for (group, key) in owners.keys().iter().enumerate().skip(owners.runtimes()) {
+                    let claimed = list
+                        .tasks
+                        .iter()
+                        .filter(|t| t.owner.known() == Some(*key))
+                        .count();
+                    assert_eq!(counts.tasks[group], claimed, "{set}/{program}: {key}");
+                    set_owned += claimed;
+                }
+            }
+        }
+        assert!(set_owned > 0, "the local-set fixtures hold set-owned tasks");
+    }
+
     /// The futures column counts what the census found through each
     /// group's tasks: the tasks themselves, plus the held futures and
     /// live set children attributed to their owners.

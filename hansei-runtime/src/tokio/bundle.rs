@@ -24,6 +24,7 @@ use super::observe::{
     WalkIssueKind, issue_of, lock_consistency,
 };
 use super::semantics::SemanticIndex;
+use super::work::{DiscoveryWorld, Registry, Roots, sweep};
 use super::{Location, RawInstant, TaskAddr, TaskState};
 
 use anyhow::{Context as _, Result, anyhow, bail, ensure};
@@ -1628,9 +1629,13 @@ impl<'b, T: Target> Context<'b, T> {
     /// Every route converges on the owner's address and dedups there.
     ///
     /// Each admitted list is then walked like one more shard and merged
-    /// — including into further rounds of the sweep, since what it owns
-    /// can point at the next hidden list, and a runtime it admits
-    /// brings its own drivers to harvest.
+    /// — and scanned in turn, since what it owns can point at the next
+    /// hidden list, and a runtime it admits brings its own drivers to
+    /// harvest. The routes run as one queue of work
+    /// ([`sweep`](super::work::sweep)): each admitted owner is
+    /// enumerated and harvested once, each resident record scanned
+    /// once, each find validated once, under an explicit item cap whose
+    /// frontier is reported rather than dropped.
     ///
     /// Every route contributes what it observed to `list.records`,
     /// one record per header ([`TaskStore::observe`]): a source, kind
@@ -1688,9 +1693,6 @@ impl<'b, T: Target> Context<'b, T> {
     ) -> (Vec<LocalSetRef<'b>>, Registries) {
         let mut sets: Vec<LocalSetRef<'b>> = Vec::new();
         let mut registries = Registries::default();
-        // One budget for the whole run: the scan's visit and referent
-        // caps are per discovery, not per task.
-        let mut budget = ScanBudget::new(limits);
 
         // The owner → LWP join table: each worker's own thread id, as
         // tokio's counter numbers it.
@@ -1725,105 +1727,57 @@ impl<'b, T: Target> Context<'b, T> {
                 .push(e.context("the local-set TLS probe failed")),
         }
 
-        // Routes 1 and 2, to a fixed point: enumerate what was admitted,
-        // produce more candidates from what was enumerated, merge what
-        // they found. Both sides are monotone and bounded — owners dedup
-        // by address, records by header address, and each record's
-        // storage is scanned once — so the loop ends; the round cap is
-        // a backstop against nothing real.
-        //
-        // The scan goes first, so a list an enumerated task points at
-        // is credited to that reference rather than to whichever of its
-        // members happens to hold a timer. The registry harvests
-        // follow, each over the runtimes no earlier round harvested: a
-        // registry's contents do not change as lists are enumerated,
-        // but a runtime admitted from one brings drivers of its own.
-        // The pool queues come last: their cells bootstrap nothing — a
-        // blocking cell's scheduler names no list — so the round they
-        // fill yields no candidates past the cells themselves.
-        let mut enumerated_runtimes = runtimes.len();
-        let mut enumerated_sets = 0;
-        let mut wheeled = 0;
-        let mut ioed = 0;
-        let mut pooled = 0;
-        for _round in 0..64 {
-            while enumerated_runtimes < runtimes.len() {
-                let runtime = &runtimes[enumerated_runtimes];
-                if let Err(e) = self.find_shared(runtime).and_then(|shared| {
-                    self.enumerate_owned(shared, runtime.owner_key(), runtime.owned_id, list)
-                }) {
-                    list.errors.push(e.context(format!(
-                        "failed to enumerate the runtime at {:#x}",
-                        runtime.handle.addr
-                    )));
-                }
-                enumerated_runtimes += 1;
-            }
-            while enumerated_sets < sets.len() {
-                let set = &sets[enumerated_sets];
-                if let Err(e) = self.enumerate_local(set, list) {
-                    list.errors.push(e.context(format!(
-                        "failed to enumerate the local set at {:#x}",
-                        set.shared.addr
-                    )));
-                }
-                enumerated_sets += 1;
-            }
-            let unscanned: Vec<TaskRecordId> = list
-                .records
-                .records()
-                .filter(|(_, record)| record.resident() && !record.scanned)
-                .map(|(id, _)| id)
-                .collect();
-            let found = if !unscanned.is_empty() {
-                self.scan_records(&unscanned, list, read, &mut budget)
-            } else if wheeled < runtimes.len() {
-                let (found, errors) =
-                    self.wheel_task_pointers(&runtimes[wheeled..], &mut registries);
-                wheeled = runtimes.len();
-                list.errors.extend(errors);
-                found
-            } else if ioed < runtimes.len() {
-                let (found, errors) = self.io_task_pointers(&runtimes[ioed..], &mut registries);
-                ioed = runtimes.len();
-                list.errors.extend(errors);
-                found
-            } else if pooled < runtimes.len() {
-                let mut found = Vec::new();
-                for runtime in &runtimes[pooled..] {
-                    if let Err(e) = self.queued_blocking(runtime, &mut found, &mut list.errors) {
-                        list.errors.push(e.context(format!(
-                            "failed to walk the blocking queue of the runtime at {:#x}",
-                            runtime.handle.addr
-                        )));
-                    }
-                }
-                pooled = runtimes.len();
-                found
-            } else {
-                break;
+        // Routes 1 and 2, to a fixed point: one queue of finite work
+        // (`work::sweep`), seeded with the root runtimes' registries and
+        // the TLS sets' lists, fed by what each item finds. What each
+        // item does to the target is `Live`'s; the order the kinds run
+        // in is the queue's; the cap and the frontier report are its.
+        let roots = Roots {
+            runtimes: runtimes.iter().map(RuntimeRef::owner_key).collect(),
+            sets: sets.iter().map(LocalSetRef::owner_key).collect(),
+        };
+        let outcome = {
+            let mut live = Live {
+                ctx: self,
+                runtimes,
+                sets: &mut sets,
+                registries: &mut registries,
+                thread_ids: &thread_ids,
+                excluded,
+                read,
+                wheel_visited: HashSet::default(),
+                io_visited: HashSet::default(),
             };
-            for candidate in found {
-                self.observe_candidate(
-                    candidate,
-                    excluded,
-                    &thread_ids,
-                    runtimes,
-                    &mut sets,
-                    list,
-                    read,
-                );
-            }
-        }
+            sweep(&mut live, list, &roots, excluded, limits)
+        };
+        // An owner reached only through a task an excluded runtime owns
+        // is not in the selection: its rows are already out of scope,
+        // and it is not a group either. Its records keep what they
+        // established.
+        let dropped: Vec<OwnerKey> = runtimes
+            .iter()
+            .map(RuntimeRef::owner_key)
+            .chain(sets.iter().map(LocalSetRef::owner_key))
+            .filter(|key| !outcome.reached.contains(key))
+            .collect();
+        runtimes.retain(|r| outcome.reached.contains(&r.owner_key()));
+        sets.retain(|s| outcome.reached.contains(&s.owner_key()));
         list.reproject(excluded);
         // What the routes disagreed on, beside the rows: every standing
         // diagnostic of every record, in record order.
         let issues: Vec<String> = list.records.issues().map(ToString::to_string).collect();
         list.errors
             .extend(issues.into_iter().map(|issue| anyhow!(issue)));
+        for owner in dropped {
+            list.errors.push(anyhow!(
+                "{owner} was reached only through tasks of an excluded runtime; \
+                 its tasks are not rows of this selection"
+            ));
+        }
         // A spent budget is reported, never absorbed: the caps are
         // there to bound a corrupt or pathological target, and a
         // healthy one that reaches them is a fact to raise the cap on.
+        let budget = &outcome.budget;
         if budget.inline_visits >= budget.limits.max_inline_visits {
             list.errors.push(anyhow!(
                 "the reference scan spent its budget of {} inline visits; \
@@ -1836,6 +1790,14 @@ impl<'b, T: Target> Context<'b, T> {
                 "the reference scan spent its budget of {} referent expansions; \
                  references past it were not followed",
                 budget.limits.max_referent_expansions
+            ));
+        }
+        if outcome.capped {
+            list.errors.push(anyhow!(
+                "discovery stopped at its cap of {} work items with {} left; \
+                 the population past that is not listed",
+                limits.max_work_items,
+                outcome.remaining
             ));
         }
         (sets, registries)
@@ -1997,16 +1959,17 @@ impl<'b, T: Target> Context<'b, T> {
     fn wheel_task_pointers(
         &self,
         runtimes: &[RuntimeRef<'b>],
+        visited: &mut HashSet<u64>,
         registries: &mut Registries,
     ) -> (Vec<Candidate>, Vec<anyhow::Error>) {
         let mut found = Vec::new();
         let mut errors = Vec::new();
-        // Across the whole harvest: the same entry is in exactly one
-        // slot, so a repeat is corrupt memory, not a second sighting.
-        let mut visited = HashSet::default();
+        // `visited` spans the whole run's harvests: the same entry is
+        // in exactly one slot of one wheel, so a repeat is corrupt
+        // memory, not a second sighting.
         for runtime in runtimes {
             if let Err(e) =
-                self.harvest_wheel(runtime, &mut visited, &mut found, &mut errors, registries)
+                self.harvest_wheel(runtime, visited, &mut found, &mut errors, registries)
             {
                 errors.push(e.context(format!(
                     "failed to walk the timer wheel of the runtime at {:#x}",
@@ -2132,18 +2095,17 @@ impl<'b, T: Target> Context<'b, T> {
     pub(crate) fn io_task_pointers(
         &self,
         runtimes: &[RuntimeRef<'b>],
+        visited: &mut HashSet<u64>,
         registries: &mut Registries,
     ) -> (Vec<Candidate>, Vec<anyhow::Error>) {
         let mut found = Vec::new();
         let mut errors = Vec::new();
-        // Across the whole harvest, for both node kinds: a registration
-        // is in one driver's list and a waiter node in one resource's,
-        // so a repeat is corrupt memory, not a second sighting.
-        let mut visited = HashSet::default();
+        // `visited` spans the whole run's harvests, for both node
+        // kinds: a registration is in one driver's list and a waiter
+        // node in one resource's, so a repeat is corrupt memory, not a
+        // second sighting.
         for runtime in runtimes {
-            if let Err(e) =
-                self.harvest_io(runtime, &mut visited, &mut found, &mut errors, registries)
-            {
+            if let Err(e) = self.harvest_io(runtime, visited, &mut found, &mut errors, registries) {
                 errors.push(e.context(format!(
                     "failed to walk the io registrations of the runtime at {:#x}",
                     runtime.handle.addr
@@ -4608,9 +4570,9 @@ mod discovery_scan_tests {
     /// The scan offers the owner a held handle names: on the
     /// foreign-runtime pair the joiner's `JoinHandle` names a task no
     /// enumerated list owns, and the scan offers that Header, by the
-    /// reference's own kind, with no wait diagnosed. In the rounds
-    /// after admission the hidden runtime's own tasks are scanned in
-    /// turn, and reference nothing outside the list.
+    /// reference's own kind, with no wait diagnosed. After admission
+    /// the hidden runtime's own tasks are scanned in turn, and
+    /// reference nothing outside the list.
     #[test]
     fn test_the_scan_offers_the_referenced_owner() {
         for set in testkit::FIXTURE_SETS {
@@ -4645,7 +4607,7 @@ mod discovery_scan_tests {
                 "a JoinHandle scanned in an enumerated task's storage"
             );
 
-            // The later round: what the admitted runtime owns was
+            // The later scans: what the admitted runtime owns was
             // scanned as new storage, and references only what is
             // listed — walked again here to look at what it offers.
             let hidden = e.runtimes[1].owner_key();
@@ -4664,7 +4626,7 @@ mod discovery_scan_tests {
             let later = ctx.scan_records(&later_ids, &mut e.list, &read, &mut budget);
             assert!(
                 budget.inline_visits > before,
-                "[{set}] the later round scanned"
+                "[{set}] the later scans read storage"
             );
             let outside: Vec<u64> = later
                 .iter()
@@ -4727,5 +4689,143 @@ mod discovery_scan_tests {
             ["the reference scan spent its budget of 1 inline visits; \
               references past it were not followed"]
         );
+    }
+}
+
+/// The target as the discovery sweep sees it: what each item of work
+/// does to memory, over the session's owner vectors and registries.
+/// [`work::sweep`] decides what runs and in which order; this decides
+/// what each run reads, and files what it found and what failed into
+/// the list, the way the rounds it replaced did.
+///
+/// [`work::sweep`]: super::work::sweep
+struct Live<'a, 'r, 'b, T: Target> {
+    ctx: &'a Context<'b, T>,
+    runtimes: &'a mut Vec<RuntimeRef<'b>>,
+    sets: &'a mut Vec<LocalSetRef<'b>>,
+    registries: &'a mut Registries,
+    thread_ids: &'a [(u64, u32)],
+    excluded: &'a [u64],
+    read: &'a ReadContext<'r>,
+    /// The wheel and io harvests' cycle guards, spanning every
+    /// runtime's harvest of the run.
+    wheel_visited: HashSet<u64>,
+    io_visited: HashSet<u64>,
+}
+
+impl<'b, T: Target> Live<'_, '_, 'b, T> {
+    fn runtime(&self, owner: OwnerKey) -> Option<RuntimeRef<'b>> {
+        let OwnerKey::Runtime { handle, .. } = owner else {
+            return None;
+        };
+        self.runtimes
+            .iter()
+            .find(|r| r.handle.addr == handle)
+            .cloned()
+    }
+}
+
+impl<'b, T: Target> DiscoveryWorld for Live<'_, '_, 'b, T> {
+    fn enumerate(&mut self, owner: OwnerKey, list: &mut TaskList) {
+        match owner {
+            OwnerKey::Runtime { handle, .. } => {
+                let Some(runtime) = self.runtime(owner) else {
+                    list.errors
+                        .push(anyhow!("{owner} was scheduled but never admitted"));
+                    return;
+                };
+                if let Err(e) = self.ctx.find_shared(&runtime).and_then(|shared| {
+                    self.ctx
+                        .enumerate_owned(shared, owner, runtime.owned_id, list)
+                }) {
+                    list.errors
+                        .push(e.context(format!("failed to enumerate the runtime at {handle:#x}")));
+                }
+            }
+            OwnerKey::LocalSet { shared } => {
+                let Some(set) = self.sets.iter().find(|s| s.shared.addr == shared).cloned() else {
+                    list.errors
+                        .push(anyhow!("{owner} was scheduled but never admitted"));
+                    return;
+                };
+                if let Err(e) = self.ctx.enumerate_local(&set, list) {
+                    list.errors.push(
+                        e.context(format!("failed to enumerate the local set at {shared:#x}")),
+                    );
+                }
+            }
+        }
+    }
+
+    fn scan(
+        &mut self,
+        id: TaskRecordId,
+        list: &mut TaskList,
+        budget: &mut ScanBudget,
+    ) -> Vec<Candidate> {
+        self.ctx.scan_records(&[id], list, self.read, budget)
+    }
+
+    fn harvest(
+        &mut self,
+        owner: OwnerKey,
+        registry: Registry,
+        list: &mut TaskList,
+    ) -> Vec<Candidate> {
+        // Only a runtime has registries, and only an admitted one is
+        // scheduled; a set here is nothing to read.
+        let Some(runtime) = self.runtime(owner) else {
+            return Vec::new();
+        };
+        let runtimes = std::slice::from_ref(&runtime);
+        match registry {
+            Registry::Timers => {
+                let (found, errors) = self.ctx.wheel_task_pointers(
+                    runtimes,
+                    &mut self.wheel_visited,
+                    self.registries,
+                );
+                list.errors.extend(errors);
+                found
+            }
+            Registry::Io => {
+                let (found, errors) =
+                    self.ctx
+                        .io_task_pointers(runtimes, &mut self.io_visited, self.registries);
+                list.errors.extend(errors);
+                found
+            }
+            Registry::BlockingQueue => {
+                let mut found = Vec::new();
+                if let Err(e) = self
+                    .ctx
+                    .queued_blocking(&runtime, &mut found, &mut list.errors)
+                {
+                    list.errors.push(e.context(format!(
+                        "failed to walk the blocking queue of the runtime at {:#x}",
+                        runtime.handle.addr
+                    )));
+                }
+                found
+            }
+        }
+    }
+
+    fn validate(&mut self, candidate: Candidate, list: &mut TaskList) -> Vec<OwnerKey> {
+        let (had_runtimes, had_sets) = (self.runtimes.len(), self.sets.len());
+        self.ctx.observe_candidate(
+            candidate,
+            self.excluded,
+            self.thread_ids,
+            self.runtimes,
+            self.sets,
+            list,
+            self.read,
+        );
+        self.runtimes[had_runtimes..]
+            .iter()
+            .map(RuntimeRef::owner_key)
+            .chain(self.sets[had_sets..].iter().map(LocalSetRef::owner_key))
+            .collect()
     }
 }

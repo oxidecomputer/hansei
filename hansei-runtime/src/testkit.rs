@@ -868,7 +868,11 @@ pub fn io_candidates<T: Target>(ctx: &Context<'_, T>, snapshot: &Snapshot) -> Ve
     let list = ctx
         .enumerate_all_tasks(&runtimes)
         .expect("the owned-task walk");
-    let (found, errors) = ctx.io_task_pointers(&runtimes, &mut Registries::default());
+    let (found, errors) = ctx.io_task_pointers(
+        &runtimes,
+        &mut foldhash::HashSet::default(),
+        &mut Registries::default(),
+    );
     assert!(errors.is_empty(), "{errors:?}");
     found
         .iter()

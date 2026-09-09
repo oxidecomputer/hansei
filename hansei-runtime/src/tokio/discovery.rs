@@ -288,6 +288,13 @@ pub struct TaskRecord {
     pub issues: Vec<DiscoveryIssue>,
     /// Whether the reference scan has walked this task's storage.
     pub(crate) scanned: bool,
+    /// Whether the selection's scope reaches this record: a task
+    /// enumerated from, or found through, a route that starts at an
+    /// admitted owner and never crosses a task an excluded runtime
+    /// owns. Every record is in scope until the sweep says otherwise
+    /// ([`TaskStore::set_scope`]); one out of it keeps its evidence and
+    /// is nobody's row.
+    in_scope: bool,
 }
 
 impl TaskRecord {
@@ -300,6 +307,7 @@ impl TaskRecord {
             owner_claims: Vec::new(),
             issues: Vec::new(),
             scanned: false,
+            in_scope: true,
         }
     }
 
@@ -343,6 +351,11 @@ impl TaskRecord {
             return true;
         }
         !self.sources.is_empty() && self.header.state.lifecycle() != Lifecycle::Complete
+    }
+
+    /// Whether the selection's scope reaches the record; see the field.
+    pub fn in_scope(&self) -> bool {
+        self.in_scope
     }
 
     /// Whether two decodes of the header disagreed.
@@ -443,6 +456,11 @@ pub struct MergeEffect {
 pub struct TaskStore {
     by_addr: HashMap<u64, TaskRecordId>,
     records: Vec<TaskRecord>,
+    /// Records that became resident since the sweep last asked
+    /// ([`TaskStore::take_scannable`]): each one's storage is scanned
+    /// once, and residency is monotone, so a record is listed here at
+    /// most once in its life.
+    scannable: Vec<TaskRecordId>,
 }
 
 impl TaskStore {
@@ -513,6 +531,7 @@ impl TaskStore {
     pub fn observe_at(&mut self, id: TaskRecordId, observation: Observation) -> MergeEffect {
         let record = &mut self.records[id.0];
         let (kind_before, owner_before) = (record.kind(), record.owner());
+        let resident_before = record.resident();
         if let Some(kind) = observation.source.kind() {
             record.add_kind(kind);
         }
@@ -524,6 +543,9 @@ impl TaskStore {
             record.add_claim(claim);
         }
         record.reconcile();
+        if !resident_before && record.resident() && !record.scanned {
+            self.scannable.push(id);
+        }
         MergeEffect {
             record: id,
             inserted: false,
@@ -557,21 +579,34 @@ impl TaskStore {
         self.records[id.0].scanned = true;
     }
 
+    /// The records that became resident since the last call, in the
+    /// order they did: what the sweep has yet to scan.
+    pub(crate) fn take_scannable(&mut self) -> Vec<TaskRecordId> {
+        std::mem::take(&mut self.scannable)
+    }
+
+    /// Whether the selection's scope reaches a record; see
+    /// [`TaskRecord::in_scope`].
+    pub(crate) fn set_scope(&mut self, id: TaskRecordId, in_scope: bool) {
+        self.records[id.0].in_scope = in_scope;
+    }
+
     /// Every diagnostic on every record, in record order.
     pub fn issues(&self) -> impl Iterator<Item = &DiscoveryIssue> {
         self.records.iter().flat_map(|r| r.issues.iter())
     }
 
-    /// The listing rows: every resident record not owned by a runtime
-    /// in `excluded` (by handle address), sorted by task id, the
-    /// idless last by address. A record whose owner is in conflict
-    /// stays a row whichever owners the conflict names — an excluded
-    /// owner in a conflict is a diagnostic, not a selection.
+    /// The listing rows: every resident record in the selection's
+    /// scope and not owned by a runtime in `excluded` (by handle
+    /// address), sorted by task id, the idless last by address. A
+    /// record whose owner is in conflict stays a row whichever owners
+    /// the conflict names — an excluded owner in a conflict is a
+    /// diagnostic, not a selection.
     pub fn project(&self, excluded: &[u64]) -> Vec<Task> {
         let mut tasks: Vec<Task> = self
             .records
             .iter()
-            .filter(|record| record.resident())
+            .filter(|record| record.resident() && record.in_scope)
             .map(TaskRecord::task)
             .filter(|task| match task.owner {
                 OwnerResolution::Known(OwnerKey::Runtime { handle, .. }) => {

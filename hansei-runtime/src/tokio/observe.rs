@@ -486,6 +486,9 @@ pub struct ScanLimits {
     pub max_inline_visits: u64,
     /// Referents read through a pointer, per discovery run.
     pub max_referent_expansions: u64,
+    /// Items of discovery work — an owner enumerated, a task scanned,
+    /// a find validated, a registry harvested — per discovery run.
+    pub max_work_items: u64,
 }
 
 impl Default for ScanLimits {
@@ -497,6 +500,7 @@ impl Default for ScanLimits {
             max_children: 65_536,
             max_inline_visits: 16_777_216,
             max_referent_expansions: 1_048_576,
+            max_work_items: 4_194_304,
         }
     }
 }
