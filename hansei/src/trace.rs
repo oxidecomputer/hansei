@@ -2703,6 +2703,47 @@ mod future_trace_tests {
         String::from_utf8(out).expect("rendered output is UTF-8")
     }
 
+    /// A running task waits on nothing, whichever kind it is: neither
+    /// a mid-poll async task nor a running blocking cell gets a
+    /// `waiting on:` line, while an idle one does.
+    #[test]
+    fn test_a_running_task_block_has_no_wait_line() {
+        use hansei_runtime::tokio::bundle::{FutureInfo, OwnerResolution, Task, TaskKind};
+        use hansei_runtime::tokio::{TaskAddr, TaskState};
+
+        const RUNNING: u64 = 0b1;
+        let task = |id: u64, state: u64, kind: TaskKind| Task {
+            addr: TaskAddr(0x1000 + id * 0x100),
+            state: TaskState((1 << 6) | state),
+            owner_id: Some(1),
+            task_id: Some(id),
+            spawn_location: None,
+            future: FutureInfo::Unknown { poll_symbol: None },
+            kind,
+            owner: OwnerResolution::Unknown,
+        };
+        let list = TaskList::new(vec![
+            task(1, RUNNING, TaskKind::Async),
+            task(2, RUNNING, TaskKind::Blocking),
+            task(3, 0, TaskKind::Async),
+        ]);
+        let polling = render(&list, &[], &[], false, 1);
+        assert!(polling.contains("\n    state: running\n"), "{polling}");
+        assert!(!polling.contains("waiting on:"), "{polling}");
+        let blocking = render(&list, &[], &[], false, 2);
+        assert!(
+            blocking.contains("\n    state: blocking (running)\n"),
+            "{blocking}"
+        );
+        assert!(!blocking.contains("waiting on:"), "{blocking}");
+        // With no analysis behind it an idle task has nothing to wait
+        // on either; the line exists only where the cell says more
+        // than a dash.
+        let idle = render(&list, &[], &[], false, 3);
+        assert!(idle.contains("\n    state: idle\n"), "{idle}");
+        assert!(!idle.contains("waiting on:"), "{idle}");
+    }
+
     /// `task --futures` on the task that owns the fixture's one held
     /// future prints that future under its count, and on any other
     /// task prints a zero and nothing under it: what the census found

@@ -15,7 +15,7 @@ pub use super::model::*;
 
 use super::contract::{self, ContractReport, WalkPolicy, Walked};
 use super::discovery::{
-    DiscoveryIssue, Observation, OwnerClaim, OwnerEvidence, TaskRecordId, TaskSource,
+    DiscoveryIssue, Observation, OwnerClaim, OwnerEvidence, TaskRecordId, TaskSource, list_claim,
 };
 use super::observe::{
     AcquireObservation, Consistency, IoFutureState, IoObservation, JoinObservation, Observed,
@@ -902,15 +902,7 @@ impl<'b, T: Target> Context<'b, T> {
         owned_id: Option<u64>,
         list: &mut TaskList,
     ) {
-        let addr = header.addr;
-        let found = header.owner_id;
-        let claim = match owned_id {
-            Some(id) if found == Some(id) => Some(OwnerClaim {
-                owner,
-                evidence: OwnerEvidence::OwnedList { head, owner_id: id },
-            }),
-            _ => None,
-        };
+        let (claim, mismatch) = list_claim(owner, head, owned_id, &header);
         let kind = self.header_kind(&header);
         let effect = list.records.observe(
             header,
@@ -920,18 +912,8 @@ impl<'b, T: Target> Context<'b, T> {
                 claim,
             },
         );
-        if let Some(expected) = owned_id
-            && found != Some(expected)
-        {
-            list.records.issue(
-                effect.record,
-                DiscoveryIssue::OwnerIdMismatch {
-                    addr,
-                    owner,
-                    expected,
-                    found,
-                },
-            );
+        if let Some(mismatch) = mismatch {
+            list.records.issue(effect.record, mismatch);
         }
     }
 

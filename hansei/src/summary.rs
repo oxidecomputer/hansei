@@ -1162,6 +1162,22 @@ mod tests {
             owned_heading(&facts(&owned, &[])),
             "1 owned by runtime 0 @ 0x1000"
         );
+        // Each apart count prints only when it is nonzero.
+        let mut unknown = task(2, 0, "x", "x.rs");
+        unknown.owner = OwnerResolution::Unknown;
+        let unknown_only = TaskList::new(vec![task(1, 0, "x", "x.rs"), unknown]);
+        assert_eq!(
+            owned_heading(&facts(&unknown_only, &[])),
+            "2: 1 owned by runtime 0 @ 0x1000, 1 with no established owner"
+        );
+        let mut conflict = task(3, 0, "x", "x.rs");
+        conflict.owner =
+            OwnerResolution::Conflict(vec![RUNTIME, OwnerKey::LocalSet { shared: 0x2000 }]);
+        let conflict_only = TaskList::new(vec![conflict]);
+        assert_eq!(
+            owned_heading(&facts(&conflict_only, &[])),
+            "1: 0 owned by runtime 0 @ 0x1000, 1 with conflicting owners"
+        );
     }
 
     /// A task assessed as verified-waiting on `target`, or — with no

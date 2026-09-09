@@ -231,6 +231,39 @@ impl fmt::Display for DiscoveryIssue {
     }
 }
 
+/// What an owned list's link to a task establishes: the claim, where
+/// the list's id `owned_id` is known and is the task's own
+/// `Header.owner_id`, else the mismatch to file — and neither where
+/// the list's id never bound, since nothing can then be held to
+/// anything.
+pub fn list_claim(
+    owner: OwnerKey,
+    head: u64,
+    owned_id: Option<u64>,
+    header: &DecodedTaskHeader,
+) -> (Option<OwnerClaim>, Option<DiscoveryIssue>) {
+    let found = header.owner_id;
+    match owned_id {
+        Some(id) if found == Some(id) => (
+            Some(OwnerClaim {
+                owner,
+                evidence: OwnerEvidence::OwnedList { head, owner_id: id },
+            }),
+            None,
+        ),
+        Some(expected) => (
+            None,
+            Some(DiscoveryIssue::OwnerIdMismatch {
+                addr: header.addr,
+                owner,
+                expected,
+                found,
+            }),
+        ),
+        None => (None, None),
+    }
+}
+
 /// How many explanatory references a record keeps per source kind
 /// before counting the rest: a task every other task holds a handle
 /// to is a fact worth one line, not ten thousand.
@@ -1114,6 +1147,96 @@ mod tests {
         );
         assert_eq!(index.key(1), Some(RT1));
         assert_eq!(index.key(3), None);
+    }
+
+    /// A list's link claims the task only when the list's id is the
+    /// task's own; another id is a mismatch to file, and a list whose
+    /// id never bound claims nothing and files nothing.
+    #[test]
+    fn test_a_list_claims_only_the_task_carrying_its_id() {
+        let (claim, mismatch) = list_claim(RT0, 0x7000, Some(1), &header(0x100, 0, Some(1)));
+        assert_eq!(
+            claim,
+            Some(OwnerClaim {
+                owner: RT0,
+                evidence: OwnerEvidence::OwnedList {
+                    head: 0x7000,
+                    owner_id: 1
+                }
+            })
+        );
+        assert_eq!(mismatch, None);
+
+        let (claim, mismatch) = list_claim(RT0, 0x7000, Some(1), &header(0x100, 0, Some(2)));
+        assert_eq!(claim, None);
+        assert_eq!(
+            mismatch,
+            Some(DiscoveryIssue::OwnerIdMismatch {
+                addr: TaskAddr(0x100),
+                owner: RT0,
+                expected: 1,
+                found: Some(2),
+            })
+        );
+
+        let (claim, mismatch) = list_claim(RT0, 0x7000, None, &header(0x100, 0, Some(1)));
+        assert_eq!((claim, mismatch), (None, None));
+    }
+
+    /// The store's accessors and the issue file: what a record is, how
+    /// many there are, and that a filed diagnostic is kept and listed.
+    #[test]
+    fn test_the_store_counts_and_files_issues() {
+        let mut store = TaskStore::new();
+        assert!(store.is_empty());
+        assert_eq!(store.len(), 0);
+        let a = store.observe(header(0x100, 0, Some(1)), handle_ref(0x100, 0x500));
+        let b = store.observe(header(0x200, 0, Some(1)), handle_ref(0x200, 0x500));
+        assert!(!store.is_empty());
+        assert_eq!(store.len(), 2);
+        assert_eq!(
+            store.records().map(|(id, _)| id).collect::<Vec<_>>(),
+            [a.record, b.record]
+        );
+        assert_eq!(store.issues().count(), 0);
+
+        let mismatch = DiscoveryIssue::OwnerIdMismatch {
+            addr: TaskAddr(0x200),
+            owner: RT0,
+            expected: 1,
+            found: Some(2),
+        };
+        store.issue(b.record, mismatch.clone());
+        store.issue(b.record, mismatch.clone());
+        assert_eq!(
+            store.record(b.record).issues,
+            std::slice::from_ref(&mismatch)
+        );
+        assert_eq!(store.issues().collect::<Vec<_>>(), [&mismatch]);
+
+        // A claim on a decoded record changes its owner once, and a
+        // repeat of it changes nothing.
+        let claim = OwnerClaim {
+            owner: RT0,
+            evidence: OwnerEvidence::CellScheduler {
+                scheduler: key(0x1000, 9),
+                owner_id: 1,
+            },
+        };
+        assert!(store.claim(a.record, claim.clone()).owner_changed);
+        assert!(!store.claim(a.record, claim).owner_changed);
+        assert_eq!(store.record(a.record).owner(), OwnerResolution::Known(RT0));
+    }
+
+    /// The index's own inventory: its keys in group order, and empty
+    /// only when there is no owner at all.
+    #[test]
+    fn test_the_owner_index_lists_its_keys() {
+        let index = OwnerIndex::from_keys(vec![RT0, SET], 1);
+        assert_eq!(index.keys(), [RT0, SET]);
+        assert!(!index.is_empty());
+        let none = OwnerIndex::from_keys(Vec::new(), 0);
+        assert!(none.is_empty() && none.keys().is_empty());
     }
 
     #[test]

@@ -980,7 +980,7 @@ mod tests {
 
     use crate::trace::FutureAt;
 
-    use crate::runtimes::RowOwner;
+    use crate::runtimes::{OwnerCounts, RowOwner, owner_label};
     use hansei_bundle::BundleTypeId;
     use hansei_runtime::tokio::assess::ContinuationStatus;
     use hansei_runtime::tokio::bundle::{
@@ -1104,6 +1104,95 @@ mod tests {
             census,
             &hansei_bundle::names::ImplFold::default(),
         )
+    }
+
+    /// The owner counts are exact per group and count the unowned
+    /// apart: a task no group owns, a task whose owners conflict, and
+    /// every find of either, land in the apart counts, never in a
+    /// group's and never nowhere.
+    #[test]
+    fn test_owner_counts_are_exact_and_count_the_unowned_apart() {
+        let mut unknown = task(3, 0);
+        unknown.owner = OwnerResolution::Unknown;
+        let mut conflict = task(4, 0);
+        conflict.owner = OwnerResolution::Conflict(GROUPS.to_vec());
+        let list = TaskList::new(vec![
+            task(1, 0),
+            task(12, 1),
+            unknown.clone(),
+            conflict.clone(),
+        ]);
+        // Task 1 (group 0) holds one future and a set of two live
+        // children; task 12 (group 1) holds one; the unknown task
+        // holds one; the conflicted task holds a set of one child.
+        let census = census(
+            vec![
+                held(0, 0x3000, None),
+                held(1, 0x3100, None),
+                held(2, 0x3200, None),
+            ],
+            vec![
+                set(
+                    0,
+                    vec![
+                        child(0x4000, Some("app::child")),
+                        child(0x4100, Some("app::child")),
+                        child(0x4200, None),
+                    ],
+                ),
+                set(3, vec![child(0x4300, Some("app::child"))]),
+            ],
+        );
+        let counts = OwnerCounts::count(&list, &census, &owners());
+        assert_eq!(counts.tasks, [1, 1]);
+        assert_eq!(counts.futures, [1 + 1 + 2, 1 + 1]);
+        assert_eq!(
+            (
+                counts.unknown_tasks,
+                counts.conflict_tasks,
+                counts.unowned_futures
+            ),
+            (1, 1, 2 + 1 + 1)
+        );
+
+        // The owner cell and its detail line for each kind of owner.
+        let tags = vec![
+            "runtime 0 @ 0x10 (multi_thread)".to_string(),
+            "local set 0 @ 0x20".to_string(),
+        ];
+        let owned = &list.tasks[0];
+        assert_eq!(RowOwner::of(owned, &owners()), RowOwner::Group(0));
+        assert_eq!(
+            RowOwner::detail(owned, &owners(), &tags).as_deref(),
+            Some("runtime 0 @ 0x10 (multi_thread)")
+        );
+        assert_eq!(RowOwner::detail(owned, &owners(), &[]), None);
+        assert_eq!(RowOwner::of(&unknown, &owners()), RowOwner::Unknown);
+        assert_eq!(
+            RowOwner::detail(&unknown, &owners(), &tags).as_deref(),
+            Some("unknown (no list, queue or cell scheduler established one)")
+        );
+        assert_eq!(RowOwner::of(&conflict, &owners()), RowOwner::Conflict);
+        assert_eq!(
+            RowOwner::detail(&conflict, &owners(), &[]).as_deref(),
+            Some("conflict (runtime 0 @ 0x10; local set 0 @ 0x20)")
+        );
+        // A known owner the index does not number spells the key.
+        let mut stranger = task(5, 0);
+        stranger.owner = OwnerResolution::Known(OwnerKey::LocalSet { shared: 0x30 });
+        assert_eq!(RowOwner::of(&stranger, &owners()), RowOwner::Unknown);
+        assert_eq!(
+            RowOwner::detail(&stranger, &owners(), &tags).as_deref(),
+            Some("unknown (the local set at 0x30 is not a group of this session)")
+        );
+        assert_eq!(
+            owner_label(OwnerKey::LocalSet { shared: 0x30 }, &owners()),
+            "the local set at 0x30"
+        );
+        assert_eq!(
+            RowOwner::Unknown.to_string() + " " + &RowOwner::Conflict.to_string(),
+            "unknown conflict"
+        );
     }
 
     /// Rows come in task order with a task's held futures ahead of its
