@@ -3,9 +3,10 @@ source: hansei/src/offline.rs
 description: "`tasks --group waiting-on` over linux-floor/walk-shapes"
 ---
 COUNT  WAITING ON                                           TASKS
-    4  unknown                                              1, 2, 3, …
     3  a tokio::sync::Semaphore (semaphore 0xADDR)  5, 6, 10
+    3  unknown at tokio::sync::notify::Notified             2, 3, 7
     1  <empty>                                              9
     1  a tokio::sync::Mutex (semaphore 0xADDR)      4
     1  task 7                                               8
-[5 groups]
+    1  unknown at walk_shapes::WrapS                        1
+[6 groups]

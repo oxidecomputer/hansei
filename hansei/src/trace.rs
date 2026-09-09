@@ -2678,6 +2678,7 @@ mod future_trace_tests {
             &hansei_bundle::names::ImplFold::default(),
             &Default::default(),
             &Default::default(),
+            &crate::tasks::StopNames::none(&Default::default()),
         );
         let finds = Finds {
             held,

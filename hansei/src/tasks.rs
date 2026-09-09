@@ -9,15 +9,17 @@ use crate::runtimes::RowOwner;
 use crate::{Session, output, print_warnings, repl, summary};
 
 use anyhow::{Context as _, Result};
-use hansei_bundle::names;
+use hansei_bundle::{BundleTypeId, BundleView, names};
 use hansei_runtime::tokio::assess::{
-    NotWaitingReason, ReadyReason, RunnableReason, WaitAssessment, WaitUnknownReason,
+    ContinuationStatus, IncompleteReason, NotWaitingReason, ReadyReason, RunnableReason,
+    WaitAssessment, WaitUnknownReason,
 };
 use hansei_runtime::tokio::graph as rt_graph;
 use hansei_runtime::tokio::{Lifecycle, bundle, census};
 
 use std::collections::{BTreeMap, HashMap};
 use std::io::{self, Write};
+use std::sync::RwLock;
 
 /// How a task is referred to in passing: by id, or by Header address
 /// when it has none.
@@ -688,6 +690,7 @@ pub(crate) fn rows<'s, T: proc::Target>(session: &'s Session<'_, T>) -> &'s [Tas
             &session.impl_fold,
             &session.registries,
             blocking_lwps(session),
+            &StopNames::of(session),
         )
     })
 }
@@ -704,6 +707,7 @@ pub(crate) fn build_rows(
     impls: &names::ImplFold,
     registries: &bundle::Registries,
     blocking_lwps: &HashMap<u64, u32>,
+    stops: &StopNames<'_>,
 ) -> Vec<TaskRow> {
     let slots = QueuedSlots::index(waits, joins);
     list.tasks
@@ -721,7 +725,7 @@ pub(crate) fn build_rows(
                     .and_then(|w| w.site.as_ref())
                     .map(|(file, line)| format!("{file}:{line}")),
                 waiting_on: waiting_on(task, waits.get(index), polling),
-                waiting_kind: waiting_kind(task, waits.get(index)),
+                waiting_kind: waiting_kind(task, waits.get(index), stops),
                 wait_detail: wait_detail(task, waits.get(index), registries),
                 waker,
                 waker_kind,
@@ -953,18 +957,138 @@ pub(crate) fn assessment_cell(assessment: &WaitAssessment) -> String {
 }
 
 /// The bucket `--group waiting-on` files an assessment under: the
-/// verified target's kind-level label, `ready` or `unknown` as the
-/// cell spells them, and nothing for a task that waits on nothing —
-/// complete, runnable, never polled, returned — which is the empty
-/// bucket rather than a value.
-pub(crate) fn assessment_kind(assessment: &WaitAssessment) -> Option<String> {
-    match assessment {
-        WaitAssessment::Waiting(wait) => Some(wait.target().group_label()),
+/// verified target's kind-level label, `ready` as the cell spells it,
+/// an unknown by what made it one ([`continuation_bucket`], or the
+/// reason where the chain did reach a primitive), and nothing for a
+/// task that waits on nothing — complete, runnable, never polled,
+/// returned — which is the empty bucket rather than a value.
+pub(crate) fn assessment_kind(wait: &rt_graph::TaskWait, stops: &StopNames<'_>) -> Option<String> {
+    match &wait.assessment {
+        WaitAssessment::Waiting(verified) => Some(verified.target().group_label()),
         WaitAssessment::ResourceReady(_) => Some("ready".to_string()),
-        WaitAssessment::Unknown(_) => Some("unknown".to_string()),
+        WaitAssessment::Unknown(WaitUnknownReason::Continuation) => Some(
+            continuation_bucket(&wait.continuation, stops).unwrap_or_else(|| "unknown".to_string()),
+        ),
+        WaitAssessment::Unknown(reason) => Some(format!("unknown ({})", unknown_word(*reason))),
         WaitAssessment::Unresumed | WaitAssessment::NotWaiting(_) | WaitAssessment::Runnable(_) => {
             None
         }
+    }
+}
+
+/// The bucket an unknown continuation earns: the type the chain
+/// stopped at, so a listing over thousands of unknowns separates the
+/// hyper connection's `Map` stop from the `PollFn` and `Select` stops
+/// and shows the long tail behind them — `unknown at
+/// futures_util::future::Map`, generic arguments dropped since they
+/// tell monomorphizations apart, not stops. A chain cut short says how
+/// (`unknown (ambiguous dyn future)`); a chain that reached a
+/// primitive nothing described is the bare `unknown`. `None` for a
+/// terminal or mid-poll end, which waits on nothing.
+pub(crate) fn continuation_bucket(
+    continuation: &ContinuationStatus,
+    stops: &StopNames<'_>,
+) -> Option<String> {
+    match continuation {
+        ContinuationStatus::Primitive => Some("unknown".to_string()),
+        ContinuationStatus::Unknown { at, .. } => Some(match stops.label(at.ty) {
+            Some(stop) => format!("unknown at {stop}"),
+            None => "unknown".to_string(),
+        }),
+        ContinuationStatus::Incomplete { reason, .. } => {
+            Some(format!("unknown ({})", incomplete_word(*reason)))
+        }
+        ContinuationStatus::Unresumed
+        | ContinuationStatus::Returned
+        | ContinuationStatus::Panicked
+        | ContinuationStatus::ActivePoll => None,
+    }
+}
+
+/// How the listings name the type an unknown continuation stopped at:
+/// the bundle's spelling, folded for display and cut to its path.
+/// Built over the session's bundle; over none for a listing test laid
+/// out by hand, where every stop is nameless.
+pub(crate) struct StopNames<'a> {
+    view: Option<BundleView<'a>>,
+    impls: &'a names::ImplFold,
+    /// Labels by type id. A listing's stops are a few dozen types over
+    /// tens of thousands of rows, and each label is a fold pass over
+    /// the name — 0.4 s of wall time (0.9 s of CPU) across the nexus
+    /// core's futures rows uncached, against a 1.5 s launch.
+    labels: RwLock<HashMap<BundleTypeId, Option<String>>>,
+}
+
+impl<'a> StopNames<'a> {
+    pub(crate) fn of<T: proc::Target>(session: &'a Session<'_, T>) -> Self {
+        StopNames {
+            view: Some(session.ctx.view),
+            impls: &session.impl_fold,
+            labels: RwLock::default(),
+        }
+    }
+
+    /// No bundle to name a stop from.
+    #[cfg(test)]
+    pub(crate) fn none(impls: &'a names::ImplFold) -> Self {
+        StopNames {
+            view: None,
+            impls,
+            labels: RwLock::default(),
+        }
+    }
+
+    /// The stop's label, or `None` where the type is not in the bundle.
+    fn label(&self, ty: BundleTypeId) -> Option<String> {
+        if let Some(label) = self.labels.read().unwrap().get(&ty) {
+            return label.clone();
+        }
+        let label = self
+            .view
+            .and_then(|view| view.ty(ty))
+            .map(|ty| stop_label(ty.name(), self.impls));
+        self.labels
+            .write()
+            .unwrap()
+            .entry(ty)
+            .or_insert(label)
+            .clone()
+    }
+}
+
+/// The label a stop type buckets under: its path folded for display
+/// and cut of its generic arguments — `futures_util::future::Map` —
+/// with a coroutine's kind word in front, as the listings spell one
+/// (`async fn app::serve`).
+pub(crate) fn stop_label(name: &str, impls: &names::ImplFold) -> String {
+    let path = names::outer_path(&names::fold_type_name(name, impls));
+    match names::coroutine_kind(name) {
+        Some(kind) => format!("{kind} {path}"),
+        None => path,
+    }
+}
+
+/// The short form of a non-continuation unknown, for its bucket.
+fn unknown_word(reason: WaitUnknownReason) -> &'static str {
+    match reason {
+        WaitUnknownReason::Continuation => "continuation",
+        WaitUnknownReason::ResourceUnreadable => "resource unreadable",
+        WaitUnknownReason::ResourceStateUnproven => "resource state unproven",
+        WaitUnknownReason::Lifecycle => "lifecycle",
+        WaitUnknownReason::TaskKind => "task kind",
+        WaitUnknownReason::ConflictingEvidence => "conflicting evidence",
+    }
+}
+
+/// The short form of a chain cut short, for its bucket.
+fn incomplete_word(reason: IncompleteReason) -> &'static str {
+    match reason {
+        IncompleteReason::UnknownDyn => "dyn future not in the tokio info",
+        IncompleteReason::AmbiguousDyn => "ambiguous dyn future",
+        IncompleteReason::DepthLimit => "depth limit",
+        IncompleteReason::Cycle => "cycle",
+        IncompleteReason::Error => "read error",
+        IncompleteReason::NoRoot => "no root in the tokio info",
     }
 }
 
@@ -1022,11 +1146,15 @@ pub(crate) fn unknown_reason(reason: WaitUnknownReason) -> &'static str {
 /// The bucket `--group waiting-on` files the row under: the
 /// assessment's, except that a blocking cell and a running task wait
 /// on nothing and land in the empty bucket.
-fn waiting_kind(task: &bundle::Task, wait: Option<&rt_graph::TaskWait>) -> Option<String> {
+fn waiting_kind(
+    task: &bundle::Task,
+    wait: Option<&rt_graph::TaskWait>,
+    stops: &StopNames<'_>,
+) -> Option<String> {
     if task.is_blocking() || task.state.lifecycle() == Lifecycle::Running {
         return None;
     }
-    assessment_kind(&wait?.assessment)
+    assessment_kind(wait?, stops)
 }
 
 /// The `-v` detail lines under a row's wait: what the assessment has
@@ -2124,8 +2252,9 @@ fn optional<T>(read: Result<T>, what: &str) -> Result<Option<T>> {
 
 #[cfg(test)]
 mod table_tests {
-    use super::{build_rows, listing_footer, print_task_table};
+    use super::{StopNames, build_rows, listing_footer, print_task_table, stop_label};
 
+    use hansei_bundle::{BundleTypeId, SemanticIssueKind};
     use hansei_runtime::tokio::assess::{
         ContinuationStatus, IncompleteReason, NotWaitingReason, VerifiedWait, WaitAssessment,
         WaitUnknownReason,
@@ -2134,6 +2263,7 @@ mod table_tests {
         FutureInfo, OwnerResolution, Task, TaskKind, TaskList, WaitTarget,
     };
     use hansei_runtime::tokio::graph::{TaskRef, TaskWait};
+    use hansei_runtime::tokio::observe::ValueKey;
     use hansei_runtime::tokio::{RawInstant, TaskAddr, TaskState};
 
     use std::collections::HashMap;
@@ -2201,7 +2331,71 @@ mod table_tests {
             &hansei_bundle::names::ImplFold::default(),
             &Default::default(),
             &Default::default(),
+            &StopNames::none(&Default::default()),
         )
+    }
+
+    /// The cell stays `unknown`; the bucket says what made it one — the
+    /// stop type where the chain stopped at one (bare `unknown` where
+    /// no bundle names it), how a chain was cut short, or the reason
+    /// where the chain reached a primitive its protocol could not vouch
+    /// for. A stop label is the type's path, generics dropped, with a
+    /// coroutine's kind word in front.
+    #[test]
+    fn test_unknown_buckets_say_what_made_them_unknown() {
+        let mut stopped = wait(1, None);
+        stopped.continuation = ContinuationStatus::Unknown {
+            at: ValueKey {
+                addr: 0x5000,
+                ty: BundleTypeId(7),
+            },
+            reason: SemanticIssueKind::NoRule,
+        };
+        let mut cut = wait(2, None);
+        cut.continuation = ContinuationStatus::Incomplete {
+            reason: IncompleteReason::AmbiguousDyn,
+            detail: None,
+        };
+        let unproven = assessed(
+            3,
+            WaitAssessment::Unknown(WaitUnknownReason::ResourceStateUnproven),
+        );
+        let rows = rows_of(
+            vec![task(1, 0), task(2, 0), task(3, 0)],
+            vec![stopped, cut, unproven],
+            HashMap::new(),
+        );
+        assert!(rows.iter().all(|r| r.waiting_on == "unknown"), "{rows:?}");
+        assert_eq!(rows[0].waiting_kind.as_deref(), Some("unknown"));
+        assert_eq!(
+            rows[1].waiting_kind.as_deref(),
+            Some("unknown (ambiguous dyn future)")
+        );
+        assert_eq!(
+            rows[2].waiting_kind.as_deref(),
+            Some("unknown (resource state unproven)")
+        );
+
+        let impls = hansei_bundle::names::ImplFold::default();
+        assert_eq!(
+            stop_label(
+                "futures_util::future::map::Map<hyper::client::conn::Connection<A, B>, \
+                 hyper_util::client::legacy::{closure_env#3}>",
+                &impls
+            ),
+            "futures_util::future::map::Map"
+        );
+        assert_eq!(
+            stop_label("app::serve::{async_fn_env#0}", &impls),
+            "async fn app::serve"
+        );
+        assert_eq!(
+            stop_label(
+                "core::future::poll_fn::PollFn<app::run::{async_fn_env#0}::{closure_env#1}>",
+                &impls
+            ),
+            "core::future::poll_fn::PollFn"
+        );
     }
 
     /// Each cell says what its column promises: the site as
@@ -2240,7 +2434,10 @@ mod table_tests {
 
         assert_eq!(rows[1].state, "idle (cancelled)");
         assert_eq!(rows[1].waiting_on, "unknown");
-        assert_eq!(rows[1].waiting_kind.as_deref(), Some("unknown"));
+        assert_eq!(
+            rows[1].waiting_kind.as_deref(),
+            Some("unknown (no root in the tokio info)")
+        );
         assert_eq!(rows[1].awaiting_at, None);
         assert_eq!(
             rows[1].wait_detail,
@@ -2320,6 +2517,7 @@ mod table_tests {
             &hansei_bundle::names::ImplFold::default(),
             &Default::default(),
             &HashMap::from([(0x1000 + 2 * 0x100, 42)]),
+            &StopNames::none(&Default::default()),
         );
         assert_eq!(with_lwp[0].state, "blocking");
         assert_eq!(with_lwp[0].lwp, Some(42));
@@ -2424,6 +2622,7 @@ mod table_tests {
             &hansei_bundle::names::ImplFold::default(),
             &registries,
             &Default::default(),
+            &StopNames::none(&Default::default()),
         );
         assert_eq!(
             rows[0].waker.as_deref(),

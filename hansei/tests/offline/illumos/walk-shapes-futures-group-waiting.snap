@@ -5,5 +5,5 @@ description: "`futures --group waiting-on` over illumos/walk-shapes"
 COUNT  WAITING ON                        FUTURES
     1  <empty>                           0xADDR
     1  a tokio::sync::Mutex (semaphore)  0xADDR
-    1  unknown                           0xADDR
+    1  unknown at walk_shapes::WrapE     0xADDR
 [3 groups]

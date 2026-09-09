@@ -378,7 +378,11 @@ pub fn generic_args(name: &str) -> Option<(&str, Vec<&str>)> {
     Some((&name[..open], args))
 }
 
-fn outer_path(name: &str) -> String {
+/// A type name with every generic argument list dropped: the path of
+/// the type itself, which is what groups its monomorphizations —
+/// `PollFn<a::{closure_env#1}>` and `PollFn<b::{closure_env#2}>` are
+/// one `core::future::poll_fn::PollFn`.
+pub fn outer_path(name: &str) -> String {
     let mut outer = String::with_capacity(name.len());
     let mut generic_depth = 0usize;
     for c in name.chars() {

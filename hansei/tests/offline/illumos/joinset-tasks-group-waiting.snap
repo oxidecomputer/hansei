@@ -2,6 +2,7 @@
 source: hansei/src/offline.rs
 description: "`tasks --group waiting-on` over illumos/joinset"
 ---
-COUNT  WAITING ON  TASKS
-    6  unknown     3, 4, 5, …
-[1 group]
+COUNT  WAITING ON                                TASKS
+    5  unknown at tokio::sync::notify::Notified  4, 5, 6, …
+    1  unknown at core::future::poll_fn::PollFn  3
+[2 groups]

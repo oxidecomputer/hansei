@@ -8,8 +8,8 @@
 
 use crate::runtimes::RowOwner;
 use crate::tasks::{
-    self, CensusTree, Cmp, EMPTY_BUCKET, Entry, Finds, Listing, alternatives, census_tree,
-    listing_footer, print_future_entry, resolve_rt, task_id,
+    self, CensusTree, Cmp, EMPTY_BUCKET, Entry, Finds, Listing, StopNames, alternatives,
+    census_tree, listing_footer, print_future_entry, resolve_rt, task_id,
 };
 use crate::trace::FutureAt;
 use crate::whatis::via_suffix;
@@ -75,7 +75,7 @@ pub(crate) struct FutureRow {
     /// What its chain bottoms out in, where recognized.
     pub(crate) waiting_on: Option<String>,
     /// The kind-level bucket `--group waiting-on` files the row under:
-    /// the primitive's kind, else the leaf type.
+    /// the primitive's kind, else what the continuation says instead.
     pub(crate) waiting_kind: Option<String>,
     /// The concrete future type, folded and never truncated.
     pub(crate) future: String,
@@ -97,6 +97,7 @@ pub(crate) fn rows<'s, T: proc::Target>(session: &'s Session<'_, T>) -> &'s [Fut
             &session.owners,
             session.census(),
             &session.impl_fold,
+            &StopNames::of(session),
         )
     })
 }
@@ -114,6 +115,7 @@ pub(crate) fn build_rows(
     owners: &bundle::OwnerIndex,
     census: &census::FutureCensus,
     impls: &names::ImplFold,
+    stops: &StopNames<'_>,
 ) -> Vec<FutureRow> {
     let tree = census_tree(census.into());
     let rows = Rows {
@@ -122,6 +124,7 @@ pub(crate) fn build_rows(
         census,
         tree: &tree,
         impls,
+        stops,
         task_at: list
             .tasks
             .iter()
@@ -156,6 +159,8 @@ struct Rows<'a> {
     census: &'a census::FutureCensus,
     tree: &'a CensusTree,
     impls: &'a names::ImplFold,
+    /// How an unknown continuation's stop is named for its bucket.
+    stops: &'a StopNames<'a>,
     /// Task index by address, for the rows that wait on a task: a
     /// scan of the listing per row is a scan of megabytes per row.
     task_at: HashMap<u64, usize>,
@@ -241,7 +246,13 @@ impl Rows<'_> {
                 .waiting_on
                 .clone()
                 .or_else(|| continuation_cell(&h.continuation)),
-            waiting_kind: waiting_kind(h.wait, &h.continuation, self.list, &self.task_at),
+            waiting_kind: waiting_kind(
+                h.wait,
+                &h.continuation,
+                self.list,
+                &self.task_at,
+                self.stops,
+            ),
             future: names::display_future_name(&h.future, self.impls),
             depth: h.depth,
             holds: inside.held,
@@ -277,7 +288,13 @@ impl Rows<'_> {
                 .waiting_on
                 .clone()
                 .or_else(|| continuation_cell(&c.continuation)),
-            waiting_kind: waiting_kind(c.wait, &c.continuation, self.list, &self.task_at),
+            waiting_kind: waiting_kind(
+                c.wait,
+                &c.continuation,
+                self.list,
+                &self.task_at,
+                self.stops,
+            ),
             future: names::display_future_name(future, self.impls),
             depth: c.depth,
             holds: inside.held,
@@ -306,12 +323,14 @@ fn continuation_cell(continuation: &ContinuationStatus) -> Option<String> {
 /// The bucket `--group waiting-on` files a row under: the resource's
 /// kind where its chain ends in one — with the identity that groups
 /// usefully, which task, which kind of lock — else what the
-/// continuation says instead, `unknown` or nothing.
+/// continuation says instead ([`tasks::continuation_bucket`]): the
+/// type it stopped at, how it was cut short, or nothing.
 fn waiting_kind(
     wait: Option<bundle::WaitKind>,
     continuation: &ContinuationStatus,
     list: &bundle::TaskList,
     task_at: &HashMap<u64, usize>,
+    stops: &StopNames<'_>,
 ) -> Option<String> {
     match wait {
         Some(bundle::WaitKind::Timer { .. }) => Some("timer".to_string()),
@@ -324,7 +343,7 @@ fn waiting_kind(
             Some(owner) => format!("a {owner} (semaphore)"),
             None => "a semaphore".to_string(),
         }),
-        None => continuation_cell(continuation),
+        None => tasks::continuation_bucket(continuation, stops),
     }
 }
 
@@ -981,8 +1000,9 @@ mod tests {
     use crate::trace::FutureAt;
 
     use crate::runtimes::{OwnerCounts, RowOwner, owner_label};
+    use crate::tasks::StopNames;
     use hansei_bundle::BundleTypeId;
-    use hansei_runtime::tokio::assess::ContinuationStatus;
+    use hansei_runtime::tokio::assess::{ContinuationStatus, IncompleteReason};
     use hansei_runtime::tokio::bundle::{
         FutureInfo, OwnerIndex, OwnerKey, OwnerResolution, RuntimeFlavor, Task, TaskKind, TaskList,
         WaitKind,
@@ -1103,7 +1123,28 @@ mod tests {
             &owners(),
             census,
             &hansei_bundle::names::ImplFold::default(),
+            &StopNames::none(&Default::default()),
         )
+    }
+
+    /// A find whose chain ends in no described resource reads
+    /// `unknown` in the cell and buckets by what cut its chain short,
+    /// the way a task row does.
+    #[test]
+    fn test_a_cut_chain_buckets_by_how_it_was_cut() {
+        let mut cut = held(0, 0x3000, None);
+        cut.waiting_on = None;
+        cut.wait = None;
+        cut.continuation = ContinuationStatus::Incomplete {
+            reason: IncompleteReason::UnknownDyn,
+            detail: None,
+        };
+        let rows = rows_of(&census(vec![cut], vec![]));
+        assert_eq!(rows[0].waiting_on.as_deref(), Some("unknown"));
+        assert_eq!(
+            rows[0].waiting_kind.as_deref(),
+            Some("unknown (dyn future not in the tokio info)")
+        );
     }
 
     /// The owner counts are exact per group and count the unowned
