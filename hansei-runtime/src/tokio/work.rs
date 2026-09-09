@@ -601,6 +601,11 @@ mod tests {
         /// first, as the caller admits them.
         admitted: Vec<OwnerKey>,
         calls: WorkTally,
+        /// Hand back every owner a find's cell names, admitted or
+        /// not, excluded or not — a world that does the sweep's own
+        /// once-only and exclusion bookkeeping for it, so the sweep
+        /// has to do it.
+        readmit: bool,
     }
 
     impl World {
@@ -856,6 +861,12 @@ mod tests {
                     },
                 },
             );
+            if self.readmit {
+                if !self.admitted.contains(&owner) {
+                    self.admitted.push(owner);
+                }
+                return vec![owner];
+            }
             if is_excluded(owner, &self.excluded) || self.admitted.contains(&owner) {
                 return Vec::new();
             }
@@ -1491,6 +1502,124 @@ mod tests {
             "{:#?}",
             list.tasks
         );
+    }
+
+    /// The sweep's own bookkeeping, with a world that does none of it:
+    /// an owner handed back by every find that names it is scheduled
+    /// once, an excluded owner handed back is scheduled never, and a
+    /// root listed twice or excluded is harvested once or not at all.
+    #[test]
+    fn test_the_sweep_schedules_once_and_never_an_excluded_owner() {
+        let root = rt(0x1000);
+        let other = rt(0x2000);
+        let hidden = rt(0x3000);
+        let OwnerKey::Runtime { handle, .. } = hidden else {
+            unreachable!()
+        };
+        let mut world = World::default();
+        world
+            .owner(root, 10, &[0x10_000, 0x10_100])
+            .owner(other, 20, &[0x20_000, 0x20_100])
+            .owner(hidden, 30, &[0x30_000]);
+        world
+            .task(0x10_000, Some(10), Some(root))
+            .task(0x10_100, Some(10), Some(root))
+            .task(0x20_000, Some(20), Some(other))
+            .task(0x20_100, Some(20), Some(other))
+            .task(0x30_000, Some(30), Some(hidden))
+            .refs(0x10_000, &[0x20_000, 0x30_000])
+            .refs(0x10_100, &[0x20_100, 0x30_000]);
+        world.excluded.push(handle);
+        world.readmit = true;
+        let roots = Roots {
+            runtimes: vec![root, hidden, root],
+            sets: Vec::new(),
+        };
+        let (list, outcome) = queued(&mut world, &roots, ScanLimits::default());
+        assert_eq!(outcome.processed.runtimes, 1, "{:?}", outcome.processed);
+        assert_eq!(
+            (
+                outcome.processed.timers,
+                outcome.processed.io,
+                outcome.processed.queues
+            ),
+            (2, 2, 2),
+            "{:?}",
+            outcome.processed
+        );
+        assert_eq!(outcome.reached, [root, other]);
+        let rows: BTreeSet<u64> = list.tasks.iter().map(|t| t.addr.0).collect();
+        assert_eq!(
+            rows,
+            BTreeSet::from([0x10_000, 0x10_100, 0x20_000, 0x20_100])
+        );
+        assert!(
+            list.record(0x30_000)
+                .is_some_and(|r| !r.task().owner.known().is_none())
+        );
+    }
+
+    /// The scope reaches an owner through a reached task's cell claim
+    /// only when that owner is not excluded, and lists a root once
+    /// however many times the roots name it.
+    #[test]
+    fn test_the_scope_skips_excluded_claims_and_repeated_roots() {
+        let root = rt(0x1000);
+        let hidden = rt(0x2000);
+        let OwnerKey::Runtime { handle, .. } = hidden else {
+            unreachable!()
+        };
+        let mut list = TaskList::default();
+        let mut store = TaskStore::new();
+        let header = Fake {
+            state: 0,
+            owner_id: Some(10),
+            kind: Some(TaskKind::Async),
+            cell: None,
+        }
+        .header(0x10_000);
+        let (claim, _) = list_claim(root, 0x10_000, Some(10), &header);
+        let a = store
+            .observe(
+                header,
+                Observation {
+                    source: TaskSource::OwnedList {
+                        owner: root,
+                        head: 0x10_000,
+                    },
+                    kind: Some(TaskKind::Async),
+                    claim,
+                },
+            )
+            .record;
+        // The root's task also carries a cell claim on the excluded
+        // runtime: a conflict, so the task is reached and walked, and
+        // the claim is the one route to the excluded owner.
+        store.claim(
+            a,
+            OwnerClaim {
+                owner: hidden,
+                evidence: OwnerEvidence::CellScheduler {
+                    scheduler: key(0x2000),
+                    owner_id: 10,
+                },
+            },
+        );
+        assert!(matches!(
+            store.record(a).owner(),
+            OwnerResolution::Conflict(_)
+        ));
+        list.records = store;
+        let roots = Roots {
+            runtimes: vec![root, root],
+            sets: Vec::new(),
+        };
+        let reached = apply_scope(&mut list, &roots, &[], &[handle]);
+        assert_eq!(reached, [root]);
+        assert!(list.record(0x10_000).unwrap().in_scope());
+        // Nothing excluded: the claim reaches the other runtime, once.
+        let reached = apply_scope(&mut list, &roots, &[], &[]);
+        assert_eq!(reached, [root, hidden]);
     }
 
     /// Owners schedule their work once however many finds admit them,
