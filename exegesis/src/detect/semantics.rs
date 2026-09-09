@@ -195,12 +195,183 @@ pub const TRACING_INSTRUMENTED_V0_1_40: LibraryConvention = LibraryConvention {
     ],
 };
 
-/// The reviewed `Instrumented` implementation a tracing version selects,
-/// or which side of the reviewed range it falls on.
-pub fn tracing_instrumented_convention(
+/// futures-util's `map`, `map_err` and `into_future` combinators as
+/// 0.3.30 through 0.3.34 implement them — the newest release at the
+/// review, with 0.3.30's `map.rs` differing only in writing
+/// `Map::Complete` where the others write `Self::Complete`.
+///
+/// `map::Map<Fut, F>` (`src/future/future/map.rs`) is the enum
+/// `Incomplete { future, f } | Complete`, and its `poll` polls `future`
+/// in the `Incomplete` state and nothing else, replacing the state with
+/// `Complete` and calling `f` only on the output; polling a `Complete`
+/// panics, so that state means the output was already produced. The
+/// public `Map` (`src/future/future/mod.rs`), `MapErr`
+/// (`src/future/try_future/mod.rs`) and every other `delegate_all!`
+/// newtype hold their subject in one member `inner` and forward one
+/// poll to it through `delegate_future!` (`src/lib.rs`), which is the
+/// macro's whole `Future` impl. `IntoFuture<Fut>`
+/// (`src/future/try_future/into_future.rs`) holds `future` and forwards
+/// `try_poll`, which for a `TryFuture` blanket impl is that future's
+/// own poll. All four therefore poll exactly their delegate.
+///
+/// The checksums are the reviewed revisions of every file a `poll`
+/// declaration in this set can name — the three implementations, the
+/// two `delegate_all!` invocation sites and the macro's own file — so
+/// a build whose line table carries one is checked against the
+/// revision that was read.
+pub const FUTURES_UTIL_ADAPTERS_V0_3_30: LibraryConvention = LibraryConvention {
+    package: "futures-util",
+    family: "futures-util-adapters-0.3.30",
+    floor: (0, 3, 30),
+    ceiling: (0, 3, 34),
+    checksums: &[
+        // src/lib.rs, 0.3.30
+        (
+            "src/lib.rs",
+            [
+                0xc9, 0xa1, 0xf7, 0xa2, 0xfd, 0x98, 0xbc, 0x0f, 0x4e, 0x58, 0x6f, 0x9f, 0x7e, 0xf3,
+                0x18, 0x8a,
+            ],
+        ),
+        // src/lib.rs, 0.3.31
+        (
+            "src/lib.rs",
+            [
+                0xf3, 0x73, 0xdd, 0x95, 0x27, 0xd2, 0xcf, 0x96, 0x66, 0x47, 0x26, 0x71, 0x1c, 0x95,
+                0x81, 0x6d,
+            ],
+        ),
+        // src/lib.rs, 0.3.32
+        (
+            "src/lib.rs",
+            [
+                0xc1, 0x00, 0x20, 0xe3, 0x65, 0x1d, 0xd5, 0xb5, 0x80, 0xad, 0x57, 0xca, 0x10, 0x15,
+                0x3c, 0xdb,
+            ],
+        ),
+        // src/lib.rs, 0.3.33 and 0.3.34
+        (
+            "src/lib.rs",
+            [
+                0x10, 0xf5, 0xe2, 0x30, 0x8f, 0x4c, 0x3c, 0xc9, 0x04, 0xd2, 0x4a, 0x76, 0xcb, 0x36,
+                0x73, 0x13,
+            ],
+        ),
+        // src/future/future/mod.rs, 0.3.30 and 0.3.31
+        (
+            "src/future/future/mod.rs",
+            [
+                0xa2, 0x39, 0x97, 0xb2, 0x50, 0x9f, 0x94, 0x24, 0x22, 0xf4, 0x7b, 0x21, 0x63, 0x84,
+                0xc2, 0xaa,
+            ],
+        ),
+        // src/future/future/mod.rs, 0.3.32 through 0.3.34
+        (
+            "src/future/future/mod.rs",
+            [
+                0x1b, 0xf8, 0x2c, 0x15, 0x76, 0x85, 0x3d, 0x4d, 0x1c, 0x3c, 0x8f, 0xe0, 0xd8, 0x39,
+                0x2c, 0x4f,
+            ],
+        ),
+        // src/future/future/map.rs, 0.3.30
+        (
+            "src/future/future/map.rs",
+            [
+                0x4a, 0x4c, 0x01, 0x20, 0x27, 0xb6, 0xbf, 0x41, 0xb2, 0x61, 0xb0, 0xb9, 0x7b, 0x18,
+                0x0e, 0x17,
+            ],
+        ),
+        // src/future/future/map.rs, 0.3.31 through 0.3.34
+        (
+            "src/future/future/map.rs",
+            [
+                0xbe, 0x7a, 0x88, 0xd9, 0xfa, 0x47, 0x03, 0x88, 0xe4, 0x94, 0x9e, 0x84, 0x90, 0xbf,
+                0x08, 0x7f,
+            ],
+        ),
+        // src/future/try_future/mod.rs, 0.3.30 through 0.3.32
+        (
+            "src/future/try_future/mod.rs",
+            [
+                0x93, 0xa1, 0xdb, 0xc4, 0xb7, 0x19, 0x86, 0x40, 0x88, 0x6b, 0x1b, 0x9d, 0x91, 0x33,
+                0xae, 0x4b,
+            ],
+        ),
+        // src/future/try_future/mod.rs, 0.3.33 and 0.3.34
+        (
+            "src/future/try_future/mod.rs",
+            [
+                0x54, 0x58, 0x00, 0xee, 0xf2, 0x0a, 0x5c, 0x6f, 0x93, 0xe2, 0x21, 0x12, 0x6b, 0xb7,
+                0xdf, 0x27,
+            ],
+        ),
+        // src/future/try_future/into_future.rs, 0.3.30 through 0.3.34
+        (
+            "src/future/try_future/into_future.rs",
+            [
+                0x2e, 0x11, 0x59, 0xc1, 0xd4, 0x4e, 0x02, 0x07, 0x2d, 0xb7, 0xb6, 0xd4, 0x35, 0xc8,
+                0xa0, 0xc6,
+            ],
+        ),
+    ],
+};
+
+/// hyper-util's `TokioSleep` as 0.1.10 through 0.1.20 implement it
+/// (`src/rt/tokio.rs`, whose `struct TokioSleep { inner:
+/// tokio::time::Sleep }` and `Future` impl are identical across the
+/// range): the newtype exists to give tokio's `!Unpin` sleep a trait
+/// object, and its `poll` is `self.project().inner.poll(cx)` and
+/// nothing else. `reset` writes a new deadline through the same
+/// member, which the sleep's own state protocol reads.
+pub const HYPER_UTIL_TOKIO_SLEEP_V0_1_10: LibraryConvention = LibraryConvention {
+    package: "hyper-util",
+    family: "hyper-util-tokio-sleep-0.1.10",
+    floor: (0, 1, 10),
+    ceiling: (0, 1, 20),
+    checksums: &[
+        // src/rt/tokio.rs, 0.1.10
+        (
+            "src/rt/tokio.rs",
+            [
+                0x1c, 0xd3, 0x1e, 0x4f, 0x80, 0xb7, 0x5a, 0x9a, 0xe8, 0xfd, 0x45, 0x30, 0xe1, 0x9d,
+                0x43, 0x5d,
+            ],
+        ),
+        // src/rt/tokio.rs, 0.1.11 through 0.1.16
+        (
+            "src/rt/tokio.rs",
+            [
+                0x5b, 0x0e, 0x28, 0xad, 0xea, 0xfd, 0xa6, 0x44, 0x6e, 0x58, 0x42, 0x4d, 0x18, 0x18,
+                0x51, 0x51,
+            ],
+        ),
+        // src/rt/tokio.rs, 0.1.17
+        (
+            "src/rt/tokio.rs",
+            [
+                0x4a, 0x0f, 0xe6, 0x73, 0xd1, 0x7f, 0x35, 0xf0, 0xed, 0x2d, 0xa3, 0x3f, 0x9a, 0x2b,
+                0xc4, 0x27,
+            ],
+        ),
+        // src/rt/tokio.rs, 0.1.18 through 0.1.20
+        (
+            "src/rt/tokio.rs",
+            [
+                0xf2, 0x23, 0xf4, 0x72, 0x6f, 0xff, 0x7b, 0x25, 0xdb, 0xfd, 0x94, 0xfc, 0x45, 0x3f,
+                0xad, 0xf6,
+            ],
+        ),
+    ],
+};
+
+/// The reviewed implementation a version selects, or which side of the
+/// reviewed range it falls on. A version outside gets no rule, however
+/// familiar the layout looks: a delegation authorizes following a poll,
+/// and only the read decides that the poll goes where the rule says.
+pub fn library_convention(
+    convention: &'static LibraryConvention,
     version: &semver::Version,
 ) -> Result<&'static LibraryConvention, LayoutSelection> {
-    let convention = &TRACING_INSTRUMENTED_V0_1_40;
     match convention.select(version) {
         LayoutSelection::ReviewedRange => Ok(convention),
         outside => Err(outside),
@@ -435,40 +606,59 @@ mod tests {
         assert!(rustc_dyn_future_abi_convention(producer).is_some());
     }
 
-    /// The tracing family binds at both edges of its range inclusive and
-    /// names the side a version outside falls on; a checksum is reviewed
-    /// only if it is one of the listed revisions.
+    /// Every delegation family binds at both edges of its range
+    /// inclusive and names the side a version outside falls on; a
+    /// checksum is reviewed only if it is one of the listed revisions.
     #[test]
-    fn test_tracing_family_selects_by_exact_version_and_checksum() {
+    fn test_delegation_families_select_by_exact_version_and_checksum() {
         let v = |s: &str| semver::Version::parse(s).unwrap();
-        for version in ["0.1.40", "0.1.41", "0.1.42", "0.1.43", "0.1.44"] {
+        for (family, inside, below, above) in [
+            (
+                &TRACING_INSTRUMENTED_V0_1_40,
+                ["0.1.40", "0.1.41", "0.1.42", "0.1.43", "0.1.44"].as_slice(),
+                "0.1.39",
+                "0.1.45",
+            ),
+            (
+                &FUTURES_UTIL_ADAPTERS_V0_3_30,
+                ["0.3.30", "0.3.31", "0.3.32", "0.3.33", "0.3.34"].as_slice(),
+                "0.3.29",
+                "0.3.35",
+            ),
+            (
+                &HYPER_UTIL_TOKIO_SLEEP_V0_1_10,
+                ["0.1.10", "0.1.15", "0.1.20"].as_slice(),
+                "0.1.9",
+                "0.1.21",
+            ),
+        ] {
+            for version in inside {
+                assert_eq!(
+                    library_convention(family, &v(version)).map(|c| c.family),
+                    Ok(family.family),
+                    "{version}"
+                );
+            }
             assert_eq!(
-                tracing_instrumented_convention(&v(version)).map(|c| c.family),
-                Ok("tracing-instrumented-0.1.40"),
-                "{version}"
+                library_convention(family, &v(below)),
+                Err(LayoutSelection::BelowFloor),
+                "{below}"
             );
+            for version in [above, "1.0.0-alpha"] {
+                assert_eq!(
+                    library_convention(family, &v(version)),
+                    Err(LayoutSelection::AboveReviewedRange),
+                    "{version}"
+                );
+            }
+            for (_, checksum) in family.checksums {
+                assert!(family.reviewed_checksum(checksum));
+            }
+            assert!(!family.reviewed_checksum(&[0; 16]));
         }
-        assert_eq!(
-            tracing_instrumented_convention(&v("0.1.39")),
-            Err(LayoutSelection::BelowFloor)
-        );
-        assert_eq!(
-            tracing_instrumented_convention(&v("0.1.45")),
-            Err(LayoutSelection::AboveReviewedRange)
-        );
-        assert_eq!(
-            tracing_instrumented_convention(&v("0.2.0")),
-            Err(LayoutSelection::AboveReviewedRange)
-        );
-        assert_eq!(
-            tracing_instrumented_convention(&v("1.0.0-alpha")),
-            Err(LayoutSelection::AboveReviewedRange)
-        );
-        let family = &TRACING_INSTRUMENTED_V0_1_40;
-        assert_eq!(family.range(), "0.1.40–0.1.44");
-        assert!(family.reviewed_checksum(&family.checksums[0].1));
-        assert!(family.reviewed_checksum(&family.checksums[1].1));
-        assert!(!family.reviewed_checksum(&[0; 16]));
+        assert_eq!(TRACING_INSTRUMENTED_V0_1_40.range(), "0.1.40–0.1.44");
+        assert_eq!(FUTURES_UTIL_ADAPTERS_V0_3_30.range(), "0.3.30–0.3.34");
+        assert_eq!(HYPER_UTIL_TOKIO_SLEEP_V0_1_10.range(), "0.1.10–0.1.20");
     }
 
     /// A state protocol binds inside its reviewed tokio range and for

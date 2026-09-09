@@ -440,10 +440,19 @@ impl<'b, T: Target> Context<'b, T> {
         // Identity: what each slot's symbol joins. The poll slot also
         // joins the task table, since a spawned future's identity is a
         // task entry's; the drop slot may be null by the ABI, and a
-        // symbol that resolves nothing constrains nothing.
+        // symbol that resolves nothing constrains nothing. A trait
+        // object of some other trait that has `Future` as a supertrait
+        // records no poll slot — where its poll sits is that trait's
+        // business — so its identity is the drop glue's alone, and the
+        // glue names a future because only future types have any.
         let mut candidates: Vec<(String, SymbolLookup<BundleTypeId>)> = Vec::new();
         let mut poll_symbol = None;
-        for (which, index) in [("poll", layout.poll_slot), ("drop", layout.drop_slot)] {
+        let slots = layout
+            .poll_slot
+            .map(|index| ("poll", index))
+            .into_iter()
+            .chain([("drop", layout.drop_slot)]);
+        for (which, index) in slots {
             let fn_addr = slot(index)?;
             if fn_addr == 0 {
                 ensure!(which == "drop", "vtable {vtable:#x} has a null poll slot");

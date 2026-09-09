@@ -62,6 +62,7 @@ fn base() -> Bundle {
         "registry/src/index.crates.io-1949cf8c6b5b557f/tracing-0.1.40/src/instrument.rs",
         "vendor/tracing-0.1.40/src/instrument.rs",
         "registry/src/index.crates.io-1949cf8c6b5b557f/tracing-0.1.50/src/instrument.rs",
+        "dyn hyper::rt::timer::Sleep<Output=()>",
     ] {
         strings.intern(s);
     }
@@ -788,7 +789,7 @@ fn dynamic() -> Bundle {
             drop_slot: 0,
             size_slot: 1,
             align_slot: 2,
-            poll_slot: 3,
+            poll_slot: Some(3),
         },
     });
     b.semantics.types = vec![r];
@@ -828,7 +829,7 @@ fn test_semantic_dynamic_targets_validate_bases_fields_trait_and_slots() {
     if let TypeDef::Struct { size, .. } = &mut b.types.types[6] {
         *size = 8;
     }
-    bad(&b, "not a Future trait object");
+    bad(&b, "not a trait object");
     if let TypeDef::Struct { size, members, .. } = &mut b.types.types[6] {
         *size = 0;
         members.push(MemberDef {
@@ -837,9 +838,9 @@ fn test_semantic_dynamic_targets_validate_bases_fields_trait_and_slots() {
             offset: 0,
         });
     }
-    bad(&b, "not a Future trait object");
+    bad(&b, "not a trait object");
     let mut b = dynamic();
-    dyn_layout(&mut b).poll_slot = 4;
+    dyn_layout(&mut b).poll_slot = Some(4);
     bad(&b, "dyn ABI slots");
     let mut b = dynamic();
     dyn_layout(&mut b).trait_ty = BundleTypeId(0);
@@ -862,6 +863,28 @@ fn test_semantic_dynamic_targets_validate_bases_fields_trait_and_slots() {
     }
     dyn_layout(&mut b).vtable.target = BundleTypeId(0);
     bad(&b, "pointer sized");
+}
+
+/// A trait object of a trait that merely has `Future` as a supertrait
+/// is a legal dyn target — polling the adapter over it proves whatever
+/// the pointer holds a future — but where that trait puts the poll is
+/// its own declaration's business, so such a layout claims no poll slot
+/// and is identified by its drop glue. Claiming one anyway is refused.
+#[test]
+fn test_a_dyn_target_of_another_trait_claims_no_poll_slot() {
+    let mut b = dynamic();
+    if let TypeDef::Opaque { name, .. } = &mut b.types.types[6] {
+        *name = StrRef(21);
+    }
+    bad(&b, "a poll slot needs a Future trait object");
+    dyn_layout(&mut b).poll_slot = None;
+    b.validate().unwrap();
+    let mut bytes = Vec::new();
+    b.write_to(&mut bytes).unwrap();
+    assert_eq!(Bundle::read_from(bytes.as_slice()).unwrap(), b);
+    // Dropping the slot never excuses the rest of the ABI.
+    dyn_layout(&mut b).align_slot = 3;
+    bad(&b, "dyn ABI slots");
 }
 
 #[test]

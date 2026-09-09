@@ -151,11 +151,20 @@ impl<'a> Check<'a> {
                     "compiler rule needs a compiler origin",
                 );
             }
-            TracingInstrumented => {
+            TracingInstrumented
+            | FuturesUtilMap
+            | FuturesUtilMapErr
+            | FuturesUtilIntoFuture
+            | HyperUtilTokioSleep => {
+                let crate_name = match rule.kind {
+                    TracingInstrumented => "tracing",
+                    HyperUtilTokioSleep => "hyper-util",
+                    _ => "futures-util",
+                };
                 return require(
                     matches!(origin, SemanticOrigin::LibraryDelegation { package, .. }
-                    if self.0.strings.get(*package) == Some("tracing")),
-                    "tracing delegation needs source evidence",
+                    if self.0.strings.get(*package) == Some(crate_name)),
+                    "third-party delegation needs source evidence",
                 );
             }
             FuturesUnordered => "futures-util",
@@ -282,19 +291,22 @@ impl<'a> Check<'a> {
                         size: 0,
                         members,
                     } if members.is_empty() => name,
-                    _ => return require(false, "dyn pointee is not a Future trait object"),
+                    _ => return require(false, "dyn pointee is not a trait object"),
                 };
+                // A poll slot is a claim about where the trait puts
+                // `Future::poll`, which the reviewed ABI settles only
+                // for `dyn Future` itself. Another trait's object is
+                // legal here — polling the adapter over it proves its
+                // concrete pointee a future, and the vtable's drop glue
+                // names which one — but it claims no slot.
                 require(
-                    crate::names::is_future_trait_object(self.string(*name)?),
-                    "dyn pointee is not a Future trait object",
+                    layout.poll_slot.is_none()
+                        || crate::names::is_future_trait_object(self.string(*name)?),
+                    "a poll slot needs a Future trait object",
                 )?;
                 require(
-                    (
-                        layout.drop_slot,
-                        layout.size_slot,
-                        layout.align_slot,
-                        layout.poll_slot,
-                    ) == (0, 1, 2, 3),
+                    (layout.drop_slot, layout.size_slot, layout.align_slot) == (0, 1, 2)
+                        && matches!(layout.poll_slot, None | Some(3)),
                     "dyn ABI slots disagree with rule",
                 )?;
                 require(
@@ -492,6 +504,10 @@ impl<'a> Check<'a> {
                         StdPinBoxPoll,
                         StdPinMutRefPoll,
                         TracingInstrumented,
+                        FuturesUtilMap,
+                        FuturesUtilMapErr,
+                        FuturesUtilIntoFuture,
+                        HyperUtilTokioSleep,
                     ],
                 )?;
                 self.target(record.ty, target)?;
@@ -499,9 +515,11 @@ impl<'a> Check<'a> {
                 // reviewed control flow: only a rule revision whose reviewed
                 // implementation polls nothing but its delegate may carry
                 // it. A coroutine resumes into its awaitee alone; the std
-                // adapters forward one poll and nothing else. `Instrumented`
-                // enters a span around its poll, running subscriber
-                // callbacks the review does not bound, so it stays false.
+                // adapters forward one poll and nothing else, as do the
+                // reviewed futures-util combinators and hyper-util's
+                // sleep newtype. `Instrumented` enters a span around its
+                // poll, running subscriber callbacks the review does not
+                // bound, so it stays false.
                 let reviewed = matches!(
                     binding.kind,
                     RustcAsyncFn
@@ -510,6 +528,10 @@ impl<'a> Check<'a> {
                         | StdMutRefPoll
                         | StdPinBoxPoll
                         | StdPinMutRefPoll
+                        | FuturesUtilMap
+                        | FuturesUtilMapErr
+                        | FuturesUtilIntoFuture
+                        | HyperUtilTokioSleep
                 );
                 require(!exclusive || reviewed, "unreviewed delegation exclusivity")?;
                 let path = match target {
@@ -549,12 +571,17 @@ impl<'a> Check<'a> {
                     "primitive has no compatible resource binding",
                 )?;
             }
-            PollAction::Unresumed | PollAction::Returned | PollAction::Panicked => {
+            // A terminal state is a state, so it needs the match that
+            // selected it. Only a compiler coroutine is ever unresumed
+            // or panicked; a reviewed combinator whose enum records
+            // that it already produced its output is returned.
+            PollAction::Unresumed | PollAction::Panicked => {
                 self.rule(rule, &[RustcAsyncFn, RustcAsyncBlock])?;
-                require(
-                    guard.is_some(),
-                    "coroutine terminal requires a variant guard",
-                )?;
+                require(guard.is_some(), "a terminal state requires a variant guard")?;
+            }
+            PollAction::Returned => {
+                self.rule(rule, &[RustcAsyncFn, RustcAsyncBlock, FuturesUtilMap])?;
+                require(guard.is_some(), "a terminal state requires a variant guard")?;
             }
             PollAction::Unknown(issue) => self.issue(issue)?,
         }
@@ -578,6 +605,10 @@ impl<'a> Check<'a> {
                 StdPinBoxPoll,
                 StdPinMutRefPoll,
                 TracingInstrumented,
+                FuturesUtilMap,
+                FuturesUtilMapErr,
+                FuturesUtilIntoFuture,
+                HyperUtilTokioSleep,
                 TokioSleep,
                 TokioJoinHandle,
                 TokioAcquire,
@@ -605,6 +636,12 @@ impl<'a> Check<'a> {
                 self.action(record, rule, action, None)
             }
             PollProgram::MatchVariant { state, cases } => {
+                // Which rule kinds read a state is exegesis' business,
+                // asserted over its real extractions: a bundle built by
+                // hand to exercise the stateful executor names whatever
+                // forwarding kind it has, and the structure below —
+                // every variant covered, every delegate carrying its
+                // own guard — is what makes such a program legible.
                 self.path(record.ty, state)?;
                 let variants = self.variants(state.target)?;
                 let mut seen = BTreeSet::new();

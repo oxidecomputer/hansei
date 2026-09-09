@@ -707,6 +707,170 @@ fn semantic_line(table: &str, prefix: &str) -> String {
     out
 }
 
+/// The combinator fixture's reviewed adapter closure, as the semantic
+/// table records it: `map` crossing its public newtype and the enum
+/// behind it, `map_err` crossing the `Map` over an `IntoFuture` its own
+/// constructor builds, and a `Pin<Box<dyn Trait>>` whose trait is not
+/// `Future`. Each ends at a hand-written future no rule covers, which
+/// is where the chain is meant to stop.
+fn assert_adapter_programs(program: &str, bundle: &Bundle) {
+    use hansei_bundle::{
+        Continuation, FutureTarget, PollAction, PollProgram, SemanticOrigin, SemanticRuleKind,
+    };
+    let table = exegesis::describe::describe_semantics(bundle);
+    let line = |prefix: &str| semantic_line(&table, prefix);
+    const PARK: &str = "futures_util::future::future::Map<select_combinator::Park, fn(u32) -> u32>";
+    const PARK_ENUM: &str =
+        "futures_util::future::future::map::Map<select_combinator::Park, fn(u32) -> u32>";
+    // `map`: the public newtype forwards through `inner`, and the enum
+    // it holds polls `future` in its incomplete state — the one that
+    // has not produced an output — and is done in the other.
+    assert_eq!(
+        line(&format!("{PARK} ::")),
+        format!(
+            "{PARK} :: members future[poll, delegated by \
+             select_combinator::mapper::{{async_fn_env#0}}] continuation rule # delegate \
+             (exclusive) inner@+0 -> {PARK_ENUM}"
+        ),
+        "{program}"
+    );
+    assert_eq!(
+        line(&format!("{PARK_ENUM} ::")),
+        format!(
+            "{PARK_ENUM} :: members future[poll, delegated by {PARK}] continuation rule # match \
+             <self>@+0 -> {PARK_ENUM} {{Incomplete: delegate (exclusive) {{Incomplete}}.future@+8 \
+             -> select_combinator::Park}} {{Complete: returned}}"
+        ),
+        "{program}"
+    );
+    // `map_err` is a newtype over a `Map` over an `IntoFuture`: three
+    // reviewed rules in a row, ending at the fallible future itself.
+    const ERR: &str =
+        "futures_util::future::try_future::MapErr<select_combinator::Fallible, fn(u32) -> u32>";
+    const ERR_MAP: &str = "futures_util::future::future::Map<futures_util::future::try_future::\
+                           into_future::IntoFuture<select_combinator::Fallible>, \
+                           futures_util::fns::MapErrFn<fn(u32) -> u32>>";
+    const ERR_MAP_ENUM: &str = "futures_util::future::future::map::Map<futures_util::future::\
+                                try_future::into_future::IntoFuture<select_combinator::Fallible>, \
+                                futures_util::fns::MapErrFn<fn(u32) -> u32>>";
+    const INTO: &str =
+        "futures_util::future::try_future::into_future::IntoFuture<select_combinator::Fallible>";
+    assert_eq!(
+        line(&format!("{ERR} ::")),
+        format!(
+            "{ERR} :: members future[poll, delegated by \
+             select_combinator::remapper::{{async_fn_env#0}}] continuation rule # delegate \
+             (exclusive) inner@+0 -> {ERR_MAP}"
+        ),
+        "{program}"
+    );
+    assert_eq!(
+        line(&format!("{INTO} ::")),
+        format!(
+            "{INTO} :: members future[poll, delegated by {ERR_MAP_ENUM}] continuation rule # \
+             delegate (exclusive) future@+0 -> select_combinator::Fallible"
+        ),
+        "{program}"
+    );
+    // Where each chain stops: a hand-written future of the fixture's,
+    // proved a future by the reviewed delegation above it.
+    for (stop, parent) in [
+        ("select_combinator::Park", PARK_ENUM.to_owned()),
+        ("select_combinator::Fallible", INTO.to_owned()),
+    ] {
+        assert_eq!(
+            line(&format!("{stop} ::")),
+            format!(
+                "{stop} :: members future[poll, delegated by {parent}] continuation unknown (NoRule)"
+            ),
+            "{program}"
+        );
+    }
+    // The dyn hop over a trait that merely requires `Future`: the box
+    // is an owned adapter like any other, and the concrete pointee is
+    // the vtable join's to name at read time.
+    const DYN_PARKED: &str = "core::pin::Pin<alloc::boxed::Box<dyn \
+                              select_combinator::Parked<Output=u32>, alloc::alloc::Global>>";
+    assert_eq!(
+        line(&format!("{DYN_PARKED} ::")),
+        format!(
+            "{DYN_PARKED} :: members future[poll, delegated by \
+             select_combinator::dynamic::{{async_fn_env#0}}] continuation rule # delegate \
+             (exclusive) dyn pointer@+0 -> alloc::boxed::Box<dyn \
+             select_combinator::Parked<Output=u32>, alloc::alloc::Global> access Owned rule # dyn \
+             pointer@+0 -> alloc::boxed::Box<dyn select_combinator::Parked<Output=u32>, \
+             alloc::alloc::Global>"
+        ),
+        "{program}"
+    );
+    let dyn_parked =
+        bundle
+            .semantics
+            .types
+            .iter()
+            .find(|record| {
+                bundle.types.name_index.iter().any(|&(name, ty)| {
+                    ty == record.ty && bundle.strings.get(name) == Some(DYN_PARKED)
+                })
+            })
+            .unwrap_or_else(|| panic!("{program}: no record for {DYN_PARKED}"));
+    let Some(Continuation::Bound {
+        program:
+            PollProgram::Direct(PollAction::Delegate {
+                target: FutureTarget::Dynamic { layout, .. },
+                ..
+            }),
+        ..
+    }) = dyn_parked.future.as_ref().map(|f| &f.continuation)
+    else {
+        panic!("{program}: {DYN_PARKED} is not a dynamic delegation");
+    };
+    assert_eq!(layout.poll_slot, None, "{program}");
+    // Every reviewed rule here is under a futures-util delegation
+    // origin at the version the fixture's lockfile pins, read off the
+    // registry path its `poll` was declared on.
+    let mut kinds: Vec<SemanticRuleKind> = Vec::new();
+    for rule in &bundle.semantics.rules {
+        let SemanticOrigin::LibraryDelegation {
+            package,
+            version,
+            family,
+            source,
+            ..
+        } = &bundle.semantics.origins[rule.origin.0 as usize]
+        else {
+            continue;
+        };
+        let s = |id| bundle.strings.get(id).unwrap();
+        assert_eq!(s(*package), "futures-util", "{program}");
+        assert_eq!(
+            s(*family),
+            exegesis::detect::semantics::FUTURES_UTIL_ADAPTERS_V0_3_30.family
+        );
+        let parsed = hansei_bundle::origin::registry_origin(s(*source))
+            .unwrap_or_else(|| panic!("{program}: {} is not a registry path", s(*source)));
+        assert_eq!(parsed.package, "futures-util", "{program}");
+        assert_eq!(parsed.version.to_string(), s(*version), "{program}");
+        kinds.push(rule.kind);
+    }
+    kinds.sort();
+    kinds.dedup();
+    assert_eq!(
+        kinds,
+        [
+            SemanticRuleKind::FuturesUtilMap,
+            SemanticRuleKind::FuturesUtilMapErr,
+            SemanticRuleKind::FuturesUtilIntoFuture,
+        ]
+        .iter()
+        .copied()
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>(),
+        "{program}"
+    );
+}
+
 /// The delegation fixture's programs, one per reviewed rule, and its
 /// negatives, as the semantic table spells them. Each case's task root
 /// is a `Pin<Box<F>>`, so every case exercises the pin rule; what `F`
@@ -933,6 +1097,7 @@ fn assert_delegation_programs(program: &str, bundle: &Bundle) {
 /// the name of its `S` — the cross-check that keeps the route-based
 /// binding honest against the spelling the runtime still classifies by.
 fn assert_library_bindings(program: &str, bundle: &Bundle) {
+    use exegesis::detect::semantics::FUTURES_UTIL_ADAPTERS_V0_3_30;
     use hansei_bundle::{
         Continuation, FutureTarget, LayoutSelection, PollAction, PollProgram, SchedulerClass,
         SemanticOrigin, SemanticRuleKind,
@@ -963,14 +1128,28 @@ fn assert_library_bindings(program: &str, bundle: &Bundle) {
             }
             SemanticOrigin::LibraryDelegation {
                 package, version, ..
-            } => {
-                assert_eq!(s(*package), "tracing", "{program}");
-                assert_eq!(s(*version), "0.1.40", "{program}");
-                assert_eq!(
-                    program, "delegation-cases",
-                    "{program}: only the delegation fixture instruments a future"
-                );
-            }
+            } => match s(*package) {
+                "tracing" => {
+                    assert_eq!(s(*version), "0.1.40", "{program}");
+                    assert_eq!(
+                        program, "delegation-cases",
+                        "{program}: only the delegation fixture instruments a future"
+                    );
+                }
+                "futures-util" => {
+                    assert!(
+                        FUTURES_UTIL_ADAPTERS_V0_3_30.select(&s(*version).parse().unwrap())
+                            == LayoutSelection::ReviewedRange,
+                        "{program}: futures-util {} is outside the reviewed range",
+                        s(*version)
+                    );
+                    assert_eq!(
+                        program, "select-combinator",
+                        "{program}: only the combinator fixture maps a future"
+                    );
+                }
+                other => panic!("{program}: unexpected delegation origin {other:?}"),
+            },
             SemanticOrigin::LibraryLayout {
                 package,
                 version,
@@ -1033,6 +1212,10 @@ fn assert_library_bindings(program: &str, bundle: &Bundle) {
         SemanticRuleKind::StdMutRefPoll,
         SemanticRuleKind::StdPinBoxPoll,
         SemanticRuleKind::StdPinMutRefPoll,
+        SemanticRuleKind::FuturesUtilMap,
+        SemanticRuleKind::FuturesUtilMapErr,
+        SemanticRuleKind::FuturesUtilIntoFuture,
+        SemanticRuleKind::HyperUtilTokioSleep,
     ];
     let delegate_kinds = [
         SemanticRuleKind::StdBoxPoll,
@@ -1040,6 +1223,19 @@ fn assert_library_bindings(program: &str, bundle: &Bundle) {
         SemanticRuleKind::StdPinBoxPoll,
         SemanticRuleKind::StdPinMutRefPoll,
         SemanticRuleKind::TracingInstrumented,
+        SemanticRuleKind::FuturesUtilMap,
+        SemanticRuleKind::FuturesUtilMapErr,
+        SemanticRuleKind::FuturesUtilIntoFuture,
+        SemanticRuleKind::HyperUtilTokioSleep,
+    ];
+    // A wrapper's program is not a storage access: only the std
+    // adapters, which are pointers, carry one.
+    let wrapper_kinds = [
+        SemanticRuleKind::TracingInstrumented,
+        SemanticRuleKind::FuturesUtilMap,
+        SemanticRuleKind::FuturesUtilMapErr,
+        SemanticRuleKind::FuturesUtilIntoFuture,
+        SemanticRuleKind::HyperUtilTokioSleep,
     ];
     // Compiler storage: every async fn or async block environment binds
     // its states under the reviewed convention (the fixtures' toolchains
@@ -1142,7 +1338,7 @@ fn assert_library_bindings(program: &str, bundle: &Bundle) {
                     "{program}: exclusivity under {kind:?}"
                 );
                 assert_eq!(
-                    kind == SemanticRuleKind::TracingInstrumented,
+                    wrapper_kinds.contains(&kind),
                     record.access.is_none(),
                     "{program}: an adapter's program is also its storage access"
                 );
@@ -1151,28 +1347,52 @@ fn assert_library_bindings(program: &str, bundle: &Bundle) {
                 }
                 if let FutureTarget::Dynamic { layout, .. } = target {
                     assert_eq!(rule_kind(layout.abi), SemanticRuleKind::DynFutureAbi);
+                    // A poll slot is claimed for a bare `dyn Future`
+                    // and for nothing else: another trait puts its
+                    // supertrait's methods where its own declaration
+                    // says, which no reviewed ABI covers.
+                    let pointee = bundle
+                        .types
+                        .name_index
+                        .iter()
+                        .find(|&&(_, ty)| ty == layout.trait_ty)
+                        .map(|&(name, _)| s(name))
+                        .unwrap_or_default();
+                    assert_eq!(
+                        layout.poll_slot.is_some(),
+                        hansei_bundle::names::is_future_trait_object(pointee),
+                        "{program}: poll slot over {pointee}"
+                    );
                 }
             }
             Continuation::Bound {
                 rule,
                 program: PollProgram::MatchVariant { state, cases },
             } => {
-                let layout = record
-                    .coroutine
-                    .as_ref()
-                    .unwrap_or_else(|| panic!("{program}: a match program on a non-coroutine"));
-                assert_eq!(layout.rule, *rule, "{program}");
+                // A coroutine's states, or futures-util's `Map`, whose
+                // two states are the only other reviewed match.
+                let states = match &record.coroutine {
+                    Some(layout) => {
+                        assert_eq!(layout.rule, *rule, "{program}");
+                        layout.states.len()
+                    }
+                    None => {
+                        assert_eq!(
+                            rule_kind(*rule),
+                            SemanticRuleKind::FuturesUtilMap,
+                            "{program}: a match program on a non-coroutine"
+                        );
+                        2
+                    }
+                };
                 assert!(
                     state.steps.is_empty() && state.target == record.ty,
                     "{program}"
                 );
-                assert_eq!(cases.len(), layout.states.len(), "{program}");
+                assert_eq!(cases.len(), states, "{program}");
                 for case in cases {
                     if let PollAction::Delegate { exclusive, .. } = &case.action {
-                        assert!(
-                            *exclusive,
-                            "{program}: a coroutine's resumption is exclusive"
-                        );
+                        assert!(*exclusive, "{program}: a reviewed resumption is exclusive");
                     }
                 }
             }
@@ -1499,12 +1719,12 @@ fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
     }
     if program == "select-combinator" {
         // A multi-line signature is where the two sources disagree: the
-        // fn at 15, its resume fn at the `{` on 19. The fn wins.
+        // fn at 26, its resume fn at the `{` on 30. The fn wins.
         assert_env_decl(
             program,
             bundle,
             "select_combinator::selector::{async_fn_env#0}",
-            15,
+            26,
         );
     }
     if program == "blocking-pool" {
@@ -2410,6 +2630,7 @@ fn run_golden(program: &str) {
                 assert_no_resource(program, &bundle, "tokio::net::unix::stream::UnixStream");
             }
             "delegation-cases" => assert_delegation_programs(program, &bundle),
+            "select-combinator" => assert_adapter_programs(program, &bundle),
             "joinset" => assert_container(
                 program,
                 &bundle,

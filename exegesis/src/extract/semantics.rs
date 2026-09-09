@@ -38,8 +38,9 @@ use crate::bundle::{
 use crate::detect::Family;
 use crate::detect::adapters::{self, InstrumentedLayout, Pointee, StdAdapter};
 use crate::detect::semantics::{
-    RustcConvention, rustc_coroutine_convention, rustc_dyn_future_abi_convention,
-    rustc_std_adapter_convention, tokio_state_protocol, tracing_instrumented_convention,
+    FUTURES_UTIL_ADAPTERS_V0_3_30, HYPER_UTIL_TOKIO_SLEEP_V0_1_10, LibraryConvention,
+    RustcConvention, TRACING_INSTRUMENTED_V0_1_40, library_convention, rustc_coroutine_convention,
+    rustc_dyn_future_abi_convention, rustc_std_adapter_convention, tokio_state_protocol,
 };
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -114,9 +115,10 @@ impl AdapterKind {
     }
 }
 
-/// A wide pointer to a bare `dyn Future`, by bundle id: the struct, its
-/// two members and their types, the trait object, and the verdict on the
-/// vtable ABI the struct's defining units were compiled under.
+/// A wide pointer to a trait object, by bundle id: the struct, its two
+/// members and their types, the trait object, whether that object is a
+/// bare `dyn Future`, and the verdict on the vtable ABI the struct's
+/// defining units were compiled under.
 #[derive(Clone, Debug)]
 struct DynSeed {
     wide: BundleTypeId,
@@ -125,6 +127,7 @@ struct DynSeed {
     data_ptr: BundleTypeId,
     vtable_ptr: BundleTypeId,
     trait_ty: BundleTypeId,
+    future_trait: bool,
     abi: CompilerVerdict,
 }
 
@@ -151,6 +154,51 @@ struct InstrumentedSeed {
     future: BundleTypeId,
 }
 
+/// A reviewed third-party wrapper as its screen saw it, by bundle id.
+/// Which crate owns it, and so which origin its poll declarations have
+/// to name, is the kind's; the layout is the screen's.
+#[derive(Clone, Debug)]
+enum LibrarySeed {
+    /// futures-util's `map::Map` enum: the incomplete variant and the
+    /// member inside it, the complete variant, and the mapped future.
+    Map {
+        incomplete: String,
+        future_member: String,
+        complete: String,
+        future: BundleTypeId,
+    },
+    /// The public `Map` newtype the `delegate_all!` macro builds.
+    MapWrapper(String, BundleTypeId),
+    /// `MapErr`, another such newtype.
+    MapErr(String, BundleTypeId),
+    /// `IntoFuture`.
+    IntoFuture(String, BundleTypeId),
+    /// hyper-util's `TokioSleep` over `tokio::time::Sleep`.
+    TokioSleep(String, BundleTypeId),
+}
+
+impl LibrarySeed {
+    fn rule_kind(&self) -> SemanticRuleKind {
+        match self {
+            LibrarySeed::Map { .. } | LibrarySeed::MapWrapper(..) => {
+                SemanticRuleKind::FuturesUtilMap
+            }
+            LibrarySeed::MapErr(..) => SemanticRuleKind::FuturesUtilMapErr,
+            LibrarySeed::IntoFuture(..) => SemanticRuleKind::FuturesUtilIntoFuture,
+            LibrarySeed::TokioSleep(..) => SemanticRuleKind::HyperUtilTokioSleep,
+        }
+    }
+
+    /// The crate whose reviewed implementation the rule runs, and the
+    /// convention its version has to fall inside.
+    fn convention(&self) -> &'static LibraryConvention {
+        match self {
+            LibrarySeed::TokioSleep(..) => &HYPER_UTIL_TOKIO_SLEEP_V0_1_10,
+            _ => &FUTURES_UTIL_ADAPTERS_V0_3_30,
+        }
+    }
+}
+
 #[derive(Default)]
 pub(super) struct Seed {
     polls: BTreeSet<String>,
@@ -161,6 +209,7 @@ pub(super) struct Seed {
     container: Option<ContainerKind>,
     adapter: Option<AdapterSeed>,
     instrumented: Option<InstrumentedSeed>,
+    library: Option<LibrarySeed>,
 }
 
 impl Seed {
@@ -184,6 +233,44 @@ pub(super) struct Library<'a> {
     pub(super) walks: &'a WalksTable,
     pub(super) tokio_version: Option<&'a semver::Version>,
     pub(super) family: Family,
+}
+
+/// The reviewed third-party wrapper `raw` is, if it is one. The name
+/// picks the screen — a definition path is where a crate's own type
+/// lives — and the screen decides, over the type's own declaration.
+fn library_seed(
+    reader: &crate::DwReader<'_>,
+    raw: TypeId,
+    name: &str,
+    bundle_id: impl Fn(TypeId) -> Option<BundleTypeId>,
+) -> Option<LibrarySeed> {
+    let forward = |layout: Option<adapters::ForwardLayout>| {
+        let layout = layout?;
+        Some((layout.member, bundle_id(layout.inner)?))
+    };
+    if name.starts_with("futures_util::future::future::map::Map<") {
+        let layout = adapters::futures_util_map(reader, raw)?;
+        Some(LibrarySeed::Map {
+            incomplete: layout.incomplete,
+            future_member: layout.future_member,
+            complete: layout.complete,
+            future: bundle_id(layout.future)?,
+        })
+    } else if name.starts_with("futures_util::future::future::Map<") {
+        let (member, inner) = forward(adapters::futures_util_map_wrapper(reader, raw))?;
+        Some(LibrarySeed::MapWrapper(member, inner))
+    } else if name.starts_with("futures_util::future::try_future::MapErr<") {
+        let (member, inner) = forward(adapters::futures_util_map_err(reader, raw))?;
+        Some(LibrarySeed::MapErr(member, inner))
+    } else if name.starts_with("futures_util::future::try_future::into_future::IntoFuture<") {
+        let (member, inner) = forward(adapters::futures_util_into_future(reader, raw))?;
+        Some(LibrarySeed::IntoFuture(member, inner))
+    } else if name == "hyper_util::rt::tokio::TokioSleep" {
+        let (member, inner) = forward(adapters::hyper_util_tokio_sleep(reader, raw))?;
+        Some(LibrarySeed::TokioSleep(member, inner))
+    } else {
+        None
+    }
 }
 
 pub(super) fn collect_semantic_seeds(
@@ -225,6 +312,7 @@ pub(super) fn collect_semantic_seeds(
                         Pointee::Sized(f) => PointeeSeed::Sized(bundle_id(f)?),
                         Pointee::Dyn(w) => PointeeSeed::Dyn(DynSeed {
                             abi: verdict(w.wide, Reviewed::DynFutureAbi),
+                            future_trait: w.future_trait,
                             wide: bundle_id(w.wide)?,
                             pointer: w.pointer,
                             vtable: w.vtable,
@@ -281,6 +369,8 @@ pub(super) fn collect_semantic_seeds(
             && let Some(future) = bundle_id(future)
         {
             seeds.entry(ty).or_default().instrumented = Some(InstrumentedSeed { inner, future });
+        } else if let Some(library) = library_seed(reader, raw, name, bundle_id) {
+            seeds.entry(ty).or_default().library = Some(library);
         }
     }
     for (raw, symbols) in polls {
@@ -560,6 +650,9 @@ enum Target {
         data: TypedPath,
         vtable: TypedPath,
         trait_ty: BundleTypeId,
+        /// Whether the reviewed ABI settles where the poll sits, which
+        /// it does for a bare `dyn Future` and no other trait.
+        future_trait: bool,
         abi: RuleKey,
     },
 }
@@ -586,6 +679,7 @@ impl Target {
                 data,
                 vtable,
                 trait_ty,
+                future_trait,
                 abi,
             } => FutureTarget::Dynamic {
                 pointer,
@@ -597,7 +691,7 @@ impl Target {
                     drop_slot: 0,
                     size_slot: 1,
                     align_slot: 2,
-                    poll_slot: 3,
+                    poll_slot: future_trait.then_some(3),
                 },
             },
         }
@@ -627,15 +721,23 @@ struct Plan {
 
 #[derive(Clone, Debug)]
 enum Delegation {
-    Direct { target: Target, exclusive: bool },
-    Coroutine { cases: Vec<(StrRef, CaseAction)> },
+    Direct {
+        target: Target,
+        exclusive: bool,
+    },
+    /// One action per state of an enum the reviewed implementation
+    /// matches on: a compiler coroutine's states, or futures-util's
+    /// two-state `Map`.
+    Match {
+        cases: Vec<(StrRef, CaseAction)>,
+    },
 }
 
 impl Plan {
     fn static_children(&self) -> Vec<BundleTypeId> {
         match &self.program {
             Delegation::Direct { target, .. } => target.static_child().into_iter().collect(),
-            Delegation::Coroutine { cases } => cases
+            Delegation::Match { cases } => cases
                 .iter()
                 .filter_map(|(_, action)| match action {
                     CaseAction::Delegate(target) => target.static_child(),
@@ -772,6 +874,11 @@ pub(super) fn bind_semantics(
                 }
             } else if let Some(instrumented) = &seed.instrumented {
                 match plan_instrumented(ty, instrumented, seed, types, names, strings) {
+                    Ok(plan) => draft.plan = Some(plan),
+                    Err(decline) => draft.decline = Some(decline),
+                }
+            } else if let Some(library) = &seed.library {
+                match plan_library(ty, library, seed, types, strings) {
                     Ok(plan) => draft.plan = Some(plan),
                     Err(decline) => draft.decline = Some(decline),
                 }
@@ -944,7 +1051,7 @@ pub(super) fn bind_semantics(
                                 exclusive,
                             })
                         }
-                        Delegation::Coroutine { cases } => PollProgram::MatchVariant {
+                        Delegation::Match { cases } => PollProgram::MatchVariant {
                             state: TypedPath {
                                 steps: Vec::new(),
                                 target: ty,
@@ -1186,6 +1293,7 @@ fn plan_adapter(
                     d.vtable_ptr,
                 )?,
                 trait_ty: d.trait_ty,
+                future_trait: d.future_trait,
                 abi: RuleKey::Rustc {
                     kind: SemanticRuleKind::DynFutureAbi,
                     producer: abi_producer.to_owned(),
@@ -1208,6 +1316,120 @@ fn plan_adapter(
     })
 }
 
+/// Plan a reviewed third-party wrapper's delegation: the origin first —
+/// every declaration of its `poll` on a cargo registry path naming the
+/// convention's crate at a version inside its reviewed range — then the
+/// route the screen described, held to the final table. Each of these
+/// implementations polls its delegate and nothing else, so all of them
+/// forward exclusively.
+fn plan_library(
+    ty: BundleTypeId,
+    seed_layout: &LibrarySeed,
+    seed: &Seed,
+    types: &TypeTable,
+    strings: &mut StringInterner,
+) -> Result<Plan, Decline> {
+    let origin = delegation_origin(&seed.poll_sources, seed_layout.convention())?;
+    let rule = RuleKey::Delegation {
+        kind: seed_layout.rule_kind(),
+        origin,
+    };
+    // A wrapper's route is its one member; the map's is the member
+    // inside its incomplete state, and the state is what selects it.
+    let forward = |member: &str, inner: BundleTypeId, strings: &mut StringInterner| {
+        let (name, member_ty, _) = member_named(types, strings, ty, member).ok_or((
+            SemanticIssueKind::AmbiguousLayout,
+            format!("no unique member {member:?}"),
+        ))?;
+        if member_ty != inner {
+            return Err((
+                SemanticIssueKind::MissingLayout,
+                format!("{member} holds another type than the screen declared"),
+            ));
+        }
+        checked_path(types, ty, vec![Step::Member(MemberRef::Named(name))], inner)
+    };
+    let program = match seed_layout {
+        LibrarySeed::Map {
+            incomplete,
+            future_member,
+            complete,
+            future,
+        } => {
+            let Some(TypeDef::Enum { shape, .. }) = types.get(ty) else {
+                return Err((
+                    SemanticIssueKind::MissingLayout,
+                    "Map is not an enum in the final table".to_owned(),
+                ));
+            };
+            let variant = |name: &str| {
+                shape
+                    .variants
+                    .iter()
+                    .find(|v| strings.get(v.name) == Some(name))
+                    .map(|v| (v.name, v.payload.ty))
+            };
+            let (incomplete_name, payload) = variant(incomplete).ok_or((
+                SemanticIssueKind::MissingLayout,
+                format!("Map has no {incomplete} state in the final table"),
+            ))?;
+            let (complete_name, _) = variant(complete).ok_or((
+                SemanticIssueKind::MissingLayout,
+                format!("Map has no {complete} state in the final table"),
+            ))?;
+            if shape.variants.len() != 2 {
+                return Err((
+                    SemanticIssueKind::MissingLayout,
+                    "Map has states beyond the two reviewed ones".to_owned(),
+                ));
+            }
+            let (member, member_ty, _) = member_named(types, strings, payload, future_member)
+                .ok_or((
+                    SemanticIssueKind::AmbiguousLayout,
+                    format!("Map's {incomplete} state has no unique member {future_member:?}"),
+                ))?;
+            if member_ty != *future {
+                return Err((
+                    SemanticIssueKind::MissingLayout,
+                    format!("{future_member} holds another type than the screen declared"),
+                ));
+            }
+            let path = checked_path(
+                types,
+                ty,
+                vec![
+                    Step::Variant(incomplete_name),
+                    Step::Member(MemberRef::Named(member)),
+                ],
+                *future,
+            )?;
+            Delegation::Match {
+                cases: vec![
+                    (
+                        incomplete_name,
+                        CaseAction::Delegate(Box::new(Target::Value(path))),
+                    ),
+                    // Polling a completed map panics, so this state is
+                    // where its output was already produced.
+                    (complete_name, CaseAction::Returned),
+                ],
+            }
+        }
+        LibrarySeed::MapWrapper(member, inner)
+        | LibrarySeed::MapErr(member, inner)
+        | LibrarySeed::IntoFuture(member, inner)
+        | LibrarySeed::TokioSleep(member, inner) => Delegation::Direct {
+            target: Target::Value(forward(member, *inner, strings)?),
+            exclusive: true,
+        },
+    };
+    Ok(Plan {
+        rule,
+        program,
+        access: None,
+    })
+}
+
 /// Plan `Instrumented<F>`'s delegation: the origin first — every
 /// declaration of its `poll` on a cargo registry path naming `tracing`
 /// at one version inside the reviewed range, any checksum the file
@@ -1223,7 +1445,7 @@ fn plan_instrumented(
     names: &[Option<String>],
     strings: &mut StringInterner,
 ) -> Result<Plan, Decline> {
-    let origin = instrumented_origin(&seed.poll_sources)?;
+    let origin = delegation_origin(&seed.poll_sources, &TRACING_INSTRUMENTED_V0_1_40)?;
     let (name, inner_ty, _) = member_named(types, strings, ty, &layout.inner).ok_or((
         SemanticIssueKind::AmbiguousLayout,
         format!("Instrumented has no unique member {:?}", layout.inner),
@@ -1287,15 +1509,20 @@ fn plan_instrumented(
     })
 }
 
-/// The origin an `Instrumented` instantiation's poll declarations
-/// establish. Every declaration has to lie on a cargo registry path
-/// naming `tracing`; they have to agree on one such path; its version
-/// has to fall inside the reviewed range; and a checksum, where a file
-/// table carried one, has to be a reviewed revision. No declaration at
-/// all is no origin: the implementation may be inlined away, but then
-/// nothing says which one it was.
-fn instrumented_origin(sources: &BTreeSet<PollSource>) -> Result<DelegationOrigin, Decline> {
+/// The origin an instantiation's poll declarations establish for a
+/// reviewed third-party implementation. Every declaration has to lie on
+/// a cargo registry path naming the convention's crate; they have to
+/// agree on one such path; its version has to fall inside the reviewed
+/// range; and a checksum, where a file table carried one, has to be a
+/// reviewed revision. No declaration at all is no origin: the
+/// implementation may be inlined away, but then nothing says which one
+/// it was.
+fn delegation_origin(
+    sources: &BTreeSet<PollSource>,
+    convention: &'static LibraryConvention,
+) -> Result<DelegationOrigin, Decline> {
     let decline = |detail: String| (SemanticIssueKind::UnsupportedOrigin, detail);
+    let package = convention.package;
     if sources.is_empty() {
         return Err(decline(
             "no poll declaration records where this instantiation's implementation lives"
@@ -1311,9 +1538,9 @@ fn instrumented_origin(sources: &BTreeSet<PollSource>) -> Result<DelegationOrigi
                 source.path
             )));
         };
-        if origin.package != "tracing" {
+        if origin.package != package {
             return Err(decline(format!(
-                "declared in {}, which is not the tracing crate",
+                "declared in {}, which is not the {package} crate",
                 source.path
             )));
         }
@@ -1332,7 +1559,7 @@ fn instrumented_origin(sources: &BTreeSet<PollSource>) -> Result<DelegationOrigi
         }
     }
     let (source, version) = agreed.expect("at least one source");
-    let convention = match tracing_instrumented_convention(&version) {
+    let convention = match library_convention(convention, &version) {
         Ok(convention) => convention,
         Err(side) => {
             let side = match side {
@@ -1340,8 +1567,8 @@ fn instrumented_origin(sources: &BTreeSet<PollSource>) -> Result<DelegationOrigi
                 _ => "above",
             };
             return Err(decline(format!(
-                "tracing {version} is {side} the reviewed range {}",
-                crate::detect::semantics::TRACING_INSTRUMENTED_V0_1_40.range()
+                "{package} {version} is {side} the reviewed range {}",
+                convention.range()
             )));
         }
     };
@@ -1439,7 +1666,7 @@ fn coroutine_plan(
         .collect();
     Plan {
         rule: rule.clone(),
-        program: Delegation::Coroutine { cases },
+        program: Delegation::Match { cases },
         access: None,
     }
 }
@@ -2099,6 +2326,7 @@ mod tests {
             data_ptr: DATA,
             vtable_ptr: VTABLE,
             trait_ty: DYN,
+            future_trait: true,
             abi: supported(&RUSTC_DYN_FUTURE_ABI_V1_97),
         }
     }
@@ -2286,7 +2514,11 @@ mod tests {
     #[test]
     fn test_instrumented_origin_reads_the_registry_path() {
         let reviewed = crate::detect::semantics::TRACING_INSTRUMENTED_V0_1_40.checksums[0].1;
-        let origin = instrumented_origin(&BTreeSet::from([source(REGISTRY, None)])).unwrap();
+        let origin = delegation_origin(
+            &BTreeSet::from([source(REGISTRY, None)]),
+            &TRACING_INSTRUMENTED_V0_1_40,
+        )
+        .unwrap();
         assert_eq!(
             origin,
             DelegationOrigin {
@@ -2300,19 +2532,25 @@ mod tests {
             }
         );
         // A checksum the table carried is recorded when reviewed.
-        let origin =
-            instrumented_origin(&BTreeSet::from([source(REGISTRY, Some(reviewed))])).unwrap();
+        let origin = delegation_origin(
+            &BTreeSet::from([source(REGISTRY, Some(reviewed))]),
+            &TRACING_INSTRUMENTED_V0_1_40,
+        )
+        .unwrap();
         assert_eq!(origin.files.len(), 1);
         assert_eq!(origin.files[0].1, reviewed);
         // Two declarations on the same path agree.
-        instrumented_origin(&BTreeSet::from([
-            source(REGISTRY, None),
-            source(REGISTRY, Some(reviewed)),
-        ]))
+        delegation_origin(
+            &BTreeSet::from([source(REGISTRY, None), source(REGISTRY, Some(reviewed))]),
+            &TRACING_INSTRUMENTED_V0_1_40,
+        )
         .unwrap();
         let declined = |sources: &[PollSource]| {
-            let (kind, detail) =
-                instrumented_origin(&sources.iter().cloned().collect()).unwrap_err();
+            let (kind, detail) = delegation_origin(
+                &sources.iter().cloned().collect(),
+                &TRACING_INSTRUMENTED_V0_1_40,
+            )
+            .unwrap_err();
             assert_eq!(kind, SemanticIssueKind::UnsupportedOrigin, "{detail}");
             detail
         };
@@ -2374,6 +2612,323 @@ mod tests {
             )),
             "{mismatch}"
         );
+    }
+
+    /// Each reviewed third-party convention reads its origin off the
+    /// registry path its own `poll` was declared on, and every
+    /// departure declines with the reason: a tree that is not the
+    /// registry's, another crate's, a version outside the range, two
+    /// declarations disagreeing, or a checksum that is not a reviewed
+    /// revision.
+    #[test]
+    fn test_every_delegation_origin_is_read_off_its_registry_path() {
+        const ROOT: &str = "/home/u/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f";
+        for (convention, version, file, other) in [
+            (
+                &FUTURES_UTIL_ADAPTERS_V0_3_30,
+                "0.3.33",
+                "src/future/future/map.rs",
+                "futures-core",
+            ),
+            (
+                &HYPER_UTIL_TOKIO_SLEEP_V0_1_10,
+                "0.1.20",
+                "src/rt/tokio.rs",
+                "hyper",
+            ),
+        ] {
+            let package = convention.package;
+            let at = |version: &str| format!("{ROOT}/{package}-{version}/{file}");
+            let origin =
+                delegation_origin(&BTreeSet::from([source(&at(version), None)]), convention)
+                    .unwrap();
+            assert_eq!(
+                origin,
+                DelegationOrigin {
+                    package,
+                    version: version.to_owned(),
+                    family: convention.family,
+                    source: at(version)
+                        .strip_prefix("/home/u/.cargo/")
+                        .unwrap()
+                        .to_owned(),
+                    files: Vec::new(),
+                }
+            );
+            let reviewed = convention.checksums[0].1;
+            let origin = delegation_origin(
+                &BTreeSet::from([source(&at(version), Some(reviewed))]),
+                convention,
+            )
+            .unwrap();
+            assert_eq!(origin.files.len(), 1);
+            let declined = |sources: &[PollSource]| {
+                let (kind, detail) =
+                    delegation_origin(&sources.iter().cloned().collect(), convention).unwrap_err();
+                assert_eq!(kind, SemanticIssueKind::UnsupportedOrigin, "{detail}");
+                detail
+            };
+            assert!(declined(&[]).contains("no poll declaration"));
+            for path in [
+                format!("/build/vendor/{package}-{version}/{file}"),
+                format!("/home/u/.cargo/git/checkouts/{package}-1a2b3c4d5e6f7a8b/0123abc/{file}"),
+                format!("/home/u/{package}/{file}"),
+            ] {
+                assert!(
+                    declined(&[source(&path, None)]).contains("not a cargo registry path"),
+                    "{path}"
+                );
+            }
+            assert!(
+                declined(&[source(&format!("{ROOT}/{other}-{version}/{file}"), None)])
+                    .contains(&format!("not the {package} crate"))
+            );
+            let (a, b, c) = convention.floor;
+            let below = format!("{a}.{b}.{}", c - 1);
+            let (x, y, z) = convention.ceiling;
+            let above = format!("{x}.{y}.{}", z + 1);
+            assert!(
+                declined(&[source(&at(&below), None)])
+                    .contains(&format!("{package} {below} is below the reviewed range"))
+            );
+            assert!(
+                declined(&[source(&at(&above), None)])
+                    .contains(&format!("{package} {above} is above the reviewed range"))
+            );
+            assert!(
+                declined(&[
+                    source(&at(version), None),
+                    source(&format!("{ROOT}/{package}-{version}/src/other.rs"), None),
+                ])
+                .contains("declared in both")
+            );
+            assert!(
+                declined(&[source(&at(version), Some([0xab; 16]))])
+                    .contains("not a reviewed revision of")
+            );
+        }
+    }
+
+    /// The reviewed wrappers plan one exclusive forward each — through
+    /// the member their implementation polls — and `Map` plans a case
+    /// per state: its incomplete one delegates into the future it holds,
+    /// its complete one has already returned. A member holding another
+    /// type than the screen declared plans nothing.
+    #[test]
+    fn test_the_reviewed_wrappers_plan_one_forward_each() {
+        let mut strings = StringInterner::new();
+        let mut names: Vec<Option<String>> = Vec::new();
+        let mut types: Vec<TypeDef> = Vec::new();
+        let mut add = |name: &str, def: TypeDef| {
+            names.push(Some(name.to_owned()));
+            types.push(def);
+            BundleTypeId(types.len() as u32 - 1)
+        };
+        let fut = add(
+            "app::Fut",
+            TypeDef::Struct {
+                name: strings.intern("app::Fut"),
+                size: 8,
+                members: Vec::new(),
+            },
+        );
+        let sleep = add(
+            "tokio::time::sleep::Sleep",
+            TypeDef::Struct {
+                name: strings.intern("tokio::time::sleep::Sleep"),
+                size: 8,
+                members: Vec::new(),
+            },
+        );
+        let one = |strings: &mut StringInterner, name: &str, member: &str, ty| TypeDef::Struct {
+            name: strings.intern(name),
+            size: 8,
+            members: vec![MemberDef {
+                name: strings.intern(member),
+                ty,
+                offset: 0,
+            }],
+        };
+        let tokio_sleep = {
+            let def = one(
+                &mut strings,
+                "hyper_util::rt::tokio::TokioSleep",
+                "inner",
+                sleep,
+            );
+            add("hyper_util::rt::tokio::TokioSleep", def)
+        };
+        let into = {
+            let def = one(
+                &mut strings,
+                "futures_util::future::try_future::into_future::IntoFuture<app::Fut>",
+                "future",
+                fut,
+            );
+            add(
+                "futures_util::future::try_future::into_future::IntoFuture<app::Fut>",
+                def,
+            )
+        };
+        let incomplete = add(
+            "map::Map::Incomplete",
+            TypeDef::Struct {
+                name: strings.intern("map::Map::Incomplete"),
+                size: 8,
+                members: vec![MemberDef {
+                    name: strings.intern("future"),
+                    ty: fut,
+                    offset: 0,
+                }],
+            },
+        );
+        let complete = add(
+            "map::Map::Complete",
+            TypeDef::Struct {
+                name: strings.intern("map::Map::Complete"),
+                size: 0,
+                members: Vec::new(),
+            },
+        );
+        let variant = |strings: &mut StringInterner, name: &str, ty| VariantDef {
+            name: strings.intern(name),
+            discr_values: None,
+            payload: MemberDef {
+                name: strings.intern(name),
+                ty,
+                offset: 0,
+            },
+            decl: None,
+            await_site: None,
+        };
+        let map = {
+            let variants = vec![
+                variant(&mut strings, "Incomplete", incomplete),
+                variant(&mut strings, "Complete", complete),
+            ];
+            let def = TypeDef::Enum {
+                name: strings.intern("futures_util::future::future::map::Map<app::Fut, app::Fn>"),
+                size: 16,
+                shape: VariantShape {
+                    discr: None,
+                    variants,
+                },
+            };
+            add(
+                "futures_util::future::future::map::Map<app::Fut, app::Fn>",
+                def,
+            )
+        };
+        let types = TypeTable {
+            types,
+            ..Default::default()
+        };
+        let registry = |package: &str, version: &str, file: &str| Seed {
+            poll_sources: BTreeSet::from([source(
+                &format!(
+                    "/home/u/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/\
+                     {package}-{version}/{file}"
+                ),
+                None,
+            )]),
+            ..Seed::default()
+        };
+        let futures_util = registry("futures-util", "0.3.33", "src/lib.rs");
+        let hyper_util = registry("hyper-util", "0.1.20", "src/rt/tokio.rs");
+        let render = |strings: &StringInterner, path: &TypedPath| {
+            path.steps
+                .iter()
+                .map(|step| match step {
+                    Step::Member(MemberRef::Named(n)) => strings.get(*n).unwrap().to_owned(),
+                    Step::Variant(n) => format!("::{}", strings.get(*n).unwrap()),
+                    other => format!("{other:?}"),
+                })
+                .collect::<Vec<_>>()
+                .join(".")
+        };
+        for (ty, seed_layout, seed, expected, target) in [
+            (
+                tokio_sleep,
+                LibrarySeed::TokioSleep("inner".into(), sleep),
+                &hyper_util,
+                "inner",
+                sleep,
+            ),
+            (
+                into,
+                LibrarySeed::IntoFuture("future".into(), fut),
+                &futures_util,
+                "future",
+                fut,
+            ),
+        ] {
+            let plan = plan_library(ty, &seed_layout, seed, &types, &mut strings).unwrap();
+            let Delegation::Direct {
+                target: t,
+                exclusive,
+            } = &plan.program
+            else {
+                panic!("a wrapper forwards directly");
+            };
+            assert!(exclusive, "a reviewed forward polls its delegate alone");
+            let Target::Value(path) = t else {
+                panic!("a wrapper forwards to a value");
+            };
+            assert_eq!(render(&strings, path), expected);
+            assert_eq!(path.target, target);
+            assert!(plan.access.is_none(), "a wrapper is not a pointer");
+        }
+        // The map's two states, and the one member the incomplete one
+        // polls.
+        let layout = LibrarySeed::Map {
+            incomplete: "Incomplete".into(),
+            future_member: "future".into(),
+            complete: "Complete".into(),
+            future: fut,
+        };
+        let plan = plan_library(map, &layout, &futures_util, &types, &mut strings).unwrap();
+        let Delegation::Match { cases } = &plan.program else {
+            panic!("a map matches its state");
+        };
+        let [
+            (incomplete_name, CaseAction::Delegate(target)),
+            (_, CaseAction::Returned),
+        ] = cases.as_slice()
+        else {
+            panic!("the incomplete state delegates and the complete one has returned");
+        };
+        assert_eq!(strings.get(*incomplete_name), Some("Incomplete"));
+        let Target::Value(path) = target.as_ref() else {
+            panic!("a map delegates to a value");
+        };
+        assert_eq!(render(&strings, path), "::Incomplete.future");
+        assert_eq!(path.target, fut);
+        // A member the screen's declared type no longer matches.
+        let wrong = LibrarySeed::TokioSleep("inner".into(), fut);
+        let (kind, detail) =
+            plan_library(tokio_sleep, &wrong, &hyper_util, &types, &mut strings).unwrap_err();
+        assert_eq!(kind, SemanticIssueKind::MissingLayout);
+        assert!(
+            detail.contains("another type than the screen declared"),
+            "{detail}"
+        );
+        // And an origin no review covers stops before the layout.
+        let vendored = Seed {
+            poll_sources: BTreeSet::from([source(
+                "/build/vendor/hyper-util-0.1.20/src/rt/tokio.rs",
+                None,
+            )]),
+            ..Seed::default()
+        };
+        let (kind, _) = plan_library(
+            tokio_sleep,
+            &LibrarySeed::TokioSleep("inner".into(), sleep),
+            &vendored,
+            &types,
+            &mut strings,
+        )
+        .unwrap_err();
+        assert_eq!(kind, SemanticIssueKind::UnsupportedOrigin);
     }
 
     /// A route is held to the type it claims to land on: the same steps
@@ -3069,7 +3624,7 @@ mod tests {
             family: "rustc-coroutine-1.97",
         };
         let plan = coroutine_plan(e.env, &rule, &layout, &e.types, &mut e.strings);
-        let Delegation::Coroutine { cases } = &plan.program else {
+        let Delegation::Match { cases } = &plan.program else {
             panic!("coroutine")
         };
         let spelled: Vec<String> = cases
@@ -3121,7 +3676,7 @@ mod tests {
             states,
         };
         let plan = coroutine_plan(e.env, &rule, &layout, &e.types, &mut e.strings);
-        let Delegation::Coroutine { cases } = &plan.program else {
+        let Delegation::Match { cases } = &plan.program else {
             panic!("coroutine")
         };
         assert!(matches!(

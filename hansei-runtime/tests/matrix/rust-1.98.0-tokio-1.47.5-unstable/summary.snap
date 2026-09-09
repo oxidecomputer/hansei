@@ -505,45 +505,87 @@ program: select-combinator
 [tasks]
 task: select_combinator::joiner::{async_fn_env#0}
   kind: AsyncFn
-  decl: select-combinator.rs:27
+  decl: select-combinator.rs:38
   entries: 2
   symbols-per-entry: 6,6
   stage: Stage<select_combinator::joiner::{async_fn_env#0}>
   variants:
-    Unresumed @ select-combinator.rs:31
-    Returned @ select-combinator.rs:35
-    Panicked @ select-combinator.rs:35
-    Suspend0 @ join.rs:203 (awaited at select-combinator.rs:33)
+    Unresumed @ select-combinator.rs:42
+    Returned @ select-combinator.rs:46
+    Panicked @ select-combinator.rs:46
+    Suspend0 @ join.rs:203 (awaited at select-combinator.rs:44)
+task: select_combinator::mapper::{async_fn_env#0}
+  kind: AsyncFn
+  decl: select-combinator.rs:93
+  entries: 2
+  symbols-per-entry: 6,6
+  stage: Stage<select_combinator::mapper::{async_fn_env#0}>
+  variants:
+    Unresumed @ select-combinator.rs:93
+    Returned @ select-combinator.rs:97
+    Panicked @ select-combinator.rs:97
+    Suspend0 @ select-combinator.rs:96
+task: select_combinator::dynamic::{async_fn_env#0}
+  kind: AsyncFn
+  decl: select-combinator.rs:105
+  entries: 2
+  symbols-per-entry: 6,6
+  stage: Stage<select_combinator::dynamic::{async_fn_env#0}>
+  variants:
+    Unresumed @ select-combinator.rs:105
+    Returned @ select-combinator.rs:109
+    Panicked @ select-combinator.rs:109
+    Suspend0 @ select-combinator.rs:108
+task: select_combinator::remapper::{async_fn_env#0}
+  kind: AsyncFn
+  decl: select-combinator.rs:99
+  entries: 2
+  symbols-per-entry: 6,6
+  stage: Stage<select_combinator::remapper::{async_fn_env#0}>
+  variants:
+    Unresumed @ select-combinator.rs:99
+    Returned @ select-combinator.rs:103
+    Panicked @ select-combinator.rs:103
+    Suspend0 @ select-combinator.rs:102
 task: select_combinator::selector::{async_fn_env#0}
   kind: AsyncFn
-  decl: select-combinator.rs:15
+  decl: select-combinator.rs:26
   entries: 2
   symbols-per-entry: 6,6
   stage: Stage<select_combinator::selector::{async_fn_env#0}>
   variants:
-    Unresumed @ select-combinator.rs:19
-    Returned @ select-combinator.rs:25
-    Panicked @ select-combinator.rs:25
-    Suspend0 @ select.rs:744 (awaited at select-combinator.rs:21)
+    Unresumed @ select-combinator.rs:30
+    Returned @ select-combinator.rs:36
+    Panicked @ select-combinator.rs:36
+    Suspend0 @ select.rs:744 (awaited at select-combinator.rs:32)
 
 [dyn-futures]
 dyn: core::future::poll_fn::PollFn<select_combinator::joiner::{async_fn#0}::{closure_env#0}> (poll)
 dyn: core::future::poll_fn::PollFn<select_combinator::selector::{async_fn#0}::{closure_env#0}> (poll)
 dyn: core::future::poll_fn::PollFn<tokio::runtime::scheduler::current_thread::{impl#0}::block_on::{closure#0}::{closure_env#0}<select_combinator::main::{async_block_env#0}>> (poll)
 dyn: core::pin::Pin<&mut select_combinator::main::{async_block_env#0}> (poll)
+dyn: core::pin::Pin<alloc::boxed::Box<dyn select_combinator::Parked<Output=u32>, alloc::alloc::Global>> (poll, drop_glue)
+dyn: select_combinator::Fallible (poll, drop_glue)
+dyn: select_combinator::Park (poll, drop_glue)
+dyn: select_combinator::dynamic::{async_fn_env#0} (poll, drop_glue)
 dyn: select_combinator::joiner::{async_fn_env#0} (poll, drop_glue)
 dyn: select_combinator::main::{async_block_env#0} (poll, drop_glue)
+dyn: select_combinator::mapper::{async_fn_env#0} (poll, drop_glue)
+dyn: select_combinator::remapper::{async_fn_env#0} (poll, drop_glue)
 dyn: select_combinator::selector::{async_fn_env#0} (poll, drop_glue)
 dyn: select_combinator::wait::{async_fn_env#0} (poll, drop_glue)
 dyn: tokio::future::maybe_done::MaybeDone<select_combinator::wait::{async_fn_env#0}> (poll, drop_glue)
 
 [env-decls]
+env: select_combinator::dynamic::{async_fn_env#0} @ select-combinator.rs:105
 env: select_combinator::joiner::{async_fn#0}::{closure_env#0} @ join.rs:151
-env: select_combinator::joiner::{async_fn_env#0} @ select-combinator.rs:27
-env: select_combinator::main::{async_block_env#0} @ select-combinator.rs:42
+env: select_combinator::joiner::{async_fn_env#0} @ select-combinator.rs:38
+env: select_combinator::main::{async_block_env#0} @ select-combinator.rs:126
+env: select_combinator::mapper::{async_fn_env#0} @ select-combinator.rs:93
+env: select_combinator::remapper::{async_fn_env#0} @ select-combinator.rs:99
 env: select_combinator::selector::{async_fn#0}::{closure_env#0} @ select.rs:662
-env: select_combinator::selector::{async_fn_env#0} @ select-combinator.rs:15
-env: select_combinator::wait::{async_fn_env#0} @ select-combinator.rs:11
+env: select_combinator::selector::{async_fn_env#0} @ select-combinator.rs:26
+env: select_combinator::wait::{async_fn_env#0} @ select-combinator.rs:22
 
 [infra]
 header: ok

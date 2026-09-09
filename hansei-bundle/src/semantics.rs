@@ -132,7 +132,14 @@ pub struct DynFutureLayout {
     pub drop_slot: u32,
     pub size_slot: u32,
     pub align_slot: u32,
-    pub poll_slot: u32,
+    /// Where `Future::poll` sits, when the reviewed ABI places it: the
+    /// trait object is a bare `dyn Future`, whose one method is the
+    /// poll. A trait object of another trait that has `Future` as a
+    /// supertrait carries a poll too, but which slot holds it depends
+    /// on that trait's own declaration order, which no reviewed
+    /// convention covers — the slot is then `None` and identity comes
+    /// from the drop glue alone.
+    pub poll_slot: Option<u32>,
 }
 
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
@@ -250,6 +257,16 @@ pub enum SemanticRuleKind {
     TokioMpscRecvState,
     TokioNotified,
     TokioNotifiedState,
+    /// futures-util's `map` combinator: the public `delegate_all!`
+    /// newtype and the `map::Map` enum it forwards into.
+    FuturesUtilMap,
+    /// futures-util's `map_err`: a `delegate_all!` newtype over a `Map`.
+    FuturesUtilMapErr,
+    /// futures-util's `into_future`.
+    FuturesUtilIntoFuture,
+    /// hyper-util's `TokioSleep`, the newtype that gives
+    /// `tokio::time::Sleep` an `Unpin` trait object.
+    HyperUtilTokioSleep,
 }
 
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]

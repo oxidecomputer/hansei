@@ -192,47 +192,76 @@ task 6: scheduler tokio::runtime::blocking::schedule::BlockingSchedule :: Blocki
 
 program: select-combinator
 origin 0: rustc rustc-coroutine-1.97 (clang LLVM (rustc version 1.98.0 (88d9e12ae 2026-08-18)))
-origin 1: layout tokio 1.49.0 family v1_49 (ReviewedRange)
-origin 2: rustc rustc-std-adapters-1.97 (clang LLVM (rustc version 1.98.0 (88d9e12ae 2026-08-18)))
+origin 1: delegation futures-util 0.3.33 family futures-util-adapters-0.3.30 from registry/src/index.crates.io-1949cf8c6b5b557f/futures-util-0.3.33/src/lib.rs (0 checksummed files)
+origin 2: delegation futures-util 0.3.33 family futures-util-adapters-0.3.30 from registry/src/index.crates.io-1949cf8c6b5b557f/futures-util-0.3.33/src/future/future/map.rs (0 checksummed files)
+origin 3: rustc rustc-std-adapters-1.97 (clang LLVM (rustc version 1.98.0 (88d9e12ae 2026-08-18)))
+origin 4: rustc rustc-dyn-future-abi-1.97 (clang LLVM (rustc version 1.98.0 (88d9e12ae 2026-08-18)))
+origin 5: delegation futures-util 0.3.33 family futures-util-adapters-0.3.30 from registry/src/index.crates.io-1949cf8c6b5b557f/futures-util-0.3.33/src/future/try_future/into_future.rs (0 checksummed files)
+origin 6: layout tokio 1.49.0 family v1_49 (ReviewedRange)
 rule 0: RustcAsyncFn rev 1 origin 0
-rule 1: RustcAsyncBlock rev 1 origin 0
-rule 2: TokioJoinHandle rev 1 origin 1
-rule 3: TokioJoinHandleState rev 1 origin 1
-rule 4: TokioNotified rev 1 origin 1
-rule 5: TokioNotifiedState rev 1 origin 1
-rule 6: StdMutRefAccess rev 1 origin 2
-rule 7: StdMutRefPoll rev 1 origin 2
-rule 8: StdPinMutRefAccess rev 1 origin 2
-rule 9: StdPinMutRefPoll rev 1 origin 2
-rule 10: TokioCurrentThreadScheduler rev 1 origin 1
-rule 11: TokioMultiThreadScheduler rev 1 origin 1
-rule 12: TokioBlockingScheduler rev 1 origin 1
+rule 1: FuturesUtilMap rev 1 origin 1
+rule 2: FuturesUtilMap rev 1 origin 2
+rule 3: StdPinBoxAccess rev 1 origin 3
+rule 4: DynFutureAbi rev 1 origin 4
+rule 5: StdPinBoxPoll rev 1 origin 3
+rule 6: FuturesUtilMapErr rev 1 origin 1
+rule 7: FuturesUtilIntoFuture rev 1 origin 5
+rule 8: RustcAsyncBlock rev 1 origin 0
+rule 9: TokioJoinHandle rev 1 origin 6
+rule 10: TokioJoinHandleState rev 1 origin 6
+rule 11: TokioNotified rev 1 origin 6
+rule 12: TokioNotifiedState rev 1 origin 6
+rule 13: StdMutRefAccess rev 1 origin 3
+rule 14: StdMutRefPoll rev 1 origin 3
+rule 15: StdPinMutRefAccess rev 1 origin 3
+rule 16: StdPinMutRefPoll rev 1 origin 3
+rule 17: TokioCurrentThreadScheduler rev 1 origin 6
+rule 18: TokioMultiThreadScheduler rev 1 origin 6
+rule 19: TokioBlockingScheduler rev 1 origin 6
 select_combinator::joiner::{async_fn_env#0} :: states future[task 0, task 1, coroutine rule 0] continuation rule 0 match <self>@+0 -> select_combinator::joiner::{async_fn_env#0} {0: unresumed} {1: returned} {2: panicked} {3: delegate (exclusive) {3}.__awaitee@+64 -> core::future::poll_fn::PollFn<select_combinator::joiner::{async_fn#0}::{closure_env#0}>} coroutine rule 0 {0:Unresumed[ready,park_a,park_b]() 1:Returned[]() 2:Panicked[]() 3:Suspended[futures,__awaitee,__2,__3]()}
 tokio::sync::oneshot::Receiver<u32> :: members future[poll, delegated by select_combinator::wait::{async_fn_env#0}] continuation unknown (NoRule)
 core::future::poll_fn::PollFn<select_combinator::joiner::{async_fn#0}::{closure_env#0}> :: members future[poll, delegated by select_combinator::joiner::{async_fn_env#0}] continuation unknown (NoRule)
 tokio::future::maybe_done::MaybeDone<select_combinator::wait::{async_fn_env#0}> :: members future[poll] continuation unknown (NoRule)
 select_combinator::wait::{async_fn_env#0} :: states future[coroutine rule 0] continuation rule 0 match <self>@+0 -> select_combinator::wait::{async_fn_env#0} {0: unresumed} {1: returned} {2: panicked} {3: delegate (exclusive) {3}.__awaitee@+8 -> tokio::sync::oneshot::Receiver<u32>} coroutine rule 0 {0:Unresumed[park]() 1:Returned[]() 2:Panicked[]() 3:Suspended[__awaitee]()}
-select_combinator::selector::{async_fn_env#0} :: states future[task 2, task 3, coroutine rule 0] continuation rule 0 match <self>@+0 -> select_combinator::selector::{async_fn_env#0} {0: unresumed} {1: returned} {2: panicked} {3: delegate (exclusive) {3}.__awaitee@+48 -> core::future::poll_fn::PollFn<select_combinator::selector::{async_fn#0}::{closure_env#0}>} coroutine rule 0 {0:Unresumed[ready,park_a,park_b]() 1:Returned[]() 2:Panicked[]() 3:Suspended[disabled,futures,__awaitee,__3,__4]()}
+select_combinator::mapper::{async_fn_env#0} :: states future[task 2, task 3, coroutine rule 0] continuation rule 0 match <self>@+0 -> select_combinator::mapper::{async_fn_env#0} {0: unresumed} {1: returned} {2: panicked} {3: delegate (exclusive) {3}.__awaitee@+0 -> futures_util::future::future::Map<select_combinator::Park, fn(u32) -> u32>} coroutine rule 0 {0:Unresumed[ready,park]() 1:Returned[]() 2:Panicked[]() 3:Suspended[__awaitee,__1]()}
+futures_util::future::future::Map<select_combinator::Park, fn(u32) -> u32> :: members future[poll, delegated by select_combinator::mapper::{async_fn_env#0}] continuation rule 1 delegate (exclusive) inner@+0 -> futures_util::future::future::map::Map<select_combinator::Park, fn(u32) -> u32>
+futures_util::future::future::map::Map<select_combinator::Park, fn(u32) -> u32> :: members future[poll, delegated by futures_util::future::future::Map<select_combinator::Park, fn(u32) -> u32>] continuation rule 2 match <self>@+0 -> futures_util::future::future::map::Map<select_combinator::Park, fn(u32) -> u32> {Incomplete: delegate (exclusive) {Incomplete}.future@+8 -> select_combinator::Park} {Complete: returned}
+select_combinator::Park :: members future[poll, delegated by futures_util::future::future::map::Map<select_combinator::Park, fn(u32) -> u32>] continuation unknown (NoRule)
+select_combinator::dynamic::{async_fn_env#0} :: states future[task 4, task 5, coroutine rule 0] continuation rule 0 match <self>@+0 -> select_combinator::dynamic::{async_fn_env#0} {0: unresumed} {1: returned} {2: panicked} {3: delegate (exclusive) {3}.__awaitee@+0 -> core::pin::Pin<alloc::boxed::Box<dyn select_combinator::Parked<Output=u32>, alloc::alloc::Global>>} coroutine rule 0 {0:Unresumed[ready,park]() 1:Returned[]() 2:Panicked[]() 3:Suspended[__awaitee,__1]()}
+core::pin::Pin<alloc::boxed::Box<dyn select_combinator::Parked<Output=u32>, alloc::alloc::Global>> :: members future[poll, delegated by select_combinator::dynamic::{async_fn_env#0}] continuation rule 5 delegate (exclusive) dyn pointer@+0 -> alloc::boxed::Box<dyn select_combinator::Parked<Output=u32>, alloc::alloc::Global> access Owned rule 3 dyn pointer@+0 -> alloc::boxed::Box<dyn select_combinator::Parked<Output=u32>, alloc::alloc::Global>
+select_combinator::remapper::{async_fn_env#0} :: states future[task 6, task 7, coroutine rule 0] continuation rule 0 match <self>@+0 -> select_combinator::remapper::{async_fn_env#0} {0: unresumed} {1: returned} {2: panicked} {3: delegate (exclusive) {3}.__awaitee@+0 -> futures_util::future::try_future::MapErr<select_combinator::Fallible, fn(u32) -> u32>} coroutine rule 0 {0:Unresumed[ready,park]() 1:Returned[]() 2:Panicked[]() 3:Suspended[__awaitee,__1]()}
+futures_util::future::try_future::MapErr<select_combinator::Fallible, fn(u32) -> u32> :: members future[poll, delegated by select_combinator::remapper::{async_fn_env#0}] continuation rule 6 delegate (exclusive) inner@+0 -> futures_util::future::future::Map<futures_util::future::try_future::into_future::IntoFuture<select_combinator::Fallible>, futures_util::fns::MapErrFn<fn(u32) -> u32>>
+futures_util::future::future::Map<futures_util::future::try_future::into_future::IntoFuture<select_combinator::Fallible>, futures_util::fns::MapErrFn<fn(u32) -> u32>> :: members future[poll, delegated by futures_util::future::try_future::MapErr<select_combinator::Fallible, fn(u32) -> u32>] continuation rule 1 delegate (exclusive) inner@+0 -> futures_util::future::future::map::Map<futures_util::future::try_future::into_future::IntoFuture<select_combinator::Fallible>, futures_util::fns::MapErrFn<fn(u32) -> u32>>
+futures_util::future::future::map::Map<futures_util::future::try_future::into_future::IntoFuture<select_combinator::Fallible>, futures_util::fns::MapErrFn<fn(u32) -> u32>> :: members future[poll, delegated by futures_util::future::future::Map<futures_util::future::try_future::into_future::IntoFuture<select_combinator::Fallible>, futures_util::fns::MapErrFn<fn(u32) -> u32>>] continuation rule 2 match <self>@+0 -> futures_util::future::future::map::Map<futures_util::future::try_future::into_future::IntoFuture<select_combinator::Fallible>, futures_util::fns::MapErrFn<fn(u32) -> u32>> {Incomplete: delegate (exclusive) {Incomplete}.future@+8 -> futures_util::future::try_future::into_future::IntoFuture<select_combinator::Fallible>} {Complete: returned}
+futures_util::future::try_future::into_future::IntoFuture<select_combinator::Fallible> :: members future[poll, delegated by futures_util::future::future::map::Map<futures_util::future::try_future::into_future::IntoFuture<select_combinator::Fallible>, futures_util::fns::MapErrFn<fn(u32) -> u32>>] continuation rule 7 delegate (exclusive) future@+0 -> select_combinator::Fallible
+select_combinator::Fallible :: members future[poll, delegated by futures_util::future::try_future::into_future::IntoFuture<select_combinator::Fallible>] continuation unknown (NoRule)
+select_combinator::selector::{async_fn_env#0} :: states future[task 8, task 9, coroutine rule 0] continuation rule 0 match <self>@+0 -> select_combinator::selector::{async_fn_env#0} {0: unresumed} {1: returned} {2: panicked} {3: delegate (exclusive) {3}.__awaitee@+48 -> core::future::poll_fn::PollFn<select_combinator::selector::{async_fn#0}::{closure_env#0}>} coroutine rule 0 {0:Unresumed[ready,park_a,park_b]() 1:Returned[]() 2:Panicked[]() 3:Suspended[disabled,futures,__awaitee,__3,__4]()}
 core::future::poll_fn::PollFn<select_combinator::selector::{async_fn#0}::{closure_env#0}> :: members future[poll, delegated by select_combinator::selector::{async_fn_env#0}] continuation unknown (NoRule)
-tokio::runtime::blocking::task::BlockingTask<tokio::runtime::scheduler::multi_thread::worker::{impl#0}::launch::{closure_env#0}> :: members future[task 4, poll] continuation unknown (NoRule)
+tokio::runtime::blocking::task::BlockingTask<tokio::runtime::scheduler::multi_thread::worker::{impl#0}::launch::{closure_env#0}> :: members future[task 10, poll] continuation unknown (NoRule)
 tokio::sync::oneshot::Receiver<()> :: members future[poll, poll, delegated by select_combinator::main::{async_block_env#0}, delegated by &mut tokio::sync::oneshot::Receiver<()>] continuation unknown (NoRule)
-select_combinator::main::{async_block_env#0} :: states future[coroutine rule 1, delegated by core::pin::Pin<&mut select_combinator::main::{async_block_env#0}>] continuation rule 1 match <self>@+0 -> select_combinator::main::{async_block_env#0} {0: unresumed} {1: returned} {2: panicked} {3: delegate (exclusive) {3}.__awaitee@+40 -> tokio::sync::oneshot::Receiver<()>} {4: delegate (exclusive) {4}.__awaitee@+32 -> tokio::sync::oneshot::Receiver<()>} {5: delegate (exclusive) {5}.__awaitee@+32 -> core::future::pending::Pending<()>} coroutine rule 1 {0:Unresumed[]() 1:Returned[]() 2:Panicked[]() 3:Suspended[ready_join_rx,_sel,_join,__awaitee,__4,__5,__6,__7,__8,__9,__10,__11,__12,__13,__14,__15]() 4:Suspended[_sel,_join,__awaitee,__3,__4,__5,__6,__7,__8,__9,__10,__11,__12,__13,__14]() 5:Suspended[_sel,_join,__awaitee,__3,__4,__5,__6,__7,__8,__9,__10,__11,__12,__13,__14]()}
-tokio::runtime::task::join::JoinHandle<u32> :: members resource JoinHandle rule 2 state rule 3 exclusive-pending
+select_combinator::main::{async_block_env#0} :: states future[coroutine rule 8, delegated by core::pin::Pin<&mut select_combinator::main::{async_block_env#0}>] continuation rule 8 match <self>@+0 -> select_combinator::main::{async_block_env#0} {0: unresumed} {1: returned} {2: panicked} {3: delegate (exclusive) {3}.__awaitee@+104 -> tokio::sync::oneshot::Receiver<()>} {4: delegate (exclusive) {4}.__awaitee@+96 -> tokio::sync::oneshot::Receiver<()>} {5: delegate (exclusive) {5}.__awaitee@+96 -> tokio::sync::oneshot::Receiver<()>} {6: delegate (exclusive) {6}.__awaitee@+96 -> tokio::sync::oneshot::Receiver<()>} {7: delegate (exclusive) {7}.__awaitee@+96 -> tokio::sync::oneshot::Receiver<()>} {8: delegate (exclusive) {8}.__awaitee@+96 -> core::future::pending::Pending<()>} coroutine rule 8 {0:Unresumed[]() 1:Returned[]() 2:Panicked[]() 3:Suspended[ready_join_rx,ready_map_rx,ready_remap_rx,ready_dyn_rx,_sel,_join,_map,_remap,_dynamic,__awaitee,__10,__11,__12,__13,__14,__15,__16,__17,__18,__19,__20,__21,__22,__23,__24,__25,__26,__27,__28,__29,__30,__31,__32,__33]() 4:Suspended[ready_map_rx,ready_remap_rx,ready_dyn_rx,_sel,_join,_map,_remap,_dynamic,__awaitee,__9,__10,__11,__12,__13,__14,__15,__16,__17,__18,__19,__20,__21,__22,__23,__24,__25,__26,__27,__28,__29,__30,__31,__32]() 5:Suspended[ready_remap_rx,ready_dyn_rx,_sel,_join,_map,_remap,_dynamic,__awaitee,__8,__9,__10,__11,__12,__13,__14,__15,__16,__17,__18,__19,__20,__21,__22,__23,__24,__25,__26,__27,__28,__29,__30,__31]() 6:Suspended[ready_dyn_rx,_sel,_join,_map,_remap,_dynamic,__awaitee,__7,__8,__9,__10,__11,__12,__13,__14,__15,__16,__17,__18,__19,__20,__21,__22,__23,__24,__25,__26,__27,__28,__29,__30]() 7:Suspended[_sel,_join,_map,_remap,_dynamic,__awaitee,__6,__7,__8,__9,__10,__11,__12,__13,__14,__15,__16,__17,__18,__19,__20,__21,__22,__23,__24,__25,__26,__27,__28,__29]() 8:Suspended[_sel,_join,_map,_remap,_dynamic,__awaitee,__6,__7,__8,__9,__10,__11,__12,__13,__14,__15,__16,__17,__18,__19,__20,__21,__22,__23,__24,__25,__26,__27,__28,__29]()}
+tokio::runtime::task::join::JoinHandle<u32> :: members resource JoinHandle rule 9 state rule 10 exclusive-pending
 core::future::pending::Pending<()> :: members future[delegated by select_combinator::main::{async_block_env#0}] continuation unknown (NoRule)
-tokio::sync::notify::Notified :: members future[poll] continuation rule 4 primitive resource Notified rule 4 state rule 5 exclusive-pending
-&mut tokio::sync::oneshot::Receiver<()> :: members future[poll] continuation rule 7 delegate (exclusive) *@+0 -> tokio::sync::oneshot::Receiver<()> access Borrowed rule 6 *@+0 -> tokio::sync::oneshot::Receiver<()>
+tokio::sync::notify::Notified :: members future[poll] continuation rule 11 primitive resource Notified rule 11 state rule 12 exclusive-pending
+&mut tokio::sync::oneshot::Receiver<()> :: members future[poll] continuation rule 14 delegate (exclusive) *@+0 -> tokio::sync::oneshot::Receiver<()> access Borrowed rule 13 *@+0 -> tokio::sync::oneshot::Receiver<()>
 core::future::poll_fn::PollFn<tokio::runtime::scheduler::current_thread::{impl#0}::block_on::{closure#0}::{closure_env#0}<select_combinator::main::{async_block_env#0}>> :: members future[poll] continuation unknown (NoRule)
-&mut core::pin::Pin<&mut tokio::sync::notify::Notified> :: members access Borrowed rule 6 *@+0 -> core::pin::Pin<&mut tokio::sync::notify::Notified>
-&mut core::pin::Pin<&mut select_combinator::main::{async_block_env#0}> :: members access Borrowed rule 6 *@+0 -> core::pin::Pin<&mut select_combinator::main::{async_block_env#0}>
-core::pin::Pin<&mut tokio::sync::notify::Notified> :: members access Borrowed rule 8 pointer.*@+0 -> tokio::sync::notify::Notified
-core::pin::Pin<&mut select_combinator::main::{async_block_env#0}> :: members future[poll] continuation rule 9 delegate (exclusive) pointer.*@+0 -> select_combinator::main::{async_block_env#0} access Borrowed rule 8 pointer.*@+0 -> select_combinator::main::{async_block_env#0}
-&mut tokio::sync::notify::Notified :: members access Borrowed rule 6 *@+0 -> tokio::sync::notify::Notified
-&mut select_combinator::main::{async_block_env#0} :: members access Borrowed rule 6 *@+0 -> select_combinator::main::{async_block_env#0}
-task 0: scheduler alloc::sync::Arc<tokio::runtime::scheduler::current_thread::Handle, alloc::alloc::Global> :: CurrentThread rule 10
-task 1: scheduler alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle, alloc::alloc::Global> :: MultiThread rule 11
-task 2: scheduler alloc::sync::Arc<tokio::runtime::scheduler::current_thread::Handle, alloc::alloc::Global> :: CurrentThread rule 10
-task 3: scheduler alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle, alloc::alloc::Global> :: MultiThread rule 11
-task 4: scheduler tokio::runtime::blocking::schedule::BlockingSchedule :: Blocking rule 12
+&mut core::pin::Pin<&mut tokio::sync::notify::Notified> :: members access Borrowed rule 13 *@+0 -> core::pin::Pin<&mut tokio::sync::notify::Notified>
+&mut core::pin::Pin<&mut select_combinator::main::{async_block_env#0}> :: members access Borrowed rule 13 *@+0 -> core::pin::Pin<&mut select_combinator::main::{async_block_env#0}>
+core::pin::Pin<&mut tokio::sync::notify::Notified> :: members access Borrowed rule 15 pointer.*@+0 -> tokio::sync::notify::Notified
+core::pin::Pin<&mut select_combinator::main::{async_block_env#0}> :: members future[poll] continuation rule 16 delegate (exclusive) pointer.*@+0 -> select_combinator::main::{async_block_env#0} access Borrowed rule 15 pointer.*@+0 -> select_combinator::main::{async_block_env#0}
+&mut tokio::sync::notify::Notified :: members access Borrowed rule 13 *@+0 -> tokio::sync::notify::Notified
+&mut select_combinator::main::{async_block_env#0} :: members access Borrowed rule 13 *@+0 -> select_combinator::main::{async_block_env#0}
+task 0: scheduler alloc::sync::Arc<tokio::runtime::scheduler::current_thread::Handle, alloc::alloc::Global> :: CurrentThread rule 17
+task 1: scheduler alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle, alloc::alloc::Global> :: MultiThread rule 18
+task 2: scheduler alloc::sync::Arc<tokio::runtime::scheduler::current_thread::Handle, alloc::alloc::Global> :: CurrentThread rule 17
+task 3: scheduler alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle, alloc::alloc::Global> :: MultiThread rule 18
+task 4: scheduler alloc::sync::Arc<tokio::runtime::scheduler::current_thread::Handle, alloc::alloc::Global> :: CurrentThread rule 17
+task 5: scheduler alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle, alloc::alloc::Global> :: MultiThread rule 18
+task 6: scheduler alloc::sync::Arc<tokio::runtime::scheduler::current_thread::Handle, alloc::alloc::Global> :: CurrentThread rule 17
+task 7: scheduler alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle, alloc::alloc::Global> :: MultiThread rule 18
+task 8: scheduler alloc::sync::Arc<tokio::runtime::scheduler::current_thread::Handle, alloc::alloc::Global> :: CurrentThread rule 17
+task 9: scheduler alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle, alloc::alloc::Global> :: MultiThread rule 18
+task 10: scheduler tokio::runtime::blocking::schedule::BlockingSchedule :: Blocking rule 19
 
 program: many-tasks
 origin 0: rustc rustc-coroutine-1.97 (clang LLVM (rustc version 1.98.0 (88d9e12ae 2026-08-18)))
