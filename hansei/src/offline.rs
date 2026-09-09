@@ -377,6 +377,37 @@ fn test_every_program_has_a_command_golden() {
     assert_eq!(COVERED, PROGRAMS);
 }
 
+/// The wakers the audit holds to the sweep are the ones the registries
+/// and the analysis decoded, each with its slot and its task: over
+/// sleep-join, the sleeper's wheel entry and the joiner's trailer — and
+/// the sweep over the same pair admits every one of them.
+#[test]
+fn test_registered_wakers_name_the_registries_and_the_joins() {
+    let (bundle, snapshot) = testkit::load("illumos", "sleep-join");
+    let args = session_args("illumos", "sleep-join");
+    let session = Session::attach(&snapshot, &bundle, &args).unwrap();
+    let registered: Vec<(&str, u64, u64)> = crate::registered_wakers(&session).collect();
+    let of = |what: &str| registered.iter().filter(|r| r.0 == what).count();
+    assert_eq!(
+        (of("wheel entry"), of("trailer")),
+        (1, 1),
+        "{registered:#?}"
+    );
+    let entry = session
+        .registries
+        .timers
+        .iter()
+        .find(|t| t.task.is_some())
+        .expect("the sleeper's entry");
+    assert!(registered.contains(&("wheel entry", entry.waker_at.unwrap(), entry.task.unwrap())));
+    let join = &session.analysis().join_wakers[0];
+    assert!(registered.contains(&("trailer", join.waker_at.unwrap(), join.waiter.addr.0)));
+    assert_eq!(
+        session.wakers().audit(registered.iter().copied()),
+        Vec::<String>::new()
+    );
+}
+
 /// A snapshot that claims an allocator index its reads cannot rebuild
 /// does not attach: the claim means the capture's discovery and census
 /// were gated by that index, and a session that read the same pair

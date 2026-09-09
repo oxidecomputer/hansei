@@ -797,6 +797,21 @@ mod tests {
         assert_eq!(Target::build_ids(&snapshot), None);
     }
 
+    /// A target whose readable memory is its mappings answers no
+    /// captured runs; a snapshot answers exactly the runs it holds, and
+    /// so does a recorder wrapping one.
+    #[test]
+    fn test_captured_runs_are_a_snapshots_own_and_nobody_elses() {
+        let target = FakeTarget::new();
+        assert_eq!(target.captured_runs(), None);
+        let snapshot = Recorder::new(&target)
+            .snapshot(RecordedHeapEvidence::Unavailable)
+            .expect("snapshot assembles");
+        let runs = snapshot.captured_runs().expect("a snapshot has runs");
+        assert_eq!(runs, snapshot.segments().collect::<Vec<_>>());
+        assert_eq!(Recorder::new(&snapshot).captured_runs(), Some(runs));
+    }
+
     /// An in-memory fake target: one memory run, a few symbols.
     struct FakeTarget {
         base: u64,

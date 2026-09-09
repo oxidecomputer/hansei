@@ -95,6 +95,16 @@ exclude_globs = [
 ]
 
 exclude_re = [
+    # The waker sweep's run enumeration: with `<=` a run that ends
+    # exactly at a mapping's edge is kept as a zero-length chunk, which
+    # a read of nothing then drops. Nothing observable.
+    "replace < with <= in Context<'b, T>::readable_runs",
+    # `aligned_matches`: with `<=` the loop's last step searches an
+    # empty tail and finds nothing. Nothing observable.
+    "replace < with <= in aligned_matches",
+    # `held_spans` keeps a find of nonzero size; the census never lists
+    # a zero-sized one (its scan skips them), so `>=` admits the same.
+    "replace > with >= in held_spans",
     # A throughput knob, not behavior: the worker count only decides how
     # the parse fan-out is scheduled, and collection is order-independent
     # by design (references are global offsets, dedup is deferred), so

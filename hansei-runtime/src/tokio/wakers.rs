@@ -878,3 +878,341 @@ mod tests {
         assert_eq!(slots.audit(registered), Vec::<String>::new());
     }
 }
+
+#[cfg(test)]
+mod planted_tests {
+    //! Tests over a target no capture holds: a fixture pair with memory
+    //! planted beside it, or with its symtab taken away.
+
+    use super::*;
+    use crate::testkit::{self, load_any};
+
+    use hansei_bundle::BundleView;
+    use proc::snapshot::Snapshot;
+    use proc::{LoadedObjectWithPath, LwpInfo, MapFlags, Regs, SymbolBuf};
+
+    use std::ops::Range;
+
+    /// Where the planted mapping sits: high, and in no fixture.
+    const BASE: u64 = 0x5f00_0000_0000;
+    const SIZE: u64 = 0x1000;
+    /// A second planted mapping, anonymous: heap-shaped memory, where
+    /// a record shaped like a vtable is not one.
+    const ANON: u64 = 0x5f00_0001_0000;
+
+    /// A snapshot with one writable file-backed mapping planted beside
+    /// it, holding whatever bytes a test lays down, and four function
+    /// symbols named as futures-util's set-waker entries.
+    struct Planted<'a> {
+        inner: &'a Snapshot,
+        bytes: Vec<u8>,
+        anon: Vec<u8>,
+        symbols: Vec<SymbolBuf>,
+    }
+
+    fn symbol(name: &str, at: u64) -> SymbolBuf {
+        SymbolBuf {
+            name: name.to_string(),
+            st_name: 0,
+            st_info: 0,
+            st_other: 0,
+            st_shndx: 1,
+            st_value: at,
+            st_size: 16,
+        }
+    }
+
+    const PREFIX: &str = "futures_util::stream::futures_unordered::task::waker_ref::";
+    const TASK: &str = "<futures_util::stream::futures_unordered::task::Task<planted::Fut>>";
+    const CLONE: u64 = BASE + 0x10;
+    const WAKE: u64 = BASE + 0x20;
+    const WAKE_BY_REF: u64 = BASE + 0x30;
+    const DROP: u64 = BASE + 0x40;
+    const DECOY: u64 = BASE + 0x50;
+    /// The genuine record and a decoy whose drop entry is wrong.
+    const VTABLE: u64 = BASE + 0x100;
+    const BAD_VTABLE: u64 = BASE + 0x140;
+    /// Three pairs: owned, unowned (a node's interior), and on the decoy.
+    const OWNED: u64 = BASE + 0x200;
+    const UNOWNED: u64 = BASE + 0x220;
+    const ON_DECOY: u64 = BASE + 0x240;
+
+    impl<'a> Planted<'a> {
+        fn new(inner: &'a Snapshot) -> Self {
+            Planted {
+                inner,
+                bytes: vec![0; SIZE as usize],
+                anon: vec![0; SIZE as usize],
+                symbols: vec![
+                    symbol(&format!("{PREFIX}clone_arc_raw::{TASK}"), CLONE),
+                    symbol(&format!("{PREFIX}wake_arc_raw::{TASK}"), WAKE),
+                    symbol(&format!("{PREFIX}wake_by_ref_arc_raw::{TASK}"), WAKE_BY_REF),
+                    symbol(&format!("{PREFIX}drop_arc_raw::{TASK}"), DROP),
+                    symbol(&format!("{PREFIX}will_wake::{TASK}"), DECOY),
+                ],
+            }
+        }
+
+        fn word(&mut self, at: u64, value: u64) {
+            let (buf, base) = if at >= ANON {
+                (&mut self.anon, ANON)
+            } else {
+                (&mut self.bytes, BASE)
+            };
+            let off = (at - base) as usize;
+            buf[off..off + 8].copy_from_slice(&value.to_le_bytes());
+        }
+
+        fn range(&self) -> Range<u64> {
+            BASE..BASE + SIZE
+        }
+
+        fn anon_range(&self) -> Range<u64> {
+            ANON..ANON + SIZE
+        }
+    }
+
+    impl proc::Target for Planted<'_> {
+        fn read_bytes(&self, addr: u64, len: u64) -> proc::Result<&[u8]> {
+            for (range, buf) in [(self.range(), &self.bytes), (self.anon_range(), &self.anon)] {
+                if range.contains(&addr) && addr + len <= range.end {
+                    let off = (addr - range.start) as usize;
+                    return Ok(&buf[off..off + len as usize]);
+                }
+            }
+            self.inner.read_bytes(addr, len)
+        }
+
+        fn readable_len(&self, addr: u64, max: u64) -> u64 {
+            for range in [self.range(), self.anon_range()] {
+                if range.contains(&addr) {
+                    return (range.end - addr).min(max);
+                }
+            }
+            self.inner.readable_len(addr, max)
+        }
+
+        fn lookup_symbol_by_addr(&self, addr: u64) -> Option<SymbolBuf> {
+            self.inner.lookup_symbol_by_addr(addr)
+        }
+
+        fn lookup_symbol_by_name(&self, name: &str) -> Option<SymbolBuf> {
+            self.inner.lookup_symbol_by_name(name)
+        }
+
+        fn symbols(&self) -> proc::Result<Vec<SymbolBuf>> {
+            let mut symbols = self.inner.symbols()?;
+            symbols.extend(self.symbols.iter().cloned());
+            Ok(symbols)
+        }
+
+        fn object_symbols(&self) -> proc::Result<Vec<SymbolBuf>> {
+            self.inner.object_symbols()
+        }
+
+        fn mappings(&self) -> proc::Result<proc::Mappings> {
+            let planted = LoadedObjectWithPath {
+                path: Some("/planted/libset.so".to_string()),
+                vaddr: BASE,
+                size: SIZE,
+                // Readable and writable, file-backed: a data segment.
+                flags: MapFlags(0x04 | 0x02),
+            };
+            let anon = LoadedObjectWithPath {
+                path: None,
+                vaddr: ANON,
+                size: SIZE,
+                // Readable, writable and anonymous: heap-shaped.
+                flags: MapFlags(0x04 | 0x02 | 0x40),
+            };
+            Ok(self
+                .inner
+                .mappings()?
+                .as_slice()
+                .iter()
+                .cloned()
+                .chain([planted, anon])
+                .collect())
+        }
+
+        fn captured_runs(&self) -> Option<Vec<Range<u64>>> {
+            let mut runs = self.inner.captured_runs()?;
+            runs.push(self.range());
+            runs.push(self.anon_range());
+            Some(runs)
+        }
+
+        fn lwps(&self) -> proc::Result<Vec<LwpInfo>> {
+            self.inner.lwps()
+        }
+
+        fn tls_var_addr(&self, regs: &Regs, sym: &SymbolBuf) -> proc::Result<Option<u64>> {
+            self.inner.tls_var_addr(regs, sym)
+        }
+    }
+
+    /// A set vtable is a record whose four entries are the four set
+    /// functions in the bundle's order, found in a file-backed data
+    /// mapping; a record with a wrong entry is not one, and neither is
+    /// a genuine-looking record in anonymous memory. A pair on the
+    /// genuine vtable naming a set child's node is that child's slot,
+    /// admitted in the data segment; one naming the node's interior
+    /// names nothing; one on the decoy is no hit at all.
+    #[test]
+    fn test_set_vtables_are_found_by_their_entries_and_name_set_children() {
+        let (bundle, snapshot) = load_any("unordered");
+        let ctx = testkit::context(&bundle, &snapshot);
+        let list = testkit::tasks(&ctx, &snapshot);
+        let census = testkit::census(&ctx, &list);
+        let extents = ctx.task_extents(&list);
+        let lwps = snapshot.lwps().unwrap();
+        let node = census.sets[0].children[0].node;
+        let (set, child, _) = census.locate(node).expect("a listed child node");
+
+        let mut planted = Planted::new(&snapshot);
+        let layout = ctx.raw_waker_layout().expect("the RawWaker layout");
+        let offsets = ctx.raw_waker_vtable_layout().expect("the vtable layout");
+        for (record, drop) in [(VTABLE, DROP), (BAD_VTABLE, DECOY), (ANON + 0x100, DROP)] {
+            planted.word(record + offsets[0], CLONE);
+            planted.word(record + offsets[1], WAKE);
+            planted.word(record + offsets[2], WAKE_BY_REF);
+            planted.word(record + offsets[3], drop);
+        }
+        for (pair, vtable, data) in [
+            (OWNED, VTABLE, node),
+            (UNOWNED, VTABLE, node + 8),
+            (ON_DECOY, BAD_VTABLE, node),
+        ] {
+            planted.word(pair + layout.vtable, vtable);
+            planted.word(pair + layout.data, data);
+        }
+
+        let pctx = Context::new(&planted, BundleView::new(&bundle)).unwrap();
+        assert_eq!(pctx.set_waker_vtables(), vec![VTABLE]);
+        let slots = pctx.sweep_wakers(&Territory {
+            list: &list,
+            extents: &extents,
+            census: &census,
+            heap: None,
+            lwps: &lwps,
+        });
+        assert_eq!(slots.stats.set_vtables, 1, "{:?}", slots.stats);
+        assert!(slots.vtables.contains(&(VTABLE, VtableKind::Set)));
+        let owned = slots.hit_at(OWNED).expect("the owned pair is admitted");
+        assert_eq!(owned.owner, Some(Owner::Child { set, child }));
+        assert_eq!(
+            (owned.kind, owned.class),
+            (VtableKind::Set, Class::DataSegment)
+        );
+        assert!(slots.slots_of_child(set, child).any(|h| h.slot == OWNED));
+        let unowned = slots
+            .hits
+            .iter()
+            .find(|h| h.slot == UNOWNED)
+            .expect("the unowned pair is a hit");
+        assert_eq!(unowned.owner, None);
+        assert!(!unowned.admitted);
+        assert!(slots.hits.iter().all(|h| h.slot != ON_DECOY));
+        assert!(slots.stats.set_hits >= 2);
+    }
+
+    /// A snapshot whose symtab has no copy of tokio's static: the sweep
+    /// admits nothing and says why, and the audit says it did not run.
+    struct Nameless<'a>(&'a Snapshot);
+
+    impl proc::Target for Nameless<'_> {
+        fn read_bytes(&self, addr: u64, len: u64) -> proc::Result<&[u8]> {
+            self.0.read_bytes(addr, len)
+        }
+        fn readable_len(&self, addr: u64, max: u64) -> u64 {
+            self.0.readable_len(addr, max)
+        }
+        fn lookup_symbol_by_addr(&self, addr: u64) -> Option<SymbolBuf> {
+            self.0.lookup_symbol_by_addr(addr)
+        }
+        fn lookup_symbol_by_name(&self, _name: &str) -> Option<SymbolBuf> {
+            None
+        }
+        fn symbols(&self) -> proc::Result<Vec<SymbolBuf>> {
+            self.0.symbols()
+        }
+        fn object_symbols(&self) -> proc::Result<Vec<SymbolBuf>> {
+            Ok(Vec::new())
+        }
+        fn mappings(&self) -> proc::Result<proc::Mappings> {
+            self.0.mappings()
+        }
+        fn captured_runs(&self) -> Option<Vec<Range<u64>>> {
+            self.0.captured_runs()
+        }
+        fn lwps(&self) -> proc::Result<Vec<LwpInfo>> {
+            self.0.lwps()
+        }
+        fn tls_var_addr(&self, regs: &Regs, sym: &SymbolBuf) -> proc::Result<Option<u64>> {
+            self.0.tls_var_addr(regs, sym)
+        }
+    }
+
+    #[test]
+    fn test_no_copy_of_the_static_means_an_absent_sweep() {
+        let (bundle, snapshot) = load_any("sleep-join");
+        let ctx = testkit::context(&bundle, &snapshot);
+        let list = testkit::tasks(&ctx, &snapshot);
+        let census = testkit::census(&ctx, &list);
+        let extents = ctx.task_extents(&list);
+        let lwps = snapshot.lwps().unwrap();
+        let nameless = Nameless(&snapshot);
+        let nctx = Context::new(&nameless, BundleView::new(&bundle)).unwrap();
+        assert_eq!(nctx.task_waker_vtables().unwrap(), Vec::<u64>::new());
+        let slots = nctx.sweep_wakers(&Territory {
+            list: &list,
+            extents: &extents,
+            census: &census,
+            heap: None,
+            lwps: &lwps,
+        });
+        assert_eq!(
+            slots.stats.absent.as_deref(),
+            Some("the symtab names no copy of tokio's WAKER_VTABLE")
+        );
+        assert!(slots.hits.is_empty() && slots.vtables.is_empty());
+        assert_eq!(slots.stats.bytes, 0);
+        let lines = slots.audit(std::iter::once(("wheel entry", 0x10, 0x20)));
+        assert!(lines[0].contains("did not run"), "{lines:?}");
+    }
+
+    /// The held finds' spans are exactly the finds' storage, sorted:
+    /// each find's address to its type's size.
+    #[test]
+    fn test_held_spans_are_the_finds_storage() {
+        let (bundle, snapshot) = load_any("unordered");
+        let ctx = testkit::context(&bundle, &snapshot);
+        let list = testkit::tasks(&ctx, &snapshot);
+        let census = testkit::census(&ctx, &list);
+        let mut expected: Vec<(u64, u64, usize)> = census
+            .held
+            .iter()
+            .enumerate()
+            .map(|(i, h)| {
+                let size = ctx.view.ty(h.ty).unwrap().size();
+                (h.addr, h.addr + size, i)
+            })
+            .collect();
+        expected.sort_unstable();
+        assert!(!expected.is_empty());
+        assert!(expected.iter().all(|(start, end, _)| end > start));
+        assert_eq!(held_spans(&ctx, &census), expected);
+    }
+
+    /// The recorder hands a sweep the runs of the snapshot it wraps.
+    #[test]
+    fn test_the_recorder_passes_the_captured_runs_through() {
+        use proc::Target as _;
+        let (_, snapshot) = load_any("sleep-join");
+        let recorder = proc::snapshot::Recorder::new(&snapshot);
+        let runs = recorder.captured_runs().expect("a snapshot's runs");
+        assert!(!runs.is_empty());
+        assert_eq!(runs, snapshot.captured_runs().unwrap());
+        assert_eq!(runs, snapshot.segments().collect::<Vec<_>>());
+    }
+}

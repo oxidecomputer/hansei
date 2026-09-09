@@ -293,6 +293,18 @@ mod tests {
 
     use proc::Timespec;
 
+    /// The unit that keeps a count under four digits, and the top unit
+    /// holding whatever is left.
+    #[test]
+    fn test_bytes_pick_the_unit_that_keeps_four_digits() {
+        assert_eq!(bytes(0), "0 B");
+        assert_eq!(bytes(1023), "1023 B");
+        assert_eq!(bytes(1024), "1.0 KiB");
+        assert_eq!(bytes(1536), "1.5 KiB");
+        assert_eq!(bytes(2 << 30), "2.0 GiB");
+        assert_eq!(bytes(u64::MAX), "16777216.0 TiB");
+    }
+
     fn ts(tv_sec: i64) -> Timespec {
         Timespec { tv_sec, tv_nsec: 0 }
     }
