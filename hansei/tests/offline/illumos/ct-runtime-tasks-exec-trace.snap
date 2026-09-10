@@ -4,6 +4,7 @@ description: "`tasks --exec trace -n` over illumos/ct-runtime"
 ---
 task 1
 Waiting on: timer (deadline TS)
+  timer 0xADDR deadline TS
 
 #0  future        tokio::time::sleep::Sleep
       waiting on timer (deadline TS)
@@ -12,6 +13,7 @@ Waiting on: timer (deadline TS)
 
 task 2
 Waiting on: a tokio::sync::Semaphore (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 2
+  semaphore 0xADDR: waker in its wake-queue node 0xADDR
 
 #0  future        tokio::sync::batch_semaphore::Acquire
       waiting on a tokio::sync::Semaphore (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 2

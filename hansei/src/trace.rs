@@ -451,18 +451,20 @@ pub(crate) fn assessed_header<T: proc::Target>(
     session: &Session<'_, T>,
     index: usize,
 ) -> Option<WaitHeader> {
-    use hansei_runtime::tokio::assess::{WaitAssessment, WaitUnknownReason};
     let wait: &TaskWait = &session.analysis().waits[index];
     let stops = crate::tasks::StopNames::of(session);
     let line = crate::tasks::assessment_cell(wait, &stops);
-    let notes = match wait.assessment {
-        // The stop itself is explained where the chain ends; what it
-        // holds unarmed is not, and is said here.
-        WaitAssessment::Unknown(WaitUnknownReason::Continuation) => {
-            crate::tasks::held_lines(wait, &stops)
-        }
-        _ => crate::tasks::assessment_detail(wait, &stops),
-    };
+    // The same lines the task block prints under its wait: the branches
+    // at the stop and the slots holding the task's waker.
+    let slots: Vec<_> = session
+        .attribution()
+        .of_task(session.tasks.tasks[index].addr.0)
+        .collect();
+    let view = session.ctx.view;
+    let notes =
+        crate::tasks::wait_detail(wait, &stops, &slots, session.registries.stopped, &|ty| {
+            view.ty(ty).map(|t| t.size())
+        });
     Some(WaitHeader {
         line,
         notes,

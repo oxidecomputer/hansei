@@ -499,19 +499,10 @@ impl<'b, T: Target> Context<'b, T> {
                 );
             }
             ChainEnd::Primitive => {}
-            ChainEnd::UnknownContinuation { reason, .. } => {
-                let last = chain
-                    .frames
-                    .last()
-                    .map(|f| f.future.ty.name())
-                    .unwrap_or("the root");
-                return Assessed::unknown(
-                    WaitUnknownReason::Continuation,
-                    format!(
-                        "what {last} polls is not established: {}",
-                        continuation_reason(*reason)
-                    ),
-                );
+            // The stop is named by the cell (`unknown at <type>`) and
+            // explained where the chain ends; nothing is said twice.
+            ChainEnd::UnknownContinuation { .. } => {
+                return Assessed::of(WaitAssessment::Unknown(WaitUnknownReason::Continuation));
             }
             ChainEnd::UnknownDyn { .. }
             | ChainEnd::AmbiguousDyn { .. }

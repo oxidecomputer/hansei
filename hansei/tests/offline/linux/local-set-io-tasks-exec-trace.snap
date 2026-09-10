@@ -4,6 +4,7 @@ description: "`tasks --exec trace -n` over linux/local-set-io"
 ---
 task 1
 Waiting on: io fd 9 (readable)
+  io 0xADDR read: awaiting readable via the read-waiter slot, ready: writable
 
 #0  future        tokio::io::util::read::Read<tokio::net::unix::stream::UnixStream>
       waiting on io fd 9 (readable)
@@ -12,6 +13,7 @@ Waiting on: io fd 9 (readable)
 
 task 2
 Waiting on: io fd 11 (readable)
+  io 0xADDR readable: awaiting readable via a waiter node, ready: writable
 
 #0  future        tokio::runtime::io::scheduled_io::Readiness
       waiting on io fd 11 (readable)
@@ -28,6 +30,7 @@ Waiting on: io fd 11 (readable)
 
 task 3
 Waiting on: io fd 13 (writable)
+  io 0xADDR write: awaiting writable via the write-waiter slot, ready: <none>
 
 #0  future        tokio::io::util::write_all::WriteAll<tokio::net::unix::stream::UnixStream>
       waiting on io fd 13 (writable)
@@ -45,6 +48,7 @@ what tokio::io::util::read::Read<local_set_io::Gated> polls is not established (
 
 task 5
 Waiting on: io fd 15 (readable)
+  io 0xADDR read: awaiting readable via the read-waiter slot, ready: writable
 
 #0  future        tokio::io::util::read::Read<tokio::net::unix::stream::UnixStream>
       waiting on io fd 15 (readable)

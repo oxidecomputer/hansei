@@ -217,7 +217,7 @@ pub(crate) fn with_slots(
         let (cell, kind) = tasks::slot_cell(&owned, stopped, &accounted);
         row.waiting_on = Some(cell);
         row.waiting_kind = Some(kind);
-        row.slot_lines = tasks::slot_lines(&owned, stopped, false);
+        row.slot_lines = tasks::slot_lines(&owned, stopped);
     });
     rows
 }

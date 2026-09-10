@@ -4,8 +4,7 @@ description: "`tasks --exec trace -n` over illumos/delegation-cases"
 ---
 task 1
 Waiting on: unknown at delegation_cases::Gated (holds 1 future)
-  holds 1 future at its stop, none holding this task's waker:
-  child: delegation_cases::Probe at 0xADDR — unknown; held, not armed; what delegation_cases::Probe<1> polls is not established: no reviewed rule covers its implementation
+  child: delegation_cases::Probe at 0xADDR — unknown; held, not armed
 
 what delegation_cases::Gated<1> polls is not established (no reviewed rule covers its implementation); the chain ends there
 #0  future        delegation_cases::Gated<1>
@@ -15,8 +14,7 @@ what delegation_cases::Gated<1> polls is not established (no reviewed rule cover
 
 task 2
 Waiting on: unknown at delegation_cases::Gated (holds 1 future)
-  holds 1 future at its stop, none holding this task's waker:
-  child: delegation_cases::Probe at 0xADDR — unknown; held, not armed; what delegation_cases::Probe<2> polls is not established: no reviewed rule covers its implementation
+  child: delegation_cases::Probe at 0xADDR — unknown; held, not armed
 
 what delegation_cases::Gated<2> polls is not established (no reviewed rule covers its implementation); the chain ends there
 #0  future        delegation_cases::Gated<2>
@@ -88,7 +86,6 @@ what delegation_cases::Probe<8> polls is not established (no reviewed rule cover
 
 task 9
 Waiting on: unknown at delegation_cases::Holder (holds 1 future)
-  holds 1 future at its stop, none holding this task's waker:
   held: async block delegation_cases::main at 0xADDR — never polled; held, not armed
 
 what delegation_cases::Holder<delegation_cases::main> polls is not established (no reviewed rule covers its implementation); the chain ends there
@@ -99,7 +96,6 @@ what delegation_cases::Holder<delegation_cases::main> polls is not established (
 
 task 10
 Waiting on: unknown at delegation_cases::Handle (holds 1 future)
-  holds 1 future at its stop, none holding this task's waker:
   handle: tokio::runtime::task::join::JoinHandle at 0xADDR — unknown (resource state unproven); held, not armed; the joined task holds no join waker: the handle's poll may not have reached it (a deferred wake can be pending)
 
 what delegation_cases::Handle polls is not established (no reviewed rule covers its implementation); the chain ends there

@@ -8,8 +8,6 @@ task 3
     type: async fn joinset::driver
     awaiting at: src/bin/joinset.rs:83
     waiting on: slot 0xADDR in tokio::util::idle_notified_set::ListsInner
-        unknown: the chain does not end in a primitive
-        what core::future::poll_fn::PollFn<tokio::task::join_set::{impl#1}::join_next::{async_fn#0}::{closure_env#0}<u32>> polls is not established: no reviewed rule covers its implementation
         slot 0xADDR: waker in tokio::util::idle_notified_set::ListsInner.waker, reached from #2 set → inner → lists → * → data → data → waker
     spawned at: src/bin/joinset.rs:100:21
     defined at: src/bin/joinset.rs:48

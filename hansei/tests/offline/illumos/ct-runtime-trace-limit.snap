@@ -3,6 +3,7 @@ source: hansei/src/offline.rs
 description: "`trace 1 -l 1` over illumos/ct-runtime"
 ---
 Waiting on: timer (deadline TS)
+  timer 0xADDR deadline TS
 
 #0  future        tokio::time::sleep::Sleep
       waiting on timer (deadline TS)

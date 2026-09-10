@@ -3,6 +3,7 @@ source: hansei/tests/acceptance.rs
 expression: actual
 ---
 Waiting on: unknown at tokio::sync::oneshot::Receiver
+  oneshot rx ADDR1: waker in Inner.rx_task (rx_task_set), reached from #0 inner → * → data → rx_task
 
 what tokio::sync::oneshot::Receiver<u32> polls is not established (no reviewed rule covers its implementation); the chain ends there
 #0  future        tokio::sync::oneshot::Receiver<u32>

@@ -3,6 +3,7 @@ source: hansei/src/offline.rs
 description: "`trace 1 -l 1` over illumos/local-set-io"
 ---
 Waiting on: io fd 11 (readable)
+  io 0xADDR read: awaiting readable via the read-waiter slot, ready: writable
 
 #0  future        tokio::io::util::read::Read<tokio::net::unix::stream::UnixStream>
       waiting on io fd 11 (readable)

@@ -149,6 +149,8 @@ pub struct SlotPath {
 /// A pointer followed to the allocation holding the slot.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Hop {
+    /// The pointer word's own address, in the value the hop left.
+    pub from: u64,
     /// The pointee's address.
     pub addr: u64,
     /// The pointee's type, as the bundle names it, and its id.
@@ -1153,6 +1155,7 @@ impl<'a, 'b, T: Target> Attributor<'a, 'b, T> {
                 root.path(
                     steps,
                     Some(Hop {
+                        from: p.at,
                         addr: p.target,
                         pointee: pointee.name().to_string(),
                         pointee_ty: pointee.id(),
@@ -1723,6 +1726,99 @@ fn finds_by_owner(census: &FutureCensus) -> HashMap<OwnerKey, Vec<usize>> {
     map
 }
 
+/// Whether a verified wait accounts for a slot: a registry timer inside
+/// the verified primitive, a registry io whose resource the target
+/// names, a join naming the target task, a semaphore node on the
+/// target semaphore, an owner slot whose primitive the `Channel` or
+/// `Notify` target names, or any typed slot inside the primitive's
+/// bytes.
+pub fn verified_accounts(
+    verified: &super::assess::VerifiedWait,
+    slot: &AttributedSlot,
+    size_of: &dyn Fn(BundleTypeId) -> Option<u64>,
+) -> bool {
+    let within = |key: ValueKey, addr: u64| {
+        addr >= key.addr && addr - key.addr < size_of(key.ty).unwrap_or(0)
+    };
+    match (&slot.attribution, verified.target()) {
+        (Attribution::Registry(RegistrySlot::Timer { entry, .. }), WaitTarget::Timer { .. }) => {
+            within(verified.primitive(), *entry)
+        }
+        (Attribution::Registry(RegistrySlot::Io { resource, .. }), WaitTarget::Io { addr, .. }) => {
+            resource == addr
+        }
+        (Attribution::Registry(RegistrySlot::Join { task }), WaitTarget::Task { addr, .. }) => {
+            task.addr.0 == *addr
+        }
+        (
+            Attribution::Registry(RegistrySlot::Semaphore { semaphore, .. }),
+            WaitTarget::Semaphore { addr, .. },
+        ) => semaphore == addr,
+        (Attribution::Owner { primitive, .. }, WaitTarget::Channel { addr, .. }) => {
+            primitive == addr
+        }
+        (Attribution::Owner { primitive, .. }, WaitTarget::Notify { addr, .. }) => {
+            primitive == addr
+        }
+        (Attribution::Owner { .. } | Attribution::Typed { .. }, _) => {
+            within(verified.primitive(), slot.slot)
+        }
+        _ => false,
+    }
+}
+
+/// Whether a wait-set member is armed by a slot: the branch's own
+/// storage holds it, the pointer a hop followed lies in the branch,
+/// the slot was located from the branch's find, the registry slot
+/// that armed the member is this one, or the branch's verified wait
+/// accounts for it.
+pub fn member_accounts(
+    member: &super::waitset::WaitMember,
+    slot: &AttributedSlot,
+    size_of: &dyn Fn(BundleTypeId) -> Option<u64>,
+) -> bool {
+    use super::assess::WaitAssessment;
+    use super::waitset::SlotRef;
+
+    if let Some(key) = member.key {
+        let size = size_of(key.ty).unwrap_or(0);
+        let within = |addr: u64| addr >= key.addr && addr - key.addr < size;
+        if within(slot.slot) {
+            return true;
+        }
+        if let Some(path) = slot.path() {
+            match path.root {
+                SlotRoot::Find { addr, .. } | SlotRoot::Child { addr, .. } if addr == key.addr => {
+                    return true;
+                }
+                _ => {}
+            }
+            if path.hop.as_ref().is_some_and(|hop| within(hop.from)) {
+                return true;
+            }
+        }
+        if let Some(SlotRoot::Find { addr, .. }) = slot.within
+            && addr == key.addr
+        {
+            return true;
+        }
+    }
+    let by_registry = match (&slot.attribution, &member.armed) {
+        (
+            Attribution::Registry(RegistrySlot::Timer { entry, .. }),
+            Some(SlotRef::Wheel { entry: at, .. }),
+        ) => entry == at,
+        (
+            Attribution::Registry(RegistrySlot::Io { resource, .. }),
+            Some(SlotRef::Io { resource: at, .. }),
+        ) => resource == at,
+        _ => false,
+    };
+    by_registry
+        || matches!(&member.assessment, Some(WaitAssessment::Waiting(verified))
+            if verified_accounts(verified, slot, size_of))
+}
+
 /// The reader's spelling a slot should carry, where a task's own
 /// assessment accounts for it: a verified wait whose primitive or
 /// resource holds the slot, or a wait-set member armed by the same
@@ -1734,68 +1830,47 @@ pub fn accounted_by(
     size_of: &dyn Fn(BundleTypeId) -> Option<u64>,
 ) -> Option<(String, String)> {
     use super::assess::WaitAssessment;
-    use super::waitset::SlotRef;
 
-    let within = |key: ValueKey, addr: u64| {
-        addr >= key.addr && addr - key.addr < size_of(key.ty).unwrap_or(0)
-    };
-    let verified_accounts = |verified: &super::assess::VerifiedWait| -> bool {
-        let target = verified.target();
-        match (&slot.attribution, target) {
-            (
-                Attribution::Registry(RegistrySlot::Timer { entry, .. }),
-                WaitTarget::Timer { .. },
-            ) => within(verified.primitive(), *entry),
-            (
-                Attribution::Registry(RegistrySlot::Io { resource, .. }),
-                WaitTarget::Io { addr, .. },
-            ) => resource == addr,
-            (Attribution::Registry(RegistrySlot::Join { task }), WaitTarget::Task { addr, .. }) => {
-                task.addr.0 == *addr
-            }
-            (
-                Attribution::Registry(RegistrySlot::Semaphore { semaphore, .. }),
-                WaitTarget::Semaphore { addr, .. },
-            ) => semaphore == addr,
-            (Attribution::Owner { primitive, .. }, WaitTarget::Channel { addr, .. }) => {
-                primitive == addr
-            }
-            (Attribution::Owner { primitive, .. }, WaitTarget::Notify { addr, .. }) => {
-                primitive == addr
-            }
-            (Attribution::Owner { .. } | Attribution::Typed { .. }, _) => {
-                within(verified.primitive(), slot.slot)
-            }
-            _ => false,
-        }
-    };
     match &wait.assessment {
-        WaitAssessment::Waiting(verified) if verified_accounts(verified) => Some((
+        WaitAssessment::Waiting(verified) if verified_accounts(verified, slot, size_of) => Some((
             verified.target().to_string(),
             verified.target().group_label(),
         )),
         WaitAssessment::Set(set) => set.members.iter().find_map(|member| {
-            let armed = member.armed.as_ref()?;
-            let by_registry = match (&slot.attribution, armed) {
-                (
-                    Attribution::Registry(RegistrySlot::Timer { entry, .. }),
-                    SlotRef::Wheel { entry: at, .. },
-                ) => entry == at,
-                (
-                    Attribution::Registry(RegistrySlot::Io { resource, .. }),
-                    SlotRef::Io { resource: at, .. },
-                ) => resource == at,
-                _ => false,
-            };
-            let by_protocol = match &member.assessment {
-                Some(WaitAssessment::Waiting(verified)) => verified_accounts(verified),
-                _ => false,
-            };
-            (by_registry || by_protocol)
+            member.armed.as_ref()?;
+            member_accounts(member, slot, size_of)
                 .then(|| Some((member.cell_entry()?, member.kind()?)))
                 .flatten()
         }),
         _ => None,
+    }
+}
+
+impl AttributedSlot {
+    /// The slot's detail line: its label, then where it sits and what
+    /// says it is current — except a wheel entry, which is spelled by
+    /// its deadline, with the wheel's own word appended where the entry
+    /// is not simply registered.
+    pub fn line(&self, stopped: Option<RawInstant>) -> String {
+        if let Attribution::Registry(RegistrySlot::Timer {
+            entry,
+            state,
+            deadline,
+        }) = &self.attribution
+        {
+            let mut line = format!("timer {entry:#x}");
+            if let Some(deadline) = deadline {
+                line.push(' ');
+                line.push_str(&deadline_text(*deadline, stopped));
+            }
+            if let Some(state) = state
+                && *state != WheelState::Registered
+            {
+                line.push_str(&format!(" ({state})"));
+            }
+            return line;
+        }
+        format!("{}: {}", self.label(), self.detail(stopped))
     }
 }
 

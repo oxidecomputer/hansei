@@ -4,9 +4,10 @@ description: "`tasks --exec trace -n` over linux/armed-select"
 ---
 task 3
 Waiting on: timer (deadline TS on the target's monotonic clock)
-  wait set: 1 of 1 members hold this task's waker; any one of them wakes it
-  what core::future::poll_fn::PollFn<armed_select::selector::{async_fn#0}::{closure_env#0}> polls is not established: no reviewed rule covers its implementation
-  timer (deadline TS on the target's monotonic clock): this task's waker in wheel entry 0xADDR, registered, inside #1's storage at +0xADDR; in no branch of the stop
+  mpsc 0xADDR: waker in Chan.rx_waker, reached from #1 queue → chan → inner → * → data → rx_waker → waker
+  oneshot rx 0xADDR: waker in Inner.rx_task (rx_task_set), reached from the future at 0xADDR inner → * → data → rx_task
+  timer 0xADDR deadline TS on the target's monotonic clock
+  watch 0xADDR: waker in Notified.waiter, in the future at 0xADDR waiter → waker
 
 what core::future::poll_fn::PollFn<armed_select::selector::{async_fn#0}::{closure_env#0}> polls is not established (no reviewed rule covers its implementation); the chain ends there
 #0  future        core::future::poll_fn::PollFn<armed_select::selector::{async_fn#0}::{closure_env#0}>
@@ -16,6 +17,7 @@ what core::future::poll_fn::PollFn<armed_select::selector::{async_fn#0}::{closur
 
 task 4
 Waiting on: unknown at tokio::sync::oneshot::Receiver
+  oneshot rx 0xADDR: waker in Inner.rx_task (rx_task_set), reached from #0 inner → * → data → rx_task
 
 what tokio::sync::oneshot::Receiver<u32> polls is not established (no reviewed rule covers its implementation); the chain ends there
 #0  future        tokio::sync::oneshot::Receiver<u32>
@@ -25,6 +27,7 @@ what tokio::sync::oneshot::Receiver<u32> polls is not established (no reviewed r
 
 task 5
 Waiting on: the Notify at 0xADDR: 1 queued
+  notify 0xADDR: waker in Notified.waiter, in #0 waiter → waker
 
 #0  future        tokio::sync::notify::Notified
       waiting on the Notify at 0xADDR: 1 queued
@@ -33,6 +36,7 @@ Waiting on: the Notify at 0xADDR: 1 queued
 
 task 6
 Waiting on: unknown at futures_util::stream::stream::next::Next
+  slot 0xADDR: waker in futures_core::task::__internal::atomic_waker::AtomicWaker.waker, reached from #1 set → ready_to_run_queue → * → data → waker → waker
 
 what futures_util::stream::stream::next::Next<futures_util::stream::futures_unordered::FuturesUnordered<armed_select::child>> polls is not established (no reviewed rule covers its implementation); the chain ends there
 #0  future        futures_util::stream::stream::next::Next<futures_util::stream::futures_unordered::FuturesUnordered<armed_select::child>>

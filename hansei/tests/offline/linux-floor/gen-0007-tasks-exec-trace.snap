@@ -13,6 +13,7 @@ what gen_0007::GfSel3<core::future::pending::Pending<u64>, core::future::pending
 
 task 4
 Waiting on: the Notify at 0xADDR: 1 queued
+  notify 0xADDR: waker in Notified.waiter, in #0 waiter → waker
 
 #0  future        tokio::sync::notify::Notified
       waiting on the Notify at 0xADDR: 1 queued
@@ -21,6 +22,7 @@ Waiting on: the Notify at 0xADDR: 1 queued
 
 task 5
 Waiting on: timer (deadline TS on the target's monotonic clock)
+  timer 0xADDR deadline TS on the target's monotonic clock
 
 #0  future        tokio::time::sleep::Sleep
       waiting on timer (deadline TS on the target's monotonic clock)

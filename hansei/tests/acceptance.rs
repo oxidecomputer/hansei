@@ -751,9 +751,16 @@ fn mask(out: &str) -> String {
     let tokio_sites = regex::Regex::new(r"tokio-\d+\.\d+\.\d+(/[^ :]+):\d+").unwrap();
     let trace_leaf =
         regex::Regex::new(r"(async fn |future )?tokio::trace::async_trace_leaf(::\S+)?").unwrap();
+    // A waker slot in memory no type reaches is admitted only where
+    // the target carries no allocator index (a Linux core); an index
+    // classifies the same bytes, and drops the stale ones. Whether the
+    // line exists is the target's call, so it is not pinned.
+    let unknown_slot =
+        regex::Regex::new(r"(?m)^\s*unknown (0x[0-9a-f]+|ADDR\d+): [^\n]*\n").unwrap();
     let masked = deadlines.replace_all(out, "deadline TS");
     let masked = overdue.replace_all(&masked, "overdue by TS");
     let masked = tokio_sites.replace_all(&masked, "tokio$1:LINE");
+    let masked = unknown_slot.replace_all(&masked, "");
     trace_leaf
         .replace_all(&masked, "tokio::trace::async_trace_leaf::TY")
         .into_owned()

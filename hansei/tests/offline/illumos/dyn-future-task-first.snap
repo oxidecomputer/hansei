@@ -8,8 +8,6 @@ task 3
     type: async fn dyn_future::driver
     awaiting at: src/bin/dyn-future.rs:40
     waiting on: oneshot rx 0xADDR
-        unknown: the chain does not end in a primitive
-        what tokio::sync::oneshot::Receiver<u32> polls is not established: no reviewed rule covers its implementation
         oneshot rx 0xADDR: waker in Inner.rx_task (rx_task_set), reached from #0 inner → * → data → rx_task
     spawned at: src/bin/dyn-future.rs:57:21
     defined at: src/bin/dyn-future.rs:24

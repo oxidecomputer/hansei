@@ -15,7 +15,7 @@ use hansei_runtime::tokio::assess::{
     WaitAssessment, WaitUnknownReason,
 };
 use hansei_runtime::tokio::graph as rt_graph;
-use hansei_runtime::tokio::waitset::{MemberRoute, SlotRef, WaitMember};
+use hansei_runtime::tokio::waitset::{MemberRoute, WaitMember};
 use hansei_runtime::tokio::{Lifecycle, RawInstant, attribution, bundle, census};
 
 use std::collections::{BTreeMap, HashMap};
@@ -711,6 +711,7 @@ pub(crate) fn with_slots<T: proc::Target>(
         session.attribution(),
         session.registries.stopped,
         &|ty| view.ty(ty).map(|t| t.size()),
+        &StopNames::of(session),
     );
     rows
 }
@@ -743,7 +744,7 @@ pub(crate) fn build_rows(
                 waiting_kind: waiting_kind(task, waits.get(index), stops),
                 wait_detail: waits
                     .get(index)
-                    .map(|wait| assessment_detail(wait, stops))
+                    .map(|wait| wait_detail(wait, stops, &[], None, &|_| None))
                     .unwrap_or_default(),
                 future: future_name(&task.future, impls),
                 spawned: task.spawn_location.as_ref().map(|loc| loc.to_string()),
@@ -776,6 +777,7 @@ pub(crate) fn merge_slots(
     slots: &attribution::Attributed,
     stopped: Option<RawInstant>,
     size_of: &dyn Fn(BundleTypeId) -> Option<u64>,
+    stops: &StopNames<'_>,
 ) {
     for (index, (row, task)) in rows.iter_mut().zip(&list.tasks).enumerate() {
         if task.is_blocking() || task.state.lifecycle() == Lifecycle::Running {
@@ -796,10 +798,9 @@ pub(crate) fn merge_slots(
         let (cell, kind) = slot_cell(&owned, stopped, &accounted);
         row.waiting_on = cell;
         row.waiting_kind = Some(kind);
-        // A wait set already lists every wheel entry and io waiter of
-        // the task's as a member; the other slots get a line each.
-        let in_set = wait.is_some_and(|w| matches!(w.assessment, WaitAssessment::Set(_)));
-        row.wait_detail.extend(slot_lines(&owned, stopped, in_set));
+        if let Some(wait) = wait {
+            row.wait_detail = wait_detail(wait, stops, &owned, stopped, size_of);
+        }
     }
 }
 
@@ -842,27 +843,13 @@ pub(crate) fn slot_cell(
     (cell, kind)
 }
 
-/// One detail line per slot — its label, then where it sits and what
-/// says it is current — sorted by label. Under a wait set the wheel
-/// entries and io waiters are left out: the set's member lines
-/// already place each.
+/// One detail line per slot, sorted: where it sits and what says it
+/// is current, a wheel entry by its deadline.
 pub(crate) fn slot_lines(
     slots: &[&attribution::AttributedSlot],
     stopped: Option<RawInstant>,
-    in_set: bool,
 ) -> Vec<String> {
-    use attribution::{Attribution, RegistrySlot};
-    let mut lines: Vec<String> = slots
-        .iter()
-        .filter(|slot| {
-            !(in_set
-                && matches!(
-                    slot.attribution,
-                    Attribution::Registry(RegistrySlot::Timer { .. } | RegistrySlot::Io { .. })
-                ))
-        })
-        .map(|slot| format!("{}: {}", slot.label(), slot.detail(stopped)))
-        .collect();
+    let mut lines: Vec<String> = slots.iter().map(|slot| slot.line(stopped)).collect();
     lines.sort();
     lines
 }
@@ -1136,137 +1123,139 @@ fn incomplete_word(reason: IncompleteReason) -> &'static str {
     }
 }
 
-/// The `-v` detail lines an assessment earns: why a ready resource is
-/// ready, why an unknown one is unknown — what the protocol read, in
-/// the assessor's words — and, for a wait set, one line per member
-/// saying what it is, what its own protocol made of it and what arms
-/// it. A verified wait says it all in the cell, short of a registry
-/// slot beside it that the wait does not account for; a task that
-/// waits on nothing says nothing.
-pub(crate) fn assessment_detail(wait: &rt_graph::TaskWait, stops: &StopNames<'_>) -> Vec<String> {
+/// The detail lines under a row's wait. What the assessment has to say
+/// beyond the cell where it is a word rather than a place (`ready:`,
+/// `unknown:` with a reason other than the continuation — an unknown
+/// stop is named by the cell); then, at a stop that polls several
+/// things, one line per branch the census could read, each armed by
+/// the slots that sit in it or were reached through it, or `held, not
+/// armed`; then one line per remaining slot — where it sits and what
+/// says it is current, a wheel entry by its deadline. Any one slot
+/// wakes the task; nothing here is a dependency.
+pub(crate) fn wait_detail(
+    wait: &rt_graph::TaskWait,
+    stops: &StopNames<'_>,
+    slots: &[&attribution::AttributedSlot],
+    stopped: Option<RawInstant>,
+    size_of: &dyn Fn(BundleTypeId) -> Option<u64>,
+) -> Vec<String> {
+    let mut lines = Vec::new();
     match &wait.assessment {
-        WaitAssessment::ResourceReady(reason) => vec![format!("ready: {}", ready_reason(*reason))],
-        WaitAssessment::Set(set) => {
-            let armed = set.armed().count();
-            let total = set.members.len() + set.capped;
-            let mut lines = vec![format!(
-                "wait set: {armed} of {total} members hold this task's waker; any one of them \
-                 wakes it"
-            )];
-            lines.extend(wait.notes.iter().cloned());
-            lines.extend(set.members.iter().map(|m| member_line(m, stops)));
-            if set.capped > 0 {
-                lines.push(format!("{} more branches not inspected", set.capped));
-            }
-            lines
+        WaitAssessment::ResourceReady(reason) => {
+            lines.push(format!("ready: {}", ready_reason(*reason)));
         }
+        WaitAssessment::Unknown(WaitUnknownReason::Continuation) => {}
         WaitAssessment::Unknown(reason) => {
-            let mut lines = vec![format!("unknown: {}", unknown_reason(*reason))];
-            lines.extend(wait.notes.iter().cloned());
-            lines.extend(held_lines(wait, stops));
-            lines
+            lines.push(format!("unknown: {}", unknown_reason(*reason)));
         }
-        WaitAssessment::Waiting(_) => wait.notes.clone(),
-        WaitAssessment::Unresumed | WaitAssessment::NotWaiting(_) | WaitAssessment::Runnable(_) => {
-            Vec::new()
+        WaitAssessment::Waiting(_) => lines.extend(wait.notes.iter().cloned()),
+        WaitAssessment::Set(_)
+        | WaitAssessment::Unresumed
+        | WaitAssessment::NotWaiting(_)
+        | WaitAssessment::Runnable(_) => {}
+    }
+    let (members, capped) = match &wait.assessment {
+        WaitAssessment::Set(set) => (set.members.as_slice(), set.capped),
+        WaitAssessment::Unknown(WaitUnknownReason::Continuation) => {
+            (wait.held.as_slice(), wait.held_capped)
         }
+        _ => (&[][..], 0),
+    };
+    let mut rest: Vec<&attribution::AttributedSlot> = slots.to_vec();
+    for member in members {
+        // A registry slot in no branch prints as the slot it is —
+        // unless there are no slots at all (a target the sweep could
+        // not run over), where the registries' account is all there is.
+        if let MemberRoute::SlotOnly { within } = &member.route {
+            if slots.is_empty() {
+                lines.push(slot_only_line(member, within.as_deref()));
+            }
+            continue;
+        }
+        let (mine, others): (Vec<_>, Vec<_>) = rest
+            .into_iter()
+            .partition(|slot| attribution::member_accounts(member, slot, size_of));
+        rest = others;
+        lines.push(member_line(member, stops, &mine, stopped));
     }
-}
-
-/// The lines for the futures an unknown stop holds with none of them
-/// armed: what the task has at its stop and, by everything read,
-/// awaits none of. Empty for every other row.
-pub(crate) fn held_lines(wait: &rt_graph::TaskWait, stops: &StopNames<'_>) -> Vec<String> {
-    if wait.held.is_empty() && wait.held_capped == 0 {
-        return Vec::new();
+    if capped > 0 {
+        lines.push(format!("{capped} more branches not inspected"));
     }
-    let mut lines = vec![format!(
-        "holds {} at its stop, none holding this task's waker:",
-        summary::counted(wait.held.len() + wait.held_capped, "future")
-    )];
-    lines.extend(wait.held.iter().map(|m| member_line(m, stops)));
-    if wait.held_capped > 0 {
-        lines.push(format!("{} more not inspected", wait.held_capped));
-    }
+    lines.extend(slot_lines(&rest, stopped));
     lines
 }
 
-/// One wait-set member's line: the branch — its local, whether it was
-/// borrowed, the future it is and where — with the engine's verdict on
-/// it and the evidence that arms it; or a slot in no branch, placed
-/// where it lies. An unknown continuation's verdict is the bare word:
-/// the note beside it says what was not established.
-fn member_line(member: &WaitMember, stops: &StopNames<'_>) -> String {
-    match &member.route {
-        MemberRoute::Branch { local, borrowed } => {
-            let via = if *borrowed { " (borrowed)" } else { "" };
-            let future = member
-                .key
-                .and_then(|key| stops.label(key.ty))
-                .or_else(|| member.future.clone())
-                .unwrap_or_default();
-            let at = member
-                .key
-                .map(|key| format!(" at {:#x}", key.addr))
-                .unwrap_or_default();
-            let verdict = match &member.assessment {
-                Some(WaitAssessment::Waiting(verified)) => verified.target().to_string(),
-                Some(WaitAssessment::Set(set)) => set.cell(),
-                Some(WaitAssessment::ResourceReady(reason)) => {
-                    format!("ready: {}", ready_reason(*reason))
-                }
-                Some(WaitAssessment::Unknown(WaitUnknownReason::Continuation)) => {
-                    "unknown".to_string()
-                }
-                Some(WaitAssessment::Unknown(reason)) => {
-                    format!("unknown ({})", unknown_word(*reason))
-                }
-                Some(WaitAssessment::Unresumed) => "never polled".to_string(),
-                Some(WaitAssessment::NotWaiting(NotWaitingReason::Returned)) => {
-                    "returned".to_string()
-                }
-                Some(WaitAssessment::NotWaiting(NotWaitingReason::Panicked)) => {
-                    "panicked".to_string()
-                }
-                Some(WaitAssessment::NotWaiting(NotWaitingReason::Complete)) => {
-                    "complete".to_string()
-                }
-                Some(WaitAssessment::Runnable(_)) => "runnable".to_string(),
-                None => "not inspected".to_string(),
-            };
-            // A branch armed by a slot whose own verdict names no
-            // target prints the slot's entry — a wheel entry's
-            // deadline — ahead of the evidence, since nothing else on
-            // the line says when it fires.
-            let armed = match (&member.armed, &member.assessment) {
-                (Some(slot), Some(WaitAssessment::Waiting(_))) => slot.detail(),
-                (Some(slot), _) => match member.cell_entry() {
-                    Some(entry) => format!("{entry}: {}", slot.detail()),
-                    None => slot.detail(),
-                },
-                (None, _) => "held, not armed".to_string(),
-            };
-            let mut line = format!("{local}{via}: {future}{at} — {verdict}; {armed}");
-            for note in &member.notes {
-                line.push_str("; ");
-                line.push_str(note);
-            }
-            line
+/// A registry slot in no branch, as the analysis placed it, for a
+/// session with no sweep to spell it as a slot.
+fn slot_only_line(member: &WaitMember, within: Option<&str>) -> String {
+    let name = member.cell_entry().unwrap_or_else(|| "a slot".to_string());
+    let evidence = member
+        .armed
+        .as_ref()
+        .map(hansei_runtime::tokio::waitset::SlotRef::detail)
+        .unwrap_or_default();
+    let within = within.map(|w| format!(", {w}")).unwrap_or_default();
+    format!("{name}: {evidence}{within}; in no branch of the stop")
+}
+
+/// One branch's line: its local, whether it was borrowed, the future it
+/// is and where, the engine's verdict on it, and what arms it — the
+/// slots that sit in it or were reached through it, else the registry
+/// or protocol evidence the analysis had, else `held, not armed`.
+fn member_line(
+    member: &WaitMember,
+    stops: &StopNames<'_>,
+    armed_by: &[&attribution::AttributedSlot],
+    stopped: Option<RawInstant>,
+) -> String {
+    let MemberRoute::Branch { local, borrowed } = &member.route else {
+        unreachable!("only branches print as members");
+    };
+    let via = if *borrowed { " (borrowed)" } else { "" };
+    let future = member
+        .key
+        .and_then(|key| stops.label(key.ty))
+        .or_else(|| member.future.clone())
+        .unwrap_or_default();
+    let at = member
+        .key
+        .map(|key| format!(" at {:#x}", key.addr))
+        .unwrap_or_default();
+    let verdict = match &member.assessment {
+        Some(WaitAssessment::Waiting(verified)) => verified.target().to_string(),
+        Some(WaitAssessment::Set(set)) => set.cell(),
+        Some(WaitAssessment::ResourceReady(reason)) => {
+            format!("ready: {}", ready_reason(*reason))
         }
-        MemberRoute::SlotOnly { within } => {
-            let name = member.cell_entry().unwrap_or_else(|| "a slot".to_string());
-            let evidence = member
-                .armed
-                .as_ref()
-                .map(SlotRef::detail)
-                .unwrap_or_default();
-            let within = within
-                .as_ref()
-                .map(|w| format!(", {w}"))
-                .unwrap_or_default();
-            format!("{name}: {evidence}{within}; in no branch of the stop")
+        Some(WaitAssessment::Unknown(WaitUnknownReason::Continuation)) => "unknown".to_string(),
+        Some(WaitAssessment::Unknown(reason)) => format!("unknown ({})", unknown_word(*reason)),
+        Some(WaitAssessment::Unresumed) => "never polled".to_string(),
+        Some(WaitAssessment::NotWaiting(NotWaitingReason::Returned)) => "returned".to_string(),
+        Some(WaitAssessment::NotWaiting(NotWaitingReason::Panicked)) => "panicked".to_string(),
+        Some(WaitAssessment::NotWaiting(NotWaitingReason::Complete)) => "complete".to_string(),
+        Some(WaitAssessment::Runnable(_)) => "runnable".to_string(),
+        None => "not inspected".to_string(),
+    };
+    let armed = if !armed_by.is_empty() {
+        let mut slots: Vec<String> = armed_by.iter().map(|s| s.line(stopped)).collect();
+        slots.sort();
+        format!("armed: {}", slots.join("; "))
+    } else {
+        match (&member.armed, &member.assessment) {
+            (Some(slot), Some(WaitAssessment::Waiting(_))) => slot.detail(),
+            (Some(slot), _) => match member.cell_entry() {
+                Some(entry) => format!("{entry}: {}", slot.detail()),
+                None => slot.detail(),
+            },
+            (None, _) => "held, not armed".to_string(),
         }
+    };
+    let mut line = format!("{local}{via}: {future}{at} — {verdict}; {armed}");
+    for note in &member.notes {
+        line.push_str("; ");
+        line.push_str(note);
     }
+    line
 }
 
 /// What a ready resource has already done, in words.
@@ -2611,7 +2600,6 @@ mod table_tests {
         assert_eq!(
             rows[0].wait_detail,
             [
-                "wait set: 2 of 4 members hold this task's waker; any one of them wakes it",
                 "a: x::branch at 0x6000 — timer (deadline +10.000s); its protocol read this \
                  task's waker",
                 "b: x::branch at 0x6000 — unknown; held, not armed",
@@ -2625,11 +2613,9 @@ mod table_tests {
         assert_eq!(
             rows[1].wait_detail,
             [
-                "unknown: the chain does not end in a primitive",
-                "holds 3 futures at its stop, none holding this task's waker:",
                 "a: x::branch at 0x6000 — unknown; held, not armed",
                 "b: x::branch at 0x6000 — unknown; held, not armed",
-                "1 more not inspected",
+                "1 more branches not inspected",
             ]
         );
     }
@@ -2675,10 +2661,8 @@ mod table_tests {
             Some(rows[1].waiting_on.as_str())
         );
         assert_eq!(rows[1].awaiting_at, None);
-        assert_eq!(
-            rows[1].wait_detail,
-            ["unknown: the chain does not end in a primitive"]
-        );
+        // An unknown stop is named by the cell; the block adds nothing.
+        assert!(rows[1].wait_detail.is_empty());
 
         assert_eq!(rows[2].waiting_on, "—");
         assert_eq!(rows[2].waiting_kind, None);
@@ -2864,7 +2848,15 @@ mod table_tests {
             &Default::default(),
             &StopNames::none(&Default::default()),
         );
-        super::merge_slots(&mut rows, &list, &waits, &slots, None, &|_| None);
+        super::merge_slots(
+            &mut rows,
+            &list,
+            &waits,
+            &slots,
+            None,
+            &|_| None,
+            &StopNames::none(&Default::default()),
+        );
         assert_eq!(
             rows[0].waiting_on,
             "2× unknown, io 0xaa00 read, join task 2, semaphore 0x9000, timer 0xdd00"
@@ -2873,15 +2865,14 @@ mod table_tests {
             rows[0].waiting_kind.as_deref(),
             Some("io read, join task 2, semaphore 0x9000, timer, unknown")
         );
-        // The assessment's own line first, then the slots.
+        // One line per slot, sorted; a stop's own reason is the cell's.
         assert_eq!(
             rows[0].wait_detail,
             vec![
-                "unknown: the chain does not end in a primitive".to_string(),
                 "io 0xaa00 read: awaiting readable via the read-waiter slot".to_string(),
                 "join task 2: waker in its trailer".to_string(),
                 "semaphore 0x9000: waker in its wake-queue node 0xe100".to_string(),
-                "timer 0xdd00: waker in the wheel entry".to_string(),
+                "timer 0xdd00".to_string(),
                 "unknown 0x7000: in a 96-byte umem_alloc_96 buffer at +48".to_string(),
                 "unknown 0x8000: in memory nothing typed reaches".to_string(),
             ]
@@ -2895,10 +2886,7 @@ mod table_tests {
             rows[1].waiting_kind.as_deref(),
             Some("unarmed: unknown (no root in the tokio info)")
         );
-        assert_eq!(
-            rows[1].wait_detail,
-            vec!["unknown: the chain does not end in a primitive".to_string()]
-        );
+        assert!(rows[1].wait_detail.is_empty());
         // Mid-poll: not parked, so nothing to mark.
         assert_eq!(rows[2].waiting_on, "— (mid-poll)");
         assert_eq!(rows[2].waiting_kind, None);
@@ -2964,7 +2952,15 @@ mod table_tests {
             &StopNames::none(&Default::default()),
         );
         assert_eq!(rows[0].waiting_on, "task 2");
-        super::merge_slots(&mut rows, &list, &waits, &slots, None, &|_| None);
+        super::merge_slots(
+            &mut rows,
+            &list,
+            &waits,
+            &slots,
+            None,
+            &|_| None,
+            &StopNames::none(&Default::default()),
+        );
         assert_eq!(rows[0].waiting_on, "task 2, timer 0xdd00");
         assert_eq!(rows[0].waiting_kind.as_deref(), Some("task 2, timer"));
     }

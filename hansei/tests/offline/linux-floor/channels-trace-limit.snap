@@ -3,6 +3,7 @@ source: hansei/src/offline.rs
 description: "`trace 3 -l 1` over linux-floor/channels"
 ---
 Waiting on: the Notify at 0xADDR: 1 queued
+  notify 0xADDR: waker in Notified.waiter, in #0 waiter → waker
 
 #0  future        tokio::sync::notify::Notified
       waiting on the Notify at 0xADDR: 1 queued

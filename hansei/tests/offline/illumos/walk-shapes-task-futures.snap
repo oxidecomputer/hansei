@@ -9,11 +9,7 @@ task 1
     type: async fn walk_shapes::chained
     awaiting at: src/bin/walk-shapes.rs:116
     waiting on: notify 0xADDR
-        unknown: the chain does not end in a primitive
-        what walk_shapes::WrapS<walk_shapes::WrapE<walk_shapes::deep::{async_fn_env#0}>> polls is not established: no reviewed rule covers its implementation
-        holds 1 future at its stop, none holding this task's waker:
-        inner: walk_shapes::WrapE at 0xADDR — unknown; held, not armed; what walk_shapes::WrapE<walk_shapes::deep::{async_fn_env#0}> polls is not established: no reviewed rule covers its implementation
-        notify 0xADDR: waker in Notified.waiter, in the future at 0xADDR inner → waiter → waker
+        inner: walk_shapes::WrapE at 0xADDR — unknown; armed: notify 0xADDR: waker in Notified.waiter, in the future at 0xADDR inner → waiter → waker
     spawned at: src/bin/walk-shapes.rs:258:9
     defined at: src/bin/walk-shapes.rs:105
     held futures: 2

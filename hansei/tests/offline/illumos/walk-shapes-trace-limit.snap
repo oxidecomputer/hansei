@@ -3,8 +3,7 @@ source: hansei/src/offline.rs
 description: "`trace 1 -l 1` over illumos/walk-shapes"
 ---
 Waiting on: unknown at walk_shapes::WrapS (holds 1 future)
-  holds 1 future at its stop, none holding this task's waker:
-  inner: walk_shapes::WrapE at 0xADDR — unknown; held, not armed; what walk_shapes::WrapE<walk_shapes::deep::{async_fn_env#0}> polls is not established: no reviewed rule covers its implementation
+  inner: walk_shapes::WrapE at 0xADDR — unknown; armed: notify 0xADDR: waker in Notified.waiter, in the future at 0xADDR inner → waiter → waker
 
 what walk_shapes::WrapS<walk_shapes::WrapE<walk_shapes::deep>> polls is not established (no reviewed rule covers its implementation); the chain ends there
 #0  future        walk_shapes::WrapS<walk_shapes::WrapE<walk_shapes::deep>>

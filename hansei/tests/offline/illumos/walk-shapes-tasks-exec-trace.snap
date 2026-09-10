@@ -4,8 +4,7 @@ description: "`tasks --exec trace -n` over illumos/walk-shapes"
 ---
 task 1
 Waiting on: unknown at walk_shapes::WrapS (holds 1 future)
-  holds 1 future at its stop, none holding this task's waker:
-  inner: walk_shapes::WrapE at 0xADDR — unknown; held, not armed; what walk_shapes::WrapE<walk_shapes::deep::{async_fn_env#0}> polls is not established: no reviewed rule covers its implementation
+  inner: walk_shapes::WrapE at 0xADDR — unknown; armed: notify 0xADDR: waker in Notified.waiter, in the future at 0xADDR inner → waiter → waker
 
 what walk_shapes::WrapS<walk_shapes::WrapE<walk_shapes::deep>> polls is not established (no reviewed rule covers its implementation); the chain ends there
 #0  future        walk_shapes::WrapS<walk_shapes::WrapE<walk_shapes::deep>>
@@ -15,6 +14,7 @@ what walk_shapes::WrapS<walk_shapes::WrapE<walk_shapes::deep>> polls is not esta
 
 task 2
 Waiting on: the Notify at 0xADDR: 1 queued
+  notify 0xADDR: waker in Notified.waiter, in #0 waiter → waker
 
 #0  future        tokio::sync::notify::Notified
       waiting on the Notify at 0xADDR: 1 queued
@@ -23,6 +23,7 @@ Waiting on: the Notify at 0xADDR: 1 queued
 
 task 3
 Waiting on: the Notify at 0xADDR: 1 queued
+  notify 0xADDR: waker in Notified.waiter, in #0 waiter → waker
 
 #0  future        tokio::sync::notify::Notified
       waiting on the Notify at 0xADDR: 1 queued
@@ -31,6 +32,7 @@ Waiting on: the Notify at 0xADDR: 1 queued
 
 task 4
 Waiting on: a tokio::sync::Mutex (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: a non-task waiter, task 4
+  semaphore 0xADDR: waker in its wake-queue node 0xADDR
 
 #0  future        tokio::sync::batch_semaphore::Acquire
       waiting on a tokio::sync::Mutex (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: a non-task waiter, task 4
@@ -45,6 +47,7 @@ Waiting on: a tokio::sync::Mutex (semaphore 0xADDR): 1 permit requested, 0 avail
 
 task 5
 Waiting on: a tokio::sync::Semaphore (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 5, task 6, task 10
+  semaphore 0xADDR: waker in its wake-queue node 0xADDR
 
 #0  future        tokio::sync::batch_semaphore::Acquire
       waiting on a tokio::sync::Semaphore (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 5, task 6, task 10
@@ -55,6 +58,7 @@ Waiting on: a tokio::sync::Semaphore (semaphore 0xADDR): 1 permit requested, 0 a
 
 task 6
 Waiting on: a tokio::sync::Semaphore (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 5, task 6, task 10
+  semaphore 0xADDR: waker in its wake-queue node 0xADDR
 
 #0  future        tokio::sync::batch_semaphore::Acquire
       waiting on a tokio::sync::Semaphore (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 5, task 6, task 10
@@ -65,6 +69,7 @@ Waiting on: a tokio::sync::Semaphore (semaphore 0xADDR): 1 permit requested, 0 a
 
 task 7
 Waiting on: the Notify at 0xADDR: 1 queued
+  notify 0xADDR: waker in Notified.waiter, in #0 waiter → waker
 
 #0  future        tokio::sync::notify::Notified
       waiting on the Notify at 0xADDR: 1 queued
@@ -73,6 +78,7 @@ Waiting on: the Notify at 0xADDR: 1 queued
 
 task 8
 Waiting on: task 7
+  join task 7: waker in its trailer
 
 #0  future        tokio::runtime::task::join::JoinHandle<u32>
       waiting on task 7
@@ -88,6 +94,7 @@ the chain ends in a future that has never been polled
 
 task 10
 Waiting on: a tokio::sync::Semaphore (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 5, task 6, task 10
+  semaphore 0xADDR: waker in its wake-queue node 0xADDR
 
 #0  future        tokio::sync::batch_semaphore::Acquire
       waiting on a tokio::sync::Semaphore (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 5, task 6, task 10

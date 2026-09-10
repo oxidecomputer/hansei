@@ -7,10 +7,7 @@ task 1
     thread: <none>
     type: future Pin<Box<delegation_cases::Gated<1>>>
     waiting on: unarmed: unknown at delegation_cases::Gated (holds 1 future)
-        unknown: the chain does not end in a primitive
-        what delegation_cases::Gated<1> polls is not established: no reviewed rule covers its implementation
-        holds 1 future at its stop, none holding this task's waker:
-        child: delegation_cases::Probe at 0xADDR — unknown; held, not armed; what delegation_cases::Probe<1> polls is not established: no reviewed rule covers its implementation
+        child: delegation_cases::Probe at 0xADDR — unknown; held, not armed
     spawned at: src/bin/delegation-cases.rs:197:8
     held futures: 1
         (frame 0, `child`): 0xADDR  future delegation_cases::Probe<1>

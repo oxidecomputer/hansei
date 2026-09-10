@@ -3,6 +3,7 @@ source: hansei/tests/acceptance.rs
 expression: actual
 ---
 Waiting on: a tokio::sync::Mutex (semaphore ADDR1): 1 permit requested, 0 available; wake queue: task #blocked
+  semaphore ADDR1: waker in its wake-queue node ADDR2
 
 #0  future        tokio::sync::batch_semaphore::Acquire
       waiting on a tokio::sync::Mutex (semaphore ADDR1): 1 permit requested, 0 available; wake queue: task #blocked

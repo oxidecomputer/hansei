@@ -8,8 +8,6 @@ task 3
     type: async fn unordered::driver
     awaiting at: src/bin/unordered.rs:119
     waiting on: slot 0xADDR in futures_core::task::__internal::atomic_waker::AtomicWaker
-        unknown: the chain does not end in a primitive
-        what futures_util::stream::stream::next::Next<futures_util::stream::futures_unordered::FuturesUnordered<unordered::set_member::{async_fn_env#0}>> polls is not established: no reviewed rule covers its implementation
         slot 0xADDR: waker in futures_core::task::__internal::atomic_waker::AtomicWaker.waker, reached from #1 set → ready_to_run_queue → * → data → waker → waker
     spawned at: src/bin/unordered.rs:141:21
     defined at: src/bin/unordered.rs:82

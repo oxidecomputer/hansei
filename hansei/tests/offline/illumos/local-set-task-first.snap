@@ -9,7 +9,7 @@ task 1
     type: async fn local_set::local_sleeper
     awaiting at: src/bin/local-set.rs:20
     waiting on: timer (deadline TS)
-        timer 0xADDR: waker in the wheel entry, registered, deadline TS
+        timer 0xADDR deadline TS
     spawned at: src/bin/local-set.rs:50:29
     defined at: src/bin/local-set.rs:17
     held futures: 0

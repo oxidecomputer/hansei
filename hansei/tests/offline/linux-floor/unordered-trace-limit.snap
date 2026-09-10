@@ -3,6 +3,7 @@ source: hansei/src/offline.rs
 description: "`trace 3 -l 1` over linux-floor/unordered"
 ---
 Waiting on: unknown at futures_util::stream::stream::next::Next
+  slot 0xADDR: waker in futures_core::task::__internal::atomic_waker::AtomicWaker.waker, reached from #1 set → ready_to_run_queue → * → data → waker → waker
 
 what futures_util::stream::stream::next::Next<futures_util::stream::futures_unordered::FuturesUnordered<unordered::set_member>> polls is not established (no reviewed rule covers its implementation); the chain ends there
 #0  future        futures_util::stream::stream::next::Next<futures_util::stream::futures_unordered::FuturesUnordered<unordered::set_member>>

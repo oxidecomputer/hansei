@@ -3,6 +3,7 @@ source: hansei/src/offline.rs
 description: "`trace 1 -n` over linux-floor/local-set"
 ---
 Waiting on: timer (deadline TS on the target's monotonic clock)
+  timer 0xADDR deadline TS on the target's monotonic clock
 
 #0  future        tokio::time::sleep::Sleep
       waiting on timer (deadline TS on the target's monotonic clock)
