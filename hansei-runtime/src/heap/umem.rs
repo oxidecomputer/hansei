@@ -1484,8 +1484,11 @@ impl<'t, T: Target> Walk<'t, T> {
             }
             for root in 0..NTMEMBASE {
                 // A `tmem_t` is a size followed by its roots, one per
-                // size class cached this way.
-                self.walk_ptc_root(ulwp + tmem + 8 + root * 8)?;
+                // size class cached this way. A thread pointer near the
+                // top of the address space is no thread; the sum must
+                // not wrap.
+                let head = ulwp.checked_add(tmem)?.checked_add(8 + root * 8)?;
+                self.walk_ptc_root(head)?;
             }
         }
         Some(())
