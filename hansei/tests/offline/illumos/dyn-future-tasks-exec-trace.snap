@@ -3,12 +3,11 @@ source: hansei/src/offline.rs
 description: "`tasks --exec trace -n` over illumos/dyn-future"
 ---
 task 3
-Waiting on: unknown at tokio::sync::oneshot::Receiver
+Waiting on: oneshot rx 0xADDR (nothing sent, sender alive)
   oneshot rx 0xADDR: waker in Inner.rx_task (rx_task_set), reached from #0 inner → * → data → rx_task
 
-what tokio::sync::oneshot::Receiver<u32> polls is not established (no reviewed rule covers its implementation); the chain ends there
 #0  future        tokio::sync::oneshot::Receiver<u32>
-      (<no_state>, 1 local)
+      waiting on oneshot rx 0xADDR (nothing sent, sender alive)
 #1  async fn      dyn_future::boxed_leaf [dyn]
       awaiting at src/bin/dyn-future.rs:16 (Suspend0, 0 locals)
 #2  future        Pin<Box<(dyn Future<Output=u32> + Send)>>
@@ -17,22 +16,20 @@ what tokio::sync::oneshot::Receiver<u32> polls is not established (no reviewed r
       awaiting at src/bin/dyn-future.rs:40 (Suspend0, 1 local)
 
 task 4
-Waiting on: unknown at tokio::sync::oneshot::Receiver
+Waiting on: oneshot rx 0xADDR (nothing sent, sender alive)
   oneshot rx 0xADDR: waker in Inner.rx_task (rx_task_set), reached from #0 inner → * → data → rx_task
 
-what tokio::sync::oneshot::Receiver<u32> polls is not established (no reviewed rule covers its implementation); the chain ends there
 #0  future        tokio::sync::oneshot::Receiver<u32>
-      (<no_state>, 1 local)
+      waiting on oneshot rx 0xADDR (nothing sent, sender alive)
 #1  async fn      dyn_future::hold_aligned
       awaiting at src/bin/dyn-future.rs:97 (Suspend0, 2 locals)
 
 task 5
-Waiting on: unknown at tokio::sync::oneshot::Receiver
+Waiting on: oneshot rx 0xADDR (nothing sent, sender alive)
   oneshot rx 0xADDR: waker in Inner.rx_task (rx_task_set), reached from #0 inner → * → data → rx_task
 
-what tokio::sync::oneshot::Receiver<u32> polls is not established (no reviewed rule covers its implementation); the chain ends there
 #0  future        tokio::sync::oneshot::Receiver<u32>
-      (<no_state>, 1 local)
+      waiting on oneshot rx 0xADDR (nothing sent, sender alive)
 #1  async fn      dyn_future::set_member
       awaiting at src/bin/dyn-future.rs:21 (Suspend0, 0 locals)
 [Executed against 3 tasks, 0 failed]

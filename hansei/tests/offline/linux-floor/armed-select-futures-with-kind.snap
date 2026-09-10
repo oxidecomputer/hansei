@@ -2,7 +2,7 @@
 source: hansei/src/offline.rs
 description: "`futures --with kind child` over linux-floor/armed-select"
 ---
-ADDR            TASK  HELD IN             STATE                                  WAITING ON                                          ARMED  TYPE
-0xADDR  6     set 0xADDR  Suspend0 — src/bin/armed-select.rs:83  unarmed: unknown at tokio::sync::oneshot::Receiver  no     async fn armed_select::child
-0xADDR  6     set 0xADDR  Suspend0 — src/bin/armed-select.rs:83  unarmed: unknown at tokio::sync::oneshot::Receiver  no     async fn armed_select::child
+ADDR            TASK  HELD IN             STATE                                  WAITING ON                                                       ARMED  TYPE
+0xADDR  6     set 0xADDR  Suspend0 — src/bin/armed-select.rs:83  unarmed: oneshot rx 0xADDR (nothing sent, sender alive)  no     async fn armed_select::child
+0xADDR  6     set 0xADDR  Suspend0 — src/bin/armed-select.rs:83  unarmed: oneshot rx 0xADDR (nothing sent, sender alive)  no     async fn armed_select::child
 [2 futures]

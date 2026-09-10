@@ -184,7 +184,9 @@ impl<'a> Check<'a> {
             | TokioMpscRecv
             | TokioMpscRecvState
             | TokioNotified
-            | TokioNotifiedState => "tokio",
+            | TokioNotifiedState
+            | TokioOneshotRecv
+            | TokioOneshotRecvState => "tokio",
         };
         require(
             matches!(origin, SemanticOrigin::LibraryLayout { package: p, .. }
@@ -199,6 +201,7 @@ impl<'a> Check<'a> {
                 | TokioIoState
                 | TokioMpscRecvState
                 | TokioNotifiedState
+                | TokioOneshotRecvState
         ) {
             // Layout validation alone cannot authorize a state protocol:
             // revision 1 of each is the reading the runtime's assessor
@@ -391,6 +394,7 @@ impl<'a> Check<'a> {
             ResourceKind::IoOperation(_) => TokioIoOperation,
             ResourceKind::MpscRecv => TokioMpscRecv,
             ResourceKind::Notified => TokioNotified,
+            ResourceKind::OneshotRecv => TokioOneshotRecv,
         };
         self.rule(binding.rule, &[kind])?;
         self.roles(ty, required_resource_roles(binding.kind))?;
@@ -403,6 +407,7 @@ impl<'a> Check<'a> {
                 ResourceKind::IoOperation(_) => TokioIoState,
                 ResourceKind::MpscRecv => TokioMpscRecvState,
                 ResourceKind::Notified => TokioNotifiedState,
+                ResourceKind::OneshotRecv => TokioOneshotRecvState,
             };
             self.rule(rule, &[kind])?;
         }
@@ -561,6 +566,7 @@ impl<'a> Check<'a> {
                         TokioIoOperation,
                         TokioMpscRecv,
                         TokioNotified,
+                        TokioOneshotRecv,
                     ],
                 )?;
                 require(
@@ -615,6 +621,7 @@ impl<'a> Check<'a> {
                 TokioIoOperation,
                 TokioMpscRecv,
                 TokioNotified,
+                TokioOneshotRecv,
             ],
         )?;
         require(
@@ -721,6 +728,7 @@ pub fn required_resource_roles(kind: ResourceKind) -> &'static [WalkRole] {
         }
         ResourceKind::MpscRecv => &[MpscRecvRx],
         ResourceKind::Notified => &[NotifiedNotify, NotifiedState, NotifiedCalls, NotifiedWaiter],
+        ResourceKind::OneshotRecv => &[OneshotInner],
     }
 }
 
@@ -769,6 +777,11 @@ pub fn required_resource_routes(kind: ResourceKind) -> &'static [WalkRole] {
             NotifyWaiterWaker,
             NotifyWaiterNotification,
         ],
+        // The shared `Inner` behind the receiver's `Arc`: the state
+        // word the recv protocol reads, the value whose presence says
+        // whether a completion carried one, and the receiver's own
+        // waker slot.
+        ResourceKind::OneshotRecv => &[OneshotState, OneshotValue, OneshotRxTask],
     }
 }
 

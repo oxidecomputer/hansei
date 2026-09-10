@@ -39,8 +39,8 @@ use super::chain::{FutureInspection, InspectionMode};
 use super::observe::{
     AcquireObservation, ChannelObservation, Consistency, IoFutureState, IoObservation,
     JoinObservation, NotifiedObservation, NotifiedState, NotifyObservation, Observed,
-    QueueObservation, ReadContext, RecvObservation, ResourceObservation, ScanBudget, SlotState,
-    TimerObservation, TimerRegistrationState, ValueKey,
+    OneshotObservation, QueueObservation, ReadContext, RecvObservation, ResourceObservation,
+    ScanBudget, SlotState, TimerObservation, TimerRegistrationState, ValueKey,
 };
 use super::waitset::WaitSet;
 use super::{Lifecycle, TaskAddr, TaskState};
@@ -135,6 +135,11 @@ pub enum ReadyReason {
     ChannelClosed,
     /// The `Notified` has been notified; the next poll returns.
     Notified,
+    /// The oneshot's sender completed — sent a value, or dropped — and
+    /// the receiver's next poll takes the outcome.
+    OneshotComplete,
+    /// The receiver closed the oneshot; its next poll returns the error.
+    OneshotClosed,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
@@ -555,8 +560,19 @@ impl<'b, T: Target> Context<'b, T> {
             ResourceObservation::Io(io) => self.assess_io(pass, io, task, chain, primitive, read),
             ResourceObservation::Timer(timer) => self.assess_timer(timer, primitive),
             ResourceObservation::Recv(recv) => self.assess_recv(pass, recv, task, primitive, read),
+            ResourceObservation::Oneshot(oneshot) => self.assess_oneshot(oneshot, task, primitive),
             ResourceObservation::Notified(notified) => {
-                self.assess_notified(pass, notified, task, primitive, read)
+                let mut assessed = self.assess_notified(pass, notified, task, primitive, read);
+                // A `Notified` on one of a watch channel's `Notify`s is
+                // the watch's wait: the receiver the chain holds names
+                // the `Shared`, and the reading is the channel's.
+                if let WaitAssessment::Waiting(verified) = &mut assessed.assessment
+                    && let WaitTarget::Notify { addr, .. } = verified.target
+                    && let Some(watch) = self.watch_target(&payloads(chain), addr)
+                {
+                    verified.target = watch;
+                }
+                assessed
             }
         }
     }
@@ -695,6 +711,61 @@ impl<'b, T: Target> Context<'b, T> {
                 senders,
                 capacity: channel.capacity,
                 unread: tail - index,
+            },
+            primitive,
+            queue_position: None,
+        }))
+    }
+
+    /// The oneshot receiver's protocol: a completed sender — a value
+    /// sent, or the sender dropped — or a receiver that closed its own
+    /// side means the next poll returns. Short of those, a wait needs
+    /// the state word to say the receiver's task cell is set, and the
+    /// cell to hold this task's waker.
+    fn assess_oneshot(
+        &self,
+        oneshot: &OneshotObservation,
+        task: &TaskFacts,
+        primitive: ValueKey,
+    ) -> Assessed {
+        let state = oneshot.state;
+        if state.complete() {
+            return Assessed::of(WaitAssessment::ResourceReady(ReadyReason::OneshotComplete));
+        }
+        if state.closed() {
+            return Assessed::of(WaitAssessment::ResourceReady(ReadyReason::OneshotClosed));
+        }
+        if !state.rx_task_set() {
+            return Assessed::unknown(
+                WaitUnknownReason::ConflictingEvidence,
+                "the receiver parked but its state word says no waker is stored",
+            );
+        }
+        match &oneshot.rx_waker {
+            Some(QueuedWaker::Task { addr, .. }) if *addr == task.addr.0 => {}
+            Some(QueuedWaker::Task { addr, .. }) => {
+                return Assessed::unknown(
+                    WaitUnknownReason::ConflictingEvidence,
+                    format!("the receiver's waker names the task at {addr:#x}, not this one"),
+                );
+            }
+            Some(QueuedWaker::Other { vtable }) => {
+                return Assessed::unknown(
+                    WaitUnknownReason::ResourceStateUnproven,
+                    format!("the receiver's waker is not a task's (vtable {vtable:#x})"),
+                );
+            }
+            Some(QueuedWaker::Unarmed) | None => {
+                return Assessed::unknown(
+                    WaitUnknownReason::ResourceUnreadable,
+                    "the receiver's waker did not read",
+                );
+            }
+        }
+        Assessed::of(WaitAssessment::Waiting(VerifiedWait {
+            target: WaitTarget::Oneshot {
+                addr: oneshot.inner,
+                state,
             },
             primitive,
             queue_position: None,
@@ -843,6 +914,7 @@ impl<'b, T: Target> Context<'b, T> {
         Assessed::of(WaitAssessment::Waiting(VerifiedWait {
             target: WaitTarget::Notify {
                 addr: notified.notify.addr,
+                state: Some(state),
                 waiters: Some(list.waiters.len()),
             },
             primitive,
@@ -1333,13 +1405,24 @@ impl<'b, T: Target> Context<'b, T> {
                     unread: channel.tail_position?.saturating_sub(channel.index?),
                 })
             }
-            // The `Notify` itself is not read here: a description of
-            // a held `Notified` names it and stops, since the tokens a
-            // workload holds thousands of would each walk a list of
-            // thousands to print one count.
-            ResourceObservation::Notified(notified) => Some(WaitTarget::Notify {
-                addr: notified.notify.addr,
-                waiters: None,
+            // The `Notify`'s list is not walked here: a description of
+            // a held `Notified` reads the state word and stops, since
+            // the tokens a workload holds thousands of would each walk
+            // a list of thousands to print one count. A watch
+            // receiver's `Notify` is the exception: the `Shared` a
+            // receiver in the chain already names is read for the
+            // channel's words.
+            ResourceObservation::Notified(notified) => Some(
+                self.watch_target(&payloads(chain), notified.notify.addr)
+                    .unwrap_or_else(|| WaitTarget::Notify {
+                        addr: notified.notify.addr,
+                        state: self.notify_state(notified.notify, read),
+                        waiters: None,
+                    }),
+            ),
+            ResourceObservation::Oneshot(oneshot) => Some(WaitTarget::Oneshot {
+                addr: oneshot.inner,
+                state: oneshot.state,
             }),
         }
     }
@@ -1571,7 +1654,7 @@ mod tests {
     use super::*;
     use crate::testkit::corrupt::Corrupt;
     use crate::testkit::{self, load_any};
-    use crate::tokio::bundle::{FutureInfo, Registries};
+    use crate::tokio::bundle::{FutureInfo, Registries, WaitKind};
     use crate::tokio::graph::{self, TaskWait};
 
     use hansei_bundle::tokio::timer;
@@ -2263,6 +2346,102 @@ mod tests {
         assert_eq!(positions, [0, 1, 2, 3, 4]);
     }
 
+    /// The oneshot receiver's protocol on the armed-select fixture: the
+    /// holder, parked on a receiver whose sender is leaked alive,
+    /// waits, with the shared state read through its `Arc` — the
+    /// receiver's cell set, nothing sent, the cell holding its waker.
+    /// Then each window the protocol distinguishes, frozen by hand:
+    /// the sender completed, the receiver closed, the cell's bit clear,
+    /// and the cell holding another task's waker. The selector's held
+    /// `once` describes as a oneshot too, and its `changed` as the
+    /// watch whose `Notify` the chain ends on.
+    #[test]
+    fn test_the_oneshot_protocol_reads_the_receivers_inner() {
+        use hansei_bundle::tokio::oneshot;
+        let (bundle, snapshot) = load_any("armed-select");
+        let ctx = testkit::context(&bundle, &snapshot);
+        let (list, rows, _) = assessed(&ctx, &snapshot);
+        let holder = task_named(&list, "armed_select::holder");
+        let parked = row(&rows, holder);
+        let WaitAssessment::Waiting(wait) = &parked.assessment else {
+            panic!("oneshot waits: {:?} {:?}", parked.assessment, parked.notes);
+        };
+        let WaitTarget::Oneshot { addr, state } = wait.target() else {
+            panic!("on a oneshot: {:?}", wait.target());
+        };
+        assert!(state.rx_task_set() && !state.complete() && !state.closed());
+        assert_eq!(state.value_present, Some(false));
+        assert_eq!(
+            wait.target().to_string(),
+            format!("oneshot rx {addr:#x} (nothing sent, sender alive)")
+        );
+        let Some(ResourceObservation::Oneshot(observed)) = &parked.observation else {
+            unreachable!()
+        };
+        assert_eq!(observed.inner, *addr);
+        assert_eq!(observed.future, wait.primitive());
+        assert_eq!(
+            observed.rx_waker.as_ref().and_then(|w| w.task()),
+            Some(holder.addr.0)
+        );
+        // The `Inner` is the `ArcInner`'s data, past the two counts.
+        assert!(observed.inner > observed.arc.addr && observed.inner - observed.arc.addr <= 16);
+
+        let arc = ctx.read_keyed(observed.arc, &ReadContext::none()).unwrap();
+        let state_at = ctx.walk(WalkRole::OneshotState).walk_at(arc).unwrap();
+        let word: u64 = state_at.parse(&snapshot).unwrap();
+        assert_eq!(word, state.word);
+        let (data, _) = raw_waker_words(&ctx, WalkRole::OneshotRxTask, arc);
+        let selector = task_named(&list, "armed_select::selector");
+        let cases: Vec<(&str, Corrupt<'_>, &str)> = vec![
+            (
+                "the sender completed",
+                Corrupt::new(&snapshot).patch(state_at.addr, word | oneshot::VALUE_SENT),
+                "ResourceReady(OneshotComplete)",
+            ),
+            (
+                "the receiver closed",
+                Corrupt::new(&snapshot).patch(state_at.addr, word | oneshot::CLOSED),
+                "ResourceReady(OneshotClosed)",
+            ),
+            (
+                "no waker stored",
+                Corrupt::new(&snapshot).patch(state_at.addr, word & !oneshot::RX_TASK_SET),
+                "Unknown(ConflictingEvidence)",
+            ),
+            (
+                "another task's waker",
+                Corrupt::new(&snapshot).patch(data, selector.addr.0),
+                "Unknown(ConflictingEvidence)",
+            ),
+        ];
+        for (what, patched, expected) in cases {
+            let (assessment, notes, observed) = reassessed(&bundle, &patched, holder);
+            assert_eq!(assessment, expected, "{what}: {notes:?}");
+            assert!(observed, "{what}: the observation is kept");
+        }
+
+        // The selector's finds: the held receiver describes as the
+        // oneshot it is, and the `changed_impl` held inside `changed`
+        // as the watch its `Notified` belongs to — the `Shared` it
+        // borrows names the channel, since `changed`'s own frame keeps
+        // no receiver past its await. `changed` itself describes
+        // nothing: its chain stops at tokio's `Coop` wrapper, which no
+        // rule follows.
+        let census = testkit::census(&ctx, &list);
+        let find = |local: &str| {
+            census
+                .held
+                .iter()
+                .find(|h| h.local == local)
+                .unwrap_or_else(|| panic!("a `{local}` find"))
+        };
+        assert!(matches!(find("once").wait, Some(WaitKind::Oneshot { .. })));
+        assert!(matches!(find("fut").wait, Some(WaitKind::Watch { .. })));
+        assert!(find("changed").wait.is_none());
+        assert!(matches!(find("recv").wait, Some(WaitKind::Channel { .. })));
+    }
+
     /// The notified protocol on the channels fixture: the waiter parked
     /// on the `Notify` waits, first in a one-node list, with its node's
     /// waker naming it. Then each window, frozen by hand: the future
@@ -2281,10 +2460,20 @@ mod tests {
         let WaitAssessment::Waiting(wait) = &parked.assessment else {
             panic!("notified waits: {:?} {:?}", parked.assessment, parked.notes);
         };
-        let WaitTarget::Notify { addr, waiters } = wait.target() else {
+        let WaitTarget::Notify {
+            addr,
+            state,
+            waiters,
+        } = wait.target()
+        else {
             panic!("on a Notify: {:?}", wait.target());
         };
         assert_eq!(*waiters, Some(1));
+        assert_eq!(state.map(|s| s & notify::STATE_MASK), Some(notify::WAITING));
+        assert_eq!(
+            wait.target().to_string(),
+            format!("notify {addr:#x} (waiting, 1 queued)")
+        );
         assert_eq!(wait.queue_position(), Some(0));
         let Some(ResourceObservation::Notified(notified)) = &parked.observation else {
             unreachable!()

@@ -119,6 +119,9 @@ fn commands(
         // The by-value fallback's refusal: nothing maps 0x1, so the
         // scan is never entered and the miss names what sync lists.
         ("sync-miss", "sync 0x1".to_owned()),
+        // The channel families alone: every oneshot, mpsc and watch a
+        // parked waker names, with the owner on each side.
+        ("channels", "channels".to_owned()),
         ("census", "census".to_owned()),
         // The runtime listing, a grouping over its one string column
         // every fixture fills, and the block of the one runtime — or

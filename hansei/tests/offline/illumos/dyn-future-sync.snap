@@ -7,3 +7,12 @@ task 5 (async fn dyn_future::set_member): idle
 
 a tokio::task::join_set::JoinSet<u32> (set 0xADDR): 1 member, driven by task 3 (`set`)
     Members (idle): task 5
+
+oneshot 0xADDR: nothing sent, sender alive
+    rx: task 4
+
+oneshot 0xADDR: nothing sent, sender alive
+    rx: task 5
+
+oneshot 0xADDR: nothing sent, sender alive
+    rx: task 3

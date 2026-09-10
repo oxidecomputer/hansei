@@ -242,6 +242,12 @@ fn kind_matches(kind: bundle::WaitKind, slot: &attribution::AttributedSlot) -> b
         (bundle::WaitKind::Notify { .. }, Attribution::Owner { kind, .. }) => {
             *kind == OwnerKind::Notify
         }
+        (bundle::WaitKind::Oneshot { .. }, Attribution::Owner { kind, .. }) => {
+            *kind == OwnerKind::OneshotRx
+        }
+        (bundle::WaitKind::Watch { .. }, Attribution::Owner { kind, .. }) => {
+            *kind == OwnerKind::Watch
+        }
         _ => false,
     }
 }
@@ -266,6 +272,22 @@ fn names_primitive(kind: bundle::WaitKind, slot: &attribution::AttributedSlot) -
             bundle::WaitKind::Notify { addr },
             Attribution::Owner {
                 kind: OwnerKind::Notify,
+                primitive,
+                ..
+            },
+        )
+        | (
+            bundle::WaitKind::Oneshot { addr },
+            Attribution::Owner {
+                kind: OwnerKind::OneshotRx,
+                primitive,
+                ..
+            },
+        )
+        | (
+            bundle::WaitKind::Watch { addr },
+            Attribution::Owner {
+                kind: OwnerKind::Watch,
                 primitive,
                 ..
             },
@@ -506,8 +528,10 @@ fn waiting_kind(
             Some(owner) => format!("a {owner} (semaphore)"),
             None => "a semaphore".to_string(),
         }),
-        Some(bundle::WaitKind::Channel { .. }) => Some("mpsc rx".to_string()),
-        Some(bundle::WaitKind::Notify { .. }) => Some("a Notify".to_string()),
+        Some(bundle::WaitKind::Channel { .. }) => Some("mpsc".to_string()),
+        Some(bundle::WaitKind::Notify { .. }) => Some("notify".to_string()),
+        Some(bundle::WaitKind::Oneshot { .. }) => Some("oneshot rx".to_string()),
+        Some(bundle::WaitKind::Watch { .. }) => Some("watch".to_string()),
         None => tasks::continuation_bucket(continuation, stops),
     }
 }
@@ -1333,10 +1357,10 @@ mod tests {
 
         let sleep = held(0, 0x5000, None);
         let mut recv = held(0, 0x6000, None);
-        recv.waiting_on = Some("mpsc rx 0x9000: 1 sender".to_string());
+        recv.waiting_on = Some("mpsc 0x9000 (1 sender, 0 unread)".to_string());
         recv.wait = Some(WaitKind::Channel { addr: 0x9000 });
         let mut notified = held(0, 0x7000, None);
-        notified.waiting_on = Some("the Notify at 0x9100".to_string());
+        notified.waiting_on = Some("notify 0x9100 (waiting)".to_string());
         notified.wait = Some(WaitKind::Notify { addr: 0x9100 });
         let mut joiner = child(0x2010, Some("app::child"));
         joiner.waiting_on = Some("task 28".to_string());
@@ -1398,6 +1422,7 @@ mod tests {
                     member: "rx_waker".to_string(),
                     path: frame.clone(),
                     validity: Validity::SelfDescribing,
+                    reading: None,
                 },
                 None,
             ),
@@ -1411,6 +1436,7 @@ mod tests {
                     member: "waiter".to_string(),
                     path: frame,
                     validity: Validity::SelfDescribing,
+                    reading: None,
                 },
                 None,
             ),
@@ -1449,18 +1475,15 @@ mod tests {
         assert!(row(0x6000).armed);
         assert_eq!(
             row(0x6000).waiting_on.as_deref(),
-            Some("mpsc rx 0x9000: 1 sender")
+            Some("mpsc 0x9000 (1 sender, 0 unread)")
         );
-        assert_eq!(row(0x6000).waiting_kind.as_deref(), Some("mpsc rx"));
+        assert_eq!(row(0x6000).waiting_kind.as_deref(), Some("mpsc"));
         assert!(!row(0x7000).armed);
         assert_eq!(
             row(0x7000).waiting_on.as_deref(),
-            Some("unarmed: the Notify at 0x9100")
+            Some("unarmed: notify 0x9100 (waiting)")
         );
-        assert_eq!(
-            row(0x7000).waiting_kind.as_deref(),
-            Some("unarmed: a Notify")
-        );
+        assert_eq!(row(0x7000).waiting_kind.as_deref(), Some("unarmed: notify"));
         assert!(row(0x7000).slot_lines.is_empty());
 
         let rows = with_slots(rows_of(&census), &list(), &census, &child_slots, None);

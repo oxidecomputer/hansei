@@ -4,7 +4,7 @@ description: "`tasks --group waiting-on` over linux-floor/armed-select"
 ---
 COUNT  WAITING ON                                                         TASKS
     1  mpsc, oneshot rx, timer, watch                                     3
+    1  notify                                                             5
     1  oneshot rx                                                         4
     1  slot in futures_core::task::__internal::atomic_waker::AtomicWaker  6
-    1  the Notify at 0xADDR                                       5
 [4 groups]

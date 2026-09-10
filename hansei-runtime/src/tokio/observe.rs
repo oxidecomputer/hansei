@@ -24,7 +24,7 @@
 //! the census's — so no caller inherits the renderer's implicit
 //! peeling or an unstated heap by accident.
 
-use super::bundle::{Interest, NotifyWaiter, QueuedWaker, SemaphoreWaiter};
+use super::bundle::{Interest, NotifyWaiter, OneshotState, QueuedWaker, SemaphoreWaiter};
 use super::{RawInstant, TaskAddr};
 
 use hansei_bundle::{BundleTypeId, IoOperationKind, Step};
@@ -340,6 +340,24 @@ pub enum NotifiedState {
     Unknown(u64),
 }
 
+/// A `oneshot::Receiver`: the shared `Inner` behind its `Arc` and every
+/// word the recv protocol reads from it, read in place — the state
+/// word, whether the value slot holds one, and the waker in the
+/// receiver's own task cell.
+#[derive(Clone, PartialEq, Debug)]
+pub struct OneshotObservation {
+    pub future: ValueKey,
+    /// The `ArcInner<Inner<T>>` the receiver's pointer names, keyed by
+    /// its nominal type.
+    pub arc: ValueKey,
+    /// The `Inner`'s own address: the primitive a slot in either task
+    /// cell names.
+    pub inner: u64,
+    pub state: OneshotState,
+    /// The waker in `rx_task`, where the state word says one is there.
+    pub rx_waker: Option<QueuedWaker>,
+}
+
 /// What one resource value was observed to be.
 #[derive(Clone, PartialEq, Debug)]
 pub enum ResourceObservation {
@@ -349,6 +367,7 @@ pub enum ResourceObservation {
     Io(IoObservation),
     Recv(RecvObservation),
     Notified(NotifiedObservation),
+    Oneshot(OneshotObservation),
 }
 
 /// What a pop at the receiver's read index would find, as `Rx::pop`
@@ -517,6 +536,8 @@ pub enum ReferenceSource {
     ChannelWaker,
     /// A task waker queued on a `Notify`.
     NotifyWaker,
+    /// The task waker a oneshot receiver stored in its task cell.
+    OneshotWaker,
 }
 
 impl std::fmt::Display for ReferenceSource {
@@ -530,6 +551,7 @@ impl std::fmt::Display for ReferenceSource {
             Self::JoinSetEntry => "a JoinSet entry",
             Self::ChannelWaker => "a task waker registered by a channel receiver",
             Self::NotifyWaker => "a task waker queued on a Notify",
+            Self::OneshotWaker => "a task waker stored by a oneshot receiver",
         })
     }
 }

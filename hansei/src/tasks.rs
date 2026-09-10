@@ -1278,6 +1278,12 @@ pub(crate) fn ready_reason(reason: ReadyReason) -> &'static str {
             "the channel is closed and drained; the next poll returns None"
         }
         ReadyReason::Notified => "the Notified has been notified; the next poll returns",
+        ReadyReason::OneshotComplete => {
+            "the oneshot's sender completed; the next poll takes the outcome"
+        }
+        ReadyReason::OneshotClosed => {
+            "the receiver closed the oneshot; the next poll returns the error"
+        }
     }
 }
 

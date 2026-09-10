@@ -389,7 +389,7 @@ pub(super) fn collect_semantic_seeds(
 /// The every-kind order the bindings are attempted in, which is also the
 /// order their rules are numbered: a bundle's rule ids depend on which
 /// kinds bound, never on the order types were met.
-const RESOURCE_KINDS: [(ResourceKind, SemanticRuleKind); 8] = [
+const RESOURCE_KINDS: [(ResourceKind, SemanticRuleKind); 9] = [
     (ResourceKind::Sleep, SemanticRuleKind::TokioSleep),
     (ResourceKind::JoinHandle, SemanticRuleKind::TokioJoinHandle),
     (
@@ -410,6 +410,10 @@ const RESOURCE_KINDS: [(ResourceKind, SemanticRuleKind); 8] = [
     ),
     (ResourceKind::MpscRecv, SemanticRuleKind::TokioMpscRecv),
     (ResourceKind::Notified, SemanticRuleKind::TokioNotified),
+    (
+        ResourceKind::OneshotRecv,
+        SemanticRuleKind::TokioOneshotRecv,
+    ),
 ];
 
 const CONTAINER_KINDS: [(ContainerKind, SemanticRuleKind); 2] = [

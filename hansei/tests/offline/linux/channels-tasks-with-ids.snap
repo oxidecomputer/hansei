@@ -2,6 +2,6 @@
 source: hansei/src/offline.rs
 description: "`tasks --with id 3,6` over linux/channels"
 ---
-ID  STATE  FUTURES  AWAITING AT             WAITING ON                              TYPE
-3   idle         0  src/bin/channels.rs:34  the Notify at 0xADDR: 1 queued  async fn channels::notify_waiter
+ID  STATE  FUTURES  AWAITING AT             WAITING ON                                 TYPE
+3   idle         0  src/bin/channels.rs:34  notify 0xADDR (waiting, 1 queued)  async fn channels::notify_waiter
 [1 task]

@@ -1025,16 +1025,10 @@ mod tests {
         let ctx = testkit::context(&bundle, &snapshot);
         let list = testkit::tasks(&ctx, &snapshot);
         // The driver, the boxed trait object, the leaf it names, and
-        // the oneshot receiver the leaf awaits — which no rule covers.
+        // the oneshot receiver the leaf awaits — a reviewed primitive.
         let healthy = inspect(&ctx, task_named(&list, "driver"));
         assert!(
-            matches!(
-                healthy.chain.end,
-                ChainEnd::UnknownContinuation {
-                    reason: SemanticIssueKind::NoRule,
-                    ..
-                }
-            ),
+            matches!(healthy.chain.end, ChainEnd::Primitive),
             "{:?}",
             healthy.chain.end
         );

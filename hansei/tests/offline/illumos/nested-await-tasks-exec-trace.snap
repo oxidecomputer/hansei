@@ -3,12 +3,11 @@ source: hansei/src/offline.rs
 description: "`tasks --exec trace -n` over illumos/nested-await"
 ---
 task 3
-Waiting on: unknown at tokio::sync::oneshot::Receiver
+Waiting on: oneshot rx 0xADDR (nothing sent, sender alive)
   oneshot rx 0xADDR: waker in Inner.rx_task (rx_task_set), reached from #0 inner → * → data → rx_task
 
-what tokio::sync::oneshot::Receiver<u32> polls is not established (no reviewed rule covers its implementation); the chain ends there
 #0  future        tokio::sync::oneshot::Receiver<u32>
-      (<no_state>, 1 local)
+      waiting on oneshot rx 0xADDR (nothing sent, sender alive)
 #1  async fn      nested_await::leaf
       awaiting at src/bin/nested-await.rs:12 (Suspend0, 0 locals)
 #2  async fn      nested_await::middle

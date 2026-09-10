@@ -531,6 +531,28 @@ pub const TOKIO_NOTIFIED_STATE_V1_47: StateProtocol = StateProtocol {
     ceiling: (1, 53),
 };
 
+/// The oneshot receiver's protocol, tokio 1.47 through 1.53
+/// (`sync/oneshot.rs`, unchanged across the range but for the trace
+/// hook's signature and a `MaybeDangling` the standard library put
+/// around the task slots): `Receiver::poll` forwards to
+/// `Inner::poll_recv`, which checks the cooperative budget and loads
+/// the shared state word. `VALUE_SENT` is `Ready` — the value if the
+/// sender wrote one, the error if it dropped without — and so is
+/// `CLOSED`, which only the receiver sets. Otherwise, with `RX_TASK_SET`
+/// clear, or set but holding a waker that would not wake this task, it
+/// stores the task's waker in `rx_task`, sets the bit, re-reads the
+/// word for a completion that raced the store, and returns `Pending`.
+/// `Sender::send` writes the value and `complete` sets `VALUE_SENT`,
+/// waking `rx_task` when its bit is set; `Sender::drop` runs `complete`
+/// with the value left `None`. So a parked receiver reads `RX_TASK_SET`
+/// with neither completion bit, and the task bit set beside `VALUE_SENT`
+/// is a wakeup owed and not yet polled.
+pub const TOKIO_ONESHOT_RECV_STATE_V1_47: StateProtocol = StateProtocol {
+    kind: SemanticRuleKind::TokioOneshotRecvState,
+    floor: (1, 47),
+    ceiling: (1, 53),
+};
+
 /// The reviewed state protocol for a resource kind at a recovered tokio
 /// version: `None` when no version was recovered or it falls outside
 /// the protocol's range. A layout family is selected regardless; a
@@ -546,6 +568,7 @@ pub fn tokio_state_protocol(
         ResourceKind::IoOperation(_) => &TOKIO_IO_STATE_V1_47,
         ResourceKind::MpscRecv => &TOKIO_MPSC_RECV_STATE_V1_47,
         ResourceKind::Notified => &TOKIO_NOTIFIED_STATE_V1_47,
+        ResourceKind::OneshotRecv => &TOKIO_ONESHOT_RECV_STATE_V1_47,
     };
     protocol.covers(version?).then_some(protocol)
 }
@@ -693,6 +716,10 @@ mod tests {
             ),
             (ResourceKind::MpscRecv, SemanticRuleKind::TokioMpscRecvState),
             (ResourceKind::Notified, SemanticRuleKind::TokioNotifiedState),
+            (
+                ResourceKind::OneshotRecv,
+                SemanticRuleKind::TokioOneshotRecvState,
+            ),
         ];
         for (kind, rule) in kinds {
             for version in ["1.47.0", "1.47.5", "1.49.0", "1.52.4", "1.53.1", "1.53.9"] {

@@ -39,8 +39,9 @@
 
 use super::RawInstant;
 use super::bundle::{
-    Context, IoResourceInfo, IoSlot, IoWaiterInfo, Readiness, Registries, TaskList, TimerEntryInfo,
-    WaitTarget, WheelState, deadline_text,
+    Context, IoResourceInfo, IoSlot, IoWaiterInfo, OneshotSide, OneshotState, Readiness,
+    Registries, TaskList, TimerEntryInfo, WaitTarget, WheelState, channel_words, deadline_text,
+    notify_words, watch_words,
 };
 use super::census::{FutureCensus, Via};
 use super::contract::{Walked, execute_steps_over};
@@ -249,6 +250,57 @@ impl OwnerKind {
     }
 }
 
+/// What a slot's primitive says about itself, read from the words the
+/// receiver-rooted roles reach in the value the slot was located in:
+/// the detail a cell appends to the kind word and address, so a slot
+/// the attributor alone names reads like one a chain leaf's reader
+/// names.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum Reading {
+    /// The oneshot's state word and value.
+    Oneshot(OneshotState),
+    /// The channel's sender count, bound and claimed slots.
+    Mpsc {
+        senders: u64,
+        capacity: Option<u64>,
+        unread: u64,
+    },
+    /// The watch channel's version, closed flag and handle counts.
+    Watch {
+        version: u64,
+        closed: bool,
+        receivers: u64,
+        senders: u64,
+    },
+    /// The `Notify`'s state word.
+    Notify { state: u64 },
+}
+
+impl Reading {
+    /// The words in a slot entry's parentheses, worded for the side
+    /// the slot is on.
+    pub fn words(&self, kind: OwnerKind) -> String {
+        match self {
+            Reading::Oneshot(state) => state.words(match kind {
+                OwnerKind::OneshotTx => OneshotSide::Tx,
+                _ => OneshotSide::Rx,
+            }),
+            Reading::Mpsc {
+                senders,
+                capacity,
+                unread,
+            } => channel_words(*senders, *capacity, *unread),
+            Reading::Watch {
+                version,
+                closed,
+                receivers,
+                senders,
+            } => watch_words(*version, *closed, *receivers, *senders),
+            Reading::Notify { state } => notify_words(Some(*state), None),
+        }
+    }
+}
+
 /// What a slot was attributed to.
 #[derive(Clone, Debug)]
 pub enum Attribution {
@@ -265,6 +317,8 @@ pub enum Attribution {
         member: String,
         path: SlotPath,
         validity: Validity,
+        /// The primitive's own words, where its roles bound and read.
+        reading: Option<Reading>,
     },
     /// A typed location no table names: spelled by the innermost type
     /// holding it.
@@ -317,8 +371,16 @@ impl AttributedSlot {
             }
             Attribution::Registry(RegistrySlot::Join { task }) => format!("join {task}"),
             Attribution::Owner {
-                kind, primitive, ..
-            } => format!("{} {primitive:#x}", kind.word()),
+                kind,
+                primitive,
+                reading,
+                ..
+            } => match reading {
+                Some(reading) => {
+                    format!("{} {primitive:#x} ({})", kind.word(), reading.words(*kind))
+                }
+                None => format!("{} {primitive:#x}", kind.word()),
+            },
             Attribution::Typed { holder, .. } => format!("slot {:#x} in {holder}", self.slot),
             Attribution::Unknown { .. } => format!("unknown {:#x}", self.slot),
         }
@@ -329,6 +391,9 @@ impl AttributedSlot {
     pub fn label(&self) -> String {
         match &self.attribution {
             Attribution::Registry(RegistrySlot::Timer { entry, .. }) => format!("timer {entry:#x}"),
+            Attribution::Owner {
+                kind, primitive, ..
+            } => format!("{} {primitive:#x}", kind.word()),
             Attribution::Typed { .. } => format!("slot {:#x}", self.slot),
             _ => self.entry(None),
         }
@@ -865,7 +930,8 @@ impl<'a, 'b, T: Target> Attributor<'a, 'b, T> {
                     member,
                     path,
                     validity,
-                } => match self.oneshot_gate(kind, &path) {
+                    reading,
+                } => match oneshot_gate(kind, reading.as_ref()) {
                     Gate::Set(bit) => Attribution::Owner {
                         kind,
                         primitive,
@@ -873,6 +939,7 @@ impl<'a, 'b, T: Target> Attributor<'a, 'b, T> {
                         member,
                         path,
                         validity: Validity::Gated(bit),
+                        reading,
                     },
                     Gate::Clear => {
                         stale.push(Stale {
@@ -891,6 +958,7 @@ impl<'a, 'b, T: Target> Attributor<'a, 'b, T> {
                         member,
                         path,
                         validity,
+                        reading,
                     },
                 },
                 Attribution::Owner {
@@ -900,16 +968,18 @@ impl<'a, 'b, T: Target> Attributor<'a, 'b, T> {
                     member,
                     path,
                     validity,
+                    reading,
                 } => {
                     let pointers = pointers.get_or_insert_with(|| self.pointer_members(&roots));
                     match self.watch_of(primitive, pointers) {
-                        Some(shared) => Attribution::Owner {
+                        Some((shared, reading)) => Attribution::Owner {
                             kind: OwnerKind::Watch,
                             primitive: shared,
                             holder,
                             member,
                             path,
                             validity,
+                            reading: Some(reading),
                         },
                         None => Attribution::Owner {
                             kind: OwnerKind::Notify,
@@ -918,6 +988,7 @@ impl<'a, 'b, T: Target> Attributor<'a, 'b, T> {
                             member,
                             path,
                             validity,
+                            reading,
                         },
                     }
                 }
@@ -952,44 +1023,70 @@ impl<'a, 'b, T: Target> Attributor<'a, 'b, T> {
         }
     }
 
-    /// The oneshot's state word, read through the `ArcInner` the slot
-    /// was reached through, against the bit that says this slot holds
-    /// a waker: `RX_TASK_SET` for `rx_task`, `TX_TASK_SET` for
-    /// `tx_task`. `Unread` where the role is unbound or the slot was
-    /// not reached through the `Arc`.
-    fn oneshot_gate(&self, kind: OwnerKind, path: &SlotPath) -> Gate {
-        let Some(hop) = &path.hop else {
-            return Gate::Unread;
-        };
-        let Some(ty) = self.types.view.ty(hop.pointee_ty) else {
-            return Gate::Unread;
-        };
-        let Ok(arc) = Value::read(self.proc, ty, hop.addr) else {
-            return Gate::Unread;
-        };
-        let Some(state) = self
-            .walk_role(WalkRole::OneshotState, arc)
-            .and_then(|v| v.parse::<u64>(self.proc).ok())
-        else {
-            return Gate::Unread;
-        };
-        let (bit, name) = match kind {
-            OwnerKind::OneshotRx => (ONESHOT_RX_TASK_SET, "rx_task_set"),
-            _ => (ONESHOT_TX_TASK_SET, "tx_task_set"),
-        };
-        if state & bit != 0 {
-            Gate::Set(name)
-        } else {
-            Gate::Clear
-        }
+    /// A role's word, executed from `root`, where it bound and read.
+    fn word_of(&self, role: WalkRole, root: Value<'b>) -> Option<u64> {
+        self.walk_role(role, root)?.parse::<u64>(self.proc).ok()
+    }
+
+    /// The oneshot's reading, from the `ArcInner<Inner<T>>` value a
+    /// slot was reached through: the state word and whether the value
+    /// slot holds one.
+    fn oneshot_reading(&self, arc: Value<'b>) -> Option<Reading> {
+        let word = self.word_of(WalkRole::OneshotState, arc)?;
+        let value_present = self
+            .walk_role(WalkRole::OneshotValue, arc)
+            .and_then(super::bundle::option_present);
+        Some(Reading::Oneshot(OneshotState {
+            word,
+            value_present,
+        }))
+    }
+
+    /// The channel's reading, from the `Chan` value a slot sits in:
+    /// the words the receiver's cell prints beside a `recv`.
+    fn mpsc_reading(&self, chan: Value<'b>) -> Option<Reading> {
+        let senders = self.word_of(WalkRole::ChanTxCount, chan)?;
+        let tail = self.word_of(WalkRole::ChanTailPosition, chan)?;
+        let index = self.word_of(WalkRole::ChanRxIndex, chan)?;
+        // An unbounded channel has no bound to read.
+        let capacity = self.word_of(WalkRole::ChanSemaphoreBound, chan);
+        Some(Reading::Mpsc {
+            senders,
+            capacity,
+            unread: tail.saturating_sub(index),
+        })
+    }
+
+    /// The `Notify`'s reading: its state word, read at the address a
+    /// `Notified`'s `notify` member names, as that member's pointee.
+    fn notify_reading(&self, notified: Value<'b>) -> Option<Reading> {
+        let pointer = notified.try_member("notify").ok().flatten()?;
+        let ty = pointer.ty.pointer_target()?;
+        let addr = pointer.parse::<u64>(self.proc).ok()?;
+        let notify = Value::read(self.proc, ty, addr).ok()?;
+        Some(Reading::Notify {
+            state: self.word_of(WalkRole::NotifyState, notify)?,
+        })
+    }
+
+    /// The watch channel's reading, from its `ArcInner<Shared<T>>`.
+    fn watch_reading(&self, arc: Value<'b>) -> Option<Reading> {
+        use hansei_bundle::tokio::watch;
+        let state = self.word_of(WalkRole::WatchSharedState, arc)?;
+        Some(Reading::Watch {
+            version: state >> watch::VERSION_SHIFT,
+            closed: state & watch::CLOSED != 0,
+            receivers: self.word_of(WalkRole::WatchSharedRxCount, arc)?,
+            senders: self.word_of(WalkRole::WatchSharedTxCount, arc)?,
+        })
     }
 
     /// The watch channel whose `notify_rx` array holds the `Notify` at
     /// `notify`, among the `Arc<watch::Shared<_>>`s the owner's values
-    /// point at: the `Shared`'s address, for the slot's primitive.
-    /// Nothing is dereferenced but the `Shared` a pointer the owner
-    /// holds already names, and only its `notify_rx` extent is read.
-    fn watch_of(&self, notify: u64, pointers: &[PointerMember]) -> Option<u64> {
+    /// point at: the `Shared`'s address, for the slot's primitive, and
+    /// the channel's reading. Nothing is dereferenced but the `Shared`
+    /// a pointer the owner holds already names.
+    fn watch_of(&self, notify: u64, pointers: &[PointerMember]) -> Option<(u64, Reading)> {
         let mut seen: HashSet<u64> = HashSet::default();
         for p in pointers {
             let ty = self.types.view.ty(p.pointee)?;
@@ -1008,7 +1105,8 @@ impl<'a, 'b, T: Target> Attributor<'a, 'b, T> {
             };
             if contains(notify_rx, notify) {
                 let data = ty.member("data").map(|m| m.offset()).unwrap_or(0);
-                return Some(arc.addr + data);
+                let reading = self.watch_reading(arc)?;
+                return Some((arc.addr + data, reading));
             }
         }
         None
@@ -1178,15 +1276,27 @@ impl<'a, 'b, T: Target> Attributor<'a, 'b, T> {
             let name = step.holder.ty.name();
             let under = |member: &str| trail[i..].iter().any(|s| s.name == member);
             let kind = if name.starts_with("tokio::sync::oneshot::Inner<") {
+                // The `ArcInner` the `Inner` sits in is the step before
+                // it on the trail; the receiver-rooted roles read from
+                // there.
+                let reading = trail[..i]
+                    .iter()
+                    .rev()
+                    .find(|s| s.holder.ty.name().starts_with("alloc::sync::ArcInner<"))
+                    .and_then(|arc| self.oneshot_reading(arc.holder));
                 if under("rx_task") {
-                    Some((OwnerKind::OneshotRx, step.holder.addr))
+                    Some((OwnerKind::OneshotRx, step.holder.addr, reading))
                 } else if under("tx_task") {
-                    Some((OwnerKind::OneshotTx, step.holder.addr))
+                    Some((OwnerKind::OneshotTx, step.holder.addr, reading))
                 } else {
                     None
                 }
             } else if name.starts_with("tokio::sync::mpsc::chan::Chan<") {
-                Some((OwnerKind::Mpsc, step.holder.addr))
+                Some((
+                    OwnerKind::Mpsc,
+                    step.holder.addr,
+                    self.mpsc_reading(step.holder),
+                ))
             } else if name.starts_with("tokio::sync::notify::Notified<")
                 || name == "tokio::sync::notify::Notified"
             {
@@ -1196,11 +1306,11 @@ impl<'a, 'b, T: Target> Attributor<'a, 'b, T> {
                     .ok()
                     .flatten()
                     .and_then(|m| m.parse::<u64>(self.proc).ok());
-                notify.map(|notify| (OwnerKind::Notify, notify))
+                notify.map(|notify| (OwnerKind::Notify, notify, self.notify_reading(step.holder)))
             } else {
                 None
             };
-            if let Some((kind, primitive)) = kind {
+            if let Some((kind, primitive, reading)) = kind {
                 return Attribution::Owner {
                     kind,
                     primitive,
@@ -1208,6 +1318,7 @@ impl<'a, 'b, T: Target> Attributor<'a, 'b, T> {
                     member: step.name.clone(),
                     path,
                     validity,
+                    reading,
                 };
             }
         }
@@ -1556,10 +1667,18 @@ enum Gate {
     Unread,
 }
 
-/// The bits of `tokio::sync::oneshot::State`: a waker stored in
-/// `rx_task`, and one in `tx_task`.
-const ONESHOT_RX_TASK_SET: u64 = 0b0001;
-const ONESHOT_TX_TASK_SET: u64 = 0b1000;
+/// The oneshot's state word against the bit that says this slot holds
+/// a waker: `RX_TASK_SET` for `rx_task`, `TX_TASK_SET` for `tx_task`.
+fn oneshot_gate(kind: OwnerKind, reading: Option<&Reading>) -> Gate {
+    let Some(Reading::Oneshot(state)) = reading else {
+        return Gate::Unread;
+    };
+    let (set, name) = match kind {
+        OwnerKind::OneshotRx => (state.rx_task_set(), "rx_task_set"),
+        _ => (state.tx_task_set(), "tx_task_set"),
+    };
+    if set { Gate::Set(name) } else { Gate::Clear }
+}
 
 /// A variant step's name: `<Some>`, so a path reads apart from a
 /// member named the same.
@@ -1760,6 +1879,22 @@ pub fn verified_accounts(
         (Attribution::Owner { primitive, .. }, WaitTarget::Notify { addr, .. }) => {
             primitive == addr
         }
+        (
+            Attribution::Owner {
+                kind: OwnerKind::OneshotRx,
+                primitive,
+                ..
+            },
+            WaitTarget::Oneshot { addr, .. },
+        ) => primitive == addr,
+        (
+            Attribution::Owner {
+                kind: OwnerKind::Watch,
+                primitive,
+                ..
+            },
+            WaitTarget::Watch { addr, .. },
+        ) => primitive == addr,
         (Attribution::Owner { .. } | Attribution::Typed { .. }, _) => {
             within(verified.primitive(), slot.slot)
         }
@@ -1990,11 +2125,24 @@ mod tests {
                     path,
                     validity,
                     primitive,
+                    reading,
                 } => {
                     assert_eq!((holder.as_str(), member.as_str()), ("Inner", "rx_task"));
                     // `MaybeUninit` under the state word, whose bit for
                     // the receiver's slot is set.
                     assert_eq!(*validity, Validity::Gated("rx_task_set"));
+                    // The reading is the parked receiver's: nothing
+                    // sent, the sender leaked alive in `main`.
+                    let Some(Reading::Oneshot(state)) = reading else {
+                        panic!("{reading:?}");
+                    };
+                    assert!(state.rx_task_set() && !state.complete() && !state.closed());
+                    assert_eq!(state.value_present, Some(false));
+                    assert_eq!(
+                        slot.entry(stopped),
+                        format!("oneshot rx {primitive:#x} (nothing sent, sender alive)")
+                    );
+                    assert_eq!(slot.label(), format!("oneshot rx {primitive:#x}"));
                     // Through the `Receiver` find's `inner`, not the
                     // frame that holds the find.
                     assert!(matches!(path.root, SlotRoot::Find { .. }), "{path:?}");
@@ -2008,7 +2156,6 @@ mod tests {
                     // The primitive is the `Inner`, past the `ArcInner`
                     // header.
                     assert!(*primitive > hop.addr && *primitive - hop.addr <= 16);
-                    assert_eq!(slot.entry(stopped), format!("oneshot rx {primitive:#x}"));
                     assert!(
                         slot.detail(stopped).starts_with(
                             "waker in Inner.rx_task (rx_task_set), reached from the future at 0x"
@@ -2023,7 +2170,8 @@ mod tests {
                     member,
                     path,
                     validity,
-                    ..
+                    primitive,
+                    reading,
                 } => {
                     assert_eq!((holder.as_str(), member.as_str()), ("Chan", "rx_waker"));
                     assert_eq!(*validity, Validity::SelfDescribing);
@@ -2033,6 +2181,20 @@ mod tests {
                     );
                     assert_eq!(path.steps[..3], ["<3>", "queue", "chan"]);
                     assert!(path.hop.is_some());
+                    // The channel's own words: the one sender kept in
+                    // `main`, the bound of four, nothing sent.
+                    assert_eq!(
+                        *reading,
+                        Some(Reading::Mpsc {
+                            senders: 1,
+                            capacity: Some(4),
+                            unread: 0,
+                        })
+                    );
+                    assert_eq!(
+                        slot.entry(stopped),
+                        format!("mpsc {primitive:#x} (1 sender, capacity 4, 0 unread)")
+                    );
                 }
                 Attribution::Owner {
                     kind: OwnerKind::Watch,
@@ -2041,6 +2203,7 @@ mod tests {
                     path,
                     validity,
                     primitive,
+                    reading,
                 } => {
                     // The `Notified` is on one of the watch channel's
                     // `Notify`s: the slot is the watch's, named by its
@@ -2048,7 +2211,20 @@ mod tests {
                     // behalf, so the snapshot holds it.
                     assert_eq!((holder.as_str(), member.as_str()), ("Notified", "waiter"));
                     assert_eq!(*validity, Validity::SelfDescribing);
-                    assert_eq!(slot.entry(stopped), format!("watch {primitive:#x}"));
+                    // Never sent to, one handle on each side.
+                    assert_eq!(
+                        *reading,
+                        Some(Reading::Watch {
+                            version: 0,
+                            closed: false,
+                            receivers: 1,
+                            senders: 1,
+                        })
+                    );
+                    assert_eq!(
+                        slot.entry(stopped),
+                        format!("watch {primitive:#x} (version 0, 1 sender, 1 receiver)")
+                    );
                     // Inside the held `changed_impl` — the innermost of
                     // the two finds holding it — by containment: its
                     // active state's awaitee is the `Notified`.
@@ -2111,7 +2287,12 @@ mod tests {
             matches!(path.root, SlotRoot::Frame { frame: 0, .. }),
             "{path:?}"
         );
-        assert_eq!(waiter[0].entry(stopped), format!("notify {primitive:#x}"));
+        // The `Notify`'s state word says waiters are queued.
+        assert_eq!(
+            waiter[0].entry(stopped),
+            format!("notify {primitive:#x} (waiting)")
+        );
+        assert_eq!(waiter[0].label(), format!("notify {primitive:#x}"));
         assert_eq!(
             waiter[0].detail(stopped),
             "waker in Notified.waiter, in #0 waiter → waker"

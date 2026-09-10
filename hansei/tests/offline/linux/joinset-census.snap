@@ -5,9 +5,9 @@ description: "`census` over linux/joinset"
 Threads: 3 lwps, 3 in runtime 0 @ 0xADDR
 
 COUNT  RT  ROLE             STATE            LWPS
-    1  0   worker           in driver        857586
-    1  0   worker           parked           857585
-    1  0   entered runtime  block_on caller  857583
+    1  0   worker           in driver        893270
+    1  0   worker           parked           893269
+    1  0   entered runtime  block_on caller  893267
     0  0   blocking pool    0 idle, 0 busy   —
 [3 lwps]
 
@@ -19,7 +19,7 @@ COUNT  STATE
 
 COUNT  TYPE / WAITING ON
     5  async fn joinset::member
-       └─ 5  a Notify
+       └─ 5  notify
     1  async fn joinset::driver
        └─ 1  unknown
 [2 types]

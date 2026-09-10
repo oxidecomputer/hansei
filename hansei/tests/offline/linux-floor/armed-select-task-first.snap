@@ -7,7 +7,7 @@ task 3
     thread: <none>
     type: async fn armed_select::selector
     awaiting at: src/bin/armed-select.rs:48
-    waiting on: mpsc 0xADDR, oneshot rx 0xADDR, timer (deadline TS on the target's monotonic clock), watch 0xADDR
+    waiting on: mpsc 0xADDR (1 sender, capacity 4, 0 unread), oneshot rx 0xADDR (nothing sent, sender alive), timer (deadline TS on the target's monotonic clock), watch 0xADDR (version 0, 1 sender, 1 receiver)
         mpsc 0xADDR: waker in Chan.rx_waker, reached from #1 queue → chan → inner → * → data → rx_waker → waker
         oneshot rx 0xADDR: waker in Inner.rx_task (rx_task_set), reached from the future at 0xADDR inner → * → data → rx_task
         timer 0xADDR deadline TS on the target's monotonic clock

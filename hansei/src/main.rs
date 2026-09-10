@@ -848,10 +848,26 @@ pub enum Command {
         #[arg(value_parser = parse_hex_addr)]
         addr: Option<u64>,
 
-        /// Show one block family only: semaphore, join, set — or
-        /// address, the by-value fallback, which needs the address.
-        #[arg(long, value_enum)]
-        kind: Option<sync::Kind>,
+        /// Show some block families only, comma-separated: semaphore,
+        /// join, set, oneshot, mpsc, watch, notify — or address alone,
+        /// the by-value fallback, which needs the address.
+        #[arg(long, value_enum, value_delimiter = ',')]
+        kind: Vec<sync::Kind>,
+    },
+
+    /// The channels a parked waker names — `sync --kind
+    /// oneshot,mpsc,watch`: one block per oneshot, mpsc and watch
+    /// channel some task or set child holds a waker in, with the
+    /// primitive's own words (sent, closed, senders, capacity,
+    /// version) and the owner parked on each side. Found through the
+    /// waker slots, never a sweep of memory: a channel nobody is
+    /// parked on is not listed.
+    #[command(hide = true)]
+    Channels {
+        /// One channel to show, by the address the cells print, in hex
+        /// with a required leading `0x`. Every one by default.
+        #[arg(value_parser = parse_hex_addr)]
+        addr: Option<u64>,
     },
 
     /// Select a task as the cursor: the position `trace`, `whatis` and
@@ -2059,6 +2075,7 @@ pub fn dispatch<T: Target>(
             snapshot_cmd::exec_snapshot(session, &output, limits, out)?
         }
         Command::Sync { addr, kind } => sync::exec_sync(session, addr, kind, out)?,
+        Command::Channels { addr } => sync::exec_sync(session, addr, sync::CHANNELS.to_vec(), out)?,
         Command::Task { target, futures } => {
             cursor::exec_task(session, target, futures, session.fit_width(theme), out)?
         }

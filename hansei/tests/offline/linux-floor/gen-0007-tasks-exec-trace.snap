@@ -12,11 +12,11 @@ what gen_0007::GfSel3<core::future::pending::Pending<u64>, core::future::pending
       awaiting at src/bin/gen-0007.rs:129 (Suspend0, 5 locals)
 
 task 4
-Waiting on: the Notify at 0xADDR: 1 queued
+Waiting on: notify 0xADDR (waiting, 1 queued)
   notify 0xADDR: waker in Notified.waiter, in #0 waiter → waker
 
 #0  future        tokio::sync::notify::Notified
-      waiting on the Notify at 0xADDR: 1 queued
+      waiting on notify 0xADDR (waiting, 1 queued)
 #1  async fn      gen_0007::member_02
       awaiting at src/bin/gen-0007.rs:148 (Suspend0, 3 locals)
 

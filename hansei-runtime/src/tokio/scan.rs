@@ -620,6 +620,11 @@ impl<'b, T: Target> Scanner<'_, 'b, T> {
                     self.reference(TaskAddr(task), ReferenceSource::NotifyWaker, key);
                 }
             }
+            Some(ResourceObservation::Oneshot(oneshot)) => {
+                if let Some(task) = oneshot.rx_waker.as_ref().and_then(|w| w.task()) {
+                    self.reference(TaskAddr(task), ReferenceSource::OneshotWaker, key);
+                }
+            }
             // A timer entry's waker is the wheel's to hand over: the
             // sleep names no task itself.
             Some(ResourceObservation::Timer(_)) | None => {}

@@ -2,4 +2,11 @@
 source: hansei/src/offline.rs
 description: "`sync` over linux-floor/armed-select"
 ---
-task 3 is party to no decoded relation: nothing waits to join it, and it blocks on no semaphore and drives no set
+oneshot 0xADDR: nothing sent, sender alive
+    rx: task 3
+
+mpsc 0xADDR: 1 sender, capacity 4, 0 unread
+    rx: task 3
+
+watch 0xADDR: version 0, 1 sender, 1 receiver
+    rx: task 3

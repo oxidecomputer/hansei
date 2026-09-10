@@ -22,3 +22,6 @@ a futures_util::stream::futures_unordered::FuturesUnordered<gen_0007::leaf_01> (
 
 a tokio::task::join_set::JoinSet<u64> (set 0xADDR): 2 members, driven by task 5 (`v1`)
     Members (idle): task 7, task 6
+
+notify 0xADDR: waiting
+    rx: task 4

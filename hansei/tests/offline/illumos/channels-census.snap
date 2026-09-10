@@ -19,11 +19,11 @@ COUNT  STATE
 
 COUNT  TYPE / WAITING ON
     1  async fn channels::hold
-       └─ 1  unknown
+       └─ 1  oneshot rx
     1  async fn channels::notify_waiter
-       └─ 1  a Notify
+       └─ 1  notify
     1  async fn channels::recv_waiter
-       └─ 1  mpsc rx
+       └─ 1  mpsc
 [3 types]
 
 Futures: 3 in flight, on 8 await-chain frames, up to 3 deep

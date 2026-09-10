@@ -1039,11 +1039,101 @@ pub enum WaitTarget {
     /// listing prints one row per waiter.
     Notify {
         addr: u64,
+        /// The `Notify`'s state word, where it read: the low bits say
+        /// whether waiters are queued.
+        state: Option<u64>,
         /// Nodes in the wait list, where the list was walked: a
         /// verified wait walked it; a held future's description reads
-        /// nothing past the future.
+        /// the state word and nothing past it.
         waiters: Option<usize>,
     },
+    /// A `oneshot::Receiver`, parked with its waker in the shared
+    /// `Inner`'s `rx_task` until the sender completes. Only the
+    /// receiver is ever a chain leaf: a sender's `poll_closed` is
+    /// reached through its `tx_task` slot, never through a wait.
+    Oneshot {
+        /// The `Inner` behind both handles' `Arc`.
+        addr: u64,
+        state: OneshotState,
+    },
+    /// A watch receiver's `changed`, queued on one of the channel's
+    /// `Notify`s: a `Notified` whose `Notify` lies in the `Shared` a
+    /// `watch::Receiver` in the same chain points at.
+    Watch {
+        /// The `Shared` behind the receiver's `Arc`.
+        addr: u64,
+        /// The published version.
+        version: u64,
+        /// Whether the sender side closed.
+        closed: bool,
+        receivers: u64,
+        senders: u64,
+    },
+}
+
+/// A oneshot's shared state word with the presence of its value: what
+/// the sender and receiver sides each say about the channel.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub struct OneshotState {
+    /// The `Inner.state` word.
+    pub word: u64,
+    /// Whether `Inner.value` holds a value, where its discriminant
+    /// read.
+    pub value_present: Option<bool>,
+}
+
+/// Which handle's slot a oneshot reading is worded for.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum OneshotSide {
+    Rx,
+    Tx,
+}
+
+impl OneshotState {
+    /// The receiver stored its waker in `rx_task`.
+    pub fn rx_task_set(&self) -> bool {
+        self.word & hansei_bundle::tokio::oneshot::RX_TASK_SET != 0
+    }
+
+    /// The sender stored its waker in `tx_task`.
+    pub fn tx_task_set(&self) -> bool {
+        self.word & hansei_bundle::tokio::oneshot::TX_TASK_SET != 0
+    }
+
+    /// The sender completed: sent a value, or dropped.
+    pub fn complete(&self) -> bool {
+        self.word & hansei_bundle::tokio::oneshot::VALUE_SENT != 0
+    }
+
+    /// The receiver closed or dropped.
+    pub fn closed(&self) -> bool {
+        self.word & hansei_bundle::tokio::oneshot::CLOSED != 0
+    }
+
+    /// The channel's state in words, from one side: what the sender
+    /// has done, and whether the other handle is still there. A parked
+    /// receiver reads `nothing sent, sender alive`; a sender watching
+    /// for the receiver reads `nothing sent, receiver alive`.
+    pub fn words(&self, side: OneshotSide) -> String {
+        let mut parts: Vec<&str> = Vec::new();
+        match (self.complete(), self.value_present) {
+            (true, Some(true)) => parts.push("value sent"),
+            (true, Some(false)) => parts.extend(["nothing sent", "sender gone"]),
+            (true, None) => parts.push("sender completed"),
+            (false, _) => {
+                parts.push("nothing sent");
+                if side == OneshotSide::Rx && !self.closed() {
+                    parts.push("sender alive");
+                }
+            }
+        }
+        if self.closed() {
+            parts.push("receiver closed");
+        } else if side == OneshotSide::Tx {
+            parts.push("receiver alive");
+        }
+        parts.join(", ")
+    }
 }
 
 /// The bucket a wait falls in: what a tally counts, without the
@@ -1073,6 +1163,12 @@ pub enum WaitKind {
     /// A `Notify`, by its address — the primitive a slot in a queued
     /// `Notified` node names.
     Notify { addr: u64 },
+    /// A oneshot, by the address of its `Inner` — the primitive a slot
+    /// in either task cell names.
+    Oneshot { addr: u64 },
+    /// A watch channel, by the address of its `Shared` — the primitive
+    /// a slot queued on one of its `Notify`s names.
+    Watch { addr: u64 },
 }
 
 impl WaitTarget {
@@ -1092,10 +1188,14 @@ impl WaitTarget {
                 Some(owner) => format!("a {owner} (semaphore {addr:#x})"),
                 None => format!("the semaphore at {addr:#x}"),
             },
-            // A channel has one receiver, so its address groups nothing;
-            // a `Notify` is waited on by many, so its address does.
-            Self::Channel { .. } => "mpsc rx".to_string(),
-            Self::Notify { addr, .. } => format!("the Notify at {addr:#x}"),
+            // The kind word alone: what a slot in the same primitive
+            // is bucketed under, so a leaf's reading and a slot's share
+            // a bucket. Which `Notify` is a `--with waiting-on 0x…`
+            // filter's question, not the bucket's.
+            Self::Channel { .. } => "mpsc".to_string(),
+            Self::Notify { .. } => "notify".to_string(),
+            Self::Oneshot { .. } => "oneshot rx".to_string(),
+            Self::Watch { .. } => "watch".to_string(),
         }
     }
 
@@ -1112,8 +1212,65 @@ impl WaitTarget {
             Self::Semaphore { owner, .. } => WaitKind::Semaphore { owner: *owner },
             Self::Channel { addr, .. } => WaitKind::Channel { addr: *addr },
             Self::Notify { addr, .. } => WaitKind::Notify { addr: *addr },
+            Self::Oneshot { addr, .. } => WaitKind::Oneshot { addr: *addr },
+            Self::Watch { addr, .. } => WaitKind::Watch { addr: *addr },
         }
     }
+}
+
+/// `1 sender` / `2 senders`.
+pub fn counted_noun(n: u64, noun: &str) -> String {
+    match n {
+        1 => format!("1 {noun}"),
+        n => format!("{n} {noun}s"),
+    }
+}
+
+/// The words a channel's reading appends to its cell entry, without
+/// the parentheses: the live senders, the capacity where the channel
+/// is bounded, and the slots claimed past the read index.
+pub fn channel_words(senders: u64, capacity: Option<u64>, unread: u64) -> String {
+    let mut words = counted_noun(senders, "sender");
+    if let Some(capacity) = capacity {
+        words.push_str(&format!(", capacity {capacity}"));
+    }
+    words.push_str(&format!(", {unread} unread"));
+    words
+}
+
+/// The words a `Notify`'s reading appends to its cell entry: what its
+/// state word says — `idle`, `waiting`, `notified` — and, where the
+/// wait list was walked, how many are queued. Empty where neither
+/// read.
+pub fn notify_words(state: Option<u64>, waiters: Option<usize>) -> String {
+    use hansei_bundle::tokio::notify;
+    let mut words: Vec<String> = Vec::new();
+    if let Some(state) = state {
+        words.push(match state & notify::STATE_MASK {
+            notify::EMPTY => "idle".to_string(),
+            notify::WAITING => "waiting".to_string(),
+            notify::NOTIFIED => "notified".to_string(),
+            other => format!("state {other:#b}"),
+        });
+    }
+    if let Some(waiters) = waiters {
+        words.push(format!("{waiters} queued"));
+    }
+    words.join(", ")
+}
+
+/// The words a watch channel's reading appends to its cell entry: the
+/// published version, both handle counts, and whether it closed.
+pub fn watch_words(version: u64, closed: bool, receivers: u64, senders: u64) -> String {
+    let mut words = format!(
+        "version {version}, {}, {}",
+        counted_noun(senders, "sender"),
+        counted_noun(receivers, "receiver")
+    );
+    if closed {
+        words.push_str(", closed");
+    }
+    words
 }
 
 /// One node in a semaphore's wait queue.
@@ -1145,7 +1302,7 @@ pub struct NotifyWaiter {
 }
 
 /// The waker registered in a wait-queue node.
-#[derive(Clone, Debug)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub enum QueuedWaker {
     /// A tokio task waker: the wake edge points at this task.
     Task { addr: u64, task_id: Option<u64> },
@@ -1280,21 +1437,37 @@ impl fmt::Display for WaitTarget {
                 senders,
                 capacity,
                 unread,
+            } => write!(
+                f,
+                "mpsc {addr:#x} ({})",
+                channel_words(*senders, *capacity, *unread)
+            ),
+            Self::Notify {
+                addr,
+                state,
+                waiters,
             } => {
-                let plural = if *senders == 1 { "" } else { "s" };
-                write!(f, "mpsc rx {addr:#x}: {senders} sender{plural}")?;
-                if let Some(capacity) = capacity {
-                    write!(f, ", capacity {capacity}")?;
-                }
-                write!(f, ", {unread} unread")
-            }
-            Self::Notify { addr, waiters } => {
-                write!(f, "the Notify at {addr:#x}")?;
-                if let Some(waiters) = waiters {
-                    write!(f, ": {waiters} queued")?;
+                write!(f, "notify {addr:#x}")?;
+                let words = notify_words(*state, *waiters);
+                if !words.is_empty() {
+                    write!(f, " ({words})")?;
                 }
                 Ok(())
             }
+            Self::Oneshot { addr, state } => {
+                write!(f, "oneshot rx {addr:#x} ({})", state.words(OneshotSide::Rx))
+            }
+            Self::Watch {
+                addr,
+                version,
+                closed,
+                receivers,
+                senders,
+            } => write!(
+                f,
+                "watch {addr:#x} ({})",
+                watch_words(*version, *closed, *receivers, *senders)
+            ),
         }
     }
 }
@@ -1389,6 +1562,91 @@ mod tests {
 
     /// The compact wait spellings every surface shares — the row, the
     /// trace's `waiting on`, the graph — and the kind-level labels
+    /// The channel targets: each printed as the kind word, the
+    /// primitive's address and its words in parentheses — the same
+    /// shape a slot entry for the primitive takes — with the bucket a
+    /// slot in the same primitive is filed under.
+    #[test]
+    fn test_channel_target_words() {
+        let channel = WaitTarget::Channel {
+            addr: 0x9000,
+            senders: 1,
+            capacity: Some(4),
+            unread: 0,
+        };
+        assert_eq!(
+            channel.to_string(),
+            "mpsc 0x9000 (1 sender, capacity 4, 0 unread)"
+        );
+        assert_eq!(channel.group_label(), "mpsc");
+        let unbounded = WaitTarget::Channel {
+            addr: 0x9000,
+            senders: 2,
+            capacity: None,
+            unread: 3,
+        };
+        assert_eq!(unbounded.to_string(), "mpsc 0x9000 (2 senders, 3 unread)");
+
+        let parked = OneshotState {
+            word: 0b0001,
+            value_present: Some(false),
+        };
+        let oneshot = WaitTarget::Oneshot {
+            addr: 0xa000,
+            state: parked,
+        };
+        assert_eq!(
+            oneshot.to_string(),
+            "oneshot rx 0xa000 (nothing sent, sender alive)"
+        );
+        assert_eq!(oneshot.group_label(), "oneshot rx");
+        assert_eq!(oneshot.kind(), WaitKind::Oneshot { addr: 0xa000 });
+
+        let watch = WaitTarget::Watch {
+            addr: 0xc000,
+            version: 3,
+            closed: true,
+            receivers: 2,
+            senders: 0,
+        };
+        assert_eq!(
+            watch.to_string(),
+            "watch 0xc000 (version 3, 0 senders, 2 receivers, closed)"
+        );
+        assert_eq!(watch.group_label(), "watch");
+        assert_eq!(watch.kind(), WaitKind::Watch { addr: 0xc000 });
+    }
+
+    /// The oneshot's words from each side, over every state the bits
+    /// and the value can be in: a parked receiver, a parked sender, a
+    /// sender that dropped without sending, a value sent, a receiver
+    /// closed, and a completion whose value did not read.
+    #[test]
+    fn test_oneshot_state_words() {
+        let state = |word, value_present| OneshotState {
+            word,
+            value_present,
+        };
+        let rx = |s: OneshotState| s.words(OneshotSide::Rx);
+        let tx = |s: OneshotState| s.words(OneshotSide::Tx);
+        let parked = state(0b1001, Some(false));
+        assert!(parked.rx_task_set() && parked.tx_task_set());
+        assert!(!parked.complete() && !parked.closed());
+        assert_eq!(rx(parked), "nothing sent, sender alive");
+        assert_eq!(tx(parked), "nothing sent, receiver alive");
+        let dropped = state(0b0011, Some(false));
+        assert_eq!(rx(dropped), "nothing sent, sender gone");
+        assert_eq!(tx(dropped), "nothing sent, sender gone, receiver alive");
+        let sent = state(0b0011, Some(true));
+        assert_eq!(rx(sent), "value sent");
+        let closed = state(0b1100, Some(false));
+        assert!(closed.closed());
+        assert_eq!(rx(closed), "nothing sent, receiver closed");
+        assert_eq!(tx(closed), "nothing sent, receiver closed");
+        let unread = state(0b0010, None);
+        assert_eq!(rx(unread), "sender completed");
+    }
+
     /// grouping buckets by.
     #[test]
     fn test_wait_target_spellings() {

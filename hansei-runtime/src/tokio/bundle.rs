@@ -20,9 +20,10 @@ use super::discovery::{
 use super::observe::{
     AcquireObservation, ChannelObservation, Consistency, IoFutureState, IoObservation,
     JoinObservation, NotifiedObservation, NotifiedState, NotifyObservation, Observed,
-    QueueObservation, ReadContext, RecvObservation, ReferenceSink, ReferenceSource,
-    ResourceObservation, ScanBudget, ScanLimits, SlotState, TaskReference, TimerObservation,
-    TimerRegistrationState, ValueKey, WalkIssue, WalkIssueKind, issue_of, lock_consistency,
+    OneshotObservation, QueueObservation, ReadContext, RecvObservation, ReferenceSink,
+    ReferenceSource, ResourceObservation, ScanBudget, ScanLimits, SlotState, TaskReference,
+    TimerObservation, TimerRegistrationState, ValueKey, WalkIssue, WalkIssueKind, issue_of,
+    lock_consistency,
 };
 use super::semantics::SemanticIndex;
 use super::work::{DiscoveryWorld, Registry, Roots, sweep};
@@ -49,6 +50,23 @@ use std::collections::BTreeMap;
 /// memory (or a pathological program), and the walk must report it
 /// rather than hang.
 pub(crate) const MAX_AWAIT_DEPTH: usize = 64;
+
+/// The watch receiver a `changed` frame holds, whose `Shared` names
+/// the channel a `Notified` on one of its `Notify`s waits for.
+const WATCH_RECEIVER: &str = "tokio::sync::watch::Receiver<";
+/// The shared state itself, as `changed_impl` borrows it.
+const WATCH_SHARED: &str = "tokio::sync::watch::Shared<";
+
+/// Whether an `Option<T>` value holds a `Some`, by its active variant;
+/// `None` where the bytes decode to no variant or the type is not an
+/// enum.
+pub fn option_present(value: Value<'_>) -> Option<bool> {
+    match value.ty.active_variant(value.bytes)?.ok()?.name {
+        "Some" => Some(true),
+        "None" => Some(false),
+        _ => None,
+    }
+}
 
 /// The io resource types the fd join recognizes: the fully-qualified
 /// name a frame member (or its pointee) must bear, and the two walk
@@ -1352,63 +1370,151 @@ impl<'b, T: Target> Context<'b, T> {
     /// member, an unreadable pointee, a walk the bundle did not bind —
     /// is a silent `None`, and the io row spells the address instead.
     pub fn io_resource_fd(&self, frames: &[Value<'b>], scheduled_io: u64) -> Option<i32> {
-        for frame in frames {
-            for member in frame.ty.members() {
-                if member.ty().size() == 0 {
-                    continue;
-                }
-                let value = self.resource_member(*frame, &member)?;
-                let Some(value) = value else { continue };
-                let Some(&(_, shared, fd)) = IO_RESOURCES
-                    .iter()
-                    .find(|(name, ..)| *name == value.ty.name())
-                else {
+        let is_resource = |name: &str| IO_RESOURCES.iter().any(|(known, ..)| *known == name);
+        for value in self.frame_members(frames, &is_resource) {
+            let Some(&(_, shared, fd)) = IO_RESOURCES
+                .iter()
+                .find(|(name, ..)| *name == value.ty.name())
+            else {
+                continue;
+            };
+            let Ok(Some(Walked::At(owned))) = self.walk(shared).try_walk(value) else {
+                continue;
+            };
+            if owned.addr != scheduled_io {
+                continue;
+            }
+            return self.walk(fd).try_read::<i32>(value).ok().flatten();
+        }
+        None
+    }
+
+    /// The watch channel whose receivers queue on the `Notify` at
+    /// `notify`, where a `watch::Receiver` held in `frames` — by value,
+    /// or by reference as `changed`'s `self` — points at its `Shared`:
+    /// the `Shared`'s address and the words that describe the channel.
+    /// Enrichment only, like the fd join: nothing is dereferenced but
+    /// the `Shared` a receiver in the frames already names, and every
+    /// miss is a silent `None`.
+    pub fn watch_target(&self, frames: &[Value<'b>], notify: u64) -> Option<WaitTarget> {
+        let is_receiver = |name: &str| name.starts_with(WATCH_RECEIVER);
+        for receiver in self.frame_members(frames, &is_receiver) {
+            let Ok(Some(Walked::At(ptr))) =
+                self.walk(WalkRole::WatchReceiverShared).try_walk(receiver)
+            else {
+                continue;
+            };
+            let Some(arc_ty) = ptr.ty.pointer_target() else {
+                continue;
+            };
+            let Ok(addr) = ptr.parse::<u64>(self.proc) else {
+                continue;
+            };
+            if !self.mappings.contains_addr(addr) {
+                continue;
+            }
+            let Ok(arc) = Value::read(self.proc, arc_ty, addr) else {
+                continue;
+            };
+            if let Some(target) = self.watch_shared_target(arc, notify) {
+                return Some(target);
+            }
+        }
+        // `changed`'s own frame keeps nothing past its await; the
+        // `changed_impl` below it holds `&Shared<T>`. The `ArcInner`
+        // around that `Shared` is a type the shared-state roles root
+        // at — the one whose `data` is this `Shared`'s type — and the
+        // `Shared` sits at `data`'s offset into it.
+        let is_shared = |name: &str| name.starts_with(WATCH_SHARED);
+        let arcs = self
+            .view
+            .bundle()
+            .walks
+            .entries
+            .get(&WalkRole::WatchSharedState)
+            .map(|binding| binding.roots.as_slice())
+            .unwrap_or_default();
+        for shared in self.frame_members(frames, &is_shared) {
+            for &root in arcs {
+                let Some(arc_ty) = self.view.ty(root) else {
                     continue;
                 };
-                let Ok(Some(Walked::At(owned))) = self.walk(shared).try_walk(value) else {
+                let Some(data) = arc_ty.member("data") else {
                     continue;
                 };
-                if owned.addr != scheduled_io {
+                if data.ty().id() != shared.ty.id() {
                     continue;
                 }
-                return self.walk(fd).try_read::<i32>(value).ok().flatten();
+                let Some(addr) = shared.addr.checked_sub(data.offset()) else {
+                    continue;
+                };
+                if let Ok(arc) = Value::read(self.proc, arc_ty, addr)
+                    && let Some(target) = self.watch_shared_target(arc, notify)
+                {
+                    return Some(target);
+                }
             }
         }
         None
     }
 
-    /// One frame member as a resource candidate: the member itself, or
-    /// — for a reference member (`&mut UnixStream` in a `Read` future)
-    /// — its pointee, read from the target. `Some(None)` is a member
-    /// that is simply not a resource; the outer `Option` is never
-    /// `None` (the signature rides `?` at the call site).
-    #[allow(clippy::option_option)]
-    fn resource_member(
-        &self,
-        frame: Value<'b>,
-        member: &hansei_bundle::BundleMember<'b>,
-    ) -> Option<Option<Value<'b>>> {
-        let start = member.offset() as usize;
-        let end = start + member.ty().size() as usize;
-        let Some(bytes) = frame.bytes.get(start..end) else {
-            return Some(None);
+    /// The watch channel behind `arc`, an `ArcInner<watch::Shared<T>>`
+    /// value, as a wait target — when the `Notify` at `notify` is one
+    /// of its `notify_rx` array. Reads the state word and both handle
+    /// counts from the value.
+    pub fn watch_shared_target(&self, arc: Value<'b>, notify: u64) -> Option<WaitTarget> {
+        let Ok(Some(Walked::At(notify_rx))) =
+            self.walk(WalkRole::WatchSharedNotifyRx).try_walk(arc)
+        else {
+            return None;
         };
-        let value = Value::new(member.ty(), frame.addr + member.offset(), bytes);
-        if IO_RESOURCES
-            .iter()
-            .any(|(name, ..)| *name == value.ty.name())
-        {
-            return Some(Some(value));
+        let within =
+            notify >= notify_rx.addr && notify - notify_rx.addr < notify_rx.bytes.len() as u64;
+        if !within {
+            return None;
         }
-        if let Some(target) = value.ty.pointer_target()
-            && IO_RESOURCES.iter().any(|(name, ..)| *name == target.name())
-            && let Ok(ptr) = value.parse::<u64>(self.proc)
-            && self.mappings.contains_addr(ptr)
-            && let Ok(pointee) = Value::read(self.proc, target, ptr)
-        {
-            return Some(Some(pointee));
+        let word = |role: WalkRole| self.walk(role).try_read::<u64>(arc).ok().flatten();
+        let state = word(WalkRole::WatchSharedState)?;
+        let data = arc.ty.member("data").map(|m| m.offset()).unwrap_or(0);
+        Some(WaitTarget::Watch {
+            addr: arc.addr + data,
+            version: state >> hansei_bundle::tokio::watch::VERSION_SHIFT,
+            closed: state & hansei_bundle::tokio::watch::CLOSED != 0,
+            receivers: word(WalkRole::WatchSharedRxCount)?,
+            senders: word(WalkRole::WatchSharedTxCount)?,
+        })
+    }
+
+    /// The values of the accepted types held in `frames`: each member
+    /// whose type `accept`s, or — for a reference member (`&mut
+    /// UnixStream` in a `Read` future, `&mut Receiver` in `changed`) —
+    /// whose pointee does, read from the target.
+    fn frame_members(&self, frames: &[Value<'b>], accept: &dyn Fn(&str) -> bool) -> Vec<Value<'b>> {
+        let mut values = Vec::new();
+        for frame in frames {
+            for member in frame.ty.members() {
+                if member.ty().size() == 0 {
+                    continue;
+                }
+                let start = member.offset() as usize;
+                let end = start + member.ty().size() as usize;
+                let Some(bytes) = frame.bytes.get(start..end) else {
+                    continue;
+                };
+                let value = Value::new(member.ty(), frame.addr + member.offset(), bytes);
+                if accept(value.ty.name()) {
+                    values.push(value);
+                } else if let Some(target) = value.ty.pointer_target()
+                    && accept(target.name())
+                    && let Ok(ptr) = value.parse::<u64>(self.proc)
+                    && self.mappings.contains_addr(ptr)
+                    && let Ok(pointee) = Value::read(self.proc, target, ptr)
+                {
+                    values.push(pointee);
+                }
+            }
         }
-        Some(None)
+        values
     }
 
     /// The deadline a `Sleep` caches, on the target's monotonic clock:
@@ -2888,6 +2994,9 @@ impl<'b, T: Target> Context<'b, T> {
             ResourceKind::Notified => self
                 .observe_notified(value, read)
                 .map(ResourceObservation::Notified),
+            ResourceKind::OneshotRecv => self
+                .observe_oneshot(value, read)
+                .map(ResourceObservation::Oneshot),
         };
         match observed {
             Ok(observation) => Observed::of(observation),
@@ -3019,6 +3128,77 @@ impl<'b, T: Target> Context<'b, T> {
             node: node.addr,
             notification,
             calls,
+        })
+    }
+
+    /// A `oneshot::Receiver`: the `ArcInner<Inner<T>>` its pointer
+    /// names, read whole under `read`, and from it the state word, the
+    /// value's presence and the receiver's task cell. The cell is read
+    /// only where the state word says a waker is in it: a clear bit
+    /// leaves `MaybeUninit` bytes nothing vouches for.
+    pub fn observe_oneshot(
+        &self,
+        receiver: Value<'b>,
+        read: &ReadContext<'_>,
+    ) -> Result<OneshotObservation> {
+        self.observe_oneshot_arc(ValueKey::of(receiver), receiver, read)
+    }
+
+    /// The oneshot behind a `Receiver` value, keyed as `future`.
+    fn observe_oneshot_arc(
+        &self,
+        future: ValueKey,
+        receiver: Value<'b>,
+        read: &ReadContext<'_>,
+    ) -> Result<OneshotObservation> {
+        let ptr = self
+            .walk(WalkRole::OneshotInner)
+            .walk_at_with(read, receiver)?;
+        let arc_ty = ptr
+            .ty
+            .pointer_target()
+            .ok_or_else(|| anyhow!("oneshot::Receiver.inner is not pointer-shaped"))?;
+        let arc_addr: u64 = ptr.parse(self.proc)?;
+        ensure!(arc_addr != 0, "the oneshot receiver's Arc pointer is null");
+        let arc = ValueKey {
+            addr: arc_addr,
+            ty: arc_ty.id(),
+        };
+        let value = self.read_keyed(arc, read)?;
+        self.observe_oneshot_inner(future, value, read)
+    }
+
+    /// The oneshot's words, from its `ArcInner<Inner<T>>` value.
+    pub fn observe_oneshot_inner(
+        &self,
+        future: ValueKey,
+        arc: Value<'b>,
+        read: &ReadContext<'_>,
+    ) -> Result<OneshotObservation> {
+        let word: u64 = self.walk(WalkRole::OneshotState).read_with(read, arc)?;
+        let inner = arc.addr + arc.ty.member("data").map(|m| m.offset()).unwrap_or(0);
+        let value_present = match self.walk(WalkRole::OneshotValue).try_walk_with(read, arc) {
+            Ok(Some(Walked::At(value))) => option_present(value),
+            _ => None,
+        };
+        let state = OneshotState {
+            word,
+            value_present,
+        };
+        let rx_waker = if state.rx_task_set() {
+            match self.walk(WalkRole::OneshotRxTask).walk_with(read, arc)? {
+                Walked::At(raw) => Some(self.raw_waker(raw)?),
+                _ => None,
+            }
+        } else {
+            None
+        };
+        Ok(OneshotObservation {
+            future,
+            arc: ValueKey::of(arc),
+            inner,
+            state,
+            rx_waker,
         })
     }
 
@@ -3432,6 +3612,16 @@ impl<'b, T: Target> Context<'b, T> {
                 .read_with(read, block)
                 .map_err(|e| issue_of(key, &e))?;
         }
+    }
+
+    /// One `Notify`'s state word alone — what a description of a held
+    /// `Notified` reads, since the list behind it may hold thousands.
+    /// `None` where the value or the word did not read.
+    pub fn notify_state(&self, notify: ValueKey, read: &ReadContext<'_>) -> Option<u64> {
+        let value = self.read_keyed(notify, read).ok()?;
+        self.walk(WalkRole::NotifyState)
+            .read_with::<u64>(read, value)
+            .ok()
     }
 
     /// Read one `Notify`, on explicit demand: its state word, the

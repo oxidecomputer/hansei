@@ -5,9 +5,9 @@ description: "`census` over linux-floor/nested-await"
 Threads: 3 lwps, 3 in runtime 0 @ 0xADDR
 
 COUNT  RT  ROLE             STATE            LWPS
-    1  0   worker           in driver        861582
-    1  0   worker           parked           861581
-    1  0   entered runtime  block_on caller  861579
+    1  0   worker           in driver        950533
+    1  0   worker           parked           950534
+    1  0   entered runtime  block_on caller  950531
     0  0   blocking pool    0 idle, 0 busy   —
 [3 lwps]
 
@@ -19,7 +19,7 @@ COUNT  STATE
 
 COUNT  TYPE / WAITING ON
     1  async fn nested_await::outer
-       └─ 1  unknown
+       └─ 1  oneshot rx
 [1 type]
 
 Futures: 1 in flight, on 4 await-chain frames, up to 4 deep

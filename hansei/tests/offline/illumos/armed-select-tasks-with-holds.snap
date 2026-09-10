@@ -2,7 +2,7 @@
 source: hansei/src/offline.rs
 description: "`tasks --with holds >0` over illumos/armed-select"
 ---
-ID  STATE  FUTURES  AWAITING AT                 WAITING ON                                                                       TYPE
-3   idle         4  src/bin/armed-select.rs:48  mpsc 0xADDR, oneshot rx 0xADDR, timer (deadline TS), watch 0xADDR  async fn armed_select::selector
-4   idle         1  src/bin/armed-select.rs:66  oneshot rx 0xADDR                                                              async fn armed_select::holder
+ID  STATE  FUTURES  AWAITING AT                 WAITING ON                                                                                                                                                                       TYPE
+3   idle         4  src/bin/armed-select.rs:48  mpsc 0xADDR (1 sender, capacity 4, 0 unread), oneshot rx 0xADDR (nothing sent, sender alive), timer (deadline TS), watch 0xADDR (version 0, 1 sender, 1 receiver)  async fn armed_select::selector
+4   idle         1  src/bin/armed-select.rs:66  oneshot rx 0xADDR (nothing sent, sender alive)                                                                                                                                 async fn armed_select::holder
 [2 tasks]

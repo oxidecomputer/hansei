@@ -568,6 +568,7 @@ fn assert_resource(program: &str, bundle: &Bundle, key: &str, kind: hansei_bundl
             ResourceKind::IoOperation(_) => SemanticRuleKind::TokioIoState,
             ResourceKind::MpscRecv => SemanticRuleKind::TokioMpscRecvState,
             ResourceKind::Notified => SemanticRuleKind::TokioNotifiedState,
+            ResourceKind::OneshotRecv => SemanticRuleKind::TokioOneshotRecvState,
         };
         assert_eq!(state.kind, expected, "{program}: {name}");
         assert_eq!(state.origin, rule.origin, "{program}: {name}");
@@ -2227,6 +2228,14 @@ fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
             hansei_bundle::ResourceKind::Notified,
         );
         assert_no_resource(program, bundle, "tokio::sync::mpsc::bounded::Receiver<u32>");
+        // A oneshot receiver is its own future, so the binding is on
+        // the receiver itself.
+        assert_resource(
+            program,
+            bundle,
+            "tokio::sync::oneshot::Receiver<u32>",
+            hansei_bundle::ResourceKind::OneshotRecv,
+        );
         // The tokio-sync formatters have no fixture elsewhere, and are the
         // most intricate detectors (multi-path, cross-pointer, waiter queues).
         // Assert their fully-resolved paths so a wrong-member navigation trips

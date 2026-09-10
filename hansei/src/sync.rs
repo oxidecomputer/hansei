@@ -6,8 +6,10 @@
 //! hansei knows — `graph` turned inside out. One block per contended
 //! semaphore (the primitive backing tokio's Mutex, RwLock and
 //! Semaphore), per joined task (a task as the resource a `JoinHandle`
-//! names), and per driven task set; an address no primitive owns falls
-//! through to the tasks whose frames hold it by value.
+//! names), per driven task set, and per channel a parked waker names
+//! — a oneshot, an mpsc, a watch — with the owner on each side; an
+//! address no primitive owns falls through to the tasks whose frames
+//! hold it by value.
 
 use crate::relations::Relations;
 use crate::summary::counted;
@@ -15,10 +17,12 @@ use crate::tasks::{future_name, task_label};
 use crate::{Session, print_warnings};
 
 use anyhow::{Result, bail};
-use hansei_bundle::names;
+use hansei_bundle::{BundleTypeId, names};
 use hansei_runtime::tokio::assess::PollingBarrier;
+use hansei_runtime::tokio::attribution::{Attributed, Attribution, OwnerKind, Reading};
 use hansei_runtime::tokio::bundle::{QueuedWaker, SemaphoreWaiter, WaitTarget};
 use hansei_runtime::tokio::graph::{Analysis, BarrierRelation, TaskRef};
+use hansei_runtime::tokio::wakers::Owner;
 use hansei_runtime::tokio::{Lifecycle, bundle, census};
 
 use std::collections::BTreeMap;
@@ -37,6 +41,32 @@ pub enum Kind {
     Set,
     /// The by-value fallback: tasks whose frames hold an address.
     Address,
+    /// oneshot channels a parked waker names: the state, and the
+    /// owner on each side.
+    Oneshot,
+    /// mpsc channels a parked receiver names: the words a `recv`
+    /// prints, the receiver, and the senders blocked on capacity.
+    Mpsc,
+    /// watch channels a parked receiver names: the version, the
+    /// handle counts, and the receivers waiting for a change.
+    Watch,
+    /// `Notify`s a queued waiter names: the state word and the tasks
+    /// parked on it.
+    Notify,
+}
+
+/// The channel kinds, in the order their blocks print — what
+/// `channels` asks for.
+pub const CHANNELS: [Kind; 3] = [Kind::Oneshot, Kind::Mpsc, Kind::Watch];
+
+/// Every family whose blocks are built from the waker slots, in the
+/// order their blocks print: the channels, then the `Notify`s.
+const SLOT_FAMILIES: [Kind; 4] = [Kind::Oneshot, Kind::Mpsc, Kind::Watch, Kind::Notify];
+
+/// Whether a listing narrowed to `kinds` prints the `kind` family: an
+/// empty list is every family.
+fn wants(kinds: &[Kind], kind: Kind) -> bool {
+    kinds.is_empty() || kinds.contains(&kind)
 }
 
 /// Everything the printers read, taken apart from the session so the
@@ -48,18 +78,25 @@ struct View<'a> {
     sets: &'a [census::FutureSet],
     join_sets: &'a [census::JoinSet],
     impls: &'a names::ImplFold,
+    /// The attributed waker slots, which name the channels.
+    slots: &'a Attributed,
+    /// A type's size, for the extent of a channel reached through a
+    /// hop — the range a sender blocked on its semaphore falls in.
+    size_of: &'a dyn Fn(BundleTypeId) -> Option<u64>,
 }
 
 pub(crate) fn exec_sync<T: proc::Target>(
     session: &Session<'_, T>,
     addr: Option<u64>,
-    kind: Option<Kind>,
+    kinds: Vec<Kind>,
     out: &mut dyn io::Write,
 ) -> Result<()> {
     let analysis = session.analysis();
     print_warnings(&analysis.errors)?;
     let relations = session.relations();
     let census = session.census();
+    let bundle_view = session.ctx.view;
+    let size_of = |ty: BundleTypeId| bundle_view.ty(ty).map(|t| t.size());
     let view = View {
         list: &session.tasks,
         analysis,
@@ -67,27 +104,33 @@ pub(crate) fn exec_sync<T: proc::Target>(
         sets: &census.sets,
         join_sets: &census.join_sets,
         impls: &session.impl_fold,
+        slots: session.attribution(),
+        size_of: &size_of,
     };
+    if kinds.contains(&Kind::Address) && kinds.len() > 1 {
+        bail!("--kind address is a reading of one address, not a block family to combine");
+    }
     if let Some(addr) = addr {
         let task_at = |addr: u64| session.extents().locate(addr).map(|(index, _)| index);
         let references = |addr: u64| collect_references(session, view.impls, addr);
-        return print_addressed(&view, addr, kind, &task_at, &references, out);
+        return print_addressed(&view, addr, &kinds, &task_at, &references, out);
     }
-    if kind == Some(Kind::Address) {
+    if kinds.contains(&Kind::Address) {
         bail!("--kind address narrows an address lookup; `sync 0x…` names one");
     }
     // The omitted-target rule: a task cursor scopes the listing to the
     // relations that task is party to; without one, everything.
     if let Some(index) = crate::cursor::cursor_task(session) {
-        return print_task_scoped(&view, index, kind, out);
+        return print_task_scoped(&view, index, &kinds, out);
     }
-    print_listing(&view, kind, out)
+    print_listing(&view, &kinds, out)
 }
 
 /// The bare listing: every contended resource, one block each —
 /// semaphores in address order, then joined tasks in task order, then
-/// nonempty sets in address order.
-fn print_listing(view: &View<'_>, kind: Option<Kind>, out: &mut dyn io::Write) -> Result<()> {
+/// nonempty sets in address order, then each channel family in
+/// address order.
+fn print_listing(view: &View<'_>, kinds: &[Kind], out: &mut dyn io::Write) -> Result<()> {
     let mut printed = 0usize;
     let mut sep = |out: &mut dyn io::Write| -> Result<()> {
         if printed > 0 {
@@ -96,13 +139,13 @@ fn print_listing(view: &View<'_>, kind: Option<Kind>, out: &mut dyn io::Write) -
         printed += 1;
         Ok(())
     };
-    if kind.is_none_or(|k| k == Kind::Semaphore) {
+    if wants(kinds, Kind::Semaphore) {
         for block in blocks(view.analysis).values() {
             sep(out)?;
             print_semaphore(block, view.impls, out)?;
         }
     }
-    if kind.is_none_or(|k| k == Kind::Join) {
+    if wants(kinds, Kind::Join) {
         for index in 0..view.list.tasks.len() {
             if view.relations.joined(index) {
                 sep(out)?;
@@ -110,23 +153,31 @@ fn print_listing(view: &View<'_>, kind: Option<Kind>, out: &mut dyn io::Write) -
             }
         }
     }
-    if kind.is_none_or(|k| k == Kind::Set) {
+    if wants(kinds, Kind::Set) {
         for &(addr, _, _) in &set_index(view) {
             sep(out)?;
             print_set(view, addr, out)?;
+        }
+    }
+    for kind in SLOT_FAMILIES {
+        if wants(kinds, kind) {
+            for block in channel_blocks(view, kind).values() {
+                sep(out)?;
+                print_channel(block, out)?;
+            }
         }
     }
     Ok(())
 }
 
 /// One address, resolved against everything `sync` lists — the
-/// semaphores, the sets, the tasks themselves — and, when no primitive
-/// owns it, against the frames that hold it by value. `--kind` skips
-/// the resolution order and asks for one reading.
+/// semaphores, the sets, the channels, the tasks themselves — and,
+/// when no primitive owns it, against the frames that hold it by
+/// value. `--kind` skips the resolution order and asks for one reading.
 fn print_addressed(
     view: &View<'_>,
     addr: u64,
-    kind: Option<Kind>,
+    kinds: &[Kind],
     task_at: &dyn Fn(u64) -> Option<usize>,
     references: &dyn Fn(u64) -> Vec<String>,
     out: &mut dyn io::Write,
@@ -135,45 +186,99 @@ fn print_addressed(
     let semaphore = semaphores.get(&addr);
     let set = set_index(view).iter().any(|&(a, ..)| a == addr);
     let task = task_at(addr);
-    match kind {
-        Some(Kind::Semaphore) => match semaphore {
+    let channel = |kind: Kind| channel_blocks(view, kind).remove(&addr);
+    match kinds {
+        [Kind::Semaphore] => match semaphore {
             Some(block) => print_semaphore(block, view.impls, out),
             None => bail!(
                 "no decoded semaphore at {addr:#x}; `sync` lists the ones \
                  the tasks' await chains reach"
             ),
         },
-        Some(Kind::Join) => match task {
+        [Kind::Join] => match task {
             Some(index) => print_join(view, index, out),
             None => bail!("{addr:#x} is in no task's allocation"),
         },
-        Some(Kind::Set) => match set {
+        [Kind::Set] => match set {
             true => print_set(view, addr, out),
             false => bail!("no decoded JoinSet or FuturesUnordered at {addr:#x}"),
         },
-        Some(Kind::Address) => print_references(addr, &references(addr), out),
-        None => {
+        [Kind::Address] => print_references(addr, &references(addr), out),
+        [] => {
             if let Some(block) = semaphore {
                 return print_semaphore(block, view.impls, out);
             }
             if set {
                 return print_set(view, addr, out);
             }
+            if let Some(block) = SLOT_FAMILIES.into_iter().find_map(channel) {
+                return print_channel(&block, out);
+            }
             if let Some(index) = task {
                 return print_join(view, index, out);
             }
             print_references(addr, &references(addr), out)
+        }
+        // A slot-named family, or several: the one block at the
+        // address among them, else the refusal naming what was asked.
+        kinds => {
+            let family: Vec<Kind> = SLOT_FAMILIES
+                .into_iter()
+                .filter(|k| kinds.contains(k))
+                .collect();
+            if family.len() != kinds.len() {
+                bail!(
+                    "--kind combines only the families a waker slot names \
+                     (oneshot, mpsc, watch, notify)"
+                );
+            }
+            match family.into_iter().find_map(channel) {
+                Some(block) => print_channel(&block, out),
+                None => bail!(
+                    "no {} at {addr:#x} holds a parked waker; `sync --kind {}` lists the \
+                     ones a slot names",
+                    channel_words_of(kinds),
+                    kinds.iter().map(|k| k.word()).collect::<Vec<_>>().join(",")
+                ),
+            }
+        }
+    }
+}
+
+/// `oneshot`, `oneshot or mpsc`, `oneshot, mpsc or watch`.
+fn channel_words_of(kinds: &[Kind]) -> String {
+    let words: Vec<&str> = kinds.iter().map(|k| k.word()).collect();
+    match words.split_last() {
+        Some((last, [])) => last.to_string(),
+        Some((last, rest)) => format!("{} or {last}", rest.join(", ")),
+        None => String::new(),
+    }
+}
+
+impl Kind {
+    /// The word the block headings and the cells use for the family.
+    fn word(self) -> &'static str {
+        match self {
+            Kind::Semaphore => "semaphore",
+            Kind::Join => "join",
+            Kind::Set => "set",
+            Kind::Address => "address",
+            Kind::Oneshot => "oneshot",
+            Kind::Mpsc => "mpsc",
+            Kind::Watch => "watch",
+            Kind::Notify => "notify",
         }
     }
 }
 
 /// The cursor's task: every relation it is party to — the semaphores
 /// it is blocked on or holds, its own join block, the join blocks of
-/// the tasks it awaits, and the sets it drives.
+/// the tasks it awaits, the sets it drives, and the channels it parks
+/// in on either side.
 fn print_task_scoped(
     view: &View<'_>,
     index: usize,
-    kind: Option<Kind>,
+    kinds: &[Kind],
     out: &mut dyn io::Write,
 ) -> Result<()> {
     let addr = view.list.tasks[index].addr.0;
@@ -185,7 +290,7 @@ fn print_task_scoped(
         printed += 1;
         Ok(())
     };
-    if kind.is_none_or(|k| k == Kind::Semaphore) {
+    if wants(kinds, Kind::Semaphore) {
         for block in blocks(view.analysis).values() {
             let blocked = block.blocked.iter().any(|(t, _)| t.addr.0 == addr);
             let holds = block.locks.iter().any(|fl| fl.holder.addr.0 == addr);
@@ -195,7 +300,7 @@ fn print_task_scoped(
             }
         }
     }
-    if kind.is_none_or(|k| k == Kind::Join) {
+    if wants(kinds, Kind::Join) {
         // The tasks it awaits: a semaphore holder is a Waiting edge
         // too, but its relation is the semaphore block above, not a
         // join, so only the edges the join index reverses count — and
@@ -217,7 +322,7 @@ fn print_task_scoped(
             print_join(view, join, out)?;
         }
     }
-    if kind.is_none_or(|k| k == Kind::Set) {
+    if wants(kinds, Kind::Set) {
         for &(set_addr, owner, _) in &set_index(view) {
             let member = view.relations.member_of[index].is_some_and(|(a, _)| a == set_addr);
             if owner == index || member {
@@ -226,13 +331,189 @@ fn print_task_scoped(
             }
         }
     }
+    for kind in SLOT_FAMILIES {
+        if wants(kinds, kind) {
+            for block in channel_blocks(view, kind).values() {
+                if block.parties.iter().any(|(_, party)| *party == index) {
+                    sep(out)?;
+                    print_channel(block, out)?;
+                }
+            }
+        }
+    }
     if printed == 0 {
         writeln!(
             out,
             "{} is party to no decoded relation: nothing waits to join \
-             it, and it blocks on no semaphore and drives no set",
+             it, and it blocks on no semaphore, drives no set and parks \
+             in no channel",
             task_label(view.list, index)
         )?;
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Channel blocks: a oneshot, an mpsc or a watch as a resource.
+// ---------------------------------------------------------------------------
+
+/// One channel — or one `Notify`, which has a waiting side only —
+/// assembled from the slots that name it: the primitive the cells
+/// print, its own words, and who is parked on each side.
+struct ChannelBlock {
+    kind: Kind,
+    addr: u64,
+    /// The primitive's words, from the first slot that read them; a
+    /// core does not change while it is read, so every slot's agree.
+    reading: Option<Reading>,
+    /// Who holds a waker on the receiving side, in slot order, named
+    /// as the listings name owners.
+    rx: Vec<String>,
+    /// Who holds a waker on the sending side: a oneshot sender polling
+    /// `poll_closed`.
+    tx: Vec<String>,
+    /// The tasks blocked on the channel's semaphore for capacity —
+    /// their verified semaphore waits fall in the channel's bytes.
+    tx_blocked: Vec<TaskRef>,
+    /// The tasks party to the block, for the cursor-scoped listing:
+    /// each side's owning task, and every blocked sender.
+    parties: Vec<(Side, usize)>,
+}
+
+#[derive(Copy, Clone, PartialEq, Eq)]
+enum Side {
+    Rx,
+    Tx,
+}
+
+/// The owner kinds whose slots name a channel of `kind`, with the
+/// side each is parked on.
+fn sides_of(kind: Kind) -> &'static [(OwnerKind, Side)] {
+    match kind {
+        Kind::Oneshot => &[
+            (OwnerKind::OneshotRx, Side::Rx),
+            (OwnerKind::OneshotTx, Side::Tx),
+        ],
+        Kind::Mpsc => &[(OwnerKind::Mpsc, Side::Rx)],
+        Kind::Watch => &[(OwnerKind::Watch, Side::Rx)],
+        Kind::Notify => &[(OwnerKind::Notify, Side::Rx)],
+        Kind::Semaphore | Kind::Join | Kind::Set | Kind::Address => &[],
+    }
+}
+
+/// The owner of a slot as a block names it: the task, or the set child
+/// with the set and the task polling it.
+fn owner_name(view: &View<'_>, owner: Owner) -> (String, usize) {
+    match owner {
+        Owner::Task { index, .. } => (task_label(view.list, index), index),
+        Owner::Child { set, child } => {
+            let polled_by = view.sets[set].owner;
+            (
+                format!(
+                    "child {child} of the set at {:#x} (polled by {})",
+                    view.sets[set].addr,
+                    task_label(view.list, polled_by)
+                ),
+                polled_by,
+            )
+        }
+    }
+}
+
+/// Every channel of `kind` a slot names, by the primitive's address.
+fn channel_blocks(view: &View<'_>, kind: Kind) -> BTreeMap<u64, ChannelBlock> {
+    let mut blocks: BTreeMap<u64, ChannelBlock> = BTreeMap::new();
+    for slot in &view.slots.slots {
+        let Attribution::Owner {
+            kind: owner_kind,
+            primitive,
+            reading,
+            path,
+            ..
+        } = &slot.attribution
+        else {
+            continue;
+        };
+        let Some(&(_, side)) = sides_of(kind).iter().find(|(k, _)| k == owner_kind) else {
+            continue;
+        };
+        let block = blocks.entry(*primitive).or_insert_with(|| ChannelBlock {
+            kind,
+            addr: *primitive,
+            reading: None,
+            rx: Vec::new(),
+            tx: Vec::new(),
+            tx_blocked: Vec::new(),
+            parties: Vec::new(),
+        });
+        if block.reading.is_none() {
+            block.reading = reading.clone();
+        }
+        let (name, party) = owner_name(view, slot.owner);
+        let names = match side {
+            Side::Rx => &mut block.rx,
+            Side::Tx => &mut block.tx,
+        };
+        if !names.contains(&name) {
+            names.push(name);
+        }
+        if !block.parties.contains(&(side, party)) {
+            block.parties.push((side, party));
+        }
+        // A bounded channel's senders block on its semaphore, which
+        // sits in the `Chan` behind the receiver's `Arc`: the hop that
+        // reached the slot names the `ArcInner` and its type, so the
+        // channel's extent is known and a semaphore wait inside it is
+        // a sender waiting for capacity.
+        if kind == Kind::Mpsc
+            && let Some(hop) = &path.hop
+            && let Some(size) = (view.size_of)(hop.pointee_ty)
+        {
+            for wait in &view.analysis.waits {
+                let Some(WaitTarget::Semaphore { addr, .. }) = wait.verified().map(|w| w.target())
+                else {
+                    continue;
+                };
+                let within = *addr >= hop.addr && *addr - hop.addr < size;
+                if within && !block.tx_blocked.iter().any(|t| t.addr == wait.task.addr) {
+                    block.tx_blocked.push(wait.task);
+                    if let Some(index) = view
+                        .list
+                        .tasks
+                        .iter()
+                        .position(|t| t.addr == wait.task.addr)
+                    {
+                        block.parties.push((Side::Tx, index));
+                    }
+                }
+            }
+        }
+    }
+    blocks
+}
+
+/// One channel's block: the kind word and address the cells print, the
+/// primitive's own words, then who is parked on each side.
+fn print_channel(block: &ChannelBlock, out: &mut dyn io::Write) -> Result<()> {
+    let words = match &block.reading {
+        Some(reading) => reading.words(match block.kind {
+            Kind::Oneshot => OwnerKind::OneshotRx,
+            Kind::Watch => OwnerKind::Watch,
+            Kind::Notify => OwnerKind::Notify,
+            _ => OwnerKind::Mpsc,
+        }),
+        None => "state not read".to_string(),
+    };
+    writeln!(out, "{} {:#x}: {words}", block.kind.word(), block.addr)?;
+    if !block.rx.is_empty() {
+        writeln!(out, "    rx: {}", block.rx.join(", "))?;
+    }
+    if !block.tx.is_empty() {
+        writeln!(out, "    tx: {}", block.tx.join(", "))?;
+    }
+    if !block.tx_blocked.is_empty() {
+        let blocked: Vec<String> = block.tx_blocked.iter().map(|t| t.to_string()).collect();
+        writeln!(out, "    tx blocked on capacity: {}", blocked.join(", "))?;
     }
     Ok(())
 }
@@ -711,7 +992,7 @@ fn waiter_name(w: &SemaphoreWaiter, held: bool) -> String {
 
 #[cfg(test)]
 mod sync_tests {
-    use super::{Kind, View, print_addressed, print_listing};
+    use super::{CHANNELS, Kind, View, print_addressed, print_listing};
 
     use crate::relations::Relations;
 
@@ -720,17 +1001,27 @@ mod sync_tests {
         ContinuationStatus, IncompleteReason, PollingBarrier, VerifiedWait, WaitAssessment,
         WaitUnknownReason,
     };
+    use hansei_runtime::tokio::attribution::{
+        Attributed, AttributedSlot, Attribution, Hop, OwnerKind, Reading, SlotPath, SlotRoot,
+        Validity,
+    };
     use hansei_runtime::tokio::bundle::{
-        FutureInfo, OwnerResolution, QueuedWaker, SemaphoreWaiter, Task, TaskKind, TaskList,
-        WaitTarget,
+        FutureInfo, OneshotState, OwnerResolution, QueuedWaker, SemaphoreWaiter, Task, TaskKind,
+        TaskList, WaitTarget,
     };
     use hansei_runtime::tokio::census;
     use hansei_runtime::tokio::graph::{Analysis, TaskRef, TaskWait};
     use hansei_runtime::tokio::observe::{AcquireObservation, ValueKey};
+    use hansei_runtime::tokio::wakers::Owner;
     use hansei_runtime::tokio::{TaskAddr, TaskState};
 
     const REF_ONE: u64 = 1 << 6;
     const SEMAPHORE: u64 = 0x9000;
+
+    /// `--kind` as the tests give it: one family, or every one.
+    fn kinds(kind: Option<Kind>) -> Vec<Kind> {
+        kind.into_iter().collect()
+    }
 
     fn addr(id: u64) -> TaskAddr {
         TaskAddr(0x1000 + id * 0x100)
@@ -879,6 +1170,9 @@ mod sync_tests {
         analysis: Analysis,
         sets: Vec<census::FutureSet>,
         join_sets: Vec<census::JoinSet>,
+        slots: Attributed,
+        /// The size every type has, for a hop's extent.
+        size: Option<u64>,
     }
 
     impl Fixture {
@@ -894,11 +1188,19 @@ mod sync_tests {
                 },
                 sets: Vec::new(),
                 join_sets: Vec::new(),
+                slots: Attributed::from_slots(Vec::new()),
+                size: None,
             }
         }
 
         fn print_scoped(&self, index: usize, kind: Option<Kind>) -> anyhow::Result<String> {
+            self.print_scoped_kinds(index, &kinds(kind))
+        }
+
+        fn print_scoped_kinds(&self, index: usize, kinds: &[Kind]) -> anyhow::Result<String> {
             let relations = Relations::build(&self.list, &self.analysis, &[], &self.join_sets);
+            let size = self.size;
+            let size_of = move |_: BundleTypeId| size;
             let view = View {
                 list: &self.list,
                 analysis: &self.analysis,
@@ -906,14 +1208,22 @@ mod sync_tests {
                 sets: &self.sets,
                 join_sets: &self.join_sets,
                 impls: &names::ImplFold::default(),
+                slots: &self.slots,
+                size_of: &size_of,
             };
             let mut out = Vec::new();
-            super::print_task_scoped(&view, index, kind, &mut out)?;
+            super::print_task_scoped(&view, index, kinds, &mut out)?;
             Ok(String::from_utf8(out).unwrap())
         }
 
         fn print(&self, select: Option<u64>, kind: Option<Kind>) -> anyhow::Result<String> {
+            self.print_kinds(select, &kinds(kind))
+        }
+
+        fn print_kinds(&self, select: Option<u64>, kinds: &[Kind]) -> anyhow::Result<String> {
             let relations = Relations::build(&self.list, &self.analysis, &[], &self.join_sets);
+            let size = self.size;
+            let size_of = move |_: BundleTypeId| size;
             let view = View {
                 list: &self.list,
                 analysis: &self.analysis,
@@ -921,16 +1231,294 @@ mod sync_tests {
                 sets: &self.sets,
                 join_sets: &self.join_sets,
                 impls: &names::ImplFold::default(),
+                slots: &self.slots,
+                size_of: &size_of,
             };
             let mut out = Vec::new();
             let task_at = |addr: u64| self.list.tasks.iter().position(|t| t.addr.0 == addr);
             let references = |_: u64| Vec::new();
             match select {
-                Some(addr) => print_addressed(&view, addr, kind, &task_at, &references, &mut out)?,
-                None => print_listing(&view, kind, &mut out)?,
+                Some(addr) => print_addressed(&view, addr, kinds, &task_at, &references, &mut out)?,
+                None => print_listing(&view, kinds, &mut out)?,
             }
             Ok(String::from_utf8(out).unwrap())
         }
+    }
+
+    /// A slot of task `id`'s waker (or a set child's), named by the
+    /// owner-name table as `kind` at `primitive`, with the primitive's
+    /// reading; `hop` is the `ArcInner` the slot was reached through.
+    fn owner_slot(
+        at: u64,
+        owner: Owner,
+        kind: OwnerKind,
+        primitive: u64,
+        reading: Option<Reading>,
+        hop: Option<u64>,
+    ) -> AttributedSlot {
+        AttributedSlot {
+            hit: at as usize,
+            slot: at,
+            owner,
+            attribution: Attribution::Owner {
+                kind,
+                primitive,
+                holder: "Inner".to_string(),
+                member: "rx_task".to_string(),
+                path: SlotPath {
+                    root: SlotRoot::Frame { task: 0, frame: 0 },
+                    steps: Vec::new(),
+                    hop: hop.map(|addr| Hop {
+                        from: 0x100,
+                        addr,
+                        pointee: "alloc::sync::ArcInner<x>".to_string(),
+                        pointee_ty: BundleTypeId(0),
+                        steps: Vec::new(),
+                    }),
+                },
+                validity: Validity::Raw,
+                reading,
+            },
+            within: None,
+        }
+    }
+
+    fn task_owner(id: u64, index: usize) -> Owner {
+        Owner::Task {
+            header: addr(id).0,
+            index,
+        }
+    }
+
+    /// A parked oneshot's state: both task cells set, nothing sent.
+    fn parked_oneshot() -> Reading {
+        Reading::Oneshot(OneshotState {
+            word: 0b1001,
+            value_present: Some(false),
+        })
+    }
+
+    /// One channel of each family, named by the slots of three tasks:
+    /// task 40 receives on all three, task 7 watches the oneshot's
+    /// receiver from the sending side, task 41 shares the watch; task
+    /// 9 is blocked on the mpsc's semaphore, which lies in the `Chan`
+    /// the receiver's slot was reached through.
+    fn channels_fixture() -> Fixture {
+        let mut fixture = Fixture::new(
+            vec![
+                wait(40, None),
+                wait(7, None),
+                wait(41, None),
+                wait(
+                    9,
+                    Some(WaitTarget::Semaphore {
+                        addr: 0xb0c0,
+                        owner: None,
+                        num_permits: 1,
+                        available: 0,
+                        closed: false,
+                        waiters: Vec::new(),
+                    }),
+                ),
+            ],
+            Vec::new(),
+        );
+        fixture.size = Some(0x200);
+        fixture.slots = Attributed::from_slots(vec![
+            owner_slot(
+                0xa020,
+                task_owner(40, 0),
+                OwnerKind::OneshotRx,
+                0xa010,
+                Some(parked_oneshot()),
+                Some(0xa000),
+            ),
+            owner_slot(
+                0xa030,
+                task_owner(7, 1),
+                OwnerKind::OneshotTx,
+                0xa010,
+                Some(parked_oneshot()),
+                Some(0xa000),
+            ),
+            owner_slot(
+                0xb080,
+                task_owner(40, 0),
+                OwnerKind::Mpsc,
+                0xb010,
+                Some(Reading::Mpsc {
+                    senders: 2,
+                    capacity: Some(4),
+                    unread: 4,
+                }),
+                Some(0xb000),
+            ),
+            owner_slot(
+                0xc080,
+                task_owner(40, 0),
+                OwnerKind::Watch,
+                0xc010,
+                Some(Reading::Watch {
+                    version: 3,
+                    closed: false,
+                    receivers: 2,
+                    senders: 1,
+                }),
+                None,
+            ),
+            owner_slot(
+                0xc090,
+                task_owner(41, 2),
+                OwnerKind::Watch,
+                0xc010,
+                Some(Reading::Watch {
+                    version: 3,
+                    closed: false,
+                    receivers: 2,
+                    senders: 1,
+                }),
+                None,
+            ),
+        ]);
+        fixture
+    }
+
+    /// The channel blocks: one per primitive, the heading printed as
+    /// the cells print the slot, the owners on each side, and a sender
+    /// blocked on capacity found through its semaphore wait inside the
+    /// `Chan`. `channels` prints the three families and nothing else.
+    #[test]
+    fn test_channel_blocks_name_both_sides() {
+        let fixture = channels_fixture();
+        let out = fixture.print_kinds(None, &CHANNELS).unwrap();
+        assert_eq!(
+            out,
+            "oneshot 0xa010: nothing sent, sender alive\n    \
+             rx: task 40\n    \
+             tx: task 7\n\
+             \n\
+             mpsc 0xb010: 2 senders, capacity 4, 4 unread\n    \
+             rx: task 40\n    \
+             tx blocked on capacity: task 9\n\
+             \n\
+             watch 0xc010: version 3, 1 sender, 2 receivers\n    \
+             rx: task 40, task 41\n"
+        );
+        // The bare listing prints the semaphore's block first, then
+        // the channels; one family alone prints that family.
+        let all = fixture.print(None, None).unwrap();
+        assert!(all.starts_with("the semaphore at 0xb0c0"), "{all}");
+        assert!(all.ends_with(&out), "{all}");
+        let watch = fixture.print(None, Some(Kind::Watch)).unwrap();
+        assert!(watch.starts_with("watch 0xc010"), "{watch}");
+        assert!(!watch.contains("oneshot"), "{watch}");
+    }
+
+    /// A `Notify` block: the state word's reading and every task
+    /// queued on it, one line — listed after the channels and not by
+    /// `channels`, which asks for the channel families alone.
+    #[test]
+    fn test_a_notify_block_lists_its_waiters() {
+        let mut fixture = Fixture::new(vec![wait(40, None), wait(41, None)], Vec::new());
+        fixture.slots = Attributed::from_slots(vec![
+            owner_slot(
+                0xe020,
+                task_owner(40, 0),
+                OwnerKind::Notify,
+                0xe000,
+                Some(Reading::Notify { state: 0b01 }),
+                None,
+            ),
+            owner_slot(
+                0xe120,
+                task_owner(41, 1),
+                OwnerKind::Notify,
+                0xe000,
+                Some(Reading::Notify { state: 0b01 }),
+                None,
+            ),
+        ]);
+        let block = "notify 0xe000: waiting\n    rx: task 40, task 41\n";
+        assert_eq!(fixture.print(None, Some(Kind::Notify)).unwrap(), block);
+        assert_eq!(fixture.print(None, None).unwrap(), block);
+        assert_eq!(fixture.print_kinds(None, &CHANNELS).unwrap(), "");
+        assert_eq!(fixture.print(Some(0xe000), None).unwrap(), block);
+        assert_eq!(fixture.print_scoped(1, None).unwrap(), block);
+    }
+
+    /// A slot whose primitive nothing read prints the heading without
+    /// words, and a set child's slot names the child and the task
+    /// polling it.
+    #[test]
+    fn test_a_channel_block_without_a_reading_or_owned_by_a_child() {
+        let mut fixture = Fixture::new(vec![wait(9, None)], Vec::new());
+        fixture.sets = vec![census::FutureSet {
+            owner: 0,
+            frame: 0,
+            local: "work".to_string(),
+            via: None,
+            addr: 0xd000,
+            ty: "futures_util::stream::futures_unordered::FuturesUnordered<()>".to_string(),
+            children: Vec::new(),
+        }];
+        fixture.slots = Attributed::from_slots(vec![owner_slot(
+            0xa020,
+            Owner::Child { set: 0, child: 3 },
+            OwnerKind::OneshotRx,
+            0xa010,
+            None,
+            None,
+        )]);
+        assert_eq!(
+            fixture.print(None, Some(Kind::Oneshot)).unwrap(),
+            "oneshot 0xa010: state not read\n    \
+             rx: child 3 of the set at 0xd000 (polled by task 9)\n"
+        );
+    }
+
+    /// An addressed ask resolves a channel's address to its block, the
+    /// family filter refuses an address of another family by name, and
+    /// the cursor-scoped listing prints the channels the task parks in
+    /// on either side.
+    #[test]
+    fn test_channels_resolve_by_address_and_by_task() {
+        let fixture = channels_fixture();
+        let by_addr = fixture.print(Some(0xa010), None).unwrap();
+        assert!(by_addr.starts_with("oneshot 0xa010"), "{by_addr}");
+        assert_eq!(
+            fixture.print(Some(0xa010), Some(Kind::Oneshot)).unwrap(),
+            by_addr
+        );
+        let err = fixture
+            .print_kinds(Some(0xa010), &[Kind::Mpsc, Kind::Watch])
+            .unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "no mpsc or watch at 0xa010 holds a parked waker; `sync --kind mpsc,watch` \
+             lists the ones a slot names"
+        );
+        let err = fixture
+            .print_kinds(Some(0xa010), &[Kind::Mpsc, Kind::Join])
+            .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("only the families a waker slot names"),
+            "{err}"
+        );
+
+        // Task 7 is party to the oneshot alone, on the sending side;
+        // task 9 to the mpsc, as a blocked sender, beside its own
+        // semaphore block.
+        let sender = fixture.print_scoped(1, None).unwrap();
+        assert_eq!(
+            sender,
+            "oneshot 0xa010: nothing sent, sender alive\n    rx: task 40\n    tx: task 7\n"
+        );
+        let blocked = fixture.print_scoped_kinds(3, &CHANNELS).unwrap();
+        assert!(blocked.starts_with("mpsc 0xb010"), "{blocked}");
+        assert!(!blocked.contains("oneshot"), "{blocked}");
+        let none = fixture.print_scoped(1, Some(Kind::Mpsc)).unwrap();
+        assert!(none.contains("parks in no channel"), "{none}");
     }
 
     fn sync(

@@ -2828,15 +2828,27 @@ fn test_sync_lists_the_contended_semaphore() {
 /// A target with no relations prints nothing at all: the analysis
 /// reads only the edges it knows how to read, and an empty answer is
 /// "none found here". A joined task is a relation now — sleep-join's
-/// sleeper earns a block in the bare listing — so the empty answer
-/// belongs to a fixture nothing joins, and the no-contention claim to
+/// sleeper earns a block in the bare listing — and so is the oneshot
+/// simple-await's one task parks on, so the empty answer belongs to
+/// the families a fixture has none of, and the no-contention claim to
 /// the semaphore family alone.
 #[test]
 fn test_sync_prints_nothing_without_contention() {
     let bundle = fixtures().bundle("simple-await");
     with_core("simple-await", |core| {
+        for kinds in ["semaphore", "join", "set", "mpsc,watch,notify"] {
+            let out = hansei_ok(&bundle, core, &format!("sync --kind {kinds}"));
+            assert_eq!(out, "", "simple-await has no {kinds}");
+        }
+        // The one relation it has: the oneshot its task waits on, one
+        // block and nothing else.
         let out = hansei_ok(&bundle, core, "sync");
-        assert_eq!(out, "", "simple-await relates on nothing");
+        assert!(out.starts_with("oneshot 0x"), "{out}");
+        assert!(
+            out.contains(": nothing sent, sender alive\n    rx: task "),
+            "{out}"
+        );
+        assert_eq!(out.matches("\n\n").count(), 0, "{out}");
     });
     let bundle = fixtures().bundle("sleep-join");
     with_core("sleep-join", |core| {
@@ -3283,7 +3295,7 @@ fn test_census_counts_a_set_and_what_is_held_beside_it() {
         assert!(
             out.contains(
                 "    5  async fn unordered::set_member\n       \
-                 ├─ 3  a Notify\n       \
+                 ├─ 3  notify\n       \
                  └─ 2  — (unresumed)\n"
             ),
             "{out}"
@@ -3915,10 +3927,28 @@ fn test_armed_select_acceptance() {
         let rows = list_tasks(&bundle, core);
         let selector = task_with_future(&rows, "async fn armed_select::selector");
         // A real core holds the watch's `Shared`, so its `Notified` is
-        // the watch's, where a snapshot could only say `notify`.
-        for word in ["mpsc 0x", "watch 0x", "oneshot rx 0x", "timer (deadline "] {
+        // the watch's, where a snapshot could only say `notify`. Each
+        // slot carries its primitive's words: the one sender kept in
+        // `main` and the bound of four, the leaked oneshot sender, the
+        // watch never sent to.
+        for word in [
+            "mpsc 0x",
+            " (1 sender, capacity 4, 0 unread)",
+            "watch 0x",
+            " (version 0, 1 sender, 1 receiver)",
+            "oneshot rx 0x",
+            " (nothing sent, sender alive)",
+            "timer (deadline ",
+        ] {
             assert!(selector.waiting.contains(word), "{selector:?}");
         }
+        // The slot and the leaf reader share one bucket per primitive.
+        let grouped = hansei_ok(&bundle, core, "tasks --group waiting-on");
+        assert!(
+            grouped.contains("mpsc, oneshot rx, timer, watch"),
+            "{grouped}"
+        );
+        assert!(!grouped.contains("mpsc rx"), "{grouped}");
         // One detail line per slot under the wait, spelled by the
         // slot's label; the wheel entry's line is the wait set's own.
         let block = hansei_ok(&bundle, core, &format!("task {}", selector.id));
@@ -3937,11 +3967,29 @@ fn test_armed_select_acceptance() {
         );
         assert!(!block.contains("\n    waker:"), "{block}");
 
+        // The holder's leaf is the receiver itself: a verified wait,
+        // printed by its reader, and the one slot agrees with it.
         let holder = task_with_future(&rows, "async fn armed_select::holder");
         assert!(holder.waiting.starts_with("oneshot rx 0x"), "{holder:?}");
-        assert!(!holder.waiting.contains(','), "{holder:?}");
+        assert!(
+            holder.waiting.ends_with(" (nothing sent, sender alive)"),
+            "{holder:?}"
+        );
+        // One entry: the leaf's reader and the slot agree on the one
+        // primitive, so the cell does not say it twice.
+        assert_eq!(
+            holder.waiting.matches("oneshot rx").count(),
+            1,
+            "{holder:?}"
+        );
         let waiter = task_with_future(&rows, "async fn armed_select::waiter");
-        assert!(waiter.waiting.starts_with("the Notify at 0x"), "{waiter:?}");
+        // The waiter's leaf reader walked the list: its state word and
+        // the one node it found, in the slot entry's grammar.
+        assert!(waiter.waiting.starts_with("notify 0x"), "{waiter:?}");
+        assert!(
+            waiter.waiting.ends_with(" (waiting, 1 queued)"),
+            "{waiter:?}"
+        );
         let driver = task_with_future(&rows, "async fn armed_select::driver");
         assert!(driver.waiting.starts_with("slot 0x"), "{driver:?}");
         assert!(driver.waiting.contains("AtomicWaker"), "{driver:?}");
@@ -3963,14 +4011,22 @@ fn test_armed_select_acceptance() {
             unarmed.contains("future tokio::sync::notify::Notified"),
             "{unarmed}"
         );
-        assert!(unarmed.contains("unarmed: the Notify at 0x"), "{unarmed}");
+        // The unpolled `Notified` describes its `Notify` by the state
+        // word alone: the list is walked only for a verified wait.
+        assert!(unarmed.contains("unarmed: notify 0x"), "{unarmed}");
+        assert!(unarmed.contains(" (waiting)"), "{unarmed}");
+        assert!(!unarmed.contains("queued)"), "{unarmed}");
         assert!(!unarmed.contains("`once`"), "{unarmed}");
         let armed = hansei_ok(&bundle, core, "futures --with armed yes");
         for local in ["`once`", "`recv`", "`changed`", "`sleep`"] {
             assert!(armed.contains(local), "{armed}");
         }
         let once = regex::Regex::new(
-            r"(?m)^(0x[0-9a-f]+) +\d+ +frame 1, `once` .* oneshot rx 0x[0-9a-f]+ +yes ",
+            // Two raw strings: a raw string has no line continuation.
+            concat!(
+                r"(?m)^(0x[0-9a-f]+) +\d+ +frame 1, `once` .* oneshot rx 0x[0-9a-f]+ ",
+                r"\(nothing sent, sender alive\) +yes ",
+            ),
         )
         .unwrap();
         assert!(once.is_match(&armed), "{armed}");
@@ -3981,6 +4037,52 @@ fn test_armed_select_acceptance() {
         );
         assert!(block.contains("\n    armed: yes\n"), "{block}");
         assert!(block.contains("\n        oneshot rx 0x"), "{block}");
+
+        // The channels as resources: one block per oneshot a slot
+        // names — the selector's, the holder's, and the two the set's
+        // children park on with the set's wakers, owned by the child
+        // — each with the leaked sender alive; the mpsc and the watch
+        // under `channels`, with the selector on the receiving side.
+        let oneshots = hansei_ok(&bundle, core, "sync --kind oneshot");
+        assert_eq!(oneshots.matches("oneshot 0x").count(), 4, "{oneshots}");
+        assert_eq!(
+            oneshots.matches(": nothing sent, sender alive\n").count(),
+            4,
+            "{oneshots}"
+        );
+        assert!(
+            oneshots.contains(&format!("\n    rx: task {}\n", selector.id)),
+            "{oneshots}"
+        );
+        assert!(
+            oneshots.contains(&format!("\n    rx: task {}\n", holder.id)),
+            "{oneshots}"
+        );
+        let child = regex::Regex::new(&format!(
+            r"(?m)^    rx: child [01] of the set at 0x[0-9a-f]+ \(polled by task {}\)$",
+            driver.id
+        ))
+        .unwrap();
+        assert_eq!(child.find_iter(&oneshots).count(), 2, "{oneshots}");
+        assert!(!oneshots.contains("tx:"), "{oneshots}");
+        let channels = hansei_ok(&bundle, core, "channels");
+        assert!(channels.contains(&oneshots), "{channels}");
+        let mpsc = regex::Regex::new(&format!(
+            r"(?m)^mpsc 0x[0-9a-f]+: 1 sender, capacity 4, 0 unread\n    rx: task {}$",
+            selector.id
+        ))
+        .unwrap();
+        assert!(mpsc.is_match(&channels), "{channels}");
+        let watch = regex::Regex::new(&format!(
+            r"(?m)^watch 0x[0-9a-f]+: version 0, 1 sender, 1 receiver\n    rx: task {}$",
+            selector.id
+        ))
+        .unwrap();
+        assert!(watch.is_match(&channels), "{channels}");
+        assert_eq!(
+            hansei_ok(&bundle, core, "sync --kind oneshot,mpsc,watch"),
+            channels
+        );
 
         // Both cross-checks run clean under `--audit`.
         let audited = hansei_with(&bundle, core, &["--audit"], "info");

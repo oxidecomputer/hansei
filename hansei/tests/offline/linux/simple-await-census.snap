@@ -5,9 +5,9 @@ description: "`census` over linux/simple-await"
 Threads: 3 lwps, 3 in runtime 0 @ 0xADDR
 
 COUNT  RT  ROLE             STATE            LWPS
-    1  0   worker           in driver        855737
-    1  0   worker           parked           855736
-    1  0   entered runtime  block_on caller  855734
+    1  0   worker           in driver        891019
+    1  0   worker           parked           891020
+    1  0   entered runtime  block_on caller  891017
     0  0   blocking pool    0 idle, 0 busy   —
 [3 lwps]
 
@@ -19,7 +19,7 @@ COUNT  STATE
 
 COUNT  TYPE / WAITING ON
     1  async fn simple_await::work
-       └─ 1  unknown
+       └─ 1  oneshot rx
 [1 type]
 
 Futures: 1 in flight, on 2 await-chain frames, up to 2 deep

@@ -5,9 +5,9 @@ description: "`census` over linux-floor/dyn-future"
 Threads: 3 lwps, 3 in runtime 0 @ 0xADDR
 
 COUNT  RT  ROLE             STATE            LWPS
-    1  0   worker           in driver        861836
-    1  0   worker           parked           861835
-    1  0   entered runtime  block_on caller  861833
+    1  0   worker           in driver        950786
+    1  0   worker           parked           950787
+    1  0   entered runtime  block_on caller  950784
     0  0   blocking pool    0 idle, 0 busy   —
 [3 lwps]
 
@@ -19,11 +19,11 @@ COUNT  STATE
 
 COUNT  TYPE / WAITING ON
     1  async fn dyn_future::driver
-       └─ 1  unknown
+       └─ 1  oneshot rx
     1  async fn dyn_future::hold_aligned
-       └─ 1  unknown
+       └─ 1  oneshot rx
     1  async fn dyn_future::set_member
-       └─ 1  unknown
+       └─ 1  oneshot rx
 [3 types]
 
 Futures: 3 in flight, on 8 await-chain frames, up to 4 deep

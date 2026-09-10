@@ -197,6 +197,9 @@ pub enum ResourceKind {
     MpscRecv,
     /// `tokio::sync::notify::Notified`, the borrowed form.
     Notified,
+    /// `tokio::sync::oneshot::Receiver<T>`, which is its own future:
+    /// its `poll` reads the shared `Inner`'s state word.
+    OneshotRecv,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
@@ -267,6 +270,8 @@ pub enum SemanticRuleKind {
     /// hyper-util's `TokioSleep`, the newtype that gives
     /// `tokio::time::Sleep` an `Unpin` trait object.
     HyperUtilTokioSleep,
+    TokioOneshotRecv,
+    TokioOneshotRecvState,
 }
 
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]

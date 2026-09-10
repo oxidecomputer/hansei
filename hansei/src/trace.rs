@@ -3177,10 +3177,10 @@ mod trace_render_tests {
                 None,
                 None,
             ),
-            "Waiting on: the Notify at 0xADDR
+            "Waiting on: notify 0xADDR (waiting)
 
 #0  future        tokio::sync::notify::Notified
-      waiting on the Notify at 0xADDR
+      waiting on notify 0xADDR (waiting)
 #1  async fn      walk_shapes::deep
       awaiting at src/bin/walk-shapes.rs:101 (Suspend0, 1 local)
 #2  future        walk_shapes::WrapE<walk_shapes::deep>
@@ -3204,10 +3204,10 @@ mod trace_render_tests {
                 "simple_await::work::{async_fn_env#0}",
                 false
             ),
-            "what tokio::sync::oneshot::Receiver<u32> polls is not established \
-             (no reviewed rule covers its implementation); the chain ends there
+            "Waiting on: oneshot rx 0xADDR (nothing sent, sender alive)
+
 #0  future        tokio::sync::oneshot::Receiver<u32>
-      (<no_state>, 1 local)
+      waiting on oneshot rx 0xADDR (nothing sent, sender alive)
 #1  async fn      simple_await::work
       awaiting at src/bin/simple-await.rs:47 (Suspend1, 13 locals)
 "
@@ -3282,10 +3282,10 @@ mod trace_render_tests {
     fn test_dyn_frames_keep_their_marker() {
         assert_eq!(
             trace("dyn-future", "dyn_future::driver::{async_fn_env#0}", false),
-            "what tokio::sync::oneshot::Receiver<u32> polls is not established \
-             (no reviewed rule covers its implementation); the chain ends there
+            "Waiting on: oneshot rx 0xADDR (nothing sent, sender alive)
+
 #0  future        tokio::sync::oneshot::Receiver<u32>
-      (<no_state>, 1 local)
+      waiting on oneshot rx 0xADDR (nothing sent, sender alive)
 #1  async fn      dyn_future::boxed_leaf [dyn]
       awaiting at src/bin/dyn-future.rs:16 (Suspend0, 0 locals)
 #2  future        Pin<Box<(dyn Future<Output=u32> + Send)>>
@@ -3312,10 +3312,10 @@ mod trace_render_tests {
                 None,
                 Some(40),
             ),
-            "what tokio::sync::oneshot::Receiver<u32> polls is not established \
-             (no reviewed rule covers its implementation); the chain ends there
+            "Waiting on: oneshot rx 0xADDR (nothing sent, sender alive)
+
 #0  future        tokio::sync::oneshot:…
-      (<no_state>, 1 local)
+      waiting on oneshot rx 0xADDR (nothing sent, sender alive)
 #1  async fn      dyn_future::box… [dyn]
       awaiting at src/bin/dyn-future.rs:16 (Suspend0, 0 locals)
 #2  future        Pin<Box<(dyn Future<O…

@@ -679,6 +679,10 @@ struct Waits {
     channel: usize,
     /// Queued on a `Notify`.
     notify: usize,
+    /// A oneshot receiver parked on its channel.
+    oneshot: usize,
+    /// A watch receiver parked on a change.
+    watch: usize,
     /// Keyed by the primitive wrapping the semaphore, which is `None`
     /// where the awaiting frame did not name one (a channel's, say).
     semaphores: BTreeMap<Option<&'static str>, usize>,
@@ -763,6 +767,8 @@ impl Waits {
             WaitKind::Semaphore { owner } => *self.semaphores.entry(owner).or_default() += 1,
             WaitKind::Channel { .. } => self.channel += 1,
             WaitKind::Notify { .. } => self.notify += 1,
+            WaitKind::Oneshot { .. } => self.oneshot += 1,
+            WaitKind::Watch { .. } => self.watch += 1,
         }
     }
 
@@ -786,8 +792,10 @@ impl Waits {
             Row::new(self.timer, timer),
             Row::new(self.task, "task"),
             Row::new(self.io, "io"),
-            Row::new(self.channel, "mpsc rx"),
-            Row::new(self.notify, "a Notify"),
+            Row::new(self.channel, "mpsc"),
+            Row::new(self.oneshot, "oneshot rx"),
+            Row::new(self.watch, "watch"),
+            Row::new(self.notify, "notify"),
             Row::new(self.one_of, "one of several"),
             Row::new(self.ready, "ready"),
             Row::new(self.unknown, "unknown"),

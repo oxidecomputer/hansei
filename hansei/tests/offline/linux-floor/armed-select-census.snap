@@ -5,9 +5,9 @@ description: "`census` over linux-floor/armed-select"
 Threads: 3 lwps, 3 in runtime 0 @ 0xADDR
 
 COUNT  RT  ROLE             STATE            LWPS
-    1  0   worker           in driver        865786
-    1  0   worker           parked           865787
-    1  0   entered runtime  block_on caller  865784
+    1  0   worker           in driver        969177
+    1  0   worker           parked           969178
+    1  0   entered runtime  block_on caller  969175
     0  0   blocking pool    0 idle, 0 busy   —
 [3 lwps]
 
@@ -21,11 +21,11 @@ COUNT  TYPE / WAITING ON
     1  async fn armed_select::driver
        └─ 1  unknown
     1  async fn armed_select::holder
-       └─ 1  unknown
+       └─ 1  oneshot rx
     1  async fn armed_select::selector
        └─ 1  one of several
     1  async fn armed_select::waiter
-       └─ 1  a Notify
+       └─ 1  notify
 [4 types]
 
 Futures: 12 in flight, on 21 await-chain frames, up to 2 deep
@@ -38,14 +38,14 @@ COUNT  HELD IN
 
 COUNT  TYPE / WAITING ON
     2  async fn armed_select::child
-       └─ 2  unknown
+       └─ 2  oneshot rx
     1  async fn tokio::sync::mpsc::bounded::Receiver::recv<u32>
-       └─ 1  mpsc rx
+       └─ 1  mpsc
     1  async fn tokio::sync::watch::Receiver::changed<u32>
        └─ 1  unknown
     1  async fn tokio::sync::watch::changed_impl<u32>
-       └─ 1  a Notify
+       └─ 1  watch
     1  future tokio::sync::notify::Notified
-       └─ 1  a Notify
+       └─ 1  notify
     2  (2 more types)
 [7 types, 5 shown]

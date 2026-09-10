@@ -7,7 +7,7 @@ task 5
     thread: <none>
     type: async fn channels::hold
     awaiting at: src/bin/channels.rs:66
-    waiting on: oneshot rx 0xADDR
+    waiting on: oneshot rx 0xADDR (nothing sent, sender alive)
         oneshot rx 0xADDR: waker in Inner.rx_task (rx_task_set), reached from #0 inner → * → data → rx_task
     spawned at: src/bin/channels.rs:121:23
     defined at: src/bin/channels.rs:51

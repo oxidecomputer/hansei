@@ -8,7 +8,7 @@ task 1
     owner: runtime 0 @ 0xADDR (current_thread)
     type: async fn walk_shapes::chained
     awaiting at: src/bin/walk-shapes.rs:116
-    waiting on: notify 0xADDR
+    waiting on: notify 0xADDR (waiting)
         inner: walk_shapes::WrapE at 0xADDR — unknown; armed: notify 0xADDR: waker in Notified.waiter, in the future at 0xADDR inner → waiter → waker
     spawned at: src/bin/walk-shapes.rs:258:9
     defined at: src/bin/walk-shapes.rs:105

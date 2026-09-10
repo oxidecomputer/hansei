@@ -5,9 +5,9 @@ description: "`census` over linux/channels"
 Threads: 3 lwps, 3 in runtime 0 @ 0xADDR
 
 COUNT  RT  ROLE             STATE            LWPS
-    1  0   worker           in driver        857061
-    1  0   worker           parked           857062
-    1  0   entered runtime  block_on caller  857059
+    1  0   worker           in driver        892581
+    1  0   worker           parked           892582
+    1  0   entered runtime  block_on caller  892579
     0  0   blocking pool    0 idle, 0 busy   —
 [3 lwps]
 
@@ -19,11 +19,11 @@ COUNT  STATE
 
 COUNT  TYPE / WAITING ON
     1  async fn channels::hold
-       └─ 1  unknown
+       └─ 1  oneshot rx
     1  async fn channels::notify_waiter
-       └─ 1  a Notify
+       └─ 1  notify
     1  async fn channels::recv_waiter
-       └─ 1  mpsc rx
+       └─ 1  mpsc
 [3 types]
 
 Futures: 3 in flight, on 8 await-chain frames, up to 3 deep
