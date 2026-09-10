@@ -726,7 +726,7 @@ impl Root<'_> {
 /// tens of thousands of owners hold dozens of pointers each, and only
 /// the one that corroborates a hit is ever spelled, by walking to its
 /// address again ([`Context::steps_to`]).
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Debug)]
 struct PointerMember {
     target: u64,
     pointee: BundleTypeId,
@@ -1873,12 +1873,22 @@ pub fn verified_accounts(
             Attribution::Registry(RegistrySlot::Semaphore { semaphore, .. }),
             WaitTarget::Semaphore { addr, .. },
         ) => semaphore == addr,
-        (Attribution::Owner { primitive, .. }, WaitTarget::Channel { addr, .. }) => {
-            primitive == addr
-        }
-        (Attribution::Owner { primitive, .. }, WaitTarget::Notify { addr, .. }) => {
-            primitive == addr
-        }
+        (
+            Attribution::Owner {
+                kind: OwnerKind::Mpsc,
+                primitive,
+                ..
+            },
+            WaitTarget::Channel { addr, .. },
+        ) => primitive == addr,
+        (
+            Attribution::Owner {
+                kind: OwnerKind::Notify,
+                primitive,
+                ..
+            },
+            WaitTarget::Notify { addr, .. },
+        ) => primitive == addr,
         (
             Attribution::Owner {
                 kind: OwnerKind::OneshotRx,
@@ -2460,5 +2470,1438 @@ mod tests {
         let attributed = Attributed::from_slots(vec![known, bare]);
         assert_eq!(attributed.stats.unknown, 2);
         assert_eq!(attributed.of_task(0x1000).count(), 2);
+    }
+}
+
+#[cfg(test)]
+mod join_tests {
+    //! The joins between a slot and what a reader or a wait-set member
+    //! says: laid out by hand, at the boundaries no fixture reaches.
+
+    use super::*;
+    use crate::tokio::assess::{ContinuationStatus, VerifiedWait, WaitAssessment};
+    use crate::tokio::bundle::{FutureInfo, IoSlot, OwnerResolution, Task, TaskKind};
+    use crate::tokio::graph::TaskRef;
+    use crate::tokio::waitset::{MemberRoute, SlotRef, WaitMember, WaitSet};
+    use crate::tokio::{TaskAddr, TaskState};
+
+    use hansei_bundle::SemanticIssueKind;
+
+    const KEY_TY: BundleTypeId = BundleTypeId(1);
+    const KEY_SIZE: u64 = 24;
+
+    fn size_of(ty: BundleTypeId) -> Option<u64> {
+        (ty == KEY_TY).then_some(KEY_SIZE)
+    }
+
+    fn key() -> ValueKey {
+        ValueKey {
+            addr: 0x5000,
+            ty: KEY_TY,
+        }
+    }
+
+    fn owner() -> Owner {
+        Owner::Task {
+            header: 0x1000,
+            index: 0,
+        }
+    }
+
+    fn typed(slot: u64, root: SlotRoot, hop: Option<Hop>) -> AttributedSlot {
+        AttributedSlot {
+            hit: 0,
+            slot,
+            owner: owner(),
+            attribution: Attribution::Typed {
+                holder: "x::Holder".to_string(),
+                member: "w".to_string(),
+                path: SlotPath {
+                    root,
+                    steps: vec!["w".to_string()],
+                    hop,
+                },
+                validity: Validity::Raw,
+            },
+            within: None,
+        }
+    }
+
+    fn registry(slot: u64, attribution: RegistrySlot, within: Option<SlotRoot>) -> AttributedSlot {
+        AttributedSlot {
+            hit: 0,
+            slot,
+            owner: owner(),
+            attribution: Attribution::Registry(attribution),
+            within,
+        }
+    }
+
+    fn owned(slot: u64, kind: OwnerKind, primitive: u64) -> AttributedSlot {
+        AttributedSlot {
+            hit: 0,
+            slot,
+            owner: owner(),
+            attribution: Attribution::Owner {
+                kind,
+                primitive,
+                holder: "Notified".to_string(),
+                member: "waiter".to_string(),
+                path: SlotPath {
+                    root: SlotRoot::Frame { task: 0, frame: 0 },
+                    steps: Vec::new(),
+                    hop: None,
+                },
+                validity: Validity::SelfDescribing,
+                reading: None,
+            },
+            within: None,
+        }
+    }
+
+    fn member(armed: Option<SlotRef>, assessment: Option<WaitAssessment>) -> WaitMember {
+        WaitMember {
+            route: MemberRoute::Branch {
+                local: "b".to_string(),
+                borrowed: false,
+            },
+            key: Some(key()),
+            future: None,
+            assessment,
+            notes: Vec::new(),
+            armed,
+        }
+    }
+
+    fn frame() -> SlotRoot {
+        SlotRoot::Frame { task: 0, frame: 0 }
+    }
+
+    fn hop(from: u64) -> Hop {
+        Hop {
+            from,
+            addr: 0x9000,
+            pointee: "x::Pointee".to_string(),
+            pointee_ty: BundleTypeId(2),
+            steps: Vec::new(),
+        }
+    }
+
+    fn timer(entry: u64) -> RegistrySlot {
+        RegistrySlot::Timer {
+            entry,
+            state: None,
+            deadline: None,
+        }
+    }
+
+    fn io(resource: u64) -> RegistrySlot {
+        RegistrySlot::Io {
+            resource,
+            slot: IoSlot::Reader,
+            ready: None,
+        }
+    }
+
+    /// A member is armed by a slot inside its storage — its first byte
+    /// in, its last byte in, the byte past its end out, the byte before
+    /// it out — by a slot located from its own find, by a slot whose
+    /// hop left from a pointer inside it, and by a registry slot the
+    /// analysis placed in its find.
+    #[test]
+    fn test_a_member_claims_the_slots_in_its_storage_and_reached_through_it() {
+        let m = member(None, None);
+        let claims = |slot: &AttributedSlot| member_accounts(&m, slot, &size_of);
+        assert!(claims(&typed(0x5000, frame(), None)));
+        assert!(claims(&typed(0x5017, frame(), None)));
+        assert!(!claims(&typed(0x5018, frame(), None)));
+        assert!(!claims(&typed(0x4ff8, frame(), None)));
+        let find = |addr| SlotRoot::Find { index: 0, addr };
+        assert!(claims(&typed(0x9000, find(0x5000), None)));
+        assert!(!claims(&typed(0x9000, find(0x5008), None)));
+        let child = |addr| SlotRoot::Child {
+            set: 0,
+            child: 0,
+            addr,
+        };
+        assert!(claims(&typed(0x9000, child(0x5000), None)));
+        assert!(claims(&typed(0x9000, frame(), Some(hop(0x5010)))));
+        assert!(!claims(&typed(0x9000, frame(), Some(hop(0x5018)))));
+        assert!(claims(&registry(0x9000, timer(0x9000), Some(find(0x5000)))));
+        assert!(!claims(&registry(
+            0x9000,
+            timer(0x9000),
+            Some(find(0x6000))
+        )));
+        // A member with no identity claims nothing by storage.
+        let mut nameless = member(None, None);
+        nameless.key = None;
+        assert!(!member_accounts(
+            &nameless,
+            &typed(0x5000, frame(), None),
+            &size_of
+        ));
+    }
+
+    /// The registry evidence that armed a member is the slot itself:
+    /// the wheel entry by its address, the io waiter by its resource —
+    /// and not a neighbour's.
+    #[test]
+    fn test_a_member_armed_by_a_registry_slot_claims_exactly_that_slot() {
+        let by_wheel = member(
+            Some(SlotRef::Wheel {
+                entry: 0xdd00,
+                state: None,
+                deadline: None,
+                stopped: None,
+            }),
+            None,
+        );
+        assert!(member_accounts(
+            &by_wheel,
+            &registry(0xdd00, timer(0xdd00), None),
+            &size_of
+        ));
+        assert!(!member_accounts(
+            &by_wheel,
+            &registry(0xdd08, timer(0xdd08), None),
+            &size_of
+        ));
+        assert!(!member_accounts(
+            &by_wheel,
+            &registry(0xaa08, io(0xaa00), None),
+            &size_of
+        ));
+        let by_io = member(
+            Some(SlotRef::Io {
+                resource: 0xaa00,
+                slot: IoSlot::Reader,
+                fd: None,
+                ready: None,
+            }),
+            None,
+        );
+        assert!(member_accounts(
+            &by_io,
+            &registry(0xaa08, io(0xaa00), None),
+            &size_of
+        ));
+        assert!(!member_accounts(
+            &by_io,
+            &registry(0xab08, io(0xab00), None),
+            &size_of
+        ));
+        assert!(!member_accounts(
+            &by_io,
+            &registry(0xdd00, timer(0xdd00), None),
+            &size_of
+        ));
+    }
+
+    /// A verified wait accounts for the slot of the primitive it names
+    /// — a `Notify` by address, a channel by address — and for a typed
+    /// slot inside its primitive's bytes, and for nothing else.
+    #[test]
+    fn test_a_verified_wait_accounts_for_its_primitives_slot() {
+        let notify = VerifiedWait::testkit(
+            WaitTarget::Notify {
+                addr: 0x7000,
+                state: None,
+                waiters: None,
+            },
+            None,
+        );
+        assert!(verified_accounts(
+            &notify,
+            &owned(0x7040, OwnerKind::Notify, 0x7000),
+            &size_of
+        ));
+        assert!(!verified_accounts(
+            &notify,
+            &owned(0x7140, OwnerKind::Notify, 0x7100),
+            &size_of
+        ));
+        assert!(!verified_accounts(
+            &notify,
+            &owned(0x7040, OwnerKind::Mpsc, 0x7000),
+            &size_of
+        ));
+        let channel = VerifiedWait::testkit(
+            WaitTarget::Channel {
+                addr: 0x8000,
+                senders: 1,
+                capacity: None,
+                unread: 0,
+            },
+            None,
+        );
+        assert!(verified_accounts(
+            &channel,
+            &owned(0x8080, OwnerKind::Mpsc, 0x8000),
+            &size_of
+        ));
+        assert!(!verified_accounts(
+            &channel,
+            &owned(0x8080, OwnerKind::Mpsc, 0x8100),
+            &size_of
+        ));
+        // The test-only primitive sits at address zero with a type of
+        // size zero: a typed slot at zero is not inside it, and one at
+        // zero with a size is.
+        assert!(!verified_accounts(
+            &channel,
+            &typed(0x0, frame(), None),
+            &size_of
+        ));
+        let sized = |_| Some(64);
+        assert!(verified_accounts(
+            &channel,
+            &typed(0x8, frame(), None),
+            &sized
+        ));
+        assert!(!verified_accounts(
+            &channel,
+            &typed(0x40, frame(), None),
+            &sized
+        ));
+        // A member verified over a resource claims that resource's slot.
+        let m = member(
+            Some(SlotRef::Protocol),
+            Some(WaitAssessment::Waiting(notify)),
+        );
+        assert!(member_accounts(
+            &m,
+            &owned(0x7040, OwnerKind::Notify, 0x7000),
+            &size_of
+        ));
+        assert!(!member_accounts(
+            &m,
+            &owned(0x7040, OwnerKind::Notify, 0x7100),
+            &size_of
+        ));
+    }
+
+    /// Over a wait set, a slot takes the words of the armed member
+    /// that claims it; an unarmed member claims nothing, and a task
+    /// waiting on nothing accounts for nothing.
+    #[test]
+    fn test_a_wait_set_speaks_for_the_slot_its_armed_member_claims() {
+        let wait = |members: Vec<WaitMember>| TaskWait {
+            task: TaskRef {
+                addr: TaskAddr(0x1000),
+                task_id: Some(1),
+            },
+            assessment: WaitAssessment::Set(WaitSet {
+                at: key(),
+                reason: SemanticIssueKind::NoRule,
+                members,
+                capped: 0,
+            }),
+            continuation: ContinuationStatus::Primitive,
+            depth: 1,
+            site: None,
+            observation: None,
+            notes: Vec::new(),
+            held: Vec::new(),
+            held_capped: 0,
+            frames: Vec::new(),
+        };
+        let armed = member(
+            Some(SlotRef::Wheel {
+                entry: 0xdd00,
+                state: None,
+                deadline: None,
+                stopped: None,
+            }),
+            None,
+        );
+        let slot = registry(0xdd00, timer(0xdd00), None);
+        assert_eq!(
+            accounted_by(&wait(vec![armed]), &slot, &size_of),
+            Some(("timer 0xdd00".to_string(), "timer".to_string()))
+        );
+        assert_eq!(
+            accounted_by(&wait(vec![member(None, None)]), &slot, &size_of),
+            None
+        );
+        let mut idle = wait(Vec::new());
+        idle.assessment = WaitAssessment::Unresumed;
+        assert_eq!(accounted_by(&idle, &slot, &size_of), None);
+    }
+
+    /// Each demotion has its own words, and the audit names the hit,
+    /// its owner as the listings do, the value it sat in and why it
+    /// was demoted.
+    #[test]
+    fn test_stale_hits_are_listed_by_reason_in_the_audit() {
+        let reasons = [
+            StaleReason::InactiveVariant,
+            StaleReason::DeadLocal,
+            StaleReason::NotAWaker,
+            StaleReason::GateClear,
+        ];
+        let mut texts: Vec<&str> = reasons.iter().map(|r| r.text()).collect();
+        assert!(texts.iter().all(|t| !t.is_empty()));
+        texts.sort_unstable();
+        texts.dedup();
+        assert_eq!(texts.len(), reasons.len());
+
+        let list = TaskList::new(vec![Task {
+            addr: TaskAddr(0x1000),
+            state: TaskState(1 << 6),
+            owner_id: None,
+            task_id: Some(7),
+            spawn_location: None,
+            future: FutureInfo::Unknown { poll_symbol: None },
+            kind: TaskKind::Async,
+            owner: OwnerResolution::Unknown,
+        }]);
+        let attributed = Attributed {
+            stale: vec![
+                Stale {
+                    hit: 0,
+                    slot: 0x5010,
+                    owner: owner(),
+                    root: SlotRoot::Frame { task: 0, frame: 1 },
+                    reason: StaleReason::InactiveVariant,
+                },
+                Stale {
+                    hit: 1,
+                    slot: 0x6020,
+                    owner: Owner::Child { set: 0, child: 2 },
+                    root: SlotRoot::Find {
+                        index: 3,
+                        addr: 0x6000,
+                    },
+                    reason: StaleReason::GateClear,
+                },
+            ],
+            ..Attributed::default()
+        };
+        let lines = attributed.audit(&list);
+        assert_eq!(
+            lines,
+            [
+                "the hit at 0x5010 names task 7 and sits in #1 but is in an inactive variant",
+                "the hit at 0x6020 names child 2 of set 0 and sits in the future at 0x6000 but is \
+                 under a state word that says no waker is set",
+            ]
+        );
+        assert!(Attributed::default().audit(&list).is_empty());
+    }
+
+    /// A task's own slot located through a set child's root is filed
+    /// under that child too; the child's own slot is filed once.
+    #[test]
+    fn test_a_slot_located_through_a_child_root_is_the_childs_once() {
+        let child = SlotRoot::Child {
+            set: 0,
+            child: 1,
+            addr: 0x4000,
+        };
+        let mut of_child = typed(0x4010, child, None);
+        of_child.owner = Owner::Child { set: 0, child: 1 };
+        let of_task = typed(0x4020, child, None);
+        let attributed = Attributed::from_slots(vec![of_child.clone(), of_task.clone()]);
+        assert_eq!(attributed.of_child(0, 1).count(), 2);
+        assert_eq!(
+            Attributed::from_slots(vec![of_child])
+                .of_child(0, 1)
+                .count(),
+            1
+        );
+        assert_eq!(
+            Attributed::from_slots(vec![of_task]).of_child(0, 1).count(),
+            1
+        );
+    }
+
+    /// Roots come innermost first: a find ahead of a frame of the same
+    /// size and address, an inner frame ahead of an outer one, and the
+    /// wrapper frames that share one range with what they wrap folded
+    /// into one.
+    #[test]
+    fn test_roots_come_innermost_first_a_find_ahead_of_a_frame() {
+        use crate::testkit::load_any;
+        let (bundle, snapshot) = load_any("sleep-join");
+        let ctx = crate::testkit::context(&bundle, &snapshot);
+        let list = crate::testkit::tasks(&ctx, &snapshot);
+        // Any two typed values of different sizes will do: a task's
+        // header and its whole cell.
+        let task = &list.tasks[0];
+        let header = Value::read(
+            ctx.proc,
+            ctx.view.ty(ctx.view.bundle().infra.header).unwrap(),
+            task.addr.0,
+        )
+        .unwrap();
+        let cell = ctx
+            .task_extent(task)
+            .map(|range| range.end - range.start)
+            .unwrap();
+        assert!(cell > header.bytes.len() as u64);
+        let frame = |frame| SlotRoot::Frame { task: 0, frame };
+        let find = SlotRoot::Find {
+            index: 0,
+            addr: task.addr.0,
+        };
+        let mut roots = vec![
+            Root {
+                at: frame(0),
+                value: header,
+            },
+            Root {
+                at: find,
+                value: header,
+            },
+            Root {
+                at: frame(1),
+                value: header,
+            },
+        ];
+        order_roots(&mut roots);
+        assert_eq!(roots.len(), 1, "one range, walked once");
+        assert_eq!(roots[0].at, find);
+        let mut frames = vec![
+            Root {
+                at: frame(2),
+                value: header,
+            },
+            Root {
+                at: frame(0),
+                value: header,
+            },
+        ];
+        order_roots(&mut frames);
+        assert_eq!(frames[0].at, frame(0), "the inner frame first");
+    }
+}
+
+#[cfg(test)]
+mod synthetic_tests {
+    //! The walk over types no fixture holds — a waker at a member's
+    //! edge, an array of wakers, a holder exactly a waker wide, a
+    //! pointer landing on a boundary — laid out by hand in a bundle of
+    //! their own, over bytes planted beside a fixture pair.
+
+    use super::*;
+    use crate::heap::umem::tests::{BUFFERS, SlabSpec, cache, fake};
+    use crate::testkit::load_any;
+    use crate::tokio::bundle::{OneshotState, Registries, TaskList};
+    use crate::tokio::census::FutureCensus;
+    use crate::tokio::graph::Analysis;
+    use crate::tokio::semantics::SemanticIndex;
+    use crate::tokio::wakers::{Class, VtableKind};
+
+    use hansei_bundle::{
+        Bundle, CoroutineLayout, CoroutinePhase, CoroutineState, DiscrDef, DiscrValue, DiscrValues,
+        DynFutureTable, Encoding, FORMAT_VERSION, ImplTable, InfraTypes, MemberDef, MemberRef,
+        Meta, ProvenanceTable, SemanticRuleId, SemanticTable, StaticsTable, Step as WalkStep,
+        StoragePolicy, StringInterner, TaskTable, TypeDef, TypeTable, VariantDef, VariantShape,
+        WalkBinding, WalksTable,
+    };
+    use proc::snapshot::Snapshot;
+    use proc::{LoadedObjectWithPath, LwpInfo, MapFlags, Regs, SymbolBuf};
+
+    use std::ops::Range;
+
+    /// Where the planted mapping sits: high, and in no fixture.
+    const BASE: u64 = 0x5f20_0000_0000;
+    const SIZE: u64 = 0x2000;
+
+    // The synthetic bundle's type ids.
+    const U64: u32 = 0;
+    const RAW_WAKER: u32 = 1;
+    const WAKER: u32 = 2;
+    const UNIT: u32 = 3;
+    const OPT_WAKER: u32 = 4;
+    const SLIM: u32 = 5;
+    const HOLDER: u32 = 6;
+    const ARR: u32 = 7;
+    const BOXED: u32 = 8;
+    const PTR_HOLDER: u32 = 9;
+    const FRAME: u32 = 10;
+    const PADDED: u32 = 11;
+    const CHANLIKE: u32 = 12;
+    const NOTIFY_ARR: u32 = 13;
+    const SHARED: u32 = 14;
+    const ARC_SHARED: u32 = 15;
+    const CORO: u32 = 16;
+    const CORO_STATE: u32 = 17;
+
+    fn id(i: u32) -> BundleTypeId {
+        BundleTypeId(i)
+    }
+
+    /// A bundle of the shapes the walk must get right at the edges:
+    /// `Holder { a: u64, w: Option<Waker> }` (24 bytes), `Slim { w:
+    /// Waker }` (exactly a waker wide), `Boxed { n, ws: [Slim; 3] }`, a
+    /// `Frame { p: *const Holder, pad }`, a `Chanlike { x, cp:
+    /// CachePadded<Option<Waker>> }` whose wrapper is wider than a
+    /// waker, and a watch `Shared` behind an `ArcInner` with the roles
+    /// the watch row reads bound.
+    fn bundle() -> Bundle {
+        let mut strings = StringInterner::new();
+        let mut n = |s: &str| strings.intern(s);
+        let (u64n, rawn, wakern, unitn) = (
+            n("u64"),
+            n("core::task::wake::RawWaker"),
+            n("core::task::wake::Waker"),
+            n("()"),
+        );
+        let (datan, vtablen, wakerm, nonen, somen, zeron) = (
+            n("data"),
+            n("vtable"),
+            n("waker"),
+            n("None"),
+            n("Some"),
+            n("__0"),
+        );
+        let (optn, slimn, holdern, boxedn, ptrn, framen) = (
+            n("core::option::Option<core::task::wake::Waker>"),
+            n("x::Slim"),
+            n("x::Holder"),
+            n("x::Boxed"),
+            n("*const x::Holder"),
+            n("x::Frame"),
+        );
+        let (wn, an, nn, wsn, pn, padn) = (n("w"), n("a"), n("n"), n("ws"), n("p"), n("pad"));
+        let (paddedn, chann, valuen, xn, cpn) = (
+            n("tokio::util::cacheline::CachePadded<core::option::Option<core::task::wake::Waker>>"),
+            n("x::Chanlike"),
+            n("value"),
+            n("x"),
+            n("cp"),
+        );
+        let (coron, coro_staten, zero_v, three_v, liven, deadn, unsuren, lpn) = (
+            n("x::coro::{async_fn_env#0}"),
+            n("x::coro::{async_fn_env#0}::Suspend0"),
+            n("0"),
+            n("3"),
+            n("live"),
+            n("dead"),
+            n("unsure"),
+            n("lp"),
+        );
+        let (sharedn, arcn, notify_rxn, staten, rxn, txn, strongn, weakn) = (
+            n("tokio::sync::watch::Shared<u32>"),
+            n("alloc::sync::ArcInner<tokio::sync::watch::Shared<u32>>"),
+            n("notify_rx"),
+            n("state"),
+            n("ref_count_rx"),
+            n("ref_count_tx"),
+            n("strong"),
+            n("weak"),
+        );
+        let member = |name, ty, offset| MemberDef { name, ty, offset };
+        let strukt = |name, size, members| TypeDef::Struct {
+            name,
+            size,
+            members,
+        };
+        let types = vec![
+            TypeDef::Base {
+                name: u64n,
+                size: 8,
+                encoding: Encoding::Unsigned,
+            },
+            strukt(
+                rawn,
+                16,
+                vec![member(datan, id(U64), 0), member(vtablen, id(U64), 8)],
+            ),
+            strukt(wakern, 16, vec![member(wakerm, id(RAW_WAKER), 0)]),
+            strukt(unitn, 0, vec![]),
+            // The niche: a null vtable word is `None`.
+            TypeDef::Enum {
+                name: optn,
+                size: 16,
+                shape: VariantShape {
+                    discr: Some(DiscrDef {
+                        offset: 8,
+                        ty: id(U64),
+                    }),
+                    variants: vec![
+                        VariantDef {
+                            name: nonen,
+                            discr_values: Some(DiscrValues(vec![DiscrValue::Value(0)])),
+                            payload: member(zeron, id(UNIT), 0),
+                            decl: None,
+                            await_site: None,
+                        },
+                        VariantDef {
+                            name: somen,
+                            discr_values: None,
+                            payload: member(zeron, id(WAKER), 0),
+                            decl: None,
+                            await_site: None,
+                        },
+                    ],
+                },
+            },
+            strukt(slimn, 16, vec![member(wn, id(WAKER), 0)]),
+            strukt(
+                holdern,
+                24,
+                vec![member(an, id(U64), 0), member(wn, id(OPT_WAKER), 8)],
+            ),
+            TypeDef::Array {
+                elem: id(SLIM),
+                count: 3,
+            },
+            strukt(
+                boxedn,
+                56,
+                vec![member(nn, id(U64), 0), member(wsn, id(ARR), 8)],
+            ),
+            TypeDef::Pointer {
+                name: Some(ptrn),
+                target: id(HOLDER),
+            },
+            strukt(
+                framen,
+                16,
+                vec![member(pn, id(PTR_HOLDER), 0), member(padn, id(U64), 8)],
+            ),
+            strukt(paddedn, 128, vec![member(valuen, id(OPT_WAKER), 0)]),
+            strukt(
+                chann,
+                136,
+                vec![member(xn, id(U64), 0), member(cpn, id(PADDED), 8)],
+            ),
+            TypeDef::Array {
+                elem: id(U64),
+                count: 32,
+            },
+            strukt(
+                sharedn,
+                280,
+                vec![
+                    member(notify_rxn, id(NOTIFY_ARR), 0),
+                    member(staten, id(U64), 256),
+                    member(rxn, id(U64), 264),
+                    member(txn, id(U64), 272),
+                ],
+            ),
+            strukt(
+                arcn,
+                296,
+                vec![
+                    member(strongn, id(U64), 0),
+                    member(weakn, id(U64), 8),
+                    member(datan, id(SHARED), 16),
+                ],
+            ),
+            // A coroutine: its state word, then the suspended state's
+            // locals — a live waker, a dead pointer, a waker whose
+            // initialization the layout cannot vouch for, a live pointer.
+            TypeDef::Enum {
+                name: coron,
+                size: 56,
+                shape: VariantShape {
+                    discr: Some(DiscrDef {
+                        offset: 0,
+                        ty: id(U64),
+                    }),
+                    variants: vec![
+                        VariantDef {
+                            name: zero_v,
+                            discr_values: Some(DiscrValues(vec![DiscrValue::Value(0)])),
+                            payload: member(zeron, id(UNIT), 8),
+                            decl: None,
+                            await_site: None,
+                        },
+                        VariantDef {
+                            name: three_v,
+                            discr_values: Some(DiscrValues(vec![DiscrValue::Value(3)])),
+                            payload: member(zeron, id(CORO_STATE), 8),
+                            decl: None,
+                            await_site: None,
+                        },
+                    ],
+                },
+            },
+            strukt(
+                coro_staten,
+                48,
+                vec![
+                    member(liven, id(WAKER), 0),
+                    member(deadn, id(PTR_HOLDER), 16),
+                    member(unsuren, id(WAKER), 24),
+                    member(lpn, id(PTR_HOLDER), 40),
+                ],
+            ),
+        ];
+        let semantics = SemanticTable {
+            types: vec![hansei_bundle::TypeSemantics {
+                ty: id(CORO),
+                storage: StoragePolicy::CoroutineStates,
+                future: None,
+                coroutine: Some(CoroutineLayout {
+                    rule: SemanticRuleId(0),
+                    states: vec![CoroutineState {
+                        variant: three_v,
+                        stage: CoroutinePhase::Suspended,
+                        locals: vec![liven, lpn],
+                        uncertain_locals: vec![unsuren],
+                    }],
+                }),
+                access: None,
+                resource: None,
+                container: None,
+                issues: Vec::new(),
+            }],
+            ..Default::default()
+        };
+        let mut b = Bundle {
+            meta: Meta {
+                format_version: FORMAT_VERSION,
+                ..Default::default()
+            },
+            strings: strings.finish(),
+            types: TypeTable {
+                types,
+                name_index: vec![],
+                ..Default::default()
+            },
+            tasks: TaskTable::default(),
+            dyn_futures: DynFutureTable::default(),
+            statics: StaticsTable::default(),
+            walks: WalksTable::default(),
+            infra: InfraTypes {
+                header: id(U64),
+                vtable: id(U64),
+                trailer: id(U64),
+                context: id(U64),
+                scheduler_handle: id(U64),
+                mt_handle: id(U64),
+                ct_handle: id(U64),
+                location: id(U64),
+                raw_waker_vtable: id(U64),
+            },
+            provenance: ProvenanceTable::default(),
+            impls: ImplTable::default(),
+            semantics,
+        };
+        let bind = |last| WalkBinding {
+            roots: vec![id(ARC_SHARED)],
+            steps: vec![
+                WalkStep::Member(MemberRef::Named(datan)),
+                WalkStep::Member(MemberRef::Named(last)),
+            ],
+            outcome: WalkOutcome::Bound {
+                spelling: 0,
+                spellings: 1,
+                note: None,
+            },
+        };
+        for (role, last) in [
+            (WalkRole::WatchSharedNotifyRx, notify_rxn),
+            (WalkRole::WatchSharedState, staten),
+            (WalkRole::WatchSharedRxCount, rxn),
+            (WalkRole::WatchSharedTxCount, txn),
+        ] {
+            b.walks.entries.insert(role, bind(last));
+        }
+        b
+    }
+
+    /// A fixture snapshot with one anonymous, writable mapping planted
+    /// beside it, holding the bytes a test lays down.
+    struct Planted<'a> {
+        inner: &'a Snapshot,
+        bytes: Vec<u8>,
+    }
+
+    impl<'a> Planted<'a> {
+        fn new(inner: &'a Snapshot) -> Self {
+            Planted {
+                inner,
+                bytes: vec![0; SIZE as usize],
+            }
+        }
+
+        fn word(&mut self, at: u64, value: u64) {
+            let off = (at - BASE) as usize;
+            self.bytes[off..off + 8].copy_from_slice(&value.to_le_bytes());
+        }
+
+        /// A waker pair at `at`: a data word and a nonzero vtable word.
+        fn pair(&mut self, at: u64) {
+            self.word(at, 0x1234);
+            self.word(at + 8, 0xf000);
+        }
+
+        fn range(&self) -> Range<u64> {
+            BASE..BASE + SIZE
+        }
+    }
+
+    impl proc::Target for Planted<'_> {
+        fn read_bytes(&self, addr: u64, len: u64) -> proc::Result<&[u8]> {
+            if self.range().contains(&addr) && addr + len <= BASE + SIZE {
+                let off = (addr - BASE) as usize;
+                return Ok(&self.bytes[off..off + len as usize]);
+            }
+            self.inner.read_bytes(addr, len)
+        }
+        fn readable_len(&self, addr: u64, max: u64) -> u64 {
+            if self.range().contains(&addr) {
+                return (BASE + SIZE - addr).min(max);
+            }
+            self.inner.readable_len(addr, max)
+        }
+        fn lookup_symbol_by_addr(&self, addr: u64) -> Option<SymbolBuf> {
+            self.inner.lookup_symbol_by_addr(addr)
+        }
+        fn lookup_symbol_by_name(&self, name: &str) -> Option<SymbolBuf> {
+            self.inner.lookup_symbol_by_name(name)
+        }
+        fn symbols(&self) -> proc::Result<Vec<SymbolBuf>> {
+            self.inner.symbols()
+        }
+        fn object_symbols(&self) -> proc::Result<Vec<SymbolBuf>> {
+            self.inner.object_symbols()
+        }
+        fn mappings(&self) -> proc::Result<proc::Mappings> {
+            let planted = LoadedObjectWithPath {
+                path: None,
+                vaddr: BASE,
+                size: SIZE,
+                flags: MapFlags(0x04 | 0x02 | 0x40),
+            };
+            Ok(self
+                .inner
+                .mappings()?
+                .as_slice()
+                .iter()
+                .cloned()
+                .chain([planted])
+                .collect())
+        }
+        fn captured_runs(&self) -> Option<Vec<Range<u64>>> {
+            let mut runs = self.inner.captured_runs()?;
+            runs.push(self.range());
+            Some(runs)
+        }
+        fn lwps(&self) -> proc::Result<Vec<LwpInfo>> {
+            self.inner.lwps()
+        }
+        fn tls_var_addr(&self, regs: &Regs, sym: &SymbolBuf) -> proc::Result<Option<u64>> {
+            self.inner.tls_var_addr(regs, sym)
+        }
+    }
+
+    /// Everything an attributor over the planted target reads that is
+    /// not the target or the bundle: empty sources.
+    struct Empty {
+        list: TaskList,
+        census: FutureCensus,
+        registries: Registries,
+        analysis: Analysis,
+        impls: ImplFold,
+        semantics: SemanticIndex,
+    }
+
+    impl Empty {
+        fn new(bundle: &Bundle) -> Self {
+            Empty {
+                list: TaskList::new(Vec::new()),
+                census: FutureCensus::from_finds(Vec::new(), Vec::new(), Vec::new()),
+                registries: Registries::default(),
+                analysis: Analysis {
+                    waits: Vec::new(),
+                    barriers: Vec::new(),
+                    join_wakers: Vec::new(),
+                    errors: Vec::new(),
+                },
+                impls: ImplFold::default(),
+                semantics: SemanticIndex::new(bundle.types.types.len(), &bundle.semantics.types)
+                    .expect("an empty semantic table indexes"),
+            }
+        }
+
+        fn sources(&self) -> Sources<'_> {
+            Sources {
+                list: &self.list,
+                census: &self.census,
+                registries: &self.registries,
+                analysis: &self.analysis,
+                heap: None,
+                impls: &self.impls,
+            }
+        }
+    }
+
+    fn attributor<'a, 'b>(
+        proc: &'b Planted<'b>,
+        bundle: &'b Bundle,
+        empty: &'a Empty,
+        sources: &'a Sources<'a>,
+    ) -> Attributor<'a, 'b, Planted<'b>> {
+        Attributor {
+            proc,
+            types: Types {
+                view: BundleView::new(bundle),
+                semantics: &empty.semantics,
+                test_bindings: &[],
+            },
+            sources,
+            registry: HashMap::default(),
+            finds: HashMap::default(),
+        }
+    }
+
+    fn value<'b>(at: &Attributor<'_, 'b, Planted<'b>>, ty: u32, addr: u64) -> Value<'b> {
+        Value::read(at.proc, at.types.view.ty(id(ty)).unwrap(), addr).unwrap()
+    }
+
+    fn hit(slot: u64) -> Hit {
+        Hit {
+            slot,
+            vtable: 0xf000,
+            kind: VtableKind::Task,
+            data: 0x1000,
+            owner: Some(Owner::Task {
+                header: 0x1000,
+                index: 0,
+            }),
+            class: Class::Anon,
+            admitted: true,
+        }
+    }
+
+    fn names<'t>(trail: &'t [super::Step<'_>]) -> Vec<&'t str> {
+        trail.iter().map(|s| s.name.as_str()).collect()
+    }
+
+    /// The offset walk lands on a `Waker` at its first byte and nowhere
+    /// else: not on the member before it, not inside it, not past the
+    /// value's end, and not in an `Option`'s `None`, which is storage
+    /// of a variant the value is not in.
+    #[test]
+    fn test_the_offset_walk_lands_on_a_waker_and_nowhere_else() {
+        let (_, snapshot) = load_any("sleep-join");
+        let bundle = bundle();
+        let mut planted = Planted::new(&snapshot);
+        let (some, none) = (BASE, BASE + 0x100);
+        planted.word(some, 7);
+        planted.pair(some + 8);
+        planted.word(none, 7);
+        let empty = Empty::new(&bundle);
+        let sources = empty.sources();
+        let at = attributor(&planted, &bundle, &empty, &sources);
+        let holder = value(&at, HOLDER, some);
+        match at.locate_member(holder, 8) {
+            Located::Slot { trail, validity } => {
+                assert_eq!(names(&trail), ["w", "<Some>"]);
+                assert_eq!(validity, Validity::SelfDescribing);
+            }
+            Located::Stale(reason) => panic!("{reason:?}"),
+        }
+        for offset in [0, 7, 9, 12, 23, 24, 100] {
+            assert!(
+                matches!(
+                    at.locate_member(holder, offset),
+                    Located::Stale(StaleReason::NotAWaker)
+                ),
+                "offset {offset}"
+            );
+        }
+        let none = value(&at, HOLDER, none);
+        assert!(matches!(
+            at.locate_member(none, 8),
+            Located::Stale(StaleReason::InactiveVariant)
+        ));
+    }
+
+    /// An array is indexed by offset: each element's waker is found at
+    /// the element's start, nothing inside an element or past the last
+    /// one, and the trail names the array step.
+    #[test]
+    fn test_the_offset_walk_indexes_arrays() {
+        let (_, snapshot) = load_any("sleep-join");
+        let bundle = bundle();
+        let mut planted = Planted::new(&snapshot);
+        let boxed = BASE;
+        planted.word(boxed, 3);
+        for i in 0..3 {
+            planted.pair(boxed + 8 + 16 * i);
+        }
+        let empty = Empty::new(&bundle);
+        let sources = empty.sources();
+        let at = attributor(&planted, &bundle, &empty, &sources);
+        let v = value(&at, BOXED, boxed);
+        for i in 0..3u64 {
+            match at.locate_member(v, 8 + 16 * i) {
+                Located::Slot { trail, validity } => {
+                    assert_eq!(names(&trail), ["ws", "[]", "w"], "element {i}");
+                    assert_eq!(validity, Validity::Raw);
+                }
+                Located::Stale(reason) => panic!("element {i}: {reason:?}"),
+            }
+        }
+        // Inside the first and second elements' wakers, and past the
+        // last element.
+        for offset in [16, 32, 8 + 48, 8 + 64] {
+            assert!(
+                matches!(
+                    at.locate_member(v, offset),
+                    Located::Stale(StaleReason::NotAWaker)
+                ),
+                "offset {offset}"
+            );
+        }
+    }
+
+    /// The holder a typed slot is named by is the innermost aggregate
+    /// wider than a waker that is not a wrapper: `Slim`, exactly a
+    /// waker wide, is passed over for the array holding it, and a
+    /// `CachePadded` wider than a waker is passed over, as a wrapper,
+    /// for the struct holding it.
+    #[test]
+    fn test_the_holder_is_the_innermost_wide_aggregate_that_is_no_wrapper() {
+        let (_, snapshot) = load_any("sleep-join");
+        let bundle = bundle();
+        let mut planted = Planted::new(&snapshot);
+        let (boxed, chan) = (BASE, BASE + 0x100);
+        planted.pair(boxed + 8 + 32);
+        planted.pair(chan + 8);
+        let empty = Empty::new(&bundle);
+        let sources = empty.sources();
+        let at = attributor(&planted, &bundle, &empty, &sources);
+        let root = SlotRoot::Frame { task: 0, frame: 0 };
+        let path = || SlotPath {
+            root,
+            steps: Vec::new(),
+            hop: None,
+        };
+
+        let Located::Slot { trail, validity } = at.locate_member(value(&at, BOXED, boxed), 40)
+        else {
+            panic!("the third element's waker");
+        };
+        let Attribution::Typed { holder, member, .. } = at.name_slot(path(), &trail, validity)
+        else {
+            panic!("a typed slot");
+        };
+        let arr = at.types.view.ty(id(ARR)).unwrap().name();
+        assert_eq!(holder, outer_path(&fold_type_name(arr, &empty.impls)));
+        assert_eq!(member, "[]");
+
+        let Located::Slot { trail, validity } = at.locate_member(value(&at, CHANLIKE, chan), 8)
+        else {
+            panic!("the padded waker");
+        };
+        assert_eq!(names(&trail), ["cp", "value", "<Some>"]);
+        let Attribution::Typed { holder, member, .. } = at.name_slot(path(), &trail, validity)
+        else {
+            panic!("a typed slot");
+        };
+        assert_eq!((holder.as_str(), member.as_str()), ("x::Chanlike", "cp"));
+    }
+
+    /// A hop corroborates only a slot inside the pointee: at its first
+    /// byte or within it, not at the byte past its end, not below it,
+    /// and not inside a waker rather than at one. Containment is held
+    /// to the same edges.
+    #[test]
+    fn test_a_hop_corroborates_only_a_slot_inside_the_pointee() {
+        let (_, snapshot) = load_any("sleep-join");
+        let bundle = bundle();
+        let mut planted = Planted::new(&snapshot);
+        let (frame, holder, none) = (BASE, BASE + 0x100, BASE + 0x200);
+        planted.word(frame, holder);
+        planted.word(holder, 7);
+        planted.pair(holder + 8);
+        planted.word(none, 7);
+        let empty = Empty::new(&bundle);
+        let sources = empty.sources();
+        let at = attributor(&planted, &bundle, &empty, &sources);
+        let roots = vec![Root {
+            at: SlotRoot::Frame { task: 0, frame: 1 },
+            value: value(&at, FRAME, frame),
+        }];
+        let pointers = at.pointer_members(&roots);
+        assert_eq!(
+            pointers.len(),
+            1,
+            "one pointer member, the null pad left out"
+        );
+        assert_eq!(
+            (pointers[0].target, pointers[0].at, pointers[0].pointee),
+            (holder, frame, id(HOLDER))
+        );
+        match at.by_hop(&hit(holder + 8), &roots, &pointers) {
+            Some(Attribution::Typed { path, .. }) => {
+                assert_eq!(path.root, SlotRoot::Frame { task: 0, frame: 1 });
+                assert_eq!(path.steps, ["p"]);
+                let hop = path.hop.expect("a hop");
+                assert_eq!(
+                    (hop.from, hop.addr, hop.pointee_ty),
+                    (frame, holder, id(HOLDER))
+                );
+                assert_eq!(hop.steps, ["w", "<Some>"]);
+            }
+            other => panic!("{other:?}"),
+        }
+        for slot in [holder + 24, holder - 8, holder + 12, holder + 0x1000] {
+            assert!(
+                at.by_hop(&hit(slot), &roots, &pointers).is_none(),
+                "{slot:#x}"
+            );
+        }
+
+        let contained = vec![Root {
+            at: SlotRoot::Find {
+                index: 0,
+                addr: holder,
+            },
+            value: value(&at, HOLDER, holder),
+        }];
+        assert!(matches!(
+            at.by_containment(&hit(holder + 8), &contained),
+            Ok(Some(Attribution::Typed { .. }))
+        ));
+        assert!(matches!(
+            at.by_containment(&hit(holder + 24), &contained),
+            Ok(None)
+        ));
+        assert!(matches!(
+            at.by_containment(&hit(holder - 8), &contained),
+            Ok(None)
+        ));
+        assert!(matches!(
+            at.by_containment(&hit(holder + 12), &contained),
+            Err(Stale {
+                reason: StaleReason::NotAWaker,
+                ..
+            })
+        ));
+        let dead = vec![Root {
+            at: SlotRoot::Find {
+                index: 1,
+                addr: none,
+            },
+            value: value(&at, HOLDER, none),
+        }];
+        assert!(matches!(
+            at.by_containment(&hit(none + 8), &dead),
+            Err(Stale {
+                reason: StaleReason::InactiveVariant,
+                ..
+            })
+        ));
+    }
+
+    /// A `Notified` on a `Notify` inside a watch `Shared`'s `notify_rx`
+    /// array is the watch's, named by the `Shared` past the `ArcInner`
+    /// header with its reading; one past the array, or with no pointer
+    /// to the `Shared` among the owner's, is not.
+    #[test]
+    fn test_a_notify_inside_a_watch_shared_is_the_watchs() {
+        let (_, snapshot) = load_any("sleep-join");
+        let bundle = bundle();
+        let mut planted = Planted::new(&snapshot);
+        let (arc, holder) = (BASE, BASE + 0x800);
+        let shared = arc + 16;
+        // Version 5, open: the closed bit is clear.
+        planted.word(shared + 256, 5 << 1);
+        planted.word(shared + 264, 2);
+        planted.word(shared + 272, 1);
+        let empty = Empty::new(&bundle);
+        let sources = empty.sources();
+        let at = attributor(&planted, &bundle, &empty, &sources);
+        let pointer = |target, pointee, from| PointerMember {
+            target,
+            pointee: id(pointee),
+            root: 0,
+            at: from,
+        };
+        let pointers = vec![
+            pointer(holder, HOLDER, BASE + 0x1000),
+            pointer(arc, ARC_SHARED, BASE + 0x1008),
+            pointer(arc, ARC_SHARED, BASE + 0x1010),
+        ];
+        let (primitive, reading) = at
+            .watch_of(shared + 40, &pointers)
+            .expect("a Notify inside notify_rx");
+        assert_eq!(primitive, shared);
+        assert_eq!(
+            reading,
+            Reading::Watch {
+                version: 5,
+                closed: false,
+                receivers: 2,
+                senders: 1,
+            }
+        );
+        assert!(
+            at.watch_of(shared + 256, &pointers).is_none(),
+            "the state word"
+        );
+        assert!(
+            at.watch_of(shared + 40, &pointers[..1]).is_none(),
+            "no Shared pointed at"
+        );
+    }
+
+    /// The oneshot gate against the state word: the receiver's slot
+    /// needs `RX_TASK_SET`, the sender's `TX_TASK_SET`, and a slot with
+    /// no reading is neither set nor clear.
+    #[test]
+    fn test_the_oneshot_gate_reads_its_own_bit() {
+        let state = |word| {
+            Reading::Oneshot(OneshotState {
+                word,
+                value_present: None,
+            })
+        };
+        assert!(matches!(
+            oneshot_gate(OwnerKind::OneshotRx, Some(&state(0b0001))),
+            Gate::Set("rx_task_set")
+        ));
+        assert!(matches!(
+            oneshot_gate(OwnerKind::OneshotTx, Some(&state(0b0001))),
+            Gate::Clear
+        ));
+        assert!(matches!(
+            oneshot_gate(OwnerKind::OneshotTx, Some(&state(0b1000))),
+            Gate::Set("tx_task_set")
+        ));
+        assert!(matches!(
+            oneshot_gate(OwnerKind::OneshotRx, Some(&state(0b1000))),
+            Gate::Clear
+        ));
+        assert!(matches!(
+            oneshot_gate(OwnerKind::OneshotRx, Some(&state(0))),
+            Gate::Clear
+        ));
+        assert!(matches!(
+            oneshot_gate(OwnerKind::OneshotRx, None),
+            Gate::Unread
+        ));
+        assert!(matches!(
+            oneshot_gate(OwnerKind::OneshotRx, Some(&Reading::Notify { state: 1 })),
+            Gate::Unread
+        ));
+    }
+
+    /// A coroutine's locals are read by its active state's layout: a
+    /// waker in a live local is a slot, one in a local the state cannot
+    /// vouch for is a slot `(unchecked)`, and storage the state does
+    /// not initialize is stale whatever it holds — and no pointer is
+    /// read out of it.
+    #[test]
+    fn test_a_dead_local_holds_no_slot_and_an_uncertain_one_is_unchecked() {
+        let (_, snapshot) = load_any("sleep-join");
+        let bundle = bundle();
+        let mut planted = Planted::new(&snapshot);
+        let (coro, holder) = (BASE, BASE + 0x100);
+        planted.word(coro, 3);
+        planted.pair(coro + 8);
+        planted.word(coro + 8 + 16, holder);
+        planted.pair(coro + 8 + 24);
+        planted.word(coro + 8 + 40, holder);
+        planted.word(holder, 7);
+        planted.pair(holder + 8);
+        // The layout arrives as a test binding too, behind a record for
+        // another type: a binding is found by its own type, not taken
+        // as the first one there.
+        let bindings = [
+            TypeSemantics {
+                ty: id(U64),
+                ..bundle.semantics.types[0].clone()
+            },
+            bundle.semantics.types[0].clone(),
+        ];
+        let empty = Empty::new(&bundle);
+        let sources = empty.sources();
+        let mut at = attributor(&planted, &bundle, &empty, &sources);
+        at.types.test_bindings = &bindings;
+        let v = value(&at, CORO, coro);
+        match at.locate_member(v, 8) {
+            Located::Slot { trail, validity } => {
+                assert_eq!(names(&trail), ["<3>", "live"]);
+                assert_eq!(validity, Validity::Raw);
+            }
+            Located::Stale(reason) => panic!("{reason:?}"),
+        }
+        match at.locate_member(v, 8 + 24) {
+            Located::Slot { trail, validity } => {
+                assert_eq!(names(&trail), ["<3>", "unsure"]);
+                assert_eq!(validity, Validity::Unchecked);
+            }
+            Located::Stale(reason) => panic!("{reason:?}"),
+        }
+        for offset in [8 + 16, 8 + 20] {
+            assert!(
+                matches!(
+                    at.locate_member(v, offset),
+                    Located::Stale(StaleReason::DeadLocal)
+                ),
+                "offset {offset}"
+            );
+        }
+        // The state word itself is no local.
+        assert!(matches!(
+            at.locate_member(v, 0),
+            Located::Stale(StaleReason::InactiveVariant)
+        ));
+        let roots = vec![Root {
+            at: SlotRoot::Frame { task: 0, frame: 0 },
+            value: v,
+        }];
+        let pointers = at.pointer_members(&roots);
+        assert_eq!(pointers.len(), 1, "the live pointer alone: {pointers:?}");
+        assert_eq!(
+            (pointers[0].at, pointers[0].target),
+            (coro + 8 + 40, holder)
+        );
+    }
+
+    /// An unknown slot is described by the allocator's account of its
+    /// buffer — the cache, the buffer's size, the offset into it — and
+    /// by nothing where the buffer is freed or there is no index.
+    #[test]
+    fn test_an_unknown_slot_is_described_by_its_buffer() {
+        let mut f = fake();
+        cache(
+            &mut f,
+            0,
+            "umem_alloc_64",
+            64,
+            0,
+            &[SlabSpec {
+                base: BUFFERS,
+                chunks: 4,
+                free: vec![2, 3],
+            }],
+        );
+        let heap = UmemHeap::build(&f).expect("the walk built an index");
+        match unknown(BUFFERS + 64 + 24, Some(&heap)) {
+            Attribution::Unknown {
+                cache,
+                size,
+                offset,
+            } => {
+                assert_eq!(cache.as_deref(), Some("umem_alloc_64"));
+                assert_eq!((size, offset), (Some(64), Some(24)));
+            }
+            other => panic!("{other:?}"),
+        }
+        let bare = |attribution| match attribution {
+            Attribution::Unknown {
+                cache,
+                size,
+                offset,
+            } => cache.is_none() && size.is_none() && offset.is_none(),
+            _ => false,
+        };
+        assert!(
+            bare(unknown(BUFFERS + 2 * 64 + 8, Some(&heap))),
+            "a freed buffer"
+        );
+        assert!(bare(unknown(BUFFERS + 8, None)), "no index");
     }
 }

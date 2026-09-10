@@ -1215,8 +1215,8 @@ mod tests {
     use hansei_bundle::BundleTypeId;
     use hansei_runtime::tokio::assess::{ContinuationStatus, IncompleteReason};
     use hansei_runtime::tokio::bundle::{
-        FutureInfo, OwnerIndex, OwnerKey, OwnerResolution, RuntimeFlavor, Task, TaskKind, TaskList,
-        WaitKind,
+        FutureInfo, IoSlot, OwnerIndex, OwnerKey, OwnerResolution, RuntimeFlavor, Task, TaskKind,
+        TaskList, WaitKind,
     };
     use hansei_runtime::tokio::census::{self, FutureCensus, Via};
     use hansei_runtime::tokio::{TaskAddr, TaskState};
@@ -1362,9 +1362,28 @@ mod tests {
         let mut notified = held(0, 0x7000, None);
         notified.waiting_on = Some("notify 0x9100 (waiting)".to_string());
         notified.wait = Some(WaitKind::Notify { addr: 0x9100 });
+        // Three more finds whose own slots sit in their storage: the
+        // reader's cell speaks for a slot of the reader's kind.
+        let mut reading = held(0, 0xa000, None);
+        reading.waiting_on = Some("io fd 3 (readable)".to_string());
+        reading.wait = Some(WaitKind::Io);
+        let mut locking = held(0, 0xb000, None);
+        locking.waiting_on = Some("the semaphore at 0x9300".to_string());
+        locking.wait = Some(WaitKind::Semaphore { owner: None });
+        let mut queued = held(0, 0xc000, None);
+        queued.waiting_on = Some("notify 0x9400 (waiting)".to_string());
+        queued.wait = Some(WaitKind::Notify { addr: 0x9400 });
+        // A JoinHandle awaited in the task's own frame: the trailer of
+        // the task it awaits is the task's slot, not the find's.
+        let mut joining = held(0, 0xd000, None);
+        joining.waiting_on = Some("task 29".to_string());
+        joining.wait = Some(WaitKind::Task { addr: 0x1d00 });
         let mut joiner = child(0x2010, Some("app::child"));
         joiner.waiting_on = Some("task 28".to_string());
-        let census = census(vec![sleep, recv, notified], vec![set(0, vec![joiner])]);
+        let census = census(
+            vec![sleep, recv, notified, reading, locking, queued, joining],
+            vec![set(0, vec![joiner])],
+        );
 
         let owner = Owner::Task {
             header: 0x1100,
@@ -1440,6 +1459,74 @@ mod tests {
                 },
                 None,
             ),
+            // The trailers of the awaited task and of some other one.
+            slot(
+                0x1d50,
+                Attribution::Registry(RegistrySlot::Join {
+                    task: TaskRef {
+                        addr: TaskAddr(0x1d00),
+                        task_id: Some(29),
+                    },
+                }),
+                None,
+            ),
+            slot(
+                0x1e50,
+                Attribution::Registry(RegistrySlot::Join {
+                    task: TaskRef {
+                        addr: TaskAddr(0x1e00),
+                        task_id: Some(30),
+                    },
+                }),
+                None,
+            ),
+            // An io waiter node inside the readiness future.
+            slot(
+                0xa010,
+                Attribution::Registry(RegistrySlot::Io {
+                    resource: 0x9500,
+                    slot: IoSlot::Listed { interest: None },
+                    ready: None,
+                }),
+                Some(SlotRoot::Find {
+                    index: 3,
+                    addr: 0xa000,
+                }),
+            ),
+            // A queue node inside the acquire.
+            slot(
+                0xb010,
+                Attribution::Registry(RegistrySlot::Semaphore {
+                    semaphore: 0x9300,
+                    node: 0xb010,
+                }),
+                Some(SlotRoot::Find {
+                    index: 4,
+                    addr: 0xb000,
+                }),
+            ),
+            // A Notified node inside the queued find — on a Notify other
+            // than the one its reader read, so the kind alone speaks.
+            slot(
+                0xc010,
+                Attribution::Owner {
+                    kind: OwnerKind::Notify,
+                    primitive: 0x9500,
+                    holder: "Notified".to_string(),
+                    member: "waiter".to_string(),
+                    path: SlotPath {
+                        root: SlotRoot::Find {
+                            index: 5,
+                            addr: 0xc000,
+                        },
+                        steps: vec!["waiter".to_string()],
+                        hop: None,
+                    },
+                    validity: Validity::SelfDescribing,
+                    reading: None,
+                },
+                None,
+            ),
         ]);
         let child_slots = Attributed::from_slots(vec![AttributedSlot {
             hit: 9,
@@ -1485,6 +1572,20 @@ mod tests {
         );
         assert_eq!(row(0x7000).waiting_kind.as_deref(), Some("unarmed: notify"));
         assert!(row(0x7000).slot_lines.is_empty());
+        for (addr, cell) in [
+            (0xa000, "io fd 3 (readable)"),
+            (0xb000, "the semaphore at 0x9300"),
+            (0xc000, "notify 0x9400 (waiting)"),
+            (0xd000, "task 29"),
+        ] {
+            assert!(row(addr).armed, "{addr:#x}");
+            assert_eq!(row(addr).waiting_on.as_deref(), Some(cell), "{addr:#x}");
+        }
+        // The armed field reads the same answer.
+        assert!(survives(&clause("armed", "yes", false), row(0xa000)));
+        assert!(!survives(&clause("armed", "yes", false), row(0x7000)));
+        assert!(survives(&clause("armed", "no", false), row(0x7000)));
+        assert!(matcher(Field::Armed, "maybe", &[]).is_err());
 
         let rows = with_slots(rows_of(&census), &list(), &census, &child_slots, None);
         let joiner = rows.iter().find(|r| r.addr == 0x2010).unwrap();
@@ -1844,5 +1945,36 @@ mod tests {
         ] {
             assert!(!exact.is_pattern(), "{exact:?}");
         }
+    }
+
+    /// A fit cuts the two type-name columns — the wait and the future —
+    /// and nothing else: the cells beside them print whole however
+    /// narrow the terminal.
+    #[test]
+    fn test_a_fit_cuts_the_wait_and_the_future_and_nothing_else() {
+        let mut long = held(0, 0x5000, None);
+        long.future =
+            "app::a::very::long::module::path::to::the::work::{async_fn_env#0}".to_string();
+        long.waiting_on = Some("mpsc 0x9000 (1 sender, 0 unread, cap 1024)".to_string());
+        let rows = rows_of(&census(vec![long], vec![]));
+        let rows: Vec<&FutureRow> = rows.iter().collect();
+        let mut out = Vec::new();
+        super::print_future_table(
+            &rows,
+            false,
+            None,
+            Some(90),
+            crate::output::Theme::plain(),
+            &mut out,
+        )
+        .expect("table prints");
+        let out = String::from_utf8(out).expect("utf8");
+        assert_eq!(
+            out.lines().nth(1),
+            Some(
+                "0x5000  1     frame 1, `arm`  Suspend1 — src/app.rs:9  mpsc 0x9000 …  no     async fn app…"
+            ),
+            "{out}"
+        );
     }
 }

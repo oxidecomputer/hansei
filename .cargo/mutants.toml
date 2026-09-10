@@ -330,4 +330,16 @@ exclude_re = [
     # length is zero either way. The strict bound says what a run's end
     # means; nothing can tell the two apart.
     "replace < with <= in Corrupt<'a>::segment",
+    # Equivalent mutant: the watch scan's two tests only save reads.
+    # Weakened to `&&`, a pointee of another type is read and put to
+    # the watch walk, which is rooted at `ArcInner<watch::Shared>` and
+    # declines it; a second pointer to the same `Shared` reads it again
+    # and answers what the first did. No row changes.
+    "replace \\|\\| with && in Attributor<'a, 'b, T>::watch_of",
+    # A defensive guard on impossible input: a root is a task frame, a
+    # find or a set child, each a coroutine or a future with a
+    # discriminant, so no root type is zero-sized and the guard never
+    # declines. Weakened to `>=`, a zero-sized root would be read as
+    # nothing and hold no slot — the same answer as being skipped.
+    "replace > with >= in Attributor<'a, 'b, T>::roots_of",
 ]

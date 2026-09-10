@@ -2428,6 +2428,14 @@ mod table_tests {
         }
     }
 
+    /// A blocking-pool task: no future, no wait.
+    fn blocking(id: u64, state: u64) -> Task {
+        Task {
+            kind: TaskKind::Blocking,
+            ..task(id, state)
+        }
+    }
+
     /// A task with an explicit assessment.
     fn assessed(id: u64, assessment: WaitAssessment) -> TaskWait {
         TaskWait {
@@ -2842,9 +2850,50 @@ mod table_tests {
                     offset: None,
                 },
             ),
+            // Task 4's one unknown slot, and a blocking task's slot.
+            AttributedSlot {
+                hit: 7,
+                slot: 0x7100,
+                owner: Owner::Task {
+                    header: 0x1000 + 4 * 0x100,
+                    index: 3,
+                },
+                attribution: Attribution::Unknown {
+                    cache: None,
+                    size: None,
+                    offset: None,
+                },
+                within: None,
+            },
+            AttributedSlot {
+                hit: 8,
+                slot: 0x7200,
+                owner: Owner::Task {
+                    header: 0x1000 + 5 * 0x100,
+                    index: 4,
+                },
+                attribution: Attribution::Registry(RegistrySlot::Timer {
+                    entry: 0x7200,
+                    state: None,
+                    deadline: None,
+                }),
+                within: None,
+            },
         ]);
-        let list = TaskList::new(vec![task(1, 0), task(2, 0), task(3, RUNNING)]);
-        let waits = vec![wait(1, None), wait(2, None), wait(3, None)];
+        let list = TaskList::new(vec![
+            task(1, 0),
+            task(2, 0),
+            task(3, RUNNING),
+            task(4, 0),
+            blocking(5, 0),
+        ]);
+        let waits = vec![
+            wait(1, None),
+            wait(2, None),
+            wait(3, None),
+            wait(4, None),
+            wait(5, None),
+        ];
         let mut rows = build_rows(
             &list,
             &Default::default(),
@@ -2896,6 +2945,18 @@ mod table_tests {
         // Mid-poll: not parked, so nothing to mark.
         assert_eq!(rows[2].waiting_on, "— (mid-poll)");
         assert_eq!(rows[2].waiting_kind, None);
+        // One unknown slot is named by its address; only several
+        // collapse to a count.
+        assert_eq!(rows[3].waiting_on, "unknown 0x7100");
+        assert_eq!(rows[3].waiting_kind.as_deref(), Some("unknown"));
+        assert_eq!(
+            rows[3].wait_detail,
+            ["unknown 0x7100: in memory nothing typed reaches"]
+        );
+        // A blocking cell waits on a pool thread, slot or no slot.
+        assert_eq!(rows[4].waiting_on, "—");
+        assert_eq!(rows[4].waiting_kind, None);
+        assert!(rows[4].wait_detail.is_empty());
     }
 
     /// A slot the task's verified wait accounts for takes the reader's
