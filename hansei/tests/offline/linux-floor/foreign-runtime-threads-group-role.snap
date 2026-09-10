@@ -3,6 +3,6 @@ source: hansei/src/offline.rs
 description: "`threads --group role` over linux-floor/foreign-runtime"
 ---
 COUNT  ROLE             LWPS
-    1  block_on caller  2096992
-    1  entered runtime  2096994
+    1  block_on caller  655499
+    1  entered runtime  655501
 [2 groups]

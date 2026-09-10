@@ -2049,6 +2049,54 @@ fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
             "state.waker.waker.__0.value.<Some>.__0.waker",
         );
     }
+    if program == "armed-select" {
+        // The receivers a waker slot is read against: the oneshot's
+        // `Arc` and the state word and two task slots behind it, the
+        // channel's `Arc`, and the watch's `Arc` and the `Notify` array
+        // its receivers queue on.
+        assert_walk(
+            program,
+            bundle,
+            WalkRole::OneshotInner,
+            "inner.<Some>.__0.ptr.pointer",
+        );
+        assert_walk(
+            program,
+            bundle,
+            WalkRole::OneshotRxTask,
+            "data.rx_task.__0.__0.value.value.value.__0.waker",
+        );
+        assert_walk(
+            program,
+            bundle,
+            WalkRole::OneshotTxTask,
+            "data.tx_task.__0.__0.value.value.value.__0.waker",
+        );
+        assert_walk(
+            program,
+            bundle,
+            WalkRole::OneshotValue,
+            "data.value.__0.value",
+        );
+        assert_walk(
+            program,
+            bundle,
+            WalkRole::MpscReceiverChan,
+            "chan.inner.ptr.pointer",
+        );
+        assert_walk(
+            program,
+            bundle,
+            WalkRole::WatchReceiverShared,
+            "shared.ptr.pointer",
+        );
+        assert_walk(
+            program,
+            bundle,
+            WalkRole::WatchSharedNotifyRx,
+            "data.notify_rx",
+        );
+    }
     if program == "local-set-io" {
         // The io rows root at the scheduler handles too, so the same
         // gap applies: the summary says they bound, not where. Two

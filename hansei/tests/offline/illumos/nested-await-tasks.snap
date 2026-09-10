@@ -2,6 +2,6 @@
 source: hansei/src/offline.rs
 description: "`tasks` over illumos/nested-await"
 ---
-ID  STATE  FUTURES  AWAITING AT                 WAITING ON           TYPE
+ID  STATE  FUTURES  AWAITING AT                 WAITING ON            TYPE
 3   idle         0  src/bin/nested-await.rs:23  oneshot rx 0xADDR  async fn nested_await::outer
 [1 task]

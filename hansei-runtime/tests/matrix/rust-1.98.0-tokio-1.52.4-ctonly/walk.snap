@@ -2,7 +2,7 @@
 source: hansei-runtime/tests/matrix.rs
 ---
 program: ct-runtime
-walk contract (tokio 1.52.4, rustc 1.98.0 (88d9e12ae 2026-08-18)): 158 entries, 0 broken, 64 absent
+walk contract (tokio 1.52.4, rustc 1.98.0 (88d9e12ae 2026-08-18)): 169 entries, 0 broken, 70 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -161,3 +161,14 @@ walk contract (tokio 1.52.4, rustc 1.98.0 (88d9e12ae 2026-08-18)): 158 entries, 
   ok      notify::Waiter.next
   ok      notify::Waiter.waker
   ok      notify::Waiter.notification
+  ok      oneshot::Receiver.inner
+  ok      oneshot::Inner.state
+  ok      oneshot::Inner.rx_task (spelling 1 of 2)
+  ok      oneshot::Inner.tx_task (spelling 1 of 2)
+  ok      oneshot::Inner.value
+  absent  mpsc::Receiver.chan — no mpsc::Receiver type in the tokio info (the target does not reach one)
+  absent  watch::Receiver.shared — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
+  absent  watch::Shared.state — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
+  absent  watch::Shared.ref_count_rx — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
+  absent  watch::Shared.ref_count_tx — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
+  absent  watch::Shared.notify_rx — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)

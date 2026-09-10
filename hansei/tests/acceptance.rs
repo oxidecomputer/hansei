@@ -3907,18 +3907,21 @@ fn test_armed_select_acceptance() {
     with_core("armed-select", |core| {
         let rows = list_tasks(&bundle, core);
         let selector = task_with_future(&rows, "async fn armed_select::selector");
-        for word in ["mpsc 0x", "notify 0x", "oneshot rx 0x", "timer (deadline "] {
+        // A real core holds the watch's `Shared`, so its `Notified` is
+        // the watch's, where a snapshot could only say `notify`.
+        for word in ["mpsc 0x", "watch 0x", "oneshot rx 0x", "timer (deadline "] {
             assert!(selector.waiting.contains(word), "{selector:?}");
         }
         // One detail line per slot under the wait, spelled by the
         // slot's label; the wheel entry's line is the wait set's own.
         let block = hansei_ok(&bundle, core, &format!("task {}", selector.id));
         let detail =
-            regex::Regex::new(r"(?m)^        (mpsc|notify|oneshot rx) 0x[0-9a-f]+: waker in ")
+            regex::Regex::new(r"(?m)^        (mpsc|watch|oneshot rx) 0x[0-9a-f]+: waker in ")
                 .unwrap();
         assert_eq!(detail.find_iter(&block).count(), 3, "{block}");
+        // The oneshot's state word vouches for its slot.
         assert!(
-            block.contains(": waker in Inner.rx_task (unchecked), reached from "),
+            block.contains(": waker in Inner.rx_task (rx_task_set), reached from "),
             "{block}"
         );
         assert!(

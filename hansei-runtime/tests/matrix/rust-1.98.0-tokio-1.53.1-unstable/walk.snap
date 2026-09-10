@@ -2,7 +2,7 @@
 source: hansei-runtime/tests/matrix.rs
 ---
 program: futurelock
-walk contract (tokio 1.53.1, rustc 1.98.0 (88d9e12ae 2026-08-18)): 158 entries, 0 broken, 54 absent
+walk contract (tokio 1.53.1, rustc 1.98.0 (88d9e12ae 2026-08-18)): 169 entries, 0 broken, 60 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -161,9 +161,20 @@ walk contract (tokio 1.53.1, rustc 1.98.0 (88d9e12ae 2026-08-18)): 158 entries, 
   ok      notify::Waiter.next
   ok      notify::Waiter.waker
   ok      notify::Waiter.notification
+  ok      oneshot::Receiver.inner
+  ok      oneshot::Inner.state
+  ok      oneshot::Inner.rx_task (spelling 1 of 2)
+  ok      oneshot::Inner.tx_task (spelling 1 of 2)
+  ok      oneshot::Inner.value
+  absent  mpsc::Receiver.chan — no mpsc::Receiver type in the tokio info (the target does not reach one)
+  absent  watch::Receiver.shared — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
+  absent  watch::Shared.state — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
+  absent  watch::Shared.ref_count_rx — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
+  absent  watch::Shared.ref_count_tx — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
+  absent  watch::Shared.notify_rx — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
 
 program: simple-await
-walk contract (tokio 1.53.1, rustc 1.98.0 (88d9e12ae 2026-08-18)): 158 entries, 0 broken, 70 absent
+walk contract (tokio 1.53.1, rustc 1.98.0 (88d9e12ae 2026-08-18)): 169 entries, 0 broken, 76 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -322,9 +333,20 @@ walk contract (tokio 1.53.1, rustc 1.98.0 (88d9e12ae 2026-08-18)): 158 entries, 
   ok      notify::Waiter.next
   ok      notify::Waiter.waker
   ok      notify::Waiter.notification
+  ok      oneshot::Receiver.inner (2 types)
+  ok      oneshot::Inner.state (2 types)
+  ok      oneshot::Inner.rx_task (spelling 1 of 2; 2 types)
+  ok      oneshot::Inner.tx_task (spelling 1 of 2; 2 types)
+  ok      oneshot::Inner.value (2 types)
+  absent  mpsc::Receiver.chan — no mpsc::Receiver type in the tokio info (the target does not reach one)
+  absent  watch::Receiver.shared — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
+  absent  watch::Shared.state — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
+  absent  watch::Shared.ref_count_rx — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
+  absent  watch::Shared.ref_count_tx — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
+  absent  watch::Shared.notify_rx — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
 
 program: nested-await
-walk contract (tokio 1.53.1, rustc 1.98.0 (88d9e12ae 2026-08-18)): 158 entries, 0 broken, 70 absent
+walk contract (tokio 1.53.1, rustc 1.98.0 (88d9e12ae 2026-08-18)): 169 entries, 0 broken, 76 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -483,9 +505,20 @@ walk contract (tokio 1.53.1, rustc 1.98.0 (88d9e12ae 2026-08-18)): 158 entries, 
   ok      notify::Waiter.next
   ok      notify::Waiter.waker
   ok      notify::Waiter.notification
+  ok      oneshot::Receiver.inner (2 types)
+  ok      oneshot::Inner.state (2 types)
+  ok      oneshot::Inner.rx_task (spelling 1 of 2; 2 types)
+  ok      oneshot::Inner.tx_task (spelling 1 of 2; 2 types)
+  ok      oneshot::Inner.value (2 types)
+  absent  mpsc::Receiver.chan — no mpsc::Receiver type in the tokio info (the target does not reach one)
+  absent  watch::Receiver.shared — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
+  absent  watch::Shared.state — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
+  absent  watch::Shared.ref_count_rx — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
+  absent  watch::Shared.ref_count_tx — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
+  absent  watch::Shared.notify_rx — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
 
 program: dyn-future
-walk contract (tokio 1.53.1, rustc 1.98.0 (88d9e12ae 2026-08-18)): 158 entries, 0 broken, 64 absent
+walk contract (tokio 1.53.1, rustc 1.98.0 (88d9e12ae 2026-08-18)): 169 entries, 0 broken, 70 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -644,9 +677,20 @@ walk contract (tokio 1.53.1, rustc 1.98.0 (88d9e12ae 2026-08-18)): 158 entries, 
   ok      notify::Waiter.next
   ok      notify::Waiter.waker
   ok      notify::Waiter.notification
+  ok      oneshot::Receiver.inner (2 types)
+  ok      oneshot::Inner.state (2 types)
+  ok      oneshot::Inner.rx_task (spelling 1 of 2; 2 types)
+  ok      oneshot::Inner.tx_task (spelling 1 of 2; 2 types)
+  ok      oneshot::Inner.value (2 types)
+  absent  mpsc::Receiver.chan — no mpsc::Receiver type in the tokio info (the target does not reach one)
+  absent  watch::Receiver.shared — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
+  absent  watch::Shared.state — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
+  absent  watch::Shared.ref_count_rx — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
+  absent  watch::Shared.ref_count_tx — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
+  absent  watch::Shared.notify_rx — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
 
 program: select-combinator
-walk contract (tokio 1.53.1, rustc 1.98.0 (88d9e12ae 2026-08-18)): 158 entries, 0 broken, 70 absent
+walk contract (tokio 1.53.1, rustc 1.98.0 (88d9e12ae 2026-08-18)): 169 entries, 0 broken, 76 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -805,9 +849,20 @@ walk contract (tokio 1.53.1, rustc 1.98.0 (88d9e12ae 2026-08-18)): 158 entries, 
   ok      notify::Waiter.next
   ok      notify::Waiter.waker
   ok      notify::Waiter.notification
+  ok      oneshot::Receiver.inner (2 types)
+  ok      oneshot::Inner.state (2 types)
+  ok      oneshot::Inner.rx_task (spelling 1 of 2; 2 types)
+  ok      oneshot::Inner.tx_task (spelling 1 of 2; 2 types)
+  ok      oneshot::Inner.value (2 types)
+  absent  mpsc::Receiver.chan — no mpsc::Receiver type in the tokio info (the target does not reach one)
+  absent  watch::Receiver.shared — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
+  absent  watch::Shared.state — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
+  absent  watch::Shared.ref_count_rx — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
+  absent  watch::Shared.ref_count_tx — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
+  absent  watch::Shared.notify_rx — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
 
 program: many-tasks
-walk contract (tokio 1.53.1, rustc 1.98.0 (88d9e12ae 2026-08-18)): 158 entries, 0 broken, 71 absent
+walk contract (tokio 1.53.1, rustc 1.98.0 (88d9e12ae 2026-08-18)): 169 entries, 0 broken, 77 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -966,9 +1021,20 @@ walk contract (tokio 1.53.1, rustc 1.98.0 (88d9e12ae 2026-08-18)): 158 entries, 
   ok      notify::Waiter.next
   ok      notify::Waiter.waker
   ok      notify::Waiter.notification
+  ok      oneshot::Receiver.inner (2 types)
+  ok      oneshot::Inner.state (2 types)
+  ok      oneshot::Inner.rx_task (spelling 1 of 2; 2 types)
+  ok      oneshot::Inner.tx_task (spelling 1 of 2; 2 types)
+  ok      oneshot::Inner.value (2 types)
+  absent  mpsc::Receiver.chan — no mpsc::Receiver type in the tokio info (the target does not reach one)
+  absent  watch::Receiver.shared — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
+  absent  watch::Shared.state — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
+  absent  watch::Shared.ref_count_rx — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
+  absent  watch::Shared.ref_count_tx — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
+  absent  watch::Shared.notify_rx — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
 
 program: sleep-join
-walk contract (tokio 1.53.1, rustc 1.98.0 (88d9e12ae 2026-08-18)): 158 entries, 0 broken, 66 absent
+walk contract (tokio 1.53.1, rustc 1.98.0 (88d9e12ae 2026-08-18)): 169 entries, 0 broken, 72 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -1127,9 +1193,20 @@ walk contract (tokio 1.53.1, rustc 1.98.0 (88d9e12ae 2026-08-18)): 158 entries, 
   ok      notify::Waiter.next
   ok      notify::Waiter.waker
   ok      notify::Waiter.notification
+  ok      oneshot::Receiver.inner
+  ok      oneshot::Inner.state
+  ok      oneshot::Inner.rx_task (spelling 1 of 2)
+  ok      oneshot::Inner.tx_task (spelling 1 of 2)
+  ok      oneshot::Inner.value
+  absent  mpsc::Receiver.chan — no mpsc::Receiver type in the tokio info (the target does not reach one)
+  absent  watch::Receiver.shared — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
+  absent  watch::Shared.state — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
+  absent  watch::Shared.ref_count_rx — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
+  absent  watch::Shared.ref_count_tx — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
+  absent  watch::Shared.notify_rx — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
 
 program: channels
-walk contract (tokio 1.53.1, rustc 1.98.0 (88d9e12ae 2026-08-18)): 158 entries, 0 broken, 44 absent
+walk contract (tokio 1.53.1, rustc 1.98.0 (88d9e12ae 2026-08-18)): 169 entries, 0 broken, 44 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -1288,9 +1365,20 @@ walk contract (tokio 1.53.1, rustc 1.98.0 (88d9e12ae 2026-08-18)): 158 entries, 
   ok      notify::Waiter.next
   ok      notify::Waiter.waker
   ok      notify::Waiter.notification
+  ok      oneshot::Receiver.inner (2 types)
+  ok      oneshot::Inner.state (2 types)
+  ok      oneshot::Inner.rx_task (spelling 1 of 2; 2 types)
+  ok      oneshot::Inner.tx_task (spelling 1 of 2; 2 types)
+  ok      oneshot::Inner.value (2 types)
+  ok      mpsc::Receiver.chan
+  ok      watch::Receiver.shared
+  ok      watch::Shared.state
+  ok      watch::Shared.ref_count_rx
+  ok      watch::Shared.ref_count_tx
+  ok      watch::Shared.notify_rx
 
 program: unordered
-walk contract (tokio 1.53.1, rustc 1.98.0 (88d9e12ae 2026-08-18)): 158 entries, 0 broken, 67 absent
+walk contract (tokio 1.53.1, rustc 1.98.0 (88d9e12ae 2026-08-18)): 169 entries, 0 broken, 73 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -1449,9 +1537,20 @@ walk contract (tokio 1.53.1, rustc 1.98.0 (88d9e12ae 2026-08-18)): 158 entries, 
   ok      notify::Waiter.next
   ok      notify::Waiter.waker
   ok      notify::Waiter.notification
+  ok      oneshot::Receiver.inner
+  ok      oneshot::Inner.state
+  ok      oneshot::Inner.rx_task (spelling 1 of 2)
+  ok      oneshot::Inner.tx_task (spelling 1 of 2)
+  ok      oneshot::Inner.value
+  absent  mpsc::Receiver.chan — no mpsc::Receiver type in the tokio info (the target does not reach one)
+  absent  watch::Receiver.shared — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
+  absent  watch::Shared.state — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
+  absent  watch::Shared.ref_count_rx — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
+  absent  watch::Shared.ref_count_tx — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
+  absent  watch::Shared.notify_rx — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
 
 program: joinset
-walk contract (tokio 1.53.1, rustc 1.98.0 (88d9e12ae 2026-08-18)): 158 entries, 0 broken, 38 absent
+walk contract (tokio 1.53.1, rustc 1.98.0 (88d9e12ae 2026-08-18)): 169 entries, 0 broken, 43 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -1610,9 +1709,20 @@ walk contract (tokio 1.53.1, rustc 1.98.0 (88d9e12ae 2026-08-18)): 158 entries, 
   ok      notify::Waiter.next
   ok      notify::Waiter.waker
   ok      notify::Waiter.notification
+  ok      oneshot::Receiver.inner
+  ok      oneshot::Inner.state
+  ok      oneshot::Inner.rx_task (spelling 1 of 2)
+  ok      oneshot::Inner.tx_task (spelling 1 of 2)
+  ok      oneshot::Inner.value
+  ok      mpsc::Receiver.chan
+  absent  watch::Receiver.shared — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
+  absent  watch::Shared.state — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
+  absent  watch::Shared.ref_count_rx — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
+  absent  watch::Shared.ref_count_tx — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
+  absent  watch::Shared.notify_rx — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
 
 program: ct-runtime
-walk contract (tokio 1.53.1, rustc 1.98.0 (88d9e12ae 2026-08-18)): 158 entries, 0 broken, 54 absent
+walk contract (tokio 1.53.1, rustc 1.98.0 (88d9e12ae 2026-08-18)): 169 entries, 0 broken, 60 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -1771,9 +1881,20 @@ walk contract (tokio 1.53.1, rustc 1.98.0 (88d9e12ae 2026-08-18)): 158 entries, 
   ok      notify::Waiter.next
   ok      notify::Waiter.waker
   ok      notify::Waiter.notification
+  ok      oneshot::Receiver.inner
+  ok      oneshot::Inner.state
+  ok      oneshot::Inner.rx_task (spelling 1 of 2)
+  ok      oneshot::Inner.tx_task (spelling 1 of 2)
+  ok      oneshot::Inner.value
+  absent  mpsc::Receiver.chan — no mpsc::Receiver type in the tokio info (the target does not reach one)
+  absent  watch::Receiver.shared — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
+  absent  watch::Shared.state — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
+  absent  watch::Shared.ref_count_rx — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
+  absent  watch::Shared.ref_count_tx — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
+  absent  watch::Shared.notify_rx — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
 
 program: local-set
-walk contract (tokio 1.53.1, rustc 1.98.0 (88d9e12ae 2026-08-18)): 158 entries, 0 broken, 47 absent
+walk contract (tokio 1.53.1, rustc 1.98.0 (88d9e12ae 2026-08-18)): 169 entries, 0 broken, 53 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   ok      statics.tls_local_set_key
@@ -1932,9 +2053,20 @@ walk contract (tokio 1.53.1, rustc 1.98.0 (88d9e12ae 2026-08-18)): 158 entries, 
   ok      notify::Waiter.next
   ok      notify::Waiter.waker
   ok      notify::Waiter.notification
+  ok      oneshot::Receiver.inner
+  ok      oneshot::Inner.state
+  ok      oneshot::Inner.rx_task (spelling 1 of 2)
+  ok      oneshot::Inner.tx_task (spelling 1 of 2)
+  ok      oneshot::Inner.value
+  absent  mpsc::Receiver.chan — no mpsc::Receiver type in the tokio info (the target does not reach one)
+  absent  watch::Receiver.shared — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
+  absent  watch::Shared.state — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
+  absent  watch::Shared.ref_count_rx — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
+  absent  watch::Shared.ref_count_tx — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
+  absent  watch::Shared.notify_rx — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
 
 program: local-set-timer
-walk contract (tokio 1.53.1, rustc 1.98.0 (88d9e12ae 2026-08-18)): 158 entries, 0 broken, 47 absent
+walk contract (tokio 1.53.1, rustc 1.98.0 (88d9e12ae 2026-08-18)): 169 entries, 0 broken, 53 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   ok      statics.tls_local_set_key
@@ -2093,9 +2225,20 @@ walk contract (tokio 1.53.1, rustc 1.98.0 (88d9e12ae 2026-08-18)): 158 entries, 
   ok      notify::Waiter.next
   ok      notify::Waiter.waker
   ok      notify::Waiter.notification
+  ok      oneshot::Receiver.inner
+  ok      oneshot::Inner.state
+  ok      oneshot::Inner.rx_task (spelling 1 of 2)
+  ok      oneshot::Inner.tx_task (spelling 1 of 2)
+  ok      oneshot::Inner.value
+  absent  mpsc::Receiver.chan — no mpsc::Receiver type in the tokio info (the target does not reach one)
+  absent  watch::Receiver.shared — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
+  absent  watch::Shared.state — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
+  absent  watch::Shared.ref_count_rx — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
+  absent  watch::Shared.ref_count_tx — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
+  absent  watch::Shared.notify_rx — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
 
 program: local-set-io
-walk contract (tokio 1.53.1, rustc 1.98.0 (88d9e12ae 2026-08-18)): 158 entries, 0 broken, 49 absent
+walk contract (tokio 1.53.1, rustc 1.98.0 (88d9e12ae 2026-08-18)): 169 entries, 0 broken, 55 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   ok      statics.tls_local_set_key
@@ -2254,9 +2397,20 @@ walk contract (tokio 1.53.1, rustc 1.98.0 (88d9e12ae 2026-08-18)): 158 entries, 
   ok      notify::Waiter.next
   ok      notify::Waiter.waker
   ok      notify::Waiter.notification
+  ok      oneshot::Receiver.inner
+  ok      oneshot::Inner.state
+  ok      oneshot::Inner.rx_task (spelling 1 of 2)
+  ok      oneshot::Inner.tx_task (spelling 1 of 2)
+  ok      oneshot::Inner.value
+  absent  mpsc::Receiver.chan — no mpsc::Receiver type in the tokio info (the target does not reach one)
+  absent  watch::Receiver.shared — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
+  absent  watch::Shared.state — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
+  absent  watch::Shared.ref_count_rx — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
+  absent  watch::Shared.ref_count_tx — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
+  absent  watch::Shared.notify_rx — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
 
 program: foreign-runtime
-walk contract (tokio 1.53.1, rustc 1.98.0 (88d9e12ae 2026-08-18)): 158 entries, 0 broken, 47 absent
+walk contract (tokio 1.53.1, rustc 1.98.0 (88d9e12ae 2026-08-18)): 169 entries, 0 broken, 53 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   ok      statics.tls_local_set_key
@@ -2415,9 +2569,20 @@ walk contract (tokio 1.53.1, rustc 1.98.0 (88d9e12ae 2026-08-18)): 158 entries, 
   ok      notify::Waiter.next
   ok      notify::Waiter.waker
   ok      notify::Waiter.notification
+  ok      oneshot::Receiver.inner (2 types)
+  ok      oneshot::Inner.state (2 types)
+  ok      oneshot::Inner.rx_task (spelling 1 of 2; 2 types)
+  ok      oneshot::Inner.tx_task (spelling 1 of 2; 2 types)
+  ok      oneshot::Inner.value (2 types)
+  absent  mpsc::Receiver.chan — no mpsc::Receiver type in the tokio info (the target does not reach one)
+  absent  watch::Receiver.shared — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
+  absent  watch::Shared.state — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
+  absent  watch::Shared.ref_count_rx — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
+  absent  watch::Shared.ref_count_tx — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
+  absent  watch::Shared.notify_rx — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
 
 program: blocking-pool
-walk contract (tokio 1.53.1, rustc 1.98.0 (88d9e12ae 2026-08-18)): 158 entries, 0 broken, 70 absent
+walk contract (tokio 1.53.1, rustc 1.98.0 (88d9e12ae 2026-08-18)): 169 entries, 0 broken, 76 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -2576,9 +2741,20 @@ walk contract (tokio 1.53.1, rustc 1.98.0 (88d9e12ae 2026-08-18)): 158 entries, 
   ok      notify::Waiter.next
   ok      notify::Waiter.waker
   ok      notify::Waiter.notification
+  ok      oneshot::Receiver.inner
+  ok      oneshot::Inner.state
+  ok      oneshot::Inner.rx_task (spelling 1 of 2)
+  ok      oneshot::Inner.tx_task (spelling 1 of 2)
+  ok      oneshot::Inner.value
+  absent  mpsc::Receiver.chan — no mpsc::Receiver type in the tokio info (the target does not reach one)
+  absent  watch::Receiver.shared — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
+  absent  watch::Shared.state — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
+  absent  watch::Shared.ref_count_rx — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
+  absent  watch::Shared.ref_count_tx — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
+  absent  watch::Shared.notify_rx — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
 
 program: delegation-cases
-walk contract (tokio 1.53.1, rustc 1.98.0 (88d9e12ae 2026-08-18)): 158 entries, 0 broken, 70 absent
+walk contract (tokio 1.53.1, rustc 1.98.0 (88d9e12ae 2026-08-18)): 169 entries, 0 broken, 76 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -2737,9 +2913,20 @@ walk contract (tokio 1.53.1, rustc 1.98.0 (88d9e12ae 2026-08-18)): 158 entries, 
   ok      notify::Waiter.next
   ok      notify::Waiter.waker
   ok      notify::Waiter.notification
+  ok      oneshot::Receiver.inner
+  ok      oneshot::Inner.state
+  ok      oneshot::Inner.rx_task (spelling 1 of 2)
+  ok      oneshot::Inner.tx_task (spelling 1 of 2)
+  ok      oneshot::Inner.value
+  absent  mpsc::Receiver.chan — no mpsc::Receiver type in the tokio info (the target does not reach one)
+  absent  watch::Receiver.shared — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
+  absent  watch::Shared.state — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
+  absent  watch::Shared.ref_count_rx — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
+  absent  watch::Shared.ref_count_tx — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
+  absent  watch::Shared.notify_rx — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
 
 program: armed-select
-walk contract (tokio 1.53.1, rustc 1.98.0 (88d9e12ae 2026-08-18)): 158 entries, 0 broken, 49 absent
+walk contract (tokio 1.53.1, rustc 1.98.0 (88d9e12ae 2026-08-18)): 169 entries, 0 broken, 49 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -2898,3 +3085,14 @@ walk contract (tokio 1.53.1, rustc 1.98.0 (88d9e12ae 2026-08-18)): 158 entries, 
   ok      notify::Waiter.next
   ok      notify::Waiter.waker
   ok      notify::Waiter.notification
+  ok      oneshot::Receiver.inner (2 types)
+  ok      oneshot::Inner.state (2 types)
+  ok      oneshot::Inner.rx_task (spelling 1 of 2; 2 types)
+  ok      oneshot::Inner.tx_task (spelling 1 of 2; 2 types)
+  ok      oneshot::Inner.value (2 types)
+  ok      mpsc::Receiver.chan
+  ok      watch::Receiver.shared
+  ok      watch::Shared.state
+  ok      watch::Shared.ref_count_rx
+  ok      watch::Shared.ref_count_tx
+  ok      watch::Shared.notify_rx

@@ -82,6 +82,11 @@ const READINESS: &str = "tokio::runtime::io::scheduled_io::Readiness";
 const NOTIFIED: &str = "tokio::sync::notify::Notified";
 /// The label a report gives the bounded receiver's `recv` future.
 const MPSC_RECV: &str = "PollFn<mpsc::bounded::Receiver::recv::{closure}>";
+/// The channel receivers a slot names by their `Chan`, and the oneshot
+/// and watch receivers whose shared state a slot in it is read against.
+const MPSC_RECEIVER: &str = "mpsc::Receiver";
+const ONESHOT_RECEIVER: &str = "tokio::sync::oneshot::Receiver<";
+const WATCH_RECEIVER: &str = "tokio::sync::watch::Receiver<";
 /// The scheduler `S` of a task cell, per flavor: the flavor handles and
 /// the `LocalSet`'s shared state are `Arc`s, the blocking pool's is a
 /// plain struct.
@@ -116,6 +121,13 @@ fn leaf_matches(key: &str, name: &str) -> bool {
     } else {
         name == key
     }
+}
+
+/// Either mpsc receiver: the bounded and the unbounded one hold the
+/// same `Rx<T, S>` and differ in `S`.
+fn mpsc_receiver(name: &str) -> bool {
+    name.starts_with("tokio::sync::mpsc::bounded::Receiver<")
+        || name.starts_with("tokio::sync::mpsc::unbounded::UnboundedReceiver<")
 }
 
 /// The bounded mpsc receiver's `recv` future: `Receiver::recv` is an
@@ -2003,6 +2015,130 @@ fn decls() -> Vec<WalkDecl> {
             Word,
             || vec![reach![Named("notification"), PeelTo(WORD)]],
         ),
+        // The oneshot, mpsc and watch receivers: what a waker slot the
+        // sweep located in their shared state is read against — the
+        // oneshot's state word gates its two task slots — and what the
+        // channel readers root at.
+        decl(
+            WalkRole::OneshotInner,
+            Leaf(ONESHOT_RECEIVER),
+            Pointer,
+            || {
+                vec![reach![
+                    Named("inner"),
+                    Variant("Some"),
+                    Named("__0"),
+                    Named("ptr"),
+                    Named("pointer"),
+                ]]
+            },
+        ),
+        decl(
+            WalkRole::OneshotState,
+            Pointee(WalkRole::OneshotInner),
+            Word,
+            || vec![reach![Named("data"), Named("state"), PeelTo(WORD)]],
+        ),
+        decl(
+            WalkRole::OneshotRxTask,
+            Pointee(WalkRole::OneshotInner),
+            Aggregate,
+            || oneshot_task("rx_task"),
+        ),
+        decl(
+            WalkRole::OneshotTxTask,
+            Pointee(WalkRole::OneshotInner),
+            Aggregate,
+            || oneshot_task("tx_task"),
+        ),
+        decl(
+            WalkRole::OneshotValue,
+            Pointee(WalkRole::OneshotInner),
+            Enum,
+            || {
+                vec![reach![
+                    Named("data"),
+                    Named("value"),
+                    Named("__0"),
+                    Named("value"),
+                ]]
+            },
+        ),
+        decl(
+            WalkRole::MpscReceiverChan,
+            WalkRoot::LeafWhere(MPSC_RECEIVER, mpsc_receiver),
+            Pointer,
+            || {
+                vec![reach![
+                    Named("chan"),
+                    Named("inner"),
+                    Named("ptr"),
+                    Named("pointer"),
+                ]]
+            },
+        ),
+        decl(
+            WalkRole::WatchReceiverShared,
+            Leaf(WATCH_RECEIVER),
+            Pointer,
+            || vec![reach![Named("shared"), Named("ptr"), Named("pointer")]],
+        ),
+        decl(
+            WalkRole::WatchSharedState,
+            Pointee(WalkRole::WatchReceiverShared),
+            Word,
+            || vec![reach![Named("data"), Named("state"), PeelTo(WORD)]],
+        ),
+        decl(
+            WalkRole::WatchSharedRxCount,
+            Pointee(WalkRole::WatchReceiverShared),
+            Word,
+            || vec![reach![Named("data"), Named("ref_count_rx"), PeelTo(WORD)]],
+        ),
+        decl(
+            WalkRole::WatchSharedTxCount,
+            Pointee(WalkRole::WatchReceiverShared),
+            Word,
+            || vec![reach![Named("data"), Named("ref_count_tx"), PeelTo(WORD)]],
+        ),
+        decl(
+            WalkRole::WatchSharedNotifyRx,
+            Pointee(WalkRole::WatchReceiverShared),
+            Aggregate,
+            || vec![reach![Named("data"), Named("notify_rx")]],
+        ),
+    ]
+}
+
+/// A oneshot `Task` slot's `RawWaker`, from the `ArcInner`: the loom
+/// cell, the std cell, the `MaybeUninit`'s `value`, the
+/// `ManuallyDrop`'s, the `Waker`'s. Two spellings, since the standard
+/// library moved between toolchains rather than tokio between
+/// releases: newer std wraps `ManuallyDrop`'s value in a
+/// `MaybeDangling` tuple, older std holds it directly.
+fn oneshot_task(member: &'static str) -> Vec<Reach<'static>> {
+    vec![
+        reach![
+            Named("data"),
+            Named(member),
+            Named("__0"),
+            Named("__0"),
+            Named("value"),
+            Named("value"),
+            Named("value"),
+            Named("__0"),
+            Named("waker"),
+        ],
+        reach![
+            Named("data"),
+            Named(member),
+            Named("__0"),
+            Named("__0"),
+            Named("value"),
+            Named("value"),
+            Named("value"),
+            Named("waker"),
+        ],
     ]
 }
 

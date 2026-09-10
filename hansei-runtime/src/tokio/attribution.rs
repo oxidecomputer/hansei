@@ -43,15 +43,18 @@ use super::bundle::{
     WaitTarget, WheelState, deadline_text,
 };
 use super::census::{FutureCensus, Via};
+use super::contract::{Walked, execute_steps_over};
 use super::graph::{Analysis, TaskRef, TaskWait};
-use super::observe::ValueKey;
+use super::observe::{ReadContext, ValueKey};
 use super::semantics::SemanticIndex;
 use super::wakers::{Hit, Owner, WakerSlots};
 use crate::heap::umem::{Liveness, Source, UmemHeap};
 
 use foldhash::{HashMap, HashSet};
 use hansei_bundle::names::{ImplFold, fold_type_name, outer_path};
-use hansei_bundle::{BundleType, BundleTypeId, BundleView, TypeClass, TypeSemantics};
+use hansei_bundle::{
+    BundleType, BundleTypeId, BundleView, TypeClass, TypeSemantics, WalkOutcome, WalkRole,
+};
 use proc::Target;
 use reify::Value;
 
@@ -85,6 +88,9 @@ pub enum Validity {
     /// The path crossed an `Option`'s `Some`: the storage says a waker
     /// is there.
     SelfDescribing,
+    /// The path crossed a `MaybeUninit` under a state word whose bit
+    /// for this slot is set — the bit named here (`rx_task_set`).
+    Gated(&'static str),
     /// The path crossed a `MaybeUninit` under a state word this build
     /// does not read: the bytes are a waker's, and nothing says the
     /// slot is current.
@@ -96,11 +102,11 @@ pub enum Validity {
 impl Validity {
     /// The word a detail line appends, or nothing for a slot that
     /// vouches for itself.
-    fn note(self) -> &'static str {
+    fn note(self) -> String {
         match self {
-            Validity::SelfDescribing => "",
-            Validity::Unchecked => " (unchecked)",
-            Validity::Raw => "",
+            Validity::SelfDescribing | Validity::Raw => String::new(),
+            Validity::Gated(bit) => format!(" ({bit})"),
+            Validity::Unchecked => " (unchecked)".to_string(),
         }
     }
 }
@@ -145,8 +151,9 @@ pub struct SlotPath {
 pub struct Hop {
     /// The pointee's address.
     pub addr: u64,
-    /// The pointee's type, as the bundle names it.
+    /// The pointee's type, as the bundle names it, and its id.
     pub pointee: String,
+    pub pointee_ty: BundleTypeId,
     /// The member steps from the pointee to the slot.
     pub steps: Vec<String>,
 }
@@ -220,6 +227,9 @@ pub enum OwnerKind {
     OneshotTx,
     /// A bounded or unbounded mpsc channel's receiver slot.
     Mpsc,
+    /// A `Notified` node queued on one of a watch channel's `Notify`s:
+    /// a receiver awaiting a change.
+    Watch,
     /// A `Notified` node queued on a bare `Notify`.
     Notify,
 }
@@ -231,6 +241,7 @@ impl OwnerKind {
             OwnerKind::OneshotRx => "oneshot rx",
             OwnerKind::OneshotTx => "oneshot tx",
             OwnerKind::Mpsc => "mpsc",
+            OwnerKind::Watch => "watch",
             OwnerKind::Notify => "notify",
         }
     }
@@ -445,6 +456,9 @@ pub enum StaleReason {
     DeadLocal,
     /// The walk landed on something that is not a `Waker`.
     NotAWaker,
+    /// The slot lies under a state word whose bit for it is clear: a
+    /// oneshot `Task` whose `*_TASK_SET` bit says no waker is stored.
+    GateClear,
 }
 
 impl StaleReason {
@@ -453,6 +467,7 @@ impl StaleReason {
             StaleReason::InactiveVariant => "in an inactive variant",
             StaleReason::DeadLocal => "in a local the active state does not initialize",
             StaleReason::NotAWaker => "not at a Waker",
+            StaleReason::GateClear => "under a state word that says no waker is set",
         }
     }
 }
@@ -837,6 +852,75 @@ impl<'a, 'b, T: Target> Attributor<'a, 'b, T> {
                     }
                 }
             };
+            // The readers' roles refine an owner slot: the oneshot's
+            // state word gates its two task slots, and a `Notified` on
+            // one of a watch channel's `Notify`s is the watch's.
+            let attribution = match attribution {
+                Attribution::Owner {
+                    kind: kind @ (OwnerKind::OneshotRx | OwnerKind::OneshotTx),
+                    primitive,
+                    holder,
+                    member,
+                    path,
+                    validity,
+                } => match self.oneshot_gate(kind, &path) {
+                    Gate::Set(bit) => Attribution::Owner {
+                        kind,
+                        primitive,
+                        holder,
+                        member,
+                        path,
+                        validity: Validity::Gated(bit),
+                    },
+                    Gate::Clear => {
+                        stale.push(Stale {
+                            hit: i,
+                            slot: hit.slot,
+                            owner,
+                            root: path.root,
+                            reason: StaleReason::GateClear,
+                        });
+                        continue;
+                    }
+                    Gate::Unread => Attribution::Owner {
+                        kind,
+                        primitive,
+                        holder,
+                        member,
+                        path,
+                        validity,
+                    },
+                },
+                Attribution::Owner {
+                    kind: OwnerKind::Notify,
+                    primitive,
+                    holder,
+                    member,
+                    path,
+                    validity,
+                } => {
+                    let pointers = pointers.get_or_insert_with(|| self.pointer_members(&roots));
+                    match self.watch_of(primitive, pointers) {
+                        Some(shared) => Attribution::Owner {
+                            kind: OwnerKind::Watch,
+                            primitive: shared,
+                            holder,
+                            member,
+                            path,
+                            validity,
+                        },
+                        None => Attribution::Owner {
+                            kind: OwnerKind::Notify,
+                            primitive,
+                            holder,
+                            member,
+                            path,
+                            validity,
+                        },
+                    }
+                }
+                other => other,
+            };
             slots.push(AttributedSlot {
                 hit: i,
                 slot: hit.slot,
@@ -845,6 +929,87 @@ impl<'a, 'b, T: Target> Attributor<'a, 'b, T> {
                 within,
             });
         }
+    }
+
+    /// Execute a recorded walk role from `root`, where the bundle bound
+    /// it, landing on a value.
+    fn walk_role(&self, role: WalkRole, root: Value<'b>) -> Option<Value<'b>> {
+        let binding = self.types.view.bundle().walks.entries.get(&role)?;
+        if !matches!(binding.outcome, WalkOutcome::Bound { .. }) {
+            return None;
+        }
+        match execute_steps_over(
+            self.proc,
+            self.types.view,
+            &ReadContext::none(),
+            root,
+            &binding.steps,
+        ) {
+            Ok(Walked::At(value)) => Some(value),
+            _ => None,
+        }
+    }
+
+    /// The oneshot's state word, read through the `ArcInner` the slot
+    /// was reached through, against the bit that says this slot holds
+    /// a waker: `RX_TASK_SET` for `rx_task`, `TX_TASK_SET` for
+    /// `tx_task`. `Unread` where the role is unbound or the slot was
+    /// not reached through the `Arc`.
+    fn oneshot_gate(&self, kind: OwnerKind, path: &SlotPath) -> Gate {
+        let Some(hop) = &path.hop else {
+            return Gate::Unread;
+        };
+        let Some(ty) = self.types.view.ty(hop.pointee_ty) else {
+            return Gate::Unread;
+        };
+        let Ok(arc) = Value::read(self.proc, ty, hop.addr) else {
+            return Gate::Unread;
+        };
+        let Some(state) = self
+            .walk_role(WalkRole::OneshotState, arc)
+            .and_then(|v| v.parse::<u64>(self.proc).ok())
+        else {
+            return Gate::Unread;
+        };
+        let (bit, name) = match kind {
+            OwnerKind::OneshotRx => (ONESHOT_RX_TASK_SET, "rx_task_set"),
+            _ => (ONESHOT_TX_TASK_SET, "tx_task_set"),
+        };
+        if state & bit != 0 {
+            Gate::Set(name)
+        } else {
+            Gate::Clear
+        }
+    }
+
+    /// The watch channel whose `notify_rx` array holds the `Notify` at
+    /// `notify`, among the `Arc<watch::Shared<_>>`s the owner's values
+    /// point at: the `Shared`'s address, for the slot's primitive.
+    /// Nothing is dereferenced but the `Shared` a pointer the owner
+    /// holds already names, and only its `notify_rx` extent is read.
+    fn watch_of(&self, notify: u64, pointers: &[PointerMember]) -> Option<u64> {
+        let mut seen: HashSet<u64> = HashSet::default();
+        for p in pointers {
+            let ty = self.types.view.ty(p.pointee)?;
+            if !ty
+                .name()
+                .starts_with("alloc::sync::ArcInner<tokio::sync::watch::Shared<")
+                || !seen.insert(p.target)
+            {
+                continue;
+            }
+            let Ok(arc) = Value::read(self.proc, ty, p.target) else {
+                continue;
+            };
+            let Some(notify_rx) = self.walk_role(WalkRole::WatchSharedNotifyRx, arc) else {
+                continue;
+            };
+            if contains(notify_rx, notify) {
+                let data = ty.member("data").map(|m| m.offset()).unwrap_or(0);
+                return Some(arc.addr + data);
+            }
+        }
+        None
     }
 
     /// The typed values `owner` holds: a task's chain frames (from the
@@ -990,6 +1155,7 @@ impl<'a, 'b, T: Target> Attributor<'a, 'b, T> {
                     Some(Hop {
                         addr: p.target,
                         pointee: pointee.name().to_string(),
+                        pointee_ty: pointee.id(),
                         steps: trail.iter().map(|s| s.name.clone()).collect(),
                     }),
                 ),
@@ -1378,6 +1544,20 @@ enum LocalLiveness {
     Dead,
 }
 
+/// What a oneshot's state word says about a task slot.
+enum Gate {
+    Set(&'static str),
+    Clear,
+    /// The word could not be read: the role is unbound, or the slot
+    /// was not reached through the `Arc`.
+    Unread,
+}
+
+/// The bits of `tokio::sync::oneshot::State`: a waker stored in
+/// `rx_task`, and one in `tx_task`.
+const ONESHOT_RX_TASK_SET: u64 = 0b0001;
+const ONESHOT_TX_TASK_SET: u64 = 0b1000;
+
 /// A variant step's name: `<Some>`, so a path reads apart from a
 /// member named the same.
 fn variant_step(name: &str) -> String {
@@ -1725,6 +1905,9 @@ mod tests {
         assert_eq!(selector.len(), 4, "{selector:#?}");
         let mut buckets: Vec<String> = selector.iter().map(|s| s.bucket()).collect();
         buckets.sort();
+        // The watch's `Notified` reads as a bare `notify` here: the
+        // snapshot holds no bytes of the `Shared` its `Notify` lies
+        // in, so the watch row cannot fire over a fixture pair.
         assert_eq!(buckets, ["mpsc", "notify", "oneshot rx", "timer"]);
         for slot in &selector {
             match &slot.attribution {
@@ -1737,9 +1920,9 @@ mod tests {
                     primitive,
                 } => {
                     assert_eq!((holder.as_str(), member.as_str()), ("Inner", "rx_task"));
-                    // `MaybeUninit` under a state word this build does
-                    // not read.
-                    assert_eq!(*validity, Validity::Unchecked);
+                    // `MaybeUninit` under the state word, whose bit for
+                    // the receiver's slot is set.
+                    assert_eq!(*validity, Validity::Gated("rx_task_set"));
                     // Through the `Receiver` find's `inner`, not the
                     // frame that holds the find.
                     assert!(matches!(path.root, SlotRoot::Find { .. }), "{path:?}");
@@ -1756,7 +1939,7 @@ mod tests {
                     assert_eq!(slot.entry(stopped), format!("oneshot rx {primitive:#x}"));
                     assert!(
                         slot.detail(stopped).starts_with(
-                            "waker in Inner.rx_task (unchecked), reached from the future at 0x"
+                            "waker in Inner.rx_task (rx_task_set), reached from the future at 0x"
                         ),
                         "{}",
                         slot.detail(stopped)
@@ -1785,10 +1968,11 @@ mod tests {
                     member,
                     path,
                     validity,
-                    ..
+                    primitive,
                 } => {
                     assert_eq!((holder.as_str(), member.as_str()), ("Notified", "waiter"));
                     assert_eq!(*validity, Validity::SelfDescribing);
+                    assert_eq!(slot.entry(stopped), format!("notify {primitive:#x}"));
                     // Inside the held `changed_impl` — the innermost of
                     // the two finds holding it — by containment: its
                     // active state's awaitee is the `Notified`.

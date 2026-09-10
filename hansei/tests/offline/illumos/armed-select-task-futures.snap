@@ -13,7 +13,7 @@ task 3
         timer (deadline TS): this task's waker in wheel entry 0xADDR, registered, inside #1's storage at +0xADDR; in no branch of the stop
         mpsc 0xADDR: waker in Chan.rx_waker, reached from #1 queue → chan → inner → * → data → rx_waker → waker
         notify 0xADDR: waker in Notified.waiter, in the future at 0xADDR waiter → waker
-        oneshot rx 0xADDR: waker in Inner.rx_task (unchecked), reached from the future at 0xADDR inner → * → data → rx_task
+        oneshot rx 0xADDR: waker in Inner.rx_task (rx_task_set), reached from the future at 0xADDR inner → * → data → rx_task
     spawned at: src/bin/armed-select.rs:116:25
     defined at: src/bin/armed-select.rs:30
     held futures: 4

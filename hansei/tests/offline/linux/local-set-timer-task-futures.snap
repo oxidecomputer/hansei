@@ -5,7 +5,7 @@ description: "`task 1 --futures` over linux/local-set-timer"
 task 1
     state: idle
     thread: <none>
-    owner: local set 0 @ 0xADDR (lwp 2092102)
+    owner: local set 0 @ 0xADDR (lwp 649552)
     type: async fn local_set_timer::local_sleeper
     awaiting at: src/bin/local-set-timer.rs:22
     waiting on: timer (deadline TS on the target's monotonic clock)

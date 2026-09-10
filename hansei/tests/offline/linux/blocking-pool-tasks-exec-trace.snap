@@ -3,7 +3,7 @@ source: hansei/src/offline.rs
 description: "`tasks --exec trace -n` over linux/blocking-pool"
 ---
 task 3
-mid-poll, but lwp 2093210's walked stack holds no frame in the task's poll symbol (its walk ended: no CFI for /usr/lib64/libc.so.6 (none of its pages are in the core, and the backing file is not on this machine); the frame-pointer walk found nothing below 0xADDR); `threads 2093210` shows the raw stack
+mid-poll, but lwp 650689's walked stack holds no frame in the task's poll symbol (its walk ended: no CFI for /usr/lib64/libc.so.6 (none of its pages are in the core, and the backing file is not on this machine); the frame-pointer walk found nothing below 0xADDR); `threads 650689` shows the raw stack
 
 Waiting on: — (mid-poll)
 

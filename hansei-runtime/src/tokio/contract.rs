@@ -192,7 +192,18 @@ pub fn classify(role: WalkRole) -> Class {
         | NotifyQueueHead
         | NotifyWaiterNext
         | NotifyWaiterWaker
-        | NotifyWaiterNotification => Class::Optional,
+        | NotifyWaiterNotification
+        | OneshotInner
+        | OneshotState
+        | OneshotRxTask
+        | OneshotTxTask
+        | OneshotValue
+        | MpscReceiverChan
+        | WatchReceiverShared
+        | WatchSharedState
+        | WatchSharedRxCount
+        | WatchSharedTxCount
+        | WatchSharedNotifyRx => Class::Optional,
         // The net resources' registration and fd, for spelling an io
         // wait as the fd the reader knows. Each roots at its resource
         // type, absent wherever the target reaches none — and an io
@@ -462,6 +473,19 @@ pub(crate) fn execute_steps<'b, T: Target>(
     cur: Value<'b>,
     steps: &[Step],
 ) -> Result<Walked<'b>> {
+    execute_steps_over(ctx.proc, ctx.view, read, cur, steps)
+}
+
+/// [`execute_steps`] over the target and the view alone, for a walk
+/// that runs apart from a context's thread (the slot attribution).
+pub(crate) fn execute_steps_over<'b, T: Target>(
+    proc: &'b T,
+    view: hansei_bundle::BundleView<'b>,
+    read: &ReadContext<'_>,
+    cur: Value<'b>,
+    steps: &[Step],
+) -> Result<Walked<'b>> {
+    let ctx = (proc, view);
     let [step, rest @ ..] = steps else {
         return Ok(Walked::At(cur));
     };
@@ -481,11 +505,11 @@ pub(crate) fn execute_steps<'b, T: Target>(
     };
     match step {
         Step::Member(at) => {
-            let member = member_at(&ctx.view, cur.ty, at).ok_or_else(|| match at {
+            let member = member_at(&ctx.1, cur.ty, at).ok_or_else(|| match at {
                 MemberRef::Named(name) => {
                     anyhow!(no_member(
                         cur.ty,
-                        ctx.view.str(*name).unwrap_or("<bad strref>")
+                        ctx.1.str(*name).unwrap_or("<bad strref>")
                     ))
                 }
                 MemberRef::Index(index) => {
@@ -498,11 +522,11 @@ pub(crate) fn execute_steps<'b, T: Target>(
                 .checked_add(member.offset())
                 .ok_or_else(|| anyhow!("{:#x} + {} overflows", cur.addr, member.offset()))?;
             let next = Value::new(member.ty(), addr, bytes);
-            execute_steps(ctx, read, next, rest)
+            execute_steps_over(ctx.0, ctx.1, read, next, rest)
         }
         Step::Variant(name) => {
             let name = ctx
-                .view
+                .1
                 .str(*name)
                 .ok_or_else(|| anyhow!("unresolvable variant name in {}", cur.ty.name()))?;
             match cur.ty.check_variant(cur.bytes, name) {
@@ -518,7 +542,7 @@ pub(crate) fn execute_steps<'b, T: Target>(
                         .checked_add(offset)
                         .ok_or_else(|| anyhow!("{:#x} + {offset} overflows", cur.addr))?;
                     let next = Value::new(payload, addr, bytes);
-                    execute_steps(ctx, read, next, rest)
+                    execute_steps_over(ctx.0, ctx.1, read, next, rest)
                 }
             }
         }
@@ -534,7 +558,7 @@ pub(crate) fn execute_steps<'b, T: Target>(
                     .checked_add(active.offset)
                     .ok_or_else(|| anyhow!("{:#x} + {} overflows", cur.addr, active.offset))?;
                 let next = Value::new(active.ty, addr, bytes);
-                execute_steps(ctx, read, next, rest)
+                execute_steps_over(ctx.0, ctx.1, read, next, rest)
             }
         },
         Step::Deref => {
@@ -557,9 +581,9 @@ pub(crate) fn execute_steps<'b, T: Target>(
                     anyhow::Error::new(refusal).context(format!("dereferencing {}", cur.ty.name()))
                 );
             }
-            let pointee = Value::read(ctx.proc, target, addr)
+            let pointee = Value::read(ctx.0, target, addr)
                 .map_err(|e| anyhow!(e).context(format!("dereferencing {}", cur.ty.name())))?;
-            execute_steps(ctx, read, pointee, rest)
+            execute_steps_over(ctx.0, ctx.1, read, pointee, rest)
         }
     }
 }

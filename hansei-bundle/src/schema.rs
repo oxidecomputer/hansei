@@ -1493,6 +1493,17 @@ walk_roles! {
     NotifyWaiterNext = "notify::Waiter.next",
     NotifyWaiterWaker = "notify::Waiter.waker",
     NotifyWaiterNotification = "notify::Waiter.notification",
+    OneshotInner = "oneshot::Receiver.inner",
+    OneshotState = "oneshot::Inner.state",
+    OneshotRxTask = "oneshot::Inner.rx_task",
+    OneshotTxTask = "oneshot::Inner.tx_task",
+    OneshotValue = "oneshot::Inner.value",
+    MpscReceiverChan = "mpsc::Receiver.chan",
+    WatchReceiverShared = "watch::Receiver.shared",
+    WatchSharedState = "watch::Shared.state",
+    WatchSharedRxCount = "watch::Shared.ref_count_rx",
+    WatchSharedTxCount = "watch::Shared.ref_count_tx",
+    WatchSharedNotifyRx = "watch::Shared.notify_rx",
 }
 
 /// What binding one walk role against the target's DWARF concluded.
