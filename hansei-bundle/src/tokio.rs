@@ -88,3 +88,27 @@ pub mod notify {
     pub const NOTIFICATION_LAST: u64 = 0b101;
     pub const NOTIFICATION_ALL: u64 = 0b010;
 }
+
+/// `sync::watch::state::AtomicState`: the closed flag below the
+/// published version.
+pub mod watch {
+    /// The sender side closed.
+    pub const CLOSED: u64 = 1;
+    /// The version counter occupies the bits above the closed bit.
+    pub const VERSION_SHIFT: u8 = 1;
+}
+
+/// `sync::oneshot::Inner`'s state word: four independent bits. A
+/// dropped `Sender` sets `VALUE_SENT` like a send does (`complete`),
+/// with the value left `None`; a dropped or closed `Receiver` sets
+/// `CLOSED`. The two task bits say which waker slots hold a waker.
+pub mod oneshot {
+    /// The receiver stored its waker in `rx_task`.
+    pub const RX_TASK_SET: u64 = 0b0001;
+    /// The sender completed: a value was sent, or the sender dropped.
+    pub const VALUE_SENT: u64 = 0b0010;
+    /// The receiver closed or dropped.
+    pub const CLOSED: u64 = 0b0100;
+    /// The sender stored its waker in `tx_task` (`poll_closed`).
+    pub const TX_TASK_SET: u64 = 0b1000;
+}

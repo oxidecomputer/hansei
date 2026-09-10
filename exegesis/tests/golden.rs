@@ -2050,6 +2050,15 @@ fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
         );
     }
     if program == "armed-select" {
+        // The oneshot's shared state renders with its flags by name.
+        assert_format(
+            program,
+            bundle,
+            "tokio::sync::oneshot::Inner<u32>",
+            "tokio::sync::oneshot::Inner<u32> :: Node Struct \
+             { state: state.inner.value.v.value.__0@+32, value: <structural>, \
+             tx_task: <structural>, rx_task: <structural> }",
+        );
         // The receivers a waker slot is read against: the oneshot's
         // `Arc` and the state word and two task slots behind it, the
         // channel's `Arc`, and the watch's `Arc` and the `Notify` array

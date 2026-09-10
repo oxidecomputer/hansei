@@ -15,7 +15,7 @@ use super::{
     Reach, Through, WORD, Want, find_unique, is_unsigned_integer, reach, sole_param_target,
     step_into, struct_of, transparent, unique_member, zero_offset_member,
 };
-use crate::bundle::tokio::semaphore;
+use crate::bundle::tokio::{oneshot, semaphore, watch};
 use crate::bundle::{
     Arm, BundleTypeId, DisplayNode, Field, ScalarDecode, Selector, Shape, Stmt, StringInterner,
     ValueExpr,
@@ -122,6 +122,21 @@ pub(super) fn permits_path(mut prefix: Reach<'_>) -> Reach<'_> {
     prefix.push(Named("permits"));
     prefix.push(PeelTo(WORD));
     prefix
+}
+
+/// Render a `tokio::sync::oneshot::Inner<T>` as itself, with its state word
+/// decoded into the four flags tokio packs there: which task slots hold a
+/// waker, whether the sender completed, whether the receiver closed. The
+/// word is a plain atomic `usize`, reached through whatever shim wraps it.
+pub(super) fn oneshot_inner_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
+    let decode = emitter.oneshot_state_decode();
+    let state = DisplayNode::Scalar {
+        at: emitter.walk(id, &reach![Named("state"), PeelTo(WORD)])?.0,
+        decode,
+    };
+    Some(DisplayNode::Struct {
+        fields: emitter.visible_fields(id, vec![("state", state)])?,
+    })
 }
 
 pub(super) fn batch_semaphore_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
@@ -946,9 +961,22 @@ impl Emitter<'_> {
 
     /// tokio watch `AtomicState`: bit 0 closed, the rest the version counter.
     fn watch_state_decode(&mut self) -> ScalarDecode {
-        let closed = self.bool_field("closed", 0);
-        let version = self.uint_tail_field("version", 1);
+        let closed = self.bool_field("closed", watch::CLOSED.trailing_zeros() as u8);
+        let version = self.uint_tail_field("version", watch::VERSION_SHIFT);
         ScalarDecode::Bits(vec![closed, version])
+    }
+
+    /// tokio oneshot `Inner` state word: four flags, named as tokio names
+    /// them — the names the runtime layer's readers share.
+    fn oneshot_state_decode(&mut self) -> ScalarDecode {
+        let bit = |flag: u64| flag.trailing_zeros() as u8;
+        let fields = vec![
+            self.bool_field("rx_task_set", bit(oneshot::RX_TASK_SET)),
+            self.bool_field("value_sent", bit(oneshot::VALUE_SENT)),
+            self.bool_field("closed", bit(oneshot::CLOSED)),
+            self.bool_field("tx_task_set", bit(oneshot::TX_TASK_SET)),
+        ];
+        ScalarDecode::Bits(fields)
     }
 
     /// Build the `queue` field shared by the waiter-mutex formatters (`Notify`

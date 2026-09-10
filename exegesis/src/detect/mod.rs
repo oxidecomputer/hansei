@@ -42,8 +42,8 @@ use self::std::{
 use self::tokio::{
     batch_semaphore_node, bounded_semaphore_node, cache_padded_node, loom_atomic_node,
     loom_parking_lot_node, loom_unsafe_cell_node, mpsc_block_node, mpsc_chan_node,
-    mpsc_handle_node, notify_node, watch_receiver_node, watch_sender_node, watch_shared_node,
-    watch_state_node,
+    mpsc_handle_node, notify_node, oneshot_inner_node, watch_receiver_node, watch_sender_node,
+    watch_shared_node, watch_state_node,
 };
 use crate::bundle::{
     Arm, BitField, Bundle, BundleTypeId, DisplayNode, Field, FieldRender, LayoutSelection,
@@ -449,6 +449,7 @@ static BY_NAME: &[(&str, Row<Detector>)] = &[
     ),
     ("tokio::sync::mpsc::chan::Chan", All(mpsc_chan_node)),
     ("tokio::sync::notify::Notify", All(notify_node)),
+    ("tokio::sync::oneshot::Inner", All(oneshot_inner_node)),
     ("tokio::sync::watch::Receiver", All(watch_receiver_node)),
     ("tokio::sync::watch::Sender", All(watch_sender_node)),
     ("tokio::sync::watch::Shared", All(watch_shared_node)),
