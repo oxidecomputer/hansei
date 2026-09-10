@@ -46,6 +46,7 @@ alloc::vec::Vec<u32, alloc::alloc::Global> :: Node Slice { pointer=buf.inner.ptr
 alloc::vec::Vec<u8, alloc::alloc::Global> :: Node Slice { pointer=buf.inner.ptr.pointer.pointer, length=len, capacity=buf.inner.cap.__0, element=u8 }
 alloc::vec::Vec<usize, alloc::alloc::Global> :: Node Slice { pointer=buf.inner.ptr.pointer.pointer, length=len, capacity=buf.inner.cap.__0, element=usize }
 core::cell::UnsafeCell<()> :: Node Alias { value, follow }
+core::cell::UnsafeCell<*const futures_util::stream::futures_unordered::task::Task<armed_select::child::{async_fn_env#0}>> :: Node Alias { value, follow }
 core::cell::UnsafeCell<*const futures_util::stream::futures_unordered::task::Task<unordered::leaf::{async_fn_env#0}>> :: Node Alias { value, follow }
 core::cell::UnsafeCell<*const futures_util::stream::futures_unordered::task::Task<unordered::set_member::{async_fn_env#0}>> :: Node Alias { value, follow }
 core::cell::UnsafeCell<*const tokio::runtime::scheduler::Context> :: Node Alias { value, follow }
@@ -64,6 +65,7 @@ core::cell::UnsafeCell<core::option::Option<alloc::boxed::Box<tokio::runtime::sc
 core::cell::UnsafeCell<core::option::Option<alloc::boxed::Box<tokio::runtime::scheduler::multi_thread::worker::Core, alloc::alloc::Global>>> :: Node Alias { value, follow }
 core::cell::UnsafeCell<core::option::Option<alloc::collections::vec_deque::VecDeque<tokio::runtime::task::Notified<alloc::sync::Arc<tokio::task::local::Shared, alloc::alloc::Global>>, alloc::alloc::Global>>> :: Node Alias { value, follow }
 core::cell::UnsafeCell<core::option::Option<alloc::rc::Rc<tokio::task::local::Context, alloc::alloc::Global>>> :: Node Alias { value, follow }
+core::cell::UnsafeCell<core::option::Option<armed_select::child::{async_fn_env#0}>> :: Node Alias { value, follow }
 core::cell::UnsafeCell<core::option::Option<core::num::nonzero::NonZero<u64>>> :: Node Alias { value, follow }
 core::cell::UnsafeCell<core::option::Option<core::ptr::non_null::NonNull<tokio::runtime::task::core::Header>>> :: Node Alias { value, follow }
 core::cell::UnsafeCell<core::option::Option<core::result::Result<(), alloc::boxed::Box<(dyn core::any::Any + core::marker::Send), alloc::alloc::Global>>>> :: Node Alias { value, follow }
@@ -84,6 +86,7 @@ core::cell::UnsafeCell<core::sync::atomic::private::Align1<i8>> :: Node Alias { 
 core::cell::UnsafeCell<core::sync::atomic::private::Align1<u8>> :: Node Alias { value, follow }
 core::cell::UnsafeCell<core::sync::atomic::private::Align4<u32>> :: Node Alias { value, follow }
 core::cell::UnsafeCell<core::sync::atomic::private::Align8<*mut ()>> :: Node Alias { value, follow }
+core::cell::UnsafeCell<core::sync::atomic::private::Align8<*mut futures_util::stream::futures_unordered::task::Task<armed_select::child::{async_fn_env#0}>>> :: Node Alias { value, follow }
 core::cell::UnsafeCell<core::sync::atomic::private::Align8<*mut futures_util::stream::futures_unordered::task::Task<unordered::leaf::{async_fn_env#0}>>> :: Node Alias { value, follow }
 core::cell::UnsafeCell<core::sync::atomic::private::Align8<*mut futures_util::stream::futures_unordered::task::Task<unordered::set_member::{async_fn_env#0}>>> :: Node Alias { value, follow }
 core::cell::UnsafeCell<core::sync::atomic::private::Align8<*mut parking_lot::raw_mutex::RawMutex>> :: Node Alias { value, follow }
@@ -107,6 +110,10 @@ core::cell::UnsafeCell<tokio::runtime::io::scheduled_io::Waiter> :: Node Alias {
 core::cell::UnsafeCell<tokio::runtime::io::scheduled_io::Waiters> :: Node Alias { value, follow }
 core::cell::UnsafeCell<tokio::runtime::scheduler::inject::synced::Synced> :: Node Alias { value, follow }
 core::cell::UnsafeCell<tokio::runtime::scheduler::multi_thread::worker::Synced> :: Node Alias { value, follow }
+core::cell::UnsafeCell<tokio::runtime::task::core::Stage<armed_select::driver::{async_fn_env#0}>> :: Node Alias { value, follow }
+core::cell::UnsafeCell<tokio::runtime::task::core::Stage<armed_select::holder::{async_fn_env#0}>> :: Node Alias { value, follow }
+core::cell::UnsafeCell<tokio::runtime::task::core::Stage<armed_select::selector::{async_fn_env#0}>> :: Node Alias { value, follow }
+core::cell::UnsafeCell<tokio::runtime::task::core::Stage<armed_select::waiter::{async_fn_env#0}>> :: Node Alias { value, follow }
 core::cell::UnsafeCell<tokio::runtime::task::core::Stage<blocking_pool::queued_waiter::{async_fn_env#0}>> :: Node Alias { value, follow }
 core::cell::UnsafeCell<tokio::runtime::task::core::Stage<blocking_pool::running_waiter::{async_fn_env#0}>> :: Node Alias { value, follow }
 core::cell::UnsafeCell<tokio::runtime::task::core::Stage<channels::hold::{async_fn_env#0}>> :: Node Alias { value, follow }
@@ -204,8 +211,10 @@ core::ptr::non_null::NonNull<alloc::collections::btree::node::LeafNode<u64, u32>
 core::ptr::non_null::NonNull<alloc::rc::RcInner<tokio::task::local::Context>> :: Node Alias { pointer, follow }
 core::ptr::non_null::NonNull<alloc::sync::ArcInner<()>> :: Node Alias { pointer, follow }
 core::ptr::non_null::NonNull<alloc::sync::ArcInner<dyn_future::Padded>> :: Node Alias { pointer, follow }
+core::ptr::non_null::NonNull<alloc::sync::ArcInner<futures_util::stream::futures_unordered::ready_to_run_queue::ReadyToRunQueue<armed_select::child::{async_fn_env#0}>>> :: Node Alias { pointer, follow }
 core::ptr::non_null::NonNull<alloc::sync::ArcInner<futures_util::stream::futures_unordered::ready_to_run_queue::ReadyToRunQueue<unordered::leaf::{async_fn_env#0}>>> :: Node Alias { pointer, follow }
 core::ptr::non_null::NonNull<alloc::sync::ArcInner<futures_util::stream::futures_unordered::ready_to_run_queue::ReadyToRunQueue<unordered::set_member::{async_fn_env#0}>>> :: Node Alias { pointer, follow }
+core::ptr::non_null::NonNull<alloc::sync::ArcInner<futures_util::stream::futures_unordered::task::Task<armed_select::child::{async_fn_env#0}>>> :: Node Alias { pointer, follow }
 core::ptr::non_null::NonNull<alloc::sync::ArcInner<futures_util::stream::futures_unordered::task::Task<unordered::leaf::{async_fn_env#0}>>> :: Node Alias { pointer, follow }
 core::ptr::non_null::NonNull<alloc::sync::ArcInner<futures_util::stream::futures_unordered::task::Task<unordered::set_member::{async_fn_env#0}>>> :: Node Alias { pointer, follow }
 core::ptr::non_null::NonNull<alloc::sync::ArcInner<std::sync::mpmc::context::Inner>> :: Node Alias { pointer, follow }
@@ -246,6 +255,7 @@ core::ptr::non_null::NonNull<tokio::util::idle_notified_set::ListEntry<tokio::ru
 core::ptr::non_null::NonNull<u8> :: Node Alias { pointer, follow }
 core::ptr::unique::Unique<u8> :: Node Alias { pointer, follow }
 core::sync::atomic::Atomic<*mut ()> :: Node Alias { v.value.__0 }
+core::sync::atomic::Atomic<*mut futures_util::stream::futures_unordered::task::Task<armed_select::child::{async_fn_env#0}>> :: Node Alias { v.value.__0 }
 core::sync::atomic::Atomic<*mut futures_util::stream::futures_unordered::task::Task<unordered::leaf::{async_fn_env#0}>> :: Node Alias { v.value.__0 }
 core::sync::atomic::Atomic<*mut futures_util::stream::futures_unordered::task::Task<unordered::set_member::{async_fn_env#0}>> :: Node Alias { v.value.__0 }
 core::sync::atomic::Atomic<*mut parking_lot::raw_mutex::RawMutex> :: Node Alias { v.value.__0 }
@@ -307,6 +317,10 @@ tokio::loom::std::unsafe_cell::UnsafeCell<core::option::Option<core::task::wake:
 tokio::loom::std::unsafe_cell::UnsafeCell<core::option::Option<tokio::runtime::task::join::JoinHandle<u32>>> :: Node Alias { __0, follow }
 tokio::loom::std::unsafe_cell::UnsafeCell<core::option::Option<u32>> :: Node Alias { __0, follow }
 tokio::loom::std::unsafe_cell::UnsafeCell<core::result::Result<(), tokio::time::error::Error>> :: Node Alias { __0, follow }
+tokio::loom::std::unsafe_cell::UnsafeCell<tokio::runtime::task::core::Stage<armed_select::driver::{async_fn_env#0}>> :: Node Alias { __0, follow }
+tokio::loom::std::unsafe_cell::UnsafeCell<tokio::runtime::task::core::Stage<armed_select::holder::{async_fn_env#0}>> :: Node Alias { __0, follow }
+tokio::loom::std::unsafe_cell::UnsafeCell<tokio::runtime::task::core::Stage<armed_select::selector::{async_fn_env#0}>> :: Node Alias { __0, follow }
+tokio::loom::std::unsafe_cell::UnsafeCell<tokio::runtime::task::core::Stage<armed_select::waiter::{async_fn_env#0}>> :: Node Alias { __0, follow }
 tokio::loom::std::unsafe_cell::UnsafeCell<tokio::runtime::task::core::Stage<blocking_pool::queued_waiter::{async_fn_env#0}>> :: Node Alias { __0, follow }
 tokio::loom::std::unsafe_cell::UnsafeCell<tokio::runtime::task::core::Stage<blocking_pool::running_waiter::{async_fn_env#0}>> :: Node Alias { __0, follow }
 tokio::loom::std::unsafe_cell::UnsafeCell<tokio::runtime::task::core::Stage<channels::hold::{async_fn_env#0}>> :: Node Alias { __0, follow }
