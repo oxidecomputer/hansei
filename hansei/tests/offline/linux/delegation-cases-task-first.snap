@@ -6,8 +6,7 @@ task 1
     state: idle
     thread: <none>
     type: future Pin<Box<delegation_cases::Gated<1>>>
-    waiting on: unknown at delegation_cases::Gated (holds 1 future)
-    waker: <empty>
+    waiting on: unarmed: unknown at delegation_cases::Gated (holds 1 future)
         unknown: the chain does not end in a primitive
         what delegation_cases::Gated<1> polls is not established: no reviewed rule covers its implementation
         holds 1 future at its stop, none holding this task's waker:

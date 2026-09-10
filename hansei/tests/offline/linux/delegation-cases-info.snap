@@ -8,5 +8,6 @@ symbols resolved: 25/25
 allocator evidence: unavailable
 waker slots: 1 copy of tokio's WAKER_VTABLE, 0 set vtables; 2.1 MiB swept in 59 chunks
     hits: 0 task-pattern, 0 set-pattern; 0 admitted; 0 unlisted headers
+    attributed: 0 by a registry, 0 by owner type, 0 by holding type, 0 unknown; 0 stale
 process: not recorded by this target
 signal: none recorded

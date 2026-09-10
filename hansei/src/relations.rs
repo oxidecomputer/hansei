@@ -282,6 +282,7 @@ mod relations_tests {
             notes: Vec::new(),
             held: Vec::new(),
             held_capped: 0,
+            frames: Vec::new(),
         }
     }
 

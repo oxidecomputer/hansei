@@ -302,6 +302,12 @@ impl<'b, T: Target> Context<'b, T> {
 
     /// Borrow the bundle's independent type facts. Missing facts establish no
     /// semantic capability; lookup does not inspect names or display formats.
+    /// The semantic index and the test bindings, for a walk that runs
+    /// apart from this context's thread (the slot attribution).
+    pub(super) fn semantic_parts(&self) -> (&SemanticIndex, &'b [TypeSemantics]) {
+        (&self.semantics, self.test_bindings)
+    }
+
     pub fn type_semantics(&self, ty: BundleTypeId) -> Option<&'b TypeSemantics> {
         if let Some(binding) = self.test_bindings.iter().find(|record| record.ty == ty) {
             return Some(binding);

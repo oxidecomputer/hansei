@@ -2682,10 +2682,8 @@ mod future_trace_tests {
             list,
             &Default::default(),
             &[],
-            &[],
             &HashMap::new(),
             &hansei_bundle::names::ImplFold::default(),
-            &Default::default(),
             &Default::default(),
             &crate::tasks::StopNames::none(&Default::default()),
         );

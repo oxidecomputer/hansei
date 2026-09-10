@@ -1,11 +1,12 @@
 ---
 source: hansei/src/offline.rs
-description: "`future 0x7f1964000ef0` over linux/gen-0007"
+description: "`future 0x7faa54000ef0` over linux/gen-0007"
 ---
 future 0xADDR
     type: async fn gen_0007::leaf_01
     child of: futures_util::stream::futures_unordered::FuturesUnordered<gen_0007::leaf_01> at 0xADDR, polled by task 3
     state: Unresumed
     depth: 1 frame
+    armed: no
     held futures: 0
     join sets: 0

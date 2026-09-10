@@ -761,8 +761,8 @@ impl Waits {
             WaitKind::Task { .. } => self.task += 1,
             WaitKind::Io => self.io += 1,
             WaitKind::Semaphore { owner } => *self.semaphores.entry(owner).or_default() += 1,
-            WaitKind::Channel => self.channel += 1,
-            WaitKind::Notify => self.notify += 1,
+            WaitKind::Channel { .. } => self.channel += 1,
+            WaitKind::Notify { .. } => self.notify += 1,
         }
     }
 
@@ -1218,6 +1218,7 @@ mod tests {
             notes: Vec::new(),
             held: Vec::new(),
             held_capped: 0,
+            frames: Vec::new(),
         }
     }
 

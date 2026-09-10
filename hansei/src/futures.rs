@@ -18,9 +18,9 @@ use crate::{Session, print_warnings, repl, summary};
 use anyhow::{Context as _, Result};
 use hansei_bundle::names;
 use hansei_runtime::tokio::assess::ContinuationStatus;
-use hansei_runtime::tokio::{bundle, census};
+use hansei_runtime::tokio::{RawInstant, attribution, bundle, census};
 
-use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
+use rayon::iter::{IntoParallelRefIterator, IntoParallelRefMutIterator, ParallelIterator};
 use std::collections::{BTreeMap, HashMap};
 
 use std::io;
@@ -72,11 +72,28 @@ pub(crate) struct FutureRow {
     pub(crate) via: Option<census::Via>,
     /// Its own suspend state, `Suspend1 — file:line` style.
     pub(crate) state: Option<String>,
-    /// What its chain bottoms out in, where recognized.
+    /// The `WAITING ON` cell: the slots holding the polling task's
+    /// waker that sit in this future or were reached through a pointer
+    /// it holds, each spelled by its reader where the future's own
+    /// wait accounts for it; `unarmed: ` before what its chain says
+    /// where no slot does and no protocol read the waker. Built short
+    /// of the slots first and merged once the sweep is in
+    /// ([`with_slots`]).
     pub(crate) waiting_on: Option<String>,
     /// The kind-level bucket `--group waiting-on` files the row under:
-    /// the primitive's kind, else what the continuation says instead.
+    /// the slots' kinds, else the primitive's kind or what the
+    /// continuation says instead, under `unarmed: ` where no slot
+    /// arms it.
     pub(crate) waiting_kind: Option<String>,
+    /// The `ARMED` cell: whether a slot attributes to the future — in
+    /// its storage, through a pointer it holds, or inside a future it
+    /// holds in turn — or its own protocol read the polling task's
+    /// waker in the resource. `no` is a future held and awaited by
+    /// nothing found.
+    pub(crate) armed: bool,
+    /// One detail line per slot, for the block: where it sits and
+    /// what says it is current.
+    pub(crate) slot_lines: Vec<String>,
     /// The concrete future type, folded and never truncated.
     pub(crate) future: String,
     /// How many frames its own chain ran to.
@@ -92,14 +109,172 @@ pub(crate) struct FutureRow {
 /// nothing more.
 pub(crate) fn rows<'s, T: proc::Target>(session: &'s Session<'_, T>) -> &'s [FutureRow] {
     session.future_rows.get_or_init(|| {
-        build_rows(
+        let rows = build_rows(
             &session.tasks,
             &session.owners,
             session.census(),
             &session.impl_fold,
             &StopNames::of(session),
+        );
+        with_slots(
+            rows,
+            &session.tasks,
+            session.census(),
+            session.attribution(),
+            session.registries.stopped,
         )
     })
+}
+
+/// The rows with their slots merged in: each find's cell, bucket,
+/// `ARMED` and detail lines rewritten from the slots attributed to it.
+/// A slot is a find's when it sits in the find's storage or in a
+/// future the find holds in turn, was reached through a pointer the
+/// find holds, or is the slot of the very primitive the find's own
+/// reader names — the channel a `recv` polls, the `Notify` a queued
+/// `Notified` is on — held by the same owner. A find with none is
+/// `unarmed: ` before what its chain said.
+pub(crate) fn with_slots(
+    mut rows: Vec<FutureRow>,
+    list: &bundle::TaskList,
+    census: &census::FutureCensus,
+    slots: &attribution::Attributed,
+    stopped: Option<RawInstant>,
+) -> Vec<FutureRow> {
+    // Which held finds sit inside which: a slot in a nested find is
+    // in the outer one's storage too.
+    let mut nested: HashMap<usize, Vec<usize>> = HashMap::new();
+    for (i, held) in census.held.iter().enumerate() {
+        if let Some(census::Via::Held(outer)) = held.via {
+            nested.entry(outer).or_default().push(i);
+        }
+    }
+    fn gather<'a>(
+        slots: &'a attribution::Attributed,
+        nested: &HashMap<usize, Vec<usize>>,
+        i: usize,
+        out: &mut Vec<&'a attribution::AttributedSlot>,
+    ) {
+        out.extend(slots.of_find(i));
+        for &inner in nested.get(&i).into_iter().flatten() {
+            gather(slots, nested, inner, out);
+        }
+    }
+    // Whose slots a find's reader can name: the polling task's for a
+    // find under a task, the set child's own for one under a child.
+    let owner_slots =
+        |via: Option<census::Via>, owner: usize| -> Vec<&attribution::AttributedSlot> {
+            let mut via = via;
+            loop {
+                match via {
+                    Some(census::Via::SetChild { set, child }) => {
+                        return slots.of_child(set, child).collect();
+                    }
+                    Some(census::Via::Held(outer)) => via = census.held[outer].via,
+                    None => return slots.of_task(list.tasks[owner].addr.0).collect(),
+                }
+            }
+        };
+    // Each row reads only its own find: the rows are rewritten side
+    // by side, as they were built.
+    rows.par_iter_mut().for_each(|row| {
+        let mut owned: Vec<&attribution::AttributedSlot> = Vec::new();
+        let (wait, via) = match row.at {
+            FutureAt::Held(i) => {
+                gather(slots, &nested, i, &mut owned);
+                (census.held[i].wait, census.held[i].via)
+            }
+            FutureAt::Child { set, child } => {
+                owned.extend(slots.of_child(set, child));
+                (
+                    census.sets[set].children[child].wait,
+                    Some(census::Via::SetChild { set, child }),
+                )
+            }
+        };
+        if let Some(kind) = wait {
+            owned.extend(
+                owner_slots(via, row.owner)
+                    .into_iter()
+                    .filter(|slot| names_primitive(kind, slot)),
+            );
+        }
+        owned.sort_by_key(|s| s.slot);
+        owned.dedup_by_key(|s| s.slot);
+        row.armed = !owned.is_empty();
+        if owned.is_empty() {
+            row.waiting_on = row.waiting_on.take().map(|w| format!("unarmed: {w}"));
+            row.waiting_kind = row.waiting_kind.take().map(|k| format!("unarmed: {k}"));
+            return;
+        }
+        // The find's own reader accounts for the slot of its kind:
+        // that slot takes the reader's cell.
+        let reader = wait.and_then(|_| Some((row.waiting_on.clone()?, row.waiting_kind.clone()?)));
+        let accounted = |slot: &attribution::AttributedSlot| {
+            let kind = wait?;
+            kind_matches(kind, slot).then(|| reader.clone()).flatten()
+        };
+        let (cell, kind) = tasks::slot_cell(&owned, stopped, &accounted);
+        row.waiting_on = Some(cell);
+        row.waiting_kind = Some(kind);
+        row.slot_lines = tasks::slot_lines(&owned, stopped, false);
+    });
+    rows
+}
+
+/// Whether a slot is of the kind a find's verified wait names: the
+/// reader's cell then speaks for the slot.
+fn kind_matches(kind: bundle::WaitKind, slot: &attribution::AttributedSlot) -> bool {
+    use attribution::{Attribution, OwnerKind, RegistrySlot};
+    match (kind, &slot.attribution) {
+        (bundle::WaitKind::Timer { .. }, Attribution::Registry(RegistrySlot::Timer { .. })) => true,
+        (bundle::WaitKind::Io, Attribution::Registry(RegistrySlot::Io { .. })) => true,
+        (bundle::WaitKind::Task { addr }, Attribution::Registry(RegistrySlot::Join { task })) => {
+            task.addr.0 == addr
+        }
+        (
+            bundle::WaitKind::Semaphore { .. },
+            Attribution::Registry(RegistrySlot::Semaphore { .. }),
+        ) => true,
+        (bundle::WaitKind::Channel { .. }, Attribution::Owner { kind, .. }) => {
+            *kind == OwnerKind::Mpsc
+        }
+        (bundle::WaitKind::Notify { .. }, Attribution::Owner { kind, .. }) => {
+            *kind == OwnerKind::Notify
+        }
+        _ => false,
+    }
+}
+
+/// Whether a slot is the slot of the primitive a find's wait names:
+/// the receiver cell of the channel a `recv` polls, the node queued on
+/// the `Notify` a `Notified` waits on, the trailer of the task a
+/// `JoinHandle` awaits. Only waits that name an address qualify; a
+/// timer's entry is in the find's own storage and needs no join.
+fn names_primitive(kind: bundle::WaitKind, slot: &attribution::AttributedSlot) -> bool {
+    use attribution::{Attribution, OwnerKind, RegistrySlot};
+    match (kind, &slot.attribution) {
+        (
+            bundle::WaitKind::Channel { addr },
+            Attribution::Owner {
+                kind: OwnerKind::Mpsc,
+                primitive,
+                ..
+            },
+        )
+        | (
+            bundle::WaitKind::Notify { addr },
+            Attribution::Owner {
+                kind: OwnerKind::Notify,
+                primitive,
+                ..
+            },
+        ) => *primitive == addr,
+        (bundle::WaitKind::Task { addr }, Attribution::Registry(RegistrySlot::Join { task })) => {
+            task.addr.0 == addr
+        }
+        _ => false,
+    }
 }
 
 /// Build every row from what it prints — taken apart from the session
@@ -253,6 +428,8 @@ impl Rows<'_> {
                 &self.task_at,
                 self.stops,
             ),
+            armed: false,
+            slot_lines: Vec::new(),
             future: names::display_future_name(&h.future, self.impls),
             depth: h.depth,
             holds: inside.held,
@@ -295,6 +472,8 @@ impl Rows<'_> {
                 &self.task_at,
                 self.stops,
             ),
+            armed: false,
+            slot_lines: Vec::new(),
             future: names::display_future_name(future, self.impls),
             depth: c.depth,
             holds: inside.held,
@@ -327,8 +506,8 @@ fn waiting_kind(
             Some(owner) => format!("a {owner} (semaphore)"),
             None => "a semaphore".to_string(),
         }),
-        Some(bundle::WaitKind::Channel) => Some("mpsc rx".to_string()),
-        Some(bundle::WaitKind::Notify) => Some("a Notify".to_string()),
+        Some(bundle::WaitKind::Channel { .. }) => Some("mpsc rx".to_string()),
+        Some(bundle::WaitKind::Notify { .. }) => Some("a Notify".to_string()),
         None => tasks::continuation_bucket(continuation, stops),
     }
 }
@@ -344,8 +523,14 @@ fn row_cells(row: &FutureRow, groups: bool) -> Vec<String> {
     cells.push(row.held_in.clone());
     cells.push(row.state.clone().unwrap_or_else(dash));
     cells.push(row.waiting_on.clone().unwrap_or_else(dash));
+    cells.push(armed_word(row.armed).to_string());
     cells.push(row.future.clone());
     cells
+}
+
+/// The `ARMED` cell's word.
+fn armed_word(armed: bool) -> &'static str {
+    if armed { "yes" } else { "no" }
 }
 
 /// Print the table: one row per future, the `RT` column only when the
@@ -363,13 +548,13 @@ fn print_future_table(
     if groups {
         header.push("RT");
     }
-    header.extend(["HELD IN", "STATE", "WAITING ON", "TYPE"]);
+    header.extend(["HELD IN", "STATE", "WAITING ON", "ARMED", "TYPE"]);
     let columns = header.len();
     // The wait and the future are type names: what a terminal cuts
     // to keep a row on one line.
     let mut table = crate::output::Table::new(columns)
         .header(header)
-        .truncatable(columns - 2)
+        .truncatable(columns - 3)
         .truncatable(columns - 1)
         .fit(fit)
         .theme(theme);
@@ -456,9 +641,15 @@ impl Blocks<'_> {
             writeln!(out, "    state: {state}")?;
         }
         writeln!(out, "    depth: {}", summary::counted(row.depth, "frame"))?;
+        // The wait, one line per slot under it, and whether anything
+        // arms the future at all — `no` is an answer, so it prints.
         if let Some(waiting) = &row.waiting_on {
             writeln!(out, "    waiting on: {waiting}")?;
+            for line in &row.slot_lines {
+                writeln!(out, "        {line}")?;
+            }
         }
+        writeln!(out, "    armed: {}", armed_word(row.armed))?;
         // What the census found inside this future, the way `task`
         // lists what it found in the task's own frames: the futures
         // held in its frames, then the sets driven from them.
@@ -540,6 +731,8 @@ pub(crate) enum Field {
     Local,
     /// `held` or `child` — exact.
     Kind,
+    /// `yes` or `no`: whether a slot arms the future — exact.
+    Armed,
     /// The owning task's id, as `tasks` prints it — exact.
     Task,
     /// The owner's group index `runtimes` prints — exact.
@@ -557,12 +750,13 @@ pub(crate) enum Field {
 }
 
 impl Field {
-    const NAMES: [(&'static str, Field); 12] = [
+    const NAMES: [(&'static str, Field); 13] = [
         ("type", Field::Type),
         ("state", Field::State),
         ("waiting-on", Field::WaitingOn),
         ("local", Field::Local),
         ("kind", Field::Kind),
+        ("armed", Field::Armed),
         ("task", Field::Task),
         ("rt", Field::Rt),
         ("frame", Field::Frame),
@@ -621,6 +815,7 @@ impl Field {
             Field::WaitingOn => column(|r| r.waiting_kind.clone()),
             Field::Local => column(|r| r.local.clone()),
             Field::Kind => vec!["held".to_string(), "child".to_string()],
+            Field::Armed => vec!["yes".to_string(), "no".to_string()],
             Field::Task => column(|r| Some(r.task.clone())),
             Field::Rt => column(|r| Some(r.rt.to_string())),
             Field::Frame => column(|r| r.frame.map(|frame| frame.to_string())),
@@ -701,6 +896,10 @@ fn matcher(field: Field, arg: &str, handles: &[u64]) -> Result<Matcher> {
             "held" | "child" => Matcher::Exact(arg.to_string()),
             _ => anyhow::bail!("a kind is `held` or `child`, got {arg:?}"),
         },
+        Field::Armed => match arg {
+            "yes" | "no" => Matcher::Exact(arg.to_string()),
+            _ => anyhow::bail!("armed is `yes` or `no`, got {arg:?}"),
+        },
         Field::Addr => Matcher::Addr(crate::parse_hex_addr(arg).map_err(anyhow::Error::msg)?),
         Field::Frame => Matcher::Frame(
             arg.parse()
@@ -735,6 +934,7 @@ fn field_text(field: Field, row: &FutureRow) -> Option<&str> {
         Field::WaitingOn => row.waiting_on.as_deref(),
         Field::Local => row.local.as_deref(),
         Field::Kind => Some(row.kind.name()),
+        Field::Armed => Some(armed_word(row.armed)),
         Field::Task => Some(&row.task),
         _ => unreachable!("{field:?} is not a text field"),
     }
@@ -761,6 +961,7 @@ fn group_value(field: Field, row: &FutureRow) -> Option<String> {
         Field::WaitingOn => row.waiting_kind.clone(),
         Field::Local => row.local.clone(),
         Field::Kind => Some(row.kind.name().to_string()),
+        Field::Armed => Some(armed_word(row.armed).to_string()),
         Field::Task => Some(row.task.clone()),
         Field::Rt => Some(row.rt.to_string()),
         Field::Frame => row.frame.map(|frame| frame.to_string()),

@@ -11,6 +11,8 @@ use anyhow::Result;
 use hansei_bundle::BundleView;
 use hansei_bundle::names;
 use hansei_runtime::heap::umem::{Allocation, Size};
+use hansei_runtime::tokio::attribution::AttributedSlot;
+use hansei_runtime::tokio::wakers::Owner;
 use hansei_runtime::tokio::{bundle, census};
 
 use std::io;
@@ -34,6 +36,8 @@ pub(crate) fn exec_whatis<T: proc::Target>(
             .and_then(|heap| heap.allocation(session.proc(), addr)),
         region_of(session, addr),
         vtable.as_ref(),
+        session.attribution().at(addr),
+        session.registries.stopped,
         &session.impl_fold,
         addr,
         out,
@@ -152,6 +156,10 @@ fn report_whatis(
     // of last resort, for an address nothing else claims.
     region: Option<String>,
     vtable: Option<&VtableAt>,
+    // The waker slot at exactly this address, where the sweep admitted
+    // one and the attribution named it.
+    slot: Option<&AttributedSlot>,
+    stopped: Option<hansei_runtime::tokio::RawInstant>,
     impls: &names::ImplFold,
     addr: u64,
     out: &mut dyn io::Write,
@@ -206,6 +214,23 @@ fn report_whatis(
     // does not: a live allocation nothing in the report claims is
     // still a miss, and says so.
     let uninterpreted = blocks;
+
+    // A waker slot: whose waker the pair here is, and what holds it.
+    // The address is the `Waker` value's own, so an interior word of
+    // the pair is not one.
+    if let Some(slot) = slot {
+        separate(&mut blocks, out)?;
+        let owner = match slot.owner {
+            Owner::Task { index, .. } => task_label(list, index),
+            Owner::Child { set, child } => format!(
+                "child {child} of the set at {:#x} (polled by {})",
+                census.sets[set].addr,
+                task_label(list, census.sets[set].owner)
+            ),
+        };
+        writeln!(out, "Waker of {owner}: {}", slot.entry(stopped))?;
+        writeln!(out, "    At: {}", slot.detail(stopped))?;
+    }
 
     for (index, rt) in runtimes.iter().enumerate() {
         let Some(offset) = within(rt.handle.addr, rt.handle.ty.size(), addr) else {
@@ -524,6 +549,8 @@ mod whatis_tests {
             alloc,
             region.map(str::to_owned),
             vtable,
+            None,
+            None,
             &hansei_bundle::names::ImplFold::default(),
             addr,
             &mut out,

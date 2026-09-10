@@ -8,8 +8,7 @@ task 1
     type: async fn ct_runtime::sleeper
     awaiting at: src/bin/ct-runtime.rs:17
     waiting on: timer (deadline TS)
-    waker: timer 0xADDR
-        timer entry 0xADDR in the wheel, registered, deadline TS
+        timer 0xADDR: waker in the wheel entry, registered, deadline TS
     spawned at: src/bin/ct-runtime.rs:37:24
     defined at: src/bin/ct-runtime.rs:14
     held futures: 0

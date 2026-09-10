@@ -2,13 +2,13 @@
 source: hansei/src/offline.rs
 description: "`tasks --group waiting-on` over linux/delegation-cases"
 ---
-COUNT  WAITING ON                                 TASKS
-    4  unknown at delegation_cases::Probe         5, 6, 7, …
-    2  unknown at delegation_cases::Gated         1, 2
-    1  unknown at core::future::pending::Pending  12
-    1  unknown at delegation_cases::Handle        10
-    1  unknown at delegation_cases::Holder        9
-    1  unknown at delegation_cases::Leaf          11
-    1  unknown at delegation_cases::RawHolder     4
-    1  unknown at delegation_cases::Retained      3
+COUNT  WAITING ON                                          TASKS
+    4  unarmed: unknown at delegation_cases::Probe         5, 6, 7, …
+    2  unarmed: unknown at delegation_cases::Gated         1, 2
+    1  unarmed: unknown at core::future::pending::Pending  12
+    1  unarmed: unknown at delegation_cases::Handle        10
+    1  unarmed: unknown at delegation_cases::Holder        9
+    1  unarmed: unknown at delegation_cases::Leaf          11
+    1  unarmed: unknown at delegation_cases::RawHolder     4
+    1  unarmed: unknown at delegation_cases::Retained      3
 [8 groups]

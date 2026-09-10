@@ -2,6 +2,6 @@
 source: hansei/src/offline.rs
 description: "`tasks --group waker` over linux/futurelock"
 ---
-COUNT  WAKER                     TASKS
-    1  semaphore 0xADDR  5
+COUNT  WAITING ON                                       TASKS
+    1  a tokio::sync::Mutex (semaphore 0xADDR)  5
 [1 group]

@@ -560,15 +560,13 @@ struct TaskRow {
     /// The wait, spelled as the table's cell — empty for a task
     /// waiting on nothing nameable, which gets no line either.
     waiting: String,
-    /// The waker slots, `<empty>` where nothing is armed.
-    waker: String,
 }
 
 /// Run `task` under every task — `tasks --exec task` — and parse what
 /// it prints: each task's table row as the exec heading, then a `task
 /// <id>` line and one `<label>: <value>` line per field. The fields
-/// `task` always prints — state, thread, type, waker, the two census
-/// counts — must be there for every task; the anchors and the wait print only
+/// `task` always prints — state, thread, type, the two census counts —
+/// must be there for every task; the anchors and the wait print only
 /// where the target has them, so those may come back empty.
 fn list_tasks(bundle: &Path, core: &Path) -> Vec<TaskRow> {
     let out = hansei_ok(bundle, core, "tasks --exec task");
@@ -607,7 +605,6 @@ fn list_tasks(bundle: &Path, core: &Path) -> Vec<TaskRow> {
             awaiting: String::new(),
             thread: String::new(),
             waiting: String::new(),
-            waker: String::new(),
         };
         while let Some(line) = lines.peek() {
             if line.is_empty() || line.starts_with("[Executed against ") {
@@ -633,7 +630,6 @@ fn list_tasks(bundle: &Path, core: &Path) -> Vec<TaskRow> {
                 "type" => &mut row.future,
                 "awaiting at" => &mut row.awaiting,
                 "waiting on" => &mut row.waiting,
-                "waker" => &mut row.waker,
                 "spawned at" => &mut row.spawned,
                 "defined at" => &mut row.defined,
                 "held futures" => &mut row.futures,
@@ -647,7 +643,6 @@ fn list_tasks(bundle: &Path, core: &Path) -> Vec<TaskRow> {
             ("state", &row.state),
             ("thread", &row.thread),
             ("type", &row.future),
-            ("waker", &row.waker),
             ("held futures", &row.futures),
             ("join sets", &row.sets),
         ] {
@@ -3894,5 +3889,95 @@ fn test_wrong_binary_refused_by_build_id() {
             "--force must warn rather than refuse:\n{}",
             String::from_utf8_lossy(&out.stderr)
         );
+    });
+}
+
+/// The waker slots over the fixture built for them. The selector's
+/// `select!` parks its waker in four places the registries do not all
+/// reach, and the merged `WAITING ON` cell names every one by what
+/// holds it: the oneshot's receiver slot, the channel's receiver slot,
+/// the watch's `Notify` node and the wheel entry. The holder's cell is
+/// its oneshot alone, while the `Notified` it keeps unpolled is the one
+/// find nothing arms; the waiter's `Notify` keeps its reader's
+/// spelling; the driver's own waker sits in the set's ready queue,
+/// named by the type holding it. Both audits run clean.
+#[test]
+fn test_armed_select_acceptance() {
+    let bundle = fixtures().bundle("armed-select");
+    with_core("armed-select", |core| {
+        let rows = list_tasks(&bundle, core);
+        let selector = task_with_future(&rows, "async fn armed_select::selector");
+        for word in ["mpsc 0x", "notify 0x", "oneshot rx 0x", "timer (deadline "] {
+            assert!(selector.waiting.contains(word), "{selector:?}");
+        }
+        // One detail line per slot under the wait, spelled by the
+        // slot's label; the wheel entry's line is the wait set's own.
+        let block = hansei_ok(&bundle, core, &format!("task {}", selector.id));
+        let detail =
+            regex::Regex::new(r"(?m)^        (mpsc|notify|oneshot rx) 0x[0-9a-f]+: waker in ")
+                .unwrap();
+        assert_eq!(detail.find_iter(&block).count(), 3, "{block}");
+        assert!(
+            block.contains(": waker in Inner.rx_task (unchecked), reached from "),
+            "{block}"
+        );
+        assert!(
+            block.contains(": waker in Chan.rx_waker, reached from #1 "),
+            "{block}"
+        );
+        assert!(!block.contains("\n    waker:"), "{block}");
+
+        let holder = task_with_future(&rows, "async fn armed_select::holder");
+        assert!(holder.waiting.starts_with("oneshot rx 0x"), "{holder:?}");
+        assert!(!holder.waiting.contains(','), "{holder:?}");
+        let waiter = task_with_future(&rows, "async fn armed_select::waiter");
+        assert!(waiter.waiting.starts_with("the Notify at 0x"), "{waiter:?}");
+        let driver = task_with_future(&rows, "async fn armed_select::driver");
+        assert!(driver.waiting.starts_with("slot 0x"), "{driver:?}");
+        assert!(driver.waiting.contains("AtomicWaker"), "{driver:?}");
+
+        // The older field names still select the same cell.
+        let by_alias = hansei_ok(&bundle, core, "tasks --with waker 'oneshot rx'");
+        assert!(by_alias.contains("armed_select::holder"), "{by_alias}");
+        assert!(by_alias.contains("armed_select::selector"), "{by_alias}");
+        assert!(!by_alias.contains("armed_select::waiter"), "{by_alias}");
+        let by_slots = hansei_ok(&bundle, core, "tasks --with slots 'oneshot rx'");
+        assert_eq!(by_alias, by_slots);
+
+        // The finds: the unpolled `Notified` is the one held future
+        // nothing arms; the selector's branches are all armed, the
+        // oneshot `Receiver` through the slot reached from it.
+        let unarmed = hansei_ok(&bundle, core, "futures --with armed no --with kind held");
+        assert!(unarmed.contains("`notified`"), "{unarmed}");
+        assert!(
+            unarmed.contains("future tokio::sync::notify::Notified"),
+            "{unarmed}"
+        );
+        assert!(unarmed.contains("unarmed: the Notify at 0x"), "{unarmed}");
+        assert!(!unarmed.contains("`once`"), "{unarmed}");
+        let armed = hansei_ok(&bundle, core, "futures --with armed yes");
+        for local in ["`once`", "`recv`", "`changed`", "`sleep`"] {
+            assert!(armed.contains(local), "{armed}");
+        }
+        let once = regex::Regex::new(
+            r"(?m)^(0x[0-9a-f]+) +\d+ +frame 1, `once` .* oneshot rx 0x[0-9a-f]+ +yes ",
+        )
+        .unwrap();
+        assert!(once.is_match(&armed), "{armed}");
+        let block = hansei_ok(
+            &bundle,
+            core,
+            &format!("future {}", &once.captures(&armed).unwrap()[1]),
+        );
+        assert!(block.contains("\n    armed: yes\n"), "{block}");
+        assert!(block.contains("\n        oneshot rx 0x"), "{block}");
+
+        // Both cross-checks run clean under `--audit`.
+        let audited = hansei_with(&bundle, core, &["--audit"], "info");
+        let stderr = String::from_utf8_lossy(&audited.stderr);
+        assert!(stderr.contains("waker audit: clean"), "{stderr}");
+        assert!(stderr.contains("attribution audit: clean"), "{stderr}");
+        let info = String::from_utf8_lossy(&audited.stdout);
+        assert!(info.contains("; 0 stale\n"), "{info}");
     });
 }

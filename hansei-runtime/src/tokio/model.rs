@@ -1066,10 +1066,13 @@ pub enum WaitKind {
     /// A semaphore, named by the primitive wrapping it where the frame
     /// awaiting it says which (`tokio::sync::Mutex`, …).
     Semaphore { owner: Option<&'static str> },
-    /// A bounded mpsc receiver's channel.
-    Channel,
-    /// A `Notify`.
-    Notify,
+    /// A bounded mpsc receiver's channel, by the address of the `Chan`
+    /// behind the receiver's `Arc` — the primitive a slot in its
+    /// receiver cell names.
+    Channel { addr: u64 },
+    /// A `Notify`, by its address — the primitive a slot in a queued
+    /// `Notified` node names.
+    Notify { addr: u64 },
 }
 
 impl WaitTarget {
@@ -1107,8 +1110,8 @@ impl WaitTarget {
             Self::Task { addr, .. } => WaitKind::Task { addr: *addr },
             Self::Io { .. } => WaitKind::Io,
             Self::Semaphore { owner, .. } => WaitKind::Semaphore { owner: *owner },
-            Self::Channel { .. } => WaitKind::Channel,
-            Self::Notify { .. } => WaitKind::Notify,
+            Self::Channel { addr, .. } => WaitKind::Channel { addr: *addr },
+            Self::Notify { addr, .. } => WaitKind::Notify { addr: *addr },
         }
     }
 }

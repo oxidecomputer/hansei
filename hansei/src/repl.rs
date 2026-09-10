@@ -2152,12 +2152,12 @@ mod tests {
     fn test_completion_spans_the_word_under_the_cursor() {
         let line = "tasks --group wa";
         let suggestions = LineCompleter::new(Box::new(|_| Vec::new())).suggest(line, line.len());
-        let waker = suggestions
+        let waiting = suggestions
             .iter()
-            .find(|s| s.value == "waker")
-            .expect("waker is a task field");
-        assert_eq!(waker.span, Span::new(line.len() - 2, line.len()));
-        assert!(waker.append_whitespace);
+            .find(|s| s.value == "waiting-on")
+            .expect("waiting-on is a task field");
+        assert_eq!(waiting.span, Span::new(line.len() - 2, line.len()));
+        assert!(waiting.append_whitespace);
     }
 
     /// `--group`, `--with` and `--without` take a field name, and the
@@ -2182,7 +2182,7 @@ mod tests {
             completions("runtimes -w f"),
             ["flavor", "futures", "found-via"]
         );
-        assert_eq!(completions("tasks --group wa"), ["waiting-on", "waker"]);
+        assert_eq!(completions("tasks --group wa"), ["waiting-on"]);
         assert_eq!(completions("futures --with k"), ["kind"]);
         assert_eq!(completions("threads --with has"), ["has-task"]);
         // The short spellings reach the same fields.

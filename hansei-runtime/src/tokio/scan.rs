@@ -1251,7 +1251,7 @@ mod tests {
                 .sets
                 .iter()
                 .flat_map(|s| s.children.iter())
-                .any(|c| matches!(c.wait, Some(WaitKind::Notify)))
+                .any(|c| matches!(c.wait, Some(WaitKind::Notify { .. })))
         );
         assert_eq!(completion.referent_expansions, total as u64 + 2);
         let (expansions, visits) = (completion.referent_expansions, completion.inline_visits);

@@ -7,7 +7,6 @@ task 3
     thread: 4
     owner: unknown (no list, queue or cell scheduler established one)
     type: future tokio::runtime::blocking::task::BlockingTask<blocking_pool::main::{async_block#0}::{closure_env#0}>
-    waker: <empty>
     spawned at: src/bin/blocking-pool.rs:39:23
     held futures: 0
     join sets: 0

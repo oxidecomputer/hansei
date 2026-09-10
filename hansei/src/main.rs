@@ -9,7 +9,7 @@ use hansei_runtime::capture;
 use hansei_runtime::heap::{self, umem::UmemHeap, view::GateCounts, view::HeapView};
 use hansei_runtime::tokio::graph::{self as rt_graph, Analysis};
 use hansei_runtime::tokio::observe::ReadContext;
-use hansei_runtime::tokio::{bundle, census, contract, wakers};
+use hansei_runtime::tokio::{attribution, bundle, census, contract, wakers};
 use proc::{Proc, Target};
 
 #[cfg(not(target_os = "illumos"))]
@@ -413,11 +413,22 @@ pub enum Command {
     /// `--without FIELD ARG` clauses AND together, and `--group FIELD`
     /// tallies the survivors. The string fields — type, state,
     /// waiting-on, local — are case-insensitive regexes over the
-    /// spelled value; kind (`held` or `child`), task (the id as
-    /// `tasks` prints it), rt (an index or `0x` handle), frame and
-    /// addr are exact; depth, holds and sets compare counts, spelled
-    /// '>N', '<N' or '=N' (quote them from a shell). `--group type` is
-    /// the overview of a target with thirty thousand of these.
+    /// spelled value; kind (`held` or `child`), armed (`yes` or `no`),
+    /// task (the id as `tasks` prints it), rt (an index or `0x`
+    /// handle), frame and addr are exact; depth, holds and sets
+    /// compare counts, spelled '>N', '<N' or '=N' (quote them from a
+    /// shell). `--group type` is the overview of a target with thirty
+    /// thousand of these.
+    ///
+    /// `WAITING ON` is spelled as `tasks` spells it: the live slots
+    /// holding the polling task's waker that sit in this future or
+    /// were reached through a pointer it holds, each with its
+    /// reader's detail, or `unarmed: ` before what its chain says
+    /// where none does. `ARMED` is that answer as a word — `yes` when
+    /// a slot attributes to the future, or its own protocol read the
+    /// waker; `no` for a future held and awaited by nothing found —
+    /// and `--with armed no` is the shortest way to the futures a
+    /// task holds without polling them.
     ///
     /// `--exec COMMAND` takes the rest of the line as one session
     /// command and runs it once per surviving future, the command's
@@ -962,23 +973,27 @@ pub enum Command {
     /// Filters are the selection: repeatable `--with FIELD ARG` /
     /// `--without FIELD ARG` clauses AND together and `--group FIELD`
     /// tallies the survivors; one task's every field is `task 129`.
-    /// The string fields — type, awaiting, waiting-on, waker,
-    /// spawned, defined, state — are case-insensitive regexes over
-    /// the spelled value; rt (an index or `0x` handle), lwp and id
-    /// are exact; holds, sets and futures compare the census's
-    /// counts, spelled '>N', '<N' or '=N' (quote them from a shell).
+    /// The string fields — type, awaiting, waiting-on, spawned,
+    /// defined, state — are case-insensitive regexes over the spelled
+    /// value; rt (an index or `0x` handle), lwp and id are exact;
+    /// holds, sets and futures compare the census's counts, spelled
+    /// '>N', '<N' or '=N' (quote them from a shell).
     ///
-    /// The waker field is the wakeup answer: every slot hansei
-    /// decodes holding this task's waker — `timer 0x…`, `io 0x…
-    /// read`, `semaphore 0x…`, `join task N` — sorted and
-    /// comma-joined. `--group waker` is the overview, bucketing the
-    /// same slots at the kind level — `io read`, `timer`, with
-    /// identity kept where it groups usefully (`semaphore 0x…`,
-    /// `join task N`) — a `select!` over several buckets by the
-    /// combination; a task with no armed slot lands in `<empty>`,
-    /// which is the "nothing can wake it" answer. `task` places each
-    /// slot (the wake-queue node, the trailer) under its `waker:`
-    /// line.
+    /// `WAITING ON` is the wakeup answer: every live slot holding
+    /// this task's waker — found by sweeping memory for the waker
+    /// itself, then named by the type that holds it — sorted and
+    /// comma-joined, each with its reader's detail where one covers
+    /// the slot: `timer (deadline +1.200s)`, `io fd 12 (readable)`,
+    /// `oneshot rx 0x…`, `mpsc 0x…`, `notify 0x…`, `task N`, `slot
+    /// 0x… in <type>` for a typed location no reader names, `unknown
+    /// 0x…` for a live allocation nothing typed reaches. A task with
+    /// no live slot prints `unarmed: ` before what its chain says
+    /// instead — the leaf type, or a reader's word — since nothing
+    /// found would wake it. `--group waiting-on` buckets the same
+    /// slots at the kind level (`io read, oneshot tx`); `waker` and
+    /// `slots` name the same field. `task` places each slot under
+    /// its `waiting on:` line: where it sits, and what says it is
+    /// current.
     ///
     /// `--exec COMMAND` takes the rest of the line as one session
     /// command and runs it once per surviving task, the command's
@@ -1470,6 +1485,12 @@ pub struct Session<'b, T: Target> {
     /// Whether `--audit` has cross-checked the registries against the
     /// sweep.
     wakers_audited: Cell<bool>,
+    /// What holds each admitted slot — attributed against the
+    /// analysis's frames, the census's finds and the registries once
+    /// all three exist, so after the worker is joined.
+    attribution: OnceCell<attribution::Attributed>,
+    /// Whether `--audit` has checked every typed hit located to a slot.
+    attribution_audited: Cell<bool>,
     /// The census as the tree the listings show — built once beside
     /// it, so `tasks --exec task` reads it per task rather than
     /// rebuilding it.
@@ -1651,6 +1672,8 @@ impl<'b, T: Target> Session<'b, T> {
             census: OnceCell::new(),
             wakers: OnceCell::new(),
             wakers_audited: Cell::new(false),
+            attribution: OnceCell::new(),
+            attribution_audited: Cell::new(false),
             census_tree: OnceCell::new(),
             stacks: OnceCell::new(),
             umem,
@@ -1719,6 +1742,36 @@ impl<'b, T: Target> Session<'b, T> {
             }
         }
         slots
+    }
+
+    /// What holds each admitted slot, attributed on first use against
+    /// the analysis, the census and the registries. Under `--audit`,
+    /// the first ask reports every hit inside a typed value that did
+    /// not locate to a waker.
+    pub(crate) fn attribution(&self) -> &attribution::Attributed {
+        let attributed = self.attribution.get_or_init(|| {
+            self.ctx.attribute_slots(
+                self.wakers(),
+                &attribution::Sources {
+                    list: &self.tasks,
+                    census: self.census(),
+                    registries: &self.registries,
+                    analysis: self.analysis(),
+                    heap: self.umem.as_ref(),
+                    impls: &self.impl_fold,
+                },
+            )
+        });
+        if first_audit(self.audit, &self.attribution_audited) {
+            let violations = attributed.audit(&self.tasks);
+            if violations.is_empty() {
+                let _ = writeln!(io::stderr(), "attribution audit: clean");
+            }
+            for violation in violations {
+                let _ = writeln!(io::stderr(), "warning: attribution audit: {violation}");
+            }
+        }
+        attributed
     }
 
     /// Every lwp's stack, unwound once per session on first use. A
@@ -2255,19 +2308,22 @@ fn warm_listings(session: &Session<'_, Proc>, proc: &Proc, bundle: &Bundle) {
         let (tasks, umem) = (&session.tasks, session.umem.as_ref());
         let (policy, bounds) = (session.policy, session.bounds);
         let worker = scope.spawn(move || warm_worker(proc, bundle, policy, tasks, bounds, umem));
-        tasks::rows(session);
+        // The task rows short of their slots: the wait analysis is
+        // this lane's cost, and the slots are the worker's.
+        let base = tasks::base_rows(session);
         threads::rows(session);
         // A worker that panicked has left the cells empty, and the
         // accessors' fallbacks compute in place.
         if let Ok(Some(warmed)) = worker.join() {
             session.adopt(*warmed);
         }
+        let _ = session.task_rows.set(tasks::with_slots(base, session));
     });
     futures::rows(session);
-    // The registry cross-check is part of `--audit`, whether or not a
-    // command asks after the sweep.
+    // The registry and attribution cross-checks are part of `--audit`,
+    // whether or not a command asks after the sweep.
     if session.audit {
-        session.wakers();
+        session.attribution();
     }
 }
 

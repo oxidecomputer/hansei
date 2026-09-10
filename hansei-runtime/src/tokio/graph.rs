@@ -25,7 +25,7 @@ use super::assess::{
     PollingBarrier, TaskFacts, VerifiedWait, WaitAssessment, WaitUnknownReason,
 };
 use super::bundle::{Context, FutureInfo, QueuedWaker, Registries, TaskList, WaitTarget};
-use super::observe::{ReadContext, ResourceObservation};
+use super::observe::{ReadContext, ResourceObservation, ValueKey};
 use super::waitset::{BranchScan, Branches, WaitMember};
 use super::{Lifecycle, TaskAddr};
 
@@ -87,6 +87,10 @@ pub struct TaskWait {
     pub held: Vec<WaitMember>,
     /// Branches past the listing cap at such a stop, counted only.
     pub held_capped: usize,
+    /// The chain's frames, root first, by address and type — what the
+    /// slot attribution walks down into after the analysis has dropped
+    /// the values themselves. Empty where no chain was walked.
+    pub frames: Vec<ValueKey>,
 }
 
 impl TaskWait {
@@ -240,6 +244,7 @@ pub fn analyze<T: Target>(
             notes: vec![note],
             held: Vec::new(),
             held_capped: 0,
+            frames: Vec::new(),
         };
         let no_root = ContinuationStatus::Incomplete {
             reason: IncompleteReason::NoRoot,
@@ -265,6 +270,7 @@ pub fn analyze<T: Target>(
                 notes: Vec::new(),
                 held: Vec::new(),
                 held_capped: 0,
+                frames: Vec::new(),
             });
             continue;
         }
@@ -340,6 +346,11 @@ pub fn analyze<T: Target>(
             notes,
             held,
             held_capped,
+            frames: chain
+                .frames
+                .iter()
+                .map(|f| ValueKey::of(f.future))
+                .collect(),
         });
     }
     Analysis {
@@ -392,6 +403,7 @@ mod tests {
             notes: Vec::new(),
             held: Vec::new(),
             held_capped: 0,
+            frames: Vec::new(),
         }
     }
 

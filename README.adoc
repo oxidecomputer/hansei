@@ -186,7 +186,6 @@ task 2436
     thread: 115
     type: async block parallel_task_set::ParallelTaskSet::spawn::{async_fn#0}<support_bundle_collection::step::CompletedCollectionStep, support_bundle_collection::collection::BundleCollection::run_collect_bundle_steps::{async_fn#0}>
     awaiting at: parallel-task-set/src/lib.rs:97
-    waker: <empty>
     spawned at: parallel-task-set/src/lib.rs:96:18
     defined at: parallel-task-set/src/lib.rs:96
     held futures: 0
@@ -197,7 +196,6 @@ task 2439
     thread: 124
     type: async block parallel_task_set::ParallelTaskSet::spawn::{async_fn#0}<support_bundle_collection::step::CompletedCollectionStep, support_bundle_collection::collection::BundleCollection::run_collect_bundle_steps::{async_fn#0}>
     awaiting at: parallel-task-set/src/lib.rs:97
-    waker: <empty>
     spawned at: parallel-task-set/src/lib.rs:96:18
     defined at: parallel-task-set/src/lib.rs:96
     held futures: 0
@@ -215,7 +213,6 @@ task 2439
     thread: 124
     type: async block parallel_task_set::ParallelTaskSet::spawn::{async_fn#0}<support_bundle_collection::step::CompletedCollectionStep, support_bundle_collection::collection::BundleCollection::run_collect_bundle_steps::{async_fn#0}>
     awaiting at: parallel-task-set/src/lib.rs:97
-    waker: <empty>
     spawned at: parallel-task-set/src/lib.rs:96:18
     defined at: parallel-task-set/src/lib.rs:96
     held futures: 0

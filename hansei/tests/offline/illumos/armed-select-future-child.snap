@@ -7,6 +7,7 @@ future 0xADDR
     child of: futures_util::stream::futures_unordered::FuturesUnordered<armed_select::child> at 0xADDR, polled by task 6
     state: Suspend0 — src/bin/armed-select.rs:83
     depth: 2 frames
-    waiting on: unknown at tokio::sync::oneshot::Receiver
+    waiting on: unarmed: unknown at tokio::sync::oneshot::Receiver
+    armed: no
     held futures: 0
     join sets: 0

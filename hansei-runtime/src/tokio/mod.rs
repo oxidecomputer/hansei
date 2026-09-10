@@ -12,6 +12,7 @@
 //! no mirror struct here to be described.
 
 pub mod assess;
+pub mod attribution;
 pub mod bundle;
 pub mod census;
 pub mod chain;

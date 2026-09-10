@@ -2,9 +2,7 @@
 source: hansei/src/offline.rs
 description: "`tasks --group waker` over linux-floor/local-set-io"
 ---
-COUNT  WAKER        TASKS
-    2  io read      1, 5
-    1  <empty>      4
-    1  io readable  2
-    1  io write     3
-[4 groups]
+COUNT  WAITING ON                                       TASKS
+    4  io                                               1, 2, 3, …
+    1  unarmed: unknown at tokio::io::util::read::Read  4
+[2 groups]

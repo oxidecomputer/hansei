@@ -1181,11 +1181,11 @@ mod tests {
             assert!(labels.starts_with(&["state", "thread", "type"]), "{text}");
             assert!(!labels.contains(&"owner"), "{text}");
             // The selection carries the task's source anchors, its
-            // waker, and the census's counts — the last two always,
-            // since their empty spellings are answers.
+            // wait, and the census's counts — the last always, since
+            // their empty spellings are answers.
             assert!(text.contains("\n    spawned at: "), "{text}");
             assert!(text.contains("\n    defined at: "), "{text}");
-            assert!(labels.contains(&"waker"), "{text}");
+            assert!(labels.contains(&"waiting on"), "{text}");
             assert!(labels.contains(&"held futures"), "{text}");
             assert!(labels.ends_with(&["held futures", "join sets"]), "{text}");
         }

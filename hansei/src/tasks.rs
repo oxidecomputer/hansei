@@ -16,7 +16,7 @@ use hansei_runtime::tokio::assess::{
 };
 use hansei_runtime::tokio::graph as rt_graph;
 use hansei_runtime::tokio::waitset::{MemberRoute, SlotRef, WaitMember};
-use hansei_runtime::tokio::{Lifecycle, bundle, census};
+use hansei_runtime::tokio::{Lifecycle, RawInstant, attribution, bundle, census};
 
 use std::collections::{BTreeMap, HashMap};
 use std::io::{self, Write};
@@ -627,32 +627,26 @@ pub(crate) struct TaskRow {
     /// The leaf await site — the line of the reader's own code the
     /// task is parked behind.
     pub(crate) awaiting_at: Option<String>,
-    /// What the task waits on, spelled the way `graph` spells it.
+    /// What would wake the task: every live slot holding its waker,
+    /// each spelled by what holds it and — where the task's own
+    /// assessment accounts for the slot — by that reader's detail,
+    /// sorted and comma-joined, so a `select!` over a timer and a
+    /// channel names both. `unarmed: ` before the assessment's own
+    /// word where no slot was found; `—` and its reasons for a task
+    /// waiting on nothing at all. Built short of the slots first
+    /// ([`base_rows`]) and merged once the sweep is in
+    /// ([`with_slots`]).
     pub(crate) waiting_on: String,
-    /// The kind-level bucket `--group waiting-on` files the row under
-    /// ([`assessment_kind`]), `None` where the row waits on nothing
-    /// nameable — mid-poll included.
+    /// The kind-level bucket `--group waiting-on` files the row under:
+    /// the slots' kinds, sorted, distinct and comma-joined (`io read,
+    /// oneshot tx`), or the assessment's own bucket
+    /// ([`assessment_kind`]) under `unarmed: `; `None` where the row
+    /// waits on nothing nameable — mid-poll included.
     pub(crate) waiting_kind: Option<String>,
-    /// The `-v` detail lines under the wait: what the registries hold
-    /// for the task — its wheel entries, the io slots its waker is
-    /// parked in. Empty where they hold nothing.
+    /// The detail lines under the wait: what the assessment has to say
+    /// beyond the cell, then one line per slot — where it sits, and
+    /// what says it is current.
     pub(crate) wait_detail: Vec<String>,
-    /// What would wake the task: every slot hansei decodes whose data
-    /// pointer is this task's header, spelled as the slot kind and
-    /// owner, sorted and comma-joined — so a `select!` over a timer
-    /// and a channel buckets by the combination. `None` is the
-    /// "nothing can wake it" answer, the `<empty>` group.
-    pub(crate) waker: Option<String>,
-    /// The bucket `--group waker` files the row under: the same
-    /// slots at the kind level — `io read`, `timer` — with identity
-    /// kept where it groups usefully (`semaphore 0x…`, `join task
-    /// N`), so twenty thousand parked reads are one bucket rather
-    /// than one each.
-    pub(crate) waker_kind: Option<String>,
-    /// The `-v` lines for the slots the wait detail above does not
-    /// already place: the semaphore wake-queue node, the joined
-    /// task's trailer.
-    pub(crate) waker_detail: Vec<String>,
     /// The root future's display name, folded and never truncated.
     pub(crate) future: String,
     /// `Spawned at:` — where the target records one
@@ -677,45 +671,65 @@ pub(crate) fn polling_map<T: proc::Target>(session: &Session<'_, T>) -> HashMap<
 
 /// The table's rows, built on first use and cached on the session.
 /// The wait analysis is the cost — the census's own walk — and every
-/// later `graph`/`census`/`whatis` then pays nothing more.
+/// later `graph`/`census`/`whatis` then pays nothing more. The launch
+/// builds the two halves apart ([`base_rows`] before the worker is
+/// joined, [`with_slots`] after) and sets the cell itself.
 pub(crate) fn rows<'s, T: proc::Target>(session: &'s Session<'_, T>) -> &'s [TaskRow] {
-    session.task_rows.get_or_init(|| {
-        let polling = polling_map(session);
-        let analysis = session.analysis();
-        build_rows(
-            &session.tasks,
-            &session.owners,
-            &analysis.waits,
-            &analysis.join_wakers,
-            &polling,
-            &session.impl_fold,
-            &session.registries,
-            blocking_lwps(session),
-            &StopNames::of(session),
-        )
-    })
+    session
+        .task_rows
+        .get_or_init(|| with_slots(base_rows(session), session))
+}
+
+/// The rows short of their slots: the wait analysis's answer per
+/// task, which needs nothing the launch worker builds.
+pub(crate) fn base_rows<T: proc::Target>(session: &Session<'_, T>) -> Vec<TaskRow> {
+    let polling = polling_map(session);
+    let analysis = session.analysis();
+    build_rows(
+        &session.tasks,
+        &session.owners,
+        &analysis.waits,
+        &polling,
+        &session.impl_fold,
+        blocking_lwps(session),
+        &StopNames::of(session),
+    )
+}
+
+/// The rows with their slots merged in: the wait cell, its bucket and
+/// its detail rewritten from the attributed slots, which need the
+/// sweep and so the worker.
+pub(crate) fn with_slots<T: proc::Target>(
+    mut rows: Vec<TaskRow>,
+    session: &Session<'_, T>,
+) -> Vec<TaskRow> {
+    let view = session.ctx.view;
+    merge_slots(
+        &mut rows,
+        &session.tasks,
+        &session.analysis().waits,
+        session.attribution(),
+        session.registries.stopped,
+        &|ty| view.ty(ty).map(|t| t.size()),
+    );
+    rows
 }
 
 /// Build every row from what it prints — taken apart from the session
 /// so a test can lay out a population no fixture holds.
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn build_rows(
     list: &bundle::TaskList,
     owners: &bundle::OwnerIndex,
     waits: &[rt_graph::TaskWait],
-    joins: &[rt_graph::JoinWaker],
     polling: &HashMap<u64, u32>,
     impls: &names::ImplFold,
-    registries: &bundle::Registries,
     blocking_lwps: &HashMap<u64, u32>,
     stops: &StopNames<'_>,
 ) -> Vec<TaskRow> {
-    let slots = QueuedSlots::index(waits, joins);
     list.tasks
         .iter()
         .enumerate()
         .map(|(index, task)| {
-            let (waker, waker_kind, waker_detail) = waker_slots(task.addr.0, &slots, registries);
             let lwp = task_lwp(task, polling, blocking_lwps);
             TaskRow {
                 id: task_id(list, index),
@@ -727,10 +741,10 @@ pub(crate) fn build_rows(
                     .map(|(file, line)| format!("{file}:{line}")),
                 waiting_on: waiting_on(task, waits.get(index), polling, stops),
                 waiting_kind: waiting_kind(task, waits.get(index), stops),
-                wait_detail: wait_detail(task, waits.get(index), registries, stops),
-                waker,
-                waker_kind,
-                waker_detail,
+                wait_detail: waits
+                    .get(index)
+                    .map(|wait| assessment_detail(wait, stops))
+                    .unwrap_or_default(),
                 future: future_name(&task.future, impls),
                 spawned: task.spawn_location.as_ref().map(|loc| loc.to_string()),
                 defined: match &task.future {
@@ -746,103 +760,111 @@ pub(crate) fn build_rows(
         .collect()
 }
 
-/// The waker slots the analysis found queued, by the task whose waker
-/// they hold: the wake-queue nodes of every decoded semaphore, and
-/// the trailers awaited through a `JoinHandle`. Built once per
-/// listing, since every row asks after its own address and the
-/// population is the same size as the rows.
-#[derive(Default)]
-struct QueuedSlots {
-    /// `(semaphore, queue node)` per waiting task.
-    semaphores: HashMap<u64, Vec<(u64, u64)>>,
-    /// The awaited task per joining task.
-    joins: HashMap<u64, Vec<rt_graph::TaskRef>>,
+/// Rewrite each row's wait cell, bucket and detail from the slots
+/// attributed to its task. A task with slots lists them, each spelled
+/// by its reader where the task's own assessment accounts for it
+/// ([`attribution::accounted_by`]) and by what holds it otherwise;
+/// several `unknown` slots collapse to a count. A task with none keeps
+/// the assessment's word under `unarmed: `, since nothing found would
+/// wake it — except a task waiting on nothing at all (`—` and its
+/// reasons), which has no slot to miss. Blocking and mid-poll rows are
+/// untouched: neither is parked.
+pub(crate) fn merge_slots(
+    rows: &mut [TaskRow],
+    list: &bundle::TaskList,
+    waits: &[rt_graph::TaskWait],
+    slots: &attribution::Attributed,
+    stopped: Option<RawInstant>,
+    size_of: &dyn Fn(BundleTypeId) -> Option<u64>,
+) {
+    for (index, (row, task)) in rows.iter_mut().zip(&list.tasks).enumerate() {
+        if task.is_blocking() || task.state.lifecycle() == Lifecycle::Running {
+            continue;
+        }
+        let owned: Vec<&attribution::AttributedSlot> = slots.of_task(task.addr.0).collect();
+        let wait = waits.get(index);
+        if owned.is_empty() {
+            if !row.waiting_on.starts_with('—') {
+                row.waiting_on = format!("unarmed: {}", row.waiting_on);
+                row.waiting_kind = row.waiting_kind.take().map(|k| format!("unarmed: {k}"));
+            }
+            continue;
+        }
+        let accounted = |slot: &attribution::AttributedSlot| {
+            wait.and_then(|wait| attribution::accounted_by(wait, slot, size_of))
+        };
+        let (cell, kind) = slot_cell(&owned, stopped, &accounted);
+        row.waiting_on = cell;
+        row.waiting_kind = Some(kind);
+        // A wait set already lists every wheel entry and io waiter of
+        // the task's as a member; the other slots get a line each.
+        let in_set = wait.is_some_and(|w| matches!(w.assessment, WaitAssessment::Set(_)));
+        row.wait_detail.extend(slot_lines(&owned, stopped, in_set));
+    }
 }
 
-impl QueuedSlots {
-    fn index(waits: &[rt_graph::TaskWait], joins: &[rt_graph::JoinWaker]) -> QueuedSlots {
-        let mut slots = QueuedSlots::default();
-        for wait in waits {
-            let Some(bundle::WaitTarget::Semaphore {
-                addr: sem, waiters, ..
-            }) = wait.verified().map(|w| w.target())
-            else {
+/// The cell and the bucket a list of slots spells: entries sorted and
+/// comma-joined, `unknown` entries past the first collapsed to their
+/// count, buckets sorted, distinct and comma-joined.
+pub(crate) fn slot_cell(
+    slots: &[&attribution::AttributedSlot],
+    stopped: Option<RawInstant>,
+    accounted: &dyn Fn(&attribution::AttributedSlot) -> Option<(String, String)>,
+) -> (String, String) {
+    let mut entries: Vec<(String, String)> = Vec::new();
+    let mut unknown = 0usize;
+    for slot in slots {
+        if matches!(slot.attribution, attribution::Attribution::Unknown { .. }) {
+            unknown += 1;
+            if unknown > 1 {
                 continue;
-            };
-            for w in waiters {
-                if let bundle::QueuedWaker::Task { addr, .. } = w.waker {
-                    slots
-                        .semaphores
-                        .entry(addr)
-                        .or_default()
-                        .push((*sem, w.addr));
-                }
             }
         }
-        for join in joins {
-            slots
-                .joins
-                .entry(join.waiter.addr.0)
-                .or_default()
-                .push(join.task);
-        }
-        slots
+        entries.push(accounted(slot).unwrap_or_else(|| (slot.entry(stopped), slot.bucket())));
     }
+    if unknown > 1 {
+        for entry in &mut entries {
+            if entry.1 == "unknown" {
+                entry.0 = format!("{unknown}× unknown");
+            }
+        }
+    }
+    entries.sort();
+    let mut kinds: Vec<&str> = entries.iter().map(|(_, k)| k.as_str()).collect();
+    kinds.sort_unstable();
+    kinds.dedup();
+    let kind = kinds.join(", ");
+    let cell = entries
+        .into_iter()
+        .map(|(e, _)| e)
+        .collect::<Vec<_>>()
+        .join(", ");
+    (cell, kind)
 }
 
-/// The waker slots armed with the task at `addr`'s waker: the wheel
-/// entries and io slots the registries keep, the wake-queue nodes the
-/// decoded semaphores carry, and the trailer of any task it awaits
-/// through a `JoinHandle` — indexed from reads already made, never a
-/// scan. The joined spelling is the row's `waker` value; the detail
-/// lines place the slots the wait detail does not.
-fn waker_slots(
-    addr: u64,
-    queued: &QueuedSlots,
-    registries: &bundle::Registries,
-) -> (Option<String>, Option<String>, Vec<String>) {
-    let mut slots = Vec::new();
-    let mut kinds = Vec::new();
-    let mut detail = Vec::new();
-    for timer in registries.timers_of(addr) {
-        slots.push(format!("timer {:#x}", timer.entry));
-        kinds.push("timer".to_string());
-    }
-    for (resource, waiter) in registries.io_of(addr) {
-        let side = match waiter.slot {
-            bundle::IoSlot::Reader => " read".to_string(),
-            bundle::IoSlot::Writer => " write".to_string(),
-            bundle::IoSlot::Listed { .. } => match waiter.slot.interest() {
-                Some(interest) => format!(" {interest}"),
-                None => String::new(),
-            },
-        };
-        slots.push(format!("io {:#x}{side}", resource.addr));
-        kinds.push(format!("io{side}"));
-    }
-    for (sem, node) in queued.semaphores.get(&addr).into_iter().flatten() {
-        slots.push(format!("semaphore {sem:#x}"));
-        kinds.push(format!("semaphore {sem:#x}"));
-        detail.push(format!(
-            "semaphore {sem:#x}: waker in its wake-queue node {node:#x}"
-        ));
-    }
-    for task in queued.joins.get(&addr).into_iter().flatten() {
-        slots.push(format!("join {task}"));
-        kinds.push(format!("join {task}"));
-        detail.push(format!("join {task}: waker in its trailer"));
-    }
-    slots.sort();
-    slots.dedup();
-    kinds.sort();
-    kinds.dedup();
-    detail.sort();
-    detail.dedup();
-    (
-        (!slots.is_empty()).then(|| slots.join(", ")),
-        (!kinds.is_empty()).then(|| kinds.join(", ")),
-        detail,
-    )
+/// One detail line per slot — its label, then where it sits and what
+/// says it is current — sorted by label. Under a wait set the wheel
+/// entries and io waiters are left out: the set's member lines
+/// already place each.
+pub(crate) fn slot_lines(
+    slots: &[&attribution::AttributedSlot],
+    stopped: Option<RawInstant>,
+    in_set: bool,
+) -> Vec<String> {
+    use attribution::{Attribution, RegistrySlot};
+    let mut lines: Vec<String> = slots
+        .iter()
+        .filter(|slot| {
+            !(in_set
+                && matches!(
+                    slot.attribution,
+                    Attribution::Registry(RegistrySlot::Timer { .. } | RegistrySlot::Io { .. })
+                ))
+        })
+        .map(|slot| format!("{}: {}", slot.label(), slot.detail(stopped)))
+        .collect();
+    lines.sort();
+    lines
 }
 
 /// Which lwp runs each claimed blocking task: unwind the stacks once
@@ -1298,60 +1320,6 @@ fn waiting_kind(
     assessment_kind(wait?, stops)
 }
 
-/// The `-v` detail lines under a row's wait: what the assessment has
-/// to say for itself beyond the cell, then every wheel entry armed
-/// with the task's waker and every io slot holding it — the
-/// registries' whole answer, whatever the row's one-line text chose
-/// to name. A wait set already lists every registry slot as a member,
-/// placed in a branch or on its own, so its rows say nothing twice.
-fn wait_detail(
-    task: &bundle::Task,
-    wait: Option<&rt_graph::TaskWait>,
-    registries: &bundle::Registries,
-    stops: &StopNames<'_>,
-) -> Vec<String> {
-    let mut lines = wait
-        .map(|wait| assessment_detail(wait, stops))
-        .unwrap_or_default();
-    if wait.is_some_and(|wait| matches!(wait.assessment, WaitAssessment::Set(_))) {
-        return lines;
-    }
-    for timer in registries.timers_of(task.addr.0) {
-        let state = match timer.wheel_state() {
-            Some(state) => format!(", {state}"),
-            None => String::new(),
-        };
-        let due = match timer.deadline {
-            Some(deadline) => format!(", {}", bundle::deadline_text(deadline, registries.stopped)),
-            None => String::new(),
-        };
-        lines.push(format!(
-            "timer entry {:#x} in the wheel{state}{due}",
-            timer.entry
-        ));
-    }
-    for (resource, waiter) in registries.io_of(task.addr.0) {
-        let slot = match waiter.slot {
-            bundle::IoSlot::Reader => "the read-waiter slot",
-            bundle::IoSlot::Writer => "the write-waiter slot",
-            bundle::IoSlot::Listed { .. } => "a waiter node",
-        };
-        let interest = match waiter.slot.interest() {
-            Some(interest) => format!("awaiting {interest}"),
-            None => "interest unreadable".to_string(),
-        };
-        let ready = match resource.ready() {
-            Some(ready) => format!(", ready: {ready}"),
-            None => String::new(),
-        };
-        lines.push(format!(
-            "io {:#x}: {interest} via {slot}{ready}",
-            resource.addr
-        ));
-    }
-    lines
-}
-
 /// One row's table cells, in column order — the table's rows, and the
 /// heading `--exec` opens each task's output with.
 fn row_cells(row: &TaskRow, futures: usize, groups: bool) -> Vec<String> {
@@ -1431,19 +1399,14 @@ pub(crate) fn print_task_view(
     if let Some(loc) = &row.awaiting_at {
         writeln!(out, "    awaiting at: {loc}")?;
     }
+    // The wait, then what the assessment has to say beyond the cell
+    // and one line per slot holding the task's waker: where it sits,
+    // and what says it is current.
     if !polled && row.waiting_on != "—" {
         writeln!(out, "    waiting on: {}", row.waiting_on)?;
-    }
-    // Every slot holding the task's waker, then where each sits: the
-    // registries' detail (which wheel entry, which io slot) and the
-    // slots those do not place (the wake-queue node, the trailer).
-    writeln!(
-        out,
-        "    waker: {}",
-        row.waker.as_deref().unwrap_or("<empty>")
-    )?;
-    for line in row.wait_detail.iter().chain(&row.waker_detail) {
-        writeln!(out, "        {line}")?;
+        for line in &row.wait_detail {
+            writeln!(out, "        {line}")?;
+        }
     }
     if let Some(loc) = &task.spawn_location {
         writeln!(out, "    spawned at: {loc}")?;
@@ -1622,10 +1585,9 @@ pub(crate) enum Field {
     Type,
     /// The leaf await site, `file:line`.
     Awaiting,
-    /// The `WAITING ON` spelling.
+    /// The `WAITING ON` spelling: the slots holding the task's waker.
+    /// `waker` and `slots` name it too.
     WaitingOn,
-    /// The waker slots, as the row joins them.
-    Waker,
     /// The spawn location.
     Spawned,
     /// The definition site.
@@ -1647,11 +1609,10 @@ pub(crate) enum Field {
 }
 
 impl Field {
-    const NAMES: [(&'static str, Field); 13] = [
+    const NAMES: [(&'static str, Field); 12] = [
         ("type", Field::Type),
         ("awaiting", Field::Awaiting),
         ("waiting-on", Field::WaitingOn),
-        ("waker", Field::Waker),
         ("spawned", Field::Spawned),
         ("defined", Field::Defined),
         ("state", Field::State),
@@ -1669,10 +1630,16 @@ impl Field {
         Self::NAMES.iter().map(|(n, _)| *n)
     }
 
+    /// Older names for a field, still accepted: the waker slots were a
+    /// field of their own before they became the wait cell.
+    const ALIASES: [(&'static str, Field); 2] =
+        [("waker", Field::WaitingOn), ("slots", Field::WaitingOn)];
+
     /// The field a flag named, or an error listing what it could have.
     fn parse(name: &str) -> Result<Field> {
         Self::NAMES
             .iter()
+            .chain(&Self::ALIASES)
             .find(|(n, _)| *n == name)
             .map(|(_, f)| *f)
             .ok_or_else(|| {
@@ -1706,16 +1673,15 @@ impl Field {
     }
 
     /// The distinct values the rows hold for the field — the kind
-    /// level for the wait and waker columns, as `--group` buckets
-    /// them, since the kind is a prefix of every spelled cell — or
-    /// `None` for a count the argument compares against.
+    /// level for the wait column, as `--group` buckets it, since the
+    /// kind is a prefix of every spelled cell — or `None` for a count
+    /// the argument compares against.
     fn values(self, rows: &[TaskRow]) -> Option<Vec<String>> {
         let column = |f: fn(&TaskRow) -> Option<String>| distinct_values(rows.iter().map(f));
         Some(match self {
             Field::Type => column(|r| Some(r.future.clone())),
             Field::Awaiting => column(|r| r.awaiting_at.clone()),
             Field::WaitingOn => column(|r| r.waiting_kind.clone()),
-            Field::Waker => column(|r| r.waker_kind.clone()),
             Field::Spawned => column(|r| r.spawned.clone()),
             Field::Defined => column(|r| r.defined.clone()),
             Field::State => column(|r| Some(r.state.clone())),
@@ -1917,7 +1883,6 @@ fn field_text(field: Field, row: &TaskRow) -> Option<&str> {
         Field::Type => Some(&row.future),
         Field::Awaiting => row.awaiting_at.as_deref(),
         Field::WaitingOn => Some(&row.waiting_on),
-        Field::Waker => row.waker.as_deref(),
         Field::Spawned => row.spawned.as_deref(),
         Field::Defined => row.defined.as_deref(),
         Field::State => Some(&row.state),
@@ -1959,7 +1924,6 @@ fn group_value(
         // per deadline — and a task waiting on nothing nameable (the
         // table's `—`, a mid-poll row) is the empty bucket, not a value.
         Field::WaitingOn => row.waiting_kind.clone(),
-        Field::Waker => row.waker_kind.clone(),
         Field::Spawned => row.spawned.clone(),
         Field::Defined => row.defined.clone(),
         Field::State => Some(row.state.clone()),
@@ -2487,6 +2451,7 @@ mod table_tests {
             notes: Vec::new(),
             held: Vec::new(),
             held_capped: 0,
+            frames: Vec::new(),
         }
     }
 
@@ -2512,10 +2477,8 @@ mod table_tests {
             &list,
             &Default::default(),
             &waits,
-            &[],
             &polling,
             &hansei_bundle::names::ImplFold::default(),
-            &Default::default(),
             &Default::default(),
             &StopNames::none(&Default::default()),
         )
@@ -2785,10 +2748,8 @@ mod table_tests {
             &TaskList::new(vec![blocking(2, RUNNING)]),
             &Default::default(),
             &[],
-            &[],
             &HashMap::new(),
             &hansei_bundle::names::ImplFold::default(),
-            &Default::default(),
             &HashMap::from([(0x1000 + 2 * 0x100, 42)]),
             &StopNames::none(&Default::default()),
         );
@@ -2816,115 +2777,196 @@ mod table_tests {
         );
     }
 
-    /// The waker column indexes every slot source: the registries'
-    /// wheel entries and io slots, a decoded semaphore's wake-queue
-    /// nodes, and the trailer of a joined task — sorted, joined, and
-    /// `None` (the `<empty>` bucket) where nothing is armed. The
-    /// detail lines place what the wait lines do not: the queue node
-    /// and the trailer.
+    /// The merge rewrites the wait cell from the task's slots: every
+    /// slot spelled by what holds it, sorted and joined, the buckets
+    /// their kinds, `unknown` slots past the first collapsed to a
+    /// count; a task with no slot keeps its assessment's word under
+    /// `unarmed: `; a mid-poll task is untouched. The detail gains one
+    /// line per slot, sorted by label.
     #[test]
-    fn test_waker_slots_index_every_source() {
-        use hansei_runtime::tokio::bundle::{
-            IoResourceInfo, IoSlot, IoWaiterInfo, QueuedWaker, Registries, SemaphoreWaiter,
-            TimerEntryInfo,
+    fn test_the_merge_spells_each_slot_and_marks_the_unarmed() {
+        use hansei_runtime::tokio::attribution::{
+            Attributed, AttributedSlot, Attribution, RegistrySlot,
         };
-        use hansei_runtime::tokio::graph::JoinWaker;
-        use hansei_runtime::tokio::observe::Consistency;
+        use hansei_runtime::tokio::bundle::IoSlot;
+        use hansei_runtime::tokio::wakers::Owner;
 
         let t1 = 0x1000 + 0x100;
-        let registries = Registries::new(
-            vec![TimerEntryInfo {
-                entry: 0xdd00,
-                state: None,
-                task: Some(t1),
-                waker_at: None,
-                deadline: None,
-            }],
-            vec![IoResourceInfo {
-                addr: 0xaa00,
-                readiness: None,
-                consistency: Consistency::Unknown,
-                waiters: vec![IoWaiterInfo {
-                    slot: IoSlot::Reader,
-                    task: Some(t1),
-                    waker_at: None,
-                    node: None,
-                    ready: None,
-                }],
-            }],
-        );
-        let semaphore = WaitTarget::Semaphore {
-            addr: 0x9000,
-            owner: None,
-            num_permits: 1,
-            available: 0,
-            closed: false,
-            waiters: vec![
-                SemaphoreWaiter {
-                    addr: 0xe100,
-                    needed: 1,
-                    waker_at: None,
-                    waker: QueuedWaker::Task {
-                        addr: t1,
-                        task_id: Some(1),
-                    },
-                },
-                SemaphoreWaiter {
-                    addr: 0xe200,
-                    needed: 1,
-                    waker_at: None,
-                    waker: QueuedWaker::Unarmed,
-                },
-            ],
+        let owner = Owner::Task {
+            header: t1,
+            index: 0,
         };
-        // Task 2's wait observes the semaphore; the queue node is
-        // task 1's — the slot lands on the waiter, not the observer.
-        let waits = vec![wait(1, None), wait(2, Some(semaphore))];
-        let joins = vec![JoinWaker {
-            task: TaskRef {
-                addr: TaskAddr(0x1000 + 2 * 0x100),
-                task_id: Some(2),
-            },
-            waiter: TaskRef {
-                addr: TaskAddr(t1),
-                task_id: Some(1),
-            },
-            waker_at: None,
-        }];
-        let list = TaskList::new(vec![task(1, 0), task(2, 0)]);
-        let rows = build_rows(
+        let slot = |at: u64, attribution: Attribution| AttributedSlot {
+            hit: at as usize,
+            slot: at,
+            owner,
+            attribution,
+            within: None,
+        };
+        let slots = Attributed::from_slots(vec![
+            slot(
+                0xdd00,
+                Attribution::Registry(RegistrySlot::Timer {
+                    entry: 0xdd00,
+                    state: None,
+                    deadline: None,
+                }),
+            ),
+            slot(
+                0xaa08,
+                Attribution::Registry(RegistrySlot::Io {
+                    resource: 0xaa00,
+                    slot: IoSlot::Reader,
+                    ready: None,
+                }),
+            ),
+            slot(
+                0xe100,
+                Attribution::Registry(RegistrySlot::Semaphore {
+                    semaphore: 0x9000,
+                    node: 0xe100,
+                }),
+            ),
+            slot(
+                0x1250,
+                Attribution::Registry(RegistrySlot::Join {
+                    task: TaskRef {
+                        addr: TaskAddr(0x1000 + 2 * 0x100),
+                        task_id: Some(2),
+                    },
+                }),
+            ),
+            slot(
+                0x7000,
+                Attribution::Unknown {
+                    cache: Some("umem_alloc_96".to_string()),
+                    size: Some(96),
+                    offset: Some(48),
+                },
+            ),
+            slot(
+                0x8000,
+                Attribution::Unknown {
+                    cache: None,
+                    size: None,
+                    offset: None,
+                },
+            ),
+        ]);
+        let list = TaskList::new(vec![task(1, 0), task(2, 0), task(3, RUNNING)]);
+        let waits = vec![wait(1, None), wait(2, None), wait(3, None)];
+        let mut rows = build_rows(
             &list,
             &Default::default(),
             &waits,
-            &joins,
             &HashMap::new(),
             &hansei_bundle::names::ImplFold::default(),
-            &registries,
             &Default::default(),
             &StopNames::none(&Default::default()),
         );
+        super::merge_slots(&mut rows, &list, &waits, &slots, None, &|_| None);
         assert_eq!(
-            rows[0].waker.as_deref(),
-            Some("io 0xaa00 read, join task 2, semaphore 0x9000, timer 0xdd00")
+            rows[0].waiting_on,
+            "2× unknown, io 0xaa00 read, join task 2, semaphore 0x9000, timer 0xdd00"
         );
-        // The group bucket is the kind-level combination: addresses
-        // dropped where they would make every bucket a singleton,
-        // kept where identity groups usefully.
         assert_eq!(
-            rows[0].waker_kind.as_deref(),
-            Some("io read, join task 2, semaphore 0x9000, timer")
+            rows[0].waiting_kind.as_deref(),
+            Some("io read, join task 2, semaphore 0x9000, timer, unknown")
         );
-        assert_eq!(rows[1].waker_kind, None);
+        // The assessment's own line first, then the slots.
         assert_eq!(
-            rows[0].waker_detail,
+            rows[0].wait_detail,
             vec![
+                "unknown: the chain does not end in a primitive".to_string(),
+                "io 0xaa00 read: awaiting readable via the read-waiter slot".to_string(),
                 "join task 2: waker in its trailer".to_string(),
                 "semaphore 0x9000: waker in its wake-queue node 0xe100".to_string(),
+                "timer 0xdd00: waker in the wheel entry".to_string(),
+                "unknown 0x7000: in a 96-byte umem_alloc_96 buffer at +48".to_string(),
+                "unknown 0x8000: in memory nothing typed reaches".to_string(),
             ]
         );
-        // The observer's own waker is in no slot.
-        assert_eq!(rows[1].waker, None);
-        assert!(rows[1].waker_detail.is_empty());
+        // No slot: the assessment's own word, marked.
+        assert_eq!(
+            rows[1].waiting_on,
+            "unarmed: unknown (no root in the tokio info)"
+        );
+        assert_eq!(
+            rows[1].waiting_kind.as_deref(),
+            Some("unarmed: unknown (no root in the tokio info)")
+        );
+        assert_eq!(
+            rows[1].wait_detail,
+            vec!["unknown: the chain does not end in a primitive".to_string()]
+        );
+        // Mid-poll: not parked, so nothing to mark.
+        assert_eq!(rows[2].waiting_on, "— (mid-poll)");
+        assert_eq!(rows[2].waiting_kind, None);
+    }
+
+    /// A slot the task's verified wait accounts for takes the reader's
+    /// spelling: the join slot in the awaited task's trailer is the
+    /// verified `task N`, cell and bucket alike, and a second slot the
+    /// wait does not account for keeps its own.
+    #[test]
+    fn test_an_accounted_slot_takes_the_readers_spelling() {
+        use hansei_runtime::tokio::attribution::{
+            Attributed, AttributedSlot, Attribution, RegistrySlot,
+        };
+        use hansei_runtime::tokio::wakers::Owner;
+
+        let t1 = 0x1000 + 0x100;
+        let t2 = 0x1000 + 2 * 0x100;
+        let joined = TaskRef {
+            addr: TaskAddr(t2),
+            task_id: Some(2),
+        };
+        let owner = Owner::Task {
+            header: t1,
+            index: 0,
+        };
+        let slots = Attributed::from_slots(vec![
+            AttributedSlot {
+                hit: 0,
+                slot: 0x1250,
+                owner,
+                attribution: Attribution::Registry(RegistrySlot::Join { task: joined }),
+                within: None,
+            },
+            AttributedSlot {
+                hit: 1,
+                slot: 0xdd00,
+                owner,
+                attribution: Attribution::Registry(RegistrySlot::Timer {
+                    entry: 0xdd00,
+                    state: None,
+                    deadline: None,
+                }),
+                within: None,
+            },
+        ]);
+        let target = WaitTarget::Task {
+            addr: t2,
+            task_id: Some(2),
+            state: TaskState(REF_ONE),
+            listed: true,
+            kind: None,
+        };
+        let list = TaskList::new(vec![task(1, 0), task(2, 0)]);
+        let waits = vec![wait(1, Some(target)), wait(2, None)];
+        let mut rows = build_rows(
+            &list,
+            &Default::default(),
+            &waits,
+            &HashMap::new(),
+            &hansei_bundle::names::ImplFold::default(),
+            &Default::default(),
+            &StopNames::none(&Default::default()),
+        );
+        assert_eq!(rows[0].waiting_on, "task 2");
+        super::merge_slots(&mut rows, &list, &waits, &slots, None, &|_| None);
+        assert_eq!(rows[0].waiting_on, "task 2, timer 0xdd00");
+        assert_eq!(rows[0].waiting_kind.as_deref(), Some("task 2, timer"));
     }
 
     /// A running task waits on nothing: its cell names the lwp polling
@@ -3062,9 +3104,6 @@ mod filter_tests {
             waiting_on: "—".to_string(),
             waiting_kind: None,
             wait_detail: Vec::new(),
-            waker: None,
-            waker_kind: None,
-            waker_detail: Vec::new(),
             future: "async fn app::work".to_string(),
             spawned: None,
             defined: None,
@@ -3103,10 +3142,12 @@ mod filter_tests {
         assert!(keeps(&clause("waiting-on", "^timer"), &r));
         assert!(keeps(&clause("spawned", "main.rs"), &r));
         assert!(keeps(&clause("defined", "app.rs:7"), &r));
-        r.waker = Some("join task 2, timer 0xdd00".to_string());
-        assert!(keeps(&clause("waker", "join task 2"), &r));
+        r.waiting_on = "task 2, timer (deadline +38.364s)".to_string();
+        // The older names reach the same field.
+        assert!(keeps(&clause("waker", "task 2"), &r));
+        assert!(keeps(&clause("slots", "task 2"), &r));
         assert!(!keeps(&clause("waker", "semaphore"), &r));
-        assert!(!keeps(&clause("waker", "."), &row("1")));
+        assert!(!keeps(&clause("waker", "unknown"), &row("1")));
 
         // Nothing in the field is nothing to match.
         assert!(!keeps(&clause("awaiting", "."), &row("1")));
@@ -3309,16 +3350,8 @@ mod filter_tests {
             group_value(Field::Lwp, 0, &waited, None).as_deref(),
             Some("115")
         );
-        // The waker bucket is the kind-level combination, and a row
-        // with no armed slot is the empty bucket.
-        let mut woken = r.clone();
-        woken.waker = Some("timer 0xdd00".to_string());
-        woken.waker_kind = Some("timer".to_string());
-        assert_eq!(
-            group_value(Field::Waker, 0, &woken, None).as_deref(),
-            Some("timer")
-        );
-        assert_eq!(group_value(Field::Waker, 0, &r, None), None);
+        // A row waiting on nothing nameable is the empty bucket.
+        assert_eq!(group_value(Field::WaitingOn, 0, &r, None), None);
         assert_eq!(EMPTY_BUCKET, "<empty>");
 
         let rows: Vec<TaskRow> = (0..5).map(|i| row(&i.to_string())).collect();
@@ -3335,7 +3368,6 @@ mod filter_tests {
         let mut a = row("129");
         a.waiting_on = "io 0xf9c3d00 (readable)".to_string();
         a.waiting_kind = Some("io".to_string());
-        a.waker_kind = Some("io read".to_string());
         a.lwp = Some(7);
         let mut b = row("130");
         b.state = "running".to_string();
@@ -3352,7 +3384,8 @@ mod filter_tests {
             values("waiting-on"),
             Some(vec!["timer".into(), "io".into()])
         );
-        assert_eq!(values("waker"), Some(vec!["io read".into()]));
+        // The alias reads the same column.
+        assert_eq!(values("waker"), values("waiting-on"));
         assert_eq!(values("lwp"), Some(vec!["7".into()]));
         assert_eq!(values("rt"), Some(vec!["0".into()]));
         assert_eq!(

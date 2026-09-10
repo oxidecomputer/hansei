@@ -94,6 +94,20 @@ fn waker_slots<T: Target>(session: &Session<'_, T>, out: &mut dyn io::Write) -> 
     if !classes.is_empty() {
         writeln!(out, "    by class: {}", classes.join(", "))?;
     }
+    // What the admitted hits were attributed to, and how many inside a
+    // typed value located to no waker — stale storage the sweep read
+    // as a pair.
+    let attributed = &session.attribution().stats;
+    writeln!(
+        out,
+        "    attributed: {} by a registry, {} by owner type, {} by holding type, {} unknown; {} \
+         stale",
+        attributed.registry,
+        attributed.owner,
+        attributed.typed,
+        attributed.unknown,
+        attributed.stale
+    )?;
     Ok(())
 }
 

@@ -9,8 +9,7 @@ task 1
     type: async fn local_set_timer::local_sleeper
     awaiting at: src/bin/local-set-timer.rs:22
     waiting on: timer (deadline TS on the target's monotonic clock)
-    waker: timer 0xADDR
-        timer entry 0xADDR in the wheel, registered, deadline TS on the target's monotonic clock
+        timer 0xADDR: waker in the wheel entry, registered, deadline TS on the target's monotonic clock
     spawned at: src/bin/local-set-timer.rs:62:20
     defined at: src/bin/local-set-timer.rs:19
     held futures: 0
