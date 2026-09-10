@@ -7,13 +7,13 @@ task 3
     thread: <none>
     type: async fn armed_select::selector
     awaiting at: src/bin/armed-select.rs:48
-    waiting on: mpsc 0xADDR, notify 0xADDR, oneshot rx 0xADDR, timer (deadline TS on the target's monotonic clock)
+    waiting on: mpsc 0xADDR, oneshot rx 0xADDR, timer (deadline TS on the target's monotonic clock), watch 0xADDR
         wait set: 1 of 1 members hold this task's waker; any one of them wakes it
         what core::future::poll_fn::PollFn<armed_select::selector::{async_fn#0}::{closure_env#0}> polls is not established: no reviewed rule covers its implementation
         timer (deadline TS on the target's monotonic clock): this task's waker in wheel entry 0xADDR, registered, inside #1's storage at +0xADDR; in no branch of the stop
         mpsc 0xADDR: waker in Chan.rx_waker, reached from #1 queue → chan → inner → * → data → rx_waker → waker
-        notify 0xADDR: waker in Notified.waiter, in the future at 0xADDR waiter → waker
         oneshot rx 0xADDR: waker in Inner.rx_task (rx_task_set), reached from the future at 0xADDR inner → * → data → rx_task
+        watch 0xADDR: waker in Notified.waiter, in the future at 0xADDR waiter → waker
     spawned at: src/bin/armed-select.rs:116:25
     defined at: src/bin/armed-select.rs:30
     held futures: 4

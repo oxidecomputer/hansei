@@ -2,7 +2,7 @@
 source: hansei/src/offline.rs
 description: "`tasks --with id 3,6` over linux-floor/armed-select"
 ---
-ID  STATE  FUTURES  AWAITING AT                  WAITING ON                                                                                                                            TYPE
-3   idle         4  src/bin/armed-select.rs:48   mpsc 0xADDR, notify 0xADDR, oneshot rx 0xADDR, timer (deadline TS on the target's monotonic clock)  async fn armed_select::selector
-6   idle         2  src/bin/armed-select.rs:100  slot 0xADDR in futures_core::task::__internal::atomic_waker::AtomicWaker                                                      async fn armed_select::driver
+ID  STATE  FUTURES  AWAITING AT                  WAITING ON                                                                                                                           TYPE
+3   idle         4  src/bin/armed-select.rs:48   mpsc 0xADDR, oneshot rx 0xADDR, timer (deadline TS on the target's monotonic clock), watch 0xADDR  async fn armed_select::selector
+6   idle         2  src/bin/armed-select.rs:100  slot 0xADDR in futures_core::task::__internal::atomic_waker::AtomicWaker                                                     async fn armed_select::driver
 [2 tasks]

@@ -12,7 +12,7 @@ use hansei_bundle::BundleView;
 use hansei_runtime::heap::{self, view::GateCounts, view::HeapView};
 use hansei_runtime::tokio::graph as rt_graph;
 use hansei_runtime::tokio::observe::ReadContext;
-use hansei_runtime::tokio::{bundle, census};
+use hansei_runtime::tokio::{attribution, bundle, census, wakers};
 use proc::snapshot::{CaptureLimits, RecordedHeapEvidence, Recorder};
 
 use std::io::{self, Write};
@@ -263,7 +263,7 @@ pub(crate) fn exec_snapshot<T: proc::Target>(
     // exactly as the replay's census is gated by the index it rebuilds
     // from these reads: a find refused here is refused there, and the
     // pages behind it are not the snapshot's to hold.
-    let _ = census::census_bounded(
+    let census = census::census_bounded(
         &ctx,
         &list,
         census::Bounds {
@@ -274,6 +274,33 @@ pub(crate) fn exec_snapshot<T: proc::Target>(
             ..session.bounds
         },
         &read,
+    );
+
+    // The waker slots' attribution, so the reads that name a slot — the
+    // `Arc` a hop follows, a oneshot's state word, the watch `Shared` a
+    // `Notify` lies in — replay offline. The sweep itself runs over the
+    // target directly, not through the recorder: it reads every mapping,
+    // and a snapshot of the whole address space is no snapshot. Its
+    // hits are addresses, which the recorded attribution then reads
+    // behind.
+    let extents = ctx.task_extents(&list);
+    let wakers = session.ctx.sweep_wakers(&wakers::Territory {
+        list: &list,
+        extents: &extents,
+        census: &census,
+        heap: umem.as_ref(),
+        lwps: &lwps,
+    });
+    let _ = ctx.attribute_slots(
+        &wakers,
+        &attribution::Sources {
+            list: &list,
+            census: &census,
+            registries: &registries,
+            analysis: &analysis,
+            heap: umem.as_ref(),
+            impls: &session.impl_fold,
+        },
     );
 
     // The threads listings' reads: stacks, contexts, parkers, pool.

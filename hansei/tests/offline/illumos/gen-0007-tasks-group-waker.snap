@@ -4,7 +4,7 @@ description: "`tasks --group waker` over illumos/gen-0007"
 ---
 COUNT  WAITING ON                            TASKS
     2  unarmed: unknown at gen_0007::GfSel2  6, 7
-    1  the Notify at 0xADDR                4
+    1  the Notify at 0xADDR               4
     1  timer                                 5
     1  unarmed: unknown at gen_0007::GfSel3  3
 [4 groups]

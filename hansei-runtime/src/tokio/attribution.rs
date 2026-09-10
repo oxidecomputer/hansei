@@ -1905,10 +1905,7 @@ mod tests {
         assert_eq!(selector.len(), 4, "{selector:#?}");
         let mut buckets: Vec<String> = selector.iter().map(|s| s.bucket()).collect();
         buckets.sort();
-        // The watch's `Notified` reads as a bare `notify` here: the
-        // snapshot holds no bytes of the `Shared` its `Notify` lies
-        // in, so the watch row cannot fire over a fixture pair.
-        assert_eq!(buckets, ["mpsc", "notify", "oneshot rx", "timer"]);
+        assert_eq!(buckets, ["mpsc", "oneshot rx", "timer", "watch"]);
         for slot in &selector {
             match &slot.attribution {
                 Attribution::Owner {
@@ -1963,16 +1960,20 @@ mod tests {
                     assert!(path.hop.is_some());
                 }
                 Attribution::Owner {
-                    kind: OwnerKind::Notify,
+                    kind: OwnerKind::Watch,
                     holder,
                     member,
                     path,
                     validity,
                     primitive,
                 } => {
+                    // The `Notified` is on one of the watch channel's
+                    // `Notify`s: the slot is the watch's, named by its
+                    // `Shared` — which the capture read on the slot's
+                    // behalf, so the snapshot holds it.
                     assert_eq!((holder.as_str(), member.as_str()), ("Notified", "waiter"));
                     assert_eq!(*validity, Validity::SelfDescribing);
-                    assert_eq!(slot.entry(stopped), format!("notify {primitive:#x}"));
+                    assert_eq!(slot.entry(stopped), format!("watch {primitive:#x}"));
                     // Inside the held `changed_impl` — the innermost of
                     // the two finds holding it — by containment: its
                     // active state's awaitee is the `Notified`.

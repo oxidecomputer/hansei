@@ -2,7 +2,7 @@
 source: hansei/src/offline.rs
 description: "`tasks` over illumos/joinset"
 ---
-ID  STATE  FUTURES  AWAITING AT            WAITING ON                                                   TYPE
+ID  STATE  FUTURES  AWAITING AT            WAITING ON                                                    TYPE
 3   idle         0  src/bin/joinset.rs:83  slot 0xADDR in tokio::util::idle_notified_set::ListsInner  async fn joinset::driver
 4   idle         0  src/bin/joinset.rs:34  the Notify at 0xADDR: 5 queued                             async fn joinset::member
 5   idle         0  src/bin/joinset.rs:34  the Notify at 0xADDR: 5 queued                             async fn joinset::member

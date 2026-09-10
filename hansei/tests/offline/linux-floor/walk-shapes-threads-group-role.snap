@@ -3,6 +3,6 @@ source: hansei/src/offline.rs
 description: "`threads --group role` over linux-floor/walk-shapes"
 ---
 COUNT  ROLE             LWPS
-    2  entered runtime  656015, 656016
-    1  block_on caller  656013
+    2  entered runtime  865009, 865010
+    1  block_on caller  865007
 [2 groups]
