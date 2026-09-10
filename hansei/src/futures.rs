@@ -1314,6 +1314,162 @@ mod tests {
         )
     }
 
+    /// The merge arms a find by the slots that sit in it and by the
+    /// slot of the primitive its reader names, and only those: a wheel
+    /// entry inside a `Sleep` takes the reader's cell while a typed
+    /// slot beside it keeps its own; a channel's receiver slot names
+    /// the `recv` find whose `Chan` it is; a `Notify` slot on another
+    /// `Notify` arms nothing, so that find is `unarmed: `; a set child
+    /// awaiting a task is armed by that task's trailer.
+    #[test]
+    fn test_the_merge_arms_a_find_by_its_own_slots_and_its_readers_primitive() {
+        use super::with_slots;
+        use hansei_runtime::tokio::attribution::{
+            Attributed, AttributedSlot, Attribution, OwnerKind, RegistrySlot, SlotPath, SlotRoot,
+            Validity,
+        };
+        use hansei_runtime::tokio::graph::TaskRef;
+        use hansei_runtime::tokio::wakers::Owner;
+
+        let sleep = held(0, 0x5000, None);
+        let mut recv = held(0, 0x6000, None);
+        recv.waiting_on = Some("mpsc rx 0x9000: 1 sender".to_string());
+        recv.wait = Some(WaitKind::Channel { addr: 0x9000 });
+        let mut notified = held(0, 0x7000, None);
+        notified.waiting_on = Some("the Notify at 0x9100".to_string());
+        notified.wait = Some(WaitKind::Notify { addr: 0x9100 });
+        let mut joiner = child(0x2010, Some("app::child"));
+        joiner.waiting_on = Some("task 28".to_string());
+        let census = census(vec![sleep, recv, notified], vec![set(0, vec![joiner])]);
+
+        let owner = Owner::Task {
+            header: 0x1100,
+            index: 0,
+        };
+        let frame = SlotPath {
+            root: SlotRoot::Frame { task: 0, frame: 1 },
+            steps: Vec::new(),
+            hop: None,
+        };
+        let in_sleep = SlotRoot::Find {
+            index: 0,
+            addr: 0x5000,
+        };
+        let slot = |at: u64, attribution: Attribution, within: Option<SlotRoot>| AttributedSlot {
+            hit: at as usize,
+            slot: at,
+            owner,
+            attribution,
+            within,
+        };
+        let slots = Attributed::from_slots(vec![
+            // The Sleep's wheel entry, inside the Sleep.
+            slot(
+                0x5010,
+                Attribution::Registry(RegistrySlot::Timer {
+                    entry: 0x5010,
+                    state: None,
+                    deadline: None,
+                }),
+                Some(in_sleep),
+            ),
+            // A typed slot inside the Sleep too: no reader speaks for it.
+            slot(
+                0x5020,
+                Attribution::Typed {
+                    holder: "x::Holder".to_string(),
+                    member: "w".to_string(),
+                    path: SlotPath {
+                        root: in_sleep,
+                        steps: vec!["w".to_string()],
+                        hop: None,
+                    },
+                    validity: Validity::Raw,
+                },
+                None,
+            ),
+            // The channel's receiver slot, reached from the frame.
+            slot(
+                0x9080,
+                Attribution::Owner {
+                    kind: OwnerKind::Mpsc,
+                    primitive: 0x9000,
+                    holder: "Chan".to_string(),
+                    member: "rx_waker".to_string(),
+                    path: frame.clone(),
+                    validity: Validity::SelfDescribing,
+                },
+                None,
+            ),
+            // A node on some other Notify.
+            slot(
+                0x9280,
+                Attribution::Owner {
+                    kind: OwnerKind::Notify,
+                    primitive: 0x9200,
+                    holder: "Notified".to_string(),
+                    member: "waiter".to_string(),
+                    path: frame,
+                    validity: Validity::SelfDescribing,
+                },
+                None,
+            ),
+        ]);
+        let child_slots = Attributed::from_slots(vec![AttributedSlot {
+            hit: 9,
+            slot: 0x1c50,
+            owner: Owner::Child { set: 0, child: 0 },
+            attribution: Attribution::Registry(RegistrySlot::Join {
+                task: TaskRef {
+                    addr: TaskAddr(0x1c00),
+                    task_id: Some(28),
+                },
+            }),
+            within: None,
+        }]);
+
+        let rows = with_slots(rows_of(&census), &list(), &census, &slots, None);
+        let row = |addr: u64| rows.iter().find(|r| r.addr == addr).unwrap();
+        assert!(row(0x5000).armed);
+        assert_eq!(
+            row(0x5000).waiting_on.as_deref(),
+            Some("a timer, slot 0x5020 in x::Holder")
+        );
+        assert_eq!(
+            row(0x5000).waiting_kind.as_deref(),
+            Some("slot in x::Holder, timer")
+        );
+        assert_eq!(
+            row(0x5000).slot_lines,
+            [
+                "slot 0x5020: waker in x::Holder.w, in the future at 0x5000 w",
+                "timer 0x5010"
+            ]
+        );
+        assert!(row(0x6000).armed);
+        assert_eq!(
+            row(0x6000).waiting_on.as_deref(),
+            Some("mpsc rx 0x9000: 1 sender")
+        );
+        assert_eq!(row(0x6000).waiting_kind.as_deref(), Some("mpsc rx"));
+        assert!(!row(0x7000).armed);
+        assert_eq!(
+            row(0x7000).waiting_on.as_deref(),
+            Some("unarmed: the Notify at 0x9100")
+        );
+        assert_eq!(
+            row(0x7000).waiting_kind.as_deref(),
+            Some("unarmed: a Notify")
+        );
+        assert!(row(0x7000).slot_lines.is_empty());
+
+        let rows = with_slots(rows_of(&census), &list(), &census, &child_slots, None);
+        let joiner = rows.iter().find(|r| r.addr == 0x2010).unwrap();
+        assert!(joiner.armed);
+        assert_eq!(joiner.waiting_on.as_deref(), Some("task 28"));
+        assert_eq!(joiner.slot_lines, ["join task 28: waker in its trailer"]);
+    }
+
     /// A find whose chain ends in no described resource says what cut
     /// its chain short, in the cell and in its bucket alike, the way a
     /// task row does.
