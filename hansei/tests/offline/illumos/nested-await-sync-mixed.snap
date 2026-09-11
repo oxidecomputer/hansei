@@ -1,0 +1,5 @@
+---
+source: hansei/src/offline.rs
+description: "`sync 0x1 --kind address,mpsc` over illumos/nested-await"
+---
+error: --kind address is a reading of one address, not a block family to combine

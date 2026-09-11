@@ -40,8 +40,8 @@
 use super::RawInstant;
 use super::bundle::{
     Context, IoResourceInfo, IoSlot, IoWaiterInfo, OneshotSide, OneshotState, Readiness,
-    Registries, TaskList, TimerEntryInfo, WaitTarget, WheelState, channel_words, deadline_text,
-    notify_words, watch_words,
+    Registries, TaskList, TimerEntryInfo, WaitTarget, WheelState, channel_words, contains,
+    deadline_text, notify_words, watch_words, watch_words_of,
 };
 use super::census::{FutureCensus, Via};
 use super::contract::{Walked, execute_steps_over};
@@ -1069,18 +1069,6 @@ impl<'a, 'b, T: Target> Attributor<'a, 'b, T> {
         })
     }
 
-    /// The watch channel's reading, from its `ArcInner<Shared<T>>`.
-    fn watch_reading(&self, arc: Value<'b>) -> Option<Reading> {
-        use hansei_bundle::tokio::watch;
-        let state = self.word_of(WalkRole::WatchSharedState, arc)?;
-        Some(Reading::Watch {
-            version: state >> watch::VERSION_SHIFT,
-            closed: state & watch::CLOSED != 0,
-            receivers: self.word_of(WalkRole::WatchSharedRxCount, arc)?,
-            senders: self.word_of(WalkRole::WatchSharedTxCount, arc)?,
-        })
-    }
-
     /// The watch channel whose `notify_rx` array holds the `Notify` at
     /// `notify`, among the `Arc<watch::Shared<_>>`s the owner's values
     /// point at: the `Shared`'s address, for the slot's primitive, and
@@ -1100,13 +1088,18 @@ impl<'a, 'b, T: Target> Attributor<'a, 'b, T> {
             let Ok(arc) = Value::read(self.proc, ty, p.target) else {
                 continue;
             };
-            let Some(notify_rx) = self.walk_role(WalkRole::WatchSharedNotifyRx, arc) else {
-                continue;
-            };
-            if contains(notify_rx, notify) {
-                let data = ty.member("data").map(|m| m.offset()).unwrap_or(0);
-                let reading = self.watch_reading(arc)?;
-                return Some((arc.addr + data, reading));
+            let at = |role| self.walk_role(role, arc);
+            let word = |role| self.word_of(role, arc);
+            if let Some(words) = watch_words_of(arc, notify, &at, &word) {
+                return Some((
+                    words.addr,
+                    Reading::Watch {
+                        version: words.version,
+                        closed: words.closed,
+                        receivers: words.receivers,
+                        senders: words.senders,
+                    },
+                ));
             }
         }
         None
@@ -1237,14 +1230,14 @@ impl<'a, 'b, T: Target> Attributor<'a, 'b, T> {
             let Some(pointee) = self.types.view.ty(p.pointee) else {
                 continue;
             };
-            if hit.slot - p.target >= pointee.size() {
+            let offset = hit.slot - p.target;
+            if offset >= pointee.size() {
                 continue;
             }
             let Ok(value) = Value::read(self.proc, pointee, p.target) else {
                 continue;
             };
-            let Located::Slot { trail, validity } = self.locate_member(value, hit.slot - p.target)
-            else {
+            let Located::Slot { trail, validity } = self.locate_member(value, offset) else {
                 continue;
             };
             let root = &roots[p.root];
@@ -1707,11 +1700,6 @@ fn sub<'b>(value: Value<'b>, offset: u64, ty: BundleType<'b>) -> Option<Value<'b
     let end = start.checked_add(usize::try_from(ty.size()).ok()?)?;
     let bytes = value.bytes.get(start..end)?;
     Some(Value::new(ty, value.addr + offset, bytes))
-}
-
-/// Whether `addr` lies in `value`'s storage.
-fn contains(value: Value<'_>, addr: u64) -> bool {
-    addr >= value.addr && addr - value.addr < value.bytes.len() as u64
 }
 
 /// A type's last path segment, generic arguments dropped: `Inner`,
@@ -2745,6 +2733,58 @@ mod join_tests {
             &owned(0x8080, OwnerKind::Mpsc, 0x8100),
             &size_of
         ));
+        // A oneshot's `Inner` and a watch's `Shared`, by address and
+        // by kind alike.
+        let oneshot = VerifiedWait::testkit(
+            WaitTarget::Oneshot {
+                addr: 0x9000,
+                state: OneshotState {
+                    word: 0b1001,
+                    value_present: Some(false),
+                },
+            },
+            None,
+        );
+        assert!(verified_accounts(
+            &oneshot,
+            &owned(0x9020, OwnerKind::OneshotRx, 0x9000),
+            &size_of
+        ));
+        assert!(!verified_accounts(
+            &oneshot,
+            &owned(0x9020, OwnerKind::OneshotTx, 0x9000),
+            &size_of
+        ));
+        assert!(!verified_accounts(
+            &oneshot,
+            &owned(0x9120, OwnerKind::OneshotRx, 0x9100),
+            &size_of
+        ));
+        let watch = VerifiedWait::testkit(
+            WaitTarget::Watch {
+                addr: 0xa000,
+                version: 3,
+                closed: false,
+                receivers: 2,
+                senders: 1,
+            },
+            None,
+        );
+        assert!(verified_accounts(
+            &watch,
+            &owned(0xa040, OwnerKind::Watch, 0xa000),
+            &size_of
+        ));
+        assert!(!verified_accounts(
+            &watch,
+            &owned(0xa040, OwnerKind::Notify, 0xa000),
+            &size_of
+        ));
+        assert!(!verified_accounts(
+            &watch,
+            &owned(0xa140, OwnerKind::Watch, 0xa100),
+            &size_of
+        ));
         // The test-only primitive sits at address zero with a type of
         // size zero: a typed slot at zero is not inside it, and one at
         // zero with a size is.
@@ -2975,6 +3015,32 @@ mod join_tests {
         order_roots(&mut frames);
         assert_eq!(frames[0].at, frame(0), "the inner frame first");
     }
+
+    /// A oneshot's reading is worded from the slot's own side: the
+    /// receiver's slot says whether the sender is alive, the sender's
+    /// whether the receiver is.
+    #[test]
+    fn test_a_oneshot_reading_is_worded_from_the_slots_side() {
+        let parked = Reading::Oneshot(OneshotState {
+            word: 0b1001,
+            value_present: Some(false),
+        });
+        let side = |kind| {
+            let mut slot = owned(0x5020, kind, 0x5000);
+            if let Attribution::Owner { reading, .. } = &mut slot.attribution {
+                *reading = Some(parked.clone());
+            }
+            slot.entry(None)
+        };
+        assert_eq!(
+            side(OwnerKind::OneshotRx),
+            "oneshot rx 0x5000 (nothing sent, sender alive)"
+        );
+        assert_eq!(
+            side(OwnerKind::OneshotTx),
+            "oneshot tx 0x5000 (nothing sent, receiver alive)"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -3028,6 +3094,10 @@ mod synthetic_tests {
     const ARC_SHARED: u32 = 15;
     const CORO: u32 = 16;
     const CORO_STATE: u32 = 17;
+    const MAYBE: u32 = 18;
+    const UNION_HOLDER: u32 = 19;
+    const PTR_UNIT: u32 = 20;
+    const UNIT_FRAME: u32 = 21;
 
     fn id(i: u32) -> BundleTypeId {
         BundleTypeId(i)
@@ -3082,6 +3152,15 @@ mod synthetic_tests {
             n("dead"),
             n("unsure"),
             n("lp"),
+        );
+        let (mayben, uninitn, union_holdern, mun, ptr_unitn, unit_framen, zn) = (
+            n("core::mem::MaybeUninit<core::task::wake::Waker>"),
+            n("uninit"),
+            n("x::UnionHolder"),
+            n("mu"),
+            n("*const ()"),
+            n("x::UnitFrame"),
+            n("z"),
         );
         let (sharedn, arcn, notify_rxn, staten, rxn, txn, strongn, weakn) = (
             n("tokio::sync::watch::Shared<u32>"),
@@ -3231,6 +3310,33 @@ mod synthetic_tests {
                     member(lpn, id(PTR_HOLDER), 40),
                 ],
             ),
+            // The one union the walk enters, by its `value` member —
+            // laid past a sized member that is no value, and off the
+            // union's start, so the choice and the bounds both show.
+            TypeDef::Union {
+                name: mayben,
+                size: 32,
+                members: vec![
+                    member(uninitn, id(UNIT), 0),
+                    member(padn, id(U64), 0),
+                    member(valuen, id(WAKER), 8),
+                ],
+            },
+            strukt(
+                union_holdern,
+                40,
+                vec![member(nn, id(U64), 0), member(mun, id(MAYBE), 8)],
+            ),
+            // A pointer to nothing sized, beside one worth following.
+            TypeDef::Pointer {
+                name: Some(ptr_unitn),
+                target: id(UNIT),
+            },
+            strukt(
+                unit_framen,
+                16,
+                vec![member(pn, id(PTR_HOLDER), 0), member(zn, id(PTR_UNIT), 8)],
+            ),
         ];
         let semantics = SemanticTable {
             types: vec![hansei_bundle::TypeSemantics {
@@ -3310,19 +3416,27 @@ mod synthetic_tests {
     /// beside it, holding the bytes a test lays down.
     struct Planted<'a> {
         inner: &'a Snapshot,
+        base: u64,
         bytes: Vec<u8>,
     }
 
     impl<'a> Planted<'a> {
         fn new(inner: &'a Snapshot) -> Self {
+            Self::at(inner, BASE)
+        }
+
+        /// The mapping planted at `base` instead: where a test wants
+        /// its bytes inside an address range something else fixes.
+        fn at(inner: &'a Snapshot, base: u64) -> Self {
             Planted {
                 inner,
+                base,
                 bytes: vec![0; SIZE as usize],
             }
         }
 
         fn word(&mut self, at: u64, value: u64) {
-            let off = (at - BASE) as usize;
+            let off = (at - self.base) as usize;
             self.bytes[off..off + 8].copy_from_slice(&value.to_le_bytes());
         }
 
@@ -3333,21 +3447,21 @@ mod synthetic_tests {
         }
 
         fn range(&self) -> Range<u64> {
-            BASE..BASE + SIZE
+            self.base..self.base + SIZE
         }
     }
 
     impl proc::Target for Planted<'_> {
         fn read_bytes(&self, addr: u64, len: u64) -> proc::Result<&[u8]> {
-            if self.range().contains(&addr) && addr + len <= BASE + SIZE {
-                let off = (addr - BASE) as usize;
+            if self.range().contains(&addr) && addr + len <= self.base + SIZE {
+                let off = (addr - self.base) as usize;
                 return Ok(&self.bytes[off..off + len as usize]);
             }
             self.inner.read_bytes(addr, len)
         }
         fn readable_len(&self, addr: u64, max: u64) -> u64 {
             if self.range().contains(&addr) {
-                return (BASE + SIZE - addr).min(max);
+                return (self.base + SIZE - addr).min(max);
             }
             self.inner.readable_len(addr, max)
         }
@@ -3366,7 +3480,7 @@ mod synthetic_tests {
         fn mappings(&self) -> proc::Result<proc::Mappings> {
             let planted = LoadedObjectWithPath {
                 path: None,
-                vaddr: BASE,
+                vaddr: self.base,
                 size: SIZE,
                 flags: MapFlags(0x04 | 0x02 | 0x40),
             };
@@ -3537,6 +3651,9 @@ mod synthetic_tests {
                 Located::Slot { trail, validity } => {
                     assert_eq!(names(&trail), ["ws", "[]", "w"], "element {i}");
                     assert_eq!(validity, Validity::Raw);
+                    // The element entered is the one at the offset, by
+                    // its own address.
+                    assert_eq!(trail[2].holder.addr, boxed + 8 + 16 * i, "element {i}");
                 }
                 Located::Stale(reason) => panic!("element {i}: {reason:?}"),
             }
@@ -3806,11 +3923,12 @@ mod synthetic_tests {
         planted.word(holder, 7);
         planted.pair(holder + 8);
         // The layout arrives as a test binding too, behind a record for
-        // another type: a binding is found by its own type, not taken
-        // as the first one there.
+        // another type that carries no layout: a binding is found by
+        // its own type, not taken as the first one there.
         let bindings = [
             TypeSemantics {
                 ty: id(U64),
+                coroutine: None,
                 ..bundle.semantics.types[0].clone()
             },
             bundle.semantics.types[0].clone(),
@@ -3857,6 +3975,158 @@ mod synthetic_tests {
         assert_eq!(
             (pointers[0].at, pointers[0].target),
             (coro + 8 + 40, holder)
+        );
+    }
+
+    /// The walk enters a union through its `value` member alone, and
+    /// only where the offset falls inside that member: below it, or at
+    /// its end, is no slot. What it finds through a union is unchecked.
+    #[test]
+    fn test_the_walk_enters_a_union_through_its_value_and_within_it() {
+        let (_, snapshot) = load_any("sleep-join");
+        let bundle = bundle();
+        let mut planted = Planted::new(&snapshot);
+        let holder = BASE;
+        planted.word(holder, 7);
+        planted.pair(holder + 8 + 8);
+        let empty = Empty::new(&bundle);
+        let sources = empty.sources();
+        let at = attributor(&planted, &bundle, &empty, &sources);
+        let v = value(&at, UNION_HOLDER, holder);
+        match at.locate_member(v, 8 + 8) {
+            Located::Slot { trail, validity } => {
+                assert_eq!(names(&trail), ["mu", "value"]);
+                assert_eq!(validity, Validity::Unchecked);
+            }
+            Located::Stale(reason) => panic!("{reason:?}"),
+        }
+        for offset in [8, 8 + 4, 8 + 8 + 16, 8 + 8 + 20] {
+            assert!(
+                matches!(
+                    at.locate_member(v, offset),
+                    Located::Stale(StaleReason::NotAWaker)
+                ),
+                "offset {offset}"
+            );
+        }
+    }
+
+    /// The pointer members a hop may follow are the non-null pointers
+    /// to something sized: a `*const ()` is left out even when set.
+    #[test]
+    fn test_pointer_members_leave_out_pointers_to_nothing() {
+        let (_, snapshot) = load_any("sleep-join");
+        let bundle = bundle();
+        let mut planted = Planted::new(&snapshot);
+        let (frame, holder) = (BASE, BASE + 0x100);
+        planted.word(frame, holder);
+        planted.word(frame + 8, holder + 0x40);
+        let empty = Empty::new(&bundle);
+        let sources = empty.sources();
+        let at = attributor(&planted, &bundle, &empty, &sources);
+        let roots = vec![Root {
+            at: SlotRoot::Frame { task: 0, frame: 1 },
+            value: value(&at, UNIT_FRAME, frame),
+        }];
+        let pointers = at.pointer_members(&roots);
+        assert_eq!(pointers.len(), 1, "{pointers:?}");
+        assert_eq!((pointers[0].target, pointers[0].at), (holder, frame));
+    }
+
+    /// An `Option`'s presence is read from its active variant: a set
+    /// waker is `Some`, a null one `None`, and a value that is no enum
+    /// answers nothing.
+    #[test]
+    fn test_option_presence_reads_the_active_variant() {
+        let (_, snapshot) = load_any("sleep-join");
+        let bundle = bundle();
+        let mut planted = Planted::new(&snapshot);
+        let (some, none) = (BASE, BASE + 0x20);
+        planted.pair(some);
+        let empty = Empty::new(&bundle);
+        let sources = empty.sources();
+        let at = attributor(&planted, &bundle, &empty, &sources);
+        let present = |ty, addr| super::super::bundle::option_present(value(&at, ty, addr));
+        assert_eq!(present(OPT_WAKER, some), Some(true));
+        assert_eq!(present(OPT_WAKER, none), Some(false));
+        assert_eq!(present(U64, some), None);
+    }
+
+    /// A hop's candidates are the pointers into the buffer the
+    /// allocator index bounds around the hit — one into a buffer below
+    /// is not, though its pointee would reach the slot — and, without
+    /// an index, the pointers at or below the slot. A pointee starting
+    /// exactly at the slot corroborates it; a pointer above the slot
+    /// in the same buffer does not.
+    #[test]
+    fn test_a_hop_reaches_only_from_the_slots_own_buffer() {
+        let (_, snapshot) = load_any("sleep-join");
+        let bundle = bundle();
+        let mut f = fake();
+        cache(
+            &mut f,
+            0,
+            "umem_alloc_64",
+            64,
+            0,
+            &[SlabSpec {
+                base: BUFFERS,
+                chunks: 4,
+                free: Vec::new(),
+            }],
+        );
+        let heap = UmemHeap::build(&f).expect("the walk built an index");
+        // The slot is the first word of the second buffer; the frame
+        // holding the pointers sits past the slabs.
+        let (slot, frame) = (BUFFERS + 64, BUFFERS + 0x1000);
+        let mut planted = Planted::at(&snapshot, BUFFERS);
+        planted.word(frame, slot);
+        planted.pair(slot);
+        let empty = Empty::new(&bundle);
+        let indexed = Sources {
+            heap: Some(&heap),
+            ..empty.sources()
+        };
+        let at = attributor(&planted, &bundle, &empty, &indexed);
+        let roots = vec![Root {
+            at: SlotRoot::Frame { task: 0, frame: 1 },
+            value: value(&at, FRAME, frame),
+        }];
+        // Every candidate is typed as the coroutine state: a waker at
+        // its start, another 24 bytes in.
+        let ptr = |target| PointerMember {
+            target,
+            pointee: id(CORO_STATE),
+            root: 0,
+            at: frame,
+        };
+        let hop_of = |at: &Attributor<'_, '_, Planted<'_>>, pointers: &[PointerMember]| match at
+            .by_hop(&hit(slot), &roots, pointers)
+        {
+            Some(Attribution::Typed { path, .. }) => {
+                let hop = path.hop.expect("a hop");
+                Some((hop.addr, hop.steps))
+            }
+            None => None,
+            other => panic!("{other:?}"),
+        };
+        // The pointer into the buffer below would reach the slot as
+        // its `unsure` waker; the index rules it out, and the pointer
+        // at the slot itself is the hop.
+        assert_eq!(
+            hop_of(&at, &[ptr(BUFFERS + 40), ptr(slot)]),
+            Some((slot, vec!["live".to_string()]))
+        );
+        // A pointer past the slot in its own buffer, or into the
+        // buffer above, reaches nothing.
+        assert_eq!(hop_of(&at, &[ptr(slot + 16)]), None);
+        assert_eq!(hop_of(&at, &[ptr(BUFFERS + 128)]), None);
+        // Without an index the pointer at the slot still corroborates.
+        let bare = empty.sources();
+        let at = attributor(&planted, &bundle, &empty, &bare);
+        assert_eq!(
+            hop_of(&at, &[ptr(slot)]),
+            Some((slot, vec!["live".to_string()]))
         );
     }
 

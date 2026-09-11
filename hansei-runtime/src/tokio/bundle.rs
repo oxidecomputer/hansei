@@ -57,6 +57,49 @@ const WATCH_RECEIVER: &str = "tokio::sync::watch::Receiver<";
 /// The shared state itself, as `changed_impl` borrows it.
 const WATCH_SHARED: &str = "tokio::sync::watch::Shared<";
 
+/// Whether `addr` lies in `value`'s storage.
+pub(crate) fn contains(value: Value<'_>, addr: u64) -> bool {
+    addr >= value.addr && addr - value.addr < value.bytes.len() as u64
+}
+
+/// A watch channel's words, as both readers print them.
+pub(crate) struct WatchWords {
+    /// The `Shared`'s address: `data`'s offset into the `ArcInner`.
+    pub addr: u64,
+    pub version: u64,
+    pub closed: bool,
+    pub receivers: u64,
+    pub senders: u64,
+}
+
+/// The watch channel behind `arc`, an `ArcInner<watch::Shared<T>>`
+/// value, read through the roles rooted at it — `at` walks a role to
+/// its value, `word` reads one as a u64 — when the `Notify` at
+/// `notify` is one of its `notify_rx` array: the state word's version
+/// and closed bit, and both handle counts. Shared by the wait
+/// assessor's target and the attributor's reading, so the two never
+/// disagree on a channel.
+pub(crate) fn watch_words_of<'b>(
+    arc: Value<'b>,
+    notify: u64,
+    at: &dyn Fn(WalkRole) -> Option<Value<'b>>,
+    word: &dyn Fn(WalkRole) -> Option<u64>,
+) -> Option<WatchWords> {
+    use hansei_bundle::tokio::watch;
+    if !contains(at(WalkRole::WatchSharedNotifyRx)?, notify) {
+        return None;
+    }
+    let state = word(WalkRole::WatchSharedState)?;
+    let data = arc.ty.member("data").map(|m| m.offset()).unwrap_or(0);
+    Some(WatchWords {
+        addr: arc.addr + data,
+        version: state >> watch::VERSION_SHIFT,
+        closed: state & watch::CLOSED != 0,
+        receivers: word(WalkRole::WatchSharedRxCount)?,
+        senders: word(WalkRole::WatchSharedTxCount)?,
+    })
+}
+
 /// Whether an `Option<T>` value holds a `Some`, by its active variant;
 /// `None` where the bytes decode to no variant or the type is not an
 /// enum.
@@ -1463,25 +1506,18 @@ impl<'b, T: Target> Context<'b, T> {
     /// of its `notify_rx` array. Reads the state word and both handle
     /// counts from the value.
     pub fn watch_shared_target(&self, arc: Value<'b>, notify: u64) -> Option<WaitTarget> {
-        let Ok(Some(Walked::At(notify_rx))) =
-            self.walk(WalkRole::WatchSharedNotifyRx).try_walk(arc)
-        else {
-            return None;
+        let at = |role: WalkRole| match self.walk(role).try_walk(arc) {
+            Ok(Some(Walked::At(value))) => Some(value),
+            _ => None,
         };
-        let within =
-            notify >= notify_rx.addr && notify - notify_rx.addr < notify_rx.bytes.len() as u64;
-        if !within {
-            return None;
-        }
         let word = |role: WalkRole| self.walk(role).try_read::<u64>(arc).ok().flatten();
-        let state = word(WalkRole::WatchSharedState)?;
-        let data = arc.ty.member("data").map(|m| m.offset()).unwrap_or(0);
+        let words = watch_words_of(arc, notify, &at, &word)?;
         Some(WaitTarget::Watch {
-            addr: arc.addr + data,
-            version: state >> hansei_bundle::tokio::watch::VERSION_SHIFT,
-            closed: state & hansei_bundle::tokio::watch::CLOSED != 0,
-            receivers: word(WalkRole::WatchSharedRxCount)?,
-            senders: word(WalkRole::WatchSharedTxCount)?,
+            addr: words.addr,
+            version: words.version,
+            closed: words.closed,
+            receivers: words.receivers,
+            senders: words.senders,
         })
     }
 
@@ -5257,6 +5293,80 @@ mod tests {
         // The v0 spelling of `task::raw::poll`, however the future
         // type parameter mangles.
         assert!(sym.name.contains("3raw4poll"), "{}", sym.name);
+    }
+
+    fn armed_select() -> &'static (Bundle, Snapshot) {
+        static PAIR: OnceLock<(Bundle, Snapshot)> = OnceLock::new();
+        PAIR.get_or_init(|| testkit::load_any("armed-select"))
+    }
+
+    /// A frame member is sliced at its own offset and size: the value
+    /// handed on carries exactly the member's bytes, at the member's
+    /// address.
+    #[test]
+    fn test_frame_members_slice_each_member_at_its_offset() {
+        let (bundle, snapshot) = sleep_join();
+        let ctx = testkit::context(bundle, snapshot);
+        // Any struct with a sized, non-pointer member well past its
+        // start (past 8, so offset and size cannot coincide).
+        let (frame_ty, member) = (0..bundle.types.types.len() as u32)
+            .filter_map(|i| ctx.view.ty(hansei_bundle::BundleTypeId(i)))
+            .filter(|ty| matches!(ty.classify(), hansei_bundle::TypeClass::Struct))
+            .find_map(|ty| {
+                let m = ty.members().find(|m| {
+                    m.offset() >= 8 && m.ty().size() > 0 && m.ty().pointer_target().is_none()
+                })?;
+                Some((ty, m))
+            })
+            .expect("a struct with a sized member past its start");
+        let wanted = member.ty().name().to_string();
+        let accept = |name: &str| name == wanted;
+        let bytes = vec![0xab_u8; frame_ty.size() as usize];
+        let base = 0x7000_0000;
+        let frame = Value::new(frame_ty, base, &bytes);
+        let values = ctx.frame_members(&[frame], &accept);
+        assert!(
+            values.iter().any(|v| v.addr == base + member.offset()),
+            "{wanted} at {:#x} in {}: {:?}",
+            member.offset(),
+            frame_ty.name(),
+            values.iter().map(|v| v.addr).collect::<Vec<_>>()
+        );
+        for v in &values {
+            assert_eq!(v.bytes.len() as u64, v.ty.size(), "{}", v.ty.name());
+        }
+    }
+
+    /// A `Notify`'s state is read from its word, whatever it says: one
+    /// patched to `notified` with two `notify_waiters` calls above the
+    /// bits reads back as exactly that.
+    #[test]
+    fn test_notify_state_reads_the_word() {
+        use crate::testkit::corrupt::Corrupt;
+        use hansei_bundle::tokio::notify;
+        let (bundle, snapshot) = armed_select();
+        let ctx = testkit::context(bundle, snapshot);
+        let notify_ty = ctx
+            .view
+            .find_by_name("tokio::sync::notify::Notify")
+            .next()
+            .expect("the fixture's bundle carries Notify");
+        // Somewhere readable to lay one: the first task's header.
+        let list = testkit::tasks(&ctx, snapshot);
+        let addr = list.tasks[0].addr.0;
+        let key = ValueKey {
+            addr,
+            ty: notify_ty.id(),
+        };
+        let read = ReadContext::none();
+        let value = ctx.read_keyed(key, &read).expect("a Notify-shaped read");
+        let Ok(Some(Walked::At(state))) = ctx.walk(WalkRole::NotifyState).try_walk(value) else {
+            panic!("the state role walks");
+        };
+        let word = notify::NOTIFIED | (2 << notify::CALLS_SHIFT);
+        let patched = Corrupt::new(snapshot).patch(state.addr, word);
+        let ctx = Context::new(&patched, BundleView::new(bundle)).unwrap();
+        assert_eq!(ctx.notify_state(key, &read), Some(word));
     }
 }
 

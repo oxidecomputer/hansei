@@ -119,6 +119,9 @@ fn commands(
         // The by-value fallback's refusal: nothing maps 0x1, so the
         // scan is never entered and the miss names what sync lists.
         ("sync-miss", "sync 0x1".to_owned()),
+        // `--kind address` is one address's reading and combines with
+        // no block family: refused before the address is looked up.
+        ("sync-mixed", "sync 0x1 --kind address,mpsc".to_owned()),
         // The channel families alone: every oneshot, mpsc and watch a
         // parked waker names, with the owner on each side.
         ("channels", "channels".to_owned()),

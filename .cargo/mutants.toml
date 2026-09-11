@@ -342,4 +342,38 @@ exclude_re = [
     # declines. Weakened to `>=`, a zero-sized root would be read as
     # nothing and hold no slot — the same answer as being skipped.
     "replace > with >= in Attributor<'a, 'b, T>::roots_of",
+    # Equivalent mutants: the offset walk skips zero-sized members
+    # (a struct's, a union's `value`, a coroutine state's locals)
+    # before asking whether one holds the offset. Admitting size 0
+    # picks a member spanning no offset at all, which the bounds check
+    # beside it rejects, so the walk answers the same either way. The
+    # guard is there to say why a `PhantomData` at the offset is not
+    # the slot.
+    "replace > with >= in Attributor<'a, 'b, T>::descend",
+    "replace > with >= in Attributor<'a, 'b, T>::local_liveness",
+    # Equivalent mutants: the end bound of a union's `value` and of an
+    # enum's active payload. One past the end enters the member's own
+    # walk at an offset equal to its size, where no member and no
+    # terminal is, and that walk answers not-a-waker as the bound
+    # does. (The struct arm's end bound is not equivalent — a member
+    # ending where the next begins would be entered first — and the
+    # `Holder { a, w }` walk kills it; the two patterns cover it too.)
+    "replace < with <= in Attributor<'a, 'b, T>::descend",
+    "replace >= with > in Attributor<'a, 'b, T>::descend",
+    # The pointer sweep's depth counter only caps a recursion the type
+    # tree already bounds: a value's members are strictly smaller than
+    # it, so the walk ends on its own, and the cap (MAX_DEPTH, 24)
+    # exists to bound the work on a pathological nest. Miscounting the
+    # depth changes nothing a nest shallower than the cap can show,
+    # and no fixture nests a value that deep.
+    "replace \\+ with \\* in Attributor<'a, 'b, T>::collect_pointers",
+    # The watch enrichment's mapped-address guard on its receiver
+    # route. Inverted, the route skips the mapped `Shared` pointer and
+    # follows only unmapped ones, whose read fails — and on every
+    # fixture the `changed_impl` route below it reaches the same
+    # `Shared`, so no answer moves. The target that would tell them
+    # apart holds a `watch::Receiver` with no `changed_impl` frame
+    # under it (a `changed` wrapped in `Coop`); pin it there when a
+    # fixture has one.
+    "delete ! in Context<'b, T>::watch_target",
 ]

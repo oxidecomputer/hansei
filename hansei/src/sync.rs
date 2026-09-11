@@ -495,13 +495,11 @@ fn channel_blocks(view: &View<'_>, kind: Kind) -> BTreeMap<u64, ChannelBlock> {
 /// One channel's block: the kind word and address the cells print, the
 /// primitive's own words, then who is parked on each side.
 fn print_channel(block: &ChannelBlock, out: &mut dyn io::Write) -> Result<()> {
+    // The reading's own variant picks its words; the owner kind only
+    // decides which side a oneshot is read from, and a block reads it
+    // from the receiver's.
     let words = match &block.reading {
-        Some(reading) => reading.words(match block.kind {
-            Kind::Oneshot => OwnerKind::OneshotRx,
-            Kind::Watch => OwnerKind::Watch,
-            Kind::Notify => OwnerKind::Notify,
-            _ => OwnerKind::Mpsc,
-        }),
+        Some(reading) => reading.words(OwnerKind::OneshotRx),
         None => "state not read".to_string(),
     };
     writeln!(out, "{} {:#x}: {words}", block.kind.word(), block.addr)?;
@@ -1301,25 +1299,30 @@ mod sync_tests {
     /// One channel of each family, named by the slots of three tasks:
     /// task 40 receives on all three, task 7 watches the oneshot's
     /// receiver from the sending side, task 41 shares the watch; task
-    /// 9 is blocked on the mpsc's semaphore, which lies in the `Chan`
-    /// the receiver's slot was reached through.
+    /// 9 and 12 are blocked on the mpsc's semaphore, which lies in the
+    /// `Chan` the receiver's slot was reached through, and tasks 10 and
+    /// 11 on semaphores outside it — one past the `Chan`, one exactly
+    /// at its end — which are no senders of the channel.
     fn channels_fixture() -> Fixture {
+        let semaphore = |addr| {
+            Some(WaitTarget::Semaphore {
+                addr,
+                owner: None,
+                num_permits: 1,
+                available: 0,
+                closed: false,
+                waiters: Vec::new(),
+            })
+        };
         let mut fixture = Fixture::new(
             vec![
                 wait(40, None),
                 wait(7, None),
                 wait(41, None),
-                wait(
-                    9,
-                    Some(WaitTarget::Semaphore {
-                        addr: 0xb0c0,
-                        owner: None,
-                        num_permits: 1,
-                        available: 0,
-                        closed: false,
-                        waiters: Vec::new(),
-                    }),
-                ),
+                wait(9, semaphore(0xb0c0)),
+                wait(10, semaphore(0xd0c0)),
+                wait(11, semaphore(0xb200)),
+                wait(12, semaphore(0xb0c0)),
             ],
             Vec::new(),
         );
@@ -1399,7 +1402,7 @@ mod sync_tests {
              \n\
              mpsc 0xb010: 2 senders, capacity 4, 4 unread\n    \
              rx: task 40\n    \
-             tx blocked on capacity: task 9\n\
+             tx blocked on capacity: task 9, task 12\n\
              \n\
              watch 0xc010: version 3, 1 sender, 2 receivers\n    \
              rx: task 40, task 41\n"

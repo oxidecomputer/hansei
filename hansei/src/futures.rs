@@ -1378,10 +1378,21 @@ mod tests {
         let mut joining = held(0, 0xd000, None);
         joining.waiting_on = Some("task 29".to_string());
         joining.wait = Some(WaitKind::Task { addr: 0x1d00 });
+        // A oneshot receiver and a watch receiver, each with its own
+        // slot inside it — the reader's cell speaks for exactly the
+        // slot of its kind.
+        let mut awaiting = held(0, 0xe000, None);
+        awaiting.waiting_on = Some("oneshot rx 0x9600 (nothing sent, sender alive)".to_string());
+        awaiting.wait = Some(WaitKind::Oneshot { addr: 0x9600 });
+        let mut changed = held(0, 0xf000, None);
+        changed.waiting_on = Some("watch 0x9700 (version 3, 1 receiver)".to_string());
+        changed.wait = Some(WaitKind::Watch { addr: 0x9700 });
         let mut joiner = child(0x2010, Some("app::child"));
         joiner.waiting_on = Some("task 28".to_string());
         let census = census(
-            vec![sleep, recv, notified, reading, locking, queued, joining],
+            vec![
+                sleep, recv, notified, reading, locking, queued, joining, awaiting, changed,
+            ],
             vec![set(0, vec![joiner])],
         );
 
@@ -1478,6 +1489,48 @@ mod tests {
                         task_id: Some(30),
                     },
                 }),
+                None,
+            ),
+            // The oneshot's receiver slot and the watch's queued node,
+            // each in its own find.
+            slot(
+                0xe010,
+                Attribution::Owner {
+                    kind: OwnerKind::OneshotRx,
+                    primitive: 0x9600,
+                    holder: "Inner".to_string(),
+                    member: "rx_task".to_string(),
+                    path: SlotPath {
+                        root: SlotRoot::Find {
+                            index: 7,
+                            addr: 0xe000,
+                        },
+                        steps: vec!["rx_task".to_string()],
+                        hop: None,
+                    },
+                    validity: Validity::SelfDescribing,
+                    reading: None,
+                },
+                None,
+            ),
+            slot(
+                0xf010,
+                Attribution::Owner {
+                    kind: OwnerKind::Watch,
+                    primitive: 0x9700,
+                    holder: "Notified".to_string(),
+                    member: "waiter".to_string(),
+                    path: SlotPath {
+                        root: SlotRoot::Find {
+                            index: 8,
+                            addr: 0xf000,
+                        },
+                        steps: vec!["waiter".to_string()],
+                        hop: None,
+                    },
+                    validity: Validity::SelfDescribing,
+                    reading: None,
+                },
                 None,
             ),
             // An io waiter node inside the readiness future.
@@ -1577,6 +1630,8 @@ mod tests {
             (0xb000, "the semaphore at 0x9300"),
             (0xc000, "notify 0x9400 (waiting)"),
             (0xd000, "task 29"),
+            (0xe000, "oneshot rx 0x9600 (nothing sent, sender alive)"),
+            (0xf000, "watch 0x9700 (version 3, 1 receiver)"),
         ] {
             assert!(row(addr).armed, "{addr:#x}");
             assert_eq!(row(addr).waiting_on.as_deref(), Some(cell), "{addr:#x}");
