@@ -3,7 +3,7 @@ source: hansei/src/offline.rs
 description: "`tasks --exec trace -n` over illumos/joinset"
 ---
 task 3
-Waiting on: unknown at core::future::poll_fn::PollFn
+Waiting on: slot 0xADDR in tokio::util::idle_notified_set::ListsInner
   slot 0xADDR: waker in tokio::util::idle_notified_set::ListsInner.waker, reached from #2 set → inner → lists → * → data → data → waker
 
 what core::future::poll_fn::PollFn<tokio::task::join_set::JoinSet::join_next::{async_fn#0}::{closure_env#0}<u32>> polls is not established (no reviewed rule covers its implementation); the chain ends there

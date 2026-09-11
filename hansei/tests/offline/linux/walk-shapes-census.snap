@@ -24,7 +24,7 @@ COUNT  TYPE / WAITING ON
     1  async fn walk_shapes::abandoner
        └─ 1  notify
     1  async fn walk_shapes::chained
-       └─ 1  unknown
+       └─ 1  one of several
     1  async fn walk_shapes::hidden_blocked
        └─ 1  a tokio::sync::Semaphore (semaphore)
     1  async fn walk_shapes::holder

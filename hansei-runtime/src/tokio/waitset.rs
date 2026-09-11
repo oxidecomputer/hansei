@@ -12,12 +12,17 @@
 //! definition of awaiting: the places that hold this task's waker. Two
 //! kinds of evidence say where those are. A **branch** is a future-typed
 //! value the stop frame holds or borrows, inspected on its own under the
-//! task's identity; a **slot** is a live waker location the registries
-//! attribute to the task — a wheel entry, an io waiter. The two are
-//! joined by containment: a slot inside a branch's storage arms that
-//! branch. A branch whose own reviewed protocol read this task's waker
-//! is armed by that protocol. A slot inside no branch is a member on
-//! its own.
+//! task's identity; a **slot** is a live waker location attributed to
+//! the task — by the registries (a wheel entry, an io waiter) while the
+//! analysis runs, and by the waker sweep afterwards, which finds every
+//! parked pair in memory and names what holds it. The two are joined by
+//! containment: a slot inside a branch's storage arms that branch. A
+//! branch whose own reviewed protocol read this task's waker is armed
+//! by that protocol. A slot inside no branch is a member on its own.
+//! The sweep's slots arrive last ([`Context::fold_slots`]), once the
+//! attribution has walked the analysis's own frames, so the assessment
+//! every consumer reads carries them: the listing, the graph, the
+//! census and the trace header say the same thing.
 //!
 //! The set is an *observation beside* the unknown continuation, never a
 //! continuation itself, and it is **disjunctive**: any one member's wake
@@ -29,14 +34,21 @@
 //! held, and a stop whose branches are all such prints `unknown` with
 //! their count.
 
+use super::Lifecycle;
 use super::RawInstant;
-use super::assess::{Assessed, AssessmentPass, TaskFacts, WaitAssessment};
+use super::assess::{
+    Assessed, AssessmentPass, ContinuationStatus, TaskFacts, WaitAssessment, WaitUnknownReason,
+};
+use super::attribution::{
+    Attributed, AttributedSlot, Attribution, RegistrySlot, member_accounts, verified_accounts,
+};
 use super::bundle::{
-    AwaitChain, AwaitFrame, ChainEnd, Context, IoSlot, Readiness, Registries, TaskList, WaitTarget,
-    WheelState, deadline_text,
+    AwaitChain, AwaitFrame, ChainEnd, Context, IoSlot, Readiness, Registries, Task, TaskList,
+    WaitTarget, WheelState, deadline_text,
 };
 use super::census::{self, Find, Path, ScanPlan};
 use super::chain::{FutureInspection, InspectionMode, NextFuture};
+use super::graph::{Analysis, TaskWait};
 use super::observe::{ReadContext, ValueKey};
 
 use foldhash::{HashMap, HashSet};
@@ -56,10 +68,13 @@ const MAX_ADAPTER_HOPS: usize = 4;
 /// registries attribute to it, any one of which wakes it.
 #[derive(Debug)]
 pub struct WaitSet {
-    /// The stop frame the set was computed at.
-    pub at: ValueKey,
-    /// Why the chain ends there.
-    pub reason: SemanticIssueKind,
+    /// The stop frame the set was computed at: the future no rule
+    /// polls through. `None` where the chain was cut short of any
+    /// stop — an unresolved trait object, a depth limit, a root that
+    /// did not read — and the set is the sweep's slots alone.
+    pub at: Option<ValueKey>,
+    /// Why the chain ends there, where it ends at a stop.
+    pub reason: Option<SemanticIssueKind>,
     /// Every branch, armed or not, then every slot in no branch. At
     /// least one member is armed, or there is no set.
     pub members: Vec<WaitMember>,
@@ -74,23 +89,55 @@ impl WaitSet {
         self.members.iter().filter(|m| m.armed.is_some())
     }
 
-    /// The cell: every armed member's entry, joined with ` + `, so
-    /// a set of one reads exactly as a verified wait on the same
-    /// resource would.
+    /// The armed members' `(entry, kind)` pairs, sorted, with every
+    /// `unknown` entry past the first collapsed into a count: the
+    /// slots in allocations nothing typed reaches tell a reader
+    /// nothing apart, and a task parked in six of them reads as
+    /// `6× unknown`, not six addresses.
+    fn entries(&self) -> Vec<(String, String)> {
+        let mut entries: Vec<(String, String)> = Vec::new();
+        let mut unknown = 0usize;
+        for member in self.armed() {
+            let (Some(entry), Some(kind)) = (member.cell_entry(), member.kind()) else {
+                continue;
+            };
+            if kind == "unknown" {
+                unknown += 1;
+                if unknown > 1 {
+                    continue;
+                }
+            }
+            entries.push((entry, kind));
+        }
+        if unknown > 1 {
+            for entry in &mut entries {
+                if entry.1 == "unknown" {
+                    entry.0 = format!("{unknown}× unknown");
+                }
+            }
+        }
+        entries.sort();
+        entries
+    }
+
+    /// The cell: every armed member's entry, sorted and joined with
+    /// `, `, so a set of one reads exactly as a verified wait on the
+    /// same resource would.
     pub fn cell(&self) -> String {
-        self.armed()
-            .filter_map(WaitMember::cell_entry)
+        self.entries()
+            .into_iter()
+            .map(|(entry, _)| entry)
             .collect::<Vec<_>>()
-            .join(" + ")
+            .join(", ")
     }
 
     /// The bucket: the armed members' kinds, distinct, sorted and
-    /// joined with `+` — `io+timer` for a select over both.
+    /// joined with `, ` — `io, timer` for a select over both.
     pub fn group_label(&self) -> String {
-        let mut kinds: Vec<String> = self.armed().filter_map(WaitMember::kind).collect();
+        let mut kinds: Vec<String> = self.entries().into_iter().map(|(_, kind)| kind).collect();
         kinds.sort();
         kinds.dedup();
-        kinds.join("+")
+        kinds.join(", ")
     }
 }
 
@@ -171,6 +218,14 @@ pub enum SlotRef {
     /// The branch's own reviewed protocol read this task's waker in
     /// the resource — a queue node, a receiver's cell, a trailer.
     Protocol,
+    /// A pair the waker sweep found and the attribution named: what
+    /// holds it, read from the holder's own words where a reader
+    /// exists. Printed as the slot is everywhere else, against the
+    /// target's stop instant.
+    Swept {
+        slot: Box<AttributedSlot>,
+        stopped: Option<RawInstant>,
+    },
 }
 
 impl SlotRef {
@@ -197,6 +252,7 @@ impl SlotRef {
                 .to_string(),
             ),
             Self::Protocol => None,
+            Self::Swept { slot, stopped } => Some(slot.entry(*stopped)),
         }
     }
 
@@ -205,6 +261,15 @@ impl SlotRef {
             Self::Wheel { .. } => Some("timer".to_string()),
             Self::Io { .. } => Some("io".to_string()),
             Self::Protocol => None,
+            Self::Swept { slot, .. } => Some(slot.bucket()),
+        }
+    }
+
+    /// The sweep's account of `slot`, for a member it arms.
+    pub fn swept(slot: &AttributedSlot, stopped: Option<RawInstant>) -> SlotRef {
+        SlotRef::Swept {
+            slot: Box::new(slot.clone()),
+            stopped,
         }
     }
 
@@ -233,6 +298,7 @@ impl SlotRef {
                 format!("this task's waker in {site}{ready}")
             }
             Self::Protocol => "its protocol read this task's waker".to_string(),
+            Self::Swept { slot, stopped } => slot.detail(*stopped),
         }
     }
 }
@@ -564,8 +630,8 @@ impl<'b, T: Target> Context<'b, T> {
 
         if members.iter().any(|m| m.armed.is_some()) {
             Branches::Set(WaitSet {
-                at: *at,
-                reason: *reason,
+                at: Some(*at),
+                reason: Some(*reason),
                 members,
                 capped,
             })
@@ -616,13 +682,189 @@ impl<'b, T: Target> Context<'b, T> {
         }
         notes
     }
+
+    /// Fold the sweep's slots into the analysis: for every task,
+    /// what the attribution named as holding its waker joins the
+    /// assessment the analysis made without it ([`fold_wait`]). Run
+    /// once, after the attribution — which walks the analysis's own
+    /// frames, and so cannot run inside it — and before any consumer
+    /// reads a wait, so that all of them read the same one.
+    pub fn fold_slots(&self, analysis: &mut Analysis, list: &TaskList, attributed: &Attributed) {
+        let stopped = self.stopped_at();
+        let size_of = |ty: BundleTypeId| self.view.ty(ty).map(|t| t.size());
+        for (task, wait) in list.tasks.iter().zip(analysis.waits.iter_mut()) {
+            let slots: Vec<&AttributedSlot> = attributed.of_task(task.addr.0).collect();
+            if slots.is_empty() {
+                continue;
+            }
+            fold_wait(task, wait, &slots, stopped, &size_of);
+        }
+    }
+}
+
+/// Where in the task's own chain `addr` lies, as a set member's
+/// placement text, or `None` when it lies in no frame.
+fn within_frames(
+    frames: &[ValueKey],
+    addr: u64,
+    size_of: &dyn Fn(BundleTypeId) -> Option<u64>,
+) -> Option<String> {
+    frames.iter().enumerate().find_map(|(i, frame)| {
+        let size = size_of(frame.ty)?;
+        (addr >= frame.addr && addr - frame.addr < size).then(|| {
+            format!(
+                "inside #{}'s storage at +{:#x}",
+                frames.len() - 1 - i,
+                addr - frame.addr
+            )
+        })
+    })
+}
+
+/// Whether `slot` is the very pair `member`'s own evidence already
+/// stands on: the wheel entry or io waiter a registry decoded, the
+/// waker its protocol read in the resource, or a swept pair folded in
+/// before. Such a slot adds no member; any other slot the member
+/// accounts for is a second place the waker is parked in.
+fn twin(
+    member: &WaitMember,
+    slot: &AttributedSlot,
+    size_of: &dyn Fn(BundleTypeId) -> Option<u64>,
+) -> bool {
+    match (&member.armed, &slot.attribution) {
+        (
+            Some(SlotRef::Wheel { entry, .. }),
+            Attribution::Registry(RegistrySlot::Timer { entry: at, .. }),
+        ) => entry == at,
+        (
+            Some(SlotRef::Io { resource, .. }),
+            Attribution::Registry(RegistrySlot::Io { resource: at, .. }),
+        ) => resource == at,
+        (Some(SlotRef::Swept { slot: swept, .. }), _) => swept.slot == slot.slot,
+        (Some(SlotRef::Protocol), _) => matches!(
+            &member.assessment,
+            Some(WaitAssessment::Waiting(verified)) if verified_accounts(verified, slot, size_of)
+        ),
+        (Some(SlotRef::Wheel { .. } | SlotRef::Io { .. }), _) | (None, _) => false,
+    }
+}
+
+/// Fold the slots the sweep attributed to one task into its wait.
+///
+/// A blocking cell and a mid-poll task are not parked, whatever pair
+/// lies in their storage, and are left alone. At an unknown continuation the slots and the stop's branches make
+/// the wait set, exactly as the registries' slots did in the analysis:
+/// a slot inside a branch's storage, or reached through a pointer the
+/// branch holds, arms that branch; a slot no branch accounts for is a
+/// member on its own, placed in the task's chain where it lies there;
+/// a slot a member's own evidence already stands on is that evidence
+/// seen again and adds nothing. A set the analysis already assembled
+/// grows the same way, and branches it returned as merely held become
+/// a set once something arms one of them or sits beside them. Beside
+/// a verified wait a slot the wait does not account for is a
+/// diagnostic note, never a member — the same rule the registries'
+/// slots follow — except the wheel and io pairs the registries already
+/// noted, and a pair in memory nothing typed reaches, which names
+/// nothing to contradict the wait with. Every other assessment is
+/// definite and is left alone.
+pub fn fold_wait(
+    task: &Task,
+    wait: &mut TaskWait,
+    slots: &[&AttributedSlot],
+    stopped: Option<RawInstant>,
+    size_of: &dyn Fn(BundleTypeId) -> Option<u64>,
+) {
+    if task.is_blocking() || task.state.lifecycle() == Lifecycle::Running {
+        return;
+    }
+    if let WaitAssessment::Waiting(verified) = &wait.assessment {
+        for slot in slots {
+            // A note names what contradicts the wait. A pair in memory
+            // nothing typed reaches names nothing — on a target with no
+            // allocator index it may be a ghost of the storage's last
+            // occupant — and stays a slot line, never a note.
+            if verified_accounts(verified, slot, size_of)
+                || matches!(
+                    slot.attribution,
+                    Attribution::Registry(RegistrySlot::Timer { .. } | RegistrySlot::Io { .. })
+                        | Attribution::Unknown { .. }
+                )
+            {
+                continue;
+            }
+            wait.notes.push(format!(
+                "{} also holds this task's waker, outside the verified wait",
+                slot.label()
+            ));
+        }
+        return;
+    }
+    let placeholder = WaitAssessment::Unknown(WaitUnknownReason::Continuation);
+    let (mut members, capped, at, reason) =
+        match std::mem::replace(&mut wait.assessment, placeholder) {
+            WaitAssessment::Set(set) => (set.members, set.capped, set.at, set.reason),
+            WaitAssessment::Unknown(WaitUnknownReason::Continuation) => {
+                let (at, reason) = match &wait.continuation {
+                    ContinuationStatus::Unknown { at, reason } => (Some(*at), Some(*reason)),
+                    _ => (None, None),
+                };
+                (
+                    std::mem::take(&mut wait.held),
+                    std::mem::take(&mut wait.held_capped),
+                    at,
+                    reason,
+                )
+            }
+            other => {
+                wait.assessment = other;
+                return;
+            }
+        };
+    let mut alone = Vec::new();
+    for slot in slots {
+        // Every member that accounts for the slot: a branch whose
+        // storage holds it or whose pointer reached it, a member whose
+        // own evidence it is. Seen already anywhere, it adds nothing;
+        // otherwise it arms the first unarmed branch it lies in, or
+        // stands alone.
+        let accounted: Vec<usize> = (0..members.len())
+            .filter(|&i| member_accounts(&members[i], slot, size_of))
+            .collect();
+        if accounted.iter().any(|&i| twin(&members[i], slot, size_of)) {
+            continue;
+        }
+        match accounted.iter().find(|&&i| members[i].armed.is_none()) {
+            Some(&i) => members[i].armed = Some(SlotRef::swept(slot, stopped)),
+            None => alone.push(WaitMember {
+                route: MemberRoute::SlotOnly {
+                    within: within_frames(&wait.frames, slot.slot, size_of),
+                },
+                key: None,
+                future: None,
+                assessment: None,
+                notes: Vec::new(),
+                armed: Some(SlotRef::swept(slot, stopped)),
+            }),
+        }
+    }
+    members.extend(alone);
+    if members.iter().any(|member| member.armed.is_some()) {
+        wait.assessment = WaitAssessment::Set(WaitSet {
+            at,
+            reason,
+            members,
+            capped,
+        });
+    } else {
+        wait.held = members;
+        wait.held_capped = capped;
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::testkit::{self, load_any};
-    use crate::tokio::assess::WaitUnknownReason;
     use crate::tokio::bundle::{FutureInfo, IoResourceInfo, IoWaiterInfo, Task, TimerEntryInfo};
     use crate::tokio::observe::Consistency;
 
@@ -769,7 +1011,7 @@ mod tests {
             member.notes.iter().any(|n| n.starts_with("also armed:")),
             "{member:#?}"
         );
-        assert_eq!(set.at.ty, inspection_stop(&ctx, task));
+        assert_eq!(set.at.unwrap().ty, inspection_stop(&ctx, task));
     }
 
     fn inspection_stop(ctx: &Context<'_, Snapshot>, task: &Task) -> BundleTypeId {
@@ -861,9 +1103,9 @@ mod tests {
         );
         assert_eq!(
             set.cell(),
-            format!("io 0x7100 (readiness) + timer {outside:#x} + io 0x7000 (readable)")
+            format!("io 0x7000 (readable), io 0x7100 (readiness), timer {outside:#x}")
         );
-        assert_eq!(set.group_label(), "io+timer");
+        assert_eq!(set.group_label(), "io, timer");
     }
 
     /// Every other end of a chain — a verified primitive here — has no
@@ -1282,5 +1524,380 @@ mod tests {
             "harvested {harvested:?} against cached {cached:?}"
         );
         assert_eq!(e.registries.stopped, ctx.stopped_at());
+    }
+
+    // ---- the fold: the sweep's slots into the analysis ----
+
+    use crate::tokio::assess::VerifiedWait;
+    use crate::tokio::attribution::{OwnerKind, SlotPath, SlotRoot, Validity};
+    use crate::tokio::bundle::{OwnerResolution, TaskKind};
+    use crate::tokio::graph::TaskRef;
+    use crate::tokio::wakers::Owner;
+    use crate::tokio::{TaskAddr, TaskState};
+
+    /// The one type every hand-built value here has, 0x40 bytes wide.
+    const TY: BundleTypeId = BundleTypeId(1);
+    const REF_ONE: u64 = 1 << 6;
+    const RUNNING: u64 = 0b0001;
+
+    fn size_of(ty: BundleTypeId) -> Option<u64> {
+        (ty == TY).then_some(0x40)
+    }
+
+    fn key(addr: u64) -> ValueKey {
+        ValueKey { addr, ty: TY }
+    }
+
+    fn a_task(state: u64, kind: TaskKind) -> Task {
+        Task {
+            addr: TaskAddr(0x1000),
+            state: TaskState(REF_ONE | state),
+            owner_id: None,
+            task_id: Some(1),
+            spawn_location: None,
+            future: FutureInfo::Unknown { poll_symbol: None },
+            kind,
+            owner: OwnerResolution::Unknown,
+        }
+    }
+
+    fn idle() -> Task {
+        a_task(0, TaskKind::Async)
+    }
+
+    /// A task whose chain — root `0x9000`, stop `0x5000` — ends at a
+    /// stop no rule covers, holding `held` there.
+    fn stopped(held: Vec<WaitMember>) -> TaskWait {
+        TaskWait {
+            task: TaskRef {
+                addr: TaskAddr(0x1000),
+                task_id: Some(1),
+            },
+            assessment: WaitAssessment::Unknown(WaitUnknownReason::Continuation),
+            continuation: ContinuationStatus::Unknown {
+                at: key(0x5000),
+                reason: SemanticIssueKind::NoRule,
+            },
+            depth: 2,
+            site: None,
+            observation: None,
+            notes: Vec::new(),
+            held,
+            held_capped: 0,
+            frames: vec![key(0x9000), key(0x5000)],
+        }
+    }
+
+    /// A branch of the stop, its storage at `addr`.
+    fn branch(addr: u64) -> WaitMember {
+        WaitMember {
+            route: MemberRoute::Branch {
+                local: "b".to_string(),
+                borrowed: false,
+            },
+            key: Some(key(addr)),
+            future: Some("x::B".to_string()),
+            assessment: Some(WaitAssessment::Unknown(WaitUnknownReason::Continuation)),
+            notes: Vec::new(),
+            armed: None,
+        }
+    }
+
+    fn swept(at: u64, attribution: Attribution) -> AttributedSlot {
+        AttributedSlot {
+            hit: 0,
+            slot: at,
+            owner: Owner::Task {
+                header: 0x1000,
+                index: 0,
+            },
+            attribution,
+            within: None,
+        }
+    }
+
+    fn path() -> SlotPath {
+        SlotPath {
+            root: SlotRoot::Frame { task: 0, frame: 0 },
+            steps: Vec::new(),
+            hop: None,
+        }
+    }
+
+    fn typed(at: u64) -> AttributedSlot {
+        swept(
+            at,
+            Attribution::Typed {
+                holder: "x::Holder".to_string(),
+                member: "w".to_string(),
+                path: path(),
+                validity: Validity::Raw,
+            },
+        )
+    }
+
+    fn notify_slot(at: u64, primitive: u64) -> AttributedSlot {
+        swept(
+            at,
+            Attribution::Owner {
+                kind: OwnerKind::Notify,
+                primitive,
+                holder: "Notified".to_string(),
+                member: "waiter".to_string(),
+                path: path(),
+                validity: Validity::SelfDescribing,
+                reading: None,
+            },
+        )
+    }
+
+    fn timer_slot(entry: u64) -> AttributedSlot {
+        swept(
+            entry,
+            Attribution::Registry(RegistrySlot::Timer {
+                entry,
+                state: None,
+                deadline: None,
+            }),
+        )
+    }
+
+    fn nowhere(at: u64) -> AttributedSlot {
+        swept(
+            at,
+            Attribution::Unknown {
+                cache: None,
+                size: None,
+                offset: None,
+            },
+        )
+    }
+
+    fn notify_target(addr: u64) -> WaitTarget {
+        WaitTarget::Notify {
+            addr,
+            state: None,
+            waiters: None,
+        }
+    }
+
+    fn fold(task: &Task, wait: &mut TaskWait, slots: &[AttributedSlot]) {
+        let slots: Vec<&AttributedSlot> = slots.iter().collect();
+        fold_wait(task, wait, &slots, None, &size_of);
+    }
+
+    fn set_of(wait: &TaskWait) -> &WaitSet {
+        match &wait.assessment {
+            WaitAssessment::Set(set) => set,
+            other => panic!("a set, not {other:?}"),
+        }
+    }
+
+    /// A slot inside a held branch arms it, and the held branches
+    /// become a set; a slot in no branch is a member on its own,
+    /// placed in the chain frame it lies in — the root here, numbered
+    /// from the stop — or nowhere.
+    #[test]
+    fn test_the_fold_arms_a_branch_by_a_slot_inside_it() {
+        let task = idle();
+        let mut wait = stopped(vec![branch(0x6000)]);
+        fold(
+            &task,
+            &mut wait,
+            &[typed(0x6010), typed(0x9008), typed(0x7000)],
+        );
+        let set = set_of(&wait);
+        assert_eq!(
+            (set.at, set.reason),
+            (Some(key(0x5000)), Some(SemanticIssueKind::NoRule))
+        );
+        assert_eq!(set.members.len(), 3, "{:#?}", set.members);
+        assert!(matches!(
+            &set.members[0].armed,
+            Some(SlotRef::Swept { slot, .. }) if slot.slot == 0x6010
+        ));
+        let within = |member: &WaitMember| match &member.route {
+            MemberRoute::SlotOnly { within } => within.clone(),
+            other => panic!("a slot on its own, not {other:?}"),
+        };
+        assert_eq!(
+            within(&set.members[1]),
+            Some("inside #1's storage at +0x8".to_string())
+        );
+        assert_eq!(within(&set.members[2]), None);
+        assert_eq!(
+            set.cell(),
+            "slot 0x6010 in x::Holder, slot 0x7000 in x::Holder, slot 0x9008 in x::Holder"
+        );
+        assert_eq!(set.group_label(), "slot in x::Holder");
+        assert!(wait.held.is_empty());
+    }
+
+    /// The pair a member's evidence already stands on adds nothing: the
+    /// wheel entry that armed a branch, the entry a slot-only member
+    /// is, the waker a branch's protocol read. A different slot inside
+    /// an armed branch is a second place the waker is parked, and a
+    /// member on its own.
+    #[test]
+    fn test_the_fold_skips_a_twin_and_adds_a_second_parking_place() {
+        let task = idle();
+        let mut armed = branch(0x6000);
+        armed.armed = Some(SlotRef::Wheel {
+            entry: 0x6008,
+            state: None,
+            deadline: None,
+            stopped: None,
+        });
+        let mut verified = branch(0x8000);
+        verified.assessment = Some(WaitAssessment::Waiting(VerifiedWait::testkit(
+            notify_target(0x7000),
+            None,
+        )));
+        verified.armed = Some(SlotRef::Protocol);
+        let alone = WaitMember {
+            route: MemberRoute::SlotOnly { within: None },
+            key: None,
+            future: None,
+            assessment: None,
+            notes: Vec::new(),
+            armed: Some(SlotRef::Wheel {
+                entry: 0xee00,
+                state: None,
+                deadline: None,
+                stopped: None,
+            }),
+        };
+        let mut wait = stopped(Vec::new());
+        wait.assessment = WaitAssessment::Set(WaitSet {
+            at: Some(key(0x5000)),
+            reason: Some(SemanticIssueKind::NoRule),
+            members: vec![armed, verified, alone],
+            capped: 1,
+        });
+        fold(
+            &task,
+            &mut wait,
+            &[
+                timer_slot(0x6008),
+                timer_slot(0xee00),
+                notify_slot(0x8010, 0x7000),
+                notify_slot(0x6020, 0x7100),
+            ],
+        );
+        let set = set_of(&wait);
+        assert_eq!(set.capped, 1);
+        assert_eq!(set.members.len(), 4, "{:#?}", set.members);
+        assert!(matches!(set.members[0].armed, Some(SlotRef::Wheel { .. })));
+        assert!(matches!(set.members[1].armed, Some(SlotRef::Protocol)));
+        assert!(matches!(set.members[2].armed, Some(SlotRef::Wheel { .. })));
+        assert!(matches!(
+            &set.members[3].armed,
+            Some(SlotRef::Swept { slot, .. }) if slot.slot == 0x6020
+        ));
+        assert_eq!(
+            set.cell(),
+            "notify 0x7000, notify 0x7100, timer 0x6008, timer 0xee00"
+        );
+        assert_eq!(set.group_label(), "notify, timer");
+        // Folding the same slots again changes nothing: every one is
+        // now a twin.
+        let before = format!("{:?}", set.members);
+        fold(
+            &task,
+            &mut wait,
+            &[timer_slot(0x6008), notify_slot(0x6020, 0x7100)],
+        );
+        assert_eq!(format!("{:?}", set_of(&wait).members), before);
+    }
+
+    /// Beside a verified wait a slot is never a member: one the wait
+    /// accounts for is silent, one it does not is a note — except a
+    /// registry's wheel or io pair, which the analysis already noted,
+    /// and a pair in untyped memory, which names nothing.
+    #[test]
+    fn test_the_fold_notes_a_slot_beside_a_verified_wait() {
+        let task = idle();
+        let mut wait = stopped(Vec::new());
+        wait.assessment =
+            WaitAssessment::Waiting(VerifiedWait::testkit(notify_target(0x7000), None));
+        wait.continuation = ContinuationStatus::Primitive;
+        fold(
+            &task,
+            &mut wait,
+            &[
+                notify_slot(0x6020, 0x7000),
+                notify_slot(0x6040, 0x7100),
+                timer_slot(0xdd00),
+                nowhere(0x8000),
+            ],
+        );
+        assert!(wait.verified().is_some());
+        assert_eq!(
+            wait.notes,
+            ["notify 0x7100 also holds this task's waker, outside the verified wait"]
+        );
+    }
+
+    /// Every definite assessment is left alone, whatever the sweep
+    /// found in the task's storage — a task never polled, a resource
+    /// that did not read — and so are a blocking cell and a mid-poll
+    /// task, which are not parked.
+    #[test]
+    fn test_the_fold_leaves_definite_and_unparked_tasks_alone() {
+        let slots = [typed(0x9008)];
+        let mut never = stopped(Vec::new());
+        never.assessment = WaitAssessment::Unresumed;
+        fold(&idle(), &mut never, &slots);
+        assert!(matches!(never.assessment, WaitAssessment::Unresumed));
+
+        let mut unread = stopped(Vec::new());
+        unread.assessment = WaitAssessment::Unknown(WaitUnknownReason::ResourceUnreadable);
+        fold(&idle(), &mut unread, &slots);
+        assert!(matches!(
+            unread.assessment,
+            WaitAssessment::Unknown(WaitUnknownReason::ResourceUnreadable)
+        ));
+
+        let mut polled = stopped(vec![branch(0x6000)]);
+        fold(&a_task(RUNNING, TaskKind::Async), &mut polled, &slots);
+        assert!(matches!(
+            polled.assessment,
+            WaitAssessment::Unknown(WaitUnknownReason::Continuation)
+        ));
+        assert_eq!(polled.held.len(), 1);
+
+        let mut blocking = stopped(Vec::new());
+        fold(&a_task(0, TaskKind::Blocking), &mut blocking, &slots);
+        assert!(matches!(
+            blocking.assessment,
+            WaitAssessment::Unknown(WaitUnknownReason::Continuation)
+        ));
+    }
+
+    /// A chain cut short of any stop still gets its set — the sweep's
+    /// slots alone, at no stop — and slots in allocations nothing
+    /// typed reaches collapse to their count past the first.
+    #[test]
+    fn test_the_fold_sets_a_cut_chain_and_collapses_the_unknown() {
+        let task = idle();
+        let mut wait = stopped(Vec::new());
+        wait.continuation = ContinuationStatus::Incomplete {
+            reason: crate::tokio::assess::IncompleteReason::AmbiguousDyn,
+            detail: None,
+        };
+        wait.frames = Vec::new();
+        fold(
+            &task,
+            &mut wait,
+            &[nowhere(0x7000), typed(0x6010), nowhere(0x8000)],
+        );
+        let set = set_of(&wait);
+        assert_eq!((set.at, set.reason), (None, None));
+        assert_eq!(set.members.len(), 3);
+        assert_eq!(set.cell(), "2× unknown, slot 0x6010 in x::Holder");
+        assert_eq!(set.group_label(), "slot in x::Holder, unknown");
+        let mut one = stopped(Vec::new());
+        fold(&task, &mut one, &[nowhere(0x7000)]);
+        assert_eq!(set_of(&one).cell(), "unknown 0x7000");
     }
 }

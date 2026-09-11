@@ -624,11 +624,11 @@ TASK                                         STATE  WAITING ON
 
         let mut set = wait(88, None);
         set.assessment = WaitAssessment::Set(WaitSet {
-            at: ValueKey {
+            at: Some(ValueKey {
                 addr: 0x5000,
                 ty: BundleTypeId(0),
-            },
-            reason: SemanticIssueKind::NoRule,
+            }),
+            reason: Some(SemanticIssueKind::NoRule),
             members: vec![WaitMember {
                 route: MemberRoute::Branch {
                     local: "a".to_string(),

@@ -672,19 +672,24 @@ pub(crate) fn polling_map<T: proc::Target>(session: &Session<'_, T>) -> HashMap<
 /// The table's rows, built on first use and cached on the session.
 /// The wait analysis is the cost — the census's own walk — and every
 /// later `graph`/`census`/`whatis` then pays nothing more. The launch
-/// builds the two halves apart ([`base_rows`] before the worker is
-/// joined, [`with_slots`] after) and sets the cell itself.
+/// builds the two halves apart ([`base_rows`] over the bare analysis
+/// before the worker is joined, [`with_slots`] over the folded one
+/// after) and sets the cell itself.
 pub(crate) fn rows<'s, T: proc::Target>(session: &'s Session<'_, T>) -> &'s [TaskRow] {
     session
         .task_rows
-        .get_or_init(|| with_slots(base_rows(session), session))
+        .get_or_init(|| with_slots(base_rows(session, session.analysis()), session))
 }
 
-/// The rows short of their slots: the wait analysis's answer per
-/// task, which needs nothing the launch worker builds.
-pub(crate) fn base_rows<T: proc::Target>(session: &Session<'_, T>) -> Vec<TaskRow> {
+/// The rows from `analysis` alone — the name, state, owner and site
+/// columns, and the wait cell as that analysis assesses it. At launch
+/// that is the analysis before the sweep's slots are folded in, and
+/// [`with_slots`] rewrites the wait cell once they are.
+pub(crate) fn base_rows<T: proc::Target>(
+    session: &Session<'_, T>,
+    analysis: &rt_graph::Analysis,
+) -> Vec<TaskRow> {
     let polling = polling_map(session);
-    let analysis = session.analysis();
     build_rows(
         &session.tasks,
         &session.owners,
@@ -696,15 +701,16 @@ pub(crate) fn base_rows<T: proc::Target>(session: &Session<'_, T>) -> Vec<TaskRo
     )
 }
 
-/// The rows with their slots merged in: the wait cell, its bucket and
-/// its detail rewritten from the attributed slots, which need the
-/// sweep and so the worker.
+/// The rows finished against the folded analysis and its slots: the
+/// wait cell and bucket as the analysis reads with the sweep's slots
+/// folded in, the detail lines the attributed slots add, and the
+/// `unarmed: ` mark on a task with none.
 pub(crate) fn with_slots<T: proc::Target>(
     mut rows: Vec<TaskRow>,
     session: &Session<'_, T>,
 ) -> Vec<TaskRow> {
     let view = session.ctx.view;
-    merge_slots(
+    apply_slots(
         &mut rows,
         &session.tasks,
         &session.analysis().waits,
@@ -761,16 +767,17 @@ pub(crate) fn build_rows(
         .collect()
 }
 
-/// Rewrite each row's wait cell, bucket and detail from the slots
-/// attributed to its task. A task with slots lists them, each spelled
-/// by its reader where the task's own assessment accounts for it
-/// ([`attribution::accounted_by`]) and by what holds it otherwise;
-/// several `unknown` slots collapse to a count. A task with none keeps
-/// the assessment's word under `unarmed: `, since nothing found would
-/// wake it — except a task waiting on nothing at all (`—` and its
-/// reasons), which has no slot to miss. Blocking and mid-poll rows are
-/// untouched: neither is parked.
-pub(crate) fn merge_slots(
+/// Finish each row against `waits` — the analysis with the sweep's
+/// slots folded in — and the slots attributed to its task. The cell
+/// and the bucket are the folded assessment's own, so a row, a graph
+/// line, a census tally and a trace header all read one wait; the
+/// detail is one line per branch armed by the slots in it, one per
+/// slot on its own. A task with no slot at all keeps the assessment's
+/// words under `unarmed: `, since nothing found would wake it — except
+/// a task waiting on nothing (`—` and its reasons), which has no slot
+/// to miss. Blocking and mid-poll rows are untouched: neither is
+/// parked, and the fold left their waits alone.
+pub(crate) fn apply_slots(
     rows: &mut [TaskRow],
     list: &bundle::TaskList,
     waits: &[rt_graph::TaskWait],
@@ -783,24 +790,21 @@ pub(crate) fn merge_slots(
         if task.is_blocking() || task.state.lifecycle() == Lifecycle::Running {
             continue;
         }
+        let Some(wait) = waits.get(index) else {
+            continue;
+        };
+        row.waiting_on = assessment_cell(wait, stops);
+        row.waiting_kind = assessment_kind(wait, stops);
         let owned: Vec<&attribution::AttributedSlot> = slots.of_task(task.addr.0).collect();
-        let wait = waits.get(index);
         if owned.is_empty() {
+            row.wait_detail = wait_detail(wait, stops, &[], stopped, size_of);
             if !row.waiting_on.starts_with('—') {
                 row.waiting_on = format!("unarmed: {}", row.waiting_on);
                 row.waiting_kind = row.waiting_kind.take().map(|k| format!("unarmed: {k}"));
             }
             continue;
         }
-        let accounted = |slot: &attribution::AttributedSlot| {
-            wait.and_then(|wait| attribution::accounted_by(wait, slot, size_of))
-        };
-        let (cell, kind) = slot_cell(&owned, stopped, &accounted);
-        row.waiting_on = cell;
-        row.waiting_kind = Some(kind);
-        if let Some(wait) = wait {
-            row.wait_detail = wait_detail(wait, stops, &owned, stopped, size_of);
-        }
+        row.wait_detail = wait_detail(wait, stops, &owned, stopped, size_of);
     }
 }
 
@@ -953,8 +957,8 @@ fn waiting_on(
 /// The one-word (or one-target) spelling of an assessment: the
 /// `WAITING ON` cell every listing shares, so a task, a future and a
 /// tally agree on what a wait is called. A wait set lists its armed
-/// members joined with ` + `, so a set of one reads as the wait it
-/// is. An unknown says what made it one ([`unknown_cell`]), and one
+/// members, sorted and comma-joined, so a set of one reads as the wait
+/// it is. An unknown says what made it one ([`unknown_cell`]), and one
 /// whose stop holds futures none of which is armed counts them.
 pub(crate) fn assessment_cell(wait: &rt_graph::TaskWait, stops: &StopNames<'_>) -> String {
     match &wait.assessment {
@@ -2405,11 +2409,11 @@ mod table_tests {
 
     fn one_of(members: Vec<WaitMember>) -> WaitAssessment {
         WaitAssessment::Set(WaitSet {
-            at: ValueKey {
+            at: Some(ValueKey {
                 addr: 0x5000,
                 ty: BundleTypeId(7),
-            },
-            reason: SemanticIssueKind::NoRule,
+            }),
+            reason: Some(SemanticIssueKind::NoRule),
             members,
             capped: 0,
         })
@@ -2547,7 +2551,7 @@ mod table_tests {
         );
     }
 
-    /// A wait set's cell is its armed members joined with ` + ` — the
+    /// A wait set's cell is its armed members, sorted and comma-joined — the
     /// verified target where a member's protocol produced one, the
     /// slot's own entry where it did not — and its bucket the
     /// distinct kinds; an unarmed branch is in neither, only in the
@@ -2608,9 +2612,9 @@ mod table_tests {
         );
         assert_eq!(
             rows[0].waiting_on,
-            "timer (deadline +10.000s) + io 0x7000 (readable)"
+            "io 0x7000 (readable), timer (deadline +10.000s)"
         );
-        assert_eq!(rows[0].waiting_kind.as_deref(), Some("io+timer"));
+        assert_eq!(rows[0].waiting_kind.as_deref(), Some("io, timer"));
         assert_eq!(
             rows[0].wait_detail,
             [
@@ -2887,31 +2891,14 @@ mod table_tests {
             task(4, 0),
             blocking(5, 0),
         ]);
-        let waits = vec![
+        let mut waits = vec![
             wait(1, None),
             wait(2, None),
             wait(3, None),
             wait(4, None),
             wait(5, None),
         ];
-        let mut rows = build_rows(
-            &list,
-            &Default::default(),
-            &waits,
-            &HashMap::new(),
-            &hansei_bundle::names::ImplFold::default(),
-            &Default::default(),
-            &StopNames::none(&Default::default()),
-        );
-        super::merge_slots(
-            &mut rows,
-            &list,
-            &waits,
-            &slots,
-            None,
-            &|_| None,
-            &StopNames::none(&Default::default()),
-        );
+        let rows = folded_rows(&list, &mut waits, &slots);
         assert_eq!(
             rows[0].waiting_on,
             "2× unknown, io 0xaa00 read, join task 2, semaphore 0x9000, timer 0xdd00"
@@ -2959,12 +2946,13 @@ mod table_tests {
         assert!(rows[4].wait_detail.is_empty());
     }
 
-    /// A slot the task's verified wait accounts for takes the reader's
-    /// spelling: the join slot in the awaited task's trailer is the
-    /// verified `task N`, cell and bucket alike, and a second slot the
-    /// wait does not account for keeps its own.
+    /// A verified wait is the cell whatever the sweep found: the join
+    /// slot in the awaited task's trailer is the wait's own evidence,
+    /// and a second slot the wait does not account for is a line under
+    /// it, never a second entry — a slot beside a verified wait is a
+    /// diagnostic, not a member.
     #[test]
-    fn test_an_accounted_slot_takes_the_readers_spelling() {
+    fn test_a_slot_beside_a_verified_wait_is_a_line_not_a_member() {
         use hansei_runtime::tokio::attribution::{
             Attributed, AttributedSlot, Attribution, RegistrySlot,
         };
@@ -3008,28 +2996,43 @@ mod table_tests {
             kind: None,
         };
         let list = TaskList::new(vec![task(1, 0), task(2, 0)]);
-        let waits = vec![wait(1, Some(target)), wait(2, None)];
+        let mut waits = vec![wait(1, Some(target)), wait(2, None)];
+        let rows = folded_rows(&list, &mut waits, &slots);
+        assert_eq!(rows[0].waiting_on, "task 2");
+        assert_eq!(rows[0].waiting_kind.as_deref(), Some("task 2"));
+        assert_eq!(
+            rows[0].wait_detail,
+            ["join task 2: waker in its trailer", "timer 0xdd00"]
+        );
+    }
+
+    /// The rows as the launch builds them: the slots folded into each
+    /// wait, then the rows built from the waits and finished against
+    /// the slots.
+    fn folded_rows(
+        list: &TaskList,
+        waits: &mut [TaskWait],
+        slots: &hansei_runtime::tokio::attribution::Attributed,
+    ) -> Vec<super::TaskRow> {
+        for (task, wait) in list.tasks.iter().zip(waits.iter_mut()) {
+            let owned: Vec<_> = slots.of_task(task.addr.0).collect();
+            if !owned.is_empty() {
+                hansei_runtime::tokio::waitset::fold_wait(task, wait, &owned, None, &|_| None);
+            }
+        }
+        let impls = Default::default();
+        let stops = StopNames::none(&impls);
         let mut rows = build_rows(
-            &list,
+            list,
             &Default::default(),
-            &waits,
+            waits,
             &HashMap::new(),
             &hansei_bundle::names::ImplFold::default(),
             &Default::default(),
-            &StopNames::none(&Default::default()),
+            &stops,
         );
-        assert_eq!(rows[0].waiting_on, "task 2");
-        super::merge_slots(
-            &mut rows,
-            &list,
-            &waits,
-            &slots,
-            None,
-            &|_| None,
-            &StopNames::none(&Default::default()),
-        );
-        assert_eq!(rows[0].waiting_on, "task 2, timer 0xdd00");
-        assert_eq!(rows[0].waiting_kind.as_deref(), Some("task 2, timer"));
+        super::apply_slots(&mut rows, list, waits, slots, None, &|_| None, &stops);
+        rows
     }
 
     /// A running task waits on nothing: its cell names the lwp polling

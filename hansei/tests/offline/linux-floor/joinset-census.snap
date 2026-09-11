@@ -21,7 +21,7 @@ COUNT  TYPE / WAITING ON
     5  async fn joinset::member
        └─ 5  notify
     1  async fn joinset::driver
-       └─ 1  unknown
+       └─ 1  one of several
 [2 types]
 
 Futures: 6 in flight, on 13 await-chain frames, up to 3 deep

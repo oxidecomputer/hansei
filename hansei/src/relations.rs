@@ -9,6 +9,8 @@
 //! edge.
 
 use hansei_runtime::tokio::assess::WaitAssessment;
+use hansei_runtime::tokio::attribution::{Attribution, RegistrySlot};
+use hansei_runtime::tokio::waitset::SlotRef;
 use hansei_runtime::tokio::{bundle, census, graph};
 
 use std::collections::HashMap;
@@ -142,14 +144,24 @@ impl Relations {
                 waited_by[to].push(from);
             }
             // A set's members: a join among them is a join the task is
-            // polling — its waker sits in the joined task's trailer —
-            // but one of several, so the edge is the weaker kind.
+            // polling — its waker sits in the joined task's trailer,
+            // whether a branch's protocol read it there or the sweep
+            // found it there — but one of several, so the edge is the
+            // weaker kind.
             if let WaitAssessment::Set(set) = &wait.assessment {
                 for member in set.armed() {
-                    if let Some(WaitAssessment::Waiting(verified)) = &member.assessment
-                        && let bundle::WaitTarget::Task { addr, .. } = verified.target()
-                        && let Some(to) = resolve(*addr)
-                    {
+                    let joined = match (&member.assessment, &member.armed) {
+                        (Some(WaitAssessment::Waiting(verified)), _) => match verified.target() {
+                            bundle::WaitTarget::Task { addr, .. } => Some(*addr),
+                            _ => None,
+                        },
+                        (_, Some(SlotRef::Swept { slot, .. })) => match &slot.attribution {
+                            Attribution::Registry(RegistrySlot::Join { task }) => Some(task.addr.0),
+                            _ => None,
+                        },
+                        _ => None,
+                    };
+                    if let Some(to) = joined.and_then(resolve) {
                         edges[from].push(Edge {
                             to,
                             kind: EdgeKind::WaitingOneOf,
@@ -316,11 +328,11 @@ mod relations_tests {
         };
         let mut wait = wait(task, None);
         wait.assessment = WaitAssessment::Set(WaitSet {
-            at: ValueKey {
+            at: Some(ValueKey {
                 addr: 0x5000,
                 ty: BundleTypeId(0),
-            },
-            reason: SemanticIssueKind::NoRule,
+            }),
+            reason: Some(SemanticIssueKind::NoRule),
             members: vec![
                 member(
                     "a",
@@ -392,6 +404,58 @@ mod relations_tests {
             errors: Vec::new(),
         };
         Relations::build(&list, &analysis, held, join_sets)
+    }
+
+    /// A join slot the sweep found in the awaited task's trailer is the
+    /// same relation a branch's protocol would have read there: one of
+    /// several waits, so the weaker edge, reversed into `waited_by`,
+    /// and never a cycle-closing wait.
+    #[test]
+    fn test_a_swept_join_slot_is_a_one_of_edge() {
+        use hansei_runtime::tokio::attribution::{AttributedSlot, Attribution, RegistrySlot};
+        use hansei_runtime::tokio::waitset::{MemberRoute, SlotRef, WaitMember, WaitSet};
+        use hansei_runtime::tokio::wakers::Owner;
+
+        let slot = AttributedSlot {
+            hit: 0,
+            slot: 0x1250,
+            owner: Owner::Task {
+                header: addr(1).0,
+                index: 0,
+            },
+            attribution: Attribution::Registry(RegistrySlot::Join {
+                task: TaskRef {
+                    addr: addr(2),
+                    task_id: Some(2),
+                },
+            }),
+            within: None,
+        };
+        let mut set = wait(1, None);
+        set.assessment = WaitAssessment::Set(WaitSet {
+            at: None,
+            reason: None,
+            members: vec![WaitMember {
+                route: MemberRoute::SlotOnly { within: None },
+                key: None,
+                future: None,
+                assessment: None,
+                notes: Vec::new(),
+                armed: Some(SlotRef::swept(&slot, None)),
+            }],
+            capped: 0,
+        });
+        let rel = build(vec![task(1), task(2)], vec![set, wait(2, None)], &[], &[]);
+        assert_eq!(
+            rel.edges[0],
+            [super::Edge {
+                to: 1,
+                kind: EdgeKind::WaitingOneOf
+            }]
+        );
+        assert_eq!(rel.waited_by[1], [0]);
+        assert!(rel.edges[1].is_empty());
+        assert!(rel.joined(1));
     }
 
     /// Every relation lands in both directions: the joiner's forward

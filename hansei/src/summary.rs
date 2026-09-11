@@ -1901,11 +1901,11 @@ mod tests {
         let list = TaskList::new(vec![task(1, JOIN_INTEREST, "x::fut", "x.rs")]);
         let mut set = wait(1, None, 1);
         set.assessment = WaitAssessment::Set(WaitSet {
-            at: ValueKey {
+            at: Some(ValueKey {
                 addr: 0x5000,
                 ty: BundleTypeId(7),
-            },
-            reason: SemanticIssueKind::NoRule,
+            }),
+            reason: Some(SemanticIssueKind::NoRule),
             members: vec![WaitMember {
                 route: MemberRoute::Branch {
                     local: "a".to_string(),

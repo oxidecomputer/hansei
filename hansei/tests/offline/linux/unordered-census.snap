@@ -19,7 +19,7 @@ COUNT  STATE
 
 COUNT  TYPE / WAITING ON
     1  async fn unordered::driver
-       └─ 1  unknown
+       └─ 1  one of several
 [1 type]
 
 Futures: 15 in flight, on 20 await-chain frames, up to 2 deep

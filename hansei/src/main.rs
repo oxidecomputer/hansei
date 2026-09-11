@@ -1736,10 +1736,8 @@ impl<'b, T: Target> Session<'b, T> {
     }
 
     /// The waker sweep, built on the launch worker or in place here.
-    /// Under `--audit`, the first ask cross-checks every waker the
-    /// registries and the analysis decoded against the sweep's hits.
     pub(crate) fn wakers(&self) -> &wakers::WakerSlots {
-        let slots = self.wakers.get_or_init(|| {
+        self.wakers.get_or_init(|| {
             self.ctx.sweep_wakers(&wakers::Territory {
                 list: &self.tasks,
                 extents: self.extents(),
@@ -1747,9 +1745,24 @@ impl<'b, T: Target> Session<'b, T> {
                 heap: self.umem.as_ref(),
                 lwps: &self.lwps,
             })
-        });
+        })
+    }
+
+    /// What holds each admitted slot, attributed against the
+    /// analysis, the census and the registries — and folded back into
+    /// the analysis, which is why the two are built together
+    /// ([`Session::fold`]) and this reads the analysis first. Under
+    /// `--audit`, the first ask cross-checks every waker the registries
+    /// and the analysis decoded against the sweep's hits, and reports
+    /// every hit inside a typed value that did not locate to a waker.
+    pub(crate) fn attribution(&self) -> &attribution::Attributed {
+        self.analysis();
+        let attributed = self
+            .attribution
+            .get()
+            .expect("the attribution is set beside the analysis");
         if first_audit(self.audit, &self.wakers_audited) {
-            let violations = slots.audit(registered_wakers(self));
+            let violations = self.wakers().audit(registered_wakers(self));
             if violations.is_empty() {
                 let _ = writeln!(io::stderr(), "waker audit: clean");
             }
@@ -1757,27 +1770,6 @@ impl<'b, T: Target> Session<'b, T> {
                 let _ = writeln!(io::stderr(), "warning: waker audit: {violation}");
             }
         }
-        slots
-    }
-
-    /// What holds each admitted slot, attributed on first use against
-    /// the analysis, the census and the registries. Under `--audit`,
-    /// the first ask reports every hit inside a typed value that did
-    /// not locate to a waker.
-    pub(crate) fn attribution(&self) -> &attribution::Attributed {
-        let attributed = self.attribution.get_or_init(|| {
-            self.ctx.attribute_slots(
-                self.wakers(),
-                &attribution::Sources {
-                    list: &self.tasks,
-                    census: self.census(),
-                    registries: &self.registries,
-                    analysis: self.analysis(),
-                    heap: self.umem.as_ref(),
-                    impls: &self.impl_fold,
-                },
-            )
-        });
         if first_audit(self.audit, &self.attribution_audited) {
             let violations = attributed.audit(&self.tasks);
             if violations.is_empty() {
@@ -1790,10 +1782,12 @@ impl<'b, T: Target> Session<'b, T> {
         attributed
     }
 
-    /// Every lwp's stack, unwound once per session on first use. A
-    /// target that cannot be walked still has runtime state worth
-    /// listing, so a failure costs the stacks and one warning, nothing
-    /// else.
+    /// Every lwp's unwound stack, keyed by tid — the one unwind the
+    /// thread rows, the blocking rows and `thread` all read, so
+    /// `threads --exec thread` walks the CFI once rather than once
+    /// per thread. Empty when the target cannot be walked; the
+    /// warning saying so prints once, when the unwind is first
+    /// asked for.
     pub(crate) fn stacks(&self) -> &BTreeMap<u32, unwind::Backtrace> {
         self.stacks
             .get_or_init(|| match unwind::load_frames(self.proc) {
@@ -1870,10 +1864,39 @@ impl<'b, T: Target> Session<'b, T> {
         self.proc
     }
 
+    /// The wait analysis every consumer reads: the engine's and the
+    /// registries' assessment of each task, with the waker sweep's
+    /// slots folded in. Built at launch in two halves ([`warm_listings`]);
+    /// computed in place here for a session nothing warmed.
     fn analysis(&self) -> &Analysis {
-        self.analysis.get_or_init(|| {
-            self.read_with(|read| rt_graph::analyze(&self.ctx, &self.tasks, &self.registries, read))
-        })
+        self.analysis.get_or_init(|| self.fold(self.analyze()))
+    }
+
+    /// The first half: the analysis as the engine and the registries
+    /// alone make it, which needs nothing the launch worker builds.
+    fn analyze(&self) -> Analysis {
+        self.read_with(|read| rt_graph::analyze(&self.ctx, &self.tasks, &self.registries, read))
+    }
+
+    /// The second half: attribute the sweep's slots against `analysis`
+    /// — its frames are the typed values the attribution walks — fold
+    /// them into it, and keep the attribution beside it. Needs the
+    /// worker's census and sweep, so it runs once the worker is joined.
+    fn fold(&self, mut analysis: Analysis) -> Analysis {
+        let attributed = self.ctx.attribute_slots(
+            self.wakers(),
+            &attribution::Sources {
+                list: &self.tasks,
+                census: self.census(),
+                registries: &self.registries,
+                analysis: &analysis,
+                heap: self.umem.as_ref(),
+                impls: &self.impl_fold,
+            },
+        );
+        self.ctx.fold_slots(&mut analysis, &self.tasks, &attributed);
+        let _ = self.attribution.set(attributed);
+        analysis
     }
 
     /// A listed task's own chain, walked by its programs under the
@@ -2325,15 +2348,19 @@ fn warm_listings(session: &Session<'_, Proc>, proc: &Proc, bundle: &Bundle) {
         let (tasks, umem) = (&session.tasks, session.umem.as_ref());
         let (policy, bounds) = (session.policy, session.bounds);
         let worker = scope.spawn(move || warm_worker(proc, bundle, policy, tasks, bounds, umem));
-        // The task rows short of their slots: the wait analysis is
-        // this lane's cost, and the slots are the worker's.
-        let base = tasks::base_rows(session);
+        // The wait analysis and the task rows short of their slots are
+        // this lane's cost while the worker sweeps; folding the
+        // worker's slots into the analysis, and the rows, waits for
+        // both.
+        let analysis = session.analyze();
+        let base = tasks::base_rows(session, &analysis);
         threads::rows(session);
         // A worker that panicked has left the cells empty, and the
         // accessors' fallbacks compute in place.
         if let Ok(Some(warmed)) = worker.join() {
             session.adopt(*warmed);
         }
+        let _ = session.analysis.set(session.fold(analysis));
         let _ = session.task_rows.set(tasks::with_slots(base, session));
     });
     futures::rows(session);

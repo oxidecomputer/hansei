@@ -45,7 +45,7 @@ use super::bundle::{
 };
 use super::census::{FutureCensus, Via};
 use super::contract::{Walked, execute_steps_over};
-use super::graph::{Analysis, TaskRef, TaskWait};
+use super::graph::{Analysis, TaskRef};
 use super::observe::{ReadContext, ValueKey};
 use super::semantics::SemanticIndex;
 use super::wakers::{Hit, Owner, WakerSlots};
@@ -1945,38 +1945,12 @@ pub fn member_accounts(
             Attribution::Registry(RegistrySlot::Io { resource, .. }),
             Some(SlotRef::Io { resource: at, .. }),
         ) => resource == at,
+        (_, Some(SlotRef::Swept { slot: swept, .. })) => swept.slot == slot.slot,
         _ => false,
     };
     by_registry
         || matches!(&member.assessment, Some(WaitAssessment::Waiting(verified))
             if verified_accounts(verified, slot, size_of))
-}
-
-/// The reader's spelling a slot should carry, where a task's own
-/// assessment accounts for it: a verified wait whose primitive or
-/// resource holds the slot, or a wait-set member armed by the same
-/// registry slot or verified over the storage holding it. `None`
-/// leaves the slot its bare spelling.
-pub fn accounted_by(
-    wait: &TaskWait,
-    slot: &AttributedSlot,
-    size_of: &dyn Fn(BundleTypeId) -> Option<u64>,
-) -> Option<(String, String)> {
-    use super::assess::WaitAssessment;
-
-    match &wait.assessment {
-        WaitAssessment::Waiting(verified) if verified_accounts(verified, slot, size_of) => Some((
-            verified.target().to_string(),
-            verified.target().group_label(),
-        )),
-        WaitAssessment::Set(set) => set.members.iter().find_map(|member| {
-            member.armed.as_ref()?;
-            member_accounts(member, slot, size_of)
-                .then(|| Some((member.cell_entry()?, member.kind()?)))
-                .flatten()
-        }),
-        _ => None,
-    }
 }
 
 impl AttributedSlot {
@@ -2338,12 +2312,109 @@ mod tests {
         assert_eq!(attributed.stats.unknown, 0);
     }
 
+    /// Over `armed-select`, folded: the selector's four slots make its
+    /// set — the cell every consumer reads, in the sweep's own words —
+    /// the driver's one typed slot makes a set of one, and the holder's
+    /// and the waiter's verified waits stand as they were, with no
+    /// note, since the sweep found exactly the wakers their protocols
+    /// read.
+    #[test]
+    fn test_the_fold_gives_every_consumer_the_selectors_set() {
+        use crate::tokio::assess::WaitAssessment;
+        use crate::tokio::waitset::{MemberRoute, SlotRef};
+
+        let (bundle, snapshot) = load_any("armed-select");
+        let over = Over::new(&bundle, &snapshot);
+        let attributed = over.attribute();
+        let mut analysis = analyze(
+            &over.ctx,
+            &over.e.list,
+            &over.e.registries,
+            &ReadContext::none(),
+        );
+        let index = |name: &str| {
+            let task = over.task(name);
+            over.e
+                .list
+                .tasks
+                .iter()
+                .position(|t| t.addr == task.addr)
+                .unwrap()
+        };
+        // Before the fold the selector's set is the registry's wheel
+        // entry alone; the driver has no set at all.
+        let WaitAssessment::Set(set) = &analysis.waits[index("selector")].assessment else {
+            panic!("{:?}", analysis.waits[index("selector")].assessment);
+        };
+        assert_eq!(set.armed().count(), 1);
+        assert!(set.cell().starts_with("timer (deadline "), "{}", set.cell());
+        assert!(matches!(
+            analysis.waits[index("driver")].assessment,
+            WaitAssessment::Unknown(_)
+        ));
+
+        over.ctx
+            .fold_slots(&mut analysis, &over.e.list, &attributed);
+
+        let selector = &analysis.waits[index("selector")];
+        let WaitAssessment::Set(set) = &selector.assessment else {
+            panic!("{:?}", selector.assessment);
+        };
+        assert_eq!(set.armed().count(), 4, "{:#?}", set.members);
+        // The wheel entry is the registry's member still, its swept
+        // twin folded into nothing; the other three are the sweep's.
+        assert_eq!(
+            set.members
+                .iter()
+                .filter(|m| matches!(m.armed, Some(SlotRef::Wheel { .. })))
+                .count(),
+            1
+        );
+        assert_eq!(
+            set.members
+                .iter()
+                .filter(|m| matches!(m.armed, Some(SlotRef::Swept { .. })))
+                .count(),
+            3
+        );
+        assert!(
+            set.members
+                .iter()
+                .all(|m| matches!(m.route, MemberRoute::SlotOnly { .. })),
+            "the select! closure's tuple is no branch yet: {:#?}",
+            set.members
+        );
+        let cell = set.cell();
+        assert!(cell.starts_with("mpsc 0x"), "{cell}");
+        assert!(cell.contains(", oneshot rx 0x"), "{cell}");
+        assert!(cell.contains(", timer (deadline "), "{cell}");
+        assert!(cell.contains(", watch 0x"), "{cell}");
+        assert_eq!(set.group_label(), "mpsc, oneshot rx, timer, watch");
+        assert!(selector.held.is_empty());
+
+        let driver = &analysis.waits[index("driver")];
+        let WaitAssessment::Set(set) = &driver.assessment else {
+            panic!("{:?}", driver.assessment);
+        };
+        assert_eq!(set.armed().count(), 1);
+        assert_eq!(
+            set.group_label(),
+            "slot in futures_core::task::__internal::atomic_waker::AtomicWaker"
+        );
+
+        for name in ["holder", "waiter"] {
+            let wait = &analysis.waits[index(name)];
+            assert!(wait.verified().is_some(), "{name}: {:?}", wait.assessment);
+            assert_eq!(wait.notes, Vec::<String>::new(), "{name}");
+        }
+    }
+
     /// Over `sleep-join`: both slots are the registries' — the sleeper's
     /// wheel entry and the joiner's waker in the sleeper's trailer —
-    /// and each takes its reader's spelling where the task's verified
-    /// wait accounts for it.
+    /// and each is accounted for by its task's verified wait, so the
+    /// fold adds no note beside either.
     #[test]
-    fn test_registry_slots_take_the_readers_spelling() {
+    fn test_registry_slots_are_accounted_for_by_the_verified_wait() {
         let (bundle, snapshot) = load_any("sleep-join");
         let over = Over::new(&bundle, &snapshot);
         let attributed = over.attribute();
@@ -2372,9 +2443,9 @@ mod tests {
             Attribution::Registry(RegistrySlot::Timer { .. })
         ));
         let wait = &over.analysis.waits[index(sleeper)];
-        let (entry, bucket) = accounted_by(wait, slots[0], &size_of).expect("the verified timer");
-        assert!(entry.starts_with("timer (deadline "), "{entry}");
-        assert_eq!(bucket, "timer");
+        let timer = wait.verified().expect("the verified timer");
+        assert!(timer.target().to_string().starts_with("timer (deadline "));
+        assert!(verified_accounts(timer, slots[0], &size_of));
 
         let slots: Vec<&AttributedSlot> = attributed.of_task(joiner.addr.0).collect();
         assert_eq!(slots.len(), 1, "{slots:#?}");
@@ -2384,12 +2455,31 @@ mod tests {
         assert_eq!(task.addr, sleeper.addr);
         assert_eq!(slots[0].detail(None), "waker in its trailer");
         let wait = &over.analysis.waits[index(joiner)];
-        let (entry, bucket) = accounted_by(wait, slots[0], &size_of).expect("the verified join");
-        assert_eq!(entry, format!("task {}", sleeper.task_id.unwrap()));
-        assert_eq!(bucket, entry);
-        // A slot the wait does not account for keeps its own spelling.
+        let join = wait.verified().expect("the verified join");
+        assert_eq!(
+            join.target().to_string(),
+            format!("task {}", sleeper.task_id.unwrap())
+        );
+        assert!(verified_accounts(join, slots[0], &size_of));
+        // A slot the wait does not account for is not its.
         let other = attributed.of_task(sleeper.addr.0).next().unwrap();
-        assert_eq!(accounted_by(wait, other, &size_of), None);
+        assert!(!verified_accounts(join, other, &size_of));
+
+        let mut analysis = analyze(
+            &over.ctx,
+            &over.e.list,
+            &over.e.registries,
+            &ReadContext::none(),
+        );
+        over.ctx
+            .fold_slots(&mut analysis, &over.e.list, &attributed);
+        for wait in [
+            &analysis.waits[index(sleeper)],
+            &analysis.waits[index(joiner)],
+        ] {
+            assert!(wait.verified().is_some(), "{:?}", wait.assessment);
+            assert_eq!(wait.notes, Vec::<String>::new());
+        }
     }
 
     /// Over `channels`: every slot is an owner-table slot — the oneshot's
@@ -2467,13 +2557,10 @@ mod join_tests {
     //! says: laid out by hand, at the boundaries no fixture reaches.
 
     use super::*;
-    use crate::tokio::assess::{ContinuationStatus, VerifiedWait, WaitAssessment};
+    use crate::tokio::assess::{VerifiedWait, WaitAssessment};
     use crate::tokio::bundle::{FutureInfo, IoSlot, OwnerResolution, Task, TaskKind};
-    use crate::tokio::graph::TaskRef;
-    use crate::tokio::waitset::{MemberRoute, SlotRef, WaitMember, WaitSet};
+    use crate::tokio::waitset::{MemberRoute, SlotRef, WaitMember};
     use crate::tokio::{TaskAddr, TaskState};
-
-    use hansei_bundle::SemanticIssueKind;
 
     const KEY_TY: BundleTypeId = BundleTypeId(1);
     const KEY_SIZE: u64 = 24;
@@ -2819,54 +2906,6 @@ mod join_tests {
             &owned(0x7040, OwnerKind::Notify, 0x7100),
             &size_of
         ));
-    }
-
-    /// Over a wait set, a slot takes the words of the armed member
-    /// that claims it; an unarmed member claims nothing, and a task
-    /// waiting on nothing accounts for nothing.
-    #[test]
-    fn test_a_wait_set_speaks_for_the_slot_its_armed_member_claims() {
-        let wait = |members: Vec<WaitMember>| TaskWait {
-            task: TaskRef {
-                addr: TaskAddr(0x1000),
-                task_id: Some(1),
-            },
-            assessment: WaitAssessment::Set(WaitSet {
-                at: key(),
-                reason: SemanticIssueKind::NoRule,
-                members,
-                capped: 0,
-            }),
-            continuation: ContinuationStatus::Primitive,
-            depth: 1,
-            site: None,
-            observation: None,
-            notes: Vec::new(),
-            held: Vec::new(),
-            held_capped: 0,
-            frames: Vec::new(),
-        };
-        let armed = member(
-            Some(SlotRef::Wheel {
-                entry: 0xdd00,
-                state: None,
-                deadline: None,
-                stopped: None,
-            }),
-            None,
-        );
-        let slot = registry(0xdd00, timer(0xdd00), None);
-        assert_eq!(
-            accounted_by(&wait(vec![armed]), &slot, &size_of),
-            Some(("timer 0xdd00".to_string(), "timer".to_string()))
-        );
-        assert_eq!(
-            accounted_by(&wait(vec![member(None, None)]), &slot, &size_of),
-            None
-        );
-        let mut idle = wait(Vec::new());
-        idle.assessment = WaitAssessment::Unresumed;
-        assert_eq!(accounted_by(&idle, &slot, &size_of), None);
     }
 
     /// Each demotion has its own words, and the audit names the hit,

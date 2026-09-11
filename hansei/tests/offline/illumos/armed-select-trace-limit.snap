@@ -2,7 +2,7 @@
 source: hansei/src/offline.rs
 description: "`trace 3 -l 1` over illumos/armed-select"
 ---
-Waiting on: timer (deadline TS)
+Waiting on: mpsc 0xADDR (1 sender, capacity 4, 0 unread), oneshot rx 0xADDR (nothing sent, sender alive), timer (deadline TS), watch 0xADDR (version 0, 1 sender, 1 receiver)
   mpsc 0xADDR: waker in Chan.rx_waker, reached from #1 queue → chan → inner → * → data → rx_waker → waker
   oneshot rx 0xADDR: waker in Inner.rx_task (rx_task_set), reached from the future at 0xADDR inner → * → data → rx_task
   timer 0xADDR deadline TS

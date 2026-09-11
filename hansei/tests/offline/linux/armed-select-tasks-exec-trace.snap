@@ -3,7 +3,7 @@ source: hansei/src/offline.rs
 description: "`tasks --exec trace -n` over linux/armed-select"
 ---
 task 3
-Waiting on: timer (deadline TS on the target's monotonic clock)
+Waiting on: mpsc 0xADDR (1 sender, capacity 4, 0 unread), oneshot rx 0xADDR (nothing sent, sender alive), timer (deadline TS on the target's monotonic clock), watch 0xADDR (version 0, 1 sender, 1 receiver)
   mpsc 0xADDR: waker in Chan.rx_waker, reached from #1 queue → chan → inner → * → data → rx_waker → waker
   oneshot rx 0xADDR: waker in Inner.rx_task (rx_task_set), reached from the future at 0xADDR inner → * → data → rx_task
   timer 0xADDR deadline TS on the target's monotonic clock
@@ -34,7 +34,7 @@ Waiting on: notify 0xADDR (waiting, 1 queued)
       awaiting at src/bin/armed-select.rs:76 (Suspend0, 0 locals)
 
 task 6
-Waiting on: unknown at futures_util::stream::stream::next::Next
+Waiting on: slot 0xADDR in futures_core::task::__internal::atomic_waker::AtomicWaker
   slot 0xADDR: waker in futures_core::task::__internal::atomic_waker::AtomicWaker.waker, reached from #1 set → ready_to_run_queue → * → data → waker → waker
 
 what futures_util::stream::stream::next::Next<futures_util::stream::futures_unordered::FuturesUnordered<armed_select::child>> polls is not established (no reviewed rule covers its implementation); the chain ends there

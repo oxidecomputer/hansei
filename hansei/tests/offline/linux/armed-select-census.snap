@@ -19,7 +19,7 @@ COUNT  STATE
 
 COUNT  TYPE / WAITING ON
     1  async fn armed_select::driver
-       └─ 1  unknown
+       └─ 1  one of several
     1  async fn armed_select::holder
        └─ 1  oneshot rx
     1  async fn armed_select::selector
