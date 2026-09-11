@@ -1696,7 +1696,8 @@ mod tests {
     /// A slot inside a held branch arms it, and the held branches
     /// become a set; a slot in no branch is a member on its own,
     /// placed in the chain frame it lies in — the root here, numbered
-    /// from the stop — or nowhere.
+    /// from the stop — or nowhere. Placement is half-open: the word
+    /// one past a frame's end is not in it.
     #[test]
     fn test_the_fold_arms_a_branch_by_a_slot_inside_it() {
         let task = idle();
@@ -1704,14 +1705,14 @@ mod tests {
         fold(
             &task,
             &mut wait,
-            &[typed(0x6010), typed(0x9008), typed(0x7000)],
+            &[typed(0x6010), typed(0x9008), typed(0x7000), typed(0x9040)],
         );
         let set = set_of(&wait);
         assert_eq!(
             (set.at, set.reason),
             (Some(key(0x5000)), Some(SemanticIssueKind::NoRule))
         );
-        assert_eq!(set.members.len(), 3, "{:#?}", set.members);
+        assert_eq!(set.members.len(), 4, "{:#?}", set.members);
         assert!(matches!(
             &set.members[0].armed,
             Some(SlotRef::Swept { slot, .. }) if slot.slot == 0x6010
@@ -1725,9 +1726,11 @@ mod tests {
             Some("inside #1's storage at +0x8".to_string())
         );
         assert_eq!(within(&set.members[2]), None);
+        assert_eq!(within(&set.members[3]), None, "one past the root's end");
         assert_eq!(
             set.cell(),
-            "slot 0x6010 in x::Holder, slot 0x7000 in x::Holder, slot 0x9008 in x::Holder"
+            "slot 0x6010 in x::Holder, slot 0x7000 in x::Holder, slot 0x9008 in x::Holder, \
+             slot 0x9040 in x::Holder"
         );
         assert_eq!(set.group_label(), "slot in x::Holder");
         assert!(wait.held.is_empty());
@@ -1754,24 +1757,39 @@ mod tests {
             None,
         )));
         verified.armed = Some(SlotRef::Protocol);
-        let alone = WaitMember {
+        let alone = |armed: SlotRef| WaitMember {
             route: MemberRoute::SlotOnly { within: None },
             key: None,
             future: None,
             assessment: None,
             notes: Vec::new(),
-            armed: Some(SlotRef::Wheel {
-                entry: 0xee00,
-                state: None,
-                deadline: None,
-                stopped: None,
-            }),
+            armed: Some(armed),
         };
+        let wheel = alone(SlotRef::Wheel {
+            entry: 0xee00,
+            state: None,
+            deadline: None,
+            stopped: None,
+        });
+        let io = alone(SlotRef::Io {
+            resource: 0x7700,
+            slot: IoSlot::Reader,
+            fd: None,
+            ready: None,
+        });
+        let io_slot = swept(
+            0x7708,
+            Attribution::Registry(RegistrySlot::Io {
+                resource: 0x7700,
+                slot: IoSlot::Reader,
+                ready: None,
+            }),
+        );
         let mut wait = stopped(Vec::new());
         wait.assessment = WaitAssessment::Set(WaitSet {
             at: Some(key(0x5000)),
             reason: Some(SemanticIssueKind::NoRule),
-            members: vec![armed, verified, alone],
+            members: vec![armed, verified, wheel, io],
             capped: 1,
         });
         fold(
@@ -1780,32 +1798,34 @@ mod tests {
             &[
                 timer_slot(0x6008),
                 timer_slot(0xee00),
+                io_slot.clone(),
                 notify_slot(0x8010, 0x7000),
                 notify_slot(0x6020, 0x7100),
             ],
         );
         let set = set_of(&wait);
         assert_eq!(set.capped, 1);
-        assert_eq!(set.members.len(), 4, "{:#?}", set.members);
+        assert_eq!(set.members.len(), 5, "{:#?}", set.members);
         assert!(matches!(set.members[0].armed, Some(SlotRef::Wheel { .. })));
         assert!(matches!(set.members[1].armed, Some(SlotRef::Protocol)));
         assert!(matches!(set.members[2].armed, Some(SlotRef::Wheel { .. })));
+        assert!(matches!(set.members[3].armed, Some(SlotRef::Io { .. })));
         assert!(matches!(
-            &set.members[3].armed,
+            &set.members[4].armed,
             Some(SlotRef::Swept { slot, .. }) if slot.slot == 0x6020
         ));
         assert_eq!(
             set.cell(),
-            "notify 0x7000, notify 0x7100, timer 0x6008, timer 0xee00"
+            "io 0x7700 (readable), notify 0x7000, notify 0x7100, timer 0x6008, timer 0xee00"
         );
-        assert_eq!(set.group_label(), "notify, timer");
+        assert_eq!(set.group_label(), "io, notify, timer");
         // Folding the same slots again changes nothing: every one is
         // now a twin.
         let before = format!("{:?}", set.members);
         fold(
             &task,
             &mut wait,
-            &[timer_slot(0x6008), notify_slot(0x6020, 0x7100)],
+            &[timer_slot(0x6008), io_slot, notify_slot(0x6020, 0x7100)],
         );
         assert_eq!(format!("{:?}", set_of(&wait).members), before);
     }
