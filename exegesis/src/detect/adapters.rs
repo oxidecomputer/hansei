@@ -1401,6 +1401,13 @@ mod tests {
         .collect();
         fx.strukt(TUPLE, None, "(app::Fut, &mut app::Fut)", &nine, &[]);
         assert_eq!(tokio_select(&fx.reader, POLL_FN), None);
+        // Exactly eight fill the `u8` mask and are admitted.
+        let mut fx = select_fixture();
+        fx.strukt(TUPLE, None, "(app::Fut, &mut app::Fut)", &nine[..8], &[]);
+        assert_eq!(
+            tokio_select(&fx.reader, POLL_FN).map(|l| (l.mask_word, l.branches.len())),
+            Some((U8, 8))
+        );
         // Nine branches fit a `u16` mask.
         let mut fx = select_fixture();
         fx.base(U128, "u16", Encoding::Unsigned, 2);

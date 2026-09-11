@@ -495,52 +495,39 @@ impl<'b, T: Target> Context<'b, T> {
         max_branches: usize,
         notes: &mut Vec<String>,
     ) -> Option<Enumerated<'b>> {
+        // Each route lands on its recorded type by construction: the
+        // validator held every endpoint, and the executor reads a
+        // pointee as exactly the pointer's declared target.
         let mut landed =
-            |steps: &[hansei_bundle::Step], target: BundleTypeId, what: &str| match self.route(
-                frame.future,
-                steps,
-                read,
-            ) {
-                Ok(value) if value.ty.id() == target => Some(value),
-                Ok(value) => {
-                    notes.push(format!(
-                        "the select! {what} landed on {} rather than its recorded type",
-                        value.ty.name()
-                    ));
-                    None
-                }
+            |steps: &[hansei_bundle::Step], what: &str| match self.route(frame.future, steps, read)
+            {
+                Ok(value) => Some(value),
                 Err(e) => {
                     notes.push(format!("the select! {what} did not read: {e:#}"));
                     None
                 }
             };
-        let mask = landed(&binding.mask.steps, binding.mask.target, "branch mask")?;
+        let mask = landed(&binding.mask.steps, "branch mask")?;
         let mut word = [0u8; 8];
         let width = mask.bytes.len().min(8);
         word[..width].copy_from_slice(&mask.bytes[..width]);
         let mask = u64::from_le_bytes(word);
-        let tuple = landed(
-            &binding.futures.steps,
-            binding.futures.target,
-            "branch tuple",
-        )?;
+        let tuple = landed(&binding.futures.steps, "branch tuple")?;
         let mut found = Enumerated::default();
         for (index, branch) in binding.branches.iter().enumerate() {
             let member = match self.route(tuple, &branch.steps, read) {
-                Ok(member) if member.ty.id() == branch.target => member,
-                Ok(member) => {
-                    notes.push(format!(
-                        "select! branch {index} landed on {} rather than its recorded type",
-                        member.ty.name()
-                    ));
-                    continue;
-                }
+                Ok(member) => member,
                 Err(e) => {
                     notes.push(format!("select! branch {index} did not read: {e:#}"));
                     continue;
                 }
             };
-            if index < 64 && (mask >> index) & 1 == 1 {
+            // The validator bounds the branches by the mask's bits, so
+            // the shift is in range; a checked one costs nothing.
+            if mask
+                .checked_shr(index as u32)
+                .is_some_and(|bits| bits & 1 == 1)
+            {
                 // Named by what the branch is, not the borrow the macro
                 // took of it: a `&mut Pin<&mut Sleep>` is a sleep.
                 let ty = self.static_referent(member.ty.id());
@@ -811,7 +798,7 @@ impl<'b, T: Target> Context<'b, T> {
         // the slots have been placed against the members they can arm:
         // a disabled branch arms nothing and is placed against nothing.
         members.extend(disabled);
-        members.sort_by_key(|m| m.route.select_index().unwrap_or(usize::MAX));
+        order_by_branch(&mut members);
 
         if members.iter().any(|m| m.armed.is_some()) {
             Branches::Set(WaitSet {
@@ -885,6 +872,14 @@ impl<'b, T: Target> Context<'b, T> {
             fold_wait(task, wait, &slots, stopped, &size_of);
         }
     }
+}
+
+/// Put a `select!`'s members in branch order — the enabled ones,
+/// inspected first, and the disabled ones, appended after the slots
+/// were placed — and leave every other member where it was, after
+/// them. Stable, so members that are not branches keep their order.
+fn order_by_branch(members: &mut [WaitMember]) {
+    members.sort_by_key(|m| m.route.select_index().unwrap_or(usize::MAX));
 }
 
 /// Where in the task's own chain `addr` lies, as a set member's
@@ -1651,6 +1646,114 @@ mod tests {
             ),
             "{members:#?}"
         );
+    }
+
+    /// A `select!`'s members list in branch order whatever order the
+    /// inspection and the mask left them in — a disabled branch ahead
+    /// of an enabled one included — and the slots that are no branch
+    /// stay after them, in their own order.
+    #[test]
+    fn test_select_members_list_in_branch_order() {
+        let member = |route: MemberRoute| WaitMember {
+            route,
+            key: None,
+            future: None,
+            assessment: None,
+            notes: Vec::new(),
+            armed: None,
+        };
+        let mut members = vec![
+            member(MemberRoute::Select {
+                index: 3,
+                borrowed: false,
+            }),
+            member(MemberRoute::Select {
+                index: 1,
+                borrowed: true,
+            }),
+            member(MemberRoute::SlotOnly {
+                within: Some("a".to_string()),
+            }),
+            member(MemberRoute::SlotOnly { within: None }),
+            member(MemberRoute::Disabled {
+                index: 0,
+                ty: BundleTypeId(0),
+            }),
+            member(MemberRoute::Disabled {
+                index: 2,
+                ty: BundleTypeId(0),
+            }),
+        ];
+        order_by_branch(&mut members);
+        let order: Vec<String> = members
+            .iter()
+            .map(|m| match &m.route {
+                MemberRoute::Select { index, .. } => format!("select {index}"),
+                MemberRoute::Disabled { index, .. } => format!("disabled {index}"),
+                MemberRoute::SlotOnly { within } => format!("slot {within:?}"),
+                MemberRoute::Branch { local, .. } => format!("branch {local}"),
+            })
+            .collect();
+        assert_eq!(
+            order,
+            [
+                "disabled 0",
+                "select 1",
+                "disabled 2",
+                "select 3",
+                "slot Some(\"a\")",
+                "slot None"
+            ]
+        );
+    }
+
+    /// A `select!` with more branches than the cap lists the first ones
+    /// and counts the rest: armed-select's four under a cap of two are
+    /// the oneshot and the mpsc, both armed by their protocols, and two
+    /// counted.
+    #[test]
+    fn test_select_branches_past_the_cap_are_counted() {
+        let (bundle, snapshot) = load_any("armed-select");
+        let ctx = testkit::context(&bundle, &snapshot);
+        let list = testkit::tasks(&ctx, &snapshot);
+        let task = task_named(&list, "selector");
+        let inspection = ctx
+            .inspect_task(task, &ReadContext::none())
+            .unwrap()
+            .unwrap();
+        let mut notes = Vec::new();
+        let Branches::Set(set) = ctx.wait_set(
+            &mut AssessmentPass::new(),
+            &inspection,
+            &TaskFacts::from(task),
+            &list,
+            &Registries::default(),
+            &ReadContext::none(),
+            &mut BranchScan {
+                max_branches: 2,
+                ..BranchScan::default()
+            },
+            &mut notes,
+        ) else {
+            panic!("a set");
+        };
+        assert!(notes.is_empty(), "{notes:#?}");
+        assert_eq!(set.capped, 2);
+        let routes: Vec<usize> = set
+            .members
+            .iter()
+            .map(|m| match m.route {
+                MemberRoute::Select { index, .. } => index,
+                ref other => panic!("{other:?}"),
+            })
+            .collect();
+        assert_eq!(routes, [0, 1]);
+        assert!(
+            set.members
+                .iter()
+                .all(|m| matches!(m.armed, Some(SlotRef::Protocol)))
+        );
+        assert_eq!(set.group_label(), "mpsc, oneshot rx");
     }
 
     /// A stop with no branch and no slot has no set and nothing held.

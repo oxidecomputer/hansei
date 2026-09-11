@@ -1453,6 +1453,39 @@ fn test_semantic_select_binding_reads_the_mask_and_the_tuple() {
     let dup = select(&mut wrong).branches[0].clone();
     select(&mut wrong).branches.push(dup);
     bad(&wrong, "more branches than tuple members");
+    // The mask's bits bound the branches too: a nine-member tuple over
+    // a `u8` mask is refused, eight members fill it exactly.
+    let mut wide = b.clone();
+    {
+        let mut strings = StringInterner::new();
+        for s in wide.strings.iter() {
+            strings.intern(s);
+        }
+        let mut interned = Vec::new();
+        for i in 0..9 {
+            interned.push(strings.intern(&format!("__{i}")));
+        }
+        // `__0` was interned already and comes back as `first`; the
+        // rest are new, in order.
+        assert_eq!(interned[0], first);
+        wide.strings = strings.finish();
+        let TypeDef::Struct { members, size, .. } = &mut wide.types.types[tuple.0 as usize] else {
+            panic!("the tuple is a struct");
+        };
+        *size = 72;
+        *members = interned
+            .iter()
+            .enumerate()
+            .map(|(i, &name)| member(name, CHILD, i as u64 * 8))
+            .collect();
+        select(&mut wide).branches = interned
+            .iter()
+            .map(|&name| path(vec![named(name)], CHILD))
+            .collect();
+    }
+    bad(&wide, "more branches than tuple members or mask bits");
+    select(&mut wide).branches.pop();
+    wide.validate().unwrap();
     let mut wrong = b.clone();
     select(&mut wrong).branches[0] = path(vec![named(first), named(FIELD)], BundleTypeId(0));
     bad(&wrong, "not one named tuple member");
