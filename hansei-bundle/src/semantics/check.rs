@@ -155,10 +155,16 @@ impl<'a> Check<'a> {
             | FuturesUtilMap
             | FuturesUtilMapErr
             | FuturesUtilIntoFuture
-            | HyperUtilTokioSleep => {
+            | HyperUtilTokioSleep
+            | TokioSelect => {
                 let crate_name = match rule.kind {
                     TracingInstrumented => "tracing",
                     HyperUtilTokioSleep => "hyper-util",
+                    // tokio's own macro, but read like a third-party
+                    // rule: the closure's declaration file is the
+                    // evidence, and tokio's version comes off its
+                    // registry path rather than the layout family.
+                    TokioSelect => "tokio",
                     _ => "futures-util",
                 };
                 return require(
@@ -418,6 +424,50 @@ impl<'a> Check<'a> {
             !binding.exclusive_pending || binding.state_rule.is_some(),
             "unreviewed exclusive-pending guarantee",
         )
+    }
+
+    /// A `select!` binding: both routes walk from the record's type
+    /// through the closure's references, the mask lands on an unsigned
+    /// word of a width tokio-macros emits, the tuple is an aggregate,
+    /// and every branch is one of its members — no more of them than
+    /// the mask has bits.
+    fn select(&self, record: &TypeSemantics, binding: &SelectBinding) -> Result<()> {
+        self.rule(binding.rule, &[SemanticRuleKind::TokioSelect])?;
+        self.path(record.ty, &binding.mask)?;
+        require(
+            matches!(binding.mask.steps.last(), Some(Step::Deref)),
+            "select mask is not reached through the closure's reference",
+        )?;
+        let width = match self.ty(binding.mask.target)? {
+            TypeDef::Base {
+                encoding: crate::Encoding::Unsigned,
+                size: size @ (1 | 2 | 4 | 8),
+                ..
+            } => *size,
+            _ => return require(false, "select mask is not an unsigned word"),
+        };
+        self.path(record.ty, &binding.futures)?;
+        require(
+            matches!(binding.futures.steps.last(), Some(Step::Deref)),
+            "select tuple is not reached through the closure's reference",
+        )?;
+        let TypeDef::Struct { members, .. } = self.ty(binding.futures.target)? else {
+            return require(false, "select tuple is not an aggregate");
+        };
+        require(!binding.branches.is_empty(), "select has no branches")?;
+        require(
+            binding.branches.len() <= members.len() && binding.branches.len() as u64 <= width * 8,
+            "select has more branches than tuple members or mask bits",
+        )?;
+        let mut seen = BTreeSet::new();
+        for branch in &binding.branches {
+            let [Step::Member(MemberRef::Named(name))] = branch.steps.as_slice() else {
+                return require(false, "select branch is not one named tuple member");
+            };
+            require(seen.insert(*name), "duplicate select branch")?;
+            self.path(binding.futures.target, branch)?;
+        }
+        Ok(())
     }
 
     fn coroutine(&self, record: &TypeSemantics, layout: &CoroutineLayout) -> Result<()> {
@@ -872,7 +922,8 @@ pub(crate) fn check_semantics(bundle: &Bundle) -> Result<()> {
                 require(
                     record.access.is_none()
                         && record.resource.is_none()
-                        && record.container.is_none(),
+                        && record.container.is_none()
+                        && record.select.is_none(),
                     "unavailable storage carries a readable capability",
                 )?;
             }
@@ -917,6 +968,13 @@ pub(crate) fn check_semantics(bundle: &Bundle) -> Result<()> {
             check.rule(container.rule, &[kind])?;
             check.roles(record.ty, container_roles(container.kind))?;
             check.routes(container_routes(container.kind))?;
+        }
+        if let Some(select) = &record.select {
+            require(
+                matches!(record.storage, StoragePolicy::DeclaredMembers),
+                "select binding needs declared-member storage",
+            )?;
+            check.select(record, select)?;
         }
         let Some(future) = &record.future else {
             continue;

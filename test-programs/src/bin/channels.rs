@@ -10,11 +10,14 @@
 //! `BoundedSemaphore`, `WatchState`, `Semaphore`, `Notify`) detect. A second
 //! task parks a waiter in the `Notify`'s queue, and a third parks in
 //! `Receiver::recv` on an empty bounded channel whose sender the holder
-//! keeps alive. `READY` on stdout means every primitive has reached its
-//! parked state; there are no timing sleeps — readiness is signalled over
-//! oneshots.
+//! keeps alive. A fourth parks in a `select!` whose one live branch is
+//! a bounded `send` on a full channel, beside two branches the macro
+//! disabled before their first poll. `READY` on stdout means every
+//! primitive has reached its parked state; there are no timing sleeps —
+//! readiness is signalled over oneshots.
 
 use std::sync::Arc;
+use std::time::Duration;
 use test_programs::census_expect;
 use tokio::sync::{Notify, Semaphore, mpsc, oneshot, watch};
 
@@ -54,6 +57,7 @@ async fn hold(
     _recv_tx: mpsc::Sender<u32>,
     _closed_rx: mpsc::Receiver<u32>,
     _drained_rx: mpsc::Receiver<u32>,
+    _full_rx: mpsc::Receiver<u32>,
     _watch_tx: watch::Sender<u32>,
     _watch_rx: watch::Receiver<u32>,
     _sem: Arc<Semaphore>,
@@ -64,6 +68,35 @@ async fn hold(
     census_expect::task("channels::hold");
     ready.send(()).expect("main waits for readiness");
     park.await.unwrap_or(0)
+}
+
+/// Park in a `select!` over three branches, only one of them live: a
+/// `send` on a full bounded channel, whose `Acquire` queues this
+/// task's waker on the channel's capacity semaphore with no permit
+/// free — and nothing ever receives. The other two are disabled before
+/// they are polled: a sleep under a false precondition, so its timer
+/// is never registered, and a block that completes at once with an
+/// output that misses the branch's pattern. Each branch future is a
+/// pinned local the `select!` borrows, so the census lists exactly
+/// the three the fixture registers — a `select!` over owned futures
+/// would hold them in a tuple nothing can name. Readiness is
+/// signalled just ahead of the `select!`, in the same poll that
+/// registers.
+async fn send_waiter(tx: mpsc::Sender<u32>, ready: oneshot::Sender<()>) {
+    census_expect::task("channels::send_waiter");
+    let send = tx.send(50);
+    let sleep = tokio::time::sleep(Duration::from_secs(3600));
+    let missed = async { Err::<(), ()>(()) };
+    tokio::pin!(send, sleep, missed);
+    census_expect::held(&*send as *const _ as u64, "send");
+    census_expect::held(&*sleep as *const _ as u64, "Sleep");
+    census_expect::held(&*missed as *const _ as u64, "send_waiter");
+    ready.send(()).expect("main waits for readiness");
+    tokio::select! {
+        _ = &mut send => {}
+        _ = &mut sleep, if false => {}
+        Ok(()) = &mut missed => {}
+    }
 }
 
 fn main() {
@@ -113,6 +146,11 @@ fn main() {
         let _recv_waiter = tokio::spawn(recv_waiter(recv_rx, recv_ready_tx));
         recv_ready_rx.await.expect("receiver signals readiness");
 
+        // A bounded channel of one, filled: the holder keeps its receiver
+        // unpolled, so the `send` below never gets its permit back.
+        let (full_tx, full_rx) = mpsc::channel::<u32>(1);
+        full_tx.send(1).await.expect("capacity available");
+
         // Park the holder forever: its `park` sender is leaked so it is never
         // woken out of the steady state.
         let (holder_ready_tx, holder_ready_rx) = oneshot::channel();
@@ -124,6 +162,7 @@ fn main() {
             recv_tx,
             closed_rx,
             drained_rx,
+            full_rx,
             watch_tx,
             watch_rx,
             sem,
@@ -132,6 +171,12 @@ fn main() {
             park_rx,
         ));
         holder_ready_rx.await.expect("holder signals readiness");
+
+        // A sender parked in a `select!` on the full channel, its waker
+        // queued on the channel's semaphore beside two disabled branches.
+        let (send_ready_tx, send_ready_rx) = oneshot::channel();
+        let _send_waiter = tokio::spawn(send_waiter(full_tx, send_ready_tx));
+        send_ready_rx.await.expect("sender signals readiness");
 
         println!("READY");
         std::future::pending::<()>().await

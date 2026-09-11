@@ -98,6 +98,13 @@ impl TaskWait {
     pub fn verified(&self) -> Option<&VerifiedWait> {
         self.assessment.verified()
     }
+
+    /// How many futures an unknown stop holds unarmed: the listed
+    /// branches that are not a `select!`'s disabled ones, plus those
+    /// past the listing cap. Zero for every other assessment.
+    pub fn held_count(&self) -> usize {
+        self.held.iter().filter(|m| !m.disabled()).count() + self.held_capped
+    }
 }
 
 /// A waker parked in a task's `Trailer`: the join edge read from the
@@ -318,6 +325,7 @@ pub fn analyze<T: Target>(
                     registries,
                     read,
                     &mut scan,
+                    &mut notes,
                 ) {
                     Branches::Set(set) => assessment = WaitAssessment::Set(set),
                     Branches::Held { members, capped } => {

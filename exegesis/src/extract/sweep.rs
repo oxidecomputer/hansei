@@ -88,8 +88,9 @@ pub(super) struct PollSource {
 /// The declaration file of `func`, joined the way the line table meant
 /// it: an absolute file as is, a relative one under its directory, a
 /// relative directory under the unit's compilation directory. `None`
-/// when the function records no file.
-fn poll_source(reader: &DwReader<'_>, func: &Func<'_>) -> Option<PollSource> {
+/// when the function records no file. Also the source a `select!`
+/// closure's declaration is read as, for the binder's origin check.
+pub(super) fn poll_source(reader: &DwReader<'_>, func: &Func<'_>) -> Option<PollSource> {
     let loc = func.raw().source_loc.as_deref()?;
     let file = reader.strings.get(loc.file?);
     let dir = loc

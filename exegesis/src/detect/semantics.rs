@@ -364,6 +364,75 @@ pub const HYPER_UTIL_TOKIO_SLEEP_V0_1_10: LibraryConvention = LibraryConvention 
     ],
 };
 
+/// tokio's `select!` as 1.47 through 1.53 expand it (`src/macros/select.rs`;
+/// the releases differ only in doc comments and in spelling `Poll`,
+/// `Pin` and `ready!` through `$crate::macros::support`). The macro
+/// stores the branch futures in a tuple on the enclosing frame, keeps a
+/// `disabled` bit mask beside it — `u8` up to eight branches, then
+/// `u16`, `u32`, `u64`, tokio-macros' choice by branch count — sets bit
+/// `i` before the first poll when branch `i`'s precondition is false,
+/// and awaits a `poll_fn` whose closure captures exactly those two by
+/// unique borrow (`_ref__disabled`, `_ref__futures`). Each poll walks
+/// the tuple from a random (or, under `biased;`, zero) start, skips the
+/// members whose bit is set, polls the rest, and sets the bit of one
+/// that completed with an output missing its pattern. Neither `biased;`
+/// nor an `else` branch adds a capture. Every other capture is the
+/// user's, evaluated outside the closure: preconditions before it,
+/// handlers after it.
+///
+/// The closure environment is declared under the user's function, so
+/// the rule keys on its declaration file rather than its name; tokio's
+/// version is read off that file's registry path the way a third-party
+/// rule's is, not from the layout family.
+pub const TOKIO_SELECT_V1_47: LibraryConvention = LibraryConvention {
+    package: "tokio",
+    family: "tokio-select-1.47",
+    floor: (1, 47, 0),
+    ceiling: (1, 53, 1),
+    checksums: &[
+        // src/macros/select.rs, 1.47.0 through 1.47.5
+        (
+            "src/macros/select.rs",
+            [
+                0x28, 0x0b, 0xf9, 0x6d, 0xd4, 0xe7, 0x0d, 0xd5, 0x88, 0xdb, 0x17, 0xda, 0x06, 0x6e,
+                0xcf, 0xc0,
+            ],
+        ),
+        // src/macros/select.rs, 1.48.0 and 1.49.0
+        (
+            "src/macros/select.rs",
+            [
+                0x37, 0x45, 0xb7, 0x7b, 0xf6, 0xb0, 0x12, 0x2c, 0x6c, 0xb2, 0x8b, 0xca, 0x26, 0x12,
+                0x59, 0x6f,
+            ],
+        ),
+        // src/macros/select.rs, 1.50.0
+        (
+            "src/macros/select.rs",
+            [
+                0xc4, 0x36, 0x6c, 0xb2, 0xaf, 0x3e, 0xfa, 0xa2, 0xd9, 0x28, 0xbb, 0x8d, 0x92, 0xc8,
+                0x75, 0x5d,
+            ],
+        ),
+        // src/macros/select.rs, 1.51.4 through 1.52.4
+        (
+            "src/macros/select.rs",
+            [
+                0x7d, 0xa7, 0x40, 0x76, 0xc7, 0x0a, 0xb9, 0x7d, 0x76, 0xe5, 0x98, 0xb2, 0x2d, 0x57,
+                0x38, 0x50,
+            ],
+        ),
+        // src/macros/select.rs, 1.53.0 and 1.53.1
+        (
+            "src/macros/select.rs",
+            [
+                0xc9, 0xe7, 0xff, 0xf5, 0xf8, 0x88, 0x9c, 0xe2, 0x55, 0x88, 0x62, 0x1c, 0x40, 0x18,
+                0xb0, 0xf5,
+            ],
+        ),
+    ],
+};
+
 /// The reviewed implementation a version selects, or which side of the
 /// reviewed range it falls on. A version outside gets no rule, however
 /// familiar the layout looks: a delegation authorizes following a poll,

@@ -244,6 +244,17 @@ fn commands(
             list.push(("print-closed-rx", "print _closed_rx".to_owned()));
             list.push(("print-drained-rx", "print _drained_rx".to_owned()));
         }
+        // The sender parked in a `select!`: its block lists the three
+        // branches — the `send` armed by its acquire, two disabled —
+        // and the trace header says the same under the cell.
+        let sender = session.tasks.tasks.iter().find(|task| {
+            matches!(&task.future, bundle::FutureInfo::Known(known)
+                if known.display_name.starts_with("channels::send_waiter::"))
+        });
+        if let Some(id) = sender.and_then(|task| task.task_id) {
+            list.push(("task-sender", format!("task {id}")));
+            list.push(("trace-sender", format!("trace {id} -n")));
+        }
     }
     // The register readout under whatever cursor the commands above
     // left: a task no thread is polling refuses, and a thread cursor

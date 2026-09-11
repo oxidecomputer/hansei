@@ -1299,12 +1299,18 @@ fn extract_from_view(
             Err(decline) => semantics::CompilerVerdict::Declined(format!("{decline:?}")),
         }
     };
+    // Where a closure environment was declared, as the `select!` rule
+    // reads its origin: the body fn's declaration file, joined the way
+    // a poll declaration's is, so the same registry-path check applies.
+    let env_source =
+        |env: TypeId| env_decl_func(reader, view, env).and_then(|f| sweep::poll_source(reader, &f));
     let seeds = semantics::collect_semantic_seeds(
         &em,
         &explicit_polls,
         &poll_sources,
         &coroutine_candidates,
         compiler_verdict,
+        env_source,
     );
     let emitter::Finished {
         types,
@@ -1402,20 +1408,30 @@ fn env_decl_site<'a>(
     view: &DwView<'a>,
     env: TypeId,
 ) -> Option<SourceLocView<'a>> {
+    env_decl_func(reader, view, env).and_then(|f| f.source_loc())
+}
+
+/// The subprogram whose declaration coordinates are an environment's
+/// ([`env_decl_site`]): the fn an async fn's env is named after where
+/// it exists, else the sibling that runs the body. Only a function
+/// that records both a file and a line counts.
+fn env_decl_func<'a>(reader: &DwReader<'a>, view: &DwView<'a>, env: TypeId) -> Option<Func<'a>> {
     let raw = reader.canonical_type(env)?;
     let leaf = reader.strings.get(raw.name()?);
     let ns = raw.namespace();
     let located = |func: Option<Func<'a>>| {
-        func.and_then(|f| f.source_loc())
-            .filter(|loc| loc.file().is_some() && loc.line().is_some())
+        func.filter(|f| {
+            f.source_loc()
+                .is_some_and(|loc| loc.file().is_some() && loc.line().is_some())
+        })
     };
     if leaf.starts_with("{async_fn_env#")
         && let Some(id) = ns
     {
         let entry = reader.namespaces.get(id);
         let outer = view.find_func_in(entry.parent, reader.strings.get(entry.name));
-        if let Some(loc) = located(outer) {
-            return Some(loc);
+        if let Some(func) = located(outer) {
+            return Some(func);
         }
     }
     let body = leaf.replacen("_env#", "#", 1);

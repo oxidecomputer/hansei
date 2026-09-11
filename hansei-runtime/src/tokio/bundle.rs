@@ -34,9 +34,9 @@ use hansei_bundle::symbols::normalized_v0_key;
 use hansei_bundle::tokio::{semaphore, timer};
 use hansei_bundle::{
     AccessKind, BundleType, BundleTypeId, BundleView, ContainerKind, FutureKind, IoOperationKind,
-    ResourceKind, SchedulerClass, StaticRole, Step, StoragePolicy, SymbolLookup, TaskEntryId,
-    TaskFutureEntry, TypeDef, TypeSemantics, WalkOutcome, WalkRole, strip_build_prefix,
-    strip_llvm_suffix,
+    ResourceKind, SchedulerClass, SelectBinding, StaticRole, Step, StoragePolicy, SymbolLookup,
+    TaskEntryId, TaskFutureEntry, TypeDef, TypeSemantics, WalkOutcome, WalkRole,
+    strip_build_prefix, strip_llvm_suffix,
 };
 use proc::{LwpInfo, Mappings, SymbolBuf, Target};
 use reify::Value;
@@ -189,6 +189,14 @@ const SEMAPHORE_OWNERS: &[(&str, &str)] = &[
     ("tokio::sync::mutex::", "tokio::sync::Mutex"),
     ("tokio::sync::rwlock", "tokio::sync::RwLock"),
     ("tokio::sync::semaphore", "tokio::sync::Semaphore"),
+    // A bounded sender's `send` → `reserve` → `reserve_inner` chain,
+    // queued on the channel's capacity semaphore: the frames are the
+    // `{impl#N}` blocks of the `bounded` module, so the module is the
+    // prefix. No receiver-side chain reaches an `Acquire`.
+    (
+        "tokio::sync::mpsc::bounded::",
+        "tokio::sync::mpsc bounded channel",
+    ),
 ];
 
 /// The primitive wrapping an acquired semaphore, when a frame above the
@@ -1400,6 +1408,12 @@ impl<'b, T: Target> Context<'b, T> {
     /// The container a type is bound as, if any.
     pub(crate) fn container_kind(&self, id: BundleTypeId) -> Option<ContainerKind> {
         self.type_semantics(id)?.container.as_ref().map(|c| c.kind)
+    }
+
+    /// The `select!` branches a type polls, where the bundle bound it
+    /// as the `PollFn` of a reviewed expansion.
+    pub(crate) fn select_binding(&self, id: BundleTypeId) -> Option<&'b SelectBinding> {
+        self.type_semantics(id)?.select.as_ref()
     }
 
     // -----------------------------------------------------------------------

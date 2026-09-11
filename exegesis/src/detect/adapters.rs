@@ -461,6 +461,86 @@ pub(crate) fn hyper_util_tokio_sleep(reader: &DwReader<'_>, id: TypeId) -> Optio
         .then_some(forward)
 }
 
+/// A `PollFn` over the closure tokio's `select!` awaits, as the raw
+/// screen saw it: the member holding the closure, the closure
+/// environment, its two by-reference captures and what each points at
+/// — the mask word and the tuple of branch futures, member by member.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SelectLayout {
+    /// The `PollFn`'s one member and the closure environment it holds.
+    pub(crate) closure: String,
+    pub(crate) env: TypeId,
+    /// The capture pointing at the mask, and the unsigned word behind
+    /// it (its size is the mask's width).
+    pub(crate) mask: String,
+    pub(crate) mask_word: TypeId,
+    /// The capture pointing at the tuple, and the tuple.
+    pub(crate) futures: String,
+    pub(crate) tuple: TypeId,
+    /// The tuple's members in order — branch `i` is `__i` — with the
+    /// future type each holds.
+    pub(crate) branches: Vec<(String, TypeId)>,
+}
+
+/// Screen `id` as the `PollFn` a `select!` expansion awaits: std's
+/// `core::future::poll_fn::PollFn<F>` holding an `F` in its one member
+/// `f`, where `F` is a closure environment with exactly two members,
+/// `_ref__disabled: &mut <unsigned word>` and `_ref__futures: &mut
+/// (F0, …)`, the word 1, 2, 4 or 8 bytes wide and the tuple an
+/// aggregate of members `__0` through `__n-1` in order with at least
+/// one and no more than the word has bits. Any other `PollFn` — the
+/// mpsc receiver's, a user's — declines; whose `select.rs` the closure
+/// was written in is the binder's question, over its declaration site.
+pub(crate) fn tokio_select(reader: &DwReader<'_>, id: TypeId) -> Option<SelectLayout> {
+    let st = declared_in(reader, id, "core::future::poll_fn", "PollFn<")?;
+    let closure = sole_member(reader, st, "f")?;
+    let env = struct_of(reader, closure.inner)?;
+    if !env
+        .name
+        .is_some_and(|name| reader.strings.get(name).starts_with("{closure_env#"))
+        || env.members.len() != 2
+    {
+        return None;
+    }
+    let (_, disabled) = unique_member(reader, &env.members, "_ref__disabled")?;
+    let (_, futures) = unique_member(reader, &env.members, "_ref__futures")?;
+    let mask_word = mut_ref_thin(reader, disabled.type_id)?;
+    let width = match reader.canonical_type(mask_word)? {
+        RawType::Base(base) if base.encoding == crate::Encoding::Unsigned => base.size,
+        _ => return None,
+    };
+    if !matches!(width, 1 | 2 | 4 | 8) {
+        return None;
+    }
+    let tuple = mut_ref_thin(reader, futures.type_id)?;
+    let tuple_st = struct_of(reader, tuple)?;
+    if !tuple_st
+        .name
+        .is_some_and(|name| reader.strings.get(name).starts_with('('))
+        || tuple_st.members.is_empty()
+        || tuple_st.members.len() as u64 > width * 8
+    {
+        return None;
+    }
+    let mut branches = Vec::with_capacity(tuple_st.members.len());
+    for (i, member) in tuple_st.members.iter().enumerate() {
+        let name = reader.strings.get(member.name?);
+        if name != format!("__{i}") {
+            return None;
+        }
+        branches.push((name.to_owned(), reader.canonicalize(member.type_id)));
+    }
+    Some(SelectLayout {
+        closure: closure.member,
+        env: closure.inner,
+        mask: "_ref__disabled".to_owned(),
+        mask_word,
+        futures: "_ref__futures".to_owned(),
+        tuple,
+        branches,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -582,19 +662,23 @@ mod tests {
             );
         }
 
-        fn vtable(&mut self, id: TypeId, words: u64) {
-            let usize_t = type_id(0x900);
-            let slots = type_id(0x901);
+        fn base(&mut self, id: TypeId, name: &'static str, encoding: Encoding, size: u64) {
             self.reader.types.insert(
-                usize_t,
+                id,
                 RawType::Base(RawBase {
-                    name: Some(self.reader.strings.intern("usize")),
+                    name: Some(self.reader.strings.intern(name)),
                     namespace: None,
-                    encoding: Encoding::Unsigned,
-                    size: 8,
+                    encoding,
+                    size,
                     alignment: None,
                 }),
             );
+        }
+
+        fn vtable(&mut self, id: TypeId, words: u64) {
+            let usize_t = type_id(0x900);
+            let slots = type_id(0x901);
+            self.base(usize_t, "usize", Encoding::Unsigned, 8);
             self.reader.types.insert(
                 slots,
                 RawType::Array(RawArray {
@@ -1166,5 +1250,176 @@ mod tests {
         };
         assert!(!wide.future_trait);
         assert_eq!(wide.trait_ty, DYN);
+    }
+    /// A `select!`'s `PollFn`: std's `PollFn<F>` with `F` a closure
+    /// environment whose two captures point at an unsigned word and a
+    /// tuple of `__i` members. Each departure — another `PollFn`, a
+    /// third capture, a signed or nine-byte word, a tuple with a gap in
+    /// its member names, more members than the word has bits, a
+    /// capture that is not a `&mut` — is not the reviewed layout.
+    #[test]
+    fn test_the_select_poll_fn_is_screened_by_its_closures_captures() {
+        const POLL_FN: TypeId = TypeId(UnitSectionOffset(0x80));
+        const ENV: TypeId = TypeId(UnitSectionOffset(0x81));
+        const U8: TypeId = TypeId(UnitSectionOffset(0x82));
+        const MASK_REF: TypeId = TypeId(UnitSectionOffset(0x83));
+        const TUPLE: TypeId = TypeId(UnitSectionOffset(0x84));
+        const TUPLE_REF: TypeId = TypeId(UnitSectionOffset(0x85));
+        const I8: TypeId = TypeId(UnitSectionOffset(0x86));
+        const U128: TypeId = TypeId(UnitSectionOffset(0x87));
+        fn select_fixture() -> Fx {
+            let mut fx = fixture();
+            let poll_fn = fx.ns("core::future::poll_fn");
+            let user = fx.ns("app::run::{async_fn#0}");
+            fx.base(U8, "u8", Encoding::Unsigned, 1);
+            fx.pointer(MASK_REF, Some("&mut u8"), U8);
+            fx.strukt(
+                TUPLE,
+                None,
+                "(app::Fut, &mut app::Fut)",
+                &[("__0", FUT, 0), ("__1", REF, 8)],
+                &[],
+            );
+            fx.pointer(TUPLE_REF, Some("&mut (app::Fut, &mut app::Fut)"), TUPLE);
+            fx.strukt(
+                ENV,
+                Some(user),
+                "{closure_env#1}",
+                &[
+                    ("_ref__disabled", MASK_REF, 0),
+                    ("_ref__futures", TUPLE_REF, 8),
+                ],
+                &[],
+            );
+            fx.strukt(
+                POLL_FN,
+                Some(poll_fn),
+                "PollFn<app::run::{async_fn#0}::{closure_env#1}>",
+                &[("f", ENV, 0)],
+                &[("F", ENV)],
+            );
+            fx
+        }
+        let fx = select_fixture();
+        assert_eq!(
+            tokio_select(&fx.reader, POLL_FN),
+            Some(SelectLayout {
+                closure: "f".into(),
+                env: ENV,
+                mask: "_ref__disabled".into(),
+                mask_word: U8,
+                futures: "_ref__futures".into(),
+                tuple: TUPLE,
+                branches: vec![("__0".into(), FUT), ("__1".into(), REF)],
+            })
+        );
+        // Another module's `PollFn`, or the closure held in another
+        // member, is not std's over a closure.
+        let mut fx = select_fixture();
+        let app = fx.ns("app");
+        fx.strukt(
+            POLL_FN,
+            Some(app),
+            "PollFn<app::run::{async_fn#0}::{closure_env#1}>",
+            &[("f", ENV, 0)],
+            &[("F", ENV)],
+        );
+        assert_eq!(tokio_select(&fx.reader, POLL_FN), None);
+        let mut fx = select_fixture();
+        let poll_fn = fx.ns("core::future::poll_fn");
+        fx.strukt(
+            POLL_FN,
+            Some(poll_fn),
+            "PollFn<app::run::{async_fn#0}::{closure_env#1}>",
+            &[("closure", ENV, 0)],
+            &[("F", ENV)],
+        );
+        assert_eq!(tokio_select(&fx.reader, POLL_FN), None);
+        // The closure has to be one, with exactly the two captures.
+        let mut fx = select_fixture();
+        let user = fx.ns("app::run::{async_fn#0}");
+        fx.strukt(
+            ENV,
+            Some(user),
+            "Recv<u32>",
+            &[
+                ("_ref__disabled", MASK_REF, 0),
+                ("_ref__futures", TUPLE_REF, 8),
+            ],
+            &[],
+        );
+        assert_eq!(tokio_select(&fx.reader, POLL_FN), None);
+        for members in [
+            &[("_ref__disabled", MASK_REF, 0)][..],
+            &[
+                ("_ref__disabled", MASK_REF, 0),
+                ("_ref__futures", TUPLE_REF, 8),
+                ("_ref__start", MASK_REF, 16),
+            ][..],
+            &[
+                ("_ref__disabled", MASK_REF, 0),
+                ("_ref__futs", TUPLE_REF, 8),
+            ][..],
+            // The captures are references: a mask held by value, a
+            // tuple pointed at through a `Box`.
+            &[("_ref__disabled", U8, 0), ("_ref__futures", TUPLE_REF, 8)][..],
+            &[("_ref__disabled", MASK_REF, 0), ("_ref__futures", BOX, 8)][..],
+        ] {
+            let mut fx = select_fixture();
+            let user = fx.ns("app::run::{async_fn#0}");
+            fx.strukt(ENV, Some(user), "{closure_env#1}", members, &[]);
+            assert_eq!(tokio_select(&fx.reader, POLL_FN), None, "{members:?}");
+        }
+        // The mask is an unsigned word of a width tokio-macros emits.
+        let mut fx = select_fixture();
+        fx.base(I8, "i8", Encoding::Signed, 1);
+        fx.pointer(MASK_REF, Some("&mut i8"), I8);
+        assert_eq!(tokio_select(&fx.reader, POLL_FN), None);
+        let mut fx = select_fixture();
+        fx.base(U128, "u128", Encoding::Unsigned, 16);
+        fx.pointer(MASK_REF, Some("&mut u128"), U128);
+        assert_eq!(tokio_select(&fx.reader, POLL_FN), None);
+        // The tuple's members are `__0` onward without a gap, at least
+        // one, and no more than the mask has bits.
+        for members in [
+            &[][..],
+            &[("__0", FUT, 0), ("__2", REF, 8)][..],
+            &[("__1", FUT, 0), ("__0", REF, 8)][..],
+            &[("head", FUT, 0), ("tail", REF, 8)][..],
+        ] {
+            let mut fx = select_fixture();
+            fx.strukt(TUPLE, None, "(app::Fut, &mut app::Fut)", members, &[]);
+            assert_eq!(tokio_select(&fx.reader, POLL_FN), None, "{members:?}");
+        }
+        let mut fx = select_fixture();
+        let nine: Vec<(&'static str, TypeId, u64)> = [
+            "__0", "__1", "__2", "__3", "__4", "__5", "__6", "__7", "__8",
+        ]
+        .iter()
+        .enumerate()
+        .map(|(i, name)| (*name, FUT, i as u64 * 8))
+        .collect();
+        fx.strukt(TUPLE, None, "(app::Fut, &mut app::Fut)", &nine, &[]);
+        assert_eq!(tokio_select(&fx.reader, POLL_FN), None);
+        // Nine branches fit a `u16` mask.
+        let mut fx = select_fixture();
+        fx.base(U128, "u16", Encoding::Unsigned, 2);
+        fx.pointer(MASK_REF, Some("&mut u16"), U128);
+        fx.strukt(TUPLE, None, "(app::Fut, &mut app::Fut)", &nine, &[]);
+        assert_eq!(
+            tokio_select(&fx.reader, POLL_FN).map(|l| (l.mask_word, l.branches.len())),
+            Some((U128, 9))
+        );
+        // A tuple that is not one: a struct with `__i` members but a
+        // name of its own.
+        let mut fx = select_fixture();
+        fx.strukt(
+            TUPLE,
+            None,
+            "app::Pair",
+            &[("__0", FUT, 0), ("__1", REF, 8)],
+            &[],
+        );
+        assert_eq!(tokio_select(&fx.reader, POLL_FN), None);
     }
 }

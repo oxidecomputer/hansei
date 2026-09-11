@@ -39,6 +39,9 @@ pub struct TypeSemantics {
     pub access: Option<AccessBinding>,
     pub resource: Option<ResourceBinding>,
     pub container: Option<ContainerBinding>,
+    /// The branches this future polls in turn, where it is the
+    /// `PollFn` a reviewed `select!` expansion parks in.
+    pub select: Option<SelectBinding>,
     pub issues: Vec<SemanticIssue>,
 }
 
@@ -221,6 +224,29 @@ pub enum ContainerKind {
     FuturesUnordered,
 }
 
+/// A `select!` as tokio's macro lays it out around the `PollFn` it
+/// awaits: the closure borrows the branch mask and the tuple of branch
+/// futures from the enclosing frame, and polls each tuple member whose
+/// bit in the mask is clear. Member `i` of the tuple is branch `i` in
+/// source order; bit `i` set means that branch is disabled — by a
+/// false precondition before the first poll, or by a completed output
+/// that missed its pattern — and is polled no more. Which of the two
+/// set it is not recorded anywhere in memory.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub struct SelectBinding {
+    pub rule: SemanticRuleId,
+    /// From the future root to the mask word itself, through the
+    /// closure's reference: an unsigned integer of 1, 2, 4 or 8 bytes,
+    /// the width tokio-macros picks by branch count.
+    pub mask: TypedPath,
+    /// From the future root to the tuple of branch futures, through the
+    /// closure's reference.
+    pub futures: TypedPath,
+    /// Branch `i`, as a path from the tuple: its member `__i` and the
+    /// future type that member holds.
+    pub branches: Vec<TypedPath>,
+}
+
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub struct SemanticRule {
     pub kind: SemanticRuleKind,
@@ -272,6 +298,9 @@ pub enum SemanticRuleKind {
     HyperUtilTokioSleep,
     TokioOneshotRecv,
     TokioOneshotRecvState,
+    /// tokio's `select!` expansion: the `PollFn` closure that borrows
+    /// the branch mask and the tuple of branch futures.
+    TokioSelect,
 }
 
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]

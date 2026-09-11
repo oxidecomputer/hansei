@@ -50,6 +50,7 @@ mod tests {
             access: None,
             resource: None,
             container: None,
+            select: None,
             issues: Vec::new(),
         }
     }

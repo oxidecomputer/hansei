@@ -1206,7 +1206,7 @@ walk contract (tokio 1.52.4, rustc 1.97.0 (2d8144b78 2026-07-07)): 169 entries, 
   absent  watch::Shared.notify_rx — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
 
 program: channels
-walk contract (tokio 1.52.4, rustc 1.97.0 (2d8144b78 2026-07-07)): 169 entries, 0 broken, 44 absent
+walk contract (tokio 1.52.4, rustc 1.97.0 (2d8144b78 2026-07-07)): 169 entries, 0 broken, 40 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -1248,16 +1248,16 @@ walk contract (tokio 1.52.4, rustc 1.97.0 (2d8144b78 2026-07-07)): 169 entries, 
   ok      Location.file (spelling 1 of 3)
   ok      Location.line
   ok      Location.col
-  ok      Cell.stage (7 cells)
-  ok      Cell.stage_running (7 cells)
-  ok      Cell.stage_finished (7 cells)
-  ok      Cell.stage_consumed (7 cells)
-  ok      Cell.trailer (7 cells)
-  ok      Cell.task_id (7 cells)
-  ok      Cell.scheduler (7 cells)
-  absent  Sleep.deadline — no tokio::time::sleep::Sleep… type in the tokio info (the target does not reach one)
-  absent  Sleep.deadline.tv_sec — no tokio::time::sleep::Sleep… type in the tokio info (the target does not reach one)
-  absent  Sleep.deadline.tv_nsec — no tokio::time::sleep::Sleep… type in the tokio info (the target does not reach one)
+  ok      Cell.stage (9 cells)
+  ok      Cell.stage_running (9 cells)
+  ok      Cell.stage_finished (9 cells)
+  ok      Cell.stage_consumed (9 cells)
+  ok      Cell.trailer (9 cells)
+  ok      Cell.task_id (9 cells)
+  ok      Cell.scheduler (9 cells)
+  ok      Sleep.deadline (family v1_49)
+  ok      Sleep.deadline.tv_sec
+  ok      Sleep.deadline.tv_nsec
   ok      JoinHandle.raw (3 types)
   ok      Acquire.semaphore
   ok      Acquire.num_permits
@@ -1339,7 +1339,7 @@ walk contract (tokio 1.52.4, rustc 1.97.0 (2d8144b78 2026-07-07)): 169 entries, 
   ok      Arc<current_thread::Handle>.data
   absent  Arc<local::Shared>.data — no Arc<tokio::task::local::Shared> type in the tokio info (the target does not reach one)
   ok      BlockingSchedule.hooks
-  absent  Sleep.timer.state — no tokio::time::sleep::Sleep… type in the tokio info (the target does not reach one)
+  ok      Sleep.timer.state (family v1_49)
   ok      ScheduledIo.waiters.lock (spelling 1 of 2)
   ok      mpsc::recv.rx
   ok      mpsc::Rx.inner.data

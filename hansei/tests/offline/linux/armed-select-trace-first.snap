@@ -3,10 +3,10 @@ source: hansei/src/offline.rs
 description: "`trace 3 -n` over linux/armed-select"
 ---
 Waiting on: mpsc 0xADDR (1 sender, capacity 4, 0 unread), oneshot rx 0xADDR (nothing sent, sender alive), timer (deadline TS on the target's monotonic clock), watch 0xADDR (version 0, 1 sender, 1 receiver)
-  mpsc 0xADDR: waker in Chan.rx_waker, reached from #1 queue → chan → inner → * → data → rx_waker → waker
-  oneshot rx 0xADDR: waker in Inner.rx_task (rx_task_set), reached from the future at 0xADDR inner → * → data → rx_task
-  timer 0xADDR deadline TS on the target's monotonic clock
-  watch 0xADDR: waker in Notified.waiter, in the future at 0xADDR waiter → waker
+  branch 0 (borrowed): tokio::sync::oneshot::Receiver at 0xADDR — oneshot rx 0xADDR (nothing sent, sender alive); armed: oneshot rx 0xADDR: waker in Inner.rx_task (rx_task_set), reached from the future at 0xADDR inner → * → data → rx_task
+  branch 1 (borrowed): async fn tokio::sync::mpsc::bounded::Receiver::recv at 0xADDR — mpsc 0xADDR (1 sender, capacity 4, 0 unread); armed: mpsc 0xADDR: waker in Chan.rx_waker, reached from #1 queue → chan → inner → * → data → rx_waker → waker
+  branch 2 (borrowed): async fn tokio::sync::watch::Receiver::changed at 0xADDR — unknown; armed: watch 0xADDR: waker in Notified.waiter, in the future at 0xADDR waiter → waker
+  branch 3 (borrowed): tokio::time::sleep::Sleep at 0xADDR — timer (deadline TS on the target's monotonic clock); armed: timer 0xADDR deadline TS on the target's monotonic clock
 
 what core::future::poll_fn::PollFn<armed_select::selector::{async_fn#0}::{closure_env#0}> polls is not established (no reviewed rule covers its implementation); the chain ends there
 #0  future        core::future::poll_fn::PollFn<armed_select::selector::{async_fn#0}::{closure_env#0}>

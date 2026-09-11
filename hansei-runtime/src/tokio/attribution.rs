@@ -2341,13 +2341,17 @@ mod tests {
                 .position(|t| t.addr == task.addr)
                 .unwrap()
         };
-        // Before the fold the selector's set is the registry's wheel
-        // entry alone; the driver has no set at all.
+        // Before the fold the selector's set is what the analysis reads
+        // on its own: the `select!`'s four branches, the oneshot and
+        // mpsc ones armed by their protocols and the sleep by the
+        // registry's wheel entry, the watch one held; the driver has no
+        // set at all.
         let WaitAssessment::Set(set) = &analysis.waits[index("selector")].assessment else {
             panic!("{:?}", analysis.waits[index("selector")].assessment);
         };
-        assert_eq!(set.armed().count(), 1);
-        assert!(set.cell().starts_with("timer (deadline "), "{}", set.cell());
+        assert_eq!(set.members.len(), 4, "{:#?}", set.members);
+        assert_eq!(set.armed().count(), 3, "{:#?}", set.members);
+        assert_eq!(set.group_label(), "mpsc, oneshot rx, timer");
         assert!(matches!(
             analysis.waits[index("driver")].assessment,
             WaitAssessment::Unknown(_)
@@ -2361,29 +2365,33 @@ mod tests {
             panic!("{:?}", selector.assessment);
         };
         assert_eq!(set.armed().count(), 4, "{:#?}", set.members);
-        // The wheel entry is the registry's member still, its swept
-        // twin folded into nothing; the other three are the sweep's.
-        assert_eq!(
+        // The wheel entry and the two protocol readings stand as the
+        // analysis left them, their swept twins folded into nothing;
+        // the watch branch — unknown to the engine, since `changed`
+        // parks in a `Notified` the chain does not reach — is the one
+        // the sweep arms, by the node inside its storage.
+        let armed_by = |pred: &dyn Fn(&SlotRef) -> bool| {
             set.members
                 .iter()
-                .filter(|m| matches!(m.armed, Some(SlotRef::Wheel { .. })))
-                .count(),
-            1
-        );
-        assert_eq!(
-            set.members
-                .iter()
-                .filter(|m| matches!(m.armed, Some(SlotRef::Swept { .. })))
-                .count(),
-            3
-        );
-        assert!(
-            set.members
-                .iter()
-                .all(|m| matches!(m.route, MemberRoute::SlotOnly { .. })),
-            "the select! closure's tuple is no branch yet: {:#?}",
-            set.members
-        );
+                .filter(|m| m.armed.as_ref().is_some_and(pred))
+                .count()
+        };
+        assert_eq!(armed_by(&|s| matches!(s, SlotRef::Wheel { .. })), 1);
+        assert_eq!(armed_by(&|s| matches!(s, SlotRef::Protocol)), 2);
+        assert_eq!(armed_by(&|s| matches!(s, SlotRef::Swept { .. })), 1);
+        // The `select!` rule lists the tuple's four members as the
+        // branches, each a `&mut` to the frame's own local, in source
+        // order, and every slot arms the branch whose storage — or
+        // whose find, reached through the borrow — holds it.
+        let routes: Vec<(usize, bool)> = set
+            .members
+            .iter()
+            .map(|m| match m.route {
+                MemberRoute::Select { index, borrowed } => (index, borrowed),
+                ref other => panic!("{other:?}"),
+            })
+            .collect();
+        assert_eq!(routes, [(0, true), (1, true), (2, true), (3, true)]);
         let cell = set.cell();
         assert!(cell.starts_with("mpsc 0x"), "{cell}");
         assert!(cell.contains(", oneshot rx 0x"), "{cell}");
@@ -2482,26 +2490,37 @@ mod tests {
         }
     }
 
-    /// Over `channels`: every slot is an owner-table slot — the oneshot's
-    /// receiver, the channel's receiver, the `Notify` node — and the
-    /// oneshot names a primitive the `Receiver`'s `inner` points into.
+    /// Over `channels`: the receivers' slots are owner-table slots — the
+    /// oneshot's receiver, the channel's receiver, the `Notify` node —
+    /// and the blocked sender's is the one typed slot, the waker in the
+    /// `Acquire`'s queue node inside its own `send` future.
     #[test]
     fn test_channels_slots_name_their_primitives() {
         let (bundle, snapshot) = load_any("channels");
         let over = Over::new(&bundle, &snapshot);
         let attributed = over.attribute();
-        let mut kinds: Vec<OwnerKind> = attributed
-            .slots
-            .iter()
-            .map(|s| match &s.attribution {
-                Attribution::Owner { kind, .. } => *kind,
+        let mut kinds: Vec<OwnerKind> = Vec::new();
+        let mut typed: Vec<(String, String)> = Vec::new();
+        for slot in &attributed.slots {
+            match &slot.attribution {
+                Attribution::Owner { kind, .. } => kinds.push(*kind),
+                Attribution::Typed { holder, member, .. } => {
+                    typed.push((holder.clone(), member.clone()));
+                }
                 other => panic!("{other:?}"),
-            })
-            .collect();
+            }
+        }
         kinds.sort_by_key(|k| k.word());
         assert_eq!(
             kinds,
             [OwnerKind::Mpsc, OwnerKind::Notify, OwnerKind::OneshotRx]
+        );
+        assert_eq!(
+            typed,
+            [(
+                "tokio::sync::batch_semaphore::Waiter".to_string(),
+                "waker".to_string()
+            )]
         );
         assert_eq!(attributed.stats.stale, 0);
     }
@@ -3394,6 +3413,7 @@ mod synthetic_tests {
                 access: None,
                 resource: None,
                 container: None,
+                select: None,
                 issues: Vec::new(),
             }],
             ..Default::default()

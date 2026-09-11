@@ -1,0 +1,17 @@
+---
+source: hansei/src/offline.rs
+description: "`task 6` over linux/channels"
+---
+task 6
+    state: idle
+    thread: <none>
+    type: async fn channels::send_waiter
+    awaiting at: src/bin/channels.rs:95
+    waiting on: a tokio::sync::mpsc bounded channel (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 6
+        branch 0 (borrowed): async fn tokio::sync::mpsc::bounded::Sender::send at 0xADDR — a tokio::sync::mpsc bounded channel (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 6; armed: slot 0xADDR: waker in tokio::sync::batch_semaphore::Waiter.waker, in the future at 0xADDR node → waker
+        branch 1: tokio::time::sleep::Sleep: disabled
+        branch 2: async block channels::send_waiter::{async_fn#0}: disabled
+    spawned at: src/bin/channels.rs:178:28
+    defined at: src/bin/channels.rs:85
+    held futures: 3
+    join sets: 0

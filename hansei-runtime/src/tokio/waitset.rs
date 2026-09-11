@@ -52,7 +52,7 @@ use super::graph::{Analysis, TaskWait};
 use super::observe::{ReadContext, ValueKey};
 
 use foldhash::{HashMap, HashSet};
-use hansei_bundle::{AccessKind, BundleTypeId, SemanticIssueKind};
+use hansei_bundle::{AccessKind, BundleTypeId, SelectBinding, SemanticIssueKind};
 use proc::Target;
 use reify::Value;
 
@@ -75,7 +75,8 @@ pub struct WaitSet {
     pub at: Option<ValueKey>,
     /// Why the chain ends there, where it ends at a stop.
     pub reason: Option<SemanticIssueKind>,
-    /// Every branch, armed or not, then every slot in no branch. At
+    /// Every branch, armed or not — a `select!`'s disabled branches
+    /// among them, in branch order — then every slot in no branch. At
     /// least one member is armed, or there is no set.
     pub members: Vec<WaitMember>,
     /// Branches past [`MAX_BRANCHES`]: found and counted, not
@@ -181,6 +182,12 @@ impl WaitMember {
         }
         armed.kind()
     }
+
+    /// Whether the member is a `select!` branch its mask has disabled:
+    /// listed, but neither held nor armed, and counted nowhere.
+    pub fn disabled(&self) -> bool {
+        matches!(self.route, MemberRoute::Disabled { .. })
+    }
 }
 
 /// How a member was reached.
@@ -189,10 +196,30 @@ pub enum MemberRoute {
     /// A future the stop frame holds in `local`, by value or — with
     /// `borrowed` — through a `&mut`.
     Branch { local: String, borrowed: bool },
+    /// Branch `index` of a `select!`, in source order: member `index`
+    /// of the tuple the stop's closure borrows, with `borrowed` where
+    /// that member is itself a `&mut` to the frame's own local.
+    Select { index: usize, borrowed: bool },
+    /// Branch `index` of a `select!` whose mask bit is set: disabled
+    /// before its first poll by a false precondition, or after
+    /// completing with an output that missed its pattern — which of
+    /// the two, nothing in memory says. Not inspected: `ty` names
+    /// what it is, and that is all that is listed.
+    Disabled { index: usize, ty: BundleTypeId },
     /// A registry slot attributed to the task that lies in no branch.
     /// `within` places it in the task's own chain where it does lie
     /// there.
     SlotOnly { within: Option<String> },
+}
+
+impl MemberRoute {
+    /// The branch's position in its `select!`, for ordering the listing.
+    fn select_index(&self) -> Option<usize> {
+        match self {
+            MemberRoute::Select { index, .. } | MemberRoute::Disabled { index, .. } => Some(*index),
+            MemberRoute::Branch { .. } | MemberRoute::SlotOnly { .. } => None,
+        }
+    }
 }
 
 /// The evidence a member holds this task's waker.
@@ -318,11 +345,22 @@ pub enum Branches {
     None,
 }
 
-/// One future-typed value the stop frame reaches.
+/// One future-typed value the stop frame reaches, and how.
 struct Branch<'b> {
-    local: String,
-    borrowed: bool,
+    route: MemberRoute,
     value: Value<'b>,
+}
+
+/// What enumerating a stop frame's branches found.
+#[derive(Default)]
+struct Enumerated<'b> {
+    /// The branches to inspect, in order.
+    branches: Vec<Branch<'b>>,
+    /// Branches past the cap: found and counted, not inspected.
+    capped: usize,
+    /// A `select!`'s disabled branches, as the members they are listed
+    /// as: named, not inspected, and never armed.
+    disabled: Vec<WaitMember>,
 }
 
 /// Recognition for the branch scan: the census's, with borrowed
@@ -367,17 +405,28 @@ fn contains(value: Value<'_>, addr: u64) -> bool {
 }
 
 impl<'b, T: Target> Context<'b, T> {
-    /// The future-typed values `frame` holds or borrows: its own locals
-    /// scanned through their aggregates and active variants, every
-    /// supported adapter followed to what it holds. Depth one — the
-    /// frame's members, never a branch's — and capped at
-    /// [`MAX_BRANCHES`], the rest counted.
+    /// The future-typed values `frame` holds or borrows. A frame the
+    /// bundle bound as a `select!`'s `PollFn` polls the tuple its
+    /// closure borrows, member by member, under its mask
+    /// ([`Context::select_branches`]); any other frame has its own
+    /// locals scanned through their aggregates and active variants,
+    /// every supported adapter followed to what it holds. Depth one —
+    /// the frame's members, never a branch's — and capped at
+    /// [`MAX_BRANCHES`], the rest counted. `notes` collects what could
+    /// not be read.
     fn branches_at(
         &self,
         frame: &AwaitFrame<'b>,
         read: &ReadContext<'_>,
         scan: &mut BranchScan,
-    ) -> (Vec<Branch<'b>>, usize) {
+        notes: &mut Vec<String>,
+    ) -> Enumerated<'b> {
+        if let Some(binding) = self.select_binding(frame.future.ty.id())
+            && let Some(found) =
+                self.select_branches(frame, binding, read, scan.max_branches, notes)
+        {
+            return found;
+        }
         let mut branches = Vec::new();
         let mut capped = 0;
         let mut counts = census::Capped::default();
@@ -413,13 +462,130 @@ impl<'b, T: Target> Context<'b, T> {
                     continue;
                 }
                 branches.push(Branch {
-                    local: name.to_string(),
-                    borrowed,
+                    route: MemberRoute::Branch {
+                        local: name.to_string(),
+                        borrowed,
+                    },
                     value,
                 });
             }
         }
-        (branches, capped)
+        Enumerated {
+            branches,
+            capped,
+            disabled: Vec::new(),
+        }
+    }
+
+    /// A `select!`'s branches, as the bound layout reads them: the mask
+    /// word and the tuple of branch futures through the closure's two
+    /// references, then tuple member `i` as branch `i`. A member whose
+    /// mask bit is set is disabled — never polled again, holding no
+    /// waker of this task's — and is listed as such without being
+    /// inspected. Every other member is a branch whatever its type: a
+    /// `&mut` to the frame's own local is followed by the inspection
+    /// like any borrowed adapter, and a type no rule recognizes is an
+    /// unknown branch, not a missing one. `None`, with the reason
+    /// noted, where the mask or the tuple did not read.
+    fn select_branches(
+        &self,
+        frame: &AwaitFrame<'b>,
+        binding: &'b SelectBinding,
+        read: &ReadContext<'_>,
+        max_branches: usize,
+        notes: &mut Vec<String>,
+    ) -> Option<Enumerated<'b>> {
+        let mut landed =
+            |steps: &[hansei_bundle::Step], target: BundleTypeId, what: &str| match self.route(
+                frame.future,
+                steps,
+                read,
+            ) {
+                Ok(value) if value.ty.id() == target => Some(value),
+                Ok(value) => {
+                    notes.push(format!(
+                        "the select! {what} landed on {} rather than its recorded type",
+                        value.ty.name()
+                    ));
+                    None
+                }
+                Err(e) => {
+                    notes.push(format!("the select! {what} did not read: {e:#}"));
+                    None
+                }
+            };
+        let mask = landed(&binding.mask.steps, binding.mask.target, "branch mask")?;
+        let mut word = [0u8; 8];
+        let width = mask.bytes.len().min(8);
+        word[..width].copy_from_slice(&mask.bytes[..width]);
+        let mask = u64::from_le_bytes(word);
+        let tuple = landed(
+            &binding.futures.steps,
+            binding.futures.target,
+            "branch tuple",
+        )?;
+        let mut found = Enumerated::default();
+        for (index, branch) in binding.branches.iter().enumerate() {
+            let member = match self.route(tuple, &branch.steps, read) {
+                Ok(member) if member.ty.id() == branch.target => member,
+                Ok(member) => {
+                    notes.push(format!(
+                        "select! branch {index} landed on {} rather than its recorded type",
+                        member.ty.name()
+                    ));
+                    continue;
+                }
+                Err(e) => {
+                    notes.push(format!("select! branch {index} did not read: {e:#}"));
+                    continue;
+                }
+            };
+            if index < 64 && (mask >> index) & 1 == 1 {
+                // Named by what the branch is, not the borrow the macro
+                // took of it: a `&mut Pin<&mut Sleep>` is a sleep.
+                let ty = self.static_referent(member.ty.id());
+                found.disabled.push(WaitMember {
+                    route: MemberRoute::Disabled { index, ty },
+                    key: None,
+                    future: self.view.ty(ty).map(|t| t.name().to_string()),
+                    assessment: None,
+                    notes: Vec::new(),
+                    armed: None,
+                });
+                continue;
+            }
+            if found.branches.len() >= max_branches {
+                found.capped += 1;
+                continue;
+            }
+            found.branches.push(Branch {
+                route: MemberRoute::Select {
+                    index,
+                    borrowed: false,
+                },
+                value: member,
+            });
+        }
+        Some(found)
+    }
+
+    /// The type behind `ty`'s recorded adapter routes, read from the
+    /// bundle alone: a `&mut Pin<&mut F>` is `F`, up to the hop bound,
+    /// and a dynamic route — whose pointee only memory names — stops
+    /// at the adapter. For naming a value nothing reads.
+    fn static_referent(&self, ty: BundleTypeId) -> BundleTypeId {
+        let mut cur = ty;
+        for _ in 0..MAX_ADAPTER_HOPS {
+            let Some(hansei_bundle::FutureTarget::Value(path)) = self
+                .type_semantics(cur)
+                .and_then(|record| record.access.as_ref())
+                .map(|access| &access.target)
+            else {
+                break;
+            };
+            cur = path.target;
+        }
+        cur
     }
 
     /// Follow an adapter through its recorded routes to the future it
@@ -482,10 +648,20 @@ impl<'b, T: Target> Context<'b, T> {
                 .enumerate()
                 .find(|(_, f)| access(f).is_none())
                 .unwrap_or((0, &held.chain.frames[0]));
-            let borrowed = branch.borrowed
-                || held.chain.frames[..index]
-                    .iter()
-                    .any(|f| access(f) == Some(AccessKind::Borrowed));
+            let via_borrow = held.chain.frames[..index]
+                .iter()
+                .any(|f| access(f) == Some(AccessKind::Borrowed));
+            let route = match branch.route {
+                MemberRoute::Branch { local, borrowed } => MemberRoute::Branch {
+                    local,
+                    borrowed: borrowed || via_borrow,
+                },
+                MemberRoute::Select { index, borrowed } => MemberRoute::Select {
+                    index,
+                    borrowed: borrowed || via_borrow,
+                },
+                other => other,
+            };
             let key = ValueKey::of(identity.future);
             // A branch that is a frame of the task's own chain is that
             // frame, not something the stop polls beside it; a branch
@@ -495,10 +671,7 @@ impl<'b, T: Target> Context<'b, T> {
             }
             let Assessed { assessment, notes } = self.assess_wait(pass, &held, task, list, read);
             members.push(WaitMember {
-                route: MemberRoute::Branch {
-                    local: branch.local,
-                    borrowed,
-                },
+                route,
                 key: Some(key),
                 future: Some(identity.future.ty.name().to_string()),
                 assessment: Some(assessment),
@@ -515,7 +688,8 @@ impl<'b, T: Target> Context<'b, T> {
     /// inspected and assessed under `task`'s identity, joined to the
     /// wheel entries and io waiters `registries` attribute to the task.
     /// Only for a chain ending in [`ChainEnd::UnknownContinuation`]:
-    /// every other end already says what the task is doing.
+    /// every other end already says what the task is doing. What
+    /// could not be read on the way is pushed onto `notes`.
     #[allow(clippy::too_many_arguments)]
     pub fn wait_set(
         &self,
@@ -526,6 +700,7 @@ impl<'b, T: Target> Context<'b, T> {
         registries: &Registries,
         read: &ReadContext<'_>,
         scan: &mut BranchScan,
+        notes: &mut Vec<String>,
     ) -> Branches {
         let chain = &inspection.chain;
         let ChainEnd::UnknownContinuation { at, reason } = &chain.end else {
@@ -534,7 +709,11 @@ impl<'b, T: Target> Context<'b, T> {
         let Some(stop) = chain.frames.last() else {
             return Branches::None;
         };
-        let (branches, capped) = self.branches_at(stop, read, scan);
+        let Enumerated {
+            branches,
+            capped,
+            disabled,
+        } = self.branches_at(stop, read, scan, notes);
         let (mut members, chains) = self.members_of(pass, chain, task, list, read, branches);
 
         // The slots: each placed in the branch whose storage holds it,
@@ -627,6 +806,12 @@ impl<'b, T: Target> Context<'b, T> {
             }
             member.armed = Some(SlotRef::Protocol);
         }
+
+        // The disabled branches join the listing in branch order, after
+        // the slots have been placed against the members they can arm:
+        // a disabled branch arms nothing and is placed against nothing.
+        members.extend(disabled);
+        members.sort_by_key(|m| m.route.select_index().unwrap_or(usize::MAX));
 
         if members.iter().any(|m| m.armed.is_some()) {
             Branches::Set(WaitSet {
@@ -900,6 +1085,7 @@ mod tests {
             registries,
             &ReadContext::none(),
             &mut BranchScan::default(),
+            &mut Vec::new(),
         )
     }
 
@@ -1386,6 +1572,7 @@ mod tests {
                     max_branches: 0,
                     ..BranchScan::default()
                 },
+                &mut Vec::new(),
             )
         };
         let Branches::Held { members, capped } = capped_to_zero(&Registries::default()) else {
@@ -1419,16 +1606,32 @@ mod tests {
             .unwrap()
             .unwrap();
         let stop = inspection.chain.frames.last().unwrap();
-        let (found, _) = ctx.branches_at(stop, &ReadContext::none(), &mut BranchScan::default());
+        let mut notes = Vec::new();
+        let found = ctx
+            .branches_at(
+                stop,
+                &ReadContext::none(),
+                &mut BranchScan::default(),
+                &mut notes,
+            )
+            .branches;
         assert_eq!(found.len(), 1);
+        assert!(notes.is_empty(), "{notes:#?}");
+        let MemberRoute::Branch { local, .. } = &found[0].route else {
+            panic!("{:?}", found[0].route);
+        };
         let branch = |borrowed: bool| Branch {
-            local: found[0].local.clone(),
-            borrowed,
+            route: MemberRoute::Branch {
+                local: local.clone(),
+                borrowed,
+            },
             value: found[0].value,
         };
         let root = Branch {
-            local: "root".to_string(),
-            borrowed: false,
+            route: MemberRoute::Branch {
+                local: "root".to_string(),
+                borrowed: false,
+            },
             value: inspection.chain.frames[0].future,
         };
         let (members, chains) = ctx.members_of(

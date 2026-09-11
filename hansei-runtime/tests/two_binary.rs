@@ -1067,7 +1067,7 @@ fn test_the_census_accounting_is_exact_per_program() {
         ("dyn-future", 0, 4, 0, 0, 0),
         ("futurelock", 2, 10, 0, 0, 0),
         ("sleep-join", 0, 2, 0, 0, 0),
-        ("channels", 0, 5, 0, 0, 0),
+        ("channels", 0, 9, 3, 0, 3),
         ("unordered", 0, 4, 3, 2, 0),
         ("joinset", 0, 7, 0, 0, 0),
         ("ct-runtime", 0, 3, 0, 0, 0),

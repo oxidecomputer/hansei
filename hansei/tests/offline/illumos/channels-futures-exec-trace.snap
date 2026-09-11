@@ -2,4 +2,30 @@
 source: hansei/src/offline.rs
 description: "`futures --exec trace -l 1` over illumos/channels"
 ---
-[Executed against 0 futures, 0 failed]
+future 0xADDR
+future 0xADDR: async fn tokio::sync::mpsc::bounded::Sender::send<u32>
+Held by: task 6 — async fn channels::send_waiter (frame 1, `send`)
+
+Waiting on: a tokio::sync::mpsc bounded channel (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 6
+
+#0  future        tokio::sync::batch_semaphore::Acquire
+      waiting on a tokio::sync::mpsc bounded channel (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 6
+[4 frames, 1 shown]
+
+future 0xADDR
+future 0xADDR: future tokio::time::sleep::Sleep
+Held by: task 6 — async fn channels::send_waiter (frame 1, `sleep`)
+
+Waiting on: timer (deadline TS)
+
+#0  future        tokio::time::sleep::Sleep
+      waiting on timer (deadline TS)
+
+future 0xADDR
+future 0xADDR: async block channels::send_waiter::{async_fn#0}
+Held by: task 6 — async fn channels::send_waiter (frame 1, `missed`)
+
+the chain ends in a future that has returned
+#0  async block   channels::send_waiter::{async_fn#0}
+      state Returned
+[Executed against 3 futures, 0 failed]

@@ -301,7 +301,12 @@ impl<'b, T: Target> Context<'b, T> {
     /// Run a recorded route to its terminal. A route a program selected
     /// admits no inactive guard and no null pointer: either is an
     /// error, not a reason to look elsewhere.
-    fn route(&self, from: Value<'b>, steps: &[Step], read: &ReadContext<'_>) -> Result<Value<'b>> {
+    pub(crate) fn route(
+        &self,
+        from: Value<'b>,
+        steps: &[Step],
+        read: &ReadContext<'_>,
+    ) -> Result<Value<'b>> {
         match contract::execute_steps(self, read, from, steps)? {
             Walked::At(value) => Ok(value),
             Walked::Inactive(name) => bail!(

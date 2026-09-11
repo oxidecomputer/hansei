@@ -103,6 +103,7 @@ pub fn walk_shapes_bindings(
         access: None,
         resource: None,
         container: None,
+        select: None,
         issues: Vec::new(),
     };
     let bindings = vec![

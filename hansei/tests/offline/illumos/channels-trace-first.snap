@@ -10,4 +10,4 @@ Waiting on: notify 0xADDR (waiting, 1 queued)
 #1  future        Pin<&mut tokio::sync::notify::Notified>
       (<no_state>, 1 local)
 #2  async fn      channels::notify_waiter
-      awaiting at src/bin/channels.rs:34 (Suspend0, 2 locals)
+      awaiting at src/bin/channels.rs:37 (Suspend0, 2 locals)

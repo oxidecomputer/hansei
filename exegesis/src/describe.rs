@@ -780,6 +780,21 @@ pub fn describe_semantics(bundle: &Bundle) -> String {
                 container.kind, container.rule.0
             );
         }
+        if let Some(select) = &record.select {
+            let branches: Vec<String> = select
+                .branches
+                .iter()
+                .map(|b| path(select.futures.target, b))
+                .collect();
+            let _ = write!(
+                line,
+                " select rule {} mask {} futures {} branches [{}]",
+                select.rule.0,
+                path(record.ty, &select.mask),
+                path(record.ty, &select.futures),
+                branches.join(", ")
+            );
+        }
         for i in &record.issues {
             let _ = write!(line, " issue ({})", issue(i));
         }

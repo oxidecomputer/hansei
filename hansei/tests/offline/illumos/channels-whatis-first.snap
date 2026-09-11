@@ -1,6 +1,6 @@
 ---
 source: hansei/src/offline.rs
-description: "`whatis 0xeaed80` over illumos/channels"
+description: "`whatis 0x161ed80` over illumos/channels"
 ---
 Status: live
 Size:   272 byte block
@@ -9,4 +9,4 @@ Offset: +16 in block
 Task 3: async fn channels::notify_waiter
     At: offset 0xADDR in the task's allocation (header 0xADDR)
     State: idle
-    Spawned at: src/bin/channels.rs:106:23
+    Spawned at: src/bin/channels.rs:139:23

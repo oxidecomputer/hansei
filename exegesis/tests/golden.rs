@@ -832,6 +832,11 @@ fn assert_adapter_programs(program: &str, bundle: &Bundle) {
     // registry path its `poll` was declared on.
     let mut kinds: Vec<SemanticRuleKind> = Vec::new();
     for rule in &bundle.semantics.rules {
+        // The selector's `select!` binds tokio's rule under tokio's own
+        // origin; `assert_select` holds that one.
+        if rule.kind == SemanticRuleKind::TokioSelect {
+            continue;
+        }
         let SemanticOrigin::LibraryDelegation {
             package,
             version,
@@ -870,6 +875,101 @@ fn assert_adapter_programs(program: &str, bundle: &Bundle) {
         .collect::<Vec<_>>(),
         "{program}"
     );
+}
+
+/// The fixtures that expand a `tokio::select!`, and so carry the
+/// select rule: each program's one stop and its branch count.
+const SELECT_PROGRAMS: [&str; 4] = [
+    "armed-select",
+    "channels",
+    "futurelock",
+    "select-combinator",
+];
+
+/// The `select!` binding of the one `PollFn` `key` names: the tuple
+/// has `branches` members in `__i` order, the mask is a `u8` (no
+/// fixture has more than eight branches), both captures are reached
+/// through the closure's references, and the rule is tokio's select
+/// kind under a tokio delegation origin. Every other `PollFn` in the
+/// bundle — the mpsc receiver's, the scheduler's `block_on` — carries
+/// none.
+fn assert_select(program: &str, bundle: &Bundle, key: &str, branches: usize) {
+    use hansei_bundle::{MemberRef, SemanticOrigin, SemanticRuleKind, Step, TypeDef};
+    let s = |id| bundle.strings.get(id).unwrap();
+    let mut seen = 0;
+    for (name, _, record) in types_named(bundle, key) {
+        let record = record.unwrap_or_else(|| panic!("{program}: {name} has no semantic record"));
+        let select = record
+            .select
+            .as_ref()
+            .unwrap_or_else(|| panic!("{program}: {name} has no select binding: {record:#?}"));
+        let rule = &bundle.semantics.rules[select.rule.0 as usize];
+        assert_eq!(
+            rule.kind,
+            SemanticRuleKind::TokioSelect,
+            "{program}: {name}"
+        );
+        assert!(
+            matches!(
+                &bundle.semantics.origins[rule.origin.0 as usize],
+                SemanticOrigin::LibraryDelegation { package, source, .. }
+                    if s(*package) == "tokio" && s(*source).ends_with("/src/macros/select.rs")
+            ),
+            "{program}: {name}: {:?}",
+            bundle.semantics.origins[rule.origin.0 as usize]
+        );
+        let route = |path: &hansei_bundle::TypedPath| {
+            path.steps
+                .iter()
+                .map(|step| match step {
+                    Step::Member(MemberRef::Named(n)) => s(*n).to_owned(),
+                    Step::Deref => "*".to_owned(),
+                    other => format!("{other:?}"),
+                })
+                .collect::<Vec<_>>()
+                .join(".")
+        };
+        assert_eq!(
+            route(&select.mask),
+            "f._ref__disabled.*",
+            "{program}: {name}"
+        );
+        assert!(
+            matches!(
+                bundle.types.get(select.mask.target),
+                Some(TypeDef::Base {
+                    size: 1,
+                    encoding: hansei_bundle::Encoding::Unsigned,
+                    ..
+                })
+            ),
+            "{program}: {name}'s mask is not a u8"
+        );
+        assert_eq!(
+            route(&select.futures),
+            "f._ref__futures.*",
+            "{program}: {name}"
+        );
+        let members: Vec<String> = select.branches.iter().map(route).collect();
+        let expected: Vec<String> = (0..branches).map(|i| format!("__{i}")).collect();
+        assert_eq!(members, expected, "{program}: {name}");
+        for branch in &select.branches {
+            assert!(
+                bundle.types.get(branch.target).is_some(),
+                "{program}: {name}: a branch names a type the table lacks"
+            );
+        }
+        seen += 1;
+    }
+    assert_eq!(seen, 1, "{program}: one PollFn named {key}");
+    for (name, _, record) in types_named(bundle, "core::future::poll_fn::PollFn<") {
+        if !name.starts_with(key) {
+            assert!(
+                record.is_none_or(|r| r.select.is_none()),
+                "{program}: {name} acquired a select binding"
+            );
+        }
+    }
 }
 
 /// The delegation fixture's programs, one per reviewed rule, and its
@@ -1147,6 +1247,21 @@ fn assert_library_bindings(program: &str, bundle: &Bundle) {
                     assert_eq!(
                         program, "select-combinator",
                         "{program}: only the combinator fixture maps a future"
+                    );
+                }
+                // The `select!` rule reads tokio's version off the
+                // closure's declaration file, and it is the version the
+                // fixture's lockfile pinned — the one the layout family
+                // was selected by.
+                "tokio" => {
+                    assert_eq!(
+                        s(*version),
+                        bundle.meta.tokio_version.as_ref().unwrap().to_string(),
+                        "{program}"
+                    );
+                    assert!(
+                        SELECT_PROGRAMS.contains(&program),
+                        "{program}: only the fixtures with a select! bind its rule"
                     );
                 }
                 other => panic!("{program}: unexpected delegation origin {other:?}"),
@@ -1719,6 +1834,12 @@ fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
         );
     }
     if program == "select-combinator" {
+        assert_select(
+            program,
+            bundle,
+            "core::future::poll_fn::PollFn<select_combinator::selector::{async_fn#0}::{closure_env#",
+            2,
+        );
         // A multi-line signature is where the two sources disagree: the
         // fn at 26, its resume fn at the `{` on 30. The fn wins.
         assert_env_decl(
@@ -1765,6 +1886,14 @@ fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
             "futurelock::do_stuff::{async_fn#0}::{closure_env#0}",
         );
         assert!(file.ends_with("/macros/select.rs"), "{program}: {file}");
+        // And that closure is the select rule's: two branches, the
+        // boxed future and the sleep.
+        assert_select(
+            program,
+            bundle,
+            "core::future::poll_fn::PollFn<futurelock::do_stuff::{async_fn#0}::{closure_env#",
+            2,
+        );
     }
     if program == "simple-await" {
         for prefix in [
@@ -2051,6 +2180,15 @@ fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
         );
     }
     if program == "armed-select" {
+        // The selector's four branches, each a `&mut` to one of the
+        // frame's own locals: the binding names the tuple members,
+        // and what they borrow is the inspection's to follow.
+        assert_select(
+            program,
+            bundle,
+            "core::future::poll_fn::PollFn<armed_select::selector::{async_fn#0}::{closure_env#",
+            4,
+        );
         // The oneshot's shared state renders with its flags by name.
         assert_format(
             program,
@@ -2193,6 +2331,16 @@ fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
         );
     }
     if program == "channels" {
+        // The sender's `select!`: three branches behind the one
+        // `PollFn` the macro expands to, whatever the two disabled
+        // ones are — the binding lists the tuple, the mask is read at
+        // runtime.
+        assert_select(
+            program,
+            bundle,
+            "core::future::poll_fn::PollFn<channels::send_waiter::{async_fn#0}::{closure_env#",
+            3,
+        );
         // The impl table resolved mpsc's Sender impl from a member
         // symbol: the `{impl#N}` index is a source-order accident a
         // tokio bump may shift, so the key pins everything but N.

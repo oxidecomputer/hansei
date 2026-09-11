@@ -33,6 +33,7 @@ fn record(ty: BundleTypeId) -> TypeSemantics {
         access: None,
         resource: None,
         container: None,
+        select: None,
         issues: Vec::new(),
     }
 }
@@ -1308,4 +1309,158 @@ fn test_semantic_coroutine_cannot_delegate_through_uncertain_storage() {
         shape.discr.as_mut().unwrap().offset = 16;
     }
     b.validate().unwrap();
+}
+
+/// A `select!` binding over a `PollFn`: `f` → `_ref__disabled` → `*`
+/// lands on an unsigned word, `f` → `_ref__futures` → `*` on a tuple,
+/// and every branch is one of the tuple's named members. The record's
+/// storage is readable, the rule is the select kind under tokio's
+/// registry origin, and each departure is refused by name.
+#[test]
+fn test_semantic_select_binding_reads_the_mask_and_the_tuple() {
+    let mut b = base();
+    let mut strings = StringInterner::new();
+    for s in b.strings.iter() {
+        strings.intern(s);
+    }
+    let name = |strings: &mut StringInterner, s: &str| strings.intern(s);
+    let u8_name = name(&mut strings, "u8");
+    let f = name(&mut strings, "f");
+    let disabled = name(&mut strings, "_ref__disabled");
+    let futures = name(&mut strings, "_ref__futures");
+    let first = name(&mut strings, "__0");
+    let tuple_name = name(&mut strings, "(child,)");
+    let env_name = name(&mut strings, "app::run::{async_fn#0}::{closure_env#1}");
+    let poll_fn_name = name(
+        &mut strings,
+        "core::future::poll_fn::PollFn<app::run::{async_fn#0}::{closure_env#1}>",
+    );
+    let tokio = name(&mut strings, "tokio");
+    let version = name(&mut strings, "1.52.4");
+    let family = name(&mut strings, "tokio-select-1.47");
+    let source = name(
+        &mut strings,
+        "registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.52.4/src/macros/select.rs",
+    );
+    b.strings = strings.finish();
+    let member = |name, ty, offset| MemberDef { name, ty, offset };
+    let next = b.types.types.len() as u32;
+    let (u8_t, mask_ref, tuple, tuple_ref, env, poll_fn) = (
+        BundleTypeId(next),
+        BundleTypeId(next + 1),
+        BundleTypeId(next + 2),
+        BundleTypeId(next + 3),
+        BundleTypeId(next + 4),
+        BundleTypeId(next + 5),
+    );
+    b.types.types.extend([
+        TypeDef::Base {
+            name: u8_name,
+            size: 1,
+            encoding: Encoding::Unsigned,
+        },
+        TypeDef::Pointer {
+            name: None,
+            target: u8_t,
+        },
+        TypeDef::Struct {
+            name: tuple_name,
+            size: 8,
+            members: vec![member(first, CHILD, 0)],
+        },
+        TypeDef::Pointer {
+            name: None,
+            target: tuple,
+        },
+        TypeDef::Struct {
+            name: env_name,
+            size: 16,
+            members: vec![member(disabled, mask_ref, 0), member(futures, tuple_ref, 8)],
+        },
+        TypeDef::Struct {
+            name: poll_fn_name,
+            size: 16,
+            members: vec![member(f, env, 0)],
+        },
+    ]);
+    b.semantics.origins.push(SemanticOrigin::LibraryDelegation {
+        package: tokio,
+        version,
+        family,
+        source,
+        files: Vec::new(),
+    });
+    b.semantics.rules.push(SemanticRule {
+        kind: SemanticRuleKind::TokioSelect,
+        revision: 1,
+        origin: SemanticOriginId(1),
+    });
+    let capture = |member, target| TypedPath {
+        steps: vec![named(f), named(member), Step::Deref],
+        target,
+    };
+    // The binding is a layout fact beside whatever future evidence
+    // the `PollFn` has; here it has none.
+    let mut record = record(poll_fn);
+    record.future = None;
+    record.select = Some(SelectBinding {
+        rule: SemanticRuleId(1),
+        mask: capture(disabled, u8_t),
+        futures: capture(futures, tuple),
+        branches: vec![path(vec![named(first)], CHILD)],
+    });
+    b.semantics.types = vec![record];
+    b.validate().unwrap();
+    let mut bytes = Vec::new();
+    b.write_to(&mut bytes).unwrap();
+    assert_eq!(Bundle::read_from(bytes.as_slice()).unwrap(), b);
+
+    fn select(b: &mut Bundle) -> &mut SelectBinding {
+        b.semantics.types[0].select.as_mut().unwrap()
+    }
+    // The rule has to be the select kind, under tokio's own origin.
+    let mut wrong = b.clone();
+    select(&mut wrong).rule = SemanticRuleId(0);
+    bad(&wrong, "incompatible capability");
+    let mut wrong = b.clone();
+    wrong.semantics.origins[1] = SemanticOrigin::LibraryDelegation {
+        package: StrRef(12),
+        version: StrRef(13),
+        family,
+        source: StrRef(18),
+        files: Vec::new(),
+    };
+    bad(&wrong, "third-party delegation needs source evidence");
+    // Both routes end through the closure's reference.
+    let mut wrong = b.clone();
+    select(&mut wrong).mask = path(vec![named(f), named(disabled)], mask_ref);
+    bad(&wrong, "mask is not reached through");
+    let mut wrong = b.clone();
+    select(&mut wrong).futures = path(vec![named(f), named(futures)], tuple_ref);
+    bad(&wrong, "tuple is not reached through");
+    // The mask is an unsigned word; a pointer to a `u64` struct is not.
+    let mut wrong = b.clone();
+    if let TypeDef::Pointer { target, .. } = &mut wrong.types.types[mask_ref.0 as usize] {
+        *target = CHILD;
+    }
+    select(&mut wrong).mask = capture(disabled, CHILD);
+    bad(&wrong, "mask is not an unsigned word");
+    // Every branch is one named member of the tuple, once.
+    let mut wrong = b.clone();
+    select(&mut wrong).branches.clear();
+    bad(&wrong, "select has no branches");
+    let mut wrong = b.clone();
+    let dup = select(&mut wrong).branches[0].clone();
+    select(&mut wrong).branches.push(dup);
+    bad(&wrong, "more branches than tuple members");
+    let mut wrong = b.clone();
+    select(&mut wrong).branches[0] = path(vec![named(first), named(FIELD)], BundleTypeId(0));
+    bad(&wrong, "not one named tuple member");
+    let mut wrong = b.clone();
+    select(&mut wrong).branches[0] = path(vec![named(FIELD)], CHILD);
+    bad(&wrong, "semantic path");
+    // A capability needs readable storage.
+    let mut wrong = b.clone();
+    wrong.semantics.types[0].storage = StoragePolicy::Unavailable(issue());
+    bad(&wrong, "unavailable storage carries a readable capability");
 }

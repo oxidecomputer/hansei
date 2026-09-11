@@ -965,7 +965,7 @@ pub(crate) fn assessment_cell(wait: &rt_graph::TaskWait, stops: &StopNames<'_>) 
         WaitAssessment::Waiting(verified) => verified.target().to_string(),
         WaitAssessment::Set(set) => set.cell(),
         WaitAssessment::ResourceReady(_) => "ready".to_string(),
-        WaitAssessment::Unknown(_) => match wait.held.len() + wait.held_capped {
+        WaitAssessment::Unknown(_) => match wait.held_count() {
             0 => unknown_cell(wait, stops),
             1 => format!("{} (holds 1 future)", unknown_cell(wait, stops)),
             n => format!("{} (holds {n} futures)", unknown_cell(wait, stops)),
@@ -1202,20 +1202,33 @@ fn slot_only_line(member: &WaitMember, within: Option<&str>) -> String {
     format!("{name}: {evidence}{within}; in no branch of the stop")
 }
 
-/// One branch's line: its local, whether it was borrowed, the future it
-/// is and where, the engine's verdict on it, and what arms it — the
-/// slots that sit in it or were reached through it, else the registry
-/// or protocol evidence the analysis had, else `held, not armed`.
+/// One branch's line: its local — or its `select!` branch number —
+/// whether it was borrowed, the future it is and where, the engine's
+/// verdict on it, and what arms it — the slots that sit in it or were
+/// reached through it, else the registry or protocol evidence the
+/// analysis had, else `held, not armed`. A `select!` branch its mask
+/// has disabled is named and nothing more: `disabled` is the whole
+/// verdict, and why it is — a false precondition, a completed output
+/// that missed its pattern — is not in memory to be read.
 fn member_line(
     member: &WaitMember,
     stops: &StopNames<'_>,
     armed_by: &[&attribution::AttributedSlot],
     stopped: Option<RawInstant>,
 ) -> String {
-    let MemberRoute::Branch { local, borrowed } = &member.route else {
-        unreachable!("only branches print as members");
+    let (local, borrowed) = match &member.route {
+        MemberRoute::Branch { local, borrowed } => (local.clone(), *borrowed),
+        MemberRoute::Select { index, borrowed } => (format!("branch {index}"), *borrowed),
+        MemberRoute::Disabled { index, ty } => {
+            let future = stops
+                .label(*ty)
+                .or_else(|| member.future.clone())
+                .unwrap_or_default();
+            return format!("branch {index}: {future}: disabled");
+        }
+        MemberRoute::SlotOnly { .. } => unreachable!("only branches print as members"),
     };
-    let via = if *borrowed { " (borrowed)" } else { "" };
+    let via = if borrowed { " (borrowed)" } else { "" };
     let future = member
         .key
         .and_then(|key| stops.label(key.ty))
@@ -2407,6 +2420,33 @@ mod table_tests {
         }
     }
 
+    /// Branch `index` of a `select!` its mask disabled: named, and
+    /// nothing else.
+    fn disabled(index: usize) -> WaitMember {
+        WaitMember {
+            route: MemberRoute::Disabled {
+                index,
+                ty: BundleTypeId(0),
+            },
+            key: None,
+            future: Some("x::skipped".to_string()),
+            assessment: None,
+            notes: Vec::new(),
+            armed: None,
+        }
+    }
+
+    /// Branch `index` of a `select!`, borrowed from the frame.
+    fn select_branch(index: usize, assessment: WaitAssessment, armed: bool) -> WaitMember {
+        WaitMember {
+            route: MemberRoute::Select {
+                index,
+                borrowed: true,
+            },
+            ..branch("", assessment, armed)
+        }
+    }
+
     fn one_of(members: Vec<WaitMember>) -> WaitAssessment {
         WaitAssessment::Set(WaitSet {
             at: Some(ValueKey {
@@ -2634,6 +2674,79 @@ mod table_tests {
                 "a: x::branch at 0x6000 — unknown; held, not armed",
                 "b: x::branch at 0x6000 — unknown; held, not armed",
                 "1 more branches not inspected",
+            ]
+        );
+    }
+
+    /// A `select!`'s branches print by number, and a disabled one by
+    /// its type and the word `disabled`: it is neither held nor armed,
+    /// so the cell counts the live branches alone and a stop whose
+    /// every branch is disabled reads as the bare unknown.
+    #[test]
+    fn test_select_branches_print_by_number_and_disabled_ones_by_name() {
+        let unknown = || WaitAssessment::Unknown(WaitUnknownReason::Continuation);
+        let verified = WaitAssessment::Waiting(VerifiedWait::testkit(
+            WaitTarget::Timer {
+                deadline: RawInstant {
+                    tv_sec: 10,
+                    tv_nsec: 0,
+                },
+                stopped: Some(RawInstant {
+                    tv_sec: 0,
+                    tv_nsec: 0,
+                }),
+            },
+            None,
+        ));
+        let set = assessed(
+            1,
+            one_of(vec![
+                select_branch(0, unknown(), false),
+                select_branch(1, verified, true),
+                disabled(2),
+            ]),
+        );
+        let mut held = wait(2, None);
+        held.continuation = ContinuationStatus::Unknown {
+            at: ValueKey {
+                addr: 0x5000,
+                ty: BundleTypeId(7),
+            },
+            reason: SemanticIssueKind::NoRule,
+        };
+        held.held = vec![select_branch(0, unknown(), false), disabled(1)];
+        let mut all_disabled = wait(3, None);
+        all_disabled.continuation = held.continuation.clone();
+        all_disabled.held = vec![disabled(0), disabled(1)];
+        let rows = rows_of(
+            vec![task(1, 0), task(2, 0), task(3, 0)],
+            vec![set, held, all_disabled],
+            HashMap::new(),
+        );
+        assert_eq!(rows[0].waiting_on, "timer (deadline +10.000s)");
+        assert_eq!(
+            rows[0].wait_detail,
+            [
+                "branch 0 (borrowed): x::branch at 0x6000 — unknown; held, not armed",
+                "branch 1 (borrowed): x::branch at 0x6000 — timer (deadline +10.000s); its \
+                 protocol read this task's waker",
+                "branch 2: x::skipped: disabled",
+            ]
+        );
+        assert_eq!(rows[1].waiting_on, "unknown (holds 1 future)");
+        assert_eq!(
+            rows[1].wait_detail,
+            [
+                "branch 0 (borrowed): x::branch at 0x6000 — unknown; held, not armed",
+                "branch 1: x::skipped: disabled",
+            ]
+        );
+        assert_eq!(rows[2].waiting_on, "unknown");
+        assert_eq!(
+            rows[2].wait_detail,
+            [
+                "branch 0: x::skipped: disabled",
+                "branch 1: x::skipped: disabled"
             ]
         );
     }

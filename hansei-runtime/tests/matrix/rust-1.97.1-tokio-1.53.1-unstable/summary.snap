@@ -917,51 +917,69 @@ program: channels
 [tasks]
 task: channels::recv_waiter::{async_fn_env#0}
   kind: AsyncFn
-  decl: channels.rs:42
+  decl: channels.rs:45
   entries: 2
   symbols-per-entry: 6,6
   stage: Stage<channels::recv_waiter::{async_fn_env#0}>
   variants:
-    Unresumed @ channels.rs:42
-    Returned @ channels.rs:46
-    Panicked @ channels.rs:46
-    Suspend0 @ channels.rs:45
+    Unresumed @ channels.rs:45
+    Returned @ channels.rs:49
+    Panicked @ channels.rs:49
+    Suspend0 @ channels.rs:48
+task: channels::send_waiter::{async_fn_env#0}
+  kind: AsyncFn
+  decl: channels.rs:85
+  entries: 2
+  symbols-per-entry: 6,6
+  stage: Stage<channels::send_waiter::{async_fn_env#0}>
+  variants:
+    Unresumed @ channels.rs:85
+    Returned @ channels.rs:100
+    Panicked @ channels.rs:100
+    Suspend0 @ select.rs:746 (awaited at channels.rs:95)
 task: channels::notify_waiter::{async_fn_env#0}
   kind: AsyncFn
-  decl: channels.rs:24
+  decl: channels.rs:27
   entries: 2
   symbols-per-entry: 6,6
   stage: Stage<channels::notify_waiter::{async_fn_env#0}>
   variants:
-    Unresumed @ channels.rs:24
-    Returned @ channels.rs:35
-    Panicked @ channels.rs:35
-    Suspend0 @ channels.rs:34
+    Unresumed @ channels.rs:27
+    Returned @ channels.rs:38
+    Panicked @ channels.rs:38
+    Suspend0 @ channels.rs:37
 task: channels::hold::{async_fn_env#0}
   kind: AsyncFn
-  decl: channels.rs:51
+  decl: channels.rs:54
   entries: 2
   symbols-per-entry: 6,6
   stage: Stage<channels::hold::{async_fn_env#0}>
   variants:
-    Unresumed @ channels.rs:63
-    Returned @ channels.rs:67
-    Panicked @ channels.rs:67
-    Suspend0 @ channels.rs:66
+    Unresumed @ channels.rs:67
+    Returned @ channels.rs:71
+    Panicked @ channels.rs:71
+    Suspend0 @ channels.rs:70
 
 [dyn-futures]
 dyn: channels::hold::{async_fn_env#0} (poll, drop_glue)
 dyn: channels::main::{async_block_env#0} (poll, drop_glue)
 dyn: channels::notify_waiter::{async_fn_env#0} (poll, drop_glue)
 dyn: channels::recv_waiter::{async_fn_env#0} (poll, drop_glue)
+dyn: channels::send_waiter::{async_fn#0}::{async_block_env#0} (poll)
+dyn: channels::send_waiter::{async_fn_env#0} (poll, drop_glue)
+dyn: core::future::poll_fn::PollFn<channels::send_waiter::{async_fn#0}::{closure_env#1}> (poll)
 dyn: core::future::poll_fn::PollFn<tokio::runtime::scheduler::current_thread::{impl#0}::block_on::{closure#0}::{closure_env#0}<channels::main::{async_block_env#0}>> (poll)
 dyn: core::pin::Pin<&mut channels::main::{async_block_env#0}> (poll)
+dyn: core::pin::Pin<&mut channels::send_waiter::{async_fn#0}::{async_block_env#0}> (poll)
 
 [env-decls]
-env: channels::hold::{async_fn_env#0} @ channels.rs:51
-env: channels::main::{async_block_env#0} @ channels.rs:74
-env: channels::notify_waiter::{async_fn_env#0} @ channels.rs:24
-env: channels::recv_waiter::{async_fn_env#0} @ channels.rs:42
+env: channels::hold::{async_fn_env#0} @ channels.rs:54
+env: channels::main::{async_block_env#0} @ channels.rs:107
+env: channels::notify_waiter::{async_fn_env#0} @ channels.rs:27
+env: channels::recv_waiter::{async_fn_env#0} @ channels.rs:45
+env: channels::send_waiter::{async_fn#0}::{async_block_env#0} @ channels.rs:89
+env: channels::send_waiter::{async_fn#0}::{closure_env#1} @ select.rs:664
+env: channels::send_waiter::{async_fn_env#0} @ channels.rs:85
 
 [infra]
 header: ok

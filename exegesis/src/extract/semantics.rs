@@ -28,19 +28,20 @@ use crate::bundle::{
     AccessBinding, AccessKind, BundleTypeId, ContainerBinding, ContainerKind, Continuation,
     CoroutineLayout, CoroutinePhase, CoroutineState, DynFutureLayout, FutureEvidence, FutureFacts,
     FutureTarget, IoOperationKind, LayoutSelection, MemberRef, PollAction, PollCase, PollProgram,
-    ResourceBinding, ResourceKind, SchedulerBinding, SchedulerClass, Selector, SemanticIssue,
-    SemanticIssueKind, SemanticOrigin, SemanticOriginId, SemanticRule, SemanticRuleId,
-    SemanticRuleKind, SemanticTable, SourceFileEvidence, Step, StoragePolicy, StrRef,
-    StringInterner, TaskEntryId, TaskFutureEntry, TypeDef, TypeSemantics, TypeTable, TypedPath,
-    WalkOutcome, WalkRole, WalksTable, container_roles, container_routes, required_resource_roles,
-    required_resource_routes, scheduler_role, semantic_path_target,
+    ResourceBinding, ResourceKind, SchedulerBinding, SchedulerClass, SelectBinding, Selector,
+    SemanticIssue, SemanticIssueKind, SemanticOrigin, SemanticOriginId, SemanticRule,
+    SemanticRuleId, SemanticRuleKind, SemanticTable, SourceFileEvidence, Step, StoragePolicy,
+    StrRef, StringInterner, TaskEntryId, TaskFutureEntry, TypeDef, TypeSemantics, TypeTable,
+    TypedPath, WalkOutcome, WalkRole, WalksTable, container_roles, container_routes,
+    required_resource_roles, required_resource_routes, scheduler_role, semantic_path_target,
 };
 use crate::detect::Family;
-use crate::detect::adapters::{self, InstrumentedLayout, Pointee, StdAdapter};
+use crate::detect::adapters::{self, InstrumentedLayout, Pointee, SelectLayout, StdAdapter};
 use crate::detect::semantics::{
     FUTURES_UTIL_ADAPTERS_V0_3_30, HYPER_UTIL_TOKIO_SLEEP_V0_1_10, LibraryConvention,
-    RustcConvention, TRACING_INSTRUMENTED_V0_1_40, library_convention, rustc_coroutine_convention,
-    rustc_dyn_future_abi_convention, rustc_std_adapter_convention, tokio_state_protocol,
+    RustcConvention, TOKIO_SELECT_V1_47, TRACING_INSTRUMENTED_V0_1_40, library_convention,
+    rustc_coroutine_convention, rustc_dyn_future_abi_convention, rustc_std_adapter_convention,
+    tokio_state_protocol,
 };
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -199,6 +200,21 @@ impl LibrarySeed {
     }
 }
 
+/// A `select!`'s `PollFn` as its screen saw it, by bundle id: the
+/// closure and its two captures, what each points at, the tuple's
+/// members in branch order, and where the closure environment was
+/// declared — the origin the rule is read off.
+#[derive(Clone, Debug)]
+struct SelectSeed {
+    closure: String,
+    mask: String,
+    mask_word: BundleTypeId,
+    futures: String,
+    tuple: BundleTypeId,
+    branches: Vec<(String, BundleTypeId)>,
+    source: Option<PollSource>,
+}
+
 #[derive(Default)]
 pub(super) struct Seed {
     polls: BTreeSet<String>,
@@ -210,6 +226,7 @@ pub(super) struct Seed {
     adapter: Option<AdapterSeed>,
     instrumented: Option<InstrumentedSeed>,
     library: Option<LibrarySeed>,
+    select: Option<SelectSeed>,
 }
 
 impl Seed {
@@ -222,6 +239,7 @@ impl Seed {
             || self.coroutine_candidate
             || self.resource.is_some()
             || self.container.is_some()
+            || self.select.is_some()
     }
 }
 
@@ -279,6 +297,7 @@ pub(super) fn collect_semantic_seeds(
     poll_sources: &BTreeMap<TypeId, BTreeSet<PollSource>>,
     coroutines: &BTreeSet<TypeId>,
     mut verdict: impl FnMut(TypeId, Reviewed) -> CompilerVerdict,
+    env_source: impl Fn(TypeId) -> Option<PollSource>,
 ) -> SemanticSeeds {
     let mut seeds = SemanticSeeds::new();
     let reader = em.reader;
@@ -369,6 +388,11 @@ pub(super) fn collect_semantic_seeds(
             && let Some(future) = bundle_id(future)
         {
             seeds.entry(ty).or_default().instrumented = Some(InstrumentedSeed { inner, future });
+        } else if name.starts_with("core::future::poll_fn::PollFn<")
+            && let Some(layout) = adapters::tokio_select(reader, raw)
+            && let Some(seed) = select_seed(layout, bundle_id, &env_source)
+        {
+            seeds.entry(ty).or_default().select = Some(seed);
         } else if let Some(library) = library_seed(reader, raw, name, bundle_id) {
             seeds.entry(ty).or_default().library = Some(library);
         }
@@ -384,6 +408,31 @@ pub(super) fn collect_semantic_seeds(
         }
     }
     seeds
+}
+
+/// The screen's `select!` layout by bundle id, with the closure
+/// environment's declaration site. `None` when any type it names was
+/// not emitted: a branch future the table does not carry cannot be a
+/// recorded route.
+fn select_seed(
+    layout: SelectLayout,
+    bundle_id: impl Fn(TypeId) -> Option<BundleTypeId>,
+    env_source: &impl Fn(TypeId) -> Option<PollSource>,
+) -> Option<SelectSeed> {
+    let branches = layout
+        .branches
+        .iter()
+        .map(|(member, future)| Some((member.clone(), bundle_id(*future)?)))
+        .collect::<Option<Vec<_>>>()?;
+    Some(SelectSeed {
+        closure: layout.closure,
+        mask: layout.mask,
+        mask_word: bundle_id(layout.mask_word)?,
+        futures: layout.futures,
+        tuple: bundle_id(layout.tuple)?,
+        branches,
+        source: env_source(layout.env),
+    })
 }
 
 /// The every-kind order the bindings are attempted in, which is also the
@@ -723,6 +772,16 @@ struct Plan {
     access: Option<(RuleKey, AccessKind, Target)>,
 }
 
+/// A `select!` binding as planned: its rule, and the three routes held
+/// to the final table.
+#[derive(Clone, Debug)]
+struct SelectPlan {
+    rule: RuleKey,
+    mask: TypedPath,
+    futures: TypedPath,
+    branches: Vec<TypedPath>,
+}
+
 #[derive(Clone, Debug)]
 enum Delegation {
     Direct {
@@ -772,6 +831,8 @@ struct Draft {
     /// The type an adapter's storage leads to, for deciding whether an
     /// adapter with no future evidence still earns a record.
     pointee: Option<BundleTypeId>,
+    /// The `select!` branches this `PollFn` polls, where it is one.
+    select: Option<SelectPlan>,
     own_record: bool,
 }
 
@@ -886,6 +947,14 @@ pub(super) fn bind_semantics(
                     Ok(plan) => draft.plan = Some(plan),
                     Err(decline) => draft.decline = Some(decline),
                 }
+            }
+        }
+        // The select binding is a fact beside the continuation, not a
+        // program: the `PollFn` still polls nothing any rule follows.
+        if readable && let Some(select) = &seed.select {
+            match plan_select(ty, select, types, strings) {
+                Ok(plan) => draft.select = Some(plan),
+                Err(decline) => draft.issues.push(decline),
             }
         }
         draft.storage = Some(storage);
@@ -1109,6 +1178,12 @@ pub(super) fn bind_semantics(
                 None => Continuation::Unknown(issue(SemanticIssueKind::NoRule)),
             },
         };
+        let select = draft.select.filter(|_| readable).map(|plan| SelectBinding {
+            rule: rules.rule(&plan.rule, strings, library),
+            mask: plan.mask,
+            futures: plan.futures,
+            branches: plan.branches,
+        });
         records.push(TypeSemantics {
             ty,
             storage,
@@ -1120,6 +1195,7 @@ pub(super) fn bind_semantics(
             access,
             resource,
             container,
+            select,
             issues,
         });
     }
@@ -1431,6 +1507,100 @@ fn plan_library(
         rule,
         program,
         access: None,
+    })
+}
+
+/// Plan a `select!`'s binding: the origin first — the closure
+/// environment declared in tokio's `src/macros/select.rs` on a cargo
+/// registry path at a version inside the reviewed range — then the two
+/// routes through the closure's references and one per tuple member,
+/// each held to the final table. The mask word has to be the unsigned
+/// integer the screen saw, of a width tokio-macros emits, with room
+/// for every branch.
+fn plan_select(
+    ty: BundleTypeId,
+    seed: &SelectSeed,
+    types: &TypeTable,
+    strings: &mut StringInterner,
+) -> Result<SelectPlan, Decline> {
+    let Some(source) = &seed.source else {
+        return Err((
+            SemanticIssueKind::UnsupportedOrigin,
+            "the closure environment records no declaration site".to_owned(),
+        ));
+    };
+    let origin = delegation_origin(&BTreeSet::from([source.clone()]), &TOKIO_SELECT_V1_47)?;
+    let rule = RuleKey::Delegation {
+        kind: SemanticRuleKind::TokioSelect,
+        origin,
+    };
+    let member = |strings: &mut StringInterner, parent: BundleTypeId, name: &str| {
+        member_named(types, strings, parent, name).ok_or((
+            SemanticIssueKind::AmbiguousLayout,
+            format!("no unique member {name:?}"),
+        ))
+    };
+    // Both captures: the `PollFn`'s closure, the closure's reference,
+    // then what it points at.
+    let (closure, env, _) = member(strings, ty, &seed.closure)?;
+    let capture = |strings: &mut StringInterner, name: &str, target| {
+        let (name, _, _) = member(strings, env, name)?;
+        checked_path(
+            types,
+            ty,
+            vec![
+                Step::Member(MemberRef::Named(closure)),
+                Step::Member(MemberRef::Named(name)),
+                Step::Deref,
+            ],
+            target,
+        )
+    };
+    let mask = capture(strings, &seed.mask, seed.mask_word)?;
+    if !matches!(
+        types.get(seed.mask_word),
+        Some(TypeDef::Base {
+            encoding: crate::Encoding::Unsigned,
+            size: 1 | 2 | 4 | 8,
+            ..
+        })
+    ) {
+        return Err((
+            SemanticIssueKind::MissingLayout,
+            "the mask is not an unsigned word in the final table".to_owned(),
+        ));
+    }
+    let futures = capture(strings, &seed.futures, seed.tuple)?;
+    let mut branches = Vec::with_capacity(seed.branches.len());
+    for (name, future) in &seed.branches {
+        let (name, member_ty, _) = member(strings, seed.tuple, name)?;
+        if member_ty != *future {
+            return Err((
+                SemanticIssueKind::MissingLayout,
+                format!(
+                    "{} holds another type than the screen declared",
+                    strings.get(name).unwrap_or_default()
+                ),
+            ));
+        }
+        branches.push(checked_path(
+            types,
+            seed.tuple,
+            vec![Step::Member(MemberRef::Named(name))],
+            *future,
+        )?);
+    }
+    if branches.is_empty() {
+        return Err((
+            SemanticIssueKind::MissingLayout,
+            "the tuple has no members".to_owned(),
+        ));
+    }
+    Ok(SelectPlan {
+        rule,
+        mask,
+        futures,
+        branches,
     })
 }
 
@@ -3039,6 +3209,244 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(kind, SemanticIssueKind::UnsupportedOrigin);
+    }
+
+    /// A `select!` plan: the origin off the closure's declaration file,
+    /// then the two capture routes and one per tuple member, each held
+    /// to the final table. A closure declared outside the registry, in
+    /// another crate or at an unreviewed version declines before the
+    /// layout; a mask that is not an unsigned word, a tuple member
+    /// holding another type than the screen saw, or a member missing
+    /// from the table decline on the layout.
+    #[test]
+    fn test_the_select_plan_reads_the_captures_and_the_tuple() {
+        let mut strings = StringInterner::new();
+        let mut types: Vec<TypeDef> = Vec::new();
+        let mut add = |name: &str, def: TypeDef| {
+            let _ = name;
+            types.push(def);
+            BundleTypeId(types.len() as u32 - 1)
+        };
+        let u8_t = add(
+            "u8",
+            TypeDef::Base {
+                name: strings.intern("u8"),
+                size: 1,
+                encoding: crate::Encoding::Unsigned,
+            },
+        );
+        let i8_t = add(
+            "i8",
+            TypeDef::Base {
+                name: strings.intern("i8"),
+                size: 1,
+                encoding: crate::Encoding::Signed,
+            },
+        );
+        let fut = add(
+            "app::Fut",
+            TypeDef::Struct {
+                name: strings.intern("app::Fut"),
+                size: 8,
+                members: Vec::new(),
+            },
+        );
+        let other = add(
+            "app::Other",
+            TypeDef::Struct {
+                name: strings.intern("app::Other"),
+                size: 8,
+                members: Vec::new(),
+            },
+        );
+        let member = |strings: &mut StringInterner, name: &str, ty, offset| MemberDef {
+            name: strings.intern(name),
+            ty,
+            offset,
+        };
+        let first = member(&mut strings, "__0", fut, 0);
+        let second = member(&mut strings, "__1", other, 8);
+        let tuple = add(
+            "(app::Fut, app::Other)",
+            TypeDef::Struct {
+                name: strings.intern("(app::Fut, app::Other)"),
+                size: 16,
+                members: vec![first, second],
+            },
+        );
+        let mask_ref = add(
+            "&mut u8",
+            TypeDef::Pointer {
+                name: Some(strings.intern("&mut u8")),
+                target: u8_t,
+            },
+        );
+        let signed_ref = add(
+            "&mut i8",
+            TypeDef::Pointer {
+                name: Some(strings.intern("&mut i8")),
+                target: i8_t,
+            },
+        );
+        let tuple_ref = add(
+            "&mut (app::Fut, app::Other)",
+            TypeDef::Pointer {
+                name: Some(strings.intern("&mut (app::Fut, app::Other)")),
+                target: tuple,
+            },
+        );
+        let disabled = member(&mut strings, "_ref__disabled", mask_ref, 0);
+        let futures = member(&mut strings, "_ref__futures", tuple_ref, 8);
+        let env = add(
+            "app::run::{async_fn#0}::{closure_env#1}",
+            TypeDef::Struct {
+                name: strings.intern("app::run::{async_fn#0}::{closure_env#1}"),
+                size: 16,
+                members: vec![disabled, futures.clone()],
+            },
+        );
+        let signed_env = add(
+            "app::run::{async_fn#0}::{closure_env#2}",
+            TypeDef::Struct {
+                name: strings.intern("app::run::{async_fn#0}::{closure_env#2}"),
+                size: 16,
+                members: vec![
+                    member(&mut strings, "_ref__disabled", signed_ref, 0),
+                    futures,
+                ],
+            },
+        );
+        let f = member(&mut strings, "f", env, 0);
+        let poll_fn = add(
+            "core::future::poll_fn::PollFn<…#1>",
+            TypeDef::Struct {
+                name: strings.intern("core::future::poll_fn::PollFn<…#1>"),
+                size: 16,
+                members: vec![f],
+            },
+        );
+        let signed_poll_fn = add(
+            "core::future::poll_fn::PollFn<…#2>",
+            TypeDef::Struct {
+                name: strings.intern("core::future::poll_fn::PollFn<…#2>"),
+                size: 16,
+                members: vec![member(&mut strings, "f", signed_env, 0)],
+            },
+        );
+        let types = TypeTable {
+            types,
+            ..Default::default()
+        };
+        const ROOT: &str = "/home/u/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f";
+        let seed = |mask_word, branches: Vec<(&str, BundleTypeId)>, path: &str| SelectSeed {
+            closure: "f".into(),
+            mask: "_ref__disabled".into(),
+            mask_word,
+            futures: "_ref__futures".into(),
+            tuple,
+            branches: branches
+                .into_iter()
+                .map(|(m, t)| (m.to_owned(), t))
+                .collect(),
+            source: (!path.is_empty()).then(|| source(path, None)),
+        };
+        let reviewed = format!("{ROOT}/tokio-1.52.4/src/macros/select.rs");
+        let render = |strings: &StringInterner, path: &TypedPath| {
+            path.steps
+                .iter()
+                .map(|step| match step {
+                    Step::Member(MemberRef::Named(n)) => strings.get(*n).unwrap().to_owned(),
+                    Step::Deref => "*".to_owned(),
+                    other => format!("{other:?}"),
+                })
+                .collect::<Vec<_>>()
+                .join(".")
+        };
+        let plan = plan_select(
+            poll_fn,
+            &seed(u8_t, vec![("__0", fut), ("__1", other)], &reviewed),
+            &types,
+            &mut strings,
+        )
+        .unwrap();
+        let RuleKey::Delegation { kind, origin } = &plan.rule else {
+            panic!("{:?}", plan.rule);
+        };
+        assert_eq!(*kind, SemanticRuleKind::TokioSelect);
+        assert_eq!(origin.package, "tokio");
+        assert_eq!(origin.version, "1.52.4");
+        assert_eq!(origin.family, TOKIO_SELECT_V1_47.family);
+        assert_eq!(render(&strings, &plan.mask), "f._ref__disabled.*");
+        assert_eq!(plan.mask.target, u8_t);
+        assert_eq!(render(&strings, &plan.futures), "f._ref__futures.*");
+        assert_eq!(plan.futures.target, tuple);
+        assert_eq!(
+            plan.branches
+                .iter()
+                .map(|b| (render(&strings, b), b.target))
+                .collect::<Vec<_>>(),
+            [("__0".to_owned(), fut), ("__1".to_owned(), other)]
+        );
+        // The origin: no declaration site, a vendored tree, another
+        // crate's registry path, and a version past the review.
+        for (path, expected) in [
+            ("", "no declaration site"),
+            (
+                "/build/vendor/tokio-1.52.4/src/macros/select.rs",
+                "not a cargo registry path",
+            ),
+            (
+                &format!("{ROOT}/tokio-util-0.7.12/src/macros/select.rs"),
+                "not the tokio crate",
+            ),
+            (
+                &format!("{ROOT}/tokio-1.54.0/src/macros/select.rs"),
+                "above the reviewed range",
+            ),
+            (
+                &format!("{ROOT}/tokio-1.46.1/src/macros/select.rs"),
+                "below the reviewed range",
+            ),
+        ] {
+            let (kind, detail) = plan_select(
+                poll_fn,
+                &seed(u8_t, vec![("__0", fut)], path),
+                &types,
+                &mut strings,
+            )
+            .unwrap_err();
+            assert_eq!(kind, SemanticIssueKind::UnsupportedOrigin, "{path}");
+            assert!(detail.contains(expected), "{path}: {detail}");
+        }
+        // The layout: a signed mask, a member holding another type, a
+        // member the table does not have.
+        let (kind, detail) = plan_select(
+            signed_poll_fn,
+            &seed(i8_t, vec![("__0", fut)], &reviewed),
+            &types,
+            &mut strings,
+        )
+        .unwrap_err();
+        assert_eq!(kind, SemanticIssueKind::MissingLayout);
+        assert!(detail.contains("not an unsigned word"), "{detail}");
+        let (kind, detail) = plan_select(
+            poll_fn,
+            &seed(u8_t, vec![("__0", other)], &reviewed),
+            &types,
+            &mut strings,
+        )
+        .unwrap_err();
+        assert_eq!(kind, SemanticIssueKind::MissingLayout);
+        assert!(detail.contains("another type than the screen"), "{detail}");
+        let (kind, detail) = plan_select(
+            poll_fn,
+            &seed(u8_t, vec![("__2", fut)], &reviewed),
+            &types,
+            &mut strings,
+        )
+        .unwrap_err();
+        assert_eq!(kind, SemanticIssueKind::AmbiguousLayout);
+        assert!(detail.contains("no unique member"), "{detail}");
     }
 
     /// A route is held to the type it claims to land on: the same steps

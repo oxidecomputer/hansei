@@ -3949,13 +3949,21 @@ fn test_armed_select_acceptance() {
             "{grouped}"
         );
         assert!(!grouped.contains("mpsc rx"), "{grouped}");
-        // One detail line per slot under the wait, spelled by the
-        // slot's label; the wheel entry's line is the wait set's own.
+        // One detail line per `select!` branch under the wait, each a
+        // borrow of the frame's own local, armed by the slot inside it
+        // and spelled by the slot's label; the sleep's by the wheel
+        // entry the registry decoded.
         let block = hansei_ok(&bundle, core, &format!("task {}", selector.id));
-        let detail =
-            regex::Regex::new(r"(?m)^        (mpsc|watch|oneshot rx) 0x[0-9a-f]+: waker in ")
-                .unwrap();
+        let detail = regex::Regex::new(
+            r"(?m)^        branch [0-2] \(borrowed\): .* — .*; armed: (mpsc|watch|oneshot rx) 0x[0-9a-f]+: waker in ",
+        )
+        .unwrap();
         assert_eq!(detail.find_iter(&block).count(), 3, "{block}");
+        let sleep = regex::Regex::new(
+            r"(?m)^        branch 3 \(borrowed\): tokio::time::sleep::Sleep at 0x[0-9a-f]+ — timer \(deadline .*; armed: timer 0x[0-9a-f]+ deadline ",
+        )
+        .unwrap();
+        assert!(sleep.is_match(&block), "{block}");
         // The oneshot's state word vouches for its slot.
         assert!(
             block.contains(": waker in Inner.rx_task (rx_task_set), reached from "),

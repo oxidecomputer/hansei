@@ -5,17 +5,17 @@ description: "`census` over linux/channels"
 Threads: 3 lwps, 3 in runtime 0 @ 0xADDR
 
 COUNT  RT  ROLE             STATE            LWPS
-    1  0   worker           in driver        892581
-    1  0   worker           parked           892582
-    1  0   entered runtime  block_on caller  892579
+    1  0   worker           in driver        2761163
+    1  0   worker           parked           2761162
+    1  0   entered runtime  block_on caller  2761160
     0  0   blocking pool    0 idle, 0 busy   —
 [3 lwps]
 
-Tasks: 3 owned by runtime 0 @ 0xADDR
+Tasks: 4 owned by runtime 0 @ 0xADDR
 
 COUNT  STATE
-    3  idle
-[3 tasks]
+    4  idle
+[4 tasks]
 
 COUNT  TYPE / WAITING ON
     1  async fn channels::hold
@@ -24,14 +24,23 @@ COUNT  TYPE / WAITING ON
        └─ 1  notify
     1  async fn channels::recv_waiter
        └─ 1  mpsc
-[3 types]
+    1  async fn channels::send_waiter
+       └─ 1  one of several
+[4 types]
 
-Futures: 3 in flight, on 8 await-chain frames, up to 3 deep
+Futures: 7 in flight, on 16 await-chain frames, up to 4 deep
 
 COUNT  HELD IN
-    3  task (its own await chain)
-    0  frame (off any await chain)
+    4  task (its own await chain)
+    3  frame (off any await chain)
     0  set (0 FuturesUnordered)
-[3 futures]
+[7 futures]
 
-[0 types]
+COUNT  TYPE / WAITING ON
+    1  async block channels::send_waiter::{async_fn#0}
+       └─ 1  — (returned)
+    1  async fn tokio::sync::mpsc::bounded::Sender::send<u32>
+       └─ 1  a tokio::sync::mpsc bounded channel (semaphore)
+    1  future tokio::time::sleep::Sleep
+       └─ 1  timer
+[3 types]
