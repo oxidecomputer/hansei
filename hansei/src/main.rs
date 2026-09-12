@@ -5,6 +5,7 @@
 use anyhow::{Context as _, Result};
 use clap::{ArgGroup, Args, Parser, Subcommand};
 use hansei_bundle::{Bundle, BundleView};
+use hansei_runtime::capture;
 use hansei_runtime::heap::umem::UmemHeap;
 use hansei_runtime::heap::view::{GateCounts, HeapView};
 use hansei_runtime::tokio::graph::{self as rt_graph, Analysis};
@@ -2305,10 +2306,27 @@ fn missing_sample(missing: &[String]) -> String {
 
 /// Find the lwps holding a tokio `Context`, through the thread-local
 /// the bundle names.
+///
+/// Will report missing stack and TLS mappings in the core.
 fn discover_workers<T: proc::Target>(
     lwps: &[proc::LwpInfo],
     ctx: &bundle::Context<'_, T>,
 ) -> Result<Vec<bundle::Worker>> {
+    // Use the `CONTEXT` static as part of our region mapping sanity
+    // check.
+    let context = ctx.tls_context_symbol().ok();
+    let incomplete = capture::incomplete(ctx.proc, lwps, context.as_ref());
+    for line in [
+        capture::missing_stacks_and_contexts(&incomplete),
+        capture::missing_stacks(&incomplete),
+        capture::missing_contexts(&incomplete),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        // Ignore failure when writing to stderr.
+        let _ = writeln!(io::stderr(), "warning: {line}");
+    }
     let workers = ctx.find_workers(lwps)?;
     anyhow::ensure!(
         !workers.is_empty(),
