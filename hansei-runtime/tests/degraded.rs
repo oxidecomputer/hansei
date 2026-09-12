@@ -9,9 +9,10 @@
 //! exists for a torn or damaged core, which no healthy fixture can
 //! produce. These tests make one: a [`Corrupt`] target replays a real
 //! captured snapshot with chosen faults layered on top — address
-//! ranges that no longer read, and words that lie — and the walks are
-//! held to their contract: degrade, contain, and say what happened,
-//! never crash and never loop.
+//! ranges that no longer read, ranges that read as nothing but zeros,
+//! and words that lie — and the walks are held to their contract:
+//! degrade, contain, and say what happened, never crash and never
+//! loop.
 //!
 //! The corruptions are aimed with addresses the healthy run reports
 //! (task headers, set nodes, join set entries, the semaphore), so they
@@ -32,8 +33,8 @@ const NOWHERE: u64 = 0xdead_beef_0000;
 
 /// A captured snapshot with faults baked into memory of its own: a
 /// denied range is cut out of the segments, so every read touching it
-/// fails, and a patched word is written over, so every read of it sees
-/// the lie.
+/// fails, a blanked range is kept and zeroed, and a patched word is
+/// written over, so every read of it sees the lie.
 ///
 /// The faults live in the bytes rather than in a `read_bytes` that
 /// doctors what it serves, because the renderer reads by borrowing: a
@@ -79,6 +80,24 @@ impl<'a> Corrupt<'a> {
             .flatten()
             .collect();
         Corrupt { memory, ..self }
+    }
+
+    /// The target range will be zeroed, as if the dump had recorded the
+    /// mapping at full length and written nothing into it, mimicking a
+    /// truncated core.
+    fn blank(mut self, range: Range<u64>) -> Self {
+        let mut blanked = 0;
+        for (base, bytes) in &mut self.memory {
+            let len = bytes.len() as u64;
+            let from = range.start.saturating_sub(*base).min(len) as usize;
+            let to = range.end.saturating_sub(*base).min(len) as usize;
+            if let Some(slot) = bytes.get_mut(from..to) {
+                slot.fill(0);
+                blanked += slot.len();
+            }
+        }
+        assert!(blanked > 0, "no recorded segment holds {range:#x?}");
+        self
     }
 
     /// The word at `addr` reads back as `value`.
@@ -191,6 +210,61 @@ fn healthy<'a>(bundle: &'a Bundle, snapshot: &'a Snapshot) -> (Context<'a, Snaps
     let list = tasks_of(&ctx, snapshot);
     assert!(list.errors.is_empty(), "{:?}", list.errors);
     (ctx, list)
+}
+
+// ---------------------------------------------------------------------------
+// Runtime discovery
+// ---------------------------------------------------------------------------
+
+/// A dump that records a thread's `Context` is zeroed, which is a
+/// *valid* `Option<scheduler::Handle>`: the niche leaves `Some` at
+/// discriminant 0, so the walk find an `Arc` with a null pointer.
+/// This likely indicates that the core is corrupt,  not that the
+/// runtime is broken, so discovery drops this thread and continues.
+/// A session over a truncated core still attaches.
+#[test]
+fn test_a_blank_worker_context_drops_only_that_thread() {
+    let (bundle, snapshot) = load_any("channels");
+    let ctx = Context::new(&snapshot, BundleView::new(&bundle)).expect("snapshot has mappings");
+    let lwps = snapshot.lwps().expect("the snapshot records lwps");
+    let workers = ctx.find_workers(&lwps).expect("the fixture runs tokio");
+    let runtimes = ctx.find_runtimes(&workers).expect("a runtime");
+    let reaching: Vec<u32> = runtimes
+        .iter()
+        .flat_map(|r| r.worker_tids.iter().copied())
+        .collect();
+    let victim = *reaching.last().expect("a thread in a runtime");
+    let context_addr = workers
+        .iter()
+        .find(|w| w.tid == victim)
+        .expect("the thread is a worker")
+        .context_addr;
+
+    // Only the handle has to go: it is the member whose zeroed bytes
+    // read back as a live variant.
+    let corrupt = Corrupt::new(&snapshot).blank(context_addr..context_addr + 0x40);
+    let ctx = Context::new(&corrupt, BundleView::new(&bundle)).expect("snapshot has mappings");
+    let workers = ctx
+        .find_workers(&lwps)
+        .expect("the other threads still hold Contexts");
+    let runtimes = ctx
+        .find_runtimes(&workers)
+        .expect("discovery survives a thread without a Context");
+
+    let left: Vec<u32> = runtimes
+        .iter()
+        .flat_map(|r| r.worker_tids.iter().copied())
+        .collect();
+    assert!(!left.contains(&victim), "{victim} still reaches a runtime");
+    assert_eq!(
+        left,
+        reaching
+            .iter()
+            .copied()
+            .filter(|&t| t != victim)
+            .collect::<Vec<u32>>(),
+        "every other thread still reaches the runtime"
+    );
 }
 
 // ---------------------------------------------------------------------------

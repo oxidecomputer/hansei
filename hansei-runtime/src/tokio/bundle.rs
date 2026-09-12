@@ -599,7 +599,15 @@ impl<'b, T: Target> Context<'b, T> {
                 // The other flavor's variant (or no handle) is live, or
                 // the row is absent on this build — try the next flavor.
                 Some(Walked::Inactive(_)) | None => {}
-                Some(Walked::Null) => bail!("the runtime handle's Arc is null"),
+                // A live variant holding a null `Arc` is not a valid
+                // state for a runtime. The most likely cause is that the
+                // dumper failed to record the memory in this range,
+                // causing it to be zeroed in the dump. This will be
+                // parsed as an `Option<scheduler::Handle>` with a null
+                // pointer in its `Arc`. So long as one thread was
+                // correctly recorded we can still find the runtime,
+                // so skip this thread and continue on.
+                Some(Walked::Null) => {}
             }
         }
         Ok(None)
