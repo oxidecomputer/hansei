@@ -2,7 +2,7 @@
 source: hansei/tests/acceptance.rs
 expression: actual
 ---
-ID  FLAVOR          HANDLE  TASKS  FUTURES  WORKERS  THREADS  FOUND VIA
-0   current_thread  ADDR1       1        1        1        1  a thread's runtime context
-1   current_thread  ADDR2       2        2        1        0  a JoinHandle scanned in an enumerated task's storage
+ID  FLAVOR          HANDLE  TASKS  FUT  WORKERS  THREADS  FOUND VIA
+0   current_thread  ADDR1       1    1        1        1  a thread's runtime context
+1   current_thread  ADDR2       2    2        1        0  a JoinHandle scanned in an enumerated task's storage
 [2 runtimes]

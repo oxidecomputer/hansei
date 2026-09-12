@@ -1023,7 +1023,7 @@ pub enum Command {
     /// when M is not zero — a script sees one failure, with nothing
     /// skipped.
     ///
-    /// `FUTURES` is what each task has in flight beside its own await
+    /// `FUT` is what each task has in flight beside its own await
     /// chain: the futures held in its frames and the live children of
     /// the sets it drives — the rows `futures` lists for the task —
     /// which is the census's to count and `task` (or `futures`) to

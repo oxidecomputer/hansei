@@ -2,7 +2,7 @@
 source: hansei/src/offline.rs
 description: "`tasks --with id 3,6` over linux-floor/walk-shapes"
 ---
-ID  STATE  RT  FUTURES  AWAITING AT                 WAITING ON                                                                                                                 TYPE
-3   idle   0         1  src/bin/walk-shapes.rs:160  notify 0xADDR (waiting, 1 queued)                                                                                  async fn walk_shapes::abandoner
-6   idle   0         0  src/bin/walk-shapes.rs:174  a tokio::sync::Semaphore (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 5, task 6, task 10  async fn walk_shapes::blocked
+ID  STATE  RT  FUT  AWAITING AT                 WAITING ON                                                                                                                 TYPE
+3   idle   0     1  src/bin/walk-shapes.rs:160  notify 0xADDR (waiting, 1 queued)                                                                                  async fn walk_shapes::abandoner
+6   idle   0     0  src/bin/walk-shapes.rs:174  a tokio::sync::Semaphore (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 5, task 6, task 10  async fn walk_shapes::blocked
 [2 tasks]

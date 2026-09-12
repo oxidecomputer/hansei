@@ -364,7 +364,7 @@ impl Counts {
     }
 
     /// How many futures the task has in flight beside its own await
-    /// chain — the `FUTURES` column, and what a `futures` clause
+    /// chain — the `FUT` column, and what a `futures` clause
     /// compares: the futures held in its frames and the live children
     /// of the sets it drives, which is the population `futures` lists
     /// for the task. A set itself is a container, not a future, and a
@@ -1515,8 +1515,11 @@ fn print_task_table(
         header.push("RT");
     }
     // The count sits with the short cells, right-aligned as a number,
-    // ahead of the three that run wide.
-    header.push("FUTURES");
+    // ahead of the three that run wide. Its heading is abbreviated
+    // because a column is as wide as its widest cell, heading
+    // included, and the counts under this one are a digit or two: the
+    // word would cost every row four columns to name one of them.
+    header.push("FUT");
     let futures = header.len() - 1;
     header.extend(["AWAITING AT", "WAITING ON", "TYPE"]);
     let columns = header.len();
@@ -1614,7 +1617,7 @@ pub(crate) enum Field {
     Holds,
     /// A comparison on the `Join sets` count.
     Sets,
-    /// A comparison on the `FUTURES` column, [`Counts::futures`].
+    /// A comparison on the `FUT` column, [`Counts::futures`].
     Futures,
     /// The task id — exact, for scripts.
     Id,
@@ -1865,7 +1868,7 @@ pub(crate) fn resolve_rt(arg: &str, handles: &[u64]) -> Result<RowOwner> {
     })
 }
 
-/// The census counts the table's `FUTURES` column and a
+/// The census counts the table's `FUT` column and a
 /// `holds`/`sets`/`futures` clause read, keyed by task index — built
 /// only for the table and for a clause or grouping naming one, since
 /// they cost the census walk.
@@ -1990,7 +1993,7 @@ pub(crate) fn exec_tasks<T: proc::Target>(
     let handles: Vec<u64> = session.runtimes.iter().map(|rt| rt.handle.addr).collect();
     let clauses = parse_clauses(&cmd.with, &cmd.without, &handles)?;
 
-    // The table's `FUTURES` column and a count clause or grouping
+    // The table's `FUT` column and a count clause or grouping
     // read what only the census counts; `--exec` and the other
     // groupings pay for its walk only when a clause asks.
     let build_counts = || census_counts(session.census().into());
@@ -3209,7 +3212,7 @@ mod table_tests {
     }
 
     /// Each row carries its futures count, right-aligned under a
-    /// `FUTURES` heading between the state and the await site.
+    /// `FUT` heading between the state and the await site.
     #[test]
     fn test_the_futures_column_counts_each_row() {
         let rows = rows_of(
@@ -3231,11 +3234,11 @@ mod table_tests {
         let out = String::from_utf8(out).expect("utf8");
         let lines: Vec<&str> = out.lines().collect();
         assert!(
-            lines[0].starts_with("ID  STATE  FUTURES  AWAITING AT"),
+            lines[0].starts_with("ID  STATE   FUT  AWAITING AT"),
             "{out}"
         );
-        assert!(lines[1].starts_with("1   idle         0  "), "{out}");
-        assert!(lines[2].starts_with("2   idle      3075  "), "{out}");
+        assert!(lines[1].starts_with("1   idle      0  "), "{out}");
+        assert!(lines[2].starts_with("2   idle   3075  "), "{out}");
     }
 
     /// `--limit` cuts the rows and earns the footer; without it every

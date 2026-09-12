@@ -2,17 +2,17 @@
 source: hansei/src/offline.rs
 description: "`tasks --with state idle` over linux/delegation-cases"
 ---
-ID  STATE  FUTURES  AWAITING AT                      WAITING ON                                                     TYPE
-1   idle         1  —                                unarmed: unknown at delegation_cases::Gated (holds 1 future)   future Pin<Box<delegation_cases::Gated<1>>>
-2   idle         1  —                                unarmed: unknown at delegation_cases::Gated (holds 1 future)   future Pin<Box<delegation_cases::Gated<2>>>
-3   idle         0  —                                unarmed: unknown at delegation_cases::Retained                 future Pin<Box<delegation_cases::Retained>>
-4   idle         0  —                                unarmed: unknown at delegation_cases::RawHolder                future Pin<Box<delegation_cases::RawHolder>>
-5   idle         0  —                                unarmed: unknown at delegation_cases::Probe                    future Pin<Box<&mut delegation_cases::Probe<5>>>
-6   idle         0  —                                unarmed: unknown at delegation_cases::Probe                    future Pin<Box<Box<delegation_cases::Probe<6>>>>
-7   idle         0  —                                unarmed: unknown at delegation_cases::Probe                    future Pin<Box<Pin<Box<(dyn Future<Output=()> + Send)>>>>
-8   idle         0  —                                unarmed: unknown at delegation_cases::Probe                    future Pin<Box<tracing::instrument::Instrumented<delegation_cases::Probe<8>>>>
-9   idle         1  —                                unarmed: unknown at delegation_cases::Holder (holds 1 future)  future Pin<Box<delegation_cases::Holder<delegation_cases::main>>>
-10  idle         1  —                                unarmed: unknown at delegation_cases::Handle (holds 1 future)  future Pin<Box<delegation_cases::Handle>>
-11  idle         0  src/bin/delegation-cases.rs:361  unarmed: unknown at delegation_cases::Leaf                     future Pin<Box<Pin<Box<(dyn Future<Output=()> + Send)>>>>
-12  idle         0  src/bin/delegation-cases.rs:384  unarmed: unknown at core::future::pending::Pending             future Pin<Box<delegation_cases::main::{async_block_env#3}>>
+ID  STATE  FUT  AWAITING AT                      WAITING ON                                                     TYPE
+1   idle     1  —                                unarmed: unknown at delegation_cases::Gated (holds 1 future)   future Pin<Box<delegation_cases::Gated<1>>>
+2   idle     1  —                                unarmed: unknown at delegation_cases::Gated (holds 1 future)   future Pin<Box<delegation_cases::Gated<2>>>
+3   idle     0  —                                unarmed: unknown at delegation_cases::Retained                 future Pin<Box<delegation_cases::Retained>>
+4   idle     0  —                                unarmed: unknown at delegation_cases::RawHolder                future Pin<Box<delegation_cases::RawHolder>>
+5   idle     0  —                                unarmed: unknown at delegation_cases::Probe                    future Pin<Box<&mut delegation_cases::Probe<5>>>
+6   idle     0  —                                unarmed: unknown at delegation_cases::Probe                    future Pin<Box<Box<delegation_cases::Probe<6>>>>
+7   idle     0  —                                unarmed: unknown at delegation_cases::Probe                    future Pin<Box<Pin<Box<(dyn Future<Output=()> + Send)>>>>
+8   idle     0  —                                unarmed: unknown at delegation_cases::Probe                    future Pin<Box<tracing::instrument::Instrumented<delegation_cases::Probe<8>>>>
+9   idle     1  —                                unarmed: unknown at delegation_cases::Holder (holds 1 future)  future Pin<Box<delegation_cases::Holder<delegation_cases::main>>>
+10  idle     1  —                                unarmed: unknown at delegation_cases::Handle (holds 1 future)  future Pin<Box<delegation_cases::Handle>>
+11  idle     0  src/bin/delegation-cases.rs:361  unarmed: unknown at delegation_cases::Leaf                     future Pin<Box<Pin<Box<(dyn Future<Output=()> + Send)>>>>
+12  idle     0  src/bin/delegation-cases.rs:384  unarmed: unknown at core::future::pending::Pending             future Pin<Box<delegation_cases::main::{async_block_env#3}>>
 [12 tasks]

@@ -321,7 +321,7 @@ pub(crate) fn print_groups(
             "FLAVOR",
             "HANDLE",
             "TASKS",
-            "FUTURES",
+            "FUT",
             "WORKERS",
             "THREADS",
             "FOUND VIA",
@@ -945,14 +945,7 @@ mod runtimes_tests {
         // The header names the columns, padded with the rows it names —
         // which is what lets the acceptance suite slice them by label.
         assert!(lines[0].starts_with("ID  FLAVOR"), "{shown}");
-        for label in [
-            "HANDLE",
-            "TASKS",
-            "FUTURES",
-            "WORKERS",
-            "THREADS",
-            "FOUND VIA",
-        ] {
+        for label in ["HANDLE", "TASKS", "FUT", "WORKERS", "THREADS", "FOUND VIA"] {
             assert!(lines[0].contains(label), "{shown}");
         }
         // The counts are the census's own: each runtime sums its tasks
@@ -961,7 +954,7 @@ mod runtimes_tests {
         // that entered it.
         assert!(lines[1].starts_with("0   current_thread  0x"), "{shown}");
         assert!(
-            lines[1].contains("      1        1        1        1  "),
+            lines[1].contains("      1    1        1        1  "),
             "{shown}"
         );
         assert!(
@@ -970,7 +963,7 @@ mod runtimes_tests {
         );
         assert!(lines[2].starts_with("1   current_thread  0x"), "{shown}");
         assert!(
-            lines[2].contains("      2        2        1        0  "),
+            lines[2].contains("      2    2        1        0  "),
             "{shown}"
         );
         assert!(
