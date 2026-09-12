@@ -542,7 +542,7 @@ fn row_cells(row: &FutureRow, groups: bool) -> Vec<String> {
     let dash = || "—".to_string();
     let mut cells = vec![format!("{:#x}", row.addr), row.task.clone()];
     if groups {
-        cells.push(row.rt.to_string());
+        cells.push(row.rt.cell());
     }
     cells.push(row.held_in.clone());
     cells.push(row.state.clone().unwrap_or_else(dash));
@@ -1755,6 +1755,16 @@ mod tests {
         assert_eq!(
             RowOwner::Unknown.to_string() + " " + &RowOwner::Conflict.to_string(),
             "unknown conflict"
+        );
+        // The `RT` cell is the mark, not the word: the words are for
+        // the clause that names one and the `owner:` line that
+        // explains it, and either of them in a cell would widen the
+        // column past the indices it holds.
+        assert_eq!(
+            [RowOwner::Group(7), RowOwner::Unknown, RowOwner::Conflict]
+                .map(|o| o.cell())
+                .join(" "),
+            "7 ? !"
         );
     }
 

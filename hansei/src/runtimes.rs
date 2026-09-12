@@ -118,6 +118,20 @@ impl RowOwner {
         }
     }
 
+    /// The `RT` cell a listing prints: the group's index, and a mark
+    /// for each of the two owners that are no group. A whole word
+    /// there widens every row of the table to its length for the sake
+    /// of the few rows that carry it, so the column stays as narrow as
+    /// the indices in it; `--with rt=` takes the mark as well as the
+    /// word, and the block's `owner:` line says which it is and why.
+    pub(crate) fn cell(&self) -> String {
+        match self {
+            Self::Group(group) => group.to_string(),
+            Self::Unknown => "?".to_string(),
+            Self::Conflict => "!".to_string(),
+        }
+    }
+
     /// The `owner:` detail line under a task or future block: the
     /// group's tag where the listings tag their groups at all, and —
     /// always, whatever the tags — the reason for an owner that is

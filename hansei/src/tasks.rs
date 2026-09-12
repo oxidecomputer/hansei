@@ -1337,7 +1337,7 @@ fn waiting_kind(
 fn row_cells(row: &TaskRow, futures: usize, groups: bool) -> Vec<String> {
     let mut cells = vec![row.id.clone(), row.state.clone()];
     if groups {
-        cells.push(row.rt.to_string());
+        cells.push(row.rt.cell());
     }
     cells.push(futures.to_string());
     cells.push(row.awaiting_at.clone().unwrap_or_else(|| "—".to_string()));
@@ -1840,9 +1840,10 @@ fn matcher(field: Field, arg: &str, handles: &[u64]) -> Result<Matcher> {
 /// carry. Exact, and an unknown handle is an error rather than an
 /// empty match.
 pub(crate) fn resolve_rt(arg: &str, handles: &[u64]) -> Result<RowOwner> {
+    // Both the word and the mark the `RT` column prints for it.
     match arg {
-        "unknown" => return Ok(RowOwner::Unknown),
-        "conflict" => return Ok(RowOwner::Conflict),
+        "unknown" | "?" => return Ok(RowOwner::Unknown),
+        "conflict" | "!" => return Ok(RowOwner::Conflict),
         _ => {}
     }
     let addr = arg.strip_prefix('@').unwrap_or(arg);
@@ -1858,8 +1859,8 @@ pub(crate) fn resolve_rt(arg: &str, handles: &[u64]) -> Result<RowOwner> {
     arg.parse().map(RowOwner::Group).map_err(|_| {
         anyhow::anyhow!(
             "a runtime is named by its index in `runtimes` or by the \
-             handle address printed beside it there (or `unknown` or \
-             `conflict` for a task no group owns), got {arg:?}"
+             handle address printed beside it there (or `unknown`/`?` \
+             or `conflict`/`!` for a task no group owns), got {arg:?}"
         )
     })
 }
@@ -3360,6 +3361,11 @@ mod filter_tests {
         );
         assert_eq!(resolve_rt("unknown", &[]).unwrap(), RowOwner::Unknown);
         assert_eq!(resolve_rt("conflict", &[]).unwrap(), RowOwner::Conflict);
+        // The marks the `RT` column prints for those two name them
+        // as well as the words do, so a value read off the table can
+        // be typed back into the clause.
+        assert_eq!(resolve_rt("?", &[]).unwrap(), RowOwner::Unknown);
+        assert_eq!(resolve_rt("!", &[]).unwrap(), RowOwner::Conflict);
         assert!(resolve_rt("@0xdead", &[0x10]).is_err());
         assert!(resolve_rt("nope", &[]).is_err());
         assert!(matcher(Field::Lwp, "x", &[]).is_err());
