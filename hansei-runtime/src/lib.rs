@@ -4,6 +4,7 @@
 
 //! Useful types for building async debuggers based on tokio
 
+pub mod capture;
 pub mod heap;
 pub mod tokio;
 
