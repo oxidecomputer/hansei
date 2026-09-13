@@ -18,6 +18,13 @@
 //! value on stdout before parking, so the suite knows what the core
 //! should say without having to trust the code that reads it.
 //!
+//! A report says the thread is about to park, not that it has: the
+//! send that delivers it is what wakes `main`, which can reach the
+//! abort while the reporter is still returning from `send`. So `main`
+//! also waits, through procfs, until the kernel says each worker is
+//! asleep, and the core then holds every worker in `park_forever`
+//! rather than one of them mid-report.
+//!
 //! The last worker parks inside a signal handler rather than on its
 //! own frames, so one stack in the core has the trampoline the kernel
 //! lays between a handler and the frame it interrupted — the seam the
@@ -127,6 +134,25 @@ fn tid() -> u32 {
         .expect("thread ids are numbers")
 }
 
+/// Block until the kernel reports `tid` asleep. Once a worker has
+/// reported in, the only interruptible sleep left to it is the park,
+/// and nothing unparks it, so `S` in its stat line means it is there
+/// for good. The loop is bounded by the worker's own progress, not by
+/// a delay, and yields rather than sleeps between reads.
+fn wait_until_parked(tid: u32) {
+    let stat = format!("/proc/self/task/{tid}/stat");
+    loop {
+        // `<tid> (<comm>) <state> …`: the comm may hold spaces, so the
+        // state is the field after the last `)`.
+        let line = std::fs::read_to_string(&stat).expect("failed to read the worker's stat");
+        let after_comm = line.rsplit_once(')').map_or("", |(_, rest)| rest);
+        if after_comm.split_whitespace().next() == Some("S") {
+            return;
+        }
+        thread::yield_now();
+    }
+}
+
 /// Claim this thread's slot and report where it is and what it holds.
 ///
 /// The address is reported, and not just the value, for two reasons:
@@ -164,11 +190,19 @@ fn main() {
     }
     drop(tx);
 
-    let mut slots = vec![claim_slot()];
+    let mine = claim_slot();
+    let mut slots = vec![mine];
     for _ in 0..WORKERS.len() {
         slots.push(rx.recv().expect("a thread died before reporting in"));
     }
     slots.sort_unstable();
+    // Every worker has reported; now let each reach the park before
+    // the abort finds it still on its way there.
+    for (tid, _, _) in &slots {
+        if *tid != mine.0 {
+            wait_until_parked(*tid);
+        }
+    }
 
     // Nothing here reads the markers; make sure they reach the symtab
     // anyway. The counter is written so its page is dirty, and so

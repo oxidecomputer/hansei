@@ -13,6 +13,13 @@
 //! oracle libproc had no hand in, and parks forever. The suite blocks on
 //! that line, so nothing here is timing-dependent.
 //!
+//! A report says a worker is about to park, not that it has: the send
+//! that delivers it is what wakes `main`, which can print the ready
+//! line — and the suite take its core — while the reporter is still
+//! returning from `send`. So `main` also waits, through procfs, until
+//! the kernel says each worker is asleep, and the core then holds
+//! every worker in `park_forever` rather than one of them mid-report.
+//!
 //! With `--spin` one extra thread bumps `PARK_COUNTER` as fast as it
 //! can: the only thing in the target that moves while it runs, and so
 //! the suite's way of telling a stopped process from a running one.
@@ -55,20 +62,67 @@ pub static PARK_TSD_KEY: u64 = 1;
 /// One LWP each, under the names the suite looks for.
 const WORKERS: [&str; 3] = ["park-worker-0", "park-worker-1", "park-worker-2"];
 
+/// `PR_ASLEEP` from `<sys/procfs.h>`: the lwp is sleeping in a system
+/// call. `pr_flags` is the first `int` of `lwpstatus_t`.
+#[cfg(target_os = "illumos")]
+const PR_ASLEEP: i32 = 0x10;
+
+/// This thread's lwpid: on illumos a thread id is its lwpid, and `libc`
+/// is an illumos dependency of this crate for the call. Elsewhere the
+/// program never gets far enough to use one.
+#[cfg(target_os = "illumos")]
+fn lwpid() -> u32 {
+    // SAFETY: `thr_self` reads the calling thread's id and nothing else.
+    unsafe { libc::thr_self() }
+}
+
+#[cfg(not(target_os = "illumos"))]
+fn lwpid() -> u32 {
+    0
+}
+
+/// Block until the kernel reports `lwpid` asleep in a system call.
+/// Once a worker has reported in, the only sleep left to it is the
+/// park, and nothing unparks it, so the flag means it is there for
+/// good. The loop is bounded by the worker's own progress, not by a
+/// delay, and yields rather than sleeps between reads.
+#[cfg(target_os = "illumos")]
+fn wait_until_parked(lwpid: u32) {
+    let status = format!("/proc/self/lwp/{lwpid}/lwpstatus");
+    loop {
+        let bytes = std::fs::read(&status).expect("failed to read the worker's lwpstatus");
+        let flags = i32::from_ne_bytes(
+            bytes[..4]
+                .try_into()
+                .expect("lwpstatus opens with pr_flags"),
+        );
+        if flags & PR_ASLEEP != 0 {
+            return;
+        }
+        thread::yield_now();
+    }
+}
+
+#[cfg(not(target_os = "illumos"))]
+fn wait_until_parked(_: u32) {}
+
 fn main() {
     test_programs::allow_any_tracer();
 
     let spin = std::env::args().any(|arg| arg == "--spin");
 
     // Every thread reports in before parking, so once they have all been
-    // heard from the LWP set below is final.
+    // heard from the LWP set below is final. A worker reports its lwpid,
+    // for `main` to wait on; the spinner, which never parks, reports
+    // `None`.
     let (tx, rx) = mpsc::channel();
     for name in WORKERS {
         let tx = tx.clone();
         thread::Builder::new()
             .name(name.to_string())
             .spawn(move || {
-                tx.send(()).expect("nobody is waiting for the workers");
+                tx.send(Some(lwpid()))
+                    .expect("nobody is waiting for the workers");
                 park_forever();
             })
             .unwrap_or_else(|e| panic!("failed to spawn {name}: {e}"));
@@ -78,7 +132,7 @@ fn main() {
         thread::Builder::new()
             .name("park-spinner".to_string())
             .spawn(move || {
-                tx.send(()).expect("nobody is waiting for the spinner");
+                tx.send(None).expect("nobody is waiting for the spinner");
                 loop {
                     PARK_COUNTER.fetch_add(1, Ordering::Relaxed);
                     std::hint::spin_loop();
@@ -87,8 +141,16 @@ fn main() {
             .expect("failed to spawn the spinner");
     }
     drop(tx);
+    let mut workers = Vec::new();
     for _ in 0..WORKERS.len() + usize::from(spin) {
-        rx.recv().expect("a thread died before reporting in");
+        if let Some(lwpid) = rx.recv().expect("a thread died before reporting in") {
+            workers.push(lwpid);
+        }
+    }
+    // Every worker has reported; now let each reach the park before
+    // the suite's core finds it still on its way there.
+    for lwpid in workers {
+        wait_until_parked(lwpid);
     }
 
     // Nothing here reads the markers; make sure they reach the symtab

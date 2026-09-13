@@ -5,9 +5,9 @@ description: "`census` over linux-floor/dyn-future"
 Threads: 3 lwps, 3 in runtime 0 @ 0xADDR
 
 COUNT  RT  ROLE             STATE            LWPS
-    1  0   worker           in driver        2766143
-    1  0   worker           parked           2766144
-    1  0   entered runtime  block_on caller  2766141
+    1  0   worker           in driver        3786418
+    1  0   worker           parked           3786417
+    1  0   entered runtime  block_on caller  3786415
     0  0   blocking pool    0 idle, 0 busy   —
 [3 lwps]
 

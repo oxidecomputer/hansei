@@ -32,6 +32,10 @@ tracing = "=0.1.40"
 [target.'cfg(target_os = "linux")'.dependencies]
 libc = "0.2"
 
+# For `thr_self`, which names the lwp `park-target` waits on.
+[target.'cfg(target_os = "illumos")'.dependencies]
+libc = "0.2"
+
 [[bin]]
 name = "futurelock"
 
