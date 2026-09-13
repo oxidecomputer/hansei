@@ -1,0 +1,8 @@
+---
+source: hansei/src/offline.rs
+description: "`futures --group waiting-on` over linux-floor/watch-stream"
+---
+COUNT  WAITING ON                                                    FUTURES
+    3  unarmed: unknown at futures_util::stream::stream::next::Next  0xADDR, 0xADDR, 0xADDR
+    2  oneshot rx                                                    0xADDR, 0xADDR
+[2 groups]

@@ -87,6 +87,7 @@ const PROGRAMS: &[&str] = &[
     "stale-local",
     "enum-reprs",
     "armed-select",
+    "watch-stream",
 ];
 
 fn workspace_root() -> &'static Path {

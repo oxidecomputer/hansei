@@ -1099,6 +1099,12 @@ fn test_the_census_accounting_is_exact_per_program() {
         // through the select's borrow of it, and their chains behind —
         // the watch's crossing tokio's `Coop` to its `changed_impl`.
         ("armed-select", 0, 10, 4, 0, 4),
+        // Two selects' branch futures — a oneshot and a stream's `Next`
+        // each — reached by descent and met again through the select's
+        // borrow, and the chains behind: the bare `changed` crossing
+        // tokio's `Coop` to its `Notified`, the fresh task's oneshot.
+        // No `Next` continues: nothing follows it into its stream yet.
+        ("watch-stream", 0, 7, 4, 0, 4),
     ];
     let named: Vec<&str> = ACCOUNTING.iter().map(|row| row.0).collect();
     assert_eq!(named, PROGRAMS, "every program is accounted for");

@@ -1,0 +1,9 @@
+---
+source: hansei/src/offline.rs
+description: "`children` over linux/watch-stream"
+---
+held futures: 2
+    (frame 1, `once`): 0xADDR  future tokio::sync::oneshot::Receiver<u32>
+      waiting on oneshot rx 0xADDR (nothing sent, sender alive)
+    (frame 1, `next`): 0xADDR  future futures_util::stream::stream::next::Next<tokio_stream::wrappers::watch::WatchStream<u32>>
+join sets: 0

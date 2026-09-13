@@ -2550,3 +2550,157 @@ ok      blocking::queue.buf
 ok      blocking::queue.cap
 ok      Trailer.waker
 ok      ScheduledIo.waiters.lock (spelling 1 of 2)
+
+program: watch-stream
+
+[tasks]
+task: watch_stream::fresh::{async_fn_env#0}
+  kind: AsyncFn
+  decl: watch-stream.rs:75
+  entries: 2
+  symbols-per-entry: 6,6
+  stage: Stage<watch_stream::fresh::{async_fn_env#0}>
+  variants:
+    Unresumed @ watch-stream.rs:79
+    Returned @ watch-stream.rs:88
+    Panicked @ watch-stream.rs:88
+    Suspend0 @ watch-stream.rs:85
+task: watch_stream::direct::{async_fn_env#0}
+  kind: AsyncFn
+  decl: watch-stream.rs:94
+  entries: 2
+  symbols-per-entry: 6,6
+  stage: Stage<watch_stream::direct::{async_fn_env#0}>
+  variants:
+    Unresumed @ watch-stream.rs:94
+    Returned @ watch-stream.rs:98
+    Panicked @ watch-stream.rs:98
+    Suspend0 @ watch-stream.rs:97
+task: watch_stream::mapper::{async_fn_env#0}
+  kind: AsyncFn
+  decl: watch-stream.rs:50
+  entries: 2
+  symbols-per-entry: 6,6
+  stage: Stage<watch_stream::mapper::{async_fn_env#0}>
+  variants:
+    Unresumed @ watch-stream.rs:54
+    Returned @ watch-stream.rs:69
+    Panicked @ watch-stream.rs:69
+    Suspend0 @ select.rs:743 (awaited at watch-stream.rs:65)
+task: watch_stream::resolver::{async_fn_env#0}
+  kind: AsyncFn
+  decl: watch-stream.rs:27
+  entries: 2
+  symbols-per-entry: 6,6
+  stage: Stage<watch_stream::resolver::{async_fn_env#0}>
+  variants:
+    Unresumed @ watch-stream.rs:31
+    Returned @ watch-stream.rs:43
+    Panicked @ watch-stream.rs:43
+    Suspend0 @ select.rs:743 (awaited at watch-stream.rs:39)
+
+[dyn-futures]
+dyn: core::future::poll_fn::PollFn<tokio::runtime::scheduler::current_thread::{impl#0}::block_on::{closure#0}::{closure_env#0}<watch_stream::main::{async_block_env#0}>> (poll)
+dyn: core::future::poll_fn::PollFn<watch_stream::mapper::{async_fn#0}::{closure_env#0}> (poll)
+dyn: core::future::poll_fn::PollFn<watch_stream::resolver::{async_fn#0}::{closure_env#0}> (poll)
+dyn: core::pin::Pin<&mut watch_stream::main::{async_block_env#0}> (poll)
+dyn: watch_stream::direct::{async_fn_env#0} (poll, drop_glue)
+dyn: watch_stream::fresh::{async_fn_env#0} (poll, drop_glue)
+dyn: watch_stream::main::{async_block_env#0} (poll, drop_glue)
+dyn: watch_stream::mapper::{async_fn_env#0} (poll, drop_glue)
+dyn: watch_stream::resolver::{async_fn_env#0} (poll, drop_glue)
+
+[env-decls]
+env: watch_stream::direct::{async_fn_env#0} @ watch-stream.rs:94
+env: watch_stream::fresh::{async_fn_env#0} @ watch-stream.rs:75
+env: watch_stream::main::{async_block_env#0} @ watch-stream.rs:105
+env: watch_stream::mapper::{async_fn#0}::{closure_env#0} @ select.rs:661
+env: watch_stream::mapper::{async_fn_env#0} @ watch-stream.rs:50
+env: watch_stream::resolver::{async_fn#0}::{closure_env#0} @ select.rs:661
+env: watch_stream::resolver::{async_fn_env#0} @ watch-stream.rs:27
+
+[infra]
+header: ok
+vtable: ok
+trailer: ok
+context: ok
+scheduler_handle: ok
+mt_handle: ok
+ct_handle: ok
+location: ok
+raw_waker_vtable: ok
+
+[statics]
+tls-context-key: ok
+task-waker-vtable: ok
+
+[walks]
+ok      Context.current_task_id
+ok      Context.thread_id
+ok      Context.handle
+ok      Context.handle.current_thread
+ok      Context.scheduler
+ok      Context.scheduler.current_thread
+ok      worker::Context.index
+ok      current_thread::Context.core
+ok      current_thread::Core.driver
+ok      Handle.shared
+ok      Shared.remotes
+ok      Remote.unpark
+ok      parker::Inner.state
+ok      parker::Inner.driver_lock
+ok      current_thread::Shared.woken
+ok      Handle.blocking_metrics
+ok      SpawnerMetrics.num_threads
+ok      SpawnerMetrics.num_idle_threads
+ok      SpawnerMetrics.queue_depth
+ok      Shared.owned_lists
+ok      Shared.owned_id
+ok      Shard.head
+ok      Header.state
+ok      Header.owner_id
+ok      Header.vtable
+ok      Trailer.owned_next
+ok      Vtable.poll
+ok      Vtable.trailer_offset
+ok      Vtable.id_offset
+ok      Vtable.dealloc
+ok      Vtable.try_read_output
+ok      Vtable.drop_join_handle_slow
+ok      Vtable.drop_abort_handle
+ok      Vtable.shutdown
+ok      Vtable.spawn_location_offset
+ok      Location.file (spelling 1 of 3)
+ok      Location.line
+ok      Location.col
+ok      Cell.stage
+ok      Cell.stage_running
+ok      Cell.stage_finished
+ok      Cell.stage_consumed
+ok      Cell.trailer
+ok      Cell.task_id
+ok      Cell.scheduler
+ok      time::Wheel.levels (family v1_49)
+ok      wheel::Level.slot
+ok      wheel::Slot.head
+ok      TimerShared.next
+ok      TimerShared.waker
+ok      io::Synced.registrations
+ok      ScheduledIo.next
+ok      ScheduledIo.waiters
+ok      io::Waiters.list
+ok      io::Waiters.reader
+ok      io::Waiters.writer
+ok      io::Waiter.next
+ok      io::Waiter.waker
+ok      TimerShared.state
+ok      time::Handle.time_source.start_time
+ok      ScheduledIo.readiness
+ok      io::Waiter.interest
+ok      blocking::Shared.queue (spelling 1 of 3)
+ok      blocking::queue.head
+ok      blocking::queue.len
+ok      blocking::queue.buf
+ok      blocking::queue.cap
+ok      Trailer.waker
+ok      ScheduledIo.waiters.lock (spelling 1 of 2)

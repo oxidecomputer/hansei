@@ -2,6 +2,6 @@
 source: hansei/src/offline.rs
 description: "`threads` over linux-floor/ct-runtime"
 ---
-LWP      NAME  ROLE             TASK  FRAME 0
-3958078  —     block_on caller  —     0xADDR
+LWP     NAME  ROLE             TASK  FRAME 0
+264116  —     block_on caller  —     0xADDR
 [1 thread]

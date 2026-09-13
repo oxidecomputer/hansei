@@ -215,6 +215,7 @@ pub const PROGRAMS: &[&str] = &[
     "blocking-pool",
     "delegation-cases",
     "armed-select",
+    "watch-stream",
 ];
 
 /// Mask the run-varying values analysis output carries — heap

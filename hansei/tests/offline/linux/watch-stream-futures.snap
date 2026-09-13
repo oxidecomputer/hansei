@@ -1,0 +1,11 @@
+---
+source: hansei/src/offline.rs
+description: "`futures` over linux/watch-stream"
+---
+ADDR            TASK  HELD IN          STATE  WAITING ON                                                    ARMED  TYPE
+0xADDR  3     frame 1, `once`  —      oneshot rx 0xADDR (nothing sent, sender alive)        yes    future tokio::sync::oneshot::Receiver<u32>
+0xADDR  3     frame 1, `next`  —      unarmed: unknown at futures_util::stream::stream::next::Next  no     future futures_util::stream::stream::next::Next<tokio_stream::wrappers::watch::WatchStream<u32>>
+0xADDR  4     frame 1, `once`  —      oneshot rx 0xADDR (nothing sent, sender alive)        yes    future tokio::sync::oneshot::Receiver<u32>
+0xADDR  4     frame 1, `next`  —      unarmed: unknown at futures_util::stream::stream::next::Next  no     future futures_util::stream::stream::next::Next<tokio_stream::stream_map::StreamMap<&str, tokio_stream::wrappers::watch::WatchStream<u32>>>
+0xADDR  5     frame 1, `next`  —      unarmed: unknown at futures_util::stream::stream::next::Next  no     future futures_util::stream::stream::next::Next<tokio_stream::wrappers::watch::WatchStream<u32>>
+[5 futures]

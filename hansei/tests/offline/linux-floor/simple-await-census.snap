@@ -5,9 +5,9 @@ description: "`census` over linux-floor/simple-await"
 Threads: 3 lwps, 3 in runtime 0 @ 0xADDR
 
 COUNT  RT  ROLE             STATE            LWPS
-    1  0   worker           in driver        3955911
-    1  0   worker           parked           3955910
-    1  0   entered runtime  block_on caller  3955908
+    1  0   worker           in driver        261947
+    1  0   worker           parked           261946
+    1  0   entered runtime  block_on caller  261944
     0  0   blocking pool    0 idle, 0 busy   —
 [3 lwps]
 

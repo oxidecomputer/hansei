@@ -1,0 +1,9 @@
+---
+source: hansei/src/offline.rs
+description: "`threads` over linux-floor/watch-stream"
+---
+LWP     NAME  ROLE                 TASK  FRAME 0
+266869  —     entered runtime      —     0xADDR
+266871  —     worker 1, parked     —     0xADDR
+266872  —     worker 0, in driver  —     0xADDR
+[3 threads]

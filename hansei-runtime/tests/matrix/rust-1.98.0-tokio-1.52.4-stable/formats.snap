@@ -19,6 +19,7 @@ family: v1_49 (tokio 1.52.4)
 alloc::boxed::Box<(dyn core::any::Any + core::marker::Send), alloc::alloc::Global> :: Node DynPointer { pointer=pointer, vtable=vtable, slots=[drop_in_place:0, size:1, align:2], tail_prefixes=[] }
 alloc::boxed::Box<(dyn core::future::future::Future<Output=()> + core::marker::Send + core::marker::Sync), alloc::alloc::Global> :: Node DynPointer { pointer=pointer, vtable=vtable, slots=[drop_in_place:0, size:1, align:2], tail_prefixes=[] }
 alloc::boxed::Box<(dyn core::future::future::Future<Output=()> + core::marker::Send), alloc::alloc::Global> :: Node DynPointer { pointer=pointer, vtable=vtable, slots=[drop_in_place:0, size:1, align:2], tail_prefixes=[] }
+alloc::boxed::Box<(dyn core::future::future::Future<Output=(core::result::Result<(), tokio::sync::watch::error::RecvError>, tokio::sync::watch::Receiver<u32>)> + core::marker::Send), alloc::alloc::Global> :: Node DynPointer { pointer=pointer, vtable=vtable, slots=[drop_in_place:0, size:1, align:2], tail_prefixes=[] }
 alloc::boxed::Box<(dyn core::future::future::Future<Output=core::result::Result<(), tokio::runtime::task::error::JoinError>> + core::marker::Send), alloc::alloc::Global> :: Node DynPointer { pointer=pointer, vtable=vtable, slots=[drop_in_place:0, size:1, align:2], tail_prefixes=[] }
 alloc::boxed::Box<(dyn core::future::future::Future<Output=u32> + core::marker::Send), alloc::alloc::Global> :: Node DynPointer { pointer=pointer, vtable=vtable, slots=[drop_in_place:0, size:1, align:2], tail_prefixes=[] }
 alloc::boxed::Box<[std::sync::mpmc::array::Slot<()>], alloc::alloc::Global> :: Node Slice { pointer=data_ptr, length=length, element=std::sync::mpmc::array::Slot<()> }
@@ -34,6 +35,7 @@ alloc::collections::btree::map::BTreeMap<u64, u32, alloc::alloc::Global> :: Node
 alloc::collections::vec_deque::index::WrappedIndex :: Node Alias { __0, follow }
 alloc::ffi::c_str::CString :: Node Str { pointer=inner.data_ptr, length=inner.length, nul_terminated }
 alloc::string::String :: Node Str { pointer=vec.buf.inner.ptr.pointer.pointer, length=vec.len, capacity=vec.buf.inner.cap.__0 }
+alloc::vec::Vec<(&str, tokio_stream::wrappers::watch::WatchStream<u32>), alloc::alloc::Global> :: Node Slice { pointer=buf.inner.ptr.pointer.pointer, length=len, capacity=buf.inner.cap.__0, element=(&str, tokio_stream::wrappers::watch::WatchStream<u32>) }
 alloc::vec::Vec<alloc::boxed::Box<tokio::runtime::scheduler::multi_thread::worker::Core, alloc::alloc::Global>, alloc::alloc::Global> :: Node Slice { pointer=buf.inner.ptr.pointer.pointer, length=len, capacity=buf.inner.cap.__0, element=<pointer> }
 alloc::vec::Vec<alloc::sync::Arc<tokio::runtime::io::scheduled_io::ScheduledIo, alloc::alloc::Global>, alloc::alloc::Global> :: Node Slice { pointer=buf.inner.ptr.pointer.pointer, length=len, capacity=buf.inner.cap.__0, element=alloc::sync::Arc<tokio::runtime::io::scheduled_io::ScheduledIo, alloc::alloc::Global> }
 alloc::vec::Vec<core::task::wake::Waker, alloc::alloc::Global> :: Node Slice { pointer=buf.inner.ptr.pointer.pointer, length=len, capacity=buf.inner.cap.__0, element=core::task::wake::Waker }
@@ -170,6 +172,10 @@ core::cell::UnsafeCell<tokio::runtime::task::core::Stage<tokio::runtime::blockin
 core::cell::UnsafeCell<tokio::runtime::task::core::Stage<tokio::runtime::blocking::task::BlockingTask<blocking_pool::main::{async_block#0}::{closure_env#2}>>> :: Node Alias { value, follow }
 core::cell::UnsafeCell<tokio::runtime::task::core::Stage<tokio::runtime::blocking::task::BlockingTask<tokio::runtime::scheduler::multi_thread::worker::{impl#0}::launch::{closure_env#0}>>> :: Node Alias { value, follow }
 core::cell::UnsafeCell<tokio::runtime::task::core::Stage<unordered::driver::{async_fn_env#0}>> :: Node Alias { value, follow }
+core::cell::UnsafeCell<tokio::runtime::task::core::Stage<watch_stream::direct::{async_fn_env#0}>> :: Node Alias { value, follow }
+core::cell::UnsafeCell<tokio::runtime::task::core::Stage<watch_stream::fresh::{async_fn_env#0}>> :: Node Alias { value, follow }
+core::cell::UnsafeCell<tokio::runtime::task::core::Stage<watch_stream::mapper::{async_fn_env#0}>> :: Node Alias { value, follow }
+core::cell::UnsafeCell<tokio::runtime::task::core::Stage<watch_stream::resolver::{async_fn_env#0}>> :: Node Alias { value, follow }
 core::cell::UnsafeCell<tokio::runtime::task::list::OwnedTasksInner<alloc::sync::Arc<tokio::task::local::Shared, alloc::alloc::Global>>> :: Node Alias { value, follow }
 core::cell::UnsafeCell<tokio::runtime::time::InnerState> :: Node Alias { value, follow }
 core::cell::UnsafeCell<tokio::sync::batch_semaphore::Waitlist> :: Node Alias { value, follow }
@@ -378,6 +384,10 @@ tokio::loom::std::unsafe_cell::UnsafeCell<tokio::runtime::task::core::Stage<toki
 tokio::loom::std::unsafe_cell::UnsafeCell<tokio::runtime::task::core::Stage<tokio::runtime::blocking::task::BlockingTask<blocking_pool::main::{async_block#0}::{closure_env#2}>>> :: Node Alias { __0, follow }
 tokio::loom::std::unsafe_cell::UnsafeCell<tokio::runtime::task::core::Stage<tokio::runtime::blocking::task::BlockingTask<tokio::runtime::scheduler::multi_thread::worker::{impl#0}::launch::{closure_env#0}>>> :: Node Alias { __0, follow }
 tokio::loom::std::unsafe_cell::UnsafeCell<tokio::runtime::task::core::Stage<unordered::driver::{async_fn_env#0}>> :: Node Alias { __0, follow }
+tokio::loom::std::unsafe_cell::UnsafeCell<tokio::runtime::task::core::Stage<watch_stream::direct::{async_fn_env#0}>> :: Node Alias { __0, follow }
+tokio::loom::std::unsafe_cell::UnsafeCell<tokio::runtime::task::core::Stage<watch_stream::fresh::{async_fn_env#0}>> :: Node Alias { __0, follow }
+tokio::loom::std::unsafe_cell::UnsafeCell<tokio::runtime::task::core::Stage<watch_stream::mapper::{async_fn_env#0}>> :: Node Alias { __0, follow }
+tokio::loom::std::unsafe_cell::UnsafeCell<tokio::runtime::task::core::Stage<watch_stream::resolver::{async_fn_env#0}>> :: Node Alias { __0, follow }
 tokio::loom::std::unsafe_cell::UnsafeCell<tokio::runtime::task::list::OwnedTasksInner<alloc::sync::Arc<tokio::task::local::Shared, alloc::alloc::Global>>> :: Node Alias { __0, follow }
 tokio::loom::std::unsafe_cell::UnsafeCell<tokio::sync::mpsc::chan::RxFields<()>> :: Node Alias { __0, follow }
 tokio::loom::std::unsafe_cell::UnsafeCell<tokio::sync::mpsc::chan::RxFields<u32>> :: Node Alias { __0, follow }

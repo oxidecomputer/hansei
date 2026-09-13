@@ -1,0 +1,46 @@
+---
+source: hansei/src/offline.rs
+description: "`census` over linux-floor/watch-stream"
+---
+Threads: 3 lwps, 3 in runtime 0 @ 0xADDR
+
+COUNT  RT  ROLE             STATE            LWPS
+    1  0   worker           in driver        266872
+    1  0   worker           parked           266871
+    1  0   entered runtime  block_on caller  266869
+    0  0   blocking pool    0 idle, 0 busy   —
+[3 lwps]
+
+Tasks: 4 owned by runtime 0 @ 0xADDR
+
+COUNT  STATE
+    4  idle
+[4 tasks]
+
+COUNT  TYPE / WAITING ON
+    1  async fn watch_stream::direct
+       └─ 1  watch
+    1  async fn watch_stream::fresh
+       └─ 1  oneshot rx
+    1  async fn watch_stream::mapper
+       └─ 1  one of several
+    1  async fn watch_stream::resolver
+       └─ 1  one of several
+[4 types]
+
+Futures: 9 in flight, on 16 await-chain frames, up to 5 deep
+
+COUNT  HELD IN
+    4  task (its own await chain)
+    5  frame (off any await chain)
+    0  set (0 FuturesUnordered)
+[9 futures]
+
+COUNT  TYPE / WAITING ON
+    2  future futures_util::stream::stream::next::Next<tokio_stream::wrappers::watch::WatchStream<u32>>
+       └─ 2  unknown
+    2  future tokio::sync::oneshot::Receiver<u32>
+       └─ 2  oneshot rx
+    1  future futures_util::stream::stream::next::Next<tokio_stream::stream_map::StreamMap<&str, tokio_stream::wrappers::watch::WatchStream<u32>>>
+       └─ 1  unknown
+[3 types]

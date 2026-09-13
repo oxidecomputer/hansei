@@ -3,5 +3,5 @@ source: hansei/src/offline.rs
 description: "`threads --group role` over linux-floor/local-set-timer"
 ---
 COUNT  ROLE             LWPS
-    1  block_on caller  3958582
+    1  block_on caller  264614
 [1 group]

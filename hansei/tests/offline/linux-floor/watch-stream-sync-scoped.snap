@@ -1,0 +1,6 @@
+---
+source: hansei/src/offline.rs
+description: "`sync` over linux-floor/watch-stream"
+---
+oneshot 0xADDR: nothing sent, sender alive
+    rx: task 3

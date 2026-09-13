@@ -1,0 +1,5 @@
+---
+source: hansei/src/offline.rs
+description: "`futures --with kind set` over illumos/watch-stream"
+---
+[0 futures]

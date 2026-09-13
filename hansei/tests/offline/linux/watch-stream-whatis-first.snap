@@ -1,0 +1,8 @@
+---
+source: hansei/src/offline.rs
+description: "`whatis 0x5625baaffe00` over linux/watch-stream"
+---
+Task 3: async fn watch_stream::resolver
+    At: offset 0xADDR in the task's allocation (header 0xADDR)
+    State: idle
+    Spawned at: src/bin/watch-stream.rs:109:25

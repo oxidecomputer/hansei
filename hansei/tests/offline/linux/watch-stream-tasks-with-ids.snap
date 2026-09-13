@@ -1,0 +1,8 @@
+---
+source: hansei/src/offline.rs
+description: "`tasks --with id 3,6` over linux/watch-stream"
+---
+ID  STATE  FUT  AWAITING AT                 WAITING ON                                              TYPE
+3   idle     2  src/bin/watch-stream.rs:39  oneshot rx 0xADDR (nothing sent, sender alive)  async fn watch_stream::resolver
+6   idle     0  src/bin/watch-stream.rs:97  watch 0xADDR (version 0, 1 sender, 1 receiver)  async fn watch_stream::direct
+[2 tasks]

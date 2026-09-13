@@ -7,8 +7,8 @@ tokio info: <tokio info>
 symbols resolved: 9/9
 allocator evidence: unavailable
 waker slots: 1 copy of tokio's WAKER_VTABLE, 0 set vtables; 4.2 MiB swept in 45 chunks
-    hits: 9 task-pattern, 0 set-pattern; 7 admitted; 2 unlisted headers
-    by class: 3 task extent, 2 lwp stack, 4 anon
+    hits: 12 task-pattern, 0 set-pattern; 7 admitted; 2 unlisted headers
+    by class: 3 task extent, 5 lwp stack, 4 anon
     attributed: 1 by a registry, 5 by owner type, 1 by holding type, 0 unknown; 0 stale
 process: not recorded by this target
 signal: none recorded

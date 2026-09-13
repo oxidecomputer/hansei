@@ -3,5 +3,5 @@ source: hansei/src/offline.rs
 description: "`threads --without role ^worker --group has-task` over linux/armed-select"
 ---
 COUNT  HAS TASK  LWPS
-    1  no        3954013
+    1  no        258412
 [1 group]

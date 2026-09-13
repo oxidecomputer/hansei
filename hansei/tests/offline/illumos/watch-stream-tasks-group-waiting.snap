@@ -1,0 +1,8 @@
+---
+source: hansei/src/offline.rs
+description: "`tasks --group waiting-on` over illumos/watch-stream"
+---
+COUNT  WAITING ON  TASKS
+    3  oneshot rx  3, 4, 5
+    1  watch       6
+[2 groups]

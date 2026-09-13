@@ -1,0 +1,39 @@
+---
+source: hansei/src/offline.rs
+description: "`futures --exec trace -l 1` over linux-floor/watch-stream"
+---
+future 0xADDR
+future 0xADDR: future tokio::sync::oneshot::Receiver<u32>
+Held by: task 3 — async fn watch_stream::resolver (frame 1, `once`)
+
+#0  future        tokio::sync::oneshot::Receiver<u32>
+      waiting on oneshot rx 0xADDR (nothing sent, sender alive)
+
+future 0xADDR
+future 0xADDR: future futures_util::stream::stream::next::Next<tokio_stream::wrappers::watch::WatchStream<u32>>
+Held by: task 3 — async fn watch_stream::resolver (frame 1, `next`)
+
+#0  future        futures_util::stream::stream::next::Next<tokio_stream::wrappers::watch::WatchStream<u32>>
+      (<no_state>, 1 local)
+
+future 0xADDR
+future 0xADDR: future tokio::sync::oneshot::Receiver<u32>
+Held by: task 4 — async fn watch_stream::mapper (frame 1, `once`)
+
+#0  future        tokio::sync::oneshot::Receiver<u32>
+      waiting on oneshot rx 0xADDR (nothing sent, sender alive)
+
+future 0xADDR
+future 0xADDR: future futures_util::stream::stream::next::Next<tokio_stream::stream_map::StreamMap<&str, tokio_stream::wrappers::watch::WatchStream<u32>>>
+Held by: task 4 — async fn watch_stream::mapper (frame 1, `next`)
+
+#0  future        futures_util::stream::stream::next::Next<tokio_stream::stream_map::StreamMap<&str, tokio_stream::wrappers::watch::WatchStream<u32>>>
+      (<no_state>, 1 local)
+
+future 0xADDR
+future 0xADDR: future futures_util::stream::stream::next::Next<tokio_stream::wrappers::watch::WatchStream<u32>>
+Held by: task 5 — async fn watch_stream::fresh (frame 1, `next`)
+
+#0  future        futures_util::stream::stream::next::Next<tokio_stream::wrappers::watch::WatchStream<u32>>
+      (<no_state>, 1 local)
+[Executed against 5 futures, 0 failed]

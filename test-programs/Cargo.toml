@@ -25,6 +25,10 @@ ct-tokio = ["tokio/rt", "tokio/time", "tokio/sync", "tokio/net"]
 futures = "0.3.32"
 oxide-tokio-rt = { version = "0.1.2", optional = true }
 tokio = { version = ">=1.47", default-features = false }
+# `watch-stream` parks on tokio-stream's `WatchStream` and `StreamMap`;
+# the box behind a `WatchStream` is tokio-util's `ReusableBoxFuture`.
+tokio-stream = { version = "0.1.14", features = ["sync"] }
+tokio-util = "0.7.11"
 tracing = "=0.1.40"
 
 # For the `prctl` that lets a test harness core a fixture by pid; see

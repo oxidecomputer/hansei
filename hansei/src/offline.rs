@@ -364,6 +364,7 @@ offline_commands! {
     test_blocking_pool_commands: "blocking-pool",
     test_delegation_cases_commands: "delegation-cases",
     test_armed_select_commands: "armed-select",
+    test_watch_stream_commands: "watch-stream",
 }
 
 /// The macro above and [`testkit::PROGRAMS`] name the same population:
@@ -390,6 +391,7 @@ fn test_every_program_has_a_command_golden() {
         "blocking-pool",
         "delegation-cases",
         "armed-select",
+        "watch-stream",
     ];
     assert_eq!(COVERED, PROGRAMS);
 }

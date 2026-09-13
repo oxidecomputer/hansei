@@ -885,20 +885,21 @@ fn assert_adapter_programs(program: &str, bundle: &Bundle) {
 
 /// The fixtures that expand a `tokio::select!`, and so carry the
 /// select rule: each program's one stop and its branch count.
-const SELECT_PROGRAMS: [&str; 4] = [
+const SELECT_PROGRAMS: [&str; 5] = [
     "armed-select",
     "channels",
     "futurelock",
     "select-combinator",
+    "watch-stream",
 ];
 
 /// The `select!` binding of the one `PollFn` `key` names: the tuple
 /// has `branches` members in `__i` order, the mask is a `u8` (no
 /// fixture has more than eight branches), both captures are reached
 /// through the closure's references, and the rule is tokio's select
-/// kind under a tokio delegation origin. Every other `PollFn` in the
-/// bundle — the mpsc receiver's, the scheduler's `block_on` — carries
-/// none.
+/// kind under a tokio delegation origin. Every `PollFn` from outside
+/// the fixture crate — the mpsc receiver's, the scheduler's `block_on`
+/// — carries none.
 fn assert_select(program: &str, bundle: &Bundle, key: &str, branches: usize) {
     use hansei_bundle::{MemberRef, SemanticOrigin, SemanticRuleKind, Step, TypeDef};
     let s = |id| bundle.strings.get(id).unwrap();
@@ -968,8 +969,14 @@ fn assert_select(program: &str, bundle: &Bundle, key: &str, branches: usize) {
         seen += 1;
     }
     assert_eq!(seen, 1, "{program}: one PollFn named {key}");
+    // A fixture with two selects asserts each by its own call, so its
+    // own other `PollFn`s are not this call's negatives.
+    let own = format!(
+        "core::future::poll_fn::PollFn<{}::",
+        program.replace('-', "_")
+    );
     for (name, _, record) in types_named(bundle, "core::future::poll_fn::PollFn<") {
-        if !name.starts_with(key) {
+        if !name.starts_with(key) && !name.starts_with(&own) {
             assert!(
                 record.is_none_or(|r| r.select.is_none()),
                 "{program}: {name} acquired a select binding"
@@ -2269,6 +2276,23 @@ fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
             "data.notify_rx",
         );
     }
+    if program == "watch-stream" {
+        // Two selects, each over a oneshot and a stream's `next()`,
+        // both pinned locals the select borrows: the resolver's over
+        // a `WatchStream`, the mapper's over a `StreamMap` of them.
+        assert_select(
+            program,
+            bundle,
+            "core::future::poll_fn::PollFn<watch_stream::resolver::{async_fn#0}::{closure_env#",
+            2,
+        );
+        assert_select(
+            program,
+            bundle,
+            "core::future::poll_fn::PollFn<watch_stream::mapper::{async_fn#0}::{closure_env#",
+            2,
+        );
+    }
     if program == "local-set-io" {
         // The io rows root at the scheduler handles too, so the same
         // gap applies: the summary says they bound, not where. Two
@@ -2953,6 +2977,11 @@ fn test_golden_channels() {
 #[test]
 fn test_golden_armed_select() {
     run_golden("armed-select");
+}
+
+#[test]
+fn test_golden_watch_stream() {
+    run_golden("watch-stream");
 }
 
 #[test]

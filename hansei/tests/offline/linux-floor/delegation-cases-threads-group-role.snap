@@ -3,6 +3,6 @@ source: hansei/src/offline.rs
 description: "`threads --group role` over linux-floor/delegation-cases"
 ---
 COUNT  ROLE             LWPS
-    1  block_on caller  3960108
-    1  entered runtime  3960106
+    1  block_on caller  266252
+    1  entered runtime  266250
 [2 groups]
