@@ -12,7 +12,6 @@ use crate::{Session, TraceOpts, TraceTarget, output};
 use anyhow::{Context as _, Result};
 use hansei_bundle::names;
 use hansei_bundle::{BundleMember, BundleType, BundleTypeId, BundleView, SymbolLookup};
-use hansei_runtime::tokio::assess::continuation_reason;
 use hansei_runtime::tokio::chain::{FutureInspection, InspectionMode};
 use hansei_runtime::tokio::graph::TaskWait;
 use hansei_runtime::tokio::observe::ReadContext;
@@ -145,7 +144,7 @@ fn exec_trace_task<T: proc::Target>(
                 print_native_continuation(session, task, task_id, chain, opts, out)?;
                 writeln!(out)?;
             }
-            let wait = assessed_header(session, index);
+            let wait = assessed_wait(session, index);
             print_trace_chain(session, chain, index, None, wait, opts, out)?;
         }
         bundle::TaskStage::Finished(result) => {
@@ -275,7 +274,7 @@ fn exec_trace_future<T: proc::Target>(
 
     let (inspection, wait) = session.read_with(|read| {
         let inspection = ctx.inspect_future(value, InspectionMode::Held, read);
-        let wait = observed_header(ctx, &inspection, list, read);
+        let wait = observed_wait(ctx, &inspection, list, read);
         (inspection, wait)
     });
     writeln!(out)?;
@@ -379,10 +378,10 @@ pub(crate) fn future_at(
     )
 }
 
-/// Render an await chain the way `trace` prints one: the `Waiting on:`
-/// summary line, then the flat frame list. Values shown under --verbose
-/// may hold raw pointers into task allocations (wakers, JoinHandles);
-/// name those with the task id so the reader knows what to trace next.
+/// Render an await chain the way `trace` prints one: the flat frame
+/// list, most recent first. Values shown under --verbose may hold raw
+/// pointers into task allocations (wakers, JoinHandles); name those
+/// with the task id so the reader knows what to trace next.
 /// The traced task itself is named like any other: a wake-queue entry
 /// resolving back to it is a finding (the futurelock shape), not noise.
 /// A pointer into a sub-executor's child node instead names the task
@@ -399,7 +398,7 @@ fn print_trace_chain<'b, T: proc::Target>(
     chain: &bundle::AwaitChain<'b>,
     owner: usize,
     origin: Option<census::Via>,
-    wait: Option<WaitHeader>,
+    wait: Option<String>,
     opts: &TraceOpts<'_>,
     out: &mut dyn io::Write,
 ) -> Result<()> {
@@ -423,7 +422,7 @@ fn print_trace_chain<'b, T: proc::Target>(
         &session.ctx,
         chain,
         opts,
-        wait.as_ref(),
+        wait.as_deref(),
         &holds,
         &session.impl_fold,
         annotate,
@@ -431,65 +430,35 @@ fn print_trace_chain<'b, T: proc::Target>(
     )
 }
 
-/// What a trace's header says the chain waits on: the `Waiting on:`
-/// line, the notes under it, and whether the line is repeated as the
-/// leaf frame's own detail — which it is for a resource the chain
-/// verifiably or observably ends in, and not for an assessment that
-/// names no resource.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct WaitHeader {
-    pub(crate) line: String,
-    pub(crate) notes: Vec<String>,
-    pub(crate) at_leaf: bool,
-}
-
-/// A task's header, from its assessment: the cell every listing
-/// spells, with the assessor's notes where the cell is `ready` or
-/// `unknown` — except that an unknown continuation is already
-/// explained where the chain ends, and says nothing twice.
-pub(crate) fn assessed_header<T: proc::Target>(
+/// What a task's chain verifiably ends in, from its assessment: the
+/// wait cell every listing prints, which the leaf frame's detail line
+/// carries in place of its live state. `None` for an assessment that
+/// names no resource — the leaf then describes itself, and the
+/// assessment and its notes are the task block's to print.
+pub(crate) fn assessed_wait<T: proc::Target>(
     session: &Session<'_, T>,
     index: usize,
-) -> Option<WaitHeader> {
+) -> Option<String> {
     let wait: &TaskWait = &session.analysis().waits[index];
+    wait.verified()?;
     let stops = crate::tasks::StopNames::of(session);
-    let line = crate::tasks::assessment_cell(wait, &stops);
-    // The same lines the task block prints under its wait: the branches
-    // at the stop and the slots holding the task's waker.
-    let slots: Vec<_> = session
-        .attribution()
-        .of_task(session.tasks.tasks[index].addr.0)
-        .collect();
-    let view = session.ctx.view;
-    let notes =
-        crate::tasks::wait_detail(wait, &stops, &slots, session.registries.stopped, &|ty| {
-            view.ty(ty).map(|t| t.size())
-        });
-    Some(WaitHeader {
-        line,
-        notes,
-        at_leaf: wait.verified().is_some(),
-    })
+    Some(crate::tasks::assessment_cell(wait, &stops))
 }
 
-/// A held future's header: the resource its chain ends in, described
-/// under no protocol — what it is parked on, with nothing said about
-/// whether anything polls it. `None` where the chain ends in no
-/// resource, or the resource did not read.
-pub(crate) fn observed_header<'b, T: proc::Target>(
+/// What a held future's chain observably ends in: the resource,
+/// described under no protocol — what it is parked on, with nothing
+/// said about whether anything polls it. `None` where the chain ends
+/// in no resource, or the resource did not read.
+pub(crate) fn observed_wait<'b, T: proc::Target>(
     ctx: &bundle::Context<'b, T>,
     inspection: &FutureInspection<'b>,
     list: &bundle::TaskList,
     read: &ReadContext<'_>,
-) -> Option<WaitHeader> {
+) -> Option<String> {
     let observation = inspection.primitive.value.as_ref()?;
     let mut pass = hansei_runtime::tokio::assess::AssessmentPass::new();
     let target = ctx.observed_target(&mut pass, observation, &inspection.chain, list, read)?;
-    Some(WaitHeader {
-        line: target.to_string(),
-        notes: Vec::new(),
-        at_leaf: true,
-    })
+    Some(target.to_string())
 }
 
 /// How many census-found futures each frame of this chain holds beside
@@ -520,15 +489,14 @@ pub(crate) fn frame_holds(
     holds
 }
 
-/// Render an await chain flat, most recent first: a blank line, the
-/// decoded wait target as a `Waiting on:` summary when there is one,
-/// then one `#N` frame line per future — #0 the most recently polled,
-/// the root at the bottom — with a detail line under each saying what
-/// the target's memory says about that frame — its live state, or the
-/// wait target again on the leaf. Under `--verbose` each frame also
-/// lists its live locals and its other suspend points. A note about
-/// where the walk cut (an unresolved dyn, a bound) prints above the
-/// frames: it describes what lies deeper than the leaf.
+/// Render an await chain flat, most recent first: one `#N` frame line
+/// per future — #0 the most recently polled, the root at the bottom —
+/// with a detail line under each saying what the target's memory says
+/// about that frame — its live state, or the decoded wait target on
+/// the leaf. Under `--verbose` each frame also lists its live locals
+/// and its other suspend points. A note about where the walk cut (an
+/// unresolved dyn, a bound) prints above the frames: it describes what
+/// lies deeper than the leaf.
 ///
 /// Reading convention: frame N is the future stored in frame N+1's
 /// live state. The frame line ends with the type name, so a terminal
@@ -541,20 +509,12 @@ fn print_await_chain<'b, T: proc::Target>(
     ctx: &bundle::Context<'b, T>,
     chain: &bundle::AwaitChain<'b>,
     opts: &TraceOpts<'_>,
-    wait: Option<&WaitHeader>,
+    wait: Option<&str>,
     holds: &[usize],
     impls: &names::ImplFold,
     annotate: Option<&reify::AddrAnnotator<'_>>,
     out: &mut dyn io::Write,
 ) -> Result<()> {
-    if let Some(wait) = wait {
-        writeln!(out, "Waiting on: {}", opts.theme.bold(&wait.line))?;
-        for note in &wait.notes {
-            writeln!(out, "  {note}")?;
-        }
-        writeln!(out)?;
-    }
-
     print_chain_end(chain, impls, out)?;
     let len = chain.frames.len();
     let shown = opts.limit.unwrap_or(len).min(len);
@@ -591,7 +551,7 @@ pub(crate) fn print_frame<'b, T: proc::Target>(
     chain: &bundle::AwaitChain<'b>,
     i: usize,
     num_width: usize,
-    wait: Option<&WaitHeader>,
+    wait: Option<&str>,
     holds: &[usize],
     opts: &TraceOpts<'_>,
     impls: &names::ImplFold,
@@ -623,12 +583,8 @@ pub(crate) fn print_frame<'b, T: proc::Target>(
 
     let held = holds.get(i).copied().unwrap_or(0);
     match wait {
-        Some(wait) if Some(i) == last && wait.at_leaf => {
-            writeln!(
-                out,
-                "{DETAIL_INDENT}waiting on {}",
-                opts.theme.bold(&wait.line)
-            )?;
+        Some(wait) if Some(i) == last => {
+            writeln!(out, "{DETAIL_INDENT}waiting on {}", opts.theme.bold(wait))?;
         }
         _ => {
             if let Some(detail) = frame_detail(frame, held, &opts.theme) {
@@ -851,15 +807,17 @@ pub(crate) fn print_locals<'b, T: proc::Target>(
     Ok(locals.len())
 }
 
-/// Why the chain stopped, printed after the last frame — nothing for a
-/// chain that bottomed out in its leaf normally.
+/// Why the chain stopped, printed above the frames — nothing for a
+/// chain that bottomed out in its leaf normally, and nothing for one
+/// whose last frame's continuation is not established: the frame is
+/// listed with no detail, and `task` names the type it stopped at.
 fn print_chain_end(
     chain: &bundle::AwaitChain<'_>,
     impls: &names::ImplFold,
     out: &mut dyn io::Write,
 ) -> Result<()> {
     match &chain.end {
-        bundle::ChainEnd::Primitive => {}
+        bundle::ChainEnd::Primitive | bundle::ChainEnd::UnknownContinuation { .. } => {}
         bundle::ChainEnd::Unresumed => {
             writeln!(out, "the chain ends in a future that has never been polled")?;
         }
@@ -868,18 +826,6 @@ fn print_chain_end(
         }
         bundle::ChainEnd::Panicked => {
             writeln!(out, "the chain ends in a future that panicked")?;
-        }
-        bundle::ChainEnd::UnknownContinuation { reason, .. } => {
-            let last = chain
-                .frames
-                .last()
-                .map(|f| names::fold_type_name(f.future.ty.name(), impls))
-                .unwrap_or(std::borrow::Cow::Borrowed("the root"));
-            writeln!(
-                out,
-                "what {last} polls is not established ({}); the chain ends there",
-                continuation_reason(*reason)
-            )?;
         }
         bundle::ChainEnd::ActivePoll => {
             writeln!(
@@ -1606,20 +1552,31 @@ mod chain_end_tests {
         String::from_utf8(out).expect("rendered output is UTF-8")
     }
 
-    /// A leaf ended the chain normally: there is nothing to explain.
+    /// A leaf ended the chain normally, or the last frame's
+    /// continuation is not established: there is nothing to explain
+    /// above the frames — the unknown stop is the frame itself.
     #[test]
-    fn test_a_leaf_prints_nothing() {
+    fn test_a_leaf_and_an_unknown_continuation_print_nothing() {
+        use hansei_bundle::SemanticIssueKind;
+        use hansei_runtime::tokio::observe::ValueKey;
         assert_eq!(rendered(ChainEnd::Primitive), "");
+        let at = ValueKey {
+            addr: 0x40,
+            ty: hansei_bundle::BundleTypeId(0),
+        };
+        assert_eq!(
+            rendered(ChainEnd::UnknownContinuation {
+                at,
+                reason: SemanticIssueKind::NoRule
+            }),
+            ""
+        );
     }
 
     /// The explicit engine's ends say what they found: a terminal
-    /// coroutine state, a mid-poll root, or a continuation nothing
-    /// establishes — with the reason in words, and the frame it stopped
-    /// at where the chain has one.
+    /// coroutine state or a mid-poll root.
     #[test]
     fn test_the_engine_ends_say_why() {
-        use hansei_bundle::SemanticIssueKind;
-        use hansei_runtime::tokio::observe::ValueKey;
         assert_eq!(
             rendered(ChainEnd::Unresumed),
             "the chain ends in a future that has never been polled\n"
@@ -1636,45 +1593,6 @@ mod chain_end_tests {
             rendered(ChainEnd::ActivePoll),
             "the task is mid-poll: its saved state below the root is not read as a chain\n"
         );
-        let at = ValueKey {
-            addr: 0x40,
-            ty: hansei_bundle::BundleTypeId(0),
-        };
-        for (reason, words) in [
-            (
-                SemanticIssueKind::NoRule,
-                "no reviewed rule covers its implementation",
-            ),
-            (
-                SemanticIssueKind::UnsupportedOrigin,
-                "origin is not reviewed",
-            ),
-            (
-                SemanticIssueKind::MissingLayout,
-                "layout is not in the tokio info",
-            ),
-            (SemanticIssueKind::AmbiguousLayout, "layout is ambiguous"),
-            (
-                SemanticIssueKind::UnsupportedState,
-                "state is one no rule covers",
-            ),
-            (
-                SemanticIssueKind::MultipleChildren,
-                "polls more than one future",
-            ),
-            (
-                SemanticIssueKind::PossiblyUninitialized,
-                "may not be initialized",
-            ),
-        ] {
-            let out = rendered(ChainEnd::UnknownContinuation { at, reason });
-            assert!(
-                out.starts_with("what the root polls is not established (")
-                    && out.contains(words)
-                    && out.ends_with("); the chain ends there\n"),
-                "{reason:?}: {out}"
-            );
-        }
     }
 
     /// The dyn continuations name the pointee — display-folded like
@@ -2344,7 +2262,7 @@ mod variable_format_tests {
 /// extracted bundle joined against a real captured snapshot.
 #[cfg(test)]
 mod future_trace_tests {
-    use super::{FutureAt, TraceOpts, frame_holds, future_at, observed_header, print_await_chain};
+    use super::{FutureAt, TraceOpts, frame_holds, future_at, observed_wait, print_await_chain};
     use crate::tasks::{
         Finds, TaskView, census_tree, future_name, print_task_children, print_task_view,
     };
@@ -2614,7 +2532,7 @@ mod future_trace_tests {
                 Some(census::Via::Held(index)),
                 chain.frames.len(),
             );
-            let wait = observed_header(ctx, &inspection, list, &read);
+            let wait = observed_wait(ctx, &inspection, list, &read);
 
             let mut out = Vec::new();
             let opts = TraceOpts {
@@ -2635,7 +2553,7 @@ mod future_trace_tests {
                 ctx,
                 chain,
                 &opts,
-                wait.as_ref(),
+                wait.as_deref(),
                 &holds,
                 &hansei_bundle::names::ImplFold::default(),
                 None,
@@ -2999,7 +2917,7 @@ mod future_trace_tests {
 /// while it is being changed.
 #[cfg(test)]
 mod trace_render_tests {
-    use super::{TraceOpts, frame_holds, observed_header, print_await_chain};
+    use super::{TraceOpts, frame_holds, observed_wait, print_await_chain};
     use crate::{RenderOpts, output};
     use hansei_runtime::testkit;
     use hansei_runtime::tokio::bundle::TaskStage;
@@ -3091,7 +3009,7 @@ mod trace_render_tests {
         let chain = &inspection.chain;
         let census = census::census(ctx, &list);
         let holds = frame_holds(&census, index, None, chain.frames.len());
-        let wait = observed_header(ctx, &inspection, &list, &read);
+        let wait = observed_wait(ctx, &inspection, &list, &read);
         let mut out = Vec::new();
         let opts = TraceOpts {
             verbose,
@@ -3111,7 +3029,7 @@ mod trace_render_tests {
             ctx,
             chain,
             &opts,
-            wait.as_ref(),
+            wait.as_deref(),
             &holds,
             // The fixture bundle's own substitutions, like a session's:
             // the tokio frames of these chains print impl-folded.
@@ -3158,7 +3076,7 @@ mod trace_render_tests {
     ///
     /// The hand-written wrappers are no reviewed implementation, so the
     /// chain steps through them only under the test bindings; the
-    /// production context ends at the first of them, and says so.
+    /// production context ends at the first of them.
     #[test]
     fn test_wrapper_frames_read_by_position() {
         assert_eq!(
@@ -3167,9 +3085,7 @@ mod trace_render_tests {
                 "walk_shapes::chained::{async_fn_env#0}",
                 false
             ),
-            "what walk_shapes::WrapS<walk_shapes::WrapE<walk_shapes::deep>> polls is not \
-             established (no reviewed rule covers its implementation); the chain ends there
-#0  future        walk_shapes::WrapS<walk_shapes::WrapE<walk_shapes::deep>>
+            "#0  future        walk_shapes::WrapS<walk_shapes::WrapE<walk_shapes::deep>>
       (<no_state>, 2 locals; holds 1 pending future)
 #1  async fn      walk_shapes::chained
       awaiting at src/bin/walk-shapes.rs:116 (Suspend0, 1 local; holds 1 pending future)
@@ -3196,9 +3112,7 @@ mod trace_render_tests {
                 None,
                 None,
             ),
-            "Waiting on: notify 0xADDR (waiting)
-
-#0  future        tokio::sync::notify::Notified
+            "#0  future        tokio::sync::notify::Notified
       waiting on notify 0xADDR (waiting)
 #1  async fn      walk_shapes::deep
       awaiting at src/bin/walk-shapes.rs:101 (Suspend0, 1 local)
@@ -3223,9 +3137,7 @@ mod trace_render_tests {
                 "simple_await::work::{async_fn_env#0}",
                 false
             ),
-            "Waiting on: oneshot rx 0xADDR (nothing sent, sender alive)
-
-#0  future        tokio::sync::oneshot::Receiver<u32>
+            "#0  future        tokio::sync::oneshot::Receiver<u32>
       waiting on oneshot rx 0xADDR (nothing sent, sender alive)
 #1  async fn      simple_await::work
       awaiting at src/bin/simple-await.rs:47 (Suspend1, 13 locals)
@@ -3234,13 +3146,12 @@ mod trace_render_tests {
     }
 
     /// The whole flat layout on a deep chain: the decoded wait target
-    /// leads as the `Waiting on:` summary and lands again on the leaf
-    /// frame — #0, printed first — every frame keeps the same two-line
-    /// shape at the same indent, and the frame holding a future the
-    /// chain does not run through — the futurelock tell — carries the
-    /// tally on its detail line.
+    /// is the leaf frame's detail — #0, printed first — every frame
+    /// keeps the same two-line shape at the same indent, and the frame
+    /// holding a future the chain does not run through — the
+    /// futurelock tell — carries the tally on its detail line.
     #[test]
-    fn test_the_wait_target_leads_and_the_leaf_repeats_it() {
+    fn test_the_leaf_frame_carries_the_wait_target() {
         let rendered = trace(
             "futurelock",
             "futurelock::main::{async_block#0}::{async_block_env#0}",
@@ -3248,9 +3159,7 @@ mod trace_render_tests {
         );
         assert_eq!(
             rendered,
-            "Waiting on: a tokio::sync::Mutex (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 5
-
-#0  future        tokio::sync::batch_semaphore::Acquire
+            "#0  future        tokio::sync::batch_semaphore::Acquire
       waiting on a tokio::sync::Mutex (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 5
 #1  async fn      tokio::sync::mutex::Mutex::acquire<()>
       awaiting at tokio-1.52.4/src/sync/mutex.rs:658 (Suspend1, 0 locals)
@@ -3282,9 +3191,7 @@ mod trace_render_tests {
         );
         assert_eq!(
             rendered,
-            "Waiting on: a tokio::sync::Mutex (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 5
-
-#0  future        tokio::sync::batch_semaphore::Acquire
+            "#0  future        tokio::sync::batch_semaphore::Acquire
       waiting on a tokio::sync::Mutex (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 5
 #1  async fn      tokio::sync::mutex::Mutex::acquire<()>
       awaiting at tokio-1.52.4/src/sync/mutex.rs:658 (Suspend1, 0 locals)
@@ -3301,9 +3208,7 @@ mod trace_render_tests {
     fn test_dyn_frames_keep_their_marker() {
         assert_eq!(
             trace("dyn-future", "dyn_future::driver::{async_fn_env#0}", false),
-            "Waiting on: oneshot rx 0xADDR (nothing sent, sender alive)
-
-#0  future        tokio::sync::oneshot::Receiver<u32>
+            "#0  future        tokio::sync::oneshot::Receiver<u32>
       waiting on oneshot rx 0xADDR (nothing sent, sender alive)
 #1  async fn      dyn_future::boxed_leaf [dyn]
       awaiting at src/bin/dyn-future.rs:16 (Suspend0, 0 locals)
@@ -3331,9 +3236,7 @@ mod trace_render_tests {
                 None,
                 Some(40),
             ),
-            "Waiting on: oneshot rx 0xADDR (nothing sent, sender alive)
-
-#0  future        tokio::sync::oneshot:…
+            "#0  future        tokio::sync::oneshot:…
       waiting on oneshot rx 0xADDR (nothing sent, sender alive)
 #1  async fn      dyn_future::box… [dyn]
       awaiting at src/bin/dyn-future.rs:16 (Suspend0, 0 locals)
@@ -3377,7 +3280,7 @@ mod trace_render_tests {
         let lifecycle = joiner.state.lifecycle();
         let inspection = ctx.inspect_future(root, InspectionMode::Task { lifecycle }, &read);
         let chain = &inspection.chain;
-        let wait = observed_header(&ctx, &inspection, &list, &read);
+        let wait = observed_wait(&ctx, &inspection, &list, &read);
         let mut out = Vec::new();
         let opts = TraceOpts {
             verbose: true,
@@ -3397,7 +3300,7 @@ mod trace_render_tests {
             &ctx,
             chain,
             &opts,
-            wait.as_ref(),
+            wait.as_deref(),
             &[],
             &hansei_bundle::names::ImplFold::default(),
             Some(&annotate),
@@ -3440,7 +3343,7 @@ mod trace_render_tests {
     }
 
     /// A terminal theme styles without saying anything new: the wait
-    /// target is bold in both its places, a frame's type name carries
+    /// target is bold on the leaf, a frame's type name carries
     /// the name hue, a detail line's source location the location hue —
     /// and the plain theme, which every non-terminal sink gets, emits
     /// not one escape byte.
@@ -3457,10 +3360,6 @@ mod trace_render_tests {
         );
         let target = "a tokio::sync::Mutex (semaphore 0xADDR): \
                       1 permit requested, 0 available; wake queue: task 5";
-        assert!(
-            styled.contains(&format!("Waiting on: \x1b[1m{target}\x1b[0m\n")),
-            "{styled}"
-        );
         assert!(
             styled.contains(&format!("      waiting on \x1b[1m{target}\x1b[0m\n")),
             "{styled}"

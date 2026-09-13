@@ -2,12 +2,6 @@
 source: hansei/src/offline.rs
 description: "`trace 6 -n` over illumos/channels"
 ---
-Waiting on: a tokio::sync::mpsc bounded channel (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 6
-  branch 0 (borrowed): async fn tokio::sync::mpsc::bounded::Sender::send at 0xADDR — a tokio::sync::mpsc bounded channel (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 6; armed: slot 0xADDR: waker in tokio::sync::batch_semaphore::Waiter.waker, in the future at 0xADDR node → waker
-  branch 1: tokio::time::sleep::Sleep: disabled
-  branch 2: async block channels::send_waiter::{async_fn#0}: disabled
-
-what core::future::poll_fn::PollFn<channels::send_waiter::{async_fn#0}::{closure_env#1}> polls is not established (no reviewed rule covers its implementation); the chain ends there
 #0  future        core::future::poll_fn::PollFn<channels::send_waiter::{async_fn#0}::{closure_env#1}>
       constructed at tokio-1.52.4/src/macros/select.rs:659 (<no_state>, 1 local)
 #1  async fn      channels::send_waiter

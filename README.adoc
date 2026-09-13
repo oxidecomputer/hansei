@@ -421,8 +421,6 @@ inner config:
 ----
 hansei> tasks --with type dispatcher --exec trace
 task 5
-Waiting on: a tokio::sync::Mutex (semaphore 0x55b3521b0cf0): 1 permit requested, 0 available; wake queue: task 5
-
 #0  future        tokio::sync::batch_semaphore::Acquire
       waiting on a tokio::sync::Mutex (semaphore 0x55b3521b0cf0): 1 permit requested, 0 available; wake queue: task 5
 #1  async fn      tokio::sync::mutex::Mutex::acquire<hansei_example::Config>

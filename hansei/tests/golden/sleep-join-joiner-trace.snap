@@ -2,9 +2,6 @@
 source: hansei/tests/acceptance.rs
 expression: actual
 ---
-Waiting on: task #sleeper
-  join task #sleeper: waker in its trailer
-
 #0  future        tokio::runtime::task::join::JoinHandle<u32>
       waiting on task #sleeper
 #1  async fn      sleep_join::joiner

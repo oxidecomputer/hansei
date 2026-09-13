@@ -3,37 +3,24 @@ source: hansei/src/offline.rs
 description: "`tasks --exec trace -n` over linux-floor/walk-shapes"
 ---
 task 1
-Waiting on: notify 0xADDR (waiting)
-  inner: walk_shapes::WrapE at 0xADDR — unknown; armed: notify 0xADDR: waker in Notified.waiter, in the future at 0xADDR inner → waiter → waker
-
-what walk_shapes::WrapS<walk_shapes::WrapE<walk_shapes::deep>> polls is not established (no reviewed rule covers its implementation); the chain ends there
 #0  future        walk_shapes::WrapS<walk_shapes::WrapE<walk_shapes::deep>>
       (<no_state>, 2 locals; holds 1 pending future)
 #1  async fn      walk_shapes::chained
       awaiting at src/bin/walk-shapes.rs:116 (Suspend0, 1 local; holds 1 pending future)
 
 task 2
-Waiting on: notify 0xADDR (waiting, 1 queued)
-  notify 0xADDR: waker in Notified.waiter, in #0 waiter → waker
-
 #0  future        tokio::sync::notify::Notified
       waiting on notify 0xADDR (waiting, 1 queued)
 #1  async fn      walk_shapes::holder
       awaiting at src/bin/walk-shapes.rs:138 (Suspend1, 3 locals)
 
 task 3
-Waiting on: notify 0xADDR (waiting, 1 queued)
-  notify 0xADDR: waker in Notified.waiter, in #0 waiter → waker
-
 #0  future        tokio::sync::notify::Notified
       waiting on notify 0xADDR (waiting, 1 queued)
 #1  async fn      walk_shapes::abandoner
       awaiting at src/bin/walk-shapes.rs:160 (Suspend1, 4 locals; holds 1 pending future)
 
 task 4
-Waiting on: a tokio::sync::Mutex (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: a non-task waiter, task 4
-  semaphore 0xADDR: waker in its wake-queue node 0xADDR
-
 #0  future        tokio::sync::batch_semaphore::Acquire
       waiting on a tokio::sync::Mutex (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: a non-task waiter, task 4
 #1  async fn      tokio::sync::mutex::Mutex::acquire<()>
@@ -46,9 +33,6 @@ Waiting on: a tokio::sync::Mutex (semaphore 0xADDR): 1 permit requested, 0 avail
       awaiting at src/bin/walk-shapes.rs:168 (Suspend1, 1 local)
 
 task 5
-Waiting on: a tokio::sync::Semaphore (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 5, task 6, task 10
-  semaphore 0xADDR: waker in its wake-queue node 0xADDR
-
 #0  future        tokio::sync::batch_semaphore::Acquire
       waiting on a tokio::sync::Semaphore (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 5, task 6, task 10
 #1  async fn      tokio::sync::semaphore::Semaphore::acquire
@@ -57,9 +41,6 @@ Waiting on: a tokio::sync::Semaphore (semaphore 0xADDR): 1 permit requested, 0 a
       awaiting at src/bin/walk-shapes.rs:174 (Suspend0, 1 local)
 
 task 6
-Waiting on: a tokio::sync::Semaphore (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 5, task 6, task 10
-  semaphore 0xADDR: waker in its wake-queue node 0xADDR
-
 #0  future        tokio::sync::batch_semaphore::Acquire
       waiting on a tokio::sync::Semaphore (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 5, task 6, task 10
 #1  async fn      tokio::sync::semaphore::Semaphore::acquire
@@ -68,34 +49,23 @@ Waiting on: a tokio::sync::Semaphore (semaphore 0xADDR): 1 permit requested, 0 a
       awaiting at src/bin/walk-shapes.rs:174 (Suspend0, 1 local)
 
 task 7
-Waiting on: notify 0xADDR (waiting, 1 queued)
-  notify 0xADDR: waker in Notified.waiter, in #0 waiter → waker
-
 #0  future        tokio::sync::notify::Notified
       waiting on notify 0xADDR (waiting, 1 queued)
 #1  async fn      walk_shapes::local_parker
       awaiting at src/bin/walk-shapes.rs:207 (Suspend0, 1 local)
 
 task 8
-Waiting on: task 7
-  join task 7: waker in its trailer
-
 #0  future        tokio::runtime::task::join::JoinHandle<u32>
       waiting on task 7
 #1  async fn      walk_shapes::joiner
       awaiting at src/bin/walk-shapes.rs:214 (Suspend0, 0 locals)
 
 task 9
-Waiting on: — (queued)
-
 the chain ends in a future that has never been polled
 #0  async fn      walk_shapes::side_parker
       state Unresumed
 
 task 10
-Waiting on: a tokio::sync::Semaphore (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 5, task 6, task 10
-  semaphore 0xADDR: waker in its wake-queue node 0xADDR
-
 #0  future        tokio::sync::batch_semaphore::Acquire
       waiting on a tokio::sync::Semaphore (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 5, task 6, task 10
 #1  async fn      tokio::sync::semaphore::Semaphore::acquire

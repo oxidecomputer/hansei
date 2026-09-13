@@ -3,47 +3,30 @@ source: hansei/src/offline.rs
 description: "`tasks --exec trace -n` over linux-floor/delegation-cases"
 ---
 task 1
-Waiting on: unknown at delegation_cases::Gated (holds 1 future)
-  child: delegation_cases::Probe at 0xADDR — unknown; held, not armed
-
-what delegation_cases::Gated<1> polls is not established (no reviewed rule covers its implementation); the chain ends there
 #0  future        delegation_cases::Gated<1>
       (<no_state>, 3 locals; holds 1 pending future)
 #1  future        Pin<Box<delegation_cases::Gated<1>>>
       (<no_state>, 1 local)
 
 task 2
-Waiting on: unknown at delegation_cases::Gated (holds 1 future)
-  child: delegation_cases::Probe at 0xADDR — unknown; held, not armed
-
-what delegation_cases::Gated<2> polls is not established (no reviewed rule covers its implementation); the chain ends there
 #0  future        delegation_cases::Gated<2>
       (<no_state>, 3 locals; holds 1 pending future)
 #1  future        Pin<Box<delegation_cases::Gated<2>>>
       (<no_state>, 1 local)
 
 task 3
-Waiting on: unknown at delegation_cases::Retained
-
-what delegation_cases::Retained polls is not established (no reviewed rule covers its implementation); the chain ends there
 #0  future        delegation_cases::Retained
       (<no_state>, 0 locals)
 #1  future        Pin<Box<delegation_cases::Retained>>
       (<no_state>, 1 local)
 
 task 4
-Waiting on: unknown at delegation_cases::RawHolder
-
-what delegation_cases::RawHolder polls is not established (no reviewed rule covers its implementation); the chain ends there
 #0  future        delegation_cases::RawHolder
       (<no_state>, 2 locals)
 #1  future        Pin<Box<delegation_cases::RawHolder>>
       (<no_state>, 1 local)
 
 task 5
-Waiting on: unknown at delegation_cases::Probe
-
-what delegation_cases::Probe<5> polls is not established (no reviewed rule covers its implementation); the chain ends there
 #0  future        delegation_cases::Probe<5>
       (<no_state>, 3 locals)
 #1  future        &mut delegation_cases::Probe<5>
@@ -52,9 +35,6 @@ what delegation_cases::Probe<5> polls is not established (no reviewed rule cover
       (<no_state>, 1 local)
 
 task 6
-Waiting on: unknown at delegation_cases::Probe
-
-what delegation_cases::Probe<6> polls is not established (no reviewed rule covers its implementation); the chain ends there
 #0  future        delegation_cases::Probe<6>
       (<no_state>, 3 locals)
 #1  future        Box<delegation_cases::Probe<6>>
@@ -63,9 +43,6 @@ what delegation_cases::Probe<6> polls is not established (no reviewed rule cover
       (<no_state>, 1 local)
 
 task 7
-Waiting on: unknown at delegation_cases::Probe
-
-what delegation_cases::Probe<7> polls is not established (no reviewed rule covers its implementation); the chain ends there
 #0  future        delegation_cases::Probe<7> [dyn]
       (<no_state>, 3 locals)
 #1  future        Pin<Box<(dyn Future<Output=()> + Send)>>
@@ -74,9 +51,6 @@ what delegation_cases::Probe<7> polls is not established (no reviewed rule cover
       (<no_state>, 1 local)
 
 task 8
-Waiting on: unknown at delegation_cases::Probe
-
-what delegation_cases::Probe<8> polls is not established (no reviewed rule covers its implementation); the chain ends there
 #0  future        delegation_cases::Probe<8>
       (<no_state>, 3 locals)
 #1  future        tracing::instrument::Instrumented<delegation_cases::Probe<8>>
@@ -85,29 +59,18 @@ what delegation_cases::Probe<8> polls is not established (no reviewed rule cover
       (<no_state>, 1 local)
 
 task 9
-Waiting on: unknown at delegation_cases::Holder (holds 1 future)
-  held: async block delegation_cases::main at 0xADDR — never polled; held, not armed
-
-what delegation_cases::Holder<delegation_cases::main> polls is not established (no reviewed rule covers its implementation); the chain ends there
 #0  future        delegation_cases::Holder<delegation_cases::main>
       (<no_state>, 2 locals; holds 1 pending future)
 #1  future        Pin<Box<delegation_cases::Holder<delegation_cases::main>>>
       (<no_state>, 1 local)
 
 task 10
-Waiting on: unknown at delegation_cases::Handle (holds 1 future)
-  handle: tokio::runtime::task::join::JoinHandle at 0xADDR — unknown (resource state unproven); held, not armed; the joined task holds no join waker: the handle's poll may not have reached it (a deferred wake can be pending)
-
-what delegation_cases::Handle polls is not established (no reviewed rule covers its implementation); the chain ends there
 #0  future        delegation_cases::Handle
       (<no_state>, 2 locals; holds 1 pending future)
 #1  future        Pin<Box<delegation_cases::Handle>>
       (<no_state>, 1 local)
 
 task 11
-Waiting on: unknown at delegation_cases::Leaf
-
-what delegation_cases::Leaf polls is not established (no reviewed rule covers its implementation); the chain ends there
 #0  future        delegation_cases::Leaf [dyn]
       (<no_state>, 3 locals)
 #1  future        Pin<Box<(dyn Future<Output=()> + Send + Sync)>>
@@ -120,9 +83,6 @@ what delegation_cases::Leaf polls is not established (no reviewed rule covers it
       (<no_state>, 1 local)
 
 task 12
-Waiting on: unknown at core::future::pending::Pending
-
-what core::future::pending::Pending<()> polls is not established (no reviewed rule covers its implementation); the chain ends there
 #0  future        core::future::pending::Pending<()>
       (<no_state>, 0 locals)
 #1  async block   delegation_cases::main::{async_block_env#2}

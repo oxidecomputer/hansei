@@ -3,9 +3,6 @@ source: hansei/src/offline.rs
 description: "`tasks --exec trace -n` over illumos/nested-await"
 ---
 task 3
-Waiting on: oneshot rx 0xADDR (nothing sent, sender alive)
-  oneshot rx 0xADDR: waker in Inner.rx_task (rx_task_set), reached from #0 inner → * → data → rx_task
-
 #0  future        tokio::sync::oneshot::Receiver<u32>
       waiting on oneshot rx 0xADDR (nothing sent, sender alive)
 #1  async fn      nested_await::leaf

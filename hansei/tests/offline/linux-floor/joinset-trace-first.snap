@@ -2,10 +2,6 @@
 source: hansei/src/offline.rs
 description: "`trace 3 -n` over linux-floor/joinset"
 ---
-Waiting on: slot 0xADDR in tokio::util::idle_notified_set::ListsInner
-  slot 0xADDR: waker in tokio::util::idle_notified_set::ListsInner.waker, reached from #2 set → inner → lists → * → data → data → waker
-
-what core::future::poll_fn::PollFn<tokio::task::join_set::JoinSet::join_next::{async_fn#0}::{closure_env#0}<u32>> polls is not established (no reviewed rule covers its implementation); the chain ends there
 #0  future        core::future::poll_fn::PollFn<tokio::task::join_set::JoinSet::join_next::{async_fn#0}::{closure_env#0}<u32>>
       constructed at tokio-1.47.5/src/task/join_set.rs:283 (<no_state>, 1 local)
 #1  async fn      tokio::task::join_set::JoinSet::join_next<u32>

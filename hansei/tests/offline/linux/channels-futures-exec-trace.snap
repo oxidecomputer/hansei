@@ -6,8 +6,6 @@ future 0xADDR
 future 0xADDR: async fn tokio::sync::mpsc::bounded::Sender::send<u32>
 Held by: task 6 — async fn channels::send_waiter (frame 1, `send`)
 
-Waiting on: a tokio::sync::mpsc bounded channel (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 6
-
 #0  future        tokio::sync::batch_semaphore::Acquire
       waiting on a tokio::sync::mpsc bounded channel (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 6
 [4 frames, 1 shown]
@@ -15,8 +13,6 @@ Waiting on: a tokio::sync::mpsc bounded channel (semaphore 0xADDR): 1 permit req
 future 0xADDR
 future 0xADDR: future tokio::time::sleep::Sleep
 Held by: task 6 — async fn channels::send_waiter (frame 1, `sleep`)
-
-Waiting on: timer (deadline TS on the target's monotonic clock)
 
 #0  future        tokio::time::sleep::Sleep
       waiting on timer (deadline TS on the target's monotonic clock)

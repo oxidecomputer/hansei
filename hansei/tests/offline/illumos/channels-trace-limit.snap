@@ -2,9 +2,6 @@
 source: hansei/src/offline.rs
 description: "`trace 3 -l 1` over illumos/channels"
 ---
-Waiting on: notify 0xADDR (waiting, 1 queued)
-  notify 0xADDR: waker in Notified.waiter, in #0 waiter → waker
-
 #0  future        tokio::sync::notify::Notified
       waiting on notify 0xADDR (waiting, 1 queued)
 [3 frames, 1 shown]

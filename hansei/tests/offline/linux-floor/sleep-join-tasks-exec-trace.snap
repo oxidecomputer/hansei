@@ -3,18 +3,12 @@ source: hansei/src/offline.rs
 description: "`tasks --exec trace -n` over linux-floor/sleep-join"
 ---
 task 3
-Waiting on: timer (deadline TS on the target's monotonic clock)
-  timer 0xADDR deadline TS on the target's monotonic clock
-
 #0  future        tokio::time::sleep::Sleep
       waiting on timer (deadline TS on the target's monotonic clock)
 #1  async fn      sleep_join::sleeper
       awaiting at src/bin/sleep-join.rs:16 (Suspend0, 0 locals)
 
 task 4
-Waiting on: task 3
-  join task 3: waker in its trailer
-
 #0  future        tokio::runtime::task::join::JoinHandle<u32>
       waiting on task 3
 #1  async fn      sleep_join::joiner

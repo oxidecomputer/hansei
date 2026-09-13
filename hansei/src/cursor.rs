@@ -556,10 +556,11 @@ pub(crate) struct ResolvedChain<'b> {
     /// `None` for a task's own chain; the held-future or set-child
     /// origin for a lone root's.
     origin: Option<census::Via>,
-    /// What the chain waits on, as the trace's header spells it: the
-    /// task's assessment for a task's own chain, the observed resource
-    /// for a lone root's.
-    pub(crate) wait: Option<trace::WaitHeader>,
+    /// What the chain's leaf verifiably waits on, as its detail line
+    /// prints it: the task's assessment for a task's own chain, the
+    /// observed resource for a lone root's; `None` where the chain
+    /// ends in no resource.
+    pub(crate) wait: Option<String>,
 }
 
 /// Resolve the cursor root to its await chain. A `Future` root at a
@@ -577,7 +578,7 @@ pub(crate) fn chain_of<'b, T: proc::Target>(
                 chain: inspection.chain,
                 owner: index,
                 origin: None,
-                wait: trace::assessed_header(session, index),
+                wait: trace::assessed_wait(session, index),
             }),
             None => Err(anyhow!("no await chain ({})", task.state.lifecycle())),
         }
@@ -630,7 +631,7 @@ pub(crate) fn chain_of<'b, T: proc::Target>(
                 let inspection = session
                     .ctx
                     .inspect_future(value, InspectionMode::Held, read);
-                let wait = trace::observed_header(&session.ctx, &inspection, &session.tasks, read);
+                let wait = trace::observed_wait(&session.ctx, &inspection, &session.tasks, read);
                 (inspection.chain, wait)
             });
             Ok(ResolvedChain {
@@ -696,7 +697,7 @@ fn print_cursor_frame<T: proc::Target>(
         heap: heap.as_ref().map(|view| view as &dyn reify::Heap),
     };
     let wait = match Some(n) == chain.frames.len().checked_sub(1) {
-        true => resolved.wait.as_ref(),
+        true => resolved.wait.as_deref(),
         false => None,
     };
     let holds = trace::frame_holds(
@@ -1422,9 +1423,7 @@ mod tests {
             let Ok(resolved) = chain_of(&session, TraceTarget::Task(id)) else {
                 continue;
             };
-            if resolved.chain.frames.len() >= 2
-                && resolved.wait.as_ref().is_some_and(|wait| wait.at_leaf)
-            {
+            if resolved.chain.frames.len() >= 2 && resolved.wait.is_some() {
                 picked = Some((id, resolved.chain.frames.len()));
                 break;
             }

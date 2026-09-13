@@ -3,10 +3,6 @@ source: hansei/src/offline.rs
 description: "`tasks --exec trace -n` over illumos/unordered"
 ---
 task 3
-Waiting on: slot 0xADDR in futures_core::task::__internal::atomic_waker::AtomicWaker
-  slot 0xADDR: waker in futures_core::task::__internal::atomic_waker::AtomicWaker.waker, reached from #1 set → ready_to_run_queue → * → data → waker → waker
-
-what futures_util::stream::stream::next::Next<futures_util::stream::futures_unordered::FuturesUnordered<unordered::set_member>> polls is not established (no reviewed rule covers its implementation); the chain ends there
 #0  future        futures_util::stream::stream::next::Next<futures_util::stream::futures_unordered::FuturesUnordered<unordered::set_member>>
       (<no_state>, 1 local)
 #1  async fn      unordered::driver

@@ -14,15 +14,12 @@ future 0xADDR
 future 0xADDR: future walk_shapes::WrapE<walk_shapes::deep>
 Held by: task 1 — async fn walk_shapes::chained (frame 0, `inner`)
 
-what walk_shapes::WrapE<walk_shapes::deep> polls is not established (no reviewed rule covers its implementation); the chain ends there
 #0  future        walk_shapes::WrapE<walk_shapes::deep>
       constructed at src/bin/walk-shapes.rs:100 (<no_state>, 0 locals)
 
 future 0xADDR
 future 0xADDR: async fn tokio::sync::mutex::Mutex::lock<()>
 Held by: task 3 — async fn walk_shapes::abandoner (frame 1, `fut`)
-
-Waiting on: a tokio::sync::Mutex (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: a non-task waiter, task 4
 
 #0  future        tokio::sync::batch_semaphore::Acquire
       waiting on a tokio::sync::Mutex (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: a non-task waiter, task 4

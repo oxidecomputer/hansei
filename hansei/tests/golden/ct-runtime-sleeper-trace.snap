@@ -2,9 +2,6 @@
 source: hansei/tests/acceptance.rs
 expression: actual
 ---
-Waiting on: timer (deadline TS)
-  timer ADDR1 deadline TS
-
 #0  future        tokio::time::sleep::Sleep
       waiting on timer (deadline TS)
 #1  async fn      ct_runtime::sleeper

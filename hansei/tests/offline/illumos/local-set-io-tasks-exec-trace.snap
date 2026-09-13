@@ -3,18 +3,12 @@ source: hansei/src/offline.rs
 description: "`tasks --exec trace -n` over illumos/local-set-io"
 ---
 task 1
-Waiting on: io fd 11 (readable)
-  io 0xADDR read: awaiting readable via the read-waiter slot, ready: writable
-
 #0  future        tokio::io::util::read::Read<tokio::net::unix::stream::UnixStream>
       waiting on io fd 11 (readable)
 #1  async fn      local_set_io::local_reader
       awaiting at src/bin/local-set-io.rs:32 (Suspend0, 2 locals)
 
 task 2
-Waiting on: io fd 13 (readable)
-  io 0xADDR readable: awaiting readable via a waiter node, ready: writable
-
 #0  future        tokio::runtime::io::scheduled_io::Readiness
       waiting on io fd 13 (readable)
 #1  async fn      tokio::runtime::io::scheduled_io::ScheduledIo::readiness
@@ -29,27 +23,18 @@ Waiting on: io fd 13 (readable)
       awaiting at src/bin/local-set-io.rs:40 (Suspend0, 2 locals)
 
 task 3
-Waiting on: io fd 15 (writable)
-  io 0xADDR write: awaiting writable via the write-waiter slot, ready: <none>
-
 #0  future        tokio::io::util::write_all::WriteAll<tokio::net::unix::stream::UnixStream>
       waiting on io fd 15 (writable)
 #1  async fn      local_set_io::local_writer
       awaiting at src/bin/local-set-io.rs:60 (Suspend1, 2 locals)
 
 task 4
-Waiting on: unknown at tokio::io::util::read::Read
-
-what tokio::io::util::read::Read<local_set_io::Gated> polls is not established (no reviewed rule covers its implementation); the chain ends there
 #0  future        tokio::io::util::read::Read<local_set_io::Gated>
       (<no_state>, 2 locals)
 #1  async fn      local_set_io::local_gated_reader
       awaiting at src/bin/local-set-io.rs:100 (Suspend0, 2 locals)
 
 task 5
-Waiting on: io fd 17 (readable)
-  io 0xADDR read: awaiting readable via the read-waiter slot, ready: writable
-
 #0  future        tokio::io::util::read::Read<tokio::net::unix::stream::UnixStream>
       waiting on io fd 17 (readable)
 #1  async fn      local_set_io::reader

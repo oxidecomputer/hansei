@@ -213,20 +213,6 @@ impl VerifiedWait {
     }
 }
 
-/// Why a continuation is not established, in words a listing prints.
-pub fn continuation_reason(reason: SemanticIssueKind) -> &'static str {
-    use SemanticIssueKind::*;
-    match reason {
-        NoRule => "no reviewed rule covers its implementation",
-        UnsupportedOrigin => "its implementation's origin is not reviewed",
-        MissingLayout => "its layout is not in the tokio info",
-        AmbiguousLayout => "its layout is ambiguous",
-        UnsupportedState => "its state is one no rule covers",
-        MultipleChildren => "it polls more than one future",
-        PossiblyUninitialized => "its storage may not be initialized",
-    }
-}
-
 /// A chain's end as an owned, compact status: what a task row keeps
 /// after the chain itself is dropped.
 #[derive(Clone, Debug)]

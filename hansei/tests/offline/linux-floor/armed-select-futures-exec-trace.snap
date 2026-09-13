@@ -6,16 +6,12 @@ future 0xADDR
 future 0xADDR: future tokio::sync::oneshot::Receiver<u32>
 Held by: task 3 — async fn armed_select::selector (frame 1, `once`)
 
-Waiting on: oneshot rx 0xADDR (nothing sent, sender alive)
-
 #0  future        tokio::sync::oneshot::Receiver<u32>
       waiting on oneshot rx 0xADDR (nothing sent, sender alive)
 
 future 0xADDR
 future 0xADDR: async fn tokio::sync::mpsc::bounded::Receiver::recv<u32>
 Held by: task 3 — async fn armed_select::selector (frame 1, `recv`)
-
-Waiting on: mpsc 0xADDR (1 sender, capacity 4, 0 unread)
 
 #0  future        core::future::poll_fn::PollFn<tokio::sync::mpsc::bounded::Receiver::recv::{async_fn#0}::{closure_env#0}<u32>>
       waiting on mpsc 0xADDR (1 sender, capacity 4, 0 unread)
@@ -25,7 +21,6 @@ future 0xADDR
 future 0xADDR: async fn tokio::sync::watch::Receiver::changed<u32>
 Held by: task 3 — async fn armed_select::selector (frame 1, `changed`)
 
-what tokio::task::coop::Coop<tokio::sync::watch::changed_impl<u32>> polls is not established (no reviewed rule covers its implementation); the chain ends there
 #0  future        tokio::task::coop::Coop<tokio::sync::watch::changed_impl<u32>>
       constructed at tokio-1.47.5/src/sync/watch.rs:914 (<no_state>, 1 local; holds 1 pending future)
 [2 frames, 1 shown]
@@ -33,8 +28,6 @@ what tokio::task::coop::Coop<tokio::sync::watch::changed_impl<u32>> polls is not
 future 0xADDR
 future 0xADDR: async fn tokio::sync::watch::changed_impl<u32>
 Held by: task 3 — async fn armed_select::selector (frame 0, `fut`, via held future at 0xADDR)
-
-Waiting on: watch 0xADDR (version 0, 1 sender, 1 receiver)
 
 #0  future        tokio::sync::notify::Notified
       waiting on watch 0xADDR (version 0, 1 sender, 1 receiver)
@@ -44,16 +37,12 @@ future 0xADDR
 future 0xADDR: future tokio::time::sleep::Sleep
 Held by: task 3 — async fn armed_select::selector (frame 1, `sleep`)
 
-Waiting on: timer (deadline TS on the target's monotonic clock)
-
 #0  future        tokio::time::sleep::Sleep
       waiting on timer (deadline TS on the target's monotonic clock)
 
 future 0xADDR
 future 0xADDR: future tokio::sync::notify::Notified
 Held by: task 4 — async fn armed_select::holder (frame 1, `notified`)
-
-Waiting on: notify 0xADDR (waiting)
 
 #0  future        tokio::sync::notify::Notified
       waiting on notify 0xADDR (waiting)
@@ -62,8 +51,6 @@ future 0xADDR
 future 0xADDR: async fn armed_select::child
 Child of: futures_util::stream::futures_unordered::FuturesUnordered<armed_select::child> at 0xADDR (frame 1, `set`), polled by task 6 — async fn armed_select::driver
 
-Waiting on: oneshot rx 0xADDR (nothing sent, sender alive)
-
 #0  future        tokio::sync::oneshot::Receiver<u32>
       waiting on oneshot rx 0xADDR (nothing sent, sender alive)
 [2 frames, 1 shown]
@@ -71,8 +58,6 @@ Waiting on: oneshot rx 0xADDR (nothing sent, sender alive)
 future 0xADDR
 future 0xADDR: async fn armed_select::child
 Child of: futures_util::stream::futures_unordered::FuturesUnordered<armed_select::child> at 0xADDR (frame 1, `set`), polled by task 6 — async fn armed_select::driver
-
-Waiting on: oneshot rx 0xADDR (nothing sent, sender alive)
 
 #0  future        tokio::sync::oneshot::Receiver<u32>
       waiting on oneshot rx 0xADDR (nothing sent, sender alive)

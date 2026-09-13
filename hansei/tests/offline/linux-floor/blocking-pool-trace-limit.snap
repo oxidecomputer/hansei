@@ -2,8 +2,6 @@
 source: hansei/src/offline.rs
 description: "`trace 3 -l 1` over linux-floor/blocking-pool"
 ---
-Waiting on: — (mid-poll)
-
 the task is mid-poll: its saved state below the root is not read as a chain
 #0  future        tokio::runtime::blocking::task::BlockingTask<blocking_pool::main::{async_block#0}::{closure_env#0}>
       (<no_state>, 1 local)

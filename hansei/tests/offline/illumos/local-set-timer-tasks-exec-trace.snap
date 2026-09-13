@@ -3,18 +3,12 @@ source: hansei/src/offline.rs
 description: "`tasks --exec trace -n` over illumos/local-set-timer"
 ---
 task 1
-Waiting on: timer (deadline TS)
-  timer 0xADDR deadline TS
-
 #0  future        tokio::time::sleep::Sleep
       waiting on timer (deadline TS)
 #1  async fn      local_set_timer::local_sleeper
       awaiting at src/bin/local-set-timer.rs:22 (Suspend0, 0 locals)
 
 task 2
-Waiting on: a tokio::sync::Semaphore (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 2
-  semaphore 0xADDR: waker in its wake-queue node 0xADDR
-
 #0  future        tokio::sync::batch_semaphore::Acquire
       waiting on a tokio::sync::Semaphore (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 2
 #1  async fn      tokio::sync::semaphore::Semaphore::acquire
@@ -23,9 +17,6 @@ Waiting on: a tokio::sync::Semaphore (semaphore 0xADDR): 1 permit requested, 0 a
       awaiting at src/bin/local-set-timer.rs:29 (Suspend0, 0 locals)
 
 task 3
-Waiting on: timer (deadline TS)
-  timer 0xADDR deadline TS
-
 #0  future        tokio::time::sleep::Sleep
       waiting on timer (deadline TS)
 #1  async fn      local_set_timer::sleeper

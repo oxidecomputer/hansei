@@ -2,10 +2,6 @@
 source: hansei/src/offline.rs
 description: "`trace 1 -l 1` over linux-floor/walk-shapes"
 ---
-Waiting on: notify 0xADDR (waiting)
-  inner: walk_shapes::WrapE at 0xADDR — unknown; armed: notify 0xADDR: waker in Notified.waiter, in the future at 0xADDR inner → waiter → waker
-
-what walk_shapes::WrapS<walk_shapes::WrapE<walk_shapes::deep>> polls is not established (no reviewed rule covers its implementation); the chain ends there
 #0  future        walk_shapes::WrapS<walk_shapes::WrapE<walk_shapes::deep>>
       (<no_state>, 2 locals; holds 1 pending future)
 [2 frames, 1 shown]

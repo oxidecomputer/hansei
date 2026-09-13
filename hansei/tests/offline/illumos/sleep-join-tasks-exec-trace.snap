@@ -3,18 +3,12 @@ source: hansei/src/offline.rs
 description: "`tasks --exec trace -n` over illumos/sleep-join"
 ---
 task 3
-Waiting on: timer (deadline TS)
-  timer 0xADDR deadline TS
-
 #0  future        tokio::time::sleep::Sleep
       waiting on timer (deadline TS)
 #1  async fn      sleep_join::sleeper
       awaiting at src/bin/sleep-join.rs:16 (Suspend0, 0 locals)
 
 task 4
-Waiting on: task 3
-  join task 3: waker in its trailer
-
 #0  future        tokio::runtime::task::join::JoinHandle<u32>
       waiting on task 3
 #1  async fn      sleep_join::joiner
