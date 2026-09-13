@@ -461,6 +461,21 @@ pub(crate) fn hyper_util_tokio_sleep(reader: &DwReader<'_>, id: TypeId) -> Optio
         .then_some(forward)
 }
 
+/// Screen `id` as tokio's `task::coop::Coop<F>`: one member `fut`,
+/// holding the `F` the instantiation declares. The wrapper spends a
+/// unit of the task's cooperative budget, then polls that member and
+/// nothing else.
+pub(crate) fn tokio_coop(reader: &DwReader<'_>, id: TypeId) -> Option<ForwardLayout> {
+    let st = declared_in(reader, id, "tokio::task::coop", "Coop<")?;
+    let forward = sole_member(reader, st, "fut")?;
+    let [f] = st.template_params.as_ref() else {
+        return None;
+    };
+    (f.name.map(|name| reader.strings.get(name)) == Some("F")
+        && forward.inner == reader.canonicalize(f.type_id))
+    .then_some(forward)
+}
+
 /// A `PollFn` over the closure tokio's `select!` awaits, as the raw
 /// screen saw it: the member holding the closure, the closure
 /// environment, its two by-reference captures and what each points at
@@ -1141,11 +1156,13 @@ mod tests {
         const INTO: TypeId = TypeId(UnitSectionOffset(0x71));
         const SLEEP: TypeId = TypeId(UnitSectionOffset(0x72));
         const TOKIO_SLEEP: TypeId = TypeId(UnitSectionOffset(0x73));
+        const COOP: TypeId = TypeId(UnitSectionOffset(0x74));
         let (mut fx, _, wrapper) = map_fixture();
         let try_future = fx.ns("futures_util::future::try_future");
         let into_mod = fx.ns("futures_util::future::try_future::into_future");
         let rt = fx.ns("hyper_util::rt::tokio");
         let sleep_mod = fx.ns("tokio::time::sleep");
+        let coop_mod = fx.ns("tokio::task::coop");
         fx.strukt(
             MAP_ERR,
             Some(try_future),
@@ -1186,10 +1203,35 @@ mod tests {
             hyper_util_tokio_sleep(&fx.reader, TOKIO_SLEEP),
             forward("inner", SLEEP)
         );
+        fx.strukt(
+            COOP,
+            Some(coop_mod),
+            "Coop<app::Fut>",
+            &[("fut", FUT, 0)],
+            &[("F", FUT)],
+        );
+        assert_eq!(tokio_coop(&fx.reader, COOP), forward("fut", FUT));
         // What each holds is the check: a `MapErr` over anything but the
         // public `Map`, an `IntoFuture` over something other than the
-        // `Fut` it declares, and a sleep newtype over anything but
-        // tokio's own are layouts no review covers.
+        // `Fut` it declares, a sleep newtype over anything but tokio's
+        // own, and a `Coop` whose member is not the `F` it declares are
+        // layouts no review covers.
+        fx.strukt(
+            COOP,
+            Some(coop_mod),
+            "Coop<app::Fut>",
+            &[("fut", SLEEP, 0)],
+            &[("F", FUT)],
+        );
+        assert_eq!(tokio_coop(&fx.reader, COOP), None);
+        fx.strukt(
+            COOP,
+            Some(coop_mod),
+            "Coop<app::Fut>",
+            &[("fut", FUT, 0), ("budget", SLEEP, 8)],
+            &[("F", FUT)],
+        );
+        assert_eq!(tokio_coop(&fx.reader, COOP), None);
         fx.strukt(
             MAP_ERR,
             Some(try_future),
@@ -1225,6 +1267,14 @@ mod tests {
             &[],
         );
         assert_eq!(hyper_util_tokio_sleep(&fx.reader, TOKIO_SLEEP), None);
+        fx.strukt(
+            COOP,
+            Some(app),
+            "Coop<app::Fut>",
+            &[("fut", FUT, 0)],
+            &[("F", FUT)],
+        );
+        assert_eq!(tokio_coop(&fx.reader, COOP), None);
     }
 
     /// A wide pointer to a trait object of some other trait is still an

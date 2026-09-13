@@ -3,5 +3,5 @@ source: hansei/src/offline.rs
 description: "`runtimes` over illumos/armed-select"
 ---
 ID  FLAVOR        HANDLE     TASKS  FUT  WORKERS  THREADS  FOUND VIA
-0   multi_thread  0xADDR      4   12        2        3  a thread's runtime context
+0   multi_thread  0xADDR      4   11        2        3  a thread's runtime context
 [1 runtime]

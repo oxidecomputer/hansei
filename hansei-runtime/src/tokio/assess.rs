@@ -2408,12 +2408,12 @@ mod tests {
         }
 
         // The selector's finds: the held receiver describes as the
-        // oneshot it is, and the `changed_impl` held inside `changed`
-        // as the watch its `Notified` belongs to — the `Shared` it
-        // borrows names the channel, since `changed`'s own frame keeps
-        // no receiver past its await. `changed` itself describes
-        // nothing: its chain stops at tokio's `Coop` wrapper, which no
-        // rule follows.
+        // oneshot it is, and `changed` as the watch its `Notified`
+        // belongs to — its chain crosses tokio's `Coop` wrapper to the
+        // `changed_impl` inside, whose borrowed `Shared` names the
+        // channel, since `changed`'s own frame keeps no receiver past
+        // its await. That `changed_impl` is on the chain, not a find of
+        // its own.
         let census = testkit::census(&ctx, &list);
         let find = |local: &str| {
             census
@@ -2423,8 +2423,11 @@ mod tests {
                 .unwrap_or_else(|| panic!("a `{local}` find"))
         };
         assert!(matches!(find("once").wait, Some(WaitKind::Oneshot { .. })));
-        assert!(matches!(find("fut").wait, Some(WaitKind::Watch { .. })));
-        assert!(find("changed").wait.is_none());
+        assert!(matches!(find("changed").wait, Some(WaitKind::Watch { .. })));
+        assert!(
+            census.held.iter().all(|h| h.local != "fut"),
+            "changed_impl is accounted to changed's chain"
+        );
         assert!(matches!(find("recv").wait, Some(WaitKind::Channel { .. })));
     }
 

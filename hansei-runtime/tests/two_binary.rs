@@ -693,13 +693,14 @@ fn test_delegation_cases_offline() {
     assert_summary("delegation-cases");
 }
 
-/// The captured bundle's delegation origin, without exegesis: the one
+/// The captured bundle's delegation origins, without exegesis: the one
 /// tracing origin names the pinned version on a registry path and has
-/// the `Instrumented` rule under it.
+/// the `Instrumented` rule under it, and the one tokio origin names the
+/// fixture's tokio on its registry path with the `Coop` rule under it.
 fn exegesis_free_origin_check(bundle: &Bundle) {
     use hansei_bundle::{SemanticOrigin, SemanticRuleKind};
     let s = |r| bundle.strings.get(r).unwrap();
-    let delegations: Vec<_> = bundle
+    let mut delegations: Vec<_> = bundle
         .semantics
         .origins
         .iter()
@@ -722,27 +723,39 @@ fn exegesis_free_origin_check(bundle: &Bundle) {
             _ => None,
         })
         .collect();
-    let [(index, package, version, family, source, checksums)] = delegations.as_slice() else {
-        panic!("expected one delegation origin: {delegations:?}");
+    delegations.sort_by_key(|d| d.1);
+    let tokio_version = bundle.meta.tokio_version.as_ref().unwrap().to_string();
+    let [tokio, tracing] = delegations.as_slice() else {
+        panic!("expected the tokio and tracing delegation origins: {delegations:?}");
     };
-    assert_eq!(
-        (*package, *version, *family),
-        ("tracing", "0.1.40", "tracing-instrumented-0.1.40")
-    );
-    let parsed = hansei_bundle::origin::registry_origin(source).expect("registry path");
-    assert_eq!(
-        (parsed.package, parsed.version.to_string().as_str()),
-        ("tracing", "0.1.40")
-    );
-    assert_eq!(*checksums, 0, "rustc's DWARF 4 carries no checksums");
-    assert!(
-        bundle
-            .semantics
-            .rules
-            .iter()
-            .any(|r| r.kind == SemanticRuleKind::TracingInstrumented
-                && r.origin.0 as usize == *index)
-    );
+    for ((index, package, version, family, source, checksums), expected, rule) in [
+        (
+            tracing,
+            ("tracing", "0.1.40", "tracing-instrumented-0.1.40"),
+            SemanticRuleKind::TracingInstrumented,
+        ),
+        (
+            tokio,
+            ("tokio", tokio_version.as_str(), "tokio-coop-1.47"),
+            SemanticRuleKind::TokioCoop,
+        ),
+    ] {
+        assert_eq!((*package, *version, *family), expected);
+        let parsed = hansei_bundle::origin::registry_origin(source).expect("registry path");
+        assert_eq!(
+            (parsed.package, parsed.version.to_string().as_str()),
+            (expected.0, expected.1)
+        );
+        assert_eq!(*checksums, 0, "rustc's DWARF 4 carries no checksums");
+        assert!(
+            bundle
+                .semantics
+                .rules
+                .iter()
+                .any(|r| r.kind == rule && r.origin.0 as usize == *index),
+            "{rule:?} under origin {index}"
+        );
+    }
 }
 
 /// The fd join's two member shapes, each pinned alone: a frame whose
@@ -1083,8 +1096,9 @@ fn test_the_census_accounting_is_exact_per_program() {
         // box at the block's unresumed slot.
         ("delegation-cases", 3, 16, 1, 0, 0),
         // Four branch futures reached by descent, each met again
-        // through the select's borrow of it, and their chains behind.
-        ("armed-select", 0, 9, 4, 0, 4),
+        // through the select's borrow of it, and their chains behind —
+        // the watch's crossing tokio's `Coop` to its `changed_impl`.
+        ("armed-select", 0, 10, 4, 0, 4),
     ];
     let named: Vec<&str> = ACCOUNTING.iter().map(|row| row.0).collect();
     assert_eq!(named, PROGRAMS, "every program is accounted for");

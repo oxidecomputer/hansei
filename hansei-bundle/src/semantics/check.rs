@@ -156,15 +156,16 @@ impl<'a> Check<'a> {
             | FuturesUtilMapErr
             | FuturesUtilIntoFuture
             | HyperUtilTokioSleep
-            | TokioSelect => {
+            | TokioSelect
+            | TokioCoop => {
                 let crate_name = match rule.kind {
                     TracingInstrumented => "tracing",
                     HyperUtilTokioSleep => "hyper-util",
-                    // tokio's own macro, but read like a third-party
-                    // rule: the closure's declaration file is the
+                    // tokio's own macro and wrapper, but read like a
+                    // third-party rule: the declaration file is the
                     // evidence, and tokio's version comes off its
                     // registry path rather than the layout family.
-                    TokioSelect => "tokio",
+                    TokioSelect | TokioCoop => "tokio",
                     _ => "futures-util",
                 };
                 return require(
@@ -563,6 +564,7 @@ impl<'a> Check<'a> {
                         FuturesUtilMapErr,
                         FuturesUtilIntoFuture,
                         HyperUtilTokioSleep,
+                        TokioCoop,
                     ],
                 )?;
                 self.target(record.ty, target)?;
@@ -571,10 +573,11 @@ impl<'a> Check<'a> {
                 // implementation polls nothing but its delegate may carry
                 // it. A coroutine resumes into its awaitee alone; the std
                 // adapters forward one poll and nothing else, as do the
-                // reviewed futures-util combinators and hyper-util's
-                // sleep newtype. `Instrumented` enters a span around its
-                // poll, running subscriber callbacks the review does not
-                // bound, so it stays false.
+                // reviewed futures-util combinators, hyper-util's sleep
+                // newtype and tokio's cooperative wrapper, whose budget
+                // check polls nothing. `Instrumented` enters a span
+                // around its poll, running subscriber callbacks the
+                // review does not bound, so it stays false.
                 let reviewed = matches!(
                     binding.kind,
                     RustcAsyncFn
@@ -587,6 +590,7 @@ impl<'a> Check<'a> {
                         | FuturesUtilMapErr
                         | FuturesUtilIntoFuture
                         | HyperUtilTokioSleep
+                        | TokioCoop
                 );
                 require(!exclusive || reviewed, "unreviewed delegation exclusivity")?;
                 let path = match target {
@@ -665,6 +669,7 @@ impl<'a> Check<'a> {
                 FuturesUtilMapErr,
                 FuturesUtilIntoFuture,
                 HyperUtilTokioSleep,
+                TokioCoop,
                 TokioSleep,
                 TokioJoinHandle,
                 TokioAcquire,

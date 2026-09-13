@@ -21,17 +21,9 @@ future 0xADDR
 future 0xADDR: async fn tokio::sync::watch::Receiver::changed<u32>
 Held by: task 3 — async fn armed_select::selector (frame 1, `changed`)
 
-#0  future        tokio::task::coop::Coop<tokio::sync::watch::changed_impl<u32>>
-      constructed at tokio-1.52.4/src/sync/watch.rs:986 (<no_state>, 1 local; holds 1 pending future)
-[2 frames, 1 shown]
-
-future 0xADDR
-future 0xADDR: async fn tokio::sync::watch::changed_impl<u32>
-Held by: task 3 — async fn armed_select::selector (frame 0, `fut`, via held future at 0xADDR)
-
 #0  future        tokio::sync::notify::Notified
       waiting on watch 0xADDR (version 0, 1 sender, 1 receiver)
-[2 frames, 1 shown]
+[4 frames, 1 shown]
 
 future 0xADDR
 future 0xADDR: future tokio::time::sleep::Sleep
@@ -62,4 +54,4 @@ Child of: futures_util::stream::futures_unordered::FuturesUnordered<armed_select
 #0  future        tokio::sync::oneshot::Receiver<u32>
       waiting on oneshot rx 0xADDR (nothing sent, sender alive)
 [2 frames, 1 shown]
-[Executed against 8 futures, 0 failed]
+[Executed against 7 futures, 0 failed]

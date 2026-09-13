@@ -833,8 +833,14 @@ fn assert_adapter_programs(program: &str, bundle: &Bundle) {
     let mut kinds: Vec<SemanticRuleKind> = Vec::new();
     for rule in &bundle.semantics.rules {
         // The selector's `select!` binds tokio's rule under tokio's own
-        // origin; `assert_select` holds that one.
-        if rule.kind == SemanticRuleKind::TokioSelect {
+        // origin; `assert_select` holds that one. The coop rule is
+        // tokio's as well, bound wherever the target keeps the
+        // runtime's own `Coop<changed_impl<()>>`, and the family check
+        // above holds it.
+        if matches!(
+            rule.kind,
+            SemanticRuleKind::TokioSelect | SemanticRuleKind::TokioCoop
+        ) {
             continue;
         }
         let SemanticOrigin::LibraryDelegation {
@@ -1259,10 +1265,25 @@ fn assert_library_bindings(program: &str, bundle: &Bundle) {
                         bundle.meta.tokio_version.as_ref().unwrap().to_string(),
                         "{program}"
                     );
-                    assert!(
-                        SELECT_PROGRAMS.contains(&program),
-                        "{program}: only the fixtures with a select! bind its rule"
-                    );
+                    let SemanticOrigin::LibraryDelegation { family, .. } = origin else {
+                        unreachable!()
+                    };
+                    use exegesis::detect::semantics::{TOKIO_COOP_V1_47, TOKIO_SELECT_V1_47};
+                    if s(*family) == TOKIO_SELECT_V1_47.family {
+                        assert!(
+                            SELECT_PROGRAMS.contains(&program),
+                            "{program}: only the fixtures with a select! bind its rule"
+                        );
+                    } else {
+                        // Which programs carry the coop rule is the
+                        // target's call, not the fixture's: tokio's own
+                        // runtime awaits a `watch::Receiver<()>`, whose
+                        // `Coop<changed_impl<()>>` survives on ELF and is
+                        // folded away in the Mach-O build, so a program
+                        // that never touches a watch binds it on one
+                        // platform and not another.
+                        assert_eq!(s(*family), TOKIO_COOP_V1_47.family, "{program}");
+                    }
                 }
                 other => panic!("{program}: unexpected delegation origin {other:?}"),
             },
@@ -1332,6 +1353,7 @@ fn assert_library_bindings(program: &str, bundle: &Bundle) {
         SemanticRuleKind::FuturesUtilMapErr,
         SemanticRuleKind::FuturesUtilIntoFuture,
         SemanticRuleKind::HyperUtilTokioSleep,
+        SemanticRuleKind::TokioCoop,
     ];
     let delegate_kinds = [
         SemanticRuleKind::StdBoxPoll,
@@ -1343,6 +1365,7 @@ fn assert_library_bindings(program: &str, bundle: &Bundle) {
         SemanticRuleKind::FuturesUtilMapErr,
         SemanticRuleKind::FuturesUtilIntoFuture,
         SemanticRuleKind::HyperUtilTokioSleep,
+        SemanticRuleKind::TokioCoop,
     ];
     // A wrapper's program is not a storage access: only the std
     // adapters, which are pointers, carry one.
@@ -1352,6 +1375,7 @@ fn assert_library_bindings(program: &str, bundle: &Bundle) {
         SemanticRuleKind::FuturesUtilMapErr,
         SemanticRuleKind::FuturesUtilIntoFuture,
         SemanticRuleKind::HyperUtilTokioSleep,
+        SemanticRuleKind::TokioCoop,
     ];
     // Compiler storage: every async fn or async block environment binds
     // its states under the reviewed convention (the fixtures' toolchains

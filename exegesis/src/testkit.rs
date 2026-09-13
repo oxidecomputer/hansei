@@ -96,7 +96,9 @@ pub fn assert_instrumented_sources(path: &Path) -> BTreeSet<String> {
 /// that re-parses to the same crate and version — with a
 /// `TracingInstrumented` rule under it. Returns the recorded source
 /// path. A bundle whose rule declined everywhere fails here: this is
-/// the positive assertion, not an inventory.
+/// the positive assertion, not an inventory. Delegation origins of
+/// other crates — tokio's, where a target keeps the runtime's own
+/// `Coop` — are not this assertion's business.
 pub fn assert_instrumented_origin(bundle: &Bundle) -> String {
     let s = |r| bundle.strings.get(r).unwrap_or("<bad strref>");
     let origins: Vec<(usize, &SemanticOrigin)> = bundle
@@ -104,10 +106,13 @@ pub fn assert_instrumented_origin(bundle: &Bundle) -> String {
         .origins
         .iter()
         .enumerate()
-        .filter(|(_, o)| matches!(o, SemanticOrigin::LibraryDelegation { .. }))
+        .filter(|(_, o)| {
+            matches!(o, SemanticOrigin::LibraryDelegation { package, .. }
+                if s(*package) == "tracing")
+        })
         .collect();
     let [(index, origin)] = origins.as_slice() else {
-        panic!("expected exactly one delegation origin, found {origins:?}");
+        panic!("expected exactly one tracing delegation origin, found {origins:?}");
     };
     let SemanticOrigin::LibraryDelegation {
         package,

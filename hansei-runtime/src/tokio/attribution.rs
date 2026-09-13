@@ -2184,15 +2184,27 @@ mod tests {
                         slot.entry(stopped),
                         format!("watch {primitive:#x} (version 0, 1 sender, 1 receiver)")
                     );
-                    // Inside the held `changed_impl` — the innermost of
-                    // the two finds holding it — by containment: its
-                    // active state's awaitee is the `Notified`.
+                    // Inside the held `changed` by containment: through
+                    // its awaitee, tokio's `Coop`, into the `changed_impl`
+                    // that wrapper's `fut` holds, whose active state's
+                    // awaitee is the `Notified`. The `changed_impl` is on
+                    // `changed`'s chain, not a find of its own.
                     let SlotRoot::Find { index, .. } = path.root else {
                         panic!("{path:?}");
                     };
-                    assert_eq!(over.census.held[index].local, "fut");
+                    assert_eq!(over.census.held[index].local, "changed");
                     assert!(path.hop.is_none());
-                    assert_eq!(path.steps[1..4], ["__awaitee", "waiter", "waker"]);
+                    let window = |steps: &[&str]| {
+                        path.steps
+                            .windows(steps.len())
+                            .any(|w| w.iter().map(String::as_str).eq(steps.iter().copied()))
+                    };
+                    assert!(window(&["__awaitee", "fut"]), "{:?}", path.steps);
+                    assert!(
+                        window(&["__awaitee", "waiter", "waker"]),
+                        "{:?}",
+                        path.steps
+                    );
                 }
                 Attribution::Registry(RegistrySlot::Timer { entry, .. }) => {
                     let timer = over
@@ -2329,16 +2341,16 @@ mod tests {
                 .unwrap()
         };
         // Before the fold the selector's set is what the analysis reads
-        // on its own: the `select!`'s four branches, the oneshot and
-        // mpsc ones armed by their protocols and the sleep by the
-        // registry's wheel entry, the watch one held; the driver has no
-        // set at all.
+        // on its own: the `select!`'s four branches, the oneshot, mpsc
+        // and watch ones armed by their protocols — the watch's chain
+        // crosses tokio's `Coop` to the `Notified` — and the sleep by
+        // the registry's wheel entry; the driver has no set at all.
         let WaitAssessment::Set(set) = &analysis.waits[index("selector")].assessment else {
             panic!("{:?}", analysis.waits[index("selector")].assessment);
         };
         assert_eq!(set.members.len(), 4, "{:#?}", set.members);
-        assert_eq!(set.armed().count(), 3, "{:#?}", set.members);
-        assert_eq!(set.group_label(), "mpsc, oneshot rx, timer");
+        assert_eq!(set.armed().count(), 4, "{:#?}", set.members);
+        assert_eq!(set.group_label(), "mpsc, oneshot rx, timer, watch");
         assert!(matches!(
             analysis.waits[index("driver")].assessment,
             WaitAssessment::Unknown(_)
@@ -2352,11 +2364,11 @@ mod tests {
             panic!("{:?}", selector.assessment);
         };
         assert_eq!(set.armed().count(), 4, "{:#?}", set.members);
-        // The wheel entry and the two protocol readings stand as the
-        // analysis left them, their swept twins folded into nothing;
-        // the watch branch — unknown to the engine, since `changed`
-        // parks in a `Notified` the chain does not reach — is the one
-        // the sweep arms, by the node inside its storage.
+        // The wheel entry and the three protocol readings stand as the
+        // analysis left them, their swept twins — the watch's waiter
+        // node among them — folded into nothing: the sweep found
+        // exactly the wakers the protocols read, and arms nothing on
+        // its own.
         let armed_by = |pred: &dyn Fn(&SlotRef) -> bool| {
             set.members
                 .iter()
@@ -2364,8 +2376,8 @@ mod tests {
                 .count()
         };
         assert_eq!(armed_by(&|s| matches!(s, SlotRef::Wheel { .. })), 1);
-        assert_eq!(armed_by(&|s| matches!(s, SlotRef::Protocol)), 2);
-        assert_eq!(armed_by(&|s| matches!(s, SlotRef::Swept { .. })), 1);
+        assert_eq!(armed_by(&|s| matches!(s, SlotRef::Protocol)), 3);
+        assert_eq!(armed_by(&|s| matches!(s, SlotRef::Swept { .. })), 0);
         // The `select!` rule lists the tuple's four members as the
         // branches, each a `&mut` to the frame's own local, in source
         // order, and every slot arms the branch whose storage — or

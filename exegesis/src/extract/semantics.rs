@@ -39,9 +39,9 @@ use crate::detect::Family;
 use crate::detect::adapters::{self, InstrumentedLayout, Pointee, SelectLayout, StdAdapter};
 use crate::detect::semantics::{
     FUTURES_UTIL_ADAPTERS_V0_3_30, HYPER_UTIL_TOKIO_SLEEP_V0_1_10, LibraryConvention,
-    RustcConvention, TOKIO_SELECT_V1_47, TRACING_INSTRUMENTED_V0_1_40, library_convention,
-    rustc_coroutine_convention, rustc_dyn_future_abi_convention, rustc_std_adapter_convention,
-    tokio_state_protocol,
+    RustcConvention, TOKIO_COOP_V1_47, TOKIO_SELECT_V1_47, TRACING_INSTRUMENTED_V0_1_40,
+    library_convention, rustc_coroutine_convention, rustc_dyn_future_abi_convention,
+    rustc_std_adapter_convention, tokio_state_protocol,
 };
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -176,6 +176,8 @@ enum LibrarySeed {
     IntoFuture(String, BundleTypeId),
     /// hyper-util's `TokioSleep` over `tokio::time::Sleep`.
     TokioSleep(String, BundleTypeId),
+    /// tokio's `Coop<F>` over the `F` it budgets.
+    Coop(String, BundleTypeId),
 }
 
 impl LibrarySeed {
@@ -187,6 +189,7 @@ impl LibrarySeed {
             LibrarySeed::MapErr(..) => SemanticRuleKind::FuturesUtilMapErr,
             LibrarySeed::IntoFuture(..) => SemanticRuleKind::FuturesUtilIntoFuture,
             LibrarySeed::TokioSleep(..) => SemanticRuleKind::HyperUtilTokioSleep,
+            LibrarySeed::Coop(..) => SemanticRuleKind::TokioCoop,
         }
     }
 
@@ -195,6 +198,7 @@ impl LibrarySeed {
     fn convention(&self) -> &'static LibraryConvention {
         match self {
             LibrarySeed::TokioSleep(..) => &HYPER_UTIL_TOKIO_SLEEP_V0_1_10,
+            LibrarySeed::Coop(..) => &TOKIO_COOP_V1_47,
             _ => &FUTURES_UTIL_ADAPTERS_V0_3_30,
         }
     }
@@ -286,6 +290,9 @@ fn library_seed(
     } else if name == "hyper_util::rt::tokio::TokioSleep" {
         let (member, inner) = forward(adapters::hyper_util_tokio_sleep(reader, raw))?;
         Some(LibrarySeed::TokioSleep(member, inner))
+    } else if name.starts_with("tokio::task::coop::Coop<") {
+        let (member, inner) = forward(adapters::tokio_coop(reader, raw))?;
+        Some(LibrarySeed::Coop(member, inner))
     } else {
         None
     }
@@ -1498,7 +1505,8 @@ fn plan_library(
         LibrarySeed::MapWrapper(member, inner)
         | LibrarySeed::MapErr(member, inner)
         | LibrarySeed::IntoFuture(member, inner)
-        | LibrarySeed::TokioSleep(member, inner) => Delegation::Direct {
+        | LibrarySeed::TokioSleep(member, inner)
+        | LibrarySeed::Coop(member, inner) => Delegation::Direct {
             target: Target::Value(forward(member, *inner, strings)?),
             exclusive: true,
         },
@@ -2809,8 +2817,9 @@ mod tests {
         let sleep_mod = ns(&mut reader, "tokio::time::sleep");
         let rt = ns(&mut reader, "hyper_util::rt::tokio");
         let into_mod = ns(&mut reader, "futures_util::future::try_future::into_future");
+        let coop_mod = ns(&mut reader, "tokio::task::coop");
         let id = |offset: usize| TypeId(UnitSectionOffset(offset));
-        let (sleep, tokio_sleep, into, fut) = (id(1), id(2), id(3), id(4));
+        let (sleep, tokio_sleep, into, fut, coop) = (id(1), id(2), id(3), id(4), id(5));
         let strukt = |reader: &mut crate::DwReader<'static>,
                       at: TypeId,
                       namespace: NsId,
@@ -2864,11 +2873,23 @@ mod tests {
             Some(("future", fut)),
             Some(("Fut", fut)),
         );
+        strukt(
+            &mut reader,
+            coop,
+            coop_mod,
+            "Coop<tokio::time::sleep::Fut>",
+            Some(("fut", fut)),
+            Some(("F", fut)),
+        );
         let bundle_id = |raw: TypeId| Some(BundleTypeId(raw.0.0 as u32));
         let seed = |raw, name: &str| library_seed(&reader, raw, name, bundle_id);
         assert!(matches!(
             seed(tokio_sleep, "hyper_util::rt::tokio::TokioSleep"),
             Some(LibrarySeed::TokioSleep(member, _)) if member == "inner"
+        ));
+        assert!(matches!(
+            seed(coop, "tokio::task::coop::Coop<tokio::time::sleep::Fut>"),
+            Some(LibrarySeed::Coop(member, _)) if member == "fut"
         ));
         assert!(matches!(
             seed(
@@ -2889,6 +2910,8 @@ mod tests {
                 sleep,
                 "futures_util::future::try_future::into_future::IntoFuture<x>",
             ),
+            (coop, "tokio::task::Coop<tokio::time::sleep::Fut>"),
+            (fut, "tokio::task::coop::Coop<tokio::time::sleep::Fut>"),
         ] {
             assert!(seed(raw, name).is_none(), "{name}");
         }
@@ -2915,6 +2938,12 @@ mod tests {
                 "0.1.20",
                 "src/rt/tokio.rs",
                 "hyper",
+            ),
+            (
+                &TOKIO_COOP_V1_47,
+                "1.52.4",
+                "src/task/coop/mod.rs",
+                "tokio-util",
             ),
         ] {
             let package = convention.package;
@@ -2963,8 +2992,13 @@ mod tests {
                 declined(&[source(&format!("{ROOT}/{other}-{version}/{file}"), None)])
                     .contains(&format!("not the {package} crate"))
             );
+            // The release just below the floor: the previous patch, or
+            // the previous minor where the floor is a `.0`.
             let (a, b, c) = convention.floor;
-            let below = format!("{a}.{b}.{}", c - 1);
+            let below = match c {
+                0 => format!("{a}.{}.0", b - 1),
+                c => format!("{a}.{b}.{}", c - 1),
+            };
             let (x, y, z) = convention.ceiling;
             let above = format!("{x}.{y}.{}", z + 1);
             assert!(
@@ -3037,6 +3071,15 @@ mod tests {
                 sleep,
             );
             add("hyper_util::rt::tokio::TokioSleep", def)
+        };
+        let coop = {
+            let def = one(
+                &mut strings,
+                "tokio::task::coop::Coop<app::Fut>",
+                "fut",
+                fut,
+            );
+            add("tokio::task::coop::Coop<app::Fut>", def)
         };
         let into = {
             let def = one(
@@ -3115,6 +3158,7 @@ mod tests {
         };
         let futures_util = registry("futures-util", "0.3.33", "src/lib.rs");
         let hyper_util = registry("hyper-util", "0.1.20", "src/rt/tokio.rs");
+        let tokio = registry("tokio", "1.52.4", "src/task/coop/mod.rs");
         let render = |strings: &StringInterner, path: &TypedPath| {
             path.steps
                 .iter()
@@ -3139,6 +3183,13 @@ mod tests {
                 LibrarySeed::IntoFuture("future".into(), fut),
                 &futures_util,
                 "future",
+                fut,
+            ),
+            (
+                coop,
+                LibrarySeed::Coop("fut".into(), fut),
+                &tokio,
+                "fut",
                 fut,
             ),
         ] {

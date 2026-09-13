@@ -301,6 +301,10 @@ pub enum SemanticRuleKind {
     /// tokio's `select!` expansion: the `PollFn` closure that borrows
     /// the branch mask and the tuple of branch futures.
     TokioSelect,
+    /// tokio's `task::coop::Coop<F>`, the cooperative-budget wrapper
+    /// `cooperative()` puts around a leaf future: its poll spends a
+    /// budget unit, then polls `fut` and nothing else.
+    TokioCoop,
 }
 
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]

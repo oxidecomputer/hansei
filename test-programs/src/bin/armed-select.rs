@@ -41,8 +41,8 @@ async fn selector(
     census_expect::held(&once as *const _ as u64, "oneshot::Receiver");
     census_expect::held(&*recv as *const _ as u64, "recv");
     census_expect::held(&*changed as *const _ as u64, "changed");
-    // `changed` awaits `changed_impl`, a future of its own inside it.
-    census_expect::held_in(&*changed as *const _ as u64, "changed_impl");
+    // `changed` awaits `changed_impl` through tokio's `Coop` wrapper; the
+    // chain crosses both, so the inner future is no find of its own.
     census_expect::held(&*sleep as *const _ as u64, "Sleep");
     ready.send(()).expect("main waits for readiness");
     tokio::select! {

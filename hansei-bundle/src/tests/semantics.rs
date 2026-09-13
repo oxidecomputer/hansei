@@ -70,6 +70,7 @@ fn base() -> Bundle {
         "hyper-util",
         "0.1.20",
         "registry/src/index.crates.io-1949cf8c6b5b557f/hyper-util-0.1.20/src/rt/tokio.rs",
+        "registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/task/coop/mod.rs",
     ] {
         strings.intern(s);
     }
@@ -802,6 +803,12 @@ fn test_semantic_delegation_origin_is_its_registry_path() {
             StrRef(25),
             StrRef(26),
             StrRef(27),
+        ),
+        (
+            SemanticRuleKind::TokioCoop,
+            StrRef(8),
+            StrRef(9),
+            StrRef(28),
         ),
     ] {
         let mut b = forwarding();
