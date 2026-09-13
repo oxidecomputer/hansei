@@ -1,0 +1,7 @@
+---
+source: hansei/src/offline.rs
+description: "`children` over linux-floor/delegation-cases"
+---
+held futures: 1
+    (frame 0, `child`): 0xADDR  future delegation_cases::Probe<1>
+join sets: 0

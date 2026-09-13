@@ -60,12 +60,10 @@ pub(crate) fn prompt_label(c: &Cursor) -> String {
     }
 }
 
-/// `task`: select one, or print the cursor's — with the census's finds
-/// listed under its counts when `futures` asks.
+/// `task`: select one, or print the cursor's.
 pub(crate) fn exec_task<T: proc::Target>(
     session: &Session<'_, T>,
     target: Option<TraceTarget>,
-    futures: bool,
     fit: Option<usize>,
     out: &mut dyn io::Write,
 ) -> Result<()> {
@@ -73,7 +71,31 @@ pub(crate) fn exec_task<T: proc::Target>(
         Some(target) => select_task(session, target)?,
         None => cursor_task(session).ok_or_else(|| anyhow!("no task selected"))?,
     };
-    tasks::print_task(session, index, futures, fit, out)
+    tasks::print_task(session, index, fit, out)
+}
+
+/// `children`: list the census's finds inside the cursor's root under
+/// their counts — the task's, or the lone future's where the root is
+/// one (the same root bare `future` reprints: a `Future` root that is
+/// really a task's allocation is the task's). Under `futures --exec`
+/// the root is the future itself, so the listing is the future's own,
+/// as `trace` and `locals` are its own there.
+pub(crate) fn exec_children<T: proc::Target>(
+    session: &Session<'_, T>,
+    fit: Option<usize>,
+    out: &mut dyn io::Write,
+) -> Result<()> {
+    let root = session.cursor.borrow().root;
+    match root {
+        Some(TraceTarget::Future(addr)) if !task_rooted(session, addr) => {
+            futures::print_children(session, future_at(session, addr)?, fit, out)
+        }
+        _ => {
+            let index =
+                cursor_task(session).ok_or_else(|| anyhow!("no task or future selected"))?;
+            tasks::print_children(session, index, fit, out)
+        }
+    }
 }
 
 /// The task the cursor stands on, if its root is one: a `Task` root,
@@ -779,7 +801,7 @@ mod tests {
         let id = task.task_id.expect("the fixture's tasks carry ids");
 
         let mut out = Vec::new();
-        exec_task(&session, Some(TraceTarget::Task(id)), false, None, &mut out)
+        exec_task(&session, Some(TraceTarget::Task(id)), None, &mut out)
             .expect("a task id selects");
         {
             let c = session.cursor.borrow();
@@ -794,7 +816,6 @@ mod tests {
         exec_task(
             &session,
             Some(TraceTarget::Future(task.addr.0)),
-            false,
             None,
             &mut Vec::new(),
         )
@@ -808,7 +829,6 @@ mod tests {
         let err = exec_task(
             &session,
             Some(TraceTarget::Future(0x10)),
-            false,
             None,
             &mut Vec::new(),
         )
@@ -890,14 +910,8 @@ mod tests {
         );
 
         // `task` moves back and replaces the thread.
-        exec_task(
-            &session,
-            Some(TraceTarget::Task(id)),
-            false,
-            None,
-            &mut Vec::new(),
-        )
-        .expect("the task selects again");
+        exec_task(&session, Some(TraceTarget::Task(id)), None, &mut Vec::new())
+            .expect("the task selects again");
         assert_eq!(session.cursor.borrow().lwp, None);
     }
 
@@ -909,14 +923,8 @@ mod tests {
         let args = session_args("linux", "nested-await");
         let session = Session::attach(&snapshot, &bundle, &args).expect("the pair attaches");
         let id = session.tasks.tasks[0].task_id.expect("ids are recorded");
-        exec_task(
-            &session,
-            Some(TraceTarget::Task(id)),
-            false,
-            None,
-            &mut Vec::new(),
-        )
-        .expect("the task selects");
+        exec_task(&session, Some(TraceTarget::Task(id)), None, &mut Vec::new())
+            .expect("the task selects");
         let at_zero = session.cursor.borrow().last_addr;
         let len = chain_of(&session, TraceTarget::Task(id))
             .expect("the chain resolves")
@@ -1029,7 +1037,6 @@ mod tests {
         exec_task(
             &session,
             Some(TraceTarget::Task(ids[0])),
-            false,
             None,
             &mut Vec::new(),
         )
@@ -1094,7 +1101,6 @@ mod tests {
         exec_task(
             &session,
             Some(TraceTarget::Future(f1)),
-            false,
             None,
             &mut Vec::new(),
         )
@@ -1111,7 +1117,6 @@ mod tests {
         exec_task(
             &session,
             Some(TraceTarget::Future(f0)),
-            false,
             None,
             &mut Vec::new(),
         )
@@ -1127,7 +1132,6 @@ mod tests {
             exec_task(
                 &session,
                 Some(TraceTarget::Future(f1_end)),
-                false,
                 None,
                 &mut Vec::new(),
             )
@@ -1151,17 +1155,10 @@ mod tests {
             .collect();
         assert!(ids.len() >= 2, "sleep-join spawns a second task");
         for &id in ids.iter().take(2) {
-            exec_task(
-                &session,
-                Some(TraceTarget::Task(id)),
-                false,
-                None,
-                &mut Vec::new(),
-            )
-            .expect("the task selects");
+            exec_task(&session, Some(TraceTarget::Task(id)), None, &mut Vec::new())
+                .expect("the task selects");
             let mut out = Vec::new();
-            exec_task(&session, None, false, None, &mut out)
-                .expect("bare task prints the cursor's");
+            exec_task(&session, None, None, &mut out).expect("bare task prints the cursor's");
             let text = String::from_utf8(out).expect("the summary is UTF-8");
             assert!(text.starts_with(&format!("task {id}\n")), "{id}: {text}");
             // Under the heading, one labelled line per field, the state,
@@ -1190,15 +1187,13 @@ mod tests {
             assert!(labels.ends_with(&["held futures", "join sets"]), "{text}");
         }
 
-        // `--futures` lists the finds under the counts: a task holding
-        // nothing prints the same lines and nothing more.
+        // `children` lists the finds under the counts, at the margin
+        // and without the block: a task holding nothing prints the
+        // two count rows and nothing more.
         let mut out = Vec::new();
-        exec_task(&session, None, true, None, &mut out).expect("bare task --futures prints");
+        exec_children(&session, None, &mut out).expect("children prints under a task cursor");
         let listed = String::from_utf8(out).expect("the listing is UTF-8");
-        assert!(
-            listed.contains("\n    held futures: 0\n    join sets: 0\n"),
-            "{listed}"
-        );
+        assert_eq!(listed, "held futures: 0\njoin sets: 0\n");
     }
 
     /// A set child roots as a lone future, at the node address the
@@ -1253,14 +1248,8 @@ mod tests {
             .iter()
             .find_map(|t| t.task_id)
             .expect("ids are recorded");
-        exec_task(
-            &session,
-            Some(TraceTarget::Task(id)),
-            false,
-            None,
-            &mut Vec::new(),
-        )
-        .expect("a task selects");
+        exec_task(&session, Some(TraceTarget::Task(id)), None, &mut Vec::new())
+            .expect("a task selects");
         let err = exec_future(&session, None, false, theme, &mut Vec::new())
             .expect_err("a task cursor holds no lone future");
         assert_eq!(err.to_string(), "no future selected");
@@ -1283,6 +1272,75 @@ mod tests {
         let err = exec_future(&session, None, false, theme, &mut Vec::new())
             .expect_err("a header-rooted cursor holds no lone future");
         assert_eq!(err.to_string(), "no future selected");
+    }
+
+    /// `children` follows the cursor's root: under a lone future — a
+    /// set child at its node — it lists what the census found inside
+    /// that future, the tail of its block moved to the margin; under
+    /// a task, by id or by the header address an id-less task roots
+    /// at, the task's finds; and with no cursor it refuses.
+    #[test]
+    fn test_children_follows_the_cursor_root() {
+        let (bundle, snapshot) = testkit::load("linux", "unordered");
+        let args = session_args("linux", "unordered");
+        let session = Session::attach(&snapshot, &bundle, &args).expect("the pair attaches");
+        let theme = crate::output::Theme::plain();
+
+        let err = exec_children(&session, None, &mut Vec::new())
+            .expect_err("no cursor holds nothing to list");
+        assert_eq!(err.to_string(), "no task or future selected");
+
+        // Every set child in flight holds one future of its own: the
+        // block's tail says so under its counts, and `children` says
+        // the same four columns to the left, and nothing else.
+        let (node, driver) = {
+            let census = session.census();
+            let set = census.sets.first().expect("unordered drives a set");
+            let child = set
+                .children
+                .iter()
+                .find(|c| c.root.is_some())
+                .expect("a child is in flight");
+            (child.node, set.owner)
+        };
+        let mut out = Vec::new();
+        exec_future(&session, Some(node), false, theme, &mut out).expect("a set child selects");
+        let block = String::from_utf8(out).expect("the block is UTF-8");
+        let mut out = Vec::new();
+        exec_children(&session, None, &mut out).expect("children lists the lone future's finds");
+        let listed = String::from_utf8(out).expect("the listing is UTF-8");
+        assert!(
+            listed.starts_with("held futures: 1\n    (frame 1, `held`): 0x"),
+            "{listed}"
+        );
+        let tail: String = block
+            .lines()
+            .skip_while(|l| !l.starts_with("    held futures: "))
+            .map(|l| format!("{}\n", &l[4..]))
+            .collect();
+        assert_eq!(listed, tail);
+
+        // The task driving the set, selected by id, lists its own
+        // finds — and rooted by its header address, the id-less
+        // spelling, lists the same, rather than asking the census what
+        // future the header is.
+        let task = &session.tasks.tasks[driver];
+        let id = task.task_id.expect("the driver has an id");
+        exec_task(&session, Some(TraceTarget::Task(id)), None, &mut Vec::new())
+            .expect("the driver selects");
+        let mut out = Vec::new();
+        exec_children(&session, None, &mut out).expect("children lists the task's finds");
+        let by_id = String::from_utf8(out).expect("the listing is UTF-8");
+        assert!(by_id.starts_with("held futures: 5\n"), "{by_id}");
+        assert!(by_id.contains("\njoin sets: 1 (3 futures)\n"), "{by_id}");
+        *session.cursor.borrow_mut() = Cursor {
+            root: Some(TraceTarget::Future(task.addr.0)),
+            ..Cursor::default()
+        };
+        let mut out = Vec::new();
+        exec_children(&session, None, &mut out).expect("a header-rooted cursor is the task's");
+        let by_header = String::from_utf8(out).expect("the listing is UTF-8");
+        assert_eq!(by_header, by_id);
     }
 
     /// The polling join, apart from a session: only a task the
@@ -1372,14 +1430,8 @@ mod tests {
             }
         }
         let (id, len) = picked.expect("sleep-join parks a chain on a decoded wait");
-        exec_task(
-            &session,
-            Some(TraceTarget::Task(id)),
-            false,
-            None,
-            &mut Vec::new(),
-        )
-        .expect("the task selects");
+        exec_task(&session, Some(TraceTarget::Task(id)), None, &mut Vec::new())
+            .expect("the task selects");
 
         let mut out = Vec::new();
         exec_frame(&session, Some(0), theme, &mut out).expect("the leaf prints");
@@ -1423,14 +1475,8 @@ mod tests {
             }
         }
         let (id, i) = found.expect("the capture parks work's frame");
-        exec_task(
-            &session,
-            Some(TraceTarget::Task(id)),
-            false,
-            None,
-            &mut Vec::new(),
-        )
-        .expect("the task selects");
+        exec_task(&session, Some(TraceTarget::Task(id)), None, &mut Vec::new())
+            .expect("the task selects");
         exec_frame(&session, Some(i), theme, &mut Vec::new()).expect("the frame selects");
 
         let mut out = Vec::new();
@@ -1457,14 +1503,8 @@ mod tests {
             .iter()
             .find_map(|t| t.task_id)
             .expect("ids are recorded");
-        exec_task(
-            &session,
-            Some(TraceTarget::Task(id)),
-            false,
-            None,
-            &mut Vec::new(),
-        )
-        .expect("a cursor stands");
+        exec_task(&session, Some(TraceTarget::Task(id)), None, &mut Vec::new())
+            .expect("a cursor stands");
         let err = repl::execute(
             &session,
             repl::Mode::Scripted,

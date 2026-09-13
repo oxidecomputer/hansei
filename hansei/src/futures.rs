@@ -9,7 +9,7 @@
 use crate::runtimes::RowOwner;
 use crate::tasks::{
     self, CensusTree, Cmp, EMPTY_BUCKET, Entry, Finds, Listing, StopNames, alternatives,
-    census_tree, listing_footer, print_future_entry, resolve_rt, task_id,
+    census_tree, listing_footer, resolve_rt, task_id,
 };
 use crate::trace::FutureAt;
 use crate::whatis::via_suffix;
@@ -303,7 +303,7 @@ fn names_primitive(kind: bundle::WaitKind, slot: &attribution::AttributedSlot) -
 
 /// Build every row from what it prints — taken apart from the session
 /// so a test can lay out a population no fixture holds. Rows come in
-/// the order `task --futures` prints the same finds: task by task,
+/// the order `tasks --exec children` prints the same finds: task by task,
 /// each task's held futures ahead of its set children, and whatever
 /// the census found inside a find directly after it — so a listing
 /// read top to bottom meets a future before the ones it holds. A
@@ -676,10 +676,21 @@ impl Blocks<'_> {
             }
         }
         writeln!(out, "    armed: {}", armed_word(row.armed))?;
-        // What the census found inside this future, the way `task`
-        // lists what it found in the task's own frames: the futures
+        // What the census found inside this future, the way `children`
+        // lists what it found in a task's own frames: the futures
         // held in its frames, then the sets driven from them.
-        let via = Self::via_of(row);
+        self.print_children(row, 4, out)
+    }
+
+    /// The finds inside one future under their counts — the block's
+    /// tail, and the whole of what `children` prints under a future
+    /// cursor — with the count rows at `indent`.
+    fn print_children(
+        &self,
+        row: &FutureRow,
+        indent: usize,
+        out: &mut dyn io::Write,
+    ) -> Result<()> {
         let listing = Listing {
             blocking_lwps: self.blocking_lwps,
             fit: self.fit,
@@ -689,38 +700,39 @@ impl Blocks<'_> {
             polling: &self.polling,
             impls: self.impls,
         };
-        let inside = || self.tree.nested.get(&via).into_iter().flatten();
-        for (label, value, sets) in [
-            ("held futures", row.holds.to_string(), false),
-            ("join sets", row.sets_summary.clone(), true),
-        ] {
-            writeln!(out, "    {label}: {value}")?;
-            for entry in inside().filter(|e| e.is_set() == sets) {
-                print_future_entry(*entry, &listing, 8, false, out)?;
-            }
-        }
-        Ok(())
+        let inside = self
+            .tree
+            .nested
+            .get(&Self::via_of(row))
+            .map(Vec::as_slice)
+            .unwrap_or(&[]);
+        tasks::print_finds(
+            &row.holds.to_string(),
+            &row.sets_summary,
+            inside,
+            &listing,
+            indent,
+            out,
+        )
     }
 }
 
-/// What `future` prints for the census find at `at`: the block above,
-/// over the session. A set child the set has already reaped is no
-/// future in flight, has no row, and is refused by name.
-pub(crate) fn print_future<T: proc::Target>(
-    session: &Session<'_, T>,
+/// The row and the block printer for the census find at `at`. A set
+/// child the set has already reaped is no future in flight, has no
+/// row, and is refused by name.
+fn blocks_for<'s, T: proc::Target>(
+    session: &'s Session<'_, T>,
     at: FutureAt,
     fit: Option<usize>,
-    out: &mut dyn io::Write,
-) -> Result<()> {
+) -> Result<(&'s FutureRow, Blocks<'s>)> {
     let rows = rows(session);
     let Some(row) = rows.iter().find(|row| row.at == at) else {
         anyhow::bail!("that child has completed and awaits reaping; nothing is in flight there");
     };
-    let census = session.census();
     let blocks = Blocks {
         list: &session.tasks,
         owners: &session.owners,
-        census,
+        census: session.census(),
         tree: session.census_tree(),
         impls: &session.impl_fold,
         group_tags: session.group_tags(),
@@ -728,6 +740,31 @@ pub(crate) fn print_future<T: proc::Target>(
         blocking_lwps: tasks::blocking_lwps(session),
         fit,
     };
+    Ok((row, blocks))
+}
+
+/// What `children` prints under a future cursor: the finds inside the
+/// census find at `at`, under their counts at the left margin — the
+/// tail of the block `future` prints, on its own.
+pub(crate) fn print_children<T: proc::Target>(
+    session: &Session<'_, T>,
+    at: FutureAt,
+    fit: Option<usize>,
+    out: &mut dyn io::Write,
+) -> Result<()> {
+    let (row, blocks) = blocks_for(session, at, fit)?;
+    blocks.print_children(row, 0, out)
+}
+
+/// What `future` prints for the census find at `at`: the block above,
+/// over the session.
+pub(crate) fn print_future<T: proc::Target>(
+    session: &Session<'_, T>,
+    at: FutureAt,
+    fit: Option<usize>,
+    out: &mut dyn io::Write,
+) -> Result<()> {
+    let (row, blocks) = blocks_for(session, at, fit)?;
     blocks.print(row, out)
 }
 

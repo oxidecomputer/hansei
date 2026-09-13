@@ -1209,8 +1209,8 @@ fn test_a_session_can_extract_from_debug_info() {
     let bundle = fixtures().bundle(program);
     let debug_binary = fixtures().debug_binary(program);
     // Enough of the session to exercise the whole attach: the summary,
-    // the task listing off the census, and the wait graph.
-    let command = "info\ntasks --exec task --futures\ngraph\n";
+    // the task listing and the census's finds, and the wait graph.
+    let command = "info\ntasks --exec children\ngraph\n";
     with_core(program, |core| {
         let from_bundle = hansei_ok(&bundle, core, command);
         let out = hansei_from(("--debug-info", &debug_binary), core, &[], command);
@@ -1256,7 +1256,7 @@ fn test_save_tokio_info_persists_the_extraction() {
     let program = "simple-await";
     let bundle = fixtures().bundle(program);
     let debug_binary = fixtures().debug_binary(program);
-    let command = "info\ntasks --exec task --futures\n";
+    let command = "info\ntasks --exec children\n";
     with_core(program, |core| {
         let dir = tempfile::tempdir().expect("failed to create a tempdir");
         let saved = dir.path().join("saved.tinfo");
@@ -2365,8 +2365,8 @@ fn test_whatis_acceptance() {
 }
 
 /// The sub-executor census: a `FuturesUnordered`'s children are futures,
-/// not tasks — `task --futures` lists them under the task that polls
-/// the set, `trace -v` labels their queued wakers with that task, and
+/// not tasks — `children` lists them under the task that polls the
+/// set, `trace -v` labels their queued wakers with that task, and
 /// `whatis` resolves a child node address to it.
 #[test]
 fn test_futures_acceptance() {
@@ -2379,25 +2379,24 @@ fn test_futures_acceptance() {
         // driver's own finds, counted apart from what the census went
         // on to find inside them. `task` carries both counts, and says
         // `0` for a task the census found nothing for rather than
-        // staying silent; `--futures` lists what each counted, under
-        // its own row.
+        // staying silent; `children` lists what each counted, under
+        // its own row, at the margin — under the task's scope it
+        // prints no heading of its own.
         assert_eq!(driver.futures, "5", "{rows:?}");
         assert_eq!(driver.sets, "1 (3 futures)", "{rows:?}");
         for row in rows.iter().filter(|row| row.id != driver.id) {
             assert_eq!(row.futures, "0", "{row:?}");
             assert_eq!(row.sets, "0", "{row:?}");
         }
-        let futures = hansei_ok(&bundle, core, &format!("task {} --futures", driver.id));
+        let block = hansei_ok(&bundle, core, &format!("task {}", driver.id));
         assert!(
-            futures.starts_with(&format!("task {}\n", driver.id)),
-            "{futures}"
+            block.ends_with("\n    held futures: 5\n    join sets: 1 (3 futures)\n"),
+            "{block}"
         );
+        let futures = hansei_ok(&bundle, core, &format!("task {} children", driver.id));
+        assert!(futures.starts_with("held futures: 5\n    "), "{futures}");
         assert!(
-            futures.contains("\n    held futures: 5\n        "),
-            "{futures}"
-        );
-        assert!(
-            futures.contains("\n    join sets: 1 (3 futures)\n        - "),
+            futures.contains("\njoin sets: 1 (3 futures)\n    - "),
             "{futures}"
         );
         assert!(
@@ -2413,8 +2412,7 @@ fn test_futures_acceptance() {
         // Set-child rows sit one indent step deeper than the set's own
         // bulleted row.
         let child =
-            regex::Regex::new(r"\n            (0x[0-9a-f]+)  async fn unordered::set_member")
-                .unwrap();
+            regex::Regex::new(r"\n        (0x[0-9a-f]+)  async fn unordered::set_member").unwrap();
         let nodes: Vec<String> = child
             .captures_iter(&futures)
             .map(|c| c[1].to_string())
@@ -2428,7 +2426,7 @@ fn test_futures_acceptance() {
         // carrying a future of its own.
         for local in ["held", "boxed", "pair", "maybe", "nested_hold"] {
             assert!(
-                futures.contains(&format!("\n        (frame 1, `{local}`)")),
+                futures.contains(&format!("\n    (frame 1, `{local}`)")),
                 "{futures}"
             );
         }
@@ -2444,11 +2442,11 @@ fn test_futures_acceptance() {
         // tree is the census's attribution, drawn.
         let held_row = r"held \(frame 1, `held`\): 0x[0-9a-f]+  async fn unordered::leaf";
         let under_child =
-            regex::Regex::new(&format!(r"\n                {held_row}  Unresumed")).unwrap();
+            regex::Regex::new(&format!(r"\n            {held_row}  Unresumed")).unwrap();
         assert_eq!(under_child.find_iter(&futures).count(), 3, "{futures}");
         assert!(
             futures.contains(
-                "\n                - futures_util::stream::futures_unordered::FuturesUnordered\
+                "\n            - futures_util::stream::futures_unordered::FuturesUnordered\
                  <unordered::leaf> at 0x"
             ),
             "{futures}"
@@ -2458,7 +2456,7 @@ fn test_futures_acceptance() {
             "{futures}"
         );
         let under_set = regex::Regex::new(
-            r"\n                    0x[0-9a-f]+  async fn unordered::leaf  Unresumed",
+            r"\n                0x[0-9a-f]+  async fn unordered::leaf  Unresumed",
         )
         .unwrap();
         assert_eq!(under_set.find_iter(&futures).count(), 2, "{futures}");
@@ -2469,16 +2467,18 @@ fn test_futures_acceptance() {
         // mark there — the heading is already the word.
         let carried_row = r"\(frame 0, `inner`\): 0x[0-9a-f]+  async fn unordered::leaf";
         let under_held =
-            regex::Regex::new(&format!(r"\n            {carried_row}  Unresumed")).unwrap();
+            regex::Regex::new(&format!(r"\n        {carried_row}  Unresumed")).unwrap();
         assert_eq!(under_held.find_iter(&futures).count(), 1, "{futures}");
 
         // Every one of those finds is the driver's: any other task
         // lists nothing under its zeros.
         for row in rows.iter().filter(|row| row.id != driver.id) {
-            let other = hansei_ok(&bundle, core, &format!("task {} --futures", row.id));
+            let other = hansei_ok(&bundle, core, &format!("task {} children", row.id));
+            assert_eq!(other, "held futures: 0\njoin sets: 0\n");
+            let block = hansei_ok(&bundle, core, &format!("task {}", row.id));
             assert!(
-                other.ends_with("\n    held futures: 0\n    join sets: 0\n"),
-                "{other}"
+                block.ends_with("\n    held futures: 0\n    join sets: 0\n"),
+                "{block}"
             );
         }
 
@@ -2564,7 +2564,7 @@ fn test_futures_acceptance() {
         );
 
         // And so is a held future, by the address its row prints.
-        let held = regex::Regex::new(r"\n        \(frame 1, `held`\): (0x[0-9a-f]+)")
+        let held = regex::Regex::new(r"\n    \(frame 1, `held`\): (0x[0-9a-f]+)")
             .unwrap()
             .captures(&futures)
             .map(|c| c[1].to_string())
@@ -2616,13 +2616,13 @@ fn test_futures_acceptance() {
 fn test_search_depth_acceptance() {
     let bundle = fixtures().bundle("unordered");
     with_core("unordered", |core| {
-        let full = hansei_ok(&bundle, core, "tasks --exec task --futures");
+        let full = hansei_ok(&bundle, core, "tasks --exec children");
 
         let shallow = hansei_with(
             &bundle,
             core,
             &["--search-depth", "0"],
-            "tasks --exec task --futures",
+            "tasks --exec children",
         );
         let warned = String::from_utf8_lossy(&shallow.stderr);
         let listed = String::from_utf8_lossy(&shallow.stdout);
@@ -2635,10 +2635,10 @@ fn test_search_depth_acceptance() {
 
         // What the driver holds outright is still found and still
         // counted; what it holds nested is neither.
-        assert!(listed.contains("\n    held futures: 3\n"), "{listed}");
+        assert!(listed.contains("\nheld futures: 3\n"), "{listed}");
         for local in ["held", "boxed", "nested_hold"] {
             assert!(
-                listed.contains(&format!("\n        (frame 1, `{local}`)")),
+                listed.contains(&format!("\n    (frame 1, `{local}`)")),
                 "{listed}"
             );
         }
@@ -2660,7 +2660,7 @@ fn test_search_depth_acceptance() {
             &bundle,
             core,
             &["--search-depth", "64"],
-            "tasks --exec task --futures",
+            "tasks --exec children",
         );
         let quiet = String::from_utf8_lossy(&deep.stderr);
         assert!(quiet.is_empty(), "{quiet}");
@@ -2668,7 +2668,7 @@ fn test_search_depth_acceptance() {
     });
 }
 
-/// A `JoinSet` holds tasks rather than futures: `task --futures` lists
+/// A `JoinSet` holds tasks rather than futures: `children` lists
 /// them under the task that drives the set, by the ids each has a row
 /// of its own under — and no futures count moves, because a spawned task
 /// is on its own await chain rather than off anybody's.
@@ -2692,9 +2692,9 @@ fn test_join_set_acceptance() {
             assert_eq!(row.sets, "0", "{row:?}");
         }
 
-        let futures = hansei_ok(&bundle, core, &format!("task {} --futures", driver.id));
+        let futures = hansei_ok(&bundle, core, &format!("task {} children", driver.id));
         assert!(
-            futures.contains("\n    join sets: 2 (6 tasks)\n        - "),
+            futures.contains("\njoin sets: 2 (6 tasks)\n    - "),
             "{futures}"
         );
         assert!(
@@ -2706,8 +2706,7 @@ fn test_join_set_acceptance() {
         // Every member is named by the id its own row carries, so the
         // set reads as an edge into the listing rather than as a
         // population beside it.
-        let member =
-            regex::Regex::new(r"\n            task (\d+)  async fn joinset::member").unwrap();
+        let member = regex::Regex::new(r"\n        task (\d+)  async fn joinset::member").unwrap();
         let ids: Vec<String> = member
             .captures_iter(&futures)
             .map(|c| c[1].to_string())
@@ -2724,7 +2723,7 @@ fn test_join_set_acceptance() {
         // listing has no row for it and nothing but this set's entry
         // names it — which the row says outright rather than naming a
         // future it cannot reach.
-        let done = regex::Regex::new(r"\n            task (\d+)  <complete, awaiting join>")
+        let done = regex::Regex::new(r"\n        task (\d+)  <complete, awaiting join>")
             .unwrap()
             .captures(&futures)
             .unwrap_or_else(|| panic!("no completed member: {futures}"))[1]
@@ -3259,7 +3258,7 @@ fn test_census_prints_only_the_sections_named() {
 }
 
 /// What a set holds is counted apart from what a frame holds, with the
-/// same split `task --futures` lists: five children in flight across
+/// same split `children` lists: five children in flight across
 /// the two sets, and nine futures held in frames beside them.
 ///
 /// The census counts a find wherever the scan reached it, so nesting
@@ -3610,15 +3609,15 @@ fn test_a_stale_future_is_not_counted_as_one_in_flight() {
     with_core("stale-local", |core| {
         let rows = list_tasks(&bundle, core);
         let task = task_with_future(&rows, "async fn stale_local::holder");
-        let out = hansei(&bundle, core, &format!("task {} --futures", task.id));
+        let out = hansei(&bundle, core, &format!("task {} children", task.id));
         let stdout = String::from_utf8_lossy(&out.stdout);
         let stderr = String::from_utf8_lossy(&out.stderr);
         assert!(out.status.success(), "{stderr}\n{stdout}");
 
-        // The count `task` prints and the listing under `--futures`
+        // The count `tasks` prints and the listing `children` prints
         // are the same census, so both say none.
         assert_eq!(task.futures, "0", "{rows:?}");
-        assert!(stdout.contains("\n    held futures: 0\n"), "{stdout}");
+        assert!(stdout.starts_with("held futures: 0\n"), "{stdout}");
         assert!(stderr.is_empty(), "{stderr}");
     });
 }

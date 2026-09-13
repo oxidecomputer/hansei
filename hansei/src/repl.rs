@@ -626,7 +626,9 @@ const HELP_SECTIONS: &[(&str, &[&str])] = &[
     ("Frame navigation", &["frame", "up", "down"]),
     (
         "Inspection",
-        &["trace", "locals", "print", "regs", "runtime", "whatis"],
+        &[
+            "trace", "locals", "children", "print", "regs", "runtime", "whatis",
+        ],
     ),
     (
         "Other commands",
@@ -2218,7 +2220,7 @@ mod tests {
         assert!(flags.iter().all(|f| f.starts_with("--")), "{flags:?}");
         assert_eq!(completions("tasks --gr"), ["--group"]);
         assert_eq!(completions("task 129 -"), completions("task -"));
-        assert_eq!(completions("task --fu"), ["--futures"]);
+        assert_eq!(completions("future --ve"), ["--verbose"]);
     }
 
     /// A short flag that takes a value owes it as the next word (`-l
@@ -2938,7 +2940,6 @@ mod tests {
                 .command,
             Command::Task {
                 target: Some(crate::TraceTarget::Task(5)),
-                futures: false
             }
         ));
         assert!(matches!(

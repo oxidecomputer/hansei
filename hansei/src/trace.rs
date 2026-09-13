@@ -2345,7 +2345,9 @@ mod variable_format_tests {
 #[cfg(test)]
 mod future_trace_tests {
     use super::{FutureAt, TraceOpts, frame_holds, future_at, observed_header, print_await_chain};
-    use crate::tasks::{Finds, TaskView, census_tree, future_name, print_task_view};
+    use crate::tasks::{
+        Finds, TaskView, census_tree, future_name, print_task_children, print_task_view,
+    };
     use crate::{RenderOpts, output};
     use crate::{TraceTarget, parse_trace_target};
     use hansei_runtime::testkit;
@@ -2652,17 +2654,18 @@ mod future_trace_tests {
         });
     }
 
-    /// Render one task the way `task` does, with no worker polling
+    /// Render one task the way `task` does — or, under `children`, the
+    /// way `children` lists its finds — with no worker polling
     /// anything: what lwp holds a task is the session's to say, and no
     /// listing test turns on it.
     fn render(
         list: &TaskList,
         held: &[census::HeldFuture],
         sets: &[census::FutureSet],
-        futures: bool,
+        children: bool,
         id: u64,
     ) -> String {
-        render_joining(list, held, sets, &[], futures, id)
+        render_joining(list, held, sets, &[], children, id)
     }
 
     /// The same, for the tests that lay out join sets: no fixture
@@ -2672,7 +2675,7 @@ mod future_trace_tests {
         held: &[census::HeldFuture],
         sets: &[census::FutureSet],
         join_sets: &[census::JoinSet],
-        futures: bool,
+        children: bool,
         id: u64,
     ) -> String {
         let index = list
@@ -2709,7 +2712,11 @@ mod future_trace_tests {
             fit: None,
         };
         let mut out: Vec<u8> = Vec::new();
-        print_task_view(&view, index, futures, &mut out).expect("the task renders");
+        if children {
+            print_task_children(&view, index, &mut out).expect("the children render");
+        } else {
+            print_task_view(&view, index, &mut out).expect("the task renders");
+        }
         String::from_utf8(out).expect("rendered output is UTF-8")
     }
 
@@ -2754,12 +2761,13 @@ mod future_trace_tests {
         assert!(!idle.contains("waiting on:"), "{idle}");
     }
 
-    /// `task --futures` on the task that owns the fixture's one held
-    /// future prints that future under its count, and on any other
-    /// task prints a zero and nothing under it: what the census found
-    /// is all the owner's.
+    /// `children` on the task that owns the fixture's one held future
+    /// prints that future under its count, and on any other task
+    /// prints a zero and nothing under it: what the census found is
+    /// all the owner's. The `task` block counts the same find and
+    /// lists nothing.
     #[test]
-    fn test_futures_lists_a_held_future_under_its_owner() {
+    fn test_children_lists_a_held_future_under_its_owner() {
         with_target("futurelock", |_ctx, list, _extents, census| {
             let owner = census
                 .held
@@ -2769,16 +2777,19 @@ mod future_trace_tests {
             let id = list.tasks[owner].task_id.expect("the owner has an id");
 
             let rendered = render(list, &census.held, &census.sets, true, id);
-            assert!(rendered.starts_with(&format!("task {id}\n")), "{rendered}");
+            assert!(rendered.starts_with("held futures: 1\n    ("), "{rendered}");
             // The row names the local it was found in and nothing more:
             // under `held futures`, `held` would only repeat the
             // heading.
             assert!(rendered.contains(", `future1`): 0x"), "{rendered}");
             assert!(!rendered.contains("held (frame"), "{rendered}");
+
+            let block = render(list, &census.held, &census.sets, false, id);
             assert!(
-                rendered.contains("\n    held futures: 1\n        ("),
-                "{rendered}"
+                block.ends_with("\n    held futures: 1\n    join sets: 0\n"),
+                "{block}"
             );
+            assert!(!block.contains("`future1`"), "{block}");
 
             for (index, task) in list.tasks.iter().enumerate() {
                 if index == owner {
@@ -2786,8 +2797,12 @@ mod future_trace_tests {
                 }
                 let other = task.task_id.expect("every fixture task has an id");
                 let rendered = render(list, &census.held, &census.sets, true, other);
-                assert!(rendered.contains("\n    held futures: 0\n"), "{rendered}");
-                assert!(!rendered.contains("`future1`"), "{rendered}");
+                assert_eq!(rendered, "held futures: 0\njoin sets: 0\n");
+                let block = render(list, &census.held, &census.sets, false, other);
+                assert!(
+                    block.ends_with("\n    held futures: 0\n    join sets: 0\n"),
+                    "{block}"
+                );
             }
         });
     }
@@ -2856,16 +2871,16 @@ mod future_trace_tests {
             // which is itself one right of the set. The task holds
             // nothing in its own frames, so `held futures` is zero and
             // its listing empty: the one held future is inside the
-            // child, which the child's own row counts.
-            assert!(
-                rendered.contains(
-                    "    held futures: 0\n    join sets: 1 (1 future)\n        \
-                     - FuturesUnordered<step> at 0x1000 (frame 0, `pending`): \
-                     1 child in flight, 1 completed and not yet reaped\n            \
-                     0x2000  async fn step  Suspend0 — step.rs:9\n                \
-                     held (frame 1, `lock`): 0x3000  async fn Mutex::lock\n"
-                ),
-                "{rendered}"
+            // child, which the child's own row counts. The reaped slot
+            // closes the listing as a row of its own, in flight or not.
+            assert_eq!(
+                rendered,
+                "held futures: 0\njoin sets: 1 (1 future)\n    \
+                 - FuturesUnordered<step> at 0x1000 (frame 0, `pending`): \
+                 1 child in flight, 1 completed and not yet reaped\n        \
+                 0x2000  async fn step  Suspend0 — step.rs:9\n            \
+                 held (frame 1, `lock`): 0x3000  async fn Mutex::lock\n        \
+                 0x2100  <completed, not yet reaped>\n"
             );
             // The reaped slot is not a future in flight, so the rows say
             // one child, not two — and they say it with or without the
@@ -2923,9 +2938,9 @@ mod future_trace_tests {
 
             let rendered = render_joining(list, &[], &[], &join_sets, true, id);
             let expected = format!(
-                "    held futures: 0\n    join sets: 1 (3 tasks)\n        \
-                 - JoinSet<()> at 0x4000 (frame 0, `set`): 3 tasks\n            \
-                 task {}  {}  {}\n            task {}  {}  {}\n            \
+                "held futures: 0\njoin sets: 1 (3 tasks)\n    \
+                 - JoinSet<()> at 0x4000 (frame 0, `set`): 3 tasks\n        \
+                 task {}  {}  {}\n        task {}  {}  {}\n        \
                  task 99  <complete, awaiting join>\n",
                 joined[0].task_id.expect("the fixture's tasks have ids"),
                 future_name(
@@ -2940,14 +2955,14 @@ mod future_trace_tests {
                 ),
                 joined[1].state.lifecycle(),
             );
-            assert!(rendered.contains(&expected), "{rendered}");
+            assert_eq!(rendered, expected);
         });
     }
 
     /// A task the census found nothing for still prints its counts,
     /// every one zero — silence would read as a listing that failed.
     #[test]
-    fn test_futures_on_a_task_holding_none_prints_zeros() {
+    fn test_children_on_a_task_holding_none_prints_zeros() {
         with_target("channels", |_ctx, list, _extents, census| {
             // Any task with no finds serves; which tasks hold something
             // legitimately grows as the census learns to see more.
@@ -2959,12 +2974,16 @@ mod future_trace_tests {
                 })
                 .expect("some task holds nothing");
             let id = list.tasks[empty].task_id.expect("the task has an id");
-            let rendered = render(list, &census.held, &census.sets, true, id);
-            assert!(rendered.starts_with(&format!("task {id}\n")), "{rendered}");
-            assert!(rendered.contains("\n    held futures: 0\n"), "{rendered}");
             // A task that drives no set says so with a bare zero: what
             // the sets it does not have would hold is noise.
-            assert!(rendered.ends_with("\n    join sets: 0\n"), "{rendered}");
+            let rendered = render(list, &census.held, &census.sets, true, id);
+            assert_eq!(rendered, "held futures: 0\njoin sets: 0\n");
+            let block = render(list, &census.held, &census.sets, false, id);
+            assert!(block.starts_with(&format!("task {id}\n")), "{block}");
+            assert!(
+                block.ends_with("\n    held futures: 0\n    join sets: 0\n"),
+                "{block}"
+            );
         });
     }
 }

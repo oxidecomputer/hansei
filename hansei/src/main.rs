@@ -317,6 +317,20 @@ pub enum Command {
         limit: usize,
     },
 
+    /// List what the census found inside the cursor's task, under the
+    /// two counts `task` prints: the futures held in its own frames
+    /// off the await chain, then the sets it drives from them with
+    /// what each holds, nested the way the census reached them. `help
+    /// task` says how to read the rows. The block counts them and
+    /// does not list them because a task driving thousands of
+    /// children would bury its own fields under them. The cursor must
+    /// stand on a task or a lone future: `task` or `future` selects
+    /// one, and `task 129 children` asks without moving the cursor.
+    /// Under a lone future — a set child in its heap node — the
+    /// listing is what the census found inside that future, the same
+    /// rows the tail of its `future` block carries.
+    Children,
+
     /// Move the cursor one await frame inward — toward #0, the most
     /// recently polled frame — and print the frame line it lands on.
     /// Any words after it are a command to run at the new frame
@@ -374,7 +388,7 @@ pub enum Command {
     /// and the task either belongs to), its owner where the target
     /// holds more than one group, its suspend state and depth, what
     /// it waits on, and the census's finds inside it under their
-    /// counts — the same finds `task --futures` lists. Bare `future`
+    /// counts — the same rows `children` lists. Bare `future`
     /// prints the cursor's lone future; `-v` prints its await chain
     /// under the block.
     Future {
@@ -397,8 +411,8 @@ pub enum Command {
     /// truncated. `--limit` is the only cut, and cutting earns a
     /// footer counting what was left out.
     ///
-    /// This is the population `task --futures` lists under each task,
-    /// as one listing: every future sitting in a frame's local off the
+    /// This is the population `children` lists under each task, as
+    /// one listing: every future sitting in a frame's local off the
     /// await chain — a `select!`/`join!` arm mid-flight, one stored
     /// across an await, a futurelock's abandoned lock — and every
     /// child a FuturesUnordered polls, in its heap node. A JoinSet's
@@ -884,7 +898,7 @@ pub enum Command {
     /// entry, the io slot, the wake-queue node), the spawn site,
     /// where the future is defined, and the census's counts — how
     /// many futures it holds in its own frames beside its await
-    /// chain, and how many sets it drives from them. `--futures`
+    /// chain, and how many sets it drives from them. `children`
     /// lists each find under its count.
     ///
     /// Those counts are of what no task listing otherwise shows — a
@@ -904,7 +918,7 @@ pub enum Command {
     /// A task's own await chain is what `trace` prints: the future it
     /// is suspended in, the one that is awaiting, and so on down to
     /// the leaf it is parked on. That chain is the only thing the task
-    /// polls when it wakes. `--futures` lists what it has in flight
+    /// polls when it wakes. `children` lists what it has in flight
     /// *beside* it.
     ///
     /// A row under `held futures` is a future sitting in a frame's
@@ -971,11 +985,6 @@ pub enum Command {
         /// task.
         #[arg(value_parser = parse_trace_target, value_name = "ID|0xADDR")]
         target: Option<TraceTarget>,
-
-        /// List the task's futures and task sets under their counts,
-        /// rather than only counting them.
-        #[arg(long, short)]
-        futures: bool,
     },
 
     /// List every task the target's executors own — one table row per
@@ -1016,8 +1025,8 @@ pub enum Command {
     /// command and runs it once per surviving task, the command's
     /// omitted target filled with that task — `tasks --with type
     /// qorb --exec trace -v` traces every match, each run under a
-    /// `task N` heading, and `tasks --with state running --exec task
-    /// --futures` prints every running task's fields and finds. One
+    /// `task N` heading, and `tasks --with state running --exec
+    /// children` lists every running task's finds. One
     /// task's failure never stops the loop: the failed run shows its
     /// error in place, the listing closes with `[Executed against N
     /// tasks, M failed]`, and the command itself fails after the loop
@@ -2100,9 +2109,10 @@ pub fn dispatch<T: Target>(
         }
         Command::Sync { addr, kind } => sync::exec_sync(session, addr, kind, out)?,
         Command::Channels { addr } => sync::exec_sync(session, addr, sync::CHANNELS.to_vec(), out)?,
-        Command::Task { target, futures } => {
-            cursor::exec_task(session, target, futures, session.fit_width(theme), out)?
+        Command::Task { target } => {
+            cursor::exec_task(session, target, session.fit_width(theme), out)?
         }
+        Command::Children => cursor::exec_children(session, session.fit_width(theme), out)?,
         Command::Tasks {
             limit,
             with,

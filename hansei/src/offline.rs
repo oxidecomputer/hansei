@@ -190,9 +190,9 @@ fn commands(
         // the commands after it, so these stay in this order.
         if let Some(id) = task.task_id {
             list.push(("task-first", format!("task {id}")));
-            // The same task with the census's finds listed under its
-            // counts: what each fixture's first task holds and drives.
-            list.push(("task-futures", format!("task {id} --futures")));
+            // The census's finds under the counts the block above
+            // carries: what each fixture's first task holds and drives.
+            list.push(("children", "children".to_owned()));
             list.push(("print-frame", "print".to_owned()));
             // The same frame's variables, flat: what `locals` lists
             // is what the print above nests as members.

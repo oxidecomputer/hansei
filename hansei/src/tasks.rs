@@ -1363,7 +1363,7 @@ pub(crate) struct TaskView<'a> {
     pub(crate) finds: Finds<'a>,
     pub(crate) tree: &'a CensusTree,
     /// The width the finds' names are cut to fit within under
-    /// `--futures` ([`Session::fit_width`]); `None` leaves them whole.
+    /// `children` ([`Session::fit_width`]); `None` leaves them whole.
     /// The task's own type line is never cut: it is the one name the
     /// command is about, so it wraps rather than ends in an ellipsis.
     pub(crate) fit: Option<usize>,
@@ -1378,13 +1378,12 @@ pub(crate) struct TaskView<'a> {
 /// placeholders — so a missing source anchor is a shorter block. The
 /// thread, the waker and the census counts print always, because
 /// their empty spellings are answers: `<none>` is "on no thread",
-/// `<empty>` is "nothing can wake it", `0` is "holds nothing". Under
-/// `futures`, the census's finds are listed under the count each
-/// belongs to.
+/// `<empty>` is "nothing can wake it", `0` is "holds nothing". The
+/// census's finds are counted here and listed by `children`
+/// ([`print_task_children`]).
 pub(crate) fn print_task_view(
     view: &TaskView<'_>,
     index: usize,
-    futures: bool,
     out: &mut dyn io::Write,
 ) -> Result<()> {
     let task = &view.list.tasks[index];
@@ -1436,8 +1435,35 @@ pub(crate) fn print_task_view(
     // sets are one row whichever kind they are — a listing of what
     // this task drives is one thing to read — with the tasks and the
     // futures they hold counted apart, since those are not the same
-    // population. Last, since what `--futures` lists under them is as
-    // long as the census found it to be.
+    // population. Last, since what `children` lists under them is as
+    // long as the census found it to be — which is why the block
+    // counts and does not list: a task driving thousands of children
+    // would bury its own fields.
+    let count = view.tree.counts.get(&index).copied().unwrap_or_default();
+    writeln!(out, "    held futures: {}", count.held)?;
+    writeln!(out, "    join sets: {}", count.sets_summary())?;
+    Ok(())
+}
+
+/// The finds at the top of a task's listing: what the census found in
+/// its own frames, and the sets it drives from them.
+fn task_roots<'a>(view: &'a TaskView<'_>, index: usize) -> &'a [Entry] {
+    view.tree
+        .roots
+        .get(&index)
+        .map(Vec::as_slice)
+        .unwrap_or(&[])
+}
+
+/// What `children` prints under a task cursor: the block's two count
+/// rows, `held futures` and `join sets`, at the left margin, with the
+/// finds each counts listed under it — the same rows `task` prints at
+/// its fields' column, followed by what they count.
+pub(crate) fn print_task_children(
+    view: &TaskView<'_>,
+    index: usize,
+    out: &mut dyn io::Write,
+) -> Result<()> {
     let listing = Listing {
         blocking_lwps: view.blocking_lwps,
         fit: view.fit,
@@ -1448,40 +1474,48 @@ pub(crate) fn print_task_view(
         impls: view.impls,
     };
     let count = view.tree.counts.get(&index).copied().unwrap_or_default();
-    let roots = || view.tree.roots.get(&index).into_iter().flatten();
-    for (label, value, sets) in [
-        ("held futures", count.held.to_string(), false),
-        ("join sets", count.sets_summary(), true),
-    ] {
-        writeln!(out, "    {label}: {value}")?;
-        if futures {
-            for entry in roots().filter(|e| e.is_set() == sets) {
-                print_future_entry(*entry, &listing, 8, false, out)?;
-            }
+    print_finds(
+        &count.held.to_string(),
+        &count.sets_summary(),
+        task_roots(view, index),
+        &listing,
+        0,
+        out,
+    )
+}
+
+/// The two rows a block counts the census's finds under — `held
+/// futures` and `join sets` — each followed by the finds it counts,
+/// one step in. `held` and `sets` are the rows' values as their owner
+/// prints them; `entries` the finds at the top of the listing, sorted
+/// under the rows by [`Entry::is_set`]; `indent` the rows' column,
+/// with the finds four further in and whatever each holds four again
+/// ([`print_future_entry`]).
+pub(crate) fn print_finds(
+    held: &str,
+    sets: &str,
+    entries: &[Entry],
+    listing: &Listing<'_>,
+    indent: usize,
+    out: &mut dyn io::Write,
+) -> Result<()> {
+    let pad = " ".repeat(indent);
+    for (label, value, is_set) in [("held futures", held, false), ("join sets", sets, true)] {
+        writeln!(out, "{pad}{label}: {value}")?;
+        for entry in entries.iter().filter(|e| e.is_set() == is_set) {
+            print_future_entry(*entry, listing, indent + 4, false, out)?;
         }
     }
     Ok(())
 }
 
-/// [`print_task_view`] over the session: what `task` prints for the
-/// task at `index`. The listing under `--futures` is a lower bound the
-/// same way `futures` is, so that flag also says where the walk
-/// stopped short — a walk that hit a limit looks like completeness
-/// otherwise — while the counts alone stay quiet, as the table does.
-pub(crate) fn print_task<T: proc::Target>(
+/// The [`TaskView`] over the session, handed to `print`: what `task`
+/// and `children` both read, built once per command.
+fn with_task_view<T: proc::Target>(
     session: &Session<'_, T>,
-    index: usize,
-    futures: bool,
     fit: Option<usize>,
-    out: &mut dyn io::Write,
+    print: impl FnOnce(&TaskView<'_>) -> Result<()>,
 ) -> Result<()> {
-    let census = session.census();
-    if futures {
-        print_warnings(&census.errors)?;
-        warn_census_capped(census.capped, "listed")?;
-        warn_census_uncertain(census.uncertain, "listed")?;
-        warn_census_refused(census.refused, "listed")?;
-    }
     let polling = polling_map(session);
     let view = TaskView {
         list: &session.tasks,
@@ -1491,11 +1525,41 @@ pub(crate) fn print_task<T: proc::Target>(
         group_tags: &session.group_tags(),
         polling: &polling,
         blocking_lwps: blocking_lwps(session),
-        finds: census.into(),
+        finds: session.census().into(),
         tree: session.census_tree(),
         fit,
     };
-    print_task_view(&view, index, futures, out)
+    print(&view)
+}
+
+/// [`print_task_view`] over the session: what `task` prints for the
+/// task at `index`. The counts stay quiet about a walk cut short, as
+/// the table does; the listing (`children`) is where that is said.
+pub(crate) fn print_task<T: proc::Target>(
+    session: &Session<'_, T>,
+    index: usize,
+    fit: Option<usize>,
+    out: &mut dyn io::Write,
+) -> Result<()> {
+    with_task_view(session, fit, |view| print_task_view(view, index, out))
+}
+
+/// [`print_task_children`] over the session: what `children` prints
+/// under a cursor on the task at `index`. The listing is a lower bound
+/// the same way `futures` is, so it also says where the walk stopped
+/// short — a walk that hit a limit looks like completeness otherwise.
+pub(crate) fn print_children<T: proc::Target>(
+    session: &Session<'_, T>,
+    index: usize,
+    fit: Option<usize>,
+    out: &mut dyn io::Write,
+) -> Result<()> {
+    let census = session.census();
+    print_warnings(&census.errors)?;
+    warn_census_capped(census.capped, "listed")?;
+    warn_census_uncertain(census.uncertain, "listed")?;
+    warn_census_refused(census.refused, "listed")?;
+    with_task_view(session, fit, |view| print_task_children(view, index, out))
 }
 
 /// Print the table: one row per task, in the listing's own id order,
@@ -2035,9 +2099,8 @@ pub(crate) fn exec_tasks<T: proc::Target>(
 
     // The table counts each task's futures, so it pays for the census
     // walk, and, as a count clause does, without the walk's own
-    // warnings: those go with a listing of the finds (`task
-    // --futures`, `futures`), where a walk cut short is a list cut
-    // short.
+    // warnings: those go with a listing of the finds (`children`,
+    // `futures`), where a walk cut short is a list cut short.
     print_warnings(&session.analysis().errors)?;
     let counts = counts.unwrap_or_else(build_counts);
     let rows = rows(session);
@@ -2203,7 +2266,7 @@ pub(crate) fn exec_census<T: proc::Target>(
             .flat_map(|analysis| &analysis.errors)
             .chain(census.iter().flat_map(|census| &census.errors)),
     )?;
-    // As `task --futures`: a walk that hit a depth limit looks like
+    // As `children`: a walk that hit a depth limit looks like
     // completeness in a count, so it says so.
     if let Some(census) = census {
         warn_census_capped(census.capped, "counted")?;

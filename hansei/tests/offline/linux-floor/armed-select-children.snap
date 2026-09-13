@@ -1,0 +1,15 @@
+---
+source: hansei/src/offline.rs
+description: "`children` over linux-floor/armed-select"
+---
+held futures: 4
+    (frame 1, `once`): 0xADDR  future tokio::sync::oneshot::Receiver<u32>
+      waiting on oneshot rx 0xADDR (nothing sent, sender alive)
+    (frame 1, `recv`): 0xADDR  async fn tokio::sync::mpsc::bounded::Receiver::recv<u32>  Suspend0 — tokio-1.47.5/src/sync/mpsc/bounded.rs:242
+      waiting on mpsc 0xADDR (1 sender, capacity 4, 0 unread)
+    (frame 1, `changed`): 0xADDR  async fn tokio::sync::watch::Receiver::changed<u32>  Suspend0 — tokio-1.47.5/src/sync/watch.rs:747
+        (frame 0, `fut`): 0xADDR  async fn tokio::sync::watch::changed_impl<u32>  Suspend1 — tokio-1.47.5/src/sync/watch.rs:927
+          waiting on watch 0xADDR (version 0, 1 sender, 1 receiver)
+    (frame 1, `sleep`): 0xADDR  future tokio::time::sleep::Sleep
+      waiting on timer (deadline TS on the target's monotonic clock)
+join sets: 0
