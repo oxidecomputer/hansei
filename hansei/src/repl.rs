@@ -2010,7 +2010,7 @@ mod tests {
         );
         assert_eq!(spelled("threads", "has-task"), plain(&["yes", "no"]));
         assert_eq!(spelled("threads", "task"), plain(&["3"]));
-        assert_eq!(spelled("futures", "kind"), plain(&["held", "child"]));
+        assert_eq!(spelled("futures", "kind"), plain(&["local", "set"]));
         assert!(spelled("tasks", "holds").is_empty());
         assert!(spelled("tasks", "colour").is_empty());
         assert!(spelled("config", "key").is_empty());
@@ -2957,7 +2957,7 @@ mod tests {
             Command::Tasks { .. }
         ));
         assert!(matches!(
-            Line::try_parse_from(["futures", "--with", "kind", "child"])
+            Line::try_parse_from(["futures", "--with", "kind", "set"])
                 .expect("futures lists")
                 .command,
             Command::Futures { .. }

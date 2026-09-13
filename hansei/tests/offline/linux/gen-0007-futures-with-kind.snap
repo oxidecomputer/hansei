@@ -1,6 +1,6 @@
 ---
 source: hansei/src/offline.rs
-description: "`futures --with kind child` over linux/gen-0007"
+description: "`futures --with kind set` over linux/gen-0007"
 ---
 ADDR            TASK  HELD IN             STATE      WAITING ON  ARMED  TYPE
 0xADDR  3     set 0xADDR  Unresumed  —           no     async fn gen_0007::leaf_01

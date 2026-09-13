@@ -1,5 +1,5 @@
 ---
 source: hansei/src/offline.rs
-description: "`futures --with kind child` over linux/sleep-join"
+description: "`futures --with kind set` over linux/sleep-join"
 ---
 [0 futures]

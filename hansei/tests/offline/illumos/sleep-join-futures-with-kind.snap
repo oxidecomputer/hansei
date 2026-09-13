@@ -1,5 +1,5 @@
 ---
 source: hansei/src/offline.rs
-description: "`futures --with kind child` over illumos/sleep-join"
+description: "`futures --with kind set` over illumos/sleep-join"
 ---
 [0 futures]

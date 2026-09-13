@@ -1,5 +1,5 @@
 ---
 source: hansei/src/offline.rs
-description: "`futures --with kind child` over linux/joinset"
+description: "`futures --with kind set` over linux/joinset"
 ---
 [0 futures]

@@ -25,7 +25,9 @@ use std::collections::{BTreeMap, HashMap};
 
 use std::io;
 
-/// Which of the census's two populations a row came from.
+/// Which of the census's two populations a row came from — named,
+/// where a filter names it, by where the future sits: `local` for one
+/// held in a frame's local, `set` for a member of a held set.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Kind {
     /// A future sitting in a frame's local, off the await chain.
@@ -37,8 +39,8 @@ pub(crate) enum Kind {
 impl Kind {
     fn name(self) -> &'static str {
         match self {
-            Kind::Held => "held",
-            Kind::Child => "child",
+            Kind::Held => "local",
+            Kind::Child => "set",
         }
     }
 }
@@ -753,7 +755,7 @@ pub(crate) enum Field {
     WaitingOn,
     /// The holding frame's local — a held future's only.
     Local,
-    /// `held` or `child` — exact.
+    /// Where the future sits, `local` or `set` — exact.
     Kind,
     /// `yes` or `no`: whether a slot arms the future — exact.
     Armed,
@@ -838,7 +840,10 @@ impl Field {
             Field::State => column(|r| r.state.clone()),
             Field::WaitingOn => column(|r| r.waiting_kind.clone()),
             Field::Local => column(|r| r.local.clone()),
-            Field::Kind => vec!["held".to_string(), "child".to_string()],
+            Field::Kind => vec![
+                Kind::Held.name().to_string(),
+                Kind::Child.name().to_string(),
+            ],
             Field::Armed => vec!["yes".to_string(), "no".to_string()],
             Field::Task => column(|r| Some(r.task.clone())),
             Field::Rt => column(|r| Some(r.rt.to_string())),
@@ -917,8 +922,8 @@ fn matcher(field: Field, arg: &str, handles: &[u64]) -> Result<Matcher> {
     Ok(match field {
         Field::Task => Matcher::Exact(arg.to_string()),
         Field::Kind => match arg {
-            "held" | "child" => Matcher::Exact(arg.to_string()),
-            _ => anyhow::bail!("a kind is `held` or `child`, got {arg:?}"),
+            "local" | "set" => Matcher::Exact(arg.to_string()),
+            _ => anyhow::bail!("a kind is `local` or `set`, got {arg:?}"),
         },
         Field::Armed => match arg {
             "yes" | "no" => Matcher::Exact(arg.to_string()),
@@ -1846,9 +1851,9 @@ mod tests {
         );
         let rows = rows_of(&census);
         let (h, c, other) = (&rows[0], &rows[1], &rows[2]);
-        assert!(survives(&clause("kind", "held", false), h));
-        assert!(!survives(&clause("kind", "held", false), c));
-        assert!(survives(&clause("kind", "held", true), c));
+        assert!(survives(&clause("kind", "local", false), h));
+        assert!(!survives(&clause("kind", "local", false), c));
+        assert!(survives(&clause("kind", "local", true), c));
         assert!(survives(&clause("addr", "0x4000", false), c));
         assert!(survives(&clause("task", "1", false), c));
         assert!(!survives(&clause("task", "10", false), c));
@@ -1870,7 +1875,7 @@ mod tests {
         assert!(survives(&clause("holds", "=0", false), h));
         assert!(survives(&clause("sets", "=0", false), h));
         assert!(!survives(&clause("sets", ">0", false), h));
-        assert!(matcher(Field::Kind, "set", &[]).is_err());
+        assert!(matcher(Field::Kind, "child", &[]).is_err());
         assert!(matcher(Field::Addr, "4000", &[]).is_err());
         assert!(Field::parse("lwp").is_err());
     }
@@ -1896,15 +1901,12 @@ mod tests {
         };
         assert_eq!(addrs(&["addr", "0x3000,0x4000"], &[]), [0x3000, 0x4000]);
         assert_eq!(addrs(&[], &["addr", "0x3000,0x4000"]), [0x5000]);
+        assert_eq!(addrs(&["kind", "local,set"], &[]), [0x3000, 0x4000, 0x5000]);
         assert_eq!(
-            addrs(&["kind", "held,child"], &[]),
-            [0x3000, 0x4000, 0x5000]
-        );
-        assert_eq!(
-            addrs(&["kind", "held,child"], &["addr", "0x5000"]),
+            addrs(&["kind", "local,set"], &["addr", "0x5000"]),
             [0x3000, 0x4000]
         );
-        let err = parse_clauses(&["kind".into(), "held,set".into()], &[], &[]).unwrap_err();
+        let err = parse_clauses(&["kind".into(), "local,held".into()], &[], &[]).unwrap_err();
         assert!(format!("{err:#}").contains("--with kind"), "{err:#}");
     }
 
@@ -1944,7 +1946,7 @@ mod tests {
         );
         let rows = rows_of(&census);
         let (h, c) = (&rows[0], &rows[1]);
-        assert_eq!(group_value(Field::Kind, h).as_deref(), Some("held"));
+        assert_eq!(group_value(Field::Kind, h).as_deref(), Some("local"));
         assert_eq!(group_value(Field::WaitingOn, h).as_deref(), Some("timer"));
         assert_eq!(group_value(Field::WaitingOn, c).as_deref(), Some("task 12"));
         assert_eq!(group_value(Field::Frame, c), None);
@@ -1954,7 +1956,7 @@ mod tests {
     }
 
     /// Each field's values are its column's distinct spellings — the
-    /// wait at its kind level, the fixed held/child for kind — and
+    /// wait at its kind level, the fixed local/set for kind — and
     /// `None` for an address or a compared count. The pattern fields
     /// are the four string columns.
     #[test]
@@ -1967,7 +1969,7 @@ mod tests {
         let values = |field: Field| field.values(&rows);
         assert_eq!(
             values(Field::Kind),
-            Some(vec!["held".into(), "child".into()])
+            Some(vec!["local".into(), "set".into()])
         );
         assert_eq!(
             values(Field::WaitingOn),

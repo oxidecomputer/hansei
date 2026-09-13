@@ -1,5 +1,5 @@
 ---
 source: hansei/src/offline.rs
-description: "`futures --with kind child` over linux-floor/delegation-cases"
+description: "`futures --with kind set` over linux-floor/delegation-cases"
 ---
 [0 futures]

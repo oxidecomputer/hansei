@@ -413,7 +413,8 @@ pub enum Command {
     /// `--without FIELD ARG` clauses AND together, and `--group FIELD`
     /// tallies the survivors. The string fields — type, state,
     /// waiting-on, local — are case-insensitive regexes over the
-    /// spelled value; kind (`held` or `child`), armed (`yes` or `no`),
+    /// spelled value; kind (`local` for a future held in a frame's
+    /// local, `set` for a member of a held set), armed (`yes` or `no`),
     /// task (the id as `tasks` prints it), rt (an index or `0x`
     /// handle), frame and addr are exact; depth, holds and sets
     /// compare counts, spelled '>N', '<N' or '=N' (quote them from a
@@ -456,7 +457,7 @@ pub enum Command {
         /// more clauses, which AND. Fields: type, state, waiting-on,
         /// local (case-insensitive regexes); kind, task, rt, frame,
         /// addr (exact); depth, holds, sets ('>N', '<N', '=N'). ARG
-        /// may list alternatives, `held,child`, of which any matches;
+        /// may list alternatives, `local,set`, of which any matches;
         /// a literal comma is `\,`.
         #[arg(long, short = 'w', num_args = 2, value_names = ["FIELD", "ARG"])]
         with: Vec<String>,

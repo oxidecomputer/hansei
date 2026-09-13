@@ -85,7 +85,7 @@ fn commands(
             "futures-group-waiting",
             "futures --group waiting-on".to_owned(),
         ),
-        ("futures-with-kind", "futures --with kind child".to_owned()),
+        ("futures-with-kind", "futures --with kind set".to_owned()),
         ("futures-exec-trace", "futures --exec trace -l 1".to_owned()),
         // A run that fails: the error in place, the counting summary,
         // and the loop's own failure — one future is enough to pin it.

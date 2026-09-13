@@ -1,5 +1,5 @@
 ---
 source: hansei/src/offline.rs
-description: "`futures --with kind child` over linux-floor/local-set-timer"
+description: "`futures --with kind set` over linux-floor/local-set-timer"
 ---
 [0 futures]

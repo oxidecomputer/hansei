@@ -4013,7 +4013,7 @@ fn test_armed_select_acceptance() {
         // The finds: the unpolled `Notified` is the one held future
         // nothing arms; the selector's branches are all armed, the
         // oneshot `Receiver` through the slot reached from it.
-        let unarmed = hansei_ok(&bundle, core, "futures --with armed no --with kind held");
+        let unarmed = hansei_ok(&bundle, core, "futures --with armed no --with kind local");
         assert!(unarmed.contains("`notified`"), "{unarmed}");
         assert!(
             unarmed.contains("future tokio::sync::notify::Notified"),

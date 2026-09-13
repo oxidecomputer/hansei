@@ -1,5 +1,5 @@
 ---
 source: hansei/src/offline.rs
-description: "`futures --with kind child` over illumos/futurelock"
+description: "`futures --with kind set` over illumos/futurelock"
 ---
 [0 futures]

@@ -1,5 +1,5 @@
 ---
 source: hansei/src/offline.rs
-description: "`futures --with kind child` over linux/nested-await"
+description: "`futures --with kind set` over linux/nested-await"
 ---
 [0 futures]
