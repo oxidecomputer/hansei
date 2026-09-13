@@ -888,6 +888,18 @@ fn extract_from_view(
     stats.dyn_decl_only_self += dyn_decl_only_self;
     stats.dyn_unresolved_self += dyn_unresolved_self;
 
+    // The same resolutions the other way, self type → its impl
+    // namespaces, for the rules whose origin is a type's own method
+    // declarations rather than a `poll`'s (a stream has none).
+    let mut impls_by_self: BTreeMap<String, Vec<NsId>> = BTreeMap::new();
+    for (ns, self_type) in &impl_selfs {
+        if let Some(self_type) = self_type {
+            impls_by_self
+                .entry(self_type.clone())
+                .or_default()
+                .push(*ns);
+        }
+    }
     // The sweep's impl resolutions, keyed by namespace path — the
     // spelling names mention them by — for the emit-side filter.
     let impl_selfs: BTreeMap<String, String> = impl_selfs
@@ -1304,6 +1316,38 @@ fn extract_from_view(
     // a poll declaration's is, so the same registry-path check applies.
     let env_source =
         |env: TypeId| env_decl_func(reader, view, env).and_then(|f| sweep::poll_source(reader, &f));
+    // Where a type's own methods were declared, for a rule over a type
+    // that is no future and so has no poll: every subprogram directly
+    // inside an impl of that type that records a file, joined the way
+    // a poll declaration's is. rustc puts no declaration file on the
+    // type DIE itself, so the methods are where the file is recorded.
+    let type_sources = |ty: TypeId| -> BTreeSet<sweep::PollSource> {
+        let Some(name) = fq_name(reader, ty) else {
+            return BTreeSet::new();
+        };
+        let path = name.split('<').next().unwrap_or(&name);
+        let Some(impls) = impls_by_self.get(path) else {
+            return BTreeSet::new();
+        };
+        // The methods themselves are small and generic, and a release
+        // build inlines them away; what survives out of line is a
+        // body nested under one — an `async` block's, a closure's, an
+        // inner fn's — in a namespace of its own below the impl. So
+        // the impl is looked for anywhere up the function's chain.
+        let under_impl = |mut ns: Option<NsId>| {
+            while let Some(id) = ns {
+                if impls.contains(&id) {
+                    return true;
+                }
+                ns = reader.namespaces.get(id).parent;
+            }
+            false
+        };
+        view.functions()
+            .filter(|(_, f)| under_impl(f.namespace_id()))
+            .filter_map(|(_, f)| sweep::poll_source(reader, &f))
+            .collect()
+    };
     let seeds = semantics::collect_semantic_seeds(
         &em,
         &explicit_polls,
@@ -1311,6 +1355,7 @@ fn extract_from_view(
         &coroutine_candidates,
         compiler_verdict,
         env_source,
+        type_sources,
     );
     let emitter::Finished {
         types,

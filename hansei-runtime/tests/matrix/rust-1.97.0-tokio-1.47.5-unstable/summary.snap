@@ -2556,48 +2556,48 @@ program: watch-stream
 [tasks]
 task: watch_stream::fresh::{async_fn_env#0}
   kind: AsyncFn
-  decl: watch-stream.rs:75
+  decl: watch-stream.rs:79
   entries: 2
   symbols-per-entry: 6,6
   stage: Stage<watch_stream::fresh::{async_fn_env#0}>
   variants:
-    Unresumed @ watch-stream.rs:79
-    Returned @ watch-stream.rs:88
-    Panicked @ watch-stream.rs:88
-    Suspend0 @ watch-stream.rs:85
+    Unresumed @ watch-stream.rs:83
+    Returned @ watch-stream.rs:93
+    Panicked @ watch-stream.rs:93
+    Suspend0 @ watch-stream.rs:90
 task: watch_stream::direct::{async_fn_env#0}
   kind: AsyncFn
-  decl: watch-stream.rs:94
+  decl: watch-stream.rs:99
   entries: 2
   symbols-per-entry: 6,6
   stage: Stage<watch_stream::direct::{async_fn_env#0}>
   variants:
-    Unresumed @ watch-stream.rs:94
-    Returned @ watch-stream.rs:98
-    Panicked @ watch-stream.rs:98
-    Suspend0 @ watch-stream.rs:97
+    Unresumed @ watch-stream.rs:99
+    Returned @ watch-stream.rs:103
+    Panicked @ watch-stream.rs:103
+    Suspend0 @ watch-stream.rs:102
 task: watch_stream::mapper::{async_fn_env#0}
   kind: AsyncFn
-  decl: watch-stream.rs:50
+  decl: watch-stream.rs:54
   entries: 2
   symbols-per-entry: 6,6
   stage: Stage<watch_stream::mapper::{async_fn_env#0}>
   variants:
-    Unresumed @ watch-stream.rs:54
-    Returned @ watch-stream.rs:69
-    Panicked @ watch-stream.rs:69
-    Suspend0 @ select.rs:744 (awaited at watch-stream.rs:65)
+    Unresumed @ watch-stream.rs:58
+    Returned @ watch-stream.rs:73
+    Panicked @ watch-stream.rs:73
+    Suspend0 @ select.rs:744 (awaited at watch-stream.rs:69)
 task: watch_stream::resolver::{async_fn_env#0}
   kind: AsyncFn
-  decl: watch-stream.rs:27
+  decl: watch-stream.rs:30
   entries: 2
   symbols-per-entry: 6,6
   stage: Stage<watch_stream::resolver::{async_fn_env#0}>
   variants:
-    Unresumed @ watch-stream.rs:31
-    Returned @ watch-stream.rs:43
-    Panicked @ watch-stream.rs:43
-    Suspend0 @ select.rs:744 (awaited at watch-stream.rs:39)
+    Unresumed @ watch-stream.rs:34
+    Returned @ watch-stream.rs:47
+    Panicked @ watch-stream.rs:47
+    Suspend0 @ select.rs:744 (awaited at watch-stream.rs:43)
 
 [dyn-futures]
 dyn: core::future::poll_fn::PollFn<tokio::runtime::scheduler::current_thread::{impl#0}::block_on::{closure#0}::{closure_env#0}<watch_stream::main::{async_block_env#0}>> (poll)
@@ -2611,13 +2611,13 @@ dyn: watch_stream::mapper::{async_fn_env#0} (poll, drop_glue)
 dyn: watch_stream::resolver::{async_fn_env#0} (poll, drop_glue)
 
 [env-decls]
-env: watch_stream::direct::{async_fn_env#0} @ watch-stream.rs:94
-env: watch_stream::fresh::{async_fn_env#0} @ watch-stream.rs:75
-env: watch_stream::main::{async_block_env#0} @ watch-stream.rs:105
+env: watch_stream::direct::{async_fn_env#0} @ watch-stream.rs:99
+env: watch_stream::fresh::{async_fn_env#0} @ watch-stream.rs:79
+env: watch_stream::main::{async_block_env#0} @ watch-stream.rs:110
 env: watch_stream::mapper::{async_fn#0}::{closure_env#0} @ select.rs:662
-env: watch_stream::mapper::{async_fn_env#0} @ watch-stream.rs:50
+env: watch_stream::mapper::{async_fn_env#0} @ watch-stream.rs:54
 env: watch_stream::resolver::{async_fn#0}::{closure_env#0} @ select.rs:662
-env: watch_stream::resolver::{async_fn_env#0} @ watch-stream.rs:27
+env: watch_stream::resolver::{async_fn_env#0} @ watch-stream.rs:30
 
 [infra]
 header: ok

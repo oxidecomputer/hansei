@@ -157,7 +157,10 @@ impl<'a> Check<'a> {
             | FuturesUtilIntoFuture
             | HyperUtilTokioSleep
             | TokioSelect
-            | TokioCoop => {
+            | TokioCoop
+            | FuturesUtilNext
+            | TokioStreamWatchStream
+            | TokioUtilReusableBox => {
                 let crate_name = match rule.kind {
                     TracingInstrumented => "tracing",
                     HyperUtilTokioSleep => "hyper-util",
@@ -166,6 +169,8 @@ impl<'a> Check<'a> {
                     // evidence, and tokio's version comes off its
                     // registry path rather than the layout family.
                     TokioSelect | TokioCoop => "tokio",
+                    TokioStreamWatchStream => "tokio-stream",
+                    TokioUtilReusableBox => "tokio-util",
                     _ => "futures-util",
                 };
                 return require(
@@ -565,6 +570,7 @@ impl<'a> Check<'a> {
                         FuturesUtilIntoFuture,
                         HyperUtilTokioSleep,
                         TokioCoop,
+                        FuturesUtilNext,
                     ],
                 )?;
                 self.target(record.ty, target)?;
@@ -574,10 +580,11 @@ impl<'a> Check<'a> {
                 // it. A coroutine resumes into its awaitee alone; the std
                 // adapters forward one poll and nothing else, as do the
                 // reviewed futures-util combinators, hyper-util's sleep
-                // newtype and tokio's cooperative wrapper, whose budget
-                // check polls nothing. `Instrumented` enters a span
-                // around its poll, running subscriber callbacks the
-                // review does not bound, so it stays false.
+                // newtype, tokio's cooperative wrapper, whose budget
+                // check polls nothing, and futures-util's `Next`, whose
+                // poll is its stream's `poll_next` alone. `Instrumented`
+                // enters a span around its poll, running subscriber
+                // callbacks the review does not bound, so it stays false.
                 let reviewed = matches!(
                     binding.kind,
                     RustcAsyncFn
@@ -591,6 +598,7 @@ impl<'a> Check<'a> {
                         | FuturesUtilIntoFuture
                         | HyperUtilTokioSleep
                         | TokioCoop
+                        | FuturesUtilNext
                 );
                 require(!exclusive || reviewed, "unreviewed delegation exclusivity")?;
                 let path = match target {
@@ -670,6 +678,7 @@ impl<'a> Check<'a> {
                 FuturesUtilIntoFuture,
                 HyperUtilTokioSleep,
                 TokioCoop,
+                FuturesUtilNext,
                 TokioSleep,
                 TokioJoinHandle,
                 TokioAcquire,
@@ -955,8 +964,16 @@ pub(crate) fn check_semantics(bundle: &Bundle) -> Result<()> {
             use SemanticRuleKind::*;
             check.rule(
                 access.rule,
+                // The two library routes are owned: each type holds
+                // the storage it polls through, and neither is a
+                // future in its own right.
                 match access.kind {
-                    AccessKind::Owned => &[StdBoxAccess, StdPinBoxAccess],
+                    AccessKind::Owned => &[
+                        StdBoxAccess,
+                        StdPinBoxAccess,
+                        TokioStreamWatchStream,
+                        TokioUtilReusableBox,
+                    ],
                     AccessKind::Borrowed => &[StdMutRefAccess, StdPinMutRefAccess],
                 },
             )?;

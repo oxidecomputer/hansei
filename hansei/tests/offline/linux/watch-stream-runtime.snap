@@ -5,9 +5,9 @@ description: "`runtime` over linux/watch-stream"
 runtime 0 @ 0xADDR
     flavor: multi_thread
     tasks: 4
-    futures: 9
+    futures: 11
     workers: 2
-    threads: 3 (lwp 258752, 258755, 258754)
+    threads: 3 (lwp 352762, 352765, 352764)
     found via: a thread's runtime context
     drivers:
       tokio::runtime::driver::Handle {

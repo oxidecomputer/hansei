@@ -2,7 +2,7 @@
 source: hansei/src/offline.rs
 description: "`tasks` over illumos/dyn-future"
 ---
-ID  STATE  FUT  AWAITING AT               WAITING ON                                         TYPE
+ID  STATE  FUT  AWAITING AT               WAITING ON                                        TYPE
 3   idle     0  src/bin/dyn-future.rs:40  oneshot rx 0xADDR (nothing sent, sender alive)  async fn dyn_future::driver
 4   idle     0  src/bin/dyn-future.rs:97  oneshot rx 0xADDR (nothing sent, sender alive)  async fn dyn_future::hold_aligned
 5   idle     0  src/bin/dyn-future.rs:21  oneshot rx 0xADDR (nothing sent, sender alive)  async fn dyn_future::set_member

@@ -23,7 +23,10 @@ use tokio_stream::wrappers::WatchStream;
 /// One boxed `changed()` behind a `WatchStream`: the stream's `next()`
 /// is a named local the `select!` borrows beside a oneshot nobody
 /// sends on. The box holds `make_future`, polled once and parked in
-/// the watch's `Notify`, so its waiter carries this task's waker.
+/// the watch's `Notify`, so its waiter carries this task's waker. The
+/// stream is registered at its own slot: it owns the box, and the
+/// census lists what an owned route reaches under the local it starts
+/// from.
 async fn resolver(
     ready: oneshot::Sender<()>,
     mut once: oneshot::Receiver<u32>,
@@ -31,6 +34,7 @@ async fn resolver(
 ) -> u32 {
     census_expect::task("watch_stream::resolver");
     let mut stream = WatchStream::from_changes(published);
+    census_expect::held(&stream as *const _ as u64, "make_future");
     let next = stream.next();
     tokio::pin!(next);
     census_expect::held(&once as *const _ as u64, "oneshot::Receiver");
@@ -79,6 +83,7 @@ async fn fresh(
 ) -> u32 {
     census_expect::task("watch_stream::fresh");
     let mut stream = WatchStream::new(current);
+    census_expect::held(&stream as *const _ as u64, "new::{async_block");
     let next = stream.next();
     census_expect::held(&next as *const _ as u64, "Next");
     ready.send(()).expect("main waits for readiness");

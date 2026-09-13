@@ -2,8 +2,19 @@
 source: hansei/src/offline.rs
 description: "`locals` over linux/unordered"
 ---
-stream: &mut futures_util::stream::futures_unordered::FuturesUnordered<unordered::set_member::{async_fn_env#0}> = 0xADDR (task 3) -> futures_util::stream::futures_unordered::FuturesUnordered<unordered::set_member::{async_fn_env#0}> {
-          ready_to_run_queue: alloc::sync::Arc<futures_util::stream::futures_unordered::ready_to_run_queue::ReadyToRunQueue<unordered::set_member::{async_fn_env#0}>, alloc::alloc::Global> { .. } @ 0xADDR (task 3),
-          head_all: task 3 via FuturesUnordered,
-          is_terminated: core::sync::atomic::Atomic<bool> { .. } @ 0xADDR (task 3),
+ready_to_run_queue: alloc::sync::Arc<futures_util::stream::futures_unordered::ready_to_run_queue::ReadyToRunQueue<unordered::set_member::{async_fn_env#0}>, alloc::alloc::Global> = 0xADDR -> alloc::sync::ArcInner<futures_util::stream::futures_unordered::ready_to_run_queue::ReadyToRunQueue<unordered::set_member::{async_fn_env#0}>> {
+          strong: 1,
+          weak: 4,
+          data: futures_util::stream::futures_unordered::ready_to_run_queue::ReadyToRunQueue<unordered::set_member::{async_fn_env#0}> { .. } @ 0xADDR,
       }
+head_all: core::sync::atomic::Atomic<*mut futures_util::stream::futures_unordered::task::Task<unordered::set_member::{async_fn_env#0}>> = 0xADDR (task 3 via FuturesUnordered) -> futures_util::stream::futures_unordered::task::Task<unordered::set_member::{async_fn_env#0}> {
+          future: core::cell::UnsafeCell<core::option::Option<unordered::set_member::{async_fn_env#0}>> { .. } @ 0xADDR (task 3 via FuturesUnordered),
+          next_all: task 3 via FuturesUnordered,
+          prev_all: null,
+          len_all: 3,
+          next_ready_to_run: 0xADDR,
+          ready_to_run_queue: alloc::sync::Weak<futures_util::stream::futures_unordered::ready_to_run_queue::ReadyToRunQueue<unordered::set_member::{async_fn_env#0}>, alloc::alloc::Global> { .. } @ 0xADDR (task 3 via FuturesUnordered),
+          queued: core::sync::atomic::Atomic<bool> { .. } @ 0xADDR (task 3 via FuturesUnordered),
+          woken: core::sync::atomic::Atomic<bool> { .. } @ 0xADDR (task 3 via FuturesUnordered),
+      }
+is_terminated: core::sync::atomic::Atomic<bool> = 0

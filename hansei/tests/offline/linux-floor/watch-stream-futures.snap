@@ -2,10 +2,12 @@
 source: hansei/src/offline.rs
 description: "`futures` over linux-floor/watch-stream"
 ---
-ADDR            TASK  HELD IN          STATE  WAITING ON                                                    ARMED  TYPE
-0xADDR  3     frame 1, `once`  —      oneshot rx 0xADDR (nothing sent, sender alive)        yes    future tokio::sync::oneshot::Receiver<u32>
-0xADDR  3     frame 1, `next`  —      unarmed: unknown at futures_util::stream::stream::next::Next  no     future futures_util::stream::stream::next::Next<tokio_stream::wrappers::watch::WatchStream<u32>>
-0xADDR  4     frame 1, `once`  —      oneshot rx 0xADDR (nothing sent, sender alive)        yes    future tokio::sync::oneshot::Receiver<u32>
-0xADDR  4     frame 1, `next`  —      unarmed: unknown at futures_util::stream::stream::next::Next  no     future futures_util::stream::stream::next::Next<tokio_stream::stream_map::StreamMap<&str, tokio_stream::wrappers::watch::WatchStream<u32>>>
-0xADDR  5     frame 1, `next`  —      unarmed: unknown at futures_util::stream::stream::next::Next  no     future futures_util::stream::stream::next::Next<tokio_stream::wrappers::watch::WatchStream<u32>>
-[5 futures]
+ADDR            TASK  HELD IN            STATE                                                    WAITING ON                                               ARMED  TYPE
+0xADDR  3     frame 1, `once`    —                                                        oneshot rx 0xADDR (nothing sent, sender alive)   yes    future tokio::sync::oneshot::Receiver<u32>
+0xADDR  3     frame 1, `stream`  Suspend0 — tokio-stream-0.1.19/src/wrappers/watch.rs:81  watch 0xADDR (version 0, 1 sender, 1 receiver)   yes    async fn tokio_stream::wrappers::watch::make_future<u32>
+0xADDR  3     frame 1, `next`    —                                                        watch 0xADDR (version 0, 1 sender, 1 receiver)   yes    future futures_util::stream::stream::next::Next<tokio_stream::wrappers::watch::WatchStream<u32>>
+0xADDR  4     frame 1, `once`    —                                                        oneshot rx 0xADDR (nothing sent, sender alive)   yes    future tokio::sync::oneshot::Receiver<u32>
+0xADDR  4     frame 1, `next`    —                                                        unarmed: unknown at tokio_stream::stream_map::StreamMap  no     future futures_util::stream::stream::next::Next<tokio_stream::stream_map::StreamMap<&str, tokio_stream::wrappers::watch::WatchStream<u32>>>
+0xADDR  5     frame 1, `stream`  Unresumed                                                —                                                        no     async block tokio_stream::wrappers::watch::WatchStream::new<u32>
+0xADDR  5     frame 1, `next`    —                                                        —                                                        no     future futures_util::stream::stream::next::Next<tokio_stream::wrappers::watch::WatchStream<u32>>
+[7 futures]

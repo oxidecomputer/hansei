@@ -1,8 +1,8 @@
 ---
 source: hansei/src/offline.rs
-description: "`whatis 0x5648ae7cea80` over linux-floor/watch-stream"
+description: "`whatis 0x560498748a80` over linux-floor/watch-stream"
 ---
 Task 3: async fn watch_stream::resolver
     At: offset 0xADDR in the task's allocation (header 0xADDR)
     State: idle
-    Spawned at: src/bin/watch-stream.rs:109:25
+    Spawned at: src/bin/watch-stream.rs:114:25

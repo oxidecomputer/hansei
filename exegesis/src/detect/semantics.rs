@@ -214,8 +214,14 @@ pub const TRACING_INSTRUMENTED_V0_1_40: LibraryConvention = LibraryConvention {
 /// `try_poll`, which for a `TryFuture` blanket impl is that future's
 /// own poll. All four therefore poll exactly their delegate.
 ///
+/// `stream::Next<'_, St>` (`src/stream/stream/next.rs`, byte-identical
+/// across the range) is `{ stream: &mut St }` and its `poll` is
+/// `self.stream.poll_next_unpin(cx)` and nothing else: one poll of the
+/// stream it borrows, so it forwards exclusively too — to a stream,
+/// which the route names without claiming it a future.
+///
 /// The checksums are the reviewed revisions of every file a `poll`
-/// declaration in this set can name — the three implementations, the
+/// declaration in this set can name — the four implementations, the
 /// two `delegate_all!` invocation sites and the macro's own file — so
 /// a build whose line table carries one is checked against the
 /// revision that was read.
@@ -311,6 +317,14 @@ pub const FUTURES_UTIL_ADAPTERS_V0_3_30: LibraryConvention = LibraryConvention {
             [
                 0x2e, 0x11, 0x59, 0xc1, 0xd4, 0x4e, 0x02, 0x07, 0x2d, 0xb7, 0xb6, 0xd4, 0x35, 0xc8,
                 0xa0, 0xc6,
+            ],
+        ),
+        // src/stream/stream/next.rs, 0.3.30 through 0.3.34
+        (
+            "src/stream/stream/next.rs",
+            [
+                0x1b, 0xd8, 0x24, 0x3a, 0xe6, 0x0b, 0x46, 0xb4, 0x36, 0x7e, 0x8a, 0x1f, 0xfa, 0x0b,
+                0x0b, 0x1d,
             ],
         ),
     ],
@@ -467,6 +481,85 @@ pub const TOKIO_COOP_V1_47: LibraryConvention = LibraryConvention {
             [
                 0x83, 0x7d, 0x88, 0xd2, 0x07, 0x3f, 0xc3, 0xa5, 0x44, 0x45, 0x6d, 0x1d, 0x49, 0x0d,
                 0xbe, 0x45,
+            ],
+        ),
+    ],
+};
+
+/// tokio-stream's `WatchStream<T>` as 0.1.14 through 0.1.19 implement
+/// it (`src/wrappers/watch.rs`; the revisions differ in docs, in where
+/// the `from_changes` constructor sits, and in 0.1.19 re-arming the
+/// stream after a closed channel): the struct is `{ inner:
+/// ReusableBoxFuture<'static, (Result<(), RecvError>, Receiver<T>)> }`
+/// and its `poll_next` is `ready!(self.inner.poll(cx))`, then a fresh
+/// `make_future(rx)` set into the same box. So polling the stream polls
+/// the one box it owns and nothing else — a storage route, not a
+/// future: the stream has no `poll`, and the rule is read off the
+/// type's own method declarations.
+pub const TOKIO_STREAM_WATCH_V0_1_14: LibraryConvention = LibraryConvention {
+    package: "tokio-stream",
+    family: "tokio-stream-watch-0.1.14",
+    floor: (0, 1, 14),
+    ceiling: (0, 1, 19),
+    checksums: &[
+        // src/wrappers/watch.rs, 0.1.14
+        (
+            "src/wrappers/watch.rs",
+            [
+                0xda, 0x55, 0x51, 0x47, 0x0d, 0xf7, 0x61, 0x1c, 0xd2, 0xbb, 0xce, 0x32, 0x39, 0x30,
+                0xd4, 0x93,
+            ],
+        ),
+        // src/wrappers/watch.rs, 0.1.15
+        (
+            "src/wrappers/watch.rs",
+            [
+                0xf7, 0xc7, 0x13, 0x36, 0xb1, 0xbb, 0x26, 0x87, 0xfe, 0xf7, 0x63, 0xf7, 0xda, 0x5d,
+                0x14, 0xe6,
+            ],
+        ),
+        // src/wrappers/watch.rs, 0.1.16 and 0.1.17
+        (
+            "src/wrappers/watch.rs",
+            [
+                0x35, 0xef, 0x04, 0x87, 0x66, 0xb0, 0xe6, 0x94, 0x96, 0x6a, 0x7c, 0x46, 0x7e, 0x4a,
+                0xa7, 0x95,
+            ],
+        ),
+        // src/wrappers/watch.rs, 0.1.18 and 0.1.19
+        (
+            "src/wrappers/watch.rs",
+            [
+                0x31, 0x0c, 0x15, 0xb6, 0x8d, 0x82, 0xfe, 0xec, 0x95, 0x0d, 0x54, 0xfb, 0xdc, 0x30,
+                0xb0, 0xf3,
+            ],
+        ),
+    ],
+};
+
+/// tokio-util's `ReusableBoxFuture<'a, T>` as 0.7.11 through 0.7.19
+/// implement it (`src/sync/reusable_box.rs`, byte-identical across the
+/// range): the struct is `{ boxed: Pin<Box<dyn Future<Output = T> +
+/// Send + 'a>> }`, its inherent `poll` is `self.get_pin().poll(cx)` over
+/// that box, and its `Future` impl is that same `poll`. `set` and
+/// `try_set` replace the box's contents in place, never the box. So
+/// every poll goes through `boxed` and nothing else — a storage route
+/// to the trait object, whose resolution is the dyn join's. The route
+/// is what matters; whether the `Future` impl was instantiated is the
+/// caller's business (`WatchStream` calls the inherent one), so the
+/// rule is read off the type's method declarations, not a `poll`'s.
+pub const TOKIO_UTIL_REUSABLE_BOX_V0_7_11: LibraryConvention = LibraryConvention {
+    package: "tokio-util",
+    family: "tokio-util-reusable-box-0.7.11",
+    floor: (0, 7, 11),
+    ceiling: (0, 7, 19),
+    checksums: &[
+        // src/sync/reusable_box.rs, 0.7.11 through 0.7.19
+        (
+            "src/sync/reusable_box.rs",
+            [
+                0xd9, 0x44, 0xcc, 0x7b, 0x66, 0xde, 0x9d, 0xde, 0xde, 0x3f, 0x8e, 0xe1, 0x29, 0x03,
+                0x0c, 0xc9,
             ],
         ),
     ],
@@ -768,6 +861,18 @@ mod tests {
                 "1.46.1",
                 "1.53.2",
             ),
+            (
+                &TOKIO_STREAM_WATCH_V0_1_14,
+                ["0.1.14", "0.1.15", "0.1.16", "0.1.17", "0.1.18", "0.1.19"].as_slice(),
+                "0.1.13",
+                "0.1.20",
+            ),
+            (
+                &TOKIO_UTIL_REUSABLE_BOX_V0_7_11,
+                ["0.7.11", "0.7.12", "0.7.15", "0.7.19"].as_slice(),
+                "0.7.10",
+                "0.7.20",
+            ),
         ] {
             for version in inside {
                 assert_eq!(
@@ -800,6 +905,8 @@ mod tests {
         assert_eq!(FUTURES_UTIL_ADAPTERS_V0_3_30.range(), "0.3.30–0.3.34");
         assert_eq!(HYPER_UTIL_TOKIO_SLEEP_V0_1_10.range(), "0.1.10–0.1.20");
         assert_eq!(TOKIO_COOP_V1_47.range(), "1.47.0–1.53.1");
+        assert_eq!(TOKIO_STREAM_WATCH_V0_1_14.range(), "0.1.14–0.1.19");
+        assert_eq!(TOKIO_UTIL_REUSABLE_BOX_V0_7_11.range(), "0.7.11–0.7.19");
     }
 
     /// A state protocol binds inside its reviewed tokio range and for

@@ -21,8 +21,10 @@ task 5
       awaiting at src/bin/armed-select.rs:76 (Suspend0, 0 locals)
 
 task 6
-#0  future        futures_util::stream::stream::next::Next<futures_util::stream::futures_unordered::FuturesUnordered<armed_select::child>>
+#0  future        futures_util::stream::futures_unordered::FuturesUnordered<armed_select::child>
+      (<no_state>, 3 locals)
+#1  future        futures_util::stream::stream::next::Next<futures_util::stream::futures_unordered::FuturesUnordered<armed_select::child>>
       (<no_state>, 1 local)
-#1  async fn      armed_select::driver
+#2  async fn      armed_select::driver
       awaiting at src/bin/armed-select.rs:100 (Suspend0, 2 locals)
 [Executed against 4 tasks, 0 failed]

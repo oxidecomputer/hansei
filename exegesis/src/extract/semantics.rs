@@ -36,12 +36,15 @@ use crate::bundle::{
     required_resource_roles, required_resource_routes, scheduler_role, semantic_path_target,
 };
 use crate::detect::Family;
-use crate::detect::adapters::{self, InstrumentedLayout, Pointee, SelectLayout, StdAdapter};
+use crate::detect::adapters::{
+    self, InstrumentedLayout, Pointee, SelectLayout, StdAdapter, WidePointer,
+};
 use crate::detect::semantics::{
     FUTURES_UTIL_ADAPTERS_V0_3_30, HYPER_UTIL_TOKIO_SLEEP_V0_1_10, LibraryConvention,
-    RustcConvention, TOKIO_COOP_V1_47, TOKIO_SELECT_V1_47, TRACING_INSTRUMENTED_V0_1_40,
-    library_convention, rustc_coroutine_convention, rustc_dyn_future_abi_convention,
-    rustc_std_adapter_convention, tokio_state_protocol,
+    RustcConvention, TOKIO_COOP_V1_47, TOKIO_SELECT_V1_47, TOKIO_STREAM_WATCH_V0_1_14,
+    TOKIO_UTIL_REUSABLE_BOX_V0_7_11, TRACING_INSTRUMENTED_V0_1_40, library_convention,
+    rustc_coroutine_convention, rustc_dyn_future_abi_convention, rustc_std_adapter_convention,
+    tokio_state_protocol,
 };
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -178,6 +181,20 @@ enum LibrarySeed {
     TokioSleep(String, BundleTypeId),
     /// tokio's `Coop<F>` over the `F` it budgets.
     Coop(String, BundleTypeId),
+    /// futures-util's `Next<'_, St>`: the `&mut St` member and the
+    /// stream it targets — a stream, which the route names without
+    /// proving it a future.
+    Next(String, BundleTypeId),
+    /// tokio-stream's `WatchStream<T>` over the `ReusableBoxFuture` it
+    /// owns: a storage route, not a future.
+    WatchStream(String, BundleTypeId),
+    /// tokio-util's `ReusableBoxFuture<'_, T>` over its pinned box: a
+    /// storage route to the trait object inside.
+    ReusableBox {
+        boxed: String,
+        pin: (String, BundleTypeId),
+        dyn_: DynSeed,
+    },
 }
 
 impl LibrarySeed {
@@ -190,6 +207,9 @@ impl LibrarySeed {
             LibrarySeed::IntoFuture(..) => SemanticRuleKind::FuturesUtilIntoFuture,
             LibrarySeed::TokioSleep(..) => SemanticRuleKind::HyperUtilTokioSleep,
             LibrarySeed::Coop(..) => SemanticRuleKind::TokioCoop,
+            LibrarySeed::Next(..) => SemanticRuleKind::FuturesUtilNext,
+            LibrarySeed::WatchStream(..) => SemanticRuleKind::TokioStreamWatchStream,
+            LibrarySeed::ReusableBox { .. } => SemanticRuleKind::TokioUtilReusableBox,
         }
     }
 
@@ -199,8 +219,20 @@ impl LibrarySeed {
         match self {
             LibrarySeed::TokioSleep(..) => &HYPER_UTIL_TOKIO_SLEEP_V0_1_10,
             LibrarySeed::Coop(..) => &TOKIO_COOP_V1_47,
+            LibrarySeed::WatchStream(..) => &TOKIO_STREAM_WATCH_V0_1_14,
+            LibrarySeed::ReusableBox { .. } => &TOKIO_UTIL_REUSABLE_BOX_V0_7_11,
             _ => &FUTURES_UTIL_ADAPTERS_V0_3_30,
         }
+    }
+
+    /// Whether the rule's origin is the type's own method declarations
+    /// rather than a `poll`'s: the two storage routes are no futures
+    /// and have no poll to be declared anywhere.
+    fn origin_is_the_type(&self) -> bool {
+        matches!(
+            self,
+            LibrarySeed::WatchStream(..) | LibrarySeed::ReusableBox { .. }
+        )
     }
 }
 
@@ -231,6 +263,10 @@ pub(super) struct Seed {
     instrumented: Option<InstrumentedSeed>,
     library: Option<LibrarySeed>,
     select: Option<SelectSeed>,
+    /// Where the type's own methods were declared, for a library rule
+    /// whose origin is the type rather than a `poll` (a `WatchStream`
+    /// has none); empty otherwise.
+    type_sources: BTreeSet<PollSource>,
 }
 
 impl Seed {
@@ -257,14 +293,36 @@ pub(super) struct Library<'a> {
     pub(super) family: Family,
 }
 
+/// A wide pointer as the binder carries it, by bundle id, with the
+/// verdict on the vtable ABI its defining units were compiled under.
+fn dyn_seed(
+    w: WidePointer,
+    verdict: &mut impl FnMut(TypeId, Reviewed) -> CompilerVerdict,
+    bundle_id: &impl Fn(TypeId) -> Option<BundleTypeId>,
+) -> Option<DynSeed> {
+    Some(DynSeed {
+        abi: verdict(w.wide, Reviewed::DynFutureAbi),
+        future_trait: w.future_trait,
+        wide: bundle_id(w.wide)?,
+        pointer: w.pointer,
+        vtable: w.vtable,
+        data_ptr: bundle_id(w.data_ptr)?,
+        vtable_ptr: bundle_id(w.vtable_ptr)?,
+        trait_ty: bundle_id(w.trait_ty)?,
+    })
+}
+
 /// The reviewed third-party wrapper `raw` is, if it is one. The name
 /// picks the screen — a definition path is where a crate's own type
 /// lives — and the screen decides, over the type's own declaration.
+/// `dyn_seed` carries a wide pointer a screen found to the binder,
+/// with its ABI verdict.
 fn library_seed(
     reader: &crate::DwReader<'_>,
     raw: TypeId,
     name: &str,
     bundle_id: impl Fn(TypeId) -> Option<BundleTypeId>,
+    mut dyn_seed: impl FnMut(WidePointer) -> Option<DynSeed>,
 ) -> Option<LibrarySeed> {
     let forward = |layout: Option<adapters::ForwardLayout>| {
         let layout = layout?;
@@ -293,6 +351,19 @@ fn library_seed(
     } else if name.starts_with("tokio::task::coop::Coop<") {
         let (member, inner) = forward(adapters::tokio_coop(reader, raw))?;
         Some(LibrarySeed::Coop(member, inner))
+    } else if name.starts_with("futures_util::stream::stream::next::Next<") {
+        let layout = adapters::futures_util_next(reader, raw)?;
+        Some(LibrarySeed::Next(layout.stream, bundle_id(layout.target)?))
+    } else if name.starts_with("tokio_stream::wrappers::watch::WatchStream<") {
+        let (member, inner) = forward(adapters::tokio_stream_watch_stream(reader, raw))?;
+        Some(LibrarySeed::WatchStream(member, inner))
+    } else if name.starts_with("tokio_util::sync::reusable_box::ReusableBoxFuture<") {
+        let layout = adapters::tokio_util_reusable_box(reader, raw)?;
+        Some(LibrarySeed::ReusableBox {
+            boxed: layout.boxed,
+            pin: (layout.pin.0, bundle_id(layout.pin.1)?),
+            dyn_: dyn_seed(layout.wide)?,
+        })
     } else {
         None
     }
@@ -305,6 +376,7 @@ pub(super) fn collect_semantic_seeds(
     coroutines: &BTreeSet<TypeId>,
     mut verdict: impl FnMut(TypeId, Reviewed) -> CompilerVerdict,
     env_source: impl Fn(TypeId) -> Option<PollSource>,
+    type_sources: impl Fn(TypeId) -> BTreeSet<PollSource>,
 ) -> SemanticSeeds {
     let mut seeds = SemanticSeeds::new();
     let reader = em.reader;
@@ -336,16 +408,7 @@ pub(super) fn collect_semantic_seeds(
                 let mut pointee = |pointee: Pointee| -> Option<PointeeSeed> {
                     Some(match pointee {
                         Pointee::Sized(f) => PointeeSeed::Sized(bundle_id(f)?),
-                        Pointee::Dyn(w) => PointeeSeed::Dyn(DynSeed {
-                            abi: verdict(w.wide, Reviewed::DynFutureAbi),
-                            future_trait: w.future_trait,
-                            wide: bundle_id(w.wide)?,
-                            pointer: w.pointer,
-                            vtable: w.vtable,
-                            data_ptr: bundle_id(w.data_ptr)?,
-                            vtable_ptr: bundle_id(w.vtable_ptr)?,
-                            trait_ty: bundle_id(w.trait_ty)?,
-                        }),
+                        Pointee::Dyn(w) => PointeeSeed::Dyn(dyn_seed(w, &mut verdict, &bundle_id)?),
                     })
                 };
                 let seed = match adapter {
@@ -400,8 +463,14 @@ pub(super) fn collect_semantic_seeds(
             && let Some(seed) = select_seed(layout, bundle_id, &env_source)
         {
             seeds.entry(ty).or_default().select = Some(seed);
-        } else if let Some(library) = library_seed(reader, raw, name, bundle_id) {
-            seeds.entry(ty).or_default().library = Some(library);
+        } else if let Some(library) = library_seed(reader, raw, name, bundle_id, |w| {
+            dyn_seed(w, &mut verdict, &bundle_id)
+        }) {
+            let seed = seeds.entry(ty).or_default();
+            if library.origin_is_the_type() {
+                seed.type_sources = type_sources(raw);
+            }
+            seed.library = Some(library);
         }
     }
     for (raw, symbols) in polls {
@@ -774,9 +843,16 @@ enum CaseAction {
 #[derive(Clone, Debug)]
 struct Plan {
     rule: RuleKey,
-    program: Delegation,
+    /// The poll program, for a type that is a future. A storage route
+    /// that is polled through and never polled itself — a stream over
+    /// the box it owns — plans none, and has only its access.
+    program: Option<Delegation>,
     /// The storage access the same route establishes, for an adapter.
     access: Option<(RuleKey, AccessKind, Target)>,
+    /// Whether the program's delegate is thereby a future: a poll
+    /// forwarded to a poll proves it, a poll that runs the delegate's
+    /// `poll_next` names a stream and proves nothing.
+    delegate_is_future: bool,
 }
 
 /// A `select!` binding as planned: its rule, and the three routes held
@@ -805,9 +881,13 @@ enum Delegation {
 
 impl Plan {
     fn static_children(&self) -> Vec<BundleTypeId> {
+        if !self.delegate_is_future {
+            return Vec::new();
+        }
         match &self.program {
-            Delegation::Direct { target, .. } => target.static_child().into_iter().collect(),
-            Delegation::Match { cases } => cases
+            None => Vec::new(),
+            Some(Delegation::Direct { target, .. }) => target.static_child().into_iter().collect(),
+            Some(Delegation::Match { cases }) => cases
                 .iter()
                 .filter_map(|(_, action)| match action {
                     CaseAction::Delegate(target) => target.static_child(),
@@ -950,6 +1030,12 @@ pub(super) fn bind_semantics(
                     Err(decline) => draft.decline = Some(decline),
                 }
             } else if let Some(library) = &seed.library {
+                // A route that is polled through and never polled — a
+                // stream over the box it owns — is a record on the
+                // strength of its screen alone: nothing will ever prove
+                // it a future, and a declined origin has nowhere else
+                // to be recorded.
+                draft.own_record |= library.origin_is_the_type();
                 match plan_library(ty, library, seed, types, strings) {
                     Ok(plan) => draft.plan = Some(plan),
                     Err(decline) => draft.decline = Some(decline),
@@ -1122,9 +1208,9 @@ pub(super) fn bind_semantics(
                 }
                 if evidence.is_empty() {
                     None
-                } else {
+                } else if let Some(program) = plan.program {
                     let rule = rules.rule(&plan.rule, strings, library);
-                    let program = match plan.program {
+                    let program = match program {
                         Delegation::Direct { target, exclusive } => {
                             PollProgram::Direct(PollAction::Delegate {
                                 target: target.into_future_target(&mut rules, strings, library),
@@ -1156,6 +1242,11 @@ pub(super) fn bind_semantics(
                         },
                     };
                     Some((rule, program))
+                } else {
+                    // Proved a future by something, yet a route with no
+                    // program: its continuation stays unknown, its
+                    // access beside it.
+                    None
                 }
             }
             None => None,
@@ -1332,62 +1423,7 @@ fn plan_adapter(
             steps.push(Step::Deref);
             Target::Value(checked_path(types, ty, steps, *f)?)
         }
-        PointeeSeed::Dyn(d) => {
-            let (abi_producer, abi) = supported(&d.abi)?;
-            if current != d.wide {
-                return Err((
-                    SemanticIssueKind::MissingLayout,
-                    "the adapter's wide pointer is not the one screened".to_owned(),
-                ));
-            }
-            let (pointer, data_ptr, _) =
-                member_named(types, strings, d.wide, &d.pointer).ok_or((
-                    SemanticIssueKind::AmbiguousLayout,
-                    "no unique data pointer member".to_owned(),
-                ))?;
-            let (vtable, vtable_ptr, _) =
-                member_named(types, strings, d.wide, &d.vtable).ok_or((
-                    SemanticIssueKind::AmbiguousLayout,
-                    "no unique vtable member".to_owned(),
-                ))?;
-            let wide_shape = data_ptr == d.data_ptr
-                && vtable_ptr == d.vtable_ptr
-                && matches!(types.get(d.data_ptr), Some(TypeDef::Pointer { target, .. }) if *target == d.trait_ty)
-                && matches!(
-                    types.get(d.trait_ty),
-                    Some(TypeDef::Struct { size: 0, members, .. }) if members.is_empty()
-                )
-                && types.size_of(d.data_ptr) == Some(crate::bundle::POINTER_SIZE)
-                && types.size_of(d.vtable_ptr) == Some(crate::bundle::POINTER_SIZE);
-            if !wide_shape {
-                return Err((
-                    SemanticIssueKind::MissingLayout,
-                    "the wide pointer's words or trait object moved in the final table".to_owned(),
-                ));
-            }
-            Target::Dynamic {
-                pointer: checked_path(types, ty, steps, d.wide)?,
-                data: checked_path(
-                    types,
-                    d.wide,
-                    vec![Step::Member(MemberRef::Named(pointer))],
-                    d.data_ptr,
-                )?,
-                vtable: checked_path(
-                    types,
-                    d.wide,
-                    vec![Step::Member(MemberRef::Named(vtable))],
-                    d.vtable_ptr,
-                )?,
-                trait_ty: d.trait_ty,
-                future_trait: d.future_trait,
-                abi: RuleKey::Rustc {
-                    kind: SemanticRuleKind::DynFutureAbi,
-                    producer: abi_producer.to_owned(),
-                    family: abi.family,
-                },
-            }
-        }
+        PointeeSeed::Dyn(d) => dynamic_target(ty, steps, current, d, types, strings)?,
     };
     Ok(Plan {
         rule: rule(adapter.kind.poll_rule()),
@@ -1396,19 +1432,89 @@ fn plan_adapter(
             adapter.kind.access(),
             target.clone(),
         )),
-        program: Delegation::Direct {
+        program: Some(Delegation::Direct {
             target,
             exclusive: true,
+        }),
+        delegate_is_future: true,
+    })
+}
+
+/// The dynamic target a wide pointer plans: `steps` from `ty` to the
+/// wide pointer `current`, which has to be the one the screen saw,
+/// held to the final table; inside it the two words the screen named,
+/// each pointer-sized, the data word targeting the zero-sized trait
+/// object; and the ABI rule its defining units were compiled under.
+fn dynamic_target(
+    ty: BundleTypeId,
+    steps: Vec<Step>,
+    current: BundleTypeId,
+    d: &DynSeed,
+    types: &TypeTable,
+    strings: &mut StringInterner,
+) -> Result<Target, Decline> {
+    let (abi_producer, abi) = supported(&d.abi)?;
+    if current != d.wide {
+        return Err((
+            SemanticIssueKind::MissingLayout,
+            "the adapter's wide pointer is not the one screened".to_owned(),
+        ));
+    }
+    let (pointer, data_ptr, _) = member_named(types, strings, d.wide, &d.pointer).ok_or((
+        SemanticIssueKind::AmbiguousLayout,
+        "no unique data pointer member".to_owned(),
+    ))?;
+    let (vtable, vtable_ptr, _) = member_named(types, strings, d.wide, &d.vtable).ok_or((
+        SemanticIssueKind::AmbiguousLayout,
+        "no unique vtable member".to_owned(),
+    ))?;
+    let wide_shape = data_ptr == d.data_ptr
+        && vtable_ptr == d.vtable_ptr
+        && matches!(types.get(d.data_ptr), Some(TypeDef::Pointer { target, .. }) if *target == d.trait_ty)
+        && matches!(
+            types.get(d.trait_ty),
+            Some(TypeDef::Struct { size: 0, members, .. }) if members.is_empty()
+        )
+        && types.size_of(d.data_ptr) == Some(crate::bundle::POINTER_SIZE)
+        && types.size_of(d.vtable_ptr) == Some(crate::bundle::POINTER_SIZE);
+    if !wide_shape {
+        return Err((
+            SemanticIssueKind::MissingLayout,
+            "the wide pointer's words or trait object moved in the final table".to_owned(),
+        ));
+    }
+    Ok(Target::Dynamic {
+        pointer: checked_path(types, ty, steps, d.wide)?,
+        data: checked_path(
+            types,
+            d.wide,
+            vec![Step::Member(MemberRef::Named(pointer))],
+            d.data_ptr,
+        )?,
+        vtable: checked_path(
+            types,
+            d.wide,
+            vec![Step::Member(MemberRef::Named(vtable))],
+            d.vtable_ptr,
+        )?,
+        trait_ty: d.trait_ty,
+        future_trait: d.future_trait,
+        abi: RuleKey::Rustc {
+            kind: SemanticRuleKind::DynFutureAbi,
+            producer: abi_producer.to_owned(),
+            family: abi.family,
         },
     })
 }
 
 /// Plan a reviewed third-party wrapper's delegation: the origin first —
 /// every declaration of its `poll` on a cargo registry path naming the
-/// convention's crate at a version inside its reviewed range — then the
-/// route the screen described, held to the final table. Each of these
-/// implementations polls its delegate and nothing else, so all of them
-/// forward exclusively.
+/// convention's crate at a version inside its reviewed range, or of
+/// the type's own methods where the type is a storage route with no
+/// poll — then the route the screen described, held to the final
+/// table. Each of these implementations polls its delegate and nothing
+/// else, so all of them forward exclusively; the two storage routes
+/// plan no program at all, only the access their one member is.
 fn plan_library(
     ty: BundleTypeId,
     seed_layout: &LibrarySeed,
@@ -1416,7 +1522,12 @@ fn plan_library(
     types: &TypeTable,
     strings: &mut StringInterner,
 ) -> Result<Plan, Decline> {
-    let origin = delegation_origin(&seed.poll_sources, seed_layout.convention())?;
+    let (sources, declared_by) = if seed_layout.origin_is_the_type() {
+        (&seed.type_sources, "method")
+    } else {
+        (&seed.poll_sources, "poll")
+    };
+    let origin = delegation_origin(sources, seed_layout.convention(), declared_by)?;
     let rule = RuleKey::Delegation {
         kind: seed_layout.rule_kind(),
         origin,
@@ -1510,11 +1621,92 @@ fn plan_library(
             target: Target::Value(forward(member, *inner, strings)?),
             exclusive: true,
         },
+        // `Next` polls through its `&mut St`: the route dereferences the
+        // reference to the stream itself, whose own record says what
+        // polling it polls. A stream is no future, so the delegate is
+        // named and not proved.
+        LibrarySeed::Next(member, stream) => {
+            let (name, member_ty, _) = member_named(types, strings, ty, member).ok_or((
+                SemanticIssueKind::AmbiguousLayout,
+                format!("no unique member {member:?}"),
+            ))?;
+            if !matches!(types.get(member_ty), Some(TypeDef::Pointer { target, .. }) if target == stream)
+            {
+                return Err((
+                    SemanticIssueKind::MissingLayout,
+                    format!("{member} is not a reference to the declared stream"),
+                ));
+            }
+            let path = checked_path(
+                types,
+                ty,
+                vec![Step::Member(MemberRef::Named(name)), Step::Deref],
+                *stream,
+            )?;
+            return Ok(Plan {
+                rule,
+                program: Some(Delegation::Direct {
+                    target: Target::Value(path),
+                    exclusive: true,
+                }),
+                access: None,
+                delegate_is_future: false,
+            });
+        }
+        // The stream owns the box it polls through, and is polled
+        // through itself: an access and no program.
+        LibrarySeed::WatchStream(member, inner) => {
+            let path = forward(member, *inner, strings)?;
+            return Ok(Plan {
+                rule: rule.clone(),
+                program: None,
+                access: Some((rule, AccessKind::Owned, Target::Value(path))),
+                delegate_is_future: true,
+            });
+        }
+        // The box's every poll is the trait object's: the route runs
+        // through `boxed` and the `Pin`'s one member to the wide
+        // pointer, which the dyn join resolves.
+        LibrarySeed::ReusableBox { boxed, pin, dyn_ } => {
+            let (boxed_name, pin_ty, _) = member_named(types, strings, ty, boxed).ok_or((
+                SemanticIssueKind::AmbiguousLayout,
+                format!("no unique member {boxed:?}"),
+            ))?;
+            let Some(TypeDef::Struct { members, .. }) = types.get(pin_ty) else {
+                return Err((
+                    SemanticIssueKind::MissingLayout,
+                    "Pin is not a struct in the final table".to_owned(),
+                ));
+            };
+            let (pin_name, box_ty, offset) =
+                member_named(types, strings, pin_ty, &pin.0).ok_or((
+                    SemanticIssueKind::AmbiguousLayout,
+                    format!("Pin has no unique member {:?}", pin.0),
+                ))?;
+            if members.len() != 1 || box_ty != pin.1 || offset != 0 {
+                return Err((
+                    SemanticIssueKind::MissingLayout,
+                    "Pin's member is not its declared pointer".to_owned(),
+                ));
+            }
+            let steps = vec![
+                Step::Member(MemberRef::Named(boxed_name)),
+                Step::Member(MemberRef::Named(pin_name)),
+            ];
+            let target = dynamic_target(ty, steps, box_ty, dyn_, types, strings)?;
+            return Ok(Plan {
+                rule: rule.clone(),
+                program: None,
+                access: Some((rule, AccessKind::Owned, target)),
+                delegate_is_future: true,
+            });
+        }
     };
     Ok(Plan {
         rule,
-        program,
+        program: Some(program),
         access: None,
+        delegate_is_future: true,
     })
 }
 
@@ -1537,7 +1729,11 @@ fn plan_select(
             "the closure environment records no declaration site".to_owned(),
         ));
     };
-    let origin = delegation_origin(&BTreeSet::from([source.clone()]), &TOKIO_SELECT_V1_47)?;
+    let origin = delegation_origin(
+        &BTreeSet::from([source.clone()]),
+        &TOKIO_SELECT_V1_47,
+        "closure",
+    )?;
     let rule = RuleKey::Delegation {
         kind: SemanticRuleKind::TokioSelect,
         origin,
@@ -1627,7 +1823,7 @@ fn plan_instrumented(
     names: &[Option<String>],
     strings: &mut StringInterner,
 ) -> Result<Plan, Decline> {
-    let origin = delegation_origin(&seed.poll_sources, &TRACING_INSTRUMENTED_V0_1_40)?;
+    let origin = delegation_origin(&seed.poll_sources, &TRACING_INSTRUMENTED_V0_1_40, "poll")?;
     let (name, inner_ty, _) = member_named(types, strings, ty, &layout.inner).ok_or((
         SemanticIssueKind::AmbiguousLayout,
         format!("Instrumented has no unique member {:?}", layout.inner),
@@ -1683,11 +1879,12 @@ fn plan_instrumented(
             kind: SemanticRuleKind::TracingInstrumented,
             origin,
         },
-        program: Delegation::Direct {
+        program: Some(Delegation::Direct {
             target: Target::Value(path),
             exclusive: false,
-        },
+        }),
         access: None,
+        delegate_is_future: true,
     })
 }
 
@@ -1702,14 +1899,14 @@ fn plan_instrumented(
 fn delegation_origin(
     sources: &BTreeSet<PollSource>,
     convention: &'static LibraryConvention,
+    declared_by: &str,
 ) -> Result<DelegationOrigin, Decline> {
     let decline = |detail: String| (SemanticIssueKind::UnsupportedOrigin, detail);
     let package = convention.package;
     if sources.is_empty() {
-        return Err(decline(
-            "no poll declaration records where this instantiation's implementation lives"
-                .to_owned(),
-        ));
+        return Err(decline(format!(
+            "no {declared_by} declaration records where this instantiation's implementation lives"
+        )));
     }
     let mut agreed: Option<(String, semver::Version)> = None;
     let mut files: Vec<(String, [u8; 16])> = Vec::new();
@@ -1848,8 +2045,9 @@ fn coroutine_plan(
         .collect();
     Plan {
         rule: rule.clone(),
-        program: Delegation::Match { cases },
+        program: Some(Delegation::Match { cases }),
         access: None,
+        delegate_is_future: true,
     }
 }
 
@@ -2478,6 +2676,20 @@ mod tests {
                 }],
             },
         );
+        // tokio-util's box over the pinned wide pointer, for the
+        // storage route whose target is the trait object.
+        add(
+            "tokio_util::sync::reusable_box::ReusableBoxFuture<()>",
+            TypeDef::Struct {
+                name: strings.intern("tokio_util::sync::reusable_box::ReusableBoxFuture<()>"),
+                size: 16,
+                members: vec![MemberDef {
+                    name: strings.intern("boxed"),
+                    ty: PIN_WIDE,
+                    offset: 0,
+                }],
+            },
+        );
         Adapters {
             types: TypeTable {
                 types,
@@ -2499,6 +2711,7 @@ mod tests {
     const PIN_WIDE: BundleTypeId = BundleTypeId(10);
     const BOX_REF: BundleTypeId = BundleTypeId(11);
     const PIN_BOX_REF: BundleTypeId = BundleTypeId(12);
+    const REUSABLE: BundleTypeId = BundleTypeId(13);
 
     fn dyn_seed() -> DynSeed {
         DynSeed {
@@ -2605,7 +2818,7 @@ mod tests {
         for (ty, seed, expected, rule, access) in cases {
             let plan = plan_adapter(ty, &seed, &a.types, &mut a.strings)
                 .unwrap_or_else(|e| panic!("{expected}: {e:?}"));
-            let Delegation::Direct { target, exclusive } = &plan.program else {
+            let Delegation::Direct { target, exclusive } = plan.program.as_ref().unwrap() else {
                 panic!("adapters delegate directly");
             };
             assert!(exclusive, "{expected}");
@@ -2621,6 +2834,74 @@ mod tests {
                     if *family == "rustc-dyn-future-abi-1.97")
                 );
             }
+        }
+    }
+
+    /// tokio-util's box plans an owned access and no program: the route
+    /// runs through `boxed` and the `Pin`'s member to the wide pointer,
+    /// whose two words the dyn join reads, under the tokio-util origin
+    /// read off the type's own method declarations. A `Pin` whose
+    /// member is not the box the screen saw declines on the layout; no
+    /// method declaration, or one off the registry, declines before it.
+    #[test]
+    fn test_the_reusable_box_plans_an_owned_dynamic_access() {
+        let mut a = adapters();
+        let typed = |path: &str| Seed {
+            type_sources: BTreeSet::from([source(path, None)]),
+            ..Seed::default()
+        };
+        let registry = typed(
+            "/home/u/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/\
+             tokio-util-0.7.19/src/sync/reusable_box.rs",
+        );
+        let layout = |pin| LibrarySeed::ReusableBox {
+            boxed: "boxed".into(),
+            pin: ("pointer".into(), pin),
+            dyn_: dyn_seed(),
+        };
+        let plan =
+            plan_library(REUSABLE, &layout(WIDE), &registry, &a.types, &mut a.strings).unwrap();
+        assert!(
+            plan.program.is_none(),
+            "a storage route polls nothing itself"
+        );
+        assert!(plan.delegate_is_future);
+        let (rule, kind, target) = plan.access.as_ref().unwrap();
+        assert_eq!(*kind, AccessKind::Owned);
+        assert!(
+            matches!(rule, RuleKey::Delegation { kind: SemanticRuleKind::TokioUtilReusableBox, origin }
+            if origin.package == "tokio-util" && origin.version == "0.7.19"
+                && origin.family == TOKIO_UTIL_REUSABLE_BOX_V0_7_11.family)
+        );
+        assert_eq!(&plan.rule, rule);
+        assert_eq!(
+            steps_of(&a, target),
+            "dyn boxed.pointer -> alloc::boxed::Box<(dyn core::future::future::Future<Output=()> \
+             + core::marker::Send), alloc::alloc::Global> [pointer -> *const dyn | vtable -> \
+             &[usize; 4]]"
+        );
+        let (kind, detail) =
+            plan_library(REUSABLE, &layout(BOX), &registry, &a.types, &mut a.strings).unwrap_err();
+        assert_eq!(kind, SemanticIssueKind::MissingLayout);
+        assert!(detail.contains("Pin's member"), "{detail}");
+        for (seed, expected) in [
+            (Seed::default(), "no method declaration"),
+            (
+                typed("/build/vendor/tokio-util-0.7.19/src/sync/reusable_box.rs"),
+                "not a cargo registry path",
+            ),
+            (
+                typed(
+                    "/home/u/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/\
+                     tokio-util-0.7.20/src/sync/reusable_box.rs",
+                ),
+                "above the reviewed range",
+            ),
+        ] {
+            let (kind, detail) =
+                plan_library(REUSABLE, &layout(WIDE), &seed, &a.types, &mut a.strings).unwrap_err();
+            assert_eq!(kind, SemanticIssueKind::UnsupportedOrigin, "{detail}");
+            assert!(detail.contains(expected), "{detail}");
         }
     }
 
@@ -2699,6 +2980,7 @@ mod tests {
         let origin = delegation_origin(
             &BTreeSet::from([source(REGISTRY, None)]),
             &TRACING_INSTRUMENTED_V0_1_40,
+            "poll",
         )
         .unwrap();
         assert_eq!(
@@ -2717,6 +2999,7 @@ mod tests {
         let origin = delegation_origin(
             &BTreeSet::from([source(REGISTRY, Some(reviewed))]),
             &TRACING_INSTRUMENTED_V0_1_40,
+            "poll",
         )
         .unwrap();
         assert_eq!(origin.files.len(), 1);
@@ -2725,12 +3008,14 @@ mod tests {
         delegation_origin(
             &BTreeSet::from([source(REGISTRY, None), source(REGISTRY, Some(reviewed))]),
             &TRACING_INSTRUMENTED_V0_1_40,
+            "poll",
         )
         .unwrap();
         let declined = |sources: &[PollSource]| {
             let (kind, detail) = delegation_origin(
                 &sources.iter().cloned().collect(),
                 &TRACING_INSTRUMENTED_V0_1_40,
+                "poll",
             )
             .unwrap_err();
             assert_eq!(kind, SemanticIssueKind::UnsupportedOrigin, "{detail}");
@@ -2881,8 +3166,65 @@ mod tests {
             Some(("fut", fut)),
             Some(("F", fut)),
         );
+        // The stream routes: `Next<St>` over a `&mut St`, and a
+        // `WatchStream` whose `inner` is tokio-util's box by that
+        // type's own declaration.
+        let next_mod = ns(&mut reader, "futures_util::stream::stream::next");
+        let watch_mod = ns(&mut reader, "tokio_stream::wrappers::watch");
+        let reusable_mod = ns(&mut reader, "tokio_util::sync::reusable_box");
+        let (st, ref_st, next, reusable, watch) = (id(6), id(7), id(8), id(9), id(10));
+        strukt(&mut reader, st, sleep_mod, "St", None, None);
+        reader.types.insert(
+            ref_st,
+            RawType::Pointer(crate::raw_types::RawPointer {
+                name: Some(reader.strings.intern("&mut tokio::time::sleep::St")),
+                target_type_id: st,
+            }),
+        );
+        strukt(
+            &mut reader,
+            next,
+            next_mod,
+            "Next<tokio::time::sleep::St>",
+            Some(("stream", ref_st)),
+            Some(("St", st)),
+        );
+        strukt(
+            &mut reader,
+            reusable,
+            reusable_mod,
+            "ReusableBoxFuture<()>",
+            Some(("boxed", fut)),
+            None,
+        );
+        strukt(
+            &mut reader,
+            watch,
+            watch_mod,
+            "WatchStream<u32>",
+            Some(("inner", reusable)),
+            Some(("T", fut)),
+        );
         let bundle_id = |raw: TypeId| Some(BundleTypeId(raw.0.0 as u32));
-        let seed = |raw, name: &str| library_seed(&reader, raw, name, bundle_id);
+        let seed = |raw, name: &str| library_seed(&reader, raw, name, bundle_id, |_| None);
+        assert!(matches!(
+            seed(next, "futures_util::stream::stream::next::Next<tokio::time::sleep::St>"),
+            Some(LibrarySeed::Next(member, target)) if member == "stream" && target == bundle_id(st).unwrap()
+        ));
+        assert!(matches!(
+            seed(watch, "tokio_stream::wrappers::watch::WatchStream<u32>"),
+            Some(LibrarySeed::WatchStream(member, inner)) if member == "inner" && inner == bundle_id(reusable).unwrap()
+        ));
+        // The box's screen needs a pinned wide pointer, which this
+        // table does not carry: the name reaches the screen, the
+        // screen refuses.
+        assert!(
+            seed(
+                reusable,
+                "tokio_util::sync::reusable_box::ReusableBoxFuture<()>"
+            )
+            .is_none()
+        );
         assert!(matches!(
             seed(tokio_sleep, "hyper_util::rt::tokio::TokioSleep"),
             Some(LibrarySeed::TokioSleep(member, _)) if member == "inner"
@@ -2912,6 +3254,15 @@ mod tests {
             ),
             (coop, "tokio::task::Coop<tokio::time::sleep::Fut>"),
             (fut, "tokio::task::coop::Coop<tokio::time::sleep::Fut>"),
+            (
+                next,
+                "tokio_stream::StreamExt::next::Next<tokio::time::sleep::St>",
+            ),
+            (watch, "tokio_stream::wrappers::WatchStream<u32>"),
+            (
+                st,
+                "futures_util::stream::stream::next::Next<tokio::time::sleep::St>",
+            ),
         ] {
             assert!(seed(raw, name).is_none(), "{name}");
         }
@@ -2945,12 +3296,27 @@ mod tests {
                 "src/task/coop/mod.rs",
                 "tokio-util",
             ),
+            (
+                &TOKIO_STREAM_WATCH_V0_1_14,
+                "0.1.19",
+                "src/wrappers/watch.rs",
+                "tokio",
+            ),
+            (
+                &TOKIO_UTIL_REUSABLE_BOX_V0_7_11,
+                "0.7.19",
+                "src/sync/reusable_box.rs",
+                "tokio",
+            ),
         ] {
             let package = convention.package;
             let at = |version: &str| format!("{ROOT}/{package}-{version}/{file}");
-            let origin =
-                delegation_origin(&BTreeSet::from([source(&at(version), None)]), convention)
-                    .unwrap();
+            let origin = delegation_origin(
+                &BTreeSet::from([source(&at(version), None)]),
+                convention,
+                "poll",
+            )
+            .unwrap();
             assert_eq!(
                 origin,
                 DelegationOrigin {
@@ -2968,12 +3334,14 @@ mod tests {
             let origin = delegation_origin(
                 &BTreeSet::from([source(&at(version), Some(reviewed))]),
                 convention,
+                "poll",
             )
             .unwrap();
             assert_eq!(origin.files.len(), 1);
             let declined = |sources: &[PollSource]| {
                 let (kind, detail) =
-                    delegation_origin(&sources.iter().cloned().collect(), convention).unwrap_err();
+                    delegation_origin(&sources.iter().cloned().collect(), convention, "poll")
+                        .unwrap_err();
                 assert_eq!(kind, SemanticIssueKind::UnsupportedOrigin, "{detail}");
                 detail
             };
@@ -3197,7 +3565,7 @@ mod tests {
             let Delegation::Direct {
                 target: t,
                 exclusive,
-            } = &plan.program
+            } = plan.program.as_ref().unwrap()
             else {
                 panic!("a wrapper forwards directly");
             };
@@ -3218,7 +3586,7 @@ mod tests {
             future: fut,
         };
         let plan = plan_library(map, &layout, &futures_util, &types, &mut strings).unwrap();
-        let Delegation::Match { cases } = &plan.program else {
+        let Delegation::Match { cases } = plan.program.as_ref().unwrap() else {
             panic!("a map matches its state");
         };
         let [
@@ -3260,6 +3628,154 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(kind, SemanticIssueKind::UnsupportedOrigin);
+
+        // The stream routes. `Next` forwards through its `&mut` to the
+        // stream itself — a dereference on the route — exclusively,
+        // and proves the stream nothing; a `WatchStream` is an owned
+        // access into its box and no program, under an origin read off
+        // the type's own methods rather than a poll it does not have.
+        let mut types = types.types;
+        let mut add = |_name: &str, def: TypeDef| {
+            types.push(def);
+            BundleTypeId(types.len() as u32 - 1)
+        };
+        let st = add(
+            "app::St",
+            TypeDef::Struct {
+                name: strings.intern("app::St"),
+                size: 8,
+                members: Vec::new(),
+            },
+        );
+        let ref_st = add(
+            "&mut app::St",
+            TypeDef::Pointer {
+                name: Some(strings.intern("&mut app::St")),
+                target: st,
+            },
+        );
+        let next = {
+            let def = one(
+                &mut strings,
+                "futures_util::stream::stream::next::Next<app::St>",
+                "stream",
+                ref_st,
+            );
+            add("futures_util::stream::stream::next::Next<app::St>", def)
+        };
+        let by_value = {
+            let def = one(
+                &mut strings,
+                "futures_util::stream::stream::next::Next<app::St>",
+                "stream",
+                st,
+            );
+            add("futures_util::stream::stream::next::Next<app::St>", def)
+        };
+        let watch = {
+            let def = one(
+                &mut strings,
+                "tokio_stream::wrappers::watch::WatchStream<u32>",
+                "inner",
+                sleep,
+            );
+            add("tokio_stream::wrappers::watch::WatchStream<u32>", def)
+        };
+        let types = TypeTable {
+            types,
+            ..Default::default()
+        };
+        let plan = plan_library(
+            next,
+            &LibrarySeed::Next("stream".into(), st),
+            &registry("futures-util", "0.3.33", "src/stream/stream/next.rs"),
+            &types,
+            &mut strings,
+        )
+        .unwrap();
+        let Some(Delegation::Direct { target, exclusive }) = &plan.program else {
+            panic!("`Next` forwards directly");
+        };
+        assert!(exclusive, "`Next` polls its stream alone");
+        let Target::Value(path) = target else {
+            panic!("`Next` forwards to a value");
+        };
+        assert_eq!(render(&strings, path), "stream.Deref");
+        assert_eq!(path.target, st);
+        assert!(plan.access.is_none());
+        assert!(!plan.delegate_is_future, "a stream is proved nothing");
+        let (kind, detail) = plan_library(
+            by_value,
+            &LibrarySeed::Next("stream".into(), st),
+            &registry("futures-util", "0.3.33", "src/stream/stream/next.rs"),
+            &types,
+            &mut strings,
+        )
+        .unwrap_err();
+        assert_eq!(kind, SemanticIssueKind::MissingLayout);
+        assert!(detail.contains("not a reference"), "{detail}");
+        let typed = |path: &str| Seed {
+            type_sources: BTreeSet::from([source(path, None)]),
+            ..Seed::default()
+        };
+        let plan = plan_library(
+            watch,
+            &LibrarySeed::WatchStream("inner".into(), sleep),
+            &typed(
+                "/home/u/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/\
+                 tokio-stream-0.1.19/src/wrappers/watch.rs",
+            ),
+            &types,
+            &mut strings,
+        )
+        .unwrap();
+        assert!(
+            plan.program.is_none(),
+            "a storage route polls nothing itself"
+        );
+        let (rule, kind, target) = plan.access.as_ref().unwrap();
+        assert_eq!(*kind, AccessKind::Owned);
+        assert_eq!(rule, &plan.rule);
+        assert!(
+            matches!(rule, RuleKey::Delegation { kind: SemanticRuleKind::TokioStreamWatchStream, origin }
+            if origin.package == "tokio-stream" && origin.version == "0.1.19")
+        );
+        let Target::Value(path) = target else {
+            panic!("the stream's access is a value route");
+        };
+        assert_eq!(render(&strings, path), "inner");
+        assert_eq!(path.target, sleep);
+        // The stream's poll sources are nobody's evidence: only its
+        // own methods' declarations count, and none is a decline of
+        // its own kind.
+        for (seed, expected) in [
+            (
+                registry("tokio-stream", "0.1.19", "src/wrappers/watch.rs"),
+                "no method declaration",
+            ),
+            (
+                typed("/build/vendor/tokio-stream-0.1.19/src/wrappers/watch.rs"),
+                "not a cargo registry path",
+            ),
+            (
+                typed(
+                    "/home/u/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/\
+                     tokio-stream-0.1.13/src/wrappers/watch.rs",
+                ),
+                "below the reviewed range",
+            ),
+        ] {
+            let (kind, detail) = plan_library(
+                watch,
+                &LibrarySeed::WatchStream("inner".into(), sleep),
+                &seed,
+                &types,
+                &mut strings,
+            )
+            .unwrap_err();
+            assert_eq!(kind, SemanticIssueKind::UnsupportedOrigin, "{detail}");
+            assert!(detail.contains(expected), "{detail}");
+        }
     }
 
     /// A `select!` plan: the origin off the closure's declaration file,
@@ -3874,7 +4390,7 @@ mod tests {
             ..Default::default()
         };
         let plan = plan_instrumented(inst, &layout, &seed, &types, &names, &mut strings).unwrap();
-        let Delegation::Direct { target, exclusive } = &plan.program else {
+        let Delegation::Direct { target, exclusive } = plan.program.as_ref().unwrap() else {
             panic!("direct")
         };
         assert!(
@@ -4193,7 +4709,7 @@ mod tests {
             family: "rustc-coroutine-1.97",
         };
         let plan = coroutine_plan(e.env, &rule, &layout, &e.types, &mut e.strings);
-        let Delegation::Match { cases } = &plan.program else {
+        let Delegation::Match { cases } = plan.program.as_ref().unwrap() else {
             panic!("coroutine")
         };
         let spelled: Vec<String> = cases
@@ -4245,7 +4761,7 @@ mod tests {
             states,
         };
         let plan = coroutine_plan(e.env, &rule, &layout, &e.types, &mut e.strings);
-        let Delegation::Match { cases } = &plan.program else {
+        let Delegation::Match { cases } = plan.program.as_ref().unwrap() else {
             panic!("coroutine")
         };
         assert!(matches!(

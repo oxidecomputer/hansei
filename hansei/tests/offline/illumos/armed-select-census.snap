@@ -28,7 +28,7 @@ COUNT  TYPE / WAITING ON
        └─ 1  notify
 [4 types]
 
-Futures: 11 in flight, on 21 await-chain frames, up to 4 deep
+Futures: 11 in flight, on 22 await-chain frames, up to 4 deep
 
 COUNT  HELD IN
     4  task (its own await chain)

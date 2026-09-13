@@ -1257,10 +1257,61 @@ fn assert_library_bindings(program: &str, bundle: &Bundle) {
                         "{program}: futures-util {} is outside the reviewed range",
                         s(*version)
                     );
+                    // Only the combinator fixture maps a future; every
+                    // other program binding this origin does so for a
+                    // `Next` — and which programs keep a `Next::poll`
+                    // out of line is the target's call, so no list.
+                    if program != "select-combinator" {
+                        let origin_id = bundle
+                            .semantics
+                            .origins
+                            .iter()
+                            .position(|o| std::ptr::eq(o, origin))
+                            .unwrap();
+                        for rule in &bundle.semantics.rules {
+                            if rule.origin.0 as usize == origin_id {
+                                assert_eq!(
+                                    rule.kind,
+                                    SemanticRuleKind::FuturesUtilNext,
+                                    "{program}: only `Next` binds futures-util here"
+                                );
+                            }
+                        }
+                    }
+                }
+                // The two stream routes: only the one fixture that
+                // depends on tokio-stream can hold either type.
+                "tokio-stream" => {
+                    use exegesis::detect::semantics::TOKIO_STREAM_WATCH_V0_1_14;
+                    let SemanticOrigin::LibraryDelegation { family, .. } = origin else {
+                        unreachable!()
+                    };
+                    assert_eq!(s(*family), TOKIO_STREAM_WATCH_V0_1_14.family, "{program}");
                     assert_eq!(
-                        program, "select-combinator",
-                        "{program}: only the combinator fixture maps a future"
+                        TOKIO_STREAM_WATCH_V0_1_14.select(&s(*version).parse().unwrap()),
+                        LayoutSelection::ReviewedRange,
+                        "{program}: tokio-stream {} is outside the reviewed range",
+                        s(*version)
                     );
+                    assert_eq!(program, "watch-stream", "{program}");
+                }
+                "tokio-util" => {
+                    use exegesis::detect::semantics::TOKIO_UTIL_REUSABLE_BOX_V0_7_11;
+                    let SemanticOrigin::LibraryDelegation { family, .. } = origin else {
+                        unreachable!()
+                    };
+                    assert_eq!(
+                        s(*family),
+                        TOKIO_UTIL_REUSABLE_BOX_V0_7_11.family,
+                        "{program}"
+                    );
+                    assert_eq!(
+                        TOKIO_UTIL_REUSABLE_BOX_V0_7_11.select(&s(*version).parse().unwrap()),
+                        LayoutSelection::ReviewedRange,
+                        "{program}: tokio-util {} is outside the reviewed range",
+                        s(*version)
+                    );
+                    assert_eq!(program, "watch-stream", "{program}");
                 }
                 // The `select!` rule reads tokio's version off the
                 // closure's declaration file, and it is the version the
@@ -1361,6 +1412,7 @@ fn assert_library_bindings(program: &str, bundle: &Bundle) {
         SemanticRuleKind::FuturesUtilIntoFuture,
         SemanticRuleKind::HyperUtilTokioSleep,
         SemanticRuleKind::TokioCoop,
+        SemanticRuleKind::FuturesUtilNext,
     ];
     let delegate_kinds = [
         SemanticRuleKind::StdBoxPoll,
@@ -1373,9 +1425,11 @@ fn assert_library_bindings(program: &str, bundle: &Bundle) {
         SemanticRuleKind::FuturesUtilIntoFuture,
         SemanticRuleKind::HyperUtilTokioSleep,
         SemanticRuleKind::TokioCoop,
+        SemanticRuleKind::FuturesUtilNext,
     ];
     // A wrapper's program is not a storage access: only the std
-    // adapters, which are pointers, carry one.
+    // adapters, which are pointers, carry one. `Next` holds a `&mut`
+    // but is a future of its own, and the dereference is its program's.
     let wrapper_kinds = [
         SemanticRuleKind::TracingInstrumented,
         SemanticRuleKind::FuturesUtilMap,
@@ -1383,6 +1437,7 @@ fn assert_library_bindings(program: &str, bundle: &Bundle) {
         SemanticRuleKind::FuturesUtilIntoFuture,
         SemanticRuleKind::HyperUtilTokioSleep,
         SemanticRuleKind::TokioCoop,
+        SemanticRuleKind::FuturesUtilNext,
     ];
     // Compiler storage: every async fn or async block environment binds
     // its states under the reviewed convention (the fixtures' toolchains
@@ -1445,17 +1500,31 @@ fn assert_library_bindings(program: &str, bundle: &Bundle) {
     }
     for record in &bundle.semantics.types {
         if let Some(access) = &record.access {
+            let kind = rule_kind(access.rule);
             assert!(
                 matches!(
-                    rule_kind(access.rule),
+                    kind,
                     SemanticRuleKind::StdBoxAccess
                         | SemanticRuleKind::StdMutRefAccess
                         | SemanticRuleKind::StdPinBoxAccess
                         | SemanticRuleKind::StdPinMutRefAccess
+                        | SemanticRuleKind::TokioStreamWatchStream
+                        | SemanticRuleKind::TokioUtilReusableBox
                 ),
-                "{program}: access under {:?}",
-                rule_kind(access.rule)
+                "{program}: access under {kind:?}"
             );
+            // The two library routes are owned storage on a type that
+            // is no future: polled through, never polled.
+            if matches!(
+                kind,
+                SemanticRuleKind::TokioStreamWatchStream | SemanticRuleKind::TokioUtilReusableBox
+            ) {
+                assert_eq!(access.kind, hansei_bundle::AccessKind::Owned, "{program}");
+                assert!(
+                    record.future.is_none(),
+                    "{program}: a stream route with future facts"
+                );
+            }
         }
         let Some(facts) = &record.future else {
             continue;
@@ -2291,6 +2360,64 @@ fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
             bundle,
             "core::future::poll_fn::PollFn<watch_stream::mapper::{async_fn#0}::{closure_env#",
             2,
+        );
+        // The linear route, record by record: `Next` forwards through
+        // its `&mut` to the nominal stream, exclusively, and proves it
+        // nothing; the stream is an owned access into tokio-util's box
+        // with no future facts of its own; the box is an owned access
+        // through `boxed` and the `Pin`'s member to the trait object,
+        // resolved by the dyn join.
+        let table = exegesis::describe::describe_semantics(bundle);
+        let next = semantic_line(
+            &table,
+            "futures_util::stream::stream::next::Next<tokio_stream::wrappers::watch::WatchStream<u32>> :: members",
+        );
+        assert!(
+            next.contains(
+                "continuation rule # delegate (exclusive) stream.*@+0 -> \
+                 tokio_stream::wrappers::watch::WatchStream<u32>"
+            ) && !next.contains(" access "),
+            "{program}: {next}"
+        );
+        let map = semantic_line(
+            &table,
+            "futures_util::stream::stream::next::Next<tokio_stream::stream_map::StreamMap<&str, \
+             tokio_stream::wrappers::watch::WatchStream<u32>>> :: members",
+        );
+        assert!(
+            map.contains(
+                "continuation rule # delegate (exclusive) stream.*@+0 -> \
+                 tokio_stream::stream_map::StreamMap<&str, tokio_stream::wrappers::watch::WatchStream<u32>>"
+            ),
+            "{program}: {map}"
+        );
+        let stream = semantic_line(
+            &table,
+            "tokio_stream::wrappers::watch::WatchStream<u32> :: members",
+        );
+        assert!(
+            stream.contains(
+                " access Owned rule # inner@+0 -> tokio_util::sync::reusable_box::ReusableBoxFuture<"
+            ) && !stream.contains("future["),
+            "{program}: {stream}"
+        );
+        let boxed = semantic_line(
+            &table,
+            "tokio_util::sync::reusable_box::ReusableBoxFuture<(core::result::Result<(), \
+             tokio::sync::watch::error::RecvError>, tokio::sync::watch::Receiver<u32>)> :: members",
+        );
+        assert!(
+            boxed.contains(
+                " access Owned rule # dyn boxed.pointer@+0 -> alloc::boxed::Box<(dyn \
+                 core::future::future::Future<Output="
+            ) && !boxed.contains("future["),
+            "{program}: {boxed}"
+        );
+        // The stream has no future facts, so nothing proves it one: no
+        // record names it as a delegate's child.
+        assert!(
+            !table.contains("delegated by futures_util::stream::stream::next::Next<"),
+            "{program}: a stream was proved a future by its `Next`"
         );
     }
     if program == "local-set-io" {

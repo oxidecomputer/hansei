@@ -3,6 +3,6 @@ source: hansei/src/offline.rs
 description: "`threads --group role` over linux/armed-select"
 ---
 COUNT  ROLE             LWPS
-    2  worker           258414, 258415
-    1  entered runtime  258412
+    2  worker           352391, 352392
+    1  entered runtime  352389
 [2 groups]

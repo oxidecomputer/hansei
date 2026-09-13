@@ -1763,6 +1763,63 @@ mod tests {
         assert_eq!(set.group_label(), "mpsc, oneshot rx");
     }
 
+    /// A branch reached through a borrow whose record is only its
+    /// access — the `&mut` stripped of its future facts — is still the
+    /// branch it borrows: the engine crosses the access route, and the
+    /// member keeps the borrow's identity, listed as borrowed and armed
+    /// by the receiver's own protocol.
+    #[test]
+    fn test_a_borrowed_access_only_route_keeps_the_borrow() {
+        let (bundle, snapshot) = load_any("armed-select");
+        let view = hansei_bundle::BundleView::new(&bundle);
+        let reference = (0..bundle.types.types.len() as u32)
+            .map(BundleTypeId)
+            .find(|id| {
+                view.ty(*id)
+                    .is_some_and(|t| t.name() == "&mut tokio::sync::oneshot::Receiver<u32>")
+            })
+            .expect("the selector borrows its oneshot");
+        let bindings = testkit::access_only(&bundle, reference);
+        let bound = Context::with_test_bindings(&snapshot, view, &bindings, &[])
+            .expect("the bindings validate");
+        assert!(
+            bound
+                .type_semantics(reference)
+                .is_some_and(|r| r.future.is_none() && r.access.is_some()),
+            "the borrow is access only under the bound context"
+        );
+        let list = testkit::tasks(&bound, &snapshot);
+        let task = task_named(&list, "selector");
+        let inspection = bound
+            .inspect_task(task, &ReadContext::none())
+            .unwrap()
+            .unwrap();
+        let mut notes = Vec::new();
+        let Branches::Set(set) = bound.wait_set(
+            &mut AssessmentPass::new(),
+            &inspection,
+            &TaskFacts::from(task),
+            &list,
+            &Registries::default(),
+            &ReadContext::none(),
+            &mut BranchScan::default(),
+            &mut notes,
+        ) else {
+            panic!("a set");
+        };
+        assert!(notes.is_empty(), "{notes:#?}");
+        let once = set
+            .members
+            .iter()
+            .find(|m| matches!(m.route, MemberRoute::Select { index: 0, .. }))
+            .expect("branch 0 is listed");
+        assert!(
+            matches!(once.route, MemberRoute::Select { borrowed: true, .. }),
+            "{once:?}"
+        );
+        assert!(matches!(once.armed, Some(SlotRef::Protocol)), "{once:?}");
+    }
+
     /// A stop with no branch and no slot has no set and nothing held.
     #[test]
     fn test_a_bare_stop_has_nothing() {

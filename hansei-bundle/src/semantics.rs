@@ -305,6 +305,19 @@ pub enum SemanticRuleKind {
     /// `cooperative()` puts around a leaf future: its poll spends a
     /// budget unit, then polls `fut` and nothing else.
     TokioCoop,
+    /// futures-util's `stream::Next<'_, St>`, the `StreamExt::next`
+    /// future: `{ stream: &mut St }`, whose poll is the stream's
+    /// `poll_next` and nothing else. Its delegate is a stream, so the
+    /// route proves nothing about it being a future.
+    FuturesUtilNext,
+    /// tokio-stream's `WatchStream<T>`: an access binding, not a
+    /// future — polling the stream polls the one `ReusableBoxFuture`
+    /// it owns.
+    TokioStreamWatchStream,
+    /// tokio-util's `ReusableBoxFuture<'_, T>`: an access binding
+    /// through `boxed`, the `Pin<Box<dyn Future>>` its every poll
+    /// forwards to.
+    TokioUtilReusableBox,
 }
 
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]

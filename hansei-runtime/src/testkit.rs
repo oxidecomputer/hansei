@@ -154,6 +154,44 @@ pub fn walk_shapes_bindings(
     (bindings, rules)
 }
 
+/// The bindings that turn `ty`'s record into an access-only one — its
+/// future facts dropped, its storage route kept — for a test of how
+/// the engine crosses such a record over a real pair. Every record
+/// that cited `ty` as the parent that proved it a future loses that
+/// citation too, since the validator holds each one to a bound program
+/// at the parent; a record that would be left with no evidence at all
+/// is a test the pair cannot host, and the assertion says so.
+pub fn access_only(
+    bundle: &Bundle,
+    ty: hansei_bundle::BundleTypeId,
+) -> Vec<hansei_bundle::TypeSemantics> {
+    use hansei_bundle::FutureEvidence;
+    let cites = FutureEvidence::DelegatedBy { parent: ty };
+    let mut out = Vec::new();
+    for record in &bundle.semantics.types {
+        if record.ty == ty {
+            let mut stripped = record.clone();
+            assert!(stripped.access.is_some(), "{ty:?} has a storage route");
+            stripped.future = None;
+            out.push(stripped);
+        } else if let Some(facts) = &record.future
+            && facts.evidence.contains(&cites)
+        {
+            let mut citing = record.clone();
+            let facts = citing.future.as_mut().unwrap();
+            facts.evidence.retain(|e| *e != cites);
+            assert!(
+                !facts.evidence.is_empty(),
+                "{:?} was a future by {ty:?} alone",
+                record.ty
+            );
+            out.push(citing);
+        }
+    }
+    assert!(out.iter().any(|r| r.ty == ty), "{ty:?} has a record");
+    out
+}
+
 /// Every checked-in set of pairs, named for its capture's coordinates.
 ///
 /// The first axis is the capturing system. A pair is only as good as

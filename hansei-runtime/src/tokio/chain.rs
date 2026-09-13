@@ -213,11 +213,20 @@ impl<'b, T: Target> Context<'b, T> {
     ) -> (Option<FrameState<'b>>, NextFuture<'b>) {
         let at = ValueKey::of(value);
         let unknown = |reason| NextFuture::End(ChainEnd::UnknownContinuation { at, reason });
-        let Some(facts) = self
-            .type_semantics(value.ty.id())
-            .and_then(|record| record.future.as_ref())
-        else {
+        let Some(record) = self.type_semantics(value.ty.id()) else {
             return (None, unknown(SemanticIssueKind::NoRule));
+        };
+        let Some(facts) = record.future.as_ref() else {
+            // A value that is no future but has a recorded storage
+            // route — a stream over the box it owns, the box over its
+            // trait object — is polled *through*: polling it polls
+            // what the route reaches, and nothing else, so the route
+            // is the continuation. The same depth bound and cycle
+            // guard apply as to any hop.
+            return match record.access.as_ref() {
+                Some(access) => (None, self.delegate(value, &access.target, true, read)),
+                None => (None, unknown(SemanticIssueKind::NoRule)),
+            };
         };
         let program = match &facts.continuation {
             Continuation::Unknown(issue) => return (None, unknown(issue.kind)),
@@ -1276,5 +1285,123 @@ mod tests {
             names(&inspection.chain),
             inspection.chain.end
         );
+    }
+
+    /// A record with a storage route and no future facts — a value
+    /// polled through, never polled — is crossed by that route as if
+    /// it were its program, exclusively, and is a frame of its own.
+    /// Over walk-shapes: `WrapS` rebound as an owned access into its
+    /// `inner` with its future facts dropped, `WrapE` keeping its own
+    /// poll evidence under the hand-written variant match, and the
+    /// task's chain runs through both to the coroutine and the
+    /// `Notified` it awaits.
+    #[test]
+    fn test_an_access_only_record_is_crossed_by_its_route() {
+        use hansei_bundle::{
+            AccessBinding, AccessKind, SemanticRule, SemanticRuleId, SemanticRuleKind,
+        };
+        let (bundle, snapshot) = load_any("walk-shapes");
+        let ctx = testkit::context(&bundle, &snapshot);
+        let list = testkit::tasks(&ctx, &snapshot);
+        let chained = task_named(&list, "chained");
+        let (helper, mut rules) = testkit::walk_shapes_bindings(&bundle);
+        let [wrap_s, wrap_e] = helper.as_slice() else {
+            panic!("the helper binds the two wrappers");
+        };
+        let program = |record: &hansei_bundle::TypeSemantics| {
+            record.future.as_ref().unwrap().continuation.clone()
+        };
+        let mut wrap_e_record = ctx.type_semantics(wrap_e.ty).unwrap().clone();
+        wrap_e_record.future.as_mut().unwrap().continuation = program(wrap_e);
+        let Continuation::Bound {
+            program: PollProgram::Direct(PollAction::Delegate { target, .. }),
+            ..
+        } = program(wrap_s)
+        else {
+            panic!("the helper forwards the struct directly");
+        };
+        let access_rule = SemanticRuleId((bundle.semantics.rules.len() + rules.len()) as u32);
+        rules.push(SemanticRule {
+            kind: SemanticRuleKind::StdBoxAccess,
+            revision: 1,
+            origin: rules[0].origin,
+        });
+        let mut wrap_s_record = ctx.type_semantics(wrap_s.ty).unwrap().clone();
+        wrap_s_record.future = None;
+        wrap_s_record.access = Some(AccessBinding {
+            rule: access_rule,
+            kind: AccessKind::Owned,
+            target,
+        });
+        let bindings = vec![wrap_s_record, wrap_e_record];
+        let bound =
+            Context::with_test_bindings(&snapshot, BundleView::new(&bundle), &bindings, &rules)
+                .expect("the bindings validate");
+        let chain = inspect(&bound, chained).chain;
+        let names = names(&chain);
+        assert_eq!(names.len(), 5, "{names:#?}");
+        assert!(names[1].starts_with("walk_shapes::WrapS<"), "{names:#?}");
+        assert!(names[2].starts_with("walk_shapes::WrapE<"), "{names:#?}");
+        assert!(names[3].contains("::deep::"), "{names:#?}");
+        assert_eq!(names[4], "tokio::sync::notify::Notified");
+        assert!(matches!(chain.end, ChainEnd::Primitive), "{:?}", chain.end);
+        // The access hop polls its referent and nothing else, where
+        // the helper's hand-written forwards claim no such thing.
+        assert!(chain.edges[1].exclusive);
+        assert!(!chain.edges[2].exclusive);
+        assert!(chain.frames[1].state.is_none());
+        assert!(
+            bound
+                .type_semantics(chain.frames[1].future.ty.id())
+                .is_some_and(|r| r.future.is_none() && r.access.is_some())
+        );
+    }
+
+    /// The same crossing through a wide pointer: unordered's `boxed`
+    /// local, a pinned `Box<dyn Future>` whose record is stripped to
+    /// its access, still resolves the trait object by the dyn join and
+    /// lands on the future inside, named by its vtable.
+    #[test]
+    fn test_an_access_only_dynamic_route_resolves_its_trait_object() {
+        let (bundle, snapshot) = load_any("unordered");
+        let ctx = testkit::context(&bundle, &snapshot);
+        let list = testkit::tasks(&ctx, &snapshot);
+        let chain = inspect(&ctx, task_named(&list, "driver")).chain;
+        let frame = chain
+            .frames
+            .iter()
+            .find(|f| f.future.ty.name().contains("::driver::"))
+            .expect("the driver's own frame");
+        let locals = crate::tokio::census::frame_locals(&ctx, frame);
+        let (_, boxed) = *locals
+            .locals
+            .iter()
+            .find(|(name, _)| *name == "boxed")
+            .expect("the driver holds `boxed`");
+        assert!(
+            boxed
+                .ty
+                .name()
+                .starts_with("core::pin::Pin<alloc::boxed::Box<(dyn ")
+        );
+        let bindings = testkit::access_only(&bundle, boxed.ty.id());
+        let bound =
+            Context::with_test_bindings(&snapshot, BundleView::new(&bundle), &bindings, &[])
+                .expect("the bindings validate");
+        // The record is access only under the bound context — what
+        // the crossing is being tested against.
+        assert!(
+            bound
+                .type_semantics(boxed.ty.id())
+                .is_some_and(|r| r.future.is_none() && r.access.is_some())
+        );
+        let held = bound
+            .inspect_future(boxed, InspectionMode::Held, &ReadContext::none())
+            .chain;
+        let names = names(&held);
+        assert_eq!(names.len(), 2, "{names:#?}");
+        assert!(names[1].contains("set_member"), "{names:#?}");
+        assert!(held.frames[1].dyn_symbol.is_some(), "the vtable named it");
+        assert!(held.edges[0].exclusive);
     }
 }

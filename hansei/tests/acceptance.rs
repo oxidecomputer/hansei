@@ -2449,9 +2449,11 @@ fn test_futures_acceptance() {
         // spine, never yet polled, and so are the two the scan reached
         // only by descending into a tuple and into an enum, and the one
         // carrying a future of its own.
+        // The driver is frame 2 of its own chain: its `next()` reaches
+        // the set, which is the leaf.
         for local in ["held", "boxed", "pair", "maybe", "nested_hold"] {
             assert!(
-                futures.contains(&format!("\n    (frame 1, `{local}`)")),
+                futures.contains(&format!("\n    (frame 2, `{local}`)")),
                 "{futures}"
             );
         }
@@ -2589,7 +2591,7 @@ fn test_futures_acceptance() {
         );
 
         // And so is a held future, by the address its row prints.
-        let held = regex::Regex::new(r"\n    \(frame 1, `held`\): (0x[0-9a-f]+)")
+        let held = regex::Regex::new(r"\n    \(frame 2, `held`\): (0x[0-9a-f]+)")
             .unwrap()
             .captures(&futures)
             .map(|c| c[1].to_string())
@@ -2597,7 +2599,7 @@ fn test_futures_acceptance() {
         let out = hansei_ok(&bundle, core, &format!("trace {held}"));
         assert!(
             out.contains(&format!(
-                "Held by: task {} — async fn unordered::driver (frame 1, `held`)",
+                "Held by: task {} — async fn unordered::driver (frame 2, `held`)",
                 driver.id
             )),
             "{out}"
@@ -2619,7 +2621,7 @@ fn test_futures_acceptance() {
         assert!(task_block < future_block, "{out}");
         assert!(
             out.contains(&format!(
-                "    Held by: task {} — async fn unordered::driver (frame 1, `held`)",
+                "    Held by: task {} — async fn unordered::driver (frame 2, `held`)",
                 driver.id
             )),
             "{out}"
@@ -2663,16 +2665,16 @@ fn test_search_depth_acceptance() {
         assert!(listed.contains("\nheld futures: 3\n"), "{listed}");
         for local in ["held", "boxed", "nested_hold"] {
             assert!(
-                listed.contains(&format!("\n    (frame 1, `{local}`)")),
+                listed.contains(&format!("\n    (frame 2, `{local}`)")),
                 "{listed}"
             );
         }
         for local in ["pair", "maybe"] {
             assert!(
-                !listed.contains(&format!("(frame 1, `{local}`)")),
+                !listed.contains(&format!("(frame 2, `{local}`)")),
                 "{listed}"
             );
-            assert!(full.contains(&format!("(frame 1, `{local}`)")), "{full}");
+            assert!(full.contains(&format!("(frame 2, `{local}`)")), "{full}");
         }
         // A set is a local in its own right, so its children are
         // walked as ever: the depth limit is a bound on one value's

@@ -13,3 +13,6 @@ oneshot 0xADDR: nothing sent, sender alive
 
 watch 0xADDR: version 0, 1 sender, 1 receiver
     rx: task 6
+
+watch 0xADDR: version 0, 1 sender, 1 receiver
+    rx: task 3

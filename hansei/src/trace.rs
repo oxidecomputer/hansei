@@ -560,10 +560,20 @@ pub(crate) fn print_frame<'b, T: proc::Target>(
 ) -> Result<()> {
     let frame = &chain.frames[i];
     let last = chain.frames.len().checked_sub(1);
-    let kind = async_kind(
-        frame.future.ty.name(),
-        frame.state.as_ref().map(|state| state.name),
-    );
+    // A frame that is no future but a recorded storage route — a stream
+    // over the box it owns — is polled through, and labelled as the
+    // adapter it is rather than as a future.
+    let adapter = ctx
+        .type_semantics(frame.future.ty.id())
+        .is_some_and(|record| record.future.is_none() && record.access.is_some());
+    let kind = if adapter {
+        "adapter"
+    } else {
+        async_kind(
+            frame.future.ty.name(),
+            frame.state.as_ref().map(|state| state.name),
+        )
+    };
     let dyn_marker = if frame.dyn_symbol.is_some() {
         " [dyn]"
     } else {

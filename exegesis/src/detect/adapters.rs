@@ -86,6 +86,25 @@ pub(crate) struct ForwardLayout {
     pub(crate) inner: TypeId,
 }
 
+/// futures-util's `stream::Next<'_, St>`: the member holding the
+/// `&mut St` its poll goes through, and the stream `St` that reference
+/// targets.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct NextLayout {
+    pub(crate) stream: String,
+    pub(crate) target: TypeId,
+}
+
+/// tokio-util's `ReusableBoxFuture<'_, T>`: the member holding its
+/// pinned box, the `Pin`'s one member and the `Box` that member holds,
+/// and the wide pointer to the trait object the box is.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ReusableBoxLayout {
+    pub(crate) boxed: String,
+    pub(crate) pin: (String, TypeId),
+    pub(crate) wide: WidePointer,
+}
+
 /// futures-util's `map::Map<Fut, F>`, the two-state enum behind the
 /// `map` combinator: which variant is which, the member holding the
 /// mapped future while it runs, and that future's declared type.
@@ -476,6 +495,73 @@ pub(crate) fn tokio_coop(reader: &DwReader<'_>, id: TypeId) -> Option<ForwardLay
     .then_some(forward)
 }
 
+/// Screen `id` as futures-util's `stream::Next<'_, St>`: one member
+/// `stream`, a `&mut St` whose target is the `St` the instantiation
+/// declares. The future's poll is that stream's `poll_next` and nothing
+/// else; what the stream polls in turn is its own type's business.
+pub(crate) fn futures_util_next(reader: &DwReader<'_>, id: TypeId) -> Option<NextLayout> {
+    let st = declared_in(reader, id, "futures_util::stream::stream::next", "Next<")?;
+    let forward = sole_member(reader, st, "stream")?;
+    let [param] = st.template_params.as_ref() else {
+        return None;
+    };
+    let target = mut_ref_thin(reader, forward.inner)?;
+    (param.name.map(|name| reader.strings.get(name)) == Some("St")
+        && target == reader.canonicalize(param.type_id))
+    .then_some(NextLayout {
+        stream: forward.member,
+        target,
+    })
+}
+
+/// Screen `id` as tokio-stream's `WatchStream<T>`: one member `inner`,
+/// holding tokio-util's `ReusableBoxFuture` by that type's own
+/// declaration. The stream's `poll_next` polls that box and nothing
+/// else, then refills it.
+pub(crate) fn tokio_stream_watch_stream(
+    reader: &DwReader<'_>,
+    id: TypeId,
+) -> Option<ForwardLayout> {
+    let st = declared_in(reader, id, "tokio_stream::wrappers::watch", "WatchStream<")?;
+    let forward = sole_member(reader, st, "inner")?;
+    declared_in(
+        reader,
+        forward.inner,
+        "tokio_util::sync::reusable_box",
+        "ReusableBoxFuture<",
+    )?;
+    Some(forward)
+}
+
+/// Screen `id` as tokio-util's `ReusableBoxFuture<'_, T>`: one member
+/// `boxed`, a `Pin<Box<dyn …>>` as the std adapter screen reads one,
+/// over a trait object. Every poll of the type goes through that box;
+/// a box over a sized future is not the type as reviewed.
+pub(crate) fn tokio_util_reusable_box(
+    reader: &DwReader<'_>,
+    id: TypeId,
+) -> Option<ReusableBoxLayout> {
+    let st = declared_in(
+        reader,
+        id,
+        "tokio_util::sync::reusable_box",
+        "ReusableBoxFuture<",
+    )?;
+    let forward = sole_member(reader, st, "boxed")?;
+    match std_adapter(reader, forward.inner)? {
+        StdAdapter::PinBox {
+            member,
+            boxed,
+            pointee: Pointee::Dyn(wide),
+        } => Some(ReusableBoxLayout {
+            boxed: forward.member,
+            pin: (member, boxed),
+            wide,
+        }),
+        _ => None,
+    }
+}
+
 /// A `PollFn` over the closure tokio's `select!` awaits, as the raw
 /// screen saw it: the member holding the closure, the closure
 /// environment, its two by-reference captures and what each points at
@@ -774,6 +860,123 @@ mod tests {
             trait_ty: DYN,
             future_trait: true,
         })
+    }
+
+    /// The stream routes: `Next` holds a `&mut St` to the `St` it
+    /// declares and nothing else; `WatchStream` holds tokio-util's box
+    /// by that type's own declaration; `ReusableBoxFuture` holds a
+    /// pinned box over a trait object. Each declines a by-value stream,
+    /// another module's type in the member, or a sized box.
+    #[test]
+    fn test_the_stream_wrappers_hold_what_their_reviews_say() {
+        const ST: TypeId = TypeId(UnitSectionOffset(0x80));
+        const REF_ST: TypeId = TypeId(UnitSectionOffset(0x81));
+        const NEXT: TypeId = TypeId(UnitSectionOffset(0x82));
+        const WATCH: TypeId = TypeId(UnitSectionOffset(0x83));
+        const REUSABLE: TypeId = TypeId(UnitSectionOffset(0x84));
+        const OTHER: TypeId = TypeId(UnitSectionOffset(0x85));
+        let build = |fx: &mut Fx, stream_member: TypeId, boxed_member: TypeId, inner: TypeId| {
+            let app = fx.ns("app");
+            let next_mod = fx.ns("futures_util::stream::stream::next");
+            let watch_mod = fx.ns("tokio_stream::wrappers::watch");
+            let reusable_mod = fx.ns("tokio_util::sync::reusable_box");
+            fx.strukt(ST, Some(app), "St", &[], &[]);
+            fx.pointer(REF_ST, Some("&mut app::St"), ST);
+            fx.strukt(
+                NEXT,
+                Some(next_mod),
+                "Next<app::St>",
+                &[("stream", stream_member, 0)],
+                &[("St", ST)],
+            );
+            fx.strukt(
+                REUSABLE,
+                Some(reusable_mod),
+                "ReusableBoxFuture<()>",
+                &[("boxed", boxed_member, 0)],
+                &[("T", FUT)],
+            );
+            fx.strukt(
+                WATCH,
+                Some(watch_mod),
+                "WatchStream<u32>",
+                &[("inner", inner, 0)],
+                &[("T", FUT)],
+            );
+            fx.strukt(OTHER, Some(app), "ReusableBoxFuture<()>", &[], &[]);
+        };
+        let mut fx = fixture();
+        pin_over(&mut fx, BOX_DYN);
+        build(&mut fx, REF_ST, PIN, REUSABLE);
+        assert_eq!(
+            futures_util_next(&fx.reader, NEXT),
+            Some(NextLayout {
+                stream: "stream".into(),
+                target: ST,
+            })
+        );
+        assert_eq!(
+            tokio_stream_watch_stream(&fx.reader, WATCH),
+            Some(ForwardLayout {
+                member: "inner".into(),
+                inner: REUSABLE,
+            })
+        );
+        assert_eq!(
+            tokio_util_reusable_box(&fx.reader, REUSABLE),
+            Some(ReusableBoxLayout {
+                boxed: "boxed".into(),
+                pin: ("pointer".into(), BOX_DYN),
+                wide: match wide_over(BOX_DYN) {
+                    Pointee::Dyn(wide) => wide,
+                    Pointee::Sized(_) => unreachable!(),
+                },
+            })
+        );
+        // Each screen reads only its own type: the others' ids are
+        // not it.
+        assert_eq!(futures_util_next(&fx.reader, WATCH), None);
+        assert_eq!(tokio_stream_watch_stream(&fx.reader, REUSABLE), None);
+        assert_eq!(tokio_util_reusable_box(&fx.reader, WATCH), None);
+        // A `Next` holding its stream by value, a `WatchStream` whose
+        // `inner` is another crate's `ReusableBoxFuture`, a box over a
+        // sized future.
+        let mut fx = fixture();
+        pin_over(&mut fx, BOX_DYN);
+        build(&mut fx, ST, PIN, OTHER);
+        assert_eq!(futures_util_next(&fx.reader, NEXT), None);
+        assert_eq!(tokio_stream_watch_stream(&fx.reader, WATCH), None);
+        let mut fx = fixture();
+        pin_over(&mut fx, BOX);
+        build(&mut fx, REF_ST, PIN, REUSABLE);
+        assert_eq!(tokio_util_reusable_box(&fx.reader, REUSABLE), None);
+        // A `WatchStream` over such a box still screens: what its box
+        // holds is the box's own screen to refuse.
+        assert!(tokio_stream_watch_stream(&fx.reader, WATCH).is_some());
+        let mut fx = fixture();
+        pin_over(&mut fx, BOX_DYN);
+        build(&mut fx, REF_ST, BOX_DYN, REUSABLE);
+        assert_eq!(tokio_util_reusable_box(&fx.reader, REUSABLE), None);
+        // The reference must target the `St` the instantiation
+        // declares, and the parameter must be that `St`: one without
+        // the other is another layout.
+        const REF_FUT: TypeId = TypeId(UnitSectionOffset(0x86));
+        for (member, param) in [(REF_FUT, ("St", ST)), (REF_ST, ("F", ST))] {
+            let mut fx = fixture();
+            let app = fx.ns("app");
+            let next_mod = fx.ns("futures_util::stream::stream::next");
+            fx.strukt(ST, Some(app), "St", &[], &[]);
+            fx.pointer(REF_ST, Some("&mut app::St"), ST);
+            fx.pointer(REF_FUT, Some("&mut app::Fut"), FUT);
+            fx.strukt(
+                NEXT,
+                Some(next_mod),
+                "Next<app::St>",
+                &[("stream", member, 0)],
+                &[param],
+            );
+            assert_eq!(futures_util_next(&fx.reader, NEXT), None, "{param:?}");
+        }
     }
 
     #[test]

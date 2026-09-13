@@ -2,7 +2,9 @@
 source: hansei/src/offline.rs
 description: "`trace 3 -n` over illumos/unordered"
 ---
-#0  future        futures_util::stream::stream::next::Next<futures_util::stream::futures_unordered::FuturesUnordered<unordered::set_member>>
+#0  future        futures_util::stream::futures_unordered::FuturesUnordered<unordered::set_member>
+      (<no_state>, 3 locals)
+#1  future        futures_util::stream::stream::next::Next<futures_util::stream::futures_unordered::FuturesUnordered<unordered::set_member>>
       (<no_state>, 1 local)
-#1  async fn      unordered::driver
+#2  async fn      unordered::driver
       awaiting at src/bin/unordered.rs:119 (Suspend0, 8 locals; holds 5 pending futures)

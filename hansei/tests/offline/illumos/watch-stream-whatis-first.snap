@@ -1,6 +1,6 @@
 ---
 source: hansei/src/offline.rs
-description: "`whatis 0x1208600` over illumos/watch-stream"
+description: "`whatis 0x1305600` over illumos/watch-stream"
 ---
 Status: live
 Size:   272 byte block
@@ -9,4 +9,4 @@ Offset: +16 in block
 Task 3: async fn watch_stream::resolver
     At: offset 0xADDR in the task's allocation (header 0xADDR)
     State: idle
-    Spawned at: src/bin/watch-stream.rs:109:25
+    Spawned at: src/bin/watch-stream.rs:114:25

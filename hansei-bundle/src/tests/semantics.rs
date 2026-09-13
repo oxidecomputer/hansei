@@ -71,6 +71,12 @@ fn base() -> Bundle {
         "0.1.20",
         "registry/src/index.crates.io-1949cf8c6b5b557f/hyper-util-0.1.20/src/rt/tokio.rs",
         "registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/task/coop/mod.rs",
+        "tokio-stream",
+        "0.1.19",
+        "registry/src/index.crates.io-1949cf8c6b5b557f/tokio-stream-0.1.19/src/wrappers/watch.rs",
+        "tokio-util",
+        "0.7.19",
+        "registry/src/index.crates.io-1949cf8c6b5b557f/tokio-util-0.7.19/src/sync/reusable_box.rs",
     ] {
         strings.intern(s);
     }
@@ -810,6 +816,12 @@ fn test_semantic_delegation_origin_is_its_registry_path() {
             StrRef(9),
             StrRef(28),
         ),
+        (
+            SemanticRuleKind::FuturesUtilNext,
+            StrRef(22),
+            StrRef(23),
+            StrRef(24),
+        ),
     ] {
         let mut b = forwarding();
         b.semantics.rules[0].kind = kind;
@@ -982,14 +994,44 @@ fn test_semantic_storage_candidates_exclude_generic_arguments() {
 
 #[test]
 fn test_semantic_access_does_not_supply_future_identity() {
-    for (kind, rule) in [
-        (AccessKind::Owned, SemanticRuleKind::StdBoxAccess),
-        (AccessKind::Owned, SemanticRuleKind::StdPinBoxAccess),
-        (AccessKind::Borrowed, SemanticRuleKind::StdMutRefAccess),
-        (AccessKind::Borrowed, SemanticRuleKind::StdPinMutRefAccess),
+    // The std kinds bind under the compiler origin the base bundle
+    // carries; the two library routes are owned storage under their
+    // crate's delegation origin, and nothing else may carry them.
+    for (kind, rule, origin) in [
+        (AccessKind::Owned, SemanticRuleKind::StdBoxAccess, None),
+        (AccessKind::Owned, SemanticRuleKind::StdPinBoxAccess, None),
+        (
+            AccessKind::Borrowed,
+            SemanticRuleKind::StdMutRefAccess,
+            None,
+        ),
+        (
+            AccessKind::Borrowed,
+            SemanticRuleKind::StdPinMutRefAccess,
+            None,
+        ),
+        (
+            AccessKind::Owned,
+            SemanticRuleKind::TokioStreamWatchStream,
+            Some((StrRef(29), StrRef(30), StrRef(31))),
+        ),
+        (
+            AccessKind::Owned,
+            SemanticRuleKind::TokioUtilReusableBox,
+            Some((StrRef(32), StrRef(33), StrRef(34))),
+        ),
     ] {
         let mut b = base();
         b.semantics.rules[0].kind = rule;
+        if let Some((package, version, source)) = origin {
+            b.semantics.origins[0] = SemanticOrigin::LibraryDelegation {
+                package,
+                version,
+                family: StrRef(17),
+                source,
+                files: Vec::new(),
+            };
+        }
         let mut r = record(PARENT);
         r.future = None;
         r.access = Some(AccessBinding {
@@ -1007,6 +1049,14 @@ fn test_semantic_access_does_not_supply_future_identity() {
             AccessKind::Borrowed => AccessKind::Owned,
         };
         bad(&b, "incompatible capability");
+        // A library route names its own crate's declaration: under a
+        // compiler origin, or another crate's, it is not that route.
+        if origin.is_some() {
+            b.semantics.types[0].access.as_mut().unwrap().kind = kind;
+            b.validate().unwrap();
+            b.semantics.origins[0] = delegation_origin(StrRef(18));
+            bad(&b, "third-party delegation needs source evidence");
+        }
     }
 }
 

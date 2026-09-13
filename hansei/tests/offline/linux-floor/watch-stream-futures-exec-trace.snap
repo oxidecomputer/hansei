@@ -10,11 +10,20 @@ Held by: task 3 — async fn watch_stream::resolver (frame 1, `once`)
       waiting on oneshot rx 0xADDR (nothing sent, sender alive)
 
 future 0xADDR
+future 0xADDR: async fn tokio_stream::wrappers::watch::make_future<u32>
+Held by: task 3 — async fn watch_stream::resolver (frame 1, `stream`)
+
+#0  future        tokio::sync::notify::Notified
+      waiting on watch 0xADDR (version 0, 1 sender, 1 receiver)
+[5 frames, 1 shown]
+
+future 0xADDR
 future 0xADDR: future futures_util::stream::stream::next::Next<tokio_stream::wrappers::watch::WatchStream<u32>>
 Held by: task 3 — async fn watch_stream::resolver (frame 1, `next`)
 
-#0  future        futures_util::stream::stream::next::Next<tokio_stream::wrappers::watch::WatchStream<u32>>
-      (<no_state>, 1 local)
+#0  future        tokio::sync::notify::Notified
+      waiting on watch 0xADDR (version 0, 1 sender, 1 receiver)
+[8 frames, 1 shown]
 
 future 0xADDR
 future 0xADDR: future tokio::sync::oneshot::Receiver<u32>
@@ -27,13 +36,24 @@ future 0xADDR
 future 0xADDR: future futures_util::stream::stream::next::Next<tokio_stream::stream_map::StreamMap<&str, tokio_stream::wrappers::watch::WatchStream<u32>>>
 Held by: task 4 — async fn watch_stream::mapper (frame 1, `next`)
 
-#0  future        futures_util::stream::stream::next::Next<tokio_stream::stream_map::StreamMap<&str, tokio_stream::wrappers::watch::WatchStream<u32>>>
+#0  future        tokio_stream::stream_map::StreamMap<&str, tokio_stream::wrappers::watch::WatchStream<u32>>
       (<no_state>, 1 local)
+[2 frames, 1 shown]
+
+future 0xADDR
+future 0xADDR: async block tokio_stream::wrappers::watch::WatchStream::new<u32>
+Held by: task 5 — async fn watch_stream::fresh (frame 1, `stream`)
+
+the chain ends in a future that has never been polled
+#0  async block   tokio_stream::wrappers::watch::WatchStream::new<u32>
+      state Unresumed
 
 future 0xADDR
 future 0xADDR: future futures_util::stream::stream::next::Next<tokio_stream::wrappers::watch::WatchStream<u32>>
 Held by: task 5 — async fn watch_stream::fresh (frame 1, `next`)
 
-#0  future        futures_util::stream::stream::next::Next<tokio_stream::wrappers::watch::WatchStream<u32>>
-      (<no_state>, 1 local)
-[Executed against 5 futures, 0 failed]
+the chain ends in a future that has never been polled
+#0  async block   tokio_stream::wrappers::watch::WatchStream::new<u32> [dyn]
+      state Unresumed
+[4 frames, 1 shown]
+[Executed against 7 futures, 0 failed]

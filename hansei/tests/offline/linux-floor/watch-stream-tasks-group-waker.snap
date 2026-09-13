@@ -2,7 +2,8 @@
 source: hansei/src/offline.rs
 description: "`tasks --group waker` over linux-floor/watch-stream"
 ---
-COUNT  WAITING ON  TASKS
-    3  oneshot rx  3, 4, 5
-    1  watch       6
-[2 groups]
+COUNT  WAITING ON         TASKS
+    2  oneshot rx         4, 5
+    1  oneshot rx, watch  3
+    1  watch              6
+[3 groups]

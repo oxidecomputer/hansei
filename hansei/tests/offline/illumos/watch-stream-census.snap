@@ -5,8 +5,8 @@ description: "`census` over illumos/watch-stream"
 Threads: 3 lwps, 3 in runtime 0 @ 0xADDR
 
 COUNT  RT  ROLE             STATE            LWPS
-    1  0   worker           in driver        2
-    1  0   worker           parked           3
+    1  0   worker           in driver        3
+    1  0   worker           parked           2
     1  0   entered runtime  block_on caller  1
     0  0   blocking pool    0 idle, 0 busy   —
 [3 lwps]
@@ -28,19 +28,24 @@ COUNT  TYPE / WAITING ON
        └─ 1  one of several
 [4 types]
 
-Futures: 9 in flight, on 16 await-chain frames, up to 5 deep
+Futures: 11 in flight, on 35 await-chain frames, up to 8 deep
 
 COUNT  HELD IN
     4  task (its own await chain)
-    5  frame (off any await chain)
+    7  frame (off any await chain)
     0  set (0 FuturesUnordered)
-[9 futures]
+[11 futures]
 
 COUNT  TYPE / WAITING ON
     2  future futures_util::stream::stream::next::Next<tokio_stream::wrappers::watch::WatchStream<u32>>
-       └─ 2  unknown
+       ├─ 1  watch
+       └─ 1  — (unresumed)
     2  future tokio::sync::oneshot::Receiver<u32>
        └─ 2  oneshot rx
+    1  async block tokio_stream::wrappers::watch::WatchStream::new<u32>
+       └─ 1  — (unresumed)
+    1  async fn tokio_stream::wrappers::watch::make_future<u32>
+       └─ 1  watch
     1  future futures_util::stream::stream::next::Next<tokio_stream::stream_map::StreamMap<&str, tokio_stream::wrappers::watch::WatchStream<u32>>>
        └─ 1  unknown
-[3 types]
+[5 types]

@@ -41,7 +41,7 @@ Held by: task 4 — async fn armed_select::holder (frame 1, `notified`)
 
 future 0xADDR
 future 0xADDR: async fn armed_select::child
-Child of: futures_util::stream::futures_unordered::FuturesUnordered<armed_select::child> at 0xADDR (frame 1, `set`), polled by task 6 — async fn armed_select::driver
+Child of: futures_util::stream::futures_unordered::FuturesUnordered<armed_select::child> at 0xADDR (frame 2, `set`), polled by task 6 — async fn armed_select::driver
 
 #0  future        tokio::sync::oneshot::Receiver<u32>
       waiting on oneshot rx 0xADDR (nothing sent, sender alive)
@@ -49,7 +49,7 @@ Child of: futures_util::stream::futures_unordered::FuturesUnordered<armed_select
 
 future 0xADDR
 future 0xADDR: async fn armed_select::child
-Child of: futures_util::stream::futures_unordered::FuturesUnordered<armed_select::child> at 0xADDR (frame 1, `set`), polled by task 6 — async fn armed_select::driver
+Child of: futures_util::stream::futures_unordered::FuturesUnordered<armed_select::child> at 0xADDR (frame 2, `set`), polled by task 6 — async fn armed_select::driver
 
 #0  future        tokio::sync::oneshot::Receiver<u32>
       waiting on oneshot rx 0xADDR (nothing sent, sender alive)
