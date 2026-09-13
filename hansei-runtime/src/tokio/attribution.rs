@@ -1951,6 +1951,21 @@ impl AttributedSlot {
             None => self.label(),
         }
     }
+
+    /// The slot's line headed by its entry rather than its label — an
+    /// owner slot's primitive with the words its reader read — for a
+    /// listing whose cell does not carry those words. The other kinds
+    /// have no reading, and their entry heads the line as their label
+    /// would, save a typed slot, whose entry names the holder the
+    /// detail names again.
+    pub fn entry_line(&self, stopped: Option<RawInstant>) -> String {
+        match (&self.attribution, self.detail(stopped)) {
+            (Attribution::Owner { .. }, Some(detail)) => {
+                format!("{}: {detail}", self.entry(stopped))
+            }
+            _ => self.line(stopped),
+        }
+    }
 }
 
 #[cfg(test)]

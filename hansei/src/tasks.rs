@@ -647,6 +647,12 @@ pub(crate) struct TaskRow {
     /// beyond the cell, then one line per slot — where it sits, and
     /// what says it is current.
     pub(crate) wait_detail: Vec<String>,
+    /// Whether those lines carry every word of the cell — a wait
+    /// set's entries, each on its slot's line; a verified target,
+    /// heading the line of the slot it accounts for — so the task
+    /// block prints the lines under a bare `waiting on:` rather than
+    /// the cell and then the lines again.
+    pub(crate) wait_listed: bool,
     /// The root future's display name, folded and never truncated.
     pub(crate) future: String,
     /// `Spawned at:` — where the target records one
@@ -752,6 +758,7 @@ pub(crate) fn build_rows(
                     .get(index)
                     .map(|wait| wait_detail(wait, stops, &[], None, &|_| None))
                     .unwrap_or_default(),
+                wait_listed: false,
                 future: future_name(&task.future, impls),
                 spawned: task.spawn_location.as_ref().map(|loc| loc.to_string()),
                 defined: match &task.future {
@@ -805,6 +812,27 @@ pub(crate) fn apply_slots(
             continue;
         }
         row.wait_detail = wait_detail(wait, stops, &owned, stopped, size_of);
+        row.wait_listed = cell_in_detail(wait, &owned, size_of);
+    }
+}
+
+/// Whether the detail lines carry the cell whole: a wait set's cell
+/// is its members' entries, and each armed member's line opens with
+/// its entry; a verified wait's cell is its target, and the line of
+/// the slot the target accounts for opens with it. Every other cell —
+/// a stop's type, a reason, `ready` — says something the lines do
+/// not, and stays on the wait line.
+fn cell_in_detail(
+    wait: &rt_graph::TaskWait,
+    slots: &[&attribution::AttributedSlot],
+    size_of: &dyn Fn(BundleTypeId) -> Option<u64>,
+) -> bool {
+    match &wait.assessment {
+        WaitAssessment::Set(_) => !slots.is_empty(),
+        WaitAssessment::Waiting(verified) => slots
+            .iter()
+            .any(|slot| attribution::verified_accounts(verified, slot, size_of)),
+        _ => false,
     }
 }
 
@@ -1185,7 +1213,35 @@ pub(crate) fn wait_detail(
     if capped > 0 {
         lines.push(format!("{capped} more branches not inspected"));
     }
-    lines.extend(slot_lines(&rest, stopped));
+    // The remaining slots, each headed by its entry — the reading
+    // included, since no cell above carries it — except that the slot
+    // a verified target accounts for is headed by the target itself,
+    // the way a branch line is: the verdict, then what arms it. A
+    // wheel entry's own line already says everything its target does.
+    let verified = match &wait.assessment {
+        WaitAssessment::Waiting(verified) => Some(verified),
+        _ => None,
+    };
+    let mut slot_lines: Vec<String> = rest
+        .iter()
+        .map(|slot| match verified {
+            Some(verified) if attribution::verified_accounts(verified, slot, size_of) => {
+                let wheel = matches!(
+                    slot.attribution,
+                    attribution::Attribution::Registry(attribution::RegistrySlot::Timer { .. })
+                );
+                match slot.detail(stopped) {
+                    Some(detail) if !wheel => {
+                        format!("{}; armed: {detail}", verified.target())
+                    }
+                    _ => slot.line(stopped),
+                }
+            }
+            _ => slot.entry_line(stopped),
+        })
+        .collect();
+    slot_lines.sort();
+    lines.extend(slot_lines);
     lines
 }
 
@@ -1255,7 +1311,17 @@ fn member_line(
         None => "not inspected".to_string(),
     };
     let armed = if !armed_by.is_empty() {
-        let mut slots: Vec<String> = armed_by.iter().map(|s| s.line(stopped)).collect();
+        // A verified verdict names the primitive and its words, so the
+        // slot is headed by its label; any other verdict leaves the
+        // words to the slot's entry.
+        let named = matches!(member.assessment, Some(WaitAssessment::Waiting(_)));
+        let mut slots: Vec<String> = armed_by
+            .iter()
+            .map(|s| match named {
+                true => s.line(stopped),
+                false => s.entry_line(stopped),
+            })
+            .collect();
         slots.sort();
         format!("armed: {}", slots.join("; "))
     } else {
@@ -1417,9 +1483,14 @@ pub(crate) fn print_task_view(
     }
     // The wait, then what the assessment has to say beyond the cell
     // and one line per slot holding the task's waker: where it sits,
-    // and what says it is current.
+    // and what says it is current. Where the lines carry the cell
+    // whole, the label stands bare over them rather than listing the
+    // wakers the lines are about to list.
     if !polled && row.waiting_on != "—" {
-        writeln!(out, "    waiting on: {}", row.waiting_on)?;
+        match row.wait_listed {
+            true => writeln!(out, "    waiting on:")?,
+            false => writeln!(out, "    waiting on: {}", row.waiting_on)?,
+        }
         for line in &row.wait_detail {
             writeln!(out, "        {line}")?;
         }
@@ -3164,10 +3235,13 @@ mod table_tests {
         let rows = folded_rows(&list, &mut waits, &slots);
         assert_eq!(rows[0].waiting_on, "task 2");
         assert_eq!(rows[0].waiting_kind.as_deref(), Some("task 2"));
+        // The join heads the trailer slot's line, so the lines carry
+        // the cell whole; the timer stands as the slot it is.
         assert_eq!(
             rows[0].wait_detail,
-            ["join task 2: waker in its trailer", "timer 0xdd00"]
+            ["task 2; armed: waker in its trailer", "timer 0xdd00"]
         );
+        assert!(rows[0].wait_listed);
     }
 
     /// The rows as the launch builds them: the slots folded into each
@@ -3334,6 +3408,7 @@ mod filter_tests {
             waiting_on: "—".to_string(),
             waiting_kind: None,
             wait_detail: Vec::new(),
+            wait_listed: false,
             future: "async fn app::work".to_string(),
             spawned: None,
             defined: None,

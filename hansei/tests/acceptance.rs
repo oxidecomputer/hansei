@@ -560,6 +560,8 @@ struct TaskRow {
     /// The wait, spelled as the table's cell — empty for a task
     /// waiting on nothing nameable, which gets no line either.
     waiting: String,
+    /// The lines under `waiting on`, one per branch or slot.
+    wait_lines: Vec<String>,
 }
 
 /// Run `task` under every task — `tasks --exec task` — and parse what
@@ -605,6 +607,7 @@ fn list_tasks(bundle: &Path, core: &Path) -> Vec<TaskRow> {
             awaiting: String::new(),
             thread: String::new(),
             waiting: String::new(),
+            wait_lines: Vec::new(),
         };
         while let Some(line) = lines.peek() {
             if line.is_empty() || line.starts_with("[Executed against ") {
@@ -617,12 +620,18 @@ fn list_tasks(bundle: &Path, core: &Path) -> Vec<TaskRow> {
             let field_line = line
                 .strip_prefix("    ")
                 .unwrap_or_else(|| panic!("unexpected task line {line:?}"));
-            if field_line.starts_with(' ') {
+            if let Some(detail) = field_line.strip_prefix("    ") {
+                row.wait_lines.push(detail.to_string());
                 continue;
             }
-            let (label, value) = field_line
-                .split_once(": ")
-                .unwrap_or_else(|| panic!("unexpected task line {line:?}"));
+            // A bare `waiting on:` stands over the lines that list the
+            // wait whole; every other field carries its value.
+            let (label, value) = match field_line.strip_suffix(':') {
+                Some("waiting on") => ("waiting on", ""),
+                _ => field_line
+                    .split_once(": ")
+                    .unwrap_or_else(|| panic!("unexpected task line {line:?}")),
+            };
             let field = match label {
                 "state" => &mut row.state,
                 "thread" => &mut row.thread,
@@ -636,7 +645,10 @@ fn list_tasks(bundle: &Path, core: &Path) -> Vec<TaskRow> {
                 "join sets" => &mut row.sets,
                 _ => panic!("unexpected task field {line:?}"),
             };
-            assert!(field.is_empty(), "repeated task field {line:?}");
+            assert!(
+                field.is_empty() && (label != "waiting on" || row.wait_lines.is_empty()),
+                "repeated task field {line:?}"
+            );
             *field = value.to_string();
         }
         for (label, value) in [
@@ -1944,11 +1956,23 @@ fn test_blocking_pool_acceptance() {
         // `task` prints no wait line for it.
         assert_eq!(running.waiting, "", "{rows:#?}");
 
-        // The join edges point at listed rows, plainly spelled.
+        // The join edges point at listed rows, plainly named: the
+        // verified join heads the line of the trailer slot it accounts
+        // for, under a bare wait label.
         let a = task_with_future(&rows, "async fn blocking_pool::running_waiter");
-        assert_eq!(a.waiting, format!("task {}", running.id), "{rows:#?}");
+        assert_eq!(a.waiting, "", "{rows:#?}");
+        assert_eq!(
+            a.wait_lines,
+            [format!("task {}; armed: waker in its trailer", running.id)],
+            "{rows:#?}"
+        );
         let b = task_with_future(&rows, "async fn blocking_pool::queued_waiter");
-        assert_eq!(b.waiting, format!("task {}", queued.id), "{rows:#?}");
+        assert_eq!(b.waiting, "", "{rows:#?}");
+        assert_eq!(
+            b.wait_lines,
+            [format!("task {}; armed: waker in its trailer", queued.id)],
+            "{rows:#?}"
+        );
     });
 }
 
@@ -3929,7 +3953,10 @@ fn test_armed_select_acceptance() {
         // the watch's, where a snapshot could only say `notify`. Each
         // slot carries its primitive's words: the one sender kept in
         // `main` and the bound of four, the leaked oneshot sender, the
-        // watch never sent to.
+        // watch never sent to. The set's cell is its lines, which
+        // stand under a bare wait label.
+        assert_eq!(selector.waiting, "", "{selector:?}");
+        let listed = selector.wait_lines.join("\n");
         for word in [
             "mpsc 0x",
             " (1 sender, capacity 4, 0 unread)",
@@ -3939,7 +3966,7 @@ fn test_armed_select_acceptance() {
             " (nothing sent, sender alive)",
             "timer (deadline ",
         ] {
-            assert!(selector.waiting.contains(word), "{selector:?}");
+            assert!(listed.contains(word), "{selector:?}");
         }
         // The slot and the leaf reader share one bucket per primitive.
         let grouped = hansei_ok(&bundle, core, "tasks --group waiting-on");
@@ -3950,11 +3977,12 @@ fn test_armed_select_acceptance() {
         assert!(!grouped.contains("mpsc rx"), "{grouped}");
         // One detail line per `select!` branch under the wait, each a
         // borrow of the frame's own local, armed by the slot inside it
-        // and spelled by the slot's label; the sleep's by the wheel
-        // entry the registry decoded.
+        // and named by the slot's label — its entry, reading included,
+        // where the verdict does not carry the words; the sleep's by
+        // the wheel entry the registry decoded.
         let block = hansei_ok(&bundle, core, &format!("task {}", selector.id));
         let detail = regex::Regex::new(
-            r"(?m)^        branch [0-2] \(borrowed\): .* — .*; armed: (mpsc|watch|oneshot rx) 0x[0-9a-f]+: waker in ",
+            r"(?m)^        branch [0-2] \(borrowed\): .* — .*; armed: (mpsc|watch|oneshot rx) 0x[0-9a-f]+( \([^)]*\))?: waker in ",
         )
         .unwrap();
         assert_eq!(detail.find_iter(&block).count(), 3, "{block}");
@@ -3975,31 +4003,37 @@ fn test_armed_select_acceptance() {
         assert!(!block.contains("\n    waker:"), "{block}");
 
         // The holder's leaf is the receiver itself: a verified wait,
-        // printed by its reader, and the one slot agrees with it.
+        // printed by its reader, heading the one slot's line — which
+        // agrees with it — under a bare wait label.
         let holder = task_with_future(&rows, "async fn armed_select::holder");
-        assert!(holder.waiting.starts_with("oneshot rx 0x"), "{holder:?}");
+        assert_eq!(holder.waiting, "", "{holder:?}");
+        let [line] = holder.wait_lines.as_slice() else {
+            panic!("{holder:?}");
+        };
+        assert!(line.starts_with("oneshot rx 0x"), "{holder:?}");
         assert!(
-            holder.waiting.ends_with(" (nothing sent, sender alive)"),
+            line.contains(" (nothing sent, sender alive); armed: waker in Inner.rx_task"),
             "{holder:?}"
         );
         // One entry: the leaf's reader and the slot agree on the one
-        // primitive, so the cell does not say it twice.
-        assert_eq!(
-            holder.waiting.matches("oneshot rx").count(),
-            1,
-            "{holder:?}"
-        );
+        // primitive, so the line does not say it twice.
+        assert_eq!(line.matches("oneshot rx").count(), 1, "{holder:?}");
         let waiter = task_with_future(&rows, "async fn armed_select::waiter");
         // The waiter's leaf reader walked the list: its state word and
         // the one node it found, in the slot entry's grammar.
-        assert!(waiter.waiting.starts_with("notify 0x"), "{waiter:?}");
-        assert!(
-            waiter.waiting.ends_with(" (waiting, 1 queued)"),
-            "{waiter:?}"
-        );
+        assert_eq!(waiter.waiting, "", "{waiter:?}");
+        let [line] = waiter.wait_lines.as_slice() else {
+            panic!("{waiter:?}");
+        };
+        assert!(line.starts_with("notify 0x"), "{waiter:?}");
+        assert!(line.contains(" (waiting, 1 queued); armed: "), "{waiter:?}");
         let driver = task_with_future(&rows, "async fn armed_select::driver");
-        assert!(driver.waiting.starts_with("slot 0x"), "{driver:?}");
-        assert!(driver.waiting.contains("AtomicWaker"), "{driver:?}");
+        assert_eq!(driver.waiting, "", "{driver:?}");
+        let [line] = driver.wait_lines.as_slice() else {
+            panic!("{driver:?}");
+        };
+        assert!(line.starts_with("slot 0x"), "{driver:?}");
+        assert!(line.contains("AtomicWaker"), "{driver:?}");
 
         // The older field names still select the same cell.
         let by_alias = hansei_ok(&bundle, core, "tasks --with waker 'oneshot rx'");

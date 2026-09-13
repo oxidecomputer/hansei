@@ -1170,6 +1170,7 @@ mod tests {
                 .skip(1)
                 .map(|line| line.trim_start())
                 .map(|line| line.split_once(": ").map(|(l, _)| l).unwrap_or(line))
+                .map(|label| label.trim_end_matches(':'))
                 .collect();
             // Every line under the heading is set in four columns.
             assert!(

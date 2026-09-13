@@ -7,8 +7,8 @@ task 3
     thread: <none>
     type: async fn channels::notify_waiter
     awaiting at: src/bin/channels.rs:37
-    waiting on: notify 0xADDR (waiting, 1 queued)
-        notify 0xADDR: waker in Notified.waiter, in #0 waiter → waker
+    waiting on:
+        notify 0xADDR (waiting, 1 queued); armed: waker in Notified.waiter, in #0 waiter → waker
     spawned at: src/bin/channels.rs:139:23
     defined at: src/bin/channels.rs:27
     held futures: 0

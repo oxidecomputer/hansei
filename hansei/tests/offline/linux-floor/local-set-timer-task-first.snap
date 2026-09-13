@@ -8,7 +8,7 @@ task 1
     owner: local set 0 @ 0xADDR (lwp 2768219)
     type: async fn local_set_timer::local_sleeper
     awaiting at: src/bin/local-set-timer.rs:22
-    waiting on: timer (deadline TS on the target's monotonic clock)
+    waiting on:
         timer 0xADDR deadline TS on the target's monotonic clock
     spawned at: src/bin/local-set-timer.rs:62:20
     defined at: src/bin/local-set-timer.rs:19
