@@ -260,7 +260,7 @@ impl SlotRef {
     /// target: a wheel entry's deadline where its word encodes one —
     /// the text a verified `Sleep` prints — else the slot kind and
     /// the resource.
-    fn cell_entry(&self) -> Option<String> {
+    pub fn cell_entry(&self) -> Option<String> {
         match self {
             Self::Wheel {
                 deadline: Some(deadline),
@@ -300,9 +300,10 @@ impl SlotRef {
         }
     }
 
-    /// The evidence, in words, for a detail line.
-    pub fn detail(&self) -> String {
-        match self {
+    /// The evidence, in words, for a detail line; `None` for a swept
+    /// slot that has none beyond its entry.
+    pub fn detail(&self) -> Option<String> {
+        Some(match self {
             Self::Wheel { entry, state, .. } => {
                 let state = match state {
                     Some(state) => format!(", {state}"),
@@ -325,8 +326,8 @@ impl SlotRef {
                 format!("this task's waker in {site}{ready}")
             }
             Self::Protocol => "its protocol read this task's waker".to_string(),
-            Self::Swept { slot, stopped } => slot.detail(*stopped),
-        }
+            Self::Swept { slot, stopped } => return slot.detail(*stopped),
+        })
     }
 }
 
@@ -725,9 +726,12 @@ impl<'b, T: Target> Context<'b, T> {
         let mut arm =
             |members: &mut Vec<WaitMember>, index: Option<usize>, slot: SlotRef, at| match index {
                 Some(i) if members[i].armed.is_none() => members[i].armed = Some(slot),
-                Some(i) => members[i]
-                    .notes
-                    .push(format!("also armed: {}", slot.detail())),
+                Some(i) => members[i].notes.push(format!(
+                    "also armed: {}",
+                    slot.detail()
+                        .or_else(|| slot.cell_entry())
+                        .unwrap_or_default()
+                )),
                 None => slot_only.push(WaitMember {
                     route: MemberRoute::SlotOnly { within: within(at) },
                     key: None,
@@ -967,7 +971,7 @@ pub fn fold_wait(
                 || matches!(
                     slot.attribution,
                     Attribution::Registry(RegistrySlot::Timer { .. } | RegistrySlot::Io { .. })
-                        | Attribution::Unknown { .. }
+                        | Attribution::Unknown
                 )
             {
                 continue;
@@ -1360,10 +1364,10 @@ mod tests {
         };
         assert_eq!(
             registered.detail(),
-            format!(
+            Some(format!(
                 "this task's waker in wheel entry 0x10, {}",
                 timer::REGISTERED
-            )
+            ))
         );
         assert_eq!(registered.cell_entry(), Some("timer 0x10".to_string()));
         let unread = SlotRef::Wheel {
@@ -1372,7 +1376,10 @@ mod tests {
             deadline: None,
             stopped: None,
         };
-        assert_eq!(unread.detail(), "this task's waker in wheel entry 0x10");
+        assert_eq!(
+            unread.detail().as_deref(),
+            Some("this task's waker in wheel entry 0x10")
+        );
         // A word that encodes a deadline prints it the way a verified
         // sleep does, in the cell and on the evidence line.
         let at = |tv_sec| RawInstant { tv_sec, tv_nsec: 0 };
@@ -1969,14 +1976,7 @@ mod tests {
     }
 
     fn nowhere(at: u64) -> AttributedSlot {
-        swept(
-            at,
-            Attribution::Unknown {
-                cache: None,
-                size: None,
-                offset: None,
-            },
-        )
+        swept(at, Attribution::Unknown)
     }
 
     fn notify_target(addr: u64) -> WaitTarget {
@@ -2224,6 +2224,6 @@ mod tests {
         assert_eq!(set.group_label(), "slot in x::Holder, unknown");
         let mut one = stopped(Vec::new());
         fold(&task, &mut one, &[nowhere(0x7000)]);
-        assert_eq!(set_of(&one).cell(), "unknown 0x7000");
+        assert_eq!(set_of(&one).cell(), "unknown @ 0x7000");
     }
 }

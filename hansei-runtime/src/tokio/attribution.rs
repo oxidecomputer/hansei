@@ -49,7 +49,7 @@ use super::graph::{Analysis, TaskRef};
 use super::observe::{ReadContext, ValueKey};
 use super::semantics::SemanticIndex;
 use super::wakers::{Hit, Owner, WakerSlots};
-use crate::heap::umem::{Liveness, Source, UmemHeap};
+use crate::heap::umem::{Liveness, UmemHeap};
 
 use foldhash::{HashMap, HashSet};
 use hansei_bundle::names::{ImplFold, fold_type_name, outer_path};
@@ -330,12 +330,10 @@ pub enum Attribution {
         path: SlotPath,
         validity: Validity,
     },
-    /// A live allocation nothing typed reaches.
-    Unknown {
-        cache: Option<String>,
-        size: Option<u64>,
-        offset: Option<u64>,
-    },
+    /// Memory nothing typed reaches: a live allocation no root's
+    /// value covers, or — on a target with no allocator index — what
+    /// may be a ghost of the storage's last occupant.
+    Unknown,
 }
 
 /// One admitted hit with what it was attributed to.
@@ -382,7 +380,7 @@ impl AttributedSlot {
                 None => format!("{} {primitive:#x}", kind.word()),
             },
             Attribution::Typed { holder, .. } => format!("slot {:#x} in {holder}", self.slot),
-            Attribution::Unknown { .. } => format!("unknown {:#x}", self.slot),
+            Attribution::Unknown => format!("unknown @ {:#x}", self.slot),
         }
     }
 
@@ -411,14 +409,15 @@ impl AttributedSlot {
             Attribution::Registry(RegistrySlot::Join { task }) => format!("join {task}"),
             Attribution::Owner { kind, .. } => kind.word().to_string(),
             Attribution::Typed { holder, .. } => format!("slot in {holder}"),
-            Attribution::Unknown { .. } => "unknown".to_string(),
+            Attribution::Unknown => "unknown".to_string(),
         }
     }
 
     /// The detail line's text after the entry: where the slot is and
-    /// what says it is current.
-    pub fn detail(&self, stopped: Option<RawInstant>) -> String {
-        match &self.attribution {
+    /// what says it is current. `None` for an unknown slot, whose
+    /// address is all there is to say.
+    pub fn detail(&self, stopped: Option<RawInstant>) -> Option<String> {
+        Some(match &self.attribution {
             Attribution::Registry(RegistrySlot::Timer {
                 state, deadline, ..
             }) => {
@@ -475,20 +474,8 @@ impl AttributedSlot {
                     path.text()
                 )
             }
-            Attribution::Unknown {
-                cache,
-                size,
-                offset,
-            } => match (cache, size, offset) {
-                (Some(cache), Some(size), Some(offset)) => {
-                    format!("in a {size}-byte {cache} buffer at +{offset}")
-                }
-                (None, Some(size), Some(offset)) => {
-                    format!("in a {size}-byte allocation at +{offset}")
-                }
-                _ => "in memory nothing typed reaches".to_string(),
-            },
-        }
+            Attribution::Unknown => return None,
+        })
     }
 
     /// The path, where the slot was located by type.
@@ -683,7 +670,7 @@ impl Attributed {
                 Attribution::Registry(_) => self.stats.registry += 1,
                 Attribution::Owner { .. } => self.stats.owner += 1,
                 Attribution::Typed { .. } => self.stats.typed += 1,
-                Attribution::Unknown { .. } => self.stats.unknown += 1,
+                Attribution::Unknown => self.stats.unknown += 1,
             }
         }
         self.stats.stale = self.stale.len();
@@ -914,7 +901,7 @@ impl<'a, 'b, T: Target> Attributor<'a, 'b, T> {
                         let pointers = pointers.get_or_insert_with(|| self.pointer_members(&roots));
                         match self.by_hop(hit, &roots, pointers) {
                             Some(attribution) => attribution,
-                            None => unknown(hit.slot, self.sources.heap),
+                            None => Attribution::Unknown,
                         }
                     }
                 }
@@ -1709,25 +1696,6 @@ fn short_name(name: &str) -> String {
     base.rsplit("::").next().unwrap_or(base).to_string()
 }
 
-/// Rule 4's answer: what the allocator index says about the buffer.
-fn unknown(slot: u64, heap: Option<&UmemHeap>) -> Attribution {
-    match heap.map(|heap| (heap, heap.locate(slot))) {
-        Some((heap, Liveness::Live { buffer, source })) => Attribution::Unknown {
-            cache: match source {
-                Source::Cache(i) => heap.caches().get(i).map(|c| c.name.clone()),
-                Source::Arena(_) => None,
-            },
-            size: Some(buffer.end - buffer.start),
-            offset: Some(slot - buffer.start),
-        },
-        _ => Attribution::Unknown {
-            cache: None,
-            size: None,
-            offset: None,
-        },
-    }
-}
-
 /// Every pair a registry or the analysis decoded, by its address.
 fn registry_map(registries: &Registries, analysis: &Analysis) -> HashMap<u64, RegistrySlot> {
     let mut map = HashMap::default();
@@ -1957,7 +1925,8 @@ impl AttributedSlot {
     /// The slot's detail line: its label, then where it sits and what
     /// says it is current — except a wheel entry, which is spelled by
     /// its deadline, with the wheel's own word appended where the entry
-    /// is not simply registered.
+    /// is not simply registered, and an unknown slot, which is its
+    /// label alone.
     pub fn line(&self, stopped: Option<RawInstant>) -> String {
         if let Attribution::Registry(RegistrySlot::Timer {
             entry,
@@ -1977,7 +1946,10 @@ impl AttributedSlot {
             }
             return line;
         }
-        format!("{}: {}", self.label(), self.detail(stopped))
+        match self.detail(stopped) {
+            Some(detail) => format!("{}: {detail}", self.label()),
+            None => self.label(),
+        }
     }
 }
 
@@ -2128,12 +2100,12 @@ mod tests {
                     // The primitive is the `Inner`, past the `ArcInner`
                     // header.
                     assert!(*primitive > hop.addr && *primitive - hop.addr <= 16);
+                    let detail = slot.detail(stopped).expect("a typed slot has a detail");
                     assert!(
-                        slot.detail(stopped).starts_with(
+                        detail.starts_with(
                             "waker in Inner.rx_task (rx_task_set), reached from the future at 0x"
                         ),
-                        "{}",
-                        slot.detail(stopped)
+                        "{detail}"
                     );
                 }
                 Attribution::Owner {
@@ -2266,8 +2238,8 @@ mod tests {
         );
         assert_eq!(waiter[0].label(), format!("notify {primitive:#x}"));
         assert_eq!(
-            waiter[0].detail(stopped),
-            "waker in Notified.waiter, in #0 waiter → waker"
+            waiter[0].detail(stopped).as_deref(),
+            Some("waker in Notified.waiter, in #0 waiter → waker")
         );
 
         let driver = slots_of(&attributed, &over, "driver");
@@ -2461,7 +2433,10 @@ mod tests {
             panic!("{:?}", slots[0]);
         };
         assert_eq!(task.addr, sleeper.addr);
-        assert_eq!(slots[0].detail(None), "waker in its trailer");
+        assert_eq!(
+            slots[0].detail(None).as_deref(),
+            Some("waker in its trailer")
+        );
         let wait = &over.analysis.waits[index(joiner)];
         let join = wait.verified().expect("the verified join");
         assert_eq!(
@@ -2525,46 +2500,29 @@ mod tests {
         assert_eq!(attributed.stats.stale, 0);
     }
 
-    /// The spellings of the slots no fixture holds: an unknown with and
-    /// without an allocator's account, and the collapse-free label.
+    /// The slot no fixture holds, as it prints: an unknown is its
+    /// address and nothing more — no detail, and a line that is the
+    /// label alone — under the collapse-free bucket word.
     #[test]
-    fn test_unknown_slots_spell_their_allocation() {
+    fn test_an_unknown_slot_is_its_address_alone() {
         let owner = Owner::Task {
             header: 0x1000,
             index: 0,
         };
-        let slot = |attribution| AttributedSlot {
+        let slot = |at| AttributedSlot {
             hit: 0,
-            slot: 0x7000,
+            slot: at,
             owner,
-            attribution,
+            attribution: Attribution::Unknown,
             within: None,
         };
-        let known = slot(Attribution::Unknown {
-            cache: Some("umem_alloc_96".to_string()),
-            size: Some(96),
-            offset: Some(48),
-        });
-        assert_eq!(known.entry(None), "unknown 0x7000");
-        assert_eq!(known.label(), "unknown 0x7000");
-        assert_eq!(known.bucket(), "unknown");
-        assert_eq!(
-            known.detail(None),
-            "in a 96-byte umem_alloc_96 buffer at +48"
-        );
-        let bare = slot(Attribution::Unknown {
-            cache: None,
-            size: None,
-            offset: None,
-        });
-        assert_eq!(bare.detail(None), "in memory nothing typed reaches");
-        let arena = slot(Attribution::Unknown {
-            cache: None,
-            size: Some(4096),
-            offset: Some(8),
-        });
-        assert_eq!(arena.detail(None), "in a 4096-byte allocation at +8");
-        let attributed = Attributed::from_slots(vec![known, bare]);
+        let one = slot(0x7000);
+        assert_eq!(one.entry(None), "unknown @ 0x7000");
+        assert_eq!(one.label(), "unknown @ 0x7000");
+        assert_eq!(one.bucket(), "unknown");
+        assert_eq!(one.detail(None), None);
+        assert_eq!(one.line(None), "unknown @ 0x7000");
+        let attributed = Attributed::from_slots(vec![one, slot(0x8000)]);
         assert_eq!(attributed.stats.unknown, 2);
         assert_eq!(attributed.of_task(0x1000).count(), 2);
     }
@@ -4187,50 +4145,5 @@ mod synthetic_tests {
             hop_of(&at, &[ptr(slot)]),
             Some((slot, vec!["live".to_string()]))
         );
-    }
-
-    /// An unknown slot is described by the allocator's account of its
-    /// buffer — the cache, the buffer's size, the offset into it — and
-    /// by nothing where the buffer is freed or there is no index.
-    #[test]
-    fn test_an_unknown_slot_is_described_by_its_buffer() {
-        let mut f = fake();
-        cache(
-            &mut f,
-            0,
-            "umem_alloc_64",
-            64,
-            0,
-            &[SlabSpec {
-                base: BUFFERS,
-                chunks: 4,
-                free: vec![2, 3],
-            }],
-        );
-        let heap = UmemHeap::build(&f).expect("the walk built an index");
-        match unknown(BUFFERS + 64 + 24, Some(&heap)) {
-            Attribution::Unknown {
-                cache,
-                size,
-                offset,
-            } => {
-                assert_eq!(cache.as_deref(), Some("umem_alloc_64"));
-                assert_eq!((size, offset), (Some(64), Some(24)));
-            }
-            other => panic!("{other:?}"),
-        }
-        let bare = |attribution| match attribution {
-            Attribution::Unknown {
-                cache,
-                size,
-                offset,
-            } => cache.is_none() && size.is_none() && offset.is_none(),
-            _ => false,
-        };
-        assert!(
-            bare(unknown(BUFFERS + 2 * 64 + 8, Some(&heap))),
-            "a freed buffer"
-        );
-        assert!(bare(unknown(BUFFERS + 8, None)), "no index");
     }
 }

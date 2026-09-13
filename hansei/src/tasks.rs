@@ -819,7 +819,7 @@ pub(crate) fn slot_cell(
     let mut entries: Vec<(String, String)> = Vec::new();
     let mut unknown = 0usize;
     for slot in slots {
-        if matches!(slot.attribution, attribution::Attribution::Unknown { .. }) {
+        if matches!(slot.attribution, attribution::Attribution::Unknown) {
             unknown += 1;
             if unknown > 1 {
                 continue;
@@ -1196,10 +1196,11 @@ fn slot_only_line(member: &WaitMember, within: Option<&str>) -> String {
     let evidence = member
         .armed
         .as_ref()
-        .map(hansei_runtime::tokio::waitset::SlotRef::detail)
+        .and_then(hansei_runtime::tokio::waitset::SlotRef::detail)
+        .map(|evidence| format!(": {evidence}"))
         .unwrap_or_default();
     let within = within.map(|w| format!(", {w}")).unwrap_or_default();
-    format!("{name}: {evidence}{within}; in no branch of the stop")
+    format!("{name}{evidence}{within}; in no branch of the stop")
 }
 
 /// One branch's line: its local — or its `select!` branch number —
@@ -1259,10 +1260,14 @@ fn member_line(
         format!("armed: {}", slots.join("; "))
     } else {
         match (&member.armed, &member.assessment) {
-            (Some(slot), Some(WaitAssessment::Waiting(_))) => slot.detail(),
-            (Some(slot), _) => match member.cell_entry() {
-                Some(entry) => format!("{entry}: {}", slot.detail()),
-                None => slot.detail(),
+            (Some(slot), Some(WaitAssessment::Waiting(_))) => slot
+                .detail()
+                .or_else(|| slot.cell_entry())
+                .unwrap_or_default(),
+            (Some(slot), _) => match (member.cell_entry(), slot.detail()) {
+                (Some(entry), Some(detail)) => format!("{entry}: {detail}"),
+                (Some(entry), None) => entry,
+                (None, detail) => detail.unwrap_or_default(),
             },
             (None, _) => "held, not armed".to_string(),
         }
@@ -3018,22 +3023,8 @@ mod table_tests {
                     },
                 }),
             ),
-            slot(
-                0x7000,
-                Attribution::Unknown {
-                    cache: Some("umem_alloc_96".to_string()),
-                    size: Some(96),
-                    offset: Some(48),
-                },
-            ),
-            slot(
-                0x8000,
-                Attribution::Unknown {
-                    cache: None,
-                    size: None,
-                    offset: None,
-                },
-            ),
+            slot(0x7000, Attribution::Unknown),
+            slot(0x8000, Attribution::Unknown),
             // Task 4's one unknown slot, and a blocking task's slot.
             AttributedSlot {
                 hit: 7,
@@ -3042,11 +3033,7 @@ mod table_tests {
                     header: 0x1000 + 4 * 0x100,
                     index: 3,
                 },
-                attribution: Attribution::Unknown {
-                    cache: None,
-                    size: None,
-                    offset: None,
-                },
+                attribution: Attribution::Unknown,
                 within: None,
             },
             AttributedSlot {
@@ -3095,8 +3082,8 @@ mod table_tests {
                 "join task 2: waker in its trailer".to_string(),
                 "semaphore 0x9000: waker in its wake-queue node 0xe100".to_string(),
                 "timer 0xdd00".to_string(),
-                "unknown 0x7000: in a 96-byte umem_alloc_96 buffer at +48".to_string(),
-                "unknown 0x8000: in memory nothing typed reaches".to_string(),
+                "unknown @ 0x7000".to_string(),
+                "unknown @ 0x8000".to_string(),
             ]
         );
         // No slot: the assessment's own word, marked.
@@ -3114,12 +3101,9 @@ mod table_tests {
         assert_eq!(rows[2].waiting_kind, None);
         // One unknown slot is named by its address; only several
         // collapse to a count.
-        assert_eq!(rows[3].waiting_on, "unknown 0x7100");
+        assert_eq!(rows[3].waiting_on, "unknown @ 0x7100");
         assert_eq!(rows[3].waiting_kind.as_deref(), Some("unknown"));
-        assert_eq!(
-            rows[3].wait_detail,
-            ["unknown 0x7100: in memory nothing typed reaches"]
-        );
+        assert_eq!(rows[3].wait_detail, ["unknown @ 0x7100"]);
         // A blocking cell waits on a pool thread, slot or no slot.
         assert_eq!(rows[4].waiting_on, "—");
         assert_eq!(rows[4].waiting_kind, None);

@@ -229,7 +229,9 @@ fn report_whatis(
             ),
         };
         writeln!(out, "Waker of {owner}: {}", slot.entry(stopped))?;
-        writeln!(out, "    At: {}", slot.detail(stopped))?;
+        if let Some(detail) = slot.detail(stopped) {
+            writeln!(out, "    At: {detail}")?;
+        }
     }
 
     for (index, rt) in runtimes.iter().enumerate() {
