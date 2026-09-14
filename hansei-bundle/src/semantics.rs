@@ -353,6 +353,12 @@ pub enum SemanticRuleKind {
     /// tokio-stream's `StreamMap<K, V>`: a container binding over its
     /// `entries`, each polled with the polling task's own context.
     TokioStreamStreamMap,
+    /// tokio's `Interval::tick`: the `PollFn` over the closure the
+    /// async fn awaits, whose pending path polls the `Pin<Box<Sleep>>`
+    /// in the interval's `delay` and nothing else. The route runs
+    /// through the closure's capture to the interval and lands on
+    /// the box; its std record crosses to the `Sleep`.
+    TokioIntervalTick,
 }
 
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]

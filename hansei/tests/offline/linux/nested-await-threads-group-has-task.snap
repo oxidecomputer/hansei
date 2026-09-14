@@ -3,5 +3,5 @@ source: hansei/src/offline.rs
 description: "`threads --without role ^worker --group has-task` over linux/nested-await"
 ---
 COUNT  HAS TASK  LWPS
-    1  no        2225710
+    1  no        2606714
 [1 group]

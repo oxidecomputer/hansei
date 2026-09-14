@@ -41,12 +41,13 @@ use crate::detect::adapters::{
 };
 use crate::detect::semantics::{
     FUTURES_UTIL_ADAPTERS_V0_3_30, HYPER_UTIL_TOKIO_SLEEP_V0_1_10, LibraryConvention,
-    RustcConvention, TOKIO_SELECT_V1_47, TOKIO_STREAM_MAP_V0_1_14, TOKIO_STREAM_WATCH_V0_1_14,
-    TOKIO_UTIL_REUSABLE_BOX_V0_7_11, TRACING_INSTRUMENTED_V0_1_40, library_convention,
-    rustc_coroutine_convention, rustc_dyn_future_abi_convention, rustc_std_adapter_convention,
-    tokio_state_protocol,
+    RustcConvention, TOKIO_INTERVAL_TICK_V1_47, TOKIO_SELECT_V1_47, TOKIO_STREAM_MAP_V0_1_14,
+    TOKIO_STREAM_WATCH_V0_1_14, TOKIO_UTIL_REUSABLE_BOX_V0_7_11, TRACING_INSTRUMENTED_V0_1_40,
+    library_convention, rustc_coroutine_convention, rustc_dyn_future_abi_convention,
+    rustc_std_adapter_convention, tokio_state_protocol,
 };
 
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 /// What the defining units of a compiler-storage candidate said about
@@ -197,6 +198,19 @@ enum LibrarySeed {
         pin: (String, BundleTypeId),
         dyn_: DynSeed,
     },
+    /// The `PollFn` tokio's `Interval::tick` awaits: the member holding
+    /// the closure, the closure's one capture and the `Interval` it
+    /// references, the interval's member holding its pinned box and
+    /// that box — and where the closure environment was declared, the
+    /// origin the rule is read off, as the `select!`'s is.
+    IntervalTick {
+        closure: String,
+        interval_ref: String,
+        interval: BundleTypeId,
+        delay: String,
+        boxed: BundleTypeId,
+        source: Option<PollSource>,
+    },
 }
 
 impl LibrarySeed {
@@ -212,6 +226,7 @@ impl LibrarySeed {
             LibrarySeed::Next(..) => SemanticRuleKind::FuturesUtilNext,
             LibrarySeed::WatchStream(..) => SemanticRuleKind::TokioStreamWatchStream,
             LibrarySeed::ReusableBox { .. } => SemanticRuleKind::TokioUtilReusableBox,
+            LibrarySeed::IntervalTick { .. } => SemanticRuleKind::TokioIntervalTick,
         }
     }
 
@@ -223,7 +238,27 @@ impl LibrarySeed {
             LibrarySeed::TokioSleep(..) => &HYPER_UTIL_TOKIO_SLEEP_V0_1_10,
             LibrarySeed::WatchStream(..) => &TOKIO_STREAM_WATCH_V0_1_14,
             LibrarySeed::ReusableBox { .. } => &TOKIO_UTIL_REUSABLE_BOX_V0_7_11,
+            LibrarySeed::IntervalTick { .. } => &TOKIO_INTERVAL_TICK_V1_47,
             _ => &FUTURES_UTIL_ADAPTERS_V0_3_30,
+        }
+    }
+
+    /// The declarations the rule's origin is read off, and what they
+    /// declare: a `poll` for a wrapper, the type's own methods for a
+    /// storage route, and the closure for the tick's `PollFn` — whose
+    /// `poll` is core's and names no tokio file, so the closure
+    /// environment's declaration is the one record of where the body it
+    /// runs was written.
+    fn origin_sources<'s>(
+        &'s self,
+        seed: &'s Seed,
+    ) -> (Cow<'s, BTreeSet<PollSource>>, &'static str) {
+        match self {
+            LibrarySeed::IntervalTick { source, .. } => {
+                (Cow::Owned(source.iter().cloned().collect()), "closure")
+            }
+            _ if self.origin_is_the_type() => (Cow::Borrowed(&seed.type_sources), "method"),
+            _ => (Cow::Borrowed(&seed.poll_sources), "poll"),
         }
     }
 
@@ -348,6 +383,7 @@ fn library_seed(
     name: &str,
     bundle_id: impl Fn(TypeId) -> Option<BundleTypeId>,
     mut dyn_seed: impl FnMut(WidePointer) -> Option<DynSeed>,
+    env_source: &impl Fn(TypeId) -> Option<PollSource>,
 ) -> Option<LibrarySeed> {
     let forward = |layout: Option<adapters::ForwardLayout>| {
         let layout = layout?;
@@ -388,6 +424,18 @@ fn library_seed(
             boxed: layout.boxed,
             pin: (layout.pin.0, bundle_id(layout.pin.1)?),
             dyn_: dyn_seed(layout.wide)?,
+        })
+    } else if name.starts_with("core::future::poll_fn::PollFn<") {
+        // The `select!` screen ran first on this name; a `PollFn` it
+        // declined may be the tick's.
+        let layout = adapters::tokio_interval_tick(reader, raw)?;
+        Some(LibrarySeed::IntervalTick {
+            closure: layout.closure,
+            interval_ref: layout.interval_ref,
+            interval: bundle_id(layout.interval)?,
+            delay: layout.delay,
+            boxed: bundle_id(layout.boxed)?,
+            source: env_source(layout.env),
         })
     } else {
         None
@@ -488,9 +536,14 @@ pub(super) fn collect_semantic_seeds(
             && let Some(seed) = select_seed(layout, bundle_id, &env_source)
         {
             seeds.entry(ty).or_default().select = Some(seed);
-        } else if let Some(library) = library_seed(reader, raw, name, bundle_id, |w| {
-            dyn_seed(w, &mut verdict, &bundle_id)
-        }) {
+        } else if let Some(library) = library_seed(
+            reader,
+            raw,
+            name,
+            bundle_id,
+            |w| dyn_seed(w, &mut verdict, &bundle_id),
+            &env_source,
+        ) {
             let seed = seeds.entry(ty).or_default();
             if library.origin_is_the_type() {
                 seed.type_sources = type_sources(raw);
@@ -1609,12 +1662,8 @@ fn plan_library(
         // type, under the crate's layout origin.
         RuleKey::Library(seed_layout.rule_kind())
     } else {
-        let (sources, declared_by) = if seed_layout.origin_is_the_type() {
-            (&seed.type_sources, "method")
-        } else {
-            (&seed.poll_sources, "poll")
-        };
-        let origin = delegation_origin(sources, seed_layout.convention(), declared_by)?;
+        let (sources, declared_by) = seed_layout.origin_sources(seed);
+        let origin = delegation_origin(&sources, seed_layout.convention(), declared_by)?;
         RuleKey::Delegation {
             kind: seed_layout.rule_kind(),
             origin,
@@ -1788,6 +1837,59 @@ fn plan_library(
                 access: Some((rule, AccessKind::Owned, target)),
                 delegate_is_future: true,
             });
+        }
+        // The tick's closure runs `self.poll_tick(cx)`, and `poll_tick`
+        // is `ready!(Pin::new(&mut self.delay).poll(cx))` before
+        // anything else: pending, the `PollFn` polls the pinned box in
+        // `delay` and nothing else, so the forward is exclusive. The
+        // route runs through the closure's one capture to the interval
+        // and lands on the box, not the `Sleep` behind it: crossing the
+        // box is the box's own std record's business.
+        LibrarySeed::IntervalTick {
+            closure,
+            interval_ref,
+            interval,
+            delay,
+            boxed,
+            ..
+        } => {
+            let member = |strings: &mut StringInterner, parent: BundleTypeId, name: &str| {
+                member_named(types, strings, parent, name).ok_or((
+                    SemanticIssueKind::AmbiguousLayout,
+                    format!("no unique member {name:?}"),
+                ))
+            };
+            let (closure_name, env, _) = member(strings, ty, closure)?;
+            let (capture_name, capture_ty, _) = member(strings, env, interval_ref)?;
+            if !matches!(types.get(capture_ty), Some(TypeDef::Pointer { target, .. }) if target == interval)
+            {
+                return Err((
+                    SemanticIssueKind::MissingLayout,
+                    format!("{interval_ref} is not a reference to the declared interval"),
+                ));
+            }
+            let (delay_name, delay_ty, _) = member(strings, *interval, delay)?;
+            if delay_ty != *boxed {
+                return Err((
+                    SemanticIssueKind::MissingLayout,
+                    format!("{delay} holds another type than the screen declared"),
+                ));
+            }
+            let path = checked_path(
+                types,
+                ty,
+                vec![
+                    Step::Member(MemberRef::Named(closure_name)),
+                    Step::Member(MemberRef::Named(capture_name)),
+                    Step::Deref,
+                    Step::Member(MemberRef::Named(delay_name)),
+                ],
+                *boxed,
+            )?;
+            Delegation::Direct {
+                target: Target::Value(path),
+                exclusive: true,
+            }
         }
     };
     Ok(Plan {
@@ -3372,8 +3474,125 @@ mod tests {
             Some(("inner", reusable)),
             Some(("T", fut)),
         );
+        // The tick's `PollFn`: the closure declared under tokio's
+        // `tick`, its one capture referencing the `Interval`, and the
+        // interval's `delay` a pinned box over tokio's `Sleep`.
+        let tick_mod = ns(
+            &mut reader,
+            "tokio::time::interval::{impl#2}::tick::{async_fn#0}",
+        );
+        let interval_mod = ns(&mut reader, "tokio::time::interval");
+        let pin_mod = ns(&mut reader, "core::pin");
+        let poll_fn_mod = ns(&mut reader, "core::future::poll_fn");
+        let (sleep_box, pin, interval, interval_ref, env, tick, select_env, select) = (
+            id(20),
+            id(21),
+            id(22),
+            id(23),
+            id(24),
+            id(25),
+            id(26),
+            id(27),
+        );
+        reader.types.insert(
+            sleep_box,
+            RawType::Pointer(crate::raw_types::RawPointer {
+                name: Some(
+                    reader.strings.intern(
+                        "alloc::boxed::Box<tokio::time::sleep::Sleep, alloc::alloc::Global>",
+                    ),
+                ),
+                target_type_id: sleep,
+            }),
+        );
+        strukt(
+            &mut reader,
+            pin,
+            pin_mod,
+            "Pin<alloc::boxed::Box<tokio::time::sleep::Sleep, alloc::alloc::Global>>",
+            Some(("pointer", sleep_box)),
+            Some(("Ptr", sleep_box)),
+        );
+        strukt(
+            &mut reader,
+            interval,
+            interval_mod,
+            "Interval",
+            Some(("delay", pin)),
+            None,
+        );
+        reader.types.insert(
+            interval_ref,
+            RawType::Pointer(crate::raw_types::RawPointer {
+                name: Some(
+                    reader
+                        .strings
+                        .intern("&mut tokio::time::interval::Interval"),
+                ),
+                target_type_id: interval,
+            }),
+        );
+        strukt(
+            &mut reader,
+            env,
+            tick_mod,
+            "{closure_env#0}",
+            Some(("_ref__self", interval_ref)),
+            None,
+        );
+        strukt(
+            &mut reader,
+            tick,
+            poll_fn_mod,
+            "PollFn<tokio::time::interval::{impl#2}::tick::{async_fn#0}::{closure_env#0}>",
+            Some(("f", env)),
+            Some(("F", env)),
+        );
+        // A `PollFn` over some other closure — a user's, with a capture
+        // of another name — reaches the tick screen and is refused.
+        strukt(
+            &mut reader,
+            select_env,
+            sleep_mod,
+            "{closure_env#0}",
+            Some(("_ref__disabled", interval_ref)),
+            None,
+        );
+        strukt(
+            &mut reader,
+            select,
+            poll_fn_mod,
+            "PollFn<tokio::time::sleep::{closure_env#0}>",
+            Some(("f", select_env)),
+            Some(("F", select_env)),
+        );
         let bundle_id = |raw: TypeId| Some(BundleTypeId(raw.0.0 as u32));
-        let seed = |raw, name: &str| library_seed(&reader, raw, name, bundle_id, |_| None);
+        let seed =
+            |raw, name: &str| library_seed(&reader, raw, name, bundle_id, |_| None, &|_| None);
+        let tick_name = "core::future::poll_fn::PollFn<tokio::time::interval::{impl#2}::tick::{async_fn#0}::{closure_env#0}>";
+        assert!(matches!(
+            seed(tick, tick_name),
+            Some(LibrarySeed::IntervalTick { closure, interval_ref, interval: i, delay, boxed, source: None })
+                if closure == "f" && interval_ref == "_ref__self" && i == bundle_id(interval).unwrap()
+                    && delay == "delay" && boxed == bundle_id(pin).unwrap()
+        ));
+        // The closure environment's declaration site rides along, read
+        // off the environment the screen found.
+        let declared = source("/home/u/tokio/src/time/interval.rs", None);
+        let with_source = library_seed(&reader, tick, tick_name, bundle_id, |_| None, &|raw| {
+            (raw == env).then(|| declared.clone())
+        });
+        assert!(matches!(
+            with_source,
+            Some(LibrarySeed::IntervalTick { source: Some(s), .. }) if s == declared
+        ));
+        assert!(
+            seed(
+                select,
+                "core::future::poll_fn::PollFn<tokio::time::sleep::{closure_env#0}>"
+            )
+            .is_none()
+        );
         assert!(matches!(
             seed(next, "futures_util::stream::stream::next::Next<tokio::time::sleep::St>"),
             Some(LibrarySeed::Next(member, target)) if member == "stream" && target == bundle_id(st).unwrap()
@@ -3422,6 +3641,14 @@ mod tests {
             (coop, "tokio::task::Coop<tokio::time::sleep::Fut>"),
             (fut, "tokio::task::coop::Coop<tokio::time::sleep::Fut>"),
             (
+                tick,
+                "app::PollFn<tokio::time::interval::{impl#2}::tick::{async_fn#0}::{closure_env#0}>",
+            ),
+            (
+                env,
+                "core::future::poll_fn::PollFn<tokio::time::interval::{impl#2}::tick::{async_fn#0}::{closure_env#0}>",
+            ),
+            (
                 next,
                 "tokio_stream::StreamExt::next::Next<tokio::time::sleep::St>",
             ),
@@ -3468,6 +3695,12 @@ mod tests {
                 "0.7.19",
                 "src/sync/reusable_box.rs",
                 "tokio",
+            ),
+            (
+                &TOKIO_INTERVAL_TICK_V1_47,
+                "1.52.4",
+                "src/time/interval.rs",
+                "tokio-util",
             ),
         ] {
             let package = convention.package;
@@ -4197,6 +4430,259 @@ mod tests {
         .unwrap_err();
         assert_eq!(kind, SemanticIssueKind::AmbiguousLayout);
         assert!(detail.contains("no unique member"), "{detail}");
+    }
+
+    /// The tick's plan: the origin off the closure's declaration file
+    /// — `interval.rs` on a registry path at a reviewed version — then
+    /// one exclusive forward through the closure's capture to the
+    /// interval's pinned box, held to the final table. A closure with
+    /// no declaration site, one declared outside the registry, in
+    /// another crate, at an unreviewed version or revision declines
+    /// before the layout; a capture that is not a reference to the
+    /// interval, a `delay` holding another type than the screen saw,
+    /// or a member missing from the table decline on the layout.
+    #[test]
+    fn test_the_tick_plan_routes_through_the_capture_to_the_box() {
+        let mut strings = StringInterner::new();
+        let mut types: Vec<TypeDef> = Vec::new();
+        let mut add = |def: TypeDef| {
+            types.push(def);
+            BundleTypeId(types.len() as u32 - 1)
+        };
+        let plain = |strings: &mut StringInterner, name: &str, size| TypeDef::Struct {
+            name: strings.intern(name),
+            size,
+            members: Vec::new(),
+        };
+        let member = |strings: &mut StringInterner, name: &str, ty, offset| MemberDef {
+            name: strings.intern(name),
+            ty,
+            offset,
+        };
+        let sleep = add(plain(&mut strings, "tokio::time::sleep::Sleep", 112));
+        let duration = add(plain(&mut strings, "core::time::Duration", 16));
+        let sleep_box = add(TypeDef::Pointer {
+            name: Some(
+                strings
+                    .intern("alloc::boxed::Box<tokio::time::sleep::Sleep, alloc::alloc::Global>"),
+            ),
+            target: sleep,
+        });
+        let pointer = member(&mut strings, "pointer", sleep_box, 0);
+        let pin = add(TypeDef::Struct {
+            name: strings
+                .intern("core::pin::Pin<alloc::boxed::Box<tokio::time::sleep::Sleep, alloc::alloc::Global>>"),
+            size: 8,
+            members: vec![pointer],
+        });
+        let period = member(&mut strings, "period", duration, 0);
+        let delay = member(&mut strings, "delay", pin, 16);
+        let interval = add(TypeDef::Struct {
+            name: strings.intern("tokio::time::interval::Interval"),
+            size: 32,
+            members: vec![period.clone(), delay],
+        });
+        // An interval whose `delay` is the bare box, not the pin.
+        let bare = member(&mut strings, "delay", sleep_box, 16);
+        let bare_interval = add(TypeDef::Struct {
+            name: strings.intern("tokio::time::interval::Interval"),
+            size: 32,
+            members: vec![period, bare],
+        });
+        let interval_ref = add(TypeDef::Pointer {
+            name: Some(strings.intern("&mut tokio::time::interval::Interval")),
+            target: interval,
+        });
+        let bare_ref = add(TypeDef::Pointer {
+            name: Some(strings.intern("&mut tokio::time::interval::Interval")),
+            target: bare_interval,
+        });
+        let env_named = "tokio::time::interval::{impl#2}::tick::{async_fn#0}::{closure_env#0}";
+        let env = add(TypeDef::Struct {
+            name: strings.intern(env_named),
+            size: 8,
+            members: vec![member(&mut strings, "_ref__self", interval_ref, 0)],
+        });
+        // A capture holding the interval by value, and one referencing
+        // the bare-box interval.
+        let by_value = add(TypeDef::Struct {
+            name: strings.intern(env_named),
+            size: 32,
+            members: vec![member(&mut strings, "_ref__self", interval, 0)],
+        });
+        let to_bare = add(TypeDef::Struct {
+            name: strings.intern(env_named),
+            size: 8,
+            members: vec![member(&mut strings, "_ref__self", bare_ref, 0)],
+        });
+        let poll_fn_named = "core::future::poll_fn::PollFn<…tick…>";
+        let poll_fn = add(TypeDef::Struct {
+            name: strings.intern(poll_fn_named),
+            size: 8,
+            members: vec![member(&mut strings, "f", env, 0)],
+        });
+        let over_value = add(TypeDef::Struct {
+            name: strings.intern(poll_fn_named),
+            size: 32,
+            members: vec![member(&mut strings, "f", by_value, 0)],
+        });
+        let over_bare = add(TypeDef::Struct {
+            name: strings.intern(poll_fn_named),
+            size: 8,
+            members: vec![member(&mut strings, "f", to_bare, 0)],
+        });
+        let types = TypeTable {
+            types,
+            ..Default::default()
+        };
+        const ROOT: &str = "/home/u/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f";
+        let layout = |interval, boxed, path: &str, md5| LibrarySeed::IntervalTick {
+            closure: "f".into(),
+            interval_ref: "_ref__self".into(),
+            interval,
+            delay: "delay".into(),
+            boxed,
+            source: (!path.is_empty()).then(|| source(path, md5)),
+        };
+        let reviewed = format!("{ROOT}/tokio-1.52.4/src/time/interval.rs");
+        let render = |strings: &StringInterner, path: &TypedPath| {
+            path.steps
+                .iter()
+                .map(|step| match step {
+                    Step::Member(MemberRef::Named(n)) => strings.get(*n).unwrap().to_owned(),
+                    Step::Deref => "*".to_owned(),
+                    other => format!("{other:?}"),
+                })
+                .collect::<Vec<_>>()
+                .join(".")
+        };
+        // The seed's own poll sources are nobody's evidence here: the
+        // `PollFn`'s poll is core's, and the closure's declaration is
+        // the origin.
+        let unproven = Seed {
+            poll_sources: BTreeSet::from([source(
+                "/rustc/abc/library/core/src/future/poll_fn.rs",
+                None,
+            )]),
+            ..Seed::default()
+        };
+        let checksum = TOKIO_INTERVAL_TICK_V1_47.checksums[1].1;
+        for md5 in [None, Some(checksum)] {
+            let plan = plan_library(
+                poll_fn,
+                &layout(interval, pin, &reviewed, md5),
+                &unproven,
+                &types,
+                &mut strings,
+            )
+            .unwrap();
+            let RuleKey::Delegation { kind, origin } = &plan.rule else {
+                panic!("{:?}", plan.rule);
+            };
+            assert_eq!(*kind, SemanticRuleKind::TokioIntervalTick);
+            assert_eq!(origin.package, "tokio");
+            assert_eq!(origin.version, "1.52.4");
+            assert_eq!(origin.family, TOKIO_INTERVAL_TICK_V1_47.family);
+            assert_eq!(origin.files.len(), usize::from(md5.is_some()));
+            let Some(Delegation::Direct {
+                target: Target::Value(path),
+                exclusive,
+            }) = &plan.program
+            else {
+                panic!("{:?}", plan.program);
+            };
+            assert!(exclusive, "pending, the tick polls its box alone");
+            assert_eq!(render(&strings, path), "f._ref__self.*.delay");
+            assert_eq!(path.target, pin);
+            assert!(plan.access.is_none(), "the tick is a future, not a pointer");
+            assert!(plan.delegate_is_future, "the pinned box is a future");
+        }
+        // The origin: no declaration site, a vendored tree, another
+        // crate's registry path, a version on either side of the
+        // review, and a revision of `interval.rs` nobody reviewed.
+        for (path, md5, expected) in [
+            ("", None, "no closure declaration"),
+            (
+                "/build/vendor/tokio-1.52.4/src/time/interval.rs",
+                None,
+                "not a cargo registry path",
+            ),
+            (
+                &format!("{ROOT}/tokio-util-0.7.12/src/time/interval.rs"),
+                None,
+                "not the tokio crate",
+            ),
+            (
+                &format!("{ROOT}/tokio-1.53.2/src/time/interval.rs"),
+                None,
+                "above the reviewed range",
+            ),
+            (
+                &format!("{ROOT}/tokio-1.46.1/src/time/interval.rs"),
+                None,
+                "below the reviewed range",
+            ),
+            (
+                &reviewed,
+                Some([0xab; 16]),
+                "not a reviewed revision of tokio-interval-tick-1.47",
+            ),
+        ] {
+            let (kind, detail) = plan_library(
+                poll_fn,
+                &layout(interval, pin, path, md5),
+                &unproven,
+                &types,
+                &mut strings,
+            )
+            .unwrap_err();
+            assert_eq!(kind, SemanticIssueKind::UnsupportedOrigin, "{path}");
+            assert!(detail.contains(expected), "{path}: {detail}");
+        }
+        // The layout: a capture holding the interval by value, a
+        // `delay` that is not the box the screen saw, and members the
+        // table does not have.
+        let (kind, detail) = plan_library(
+            over_value,
+            &layout(interval, pin, &reviewed, None),
+            &unproven,
+            &types,
+            &mut strings,
+        )
+        .unwrap_err();
+        assert_eq!(kind, SemanticIssueKind::MissingLayout);
+        assert!(
+            detail.contains("not a reference to the declared interval"),
+            "{detail}"
+        );
+        let (kind, detail) = plan_library(
+            over_bare,
+            &layout(bare_interval, pin, &reviewed, None),
+            &unproven,
+            &types,
+            &mut strings,
+        )
+        .unwrap_err();
+        assert_eq!(kind, SemanticIssueKind::MissingLayout);
+        assert!(detail.contains("another type than the screen"), "{detail}");
+        let renamed = |closure: &str, interval_ref: &str, delay: &str| LibrarySeed::IntervalTick {
+            closure: closure.into(),
+            interval_ref: interval_ref.into(),
+            interval,
+            delay: delay.into(),
+            boxed: pin,
+            source: Some(source(&reviewed, None)),
+        };
+        for seed in [
+            renamed("closure", "_ref__self", "delay"),
+            renamed("f", "_ref__interval", "delay"),
+            renamed("f", "_ref__self", "sleep"),
+        ] {
+            let (kind, detail) =
+                plan_library(poll_fn, &seed, &unproven, &types, &mut strings).unwrap_err();
+            assert_eq!(kind, SemanticIssueKind::AmbiguousLayout, "{seed:?}");
+            assert!(detail.contains("no unique member"), "{detail}");
+        }
     }
 
     /// A route is held to the type it claims to land on: the same steps

@@ -447,6 +447,54 @@ pub const TOKIO_SELECT_V1_47: LibraryConvention = LibraryConvention {
     ],
 };
 
+/// tokio's `Interval::tick` as 1.47 through 1.53 implement it
+/// (`src/time/interval.rs`; 1.48 rewrote the module's docs, 1.53
+/// renamed the `reset_without_reregister` the `Ready` path calls):
+/// `tick` is `poll_fn(|cx| self.poll_tick(cx)).await`, and `poll_tick`
+/// is `ready!(Pin::new(&mut self.delay).poll(cx))` before anything
+/// else — the next deadline is computed and the delay reset only once
+/// that `Sleep` is ready. So while the tick is pending, its `PollFn`
+/// polls the `Pin<Box<Sleep>>` in the interval's `delay` and nothing
+/// else. The struct is `{ delay, period, missed_tick_behavior }` in
+/// every release (plus a `resource_span` under `tokio_unstable` with
+/// `tracing`), and the route names its members, not their offsets.
+///
+/// Like the `select!` closure, the closure environment is declared
+/// under `tick`'s own body, so the rule is read off that declaration
+/// file's registry path, not the layout family.
+pub const TOKIO_INTERVAL_TICK_V1_47: LibraryConvention = LibraryConvention {
+    package: "tokio",
+    family: "tokio-interval-tick-1.47",
+    floor: (1, 47, 0),
+    ceiling: (1, 53, 1),
+    checksums: &[
+        // src/time/interval.rs, 1.47.0 through 1.47.5
+        (
+            "src/time/interval.rs",
+            [
+                0x47, 0x12, 0xca, 0x6c, 0xc1, 0xfa, 0xcb, 0xa8, 0x79, 0xa0, 0xf7, 0xd6, 0x63, 0x2f,
+                0x15, 0x2d,
+            ],
+        ),
+        // src/time/interval.rs, 1.48.0 through 1.52.4
+        (
+            "src/time/interval.rs",
+            [
+                0x8d, 0x47, 0xd1, 0x81, 0x44, 0x5f, 0x86, 0x17, 0x89, 0x68, 0x85, 0x86, 0xc4, 0x87,
+                0xf7, 0xfa,
+            ],
+        ),
+        // src/time/interval.rs, 1.53.0 and 1.53.1
+        (
+            "src/time/interval.rs",
+            [
+                0x64, 0xe7, 0xd7, 0x63, 0xe7, 0x46, 0xf5, 0x65, 0x7f, 0x44, 0xf3, 0xba, 0x62, 0xf6,
+                0xb5, 0xaa,
+            ],
+        ),
+    ],
+};
+
 /// tokio-stream's `WatchStream<T>` as 0.1.14 through 0.1.19 implement
 /// it (`src/wrappers/watch.rs`; the revisions differ in docs, in where
 /// the `from_changes` constructor sits, and in 0.1.19 re-arming the
@@ -896,6 +944,12 @@ mod tests {
                 "0.1.13",
                 "0.1.20",
             ),
+            (
+                &TOKIO_INTERVAL_TICK_V1_47,
+                ["1.47.0", "1.47.5", "1.48.0", "1.52.4", "1.53.0", "1.53.1"].as_slice(),
+                "1.46.1",
+                "1.53.2",
+            ),
         ] {
             for version in inside {
                 assert_eq!(
@@ -929,6 +983,13 @@ mod tests {
         assert_eq!(HYPER_UTIL_TOKIO_SLEEP_V0_1_10.range(), "0.1.10–0.1.20");
         assert_eq!(TOKIO_STREAM_WATCH_V0_1_14.range(), "0.1.14–0.1.19");
         assert_eq!(TOKIO_UTIL_REUSABLE_BOX_V0_7_11.range(), "0.7.11–0.7.19");
+        assert_eq!(TOKIO_INTERVAL_TICK_V1_47.range(), "1.47.0–1.53.1");
+        // Three revisions of `interval.rs` in the range, none shared
+        // with the select's file.
+        assert_eq!(TOKIO_INTERVAL_TICK_V1_47.checksums.len(), 3);
+        for (_, checksum) in TOKIO_SELECT_V1_47.checksums {
+            assert!(!TOKIO_INTERVAL_TICK_V1_47.reviewed_checksum(checksum));
+        }
     }
 
     /// A state protocol binds inside its reviewed tokio range and for

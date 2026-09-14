@@ -3,5 +3,5 @@ source: hansei/src/offline.rs
 description: "`threads --without role ^worker --group has-task` over linux/foreign-runtime"
 ---
 COUNT  HAS TASK  LWPS
-    2  no        2228676, 2228678
+    2  no        2609523, 2609525
 [1 group]

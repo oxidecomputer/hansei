@@ -642,6 +642,83 @@ pub(crate) fn tokio_select(reader: &DwReader<'_>, id: TypeId) -> Option<SelectLa
     })
 }
 
+/// A `PollFn` over the closure tokio's `Interval::tick` awaits, as the
+/// raw screen saw it: the member holding the closure, the closure
+/// environment, its one capture and the `Interval` it points at, and
+/// the interval's member holding the pinned box its `Sleep` lives in,
+/// with that box's own type.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct IntervalTickLayout {
+    /// The `PollFn`'s one member and the closure environment it holds.
+    pub(crate) closure: String,
+    pub(crate) env: TypeId,
+    /// The capture pointing at the interval, and the interval.
+    pub(crate) interval_ref: String,
+    pub(crate) interval: TypeId,
+    /// The interval's member holding its `Pin<Box<Sleep>>`, and that
+    /// pinned box.
+    pub(crate) delay: String,
+    pub(crate) boxed: TypeId,
+}
+
+/// Screen `id` as the `PollFn` tokio's `Interval::tick` awaits: std's
+/// `core::future::poll_fn::PollFn<F>` holding an `F` in its one member
+/// `f`, where `F` is a closure environment declared under
+/// `tokio::time::interval::{impl#N}::tick::{async_fn#0}` with exactly
+/// one member, `_ref__self: &mut Interval`, the `Interval` being the
+/// struct of that name declared in `tokio::time::interval`, with a
+/// member `delay` holding a `Pin<Box<Sleep>>` over tokio's own `Sleep`.
+/// The closure's body is `self.poll_tick(cx)`, whose pending path
+/// polls that box and nothing else. Any other `PollFn` — the mpsc
+/// receiver's, a `select!`'s, a user's — declines; whose `interval.rs`
+/// the closure was written in is the binder's question, over its
+/// declaration site.
+pub(crate) fn tokio_interval_tick(reader: &DwReader<'_>, id: TypeId) -> Option<IntervalTickLayout> {
+    let st = declared_in(reader, id, "core::future::poll_fn", "PollFn<")?;
+    let closure = sole_member(reader, st, "f")?;
+    let env = struct_of(reader, closure.inner)?;
+    let under_tick = env
+        .namespace
+        .map(|ns| ns_path(reader, ns))
+        .is_some_and(|path| {
+            path.strip_prefix("tokio::time::interval::{impl#")
+                .and_then(|rest| rest.strip_suffix("}::tick::{async_fn#0}"))
+                .is_some_and(|index| !index.is_empty() && index.bytes().all(|b| b.is_ascii_digit()))
+        });
+    if !under_tick
+        || !env
+            .name
+            .is_some_and(|name| reader.strings.get(name).starts_with("{closure_env#"))
+        || env.members.len() != 1
+    {
+        return None;
+    }
+    let (_, capture) = unique_member(reader, &env.members, "_ref__self")?;
+    let interval = mut_ref_thin(reader, capture.type_id)?;
+    let interval_st = declared_in(reader, interval, "tokio::time::interval", "Interval")?;
+    if reader.strings.get(interval_st.name?) != "Interval" {
+        return None;
+    }
+    let (_, delay) = unique_member(reader, &interval_st.members, "delay")?;
+    let Some(StdAdapter::PinBox {
+        pointee: Pointee::Sized(sleep),
+        ..
+    }) = std_adapter(reader, delay.type_id)
+    else {
+        return None;
+    };
+    (fq_name(reader, sleep).as_deref() == Some("tokio::time::sleep::Sleep")).then(|| {
+        IntervalTickLayout {
+            closure: closure.member,
+            env: closure.inner,
+            interval_ref: "_ref__self".to_owned(),
+            interval,
+            delay: "delay".to_owned(),
+            boxed: reader.canonicalize(delay.type_id),
+        }
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1681,5 +1758,235 @@ mod tests {
             &[],
         );
         assert_eq!(tokio_select(&fx.reader, POLL_FN), None);
+    }
+
+    /// The tick's `PollFn` is screened by where its closure was
+    /// declared and by what the one capture reaches: a `&mut Interval`
+    /// whose `delay` is a `Pin<Box<Sleep>>` over tokio's own `Sleep`.
+    /// Every departure — another module's `PollFn`, a closure declared
+    /// elsewhere, a second capture, a capture that is not a reference
+    /// to tokio's `Interval`, a `delay` that is not that pinned box —
+    /// declines.
+    #[test]
+    fn test_the_interval_tick_poll_fn_is_screened_by_its_capture_and_the_box() {
+        const POLL_FN: TypeId = TypeId(UnitSectionOffset(0x90));
+        const ENV: TypeId = TypeId(UnitSectionOffset(0x91));
+        const INTERVAL_REF: TypeId = TypeId(UnitSectionOffset(0x92));
+        const INTERVAL: TypeId = TypeId(UnitSectionOffset(0x93));
+        const PIN: TypeId = TypeId(UnitSectionOffset(0x94));
+        const SLEEP_BOX: TypeId = TypeId(UnitSectionOffset(0x95));
+        const SLEEP: TypeId = TypeId(UnitSectionOffset(0x96));
+        const DURATION: TypeId = TypeId(UnitSectionOffset(0x97));
+        const OTHER_PIN: TypeId = TypeId(UnitSectionOffset(0x98));
+        fn tick_fixture() -> Fx {
+            let mut fx = fixture();
+            let poll_fn = fx.ns("core::future::poll_fn");
+            let tick = fx.ns("tokio::time::interval::{impl#2}::tick::{async_fn#0}");
+            let interval_mod = fx.ns("tokio::time::interval");
+            let sleep_mod = fx.ns("tokio::time::sleep");
+            let pin_mod = fx.ns("core::pin");
+            let time = fx.ns("core::time");
+            fx.strukt(SLEEP, Some(sleep_mod), "Sleep", &[], &[]);
+            fx.strukt(DURATION, Some(time), "Duration", &[], &[]);
+            fx.pointer(
+                SLEEP_BOX,
+                Some("alloc::boxed::Box<tokio::time::sleep::Sleep, alloc::alloc::Global>"),
+                SLEEP,
+            );
+            fx.strukt(
+                PIN,
+                Some(pin_mod),
+                "Pin<alloc::boxed::Box<tokio::time::sleep::Sleep, alloc::alloc::Global>>",
+                &[("pointer", SLEEP_BOX, 0)],
+                &[("Ptr", SLEEP_BOX)],
+            );
+            fx.strukt(
+                INTERVAL,
+                Some(interval_mod),
+                "Interval",
+                &[("period", DURATION, 0), ("delay", PIN, 16)],
+                &[],
+            );
+            fx.pointer(
+                INTERVAL_REF,
+                Some("&mut tokio::time::interval::Interval"),
+                INTERVAL,
+            );
+            fx.strukt(
+                ENV,
+                Some(tick),
+                "{closure_env#0}",
+                &[("_ref__self", INTERVAL_REF, 0)],
+                &[],
+            );
+            fx.strukt(
+                POLL_FN,
+                Some(poll_fn),
+                "PollFn<tokio::time::interval::{impl#2}::tick::{async_fn#0}::{closure_env#0}>",
+                &[("f", ENV, 0)],
+                &[("F", ENV)],
+            );
+            fx
+        }
+        let fx = tick_fixture();
+        assert_eq!(
+            tokio_interval_tick(&fx.reader, POLL_FN),
+            Some(IntervalTickLayout {
+                closure: "f".into(),
+                env: ENV,
+                interval_ref: "_ref__self".into(),
+                interval: INTERVAL,
+                delay: "delay".into(),
+                boxed: PIN,
+            })
+        );
+        // The select screen and this one are the two readings of a
+        // `PollFn`, and neither takes the other's.
+        assert_eq!(tokio_select(&fx.reader, POLL_FN), None);
+        // Another module's `PollFn`, or the closure held in another
+        // member.
+        let mut fx = tick_fixture();
+        let app = fx.ns("app");
+        fx.strukt(
+            POLL_FN,
+            Some(app),
+            "PollFn<tokio::time::interval::{impl#2}::tick::{async_fn#0}::{closure_env#0}>",
+            &[("f", ENV, 0)],
+            &[("F", ENV)],
+        );
+        assert_eq!(tokio_interval_tick(&fx.reader, POLL_FN), None);
+        let mut fx = tick_fixture();
+        let poll_fn = fx.ns("core::future::poll_fn");
+        fx.strukt(
+            POLL_FN,
+            Some(poll_fn),
+            "PollFn<tokio::time::interval::{impl#2}::tick::{async_fn#0}::{closure_env#0}>",
+            &[("closure", ENV, 0)],
+            &[("F", ENV)],
+        );
+        assert_eq!(tokio_interval_tick(&fx.reader, POLL_FN), None);
+        // The closure is `tick`'s own: not another method's, not a
+        // user's, not a module below tokio's, and one with the one
+        // capture — a second capture, a capture by another name, or one
+        // held by value is another closure.
+        for path in [
+            "tokio::time::interval::{impl#2}::poll_tick::{async_fn#0}",
+            "tokio::time::interval::{impl#2}::tick",
+            "tokio::time::interval::{impl#}::tick::{async_fn#0}",
+            "tokio::time::interval::{impl#x}::tick::{async_fn#0}",
+            "tokio::time::interval::{impl#2}::tick::{async_fn#1}",
+            "tokio::time::interval::tick::{async_fn#0}",
+            "tokio_stream::wrappers::interval::{impl#2}::tick::{async_fn#0}",
+            "app::run::{async_fn#0}",
+        ] {
+            let mut fx = tick_fixture();
+            let elsewhere = fx.ns(path);
+            fx.strukt(
+                ENV,
+                Some(elsewhere),
+                "{closure_env#0}",
+                &[("_ref__self", INTERVAL_REF, 0)],
+                &[],
+            );
+            assert_eq!(tokio_interval_tick(&fx.reader, POLL_FN), None, "{path}");
+        }
+        for members in [
+            &[
+                ("_ref__self", INTERVAL_REF, 0),
+                ("_ref__cx", INTERVAL_REF, 8),
+            ][..],
+            &[("_ref__interval", INTERVAL_REF, 0)][..],
+            &[("_ref__self", INTERVAL, 0)][..],
+            &[][..],
+        ] {
+            let mut fx = tick_fixture();
+            let tick = fx.ns("tokio::time::interval::{impl#2}::tick::{async_fn#0}");
+            fx.strukt(ENV, Some(tick), "{closure_env#0}", members, &[]);
+            assert_eq!(
+                tokio_interval_tick(&fx.reader, POLL_FN),
+                None,
+                "{members:?}"
+            );
+        }
+        let mut fx = tick_fixture();
+        let tick = fx.ns("tokio::time::interval::{impl#2}::tick::{async_fn#0}");
+        fx.strukt(
+            ENV,
+            Some(tick),
+            "Tick",
+            &[("_ref__self", INTERVAL_REF, 0)],
+            &[],
+        );
+        assert_eq!(tokio_interval_tick(&fx.reader, POLL_FN), None);
+        // The capture reaches tokio's `Interval` and no other struct of
+        // that name, or of a longer one.
+        for (module, name, reference) in [
+            (
+                "tokio_stream::wrappers::interval",
+                "Interval",
+                "&mut tokio_stream::wrappers::interval::Interval",
+            ),
+            ("app", "Interval", "&mut app::Interval"),
+            (
+                "tokio::time::interval",
+                "IntervalStream",
+                "&mut tokio::time::interval::IntervalStream",
+            ),
+        ] {
+            let mut fx = tick_fixture();
+            let module = fx.ns(module);
+            fx.strukt(
+                INTERVAL,
+                Some(module),
+                name,
+                &[("period", DURATION, 0), ("delay", PIN, 16)],
+                &[],
+            );
+            fx.pointer(INTERVAL_REF, Some(reference), INTERVAL);
+            assert_eq!(tokio_interval_tick(&fx.reader, POLL_FN), None, "{name}");
+        }
+        // `delay` is the pinned box over tokio's `Sleep`: not a bare
+        // box, not a pin over another box, not a member by another
+        // name, not missing.
+        let mut fx = tick_fixture();
+        let interval_mod = fx.ns("tokio::time::interval");
+        fx.strukt(
+            INTERVAL,
+            Some(interval_mod),
+            "Interval",
+            &[("period", DURATION, 0), ("delay", SLEEP_BOX, 16)],
+            &[],
+        );
+        assert_eq!(tokio_interval_tick(&fx.reader, POLL_FN), None);
+        let mut fx = tick_fixture();
+        let pin_mod = fx.ns("core::pin");
+        fx.strukt(
+            OTHER_PIN,
+            Some(pin_mod),
+            "Pin<alloc::boxed::Box<app::Fut, alloc::alloc::Global>>",
+            &[("pointer", BOX, 0)],
+            &[("Ptr", BOX)],
+        );
+        fx.strukt(
+            INTERVAL,
+            Some(interval_mod),
+            "Interval",
+            &[("period", DURATION, 0), ("delay", OTHER_PIN, 16)],
+            &[],
+        );
+        assert_eq!(tokio_interval_tick(&fx.reader, POLL_FN), None);
+        for members in [
+            &[("period", DURATION, 0), ("sleep", PIN, 16)][..],
+            &[("period", DURATION, 0)][..],
+        ] {
+            let mut fx = tick_fixture();
+            let interval_mod = fx.ns("tokio::time::interval");
+            fx.strukt(INTERVAL, Some(interval_mod), "Interval", members, &[]);
+            assert_eq!(
+                tokio_interval_tick(&fx.reader, POLL_FN),
+                None,
+                "{members:?}"
+            );
+        }
     }
 }

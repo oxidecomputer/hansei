@@ -140,7 +140,7 @@ async fn pacer(ready: oneshot::Sender<()>) -> u32 {
     let mut spare = tokio::time::interval(period);
     let mut interval = tokio::time::interval_at(tokio::time::Instant::now() + period, period);
     census_expect::held(&spare as *const _ as u64 + INTERVAL_DELAY, "Sleep");
-    census_expect::held(&interval as *const _ as u64 + INTERVAL_DELAY, "Sleep");
+    // `interval`'s box is on this task's own chain: no find of its own.
     let spare_tick = spare.tick();
     tokio::pin!(spare_tick);
     census_expect::held(&*spare_tick as *const _ as u64, "tick");

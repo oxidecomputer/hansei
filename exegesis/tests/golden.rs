@@ -838,10 +838,13 @@ fn assert_adapter_programs(program: &str, bundle: &Bundle) {
         // origin; `assert_select` holds that one. The coop rule is
         // tokio's as well, bound wherever the target keeps the
         // runtime's own `Coop<changed_impl<()>>`, and the family check
-        // above holds it.
+        // above holds it — as it does the tick's, bound wherever a
+        // `tick` is in flight.
         if matches!(
             rule.kind,
-            SemanticRuleKind::TokioSelect | SemanticRuleKind::TokioCoop
+            SemanticRuleKind::TokioSelect
+                | SemanticRuleKind::TokioCoop
+                | SemanticRuleKind::TokioIntervalTick
         ) {
             continue;
         }
@@ -1345,15 +1348,30 @@ fn assert_library_bindings(program: &str, bundle: &Bundle) {
                         bundle.meta.tokio_version.as_ref().unwrap().to_string(),
                         "{program}"
                     );
-                    let SemanticOrigin::LibraryDelegation { family, .. } = origin else {
+                    let SemanticOrigin::LibraryDelegation { family, source, .. } = origin else {
                         unreachable!()
                     };
-                    use exegesis::detect::semantics::TOKIO_SELECT_V1_47;
-                    assert_eq!(s(*family), TOKIO_SELECT_V1_47.family, "{program}");
-                    assert!(
-                        SELECT_PROGRAMS.contains(&program),
-                        "{program}: only the fixtures with a select! bind its rule"
-                    );
+                    use exegesis::detect::semantics::{
+                        TOKIO_INTERVAL_TICK_V1_47, TOKIO_SELECT_V1_47,
+                    };
+                    let family = s(*family);
+                    if family == TOKIO_SELECT_V1_47.family {
+                        assert!(
+                            SELECT_PROGRAMS.contains(&program),
+                            "{program}: only the fixtures with a select! bind its rule"
+                        );
+                    } else if family == TOKIO_INTERVAL_TICK_V1_47.family {
+                        // Which programs keep a `tick` closure's
+                        // declaration out of line is the target's
+                        // call, so no program list; the file is.
+                        assert!(
+                            s(*source).ends_with("/src/time/interval.rs"),
+                            "{program}: {}",
+                            s(*source)
+                        );
+                    } else {
+                        panic!("{program}: unexpected tokio delegation family {family}");
+                    }
                 }
                 other => panic!("{program}: unexpected delegation origin {other:?}"),
             },
@@ -1425,6 +1443,7 @@ fn assert_library_bindings(program: &str, bundle: &Bundle) {
         SemanticRuleKind::HyperUtilTokioSleep,
         SemanticRuleKind::TokioCoop,
         SemanticRuleKind::FuturesUtilNext,
+        SemanticRuleKind::TokioIntervalTick,
     ];
     let delegate_kinds = [
         SemanticRuleKind::StdBoxPoll,
@@ -1438,10 +1457,12 @@ fn assert_library_bindings(program: &str, bundle: &Bundle) {
         SemanticRuleKind::HyperUtilTokioSleep,
         SemanticRuleKind::TokioCoop,
         SemanticRuleKind::FuturesUtilNext,
+        SemanticRuleKind::TokioIntervalTick,
     ];
     // A wrapper's program is not a storage access: only the std
     // adapters, which are pointers, carry one. `Next` holds a `&mut`
-    // but is a future of its own, and the dereference is its program's.
+    // but is a future of its own, and the dereference is its program's;
+    // so is the tick's, through its closure's capture.
     let wrapper_kinds = [
         SemanticRuleKind::TracingInstrumented,
         SemanticRuleKind::FuturesUtilMap,
@@ -1450,6 +1471,7 @@ fn assert_library_bindings(program: &str, bundle: &Bundle) {
         SemanticRuleKind::HyperUtilTokioSleep,
         SemanticRuleKind::TokioCoop,
         SemanticRuleKind::FuturesUtilNext,
+        SemanticRuleKind::TokioIntervalTick,
     ];
     // Compiler storage: every async fn or async block environment binds
     // its states under the reviewed convention (the fixtures' toolchains
@@ -2300,6 +2322,62 @@ fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
             bundle,
             "core::future::poll_fn::PollFn<armed_select::selector::{async_fn#0}::{closure_env#",
             4,
+        );
+        // The ticker's two branches: the oneshot and the pinned tick.
+        assert_select(
+            program,
+            bundle,
+            "core::future::poll_fn::PollFn<armed_select::ticker::{async_fn#0}::{closure_env#",
+            2,
+        );
+        // The tick's `PollFn` forwards through its closure's capture to
+        // the interval's pinned box, exclusively, under tokio's tick
+        // rule; the box, proved a future by that delegation, crosses to
+        // the `Sleep` by its own std record.
+        let table = exegesis::describe::describe_semantics(bundle);
+        let tick_prefix = table
+            .lines()
+            .find(|line| {
+                line.starts_with("core::future::poll_fn::PollFn<tokio::time::interval::{impl#")
+                    && line.contains("}::tick::{async_fn#0}::{closure_env#0}> :: members")
+            })
+            .and_then(|line| line.split(" :: members").next())
+            .unwrap_or_else(|| panic!("{program}: no record for the tick's PollFn"))
+            .to_owned();
+        let tick = semantic_line(&table, &tick_prefix);
+        assert!(
+            tick.contains(
+                "continuation rule # delegate (exclusive) f._ref__self.*.delay@+16 -> \
+                 core::pin::Pin<alloc::boxed::Box<tokio::time::sleep::Sleep, alloc::alloc::Global>>"
+            ) && !tick.contains(" access "),
+            "{program}: {tick}"
+        );
+        let tick_rule = bundle
+            .semantics
+            .rules
+            .iter()
+            .find(|rule| rule.kind == hansei_bundle::SemanticRuleKind::TokioIntervalTick)
+            .unwrap_or_else(|| panic!("{program}: no tick rule bound"));
+        let s = |id| bundle.strings.get(id).unwrap();
+        assert!(
+            matches!(
+                &bundle.semantics.origins[tick_rule.origin.0 as usize],
+                hansei_bundle::SemanticOrigin::LibraryDelegation { package, source, .. }
+                    if s(*package) == "tokio" && s(*source).ends_with("/src/time/interval.rs")
+            ),
+            "{program}: {:?}",
+            bundle.semantics.origins[tick_rule.origin.0 as usize]
+        );
+        let boxed = semantic_line(
+            &table,
+            "core::pin::Pin<alloc::boxed::Box<tokio::time::sleep::Sleep, alloc::alloc::Global>> :: members",
+        );
+        assert!(
+            boxed.contains("delegated by core::future::poll_fn::PollFn<tokio::time::interval::")
+                && boxed.contains(
+                    "continuation rule # delegate (exclusive) pointer.*@+0 -> tokio::time::sleep::Sleep"
+                ),
+            "{program}: {boxed}"
         );
         // The oneshot's shared state renders with its flags by name.
         assert_format(

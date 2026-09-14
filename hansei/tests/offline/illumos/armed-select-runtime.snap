@@ -5,7 +5,7 @@ description: "`runtime` over illumos/armed-select"
 runtime 0 @ 0xADDR
     flavor: multi_thread
     tasks: 6
-    futures: 19
+    futures: 18
     workers: 2
     threads: 3 (lwp 1, 2, 3)
     found via: a thread's runtime context

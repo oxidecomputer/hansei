@@ -78,6 +78,7 @@ fn base() -> Bundle {
         "0.7.19",
         "registry/src/index.crates.io-1949cf8c6b5b557f/tokio-util-0.7.19/src/sync/reusable_box.rs",
         "registry/src/index.crates.io-1949cf8c6b5b557f/tokio-stream-0.1.19/src/stream_map.rs",
+        "registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.53.1/src/time/interval.rs",
     ] {
         strings.intern(s);
     }
@@ -798,6 +799,14 @@ fn test_semantic_delegation_origin_is_its_registry_path() {
             StrRef(22),
             StrRef(23),
             StrRef(24),
+        ),
+        // tokio's own async fn, read like a third-party rule off the
+        // closure's declaration file.
+        (
+            SemanticRuleKind::TokioIntervalTick,
+            StrRef(8),
+            StrRef(9),
+            StrRef(36),
         ),
     ] {
         let mut b = forwarding();

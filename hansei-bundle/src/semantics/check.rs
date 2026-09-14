@@ -168,6 +168,7 @@ impl<'a> Check<'a> {
             TracingInstrumented
             | HyperUtilTokioSleep
             | TokioSelect
+            | TokioIntervalTick
             | FuturesUtilNext
             | TokioStreamWatchStream
             | TokioUtilReusableBox
@@ -175,11 +176,11 @@ impl<'a> Check<'a> {
                 let crate_name = match rule.kind {
                     TracingInstrumented => "tracing",
                     HyperUtilTokioSleep => "hyper-util",
-                    // tokio's own macro, but read like a third-party
-                    // rule: the declaration file is the evidence, and
-                    // tokio's version comes off its registry path rather
-                    // than the layout family.
-                    TokioSelect => "tokio",
+                    // tokio's own macro and its own async fn, but read
+                    // like a third-party rule: the declaration file is
+                    // the evidence, and tokio's version comes off its
+                    // registry path rather than the layout family.
+                    TokioSelect | TokioIntervalTick => "tokio",
                     // The map is a container, but one whose layout the
                     // walk contract binds by name alone: its origin is
                     // the type's own method declarations, read like the
@@ -591,6 +592,7 @@ impl<'a> Check<'a> {
                         HyperUtilTokioSleep,
                         TokioCoop,
                         FuturesUtilNext,
+                        TokioIntervalTick,
                     ],
                 )?;
                 self.target(record.ty, target)?;
@@ -604,7 +606,9 @@ impl<'a> Check<'a> {
                 // check polls nothing, and futures-util's `Next`, whose
                 // poll is its stream's `poll_next` alone. `Instrumented`
                 // enters a span around its poll, running subscriber
-                // callbacks the review does not bound, so it stays false.
+                // callbacks the review does not bound, so it stays
+                // false. The tick's `PollFn` polls the interval's box
+                // and, while that is pending, nothing else.
                 let reviewed = matches!(
                     binding.kind,
                     RustcAsyncFn
@@ -619,6 +623,7 @@ impl<'a> Check<'a> {
                         | HyperUtilTokioSleep
                         | TokioCoop
                         | FuturesUtilNext
+                        | TokioIntervalTick
                 );
                 require(!exclusive || reviewed, "unreviewed delegation exclusivity")?;
                 let path = match target {
@@ -699,6 +704,7 @@ impl<'a> Check<'a> {
                 HyperUtilTokioSleep,
                 TokioCoop,
                 FuturesUtilNext,
+                TokioIntervalTick,
                 TokioSleep,
                 TokioJoinHandle,
                 TokioAcquire,
