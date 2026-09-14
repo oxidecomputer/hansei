@@ -2311,6 +2311,7 @@ mod tests {
             attribution,
             within: None,
             through: Vec::new(),
+            aliases: Vec::new(),
         }
     }
 

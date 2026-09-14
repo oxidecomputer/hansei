@@ -1459,6 +1459,7 @@ mod tests {
             attribution,
             within,
             through: Vec::new(),
+            aliases: Vec::new(),
         };
         let slots = Attributed::from_slots(vec![
             // The Sleep's wheel entry, inside the Sleep.
@@ -1637,6 +1638,7 @@ mod tests {
             }),
             within: None,
             through: Vec::new(),
+            aliases: Vec::new(),
         }]);
 
         let rows = with_slots(rows_of(&census), &list(), &census, &slots, None);

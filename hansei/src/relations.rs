@@ -433,6 +433,7 @@ mod relations_tests {
             }),
             within: None,
             through: Vec::new(),
+            aliases: Vec::new(),
         };
         let mut set = wait(1, None);
         set.assessment = WaitAssessment::Set(WaitSet {

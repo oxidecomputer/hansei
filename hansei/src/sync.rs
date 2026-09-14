@@ -1279,6 +1279,7 @@ mod sync_tests {
             },
             within: None,
             through: Vec::new(),
+            aliases: Vec::new(),
         }
     }
 

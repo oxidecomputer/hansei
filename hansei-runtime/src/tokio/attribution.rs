@@ -355,6 +355,13 @@ pub struct AttributedSlot {
     /// index into the census's held finds; the find `within` names,
     /// if one, is not repeated here.
     pub through: Vec<usize>,
+    /// The other roots binding the resource the path hopped into: the
+    /// same member of the same type, holding the same pointer. A
+    /// handle moved out of a struct field leaves its bytes behind, so
+    /// one oneshot can be two roots and only one of them heads the
+    /// path; every root here reaches this slot as truly as that one
+    /// does. Empty for a slot no hop reached.
+    pub aliases: Vec<SlotRoot>,
 }
 
 impl AttributedSlot {
@@ -661,6 +668,20 @@ impl Attributed {
             }
             for &index in &slot.through {
                 self.by_find.entry(index).or_default().push(i);
+            }
+            // A second binding of the resource is armed by the slot as
+            // the one the path names is; the root itself is filed
+            // below, so nothing is entered twice.
+            for alias in &slot.aliases {
+                match *alias {
+                    SlotRoot::Find { index, .. } => self.by_find.entry(index).or_default().push(i),
+                    SlotRoot::Child { set, child, .. }
+                        if !matches!(slot.owner, Owner::Child { .. }) =>
+                    {
+                        self.by_child.entry((set, child)).or_default().push(i)
+                    }
+                    _ => {}
+                }
             }
             match Self::root_of(slot) {
                 Some(SlotRoot::Find { index, .. }) => {
@@ -1013,6 +1034,15 @@ impl<'a, 'b, T: Target> Attributor<'a, 'b, T> {
                 }
                 other => other,
             };
+            // Collected after the refinements above, which may replace
+            // the attribution but never the path it was located by.
+            let aliases = match (&attribution, pointers.as_deref()) {
+                (
+                    Attribution::Owner { path, .. } | Attribution::Typed { path, .. },
+                    Some(pointers),
+                ) => self.aliases_of(&roots, pointers, path),
+                _ => Vec::new(),
+            };
             slots.push(AttributedSlot {
                 hit: i,
                 slot: hit.slot,
@@ -1020,6 +1050,7 @@ impl<'a, 'b, T: Target> Attributor<'a, 'b, T> {
                 attribution,
                 within,
                 through,
+                aliases,
             });
         }
     }
@@ -1125,6 +1156,31 @@ impl<'a, 'b, T: Target> Attributor<'a, 'b, T> {
         None
     }
 
+    /// The addresses the analysis already made branches of `owner`'s
+    /// stop — what the task is, by its own state machine, polling. Only
+    /// an ordering preference ([`order_roots`]): a root that is none of
+    /// them is walked all the same.
+    fn branch_addrs(&self, owner: Owner) -> HashSet<u64> {
+        use super::assess::WaitAssessment;
+
+        let Owner::Task { index, .. } = owner else {
+            return HashSet::default();
+        };
+        let Some(wait) = self.sources.analysis.waits.get(index) else {
+            return HashSet::default();
+        };
+        let members = match &wait.assessment {
+            WaitAssessment::Set(set) => set.members.as_slice(),
+            // Every other assessment carries its branches in `held`,
+            // empty unless the continuation is unknown.
+            _ => wait.held.as_slice(),
+        };
+        members
+            .iter()
+            .filter_map(|member| member.key.map(|key| key.addr))
+            .collect()
+    }
+
     /// The typed values `owner` holds: a task's chain frames (from the
     /// analysis) and the finds the census lists under it; a set
     /// child's root and the finds under it.
@@ -1186,7 +1242,7 @@ impl<'a, 'b, T: Target> Attributor<'a, 'b, T> {
                 });
             }
         }
-        order_roots(&mut roots);
+        order_roots(&mut roots, &self.branch_addrs(owner));
         roots
     }
 
@@ -1216,7 +1272,7 @@ impl<'a, 'b, T: Target> Attributor<'a, 'b, T> {
                 }
             }
         }
-        order_roots(&mut roots);
+        order_roots(&mut roots, &self.branch_addrs(owner));
         roots
     }
 
@@ -1308,6 +1364,56 @@ impl<'a, 'b, T: Target> Attributor<'a, 'b, T> {
             ));
         }
         None
+    }
+
+    /// The roots other than the one `path` names that hold the very
+    /// pointer it hopped through: the same member, at the same offset,
+    /// of a root of the same type. Those are two bindings of one
+    /// resource — the moved-from copy a `let x = self.y` leaves in the
+    /// frame beside the local that owns it now — and a reader asking
+    /// about either is asking about this slot.
+    ///
+    /// Type and offset are what keep that from over-reaching. Two
+    /// *different* handles on one allocation — a oneshot's sender and
+    /// its receiver, both holding `Arc<Inner<T>>` — point at the same
+    /// target, and the receiver's parked waker is no evidence about
+    /// the sender. Requiring the same member of the same type admits
+    /// only copies of one handle.
+    fn aliases_of(
+        &self,
+        roots: &[Root<'b>],
+        pointers: &[PointerMember],
+        path: &SlotPath,
+    ) -> Vec<SlotRoot> {
+        let Some(hop) = &path.hop else {
+            return Vec::new();
+        };
+        let Some(taken) = pointers
+            .iter()
+            .find(|p| p.at == hop.from && p.target == hop.addr)
+        else {
+            return Vec::new();
+        };
+        let base = &roots[taken.root];
+        let (ty, offset) = (base.value.ty.id(), taken.at - base.value.addr);
+        let mut out = Vec::new();
+        // Sorted by target, so the pointers into the pointee are one run.
+        let from = pointers.partition_point(|p| p.target < hop.addr);
+        for p in &pointers[from..] {
+            if p.target != hop.addr {
+                break;
+            }
+            let root = &roots[p.root];
+            if p.root == taken.root
+                || root.value.ty.id() != ty
+                || p.at.checked_sub(root.value.addr) != Some(offset)
+                || out.contains(&root.at)
+            {
+                continue;
+            }
+            out.push(root.at);
+        }
+        out
     }
 
     /// Name a located slot: the owner-name table over the aggregates
@@ -1731,15 +1837,30 @@ fn variant_step(name: &str) -> String {
 
 /// Innermost first: a smaller value before a larger one, a find before
 /// a frame of the same size (the find is what the listings name), an
-/// inner frame before an outer. Wrapper frames that share one
-/// allocation with what they wrap are one range each and are walked
-/// once.
-fn order_roots(roots: &mut Vec<Root<'_>>) {
+/// inner frame before an outer, and — where those leave two roots tied
+/// — a branch of the owner's stop before a root that is none. Wrapper
+/// frames that share one allocation with what they wrap are one range
+/// each and are walked once.
+///
+/// The tie is not hypothetical: a handle moved out of a struct field
+/// leaves a copy of its bytes behind in the frame, so one resource has
+/// two roots of the same type and size pointing at it, and whichever
+/// the sweep walks from is the one a slot's path names. Naming the
+/// branch the analysis already reached means a slot located behind it
+/// is recognized as that branch's ([`member_accounts`]) rather than
+/// printing beside it as a wake route of its own.
+fn order_roots(roots: &mut Vec<Root<'_>>, branches: &HashSet<u64>) {
     let rank = |root: &Root<'_>| match root.at {
         SlotRoot::Find { .. } | SlotRoot::Child { .. } => 0,
         SlotRoot::Frame { frame, .. } => 1 + frame,
     };
-    roots.sort_by_key(|r| (r.value.bytes.len(), rank(r)));
+    roots.sort_by_key(|r| {
+        (
+            r.value.bytes.len(),
+            rank(r),
+            !branches.contains(&r.value.addr),
+        )
+    });
     roots.dedup_by_key(|r| (r.value.addr, r.value.bytes.len()));
 }
 
@@ -1960,6 +2081,14 @@ pub fn member_accounts(
             if path.hop.as_ref().is_some_and(|hop| within(hop.from)) {
                 return true;
             }
+        }
+        // The path heads at one binding of the resource; the branch may
+        // be another of them.
+        if slot.aliases.iter().any(|alias| match *alias {
+            SlotRoot::Find { addr, .. } | SlotRoot::Child { addr, .. } => addr == key.addr,
+            SlotRoot::Frame { .. } => false,
+        }) {
+            return true;
         }
         if let Some(SlotRoot::Find { addr, .. }) = slot.within
             && addr == key.addr
@@ -2641,6 +2770,7 @@ mod tests {
             attribution: Attribution::Unknown,
             within: None,
             through: Vec::new(),
+            aliases: Vec::new(),
         };
         let one = slot(0x7000);
         assert_eq!(one.entry(None), "unknown @ 0x7000");
@@ -2703,6 +2833,7 @@ mod join_tests {
             },
             within: None,
             through: Vec::new(),
+            aliases: Vec::new(),
         }
     }
 
@@ -2714,6 +2845,7 @@ mod join_tests {
             attribution: Attribution::Registry(attribution),
             within,
             through: Vec::new(),
+            aliases: Vec::new(),
         }
     }
 
@@ -2737,6 +2869,7 @@ mod join_tests {
             },
             within: None,
             through: Vec::new(),
+            aliases: Vec::new(),
         }
     }
 
@@ -2823,6 +2956,27 @@ mod join_tests {
             &typed(0x5000, frame(), None),
             &size_of
         ));
+    }
+
+    /// A slot located through one binding of a resource is the
+    /// branch's when the branch is another binding of it: a handle
+    /// moved out of a struct field leaves its bytes behind, so the
+    /// path may head at the copy while the reader asks about the local
+    /// that owns it now. Only an address among the aliases claims it —
+    /// a frame carries none to compare.
+    #[test]
+    fn test_a_member_claims_a_slot_reached_through_another_binding_of_it() {
+        let m = member(None, None);
+        let find = |index, addr| SlotRoot::Find { index, addr };
+        // The hop leaves from a root that is not the member's storage.
+        let mut slot = typed(0x9000, find(1, 0x7000), Some(hop(0x7000)));
+        assert!(!member_accounts(&m, &slot, &size_of));
+        slot.aliases = vec![find(0, 0x5000)];
+        assert!(member_accounts(&m, &slot, &size_of));
+        slot.aliases = vec![find(0, 0x6000)];
+        assert!(!member_accounts(&m, &slot, &size_of));
+        slot.aliases = vec![frame()];
+        assert!(!member_accounts(&m, &slot, &size_of));
     }
 
     /// The registry evidence that armed a member is the slot itself:
@@ -3145,7 +3299,7 @@ mod join_tests {
                 value: header,
             },
         ];
-        order_roots(&mut roots);
+        order_roots(&mut roots, &HashSet::default());
         assert_eq!(roots.len(), 1, "one range, walked once");
         assert_eq!(roots[0].at, find);
         let mut frames = vec![
@@ -3158,7 +3312,7 @@ mod join_tests {
                 value: header,
             },
         ];
-        order_roots(&mut frames);
+        order_roots(&mut frames, &HashSet::default());
         assert_eq!(frames[0].at, frame(0), "the inner frame first");
     }
 
@@ -3244,6 +3398,7 @@ mod synthetic_tests {
     const UNION_HOLDER: u32 = 19;
     const PTR_UNIT: u32 = 20;
     const UNIT_FRAME: u32 = 21;
+    const TWO_PTR: u32 = 22;
 
     fn id(i: u32) -> BundleTypeId {
         BundleTypeId(i)
@@ -3308,6 +3463,7 @@ mod synthetic_tests {
             n("x::UnitFrame"),
             n("z"),
         );
+        let (two_ptrn, firstn, secondn) = (n("x::TwoPtr"), n("first"), n("second"));
         let (sharedn, arcn, notify_rxn, staten, rxn, txn, strongn, weakn) = (
             n("tokio::sync::watch::Shared<u32>"),
             n("alloc::sync::ArcInner<tokio::sync::watch::Shared<u32>>"),
@@ -3482,6 +3638,16 @@ mod synthetic_tests {
                 unit_framen,
                 16,
                 vec![member(pn, id(PTR_HOLDER), 0), member(zn, id(PTR_UNIT), 8)],
+            ),
+            // Two handles on one holder, to tell a copy of one member
+            // from a different member reaching the same allocation.
+            strukt(
+                two_ptrn,
+                16,
+                vec![
+                    member(firstn, id(PTR_HOLDER), 0),
+                    member(secondn, id(PTR_HOLDER), 8),
+                ],
             ),
         ];
         let semantics = SemanticTable {
@@ -4197,6 +4363,133 @@ mod synthetic_tests {
         assert_eq!(present(OPT_WAKER, some), Some(true));
         assert_eq!(present(OPT_WAKER, none), Some(false));
         assert_eq!(present(U64, some), None);
+    }
+
+    /// The other roots holding the very pointer a hop left from are
+    /// the resource's other bindings — the copy a move out of a struct
+    /// field leaves in the frame. Same member of the same type only: a
+    /// root of another type reaching the same allocation is a
+    /// different handle on it, and so is another member of the same
+    /// type.
+    #[test]
+    fn test_a_hops_aliases_are_the_same_member_of_the_same_type() {
+        let (_, snapshot) = load_any("sleep-join");
+        let bundle = bundle();
+        let mut planted = Planted::new(&snapshot);
+        let holder = BASE + 0x100;
+        let (frame_a, frame_b, unit) = (BASE, BASE + 0x20, BASE + 0x40);
+        // `two_a` holds the resource in `first`, `two_b` in `second`,
+        // `two_c` in both.
+        let (two_a, two_b, two_c) = (BASE + 0x60, BASE + 0x80, BASE + 0xa0);
+        planted.word(holder, 7);
+        planted.pair(holder + 8);
+        for at in [frame_a, frame_b, unit, two_a, two_c] {
+            planted.word(at, holder);
+        }
+        planted.word(two_b + 8, holder);
+        planted.word(two_c + 8, holder);
+        let empty = Empty::new(&bundle);
+        let sources = empty.sources();
+        let at = attributor(&planted, &bundle, &empty, &sources);
+        let root = |index, ty, addr| Root {
+            at: SlotRoot::Find { index, addr },
+            value: value(&at, ty, addr),
+        };
+        let find = |index, addr| SlotRoot::Find { index, addr };
+        // The pointers are sorted by root, so the hop is taken from
+        // the first root and the aliases are found among the rest.
+        let aliases = |roots: &[Root<'_>]| -> Vec<SlotRoot> {
+            let pointers = at.pointer_members(roots);
+            let path = match at.by_hop(&hit(holder + 8), roots, &pointers) {
+                Some(Attribution::Typed { path, .. }) => path,
+                other => panic!("{other:?}"),
+            };
+            assert_eq!(path.root, roots[0].at, "the hop is the first root's");
+            at.aliases_of(roots, &pointers, &path)
+        };
+        assert_eq!(
+            aliases(&[
+                root(0, FRAME, frame_a),
+                root(1, FRAME, frame_b),
+                root(2, UNIT_FRAME, unit),
+                root(3, TWO_PTR, two_a),
+            ]),
+            [find(1, frame_b)],
+            "the other Frame, not the other types reaching the same holder"
+        );
+        assert_eq!(
+            aliases(&[
+                root(0, TWO_PTR, two_a),
+                root(1, TWO_PTR, two_b),
+                root(2, FRAME, frame_a),
+            ]),
+            [],
+            "`second` is a different handle from `first`"
+        );
+        assert_eq!(
+            aliases(&[root(0, TWO_PTR, two_a), root(1, TWO_PTR, two_c)]),
+            [find(1, two_c)],
+            "`first` to `first`, though `second` reaches it too"
+        );
+        // A path with no hop has nothing to alias.
+        let roots = [root(0, TWO_PTR, two_a), root(1, TWO_PTR, two_c)];
+        let bare = SlotPath {
+            root: roots[0].at,
+            steps: Vec::new(),
+            hop: None,
+        };
+        assert_eq!(
+            at.aliases_of(&roots, &at.pointer_members(&roots), &bare),
+            []
+        );
+    }
+
+    /// Two roots the size and kind rules leave tied are ordered by
+    /// which of them the analysis already made a branch of the stop,
+    /// so a slot behind the resource they share is located from the
+    /// branch a reader asks about rather than from a copy of it.
+    #[test]
+    fn test_a_branch_outranks_a_root_tied_with_it() {
+        let (_, snapshot) = load_any("sleep-join");
+        let bundle = bundle();
+        let mut planted = Planted::new(&snapshot);
+        let (ghost, live) = (BASE, BASE + 0x20);
+        planted.word(ghost, BASE + 0x100);
+        planted.word(live, BASE + 0x100);
+        let empty = Empty::new(&bundle);
+        let sources = empty.sources();
+        let at = attributor(&planted, &bundle, &empty, &sources);
+        let roots = || {
+            vec![
+                Root {
+                    at: SlotRoot::Find {
+                        index: 0,
+                        addr: ghost,
+                    },
+                    value: value(&at, FRAME, ghost),
+                },
+                Root {
+                    at: SlotRoot::Find {
+                        index: 1,
+                        addr: live,
+                    },
+                    value: value(&at, FRAME, live),
+                },
+            ]
+        };
+        let ordered = |branches: &HashSet<u64>| {
+            let mut roots = roots();
+            order_roots(&mut roots, branches);
+            roots.iter().map(|r| r.value.addr).collect::<Vec<_>>()
+        };
+        assert_eq!(ordered(&HashSet::default()), [ghost, live], "input order");
+        assert_eq!(
+            ordered(&HashSet::from_iter([live])),
+            [live, ghost],
+            "the branch first"
+        );
+        // A branch that is no root of this owner changes nothing.
+        assert_eq!(ordered(&HashSet::from_iter([BASE + 0x400])), [ghost, live]);
     }
 
     /// A hop's candidates are the pointers into the buffer the
