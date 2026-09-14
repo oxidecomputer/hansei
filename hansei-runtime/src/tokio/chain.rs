@@ -19,9 +19,11 @@
 //! program names and the vtable slots its ABI rule records: the poll
 //! and drop-glue symbols are joined against the bundle's dyn-future
 //! table (the poll also against the task table, a spawned future's
-//! identity), and a concrete type is accepted only when every slot
-//! that said anything agrees on it. Disagreement is reported as
-//! ambiguity, not resolved by preference.
+//! identity). The slots are ranked rather than pooled — the poll names
+//! a state machine, the glue only a drop layout that folds — so the
+//! poll decides where the ABI records one and the glue corroborates.
+//! A lead naming several types and corroboration that cannot narrow it
+//! to one is reported as ambiguity, never guessed at.
 //!
 //! Lifecycle is passed beside the value, not read out of it: a task
 //! mid-poll has saved discriminants that may be mid-mutation, so its
@@ -86,6 +88,34 @@ pub enum InspectionMode {
 pub struct FutureInspection<'b> {
     pub chain: AwaitChain<'b>,
     pub primitive: Observed<ResourceObservation>,
+}
+
+/// The vtable slots that name the erased type, in rank order: `POLL`
+/// leads where the ABI records one, `DROP` only in its absence.
+const POLL: &str = "poll";
+const DROP: &str = "drop";
+
+/// What one vtable slot said about the erased concrete type.
+struct SlotEvidence {
+    /// [`POLL`] or [`DROP`], the slot the symbol was read from.
+    which: &'static str,
+    /// The slot's function symbol, as the target's symtab spells it.
+    symbol: String,
+    /// The types that symbol joins in the bundle. Never `Missing`: a
+    /// symbol that resolves nothing constrains nothing and is not
+    /// collected.
+    lookup: SymbolLookup<BundleTypeId>,
+}
+
+impl SlotEvidence {
+    /// Whether this slot's join leaves room for `id`.
+    fn admits(&self, id: BundleTypeId) -> bool {
+        match &self.lookup {
+            SymbolLookup::Unique(other) => *other == id,
+            SymbolLookup::Ambiguous(ids) => ids.contains(&id),
+            SymbolLookup::Missing => true,
+        }
+    }
 }
 
 /// The outcome of resolving one `dyn Future` wide pointer.
@@ -415,11 +445,12 @@ impl<'b, T: Target> Context<'b, T> {
         self.resolve_dynamic(data, vtable, layout, read)
     }
 
-    /// Resolve a `dyn Future` by its vtable: the identity every slot
-    /// that says anything agrees on, then the size and alignment the
-    /// vtable records checked against the pointer and the layout, then
-    /// the referent read whole under `read`. A zero-sized future has a
-    /// dangling, aligned data pointer and no bytes to read.
+    /// Resolve a `dyn Future` by its vtable: the identity its leading
+    /// slot names, narrowed by the slots that corroborate it, then the
+    /// size and alignment the vtable records checked against the
+    /// pointer and the layout, then the referent read whole under
+    /// `read`. A zero-sized future has a dangling, aligned data
+    /// pointer and no bytes to read.
     fn resolve_dynamic(
         &self,
         data: u64,
@@ -459,24 +490,24 @@ impl<'b, T: Target> Context<'b, T> {
         // records no poll slot — where its poll sits is that trait's
         // business — so its identity is the drop glue's alone, and the
         // glue names a future because only future types have any.
-        let mut candidates: Vec<(String, SymbolLookup<BundleTypeId>)> = Vec::new();
+        let mut evidence: Vec<SlotEvidence> = Vec::new();
         let mut poll_symbol = None;
         let slots = layout
             .poll_slot
-            .map(|index| ("poll", index))
+            .map(|index| (POLL, index))
             .into_iter()
-            .chain([("drop", layout.drop_slot)]);
+            .chain([(DROP, layout.drop_slot)]);
         for (which, index) in slots {
             let fn_addr = slot(index)?;
             if fn_addr == 0 {
-                ensure!(which == "drop", "vtable {vtable:#x} has a null poll slot");
+                ensure!(which == DROP, "vtable {vtable:#x} has a null poll slot");
                 continue;
             }
             let Some(symbol) = self.symbol_at(fn_addr) else {
                 continue;
             };
             let mut lookup = self.dyn_future_ids_memoized(&symbol);
-            if which == "poll" {
+            if which == POLL {
                 poll_symbol = Some(symbol.clone());
                 if matches!(lookup, SymbolLookup::Missing) {
                     lookup = match self.task_ids_memoized(&symbol) {
@@ -498,55 +529,69 @@ impl<'b, T: Target> Context<'b, T> {
                 }
             }
             if !matches!(lookup, SymbolLookup::Missing) {
-                candidates.push((symbol, lookup));
-            }
-        }
-        // One conflict policy: a unique identity is accepted only if
-        // every other set that said anything contains it and no other
-        // unique result disagrees; anything else is reported whole.
-        let unique = candidates.iter().find_map(|(_, lookup)| match lookup {
-            SymbolLookup::Unique(id) => Some(*id),
-            _ => None,
-        });
-        let agreed = |id: BundleTypeId| {
-            candidates.iter().all(|(_, lookup)| match lookup {
-                SymbolLookup::Unique(other) => *other == id,
-                SymbolLookup::Ambiguous(ids) => ids.contains(&id),
-                SymbolLookup::Missing => true,
-            })
-        };
-        let id = match unique {
-            Some(id) if agreed(id) => id,
-            _ if candidates.is_empty() => return Ok(Dyn::Unknown { poll_symbol }),
-            _ => {
-                let mut ids: Vec<BundleTypeId> = candidates
-                    .iter()
-                    .flat_map(|(_, lookup)| match lookup {
-                        SymbolLookup::Unique(id) => vec![*id],
-                        SymbolLookup::Ambiguous(ids) => ids.clone(),
-                        SymbolLookup::Missing => Vec::new(),
-                    })
-                    .collect();
-                ids.sort();
-                ids.dedup();
-                return Ok(Dyn::Ambiguous {
-                    symbol: poll_symbol.unwrap_or_else(|| candidates[0].0.clone()),
-                    candidates: ids
-                        .into_iter()
-                        .filter_map(|id| self.view.ty(id))
-                        .map(|ty| TypeCandidate {
-                            name: ty.name().to_owned(),
-                            ty: ty.id(),
-                        })
-                        .collect(),
+                evidence.push(SlotEvidence {
+                    which,
+                    symbol,
+                    lookup,
                 });
             }
+        }
+        // The slots are ranked, not pooled. `drop_glue::<T>` is
+        // derived from T's drop layout and nothing else, so two future
+        // types that drop alike compile to one function and the linker
+        // keeps a single name for it — the surviving name then belongs
+        // to whichever type won the fold, and identifies the other
+        // wrongly. A coroutine's poll is its own state machine, which
+        // no unrelated future shares. So the poll slot leads where the
+        // ABI records one, the glue leads only in its absence (the
+        // supertrait object, whose poll sits at a slot no reviewed
+        // convention covers), and whoever leads decides: a lead naming
+        // one type is believed outright, over a trailing slot that
+        // disagrees.
+        //
+        // A lead naming several is the one case the trailing slots
+        // still narrow — the fold can only ever add a type the lead
+        // did not name, so an intersection either leaves the truth
+        // standing alone or leaves nothing, and never substitutes.
+        let lead = match evidence.iter().position(|e| e.which == POLL) {
+            Some(index) => index,
+            None if evidence.is_empty() => return Ok(Dyn::Unknown { poll_symbol }),
+            None => 0,
         };
-        let symbol = candidates
-            .iter()
-            .find(|(_, lookup)| matches!(lookup, SymbolLookup::Unique(other) if *other == id))
-            .map(|(symbol, _)| symbol.clone())
-            .expect("a unique candidate named the identity");
+        let trailing = || evidence.iter().enumerate().filter(|&(i, _)| i != lead);
+        let id = match &evidence[lead].lookup {
+            SymbolLookup::Unique(id) => *id,
+            SymbolLookup::Ambiguous(ids) => {
+                let narrowed: Vec<BundleTypeId> = ids
+                    .iter()
+                    .copied()
+                    .filter(|&id| trailing().all(|(_, e)| e.admits(id)))
+                    .collect();
+                match narrowed.as_slice() {
+                    [one] => *one,
+                    // Neither the lead nor its corroboration settled
+                    // it. What is reported is the lead's own set: a
+                    // type only a trailing slot named is a type the
+                    // lead ruled out.
+                    _ => {
+                        return Ok(Dyn::Ambiguous {
+                            symbol: evidence[lead].symbol.clone(),
+                            candidates: ids
+                                .iter()
+                                .filter_map(|&id| self.view.ty(id))
+                                .map(|ty| TypeCandidate {
+                                    name: ty.name().to_owned(),
+                                    ty: ty.id(),
+                                })
+                                .collect(),
+                        });
+                    }
+                }
+            }
+            // Only non-`Missing` joins are collected.
+            SymbolLookup::Missing => unreachable!("a missing join is not evidence"),
+        };
+        let symbol = evidence[lead].symbol.clone();
         let ty = self
             .view
             .ty(id)
@@ -1014,6 +1059,23 @@ mod tests {
         (data.addr, vtable.addr, word(vtable))
     }
 
+    /// The address in a task's own vtable poll slot — a monomorphized
+    /// `raw::poll`, which joins the task table and not the dyn-future
+    /// one, and so stands in for a leaf's poll under a patched vtable.
+    fn task_poll_fn(ctx: &Context<'_, Snapshot>, snapshot: &Snapshot, task: &Task) -> u64 {
+        let header_ty = ctx
+            .infra_ty(ctx.view.bundle().infra.header, "task Header")
+            .unwrap();
+        let header = Value::read(snapshot, header_ty, task.addr.0).unwrap();
+        let task_vtable: u64 = ctx.walk(WalkRole::HeaderVtable).read(header).unwrap();
+        let vtable_ty = ctx
+            .infra_ty(ctx.view.bundle().infra.vtable, "task Vtable")
+            .unwrap();
+        ctx.walk(WalkRole::VtablePoll)
+            .read(Value::read(snapshot, vtable_ty, task_vtable).unwrap())
+            .unwrap()
+    }
+
     fn corrupted<'a>(
         bundle: &'a Bundle,
         snapshot: &'a Snapshot,
@@ -1027,8 +1089,8 @@ mod tests {
     }
 
     /// The dynamic join reads the recorded ABI slots and believes none
-    /// of them blindly: the concrete type is named by the poll and
-    /// drop-glue symbols agreeing, the alignment word must be a power
+    /// of them blindly: the concrete type is named by the poll symbol,
+    /// the alignment word must be a power
     /// of two the data pointer honors, the size word must be the
     /// layout's, and the referent must be mapped whole. Each check
     /// failing ends the chain with an error naming it; a vtable whose
@@ -1098,35 +1160,24 @@ mod tests {
         assert!(end_of(&corrupt, &list).contains("null poll slot"));
     }
 
-    /// Two slots that name different concrete types are conflicting
-    /// identity evidence, reported whole; neither is preferred. The
-    /// set member's task poll fn stands in for the leaf's poll here:
-    /// it joins the task table alone, naming the member's future, while
-    /// the drop glue still names the leaf.
+    /// Two slots naming different concrete types is the shape a
+    /// folded `drop_glue` leaves behind, and the poll slot decides it:
+    /// the erased type is the poll's, whatever the glue says, and the
+    /// poll needs no corroboration to be believed. Where the poll
+    /// resolves nothing the glue leads again, as it does for a trait
+    /// object whose ABI records no poll slot at all.
+    ///
+    /// The set member's task poll fn stands in for the leaf's poll
+    /// here: it joins the task table alone, naming the member's
+    /// future, while the drop glue still names the leaf.
     #[test]
-    fn test_conflicting_vtable_slots_are_reported_not_resolved() {
+    fn test_the_poll_slot_outranks_conflicting_drop_glue() {
         let (bundle, snapshot) = load_any("dyn-future");
         let ctx = testkit::context(&bundle, &snapshot);
         let list = testkit::tasks(&ctx, &snapshot);
         let (_, _, vtable) = wide_pointer(&ctx, &list);
         let member = task_named(&list, "set_member");
-        let header_ty = ctx
-            .infra_ty(ctx.view.bundle().infra.header, "task Header")
-            .unwrap();
-        let header = Value::read(&snapshot, header_ty, member.addr.0).unwrap();
-        let member_vtable: u64 = ctx.walk(WalkRole::HeaderVtable).read(header).unwrap();
-        let member_poll: u64 = ctx
-            .walk(WalkRole::VtablePoll)
-            .read(
-                Value::read(
-                    &snapshot,
-                    ctx.infra_ty(ctx.view.bundle().infra.vtable, "task Vtable")
-                        .unwrap(),
-                    member_vtable,
-                )
-                .unwrap(),
-            )
-            .unwrap();
+        let member_poll = task_poll_fn(&ctx, &snapshot, member);
         let symbol = ctx
             .symbol_at(member_poll)
             .expect("the task poll is a symbol");
@@ -1138,18 +1189,39 @@ mod tests {
             ctx.task_ids_memoized(&symbol),
             SymbolLookup::Unique(_)
         ));
+        // The glue still names the leaf and is overruled: a chain
+        // that stopped here before now runs on through the member.
         let (corrupt, list) =
             corrupted(&bundle, &snapshot, |c| c.patch(vtable + 3 * 8, member_poll));
         let ctx = Context::new(&corrupt, BundleView::new(&bundle)).unwrap();
         let inspection = inspect(&ctx, task_named(&list, "driver"));
-        match &inspection.chain.end {
-            ChainEnd::AmbiguousDyn { candidates, .. } => {
-                let names: Vec<&str> = candidates.iter().map(|c| c.name.as_str()).collect();
-                assert!(names.iter().any(|n| n.contains("boxed_leaf")), "{names:?}");
-                assert!(names.iter().any(|n| n.contains("set_member")), "{names:?}");
-            }
-            other => panic!("conflicting slots are reported: {other:?}"),
-        }
+        let resolved = &inspection.chain.frames[2];
+        assert!(
+            resolved.future.ty.name().contains("set_member"),
+            "the poll decides: {:?} {:?}",
+            names(&inspection.chain),
+            inspection.chain.end
+        );
+        assert_eq!(
+            resolved.dyn_symbol.as_deref(),
+            Some(symbol.as_str()),
+            "the poll's symbol is the one recorded"
+        );
+        // A poll slot that resolves nothing hands the lead back to the
+        // glue, which names the leaf — the supertrait object's case,
+        // where the ABI records no poll slot to lead with.
+        let (corrupt, list) = corrupted(&bundle, &snapshot, |c| c.patch(vtable + 3 * 8, NOWHERE));
+        let ctx = Context::new(&corrupt, BundleView::new(&bundle)).unwrap();
+        let inspection = inspect(&ctx, task_named(&list, "driver"));
+        assert!(
+            inspection.chain.frames[2]
+                .future
+                .ty
+                .name()
+                .contains("boxed_leaf"),
+            "the glue leads when the poll says nothing: {:?}",
+            names(&inspection.chain)
+        );
         // With the drop glue's constraint gone, the task table alone
         // names the member's future: the sibling fallback resolves it.
         let (corrupt, list) = corrupted(&bundle, &snapshot, |c| {
@@ -1232,23 +1304,7 @@ mod tests {
             unreachable!()
         };
         let entry_id = known.entry;
-        let header_ty = ctx
-            .infra_ty(ctx.view.bundle().infra.header, "task Header")
-            .unwrap();
-        let header = Value::read(&snapshot, header_ty, member.addr.0).unwrap();
-        let member_vtable: u64 = ctx.walk(WalkRole::HeaderVtable).read(header).unwrap();
-        let member_poll: u64 = ctx
-            .walk(WalkRole::VtablePoll)
-            .read(
-                Value::read(
-                    &snapshot,
-                    ctx.infra_ty(ctx.view.bundle().infra.vtable, "task Vtable")
-                        .unwrap(),
-                    member_vtable,
-                )
-                .unwrap(),
-            )
-            .unwrap();
+        let member_poll = task_poll_fn(&ctx, &snapshot, member);
         drop(ctx);
         // A second entry of the same future under the same symbol.
         let twin = bundle.tasks.entries[entry_id.0 as usize].clone();
@@ -1285,6 +1341,83 @@ mod tests {
             names(&inspection.chain),
             inspection.chain.end
         );
+    }
+
+    /// A lead naming several types is the one case a trailing slot
+    /// still narrows it, and it narrows by intersection alone: the
+    /// glue's type is taken only because the poll had already named
+    /// it, never because the glue said so. Where the intersection
+    /// leaves nothing the chain is ambiguous, and what it reports is
+    /// the poll's own set — a type only the glue names is one the
+    /// poll ruled out.
+    ///
+    /// A second task entry under the member's poll symbol, its future
+    /// another type, is what makes that symbol name two futures.
+    #[test]
+    fn test_an_ambiguous_poll_is_narrowed_by_the_glue_never_replaced() {
+        // The twin's future, and what the join should then make of
+        // the leaf the drop glue names: the poll naming it too leaves
+        // one type standing, the poll naming two others leaves none.
+        for narrows in [true, false] {
+            let (mut bundle, snapshot) = load_any("dyn-future");
+            let ctx = testkit::context(&bundle, &snapshot);
+            let list = testkit::tasks(&ctx, &snapshot);
+            let (_, _, vtable) = wide_pointer(&ctx, &list);
+            let member = task_named(&list, "set_member");
+            let FutureInfo::Known(known) = &member.future else {
+                panic!("the member's identity is its task entry");
+            };
+            let entry_id = known.entry;
+            let member_poll = task_poll_fn(&ctx, &snapshot, member);
+            let symbol = ctx.symbol_at(member_poll).unwrap();
+            let healthy = inspect(&ctx, task_named(&list, "driver"));
+            // The leaf the glue names, and a type it does not.
+            let leaf = healthy.chain.frames[2].future.ty.id();
+            let unrelated = healthy.chain.frames[0].future.ty.id();
+            drop(ctx);
+            let mut twin = bundle.tasks.entries[entry_id.0 as usize].clone();
+            twin.future = if narrows { leaf } else { unrelated };
+            bundle.tasks.entries.push(twin);
+            let twin_id = hansei_bundle::TaskEntryId(bundle.tasks.entries.len() as u32 - 1);
+            for ids in bundle.tasks.by_symbol.values_mut() {
+                if ids.contains(&entry_id) {
+                    ids.push(twin_id);
+                }
+            }
+            bundle.tasks.by_normalized_symbol =
+                hansei_bundle::symbols::normalized_candidate_index(&bundle.tasks.by_symbol);
+            // Only the poll slot is patched: the glue still names the
+            // leaf, and leads nothing.
+            let (corrupt, list) =
+                corrupted(&bundle, &snapshot, |c| c.patch(vtable + 3 * 8, member_poll));
+            let ctx = Context::new(&corrupt, BundleView::new(&bundle)).unwrap();
+            assert!(
+                matches!(ctx.task_ids_memoized(&symbol), SymbolLookup::Ambiguous(_)),
+                "the twin makes the poll symbol name two futures"
+            );
+            let inspection = inspect(&ctx, task_named(&list, "driver"));
+            if narrows {
+                assert!(
+                    inspection.chain.frames[2].future.ty.id() == leaf,
+                    "the glue's type survives because the poll named it: {:?} {:?}",
+                    names(&inspection.chain),
+                    inspection.chain.end
+                );
+            } else {
+                let ChainEnd::AmbiguousDyn { candidates, .. } = &inspection.chain.end else {
+                    panic!("nothing is left to take: {:?}", inspection.chain.end);
+                };
+                let ids: Vec<BundleTypeId> = candidates.iter().map(|c| c.ty).collect();
+                assert!(
+                    ids.contains(&unrelated),
+                    "the poll's set is reported: {ids:?}"
+                );
+                assert!(
+                    !ids.contains(&leaf),
+                    "a type only the glue named is not a candidate: {ids:?}"
+                );
+            }
+        }
     }
 
     /// A record with a storage route and no future facts — a value
