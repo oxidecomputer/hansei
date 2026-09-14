@@ -105,6 +105,10 @@ exclude_re = [
     # `held_spans` keeps a find of nonzero size; the census never lists
     # a zero-sized one (its scan skips them), so `>=` admits the same.
     "replace > with >= in held_spans",
+    # The attributor's chain roots skip a zero-sized frame the same
+    # way; with `>=` the frame is read as an empty value, which
+    # contains no address and so files nothing. Nothing observable.
+    "replace > with >= in Attributor<'a, 'b, T>::chain_roots_of",
     # A throughput knob, not behavior: the worker count only decides how
     # the parse fan-out is scheduled, and collection is order-independent
     # by design (references are global offsets, dedup is deferred), so

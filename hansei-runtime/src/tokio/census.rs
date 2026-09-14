@@ -328,6 +328,11 @@ pub struct HeldFuture {
     pub ty: BundleTypeId,
     /// How many frames its own chain ran to; see [`SetChild::depth`].
     pub depth: usize,
+    /// The frames of that chain, in the order it ran — the find's own
+    /// value first, whatever it delegates to after — so what the find
+    /// holds through a pointer (a boxed `Sleep` behind an interval's
+    /// tick) is known to be its without walking the chain again.
+    pub frames: Vec<ValueKey>,
     /// The concrete future type, dyn-resolved when it had to be.
     pub future: String,
     /// Its suspend state, `Suspend1 — file:line` style.
@@ -1179,6 +1184,12 @@ impl<'b, T: Target> Walker<'_, 'b, T> {
                     addr,
                     ty,
                     depth: summary.depth,
+                    frames: held
+                        .chain
+                        .frames
+                        .iter()
+                        .map(|f| ValueKey::of(f.future))
+                        .collect(),
                     future: summary.future,
                     state: summary.state,
                     waiting_on: summary.waiting_on,
@@ -3558,6 +3569,7 @@ mod tests {
             addr,
             ty: BundleTypeId(0),
             depth: 1,
+            frames: Vec::new(),
             future: "f".to_string(),
             state: None,
             waiting_on: None,

@@ -354,6 +354,7 @@ mod relations_tests {
     fn held_handle(owner: usize, id: u64) -> census::HeldFuture {
         census::HeldFuture {
             depth: 1,
+            frames: Vec::new(),
             owner,
             frame: 0,
             local: "handle".to_string(),
@@ -431,6 +432,7 @@ mod relations_tests {
                 },
             }),
             within: None,
+            through: Vec::new(),
         };
         let mut set = wait(1, None);
         set.assessment = WaitAssessment::Set(WaitSet {

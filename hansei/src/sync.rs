@@ -1278,6 +1278,7 @@ mod sync_tests {
                 reading,
             },
             within: None,
+            through: Vec::new(),
         }
     }
 

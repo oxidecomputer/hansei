@@ -1258,6 +1258,7 @@ mod tests {
     fn held_deep(future: &str, wait: Option<WaitKind>, depth: usize) -> HeldFuture {
         HeldFuture {
             depth,
+            frames: Vec::new(),
             owner: 0,
             frame: 0,
             local: "arm".to_string(),

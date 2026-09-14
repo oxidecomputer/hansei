@@ -1304,6 +1304,7 @@ mod tests {
             addr,
             ty: BundleTypeId(0),
             depth: 2,
+            frames: Vec::new(),
             future: "app::work::{async_fn_env#0}".to_string(),
             state: Some("Suspend1 — src/app.rs:9".to_string()),
             waiting_on: Some("a timer".to_string()),
@@ -1457,6 +1458,7 @@ mod tests {
             owner,
             attribution,
             within,
+            through: Vec::new(),
         };
         let slots = Attributed::from_slots(vec![
             // The Sleep's wheel entry, inside the Sleep.
@@ -1634,6 +1636,7 @@ mod tests {
                 },
             }),
             within: None,
+            through: Vec::new(),
         }]);
 
         let rows = with_slots(rows_of(&census), &list(), &census, &slots, None);

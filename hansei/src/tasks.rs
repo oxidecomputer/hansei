@@ -3172,6 +3172,7 @@ mod table_tests {
             owner,
             attribution,
             within: None,
+            through: Vec::new(),
         };
         let slots = Attributed::from_slots(vec![
             slot(
@@ -3218,6 +3219,7 @@ mod table_tests {
                 },
                 attribution: Attribution::Unknown,
                 within: None,
+                through: Vec::new(),
             },
             AttributedSlot {
                 hit: 8,
@@ -3232,6 +3234,7 @@ mod table_tests {
                     deadline: None,
                 }),
                 within: None,
+                through: Vec::new(),
             },
         ]);
         let list = TaskList::new(vec![
@@ -3322,6 +3325,7 @@ mod table_tests {
                 owner,
                 attribution: Attribution::Registry(RegistrySlot::Join { task: joined }),
                 within: None,
+                through: Vec::new(),
             },
             AttributedSlot {
                 hit: 1,
@@ -3333,6 +3337,7 @@ mod table_tests {
                     deadline: None,
                 }),
                 within: None,
+                through: Vec::new(),
             },
         ]);
         let target = WaitTarget::Task {
@@ -4048,6 +4053,7 @@ mod census_listing_tests {
             addr: 0x1000,
             ty: BundleTypeId(0),
             depth: 1,
+            frames: Vec::new(),
             future: "app::work".to_string(),
             state: None,
             waiting_on: None,

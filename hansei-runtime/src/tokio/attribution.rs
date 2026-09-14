@@ -348,6 +348,13 @@ pub struct AttributedSlot {
     /// `Sleep` find around its wheel entry — so the find it sits in is
     /// armed by it as a located slot's would be.
     pub within: Option<SlotRoot>,
+    /// For a registry slot, the held finds whose own chains run through
+    /// the value it lies in, past their own storage — an interval's
+    /// tick, whose chain crosses the box to the `Sleep` holding the
+    /// wheel entry — each armed by it as the value's own find is. By
+    /// index into the census's held finds; the find `within` names,
+    /// if one, is not repeated here.
+    pub through: Vec<usize>,
 }
 
 impl AttributedSlot {
@@ -652,6 +659,9 @@ impl Attributed {
                     self.by_child.entry((set, child)).or_default().push(i)
                 }
             }
+            for &index in &slot.through {
+                self.by_find.entry(index).or_default().push(i);
+            }
             match Self::root_of(slot) {
                 Some(SlotRoot::Find { index, .. }) => {
                     self.by_find.entry(index).or_default().push(i)
@@ -880,14 +890,36 @@ impl<'a, 'b, T: Target> Attributor<'a, 'b, T> {
     ) {
         let roots = self.roots_of(owner);
         let mut pointers: Option<Vec<PointerMember>> = None;
+        let mut chain_roots: Option<Vec<Root<'b>>> = None;
         for &i in indexes {
             let hit = &hits[i];
             let mut within = None;
+            let mut through = Vec::new();
             let attribution = if let Some(slot) = self.registry.get(&hit.slot) {
+                // A registry slot is filed under the value it lies in:
+                // a chain frame or a find. It also arms every find whose
+                // chain runs through that value past the find's own
+                // storage — the way a task's chain frames are the
+                // task's: a boxed `Sleep` an interval's tick polls
+                // holds its wheel entry on the heap, where the `Sleep`
+                // may be a find of its own under the interval local
+                // and the tick a second find polling it. Where no
+                // value of its own holds the slot, the first such
+                // frame is what it is filed under.
+                let chain = chain_roots.get_or_insert_with(|| self.chain_roots_of(owner));
                 within = roots
                     .iter()
                     .find(|r| contains(r.value, hit.slot))
+                    .or_else(|| chain.iter().find(|r| contains(r.value, hit.slot)))
                     .map(|r| r.at);
+                for root in chain.iter().filter(|r| contains(r.value, hit.slot)) {
+                    if let SlotRoot::Find { index, .. } = root.at
+                        && within != Some(root.at)
+                        && !through.contains(&index)
+                    {
+                        through.push(index);
+                    }
+                }
                 Attribution::Registry(slot.clone())
             } else {
                 match self.by_containment(hit, &roots) {
@@ -987,6 +1019,7 @@ impl<'a, 'b, T: Target> Attributor<'a, 'b, T> {
                 owner,
                 attribution,
                 within,
+                through,
             });
         }
     }
@@ -1151,6 +1184,36 @@ impl<'a, 'b, T: Target> Attributor<'a, 'b, T> {
                     },
                     value,
                 });
+            }
+        }
+        order_roots(&mut roots);
+        roots
+    }
+
+    /// The frames each of `owner`'s finds delegates to beyond its own
+    /// value — what the find polls through a pointer, a boxed `Sleep`
+    /// behind an interval's tick — each filed under the find. Only a
+    /// registry slot is placed by these: a typed slot's path names its
+    /// root's type, and a chain frame is not the find's.
+    fn chain_roots_of(&self, owner: Owner) -> Vec<Root<'b>> {
+        let mut roots = Vec::new();
+        for &i in self.finds.get(&OwnerKey::from(owner)).into_iter().flatten() {
+            let held = &self.sources.census.held[i];
+            for key in held.frames.iter().filter(|k| k.addr != held.addr) {
+                let Some(ty) = self.types.view.ty(key.ty) else {
+                    continue;
+                };
+                if ty.size() > 0
+                    && let Ok(value) = Value::read(self.proc, ty, key.addr)
+                {
+                    roots.push(Root {
+                        at: SlotRoot::Find {
+                            index: i,
+                            addr: held.addr,
+                        },
+                        value,
+                    });
+                }
             }
         }
         order_roots(&mut roots);
@@ -2305,6 +2368,38 @@ mod tests {
         assert!(!attributed.find_armed(find("notified")));
         assert!(attributed.at(holder[0].slot).is_some());
         assert!(attributed.at(holder[0].slot + 8).is_none());
+        // The ticker's wheel entry lies in the `Sleep` boxed inside its
+        // `interval` local — a find of its own, armed by containment —
+        // and the pinned `tick`'s chain runs through that box to the
+        // same `Sleep`, so the one slot arms both: filed under the
+        // `Sleep`, carried to the tick. The pacer's `spare` was never
+        // registered and its unpolled `spare_tick` reaches nothing.
+        let (interval, tick) = (find("interval"), find("tick"));
+        let [entry] = attributed.of_find(interval).collect::<Vec<_>>()[..] else {
+            panic!("{:?}", attributed.of_find(interval).collect::<Vec<_>>());
+        };
+        assert!(
+            matches!(
+                entry.attribution,
+                Attribution::Registry(RegistrySlot::Timer { .. })
+            ),
+            "{entry:?}"
+        );
+        assert_eq!(
+            entry.within,
+            Some(SlotRoot::Find {
+                index: interval,
+                addr: over.census.held[interval].addr
+            })
+        );
+        assert_eq!(entry.through, vec![tick]);
+        assert!(attributed.find_armed(tick));
+        assert!(std::ptr::eq(
+            attributed.of_find(tick).next().unwrap(),
+            entry
+        ));
+        assert!(!attributed.find_armed(find("spare")));
+        assert!(!attributed.find_armed(find("spare_tick")));
         // The interval tasks add the ticker's oneshot slot to the
         // owner-typed count and their two registered `Sleep`s' wheel
         // entries to the registry's, beside the selector's.
@@ -2545,6 +2640,7 @@ mod tests {
             owner,
             attribution: Attribution::Unknown,
             within: None,
+            through: Vec::new(),
         };
         let one = slot(0x7000);
         assert_eq!(one.entry(None), "unknown @ 0x7000");
@@ -2606,6 +2702,7 @@ mod join_tests {
                 validity: Validity::Raw,
             },
             within: None,
+            through: Vec::new(),
         }
     }
 
@@ -2616,6 +2713,7 @@ mod join_tests {
             owner: owner(),
             attribution: Attribution::Registry(attribution),
             within,
+            through: Vec::new(),
         }
     }
 
@@ -2638,6 +2736,7 @@ mod join_tests {
                 reading: None,
             },
             within: None,
+            through: Vec::new(),
         }
     }
 

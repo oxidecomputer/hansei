@@ -4129,6 +4129,54 @@ fn test_armed_select_acceptance() {
             channels
         );
 
+        // The interval tasks. The ticker's tick branch — the pinned
+        // local its select borrows — reads the timer through the
+        // closure, the interval and its box, and is armed by the
+        // wheel entry inside the `Sleep` the box holds; no timer line
+        // stands on its own under the wait.
+        let ticker = task_with_future(&rows, "async fn armed_select::ticker");
+        assert_eq!(ticker.waiting, "", "{ticker:?}");
+        let block = hansei_ok(&bundle, core, &format!("task {}", ticker.id));
+        let tick = regex::Regex::new(
+            r"(?m)^        branch 1 \(borrowed\): async fn tokio::time::interval::Interval::tick at 0x[0-9a-f]+ — timer \(deadline .*; armed: timer 0x[0-9a-f]+ deadline ",
+        )
+        .unwrap();
+        assert!(tick.is_match(&block), "{block}");
+        assert_eq!(block.matches("timer 0x").count(), 1, "{block}");
+        assert!(!block.contains("PollFn"), "{block}");
+        // The pacer's bare tick: the task's own chain runs the same
+        // route to the `Sleep`, a verified timer wait whose one line
+        // is the wheel entry that arms it, as a bare `sleep`'s is; the
+        // spare interval's tick it holds unpolled reaches nothing and
+        // nothing arms it, its `Sleep` never registered.
+        let pacer = task_with_future(&rows, "async fn armed_select::pacer");
+        assert_eq!(pacer.waiting, "", "{pacer:?}");
+        let [line] = pacer.wait_lines.as_slice() else {
+            panic!("{pacer:?}");
+        };
+        assert!(line.starts_with("timer 0x"), "{pacer:?}");
+        assert!(line.contains(" deadline "), "{pacer:?}");
+        // The chain, leaf up: the `Sleep`, the box, the closure's
+        // `PollFn`, the tick, the task.
+        let trace = hansei_ok(&bundle, core, &format!("trace {} -n", pacer.id));
+        for frame in [
+            r"(?m)^#0 +future +tokio::time::sleep::Sleep$",
+            r"(?m)^#1 +future +Pin<Box<tokio::time::sleep::Sleep>>$",
+            r"(?m)^#2 +future +core::future::poll_fn::PollFn<tokio::time::interval::Interval::tick::\{async_fn#0\}::\{closure_env#0\}>$",
+            r"(?m)^#3 +async fn +tokio::time::interval::Interval::tick$",
+            r"(?m)^#4 +async fn +armed_select::pacer$",
+        ] {
+            assert!(
+                regex::Regex::new(frame).unwrap().is_match(&trace),
+                "{frame}: {trace}"
+            );
+        }
+        let unarmed = hansei_ok(&bundle, core, "futures --with armed no --with kind local");
+        assert!(unarmed.contains("`spare_tick`"), "{unarmed}");
+        assert!(unarmed.contains("`spare`"), "{unarmed}");
+        assert!(!unarmed.contains("`tick`"), "{unarmed}");
+        assert!(!unarmed.contains("`interval`"), "{unarmed}");
+
         // Both cross-checks run clean under `--audit`.
         let audited = hansei_with(&bundle, core, &["--audit"], "info");
         let stderr = String::from_utf8_lossy(&audited.stderr);

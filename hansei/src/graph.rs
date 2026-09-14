@@ -524,6 +524,7 @@ mod graph_tests {
     fn held_handle(owner: usize, id: u64) -> census::HeldFuture {
         census::HeldFuture {
             depth: 1,
+            frames: Vec::new(),
             owner,
             frame: 0,
             local: "cancel_task".to_string(),

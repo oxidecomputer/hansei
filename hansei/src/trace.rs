@@ -2778,6 +2778,7 @@ mod future_trace_tests {
             }];
             let held = vec![census::HeldFuture {
                 depth: 1,
+                frames: Vec::new(),
                 owner,
                 frame: 1,
                 local: "lock".to_string(),

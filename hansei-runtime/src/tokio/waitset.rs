@@ -2310,6 +2310,7 @@ mod tests {
             },
             attribution,
             within: None,
+            through: Vec::new(),
         }
     }
 
