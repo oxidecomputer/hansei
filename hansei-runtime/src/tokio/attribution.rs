@@ -2305,8 +2305,11 @@ mod tests {
         assert!(!attributed.find_armed(find("notified")));
         assert!(attributed.at(holder[0].slot).is_some());
         assert!(attributed.at(holder[0].slot + 8).is_none());
-        assert_eq!(attributed.stats.owner, 5);
-        assert_eq!(attributed.stats.registry, 1);
+        // The interval tasks add the ticker's oneshot slot to the
+        // owner-typed count and their two registered `Sleep`s' wheel
+        // entries to the registry's, beside the selector's.
+        assert_eq!(attributed.stats.owner, 6);
+        assert_eq!(attributed.stats.registry, 3);
         assert_eq!(attributed.stats.typed, 1);
         assert_eq!(attributed.stats.unknown, 0);
     }

@@ -1105,7 +1105,14 @@ fn test_the_census_accounting_is_exact_per_program() {
         // Four branch futures reached by descent, each met again
         // through the select's borrow of it, and their chains behind —
         // the watch's crossing tokio's `Coop` to its `changed_impl`.
-        ("armed-select", 0, 10, 4, 0, 4),
+        // The two interval tasks add the `Sleep` boxed inside each of
+        // their three `Interval` locals, a find by descent through the
+        // local and met again through the box's own `pointer` when the
+        // find's chain is scanned; the ticker's two select branches,
+        // met again through its borrow; and four chain frames — each
+        // tick's `PollFn`, the ticker's select and the pacer's awaited
+        // tick.
+        ("armed-select", 0, 14, 9, 0, 9),
         // Two selects' branch futures — a oneshot and a stream's `Next`
         // each — reached by descent and met again through the select's
         // borrow; the box each `WatchStream` owns, a find under the

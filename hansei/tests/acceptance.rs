@@ -4083,15 +4083,16 @@ fn test_armed_select_acceptance() {
         assert!(block.contains("\n        oneshot rx 0x"), "{block}");
 
         // The channels as resources: one block per oneshot a slot
-        // names — the selector's, the holder's, and the two the set's
-        // children park on with the set's wakers, owned by the child
-        // — each with the leaked sender alive; the mpsc and the watch
-        // under `channels`, with the selector on the receiving side.
+        // names — the selector's, the holder's, the ticker's, and the
+        // two the set's children park on with the set's wakers, owned
+        // by the child — each with the leaked sender alive; the mpsc
+        // and the watch under `channels`, with the selector on the
+        // receiving side.
         let oneshots = hansei_ok(&bundle, core, "sync --kind oneshot");
-        assert_eq!(oneshots.matches("oneshot 0x").count(), 4, "{oneshots}");
+        assert_eq!(oneshots.matches("oneshot 0x").count(), 5, "{oneshots}");
         assert_eq!(
             oneshots.matches(": nothing sent, sender alive\n").count(),
-            4,
+            5,
             "{oneshots}"
         );
         assert!(

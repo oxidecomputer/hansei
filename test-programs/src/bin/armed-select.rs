@@ -8,10 +8,10 @@
 //! oneshot's `rx_task`, a bounded mpsc's receiver slot, a watch's
 //! `Notify` node and a `Sleep`'s wheel entry — while a holder keeps a
 //! `Notified` it never polled beside a oneshot it awaits, a waiter
-//! parks in a bare `Notify`, and a `FuturesUnordered` drives two
-//! children whose oneshots hold the *set's* wakers rather than the
-//! task's. `READY` on stdout means every task has parked; readiness is
-//! signalled over oneshots, never by sleeping.
+//! parks in a bare `Notify`, a `FuturesUnordered` drives two children
+//! whose oneshots hold the *set's* wakers rather than the task's, and
+//! two tasks park in an `Interval`'s `tick`. `READY` on stdout means
+//! every task has parked, signalled over oneshots, never by sleeping.
 
 use futures::stream::{FuturesUnordered, StreamExt};
 use test_programs::census_expect;
@@ -103,6 +103,52 @@ async fn driver(
     sum
 }
 
+/// Where an `Interval` keeps its boxed `Sleep`: the offset of its
+/// `delay` member, which no public surface exposes, so the markers
+/// below name the box's slot by hand. rustc lays the `Duration` first
+/// and the box after it.
+const INTERVAL_DELAY: u64 = 16;
+
+/// A `select!` over an interval's `tick` and a oneshot nobody sends
+/// on: the `Sleep` boxed inside the interval is registered in the
+/// wheel by the tick's first poll and never fires. The interval
+/// starts a period out — a plain `interval()` completes its first
+/// tick at once — so the one tick in flight is the one parked.
+async fn ticker(ready: oneshot::Sender<()>, mut once: oneshot::Receiver<u32>) -> u32 {
+    census_expect::task("armed_select::ticker");
+    let period = Duration::from_secs(3600);
+    let mut interval = tokio::time::interval_at(tokio::time::Instant::now() + period, period);
+    census_expect::held(&interval as *const _ as u64 + INTERVAL_DELAY, "Sleep");
+    let tick = interval.tick();
+    tokio::pin!(tick);
+    census_expect::held(&once as *const _ as u64, "oneshot::Receiver");
+    census_expect::held(&*tick as *const _ as u64, "tick");
+    ready.send(()).expect("main waits for readiness");
+    tokio::select! {
+        got = &mut once => got.unwrap_or(9),
+        _ = &mut tick => 10,
+    }
+}
+
+/// Parked in a bare `tick().await` on one interval while holding,
+/// pinned and never polled, the `tick` of a second one made by a plain
+/// `interval()`: that `Sleep`'s deadline is already past, but it is
+/// registered in no wheel until polled, so nothing arms the held tick.
+async fn pacer(ready: oneshot::Sender<()>) -> u32 {
+    census_expect::task("armed_select::pacer");
+    let period = Duration::from_secs(3600);
+    let mut spare = tokio::time::interval(period);
+    let mut interval = tokio::time::interval_at(tokio::time::Instant::now() + period, period);
+    census_expect::held(&spare as *const _ as u64 + INTERVAL_DELAY, "Sleep");
+    census_expect::held(&interval as *const _ as u64 + INTERVAL_DELAY, "Sleep");
+    let spare_tick = spare.tick();
+    tokio::pin!(spare_tick);
+    census_expect::held(&*spare_tick as *const _ as u64, "tick");
+    ready.send(()).expect("main waits for readiness");
+    interval.tick().await;
+    11
+}
+
 fn main() {
     test_programs::allow_any_tracer();
 
@@ -132,10 +178,19 @@ fn main() {
         let _driver = tokio::spawn(driver(driver_ready_tx, first_rx, second_rx));
         driver_ready_rx.await.expect("driver signals readiness");
 
+        let (ticker_once_tx, ticker_once_rx) = oneshot::channel::<u32>();
+        let (ticker_ready_tx, ticker_ready_rx) = oneshot::channel();
+        let _ticker = tokio::spawn(ticker(ticker_ready_tx, ticker_once_rx));
+        ticker_ready_rx.await.expect("ticker signals readiness");
+
+        let (pacer_ready_tx, pacer_ready_rx) = oneshot::channel();
+        let _pacer = tokio::spawn(pacer(pacer_ready_tx));
+        pacer_ready_rx.await.expect("pacer signals readiness");
+
         // The senders that must never send: leaked, so no drop closes
         // a channel and wakes anyone. The mpsc and watch senders stay
         // alive here for the same reason, and `main` never returns.
-        for tx in [once_tx, holder_park_tx, first_tx, second_tx] {
+        for tx in [once_tx, holder_park_tx, first_tx, second_tx, ticker_once_tx] {
             std::mem::forget(tx);
         }
         let _keep = (queue_tx, published_tx);

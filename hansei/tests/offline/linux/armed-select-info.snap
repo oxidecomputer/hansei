@@ -4,11 +4,11 @@ description: "`info` over linux/armed-select"
 ---
 core:       <snapshot>
 tokio info: <tokio info>
-symbols resolved: 9/9
+symbols resolved: 13/13
 allocator evidence: unavailable
-waker slots: 1 copy of tokio's WAKER_VTABLE, 0 set vtables; 4.2 MiB swept in 49 chunks
-    hits: 12 task-pattern, 0 set-pattern; 7 admitted; 3 unlisted headers
-    by class: 3 task extent, 4 lwp stack, 4 anon, 1 unmapped companion
-    attributed: 1 by a registry, 5 by owner type, 1 by holding type, 0 unknown; 0 stale
+waker slots: 1 copy of tokio's WAKER_VTABLE, 0 set vtables; 4.2 MiB swept in 60 chunks
+    hits: 15 task-pattern, 0 set-pattern; 10 admitted; 3 unlisted headers
+    by class: 3 task extent, 2 find, 5 lwp stack, 5 anon
+    attributed: 3 by a registry, 6 by owner type, 1 by holding type, 0 unknown; 0 stale
 process: not recorded by this target
 signal: none recorded

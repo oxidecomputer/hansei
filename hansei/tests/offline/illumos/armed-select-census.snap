@@ -5,47 +5,51 @@ description: "`census` over illumos/armed-select"
 Threads: 3 lwps, 3 in runtime 0 @ 0xADDR
 
 COUNT  RT  ROLE             STATE            LWPS
-    1  0   worker           in driver        3
-    1  0   worker           parked           2
+    1  0   worker           in driver        2
+    1  0   worker           parked           3
     1  0   entered runtime  block_on caller  1
     0  0   blocking pool    0 idle, 0 busy   —
 [3 lwps]
 
-Tasks: 4 owned by runtime 0 @ 0xADDR
+Tasks: 6 owned by runtime 0 @ 0xADDR
 
 COUNT  STATE
-    4  idle
-[4 tasks]
+    6  idle
+[6 tasks]
 
 COUNT  TYPE / WAITING ON
     1  async fn armed_select::driver
        └─ 1  one of several
     1  async fn armed_select::holder
        └─ 1  oneshot rx
+    1  async fn armed_select::pacer
+       └─ 1  one of several
     1  async fn armed_select::selector
        └─ 1  one of several
-    1  async fn armed_select::waiter
-       └─ 1  notify
-[4 types]
+    1  async fn armed_select::ticker
+       └─ 1  one of several
+    1  (1 more types)
+[6 types, 5 shown]
 
-Futures: 11 in flight, on 22 await-chain frames, up to 4 deep
+Futures: 19 in flight, on 37 await-chain frames, up to 4 deep
 
 COUNT  HELD IN
-    4  task (its own await chain)
-    5  frame (off any await chain)
+    6  task (its own await chain)
+   11  frame (off any await chain)
     2  set (1 FuturesUnordered)
-[11 futures]
+[19 futures]
 
 COUNT  TYPE / WAITING ON
+    4  future tokio::time::sleep::Sleep
+       └─ 4  timer (1 past due)
     2  async fn armed_select::child
+       └─ 2  oneshot rx
+    2  async fn tokio::time::interval::Interval::tick
+       ├─ 1  unknown
+       └─ 1  — (unresumed)
+    2  future tokio::sync::oneshot::Receiver<u32>
        └─ 2  oneshot rx
     1  async fn tokio::sync::mpsc::bounded::Receiver::recv<u32>
        └─ 1  mpsc
-    1  async fn tokio::sync::watch::Receiver::changed<u32>
-       └─ 1  watch
-    1  future tokio::sync::notify::Notified
-       └─ 1  notify
-    1  future tokio::sync::oneshot::Receiver<u32>
-       └─ 1  oneshot rx
-    1  (1 more types)
-[6 types, 5 shown]
+    2  (2 more types)
+[7 types, 5 shown]

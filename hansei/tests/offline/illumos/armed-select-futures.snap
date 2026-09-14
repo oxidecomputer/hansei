@@ -2,12 +2,18 @@
 source: hansei/src/offline.rs
 description: "`futures` over illumos/armed-select"
 ---
-ADDR       TASK  HELD IN              STATE                                                 WAITING ON                                                  ARMED  TYPE
-0xADDR  3     frame 1, `once`      —                                                     oneshot rx 0xADDR (nothing sent, sender alive)           yes    future tokio::sync::oneshot::Receiver<u32>
-0xADDR  3     frame 1, `recv`      Suspend0 — tokio-1.52.4/src/sync/mpsc/bounded.rs:245  mpsc 0xADDR (1 sender, capacity 4, 0 unread)             yes    async fn tokio::sync::mpsc::bounded::Receiver::recv<u32>
-0xADDR  3     frame 1, `changed`   Suspend0 — tokio-1.52.4/src/sync/watch.rs:819         watch 0xADDR (version 0, 1 sender, 1 receiver)           yes    async fn tokio::sync::watch::Receiver::changed<u32>
-0xADDR  3     frame 1, `sleep`     —                                                     timer (deadline TS)                                 yes    future tokio::time::sleep::Sleep
-0xADDR  4     frame 1, `notified`  —                                                     unarmed: notify 0xADDR (waiting)                         no     future tokio::sync::notify::Notified
-0xADDR  6     set 0xADDR        Suspend0 — src/bin/armed-select.rs:83                 unarmed: oneshot rx 0xADDR (nothing sent, sender alive)  no     async fn armed_select::child
-0xADDR  6     set 0xADDR        Suspend0 — src/bin/armed-select.rs:83                 unarmed: oneshot rx 0xADDR (nothing sent, sender alive)  no     async fn armed_select::child
-[7 futures]
+ADDR       TASK  HELD IN                STATE                                                 WAITING ON                                                  ARMED  TYPE
+0xADDR  3     frame 1, `once`        —                                                     oneshot rx 0xADDR (nothing sent, sender alive)           yes    future tokio::sync::oneshot::Receiver<u32>
+0xADDR  3     frame 1, `recv`        Suspend0 — tokio-1.52.4/src/sync/mpsc/bounded.rs:245  mpsc 0xADDR (1 sender, capacity 4, 0 unread)             yes    async fn tokio::sync::mpsc::bounded::Receiver::recv<u32>
+0xADDR  3     frame 1, `changed`     Suspend0 — tokio-1.52.4/src/sync/watch.rs:819         watch 0xADDR (version 0, 1 sender, 1 receiver)           yes    async fn tokio::sync::watch::Receiver::changed<u32>
+0xADDR  3     frame 1, `sleep`       —                                                     timer (deadline TS)                                 yes    future tokio::time::sleep::Sleep
+0xADDR  4     frame 1, `notified`    —                                                     unarmed: notify 0xADDR (waiting)                         no     future tokio::sync::notify::Notified
+0xADDR  6     set 0xADDR          Suspend0 — src/bin/armed-select.rs:83                 unarmed: oneshot rx 0xADDR (nothing sent, sender alive)  no     async fn armed_select::child
+0xADDR  6     set 0xADDR          Suspend0 — src/bin/armed-select.rs:83                 unarmed: oneshot rx 0xADDR (nothing sent, sender alive)  no     async fn armed_select::child
+0xADDR  7     frame 1, `once`        —                                                     oneshot rx 0xADDR (nothing sent, sender alive)           yes    future tokio::sync::oneshot::Receiver<u32>
+0xADDR  7     frame 1, `interval`    —                                                     timer (deadline TS)                                 yes    future tokio::time::sleep::Sleep
+0xADDR  7     frame 1, `tick`        Suspend0 — tokio-1.52.4/src/time/interval.rs:447      unarmed: unknown at core::future::poll_fn::PollFn           no     async fn tokio::time::interval::Interval::tick
+0xADDR  8     frame 2, `spare`       —                                                     unarmed: timer (overdue by TS)                          no     future tokio::time::sleep::Sleep
+0xADDR  8     frame 2, `interval`    —                                                     timer (deadline TS)                                 yes    future tokio::time::sleep::Sleep
+0xADDR  8     frame 2, `spare_tick`  Unresumed                                             —                                                           no     async fn tokio::time::interval::Interval::tick
+[13 futures]

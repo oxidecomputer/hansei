@@ -6,6 +6,9 @@ a futures_util::stream::futures_unordered::FuturesUnordered<armed_select::child>
     In flight: 2
 
 oneshot 0xADDR: nothing sent, sender alive
+    rx: task 7
+
+oneshot 0xADDR: nothing sent, sender alive
     rx: task 3
 
 oneshot 0xADDR: nothing sent, sender alive

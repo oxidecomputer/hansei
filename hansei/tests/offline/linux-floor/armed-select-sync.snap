@@ -11,6 +11,9 @@ oneshot 0xADDR: nothing sent, sender alive
 oneshot 0xADDR: nothing sent, sender alive
     rx: task 4
 
+oneshot 0xADDR: nothing sent, sender alive
+    rx: task 7
+
 mpsc 0xADDR: 1 sender, capacity 4, 0 unread
     rx: task 3
 
