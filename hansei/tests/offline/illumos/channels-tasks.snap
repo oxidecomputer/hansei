@@ -2,7 +2,7 @@
 source: hansei/src/offline.rs
 description: "`tasks` over illumos/channels"
 ---
-ID  STATE  FUT  AWAITING AT             WAITING ON                                                                                                      TYPE
+ID  STATE  FUT  AWAITING AT             WAITING ON                                                                                                     TYPE
 3   idle     0  src/bin/channels.rs:37  notify 0xADDR (waiting, 1 queued)                                                                            async fn channels::notify_waiter
 4   idle     0  src/bin/channels.rs:48  mpsc 0xADDR (1 sender, capacity 4, 0 unread)                                                                 async fn channels::recv_waiter
 5   idle     0  src/bin/channels.rs:70  oneshot rx 0xADDR (nothing sent, sender alive)                                                               async fn channels::hold

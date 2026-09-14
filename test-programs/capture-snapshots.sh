@@ -133,12 +133,20 @@ for p in "${PROGRAMS[@]}"; do
     pid=$!
     trap 'kill $pid 2>/dev/null || true; rm -f "$fifo"; rm -rf "$coredir"' EXIT
 
+    # One reader, held open across both stages below: reading the
+    # marker from the fifo and then reopening it for the drain would
+    # leave the child with no reader in between, and whatever it wrote
+    # in that window would block it or kill it with SIGPIPE. No fixture
+    # prints past its marker today, so this is the hazard staying shut
+    # rather than one being fixed.
+    exec 3<"$fifo"
     want="$(marker "$p")"
     while IFS= read -r line; do
         [[ "$line" == "$want" ]] && break
-    done <"$fifo"
+    done <&3
     # Keep draining stdout so the child never blocks on a full pipe.
-    cat "$fifo" >/dev/null &
+    cat <&3 >/dev/null &
+    exec 3<&-
 
     gcore -o "$coredir/core" "$pid"
     # A Linux core carries no symbol table, so the executable that ran
