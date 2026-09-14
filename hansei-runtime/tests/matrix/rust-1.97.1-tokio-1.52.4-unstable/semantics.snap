@@ -204,12 +204,11 @@ task 6: scheduler tokio::runtime::blocking::schedule::BlockingSchedule :: Blocki
 program: select-combinator
 origin 0: rustc rustc-coroutine-1.97 (clang LLVM (rustc version 1.97.1 (8bab26f4f 2026-07-14)))
 origin 1: layout tokio 1.52.4 family v1_49 (ReviewedRange)
-origin 2: delegation futures-util 0.3.33 family futures-util-adapters-0.3.30 from registry/src/index.crates.io-1949cf8c6b5b557f/futures-util-0.3.33/src/lib.rs (0 checksummed files)
+origin 2: layout futures-util <no version> family unversioned (VersionUnknown)
 origin 3: delegation futures-util 0.3.33 family futures-util-adapters-0.3.30 from registry/src/index.crates.io-1949cf8c6b5b557f/futures-util-0.3.33/src/future/future/map.rs (0 checksummed files)
 origin 4: rustc rustc-std-adapters-1.97 (clang LLVM (rustc version 1.97.1 (8bab26f4f 2026-07-14)))
 origin 5: rustc rustc-dyn-future-abi-1.97 (clang LLVM (rustc version 1.97.1 (8bab26f4f 2026-07-14)))
-origin 6: delegation futures-util 0.3.33 family futures-util-adapters-0.3.30 from registry/src/index.crates.io-1949cf8c6b5b557f/futures-util-0.3.33/src/future/try_future/into_future.rs (0 checksummed files)
-origin 7: delegation tokio 1.52.4 family tokio-select-1.47 from registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.52.4/src/macros/select.rs (0 checksummed files)
+origin 6: delegation tokio 1.52.4 family tokio-select-1.47 from registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.52.4/src/macros/select.rs (0 checksummed files)
 rule 0: RustcAsyncFn rev 1 origin 0
 rule 1: TokioOneshotRecv rev 1 origin 1
 rule 2: TokioOneshotRecvState rev 1 origin 1
@@ -219,8 +218,8 @@ rule 5: StdPinBoxAccess rev 1 origin 4
 rule 6: DynFutureAbi rev 1 origin 5
 rule 7: StdPinBoxPoll rev 1 origin 4
 rule 8: FuturesUtilMapErr rev 1 origin 2
-rule 9: FuturesUtilIntoFuture rev 1 origin 6
-rule 10: TokioSelect rev 1 origin 7
+rule 9: FuturesUtilIntoFuture rev 1 origin 2
+rule 10: TokioSelect rev 1 origin 6
 rule 11: RustcAsyncBlock rev 1 origin 0
 rule 12: TokioJoinHandle rev 1 origin 1
 rule 13: TokioJoinHandleState rev 1 origin 1
@@ -246,8 +245,8 @@ select_combinator::dynamic::{async_fn_env#0} :: states future[task 4, task 5, co
 core::pin::Pin<alloc::boxed::Box<dyn select_combinator::Parked<Output=u32>, alloc::alloc::Global>> :: members future[poll, delegated by select_combinator::dynamic::{async_fn_env#0}] continuation rule 7 delegate (exclusive) dyn pointer@+0 -> alloc::boxed::Box<dyn select_combinator::Parked<Output=u32>, alloc::alloc::Global> access Owned rule 5 dyn pointer@+0 -> alloc::boxed::Box<dyn select_combinator::Parked<Output=u32>, alloc::alloc::Global>
 select_combinator::remapper::{async_fn_env#0} :: states future[task 6, task 7, coroutine rule 0] continuation rule 0 match <self>@+0 -> select_combinator::remapper::{async_fn_env#0} {0: unresumed} {1: returned} {2: panicked} {3: delegate (exclusive) {3}.__awaitee@+0 -> futures_util::future::try_future::MapErr<select_combinator::Fallible, fn(u32) -> u32>} coroutine rule 0 {0:Unresumed[ready,park]() 1:Returned[]() 2:Panicked[]() 3:Suspended[__awaitee,__1]()}
 futures_util::future::try_future::MapErr<select_combinator::Fallible, fn(u32) -> u32> :: members future[poll, delegated by select_combinator::remapper::{async_fn_env#0}] continuation rule 8 delegate (exclusive) inner@+0 -> futures_util::future::future::Map<futures_util::future::try_future::into_future::IntoFuture<select_combinator::Fallible>, futures_util::fns::MapErrFn<fn(u32) -> u32>>
-futures_util::future::future::Map<futures_util::future::try_future::into_future::IntoFuture<select_combinator::Fallible>, futures_util::fns::MapErrFn<fn(u32) -> u32>> :: members future[delegated by futures_util::future::try_future::MapErr<select_combinator::Fallible, fn(u32) -> u32>] continuation unknown (UnsupportedOrigin: no poll declaration records where this instantiation's implementation lives) issue (UnsupportedOrigin: no poll declaration records where this instantiation's implementation lives)
-futures_util::future::future::map::Map<futures_util::future::try_future::into_future::IntoFuture<select_combinator::Fallible>, futures_util::fns::MapErrFn<fn(u32) -> u32>> :: members future[poll] continuation rule 4 match <self>@+0 -> futures_util::future::future::map::Map<futures_util::future::try_future::into_future::IntoFuture<select_combinator::Fallible>, futures_util::fns::MapErrFn<fn(u32) -> u32>> {Incomplete: delegate (exclusive) {Incomplete}.future@+8 -> futures_util::future::try_future::into_future::IntoFuture<select_combinator::Fallible>} {Complete: returned}
+futures_util::future::future::Map<futures_util::future::try_future::into_future::IntoFuture<select_combinator::Fallible>, futures_util::fns::MapErrFn<fn(u32) -> u32>> :: members future[delegated by futures_util::future::try_future::MapErr<select_combinator::Fallible, fn(u32) -> u32>] continuation rule 3 delegate (exclusive) inner@+0 -> futures_util::future::future::map::Map<futures_util::future::try_future::into_future::IntoFuture<select_combinator::Fallible>, futures_util::fns::MapErrFn<fn(u32) -> u32>>
+futures_util::future::future::map::Map<futures_util::future::try_future::into_future::IntoFuture<select_combinator::Fallible>, futures_util::fns::MapErrFn<fn(u32) -> u32>> :: members future[poll, delegated by futures_util::future::future::Map<futures_util::future::try_future::into_future::IntoFuture<select_combinator::Fallible>, futures_util::fns::MapErrFn<fn(u32) -> u32>>] continuation rule 4 match <self>@+0 -> futures_util::future::future::map::Map<futures_util::future::try_future::into_future::IntoFuture<select_combinator::Fallible>, futures_util::fns::MapErrFn<fn(u32) -> u32>> {Incomplete: delegate (exclusive) {Incomplete}.future@+8 -> futures_util::future::try_future::into_future::IntoFuture<select_combinator::Fallible>} {Complete: returned}
 futures_util::future::try_future::into_future::IntoFuture<select_combinator::Fallible> :: members future[poll, delegated by futures_util::future::future::map::Map<futures_util::future::try_future::into_future::IntoFuture<select_combinator::Fallible>, futures_util::fns::MapErrFn<fn(u32) -> u32>>] continuation rule 9 delegate (exclusive) future@+0 -> select_combinator::Fallible
 select_combinator::Fallible :: members future[poll, delegated by futures_util::future::try_future::into_future::IntoFuture<select_combinator::Fallible>] continuation unknown (NoRule)
 select_combinator::selector::{async_fn_env#0} :: states future[task 8, task 9, coroutine rule 0] continuation rule 0 match <self>@+0 -> select_combinator::selector::{async_fn_env#0} {0: unresumed} {1: returned} {2: panicked} {3: delegate (exclusive) {3}.__awaitee@+48 -> core::future::poll_fn::PollFn<select_combinator::selector::{async_fn#0}::{closure_env#0}>} coroutine rule 0 {0:Unresumed[ready,park_a,park_b]() 1:Returned[]() 2:Panicked[]() 3:Suspended[disabled,futures,__awaitee,__3,__4]()}
@@ -997,7 +996,6 @@ origin 1: layout tokio 1.52.4 family v1_49 (ReviewedRange)
 origin 2: layout futures-util <no version> family unversioned (VersionUnknown)
 origin 3: rustc rustc-std-adapters-1.97 (clang LLVM (rustc version 1.97.1 (8bab26f4f 2026-07-14)))
 origin 4: delegation tokio 1.52.4 family tokio-select-1.47 from registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.52.4/src/macros/select.rs (0 checksummed files)
-origin 5: delegation tokio 1.52.4 family tokio-coop-1.47 from registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.52.4/src/task/coop/mod.rs (0 checksummed files)
 rule 0: RustcAsyncFn rev 1 origin 0
 rule 1: TokioOneshotRecv rev 1 origin 1
 rule 2: TokioOneshotRecvState rev 1 origin 1
@@ -1011,7 +1009,7 @@ rule 9: TokioSelect rev 1 origin 4
 rule 10: StdMutRefPoll rev 1 origin 3
 rule 11: TokioMpscRecv rev 1 origin 1
 rule 12: TokioMpscRecvState rev 1 origin 1
-rule 13: TokioCoop rev 1 origin 5
+rule 13: TokioCoop rev 1 origin 1
 rule 14: StdPinMutRefAccess rev 1 origin 3
 rule 15: StdPinMutRefPoll rev 1 origin 3
 rule 16: RustcAsyncBlock rev 1 origin 0
@@ -1080,9 +1078,8 @@ origin 3: delegation futures-util 0.3.33 family futures-util-adapters-0.3.30 fro
 origin 4: delegation tokio-util 0.7.19 family tokio-util-reusable-box-0.7.11 from registry/src/index.crates.io-1949cf8c6b5b557f/tokio-util-0.7.19/src/sync/reusable_box.rs (0 checksummed files)
 origin 5: rustc rustc-dyn-future-abi-1.97 (clang LLVM (rustc version 1.97.1 (8bab26f4f 2026-07-14)))
 origin 6: rustc rustc-std-adapters-1.97 (clang LLVM (rustc version 1.97.1 (8bab26f4f 2026-07-14)))
-origin 7: delegation tokio 1.52.4 family tokio-coop-1.47 from registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.52.4/src/task/coop/mod.rs (0 checksummed files)
-origin 8: delegation tokio-stream 0.1.19 family tokio-stream-map-0.1.14 from registry/src/index.crates.io-1949cf8c6b5b557f/tokio-stream-0.1.19/src/stream_map.rs (0 checksummed files)
-origin 9: delegation tokio 1.52.4 family tokio-select-1.47 from registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.52.4/src/macros/select.rs (0 checksummed files)
+origin 7: delegation tokio-stream 0.1.19 family tokio-stream-map-0.1.14 from registry/src/index.crates.io-1949cf8c6b5b557f/tokio-stream-0.1.19/src/stream_map.rs (0 checksummed files)
+origin 8: delegation tokio 1.52.4 family tokio-select-1.47 from registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.52.4/src/macros/select.rs (0 checksummed files)
 rule 0: RustcAsyncFn rev 1 origin 0
 rule 1: TokioOneshotRecv rev 1 origin 1
 rule 2: TokioOneshotRecvState rev 1 origin 1
@@ -1091,11 +1088,11 @@ rule 4: FuturesUtilNext rev 1 origin 3
 rule 5: TokioUtilReusableBox rev 1 origin 4
 rule 6: DynFutureAbi rev 1 origin 5
 rule 7: StdMutRefAccess rev 1 origin 6
-rule 8: TokioCoop rev 1 origin 7
+rule 8: TokioCoop rev 1 origin 1
 rule 9: TokioNotified rev 1 origin 1
 rule 10: TokioNotifiedState rev 1 origin 1
-rule 11: TokioStreamStreamMap rev 1 origin 8
-rule 12: TokioSelect rev 1 origin 9
+rule 11: TokioStreamStreamMap rev 1 origin 7
+rule 12: TokioSelect rev 1 origin 8
 rule 13: StdMutRefPoll rev 1 origin 6
 rule 14: StdPinMutRefAccess rev 1 origin 6
 rule 15: StdPinMutRefPoll rev 1 origin 6

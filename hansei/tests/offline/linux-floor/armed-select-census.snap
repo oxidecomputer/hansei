@@ -5,9 +5,9 @@ description: "`census` over linux-floor/armed-select"
 Threads: 3 lwps, 3 in runtime 0 @ 0xADDR
 
 COUNT  RT  ROLE             STATE            LWPS
-    1  0   worker           in driver        1565316
-    1  0   worker           parked           1565315
-    1  0   entered runtime  block_on caller  1565313
+    1  0   worker           in driver        2236522
+    1  0   worker           parked           2236523
+    1  0   entered runtime  block_on caller  2236520
     0  0   blocking pool    0 idle, 0 busy   —
 [3 lwps]
 

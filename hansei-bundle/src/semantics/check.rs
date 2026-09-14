@@ -151,13 +151,23 @@ impl<'a> Check<'a> {
                     "compiler rule needs a compiler origin",
                 );
             }
+            // The `map` newtype forwards on its layout and the enum it
+            // forwards into is read off its declaration: one kind, under
+            // either of futures-util's origins.
+            FuturesUtilMap => {
+                return require(
+                    matches!(
+                        origin,
+                        SemanticOrigin::LibraryDelegation { package, .. }
+                        | SemanticOrigin::LibraryLayout { package, .. }
+                        if self.0.strings.get(*package) == Some("futures-util")
+                    ),
+                    "futures-util map rule needs a futures-util origin",
+                );
+            }
             TracingInstrumented
-            | FuturesUtilMap
-            | FuturesUtilMapErr
-            | FuturesUtilIntoFuture
             | HyperUtilTokioSleep
             | TokioSelect
-            | TokioCoop
             | FuturesUtilNext
             | TokioStreamWatchStream
             | TokioUtilReusableBox
@@ -165,11 +175,11 @@ impl<'a> Check<'a> {
                 let crate_name = match rule.kind {
                     TracingInstrumented => "tracing",
                     HyperUtilTokioSleep => "hyper-util",
-                    // tokio's own macro and wrapper, but read like a
-                    // third-party rule: the declaration file is the
-                    // evidence, and tokio's version comes off its
-                    // registry path rather than the layout family.
-                    TokioSelect | TokioCoop => "tokio",
+                    // tokio's own macro, but read like a third-party
+                    // rule: the declaration file is the evidence, and
+                    // tokio's version comes off its registry path rather
+                    // than the layout family.
+                    TokioSelect => "tokio",
                     // The map is a container, but one whose layout the
                     // walk contract binds by name alone: its origin is
                     // the type's own method declarations, read like the
@@ -184,8 +194,13 @@ impl<'a> Check<'a> {
                     "third-party delegation needs source evidence",
                 );
             }
-            FuturesUnordered => "futures-util",
-            TokioSleep
+            // A sole-member forwarder binds on its layout — the one
+            // member of the declared type is the whole of the evidence,
+            // and no declaration has to say which implementation
+            // forwards it — under its crate's layout origin.
+            FuturesUnordered | FuturesUtilMapErr | FuturesUtilIntoFuture => "futures-util",
+            TokioCoop
+            | TokioSleep
             | TokioJoinHandle
             | TokioAcquire
             | TokioJoinSet

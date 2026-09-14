@@ -693,14 +693,15 @@ fn test_delegation_cases_offline() {
     assert_summary("delegation-cases");
 }
 
-/// The captured bundle's delegation origins, without exegesis: the one
-/// tracing origin names the pinned version on a registry path and has
-/// the `Instrumented` rule under it, and the one tokio origin names the
-/// fixture's tokio on its registry path with the `Coop` rule under it.
+/// The captured bundle's origins, without exegesis: the one delegation
+/// origin is tracing's, naming the pinned version on a registry path
+/// with the `Instrumented` rule under it, and the `Coop` rule — bound
+/// on its layout, with no declaration read — sits under tokio's layout
+/// origin at the fixture's tokio version.
 fn exegesis_free_origin_check(bundle: &Bundle) {
-    use hansei_bundle::{SemanticOrigin, SemanticRuleKind};
+    use hansei_bundle::{LayoutSelection, SemanticOrigin, SemanticRuleKind};
     let s = |r| bundle.strings.get(r).unwrap();
-    let mut delegations: Vec<_> = bundle
+    let delegations: Vec<_> = bundle
         .semantics
         .origins
         .iter()
@@ -723,39 +724,45 @@ fn exegesis_free_origin_check(bundle: &Bundle) {
             _ => None,
         })
         .collect();
-    delegations.sort_by_key(|d| d.1);
-    let tokio_version = bundle.meta.tokio_version.as_ref().unwrap().to_string();
-    let [tokio, tracing] = delegations.as_slice() else {
-        panic!("expected the tokio and tracing delegation origins: {delegations:?}");
+    let [(index, package, version, family, source, checksums)] = delegations.as_slice() else {
+        panic!("expected the tracing delegation origin alone: {delegations:?}");
     };
-    for ((index, package, version, family, source, checksums), expected, rule) in [
-        (
-            tracing,
-            ("tracing", "0.1.40", "tracing-instrumented-0.1.40"),
-            SemanticRuleKind::TracingInstrumented,
+    let expected = ("tracing", "0.1.40", "tracing-instrumented-0.1.40");
+    assert_eq!((*package, *version, *family), expected);
+    let parsed = hansei_bundle::origin::registry_origin(source).expect("registry path");
+    assert_eq!(
+        (parsed.package, parsed.version.to_string().as_str()),
+        (expected.0, expected.1)
+    );
+    assert_eq!(*checksums, 0, "rustc's DWARF 4 carries no checksums");
+    let under = |rule: SemanticRuleKind| {
+        bundle
+            .semantics
+            .rules
+            .iter()
+            .filter(|r| r.kind == rule)
+            .map(|r| r.origin.0 as usize)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(under(SemanticRuleKind::TracingInstrumented), [*index]);
+    let tokio_version = bundle.meta.tokio_version.as_ref().unwrap().to_string();
+    let coop_rules = under(SemanticRuleKind::TokioCoop);
+    let [coop] = coop_rules.as_slice() else {
+        panic!("expected one Coop rule: {coop_rules:?}");
+    };
+    assert!(
+        matches!(
+            &bundle.semantics.origins[*coop],
+            SemanticOrigin::LibraryLayout {
+                package,
+                version: Some(version),
+                selection: LayoutSelection::ReviewedRange,
+                ..
+            } if s(*package) == "tokio" && s(*version) == tokio_version
         ),
-        (
-            tokio,
-            ("tokio", tokio_version.as_str(), "tokio-coop-1.47"),
-            SemanticRuleKind::TokioCoop,
-        ),
-    ] {
-        assert_eq!((*package, *version, *family), expected);
-        let parsed = hansei_bundle::origin::registry_origin(source).expect("registry path");
-        assert_eq!(
-            (parsed.package, parsed.version.to_string().as_str()),
-            (expected.0, expected.1)
-        );
-        assert_eq!(*checksums, 0, "rustc's DWARF 4 carries no checksums");
-        assert!(
-            bundle
-                .semantics
-                .rules
-                .iter()
-                .any(|r| r.kind == rule && r.origin.0 as usize == *index),
-            "{rule:?} under origin {index}"
-        );
-    }
+        "Coop under origin {coop}: {:?}",
+        bundle.semantics.origins[*coop]
+    );
 }
 
 /// The fd join's two member shapes, each pinned alone: a frame whose

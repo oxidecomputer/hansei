@@ -41,10 +41,10 @@ use crate::detect::adapters::{
 };
 use crate::detect::semantics::{
     FUTURES_UTIL_ADAPTERS_V0_3_30, HYPER_UTIL_TOKIO_SLEEP_V0_1_10, LibraryConvention,
-    RustcConvention, TOKIO_COOP_V1_47, TOKIO_SELECT_V1_47, TOKIO_STREAM_MAP_V0_1_14,
-    TOKIO_STREAM_WATCH_V0_1_14, TOKIO_UTIL_REUSABLE_BOX_V0_7_11, TRACING_INSTRUMENTED_V0_1_40,
-    library_convention, rustc_coroutine_convention, rustc_dyn_future_abi_convention,
-    rustc_std_adapter_convention, tokio_state_protocol,
+    RustcConvention, TOKIO_SELECT_V1_47, TOKIO_STREAM_MAP_V0_1_14, TOKIO_STREAM_WATCH_V0_1_14,
+    TOKIO_UTIL_REUSABLE_BOX_V0_7_11, TRACING_INSTRUMENTED_V0_1_40, library_convention,
+    rustc_coroutine_convention, rustc_dyn_future_abi_convention, rustc_std_adapter_convention,
+    tokio_state_protocol,
 };
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -159,8 +159,10 @@ struct InstrumentedSeed {
 }
 
 /// A reviewed third-party wrapper as its screen saw it, by bundle id.
-/// Which crate owns it, and so which origin its poll declarations have
-/// to name, is the kind's; the layout is the screen's.
+/// The layout is the screen's. Which crate owns it is the kind's, and
+/// so is what proves the rule: a sole-member forwarder binds on the
+/// layout alone, and every other seed on the origin its poll or method
+/// declarations name.
 #[derive(Clone, Debug)]
 enum LibrarySeed {
     /// futures-util's `map::Map` enum: the incomplete variant and the
@@ -214,11 +216,11 @@ impl LibrarySeed {
     }
 
     /// The crate whose reviewed implementation the rule runs, and the
-    /// convention its version has to fall inside.
+    /// convention its version has to fall inside. Not asked of a seed
+    /// that binds on its layout.
     fn convention(&self) -> &'static LibraryConvention {
         match self {
             LibrarySeed::TokioSleep(..) => &HYPER_UTIL_TOKIO_SLEEP_V0_1_10,
-            LibrarySeed::Coop(..) => &TOKIO_COOP_V1_47,
             LibrarySeed::WatchStream(..) => &TOKIO_STREAM_WATCH_V0_1_14,
             LibrarySeed::ReusableBox { .. } => &TOKIO_UTIL_REUSABLE_BOX_V0_7_11,
             _ => &FUTURES_UTIL_ADAPTERS_V0_3_30,
@@ -232,6 +234,29 @@ impl LibrarySeed {
         matches!(
             self,
             LibrarySeed::WatchStream(..) | LibrarySeed::ReusableBox { .. }
+        )
+    }
+
+    /// Whether the layout the screen proved is the whole of the rule's
+    /// evidence. A wrapper whose one member is the future its own
+    /// template parameter names can poll that member or nothing: there
+    /// is nothing else in it to wait on, so the delegation is read off
+    /// the layout and needs no declaration to say which implementation
+    /// forwards it. That matters because a `poll` the optimizer folded
+    /// into an identical instantiation's leaves no declaration at all,
+    /// and a rule whose evidence came and went with the fold would bind
+    /// or decline by build. The map's state machine, the `select!`
+    /// mask and the box's refill keep the origin proof: their behavior
+    /// is read from the source, not the layout. hyper-util's sleep is
+    /// the same shape as these but keeps the proof too, for want of a
+    /// hyper-util layout origin to file it under.
+    fn origin_is_the_layout(&self) -> bool {
+        matches!(
+            self,
+            LibrarySeed::Coop(..)
+                | LibrarySeed::MapWrapper(..)
+                | LibrarySeed::MapErr(..)
+                | LibrarySeed::IntoFuture(..)
         )
     }
 }
@@ -712,10 +737,19 @@ impl Rules {
         strings: &mut StringInterner,
         library: &Library<'_>,
     ) -> SemanticOriginId {
-        let (slot, origin) = if kind == SemanticRuleKind::FuturesUnordered {
+        let futures_util = matches!(
+            kind,
+            SemanticRuleKind::FuturesUnordered
+                | SemanticRuleKind::FuturesUtilMap
+                | SemanticRuleKind::FuturesUtilMapErr
+                | SemanticRuleKind::FuturesUtilIntoFuture
+        );
+        let (slot, origin) = if futures_util {
             // The set walker's layout has held across every futures-util
             // release the fixtures cover, and no version is recovered for
-            // it: its rows are unversioned, and the origin says so.
+            // it: its rows are unversioned, and the origin says so. The
+            // sole-member forwarders bound on their layout are filed
+            // under the same origin, being read off nothing else.
             let origin = SemanticOrigin::LibraryLayout {
                 package: strings.intern("futures-util"),
                 version: None,
@@ -1570,15 +1604,21 @@ fn plan_library(
     types: &TypeTable,
     strings: &mut StringInterner,
 ) -> Result<Plan, Decline> {
-    let (sources, declared_by) = if seed_layout.origin_is_the_type() {
-        (&seed.type_sources, "method")
+    let rule = if seed_layout.origin_is_the_layout() {
+        // The forward below is the proof: a sole member of the declared
+        // type, under the crate's layout origin.
+        RuleKey::Library(seed_layout.rule_kind())
     } else {
-        (&seed.poll_sources, "poll")
-    };
-    let origin = delegation_origin(sources, seed_layout.convention(), declared_by)?;
-    let rule = RuleKey::Delegation {
-        kind: seed_layout.rule_kind(),
-        origin,
+        let (sources, declared_by) = if seed_layout.origin_is_the_type() {
+            (&seed.type_sources, "method")
+        } else {
+            (&seed.poll_sources, "poll")
+        };
+        let origin = delegation_origin(sources, seed_layout.convention(), declared_by)?;
+        RuleKey::Delegation {
+            kind: seed_layout.rule_kind(),
+            origin,
+        }
     };
     // A wrapper's route is its one member; the map's is the member
     // inside its incomplete state, and the state is what selects it.
@@ -3418,12 +3458,6 @@ mod tests {
                 "hyper",
             ),
             (
-                &TOKIO_COOP_V1_47,
-                "1.52.4",
-                "src/task/coop/mod.rs",
-                "tokio-util",
-            ),
-            (
                 &TOKIO_STREAM_WATCH_V0_1_14,
                 "0.1.19",
                 "src/wrappers/watch.rs",
@@ -3653,7 +3687,9 @@ mod tests {
         };
         let futures_util = registry("futures-util", "0.3.33", "src/lib.rs");
         let hyper_util = registry("hyper-util", "0.1.20", "src/rt/tokio.rs");
-        let tokio = registry("tokio", "1.52.4", "src/task/coop/mod.rs");
+        // No declaration at all: what a `poll` the optimizer folded
+        // into another instantiation's leaves behind.
+        let unproven = Seed::default();
         let render = |strings: &StringInterner, path: &TypedPath| {
             path.steps
                 .iter()
@@ -3665,30 +3701,50 @@ mod tests {
                 .collect::<Vec<_>>()
                 .join(".")
         };
-        for (ty, seed_layout, seed, expected, target) in [
+        // hyper-util's sleep is proved by its poll's origin; a
+        // sole-member forwarder by its layout alone, under the crate's
+        // layout origin, with nothing declared anywhere.
+        for (ty, seed_layout, seed, expected, target, rule) in [
             (
                 tokio_sleep,
                 LibrarySeed::TokioSleep("inner".into(), sleep),
                 &hyper_util,
                 "inner",
                 sleep,
+                None,
             ),
             (
                 into,
                 LibrarySeed::IntoFuture("future".into(), fut),
-                &futures_util,
+                &unproven,
                 "future",
                 fut,
+                Some(RuleKey::Library(SemanticRuleKind::FuturesUtilIntoFuture)),
             ),
             (
                 coop,
                 LibrarySeed::Coop("fut".into(), fut),
-                &tokio,
+                &unproven,
                 "fut",
                 fut,
+                Some(RuleKey::Library(SemanticRuleKind::TokioCoop)),
             ),
         ] {
             let plan = plan_library(ty, &seed_layout, seed, &types, &mut strings).unwrap();
+            match rule {
+                Some(rule) => assert_eq!(plan.rule, rule),
+                None => assert!(
+                    matches!(
+                        plan.rule,
+                        RuleKey::Delegation {
+                            kind: SemanticRuleKind::HyperUtilTokioSleep,
+                            ..
+                        }
+                    ),
+                    "{:?}",
+                    plan.rule
+                ),
+            }
             let Delegation::Direct {
                 target: t,
                 exclusive,

@@ -827,10 +827,12 @@ fn assert_adapter_programs(program: &str, bundle: &Bundle) {
         panic!("{program}: {DYN_PARKED} is not a dynamic delegation");
     };
     assert_eq!(layout.poll_slot, None, "{program}");
-    // Every reviewed rule here is under a futures-util delegation
-    // origin at the version the fixture's lockfile pins, read off the
-    // registry path its `poll` was declared on.
+    // The `map` enum's rule is under a futures-util delegation origin
+    // at the version the fixture's lockfile pins, read off the registry
+    // path its `poll` was declared on; the two newtypes forward on
+    // their layout, under futures-util's layout origin.
     let mut kinds: Vec<SemanticRuleKind> = Vec::new();
+    let mut layout_kinds: Vec<SemanticRuleKind> = Vec::new();
     for rule in &bundle.semantics.rules {
         // The selector's `select!` binds tokio's rule under tokio's own
         // origin; `assert_select` holds that one. The coop rule is
@@ -841,6 +843,13 @@ fn assert_adapter_programs(program: &str, bundle: &Bundle) {
             rule.kind,
             SemanticRuleKind::TokioSelect | SemanticRuleKind::TokioCoop
         ) {
+            continue;
+        }
+        if let SemanticOrigin::LibraryLayout { package, .. } =
+            &bundle.semantics.origins[rule.origin.0 as usize]
+            && bundle.strings.get(*package) == Some("futures-util")
+        {
+            layout_kinds.push(rule.kind);
             continue;
         }
         let SemanticOrigin::LibraryDelegation {
@@ -867,8 +876,11 @@ fn assert_adapter_programs(program: &str, bundle: &Bundle) {
     }
     kinds.sort();
     kinds.dedup();
+    assert_eq!(kinds, [SemanticRuleKind::FuturesUtilMap], "{program}");
+    layout_kinds.sort();
+    layout_kinds.dedup();
     assert_eq!(
-        kinds,
+        layout_kinds,
         [
             SemanticRuleKind::FuturesUtilMap,
             SemanticRuleKind::FuturesUtilMapErr,
@@ -1321,10 +1333,12 @@ fn assert_library_bindings(program: &str, bundle: &Bundle) {
                     );
                     assert_eq!(program, "watch-stream", "{program}");
                 }
-                // The `select!` rule reads tokio's version off the
-                // closure's declaration file, and it is the version the
-                // fixture's lockfile pinned — the one the layout family
-                // was selected by.
+                // The `select!` rule is the one tokio delegation read
+                // off a declaration file (`Coop` binds on its layout,
+                // under tokio's layout origin): it reads tokio's version
+                // off the closure's, and it is the version the fixture's
+                // lockfile pinned — the one the layout family was
+                // selected by.
                 "tokio" => {
                     assert_eq!(
                         s(*version),
@@ -1334,22 +1348,12 @@ fn assert_library_bindings(program: &str, bundle: &Bundle) {
                     let SemanticOrigin::LibraryDelegation { family, .. } = origin else {
                         unreachable!()
                     };
-                    use exegesis::detect::semantics::{TOKIO_COOP_V1_47, TOKIO_SELECT_V1_47};
-                    if s(*family) == TOKIO_SELECT_V1_47.family {
-                        assert!(
-                            SELECT_PROGRAMS.contains(&program),
-                            "{program}: only the fixtures with a select! bind its rule"
-                        );
-                    } else {
-                        // Which programs carry the coop rule is the
-                        // target's call, not the fixture's: tokio's own
-                        // runtime awaits a `watch::Receiver<()>`, whose
-                        // `Coop<changed_impl<()>>` survives on ELF and is
-                        // folded away in the Mach-O build, so a program
-                        // that never touches a watch binds it on one
-                        // platform and not another.
-                        assert_eq!(s(*family), TOKIO_COOP_V1_47.family, "{program}");
-                    }
+                    use exegesis::detect::semantics::TOKIO_SELECT_V1_47;
+                    assert_eq!(s(*family), TOKIO_SELECT_V1_47.family, "{program}");
+                    assert!(
+                        SELECT_PROGRAMS.contains(&program),
+                        "{program}: only the fixtures with a select! bind its rule"
+                    );
                 }
                 other => panic!("{program}: unexpected delegation origin {other:?}"),
             },

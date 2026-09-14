@@ -447,45 +447,6 @@ pub const TOKIO_SELECT_V1_47: LibraryConvention = LibraryConvention {
     ],
 };
 
-/// tokio's `task::coop::Coop<F>` as 1.47 through 1.53 implement it
-/// (`src/task/coop/mod.rs`; 1.48 rewrote the module's docs and budget
-/// helpers around an unchanged wrapper): the struct is `{ fut: F }`,
-/// and its `Future::poll` asks the budget for a unit with
-/// `poll_proceed`, returning `Pending` without touching `fut` when the
-/// budget is spent, else polls `fut` and nothing else, marking the
-/// unit consumed when that poll is ready. So the wrapper forwards one
-/// poll exclusively: the budget check runs no other future. tokio's
-/// own `cooperative()` puts this around every leaf a `Receiver::changed`
-/// awaits, which is why every watch chain crosses it.
-///
-/// tokio's version is read off the poll's declaration file the way the
-/// `select!` rule reads it, not from the layout family: the reviewed
-/// evidence is the poll body, and the checksum is of that file.
-pub const TOKIO_COOP_V1_47: LibraryConvention = LibraryConvention {
-    package: "tokio",
-    family: "tokio-coop-1.47",
-    floor: (1, 47, 0),
-    ceiling: (1, 53, 1),
-    checksums: &[
-        // src/task/coop/mod.rs, 1.47.0 through 1.47.5
-        (
-            "src/task/coop/mod.rs",
-            [
-                0xee, 0xfb, 0xbb, 0xdf, 0xee, 0xf4, 0x0a, 0xc3, 0x53, 0xd4, 0xb6, 0x42, 0x28, 0x7c,
-                0x6b, 0x36,
-            ],
-        ),
-        // src/task/coop/mod.rs, 1.48.0 through 1.53.1
-        (
-            "src/task/coop/mod.rs",
-            [
-                0x83, 0x7d, 0x88, 0xd2, 0x07, 0x3f, 0xc3, 0xa5, 0x44, 0x45, 0x6d, 0x1d, 0x49, 0x0d,
-                0xbe, 0x45,
-            ],
-        ),
-    ],
-};
-
 /// tokio-stream's `WatchStream<T>` as 0.1.14 through 0.1.19 implement
 /// it (`src/wrappers/watch.rs`; the revisions differ in docs, in where
 /// the `from_changes` constructor sits, and in 0.1.19 re-arming the
@@ -918,12 +879,6 @@ mod tests {
                 "0.1.21",
             ),
             (
-                &TOKIO_COOP_V1_47,
-                ["1.47.0", "1.47.5", "1.48.0", "1.52.4", "1.53.1"].as_slice(),
-                "1.46.1",
-                "1.53.2",
-            ),
-            (
                 &TOKIO_STREAM_WATCH_V0_1_14,
                 ["0.1.14", "0.1.15", "0.1.16", "0.1.17", "0.1.18", "0.1.19"].as_slice(),
                 "0.1.13",
@@ -972,7 +927,6 @@ mod tests {
         assert_eq!(TRACING_INSTRUMENTED_V0_1_40.range(), "0.1.40–0.1.44");
         assert_eq!(FUTURES_UTIL_ADAPTERS_V0_3_30.range(), "0.3.30–0.3.34");
         assert_eq!(HYPER_UTIL_TOKIO_SLEEP_V0_1_10.range(), "0.1.10–0.1.20");
-        assert_eq!(TOKIO_COOP_V1_47.range(), "1.47.0–1.53.1");
         assert_eq!(TOKIO_STREAM_WATCH_V0_1_14.range(), "0.1.14–0.1.19");
         assert_eq!(TOKIO_UTIL_REUSABLE_BOX_V0_7_11.range(), "0.7.11–0.7.19");
     }

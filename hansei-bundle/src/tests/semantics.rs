@@ -788,34 +788,10 @@ fn test_semantic_delegation_origin_is_its_registry_path() {
     // runs; another crate's origin, however well-formed, is not it.
     for (kind, package, version, source) in [
         (
-            SemanticRuleKind::FuturesUtilMap,
-            StrRef(22),
-            StrRef(23),
-            StrRef(24),
-        ),
-        (
-            SemanticRuleKind::FuturesUtilMapErr,
-            StrRef(22),
-            StrRef(23),
-            StrRef(24),
-        ),
-        (
-            SemanticRuleKind::FuturesUtilIntoFuture,
-            StrRef(22),
-            StrRef(23),
-            StrRef(24),
-        ),
-        (
             SemanticRuleKind::HyperUtilTokioSleep,
             StrRef(25),
             StrRef(26),
             StrRef(27),
-        ),
-        (
-            SemanticRuleKind::TokioCoop,
-            StrRef(8),
-            StrRef(9),
-            StrRef(28),
         ),
         (
             SemanticRuleKind::FuturesUtilNext,
@@ -838,6 +814,86 @@ fn test_semantic_delegation_origin_is_its_registry_path() {
         b.semantics.origins[0] = delegation_origin(StrRef(18));
         bad(&b, "third-party delegation needs source evidence");
     }
+    // A sole-member forwarder binds on its layout, under its crate's
+    // layout origin, versioned or not: a declaration origin, even its
+    // own crate's, is not that evidence, and another crate's layout is
+    // another crate's.
+    let layout = |package, version| SemanticOrigin::LibraryLayout {
+        package,
+        version,
+        family: StrRef(10),
+        selection: match version {
+            Some(_) => LayoutSelection::ReviewedRange,
+            None => LayoutSelection::VersionUnknown,
+        },
+    };
+    // Each row: the kind, its crate, the version the layout origin
+    // may or may not carry, another crate, and a well-formed
+    // declaration origin of its own crate.
+    for (kind, package, version, other, declared) in [
+        (
+            SemanticRuleKind::FuturesUtilMapErr,
+            StrRef(22),
+            None,
+            StrRef(8),
+            (StrRef(23), StrRef(24)),
+        ),
+        (
+            SemanticRuleKind::FuturesUtilIntoFuture,
+            StrRef(22),
+            None,
+            StrRef(8),
+            (StrRef(23), StrRef(24)),
+        ),
+        (
+            SemanticRuleKind::TokioCoop,
+            StrRef(8),
+            Some(StrRef(9)),
+            StrRef(22),
+            (StrRef(9), StrRef(28)),
+        ),
+        (
+            SemanticRuleKind::TokioCoop,
+            StrRef(8),
+            None,
+            StrRef(22),
+            (StrRef(9), StrRef(28)),
+        ),
+    ] {
+        let mut b = forwarding();
+        b.semantics.rules[0].kind = kind;
+        b.semantics.origins[0] = layout(package, version);
+        b.validate().unwrap_or_else(|e| panic!("{kind:?}: {e}"));
+        b.semantics.origins[0] = layout(other, version);
+        bad(&b, "layout rule has an incompatible library origin");
+        b.semantics.origins[0] = SemanticOrigin::LibraryDelegation {
+            package,
+            version: declared.0,
+            family: StrRef(17),
+            source: declared.1,
+            files: Vec::new(),
+        };
+        bad(&b, "layout rule has an incompatible library origin");
+    }
+    // The `map` kind is both: the newtype on its layout, the enum it
+    // forwards into off its declaration — either of futures-util's
+    // origins, and no other crate's of either sort.
+    let mut b = forwarding();
+    b.semantics.rules[0].kind = SemanticRuleKind::FuturesUtilMap;
+    b.semantics.origins[0] = layout(StrRef(22), None);
+    b.validate().unwrap();
+    b.semantics.origins[0] = SemanticOrigin::LibraryDelegation {
+        package: StrRef(22),
+        version: StrRef(23),
+        family: StrRef(17),
+        source: StrRef(24),
+        files: Vec::new(),
+    };
+    b.validate().unwrap();
+    b.semantics.origins[0] = layout(StrRef(8), None);
+    bad(&b, "futures-util map rule needs a futures-util origin");
+    b.semantics.origins[0] = delegation_origin(StrRef(18));
+    bad(&b, "futures-util map rule needs a futures-util origin");
 }
 
 fn dynamic() -> Bundle {
