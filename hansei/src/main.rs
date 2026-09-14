@@ -378,11 +378,14 @@ pub enum Command {
         then: Vec<String>,
     },
 
-    /// Select a lone future as the cursor, by the hex address the
-    /// listings print — for the chains no task contains, such as a
-    /// FuturesUnordered child in its heap node. An address some task
-    /// holds selects that task instead, positioned at the holding
-    /// frame — one cursor, never two. Either way it prints the future
+    /// Select a future as the cursor, by the hex address the listings
+    /// print: one a task holds in a frame's local, or a chain no task
+    /// contains, such as a FuturesUnordered child in its heap node. The
+    /// cursor roots at the future itself, frame #0 of its own chain, so
+    /// `trace`, `frame` and `locals` follow that chain and `$_` is its
+    /// address; the holder stays one explicit `task` away — bare `task`
+    /// prints it without moving, and `up` past the future's root names
+    /// it. Either way it prints the future
     /// as one labelled line per field: its type, where it sits (the
     /// holding frame and local, or the set whose child node it is,
     /// and the task either belongs to), its owner where the target
@@ -450,9 +453,9 @@ pub enum Command {
     /// omitted target filled with that future — `futures --with type
     /// acquire --exec trace -v` traces every match, each run under a
     /// `future 0x…` heading. The target is the future itself, even one a
-    /// task holds: `trace` follows its own chain, `print` and `locals`
-    /// its own frames, where `future 0x…` would have selected the
-    /// holding task. One future's failure never stops the loop, the
+    /// task holds, as `future 0x…` selects it: `trace` follows its own
+    /// chain, `print` and `locals` its own frames. One future's failure
+    /// never stops the loop, the
     /// listing closes with `[Executed against N futures, M failed]`, and
     /// the command itself fails after the loop when M is not zero.
     /// One future's every field — who holds it and where, its state

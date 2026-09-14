@@ -157,9 +157,8 @@ fn commands(
     {
         list.push(("sync-ref", format!("sync {joined:#x} --kind address")));
     }
-    // The future selector, on a set child in flight — the one kind of
-    // find that roots as a lone future — and on a held future, which
-    // collapses to the holding task but prints its own block.
+    // The future selector, on a set child in flight and on a held
+    // future: each roots the cursor at itself and prints its own block.
     if let Some(node) = session
         .census()
         .sets

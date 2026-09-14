@@ -9,10 +9,10 @@
 //! move.
 //!
 //! One cursor, three coordinates: `lwp ⊃ chain root ⊃ frame`. The
-//! root is a task wherever a task can claim the position — a `future`
-//! that some task holds collapses to that task at the holding frame —
-//! and a lone `Future` root exists only for the chains no task
-//! contains. Listings never read the cursor; only the selectors and
+//! root is one chain: a task's, or a future's own — a future some task
+//! holds roots at itself, its chain ending at its own root frame, and
+//! the holder is a separate selection rather than a frame above it.
+//! Listings never read the cursor; only the selectors and
 //! `frame`/`up`/`down` move it, and `$_` — the current frame's base
 //! address — moves with it and with nothing else.
 
@@ -98,13 +98,25 @@ pub(crate) fn exec_children<T: proc::Target>(
     }
 }
 
-/// The task the cursor stands on, if its root is one: a `Task` root,
-/// or a `Future` root that is really a task's allocation (an id-less
-/// task is rooted by its header address).
+/// The task the cursor's root belongs to: a `Task` root's own, or the
+/// task a `Future` root sits in — its allocation for an id-less task
+/// rooted at its header and for a future held inline in a frame, else
+/// the census's owner for one held in a heap box or driven as a set
+/// child. Under a future root this is the holder, which bare `task`
+/// answers with, not a move.
 pub(crate) fn cursor_task<T: proc::Target>(session: &Session<'_, T>) -> Option<usize> {
     match session.cursor.borrow().root? {
         TraceTarget::Task(id) => task_index(session, id).ok(),
-        TraceTarget::Future(addr) => session.extents().locate(addr).map(|(index, _)| index),
+        TraceTarget::Future(addr) => match session.extents().locate(addr) {
+            Some((index, _)) => Some(index),
+            None => {
+                let census = session.census();
+                match future_at(session, addr).ok()? {
+                    trace::FutureAt::Held(i) => Some(census.held[i].owner),
+                    trace::FutureAt::Child { set, .. } => Some(census.sets[set].owner),
+                }
+            }
+        },
     }
 }
 
@@ -259,44 +271,20 @@ fn future_at<T: proc::Target>(session: &Session<'_, T>, addr: u64) -> Result<tra
 }
 
 /// Move the cursor to the future at `addr`, answering what the census
-/// says it is. An address some task holds collapses to that task at
-/// the holding frame — one cursor, never two; only a chain no task
-/// contains (a set child in its heap node) roots as a future, and it
-/// roots at the node: that is the address every listing prints for
-/// the child and every address command resolves back to it, where the
-/// chain's own root — a boxed child's heap referent — sits in no
-/// allocation the census can name.
+/// says it is. The root is the future itself, at frame #0 of its own
+/// chain, whether a task holds it or a set drives it: `trace`, `frame`
+/// and `locals` then follow the future's chain and `$_` is its own
+/// address, and the holder is one explicit `task` away — bare `task`
+/// names it without moving. A set child roots at its node: that is the
+/// address every listing prints for the child and every address command
+/// resolves back to it, where the chain's own root — a boxed child's
+/// heap referent — sits in no allocation the census can name.
 pub(crate) fn select_future<T: proc::Target>(
     session: &Session<'_, T>,
     addr: u64,
 ) -> Result<trace::FutureAt> {
-    let census = session.census();
-    let list = &session.tasks;
     let found = future_at(session, addr)?;
-    match found {
-        trace::FutureAt::Held(i) => {
-            let h = &census.held[i];
-            let task = &list.tasks[h.owner];
-            // $_ is the holding frame's own base, not the held
-            // future's: the cursor stands on the frame.
-            let last_addr = frame_base(session, task, h.frame).unwrap_or(h.addr);
-            *session.cursor.borrow_mut() = Cursor {
-                lwp: polling_worker(&session.workers, task),
-                root: Some(task_root(task)),
-                frame: h.frame,
-                last_addr: Some(last_addr),
-            };
-        }
-        trace::FutureAt::Child { set, child } => {
-            let c = &census.sets[set].children[child];
-            *session.cursor.borrow_mut() = Cursor {
-                lwp: None,
-                root: Some(TraceTarget::Future(c.node)),
-                frame: 0,
-                last_addr: Some(c.node),
-            };
-        }
-    }
+    scope_to_future(session, found);
     Ok(found)
 }
 
@@ -328,12 +316,11 @@ pub(crate) fn scope_to<T: proc::Target>(session: &Session<'_, T>, index: usize) 
 }
 
 /// Scope the cursor to one census future at frame #0 of its own chain
-/// — what `futures --exec` sets before each surviving future's run.
-/// The root is the future itself even when a task holds it, where
-/// `future 0x…` would collapse to that task at the holding frame: the
-/// loop runs commands against futures, so `trace` under it follows
-/// the future's own chain and `$_` is its own address. The lwp is the
-/// holding task's, mid-poll or not, the way `future` selects it.
+/// — what `future 0x…` selects, and what `futures --exec` sets before
+/// each surviving future's run. The root is the future itself even
+/// when a task holds it: `trace` under it follows the future's own
+/// chain and `$_` is its own address. The lwp is the holding task's
+/// where it is mid-poll, as selecting the task would set it.
 pub(crate) fn scope_to_future<T: proc::Target>(session: &Session<'_, T>, at: trace::FutureAt) {
     let census = session.census();
     let (addr, lwp) = match at {
@@ -459,7 +446,9 @@ pub(crate) fn exec_frame<T: proc::Target>(
 
 /// `up`: one frame outward, toward the chain's root — the bottom of
 /// the listing — landing with the frame line alone; `up locals` asks
-/// for more.
+/// for more. A future's chain ends at its own root: the frame holding
+/// it belongs to another chain, so the refusal there names the holder
+/// and the `task` that selects it rather than crossing over.
 pub(crate) fn exec_up<T: proc::Target>(
     session: &Session<'_, T>,
     theme: output::Theme,
@@ -470,9 +459,45 @@ pub(crate) fn exec_up<T: proc::Target>(
     let root = root.ok_or_else(|| anyhow!("no task selected"))?;
     let resolved = chain_of(session, root)?;
     if frame + 1 >= resolved.chain.frames.len() {
-        return Err(anyhow!("already at frame #{frame}, the chain's root"));
+        let past = match resolved.origin {
+            Some(via) => format!("; {}", past_the_root(session, resolved.owner, via)),
+            None => String::new(),
+        };
+        return Err(anyhow!("already at frame #{frame}, the chain's root{past}"));
     }
     exec_frame(session, Some(frame + 1), theme, out)
+}
+
+/// What stands past a future's root frame, for the `up` refusal: the
+/// task and frame holding it, or the set driving it, and the `task`
+/// selection that moves there — by id, or by header address for an
+/// id-less task.
+fn past_the_root<T: proc::Target>(
+    session: &Session<'_, T>,
+    owner: usize,
+    via: census::Via,
+) -> String {
+    let census = session.census();
+    let task = &session.tasks.tasks[owner];
+    let label = tasks::task_label(&session.tasks, owner);
+    let select = match task.task_id {
+        Some(id) => format!("`task {id}`"),
+        None => format!("`task {:#x}`", task.addr.0),
+    };
+    match via {
+        census::Via::Held(i) => {
+            let h = &census.held[i];
+            format!(
+                "{label} holds this future at its frame #{} (`{}`), and {select} selects it",
+                h.frame, h.local
+            )
+        }
+        census::Via::SetChild { set, .. } => format!(
+            "this future is a child of the set at {:#x}, which {label} drives, and {select} \
+             selects it",
+            census.sets[set].addr
+        ),
+    }
 }
 
 /// `down`: one frame inward, toward #0, the most recently polled
@@ -963,49 +988,119 @@ mod tests {
         );
     }
 
-    /// A held future collapses to the task holding it, positioned at
-    /// the holding frame — one cursor, never two.
+    /// A held future roots the cursor at itself — frame #0 of its own
+    /// chain, `$_` its own address, the prompt naming it — and the
+    /// holder is one explicit `task` away: bare `task` prints the
+    /// holder's block without moving, and `up` past the future's root
+    /// refuses, naming the holding frame and the selection, rather
+    /// than crossing into the holder's chain.
     #[test]
-    fn test_a_held_future_collapses_to_its_task() {
+    fn test_a_held_future_roots_the_cursor() {
         let (bundle, snapshot) = testkit::load("linux", "futurelock");
         let args = session_args("linux", "futurelock");
         let session = Session::attach(&snapshot, &bundle, &args).expect("the pair attaches");
-        let (addr, owner, frame) = {
+        let theme = crate::output::Theme::plain();
+        let (addr, owner, frame, local) = {
             let census = session.census();
             let h = census.held.first().expect("futurelock holds a future");
-            (h.addr, h.owner, h.frame)
+            (h.addr, h.owner, h.frame, h.local.clone())
         };
         let mut out = Vec::new();
+        exec_future(&session, Some(addr), false, theme, &mut out).expect("a held future selects");
+        let block = String::from_utf8(out).expect("the block is UTF-8");
+        assert!(block.starts_with(&format!("future {addr:#x}\n")), "{block}");
+        assert!(block.contains("\n    held by: "), "{block}");
+
+        let at_root = |c: &Cursor| {
+            matches!(c.root, Some(TraceTarget::Future(a)) if a == addr)
+                && c.frame == 0
+                && c.last_addr == Some(addr)
+        };
+        let c = *session.cursor.borrow();
+        assert!(
+            at_root(&c),
+            "{:?} #{} $_={:?}",
+            c.root,
+            c.frame,
+            c.last_addr
+        );
+        assert_eq!(prompt_label(&c), format!("hansei : future {addr:#x} #0"));
+
+        // Bare `task` answers with the holder; the cursor stays.
+        let id = session.tasks.tasks[owner]
+            .task_id
+            .expect("the holder has an id");
+        let mut out = Vec::new();
+        exec_task(&session, None, None, &mut out).expect("bare task prints the holder");
+        let text = String::from_utf8(out).expect("the block is UTF-8");
+        assert!(text.starts_with(&format!("task {id}\n")), "{text}");
+        assert!(at_root(&session.cursor.borrow()));
+
+        // `up` walks the future's own chain to its root and refuses
+        // there, naming what stands past it and the move that goes.
+        let len = chain_of(&session, TraceTarget::Future(addr))
+            .expect("the future's chain resolves")
+            .chain
+            .frames
+            .len();
+        for _ in 1..len {
+            exec_up(&session, theme, &mut Vec::new()).expect("up moves within the chain");
+        }
+        let err = exec_up(&session, theme, &mut Vec::new()).expect_err("the root is the end");
+        assert_eq!(
+            err.to_string(),
+            format!(
+                "already at frame #{}, the chain's root; task {id} holds this future at its \
+                 frame #{frame} (`{local}`), and `task {id}` selects it",
+                len - 1
+            )
+        );
+        assert!(matches!(
+            session.cursor.borrow().root,
+            Some(TraceTarget::Future(a)) if a == addr
+        ));
+        // And the explicit move lands on the holder as ever.
+        exec_task(&session, Some(TraceTarget::Task(id)), None, &mut Vec::new())
+            .expect("the holder selects");
+        assert!(matches!(
+            session.cursor.borrow().root,
+            Some(TraceTarget::Task(t)) if t == id
+        ));
+    }
+
+    /// A future held in a heap box sits in no task's allocation, so the
+    /// holder is the census's to name: bare `task` under such a root
+    /// still answers with the task holding it.
+    #[test]
+    fn test_bare_task_names_the_holder_of_a_boxed_future() {
+        let (bundle, snapshot) = testkit::load("linux", "watch-stream");
+        let args = session_args("linux", "watch-stream");
+        let session = Session::attach(&snapshot, &bundle, &args).expect("the pair attaches");
+        let (addr, owner) = {
+            let census = session.census();
+            let h = census
+                .held
+                .iter()
+                .find(|h| session.extents().locate(h.addr).is_none())
+                .expect("watch-stream holds a boxed future");
+            (h.addr, h.owner)
+        };
         exec_future(
             &session,
             Some(addr),
             false,
             crate::output::Theme::plain(),
-            &mut out,
+            &mut Vec::new(),
         )
-        .expect("a held future selects");
-        let block = String::from_utf8(out).expect("the block is UTF-8");
-        assert!(block.starts_with(&format!("future {addr:#x}\n")), "{block}");
-        assert!(block.contains("\n    held by: "), "{block}");
-
-        let c = *session.cursor.borrow();
-        assert_eq!(c.frame, frame);
-        let expected = crate::cursor::task_root(&session.tasks.tasks[owner]);
-        match (c.root, expected) {
-            (Some(TraceTarget::Task(a)), TraceTarget::Task(b)) => assert_eq!(a, b),
-            (Some(TraceTarget::Future(a)), TraceTarget::Future(b)) => assert_eq!(a, b),
-            other => panic!("the cursor did not collapse to the task: {other:?}"),
-        }
-        // `$_` is the holding frame's own base — the cursor stands on
-        // the frame, not on the held future. Computed here from the
-        // chain itself so nothing under test corroborates itself.
-        let task = &session.tasks.tasks[owner];
-        if let Some(chain) = session.task_chain(task) {
-            let inner = chain.frames.len().checked_sub(frame + 1);
-            if let Some(f) = inner.and_then(|i| chain.frames.get(i)) {
-                assert_eq!(c.last_addr, Some(f.future.addr));
-            }
-        }
+        .expect("the boxed future selects");
+        assert_eq!(cursor_task(&session), Some(owner));
+        let id = session.tasks.tasks[owner]
+            .task_id
+            .expect("the holder has an id");
+        let mut out = Vec::new();
+        exec_task(&session, None, None, &mut out).expect("bare task prints the holder");
+        let text = String::from_utf8(out).expect("the block is UTF-8");
+        assert!(text.starts_with(&format!("task {id}\n")), "{text}");
     }
 
     /// A scoped prefix runs its command under a temporary cursor and
