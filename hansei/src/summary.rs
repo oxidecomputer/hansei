@@ -703,6 +703,9 @@ struct Waits {
     unresumed: usize,
     /// Its root has run to a terminal state.
     returned: usize,
+    /// Its chain ends in a future no poll of which returns `Ready`:
+    /// waiting, forever, on nothing that exists.
+    never_ready: usize,
     /// No definite answer: the continuation is not established at some
     /// future no reviewed rule covers, the chain was cut short, or the
     /// resource's state is not one its protocol vouches for. On any
@@ -730,6 +733,7 @@ impl Waits {
             WaitAssessment::NotWaiting(NotWaitingReason::Complete) => self.complete += 1,
             WaitAssessment::NotWaiting(_) => self.returned += 1,
             WaitAssessment::Unresumed => self.unresumed += 1,
+            WaitAssessment::NeverReady { .. } => self.never_ready += 1,
             WaitAssessment::Unknown(_) => self.unknown += 1,
         }
     }
@@ -746,6 +750,7 @@ impl Waits {
             (None, ContinuationStatus::Returned | ContinuationStatus::Panicked) => {
                 self.returned += 1
             }
+            (None, ContinuationStatus::NeverReady) => self.never_ready += 1,
             (None, ContinuationStatus::ActivePoll) => self.running += 1,
             (
                 None,
@@ -775,8 +780,8 @@ impl Waits {
     /// The tally as printable rows, commonest first, each spelled as
     /// the `WAITING ON` column spells the wait at kind level — `io`,
     /// `timer`, `task`, the semaphore by the primitive wrapping it,
-    /// `one of several` for a wait set, `ready`, `unknown` — and a task
-    /// waiting on nothing by why: `—
+    /// `one of several` for a wait set, `ready`, `never ready`, `unknown`
+    /// — and a task waiting on nothing by why: `—
     /// (mid-poll)`, `— (queued)`, `— (complete)`, `— (unresumed)`, `—
     /// (returned)`. A closed set, so every nonzero row prints and
     /// `top` cuts nothing.
@@ -798,6 +803,7 @@ impl Waits {
             Row::new(self.notify, "notify"),
             Row::new(self.one_of, "one of several"),
             Row::new(self.ready, "ready"),
+            Row::new(self.never_ready, "never ready"),
             Row::new(self.unknown, "unknown"),
             Row::new(self.running, "— (mid-poll)"),
             Row::new(self.queued, "— (queued)"),
@@ -1802,6 +1808,63 @@ mod tests {
         let waits = [complete];
         let page = census(&facts(&list, &waits), 5);
         assert!(page.contains("└─ 1  — (complete)\n"), "{page}");
+    }
+
+    /// A chain ending in a future that is never ready is its own row,
+    /// for a task and for a held future alike: waiting, forever, on
+    /// nothing that exists is neither `returned` nor `unknown`.
+    #[test]
+    fn test_never_ready_counts_its_own_row() {
+        let list = TaskList::new(
+            (1..=3)
+                .map(|id| task(id, JOIN_INTEREST, "x::fut", "x.rs"))
+                .collect(),
+        );
+        let never_ready = || WaitAssessment::NeverReady {
+            members: Vec::new(),
+            capped: 0,
+        };
+        let assessed = |id, assessment| {
+            let mut wait = wait(id, None, 1);
+            wait.assessment = assessment;
+            wait
+        };
+        let waits = [
+            assessed(1, never_ready()),
+            assessed(2, never_ready()),
+            assessed(3, WaitAssessment::NotWaiting(NotWaitingReason::Returned)),
+        ];
+        let continued = |continuation| {
+            let mut held = held("h::fut", None);
+            held.continuation = continuation;
+            held
+        };
+        let held = [
+            continued(ContinuationStatus::NeverReady),
+            continued(ContinuationStatus::NeverReady),
+            continued(ContinuationStatus::Returned),
+        ];
+        let mut facts = facts(&list, &waits);
+        facts.held = &held;
+
+        let tasks = sections(&facts, Sections::select(false, true, false), 10);
+        assert!(
+            tasks.contains(
+                "    3  future x::fut\n       \
+                 ├─ 2  never ready\n       \
+                 └─ 1  — (returned)\n"
+            ),
+            "{tasks}"
+        );
+        let futures = sections(&facts, Sections::select(false, false, true), 10);
+        assert!(
+            futures.contains(
+                "    3  future h::fut\n       \
+                 ├─ 2  never ready\n       \
+                 └─ 1  — (returned)\n"
+            ),
+            "{futures}"
+        );
     }
 
     /// Every bucket a task can land in short of a verified wait counts

@@ -42,7 +42,7 @@ use super::observe::{
     OneshotObservation, QueueObservation, ReadContext, RecvObservation, ResourceObservation,
     ScanBudget, SlotState, TimerObservation, TimerRegistrationState, ValueKey,
 };
-use super::waitset::WaitSet;
+use super::waitset::{WaitMember, WaitSet};
 use super::{Lifecycle, TaskAddr, TaskState};
 
 use hansei_bundle::{AccessKind, FutureTarget, IoOperationKind, SemanticIssueKind, Step};
@@ -76,6 +76,22 @@ pub enum WaitAssessment {
     /// disjunction, not a dependency: it is no `Waiting` edge, closes
     /// no cycle and establishes no polling barrier.
     Set(WaitSet),
+    /// The chain ends in a future whose reviewed poll returns `Pending`
+    /// and does nothing else — registers no waker, polls nothing — so
+    /// no poll of the task ever returns `Ready`. About readiness, not
+    /// waking: a stale or spurious wake still schedules the task, which
+    /// polls the terminal and parks again, so a waker slot attributed
+    /// to the task contradicts nothing and demotes nothing. The task
+    /// is waiting, forever, on nothing that exists.
+    NeverReady {
+        /// The branches of a `select!` stop every enabled one of which
+        /// ends never ready, in branch order with the disabled ones
+        /// among them, for the listing; empty where the task's own
+        /// chain ends at the terminal.
+        members: Vec<WaitMember>,
+        /// Branches past the listing cap at such a stop, counted only.
+        capped: usize,
+    },
     /// No definite answer, for the reason given. The inspection still
     /// carries whatever was read.
     Unknown(WaitUnknownReason),
@@ -221,6 +237,7 @@ pub enum ContinuationStatus {
     Unresumed,
     Returned,
     Panicked,
+    NeverReady,
     ActivePoll,
     Unknown {
         at: ValueKey,
@@ -253,6 +270,7 @@ impl ContinuationStatus {
             ChainEnd::Unresumed => ContinuationStatus::Unresumed,
             ChainEnd::Returned => ContinuationStatus::Returned,
             ChainEnd::Panicked => ContinuationStatus::Panicked,
+            ChainEnd::NeverReady => ContinuationStatus::NeverReady,
             ChainEnd::ActivePoll => ContinuationStatus::ActivePoll,
             ChainEnd::UnknownContinuation { at, reason } => ContinuationStatus::Unknown {
                 at: *at,
@@ -483,6 +501,16 @@ impl<'b, T: Target> Context<'b, T> {
                 return Assessed::of(WaitAssessment::NotWaiting(NotWaitingReason::Panicked));
             }
             ChainEnd::Unresumed => return Assessed::of(WaitAssessment::Unresumed),
+            // The terminal is the verdict: no resource to read, no
+            // branches to enumerate. Whatever slots the registries or
+            // the sweep attribute to the task are listed beside it and
+            // change nothing.
+            ChainEnd::NeverReady => {
+                return Assessed::of(WaitAssessment::NeverReady {
+                    members: Vec::new(),
+                    capped: 0,
+                });
+            }
             ChainEnd::ActivePoll => {
                 return Assessed::unknown(
                     WaitUnknownReason::Lifecycle,
@@ -2817,6 +2845,7 @@ mod tests {
             (ChainEnd::Unresumed, "Unresumed"),
             (ChainEnd::Returned, "Returned"),
             (ChainEnd::Panicked, "Panicked"),
+            (ChainEnd::NeverReady, "NeverReady"),
             (ChainEnd::ActivePoll, "ActivePoll"),
             (
                 ChainEnd::DepthLimit,

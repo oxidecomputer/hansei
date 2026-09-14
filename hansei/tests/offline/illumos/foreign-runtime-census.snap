@@ -19,7 +19,7 @@ COUNT  STATE
 
 COUNT  TYPE / WAITING ON
     1  async fn foreign_runtime::detached
-       └─ 1  unknown
+       └─ 1  never ready
     1  async fn foreign_runtime::joined
        └─ 1  a tokio::sync::Semaphore (semaphore)
     1  async fn foreign_runtime::joiner

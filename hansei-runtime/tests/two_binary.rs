@@ -406,6 +406,7 @@ fn render_chain(out: &mut String, chain: &AwaitChain<'_>) {
         ChainEnd::Unresumed => "unresumed".to_owned(),
         ChainEnd::Returned => "returned".to_owned(),
         ChainEnd::Panicked => "panicked".to_owned(),
+        ChainEnd::NeverReady => "never ready".to_owned(),
         ChainEnd::ActivePoll => "active poll".to_owned(),
         ChainEnd::UnknownContinuation { reason, .. } => {
             format!("unknown continuation ({reason:?})")

@@ -927,6 +927,12 @@ pub enum ChainEnd {
     Returned,
     /// The last frame is a coroutine that panicked.
     Panicked,
+    /// The last frame is a future whose reviewed poll returns `Pending`
+    /// without registering a waker or polling anything: no poll of it
+    /// ever returns `Ready`. About readiness, not waking — a stale or
+    /// spurious wake still schedules the task, which polls this and
+    /// parks again.
+    NeverReady,
     /// The last frame's continuation is not established: no semantic
     /// record, no rule for its shape, a state its rule declined, or a
     /// case its program has no action for. What it holds may still be

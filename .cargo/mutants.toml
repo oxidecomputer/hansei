@@ -380,4 +380,11 @@ exclude_re = [
     # under it (a `changed` wrapped in `Coop`); pin it there when a
     # fixture has one.
     "delete ! in Context<'b, T>::watch_target",
+    # Equivalent mutant: the `Pending` screen's name test is a
+    # pre-screen that saves the walk, the same shape as the adapter
+    # branch above it — `core_pending` itself checks the declaring
+    # module and the name prefix, so admitting every type to the screen
+    # binds exactly the same set. (The function's other `&&` are
+    # let-chains, which the tool does not mutate.)
+    "replace && with \\|\\| in collect_semantic_seeds",
 ]

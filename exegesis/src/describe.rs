@@ -624,6 +624,7 @@ pub fn describe_semantics(bundle: &Bundle) -> String {
         PollAction::Unresumed => "unresumed".to_owned(),
         PollAction::Returned => "returned".to_owned(),
         PollAction::Panicked => "panicked".to_owned(),
+        PollAction::NeverReady => "never ready".to_owned(),
         PollAction::Unknown(i) => format!("unknown ({})", issue(i)),
     };
     let state = |st: &CoroutineState| {

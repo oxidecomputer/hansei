@@ -495,6 +495,22 @@ pub(crate) fn tokio_coop(reader: &DwReader<'_>, id: TypeId) -> Option<ForwardLay
     .then_some(forward)
 }
 
+/// Screen `id` as core's `future::pending::Pending<T>`: a zero-sized
+/// struct whose one member `_data` is the `PhantomData` that carries
+/// its `T`. Anything else at that name — a member with a size, a
+/// second member — is a layout the reviewed poll was not read against.
+pub(crate) fn core_pending(reader: &DwReader<'_>, id: TypeId) -> bool {
+    let Some(st) = declared_in(reader, id, "core::future::pending", "Pending<") else {
+        return false;
+    };
+    let Some(forward) = sole_member(reader, st, "_data") else {
+        return false;
+    };
+    st.size == 0
+        && fq_name(reader, forward.inner)
+            .is_some_and(|name| name.starts_with("core::marker::PhantomData<"))
+}
+
 /// Screen `id` as futures-util's `stream::Next<'_, St>`: one member
 /// `stream`, a `&mut St` whose target is the `St` the instantiation
 /// declares. The future's poll is that stream's `poll_next` and nothing
@@ -1555,6 +1571,55 @@ mod tests {
             &[("F", FUT)],
         );
         assert_eq!(tokio_coop(&fx.reader, COOP), None);
+    }
+
+    /// core's `Pending<T>` is exactly its reviewed layout: declared in
+    /// `core::future::pending`, zero-sized, one member `_data` that is
+    /// a `PhantomData`. A size, a second member, another member type
+    /// or another module is a layout the reviewed poll was not read
+    /// against, whatever the name says.
+    #[test]
+    fn test_pending_is_a_zero_sized_phantom_data_in_its_own_module() {
+        const PENDING: TypeId = TypeId(UnitSectionOffset(0x80));
+        const PHANTOM: TypeId = TypeId(UnitSectionOffset(0x81));
+        let mut fx = fixture();
+        let pending_mod = fx.ns("core::future::pending");
+        let marker = fx.ns("core::marker");
+        let app = fx.ns("app");
+        let resize = |fx: &mut Fx, id: TypeId, size: u64| {
+            let Some(RawType::Struct(st)) = fx.reader.types.get_mut(&id) else {
+                panic!("a struct");
+            };
+            st.size = size;
+        };
+        fx.strukt(PHANTOM, Some(marker), "PhantomData<fn()>", &[], &[]);
+        resize(&mut fx, PHANTOM, 0);
+        let pending = |fx: &mut Fx, ns, members: &[(&'static str, TypeId, u64)], size| {
+            fx.strukt(PENDING, Some(ns), "Pending<()>", members, &[]);
+            resize(fx, PENDING, size);
+        };
+        pending(&mut fx, pending_mod, &[("_data", PHANTOM, 0)], 0);
+        assert!(core_pending(&fx.reader, PENDING));
+        // A size: something in it the review did not see.
+        pending(&mut fx, pending_mod, &[("_data", PHANTOM, 0)], 8);
+        assert!(!core_pending(&fx.reader, PENDING));
+        // A second member, zero-sized or not.
+        pending(
+            &mut fx,
+            pending_mod,
+            &[("_data", PHANTOM, 0), ("extra", PHANTOM, 0)],
+            0,
+        );
+        assert!(!core_pending(&fx.reader, PENDING));
+        // The one member is not a `PhantomData`.
+        pending(&mut fx, pending_mod, &[("_data", FUT, 0)], 0);
+        assert!(!core_pending(&fx.reader, PENDING));
+        // Another member name.
+        pending(&mut fx, pending_mod, &[("data", PHANTOM, 0)], 0);
+        assert!(!core_pending(&fx.reader, PENDING));
+        // The right shape declared somewhere else.
+        pending(&mut fx, app, &[("_data", PHANTOM, 0)], 0);
+        assert!(!core_pending(&fx.reader, PENDING));
     }
 
     /// A wide pointer to a trait object of some other trait is still an

@@ -1242,13 +1242,15 @@ fn assert_library_bindings(program: &str, bundle: &Bundle) {
                     bundle.meta.rustc_version
                 );
                 use exegesis::detect::semantics::{
-                    RUSTC_COROUTINE_V1_97, RUSTC_DYN_FUTURE_ABI_V1_97, RUSTC_STD_ADAPTERS_V1_97,
+                    RUSTC_CORE_PENDING_V1_97, RUSTC_COROUTINE_V1_97, RUSTC_DYN_FUTURE_ABI_V1_97,
+                    RUSTC_STD_ADAPTERS_V1_97,
                 };
                 assert!(
                     [
                         RUSTC_COROUTINE_V1_97.family,
                         RUSTC_STD_ADAPTERS_V1_97.family,
                         RUSTC_DYN_FUTURE_ABI_V1_97.family,
+                        RUSTC_CORE_PENDING_V1_97.family,
                     ]
                     .contains(&s(*family)),
                     "{program}: unexpected compiler family {:?}",
@@ -1573,6 +1575,18 @@ fn assert_library_bindings(program: &str, bundle: &Bundle) {
                 "{program}: {:?}",
                 facts.continuation
             ),
+            // The one terminal program: core's `Pending`, under its
+            // compiler rule, on a record with nothing to read.
+            Continuation::Bound {
+                rule,
+                program: PollProgram::Direct(PollAction::NeverReady),
+            } => {
+                assert_eq!(rule_kind(*rule), SemanticRuleKind::CorePending, "{program}");
+                assert!(
+                    record.resource.is_none() && record.coroutine.is_none(),
+                    "{program}: never ready beside state"
+                );
+            }
             Continuation::Bound {
                 rule,
                 program: PollProgram::Direct(PollAction::Delegate { target, exclusive }),
@@ -1712,6 +1726,81 @@ fn assert_library_bindings(program: &str, bundle: &Bundle) {
 
 /// Structural assertions that hold for every fixture — the "zero silent
 /// drops" checks plus metadata sanity.
+/// Every `core::future::pending::Pending<T>` the program proves a
+/// future — by awaiting it, by spawning it — binds the never-ready
+/// terminal under the compiler rule, with its origin the target's own
+/// producer under the reviewed family; a record the evidence does not
+/// reach binds nothing. The two fixtures whose task-level wait is the
+/// terminal must hold at least one such binding, as must every
+/// program whose `main` parks on `pending()` — which is nearly all of
+/// them, but which programs keep that root out of line is the target's
+/// call, so no list.
+fn assert_never_ready(program: &str, bundle: &Bundle) {
+    use hansei_bundle::{Continuation, PollAction, PollProgram, SemanticOrigin, SemanticRuleKind};
+    let s = |id| bundle.strings.get(id).unwrap();
+    let mut bound = 0;
+    for record in &bundle.semantics.types {
+        let Some(name) = bundle
+            .types
+            .name_index
+            .iter()
+            .find(|&&(_, ty)| ty == record.ty)
+            .map(|&(name, _)| s(name))
+        else {
+            continue;
+        };
+        if !name.starts_with("core::future::pending::Pending<") {
+            continue;
+        }
+        let Some(facts) = &record.future else {
+            panic!("{program}: {name} has a record but is no future");
+        };
+        assert!(
+            !facts.evidence.is_empty(),
+            "{program}: {name} is a future on no evidence"
+        );
+        let Continuation::Bound { rule, program: p } = &facts.continuation else {
+            panic!(
+                "{program}: {name} is a proven future with no program: {:?}",
+                facts.continuation
+            );
+        };
+        assert!(
+            matches!(p, PollProgram::Direct(PollAction::NeverReady)),
+            "{program}: {name}: {p:?}"
+        );
+        let rule = &bundle.semantics.rules[rule.0 as usize];
+        assert_eq!(
+            rule.kind,
+            SemanticRuleKind::CorePending,
+            "{program}: {name}"
+        );
+        let SemanticOrigin::Rustc { producer, family } =
+            &bundle.semantics.origins[rule.origin.0 as usize]
+        else {
+            panic!("{program}: {name} under a library origin");
+        };
+        assert_eq!(
+            s(*family),
+            exegesis::detect::semantics::RUSTC_CORE_PENDING_V1_97.family,
+            "{program}: {name}"
+        );
+        assert!(
+            s(*producer).contains(&format!("rustc version {}", bundle.meta.rustc_version)),
+            "{program}: {name} under {:?}",
+            s(*producer)
+        );
+        assert!(
+            record.resource.is_none() && record.coroutine.is_none() && record.access.is_none(),
+            "{program}: {name} carries another capability"
+        );
+        bound += 1;
+    }
+    if matches!(program, "foreign-runtime" | "delegation-cases") {
+        assert!(bound > 0, "{program}: no never-ready binding");
+    }
+}
+
 fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
     assert_addresses_by_name(program, bundle);
     // The impl table records only what the bundle's strings mention —
@@ -2885,6 +2974,7 @@ fn run_golden(program: &str) {
         "{program}: no semantic records"
     );
     assert_library_bindings(program, &bundle);
+    assert_never_ready(program, &bundle);
     {
         use hansei_bundle::{ContainerKind, IoOperationKind, ResourceKind};
         match program {

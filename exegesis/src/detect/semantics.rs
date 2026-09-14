@@ -108,6 +108,26 @@ pub fn rustc_std_adapter_convention(producer: &str) -> Option<&'static RustcConv
     rustc_convention(producer, &[&RUSTC_STD_ADAPTERS_V1_97])
 }
 
+/// core's `future::pending::Pending<T>` as rustc 1.97 and 1.98 ship it,
+/// reviewed against `library/core/src/future/pending.rs` (identical
+/// across the three matrix toolchains): a zero-sized struct whose one
+/// member is a `PhantomData`, and a `Future::poll` that returns
+/// `Poll::Pending` without touching its `Context` — no waker
+/// registered, nothing polled, never `Ready`. The source ships with
+/// the toolchain, so the producer version says which source was read,
+/// and the ceiling advances by hand with the others.
+pub const RUSTC_CORE_PENDING_V1_97: RustcConvention = RustcConvention {
+    family: "rustc-core-pending-1.97",
+    floor: (1, 97),
+    ceiling: (1, 98),
+};
+
+/// The `Pending` convention covering a producer, selected like
+/// [`rustc_coroutine_convention`].
+pub fn rustc_core_pending_convention(producer: &str) -> Option<&'static RustcConvention> {
+    rustc_convention(producer, &[&RUSTC_CORE_PENDING_V1_97])
+}
+
 /// The `dyn Future` ABI convention covering a producer, selected like
 /// [`rustc_coroutine_convention`].
 pub fn rustc_dyn_future_abi_convention(producer: &str) -> Option<&'static RustcConvention> {
@@ -880,11 +900,16 @@ mod tests {
                 rustc_dyn_future_abi_convention(producer).is_none(),
                 "{producer}"
             );
+            assert!(
+                rustc_core_pending_convention(producer).is_none(),
+                "{producer}"
+            );
         }
     }
 
-    /// The adapter and ABI conventions are separate reviews with their
-    /// own names, covering the same toolchains as the coroutine one.
+    /// The adapter, ABI and `Pending` conventions are separate reviews
+    /// with their own names, covering the same toolchains as the
+    /// coroutine one.
     #[test]
     fn test_std_adapter_and_dyn_abi_conventions_cover_the_reviewed_toolchains() {
         let producer = "clang LLVM (rustc version 1.98.0 (88d9e12ae 2026-08-18))";
@@ -896,9 +921,14 @@ mod tests {
             rustc_dyn_future_abi_convention(producer).map(|c| c.family),
             Some("rustc-dyn-future-abi-1.97")
         );
+        assert_eq!(
+            rustc_core_pending_convention(producer).map(|c| c.family),
+            Some("rustc-core-pending-1.97")
+        );
         let producer = "clang LLVM (rustc version 1.97.0 (2d8144b78 2026-07-07))";
         assert!(rustc_std_adapter_convention(producer).is_some());
         assert!(rustc_dyn_future_abi_convention(producer).is_some());
+        assert!(rustc_core_pending_convention(producer).is_some());
     }
 
     /// Every delegation family binds at both edges of its range

@@ -332,6 +332,7 @@ impl<'b, T: Target> Context<'b, T> {
             PollAction::Unresumed => NextFuture::End(ChainEnd::Unresumed),
             PollAction::Returned => NextFuture::End(ChainEnd::Returned),
             PollAction::Panicked => NextFuture::End(ChainEnd::Panicked),
+            PollAction::NeverReady => NextFuture::End(ChainEnd::NeverReady),
             PollAction::Unknown(issue) => unknown(issue.kind),
         };
         (state, next)
@@ -890,19 +891,23 @@ mod tests {
                     }
                     // A coroutine root awaiting a `Pin` reference to the
                     // registered child: the block, the reference, the
-                    // child, and the child's own awaitee no rule covers.
+                    // child, and the child's own awaitee — a `Pending`,
+                    // whose reviewed poll is never ready.
                     "alias" => {
                         assert_eq!(chain.frames.len(), 5, "{set}: {:?}", names(chain));
                         let child = chain.frames[3].future;
                         assert_eq!((child.addr, child.ty.size()), (case.child, case.child_size));
                         assert!(chain.all_exclusive());
-                        assert!(matches!(
-                            chain.end,
-                            ChainEnd::UnknownContinuation {
-                                reason: SemanticIssueKind::NoRule,
-                                ..
-                            }
-                        ));
+                        assert!(
+                            chain.frames[4]
+                                .future
+                                .ty
+                                .name()
+                                .starts_with("core::future::pending::Pending<"),
+                            "{set}: {:?}",
+                            names(chain)
+                        );
+                        assert!(matches!(chain.end, ChainEnd::NeverReady), "{set}");
                     }
                     other => panic!("{set}: unexpected case {other}"),
                 }

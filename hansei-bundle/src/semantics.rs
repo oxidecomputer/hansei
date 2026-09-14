@@ -105,6 +105,14 @@ pub enum PollAction {
     Unresumed,
     Returned,
     Panicked,
+    /// The reviewed implementation returns `Poll::Pending` without
+    /// touching its `Context`: it registers no waker, polls nothing,
+    /// and no poll of it ever returns `Ready`. A terminal about
+    /// readiness, not waking — a spurious or stale wake still
+    /// schedules the task, which polls this and parks again. Legal
+    /// only as a whole program, never as a state's case: no reviewed
+    /// matcher has a state that means this.
+    NeverReady,
     Unknown(SemanticIssue),
 }
 
@@ -359,6 +367,11 @@ pub enum SemanticRuleKind {
     /// through the closure's capture to the interval and lands on
     /// the box; its std record crosses to the `Sleep`.
     TokioIntervalTick,
+    /// core's `future::pending::Pending<T>`, the future
+    /// `std::future::pending()` returns: `poll` returns `Poll::Pending`
+    /// and does nothing else. A compiler-origin rule, since the source
+    /// it reviews ships with the toolchain.
+    CorePending,
 }
 
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]

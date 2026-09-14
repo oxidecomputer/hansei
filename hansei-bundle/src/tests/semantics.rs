@@ -1699,3 +1699,82 @@ fn test_semantic_select_binding_reads_the_mask_and_the_tuple() {
     wrong.semantics.types[0].storage = StoragePolicy::Unavailable(issue());
     bad(&wrong, "unavailable storage carries a readable capability");
 }
+
+/// A never-ready terminal: `core::future::pending::Pending<T>` bound as
+/// a whole program under its compiler-origin rule, on a record with
+/// nothing to read.
+fn never_ready() -> Bundle {
+    let mut b = base();
+    b.semantics.rules[0].kind = SemanticRuleKind::CorePending;
+    let mut r = record(CHILD);
+    r.future.as_mut().unwrap().continuation = Continuation::Bound {
+        rule: SemanticRuleId(0),
+        program: PollProgram::Direct(PollAction::NeverReady),
+    };
+    b.semantics.types = vec![r];
+    b.validate().unwrap();
+    b
+}
+
+/// Never ready is a property of the type and legal only as a whole
+/// program under its own rule: not as a state's case, not under any
+/// other kind, not beside state the record says there is to read, and
+/// not under a library origin.
+#[test]
+fn test_semantic_never_ready_is_a_whole_program_under_its_own_rule() {
+    let b = never_ready();
+    let mut bytes = Vec::new();
+    b.write_to(&mut bytes).unwrap();
+    assert_eq!(Bundle::read_from(bytes.as_slice()).unwrap(), b);
+
+    // A coroutine's case, under the coroutine's own rule.
+    let mut b = coroutine();
+    cases(&mut b)[0].action = PollAction::NeverReady;
+    bad(&b, "incompatible capability");
+    // A case of a plain enum's match under the pending rule itself:
+    // the guard is the tell.
+    b.semantics.rules[0].kind = SemanticRuleKind::CorePending;
+    let r = &mut b.semantics.types[0];
+    r.coroutine = None;
+    r.storage = StoragePolicy::DeclaredMembers;
+    r.future.as_mut().unwrap().evidence = vec![FutureEvidence::PollSymbol(POLL)];
+    bad(&b, "never ready is not a state");
+
+    // A whole program under a resource's rule, well-formed on its own.
+    let mut b = never_ready();
+    b.semantics.rules[0].kind = SemanticRuleKind::TokioSleep;
+    b.semantics.origins[0] = SemanticOrigin::LibraryLayout {
+        package: StrRef(8),
+        version: Some(StrRef(9)),
+        family: StrRef(10),
+        selection: LayoutSelection::ReviewedRange,
+    };
+    bad(&b, "incompatible capability");
+
+    // Beside a resource binding: the record has state to read.
+    let mut b = resource();
+    b.semantics.origins.push(SemanticOrigin::Rustc {
+        producer: StrRef(6),
+        family: StrRef(7),
+    });
+    b.semantics.rules.push(SemanticRule {
+        kind: SemanticRuleKind::CorePending,
+        revision: 1,
+        origin: SemanticOriginId(1),
+    });
+    b.semantics.types[0].future.as_mut().unwrap().continuation = Continuation::Bound {
+        rule: SemanticRuleId(1),
+        program: PollProgram::Direct(PollAction::NeverReady),
+    };
+    bad(&b, "never ready on a type with state to read");
+
+    // Under a library origin: the source it reviews is the toolchain's.
+    let mut b = never_ready();
+    b.semantics.origins[0] = SemanticOrigin::LibraryLayout {
+        package: StrRef(8),
+        version: Some(StrRef(9)),
+        family: StrRef(10),
+        selection: LayoutSelection::ReviewedRange,
+    };
+    bad(&b, "compiler rule needs a compiler origin");
+}

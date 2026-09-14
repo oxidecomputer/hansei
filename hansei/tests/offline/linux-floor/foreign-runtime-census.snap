@@ -5,10 +5,10 @@ description: "`census` over linux-floor/foreign-runtime"
 Threads: 2 lwps, 2 in 2 runtimes
 
 COUNT  RT  ROLE             STATE           LWPS
-    1  0   block_on thread  in driver       578701
+    1  0   block_on thread  in driver       804745
     0  0   blocking pool    0 idle, 0 busy  —
     0  1   blocking pool    0 idle, 0 busy  —
-    1  —   entered runtime  —               578703
+    1  —   entered runtime  —               804747
 [2 lwps]
 
 Tasks: 4 owned by 2 runtimes and 1 local set
@@ -19,7 +19,7 @@ COUNT  STATE
 
 COUNT  TYPE / WAITING ON
     1  async fn foreign_runtime::detached
-       └─ 1  unknown
+       └─ 1  never ready
     1  async fn foreign_runtime::joined
        └─ 1  a tokio::sync::Semaphore (semaphore)
     1  async fn foreign_runtime::joiner

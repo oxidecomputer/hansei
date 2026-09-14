@@ -145,7 +145,7 @@ impl<'a> Check<'a> {
         let package = match rule.kind {
             RustcAsyncFn | RustcAsyncBlock | DynFutureAbi | StdBoxAccess | StdMutRefAccess
             | StdPinBoxAccess | StdPinMutRefAccess | StdBoxPoll | StdMutRefPoll | StdPinBoxPoll
-            | StdPinMutRefPoll => {
+            | StdPinMutRefPoll | CorePending => {
                 return require(
                     matches!(origin, SemanticOrigin::Rustc { .. }),
                     "compiler rule needs a compiler origin",
@@ -676,6 +676,21 @@ impl<'a> Check<'a> {
                 self.rule(rule, &[RustcAsyncFn, RustcAsyncBlock, FuturesUtilMap])?;
                 require(guard.is_some(), "a terminal state requires a variant guard")?;
             }
+            // Never ready is a property of the type, not of a state,
+            // and a type that has state to read — a resource, a
+            // coroutine, a container, a select — is not one whose poll
+            // reads nothing.
+            PollAction::NeverReady => {
+                self.rule(rule, &[CorePending])?;
+                require(guard.is_none(), "never ready is not a state")?;
+                require(
+                    record.resource.is_none()
+                        && record.coroutine.is_none()
+                        && record.container.is_none()
+                        && record.select.is_none(),
+                    "never ready on a type with state to read",
+                )?;
+            }
             PollAction::Unknown(issue) => self.issue(issue)?,
         }
         Ok(())
@@ -712,6 +727,7 @@ impl<'a> Check<'a> {
                 TokioMpscRecv,
                 TokioNotified,
                 TokioOneshotRecv,
+                CorePending,
             ],
         )?;
         require(

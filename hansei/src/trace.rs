@@ -837,6 +837,9 @@ fn print_chain_end(
         bundle::ChainEnd::Panicked => {
             writeln!(out, "the chain ends in a future that panicked")?;
         }
+        bundle::ChainEnd::NeverReady => {
+            writeln!(out, "the chain ends in a future that is never ready")?;
+        }
         bundle::ChainEnd::ActivePoll => {
             writeln!(
                 out,

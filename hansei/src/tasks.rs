@@ -998,6 +998,7 @@ pub(crate) fn assessment_cell(wait: &rt_graph::TaskWait, stops: &StopNames<'_>) 
             1 => format!("{} (holds 1 future)", unknown_cell(wait, stops)),
             n => format!("{} (holds {n} futures)", unknown_cell(wait, stops)),
         },
+        WaitAssessment::NeverReady { .. } => "never ready".to_string(),
         WaitAssessment::Unresumed => "— (unresumed)".to_string(),
         WaitAssessment::NotWaiting(NotWaitingReason::Returned) => "— (returned)".to_string(),
         WaitAssessment::NotWaiting(NotWaitingReason::Panicked) => "— (panicked)".to_string(),
@@ -1019,6 +1020,9 @@ pub(crate) fn assessment_kind(wait: &rt_graph::TaskWait, stops: &StopNames<'_>) 
         WaitAssessment::Set(set) => Some(set.group_label()),
         WaitAssessment::ResourceReady(_) => Some("ready".to_string()),
         WaitAssessment::Unknown(_) => Some(unknown_cell(wait, stops)),
+        // Waiting, forever, on nothing that exists: its own bucket,
+        // since a hang investigation wants to list exactly these.
+        WaitAssessment::NeverReady { .. } => Some("never ready".to_string()),
         WaitAssessment::Unresumed | WaitAssessment::NotWaiting(_) | WaitAssessment::Runnable(_) => {
             None
         }
@@ -1046,14 +1050,16 @@ fn unknown_cell(wait: &rt_graph::TaskWait, stops: &StopNames<'_>) -> String {
 /// futures_util::future::Map`, generic arguments dropped since they
 /// tell monomorphizations apart, not stops. A chain cut short says how
 /// (`unknown (ambiguous dyn future)`); a chain that reached a
-/// primitive nothing described is the bare `unknown`. `None` for a
-/// terminal or mid-poll end, which waits on nothing.
+/// primitive nothing described is the bare `unknown`; a chain ending
+/// in a future that is never ready is `never ready`, a bucket of its
+/// own. `None` for a finished or mid-poll end, which waits on nothing.
 pub(crate) fn continuation_bucket(
     continuation: &ContinuationStatus,
     stops: &StopNames<'_>,
 ) -> Option<String> {
     match continuation {
         ContinuationStatus::Primitive => Some("unknown".to_string()),
+        ContinuationStatus::NeverReady => Some("never ready".to_string()),
         ContinuationStatus::Unknown { at, .. } => Some(match stops.label(at.ty) {
             Some(stop) => format!("unknown at {stop}"),
             None => "unknown".to_string(),
@@ -1182,12 +1188,14 @@ pub(crate) fn wait_detail(
         }
         WaitAssessment::Waiting(_) => lines.extend(wait.notes.iter().cloned()),
         WaitAssessment::Set(_)
+        | WaitAssessment::NeverReady { .. }
         | WaitAssessment::Unresumed
         | WaitAssessment::NotWaiting(_)
         | WaitAssessment::Runnable(_) => {}
     }
     let (members, capped) = match &wait.assessment {
         WaitAssessment::Set(set) => (set.members.as_slice(), set.capped),
+        WaitAssessment::NeverReady { members, capped } => (members.as_slice(), *capped),
         WaitAssessment::Unknown(WaitUnknownReason::Continuation) => {
             (wait.held.as_slice(), wait.held_capped)
         }
@@ -1337,6 +1345,7 @@ fn member_line(
         }
         Some(WaitAssessment::Unknown(WaitUnknownReason::Continuation)) => "unknown".to_string(),
         Some(WaitAssessment::Unknown(reason)) => format!("unknown ({})", unknown_word(*reason)),
+        Some(WaitAssessment::NeverReady { .. }) => "never ready".to_string(),
         Some(WaitAssessment::Unresumed) => "never polled".to_string(),
         Some(WaitAssessment::NotWaiting(NotWaitingReason::Returned)) => "returned".to_string(),
         Some(WaitAssessment::NotWaiting(NotWaitingReason::Panicked)) => "panicked".to_string(),
@@ -2928,6 +2937,36 @@ mod table_tests {
             [
                 "a: x::branch at 0x6000 — unknown; held, not armed",
                 "b: x::branch at 0x6000 — unknown; held, not armed",
+                "1 more branches not inspected",
+            ]
+        );
+    }
+
+    /// A never-ready verdict at a `select!` stop lists the branches it
+    /// was rolled up from, each with the verdict and the armed half a
+    /// held branch prints, and counts the ones past the cap; the cell
+    /// and the bucket are the verdict alone.
+    #[test]
+    fn test_a_never_ready_stop_lists_its_branches() {
+        let never_ready = |members, capped| WaitAssessment::NeverReady { members, capped };
+        let rolled = assessed(
+            1,
+            never_ready(
+                vec![
+                    branch("a", never_ready(Vec::new(), 0), false),
+                    branch("b", never_ready(Vec::new(), 0), false),
+                ],
+                1,
+            ),
+        );
+        let rows = rows_of(vec![task(1, 0)], vec![rolled], HashMap::new());
+        assert_eq!(rows[0].waiting_on, "never ready");
+        assert_eq!(rows[0].waiting_kind.as_deref(), Some("never ready"));
+        assert_eq!(
+            rows[0].wait_detail,
+            [
+                "a: x::branch at 0x6000 — never ready; held, not armed",
+                "b: x::branch at 0x6000 — never ready; held, not armed",
                 "1 more branches not inspected",
             ]
         );

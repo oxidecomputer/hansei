@@ -43,8 +43,8 @@ use crate::detect::semantics::{
     FUTURES_UTIL_ADAPTERS_V0_3_30, HYPER_UTIL_TOKIO_SLEEP_V0_1_10, LibraryConvention,
     RustcConvention, TOKIO_INTERVAL_TICK_V1_47, TOKIO_SELECT_V1_47, TOKIO_STREAM_MAP_V0_1_14,
     TOKIO_STREAM_WATCH_V0_1_14, TOKIO_UTIL_REUSABLE_BOX_V0_7_11, TRACING_INSTRUMENTED_V0_1_40,
-    library_convention, rustc_coroutine_convention, rustc_dyn_future_abi_convention,
-    rustc_std_adapter_convention, tokio_state_protocol,
+    library_convention, rustc_core_pending_convention, rustc_coroutine_convention,
+    rustc_dyn_future_abi_convention, rustc_std_adapter_convention, tokio_state_protocol,
 };
 
 use std::borrow::Cow;
@@ -72,6 +72,7 @@ pub(super) enum Reviewed {
     Coroutine,
     StdAdapters,
     DynFutureAbi,
+    CorePending,
 }
 
 impl Reviewed {
@@ -81,6 +82,7 @@ impl Reviewed {
             Reviewed::Coroutine => rustc_coroutine_convention(producer),
             Reviewed::StdAdapters => rustc_std_adapter_convention(producer),
             Reviewed::DynFutureAbi => rustc_dyn_future_abi_convention(producer),
+            Reviewed::CorePending => rustc_core_pending_convention(producer),
         }
     }
 }
@@ -323,6 +325,10 @@ pub(super) struct Seed {
     instrumented: Option<InstrumentedSeed>,
     library: Option<LibrarySeed>,
     select: Option<SelectSeed>,
+    /// core's `Pending<T>` as its screen saw it: the compiler verdict on
+    /// its defining units, which is the whole of the rule's origin. The
+    /// layout is the screen's; there is no member to route through.
+    pending: Option<CompilerVerdict>,
     /// Where the type's own methods were declared, for a library rule
     /// whose origin is the type rather than a `poll` (a `WatchStream`
     /// has none, nor does the `StreamMap` container); empty otherwise.
@@ -536,6 +542,10 @@ pub(super) fn collect_semantic_seeds(
             && let Some(seed) = select_seed(layout, bundle_id, &env_source)
         {
             seeds.entry(ty).or_default().select = Some(seed);
+        } else if name.starts_with("core::future::pending::Pending<")
+            && adapters::core_pending(reader, raw)
+        {
+            seeds.entry(ty).or_default().pending = Some(verdict(raw, Reviewed::CorePending));
         } else if let Some(library) = library_seed(
             reader,
             raw,
@@ -1003,6 +1013,9 @@ enum Delegation {
     Match {
         cases: Vec<(StrRef, CaseAction)>,
     },
+    /// The reviewed poll returns `Pending` and does nothing else: no
+    /// delegate, no state, nothing to route to.
+    NeverReady,
 }
 
 impl Plan {
@@ -1020,6 +1033,7 @@ impl Plan {
                     _ => None,
                 })
                 .collect(),
+            Some(Delegation::NeverReady) => Vec::new(),
         }
     }
 }
@@ -1167,6 +1181,15 @@ pub(super) fn bind_semantics(
                 }
             } else if let Some(instrumented) = &seed.instrumented {
                 match plan_instrumented(ty, instrumented, seed, types, names, strings) {
+                    Ok(plan) => draft.plan = Some(plan),
+                    Err(decline) => draft.decline = Some(decline),
+                }
+            } else if let Some(verdict) = &seed.pending {
+                // The terminal is a program like any other: it needs a
+                // future to be about, so a `Pending` nothing proves a
+                // future — a member of a type with no plan — plans one
+                // and never emits it.
+                match plan_pending(verdict) {
                     Ok(plan) => draft.plan = Some(plan),
                     Err(decline) => draft.decline = Some(decline),
                 }
@@ -1352,6 +1375,7 @@ pub(super) fn bind_semantics(
                                 exclusive,
                             })
                         }
+                        Delegation::NeverReady => PollProgram::Direct(PollAction::NeverReady),
                         Delegation::Match { cases } => PollProgram::MatchVariant {
                             state: TypedPath {
                                 steps: Vec::new(),
@@ -1506,6 +1530,24 @@ fn supported(verdict: &CompilerVerdict) -> Result<(&str, &'static RustcConventio
             Err((SemanticIssueKind::UnsupportedOrigin, detail.clone()))
         }
     }
+}
+
+/// Plan core's `Pending<T>`: the compiler verdict on its defining units
+/// is the whole of the evidence — the layout was the screen's, and the
+/// reviewed poll routes to nothing — so the plan is the terminal under
+/// the compiler rule, or the verdict's decline.
+fn plan_pending(verdict: &CompilerVerdict) -> Result<Plan, Decline> {
+    let (producer, convention) = supported(verdict)?;
+    Ok(Plan {
+        rule: RuleKey::Rustc {
+            kind: SemanticRuleKind::CorePending,
+            producer: producer.to_owned(),
+            family: convention.family,
+        },
+        program: Some(Delegation::NeverReady),
+        access: None,
+        delegate_is_future: false,
+    })
 }
 
 /// Plan a std adapter's delegation: the compiler verdict on its
@@ -3172,6 +3214,32 @@ mod tests {
             assert_eq!(kind, SemanticIssueKind::UnsupportedOrigin, "{detail}");
             assert!(detail.contains(expected), "{detail}");
         }
+    }
+
+    /// `Pending` plans the terminal under the compiler rule, on the
+    /// verdict alone: no route, no access, no delegate to prove a
+    /// future; and a verdict outside the reviewed range is the decline
+    /// with its reason.
+    #[test]
+    fn test_pending_plans_the_terminal_on_the_compiler_verdict_alone() {
+        use crate::detect::semantics::RUSTC_CORE_PENDING_V1_97;
+        let plan = plan_pending(&supported(&RUSTC_CORE_PENDING_V1_97)).unwrap();
+        assert_eq!(
+            plan.rule,
+            RuleKey::Rustc {
+                kind: SemanticRuleKind::CorePending,
+                producer: PRODUCER.to_owned(),
+                family: RUSTC_CORE_PENDING_V1_97.family,
+            }
+        );
+        assert!(matches!(plan.program, Some(Delegation::NeverReady)));
+        assert!(plan.access.is_none());
+        assert!(!plan.delegate_is_future);
+        assert!(plan.static_children().is_empty());
+        let (kind, detail) =
+            plan_pending(&CompilerVerdict::Declined("rustc 1.99".into())).unwrap_err();
+        assert_eq!(kind, SemanticIssueKind::UnsupportedOrigin);
+        assert_eq!(detail, "rustc 1.99");
     }
 
     /// A route that the final table does not bear out declines with the
