@@ -483,6 +483,33 @@ pub fn tasks<T: Target>(ctx: &Context<'_, T>, target: &T) -> TaskList {
     e.list
 }
 
+/// The local `local` of the frame on `task`'s chain whose future's
+/// name contains `frame`, as the census scans it — a test's way to
+/// hand a walk the very value a fixture built, without a marker.
+pub fn frame_local<'b, T: Target>(
+    ctx: &Context<'b, T>,
+    task: &crate::tokio::bundle::Task,
+    frame: &str,
+    local: &str,
+) -> reify::Value<'b> {
+    let inspection = ctx
+        .inspect_task(task, &ReadContext::none())
+        .expect("the task's root reads")
+        .expect("the task holds a resident future");
+    let found = inspection
+        .chain
+        .frames
+        .iter()
+        .find(|f| f.future.ty.name().contains(frame))
+        .unwrap_or_else(|| panic!("no frame named {frame} on the chain"));
+    census_mod::frame_locals(ctx, found)
+        .locals
+        .into_iter()
+        .find(|(name, _)| *name == local)
+        .map(|(_, value)| value)
+        .unwrap_or_else(|| panic!("no local {local} in {frame}"))
+}
+
 /// The future census over an enumerated list, held to its construction
 /// rules: the total audit invariants hold over any input whatsoever, so
 /// every test census — healthy pair and fault campaign alike — runs

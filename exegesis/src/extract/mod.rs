@@ -1317,26 +1317,39 @@ fn extract_from_view(
     let env_source =
         |env: TypeId| env_decl_func(reader, view, env).and_then(|f| sweep::poll_source(reader, &f));
     // Where a type's own methods were declared, for a rule over a type
-    // that is no future and so has no poll: every subprogram directly
-    // inside an impl of that type that records a file, joined the way
-    // a poll declaration's is. rustc puts no declaration file on the
-    // type DIE itself, so the methods are where the file is recorded.
+    // that is no future and so has no poll: every subprogram under an
+    // impl of that type, or under the type's own DIE, that records a
+    // file, joined the way a poll declaration's is. rustc puts no
+    // declaration file on the type DIE itself, so the methods are
+    // where the file is recorded — trait impls in an `{impl#N}`
+    // namespace the sweep resolved to the type, inherent methods as
+    // declarations inside the type DIE, which the unit pass files
+    // under a namespace named after the type.
     let type_sources = |ty: TypeId| -> BTreeSet<sweep::PollSource> {
         let Some(name) = fq_name(reader, ty) else {
             return BTreeSet::new();
         };
         let path = name.split('<').next().unwrap_or(&name);
-        let Some(impls) = impls_by_self.get(path) else {
+        let mut roots: Vec<NsId> = impls_by_self.get(path).cloned().unwrap_or_default();
+        if let Some(RawType::Struct(st)) = reader.canonical_type(ty)
+            && let Some(own) = st.name
+            && let Some(node) = reader.namespaces.find(st.namespace, own)
+        {
+            roots.push(node);
+        }
+        if roots.is_empty() {
             return BTreeSet::new();
-        };
+        }
         // The methods themselves are small and generic, and a release
         // build inlines them away; what survives out of line is a
         // body nested under one — an `async` block's, a closure's, an
-        // inner fn's — in a namespace of its own below the impl. So
-        // the impl is looked for anywhere up the function's chain.
-        let under_impl = |mut ns: Option<NsId>| {
+        // inner fn's — in a namespace of its own below the impl, or
+        // the declaration the type DIE keeps of the method whatever
+        // became of its body. So the root is looked for anywhere up
+        // the function's chain.
+        let under_root = |mut ns: Option<NsId>| {
             while let Some(id) = ns {
-                if impls.contains(&id) {
+                if roots.contains(&id) {
                     return true;
                 }
                 ns = reader.namespaces.get(id).parent;
@@ -1344,7 +1357,7 @@ fn extract_from_view(
             false
         };
         view.functions()
-            .filter(|(_, f)| under_impl(f.namespace_id()))
+            .filter(|(_, f)| under_root(f.namespace_id()))
             .filter_map(|(_, f)| sweep::poll_source(reader, &f))
             .collect()
     };

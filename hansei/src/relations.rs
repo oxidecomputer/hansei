@@ -325,6 +325,7 @@ mod relations_tests {
             assessment: Some(assessment),
             notes: Vec::new(),
             armed: armed.then_some(SlotRef::Protocol),
+            entries: None,
         };
         let mut wait = wait(task, None);
         wait.assessment = WaitAssessment::Set(WaitSet {
@@ -442,6 +443,7 @@ mod relations_tests {
                 assessment: None,
                 notes: Vec::new(),
                 armed: Some(SlotRef::swept(&slot, None)),
+                entries: None,
             }],
             capped: 0,
         });

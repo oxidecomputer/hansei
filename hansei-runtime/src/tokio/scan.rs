@@ -42,7 +42,9 @@
 
 use super::TaskAddr;
 use super::bundle::{ChainEnd, Context};
-use super::census::{NodeStop, join_set_entry_task, walk_join_set_entries, walk_set_nodes};
+use super::census::{
+    NodeStop, join_set_entry_task, walk_fanout_entries, walk_join_set_entries, walk_set_nodes,
+};
 use super::chain::NextFuture;
 use super::contract::{self, Walked};
 use super::observe::{
@@ -237,6 +239,12 @@ impl<'b, T: Target> Scanner<'_, 'b, T> {
             Some(ContainerKind::JoinSet) => {
                 if once(self) {
                     self.join_set(value, key);
+                }
+                return;
+            }
+            Some(ContainerKind::StreamMap) => {
+                if once(self) {
+                    self.fanout(value, key, frame);
                 }
                 return;
             }
@@ -706,6 +714,45 @@ impl<'b, T: Target> Scanner<'_, 'b, T> {
         };
         let result = walk_set_nodes(ctx, &read, set, max, visit);
         if let Err(stop) = result {
+            self.node_stop(key, stop);
+        }
+        let child_frame = frame.nested();
+        if frame.nesting >= self.budget.limits.max_future_nesting && !children.is_empty() {
+            self.report(WalkIssue::new(
+                key,
+                WalkIssueKind::HopLimit,
+                format!(
+                    "the future nesting limit ({}) was reached",
+                    self.budget.limits.max_future_nesting
+                ),
+            ));
+            return;
+        }
+        self.path.push(Step::Deref);
+        for child in children {
+            self.root(child, child_frame);
+        }
+        self.path.pop();
+    }
+
+    /// A `StreamMap`: each entry's stream is a new origin, one
+    /// dereference — the entries buffer — and one nesting hop from
+    /// here, scanned as the value it is: an owned stream over a box,
+    /// a future outright.
+    fn fanout(&mut self, map: Value<'b>, key: ValueKey, frame: Frame) {
+        let max = self.budget.limits.max_children as usize;
+        let mut children: Vec<Value<'b>> = Vec::new();
+        let ctx = self.ctx;
+        let read = self.read;
+        let budget = &mut *self.budget;
+        let visit = &mut |_index: usize, stream: Value<'b>| -> std::result::Result<(), NodeStop> {
+            if !budget.charge_referent() {
+                return Err(Self::spent(budget));
+            }
+            children.push(stream);
+            Ok(())
+        };
+        if let Err(stop) = walk_fanout_entries(ctx, &read, map, max, visit) {
             self.node_stop(key, stop);
         }
         let child_frame = frame.nested();
@@ -1725,6 +1772,67 @@ mod tests {
         assert!(completion.complete, "{:?}", sink.issues);
         assert!(sink.references.is_empty(), "{:?}", sink.references);
         assert_eq!(completion.referent_expansions, 0);
+    }
+
+    /// A `StreamMap` is walked by its own contract: each entry is an
+    /// origin one dereference and one nesting hop from the map, so a
+    /// scan of the mapper completes with the map's three entries
+    /// visited; with no nesting allowed the map reports the hop limit
+    /// and roots none of them; with no referent budget the map's walk
+    /// stops on its first entry and says so.
+    #[test]
+    fn test_a_stream_map_roots_each_entry_under_the_limits() {
+        let (bundle, snapshot) = testkit::load_any("watch-stream");
+        let ctx = testkit::context(&bundle, &snapshot);
+        let list = testkit::tasks(&ctx, &snapshot);
+        let mapper = task_named(&list, "mapper");
+        let map = testkit::frame_local(&ctx, mapper, "mapper", "map");
+        let map_key = ValueKey::of(map);
+        let (completion, sink) = scan_task(&ctx, mapper);
+        assert!(completion.complete, "{:?}", sink.issues);
+        assert!(sink.issues.is_empty(), "{:?}", sink.issues);
+        let visits = completion.inline_visits;
+        let expansions = completion.referent_expansions;
+
+        let (limited, sink) = scan_task_with(
+            &ctx,
+            mapper,
+            &ReadContext::none(),
+            ScanLimits {
+                max_future_nesting: 0,
+                ..ScanLimits::default()
+            },
+        );
+        assert!(!limited.complete);
+        assert!(
+            sink.issues
+                .iter()
+                .any(|i| i.kind == WalkIssueKind::HopLimit && i.at == map_key),
+            "{:?}",
+            sink.issues
+        );
+        // The entries were walked and charged, then not rooted.
+        assert!(limited.inline_visits < visits, "{limited:?}");
+        assert!(limited.referent_expansions < expansions, "{limited:?}");
+
+        let (spent, sink) = scan_task_with(
+            &ctx,
+            mapper,
+            &ReadContext::none(),
+            ScanLimits {
+                max_referent_expansions: 0,
+                ..ScanLimits::default()
+            },
+        );
+        assert!(!spent.complete);
+        assert!(
+            sink.issues
+                .iter()
+                .any(|i| i.kind == WalkIssueKind::VisitLimit && i.at == map_key),
+            "{:?}",
+            sink.issues
+        );
+        assert_eq!(spent.referent_expansions, 0);
     }
 
     /// A counting sink sees the same references as the collecting

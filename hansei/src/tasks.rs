@@ -1208,7 +1208,15 @@ pub(crate) fn wait_detail(
             .into_iter()
             .partition(|slot| attribution::member_accounts(member, slot, size_of));
         rest = others;
-        lines.push(member_line(member, stops, &mine, stopped));
+        let line = member_line(member, stops, &mine, stopped);
+        // An entry reached through a member listed before it — a
+        // branch whose chain ends at the map, a local holding one —
+        // sits one step under that member; an entry of a stop that is
+        // the map itself is a branch of the stop like any other.
+        match &member.route {
+            MemberRoute::Entry { under: Some(_), .. } => lines.push(format!("    {line}")),
+            _ => lines.push(line),
+        }
     }
     if capped > 0 {
         lines.push(format!("{capped} more branches not inspected"));
@@ -1283,6 +1291,9 @@ fn member_line(
                 .unwrap_or_default();
             return format!("branch {index}: {future}: disabled");
         }
+        MemberRoute::Entry {
+            index, borrowed, ..
+        } => (format!("entry {index}"), *borrowed),
         MemberRoute::SlotOnly { .. } => unreachable!("only branches print as members"),
     };
     let via = if borrowed { " (borrowed)" } else { "" };
@@ -1295,6 +1306,29 @@ fn member_line(
         .key
         .map(|key| format!(" at {:#x}", key.addr))
         .unwrap_or_default();
+    // A member that fans out — a map polled with this task's own
+    // context, or a chain ending at one — is listed for its entries,
+    // which follow it: it holds no waker of this task's itself, so
+    // nothing arms it, and the verdict is the count. Any one entry
+    // wakes the task.
+    if let Some(fanout) = member.entries {
+        let inspected = if fanout.listed < fanout.total {
+            format!(" ({} inspected)", fanout.listed)
+        } else {
+            String::new()
+        };
+        let verdict = match fanout.total {
+            0 => "no entries".to_string(),
+            1 => "1 entry, which wakes it".to_string(),
+            n => format!("{n} entries{inspected}, any one wakes it"),
+        };
+        let mut line = format!("{local}{via}: {future}{at} — {verdict}");
+        for note in &member.notes {
+            line.push_str("; ");
+            line.push_str(note);
+        }
+        return line;
+    }
     let verdict = match &member.assessment {
         Some(WaitAssessment::Waiting(verified)) => verified.target().to_string(),
         Some(WaitAssessment::Set(set)) => set.cell(),
@@ -2523,7 +2557,10 @@ fn optional<T>(read: Result<T>, what: &str) -> Result<Option<T>> {
 
 #[cfg(test)]
 mod table_tests {
-    use super::{StopNames, build_rows, listing_footer, print_task_table, stop_label};
+    use super::{
+        StopNames, build_rows, listing_footer, member_line, print_task_table, stop_label,
+        wait_detail,
+    };
 
     use hansei_bundle::{BundleTypeId, SemanticIssueKind};
     use hansei_runtime::tokio::assess::{
@@ -2560,6 +2597,7 @@ mod table_tests {
             assessment: Some(assessment),
             notes: Vec::new(),
             armed: armed.then_some(SlotRef::Protocol),
+            entries: None,
         }
     }
 
@@ -2576,6 +2614,7 @@ mod table_tests {
             assessment: None,
             notes: Vec::new(),
             armed: None,
+            entries: None,
         }
     }
 
@@ -2674,6 +2713,78 @@ mod table_tests {
         )
     }
 
+    /// A member that fans out is listed for its count and arms nothing
+    /// itself: the count, with how many were inspected where the cap
+    /// cut it short, and no verdict or slot text; its entries follow
+    /// as `entry N` lines one step in, while an entry of a stop that
+    /// is the map itself sits at the top like any branch.
+    #[test]
+    fn test_a_fan_out_member_lists_its_count_and_nests_its_entries() {
+        let entry = |index: usize, under: Option<MemberRoute>| WaitMember {
+            route: MemberRoute::Entry {
+                index,
+                under: under.map(Box::new),
+                borrowed: false,
+            },
+            ..branch(
+                "e",
+                WaitAssessment::Unknown(WaitUnknownReason::Continuation),
+                false,
+            )
+        };
+        let fanning = |listed: usize, total: usize| WaitMember {
+            route: MemberRoute::Select {
+                index: 1,
+                borrowed: true,
+            },
+            assessment: None,
+            entries: Some(hansei_runtime::tokio::waitset::Fanout { listed, total }),
+            ..branch("m", WaitAssessment::Unresumed, true)
+        };
+        let impls = Default::default();
+        let stops = StopNames::none(&impls);
+        let line = |member: &WaitMember| member_line(member, &stops, &[], None);
+        assert_eq!(
+            line(&fanning(3, 3)),
+            "branch 1 (borrowed): x::branch at 0x6000 — 3 entries, any one wakes it"
+        );
+        assert_eq!(
+            line(&fanning(8, 12)),
+            "branch 1 (borrowed): x::branch at 0x6000 — 12 entries (8 inspected), any one wakes it"
+        );
+        assert_eq!(
+            line(&fanning(1, 1)),
+            "branch 1 (borrowed): x::branch at 0x6000 — 1 entry, which wakes it"
+        );
+        assert_eq!(
+            line(&fanning(0, 0)),
+            "branch 1 (borrowed): x::branch at 0x6000 — no entries"
+        );
+        let under = MemberRoute::Select {
+            index: 1,
+            borrowed: true,
+        };
+        let wait = assessed(
+            1,
+            one_of(vec![
+                fanning(2, 2),
+                entry(0, Some(under.clone())),
+                entry(1, Some(under)),
+                entry(0, None),
+            ]),
+        );
+        let lines = wait_detail(&wait, &stops, &[], None, &|_| None);
+        assert_eq!(
+            lines,
+            [
+                "branch 1 (borrowed): x::branch at 0x6000 — 2 entries, any one wakes it",
+                "    entry 0: x::branch at 0x6000 — unknown; held, not armed",
+                "    entry 1: x::branch at 0x6000 — unknown; held, not armed",
+                "entry 0: x::branch at 0x6000 — unknown; held, not armed",
+            ]
+        );
+    }
+
     /// An unknown says what made it one, in the cell and in its bucket
     /// alike — the stop type where the chain stopped at one (bare
     /// `unknown` where no bundle names it), how a chain was cut short,
@@ -2768,6 +2879,7 @@ mod table_tests {
                 fd: None,
                 ready: None,
             }),
+            entries: None,
         };
         let mut set = one_of(vec![
             branch("a", verified, true),

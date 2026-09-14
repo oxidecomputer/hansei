@@ -216,12 +216,44 @@ pub enum IoOperationKind {
 pub struct ContainerBinding {
     pub rule: SemanticRuleId,
     pub kind: ContainerKind,
+    /// Whose waker the container hands its children; fixed by the
+    /// kind ([`ContainerKind::wakers`]) and recorded beside it so a
+    /// consumer reads the fact it dispatches on rather than
+    /// re-deriving it.
+    pub wakers: ContainerWakers,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub enum ContainerKind {
     JoinSet,
     FuturesUnordered,
+    /// tokio-stream's `StreamMap<K, V>`: a `Vec<(K, V)>` of streams
+    /// polled in turn with the polling task's own context, every
+    /// pending one keeping its registration.
+    StreamMap,
+}
+
+/// Whose waker a container's children are polled with.
+#[derive(Copy, Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub enum ContainerWakers {
+    /// The container's own per-child waker (`FuturesUnordered`,
+    /// `JoinSet`): a child's registration names the container, and
+    /// the task polling the container is woken through it.
+    Own,
+    /// The polling task's context, forwarded unchanged (`StreamMap`):
+    /// every child's registration names the task itself.
+    Forwarded,
+}
+
+impl ContainerKind {
+    /// How the kind polls its children; the reviewed implementation's
+    /// business, not the target's.
+    pub fn wakers(self) -> ContainerWakers {
+        match self {
+            ContainerKind::JoinSet | ContainerKind::FuturesUnordered => ContainerWakers::Own,
+            ContainerKind::StreamMap => ContainerWakers::Forwarded,
+        }
+    }
 }
 
 /// A `select!` as tokio's macro lays it out around the `PollFn` it
@@ -318,6 +350,9 @@ pub enum SemanticRuleKind {
     /// through `boxed`, the `Pin<Box<dyn Future>>` its every poll
     /// forwards to.
     TokioUtilReusableBox,
+    /// tokio-stream's `StreamMap<K, V>`: a container binding over its
+    /// `entries`, each polled with the polling task's own context.
+    TokioStreamStreamMap,
 }
 
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]

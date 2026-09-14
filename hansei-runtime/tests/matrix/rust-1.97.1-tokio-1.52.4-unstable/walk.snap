@@ -2,7 +2,7 @@
 source: hansei-runtime/tests/matrix.rs
 ---
 program: futurelock
-walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 169 entries, 0 broken, 60 absent
+walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 171 entries, 0 broken, 62 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -172,9 +172,11 @@ walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 169 entries, 
   absent  watch::Shared.ref_count_rx — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
   absent  watch::Shared.ref_count_tx — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
   absent  watch::Shared.notify_rx — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
+  absent  StreamMap.entries — no tokio_stream::stream_map::StreamMap<… type in the tokio info (the target does not reach one)
+  absent  StreamMap.entry.stream — no tokio_stream::stream_map::StreamMap<… type in the tokio info (the target does not reach one)
 
 program: simple-await
-walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 169 entries, 0 broken, 76 absent
+walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 171 entries, 0 broken, 78 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -344,9 +346,11 @@ walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 169 entries, 
   absent  watch::Shared.ref_count_rx — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
   absent  watch::Shared.ref_count_tx — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
   absent  watch::Shared.notify_rx — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
+  absent  StreamMap.entries — no tokio_stream::stream_map::StreamMap<… type in the tokio info (the target does not reach one)
+  absent  StreamMap.entry.stream — no tokio_stream::stream_map::StreamMap<… type in the tokio info (the target does not reach one)
 
 program: nested-await
-walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 169 entries, 0 broken, 76 absent
+walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 171 entries, 0 broken, 78 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -516,9 +520,11 @@ walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 169 entries, 
   absent  watch::Shared.ref_count_rx — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
   absent  watch::Shared.ref_count_tx — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
   absent  watch::Shared.notify_rx — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
+  absent  StreamMap.entries — no tokio_stream::stream_map::StreamMap<… type in the tokio info (the target does not reach one)
+  absent  StreamMap.entry.stream — no tokio_stream::stream_map::StreamMap<… type in the tokio info (the target does not reach one)
 
 program: dyn-future
-walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 169 entries, 0 broken, 70 absent
+walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 171 entries, 0 broken, 72 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -688,9 +694,11 @@ walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 169 entries, 
   absent  watch::Shared.ref_count_rx — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
   absent  watch::Shared.ref_count_tx — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
   absent  watch::Shared.notify_rx — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
+  absent  StreamMap.entries — no tokio_stream::stream_map::StreamMap<… type in the tokio info (the target does not reach one)
+  absent  StreamMap.entry.stream — no tokio_stream::stream_map::StreamMap<… type in the tokio info (the target does not reach one)
 
 program: select-combinator
-walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 169 entries, 0 broken, 76 absent
+walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 171 entries, 0 broken, 78 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -860,9 +868,11 @@ walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 169 entries, 
   absent  watch::Shared.ref_count_rx — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
   absent  watch::Shared.ref_count_tx — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
   absent  watch::Shared.notify_rx — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
+  absent  StreamMap.entries — no tokio_stream::stream_map::StreamMap<… type in the tokio info (the target does not reach one)
+  absent  StreamMap.entry.stream — no tokio_stream::stream_map::StreamMap<… type in the tokio info (the target does not reach one)
 
 program: many-tasks
-walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 169 entries, 0 broken, 77 absent
+walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 171 entries, 0 broken, 79 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -1032,9 +1042,11 @@ walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 169 entries, 
   absent  watch::Shared.ref_count_rx — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
   absent  watch::Shared.ref_count_tx — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
   absent  watch::Shared.notify_rx — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
+  absent  StreamMap.entries — no tokio_stream::stream_map::StreamMap<… type in the tokio info (the target does not reach one)
+  absent  StreamMap.entry.stream — no tokio_stream::stream_map::StreamMap<… type in the tokio info (the target does not reach one)
 
 program: sleep-join
-walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 169 entries, 0 broken, 72 absent
+walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 171 entries, 0 broken, 74 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -1204,9 +1216,11 @@ walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 169 entries, 
   absent  watch::Shared.ref_count_rx — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
   absent  watch::Shared.ref_count_tx — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
   absent  watch::Shared.notify_rx — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
+  absent  StreamMap.entries — no tokio_stream::stream_map::StreamMap<… type in the tokio info (the target does not reach one)
+  absent  StreamMap.entry.stream — no tokio_stream::stream_map::StreamMap<… type in the tokio info (the target does not reach one)
 
 program: channels
-walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 169 entries, 0 broken, 40 absent
+walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 171 entries, 0 broken, 42 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -1376,9 +1390,11 @@ walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 169 entries, 
   ok      watch::Shared.ref_count_rx
   ok      watch::Shared.ref_count_tx
   ok      watch::Shared.notify_rx
+  absent  StreamMap.entries — no tokio_stream::stream_map::StreamMap<… type in the tokio info (the target does not reach one)
+  absent  StreamMap.entry.stream — no tokio_stream::stream_map::StreamMap<… type in the tokio info (the target does not reach one)
 
 program: unordered
-walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 169 entries, 0 broken, 73 absent
+walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 171 entries, 0 broken, 75 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -1548,9 +1564,11 @@ walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 169 entries, 
   absent  watch::Shared.ref_count_rx — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
   absent  watch::Shared.ref_count_tx — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
   absent  watch::Shared.notify_rx — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
+  absent  StreamMap.entries — no tokio_stream::stream_map::StreamMap<… type in the tokio info (the target does not reach one)
+  absent  StreamMap.entry.stream — no tokio_stream::stream_map::StreamMap<… type in the tokio info (the target does not reach one)
 
 program: joinset
-walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 169 entries, 0 broken, 43 absent
+walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 171 entries, 0 broken, 45 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -1720,9 +1738,11 @@ walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 169 entries, 
   absent  watch::Shared.ref_count_rx — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
   absent  watch::Shared.ref_count_tx — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
   absent  watch::Shared.notify_rx — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
+  absent  StreamMap.entries — no tokio_stream::stream_map::StreamMap<… type in the tokio info (the target does not reach one)
+  absent  StreamMap.entry.stream — no tokio_stream::stream_map::StreamMap<… type in the tokio info (the target does not reach one)
 
 program: ct-runtime
-walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 169 entries, 0 broken, 60 absent
+walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 171 entries, 0 broken, 62 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -1892,9 +1912,11 @@ walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 169 entries, 
   absent  watch::Shared.ref_count_rx — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
   absent  watch::Shared.ref_count_tx — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
   absent  watch::Shared.notify_rx — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
+  absent  StreamMap.entries — no tokio_stream::stream_map::StreamMap<… type in the tokio info (the target does not reach one)
+  absent  StreamMap.entry.stream — no tokio_stream::stream_map::StreamMap<… type in the tokio info (the target does not reach one)
 
 program: local-set
-walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 169 entries, 0 broken, 53 absent
+walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 171 entries, 0 broken, 55 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   ok      statics.tls_local_set_key
@@ -2064,9 +2086,11 @@ walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 169 entries, 
   absent  watch::Shared.ref_count_rx — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
   absent  watch::Shared.ref_count_tx — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
   absent  watch::Shared.notify_rx — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
+  absent  StreamMap.entries — no tokio_stream::stream_map::StreamMap<… type in the tokio info (the target does not reach one)
+  absent  StreamMap.entry.stream — no tokio_stream::stream_map::StreamMap<… type in the tokio info (the target does not reach one)
 
 program: local-set-timer
-walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 169 entries, 0 broken, 53 absent
+walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 171 entries, 0 broken, 55 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   ok      statics.tls_local_set_key
@@ -2236,9 +2260,11 @@ walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 169 entries, 
   absent  watch::Shared.ref_count_rx — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
   absent  watch::Shared.ref_count_tx — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
   absent  watch::Shared.notify_rx — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
+  absent  StreamMap.entries — no tokio_stream::stream_map::StreamMap<… type in the tokio info (the target does not reach one)
+  absent  StreamMap.entry.stream — no tokio_stream::stream_map::StreamMap<… type in the tokio info (the target does not reach one)
 
 program: local-set-io
-walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 169 entries, 0 broken, 55 absent
+walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 171 entries, 0 broken, 57 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   ok      statics.tls_local_set_key
@@ -2408,9 +2434,11 @@ walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 169 entries, 
   absent  watch::Shared.ref_count_rx — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
   absent  watch::Shared.ref_count_tx — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
   absent  watch::Shared.notify_rx — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
+  absent  StreamMap.entries — no tokio_stream::stream_map::StreamMap<… type in the tokio info (the target does not reach one)
+  absent  StreamMap.entry.stream — no tokio_stream::stream_map::StreamMap<… type in the tokio info (the target does not reach one)
 
 program: foreign-runtime
-walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 169 entries, 0 broken, 53 absent
+walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 171 entries, 0 broken, 55 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   ok      statics.tls_local_set_key
@@ -2580,9 +2608,11 @@ walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 169 entries, 
   absent  watch::Shared.ref_count_rx — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
   absent  watch::Shared.ref_count_tx — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
   absent  watch::Shared.notify_rx — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
+  absent  StreamMap.entries — no tokio_stream::stream_map::StreamMap<… type in the tokio info (the target does not reach one)
+  absent  StreamMap.entry.stream — no tokio_stream::stream_map::StreamMap<… type in the tokio info (the target does not reach one)
 
 program: blocking-pool
-walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 169 entries, 0 broken, 76 absent
+walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 171 entries, 0 broken, 78 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -2752,9 +2782,11 @@ walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 169 entries, 
   absent  watch::Shared.ref_count_rx — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
   absent  watch::Shared.ref_count_tx — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
   absent  watch::Shared.notify_rx — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
+  absent  StreamMap.entries — no tokio_stream::stream_map::StreamMap<… type in the tokio info (the target does not reach one)
+  absent  StreamMap.entry.stream — no tokio_stream::stream_map::StreamMap<… type in the tokio info (the target does not reach one)
 
 program: delegation-cases
-walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 169 entries, 0 broken, 76 absent
+walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 171 entries, 0 broken, 78 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -2924,9 +2956,11 @@ walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 169 entries, 
   absent  watch::Shared.ref_count_rx — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
   absent  watch::Shared.ref_count_tx — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
   absent  watch::Shared.notify_rx — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
+  absent  StreamMap.entries — no tokio_stream::stream_map::StreamMap<… type in the tokio info (the target does not reach one)
+  absent  StreamMap.entry.stream — no tokio_stream::stream_map::StreamMap<… type in the tokio info (the target does not reach one)
 
 program: armed-select
-walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 169 entries, 0 broken, 49 absent
+walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 171 entries, 0 broken, 51 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -3096,9 +3130,11 @@ walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 169 entries, 
   ok      watch::Shared.ref_count_rx
   ok      watch::Shared.ref_count_tx
   ok      watch::Shared.notify_rx
+  absent  StreamMap.entries — no tokio_stream::stream_map::StreamMap<… type in the tokio info (the target does not reach one)
+  absent  StreamMap.entry.stream — no tokio_stream::stream_map::StreamMap<… type in the tokio info (the target does not reach one)
 
 program: watch-stream
-walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 169 entries, 0 broken, 71 absent
+walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 171 entries, 0 broken, 71 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -3268,3 +3304,5 @@ walk contract (tokio 1.52.4, rustc 1.97.1 (8bab26f4f 2026-07-14)): 169 entries, 
   ok      watch::Shared.ref_count_rx
   ok      watch::Shared.ref_count_tx
   ok      watch::Shared.notify_rx
+  ok      StreamMap.entries
+  ok      StreamMap.entry.stream

@@ -1105,7 +1105,10 @@ fn test_the_census_accounting_is_exact_per_program() {
         // stream's own slot and met again down its `Next`'s chain; and
         // the chains behind, the routes crossed from `Next` through
         // the stream and its box to the watch's `Notified` included.
-        ("watch-stream", 0, 11, 4, 0, 10),
+        // The map's three entries add their boxes, each a find at
+        // `map[i]`, and the chains behind them, every frame met again
+        // when the entry's own chain is scanned.
+        ("watch-stream", 0, 23, 4, 0, 11),
     ];
     let named: Vec<&str> = ACCOUNTING.iter().map(|row| row.0).collect();
     assert_eq!(named, PROGRAMS, "every program is accounted for");

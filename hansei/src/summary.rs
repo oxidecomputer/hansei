@@ -1923,6 +1923,7 @@ mod tests {
                 ))),
                 notes: Vec::new(),
                 armed: Some(SlotRef::Protocol),
+                entries: None,
             }],
             capped: 0,
         });

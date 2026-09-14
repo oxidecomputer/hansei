@@ -1279,16 +1279,24 @@ fn assert_library_bindings(program: &str, bundle: &Bundle) {
                         }
                     }
                 }
-                // The two stream routes: only the one fixture that
-                // depends on tokio-stream can hold either type.
+                // The stream route and the map container: only the one
+                // fixture that depends on tokio-stream can hold either
+                // type, and each binds under its own family.
                 "tokio-stream" => {
-                    use exegesis::detect::semantics::TOKIO_STREAM_WATCH_V0_1_14;
+                    use exegesis::detect::semantics::{
+                        TOKIO_STREAM_MAP_V0_1_14, TOKIO_STREAM_WATCH_V0_1_14,
+                    };
                     let SemanticOrigin::LibraryDelegation { family, .. } = origin else {
                         unreachable!()
                     };
-                    assert_eq!(s(*family), TOKIO_STREAM_WATCH_V0_1_14.family, "{program}");
+                    let convention = if s(*family) == TOKIO_STREAM_MAP_V0_1_14.family {
+                        &TOKIO_STREAM_MAP_V0_1_14
+                    } else {
+                        assert_eq!(s(*family), TOKIO_STREAM_WATCH_V0_1_14.family, "{program}");
+                        &TOKIO_STREAM_WATCH_V0_1_14
+                    };
                     assert_eq!(
-                        TOKIO_STREAM_WATCH_V0_1_14.select(&s(*version).parse().unwrap()),
+                        convention.select(&s(*version).parse().unwrap()),
                         LayoutSelection::ReviewedRange,
                         "{program}: tokio-stream {} is outside the reviewed range",
                         s(*version)
@@ -3026,6 +3034,20 @@ fn run_golden(program: &str) {
                 "tokio::task::join_set::JoinSet<",
                 ContainerKind::JoinSet,
             ),
+            // The map is a container whose children are polled with
+            // the task's own context; its entries are a `Vec<(K, V)>`
+            // walked element by element, each element's `__1` the
+            // stream.
+            "watch-stream" => {
+                assert_container(
+                    program,
+                    &bundle,
+                    "tokio_stream::stream_map::StreamMap<",
+                    ContainerKind::StreamMap,
+                );
+                assert_walk(program, &bundle, WalkRole::StreamMapEntries, "entries");
+                assert_walk(program, &bundle, WalkRole::StreamMapEntryStream, "__1");
+            }
             "unordered" => assert_container(
                 program,
                 &bundle,

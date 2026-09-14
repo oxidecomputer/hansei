@@ -77,6 +77,7 @@ fn base() -> Bundle {
         "tokio-util",
         "0.7.19",
         "registry/src/index.crates.io-1949cf8c6b5b557f/tokio-util-0.7.19/src/sync/reusable_box.rs",
+        "registry/src/index.crates.io-1949cf8c6b5b557f/tokio-stream-0.1.19/src/stream_map.rs",
     ] {
         strings.intern(s);
     }
@@ -1320,6 +1321,7 @@ fn test_semantic_container_is_not_automatically_a_future() {
     r.container = Some(ContainerBinding {
         rule: SemanticRuleId(0),
         kind: ContainerKind::JoinSet,
+        wakers: ContainerWakers::Own,
     });
     let walk = b.walks.entries[&WalkRole::JoinHandleRaw].clone();
     let route = WalkBinding {
@@ -1341,11 +1343,89 @@ fn test_semantic_container_is_not_automatically_a_future() {
     let mut missing = b.clone();
     missing.walks.entries.remove(&WalkRole::JoinSetLists);
     bad(&missing, "essential walk role");
+    // The wakers flag is the kind's own fact, recorded beside it: a
+    // set that claimed to forward the task's waker would be listed
+    // as the task's branches.
+    let mut forwarded = b.clone();
+    forwarded.semantics.types[0]
+        .container
+        .as_mut()
+        .unwrap()
+        .wakers = ContainerWakers::Forwarded;
+    bad(&forwarded, "container wakers disagree");
     b.semantics.types[0].storage = StoragePolicy::Unavailable(issue());
     bad(&b, "unavailable storage carries a readable capability");
     b.semantics.types[0].storage = StoragePolicy::DeclaredMembers;
     b.walks.entries.remove(&WalkRole::JoinSetIdleHead);
     bad(&b, "essential walk route");
+}
+
+/// A `StreamMap` container: its rule is the tokio-stream map kind
+/// under that crate's delegation origin — the type's own declaration
+/// file, like the watch stream's — its `entries` role bound at the
+/// map and the entry route below it, and its children forwarded the
+/// task's own waker.
+#[test]
+fn test_semantic_stream_map_container_forwards_the_task_waker() {
+    let mut b = resource();
+    b.semantics.rules[0].kind = SemanticRuleKind::TokioStreamStreamMap;
+    b.semantics.origins[0] = SemanticOrigin::LibraryDelegation {
+        package: StrRef(29),
+        version: StrRef(30),
+        family: StrRef(17),
+        source: StrRef(35),
+        files: Vec::new(),
+    };
+    let r = &mut b.semantics.types[0];
+    r.resource = None;
+    r.future = None;
+    r.container = Some(ContainerBinding {
+        rule: SemanticRuleId(0),
+        kind: ContainerKind::StreamMap,
+        wakers: ContainerWakers::Forwarded,
+    });
+    let walk = b.walks.entries[&WalkRole::JoinHandleRaw].clone();
+    let route = WalkBinding {
+        roots: vec![CHILD],
+        ..walk.clone()
+    };
+    b.walks.entries = [
+        (WalkRole::StreamMapEntries, walk),
+        (WalkRole::StreamMapEntryStream, route),
+    ]
+    .into_iter()
+    .collect();
+    b.validate().unwrap();
+    let mut bytes = Vec::new();
+    b.write_to(&mut bytes).unwrap();
+    assert_eq!(Bundle::read_from(bytes.as_slice()).unwrap(), b);
+    let mut missing = b.clone();
+    missing
+        .walks
+        .entries
+        .remove(&WalkRole::StreamMapEntryStream);
+    bad(&missing, "essential walk route");
+    let mut missing = b.clone();
+    missing.walks.entries.remove(&WalkRole::StreamMapEntries);
+    bad(&missing, "essential walk role");
+    // A map polls its entries with the task's context and nothing
+    // else's; a set's kind under the map's rule is another review.
+    let mut own = b.clone();
+    own.semantics.types[0].container.as_mut().unwrap().wakers = ContainerWakers::Own;
+    bad(&own, "container wakers disagree");
+    let mut set = b.clone();
+    set.semantics.types[0].container.as_mut().unwrap().kind = ContainerKind::FuturesUnordered;
+    bad(&set, "incompatible capability");
+    // The origin names the crate whose implementation was reviewed;
+    // tokio-util's registry path, however well-formed, is not it.
+    b.semantics.origins[0] = SemanticOrigin::LibraryDelegation {
+        package: StrRef(32),
+        version: StrRef(33),
+        family: StrRef(17),
+        source: StrRef(34),
+        files: Vec::new(),
+    };
+    bad(&b, "third-party delegation needs source evidence");
 }
 
 #[test]

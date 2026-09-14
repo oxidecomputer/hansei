@@ -793,6 +793,9 @@ pub(crate) fn frame_locals<'b, T: Target>(
 pub(crate) enum Find<'b> {
     Set(Value<'b>),
     JoinSet(Value<'b>),
+    /// A container whose entries are polled with the task's own
+    /// context: each entry is scanned as a find of the task.
+    Fanout(Value<'b>),
     Future(Value<'b>),
     /// An owned adapter whose referent, by its recorded route, is the
     /// find.
@@ -993,6 +996,28 @@ impl<'b, T: Target> Walker<'_, 'b, T> {
     ) {
         let on_chain: HashSet<ValueKey> = chain.referents().collect();
         for (frame_index, frame) in chain.frames.iter().enumerate() {
+            // Recorded display-numbered — #0 the most recently polled
+            // frame — the way every listing prints it.
+            let display = chain.frames.len() - 1 - frame_index;
+            // A frame that is itself a fan-out container — a chain
+            // ending at a `StreamMap` the task polls directly — holds
+            // its entries the way a local holds a future: they are the
+            // task's finds, entered through the member the map keeps
+            // them in. Its members are not scanned besides, since that
+            // member is the buffer's header and nothing else.
+            if self.ctx.recognize(frame.future.ty.id()) == Recognized::Fanout {
+                let storage = self.ctx.fanout_storage_name().to_string();
+                self.record(
+                    owner,
+                    display,
+                    &storage,
+                    via,
+                    Find::Fanout(frame.future),
+                    nesting,
+                    &on_chain,
+                );
+                continue;
+            }
             let locals = frame_locals(self.ctx, frame);
             if locals.unavailable {
                 self.capped.unavailable += 1;
@@ -1012,10 +1037,7 @@ impl<'b, T: Target> Walker<'_, 'b, T> {
                     &mut self.stats,
                 );
                 for find in found {
-                    // Recorded display-numbered — #0 the most recently
-                    // polled frame — the way every listing prints it.
-                    let frame = chain.frames.len() - 1 - frame_index;
-                    self.record(owner, frame, name, via, find, nesting, &on_chain);
+                    self.record(owner, display, name, via, find, nesting, &on_chain);
                 }
             }
         }
@@ -1037,6 +1059,7 @@ impl<'b, T: Target> Walker<'_, 'b, T> {
         let value = match &find {
             Find::Set(value)
             | Find::JoinSet(value)
+            | Find::Fanout(value)
             | Find::Future(value)
             | Find::Adapter(value) => value,
         };
@@ -1058,6 +1081,9 @@ impl<'b, T: Target> Walker<'_, 'b, T> {
         match find {
             Find::Set(value) => self.record_set(owner, frame, local, via, value, nesting),
             Find::JoinSet(value) => self.record_join_set(owner, frame, local, via, value),
+            Find::Fanout(value) => {
+                self.record_fanout(owner, frame, local, via, value, nesting, on_chain)
+            }
             // The adapter's referent is the find — under the adapter's
             // slot, so a `Box<F>` local lists `F` where the local is.
             // A route that lands nowhere lists nothing: the adapter is
@@ -1225,6 +1251,54 @@ impl<'b, T: Target> Walker<'_, 'b, T> {
         }
     }
 
+    /// Record one fan-out container: walk its entries, and scan each
+    /// as a value the task holds at `local[index]`, so what the entry
+    /// is — an owned stream over a box, a future outright — is found
+    /// the way it would be in a frame's local. The container itself
+    /// is no row: it holds the task's own registrations, not a set's.
+    #[allow(clippy::too_many_arguments)]
+    fn record_fanout(
+        &mut self,
+        owner: usize,
+        frame: usize,
+        local: &str,
+        via: Option<Via>,
+        value: Value<'b>,
+        nesting: usize,
+        on_chain: &HashSet<ValueKey>,
+    ) {
+        let mut entries = Vec::new();
+        let visit = &mut |index: usize, stream: Value<'b>| -> std::result::Result<(), NodeStop> {
+            entries.push((index, stream));
+            Ok(())
+        };
+        if let Err(e) = walk_fanout_entries(self.ctx, &self.read, value, MAX_CHILDREN, visit) {
+            self.errors.push(anyhow::Error::from(e).context(format!(
+                "the StreamMap at {:#x} lists only {} of its entries",
+                value.addr,
+                entries.len()
+            )));
+        }
+        for (index, stream) in entries {
+            let mut found = Vec::new();
+            scan_value(
+                stream,
+                self.ctx,
+                0,
+                self.bounds.scan_depth,
+                Path::default(),
+                &mut found,
+                &mut self.capped,
+                &mut self.plans,
+                &mut self.stats,
+            );
+            let local = format!("{local}[{index}]");
+            for find in found {
+                self.record(owner, frame, &local, via, find, nesting, on_chain);
+            }
+        }
+    }
+
     /// Record one join set: walk its two entry lists for the tasks it
     /// holds.
     ///
@@ -1291,6 +1365,10 @@ impl<'b, T: Target> Walker<'_, 'b, T> {
 pub(crate) enum Recognized {
     Set,
     JoinSet,
+    /// A container that polls every entry with the polling task's own
+    /// context — a `StreamMap` — so its entries are futures the task
+    /// holds, listed as its finds rather than as a set's children.
+    Fanout,
     Future,
     /// A supported owned pointer adapter that is not itself a future —
     /// a `Box<F>` over a future that is not `Unpin`, the `Box<dyn
@@ -1314,6 +1392,7 @@ impl<T: Target> Recognize for Context<'_, T> {
         match self.container_kind(id) {
             Some(hansei_bundle::ContainerKind::FuturesUnordered) => Recognized::Set,
             Some(hansei_bundle::ContainerKind::JoinSet) => Recognized::JoinSet,
+            Some(hansei_bundle::ContainerKind::StreamMap) => Recognized::Fanout,
             None if self.recognized_future(id) => Recognized::Future,
             None if self.owned_adapter(id) => Recognized::Adapter,
             None if self.storage_unavailable(id) => Recognized::Unavailable,
@@ -1326,6 +1405,9 @@ impl<T: Target> Recognize for Context<'_, T> {
 pub(crate) enum ScanPlan {
     Set,
     JoinSet,
+    /// A container polling its entries with the task's own context:
+    /// walked by its contract, each entry a find of the task.
+    Fanout,
     /// A future outright: a coroutine env, a known leaf, or a wide
     /// pointer to a future trait object — chained rather than descended
     /// into, so its insides are attributed to it rather than to the
@@ -1356,6 +1438,7 @@ fn scan_plan(value: Value<'_>, facts: &dyn Recognize) -> ScanPlan {
     match facts.recognize(value.ty.id()) {
         Recognized::Set => return ScanPlan::Set,
         Recognized::JoinSet => return ScanPlan::JoinSet,
+        Recognized::Fanout => return ScanPlan::Fanout,
         Recognized::Future => return ScanPlan::Future,
         Recognized::Adapter => return ScanPlan::Adapter,
         Recognized::Unavailable => return ScanPlan::Unavailable,
@@ -1429,7 +1512,7 @@ pub(crate) fn scan_value<'b>(
     };
     if matches!(
         plan,
-        ScanPlan::Set | ScanPlan::JoinSet | ScanPlan::Future | ScanPlan::Adapter
+        ScanPlan::Set | ScanPlan::JoinSet | ScanPlan::Fanout | ScanPlan::Future | ScanPlan::Adapter
     ) {
         if path.descended {
             stats.descend_finds += 1;
@@ -1441,6 +1524,7 @@ pub(crate) fn scan_value<'b>(
     match plan {
         ScanPlan::Set => found.push(Find::Set(value)),
         ScanPlan::JoinSet => found.push(Find::JoinSet(value)),
+        ScanPlan::Fanout => found.push(Find::Fanout(value)),
         ScanPlan::Future => found.push(Find::Future(value)),
         ScanPlan::Adapter => found.push(Find::Adapter(value)),
         ScanPlan::Unavailable => capped.unavailable += 1,
@@ -1849,6 +1933,60 @@ pub(crate) fn walk_set_nodes<'b, T: Target>(
     Ok(())
 }
 
+/// Walk a `StreamMap`'s entries — the elements of its `Vec<(K, V)>`,
+/// read through the `Vec`'s own buffer route — handing each entry's
+/// stream to `visit` with its index, and returning how many entries
+/// the map holds. The buffer is one allocation, held to the
+/// allocator's word as a set's nodes are; past `max` entries the walk
+/// stops and says so, the count still being the map's own.
+pub(crate) fn walk_fanout_entries<'b, T: Target>(
+    ctx: &Context<'b, T>,
+    read: &ReadContext<'_>,
+    map: Value<'b>,
+    max: usize,
+    visit: &mut dyn FnMut(usize, Value<'b>) -> std::result::Result<(), NodeStop>,
+) -> std::result::Result<usize, NodeStop> {
+    let entries = ctx
+        .walk(WalkRole::StreamMapEntries)
+        .walk_at_with(read, map)?;
+    let elements = entries.elements(ctx.proc).map_err(|e| {
+        NodeStop::Failed(anyhow::Error::from(e).context(format!(
+            "failed to read the entries of the StreamMap at {:#x}",
+            map.addr
+        )))
+    })?;
+    let total = elements.len() as usize;
+    if let Some(first) = elements.iter().next() {
+        let extent = elements.len() * elements.element_ty().size();
+        if !ctx.mappings.contains_addr(first.addr) {
+            return Err(NodeStop::Unmapped {
+                what: "StreamMap entries",
+                addr: first.addr,
+            });
+        }
+        if let Some(refusal) = read.refusal(first.addr, extent) {
+            return Err(NodeStop::Refused {
+                what: "StreamMap entries",
+                addr: first.addr,
+                refusal,
+            });
+        }
+    }
+    for (index, entry) in elements.iter().enumerate().take(max) {
+        let stream = ctx
+            .walk(WalkRole::StreamMapEntryStream)
+            .walk_at_with(read, entry)?;
+        visit(index, stream)?;
+    }
+    if total > max {
+        return Err(NodeStop::Capped {
+            unit: "entries",
+            max,
+        });
+    }
+    Ok(total)
+}
+
 /// Walk a `JoinSet`'s two entry lists, handing each entry to `visit`
 /// as it is reached and leaving the set's own count in `length`.
 ///
@@ -2010,6 +2148,7 @@ mod tests {
             match self.containers.get(&id) {
                 Some(hansei_bundle::ContainerKind::FuturesUnordered) => Recognized::Set,
                 Some(hansei_bundle::ContainerKind::JoinSet) => Recognized::JoinSet,
+                Some(hansei_bundle::ContainerKind::StreamMap) => Recognized::Fanout,
                 None if self.futures.contains(&id) => Recognized::Future,
                 None if self.adapters.contains(&id) => Recognized::Adapter,
                 None if self.unavailable.contains(&id) => Recognized::Unavailable,
@@ -2105,6 +2244,7 @@ mod tests {
             match self {
                 Find::Set(_) => "set",
                 Find::JoinSet(_) => "join set",
+                Find::Fanout(_) => "fan-out",
                 Find::Future(_) => "future",
                 Find::Adapter(_) => "adapter",
             }
@@ -2112,7 +2252,11 @@ mod tests {
 
         fn value(&self) -> Value<'b> {
             match *self {
-                Find::Set(v) | Find::JoinSet(v) | Find::Future(v) | Find::Adapter(v) => v,
+                Find::Set(v)
+                | Find::JoinSet(v)
+                | Find::Fanout(v)
+                | Find::Future(v)
+                | Find::Adapter(v) => v,
             }
         }
     }
@@ -4301,5 +4445,135 @@ mod tests {
                 .any(|p| p.contains("unregistered held find")),
             "{registry_problems:#?}"
         );
+    }
+}
+
+#[cfg(test)]
+mod fanout_tests {
+    use super::*;
+    use crate::testkit::heap::FakeHeap;
+    use crate::testkit::{self, load_any};
+    use crate::tokio::bundle::{FutureInfo, Task};
+
+    use proc::snapshot::Snapshot;
+
+    fn mapper_map<'b>(ctx: &Context<'b, Snapshot>, list: &TaskList) -> Value<'b> {
+        let task: &Task = list
+            .tasks
+            .iter()
+            .find(
+                |t| matches!(&t.future, FutureInfo::Known(k) if k.display_name.contains("mapper")),
+            )
+            .expect("the fixture lists the mapper");
+        testkit::frame_local(ctx, task, "mapper", "map")
+    }
+
+    /// The map's entries are its three streams in order, every one
+    /// under the cap; exactly the cap lists them all and stops nothing;
+    /// past the cap the walk stops after `max` and says so. The member
+    /// the entries are held in is the one the route names.
+    #[test]
+    fn test_the_map_walk_hands_over_each_entry_up_to_the_cap() {
+        let (bundle, snapshot) = load_any("watch-stream");
+        let ctx = testkit::context(&bundle, &snapshot);
+        let list = testkit::tasks(&ctx, &snapshot);
+        let map = mapper_map(&ctx, &list);
+        let read = ReadContext::none();
+        let mut seen: Vec<(usize, String)> = Vec::new();
+        let total = walk_fanout_entries(&ctx, &read, map, MAX_CHILDREN, &mut |i, v| {
+            seen.push((i, v.ty.name().to_string()));
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(total, 3);
+        assert_eq!(seen.iter().map(|(i, _)| *i).collect::<Vec<_>>(), [0, 1, 2]);
+        assert!(
+            seen.iter()
+                .all(|(_, n)| n.starts_with("tokio_stream::wrappers::watch::WatchStream<")),
+            "{seen:?}"
+        );
+        let mut n = 0;
+        let total = walk_fanout_entries(&ctx, &read, map, 3, &mut |_, _| {
+            n += 1;
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!((total, n), (3, 3));
+        let mut n = 0;
+        let stop = walk_fanout_entries(&ctx, &read, map, 2, &mut |_, _| {
+            n += 1;
+            Ok(())
+        })
+        .unwrap_err();
+        assert!(
+            matches!(
+                stop,
+                NodeStop::Capped {
+                    unit: "entries",
+                    max: 2
+                }
+            ),
+            "{stop}"
+        );
+        assert_eq!(n, 2);
+        assert_eq!(ctx.fanout_storage_name(), "entries");
+    }
+
+    /// The entries buffer is one allocation, held to the allocator's
+    /// word before any entry is read: freed, the walk refuses it; a
+    /// block shorter than the three entries refuses it as outside its
+    /// allocation; a block covering exactly the three admits it.
+    #[test]
+    fn test_the_map_walk_holds_the_buffer_to_the_allocator() {
+        let (bundle, snapshot) = load_any("watch-stream");
+        let ctx = testkit::context(&bundle, &snapshot);
+        let list = testkit::tasks(&ctx, &snapshot);
+        let map = mapper_map(&ctx, &list);
+        let entries = ctx.walk(WalkRole::StreamMapEntries).walk_at(map).unwrap();
+        let elements = entries.elements(ctx.proc).unwrap();
+        let base = elements.get(0).addr;
+        let stride = elements.element_ty().size();
+        assert!(stride > 0 && elements.len() == 3);
+        let walk = |heap: &FakeHeap| {
+            let mut n = 0;
+            let outcome = walk_fanout_entries(
+                &ctx,
+                &ReadContext::with_heap(heap),
+                map,
+                MAX_CHILDREN,
+                &mut |_, _| {
+                    n += 1;
+                    Ok(())
+                },
+            );
+            (outcome, n)
+        };
+        let (freed, n) = walk(&FakeHeap::new().freed(base..base + 3 * stride));
+        assert!(
+            matches!(
+                freed,
+                Err(NodeStop::Refused {
+                    refusal: Refusal::Freed { .. },
+                    ..
+                })
+            ),
+            "{freed:?}"
+        );
+        assert_eq!(n, 0);
+        let (short, n) = walk(&FakeHeap::new().live(base..base + 2 * stride));
+        assert!(
+            matches!(
+                short,
+                Err(NodeStop::Refused {
+                    refusal: Refusal::OutsideAllocation { .. },
+                    ..
+                })
+            ),
+            "{short:?}"
+        );
+        assert_eq!(n, 0);
+        let (whole, n) = walk(&FakeHeap::new().live(base..base + 3 * stride));
+        assert!(matches!(whole, Ok(3)), "{whole:?}");
+        assert_eq!(n, 3);
     }
 }

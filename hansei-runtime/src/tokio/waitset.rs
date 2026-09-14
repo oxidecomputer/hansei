@@ -52,9 +52,13 @@ use super::graph::{Analysis, TaskWait};
 use super::observe::{ReadContext, ValueKey};
 
 use foldhash::{HashMap, HashSet};
-use hansei_bundle::{AccessKind, BundleTypeId, SelectBinding, SemanticIssueKind};
+use hansei_bundle::{
+    AccessKind, BundleTypeId, ContainerKind, SelectBinding, SemanticIssueKind, WalkRole,
+};
 use proc::Target;
 use reify::Value;
+
+use std::collections::VecDeque;
 
 /// How many branches a stop frame's set lists; the rest are counted.
 pub const MAX_BRANCHES: usize = 8;
@@ -160,6 +164,12 @@ pub struct WaitMember {
     /// The evidence this task's waker is parked here, or `None` for a
     /// branch merely held.
     pub armed: Option<SlotRef>,
+    /// The entries this member fans out to, where its chain ends at a
+    /// container polling each with the task's own context, or it is
+    /// that container: the entries follow it as members of their own,
+    /// and the container itself arms nothing. `None` for every other
+    /// member.
+    pub entries: Option<Fanout>,
 }
 
 impl WaitMember {
@@ -206,6 +216,17 @@ pub enum MemberRoute {
     /// the two, nothing in memory says. Not inspected: `ty` names
     /// what it is, and that is all that is listed.
     Disabled { index: usize, ty: BundleTypeId },
+    /// Entry `index` of a container that polls every entry with the
+    /// task's own context — a `StreamMap` — so each entry holds the
+    /// task's waker itself. `under` is the member the container was
+    /// reached through, where it was not the stop itself: a branch
+    /// whose chain ends at the map, or a local holding one. Listed
+    /// after that member, indented under it.
+    Entry {
+        index: usize,
+        under: Option<Box<MemberRoute>>,
+        borrowed: bool,
+    },
     /// A registry slot attributed to the task that lies in no branch.
     /// `within` places it in the task's own chain where it does lie
     /// there.
@@ -213,13 +234,26 @@ pub enum MemberRoute {
 }
 
 impl MemberRoute {
-    /// The branch's position in its `select!`, for ordering the listing.
+    /// The branch's position in its `select!`, for ordering the
+    /// listing; an entry's is the branch it is listed under.
     fn select_index(&self) -> Option<usize> {
         match self {
             MemberRoute::Select { index, .. } | MemberRoute::Disabled { index, .. } => Some(*index),
+            MemberRoute::Entry { under, .. } => under.as_ref().and_then(|u| u.select_index()),
             MemberRoute::Branch { .. } | MemberRoute::SlotOnly { .. } => None,
         }
     }
+}
+
+/// How many entries a member fans out to: the container its chain
+/// ends at, or the container it is, polls every one with the task's
+/// context, and each is a member of its own after it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Fanout {
+    /// The entries listed as members, up to the branch cap.
+    pub listed: usize,
+    /// The entries the container holds.
+    pub total: usize,
 }
 
 /// The evidence a member holds this task's waker.
@@ -374,6 +408,7 @@ impl<T: Target> census::Recognize for Branching<'_, '_, T> {
         match self.0.container_kind(id) {
             Some(hansei_bundle::ContainerKind::FuturesUnordered) => Recognized::Set,
             Some(hansei_bundle::ContainerKind::JoinSet) => Recognized::JoinSet,
+            Some(hansei_bundle::ContainerKind::StreamMap) => Recognized::Fanout,
             None if self.0.recognized_future(id) => Recognized::Future,
             None if self.0.any_adapter(id) => Recognized::Adapter,
             None if self.0.storage_unavailable(id) => Recognized::Unavailable,
@@ -428,6 +463,20 @@ impl<'b, T: Target> Context<'b, T> {
         {
             return found;
         }
+        // The stop itself a fan-out container — a task polling a
+        // `StreamMap` directly — holds nothing to scan but the
+        // entries: each is a branch polled with this task's own
+        // context, listed at the top since the stop is the map.
+        if self.container_kind(frame.future.ty.id()) == Some(ContainerKind::StreamMap) {
+            let (branches, fanout) =
+                self.fanout_branches(frame.future, None, read, scan.max_branches, notes);
+            let capped = fanout.map_or(0, |f| f.total - f.listed);
+            return Enumerated {
+                branches,
+                capped,
+                disabled: Vec::new(),
+            };
+        }
         let mut branches = Vec::new();
         let mut capped = 0;
         let mut counts = census::Capped::default();
@@ -453,9 +502,12 @@ impl<'b, T: Target> Context<'b, T> {
                         Some(landed) => landed,
                         None => continue,
                     },
-                    // A container's children are polled with the
-                    // container's own wakers, not the task's: a set
-                    // here is not a branch of this task's waker.
+                    // A map polls its entries with this task's own
+                    // context, so a map held here is a branch listed
+                    // for them; a set's children are polled with the
+                    // set's own wakers, and a set here is not a branch
+                    // of this task's waker.
+                    Find::Fanout(map) => (map, false),
                     Find::Set(_) | Find::JoinSet(_) => continue,
                 };
                 if branches.len() >= scan.max_branches {
@@ -539,6 +591,7 @@ impl<'b, T: Target> Context<'b, T> {
                     assessment: None,
                     notes: Vec::new(),
                     armed: None,
+                    entries: None,
                 });
                 continue;
             }
@@ -555,6 +608,65 @@ impl<'b, T: Target> Context<'b, T> {
             });
         }
         Some(found)
+    }
+
+    /// A fan-out container's entries as branches, each polled with this
+    /// task's own context: entry `i` of `map` under `under`, up to
+    /// `max` of them listed, the rest counted in the fan-out. `None`
+    /// for the fan-out where the map did not read, with the reason
+    /// noted — the branches then being whatever prefix was reached.
+    fn fanout_branches(
+        &self,
+        map: Value<'b>,
+        under: Option<Box<MemberRoute>>,
+        read: &ReadContext<'_>,
+        max: usize,
+        notes: &mut Vec<String>,
+    ) -> (Vec<Branch<'b>>, Option<Fanout>) {
+        let mut branches = Vec::new();
+        let visit = &mut |index: usize, stream: Value<'b>| -> Result<(), census::NodeStop> {
+            branches.push(Branch {
+                route: MemberRoute::Entry {
+                    index,
+                    under: under.clone(),
+                    borrowed: false,
+                },
+                value: stream,
+            });
+            Ok(())
+        };
+        match census::walk_fanout_entries(self, read, map, max, visit) {
+            Ok(total) => {
+                let listed = branches.len();
+                (branches, Some(Fanout { listed, total }))
+            }
+            // Past the cap the walk stops rather than reads on; the
+            // count is the map's own and the listing says how many of
+            // it were inspected.
+            Err(census::NodeStop::Capped { .. }) => {
+                let listed = branches.len();
+                let total = self.fanout_total(map, read).unwrap_or(listed);
+                (branches, Some(Fanout { listed, total }))
+            }
+            Err(stop) => {
+                notes.push(format!(
+                    "the StreamMap at {:#x} lists only {} of its entries: {stop}",
+                    map.addr,
+                    branches.len()
+                ));
+                (branches, None)
+            }
+        }
+    }
+
+    /// How many entries a fan-out container holds, read from its
+    /// buffer route alone.
+    fn fanout_total(&self, map: Value<'b>, read: &ReadContext<'_>) -> Option<usize> {
+        let entries = self
+            .walk(WalkRole::StreamMapEntries)
+            .walk_at_with(read, map)
+            .ok()?;
+        Some(entries.elements(self.proc).ok()?.len() as usize)
     }
 
     /// The type behind `ty`'s recorded adapter routes, read from the
@@ -603,7 +715,12 @@ impl<'b, T: Target> Context<'b, T> {
     /// Each branch inspected and assessed under `task`'s identity, as
     /// an unarmed member beside its own chain — a branch that is a
     /// frame of the task's chain is that frame and no member, and a
-    /// branch reached twice is one.
+    /// branch reached twice is one. A branch that is a fan-out
+    /// container, or whose chain ends at one, is a member listed for
+    /// its entries, which follow it as members of their own, each
+    /// inspected the same way; the container has no chain of its
+    /// own, and its place in `chains` is empty.
+    #[allow(clippy::too_many_arguments)]
     fn members_of(
         &self,
         pass: &mut AssessmentPass,
@@ -612,12 +729,49 @@ impl<'b, T: Target> Context<'b, T> {
         list: &TaskList,
         read: &ReadContext<'_>,
         branches: Vec<Branch<'b>>,
-    ) -> (Vec<WaitMember>, Vec<AwaitChain<'b>>) {
+        max_branches: usize,
+        notes: &mut Vec<String>,
+    ) -> (Vec<WaitMember>, Vec<Option<AwaitChain<'b>>>) {
         let on_chain: HashSet<ValueKey> = chain.referents().collect();
         let mut seen: HashSet<ValueKey> = HashSet::default();
         let mut members: Vec<WaitMember> = Vec::new();
-        let mut chains: Vec<AwaitChain<'b>> = Vec::new();
-        for branch in branches {
+        let mut chains: Vec<Option<AwaitChain<'b>>> = Vec::new();
+        let mut queue: VecDeque<Branch<'b>> = branches.into();
+        // The entries a member fans out to go ahead of everything
+        // queued after it, so they are listed under it.
+        let ahead = |queue: &mut VecDeque<Branch<'b>>, entries: Vec<Branch<'b>>| {
+            for (i, entry) in entries.into_iter().enumerate() {
+                queue.insert(i, entry);
+            }
+        };
+        while let Some(branch) = queue.pop_front() {
+            if self.container_kind(branch.value.ty.id()) == Some(ContainerKind::StreamMap) {
+                // The map itself, held or borrowed by the stop: no
+                // future to inspect, a member for the entries alone.
+                let key = ValueKey::of(branch.value);
+                if !seen.insert(key) {
+                    continue;
+                }
+                let (entries, fanout) = self.fanout_branches(
+                    branch.value,
+                    Some(Box::new(branch.route.clone())),
+                    read,
+                    max_branches,
+                    notes,
+                );
+                members.push(WaitMember {
+                    route: branch.route,
+                    key: Some(key),
+                    future: Some(branch.value.ty.name().to_string()),
+                    assessment: None,
+                    notes: Vec::new(),
+                    armed: None,
+                    entries: fanout,
+                });
+                chains.push(None);
+                ahead(&mut queue, entries);
+                continue;
+            }
             let held = self.inspect_future(branch.value, InspectionMode::Held, read);
             // The branch's identity is the first frame past the
             // adapters it was held through, as the census lists a
@@ -648,6 +802,15 @@ impl<'b, T: Target> Context<'b, T> {
                     index,
                     borrowed: borrowed || via_borrow,
                 },
+                MemberRoute::Entry {
+                    index,
+                    under,
+                    borrowed,
+                } => MemberRoute::Entry {
+                    index,
+                    under,
+                    borrowed: borrowed || via_borrow,
+                },
                 other => other,
             };
             let key = ValueKey::of(identity.future);
@@ -657,16 +820,38 @@ impl<'b, T: Target> Context<'b, T> {
             if on_chain.contains(&key) || !seen.insert(key) {
                 continue;
             }
-            let Assessed { assessment, notes } = self.assess_wait(pass, &held, task, list, read);
+            let Assessed {
+                assessment,
+                notes: member_notes,
+            } = self.assess_wait(pass, &held, task, list, read);
+            // A chain ending at a fan-out container — a `Next` over a
+            // map — polls the map's entries with this task's context:
+            // the member is listed for them, and they follow it.
+            let mut fanout = None;
+            let mut entries = Vec::new();
+            if matches!(held.chain.end, ChainEnd::UnknownContinuation { .. })
+                && let Some(stop) = held.chain.frames.last()
+                && self.container_kind(stop.future.ty.id()) == Some(ContainerKind::StreamMap)
+            {
+                (entries, fanout) = self.fanout_branches(
+                    stop.future,
+                    Some(Box::new(route.clone())),
+                    read,
+                    max_branches,
+                    notes,
+                );
+            }
             members.push(WaitMember {
                 route,
                 key: Some(key),
                 future: Some(identity.future.ty.name().to_string()),
                 assessment: Some(assessment),
-                notes,
+                notes: member_notes,
                 armed: None,
+                entries: fanout,
             });
-            chains.push(held.chain);
+            chains.push(Some(held.chain));
+            ahead(&mut queue, entries);
         }
 
         (members, chains)
@@ -702,14 +887,25 @@ impl<'b, T: Target> Context<'b, T> {
             capped,
             disabled,
         } = self.branches_at(stop, read, scan, notes);
-        let (mut members, chains) = self.members_of(pass, chain, task, list, read, branches);
+        let (mut members, chains) = self.members_of(
+            pass,
+            chain,
+            task,
+            list,
+            read,
+            branches,
+            scan.max_branches,
+            notes,
+        );
 
         // The slots: each placed in the branch whose storage holds it,
         // or listed on its own.
-        let placed = |chains: &[AwaitChain<'b>], addr: u64| {
-            chains
-                .iter()
-                .position(|chain| chain.frames.iter().any(|f| contains(f.future, addr)))
+        let placed = |chains: &[Option<AwaitChain<'b>>], addr: u64| {
+            chains.iter().position(|chain| {
+                chain
+                    .as_ref()
+                    .is_some_and(|chain| chain.frames.iter().any(|f| contains(f.future, addr)))
+            })
         };
         let within = |addr: u64| {
             chain.frames.iter().enumerate().find_map(|(i, f)| {
@@ -739,6 +935,7 @@ impl<'b, T: Target> Context<'b, T> {
                     assessment: None,
                     notes: Vec::new(),
                     armed: Some(slot),
+                    entries: None,
                 }),
             };
         for timer in registries.timers_of(task.addr.0) {
@@ -759,7 +956,7 @@ impl<'b, T: Target> Context<'b, T> {
             let frames: Vec<Value<'b>> = chain
                 .frames
                 .iter()
-                .chain(chains.iter().flat_map(|c| c.frames.iter()))
+                .chain(chains.iter().flatten().flat_map(|c| c.frames.iter()))
                 .map(|f| f.future)
                 .collect();
             let slot = SlotRef::Io {
@@ -1028,6 +1225,7 @@ pub fn fold_wait(
                 assessment: None,
                 notes: Vec::new(),
                 armed: Some(SlotRef::swept(slot, stopped)),
+                entries: None,
             }),
         }
     }
@@ -1427,6 +1625,12 @@ mod tests {
                     {
                         Recognized::JoinSet
                     }
+                    Some(r)
+                        if r.container.as_ref().map(|c| c.kind)
+                            == Some(ContainerKind::StreamMap) =>
+                    {
+                        Recognized::Fanout
+                    }
                     Some(r) if r.future.is_some() || r.resource.is_some() => Recognized::Future,
                     Some(r) if r.access.is_some() => {
                         if r.access.as_ref().unwrap().kind == AccessKind::Borrowed {
@@ -1643,6 +1847,8 @@ mod tests {
             &list,
             &ReadContext::none(),
             vec![root, branch(true), branch(false)],
+            MAX_BRANCHES,
+            &mut Vec::new(),
         );
         assert_eq!(members.len(), 1, "{members:#?}");
         assert_eq!(chains.len(), 1);
@@ -1657,8 +1863,9 @@ mod tests {
 
     /// A `select!`'s members list in branch order whatever order the
     /// inspection and the mask left them in — a disabled branch ahead
-    /// of an enabled one included — and the slots that are no branch
-    /// stay after them, in their own order.
+    /// of an enabled one included — the entries a branch fans out to
+    /// stay under it, and the slots that are no branch stay after
+    /// them, in their own order.
     #[test]
     fn test_select_members_list_in_branch_order() {
         let member = |route: MemberRoute| WaitMember {
@@ -1668,6 +1875,7 @@ mod tests {
             assessment: None,
             notes: Vec::new(),
             armed: None,
+            entries: None,
         };
         let mut members = vec![
             member(MemberRoute::Select {
@@ -1677,6 +1885,22 @@ mod tests {
             member(MemberRoute::Select {
                 index: 1,
                 borrowed: true,
+            }),
+            member(MemberRoute::Entry {
+                index: 0,
+                under: Some(Box::new(MemberRoute::Select {
+                    index: 1,
+                    borrowed: true,
+                })),
+                borrowed: false,
+            }),
+            member(MemberRoute::Entry {
+                index: 1,
+                under: Some(Box::new(MemberRoute::Select {
+                    index: 1,
+                    borrowed: true,
+                })),
+                borrowed: false,
             }),
             member(MemberRoute::SlotOnly {
                 within: Some("a".to_string()),
@@ -1697,6 +1921,7 @@ mod tests {
             .map(|m| match &m.route {
                 MemberRoute::Select { index, .. } => format!("select {index}"),
                 MemberRoute::Disabled { index, .. } => format!("disabled {index}"),
+                MemberRoute::Entry { index, .. } => format!("entry {index}"),
                 MemberRoute::SlotOnly { within } => format!("slot {within:?}"),
                 MemberRoute::Branch { local, .. } => format!("branch {local}"),
             })
@@ -1706,6 +1931,8 @@ mod tests {
             [
                 "disabled 0",
                 "select 1",
+                "entry 0",
+                "entry 1",
                 "disabled 2",
                 "select 3",
                 "slot Some(\"a\")",
@@ -1761,6 +1988,105 @@ mod tests {
                 .all(|m| matches!(m.armed, Some(SlotRef::Protocol)))
         );
         assert_eq!(set.group_label(), "mpsc, oneshot rx");
+    }
+
+    /// A `StreamMap` fans out to the task's own branches: the mapper's
+    /// `select!` branch over the map's `next()` is a member listed for
+    /// its three entries and arms nothing itself, and each entry is a
+    /// member of its own under that branch — a verified watch wait,
+    /// armed by its protocol, filed under the watch bucket. A set
+    /// beside it is still no branch: armed-select's driver polls a
+    /// `FuturesUnordered` whose children arm by the set's own waker,
+    /// and its wait lists no entry.
+    #[test]
+    fn test_a_stream_map_fans_out_to_the_task_own_branches() {
+        let (bundle, snapshot) = load_any("watch-stream");
+        let ctx = testkit::context(&bundle, &snapshot);
+        let list = testkit::tasks(&ctx, &snapshot);
+        let task = task_named(&list, "mapper");
+        let Branches::Set(set) = branches_of(&ctx, &list, task, &Registries::default()) else {
+            panic!("a set");
+        };
+        let map = set
+            .members
+            .iter()
+            .find(|m| m.entries.is_some())
+            .expect("the map's branch fans out");
+        assert!(
+            matches!(
+                map.route,
+                MemberRoute::Select {
+                    index: 1,
+                    borrowed: true
+                }
+            ),
+            "{:?}",
+            map.route
+        );
+        assert_eq!(
+            map.entries,
+            Some(Fanout {
+                listed: 3,
+                total: 3
+            })
+        );
+        assert!(map.armed.is_none() && map.cell_entry().is_none());
+        let entries: Vec<&WaitMember> = set
+            .members
+            .iter()
+            .filter(|m| matches!(m.route, MemberRoute::Entry { .. }))
+            .collect();
+        assert_eq!(entries.len(), 3, "{:#?}", set.members);
+        for (i, entry) in entries.iter().enumerate() {
+            assert!(
+                matches!(
+                    &entry.route,
+                    MemberRoute::Entry { index, under: Some(under), borrowed: false }
+                        if *index == i && matches!(**under, MemberRoute::Select { index: 1, .. })
+                ),
+                "{:?}",
+                entry.route
+            );
+            assert!(
+                matches!(entry.assessment, Some(WaitAssessment::Waiting(_))),
+                "{:?}",
+                entry.assessment
+            );
+            assert!(matches!(entry.armed, Some(SlotRef::Protocol)));
+            assert_eq!(entry.kind().as_deref(), Some("watch"));
+            assert!(entry.entries.is_none());
+        }
+        // Listed in branch order, the entries under their branch.
+        let order: Vec<String> = set
+            .members
+            .iter()
+            .map(|m| match &m.route {
+                MemberRoute::Select { index, .. } => format!("branch {index}"),
+                MemberRoute::Entry { index, .. } => format!("entry {index}"),
+                other => panic!("{other:?}"),
+            })
+            .collect();
+        assert_eq!(
+            order,
+            ["branch 0", "branch 1", "entry 0", "entry 1", "entry 2"]
+        );
+        assert_eq!(set.group_label(), "oneshot rx, watch");
+
+        let (bundle, snapshot) = load_any("armed-select");
+        let ctx = testkit::context(&bundle, &snapshot);
+        let list = testkit::tasks(&ctx, &snapshot);
+        let driver = task_named(&list, "driver");
+        let members = match branches_of(&ctx, &list, driver, &Registries::default()) {
+            Branches::Set(set) => set.members,
+            Branches::Held { members, .. } => members,
+            Branches::None => Vec::new(),
+        };
+        assert!(
+            members
+                .iter()
+                .all(|m| m.entries.is_none() && !matches!(m.route, MemberRoute::Entry { .. })),
+            "{members:#?}"
+        );
     }
 
     /// A branch reached through a borrow whose record is only its
@@ -1970,6 +2296,7 @@ mod tests {
             assessment: Some(WaitAssessment::Unknown(WaitUnknownReason::Continuation)),
             notes: Vec::new(),
             armed: None,
+            entries: None,
         }
     }
 
@@ -2127,6 +2454,7 @@ mod tests {
             assessment: None,
             notes: Vec::new(),
             armed: Some(armed),
+            entries: None,
         };
         let wheel = alone(SlotRef::Wheel {
             entry: 0xee00,
@@ -2282,5 +2610,215 @@ mod tests {
         let mut one = stopped(Vec::new());
         fold(&task, &mut one, &[nowhere(0x7000)]);
         assert_eq!(set_of(&one).cell(), "unknown @ 0x7000");
+    }
+}
+
+#[cfg(test)]
+mod fanout_tests {
+    use super::*;
+    use crate::testkit::{self, load_any};
+    use crate::tokio::bundle::{FutureInfo, Task};
+
+    fn named<'a>(list: &'a TaskList, name: &str) -> &'a Task {
+        list.tasks
+            .iter()
+            .find(|t| matches!(&t.future, FutureInfo::Known(k) if k.display_name.contains(name)))
+            .unwrap_or_else(|| panic!("the fixture lists {name}"))
+    }
+
+    /// A map that is itself a branch — a local of a stop that is no
+    /// `select!` — is a member listed for its entries and no future
+    /// to inspect; handed twice, it is one member; and an entry
+    /// reached through a borrow keeps the borrow whatever its own
+    /// chain says.
+    #[test]
+    fn test_a_map_held_by_the_stop_is_one_member_for_its_entries() {
+        let (bundle, snapshot) = load_any("watch-stream");
+        let ctx = testkit::context(&bundle, &snapshot);
+        let list = testkit::tasks(&ctx, &snapshot);
+        let task = named(&list, "mapper");
+        let inspection = ctx
+            .inspect_task(task, &ReadContext::none())
+            .unwrap()
+            .unwrap();
+        let map = testkit::frame_local(&ctx, task, "mapper", "map");
+        let branch = |i: usize| Branch {
+            route: MemberRoute::Branch {
+                local: format!("m{i}"),
+                borrowed: false,
+            },
+            value: map,
+        };
+        let mut notes = Vec::new();
+        let (members, chains) = ctx.members_of(
+            &mut AssessmentPass::new(),
+            &inspection.chain,
+            &TaskFacts::from(task),
+            &list,
+            &ReadContext::none(),
+            vec![branch(0), branch(1)],
+            MAX_BRANCHES,
+            &mut notes,
+        );
+        assert!(notes.is_empty(), "{notes:#?}");
+        assert_eq!(members.len(), 4, "{members:#?}");
+        assert_eq!(chains.len(), 4);
+        assert!(chains[0].is_none() && chains[1..].iter().all(|c| c.is_some()));
+        assert!(matches!(&members[0].route, MemberRoute::Branch { local, .. } if local == "m0"));
+        assert_eq!(
+            members[0].entries,
+            Some(Fanout {
+                listed: 3,
+                total: 3
+            })
+        );
+        assert!(members[0].assessment.is_none() && members[0].armed.is_none());
+        for (i, member) in members[1..].iter().enumerate() {
+            assert!(
+                matches!(
+                    &member.route,
+                    MemberRoute::Entry { index, under: Some(under), borrowed: false }
+                        if *index == i
+                            && matches!(&**under, MemberRoute::Branch { local, .. } if local == "m0")
+                ),
+                "{:?}",
+                member.route
+            );
+            assert!(matches!(
+                member.assessment,
+                Some(WaitAssessment::Waiting(_))
+            ));
+        }
+
+        let mut first = None;
+        let _ = census::walk_fanout_entries(&ctx, &ReadContext::none(), map, 1, &mut |_, v| {
+            first = Some(v);
+            Ok(())
+        });
+        let (members, _) = ctx.members_of(
+            &mut AssessmentPass::new(),
+            &inspection.chain,
+            &TaskFacts::from(task),
+            &list,
+            &ReadContext::none(),
+            vec![Branch {
+                route: MemberRoute::Entry {
+                    index: 7,
+                    under: None,
+                    borrowed: true,
+                },
+                value: first.expect("the map has a first entry"),
+            }],
+            MAX_BRANCHES,
+            &mut notes,
+        );
+        assert_eq!(members.len(), 1);
+        assert!(
+            matches!(
+                members[0].route,
+                MemberRoute::Entry {
+                    index: 7,
+                    under: None,
+                    borrowed: true
+                }
+            ),
+            "{:?}",
+            members[0].route
+        );
+    }
+
+    /// A stop that is the map itself lists its entries as the branches:
+    /// all three uncapped, and under a cap of one the first listed and
+    /// the other two counted.
+    #[test]
+    fn test_a_stop_that_is_the_map_lists_entries_as_its_branches() {
+        let (bundle, snapshot) = load_any("watch-stream");
+        let ctx = testkit::context(&bundle, &snapshot);
+        let list = testkit::tasks(&ctx, &snapshot);
+        let map = testkit::frame_local(&ctx, named(&list, "mapper"), "mapper", "map");
+        let frame = AwaitFrame {
+            future: map,
+            state: None,
+            dyn_symbol: None,
+        };
+        let mut notes = Vec::new();
+        let found = ctx.branches_at(
+            &frame,
+            &ReadContext::none(),
+            &mut BranchScan::default(),
+            &mut notes,
+        );
+        assert!(notes.is_empty(), "{notes:#?}");
+        assert_eq!((found.branches.len(), found.capped), (3, 0));
+        assert!(found.disabled.is_empty());
+        for (i, branch) in found.branches.iter().enumerate() {
+            assert!(matches!(
+                branch.route,
+                MemberRoute::Entry { index, under: None, borrowed: false } if index == i
+            ));
+        }
+        let found = ctx.branches_at(
+            &frame,
+            &ReadContext::none(),
+            &mut BranchScan {
+                max_branches: 1,
+                ..BranchScan::default()
+            },
+            &mut notes,
+        );
+        assert!(notes.is_empty(), "{notes:#?}");
+        assert_eq!((found.branches.len(), found.capped), (1, 2));
+    }
+
+    /// Entries past the branch cap are counted in the fan-out rather
+    /// than listed: the mapper's map under a cap of two lists two of
+    /// its three and says three.
+    #[test]
+    fn test_entries_past_the_cap_are_counted_in_the_fan_out() {
+        let (bundle, snapshot) = load_any("watch-stream");
+        let ctx = testkit::context(&bundle, &snapshot);
+        let list = testkit::tasks(&ctx, &snapshot);
+        let task = named(&list, "mapper");
+        let inspection = ctx
+            .inspect_task(task, &ReadContext::none())
+            .unwrap()
+            .unwrap();
+        let mut notes = Vec::new();
+        let Branches::Set(set) = ctx.wait_set(
+            &mut AssessmentPass::new(),
+            &inspection,
+            &TaskFacts::from(task),
+            &list,
+            &Registries::default(),
+            &ReadContext::none(),
+            &mut BranchScan {
+                max_branches: 2,
+                ..BranchScan::default()
+            },
+            &mut notes,
+        ) else {
+            panic!("a set");
+        };
+        assert!(notes.is_empty(), "{notes:#?}");
+        let map = set
+            .members
+            .iter()
+            .find(|m| m.entries.is_some())
+            .expect("the map's branch fans out");
+        assert_eq!(
+            map.entries,
+            Some(Fanout {
+                listed: 2,
+                total: 3
+            })
+        );
+        assert_eq!(
+            set.members
+                .iter()
+                .filter(|m| matches!(m.route, MemberRoute::Entry { .. }))
+                .count(),
+            2
+        );
+        assert_eq!(set.capped, 0);
     }
 }

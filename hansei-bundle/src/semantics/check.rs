@@ -160,7 +160,8 @@ impl<'a> Check<'a> {
             | TokioCoop
             | FuturesUtilNext
             | TokioStreamWatchStream
-            | TokioUtilReusableBox => {
+            | TokioUtilReusableBox
+            | TokioStreamStreamMap => {
                 let crate_name = match rule.kind {
                     TracingInstrumented => "tracing",
                     HyperUtilTokioSleep => "hyper-util",
@@ -169,7 +170,11 @@ impl<'a> Check<'a> {
                     // evidence, and tokio's version comes off its
                     // registry path rather than the layout family.
                     TokioSelect | TokioCoop => "tokio",
-                    TokioStreamWatchStream => "tokio-stream",
+                    // The map is a container, but one whose layout the
+                    // walk contract binds by name alone: its origin is
+                    // the type's own method declarations, read like the
+                    // stream route's.
+                    TokioStreamWatchStream | TokioStreamStreamMap => "tokio-stream",
                     TokioUtilReusableBox => "tokio-util",
                     _ => "futures-util",
                 };
@@ -868,6 +873,7 @@ pub fn container_roles(kind: ContainerKind) -> &'static [WalkRole] {
     match kind {
         ContainerKind::JoinSet => &[JoinSetLength, JoinSetLists],
         ContainerKind::FuturesUnordered => &[SetHeadAll],
+        ContainerKind::StreamMap => &[StreamMapEntries],
     }
 }
 
@@ -877,6 +883,7 @@ pub fn container_routes(kind: ContainerKind) -> &'static [WalkRole] {
     match kind {
         ContainerKind::JoinSet => &[JoinSetNotifiedHead, JoinSetIdleHead],
         ContainerKind::FuturesUnordered => &[],
+        ContainerKind::StreamMap => &[StreamMapEntryStream],
     }
 }
 
@@ -986,8 +993,17 @@ pub(crate) fn check_semantics(bundle: &Bundle) -> Result<()> {
             let kind = match container.kind {
                 ContainerKind::JoinSet => SemanticRuleKind::TokioJoinSet,
                 ContainerKind::FuturesUnordered => SemanticRuleKind::FuturesUnordered,
+                ContainerKind::StreamMap => SemanticRuleKind::TokioStreamStreamMap,
             };
             check.rule(container.rule, &[kind])?;
+            // Whose waker the children get is the reviewed
+            // implementation's, so the recorded flag must be the
+            // kind's own: a set claiming forwarded wakers would have
+            // the wait set list its children as the task's branches.
+            require(
+                container.wakers == container.kind.wakers(),
+                "container wakers disagree with its kind",
+            )?;
             check.roles(record.ty, container_roles(container.kind))?;
             check.routes(container_routes(container.kind))?;
         }

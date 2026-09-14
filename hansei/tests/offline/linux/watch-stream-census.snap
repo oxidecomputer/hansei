@@ -5,9 +5,9 @@ description: "`census` over linux/watch-stream"
 Threads: 3 lwps, 3 in runtime 0 @ 0xADDR
 
 COUNT  RT  ROLE             STATE            LWPS
-    1  0   worker           in driver        352764
-    1  0   worker           parked           352765
-    1  0   entered runtime  block_on caller  352762
+    1  0   worker           in driver        1558926
+    1  0   worker           parked           1558925
+    1  0   entered runtime  block_on caller  1558923
     0  0   blocking pool    0 idle, 0 busy   —
 [3 lwps]
 
@@ -28,15 +28,17 @@ COUNT  TYPE / WAITING ON
        └─ 1  one of several
 [4 types]
 
-Futures: 11 in flight, on 35 await-chain frames, up to 8 deep
+Futures: 14 in flight, on 53 await-chain frames, up to 8 deep
 
 COUNT  HELD IN
     4  task (its own await chain)
-    7  frame (off any await chain)
+   10  frame (off any await chain)
     0  set (0 FuturesUnordered)
-[11 futures]
+[14 futures]
 
 COUNT  TYPE / WAITING ON
+    4  async fn tokio_stream::wrappers::watch::make_future<u32>
+       └─ 4  watch
     2  future futures_util::stream::stream::next::Next<tokio_stream::wrappers::watch::WatchStream<u32>>
        ├─ 1  watch
        └─ 1  — (unresumed)
@@ -44,8 +46,6 @@ COUNT  TYPE / WAITING ON
        └─ 2  oneshot rx
     1  async block tokio_stream::wrappers::watch::WatchStream::new<u32>
        └─ 1  — (unresumed)
-    1  async fn tokio_stream::wrappers::watch::make_future<u32>
-       └─ 1  watch
     1  future futures_util::stream::stream::next::Next<tokio_stream::stream_map::StreamMap<&str, tokio_stream::wrappers::watch::WatchStream<u32>>>
        └─ 1  unknown
 [5 types]

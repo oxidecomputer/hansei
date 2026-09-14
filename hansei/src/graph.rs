@@ -642,6 +642,7 @@ TASK                                         STATE  WAITING ON
                 ))),
                 notes: Vec::new(),
                 armed: Some(SlotRef::Protocol),
+                entries: None,
             }],
             capped: 0,
         });

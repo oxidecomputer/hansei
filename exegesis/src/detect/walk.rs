@@ -53,6 +53,8 @@ const ACQUIRE: &str = "tokio::sync::batch_semaphore::Acquire";
 const FUTURES_UNORDERED: &str = "futures_util::stream::futures_unordered::FuturesUnordered<";
 /// The by-value type every join set is recognized as.
 const JOIN_SET: &str = "tokio::task::join_set::JoinSet<";
+/// The by-value type every tokio-stream `StreamMap` is recognized as.
+const STREAM_MAP: &str = "tokio_stream::stream_map::StreamMap<";
 /// A `LocalSet`'s shared state — the root of its own task list. Reached
 /// transitively from local task cells (whose scheduler `S` is
 /// `Arc<Shared>`) and emitted by name for a set nothing was spawned onto.
@@ -2107,6 +2109,22 @@ fn decls() -> Vec<WalkDecl> {
             Aggregate,
             || vec![reach![Named("data"), Named("notify_rx")]],
         ),
+        // The census's map walk: a tokio-stream `StreamMap`'s entries
+        // are a `Vec<(K, V)>`, read element by element through the
+        // `Vec` formatter's own buffer route, and each element's `V`
+        // is a stream the map polls with the task's own context.
+        decl(
+            WalkRole::StreamMapEntries,
+            Leaf(STREAM_MAP),
+            Aggregate,
+            || vec![reach![Named("entries")]],
+        ),
+        decl(
+            WalkRole::StreamMapEntryStream,
+            Elem(WalkRole::StreamMapEntries),
+            Any,
+            || vec![reach![Named("__1")]],
+        ),
     ]
 }
 
@@ -2653,11 +2671,20 @@ fn resolve_root(
             Roots::Types { types, note } => {
                 let mut out = Vec::new();
                 for (label, ty) in types {
-                    // An inline array declares its element type; a boxed
-                    // slice keeps it behind the `data_ptr` half of the fat
-                    // pointer.
+                    // An inline array declares its element type; a
+                    // `Vec<T>` names it as its parameter, the buffer
+                    // pointer being untyped; a boxed slice keeps it
+                    // behind the `data_ptr` half of the fat pointer.
                     let target = match reader.canonical_type(ty) {
                         Some(RawType::Array(array)) => Some(array.elem_type_id),
+                        Some(RawType::Struct(st))
+                            if type_label(reader, ty).starts_with("alloc::vec::Vec<") =>
+                        {
+                            st.template_params
+                                .iter()
+                                .find(|p| p.name.map(|n| reader.strings.get(n)) == Some("T"))
+                                .map(|p| p.type_id)
+                        }
                         _ => aggregate_members(reader, ty)
                             .and_then(|members| {
                                 members.iter().find(|m| {
@@ -2671,8 +2698,8 @@ fn resolve_root(
                     };
                     let Some(target) = target else {
                         return Roots::Broken(vec![format!(
-                            "{label}: {} is neither an array nor a data_ptr fat pointer \
-                             to walk elements of",
+                            "{label}: {} is neither an array, a Vec nor a data_ptr fat \
+                             pointer to walk elements of",
                             type_label(reader, ty)
                         )]);
                     };

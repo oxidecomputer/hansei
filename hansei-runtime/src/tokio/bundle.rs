@@ -34,8 +34,8 @@ use hansei_bundle::symbols::normalized_v0_key;
 use hansei_bundle::tokio::{semaphore, timer};
 use hansei_bundle::{
     AccessKind, BundleType, BundleTypeId, BundleView, ContainerKind, FutureKind, IoOperationKind,
-    ResourceKind, SchedulerClass, SelectBinding, StaticRole, Step, StoragePolicy, SymbolLookup,
-    TaskEntryId, TaskFutureEntry, TypeDef, TypeSemantics, WalkOutcome, WalkRole,
+    MemberRef, ResourceKind, SchedulerClass, SelectBinding, StaticRole, Step, StoragePolicy,
+    SymbolLookup, TaskEntryId, TaskFutureEntry, TypeDef, TypeSemantics, WalkOutcome, WalkRole,
     strip_build_prefix, strip_llvm_suffix,
 };
 use proc::{LwpInfo, Mappings, SymbolBuf, Target};
@@ -1408,6 +1408,25 @@ impl<'b, T: Target> Context<'b, T> {
     /// The container a type is bound as, if any.
     pub(crate) fn container_kind(&self, id: BundleTypeId) -> Option<ContainerKind> {
         self.type_semantics(id)?.container.as_ref().map(|c| c.kind)
+    }
+
+    /// The member a fan-out container keeps its entries in, as the
+    /// bound route names it — what an entry of a map that is itself
+    /// a chain frame is listed as held in. Asked only of a bundle that
+    /// bound a fan-out container, and the validator holds every such
+    /// binding to that route being bound at the container, so the
+    /// route and its first member step are there by construction.
+    pub(crate) fn fanout_storage_name(&self) -> &'b str {
+        self.view
+            .bundle()
+            .walks
+            .entries
+            .get(&WalkRole::StreamMapEntries)
+            .and_then(|binding| match binding.steps.first() {
+                Some(Step::Member(MemberRef::Named(name))) => self.view.str(*name),
+                _ => None,
+            })
+            .expect("a fan-out container's entries route is bound at it")
     }
 
     /// The `select!` branches a type polls, where the bundle bound it

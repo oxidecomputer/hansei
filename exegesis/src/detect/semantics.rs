@@ -565,6 +565,68 @@ pub const TOKIO_UTIL_REUSABLE_BOX_V0_7_11: LibraryConvention = LibraryConvention
     ],
 };
 
+/// tokio-stream's `StreamMap<K, V>` as 0.1.14 through 0.1.19 implement
+/// it (`src/stream_map.rs`): the struct is `{ entries: Vec<(K, V)> }`,
+/// and `poll_next_entry` picks a random start index and polls every
+/// entry in turn **with the task's own context** until one is ready,
+/// removing an exhausted entry and leaving a pending one registered.
+/// So every pending entry holds the polling task's waker directly —
+/// there is no per-child waker as in a `FuturesUnordered` — and the
+/// map is a container whose children are the task's own branches.
+/// The file's checksum moves every release (docs, iterators, the
+/// `rand` shim), while the struct and that poll body are the same
+/// text in all six, up to 0.1.14's `use Poll::*`. The type is no
+/// future and has no poll, so the rule is read off its own method
+/// declarations, like the watch stream's.
+pub const TOKIO_STREAM_MAP_V0_1_14: LibraryConvention = LibraryConvention {
+    package: "tokio-stream",
+    family: "tokio-stream-map-0.1.14",
+    floor: (0, 1, 14),
+    ceiling: (0, 1, 19),
+    checksums: &[
+        // src/stream_map.rs, 0.1.14
+        (
+            "src/stream_map.rs",
+            [
+                0xb3, 0x78, 0x51, 0xf6, 0xd0, 0x31, 0xf1, 0x2d, 0x47, 0xd7, 0x32, 0x83, 0x08, 0x74,
+                0x2b, 0xd9,
+            ],
+        ),
+        // src/stream_map.rs, 0.1.15
+        (
+            "src/stream_map.rs",
+            [
+                0xb6, 0x8c, 0x3c, 0x31, 0x81, 0x2d, 0x8a, 0xc2, 0x71, 0x31, 0x56, 0xab, 0xbd, 0x86,
+                0xa4, 0x1f,
+            ],
+        ),
+        // src/stream_map.rs, 0.1.16 and 0.1.17
+        (
+            "src/stream_map.rs",
+            [
+                0xe9, 0xce, 0x97, 0x95, 0x32, 0x43, 0xbf, 0x95, 0x17, 0xb0, 0x74, 0x45, 0x5e, 0xf4,
+                0x81, 0x81,
+            ],
+        ),
+        // src/stream_map.rs, 0.1.18
+        (
+            "src/stream_map.rs",
+            [
+                0xb5, 0x1b, 0x28, 0x7a, 0x6d, 0x3c, 0x9c, 0x22, 0x07, 0x64, 0x99, 0xed, 0x8c, 0xb2,
+                0xd4, 0xb7,
+            ],
+        ),
+        // src/stream_map.rs, 0.1.19
+        (
+            "src/stream_map.rs",
+            [
+                0xc8, 0x04, 0x84, 0x60, 0xb5, 0x3e, 0x98, 0xa3, 0x14, 0x17, 0xef, 0xa9, 0x54, 0xec,
+                0x6c, 0xa2,
+            ],
+        ),
+    ],
+};
+
 /// The reviewed implementation a version selects, or which side of the
 /// reviewed range it falls on. A version outside gets no rule, however
 /// familiar the layout looks: a delegation authorizes following a poll,
@@ -872,6 +934,12 @@ mod tests {
                 ["0.7.11", "0.7.12", "0.7.15", "0.7.19"].as_slice(),
                 "0.7.10",
                 "0.7.20",
+            ),
+            (
+                &TOKIO_STREAM_MAP_V0_1_14,
+                ["0.1.14", "0.1.15", "0.1.16", "0.1.17", "0.1.18", "0.1.19"].as_slice(),
+                "0.1.13",
+                "0.1.20",
             ),
         ] {
             for version in inside {

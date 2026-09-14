@@ -2556,37 +2556,37 @@ program: watch-stream
 [tasks]
 task: watch_stream::fresh::{async_fn_env#0}
   kind: AsyncFn
-  decl: watch-stream.rs:79
+  decl: watch-stream.rs:85
   entries: 2
   symbols-per-entry: 6,6
   stage: Stage<watch_stream::fresh::{async_fn_env#0}>
   variants:
-    Unresumed @ watch-stream.rs:83
-    Returned @ watch-stream.rs:93
-    Panicked @ watch-stream.rs:93
-    Suspend0 @ watch-stream.rs:90
+    Unresumed @ watch-stream.rs:89
+    Returned @ watch-stream.rs:99
+    Panicked @ watch-stream.rs:99
+    Suspend0 @ watch-stream.rs:96
 task: watch_stream::direct::{async_fn_env#0}
   kind: AsyncFn
-  decl: watch-stream.rs:99
+  decl: watch-stream.rs:105
   entries: 2
   symbols-per-entry: 6,6
   stage: Stage<watch_stream::direct::{async_fn_env#0}>
   variants:
-    Unresumed @ watch-stream.rs:99
-    Returned @ watch-stream.rs:103
-    Panicked @ watch-stream.rs:103
-    Suspend0 @ watch-stream.rs:102
+    Unresumed @ watch-stream.rs:105
+    Returned @ watch-stream.rs:109
+    Panicked @ watch-stream.rs:109
+    Suspend0 @ watch-stream.rs:108
 task: watch_stream::mapper::{async_fn_env#0}
   kind: AsyncFn
-  decl: watch-stream.rs:54
+  decl: watch-stream.rs:57
   entries: 2
   symbols-per-entry: 6,6
   stage: Stage<watch_stream::mapper::{async_fn_env#0}>
   variants:
-    Unresumed @ watch-stream.rs:58
-    Returned @ watch-stream.rs:73
-    Panicked @ watch-stream.rs:73
-    Suspend0 @ select.rs:741 (awaited at watch-stream.rs:69)
+    Unresumed @ watch-stream.rs:61
+    Returned @ watch-stream.rs:79
+    Panicked @ watch-stream.rs:79
+    Suspend0 @ select.rs:741 (awaited at watch-stream.rs:75)
 task: watch_stream::resolver::{async_fn_env#0}
   kind: AsyncFn
   decl: watch-stream.rs:30
@@ -2611,11 +2611,11 @@ dyn: watch_stream::mapper::{async_fn_env#0} (poll, drop_glue)
 dyn: watch_stream::resolver::{async_fn_env#0} (poll, drop_glue)
 
 [env-decls]
-env: watch_stream::direct::{async_fn_env#0} @ watch-stream.rs:99
-env: watch_stream::fresh::{async_fn_env#0} @ watch-stream.rs:79
-env: watch_stream::main::{async_block_env#0} @ watch-stream.rs:110
+env: watch_stream::direct::{async_fn_env#0} @ watch-stream.rs:105
+env: watch_stream::fresh::{async_fn_env#0} @ watch-stream.rs:85
+env: watch_stream::main::{async_block_env#0} @ watch-stream.rs:116
 env: watch_stream::mapper::{async_fn#0}::{closure_env#0} @ select.rs:659
-env: watch_stream::mapper::{async_fn_env#0} @ watch-stream.rs:54
+env: watch_stream::mapper::{async_fn_env#0} @ watch-stream.rs:57
 env: watch_stream::resolver::{async_fn#0}::{closure_env#0} @ select.rs:659
 env: watch_stream::resolver::{async_fn_env#0} @ watch-stream.rs:30
 

@@ -7,7 +7,10 @@ ADDR            TASK  HELD IN            STATE                                  
 0xADDR  3     frame 1, `stream`  Suspend0 — tokio-stream-0.1.19/src/wrappers/watch.rs:81  watch 0xADDR (version 0, 1 sender, 1 receiver)   yes    async fn tokio_stream::wrappers::watch::make_future<u32>
 0xADDR  3     frame 1, `next`    —                                                        watch 0xADDR (version 0, 1 sender, 1 receiver)   yes    future futures_util::stream::stream::next::Next<tokio_stream::wrappers::watch::WatchStream<u32>>
 0xADDR  4     frame 1, `once`    —                                                        oneshot rx 0xADDR (nothing sent, sender alive)   yes    future tokio::sync::oneshot::Receiver<u32>
+0xADDR  4     frame 1, `map[0]`  Suspend0 — tokio-stream-0.1.19/src/wrappers/watch.rs:81  watch 0xADDR (version 0, 1 sender, 1 receiver)   yes    async fn tokio_stream::wrappers::watch::make_future<u32>
+0xADDR  4     frame 1, `map[1]`  Suspend0 — tokio-stream-0.1.19/src/wrappers/watch.rs:81  watch 0xADDR (version 0, 1 sender, 1 receiver)   yes    async fn tokio_stream::wrappers::watch::make_future<u32>
+0xADDR  4     frame 1, `map[2]`  Suspend0 — tokio-stream-0.1.19/src/wrappers/watch.rs:81  watch 0xADDR (version 0, 1 sender, 1 receiver)   yes    async fn tokio_stream::wrappers::watch::make_future<u32>
 0xADDR  4     frame 1, `next`    —                                                        unarmed: unknown at tokio_stream::stream_map::StreamMap  no     future futures_util::stream::stream::next::Next<tokio_stream::stream_map::StreamMap<&str, tokio_stream::wrappers::watch::WatchStream<u32>>>
 0xADDR  5     frame 1, `stream`  Unresumed                                                —                                                        no     async block tokio_stream::wrappers::watch::WatchStream::new<u32>
 0xADDR  5     frame 1, `next`    —                                                        —                                                        no     future futures_util::stream::stream::next::Next<tokio_stream::wrappers::watch::WatchStream<u32>>
-[7 futures]
+[10 futures]

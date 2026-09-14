@@ -2649,6 +2649,7 @@ mod join_tests {
             assessment,
             notes: Vec::new(),
             armed,
+            entries: None,
         }
     }
 

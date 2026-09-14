@@ -41,10 +41,10 @@ use crate::detect::adapters::{
 };
 use crate::detect::semantics::{
     FUTURES_UTIL_ADAPTERS_V0_3_30, HYPER_UTIL_TOKIO_SLEEP_V0_1_10, LibraryConvention,
-    RustcConvention, TOKIO_COOP_V1_47, TOKIO_SELECT_V1_47, TOKIO_STREAM_WATCH_V0_1_14,
-    TOKIO_UTIL_REUSABLE_BOX_V0_7_11, TRACING_INSTRUMENTED_V0_1_40, library_convention,
-    rustc_coroutine_convention, rustc_dyn_future_abi_convention, rustc_std_adapter_convention,
-    tokio_state_protocol,
+    RustcConvention, TOKIO_COOP_V1_47, TOKIO_SELECT_V1_47, TOKIO_STREAM_MAP_V0_1_14,
+    TOKIO_STREAM_WATCH_V0_1_14, TOKIO_UTIL_REUSABLE_BOX_V0_7_11, TRACING_INSTRUMENTED_V0_1_40,
+    library_convention, rustc_coroutine_convention, rustc_dyn_future_abi_convention,
+    rustc_std_adapter_convention, tokio_state_protocol,
 };
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -265,7 +265,7 @@ pub(super) struct Seed {
     select: Option<SelectSeed>,
     /// Where the type's own methods were declared, for a library rule
     /// whose origin is the type rather than a `poll` (a `WatchStream`
-    /// has none); empty otherwise.
+    /// has none, nor does the `StreamMap` container); empty otherwise.
     type_sources: BTreeSet<PollSource>,
 }
 
@@ -471,6 +471,12 @@ pub(super) fn collect_semantic_seeds(
                 seed.type_sources = type_sources(raw);
             }
             seed.library = Some(library);
+        } else if name.starts_with(STREAM_MAP) {
+            // The map's layout is the walk contract's to bind, by the
+            // roles rooted at its name; its origin is the type's own
+            // method declarations, gathered here where the DWARF is
+            // still open and read when the container binds.
+            seeds.entry(ty).or_default().type_sources = type_sources(raw);
         }
     }
     for (raw, symbols) in polls {
@@ -541,13 +547,46 @@ const RESOURCE_KINDS: [(ResourceKind, SemanticRuleKind); 9] = [
     ),
 ];
 
-const CONTAINER_KINDS: [(ContainerKind, SemanticRuleKind); 2] = [
+const CONTAINER_KINDS: [(ContainerKind, SemanticRuleKind); 3] = [
     (ContainerKind::JoinSet, SemanticRuleKind::TokioJoinSet),
     (
         ContainerKind::FuturesUnordered,
         SemanticRuleKind::FuturesUnordered,
     ),
+    (
+        ContainerKind::StreamMap,
+        SemanticRuleKind::TokioStreamStreamMap,
+    ),
 ];
+
+/// The by-value type every tokio-stream `StreamMap` is recognized as:
+/// the walk contract's leaf key, whose roles bound at a type are what
+/// seed the container.
+const STREAM_MAP: &str = "tokio_stream::stream_map::StreamMap<";
+
+/// The rule a container binds under. The two tokio and futures-util
+/// sets bind under the bundle's one layout origin for their library;
+/// the map is a third-party type whose layout the contract binds by
+/// name alone, so its rule is read off the type's own method
+/// declarations like a stream route's, and declines the same ways.
+fn container_rule(kind: ContainerKind, seed: &Seed) -> Result<RuleKey, Decline> {
+    let rule_kind = CONTAINER_KINDS
+        .iter()
+        .find(|(k, _)| *k == kind)
+        .map(|(_, rule)| *rule)
+        .expect("every container kind has a rule");
+    match kind {
+        ContainerKind::JoinSet | ContainerKind::FuturesUnordered => Ok(RuleKey::Library(rule_kind)),
+        ContainerKind::StreamMap => {
+            let origin =
+                delegation_origin(&seed.type_sources, &TOKIO_STREAM_MAP_V0_1_14, "method")?;
+            Ok(RuleKey::Delegation {
+                kind: rule_kind,
+                origin,
+            })
+        }
+    }
+}
 
 const SCHEDULER_CLASSES: [(SchedulerClass, SemanticRuleKind); 4] = [
     (
@@ -910,7 +949,10 @@ struct Draft {
     issues: Vec<Decline>,
     evidence: BTreeSet<FutureEvidence>,
     resource: Option<ResourceKind>,
-    container: Option<ContainerKind>,
+    /// The container the type is bound as, with the rule it binds
+    /// under — decided with the seed in hand, since the map's rule is
+    /// an origin read off the seed's sources.
+    container: Option<(ContainerKind, RuleKey)>,
     plan: Option<Plan>,
     /// Why no program was planned, when a reviewed shape was screened
     /// and declined: the continuation's reason, over the bare `NoRule`.
@@ -1014,7 +1056,19 @@ pub(super) fn bind_semantics(
         // at a type without it, so this only guards the record's shape.
         let readable = matches!(storage, StoragePolicy::DeclaredMembers);
         draft.resource = seed.resource.filter(|_| readable);
-        draft.container = seed.container.filter(|_| readable);
+        // A container whose rule declines — the map declared off the
+        // registry, or at an unreviewed version — keeps its record and
+        // says why, and is walked by no contract.
+        draft.container =
+            seed.container
+                .filter(|_| readable)
+                .and_then(|kind| match container_rule(kind, seed) {
+                    Ok(rule) => Some((kind, rule)),
+                    Err(decline) => {
+                        draft.issues.push(decline);
+                        None
+                    }
+                });
         if readable && draft.plan.is_none() {
             if let Some(adapter) = &seed.adapter {
                 match plan_adapter(ty, adapter, types, strings) {
@@ -1158,16 +1212,10 @@ pub(super) fn bind_semantics(
                 exclusive_pending: state_rule.is_some(),
             }
         });
-        let container = draft.container.map(|kind| {
-            let rule_kind = CONTAINER_KINDS
-                .iter()
-                .find(|(k, _)| *k == kind)
-                .map(|(_, rule)| *rule)
-                .expect("every container kind has a rule");
-            ContainerBinding {
-                rule: rules.rule(&RuleKey::Library(rule_kind), strings, library),
-                kind,
-            }
+        let container = draft.container.map(|(kind, rule)| ContainerBinding {
+            rule: rules.rule(&rule, strings, library),
+            kind,
+            wakers: kind.wakers(),
         });
         let coroutine = draft.coroutine.map(|layout| CoroutineLayout {
             rule: rules.rule(
@@ -2834,6 +2882,85 @@ mod tests {
                     if *family == "rustc-dyn-future-abi-1.97")
                 );
             }
+        }
+    }
+
+    /// A container's rule: the two sets under their library's one
+    /// layout origin, whatever the seed says; the map under
+    /// tokio-stream's delegation origin read off the type's own method
+    /// declarations, declining — with no container — where those are
+    /// missing, off the registry, another crate's, or at a version on
+    /// either side of the reviewed range.
+    #[test]
+    fn test_the_map_container_rule_reads_the_type_origin() {
+        let typed = |path: &str| Seed {
+            type_sources: BTreeSet::from([source(path, None)]),
+            ..Seed::default()
+        };
+        let registry = |package: &str, version: &str| {
+            typed(&format!(
+                "/home/u/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/\
+                 {package}-{version}/src/stream_map.rs"
+            ))
+        };
+        for kind in [ContainerKind::JoinSet, ContainerKind::FuturesUnordered] {
+            let rule = container_rule(kind, &Seed::default()).unwrap();
+            assert!(matches!(rule, RuleKey::Library(_)), "{kind:?}: {rule:?}");
+        }
+        let rule = container_rule(
+            ContainerKind::StreamMap,
+            &registry("tokio-stream", "0.1.19"),
+        )
+        .unwrap();
+        assert!(
+            matches!(&rule, RuleKey::Delegation { kind: SemanticRuleKind::TokioStreamStreamMap, origin }
+            if origin.package == "tokio-stream" && origin.version == "0.1.19"
+                && origin.family == TOKIO_STREAM_MAP_V0_1_14.family),
+            "{rule:?}"
+        );
+        let reviewed = TOKIO_STREAM_MAP_V0_1_14.checksums[4].1;
+        let checked = Seed {
+            type_sources: BTreeSet::from([source(
+                "/home/u/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/\
+                 tokio-stream-0.1.19/src/stream_map.rs",
+                Some(reviewed),
+            )]),
+            ..Seed::default()
+        };
+        assert!(container_rule(ContainerKind::StreamMap, &checked).is_ok());
+        for (seed, expected) in [
+            (Seed::default(), "no method declaration"),
+            (
+                typed("/build/vendor/tokio-stream-0.1.19/src/stream_map.rs"),
+                "not a cargo registry path",
+            ),
+            (
+                registry("tokio-util", "0.7.19"),
+                "not the tokio-stream crate",
+            ),
+            (
+                registry("tokio-stream", "0.1.13"),
+                "below the reviewed range",
+            ),
+            (
+                registry("tokio-stream", "0.1.20"),
+                "above the reviewed range",
+            ),
+            (
+                Seed {
+                    type_sources: BTreeSet::from([source(
+                        "/home/u/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/\
+                         tokio-stream-0.1.19/src/stream_map.rs",
+                        Some([9; 16]),
+                    )]),
+                    ..Seed::default()
+                },
+                "not a reviewed revision",
+            ),
+        ] {
+            let (kind, detail) = container_rule(ContainerKind::StreamMap, &seed).unwrap_err();
+            assert_eq!(kind, SemanticIssueKind::UnsupportedOrigin, "{detail}");
+            assert!(detail.contains(expected), "{detail}");
         }
     }
 

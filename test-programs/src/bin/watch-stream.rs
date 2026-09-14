@@ -50,7 +50,10 @@ async fn resolver(
 /// The map polls each entry with this task's own context and keeps
 /// every pending one registered, so all three boxes' waiters carry
 /// this task's waker — there is no per-child waker as in a
-/// `FuturesUnordered`.
+/// `FuturesUnordered`. Each entry's stream is registered at its own
+/// slot in the map's buffer, the way the resolver's is at its local:
+/// the census lists a map's entries as finds of the task that polls
+/// it.
 async fn mapper(
     ready: oneshot::Sender<()>,
     mut once: oneshot::Receiver<u32>,
@@ -60,6 +63,9 @@ async fn mapper(
     let mut map = StreamMap::new();
     for (key, rx) in ["alpha", "beta", "gamma"].into_iter().zip(receivers) {
         map.insert(key, WatchStream::from_changes(rx));
+    }
+    for (_, stream) in map.iter() {
+        census_expect::held(stream as *const _ as u64, "make_future");
     }
     let next = map.next();
     tokio::pin!(next);
