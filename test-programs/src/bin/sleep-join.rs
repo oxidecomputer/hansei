@@ -35,6 +35,7 @@ fn main() {
         let _joiner = tokio::spawn(joiner(ready_b_tx, handle));
         ready_a_rx.await.expect("sleeper signals readiness");
         ready_b_rx.await.expect("joiner signals readiness");
+        test_programs::quiesce();
         println!("READY");
         std::future::pending::<()>().await
     })

@@ -62,6 +62,7 @@ fn main() {
 
         ready_rx.await.expect("task signals readiness");
         aligned_ready_rx.await.expect("holder signals readiness");
+        test_programs::quiesce();
         println!("READY");
         std::future::pending::<()>().await
     })

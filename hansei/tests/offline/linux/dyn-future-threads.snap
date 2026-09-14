@@ -2,8 +2,8 @@
 source: hansei/src/offline.rs
 description: "`threads` over linux/dyn-future"
 ---
-LWP      NAME  ROLE                 TASK  FRAME 0
-2606963  —     entered runtime      —     0xADDR
-2606965  —     worker 0, in driver  —     0xADDR
-2606966  —     worker 1, parked     —     0xADDR
+LWP     NAME  ROLE                 TASK  FRAME 0
+474723  —     entered runtime      —     0xADDR
+474725  —     worker 1, in driver  —     0xADDR
+474726  —     worker 0, parked     —     0xADDR
 [3 threads]

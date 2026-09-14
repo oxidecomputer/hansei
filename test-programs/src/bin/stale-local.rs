@@ -136,6 +136,7 @@ fn main() {
         drop(unsafe { Box::from_raw(addr) });
         drop(unsafe { Box::from_raw(future) });
 
+        test_programs::quiesce();
         println!("READY");
         std::future::pending::<()>().await
     })

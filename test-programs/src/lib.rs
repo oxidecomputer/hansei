@@ -58,6 +58,160 @@ pub fn run_builder<T>(builder: &mut Builder, main: impl std::future::Future<Outp
     }
 }
 
+/// Block until every thread of this process but the caller is asleep
+/// in the kernel.
+///
+/// A readiness handshake says a task *sent*, not that the runtime is
+/// done with it. The send is what wakes the thread that prints the
+/// marker, so a core can land while the sender is still returning from
+/// `send` — before its leaf has been polled to `Pending`, its timer
+/// registered, its waker stored, its task marked idle, or the worker
+/// parked. Nothing a thread can publish about itself closes that
+/// window, because whatever it published, it is still running to say
+/// so. The kernel's account is the only one taken from outside: a
+/// thread asleep in a system call is past every poll it ran, so the
+/// task states and registrations behind it are final, and in a fixture
+/// that parks forever nothing wakes it again.
+///
+/// Call it from the thread that prints the marker, immediately before
+/// the print. The wait is bounded by the other threads' own progress,
+/// not by a delay, and yields rather than sleeps between passes — so a
+/// fixture that keeps a thread running on purpose (`spin-poll`,
+/// `ct-spin`, `park-target --spin`) must never call it.
+///
+/// Elsewhere — macOS, which builds and extracts from the fixtures but
+/// takes no core from one — there is nothing to race and this does
+/// nothing.
+pub fn quiesce() {
+    let mine = sleeping::self_id();
+    // A pass is not an atomic snapshot of the process: a thread seen
+    // asleep early could in principle wake before the last is read.
+    // Nothing in a parked fixture wakes one, which is the property the
+    // whole handshake rests on, so a pass that finds them all asleep
+    // is the state the core is taken in.
+    while !sleeping::thread_ids()
+        .into_iter()
+        .all(|id| id == mine || sleeping::asleep(id))
+    {
+        std::thread::yield_now();
+    }
+}
+
+/// Block until the kernel reports the thread `id` asleep, where `id`
+/// is a Linux tid or an illumos lwpid — what the thread itself gets
+/// from [`thread_id`].
+///
+/// The per-thread half of [`quiesce`], for a fixture that must wait on
+/// named threads rather than on all of them: `park-target --spin`
+/// keeps one thread running forever on purpose, and waiting for the
+/// process to go quiet would never return.
+pub fn wait_until_asleep(id: u32) {
+    while !sleeping::asleep(id) {
+        std::thread::yield_now();
+    }
+}
+
+/// This thread's id in the spelling [`wait_until_asleep`] takes: its
+/// tid on Linux, its lwpid on illumos, and 0 where neither exists.
+pub fn thread_id() -> u32 {
+    sleeping::self_id()
+}
+
+/// The numbered entries of a procfs directory that lists a process's
+/// threads — Linux's `task`, illumos's `lwp`. Anything else in there
+/// is not a thread and is skipped.
+#[cfg(any(target_os = "linux", target_os = "illumos"))]
+fn listed_ids(dir: &str) -> Vec<u32> {
+    std::fs::read_dir(dir)
+        .unwrap_or_else(|e| panic!("failed to read {dir}: {e}"))
+        .filter_map(|entry| {
+            let entry = entry.unwrap_or_else(|e| panic!("failed to read an entry of {dir}: {e}"));
+            entry.file_name().to_string_lossy().parse().ok()
+        })
+        .collect()
+}
+
+/// What each system says about a thread that is asleep, and how it
+/// lists the threads there are to ask about.
+#[cfg(target_os = "linux")]
+mod sleeping {
+    /// `/proc/self/task` is this process's thread list, and a thread's
+    /// `stat` holds its state: `S`, interruptible sleep, is where a
+    /// parked worker, a blocked `recv` and an `epoll_wait` all are.
+    const TASKS: &str = "/proc/self/task";
+
+    pub fn self_id() -> u32 {
+        // SAFETY: `gettid` reads the calling thread's id and nothing
+        // else.
+        unsafe { libc::gettid() as u32 }
+    }
+
+    pub fn asleep(id: u32) -> bool {
+        let Ok(line) = std::fs::read_to_string(format!("{TASKS}/{id}/stat")) else {
+            // The thread is gone, which is as quiet as it gets.
+            return true;
+        };
+        // `<tid> (<comm>) <state> …`: the comm may hold spaces and
+        // parentheses of its own, so the state is the field after the
+        // last `)`.
+        let after_comm = line.rsplit_once(')').map_or("", |(_, rest)| rest);
+        after_comm.split_whitespace().next() == Some("S")
+    }
+
+    pub fn thread_ids() -> Vec<u32> {
+        super::listed_ids(TASKS)
+    }
+}
+
+#[cfg(target_os = "illumos")]
+mod sleeping {
+    /// `/proc/self/lwp` is this process's lwp list, and the `pr_flags`
+    /// an lwp's `lwpstatus` opens with carry `PR_ASLEEP` while it is
+    /// sleeping in a system call.
+    const LWPS: &str = "/proc/self/lwp";
+
+    /// `PR_ASLEEP` from `<sys/procfs.h>`. `pr_flags` is the first
+    /// `int` of `lwpstatus_t`.
+    const PR_ASLEEP: i32 = 0x10;
+
+    pub fn self_id() -> u32 {
+        // SAFETY: `thr_self` reads the calling thread's id and nothing
+        // else. A thread id is an lwpid here.
+        unsafe { libc::thr_self() }
+    }
+
+    pub fn asleep(id: u32) -> bool {
+        let Ok(bytes) = std::fs::read(format!("{LWPS}/{id}/lwpstatus")) else {
+            // The lwp is gone, which is as quiet as it gets.
+            return true;
+        };
+        let head = bytes.get(..4).expect("lwpstatus opens with pr_flags");
+        let flags = i32::from_ne_bytes(head.try_into().expect("four bytes are an int"));
+        flags & PR_ASLEEP != 0
+    }
+
+    pub fn thread_ids() -> Vec<u32> {
+        super::listed_ids(LWPS)
+    }
+}
+
+/// Nowhere else does a core get taken from a fixture, so there is
+/// nothing to wait for and no thread list to consult.
+#[cfg(not(any(target_os = "linux", target_os = "illumos")))]
+mod sleeping {
+    pub fn self_id() -> u32 {
+        0
+    }
+
+    pub fn asleep(_id: u32) -> bool {
+        true
+    }
+
+    pub fn thread_ids() -> Vec<u32> {
+        Vec::new()
+    }
+}
+
 /// The ground-truth registry: what a fixture built, stamped into the
 /// target's own memory so a reader of its core can hold the census to
 /// it.
@@ -76,7 +230,8 @@ pub fn run_builder<T>(builder: &mut Builder, main: impl std::future::Future<Outp
 /// write nothing to stderr — and thread-safe: an entry's index is
 /// reserved first, its fields written, and only then counted into
 /// `committed`, so a reader never sees a half-written entry. The
-/// fixtures quiesce before READY, so a capture sees every entry.
+/// fixtures wait for the process to go quiet before READY (see
+/// [`quiesce`]), so a capture sees every entry.
 pub mod census_expect {
     use std::cell::UnsafeCell;
     use std::sync::atomic::{AtomicU64, Ordering};

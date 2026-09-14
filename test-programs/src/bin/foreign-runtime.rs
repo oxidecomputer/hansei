@@ -133,6 +133,7 @@ fn main() {
         let _joiner = tokio::spawn(joiner(handle, ready_tx));
         ready_rx.await.expect("the joiner signals readiness");
         parked_rx.await.expect("the hidden runtime parks");
+        test_programs::quiesce();
         println!("READY");
         pending::<()>().await
     })

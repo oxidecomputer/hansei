@@ -134,25 +134,6 @@ fn tid() -> u32 {
         .expect("thread ids are numbers")
 }
 
-/// Block until the kernel reports `tid` asleep. Once a worker has
-/// reported in, the only interruptible sleep left to it is the park,
-/// and nothing unparks it, so `S` in its stat line means it is there
-/// for good. The loop is bounded by the worker's own progress, not by
-/// a delay, and yields rather than sleeps between reads.
-fn wait_until_parked(tid: u32) {
-    let stat = format!("/proc/self/task/{tid}/stat");
-    loop {
-        // `<tid> (<comm>) <state> …`: the comm may hold spaces, so the
-        // state is the field after the last `)`.
-        let line = std::fs::read_to_string(&stat).expect("failed to read the worker's stat");
-        let after_comm = line.rsplit_once(')').map_or("", |(_, rest)| rest);
-        if after_comm.split_whitespace().next() == Some("S") {
-            return;
-        }
-        thread::yield_now();
-    }
-}
-
 /// Claim this thread's slot and report where it is and what it holds.
 ///
 /// The address is reported, and not just the value, for two reasons:
@@ -190,19 +171,16 @@ fn main() {
     }
     drop(tx);
 
-    let mine = claim_slot();
-    let mut slots = vec![mine];
+    let mut slots = vec![claim_slot()];
     for _ in 0..WORKERS.len() {
         slots.push(rx.recv().expect("a thread died before reporting in"));
     }
     slots.sort_unstable();
     // Every worker has reported; now let each reach the park before
-    // the abort finds it still on its way there.
-    for (tid, _, _) in &slots {
-        if *tid != mine.0 {
-            wait_until_parked(*tid);
-        }
-    }
+    // the abort finds it still on its way there. Nothing here runs
+    // once parked, so every thread but this one going to sleep is the
+    // whole set arriving.
+    test_programs::quiesce();
 
     // Nothing here reads the markers; make sure they reach the symtab
     // anyway. The counter is written so its page is dirty, and so

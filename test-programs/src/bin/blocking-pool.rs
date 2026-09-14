@@ -56,6 +56,7 @@ fn main() {
         let _queued = tokio::spawn(queued_waiter(ready_b_tx, queued));
         ready_a_rx.await.expect("running waiter signals readiness");
         ready_b_rx.await.expect("queued waiter signals readiness");
+        test_programs::quiesce();
         println!("READY");
         let _keep = never_tx;
         std::future::pending::<()>().await

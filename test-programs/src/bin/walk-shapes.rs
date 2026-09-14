@@ -299,6 +299,7 @@ fn main() {
                 r_parker_rx.await.expect("local parker signals readiness");
                 r_joiner_rx.await.expect("joiner signals readiness");
                 r_side_rx.await.expect("the side thread signals readiness");
+                test_programs::quiesce();
                 println!("READY");
                 std::future::pending::<()>().await
             })

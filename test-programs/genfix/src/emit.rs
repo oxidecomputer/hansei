@@ -8,8 +8,11 @@
 //! (`unordered.rs`, `joinset.rs`): every running body registers what it
 //! built with `census_expect` at the addresses it built it, reports in
 //! on a shared channel, and parks forever; `main` counts every body's
-//! report before printing `READY`, so a capture taken at the marker
-//! sees every registration and every park. All the primitives pend
+//! report and then waits for the process to go quiet
+//! (`test_programs::quiesce` — a report is sent from inside the poll
+//! that goes on to park, so the count alone proves nothing about where
+//! the worker is) before printing `READY`, so a capture taken at the
+//! marker sees every registration and every park. All the primitives pend
 //! forever — the notify is never notified, the oneshot senders are
 //! leaked, the semaphore has no permits, the timer deadlines are years
 //! out.
@@ -853,6 +856,7 @@ fn emit_main(p: &Program, mode: Mode, s: &mut String) {
          \x20       for _ in 0..TOTAL_BODIES {\n\
          \x20           started_rx.recv().await.expect(\"every body reports in\");\n\
          \x20       }\n\
+         \x20       test_programs::quiesce();\n\
          \x20       println!(\"READY\");\n\
          \x20       std::future::pending::<()>().await\n\
          \x20   })\n\
@@ -942,6 +946,7 @@ mod tests {
             let src = emit(&generate(seed), Mode::Parked);
             for needle in [
                 "println!(\"READY\")",
+                "test_programs::quiesce()",
                 "allow_any_tracer",
                 "census_expect::task(\"driver_00\")",
                 "const TOTAL_BODIES",
@@ -980,6 +985,9 @@ mod tests {
                 "census_expect",
                 "TOTAL_BODIES",
                 "println!(\"READY\")",
+                // A churn program never settles, so a wait for quiet
+                // would never return.
+                "test_programs::quiesce()",
                 "std::future::pending::<u64>()",
                 "std::mem::forget",
                 "from_secs(3_000_000)",

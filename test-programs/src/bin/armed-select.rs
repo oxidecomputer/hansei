@@ -195,6 +195,7 @@ fn main() {
         }
         let _keep = (queue_tx, published_tx);
 
+        test_programs::quiesce();
         println!("READY");
         std::future::pending::<()>().await
     })

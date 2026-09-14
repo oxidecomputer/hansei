@@ -153,6 +153,7 @@ fn main() {
         ready_map_rx.await.expect("mapper signals readiness");
         ready_remap_rx.await.expect("remapper signals readiness");
         ready_dyn_rx.await.expect("dynamic signals readiness");
+        test_programs::quiesce();
         println!("READY");
         std::future::pending::<()>().await
     })

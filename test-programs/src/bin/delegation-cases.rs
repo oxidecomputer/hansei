@@ -409,6 +409,7 @@ fn main() {
         row[7].store(1, SeqCst);
     }
     test_programs::census_expect::task("delegation_cases::Gated<1>");
+    test_programs::quiesce();
     println!("READY");
     let (_hold, park) = mpsc::channel::<()>();
     park.recv().unwrap();

@@ -162,6 +162,7 @@ fn main() {
             direct_watch_tx,
         );
 
+        test_programs::quiesce();
         println!("READY");
         std::future::pending::<()>().await
     })

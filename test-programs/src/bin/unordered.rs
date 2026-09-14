@@ -141,6 +141,7 @@ fn main() {
         let _task = tokio::spawn(driver(ready_tx, notify));
 
         ready_rx.await.expect("task signals readiness");
+        test_programs::quiesce();
         println!("READY");
         std::future::pending::<()>().await
     })

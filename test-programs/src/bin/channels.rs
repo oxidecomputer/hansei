@@ -178,6 +178,7 @@ fn main() {
         let _send_waiter = tokio::spawn(send_waiter(full_tx, send_ready_tx));
         send_ready_rx.await.expect("sender signals readiness");
 
+        test_programs::quiesce();
         println!("READY");
         std::future::pending::<()>().await
     })

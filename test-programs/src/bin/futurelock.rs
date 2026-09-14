@@ -47,9 +47,17 @@ async fn start_background_task(lock: Arc<Mutex<()>>) {
     #[allow(clippy::let_underscore_future)]
     let _ = tokio::spawn(async move {
         println!("background task: start");
-        let _guard = lock.lock().await;
+        let guard = lock.lock().await;
         let _ = tx.send(());
         sleep(Duration::from_secs(5)).await;
+        // The marker stands for the futurelock the release creates, so
+        // the release has to come first: dropping the guard at the end
+        // of this scope, after the print, would leave a capture to race
+        // the handoff to `op1`'s never-again-polled acquire. Waiting
+        // for the woken tasks to park again then makes the deadlock,
+        // not the wake-up, what the marker announces.
+        drop(guard);
+        test_programs::quiesce();
         println!("background task: done (dropping lock)")
     });
     // Wait for the task to take the lock before returning.

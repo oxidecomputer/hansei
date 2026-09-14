@@ -226,6 +226,7 @@ fn main() {
         for _ in 0..TOTAL_BODIES {
             started_rx.recv().await.expect("every body reports in");
         }
+        test_programs::quiesce();
         println!("READY");
         std::future::pending::<()>().await
     })

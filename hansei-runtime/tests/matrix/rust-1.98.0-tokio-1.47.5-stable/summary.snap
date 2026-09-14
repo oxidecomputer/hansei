@@ -12,8 +12,8 @@ task: futurelock::start_background_task::{async_fn#0}::{async_block_env#0}
   stage: Stage<futurelock::start_background_task::{async_fn#0}::{async_block_env#0}>
   variants:
     Unresumed @ futurelock.rs:48
-    Returned @ futurelock.rs:54
-    Panicked @ futurelock.rs:54
+    Returned @ futurelock.rs:62
+    Panicked @ futurelock.rs:62
     Suspend0 @ futurelock.rs:50
     Suspend1 @ futurelock.rs:52
 task: futurelock::main::{async_block#0}::{async_block_env#0}
@@ -41,9 +41,9 @@ dyn: futurelock::start_background_task::{async_fn#0}::{async_block_env#0} (poll,
 dyn: futurelock::start_background_task::{async_fn_env#0} (poll, drop_glue)
 
 [env-decls]
-env: futurelock::do_async_thing::{async_fn_env#0} @ futurelock.rs:80
+env: futurelock::do_async_thing::{async_fn_env#0} @ futurelock.rs:88
 env: futurelock::do_stuff::{async_fn#0}::{closure_env#0} @ select.rs:662
-env: futurelock::do_stuff::{async_fn_env#0} @ futurelock.rs:60
+env: futurelock::do_stuff::{async_fn_env#0} @ futurelock.rs:68
 env: futurelock::main::{async_block#0}::{async_block_env#0} @ futurelock.rs:20
 env: futurelock::main::{async_block_env#0} @ futurelock.rs:19
 env: futurelock::start_background_task::{async_fn#0}::{async_block_env#0} @ futurelock.rs:48
@@ -380,15 +380,15 @@ task: dyn_future::set_member::{async_fn_env#0}
     Suspend0 @ dyn-future.rs:21
 task: dyn_future::hold_aligned::{async_fn_env#0}
   kind: AsyncFn
-  decl: dyn-future.rs:92
+  decl: dyn-future.rs:93
   entries: 2
   symbols-per-entry: 6,6
   stage: Stage<dyn_future::hold_aligned::{async_fn_env#0}>
   variants:
-    Unresumed @ dyn-future.rs:92
-    Returned @ dyn-future.rs:98
-    Panicked @ dyn-future.rs:98
-    Suspend0 @ dyn-future.rs:97
+    Unresumed @ dyn-future.rs:93
+    Returned @ dyn-future.rs:99
+    Panicked @ dyn-future.rs:99
+    Suspend0 @ dyn-future.rs:98
 task: dyn_future::driver::{async_fn_env#0}
   kind: AsyncFn
   decl: dyn-future.rs:24
@@ -414,7 +414,7 @@ dyn: dyn_future::set_member::{async_fn_env#0} (poll, drop_glue)
 [env-decls]
 env: dyn_future::boxed_leaf::{async_fn_env#0} @ dyn-future.rs:15
 env: dyn_future::driver::{async_fn_env#0} @ dyn-future.rs:24
-env: dyn_future::hold_aligned::{async_fn_env#0} @ dyn-future.rs:92
+env: dyn_future::hold_aligned::{async_fn_env#0} @ dyn-future.rs:93
 env: dyn_future::main::{async_block_env#0} @ dyn-future.rs:50
 env: dyn_future::set_member::{async_fn_env#0} @ dyn-future.rs:19
 

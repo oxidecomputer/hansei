@@ -35,6 +35,7 @@ fn main() {
         for rx in ready {
             rx.await.expect("task signals readiness");
         }
+        test_programs::quiesce();
         println!("READY");
         std::future::pending::<()>().await
     })

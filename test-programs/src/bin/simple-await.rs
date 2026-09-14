@@ -83,6 +83,7 @@ fn main() {
         let _task = tokio::spawn(work(ready_tx, park_rx));
 
         ready_rx.await.expect("task signals readiness");
+        test_programs::quiesce();
         println!("READY");
         std::future::pending::<()>().await
     })
