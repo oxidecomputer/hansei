@@ -179,6 +179,19 @@ proves little about the others. Detection is covered portably by the golden
 tests below; a real cored target on an illumos or Linux host is where the
 render side and the acceptance suite are exercised.
 
+**A flaky test is a bug with a cause, and the cause must be identified
+every time one occurs.** Re-running a failed test and moving on because
+it passed is never acceptable: a pass on retry proves only that the
+failure is timing-dependent, not that it is harmless, and the suites
+here core live processes, so most flakes are a capture taken before the
+target reached the state the test assumes (a channel send racing the
+core, a runtime still spawning its threads). Read the failing output,
+name the race or the environmental cause, and either fix it (a
+readiness wait in the fixture, as `test-programs` already does over
+procfs for its parked workers) or record the exact signature and the
+reason it is benign where it is found. "It passed the second time" is
+not a finding.
+
 **A test that builds a fixture must go through `testrun::once_per_run`.**
 nextest runs each test in its own process, so anything a suite arranged once
 per process — the acceptance suite's two compilations and per-program bundle
