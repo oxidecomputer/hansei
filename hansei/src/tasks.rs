@@ -1463,28 +1463,64 @@ fn member_line(
             false => "no".to_string(),
         },
     );
-    field(
-        "blocked on",
-        match &member.assessment {
-            Some(WaitAssessment::Waiting(verified)) => match verified.target().words() {
-                Some(words) => format!("{} ({words})", verified.target()),
-                None => verified.target().to_string(),
+    // What the wait is on has two routes to it, and they fail apart:
+    // the chain route reads the primitive a chain ends at, and stops
+    // at a hand-written future it cannot follow through; the slot
+    // route names the type a waker sits in, whatever polled it. Where
+    // the chain route named nothing, a slot of this task's still
+    // names the primitive it is parked in, so that is the answer —
+    // the same one arrived at the other way. The slot blocks below
+    // already fall back like this; a branch that did not read
+    // `unknown` here while `future` printed the name.
+    let lifted: Vec<String> = match &member.assessment {
+        Some(WaitAssessment::Unknown(_)) => {
+            let mut named: Vec<String> = armed_by
+                .iter()
+                .filter_map(|slot| slot.waits_on(stopped))
+                .collect();
+            named.sort();
+            named.dedup();
+            named
+        }
+        _ => Vec::new(),
+    };
+    for on in &lifted {
+        field("blocked on", on.clone());
+    }
+    if lifted.is_empty() {
+        field(
+            "blocked on",
+            match &member.assessment {
+                Some(WaitAssessment::Waiting(verified)) => match verified.target().words() {
+                    Some(words) => format!("{} ({words})", verified.target()),
+                    None => verified.target().to_string(),
+                },
+                Some(WaitAssessment::Set(set)) => set.cell(),
+                Some(WaitAssessment::ResourceReady(reason)) => {
+                    format!("ready: {}", ready_reason(*reason))
+                }
+                Some(WaitAssessment::Unknown(WaitUnknownReason::Continuation)) => {
+                    "unknown".to_string()
+                }
+                Some(WaitAssessment::Unknown(reason)) => {
+                    format!("unknown ({})", unknown_word(*reason))
+                }
+                Some(WaitAssessment::NeverReady { .. }) => "never ready".to_string(),
+                Some(WaitAssessment::Unresumed) => "never polled".to_string(),
+                Some(WaitAssessment::NotWaiting(NotWaitingReason::Returned)) => {
+                    "returned".to_string()
+                }
+                Some(WaitAssessment::NotWaiting(NotWaitingReason::Panicked)) => {
+                    "panicked".to_string()
+                }
+                Some(WaitAssessment::NotWaiting(NotWaitingReason::Complete)) => {
+                    "complete".to_string()
+                }
+                Some(WaitAssessment::Runnable(_)) => "runnable".to_string(),
+                None => "not inspected".to_string(),
             },
-            Some(WaitAssessment::Set(set)) => set.cell(),
-            Some(WaitAssessment::ResourceReady(reason)) => {
-                format!("ready: {}", ready_reason(*reason))
-            }
-            Some(WaitAssessment::Unknown(WaitUnknownReason::Continuation)) => "unknown".to_string(),
-            Some(WaitAssessment::Unknown(reason)) => format!("unknown ({})", unknown_word(*reason)),
-            Some(WaitAssessment::NeverReady { .. }) => "never ready".to_string(),
-            Some(WaitAssessment::Unresumed) => "never polled".to_string(),
-            Some(WaitAssessment::NotWaiting(NotWaitingReason::Returned)) => "returned".to_string(),
-            Some(WaitAssessment::NotWaiting(NotWaitingReason::Panicked)) => "panicked".to_string(),
-            Some(WaitAssessment::NotWaiting(NotWaitingReason::Complete)) => "complete".to_string(),
-            Some(WaitAssessment::Runnable(_)) => "runnable".to_string(),
-            None => "not inspected".to_string(),
-        },
-    );
+        );
+    }
     // The slots themselves: one a path names says where it sits, and
     // one sitting where no path reaches — a wheel entry, an io
     // waiter, a queue node — is named by what the registry that
@@ -1494,12 +1530,18 @@ fn member_line(
     let mut wakers: Vec<String> = armed_by
         .iter()
         .filter(|slot| slot.location().is_none())
-        .map(|slot| match (timer, slot.wheel_entry()) {
-            (true, Some(entry)) => entry,
-            _ => match verified.is_some() {
+        .filter_map(|slot| match (timer, slot.wheel_entry()) {
+            (true, Some(entry)) => Some(entry),
+            // A slot whose own name stands on a `blocked on` line
+            // above carries only its detail here, the way a slot
+            // block's does: naming it twice says nothing the second
+            // time, and a slot with no detail to add says nothing at
+            // all.
+            _ if !lifted.is_empty() && slot.waits_on(stopped).is_some() => slot.detail(stopped),
+            _ => Some(match verified.is_some() {
                 true => slot.line(stopped),
                 false => slot.entry_line(stopped),
-            },
+            }),
         })
         .collect();
     if armed_by.is_empty()
@@ -2939,6 +2981,150 @@ mod table_tests {
                 "    address: 0x6000",
                 "    armed: no",
                 "    blocked on: unknown",
+            ]
+        );
+    }
+
+    /// What a branch is blocked on has two routes to it, and the
+    /// branch takes whichever answers. Where the chain route stopped
+    /// short — a hand-written future it cannot follow through — a slot
+    /// of this task's names the primitive it is parked in, and that is
+    /// the line; where the chain route answered, its word stands and
+    /// the slot is a line of its own. A slot lifted onto the line
+    /// keeps its `location:`, and one named there is not named twice:
+    /// its own line carries only its detail.
+    #[test]
+    fn test_a_branch_the_chain_cannot_name_is_named_by_its_slot() {
+        use hansei_runtime::tokio::attribution::{
+            AttributedSlot, Attribution, OwnerKind, RegistrySlot, SlotPath, SlotRoot, Validity,
+        };
+        use hansei_runtime::tokio::bundle::IoSlot;
+        use hansei_runtime::tokio::wakers::Owner;
+
+        let impls = Default::default();
+        let stops = StopNames::none(&impls);
+        let owner = Owner::Task {
+            header: 0x1100,
+            index: 0,
+        };
+        let slot = |at: u64, attribution: Attribution| AttributedSlot {
+            hit: 0,
+            slot: at,
+            owner,
+            attribution,
+            within: None,
+            through: Vec::new(),
+            aliases: Vec::new(),
+        };
+        let channel = slot(
+            0x6010,
+            Attribution::Owner {
+                kind: OwnerKind::Mpsc,
+                primitive: 0x9000,
+                holder: "Chan".to_string(),
+                member: "rx_waker".to_string(),
+                path: SlotPath {
+                    root: SlotRoot::Find {
+                        index: 0,
+                        addr: 0x6000,
+                        frame: 0,
+                    },
+                    steps: vec!["rx_waker".to_string()],
+                    hop: None,
+                },
+                validity: Validity::SelfDescribing,
+                reading: None,
+            },
+        );
+        let reader = slot(
+            0x6020,
+            Attribution::Registry(RegistrySlot::Io {
+                resource: 0xaa00,
+                slot: IoSlot::Reader,
+                ready: None,
+            }),
+        );
+        let cannot_name = branch(
+            "inner",
+            WaitAssessment::Unknown(WaitUnknownReason::Continuation),
+            false,
+        );
+        // The slot names the primitive the chain route never reached,
+        // and still says where the waker sits.
+        assert_eq!(
+            member_line(&cannot_name, &stops, &[&channel], None),
+            [
+                "inner: x::branch",
+                "    address: 0x6000",
+                "    armed: yes",
+                "    blocked on: mpsc rx 0x9000",
+                "    location: future 0x6000 rx_waker",
+            ]
+        );
+        // A registry slot answers the same way, and having been named
+        // on the line above it adds only its detail below.
+        assert_eq!(
+            member_line(&cannot_name, &stops, &[&reader], None),
+            [
+                "inner: x::branch",
+                "    address: 0x6000",
+                "    armed: yes",
+                "    blocked on: io 0xaa00 read",
+                "    waker: awaiting readable via the read-waiter slot",
+            ]
+        );
+        // Both, one line each, sorted.
+        assert_eq!(
+            member_line(&cannot_name, &stops, &[&channel, &reader], None)
+                .iter()
+                .filter(|line| line.starts_with("    blocked on: "))
+                .collect::<Vec<_>>(),
+            [
+                "    blocked on: io 0xaa00 read",
+                "    blocked on: mpsc rx 0x9000"
+            ]
+        );
+        // With no slot to ask, the chain route's own word stands.
+        assert_eq!(
+            member_line(&cannot_name, &stops, &[], None).last().unwrap(),
+            "    blocked on: unknown"
+        );
+        // A chain route that answered is not second-guessed: its
+        // target is the line, and the slot beside it is its own.
+        let named = branch(
+            "inner",
+            WaitAssessment::Waiting(VerifiedWait::testkit(
+                WaitTarget::Io {
+                    addr: 0xbb00,
+                    fd: None,
+                    interest: None,
+                },
+                None,
+            )),
+            false,
+        );
+        assert_eq!(
+            member_line(&named, &stops, &[&channel], None),
+            [
+                "inner: x::branch",
+                "    address: 0x6000",
+                "    armed: yes",
+                "    blocked on: io 0xbb00 (readiness)",
+                "    location: future 0x6000 rx_waker",
+            ]
+        );
+        // And a registry slot beside an answered chain route keeps
+        // its own name, since nothing above it carries one: the line
+        // is the slot whole, not the detail a lifted slot is left
+        // with.
+        assert_eq!(
+            member_line(&named, &stops, &[&reader], None),
+            [
+                "inner: x::branch",
+                "    address: 0x6000",
+                "    armed: yes",
+                "    blocked on: io 0xbb00 (readiness)",
+                "    waker: io 0xaa00 read: awaiting readable via the read-waiter slot",
             ]
         );
     }

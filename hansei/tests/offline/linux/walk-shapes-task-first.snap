@@ -12,7 +12,7 @@ task 1
         inner: walk_shapes::WrapE<walk_shapes::deep>
             address: 0xADDR
             armed: yes
-            blocked on: unknown
+            blocked on: notify rx 0xADDR (waiting)
             location: future 0xADDR Running.inner.waiter.waker.Some
     spawned at: src/bin/walk-shapes.rs:258:9
     defined at: src/bin/walk-shapes.rs:105
