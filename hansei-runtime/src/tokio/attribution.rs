@@ -119,18 +119,33 @@ pub enum SlotRoot {
     /// frames: `#0` the most recently polled.
     Frame { task: usize, frame: usize },
     /// A held find, by its index in [`FutureCensus::held`] and the
-    /// address the listings print for it.
-    Find { index: usize, addr: u64 },
+    /// address the listings print for it, with the frame of its own
+    /// chain the path runs from — `frame` as the listings number
+    /// frames, 0 where the cursor lands by default.
+    Find {
+        index: usize,
+        addr: u64,
+        frame: usize,
+    },
     /// A set child, by set and child index and its root's address.
     Child { set: usize, child: usize, addr: u64 },
 }
 
+/// The selector that puts a session's cursor on the root, so the path
+/// from it is one `print` can be handed: `frame 1`, `future 0x…`. A
+/// set child is a future of its own to the listings, and selected the
+/// same way.
 impl std::fmt::Display for SlotRoot {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            SlotRoot::Frame { frame, .. } => write!(f, "#{frame}"),
-            SlotRoot::Find { addr, .. } => write!(f, "the future at {addr:#x}"),
-            SlotRoot::Child { addr, .. } => write!(f, "the set child at {addr:#x}"),
+            SlotRoot::Frame { frame, .. } => write!(f, "frame {frame}"),
+            // `future 0x…` stands on frame #0 of that future's own
+            // chain, so only a path from a frame further out names
+            // one.
+            SlotRoot::Find { addr, frame: 0, .. } | SlotRoot::Child { addr, .. } => {
+                write!(f, "future {addr:#x}")
+            }
+            SlotRoot::Find { addr, frame, .. } => write!(f, "future {addr:#x} frame {frame}"),
         }
     }
 }
@@ -162,37 +177,59 @@ pub struct Hop {
 }
 
 impl SlotPath {
-    /// The path as a detail line spells it: the root, then the member
-    /// names on the way, tuple positions and enum variants left out
-    /// (they say how the storage is spelled, not what holds it).
-    fn text(&self) -> String {
+    /// The path as a `print` follows it: the root's selector, then the
+    /// members from it joined by `.`, the pointer a hop crossed left
+    /// implicit. `print` takes the same steps for itself — through a
+    /// reference, an `Arc`'s header, a `NonNull`, a transparent
+    /// wrapper — so the plumbing those layers carry (`ptr`,
+    /// `pointer`) stays out, while the steps it will not take on its
+    /// own stay in: an enum's variant, a tuple's position.
+    fn location(&self) -> String {
         let mut out = self.root.to_string();
-        let names = |steps: &[String]| -> String {
-            let kept: Vec<&str> = steps
-                .iter()
-                .map(String::as_str)
-                .filter(|s| {
-                    !s.starts_with("__")
-                        && !s.starts_with('<')
-                        && !matches!(*s, "ptr" | "pointer" | "value" | "*")
-                })
-                .collect();
-            kept.join(" → ")
-        };
-        let head = names(&self.steps);
-        if !head.is_empty() {
-            out.push(' ');
-            out.push_str(&head);
-        }
-        if let Some(hop) = &self.hop {
-            let tail = names(&hop.steps);
-            out.push_str(" → *");
-            if !tail.is_empty() {
-                out.push_str(" → ");
-                out.push_str(&tail);
+        let mut first = true;
+        let steps = self
+            .steps
+            .iter()
+            .chain(self.hop.iter().flat_map(|hop| hop.steps.iter()));
+        for step in steps {
+            let Some(text) = step_text(step) else {
+                continue;
+            };
+            if text.starts_with('[') {
+                out.push_str(text);
+            } else {
+                out.push(if first { ' ' } else { '.' });
+                out.push_str(text);
             }
+            first = false;
         }
         out
+    }
+}
+
+/// Whether a walk step names an enum's variant rather than a member.
+fn is_variant(step: &str) -> bool {
+    step.starts_with('<') && step.ends_with('>')
+}
+
+/// One walk step in the path grammar — `<Some>` as the `.Some` a
+/// variant is named by, an array index as its own `[i]` — or nothing
+/// for a step a reader does not take: a coroutine's state, the
+/// pointer plumbing and the compiler's own slots, which `print`
+/// crosses on its own, and which say how the storage is laid out
+/// rather than what holds it.
+fn step_text(step: &str) -> Option<&str> {
+    if is_variant(step) {
+        let name = &step[1..step.len() - 1];
+        return (!name.starts_with('#')).then_some(name);
+    }
+    if step.starts_with('[') {
+        return Some(step);
+    }
+    match step {
+        _ if step.starts_with("__") => None,
+        "ptr" | "pointer" | "value" => None,
+        _ => Some(step),
     }
 }
 
@@ -243,10 +280,18 @@ impl OwnerKind {
         match self {
             OwnerKind::OneshotRx => "oneshot rx",
             OwnerKind::OneshotTx => "oneshot tx",
-            OwnerKind::Mpsc => "mpsc",
-            OwnerKind::Watch => "watch",
+            OwnerKind::Mpsc => "mpsc rx",
+            OwnerKind::Watch => "watch rx",
             OwnerKind::Notify => "notify",
         }
+    }
+
+    /// Whether the primitive's reading is a line of its own rather
+    /// than a parenthetical on the entry: a channel's and a watch's
+    /// counts run long, and the cell or verdict they sat on says
+    /// enough without them.
+    fn reads_apart(self) -> bool {
+        matches!(self, OwnerKind::Mpsc | OwnerKind::Watch)
     }
 }
 
@@ -388,10 +433,10 @@ impl AttributedSlot {
                 reading,
                 ..
             } => match reading {
-                Some(reading) => {
+                Some(reading) if !kind.reads_apart() => {
                     format!("{} {primitive:#x} ({})", kind.word(), reading.words(*kind))
                 }
-                None => format!("{} {primitive:#x}", kind.word()),
+                _ => format!("{} {primitive:#x}", kind.word()),
             },
             Attribution::Typed { holder, .. } => format!("slot {:#x} in {holder}", self.slot),
             Attribution::Unknown => format!("unknown @ {:#x}", self.slot),
@@ -400,13 +445,18 @@ impl AttributedSlot {
 
     /// The slot's label for a detail line: the kind word and the
     /// address that identifies the slot, whatever a reader would add.
+    /// A typed slot is named by its holder as well, since nothing
+    /// else on its line is: its `location` says where the slot sits,
+    /// not what type the storage belongs to.
     pub fn label(&self) -> String {
         match &self.attribution {
             Attribution::Registry(RegistrySlot::Timer { entry, .. }) => format!("timer {entry:#x}"),
             Attribution::Owner {
                 kind, primitive, ..
             } => format!("{} {primitive:#x}", kind.word()),
-            Attribution::Typed { .. } => format!("slot {:#x}", self.slot),
+            // A typed slot's entry is already its address and its
+            // holder, with no reading to leave off, so it is its own
+            // label.
             _ => self.entry(None),
         }
     }
@@ -465,31 +515,54 @@ impl AttributedSlot {
                 format!("waker in its wake-queue node {node:#x}")
             }
             Attribution::Registry(RegistrySlot::Join { .. }) => "waker in its trailer".to_string(),
-            Attribution::Owner {
-                holder,
-                member,
-                path,
-                validity,
-                ..
-            }
-            | Attribution::Typed {
-                holder,
-                member,
-                path,
-                validity,
-            } => {
-                let reached = match path.hop {
-                    Some(_) => "reached from",
-                    None => "in",
-                };
-                format!(
-                    "waker in {holder}.{member}{}, {reached} {}",
-                    validity.note(),
-                    path.text()
-                )
-            }
+            // Where the slot sits is a path, which is a line of its
+            // own ([`Self::location`]): the members it names say what
+            // holds the waker, and say it the way a `print` reads it.
+            Attribution::Owner { .. } | Attribution::Typed { .. } => return None,
             Attribution::Unknown => return None,
         })
+    }
+
+    /// What the slot's own reading says where those words are a line
+    /// of their own — a channel's counts, a watch's version and
+    /// handles. The other primitives carry theirs in the entry.
+    pub fn words(&self) -> Option<String> {
+        match &self.attribution {
+            Attribution::Owner {
+                kind,
+                reading: Some(reading),
+                ..
+            } if kind.reads_apart() => Some(reading.words(*kind)),
+            _ => None,
+        }
+    }
+
+    /// Everything the slot's reading says, wherever it is carried:
+    /// for a line that is the slot and nothing else, and so has room
+    /// for all of it.
+    fn reading_words(&self) -> Option<String> {
+        match &self.attribution {
+            Attribution::Owner {
+                kind,
+                reading: Some(reading),
+                ..
+            } => Some(reading.words(*kind)),
+            _ => None,
+        }
+    }
+
+    /// Where the slot sits, as a path from the root it was located
+    /// in: a selector for that root and the members to the waker,
+    /// which `print` reads as written. The note a gated or unchecked
+    /// slot carries closes the line — what the storage says about
+    /// itself, where it says anything.
+    pub fn location(&self) -> Option<String> {
+        let (path, validity) = match &self.attribution {
+            Attribution::Owner { path, validity, .. }
+            | Attribution::Typed { path, validity, .. } => (path, validity),
+            _ => return None,
+        };
+        Some(format!("{}{}", path.location(), validity.note()))
     }
 
     /// The path, where the slot was located by type.
@@ -725,19 +798,6 @@ pub struct Sources<'a> {
 struct Root<'b> {
     at: SlotRoot,
     value: Value<'b>,
-}
-
-impl Root<'_> {
-    /// The path to a slot located `steps` into this root, or — with
-    /// `hop` — to the pointer member at `steps` and on into the
-    /// pointee.
-    fn path(&self, steps: Vec<String>, hop: Option<Hop>) -> SlotPath {
-        SlotPath {
-            root: self.at,
-            steps,
-            hop,
-        }
-    }
 }
 
 /// A pointer member of one of an owner's roots. Its path is not kept:
@@ -1237,6 +1297,7 @@ impl<'a, 'b, T: Target> Attributor<'a, 'b, T> {
                     at: SlotRoot::Find {
                         index: i,
                         addr: held.addr,
+                        frame: 0,
                     },
                     value,
                 });
@@ -1266,6 +1327,10 @@ impl<'a, 'b, T: Target> Attributor<'a, 'b, T> {
                         at: SlotRoot::Find {
                             index: i,
                             addr: held.addr,
+                            // The frame the path runs from is the
+                            // innermost one it passes through, which
+                            // only the walk knows ([`path_from`]).
+                            frame: 0,
                         },
                         value,
                     });
@@ -1286,7 +1351,7 @@ impl<'a, 'b, T: Target> Attributor<'a, 'b, T> {
         };
         match self.locate_member(root.value, hit.slot - root.value.addr) {
             Located::Slot { trail, validity } => Ok(Some(self.name_slot(
-                root.path(trail.iter().map(|s| s.name.clone()).collect(), None),
+                self.path_from(root, &trail, None),
                 &trail,
                 validity,
             ))),
@@ -1347,10 +1412,11 @@ impl<'a, 'b, T: Target> Attributor<'a, 'b, T> {
                 continue;
             };
             let root = &roots[p.root];
-            let steps = self.steps_to(root.value, p.at - root.value.addr);
+            let to_pointer = self.steps_to(root.value, p.at - root.value.addr);
             return Some(self.name_slot(
-                root.path(
-                    steps,
+                self.path_from(
+                    root,
+                    &to_pointer,
                     Some(Hop {
                         from: p.at,
                         addr: p.target,
@@ -1523,10 +1589,55 @@ impl<'a, 'b, T: Target> Attributor<'a, 'b, T> {
 
     /// The member steps from `value` to the pointer word at `offset` —
     /// the path of a pointer the enumeration recorded by address.
-    fn steps_to(&self, value: Value<'b>, offset: u64) -> Vec<String> {
+    fn steps_to(&self, value: Value<'b>, offset: u64) -> Vec<Step<'b>> {
         match self.descend(value, offset, Terminal::Pointer) {
-            Ok(descent) => descent.trail.into_iter().map(|s| s.name).collect(),
+            Ok(descent) => descent.trail,
             Err(_) => Vec::new(),
+        }
+    }
+
+    /// The path to a slot `trail` steps into `root`, or — with `hop` —
+    /// to the pointer member at the end of `trail` and on into the
+    /// pointee.
+    ///
+    /// A find is walked from one value, but its chain has frames, and
+    /// a cursor on that find stands on the innermost of them. So the
+    /// path is re-rooted at the innermost frame the walk passed
+    /// through: the steps before it are that frame's own nesting,
+    /// which no cursor is outside of, and the ones after it are what a
+    /// reader names from where the cursor stands.
+    fn path_from(&self, root: &Root<'b>, trail: &[Step<'b>], hop: Option<Hop>) -> SlotPath {
+        let SlotRoot::Find { index, addr, .. } = root.at else {
+            return SlotPath {
+                root: root.at,
+                steps: trail.iter().map(|s| s.name.clone()).collect(),
+                hop,
+            };
+        };
+        let frames: &[ValueKey] = match self.sources.census.held.get(index) {
+            Some(held) => &held.frames,
+            None => &[],
+        };
+        // The chain runs outermost first, the listings number frames
+        // the other way round.
+        let numbered = |value: Value<'b>| {
+            frames
+                .iter()
+                .position(|f| f.addr == value.addr && f.ty == value.ty.id())
+                .map(|at| frames.len() - 1 - at)
+        };
+        let mut frame = numbered(root.value).unwrap_or(0);
+        let mut from = 0;
+        for (i, step) in trail.iter().enumerate() {
+            if let Some(number) = numbered(step.holder) {
+                frame = number;
+                from = i;
+            }
+        }
+        SlotPath {
+            root: SlotRoot::Find { index, addr, frame },
+            steps: trail[from..].iter().map(|s| s.name.clone()).collect(),
+            hop,
         }
     }
 
@@ -1627,7 +1738,11 @@ impl<'a, 'b, T: Target> Attributor<'a, 'b, T> {
                             LocalLiveness::Dead => return Err(StaleReason::DeadLocal),
                         }
                     }
-                    step(&mut descent.trail, variant_step(active.name), cur);
+                    step(
+                        &mut descent.trail,
+                        variant_step(active.name, ty.is_coroutine()),
+                        cur,
+                    );
                     offset -= active.offset;
                     cur = next;
                 }
@@ -1643,7 +1758,7 @@ impl<'a, 'b, T: Target> Attributor<'a, 'b, T> {
                     let Some(next) = sub(cur, index * size, element) else {
                         return not_a_waker;
                     };
-                    step(&mut descent.trail, "[]".to_string(), cur);
+                    step(&mut descent.trail, format!("[{index}]"), cur);
                     offset -= index * size;
                     cur = next;
                 }
@@ -1830,9 +1945,15 @@ fn oneshot_gate(kind: OwnerKind, reading: Option<&Reading>) -> Gate {
 }
 
 /// A variant step's name: `<Some>`, so a path reads apart from a
-/// member named the same.
-fn variant_step(name: &str) -> String {
-    format!("<{name}>")
+/// member named the same. A coroutine's is marked `<#…>`: its states
+/// are numbered rather than named, and it is a frame boundary — the
+/// locals under it are what a reader addresses, and a path leaves the
+/// state itself out.
+fn variant_step(name: &str, coroutine: bool) -> String {
+    match coroutine {
+        true => format!("<#{name}>"),
+        false => format!("<{name}>"),
+    }
 }
 
 /// Innermost first: a smaller value before a larger one, a find before
@@ -2138,9 +2259,13 @@ impl AttributedSlot {
             }
             return line;
         }
-        match self.detail(stopped) {
-            Some(detail) => format!("{}: {detail}", self.label()),
-            None => self.label(),
+        match (self.detail(stopped), self.reading_words()) {
+            (Some(detail), _) => format!("{}: {detail}", self.label()),
+            // Nothing else stands on this line, so it carries the
+            // whole reading — including the words the entry leaves to
+            // a line of their own.
+            (None, Some(words)) => format!("{} ({words})", self.label()),
+            (None, None) => self.label(),
         }
     }
 
@@ -2148,13 +2273,13 @@ impl AttributedSlot {
     /// owner slot's primitive with the words its reader read — for a
     /// listing whose cell does not carry those words. The other kinds
     /// have no reading, and their entry heads the line as their label
-    /// would, save a typed slot, whose entry names the holder the
-    /// detail names again.
+    /// would.
     pub fn entry_line(&self, stopped: Option<RawInstant>) -> String {
         match (&self.attribution, self.detail(stopped)) {
-            (Attribution::Owner { .. }, Some(detail)) => {
-                format!("{}: {detail}", self.entry(stopped))
-            }
+            (Attribution::Owner { .. }, detail) => match detail {
+                Some(detail) => format!("{}: {detail}", self.entry(stopped)),
+                None => self.entry(stopped),
+            },
             _ => self.line(stopped),
         }
     }
@@ -2266,7 +2391,7 @@ mod tests {
         assert_eq!(selector.len(), 4, "{selector:#?}");
         let mut buckets: Vec<String> = selector.iter().map(|s| s.bucket()).collect();
         buckets.sort();
-        assert_eq!(buckets, ["mpsc", "oneshot rx", "timer", "watch"]);
+        assert_eq!(buckets, ["mpsc rx", "oneshot rx", "timer", "watch rx"]);
         for slot in &selector {
             match &slot.attribution {
                 Attribution::Owner {
@@ -2294,6 +2419,10 @@ mod tests {
                         format!("oneshot rx {primitive:#x} (nothing sent, sender alive)")
                     );
                     assert_eq!(slot.label(), format!("oneshot rx {primitive:#x}"));
+                    // A oneshot's reading rides on its entry, so it is
+                    // not also a line of its own: the line naming the
+                    // primitive says it exactly once.
+                    assert_eq!(slot.words(), None);
                     // Through the `Receiver` find's `inner`, not the
                     // frame that holds the find.
                     assert!(matches!(path.root, SlotRoot::Find { .. }), "{path:?}");
@@ -2307,12 +2436,16 @@ mod tests {
                     // The primitive is the `Inner`, past the `ArcInner`
                     // header.
                     assert!(*primitive > hop.addr && *primitive - hop.addr <= 16);
-                    let detail = slot.detail(stopped).expect("a typed slot has a detail");
+                    // Where it sits is the path, and the path is the
+                    // whole of the detail: the find it was reached
+                    // from, the members to the slot as a reader names
+                    // them, and the bit that vouches for it.
+                    assert_eq!(slot.detail(stopped), None);
+                    let at = slot.location().expect("a typed slot has a location");
+                    assert!(at.starts_with("future 0x"), "{at}");
                     assert!(
-                        detail.starts_with(
-                            "waker in Inner.rx_task (rx_task_set), reached from the future at 0x"
-                        ),
-                        "{detail}"
+                        at.ends_with(" inner.Some.data.rx_task (rx_task_set)"),
+                        "{at}"
                     );
                 }
                 Attribution::Owner {
@@ -2330,7 +2463,7 @@ mod tests {
                         matches!(path.root, SlotRoot::Frame { frame: 1, .. }),
                         "{path:?}"
                     );
-                    assert_eq!(path.steps[..3], ["<3>", "queue", "chan"]);
+                    assert_eq!(path.steps[..3], ["<#3>", "queue", "chan"]);
                     assert!(path.hop.is_some());
                     // The channel's own words: the one sender kept in
                     // `main`, the bound of four, nothing sent.
@@ -2342,9 +2475,20 @@ mod tests {
                             unread: 0,
                         })
                     );
+                    // The counts are a line of their own, so the
+                    // entry names the channel and stops.
+                    assert_eq!(slot.entry(stopped), format!("mpsc rx {primitive:#x}"));
                     assert_eq!(
-                        slot.entry(stopped),
-                        format!("mpsc {primitive:#x} (1 sender, capacity 4, 0 unread)")
+                        slot.words().as_deref(),
+                        Some("1 sender, capacity 4, 0 unread")
+                    );
+                    // Headed by its entry, the counts stay off — that
+                    // line carries a verdict beside them; a line that
+                    // is the slot alone takes them.
+                    assert_eq!(slot.entry_line(stopped), format!("mpsc rx {primitive:#x}"));
+                    assert_eq!(
+                        slot.line(stopped),
+                        format!("mpsc rx {primitive:#x} (1 sender, capacity 4, 0 unread)")
                     );
                 }
                 Attribution::Owner {
@@ -2372,30 +2516,39 @@ mod tests {
                             senders: 1,
                         })
                     );
+                    assert_eq!(slot.entry(stopped), format!("watch rx {primitive:#x}"));
                     assert_eq!(
-                        slot.entry(stopped),
-                        format!("watch {primitive:#x} (version 0, 1 sender, 1 receiver)")
+                        slot.words().as_deref(),
+                        Some("version 0, 1 sender, 1 receiver")
                     );
-                    // Inside the held `changed` by containment: through
-                    // its awaitee, tokio's `Coop`, into the `changed_impl`
-                    // that wrapper's `fut` holds, whose active state's
-                    // awaitee is the `Notified`. The `changed_impl` is on
-                    // `changed`'s chain, not a find of its own.
-                    let SlotRoot::Find { index, .. } = path.root else {
+                    // The whole reading stands on a line of the slot's
+                    // own.
+                    assert_eq!(
+                        slot.line(stopped),
+                        format!("watch rx {primitive:#x} (version 0, 1 sender, 1 receiver)")
+                    );
+                    // Inside the held `changed` by containment: down
+                    // through its awaitee, tokio's `Coop`, into the
+                    // `changed_impl` that wrapper's `fut` holds, whose
+                    // active state's awaitee is the `Notified` the
+                    // slot sits in. That `Notified` is a frame of
+                    // `changed`'s own chain — the frame a cursor on
+                    // the find stands on — so the path is rooted
+                    // there and names the members from it, the
+                    // nesting above it left to the cursor.
+                    let SlotRoot::Find { index, frame, .. } = path.root else {
                         panic!("{path:?}");
                     };
                     assert_eq!(over.census.held[index].local, "changed");
+                    assert_eq!(frame, 0, "{path:?}");
                     assert!(path.hop.is_none());
-                    let window = |steps: &[&str]| {
-                        path.steps
-                            .windows(steps.len())
-                            .any(|w| w.iter().map(String::as_str).eq(steps.iter().copied()))
-                    };
-                    assert!(window(&["__awaitee", "fut"]), "{:?}", path.steps);
-                    assert!(
-                        window(&["__awaitee", "waiter", "waker"]),
-                        "{:?}",
-                        path.steps
+                    assert_eq!(path.steps[..2], ["waiter", "waker"], "{:?}", path.steps);
+                    assert_eq!(
+                        slot.location(),
+                        Some(format!(
+                            "future {:#x} waiter.waker.Some",
+                            over.census.held[index].addr
+                        ))
                     );
                 }
                 Attribution::Registry(RegistrySlot::Timer { entry, .. }) => {
@@ -2456,9 +2609,10 @@ mod tests {
             format!("notify {primitive:#x} (waiting)")
         );
         assert_eq!(waiter[0].label(), format!("notify {primitive:#x}"));
+        assert_eq!(waiter[0].detail(stopped), None);
         assert_eq!(
-            waiter[0].detail(stopped).as_deref(),
-            Some("waker in Notified.waiter, in #0 waiter → waker")
+            waiter[0].location().as_deref(),
+            Some("frame 0 waiter.waker.Some")
         );
 
         let driver = slots_of(&attributed, &over, "driver");
@@ -2480,7 +2634,12 @@ mod tests {
             format!("slot {:#x} in {holds}", driver[0].slot)
         );
         assert_eq!(driver[0].bucket(), format!("slot in {holds}"));
-        assert_eq!(driver[0].label(), format!("slot {:#x}", driver[0].slot));
+        // A typed slot's label names the holder too: nothing else on
+        // its line does.
+        assert_eq!(
+            driver[0].label(),
+            format!("slot {:#x} in {holds}", driver[0].slot)
+        );
 
         // The finds: the `Receiver` armed through its pointer, the
         // unpolled `Notified` not.
@@ -2518,7 +2677,8 @@ mod tests {
             entry.within,
             Some(SlotRoot::Find {
                 index: interval,
-                addr: over.census.held[interval].addr
+                addr: over.census.held[interval].addr,
+                frame: 0,
             })
         );
         assert_eq!(entry.through, vec![tick]);
@@ -2577,7 +2737,7 @@ mod tests {
         };
         assert_eq!(set.members.len(), 4, "{:#?}", set.members);
         assert_eq!(set.armed().count(), 4, "{:#?}", set.members);
-        assert_eq!(set.group_label(), "mpsc, oneshot rx, timer, watch");
+        assert_eq!(set.group_label(), "mpsc rx, oneshot rx, timer, watch rx");
         assert!(matches!(
             analysis.waits[index("driver")].assessment,
             WaitAssessment::Unknown(_)
@@ -2619,11 +2779,11 @@ mod tests {
             .collect();
         assert_eq!(routes, [(0, true), (1, true), (2, true), (3, true)]);
         let cell = set.cell();
-        assert!(cell.starts_with("mpsc 0x"), "{cell}");
+        assert!(cell.starts_with("mpsc rx 0x"), "{cell}");
         assert!(cell.contains(", oneshot rx 0x"), "{cell}");
         assert!(cell.contains(", timer (deadline "), "{cell}");
-        assert!(cell.contains(", watch 0x"), "{cell}");
-        assert_eq!(set.group_label(), "mpsc, oneshot rx, timer, watch");
+        assert!(cell.contains(", watch rx 0x"), "{cell}");
+        assert_eq!(set.group_label(), "mpsc rx, oneshot rx, timer, watch rx");
         assert!(selector.held.is_empty());
 
         let driver = &analysis.waits[index("driver")];
@@ -2931,7 +3091,11 @@ mod join_tests {
         assert!(claims(&typed(0x5017, frame(), None)));
         assert!(!claims(&typed(0x5018, frame(), None)));
         assert!(!claims(&typed(0x4ff8, frame(), None)));
-        let find = |addr| SlotRoot::Find { index: 0, addr };
+        let find = |addr| SlotRoot::Find {
+            index: 0,
+            addr,
+            frame: 0,
+        };
         assert!(claims(&typed(0x9000, find(0x5000), None)));
         assert!(!claims(&typed(0x9000, find(0x5008), None)));
         let child = |addr| SlotRoot::Child {
@@ -2967,7 +3131,11 @@ mod join_tests {
     #[test]
     fn test_a_member_claims_a_slot_reached_through_another_binding_of_it() {
         let m = member(None, None);
-        let find = |index, addr| SlotRoot::Find { index, addr };
+        let find = |index, addr| SlotRoot::Find {
+            index,
+            addr,
+            frame: 0,
+        };
         // The hop leaves from a root that is not the member's storage.
         let mut slot = typed(0x9000, find(1, 0x7000), Some(hop(0x7000)));
         assert!(!member_accounts(&m, &slot, &size_of));
@@ -3212,6 +3380,7 @@ mod join_tests {
                     root: SlotRoot::Find {
                         index: 3,
                         addr: 0x6000,
+                        frame: 0,
                     },
                     reason: StaleReason::GateClear,
                 },
@@ -3222,8 +3391,8 @@ mod join_tests {
         assert_eq!(
             lines,
             [
-                "the hit at 0x5010 names task 7 and sits in #1 but is in an inactive variant",
-                "the hit at 0x6020 names child 2 of set 0 and sits in the future at 0x6000 but is \
+                "the hit at 0x5010 names task 7 and sits in frame 1 but is in an inactive variant",
+                "the hit at 0x6020 names child 2 of set 0 and sits in future 0x6000 but is \
                  under a state word that says no waker is set",
             ]
         );
@@ -3284,6 +3453,7 @@ mod join_tests {
         let find = SlotRoot::Find {
             index: 0,
             addr: task.addr.0,
+            frame: 0,
         };
         let mut roots = vec![
             Root {
@@ -3340,6 +3510,23 @@ mod join_tests {
             side(OwnerKind::OneshotTx),
             "oneshot tx 0x5000 (nothing sent, receiver alive)"
         );
+    }
+
+    /// A step names a variant only when it is bracketed at both ends.
+    /// A member whose name merely starts or ends with an angle bracket
+    /// is a member, and keeps its name whole — stripping its ends
+    /// would hand `print` a path it cannot read.
+    #[test]
+    fn test_a_variant_step_is_bracketed_at_both_ends() {
+        assert!(is_variant("<Some>"));
+        assert!(!is_variant("<Some"));
+        assert!(!is_variant("Some>"));
+        assert!(!is_variant("rx_waker"));
+        assert_eq!(step_text("<Some>"), Some("Some"));
+        assert_eq!(step_text("<Some"), Some("<Some"));
+        assert_eq!(step_text("Some>"), Some("Some>"));
+        // A coroutine's state is a frame boundary, not a step.
+        assert_eq!(step_text("<#3>"), None);
     }
 }
 
@@ -3962,7 +4149,12 @@ mod synthetic_tests {
         for i in 0..3u64 {
             match at.locate_member(v, 8 + 16 * i) {
                 Located::Slot { trail, validity } => {
-                    assert_eq!(names(&trail), ["ws", "[]", "w"], "element {i}");
+                    // The element's own index, so a path can name it.
+                    assert_eq!(
+                        names(&trail),
+                        ["ws".to_string(), format!("[{i}]"), "w".to_string()],
+                        "element {i}"
+                    );
                     assert_eq!(validity, Validity::Raw);
                     // The element entered is the one at the offset, by
                     // its own address.
@@ -4017,7 +4209,7 @@ mod synthetic_tests {
         };
         let arr = at.types.view.ty(id(ARR)).unwrap().name();
         assert_eq!(holder, outer_path(&fold_type_name(arr, &empty.impls)));
-        assert_eq!(member, "[]");
+        assert_eq!(member, "[2]");
 
         let Located::Slot { trail, validity } = at.locate_member(value(&at, CHANLIKE, chan), 8)
         else {
@@ -4086,6 +4278,7 @@ mod synthetic_tests {
             at: SlotRoot::Find {
                 index: 0,
                 addr: holder,
+                frame: 0,
             },
             value: value(&at, HOLDER, holder),
         }];
@@ -4112,6 +4305,7 @@ mod synthetic_tests {
             at: SlotRoot::Find {
                 index: 1,
                 addr: none,
+                frame: 0,
             },
             value: value(&at, HOLDER, none),
         }];
@@ -4253,14 +4447,14 @@ mod synthetic_tests {
         let v = value(&at, CORO, coro);
         match at.locate_member(v, 8) {
             Located::Slot { trail, validity } => {
-                assert_eq!(names(&trail), ["<3>", "live"]);
+                assert_eq!(names(&trail), ["<#3>", "live"]);
                 assert_eq!(validity, Validity::Raw);
             }
             Located::Stale(reason) => panic!("{reason:?}"),
         }
         match at.locate_member(v, 8 + 24) {
             Located::Slot { trail, validity } => {
-                assert_eq!(names(&trail), ["<3>", "unsure"]);
+                assert_eq!(names(&trail), ["<#3>", "unsure"]);
                 assert_eq!(validity, Validity::Unchecked);
             }
             Located::Stale(reason) => panic!("{reason:?}"),
@@ -4392,10 +4586,18 @@ mod synthetic_tests {
         let sources = empty.sources();
         let at = attributor(&planted, &bundle, &empty, &sources);
         let root = |index, ty, addr| Root {
-            at: SlotRoot::Find { index, addr },
+            at: SlotRoot::Find {
+                index,
+                addr,
+                frame: 0,
+            },
             value: value(&at, ty, addr),
         };
-        let find = |index, addr| SlotRoot::Find { index, addr };
+        let find = |index, addr| SlotRoot::Find {
+            index,
+            addr,
+            frame: 0,
+        };
         // The pointers are sorted by root, so the hop is taken from
         // the first root and the aliases are found among the rest.
         let aliases = |roots: &[Root<'_>]| -> Vec<SlotRoot> {
@@ -4465,6 +4667,7 @@ mod synthetic_tests {
                     at: SlotRoot::Find {
                         index: 0,
                         addr: ghost,
+                        frame: 0,
                     },
                     value: value(&at, FRAME, ghost),
                 },
@@ -4472,6 +4675,7 @@ mod synthetic_tests {
                     at: SlotRoot::Find {
                         index: 1,
                         addr: live,
+                        frame: 0,
                     },
                     value: value(&at, FRAME, live),
                 },

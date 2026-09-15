@@ -1198,10 +1198,33 @@ impl WaitTarget {
             // is bucketed under, so a leaf's reading and a slot's share
             // a bucket. Which `Notify` is a `--with waiting-on 0x…`
             // filter's question, not the bucket's.
-            Self::Channel { .. } => "mpsc".to_string(),
+            Self::Channel { .. } => "mpsc rx".to_string(),
             Self::Notify { .. } => "notify".to_string(),
             Self::Oneshot { .. } => "oneshot rx".to_string(),
-            Self::Watch { .. } => "watch".to_string(),
+            Self::Watch { .. } => "watch rx".to_string(),
+        }
+    }
+
+    /// What the reading adds where it is a line of its own rather
+    /// than a parenthetical: a channel's sender count, bound and
+    /// claimed slots; a watch's version and handle counts. The other
+    /// targets carry their words on the line that names them.
+    pub fn words(&self) -> Option<String> {
+        match self {
+            Self::Channel {
+                senders,
+                capacity,
+                unread,
+                ..
+            } => Some(channel_words(*senders, *capacity, *unread)),
+            Self::Watch {
+                version,
+                closed,
+                receivers,
+                senders,
+                ..
+            } => Some(watch_words(*version, *closed, *receivers, *senders)),
+            _ => None,
         }
     }
 
@@ -1438,16 +1461,11 @@ impl fmt::Display for WaitTarget {
                 }
                 Ok(())
             }
-            Self::Channel {
-                addr,
-                senders,
-                capacity,
-                unread,
-            } => write!(
-                f,
-                "mpsc {addr:#x} ({})",
-                channel_words(*senders, *capacity, *unread)
-            ),
+            // A channel's counts run long and the line naming it
+            // already carries a verdict, so they are a line of their
+            // own ([`WaitTarget::words`]) rather than a parenthetical
+            // here.
+            Self::Channel { addr, .. } => write!(f, "mpsc rx {addr:#x}"),
             Self::Notify {
                 addr,
                 state,
@@ -1463,17 +1481,11 @@ impl fmt::Display for WaitTarget {
             Self::Oneshot { addr, state } => {
                 write!(f, "oneshot rx {addr:#x} ({})", state.words(OneshotSide::Rx))
             }
-            Self::Watch {
-                addr,
-                version,
-                closed,
-                receivers,
-                senders,
-            } => write!(
-                f,
-                "watch {addr:#x} ({})",
-                watch_words(*version, *closed, *receivers, *senders)
-            ),
+            // Only a receiver's `changed` parks on a watch channel's
+            // `Notify`, so the side is not in doubt; the version and
+            // the handle counts are a line of their own, as a
+            // channel's are.
+            Self::Watch { addr, .. } => write!(f, "watch rx {addr:#x}"),
         }
     }
 }
@@ -1580,18 +1592,33 @@ mod tests {
             capacity: Some(4),
             unread: 0,
         };
+        // The counts are a line of their own, not a parenthetical.
+        assert_eq!(channel.to_string(), "mpsc rx 0x9000");
         assert_eq!(
-            channel.to_string(),
-            "mpsc 0x9000 (1 sender, capacity 4, 0 unread)"
+            channel.words().as_deref(),
+            Some("1 sender, capacity 4, 0 unread")
         );
-        assert_eq!(channel.group_label(), "mpsc");
+        assert_eq!(channel.group_label(), "mpsc rx");
         let unbounded = WaitTarget::Channel {
             addr: 0x9000,
             senders: 2,
             capacity: None,
             unread: 3,
         };
-        assert_eq!(unbounded.to_string(), "mpsc 0x9000 (2 senders, 3 unread)");
+        assert_eq!(unbounded.to_string(), "mpsc rx 0x9000");
+        assert_eq!(unbounded.words().as_deref(), Some("2 senders, 3 unread"));
+        // A oneshot's words stay on the line that names it.
+        assert_eq!(
+            WaitTarget::Oneshot {
+                addr: 0xa000,
+                state: OneshotState {
+                    word: 0,
+                    value_present: Some(false),
+                },
+            }
+            .words(),
+            None
+        );
 
         let parked = OneshotState {
             word: 0b0001,
@@ -1615,11 +1642,12 @@ mod tests {
             receivers: 2,
             senders: 0,
         };
+        assert_eq!(watch.to_string(), "watch rx 0xc000");
         assert_eq!(
-            watch.to_string(),
-            "watch 0xc000 (version 3, 0 senders, 2 receivers, closed)"
+            watch.words().as_deref(),
+            Some("version 3, 0 senders, 2 receivers, closed")
         );
-        assert_eq!(watch.group_label(), "watch");
+        assert_eq!(watch.group_label(), "watch rx");
         assert_eq!(watch.kind(), WaitKind::Watch { addr: 0xc000 });
     }
 

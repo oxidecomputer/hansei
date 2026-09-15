@@ -19,7 +19,7 @@ COUNT  STATE
 
 COUNT  TYPE / WAITING ON
     1  async fn watch_stream::direct
-       └─ 1  watch
+       └─ 1  watch rx
     1  async fn watch_stream::fresh
        └─ 1  oneshot rx
     1  async fn watch_stream::mapper
@@ -38,9 +38,9 @@ COUNT  HELD IN
 
 COUNT  TYPE / WAITING ON
     4  async fn tokio_stream::wrappers::watch::make_future<u32>
-       └─ 4  watch
+       └─ 4  watch rx
     2  future futures_util::stream::stream::next::Next<tokio_stream::wrappers::watch::WatchStream<u32>>
-       ├─ 1  watch
+       ├─ 1  watch rx
        └─ 1  — (unresumed)
     2  future tokio::sync::oneshot::Receiver<u32>
        └─ 2  oneshot rx

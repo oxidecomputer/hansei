@@ -4,7 +4,7 @@ description: "`tasks --group waker` over illumos/channels"
 ---
 COUNT  WAITING ON                                                 TASKS
     1  a tokio::sync::mpsc bounded channel (semaphore 0xADDR)  6
-    1  mpsc                                                       4
+    1  mpsc rx                                                    4
     1  notify                                                     3
     1  oneshot rx                                                 5
 [4 groups]

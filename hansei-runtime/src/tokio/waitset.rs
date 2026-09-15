@@ -363,6 +363,16 @@ impl SlotRef {
             Self::Swept { slot, stopped } => return slot.detail(*stopped),
         })
     }
+
+    /// Where a swept slot sits, as [`AttributedSlot::location`] gives
+    /// it. The registries' own slots are located by what they are —
+    /// the wheel entry, the waiter node — which their detail says.
+    pub fn location(&self) -> Option<String> {
+        match self {
+            Self::Swept { slot, .. } => slot.location(),
+            _ => None,
+        }
+    }
 }
 
 /// What the stop frame's branches and the task's slots amount to.
@@ -1689,6 +1699,28 @@ mod tests {
         assert_eq!(SlotRef::Protocol.kind(), None);
     }
 
+    /// Only a swept slot has a path to print: it answers with the
+    /// slot's own location. The registries' slots are located by what
+    /// they are — the wheel entry, the waiter node — which their
+    /// detail line says, so they offer no location of their own.
+    #[test]
+    fn test_only_a_swept_slot_locates_itself() {
+        let slot = typed(0x7000);
+        assert_eq!(slot.location().as_deref(), Some("frame 0"));
+        assert_eq!(SlotRef::swept(&slot, None).location(), slot.location());
+        assert_eq!(SlotRef::Protocol.location(), None);
+        assert_eq!(
+            SlotRef::Wheel {
+                entry: 0x10,
+                state: None,
+                deadline: None,
+                stopped: None,
+            }
+            .location(),
+            None
+        );
+    }
+
     /// The branch scan's recognition is the census's with one row
     /// more: a borrowed adapter is followed. Judged over every type of
     /// every pair against the semantics records themselves, so the
@@ -2079,7 +2111,7 @@ mod tests {
                 .iter()
                 .all(|m| matches!(m.armed, Some(SlotRef::Protocol)))
         );
-        assert_eq!(set.group_label(), "mpsc, oneshot rx");
+        assert_eq!(set.group_label(), "mpsc rx, oneshot rx");
     }
 
     /// A `StreamMap` fans out to the task's own branches: the mapper's
@@ -2145,7 +2177,7 @@ mod tests {
                 entry.assessment
             );
             assert!(matches!(entry.armed, Some(SlotRef::Protocol)));
-            assert_eq!(entry.kind().as_deref(), Some("watch"));
+            assert_eq!(entry.kind().as_deref(), Some("watch rx"));
             assert!(entry.entries.is_none());
         }
         // Listed in branch order, the entries under their branch.
@@ -2162,7 +2194,7 @@ mod tests {
             order,
             ["branch 0", "branch 1", "entry 0", "entry 1", "entry 2"]
         );
-        assert_eq!(set.group_label(), "oneshot rx, watch");
+        assert_eq!(set.group_label(), "oneshot rx, watch rx");
 
         let (bundle, snapshot) = load_any("armed-select");
         let ctx = testkit::context(&bundle, &snapshot);

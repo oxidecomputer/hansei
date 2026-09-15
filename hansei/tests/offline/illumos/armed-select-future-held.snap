@@ -1,13 +1,14 @@
 ---
 source: hansei/src/offline.rs
-description: "`future 0xc77990` over illumos/armed-select"
+description: "`future 0x1858990` over illumos/armed-select"
 ---
 future 0xADDR
     type: future tokio::sync::oneshot::Receiver<u32>
     held by: task 3 (frame 1, `once`)
     depth: 1 frame
-    waiting on: oneshot rx 0xADDR (nothing sent, sender alive)
-        oneshot rx 0xADDR: waker in Inner.rx_task (rx_task_set), reached from the future at 0xADDR inner → * → data → rx_task
+    waiting on:
+        oneshot rx 0xADDR (nothing sent, sender alive)
+            location: future 0xADDR inner.Some.data.rx_task (rx_task_set)
     armed: yes
     held futures: 0
     join sets: 0

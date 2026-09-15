@@ -228,9 +228,18 @@ fn report_whatis(
                 task_label(list, census.sets[set].owner)
             ),
         };
-        writeln!(out, "Waker of {owner}: {}", slot.entry(stopped))?;
+        // The reading the entry leaves to a line of its own has room
+        // here: this line is the slot and nothing else.
+        let entry = match slot.words() {
+            Some(words) => format!("{} ({words})", slot.entry(stopped)),
+            None => slot.entry(stopped),
+        };
+        writeln!(out, "Waker of {owner}: {entry}")?;
         if let Some(detail) = slot.detail(stopped) {
             writeln!(out, "    At: {detail}")?;
+        }
+        if let Some(at) = slot.location() {
+            writeln!(out, "    location: {at}")?;
         }
     }
 

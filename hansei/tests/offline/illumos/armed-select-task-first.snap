@@ -8,9 +8,14 @@ task 3
     type: async fn armed_select::selector
     awaiting at: src/bin/armed-select.rs:49
     waiting on:
-        branch 0 (borrowed): tokio::sync::oneshot::Receiver at 0xADDR — oneshot rx 0xADDR (nothing sent, sender alive); armed: oneshot rx 0xADDR: waker in Inner.rx_task (rx_task_set), reached from the future at 0xADDR inner → * → data → rx_task
-        branch 1 (borrowed): async fn tokio::sync::mpsc::bounded::Receiver::recv at 0xADDR — mpsc 0xADDR (1 sender, capacity 4, 0 unread); armed: mpsc 0xADDR: waker in Chan.rx_waker, reached from #1 queue → chan → inner → * → data → rx_waker → waker
-        branch 2 (borrowed): async fn tokio::sync::watch::Receiver::changed at 0xADDR — watch 0xADDR (version 0, 1 sender, 1 receiver); armed: watch 0xADDR: waker in Notified.waiter, in the future at 0xADDR fut → waiter → waker
+        branch 0 (borrowed): tokio::sync::oneshot::Receiver at 0xADDR — oneshot rx 0xADDR (nothing sent, sender alive); armed
+            location: future 0xADDR inner.Some.data.rx_task (rx_task_set)
+        branch 1 (borrowed): async fn tokio::sync::mpsc::bounded::Receiver::recv at 0xADDR — mpsc rx 0xADDR; armed
+            1 sender, capacity 4, 0 unread
+            location: frame 1 queue.chan.inner.data.rx_waker.waker.Some
+        branch 2 (borrowed): async fn tokio::sync::watch::Receiver::changed at 0xADDR — watch rx 0xADDR; armed
+            version 0, 1 sender, 1 receiver
+            location: future 0xADDR waiter.waker.Some
         branch 3 (borrowed): tokio::time::sleep::Sleep at 0xADDR — timer (deadline TS); armed: timer 0xADDR deadline TS
     spawned at: src/bin/armed-select.rs:186:25
     defined at: src/bin/armed-select.rs:31

@@ -8,7 +8,8 @@ task 3
     type: async fn unordered::driver
     awaiting at: src/bin/unordered.rs:119
     waiting on:
-        slot 0xADDR: waker in futures_core::task::__internal::atomic_waker::AtomicWaker.waker, reached from #0 ready_to_run_queue → * → data → waker → waker
+        slot 0xADDR in futures_core::task::__internal::atomic_waker::AtomicWaker
+            location: frame 0 ready_to_run_queue.data.waker.waker.Some
     spawned at: src/bin/unordered.rs:141:21
     defined at: src/bin/unordered.rs:82
     held futures: 5

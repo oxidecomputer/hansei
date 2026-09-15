@@ -22,7 +22,7 @@ task 5
 
 task 6
 #0  future        tokio::sync::notify::Notified
-      waiting on watch 0xADDR (version 0, 1 sender, 1 receiver)
+      waiting on watch rx 0xADDR (version 0, 1 sender, 1 receiver)
 #1  async fn      tokio::sync::watch::changed_impl<u32>
       awaiting at tokio-1.47.5/src/sync/watch.rs:927 (Suspend1, 2 locals)
 #2  future        tokio::task::coop::Coop<tokio::sync::watch::changed_impl<u32>>

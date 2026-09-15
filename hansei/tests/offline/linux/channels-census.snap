@@ -23,7 +23,7 @@ COUNT  TYPE / WAITING ON
     1  async fn channels::notify_waiter
        └─ 1  notify
     1  async fn channels::recv_waiter
-       └─ 1  mpsc
+       └─ 1  mpsc rx
     1  async fn channels::send_waiter
        └─ 1  one of several
 [4 types]

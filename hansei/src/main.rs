@@ -898,7 +898,8 @@ pub enum Command {
     /// Either way it prints the task as one labelled line per field:
     /// state, owner, type, the leaf await site, what it waits on,
     /// every slot holding its waker (and where each sits — the wheel
-    /// entry, the io slot, the wake-queue node), the spawn site,
+    /// entry, the io slot, the wake-queue node, or a `location:` line
+    /// giving the path to it, which `print` reads), the spawn site,
     /// where the future is defined, and the census's counts — how
     /// many futures it holds in its own frames beside its await
     /// chain, and how many sets it drives from them. `children`
@@ -1013,7 +1014,7 @@ pub enum Command {
     /// itself, then named by the type that holds it — sorted and
     /// comma-joined, each with its reader's detail where one covers
     /// the slot: `timer (deadline +1.200s)`, `io fd 12 (readable)`,
-    /// `oneshot rx 0x…`, `mpsc 0x…`, `notify 0x…`, `task N`, `slot
+    /// `oneshot rx 0x…`, `mpsc rx 0x…`, `notify 0x…`, `task N`, `slot
     /// 0x… in <type>` for a typed location no reader names, `unknown
     /// 0x…` for a live allocation nothing typed reaches. A task with
     /// no live slot prints `unarmed: ` before what its chain says

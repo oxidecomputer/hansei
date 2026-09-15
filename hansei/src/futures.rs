@@ -530,10 +530,10 @@ fn waiting_kind(
             Some(owner) => format!("a {owner} (semaphore)"),
             None => "a semaphore".to_string(),
         }),
-        Some(bundle::WaitKind::Channel { .. }) => Some("mpsc".to_string()),
+        Some(bundle::WaitKind::Channel { .. }) => Some("mpsc rx".to_string()),
         Some(bundle::WaitKind::Notify { .. }) => Some("notify".to_string()),
         Some(bundle::WaitKind::Oneshot { .. }) => Some("oneshot rx".to_string()),
-        Some(bundle::WaitKind::Watch { .. }) => Some("watch".to_string()),
+        Some(bundle::WaitKind::Watch { .. }) => Some("watch rx".to_string()),
         None => tasks::continuation_bucket(continuation, stops),
     }
 }
@@ -669,8 +669,14 @@ impl Blocks<'_> {
         writeln!(out, "    depth: {}", summary::counted(row.depth, "frame"))?;
         // The wait, one line per slot under it, and whether anything
         // arms the future at all — `no` is an answer, so it prints.
+        // Where the slots are listed they carry the cell whole, each
+        // line opening with the entry the cell holds, so the label
+        // stands bare over them rather than saying it twice.
         if let Some(waiting) = &row.waiting_on {
-            writeln!(out, "    waiting on: {waiting}")?;
+            match row.slot_lines.is_empty() {
+                true => writeln!(out, "    waiting on: {waiting}")?,
+                false => writeln!(out, "    waiting on:")?,
+            }
             for line in &row.slot_lines {
                 writeln!(out, "        {line}")?;
             }
@@ -1451,6 +1457,7 @@ mod tests {
         let in_sleep = SlotRoot::Find {
             index: 0,
             addr: 0x5000,
+            frame: 0,
         };
         let slot = |at: u64, attribution: Attribution, within: Option<SlotRoot>| AttributedSlot {
             hit: at as usize,
@@ -1549,6 +1556,7 @@ mod tests {
                         root: SlotRoot::Find {
                             index: 7,
                             addr: 0xe000,
+                            frame: 0,
                         },
                         steps: vec!["rx_task".to_string()],
                         hop: None,
@@ -1569,6 +1577,7 @@ mod tests {
                         root: SlotRoot::Find {
                             index: 8,
                             addr: 0xf000,
+                            frame: 0,
                         },
                         steps: vec!["waiter".to_string()],
                         hop: None,
@@ -1589,6 +1598,7 @@ mod tests {
                 Some(SlotRoot::Find {
                     index: 3,
                     addr: 0xa000,
+                    frame: 0,
                 }),
             ),
             // A queue node inside the acquire.
@@ -1601,6 +1611,7 @@ mod tests {
                 Some(SlotRoot::Find {
                     index: 4,
                     addr: 0xb000,
+                    frame: 0,
                 }),
             ),
             // A Notified node inside the queued find — on a Notify other
@@ -1616,6 +1627,7 @@ mod tests {
                         root: SlotRoot::Find {
                             index: 5,
                             addr: 0xc000,
+                            frame: 0,
                         },
                         steps: vec!["waiter".to_string()],
                         hop: None,
@@ -1655,7 +1667,8 @@ mod tests {
         assert_eq!(
             row(0x5000).slot_lines,
             [
-                "slot 0x5020: waker in x::Holder.w, in the future at 0x5000 w",
+                "slot 0x5020 in x::Holder",
+                "    location: future 0x5000 w",
                 "timer 0x5010"
             ]
         );
@@ -1664,7 +1677,7 @@ mod tests {
             row(0x6000).waiting_on.as_deref(),
             Some("mpsc 0x9000 (1 sender, 0 unread)")
         );
-        assert_eq!(row(0x6000).waiting_kind.as_deref(), Some("mpsc"));
+        assert_eq!(row(0x6000).waiting_kind.as_deref(), Some("mpsc rx"));
         assert!(!row(0x7000).armed);
         assert_eq!(
             row(0x7000).waiting_on.as_deref(),

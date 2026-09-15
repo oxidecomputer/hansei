@@ -3,7 +3,7 @@ source: hansei/src/offline.rs
 description: "`futures --group waiting-on` over linux-floor/watch-stream"
 ---
 COUNT  WAITING ON                                               FUTURES
-    5  watch                                                    0xADDR, 0xADDR, 0xADDR, …
+    5  watch rx                                                 0xADDR, 0xADDR, 0xADDR, …
     2  <empty>                                                  0xADDR, 0xADDR
     2  oneshot rx                                               0xADDR, 0xADDR
     1  unarmed: unknown at tokio_stream::stream_map::StreamMap  0xADDR

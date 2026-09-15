@@ -3961,10 +3961,10 @@ fn test_armed_select_acceptance() {
         assert_eq!(selector.waiting, "", "{selector:?}");
         let listed = selector.wait_lines.join("\n");
         for word in [
-            "mpsc 0x",
-            " (1 sender, capacity 4, 0 unread)",
-            "watch 0x",
-            " (version 0, 1 sender, 1 receiver)",
+            "mpsc rx 0x",
+            "1 sender, capacity 4, 0 unread",
+            "watch rx 0x",
+            "version 0, 1 sender, 1 receiver",
             "oneshot rx 0x",
             " (nothing sent, sender alive)",
             "timer (deadline ",
@@ -3974,33 +3974,47 @@ fn test_armed_select_acceptance() {
         // The slot and the leaf reader share one bucket per primitive.
         let grouped = hansei_ok(&bundle, core, "tasks --group waiting-on");
         assert!(
-            grouped.contains("mpsc, oneshot rx, timer, watch"),
+            grouped.contains("mpsc rx, oneshot rx, timer, watch rx"),
             "{grouped}"
         );
-        assert!(!grouped.contains("mpsc rx"), "{grouped}");
         // One detail line per `select!` branch under the wait, each a
-        // borrow of the frame's own local, armed by the slot inside it
-        // and named by the slot's label — its entry, reading included,
-        // where the verdict does not carry the words; the sleep's by
-        // the wheel entry the registry decoded.
+        // borrow of the frame's own local, the verdict naming the
+        // primitive and `armed` saying a slot sits in it, with what
+        // the channel reads and where the slot sits on the lines
+        // under it; the sleep's is the wheel entry the registry
+        // decoded, which has no location — it is not in the task's
+        // storage.
         let block = hansei_ok(&bundle, core, &format!("task {}", selector.id));
         let detail = regex::Regex::new(
-            r"(?m)^        branch [0-2] \(borrowed\): .* — .*; armed: (mpsc|watch|oneshot rx) 0x[0-9a-f]+( \([^)]*\))?: waker in ",
+            r"(?m)^        branch [0-2] \(borrowed\): .* — (mpsc rx|watch rx|oneshot rx) 0x[0-9a-f]+( \(nothing sent, sender alive\))?; armed$",
         )
         .unwrap();
         assert_eq!(detail.find_iter(&block).count(), 3, "{block}");
+        // The channel and the watch read on a line of their own; the
+        // oneshot's words stand on the line that names it.
+        let words = regex::Regex::new(
+            r"(?m)^            (1 sender, capacity 4, 0 unread|version 0, 1 sender, 1 receiver)$",
+        )
+        .unwrap();
+        assert_eq!(words.find_iter(&block).count(), 2, "{block}");
+        let located = regex::Regex::new(
+            r"(?m)^            location: (frame [0-9]+|future 0x[0-9a-f]+( frame [0-9]+)?) [a-zA-Z_0-9.]+",
+        )
+        .unwrap();
+        assert_eq!(located.find_iter(&block).count(), 3, "{block}");
         let sleep = regex::Regex::new(
             r"(?m)^        branch 3 \(borrowed\): tokio::time::sleep::Sleep at 0x[0-9a-f]+ — timer \(deadline .*; armed: timer 0x[0-9a-f]+ deadline ",
         )
         .unwrap();
         assert!(sleep.is_match(&block), "{block}");
-        // The oneshot's state word vouches for its slot.
+        // The oneshot's state word vouches for its slot, and the
+        // channel's is reached from the frame that holds the receiver.
         assert!(
-            block.contains(": waker in Inner.rx_task (rx_task_set), reached from "),
+            block.contains(" inner.Some.data.rx_task (rx_task_set)"),
             "{block}"
         );
         assert!(
-            block.contains(": waker in Chan.rx_waker, reached from #1 "),
+            block.contains("location: frame 1 queue.chan.inner."),
             "{block}"
         );
         assert!(!block.contains("\n    waker:"), "{block}");
@@ -4010,12 +4024,18 @@ fn test_armed_select_acceptance() {
         // agrees with it — under a bare wait label.
         let holder = task_with_future(&rows, "async fn armed_select::holder");
         assert_eq!(holder.waiting, "", "{holder:?}");
-        let [line] = holder.wait_lines.as_slice() else {
+        let [line, at] = holder.wait_lines.as_slice() else {
             panic!("{holder:?}");
         };
         assert!(line.starts_with("oneshot rx 0x"), "{holder:?}");
         assert!(
-            line.contains(" (nothing sent, sender alive); armed: waker in Inner.rx_task"),
+            line.contains(" (nothing sent, sender alive); armed"),
+            "{holder:?}"
+        );
+        // Where the slot sits is the line under it, and what vouches
+        // for it closes that line.
+        assert!(
+            at.starts_with("    location: ") && at.ends_with(".rx_task (rx_task_set)"),
             "{holder:?}"
         );
         // One entry: the leaf's reader and the slot agree on the one
@@ -4025,18 +4045,22 @@ fn test_armed_select_acceptance() {
         // The waiter's leaf reader walked the list: its state word and
         // the one node it found, in the slot entry's grammar.
         assert_eq!(waiter.waiting, "", "{waiter:?}");
-        let [line] = waiter.wait_lines.as_slice() else {
+        let [line, at] = waiter.wait_lines.as_slice() else {
             panic!("{waiter:?}");
         };
         assert!(line.starts_with("notify 0x"), "{waiter:?}");
-        assert!(line.contains(" (waiting, 1 queued); armed: "), "{waiter:?}");
+        assert!(line.ends_with(" (waiting, 1 queued); armed"), "{waiter:?}");
+        assert!(at.starts_with("    location: "), "{waiter:?}");
         let driver = task_with_future(&rows, "async fn armed_select::driver");
         assert_eq!(driver.waiting, "", "{driver:?}");
-        let [line] = driver.wait_lines.as_slice() else {
+        let [line, at] = driver.wait_lines.as_slice() else {
             panic!("{driver:?}");
         };
+        // A slot no table names is its address and the type holding
+        // it, with the path to it under that.
         assert!(line.starts_with("slot 0x"), "{driver:?}");
         assert!(line.contains("AtomicWaker"), "{driver:?}");
+        assert!(at.starts_with("    location: "), "{driver:?}");
 
         // The older field names still select the same cell.
         let by_alias = hansei_ok(&bundle, core, "tasks --with waker 'oneshot rx'");

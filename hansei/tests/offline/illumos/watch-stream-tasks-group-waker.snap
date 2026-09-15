@@ -2,8 +2,8 @@
 source: hansei/src/offline.rs
 description: "`tasks --group waker` over illumos/watch-stream"
 ---
-COUNT  WAITING ON         TASKS
-    2  oneshot rx, watch  3, 4
-    1  oneshot rx         5
-    1  watch              6
+COUNT  WAITING ON            TASKS
+    2  oneshot rx, watch rx  3, 4
+    1  oneshot rx            5
+    1  watch rx              6
 [3 groups]

@@ -440,9 +440,15 @@ pub(crate) fn assessed_wait<T: proc::Target>(
     index: usize,
 ) -> Option<String> {
     let wait: &TaskWait = &session.analysis().waits[index];
-    wait.verified()?;
+    let words = wait.verified()?.target().words();
     let stops = crate::tasks::StopNames::of(session);
-    Some(crate::tasks::assessment_cell(wait, &stops))
+    let cell = crate::tasks::assessment_cell(wait, &stops);
+    // Nothing else stands on this line, so it carries the reading a
+    // cell leaves to a line of its own.
+    Some(match words {
+        Some(words) => format!("{cell} ({words})"),
+        None => cell,
+    })
 }
 
 /// What a held future's chain observably ends in: the resource,
@@ -458,7 +464,10 @@ pub(crate) fn observed_wait<'b, T: proc::Target>(
     let observation = inspection.primitive.value.as_ref()?;
     let mut pass = hansei_runtime::tokio::assess::AssessmentPass::new();
     let target = ctx.observed_target(&mut pass, observation, &inspection.chain, list, read)?;
-    Some(target.to_string())
+    Some(match target.words() {
+        Some(words) => format!("{target} ({words})"),
+        None => target.to_string(),
+    })
 }
 
 /// How many census-found futures each frame of this chain holds beside

@@ -14,7 +14,7 @@ future 0xADDR: async fn tokio::sync::mpsc::bounded::Receiver::recv<u32>
 Held by: task 3 — async fn armed_select::selector (frame 1, `recv`)
 
 #0  future        core::future::poll_fn::PollFn<tokio::sync::mpsc::bounded::Receiver::recv::{async_fn#0}::{closure_env#0}<u32>>
-      waiting on mpsc 0xADDR (1 sender, capacity 4, 0 unread)
+      waiting on mpsc rx 0xADDR (1 sender, capacity 4, 0 unread)
 [2 frames, 1 shown]
 
 future 0xADDR
@@ -22,7 +22,7 @@ future 0xADDR: async fn tokio::sync::watch::Receiver::changed<u32>
 Held by: task 3 — async fn armed_select::selector (frame 1, `changed`)
 
 #0  future        tokio::sync::notify::Notified
-      waiting on watch 0xADDR (version 0, 1 sender, 1 receiver)
+      waiting on watch rx 0xADDR (version 0, 1 sender, 1 receiver)
 [4 frames, 1 shown]
 
 future 0xADDR

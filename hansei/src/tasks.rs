@@ -875,15 +875,23 @@ pub(crate) fn slot_cell(
     (cell, kind)
 }
 
-/// One detail line per slot, sorted: where it sits and what says it
-/// is current, a wheel entry by its deadline.
+/// One detail line per slot, sorted: what it is and what says it is
+/// current, a wheel entry by its deadline, with the `location:` line
+/// of a slot a path names under it.
 pub(crate) fn slot_lines(
     slots: &[&attribution::AttributedSlot],
     stopped: Option<RawInstant>,
 ) -> Vec<String> {
-    let mut lines: Vec<String> = slots.iter().map(|slot| slot.line(stopped)).collect();
-    lines.sort();
-    lines
+    let mut blocks: Vec<Vec<String>> = slots
+        .iter()
+        .map(|slot| {
+            let mut block = vec![slot.line(stopped)];
+            block.extend(location_lines([*slot]));
+            block
+        })
+        .collect();
+    blocks.sort();
+    blocks.into_iter().flatten().collect()
 }
 
 /// Which lwp runs each claimed blocking task: unwind the stacks once
@@ -1216,14 +1224,16 @@ pub(crate) fn wait_detail(
             .into_iter()
             .partition(|slot| attribution::member_accounts(member, slot, size_of));
         rest = others;
-        let line = member_line(member, stops, &mine, stopped);
+        let block = member_line(member, stops, &mine, stopped);
         // An entry reached through a member listed before it — a
         // branch whose chain ends at the map, a local holding one —
         // sits one step under that member; an entry of a stop that is
         // the map itself is a branch of the stop like any other.
         match &member.route {
-            MemberRoute::Entry { under: Some(_), .. } => lines.push(format!("    {line}")),
-            _ => lines.push(line),
+            MemberRoute::Entry { under: Some(_), .. } => {
+                lines.extend(block.into_iter().map(|line| format!("    {line}")))
+            }
+            _ => lines.extend(block),
         }
     }
     if capped > 0 {
@@ -1234,30 +1244,74 @@ pub(crate) fn wait_detail(
     // a verified target accounts for is headed by the target itself,
     // the way a branch line is: the verdict, then what arms it. A
     // wheel entry's own line already says everything its target does.
+    // Each carries its location under it, and sorts by its head.
     let verified = match &wait.assessment {
         WaitAssessment::Waiting(verified) => Some(verified),
         _ => None,
     };
-    let mut slot_lines: Vec<String> = rest
+    let mut slot_blocks: Vec<Vec<String>> = rest
         .iter()
-        .map(|slot| match verified {
-            Some(verified) if attribution::verified_accounts(verified, slot, size_of) => {
-                let wheel = matches!(
-                    slot.attribution,
-                    attribution::Attribution::Registry(attribution::RegistrySlot::Timer { .. })
-                );
-                match slot.detail(stopped) {
-                    Some(detail) if !wheel => {
-                        format!("{}; armed: {detail}", verified.target())
+        .map(|slot| {
+            let head = match verified {
+                Some(verified) if attribution::verified_accounts(verified, slot, size_of) => {
+                    let wheel = matches!(
+                        slot.attribution,
+                        attribution::Attribution::Registry(attribution::RegistrySlot::Timer { .. })
+                    );
+                    match (wheel, slot.detail(stopped)) {
+                        (false, Some(detail)) => {
+                            format!("{}; armed: {detail}", verified.target())
+                        }
+                        (false, None) => format!("{}; armed", verified.target()),
+                        (true, _) => slot.line(stopped),
                     }
-                    _ => slot.line(stopped),
                 }
-            }
-            _ => slot.entry_line(stopped),
+                _ => slot.entry_line(stopped),
+            };
+            let mut block = vec![head];
+            block.extend(under_lines(
+                verified.map(|v| v.target()),
+                std::slice::from_ref(slot),
+            ));
+            block
         })
         .collect();
-    slot_lines.sort();
-    lines.extend(slot_lines);
+    slot_blocks.sort();
+    lines.extend(slot_blocks.into_iter().flatten());
+    lines
+}
+
+/// The lines under a line that names a primitive, indented one step
+/// in: what a channel's or a watch's reading says, which is a line of
+/// its own because the line above carries a verdict, and then where
+/// each slot sits.
+fn under_lines(
+    target: Option<&bundle::WaitTarget>,
+    slots: &[&attribution::AttributedSlot],
+) -> Vec<String> {
+    let words = target
+        .and_then(|target| target.words())
+        .or_else(|| slots.iter().find_map(|slot| slot.words()));
+    let mut lines: Vec<String> = words
+        .into_iter()
+        .map(|words| format!("    {words}"))
+        .collect();
+    lines.extend(location_lines(slots.iter().copied()));
+    lines
+}
+
+/// The `location:` line each slot that has one contributes, indented
+/// one step under the line it belongs to: where the slot sits, as a
+/// path `print` follows from the root the selector names.
+fn location_lines<'a>(
+    slots: impl IntoIterator<Item = &'a attribution::AttributedSlot>,
+) -> Vec<String> {
+    let mut lines: Vec<String> = slots
+        .into_iter()
+        .filter_map(|slot| slot.location())
+        .map(|at| format!("    location: {at}"))
+        .collect();
+    lines.sort();
     lines
 }
 
@@ -1283,12 +1337,16 @@ fn slot_only_line(member: &WaitMember, within: Option<&str>) -> String {
 /// has disabled is named and nothing more: `disabled` is the whole
 /// verdict, and why it is — a false precondition, a completed output
 /// that missed its pattern — is not in memory to be read.
+///
+/// A slot that is somewhere a path can name puts that path on a
+/// `location:` line under the branch, which is what the lines after
+/// the first are.
 fn member_line(
     member: &WaitMember,
     stops: &StopNames<'_>,
     armed_by: &[&attribution::AttributedSlot],
     stopped: Option<RawInstant>,
-) -> String {
+) -> Vec<String> {
     let (local, borrowed) = match &member.route {
         MemberRoute::Branch { local, borrowed } => (local.clone(), *borrowed),
         MemberRoute::Select { index, borrowed } => (format!("branch {index}"), *borrowed),
@@ -1297,7 +1355,7 @@ fn member_line(
                 .label(*ty)
                 .or_else(|| member.future.clone())
                 .unwrap_or_default();
-            return format!("branch {index}: {future}: disabled");
+            return vec![format!("branch {index}: {future}: disabled")];
         }
         MemberRoute::Entry {
             index, borrowed, ..
@@ -1335,7 +1393,7 @@ fn member_line(
             line.push_str("; ");
             line.push_str(note);
         }
-        return line;
+        return vec![line];
     }
     let verdict = match &member.assessment {
         Some(WaitAssessment::Waiting(verified)) => verified.target().to_string(),
@@ -1353,26 +1411,52 @@ fn member_line(
         Some(WaitAssessment::Runnable(_)) => "runnable".to_string(),
         None => "not inspected".to_string(),
     };
+    // What the verdict leaves to a line of its own — a channel's
+    // reading — and where each slot sits, both under the branch.
+    let verified = match &member.assessment {
+        Some(WaitAssessment::Waiting(verified)) => Some(verified.target()),
+        _ => None,
+    };
+    let mut under = under_lines(verified, armed_by);
     let armed = if !armed_by.is_empty() {
-        // A verified verdict names the primitive and its words, so the
-        // slot is headed by its label; any other verdict leaves the
-        // words to the slot's entry.
-        let named = matches!(member.assessment, Some(WaitAssessment::Waiting(_)));
+        // A slot whose verdict already names its primitive and whose
+        // place is a `location:` line under the branch has said
+        // everything, and `armed` is the whole of what is left. Every
+        // other slot is named here: a registry's — a wheel entry, an
+        // io waiter — sits where no path reaches, and an unverified
+        // verdict names no primitive for a slot to be the place of.
         let mut slots: Vec<String> = armed_by
             .iter()
-            .map(|s| match named {
-                true => s.line(stopped),
-                false => s.entry_line(stopped),
+            .filter(|slot| !(verified.is_some() && slot.location().is_some()))
+            .map(|slot| match verified.is_some() {
+                true => slot.line(stopped),
+                false => slot.entry_line(stopped),
             })
             .collect();
         slots.sort();
-        format!("armed: {}", slots.join("; "))
+        match slots.is_empty() {
+            true => "armed".to_string(),
+            false => format!("armed: {}", slots.join("; ")),
+        }
     } else {
+        under.extend(
+            member
+                .armed
+                .as_ref()
+                .and_then(hansei_runtime::tokio::waitset::SlotRef::location)
+                .map(|at| format!("    location: {at}")),
+        );
         match (&member.armed, &member.assessment) {
-            (Some(slot), Some(WaitAssessment::Waiting(_))) => slot
-                .detail()
-                .or_else(|| slot.cell_entry())
-                .unwrap_or_default(),
+            // The verdict names the primitive, so evidence that is a
+            // location and nothing else says only that the branch is
+            // armed; the location line under it says where.
+            (Some(slot), Some(WaitAssessment::Waiting(_))) => {
+                match (slot.detail(), slot.location()) {
+                    (Some(detail), _) => detail,
+                    (None, Some(_)) => "armed".to_string(),
+                    (None, None) => slot.cell_entry().unwrap_or_default(),
+                }
+            }
             (Some(slot), _) => match (member.cell_entry(), slot.detail()) {
                 (Some(entry), Some(detail)) => format!("{entry}: {detail}"),
                 (Some(entry), None) => entry,
@@ -1386,7 +1470,9 @@ fn member_line(
         line.push_str("; ");
         line.push_str(note);
     }
-    line
+    let mut lines = vec![line];
+    lines.extend(under);
+    lines
 }
 
 /// What a ready resource has already done, in words.
@@ -2752,7 +2838,8 @@ mod table_tests {
         };
         let impls = Default::default();
         let stops = StopNames::none(&impls);
-        let line = |member: &WaitMember| member_line(member, &stops, &[], None);
+        // A fan-out member arms nothing, so its block is the one line.
+        let line = |member: &WaitMember| member_line(member, &stops, &[], None).join("\n");
         assert_eq!(
             line(&fanning(3, 3)),
             "branch 1 (borrowed): x::branch at 0x6000 — 3 entries, any one wakes it"
