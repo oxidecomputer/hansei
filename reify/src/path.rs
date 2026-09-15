@@ -216,7 +216,7 @@ fn member_step<'a, T: Target>(proc: &'a T, node: Node<'a>, name: &str) -> Result
                 // The name is a variant's or nothing: the active one
                 // answers its payload, and anything else is refused
                 // with the name of the variant that is live.
-                return match v.try_select_variant(name) {
+                return match v.try_select_variant_raw(name) {
                     Ok(Some(payload)) => Ok(Node::Value(payload)),
                     Ok(None) => Err(Error::inactive_variant(
                         name.to_string(),
@@ -321,11 +321,11 @@ pub fn member_names<T: Target>(proc: &T, node: &Node<'_>) -> Vec<String> {
 /// `.name` against the members the type declares, with the tuple
 /// spelling: `.0` reads the `__0` DWARF gives a tuple field.
 fn try_member_spellings<'a>(v: &Value<'a>, name: &str) -> Result<Option<Value<'a>>> {
-    if let Some(m) = v.try_member(name)? {
+    if let Some(m) = v.try_member_raw(name)? {
         return Ok(Some(m));
     }
     if name.chars().all(|c| c.is_ascii_digit()) {
-        return v.try_member(&format!("__{name}"));
+        return v.try_member_raw(&format!("__{name}"));
     }
     Ok(None)
 }
@@ -342,7 +342,7 @@ fn heap_header_data<'a>(v: &Value<'a>) -> Result<Option<Value<'a>>> {
     } else {
         return Ok(None);
     };
-    v.member(inner).map(Some)
+    v.member_raw(inner).map(Some)
 }
 
 /// The single sized member a transparent wrapper descends to — one
@@ -588,6 +588,46 @@ mod tests {
             assert!(err.contains(why), "{path}: {err}");
             assert!(err.contains("cannot parse path"), "{path}: {err}");
         }
+    }
+
+    /// A step lands on the layer it names: `.inner` on a wrapper of a
+    /// wrapper answers that wrapper, not the value a peel would leave
+    /// behind, and every layer under it stays addressable by its own
+    /// name. A waker slot's `location` is written that way —
+    /// `.chan.inner.data` — so each name it prints has to resolve.
+    #[test]
+    fn test_member_lands_on_the_layer_it_names() {
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+        let mem = FakeMem::new();
+        // WrapWrap { inner: PadWrap { pad: (), point: Point { 3, 4 } } }.
+        let mut bytes = vec![0u8; 4];
+        bytes.extend_from_slice(&u32s(&[3, 4]));
+        let outer = Value::new(v.ty(WRAP_WRAP).unwrap(), 0x100, &bytes);
+        assert_eq!(
+            shown(resolve(&mem, outer, &parse(".inner").unwrap()).unwrap()),
+            "PadWrap { point: Point { x: 3, y: 4 } }"
+        );
+        assert_eq!(
+            shown(resolve(&mem, outer, &parse(".inner.point").unwrap()).unwrap()),
+            "Point { x: 3, y: 4 }"
+        );
+        assert_eq!(
+            shown(resolve(&mem, outer, &parse(".inner.point.x").unwrap()).unwrap()),
+            "3"
+        );
+        // Naming a layer is optional, not required: the auto-deref
+        // still reaches past both of them.
+        assert_eq!(
+            shown(resolve(&mem, outer, &parse(".x").unwrap()).unwrap()),
+            "3"
+        );
+        // And the prompt offers each layer's names, in the order the
+        // descent would try them.
+        assert_eq!(
+            member_names(&mem, &Node::Value(outer)),
+            ["inner", "pad", "point", "x", "y"]
+        );
     }
 
     /// `.member` finds a wrapper's own member, descends transparent

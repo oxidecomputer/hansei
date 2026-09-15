@@ -80,6 +80,26 @@ impl<'a> Value<'a> {
         Ok(Some(self.view_at(member.offset(), member.ty())?.peel()))
     }
 
+    /// The member `name` as declared, with no peel: the view at its
+    /// own offset and its own type. A path resolver navigates with
+    /// this, so every wrapper on the way keeps its own member names —
+    /// `.chan.inner.data` rather than `.chan` landing inside the
+    /// `Arc` the `Rx` holds — where a renderer wants the innermost
+    /// value and takes [`Self::try_member`].
+    pub fn try_member_raw(&self, name: &str) -> Result<Option<Value<'a>>> {
+        let Some(member) = self.ty.member(name) else {
+            return Ok(None);
+        };
+        Ok(Some(self.view_at(member.offset(), member.ty())?))
+    }
+
+    /// [`Self::try_member_raw`], refusing a name the type does not
+    /// declare.
+    pub fn member_raw(&self, name: &str) -> Result<Value<'a>> {
+        self.try_member_raw(name)?
+            .ok_or_else(|| Error::no_member(self.ty.name().to_string(), name.to_string()))
+    }
+
     pub fn member(&self, name: &str) -> Result<Value<'a>> {
         let Some(member) = self.try_member(name)? else {
             return Err(Error::no_member(
@@ -138,6 +158,27 @@ impl<'a> Value<'a> {
         };
 
         Ok(Some(self.view_at(offset, var_ty)?.peel()))
+    }
+
+    /// [`Self::try_select_variant`] with no peel: the variant's
+    /// payload as declared, so a path that names a variant lands on
+    /// the payload's own type and the members under it keep their
+    /// names.
+    pub fn try_select_variant_raw(&self, name: &str) -> Result<Option<Value<'a>>> {
+        let Some(result) = self.ty.check_variant(self.bytes, name) else {
+            return Err(Error::not_an_enum(self.ty.name().to_string()));
+        };
+        let Some((var_ty, offset)) = result.map_err(|e| match e {
+            VariantError::NoSuchVariant => {
+                Error::no_variant(self.ty.name().to_string(), name.to_string())
+            }
+            other => bundle_variant_error(&self.ty, other),
+        })?
+        else {
+            return Ok(None);
+        };
+
+        Ok(Some(self.view_at(offset, var_ty)?))
     }
 
     pub fn select_variant(&self, name: &str) -> Result<Value<'a>> {

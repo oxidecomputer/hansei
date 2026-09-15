@@ -642,6 +642,10 @@ fixture_ids! {
     // C's one-byte `char` and a `[char; 2]`: the byte and the code-point
     // readings of a character type, which share one `TypeClass` arm.
     C_CHAR, CHAR_ARR,
+    // A wrapper around PAD_WRAP: two wrapper layers, neither carrying a
+    // display format, so a path that lands on a layer can be told from
+    // one peeled past it.
+    WRAP_WRAP,
 }
 
 /// A hand-built mini-bundle exercising every TypeDef kind reify touches:
@@ -2034,6 +2038,16 @@ pub fn test_bundle() -> Bundle {
         TypeDef::Array {
             elem: CHAR,
             count: 2,
+        },
+    );
+    // WrapWrap { inner: PadWrap @0 }: a wrapper whose one member is
+    // itself a wrapper.
+    types.add(
+        WRAP_WRAP,
+        TypeDef::Struct {
+            name: s("WrapWrap"),
+            size: 12,
+            members: vec![m(innern, PAD_WRAP, 0)],
         },
     );
 

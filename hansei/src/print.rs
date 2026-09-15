@@ -34,13 +34,17 @@ pub(crate) fn exec_print<T: proc::Target>(
     let steps = reify::path::parse(&path)?;
     let root = root_value(session, root)?;
     let results = reify::path::resolve(session.ctx.proc, root, &steps)?;
+    // A value a step landed on is shown peeled; a root named by no
+    // step is shown as it stands, since the type the reader asked
+    // for is the answer.
+    let peel = !steps.is_empty();
     match results.as_slice() {
         [] => writeln!(out, "0 values")?,
-        [one] if one.label.is_empty() => write_result(session, one, render, out)?,
+        [one] if one.label.is_empty() => write_result(session, one, peel, render, out)?,
         many => {
             for r in many {
                 write!(out, "{} ", r.label)?;
-                write_result(session, r, render, out)?;
+                write_result(session, r, peel, render, out)?;
             }
         }
     }
@@ -164,13 +168,22 @@ fn parse_args(args: &[String]) -> Result<(Root<'_>, String)> {
 fn write_result<T: proc::Target>(
     session: &Session<'_, T>,
     r: &Resolved<'_>,
+    peel: bool,
     render: RenderOpts,
     out: &mut dyn io::Write,
 ) -> Result<()> {
     let heap = session.heap_view();
     // Written rather than returned: a closure cannot hand back a
     // display borrowing its argument, so the borrow ends in here.
+    //
+    // The path stops on the layer it names, so `.chan.inner` resolves
+    // and the prompt offers both; what is *shown* is that layer
+    // peeled, because a wrapper renders as its own plumbing — an
+    // `Arc<dyn>` as a `NonNull` around a pointer — and every level
+    // the depth budget spends on plumbing is one it does not spend on
+    // the value the reader asked for.
     let show = |v: &reify::Value<'_>, pretty: bool, out: &mut dyn io::Write| -> Result<()> {
+        let v = if peel { v.peel() } else { *v };
         let mut disp = v
             .display_from_target(session.ctx.proc, render.depth)
             .max_str_len(Some(render.max_string_len))
