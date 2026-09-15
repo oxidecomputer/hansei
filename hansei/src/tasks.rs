@@ -1410,110 +1410,109 @@ fn member_line(
     };
     let via = if borrowed { " (borrowed)" } else { "" };
     let future = member_future(member, stops, member.key.map(|key| key.ty));
-    let at = member
-        .key
-        .map(|key| format!(" at {:#x}", key.addr))
-        .unwrap_or_default();
+    let mut lines = vec![format!("{local}{via}: {future}")];
+    let mut field = |label: &str, value: String| lines.push(format!("    {label}: {value}"));
+    if let Some(key) = member.key {
+        field("address", format!("{:#x}", key.addr));
+    }
     // A member that fans out — a map polled with this task's own
     // context, or a chain ending at one — is listed for its entries,
     // which follow it: it holds no waker of this task's itself, so
-    // nothing arms it, and the verdict is the count. Any one entry
-    // wakes the task.
+    // nothing arms it, and the count is all it has to say. Any one
+    // entry wakes the task.
     if let Some(fanout) = member.entries {
-        let inspected = if fanout.listed < fanout.total {
-            format!(" ({} inspected)", fanout.listed)
-        } else {
-            String::new()
-        };
-        let verdict = match fanout.total {
-            0 => "no entries".to_string(),
-            1 => "1 entry, which wakes it".to_string(),
-            n => format!("{n} entries{inspected}, any one wakes it"),
-        };
-        let mut line = format!("{local}{via}: {future}{at} — {verdict}");
+        // The entries follow, so a count of them says what the lines
+        // under this one already show — unless some were not
+        // inspected, which nothing else says.
+        if fanout.listed < fanout.total {
+            field(
+                "entries",
+                format!(
+                    "{} of {}, the rest not inspected",
+                    fanout.listed, fanout.total
+                ),
+            );
+        }
         for note in &member.notes {
-            line.push_str("; ");
-            line.push_str(note);
+            field("note", note.clone());
         }
-        return vec![line];
+        return lines;
     }
-    let verdict = match &member.assessment {
-        Some(WaitAssessment::Waiting(verified)) => verified.target().to_string(),
-        Some(WaitAssessment::Set(set)) => set.cell(),
-        Some(WaitAssessment::ResourceReady(reason)) => {
-            format!("ready: {}", ready_reason(*reason))
-        }
-        Some(WaitAssessment::Unknown(WaitUnknownReason::Continuation)) => "unknown".to_string(),
-        Some(WaitAssessment::Unknown(reason)) => format!("unknown ({})", unknown_word(*reason)),
-        Some(WaitAssessment::NeverReady { .. }) => "never ready".to_string(),
-        Some(WaitAssessment::Unresumed) => "never polled".to_string(),
-        Some(WaitAssessment::NotWaiting(NotWaitingReason::Returned)) => "returned".to_string(),
-        Some(WaitAssessment::NotWaiting(NotWaitingReason::Panicked)) => "panicked".to_string(),
-        Some(WaitAssessment::NotWaiting(NotWaitingReason::Complete)) => "complete".to_string(),
-        Some(WaitAssessment::Runnable(_)) => "runnable".to_string(),
-        None => "not inspected".to_string(),
-    };
-    // What the verdict leaves to a line of its own — a channel's
-    // reading — and where each slot sits, both under the branch.
     let verified = match &member.assessment {
         Some(WaitAssessment::Waiting(verified)) => Some(verified.target()),
         _ => None,
     };
-    let mut under = under_lines(verified, armed_by);
-    let armed = if !armed_by.is_empty() {
-        // A slot whose verdict already names its primitive and whose
-        // place is a `location:` line under the branch has said
-        // everything, and `armed` is the whole of what is left. Every
-        // other slot is named here: a registry's — a wheel entry, an
-        // io waiter — sits where no path reaches, and an unverified
-        // verdict names no primitive for a slot to be the place of.
-        let mut slots: Vec<String> = armed_by
-            .iter()
-            .filter(|slot| !(verified.is_some() && slot.location().is_some()))
-            .map(|slot| match verified.is_some() {
+    // Whether a waker of this task's sits in the branch at all, which
+    // is the question a reader asks first: the rest of the lines say
+    // what it waits on and where the waker is.
+    field(
+        "armed",
+        match !armed_by.is_empty() || member.armed.is_some() {
+            true => "yes".to_string(),
+            false => "no".to_string(),
+        },
+    );
+    field(
+        "blocked on",
+        match &member.assessment {
+            Some(WaitAssessment::Waiting(verified)) => match verified.target().words() {
+                Some(words) => format!("{} ({words})", verified.target()),
+                None => verified.target().to_string(),
+            },
+            Some(WaitAssessment::Set(set)) => set.cell(),
+            Some(WaitAssessment::ResourceReady(reason)) => {
+                format!("ready: {}", ready_reason(*reason))
+            }
+            Some(WaitAssessment::Unknown(WaitUnknownReason::Continuation)) => "unknown".to_string(),
+            Some(WaitAssessment::Unknown(reason)) => format!("unknown ({})", unknown_word(*reason)),
+            Some(WaitAssessment::NeverReady { .. }) => "never ready".to_string(),
+            Some(WaitAssessment::Unresumed) => "never polled".to_string(),
+            Some(WaitAssessment::NotWaiting(NotWaitingReason::Returned)) => "returned".to_string(),
+            Some(WaitAssessment::NotWaiting(NotWaitingReason::Panicked)) => "panicked".to_string(),
+            Some(WaitAssessment::NotWaiting(NotWaitingReason::Complete)) => "complete".to_string(),
+            Some(WaitAssessment::Runnable(_)) => "runnable".to_string(),
+            None => "not inspected".to_string(),
+        },
+    );
+    // The slots themselves: one a path names says where it sits, and
+    // one sitting where no path reaches — a wheel entry, an io
+    // waiter, a queue node — is named by what the registry that
+    // decoded it calls it. A wheel entry under a timer verdict drops
+    // its deadline, which the line above just gave.
+    let timer = matches!(verified, Some(bundle::WaitTarget::Timer { .. }));
+    let mut wakers: Vec<String> = armed_by
+        .iter()
+        .filter(|slot| slot.location().is_none())
+        .map(|slot| match (timer, slot.wheel_entry()) {
+            (true, Some(entry)) => entry,
+            _ => match verified.is_some() {
                 true => slot.line(stopped),
                 false => slot.entry_line(stopped),
-            })
-            .collect();
-        slots.sort();
-        match slots.is_empty() {
-            true => "armed".to_string(),
-            false => format!("armed: {}", slots.join("; ")),
-        }
-    } else {
-        under.extend(
-            member
-                .armed
-                .as_ref()
-                .and_then(hansei_runtime::tokio::waitset::SlotRef::location)
-                .map(|at| format!("    location: {at}")),
-        );
-        match (&member.armed, &member.assessment) {
-            // The verdict names the primitive, so evidence that is a
-            // location and nothing else says only that the branch is
-            // armed; the location line under it says where.
-            (Some(slot), Some(WaitAssessment::Waiting(_))) => {
-                match (slot.detail(), slot.location()) {
-                    (Some(detail), _) => detail,
-                    (None, Some(_)) => "armed".to_string(),
-                    (None, None) => slot.cell_entry().unwrap_or_default(),
-                }
-            }
-            (Some(slot), _) => match (member.cell_entry(), slot.detail()) {
-                (Some(entry), Some(detail)) => format!("{entry}: {detail}"),
-                (Some(entry), None) => entry,
-                (None, detail) => detail.unwrap_or_default(),
             },
-            (None, _) => "held, not armed".to_string(),
-        }
-    };
-    let mut line = format!("{local}{via}: {future}{at} — {verdict}; {armed}");
-    for note in &member.notes {
-        line.push_str("; ");
-        line.push_str(note);
+        })
+        .collect();
+    if armed_by.is_empty()
+        && let Some(slot) = &member.armed
+    {
+        wakers.extend(slot.detail().or_else(|| slot.cell_entry()));
     }
-    let mut lines = vec![line];
-    lines.extend(under);
+    wakers.sort();
+    for waker in wakers {
+        field("waker", waker);
+    }
+    let mut located: Vec<String> = armed_by.iter().filter_map(|slot| slot.location()).collect();
+    if armed_by.is_empty()
+        && let Some(slot) = &member.armed
+    {
+        located.extend(hansei_runtime::tokio::waitset::SlotRef::location(slot));
+    }
+    located.sort();
+    for at in located {
+        field("location", at);
+    }
+    for note in &member.notes {
+        field("note", note.clone());
+    }
     lines
 }
 
@@ -2884,19 +2883,19 @@ mod table_tests {
         let line = |member: &WaitMember| member_line(member, &stops, &[], None).join("\n");
         assert_eq!(
             line(&fanning(3, 3)),
-            "branch 1 (borrowed): x::branch at 0x6000 — 3 entries, any one wakes it"
+            "branch 1 (borrowed): x::branch\n    address: 0x6000"
         );
         assert_eq!(
             line(&fanning(8, 12)),
-            "branch 1 (borrowed): x::branch at 0x6000 — 12 entries (8 inspected), any one wakes it"
+            "branch 1 (borrowed): x::branch\n    address: 0x6000\n    entries: 8 of 12, the rest not inspected"
         );
         assert_eq!(
             line(&fanning(1, 1)),
-            "branch 1 (borrowed): x::branch at 0x6000 — 1 entry, which wakes it"
+            "branch 1 (borrowed): x::branch\n    address: 0x6000"
         );
         assert_eq!(
             line(&fanning(0, 0)),
-            "branch 1 (borrowed): x::branch at 0x6000 — no entries"
+            "branch 1 (borrowed): x::branch\n    address: 0x6000"
         );
         let under = MemberRoute::Select {
             index: 1,
@@ -2915,10 +2914,20 @@ mod table_tests {
         assert_eq!(
             lines,
             [
-                "branch 1 (borrowed): x::branch at 0x6000 — 2 entries, any one wakes it",
-                "    entry 0: x::branch at 0x6000 — unknown; held, not armed",
-                "    entry 1: x::branch at 0x6000 — unknown; held, not armed",
-                "entry 0: x::branch at 0x6000 — unknown; held, not armed",
+                "branch 1 (borrowed): x::branch",
+                "    address: 0x6000",
+                "    entry 0: x::branch",
+                "        address: 0x6000",
+                "        armed: no",
+                "        blocked on: unknown",
+                "    entry 1: x::branch",
+                "        address: 0x6000",
+                "        armed: no",
+                "        blocked on: unknown",
+                "entry 0: x::branch",
+                "    address: 0x6000",
+                "    armed: no",
+                "    blocked on: unknown",
             ]
         );
     }
@@ -3051,9 +3060,15 @@ mod table_tests {
         assert_eq!(
             rows[0].wait_detail,
             [
-                "a: x::branch at 0x6000 — timer (deadline +10.000s); its protocol read this \
-                 task's waker",
-                "b: x::branch at 0x6000 — unknown; held, not armed",
+                "a: x::branch",
+                "    address: 0x6000",
+                "    armed: yes",
+                "    blocked on: timer (deadline +10.000s)",
+                "    waker: its protocol read this task's waker",
+                "b: x::branch",
+                "    address: 0x6000",
+                "    armed: no",
+                "    blocked on: unknown",
                 "io 0x7000 (readable): this task's waker in the read-waiter slot, inside #1's \
                  storage at +0x10; in no branch of the stop",
                 "1 more branches not inspected",
@@ -3064,8 +3079,14 @@ mod table_tests {
         assert_eq!(
             rows[1].wait_detail,
             [
-                "a: x::branch at 0x6000 — unknown; held, not armed",
-                "b: x::branch at 0x6000 — unknown; held, not armed",
+                "a: x::branch",
+                "    address: 0x6000",
+                "    armed: no",
+                "    blocked on: unknown",
+                "b: x::branch",
+                "    address: 0x6000",
+                "    armed: no",
+                "    blocked on: unknown",
                 "1 more branches not inspected",
             ]
         );
@@ -3094,8 +3115,14 @@ mod table_tests {
         assert_eq!(
             rows[0].wait_detail,
             [
-                "a: x::branch at 0x6000 — never ready; held, not armed",
-                "b: x::branch at 0x6000 — never ready; held, not armed",
+                "a: x::branch",
+                "    address: 0x6000",
+                "    armed: no",
+                "    blocked on: never ready",
+                "b: x::branch",
+                "    address: 0x6000",
+                "    armed: no",
+                "    blocked on: never ready",
                 "1 more branches not inspected",
             ]
         );
@@ -3150,9 +3177,15 @@ mod table_tests {
         assert_eq!(
             rows[0].wait_detail,
             [
-                "branch 0 (borrowed): x::branch at 0x6000 — unknown; held, not armed",
-                "branch 1 (borrowed): x::branch at 0x6000 — timer (deadline +10.000s); its \
-                 protocol read this task's waker",
+                "branch 0 (borrowed): x::branch",
+                "    address: 0x6000",
+                "    armed: no",
+                "    blocked on: unknown",
+                "branch 1 (borrowed): x::branch",
+                "    address: 0x6000",
+                "    armed: yes",
+                "    blocked on: timer (deadline +10.000s)",
+                "    waker: its protocol read this task's waker",
                 "branch 2: x::skipped: disabled",
             ]
         );
@@ -3160,7 +3193,10 @@ mod table_tests {
         assert_eq!(
             rows[1].wait_detail,
             [
-                "branch 0 (borrowed): x::branch at 0x6000 — unknown; held, not armed",
+                "branch 0 (borrowed): x::branch",
+                "    address: 0x6000",
+                "    armed: no",
+                "    blocked on: unknown",
                 "branch 1: x::skipped: disabled",
             ]
         );
@@ -3622,8 +3658,15 @@ mod table_tests {
         assert_eq!(
             rows[0].wait_detail,
             [
-                "branch 0 (borrowed): x::branch at 0x6000 — never ready; armed: unknown @ 0x6010",
-                "branch 1 (borrowed): x::branch at 0x6000 — never ready; held, not armed",
+                "branch 0 (borrowed): x::branch",
+                "    address: 0x6000",
+                "    armed: yes",
+                "    blocked on: never ready",
+                "    waker: unknown @ 0x6010",
+                "branch 1 (borrowed): x::branch",
+                "    address: 0x6000",
+                "    armed: no",
+                "    blocked on: never ready",
                 "branch 2: x::skipped: disabled",
                 "unknown @ 0x7000",
             ]

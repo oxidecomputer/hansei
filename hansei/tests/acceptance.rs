@@ -3321,7 +3321,7 @@ fn test_census_counts_a_set_and_what_is_held_beside_it() {
         assert!(
             out.contains(
                 "    5  async fn unordered::set_member\n       \
-                 ├─ 3  notify\n       \
+                 ├─ 3  notify rx\n       \
                  └─ 2  — (unresumed)\n"
             ),
             "{out}"
@@ -3986,24 +3986,24 @@ fn test_armed_select_acceptance() {
         // storage.
         let block = hansei_ok(&bundle, core, &format!("task {}", selector.id));
         let detail = regex::Regex::new(
-            r"(?m)^        branch [0-2] \(borrowed\): .* — (mpsc rx|watch rx|oneshot rx) 0x[0-9a-f]+( \(nothing sent, sender alive\))?; armed$",
+            r"(?m)^        branch [0-2] \(borrowed\): [^\n]+\n            address: 0x[0-9a-f]+\n            armed: yes\n            blocked on: (mpsc rx|watch rx|oneshot rx) 0x[0-9a-f]+ \([^)]*\)$",
         )
         .unwrap();
         assert_eq!(detail.find_iter(&block).count(), 3, "{block}");
-        // The channel and the watch read on a line of their own; the
-        // oneshot's words stand on the line that names it.
+        // Each primitive stands on a line of its own and carries its
+        // whole reading.
         let words = regex::Regex::new(
-            r"(?m)^            (1 sender, capacity 4, 0 unread|version 0, 1 sender, 1 receiver)$",
+            r"(?m)^            blocked on: .*(1 sender, capacity 4, 0 unread|version 0, 1 sender, 1 receiver|nothing sent, sender alive)\)$",
         )
         .unwrap();
-        assert_eq!(words.find_iter(&block).count(), 2, "{block}");
+        assert_eq!(words.find_iter(&block).count(), 3, "{block}");
         let located = regex::Regex::new(
             r"(?m)^            location: (frame [0-9]+|future 0x[0-9a-f]+( frame [0-9]+)?) [a-zA-Z_0-9.]+",
         )
         .unwrap();
         assert_eq!(located.find_iter(&block).count(), 3, "{block}");
         let sleep = regex::Regex::new(
-            r"(?m)^        branch 3 \(borrowed\): tokio::time::sleep::Sleep at 0x[0-9a-f]+ — timer \(deadline .*; armed: timer 0x[0-9a-f]+ deadline ",
+            r"(?m)^        branch 3 \(borrowed\): tokio::time::sleep::Sleep\n            address: 0x[0-9a-f]+\n            armed: yes\n            blocked on: timer \(deadline [^\n]*\n            waker: timer 0x[0-9a-f]+$",
         )
         .unwrap();
         assert!(sleep.is_match(&block), "{block}");
@@ -4048,7 +4048,7 @@ fn test_armed_select_acceptance() {
         let [line, at] = waiter.wait_lines.as_slice() else {
             panic!("{waiter:?}");
         };
-        assert!(line.starts_with("notify 0x"), "{waiter:?}");
+        assert!(line.starts_with("notify rx 0x"), "{waiter:?}");
         assert!(line.ends_with(" (waiting, 1 queued); armed"), "{waiter:?}");
         assert!(at.starts_with("    location: "), "{waiter:?}");
         let driver = task_with_future(&rows, "async fn armed_select::driver");
@@ -4081,7 +4081,7 @@ fn test_armed_select_acceptance() {
         );
         // The unpolled `Notified` describes its `Notify` by the state
         // word alone: the list is walked only for a verified wait.
-        assert!(unarmed.contains("unarmed: notify 0x"), "{unarmed}");
+        assert!(unarmed.contains("unarmed: notify rx 0x"), "{unarmed}");
         assert!(unarmed.contains(" (waiting)"), "{unarmed}");
         assert!(!unarmed.contains("queued)"), "{unarmed}");
         assert!(!unarmed.contains("`once`"), "{unarmed}");
@@ -4162,7 +4162,7 @@ fn test_armed_select_acceptance() {
         assert_eq!(ticker.waiting, "", "{ticker:?}");
         let block = hansei_ok(&bundle, core, &format!("task {}", ticker.id));
         let tick = regex::Regex::new(
-            r"(?m)^        branch 1 \(borrowed\): async fn tokio::time::interval::Interval::tick at 0x[0-9a-f]+ — timer \(deadline .*; armed: timer 0x[0-9a-f]+ deadline ",
+            r"(?m)^        branch 1 \(borrowed\): async fn tokio::time::interval::Interval::tick\n            address: 0x[0-9a-f]+\n            armed: yes\n            blocked on: timer \(deadline [^\n]*\n            waker: timer 0x[0-9a-f]+$",
         )
         .unwrap();
         assert!(tick.is_match(&block), "{block}");
@@ -4215,8 +4215,8 @@ fn test_armed_select_acceptance() {
             // Each branch is named in full, generic arguments and
             // all: one line stands for one branch, so what the arm is
             // over is what tells it from its neighbour.
-            r"(?m)^        branch 0 \(borrowed\): core::future::pending::Pending<u32> at 0x[0-9a-f]+ — never ready; held, not armed$",
-            r"(?m)^        branch 1 \(borrowed\): async block armed_select::forever::\{async_fn#0\} at 0x[0-9a-f]+ — never ready; held, not armed$",
+            r"(?m)^        branch 0 \(borrowed\): core::future::pending::Pending<u32>\n            address: 0x[0-9a-f]+\n            armed: no\n            blocked on: never ready$",
+            r"(?m)^        branch 1 \(borrowed\): async block armed_select::forever::\{async_fn#0\}\n            address: 0x[0-9a-f]+\n            armed: no\n            blocked on: never ready$",
             r"(?m)^        branch 2: core::future::ready::Ready<u32>: disabled$",
         ] {
             assert!(

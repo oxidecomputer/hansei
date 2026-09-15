@@ -37,7 +37,7 @@ future 0xADDR: future tokio::sync::notify::Notified
 Held by: task 4 — async fn armed_select::holder (frame 1, `notified`)
 
 #0  future        tokio::sync::notify::Notified
-      waiting on notify 0xADDR (waiting)
+      waiting on notify rx 0xADDR (waiting)
 
 future 0xADDR
 future 0xADDR: async fn armed_select::child

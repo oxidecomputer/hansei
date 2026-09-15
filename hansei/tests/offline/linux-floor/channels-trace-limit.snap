@@ -3,5 +3,5 @@ source: hansei/src/offline.rs
 description: "`trace 3 -l 1` over linux-floor/channels"
 ---
 #0  future        tokio::sync::notify::Notified
-      waiting on notify 0xADDR (waiting, 1 queued)
+      waiting on notify rx 0xADDR (waiting, 1 queued)
 [3 frames, 1 shown]

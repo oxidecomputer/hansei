@@ -7,7 +7,7 @@ ADDR            TASK  HELD IN                STATE                              
 0xADDR  3     frame 1, `recv`        Suspend0 — tokio-1.52.4/src/sync/mpsc/bounded.rs:245  mpsc rx 0xADDR                                                  yes    async fn tokio::sync::mpsc::bounded::Receiver::recv<u32>
 0xADDR  3     frame 1, `changed`     Suspend0 — tokio-1.52.4/src/sync/watch.rs:819         watch rx 0xADDR                                                 yes    async fn tokio::sync::watch::Receiver::changed<u32>
 0xADDR  3     frame 1, `sleep`       —                                                     timer (deadline TS on the target's monotonic clock)           yes    future tokio::time::sleep::Sleep
-0xADDR  4     frame 1, `notified`    —                                                     unarmed: notify 0xADDR (waiting)                                no     future tokio::sync::notify::Notified
+0xADDR  4     frame 1, `notified`    —                                                     unarmed: notify rx 0xADDR (waiting)                             no     future tokio::sync::notify::Notified
 0xADDR  6     set 0xADDR     Suspend0 — src/bin/armed-select.rs:84                 unarmed: oneshot rx 0xADDR (nothing sent, sender alive)         no     async fn armed_select::child
 0xADDR  6     set 0xADDR     Suspend0 — src/bin/armed-select.rs:84                 unarmed: oneshot rx 0xADDR (nothing sent, sender alive)         no     async fn armed_select::child
 0xADDR  7     frame 1, `once`        —                                                     oneshot rx 0xADDR (nothing sent, sender alive)                  yes    future tokio::sync::oneshot::Receiver<u32>

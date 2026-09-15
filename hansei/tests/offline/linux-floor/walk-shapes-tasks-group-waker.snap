@@ -3,7 +3,7 @@ source: hansei/src/offline.rs
 description: "`tasks --group waker` over linux-floor/walk-shapes"
 ---
 COUNT  WAITING ON                                           TASKS
-    4  notify                                               1, 2, 3, …
+    4  notify rx                                            1, 2, 3, …
     3  a tokio::sync::Semaphore (semaphore 0xADDR)  5, 6, 10
     1  <empty>                                              9
     1  a tokio::sync::Mutex (semaphore 0xADDR)      4

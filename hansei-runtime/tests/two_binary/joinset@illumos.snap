@@ -19,7 +19,7 @@ task 4 idle joinset::member::{async_fn_env#0}
   await tokio::sync::notify::Notified
   end primitive
   site src/bin/joinset.rs:34
-  waiting on notify 0xADDR (waiting, 5 queued)
+  waiting on notify rx 0xADDR (waiting, 5 queued)
 task 5 idle joinset::member::{async_fn_env#0}
   spawned src/bin/joinset.rs:54:13
   defined src/bin/joinset.rs:31
@@ -27,7 +27,7 @@ task 5 idle joinset::member::{async_fn_env#0}
   await tokio::sync::notify::Notified
   end primitive
   site src/bin/joinset.rs:34
-  waiting on notify 0xADDR (waiting, 5 queued)
+  waiting on notify rx 0xADDR (waiting, 5 queued)
 task 6 idle joinset::member::{async_fn_env#0}
   spawned src/bin/joinset.rs:54:13
   defined src/bin/joinset.rs:31
@@ -35,7 +35,7 @@ task 6 idle joinset::member::{async_fn_env#0}
   await tokio::sync::notify::Notified
   end primitive
   site src/bin/joinset.rs:34
-  waiting on notify 0xADDR (waiting, 5 queued)
+  waiting on notify rx 0xADDR (waiting, 5 queued)
 task 7 idle joinset::member::{async_fn_env#0}
   spawned src/bin/joinset.rs:62:14
   defined src/bin/joinset.rs:31
@@ -43,7 +43,7 @@ task 7 idle joinset::member::{async_fn_env#0}
   await tokio::sync::notify::Notified
   end primitive
   site src/bin/joinset.rs:34
-  waiting on notify 0xADDR (waiting, 5 queued)
+  waiting on notify rx 0xADDR (waiting, 5 queued)
 task 8 idle joinset::member::{async_fn_env#0}
   spawned src/bin/joinset.rs:62:14
   defined src/bin/joinset.rs:31
@@ -51,4 +51,4 @@ task 8 idle joinset::member::{async_fn_env#0}
   await tokio::sync::notify::Notified
   end primitive
   site src/bin/joinset.rs:34
-  waiting on notify 0xADDR (waiting, 5 queued)
+  waiting on notify rx 0xADDR (waiting, 5 queued)

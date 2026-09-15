@@ -800,7 +800,7 @@ impl Waits {
             Row::new(self.channel, "mpsc rx"),
             Row::new(self.oneshot, "oneshot rx"),
             Row::new(self.watch, "watch rx"),
-            Row::new(self.notify, "notify"),
+            Row::new(self.notify, "notify rx"),
             Row::new(self.one_of, "one of several"),
             Row::new(self.ready, "ready"),
             Row::new(self.never_ready, "never ready"),

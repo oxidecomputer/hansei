@@ -10,13 +10,13 @@ task 1
 
 task 2
 #0  future        tokio::sync::notify::Notified
-      waiting on notify 0xADDR (waiting, 1 queued)
+      waiting on notify rx 0xADDR (waiting, 1 queued)
 #1  async fn      walk_shapes::holder
       awaiting at src/bin/walk-shapes.rs:138 (Suspend1, 3 locals)
 
 task 3
 #0  future        tokio::sync::notify::Notified
-      waiting on notify 0xADDR (waiting, 1 queued)
+      waiting on notify rx 0xADDR (waiting, 1 queued)
 #1  async fn      walk_shapes::abandoner
       awaiting at src/bin/walk-shapes.rs:160 (Suspend1, 4 locals; holds 1 pending future)
 
@@ -50,7 +50,7 @@ task 6
 
 task 7
 #0  future        tokio::sync::notify::Notified
-      waiting on notify 0xADDR (waiting, 1 queued)
+      waiting on notify rx 0xADDR (waiting, 1 queued)
 #1  async fn      walk_shapes::local_parker
       awaiting at src/bin/walk-shapes.rs:207 (Suspend0, 1 local)
 

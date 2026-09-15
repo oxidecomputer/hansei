@@ -16,7 +16,7 @@ task 4
 
 task 5
 #0  future        tokio::sync::notify::Notified
-      waiting on notify 0xADDR (waiting, 1 queued)
+      waiting on notify rx 0xADDR (waiting, 1 queued)
 #1  async fn      armed_select::waiter
       awaiting at src/bin/armed-select.rs:77 (Suspend0, 0 locals)
 

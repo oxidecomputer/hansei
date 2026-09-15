@@ -10,7 +10,7 @@ task 3
 
 task 4
 #0  future        tokio::sync::notify::Notified
-      waiting on notify 0xADDR (waiting, 1 queued)
+      waiting on notify rx 0xADDR (waiting, 1 queued)
 #1  async fn      gen_0007::member_02
       awaiting at src/bin/gen-0007.rs:148 (Suspend0, 3 locals)
 

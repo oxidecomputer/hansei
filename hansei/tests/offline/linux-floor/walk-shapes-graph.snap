@@ -4,9 +4,9 @@ description: "`graph` over linux-floor/walk-shapes"
 ---
 TASK                                   STATE  WAITING ON
 4                                      idle   a tokio::sync::Mutex (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: a non-task waiter, task 4
-└─ 3 [queued ahead of the task above]  idle   notify 0xADDR (waiting, 1 queued)
+└─ 3 [queued ahead of the task above]  idle   notify rx 0xADDR (waiting, 1 queued)
 8                                      idle   task 7
-└─ 7                                   idle   notify 0xADDR (waiting, 1 queued)
+└─ 7                                   idle   notify rx 0xADDR (waiting, 1 queued)
 
 futurelock: task 3 holds place 0 in the wake queue of a tokio::sync::Mutex (semaphore 0xADDR) in a future it cannot poll until the future tokio::sync::notify::Notified it awaits completes:
   `fut` (async fn tokio::sync::mutex::Mutex::lock<()>)

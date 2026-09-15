@@ -2,10 +2,10 @@
 source: hansei/src/offline.rs
 description: "`futures --with kind set` over illumos/unordered"
 ---
-ADDR       TASK  HELD IN                                    STATE                               WAITING ON                           ARMED  TYPE
-0xADDR  3     set 0xADDR                              Suspend0 — src/bin/unordered.rs:73  unarmed: notify 0xADDR (waiting)  no     async fn unordered::set_member
-0xADDR  3     set 0xADDR                              Suspend0 — src/bin/unordered.rs:73  unarmed: notify 0xADDR (waiting)  no     async fn unordered::set_member
-0xADDR  3     set 0xADDR                              Suspend0 — src/bin/unordered.rs:73  unarmed: notify 0xADDR (waiting)  no     async fn unordered::set_member
-0xADDR  3     set 0xADDR, via set child at 0xADDR  Unresumed                           —                                    no     async fn unordered::leaf
-0xADDR  3     set 0xADDR, via set child at 0xADDR  Unresumed                           —                                    no     async fn unordered::leaf
+ADDR       TASK  HELD IN                                    STATE                               WAITING ON                              ARMED  TYPE
+0xADDR  3     set 0xADDR                              Suspend0 — src/bin/unordered.rs:73  unarmed: notify rx 0xADDR (waiting)  no     async fn unordered::set_member
+0xADDR  3     set 0xADDR                              Suspend0 — src/bin/unordered.rs:73  unarmed: notify rx 0xADDR (waiting)  no     async fn unordered::set_member
+0xADDR  3     set 0xADDR                              Suspend0 — src/bin/unordered.rs:73  unarmed: notify rx 0xADDR (waiting)  no     async fn unordered::set_member
+0xADDR  3     set 0xADDR, via set child at 0xADDR  Unresumed                           —                                       no     async fn unordered::leaf
+0xADDR  3     set 0xADDR, via set child at 0xADDR  Unresumed                           —                                       no     async fn unordered::leaf
 [5 futures]

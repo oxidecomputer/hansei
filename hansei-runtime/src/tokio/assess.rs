@@ -2489,7 +2489,7 @@ mod tests {
         assert_eq!(state.map(|s| s & notify::STATE_MASK), Some(notify::WAITING));
         assert_eq!(
             wait.target().to_string(),
-            format!("notify {addr:#x} (waiting, 1 queued)")
+            format!("notify rx {addr:#x} (waiting, 1 queued)")
         );
         assert_eq!(wait.queue_position(), Some(0));
         let Some(ResourceObservation::Notified(notified)) = &parked.observation else {

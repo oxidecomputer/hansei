@@ -3136,7 +3136,7 @@ mod trace_render_tests {
                 None,
             ),
             "#0  future        tokio::sync::notify::Notified
-      waiting on notify 0xADDR (waiting)
+      waiting on notify rx 0xADDR (waiting)
 #1  async fn      walk_shapes::deep
       awaiting at src/bin/walk-shapes.rs:101 (Suspend0, 1 local)
 #2  future        walk_shapes::WrapE<walk_shapes::deep>

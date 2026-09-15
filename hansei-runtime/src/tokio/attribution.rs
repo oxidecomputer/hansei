@@ -282,7 +282,7 @@ impl OwnerKind {
             OwnerKind::OneshotTx => "oneshot tx",
             OwnerKind::Mpsc => "mpsc rx",
             OwnerKind::Watch => "watch rx",
-            OwnerKind::Notify => "notify",
+            OwnerKind::Notify => "notify rx",
         }
     }
 
@@ -2269,6 +2269,24 @@ impl AttributedSlot {
         }
     }
 
+    /// A wheel entry without its deadline: the entry that holds the
+    /// waker, and whatever the wheel says about it beyond being
+    /// registered. For a line under one that gives the deadline
+    /// already, which is the target's to give. `None` for a slot that
+    /// is no wheel entry.
+    pub fn wheel_entry(&self) -> Option<String> {
+        let Attribution::Registry(RegistrySlot::Timer { entry, state, .. }) = &self.attribution
+        else {
+            return None;
+        };
+        Some(match state {
+            Some(state) if *state != WheelState::Registered => {
+                format!("timer {entry:#x} ({state})")
+            }
+            _ => format!("timer {entry:#x}"),
+        })
+    }
+
     /// The slot's line headed by its entry rather than its label — an
     /// owner slot's primitive with the words its reader read — for a
     /// listing whose cell does not carry those words. The other kinds
@@ -2606,9 +2624,9 @@ mod tests {
         // The `Notify`'s state word says waiters are queued.
         assert_eq!(
             waiter[0].entry(stopped),
-            format!("notify {primitive:#x} (waiting)")
+            format!("notify rx {primitive:#x} (waiting)")
         );
-        assert_eq!(waiter[0].label(), format!("notify {primitive:#x}"));
+        assert_eq!(waiter[0].label(), format!("notify rx {primitive:#x}"));
         assert_eq!(waiter[0].detail(stopped), None);
         assert_eq!(
             waiter[0].location().as_deref(),

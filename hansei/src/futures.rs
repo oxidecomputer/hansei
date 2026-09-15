@@ -531,7 +531,7 @@ fn waiting_kind(
             None => "a semaphore".to_string(),
         }),
         Some(bundle::WaitKind::Channel { .. }) => Some("mpsc rx".to_string()),
-        Some(bundle::WaitKind::Notify { .. }) => Some("notify".to_string()),
+        Some(bundle::WaitKind::Notify { .. }) => Some("notify rx".to_string()),
         Some(bundle::WaitKind::Oneshot { .. }) => Some("oneshot rx".to_string()),
         Some(bundle::WaitKind::Watch { .. }) => Some("watch rx".to_string()),
         None => tasks::continuation_bucket(continuation, stops),
@@ -1683,7 +1683,10 @@ mod tests {
             row(0x7000).waiting_on.as_deref(),
             Some("unarmed: notify 0x9100 (waiting)")
         );
-        assert_eq!(row(0x7000).waiting_kind.as_deref(), Some("unarmed: notify"));
+        assert_eq!(
+            row(0x7000).waiting_kind.as_deref(),
+            Some("unarmed: notify rx")
+        );
         assert!(row(0x7000).slot_lines.is_empty());
         for (addr, cell) in [
             (0xa000, "io fd 3 (readable)"),

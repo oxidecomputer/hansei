@@ -8,7 +8,10 @@ task 6
     type: async fn channels::send_waiter
     awaiting at: src/bin/channels.rs:95
     waiting on:
-        branch 0 (borrowed): async fn tokio::sync::mpsc::bounded::Sender::send<u32> at 0xADDR — a tokio::sync::mpsc bounded channel (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 6; armed
+        branch 0 (borrowed): async fn tokio::sync::mpsc::bounded::Sender::send<u32>
+            address: 0xADDR
+            armed: yes
+            blocked on: a tokio::sync::mpsc bounded channel (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 6
             location: future 0xADDR node.waker.Some
         branch 1: tokio::time::sleep::Sleep: disabled
         branch 2: async block channels::send_waiter::{async_fn#0}: disabled

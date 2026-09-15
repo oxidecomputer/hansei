@@ -4,9 +4,9 @@ description: "`tasks --with state idle` over illumos/joinset"
 ---
 ID  STATE  FUT  AWAITING AT            WAITING ON                                                   TYPE
 3   idle     0  src/bin/joinset.rs:83  slot 0xADDR in tokio::util::idle_notified_set::ListsInner  async fn joinset::driver
-4   idle     0  src/bin/joinset.rs:34  notify 0xADDR (waiting, 5 queued)                          async fn joinset::member
-5   idle     0  src/bin/joinset.rs:34  notify 0xADDR (waiting, 5 queued)                          async fn joinset::member
-6   idle     0  src/bin/joinset.rs:34  notify 0xADDR (waiting, 5 queued)                          async fn joinset::member
-7   idle     0  src/bin/joinset.rs:34  notify 0xADDR (waiting, 5 queued)                          async fn joinset::member
-8   idle     0  src/bin/joinset.rs:34  notify 0xADDR (waiting, 5 queued)                          async fn joinset::member
+4   idle     0  src/bin/joinset.rs:34  notify rx 0xADDR (waiting, 5 queued)                       async fn joinset::member
+5   idle     0  src/bin/joinset.rs:34  notify rx 0xADDR (waiting, 5 queued)                       async fn joinset::member
+6   idle     0  src/bin/joinset.rs:34  notify rx 0xADDR (waiting, 5 queued)                       async fn joinset::member
+7   idle     0  src/bin/joinset.rs:34  notify rx 0xADDR (waiting, 5 queued)                       async fn joinset::member
+8   idle     0  src/bin/joinset.rs:34  notify rx 0xADDR (waiting, 5 queued)                       async fn joinset::member
 [6 tasks]

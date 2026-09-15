@@ -55,7 +55,7 @@ future 0xADDR: async fn unordered::set_member
 Child of: futures_util::stream::futures_unordered::FuturesUnordered<unordered::set_member> at 0xADDR (frame 2, `set`), polled by task 3 — async fn unordered::driver
 
 #0  future        tokio::sync::notify::Notified
-      waiting on notify 0xADDR (waiting)
+      waiting on notify rx 0xADDR (waiting)
 [2 frames, 1 shown]
 
 future 0xADDR
@@ -71,7 +71,7 @@ future 0xADDR: async fn unordered::set_member
 Child of: futures_util::stream::futures_unordered::FuturesUnordered<unordered::set_member> at 0xADDR (frame 2, `set`), polled by task 3 — async fn unordered::driver
 
 #0  future        tokio::sync::notify::Notified
-      waiting on notify 0xADDR (waiting)
+      waiting on notify rx 0xADDR (waiting)
 [2 frames, 1 shown]
 
 future 0xADDR
@@ -87,7 +87,7 @@ future 0xADDR: async fn unordered::set_member
 Child of: futures_util::stream::futures_unordered::FuturesUnordered<unordered::set_member> at 0xADDR (frame 2, `set`), polled by task 3 — async fn unordered::driver
 
 #0  future        tokio::sync::notify::Notified
-      waiting on notify 0xADDR (waiting)
+      waiting on notify rx 0xADDR (waiting)
 [2 frames, 1 shown]
 
 future 0xADDR

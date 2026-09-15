@@ -2836,9 +2836,9 @@ mod tests {
         ));
         assert_eq!(
             set.cell(),
-            "io 0x7700 (readable), notify 0x7000, notify 0x7100, timer 0x6008, timer 0xee00"
+            "io 0x7700 (readable), notify rx 0x7000, notify rx 0x7100, timer 0x6008, timer 0xee00"
         );
-        assert_eq!(set.group_label(), "io, notify, timer");
+        assert_eq!(set.group_label(), "io, notify rx, timer");
         // Folding the same slots again changes nothing: every one is
         // now a twin.
         let before = format!("{:?}", set.members);
@@ -2874,7 +2874,7 @@ mod tests {
         assert!(wait.verified().is_some());
         assert_eq!(
             wait.notes,
-            ["notify 0x7100 also holds this task's waker, outside the verified wait"]
+            ["notify rx 0x7100 also holds this task's waker, outside the verified wait"]
         );
     }
 

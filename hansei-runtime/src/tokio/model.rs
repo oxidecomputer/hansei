@@ -1199,7 +1199,7 @@ impl WaitTarget {
             // a bucket. Which `Notify` is a `--with waiting-on 0x…`
             // filter's question, not the bucket's.
             Self::Channel { .. } => "mpsc rx".to_string(),
-            Self::Notify { .. } => "notify".to_string(),
+            Self::Notify { .. } => "notify rx".to_string(),
             Self::Oneshot { .. } => "oneshot rx".to_string(),
             Self::Watch { .. } => "watch rx".to_string(),
         }
@@ -1471,7 +1471,7 @@ impl fmt::Display for WaitTarget {
                 state,
                 waiters,
             } => {
-                write!(f, "notify {addr:#x}")?;
+                write!(f, "notify rx {addr:#x}")?;
                 let words = notify_words(*state, *waiters);
                 if !words.is_empty() {
                     write!(f, " ({words})")?;

@@ -12,31 +12,31 @@ task 3
 
 task 4
 #0  future        tokio::sync::notify::Notified
-      waiting on notify 0xADDR (waiting, 5 queued)
+      waiting on notify rx 0xADDR (waiting, 5 queued)
 #1  async fn      joinset::member
       awaiting at src/bin/joinset.rs:34 (Suspend1, 2 locals)
 
 task 5
 #0  future        tokio::sync::notify::Notified
-      waiting on notify 0xADDR (waiting, 5 queued)
+      waiting on notify rx 0xADDR (waiting, 5 queued)
 #1  async fn      joinset::member
       awaiting at src/bin/joinset.rs:34 (Suspend1, 2 locals)
 
 task 6
 #0  future        tokio::sync::notify::Notified
-      waiting on notify 0xADDR (waiting, 5 queued)
+      waiting on notify rx 0xADDR (waiting, 5 queued)
 #1  async fn      joinset::member
       awaiting at src/bin/joinset.rs:34 (Suspend1, 2 locals)
 
 task 7
 #0  future        tokio::sync::notify::Notified
-      waiting on notify 0xADDR (waiting, 5 queued)
+      waiting on notify rx 0xADDR (waiting, 5 queued)
 #1  async fn      joinset::member
       awaiting at src/bin/joinset.rs:34 (Suspend1, 2 locals)
 
 task 8
 #0  future        tokio::sync::notify::Notified
-      waiting on notify 0xADDR (waiting, 5 queued)
+      waiting on notify rx 0xADDR (waiting, 5 queued)
 #1  async fn      joinset::member
       awaiting at src/bin/joinset.rs:34 (Suspend1, 2 locals)
 [Executed against 6 tasks, 0 failed]
