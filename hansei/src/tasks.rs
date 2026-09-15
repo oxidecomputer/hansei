@@ -1094,6 +1094,9 @@ pub(crate) struct StopNames<'a> {
     /// the name — 0.4 s of wall time (0.9 s of CPU) across the nexus
     /// core's futures rows uncached, against a 1.5 s launch.
     labels: RwLock<HashMap<BundleTypeId, Option<String>>>,
+    /// The same types' full names, memoized the same way and for the
+    /// same reason: a name is folded once however many rows carry it.
+    names: RwLock<HashMap<BundleTypeId, Option<String>>>,
 }
 
 impl<'a> StopNames<'a> {
@@ -1102,6 +1105,7 @@ impl<'a> StopNames<'a> {
             view: Some(session.ctx.view),
             impls: &session.impl_fold,
             labels: RwLock::default(),
+            names: RwLock::default(),
         }
     }
 
@@ -1112,6 +1116,7 @@ impl<'a> StopNames<'a> {
             view: None,
             impls,
             labels: RwLock::default(),
+            names: RwLock::default(),
         }
     }
 
@@ -1130,6 +1135,37 @@ impl<'a> StopNames<'a> {
             .entry(ty)
             .or_insert(label)
             .clone()
+    }
+
+    /// The type's name in full, for a line that names one future
+    /// rather than a bucket of them: `None` where the type is not in
+    /// the bundle.
+    fn name(&self, ty: BundleTypeId) -> Option<String> {
+        if let Some(name) = self.names.read().unwrap().get(&ty) {
+            return name.clone();
+        }
+        let name = self
+            .view
+            .and_then(|view| view.ty(ty))
+            .map(|ty| self.spell(ty.name()));
+        self.names
+            .write()
+            .unwrap()
+            .entry(ty)
+            .or_insert(name)
+            .clone()
+    }
+
+    /// One type name as a line that names a future carries it: folded
+    /// for display, its generic arguments kept — they are what tells
+    /// one `select!` arm from the arm beside it — with a coroutine's
+    /// kind word in front, as [`stop_label`] puts one there.
+    fn spell(&self, name: &str) -> String {
+        let folded = names::fold_type_name(name, self.impls);
+        match names::coroutine_kind(name) {
+            Some(kind) => format!("{kind} {folded}"),
+            None => folded.into_owned(),
+        }
     }
 }
 
@@ -1329,6 +1365,19 @@ fn slot_only_line(member: &WaitMember, within: Option<&str>) -> String {
     format!("{name}{evidence}{within}; in no branch of the stop")
 }
 
+/// The future a branch is, named in full: one line stands for one
+/// branch, so the generic arguments are what tells an arm from the
+/// arm beside it — two `Next<…>`s over different streams, three
+/// `recv`s on channels of different messages — where a bucket cuts
+/// them because it collects every monomorphization ([`stop_label`]).
+/// `ty` is the branch's own type where the analysis recorded one;
+/// what it recorded as a name otherwise is worded the same way.
+fn member_future(member: &WaitMember, stops: &StopNames<'_>, ty: Option<BundleTypeId>) -> String {
+    ty.and_then(|ty| stops.name(ty))
+        .or_else(|| member.future.as_deref().map(|name| stops.spell(name)))
+        .unwrap_or_default()
+}
+
 /// One branch's line: its local — or its `select!` branch number —
 /// whether it was borrowed, the future it is and where, the engine's
 /// verdict on it, and what arms it — the slots that sit in it or were
@@ -1351,10 +1400,7 @@ fn member_line(
         MemberRoute::Branch { local, borrowed } => (local.clone(), *borrowed),
         MemberRoute::Select { index, borrowed } => (format!("branch {index}"), *borrowed),
         MemberRoute::Disabled { index, ty } => {
-            let future = stops
-                .label(*ty)
-                .or_else(|| member.future.clone())
-                .unwrap_or_default();
+            let future = member_future(member, stops, Some(*ty));
             return vec![format!("branch {index}: {future}: disabled")];
         }
         MemberRoute::Entry {
@@ -1363,11 +1409,7 @@ fn member_line(
         MemberRoute::SlotOnly { .. } => unreachable!("only branches print as members"),
     };
     let via = if borrowed { " (borrowed)" } else { "" };
-    let future = member
-        .key
-        .and_then(|key| stops.label(key.ty))
-        .or_else(|| member.future.clone())
-        .unwrap_or_default();
+    let future = member_future(member, stops, member.key.map(|key| key.ty));
     let at = member
         .key
         .map(|key| format!(" at {:#x}", key.addr))

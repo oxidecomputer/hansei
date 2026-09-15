@@ -4212,9 +4212,12 @@ fn test_armed_select_acceptance() {
         assert_eq!(forever.waiting, "unarmed: never ready", "{forever:?}");
         let block = hansei_ok(&bundle, core, &format!("task {}", forever.id));
         for line in [
-            r"(?m)^        branch 0 \(borrowed\): core::future::pending::Pending at 0x[0-9a-f]+ — never ready; held, not armed$",
+            // Each branch is named in full, generic arguments and
+            // all: one line stands for one branch, so what the arm is
+            // over is what tells it from its neighbour.
+            r"(?m)^        branch 0 \(borrowed\): core::future::pending::Pending<u32> at 0x[0-9a-f]+ — never ready; held, not armed$",
             r"(?m)^        branch 1 \(borrowed\): async block armed_select::forever::\{async_fn#0\} at 0x[0-9a-f]+ — never ready; held, not armed$",
-            r"(?m)^        branch 2: core::future::ready::Ready: disabled$",
+            r"(?m)^        branch 2: core::future::ready::Ready<u32>: disabled$",
         ] {
             assert!(
                 regex::Regex::new(line).unwrap().is_match(&block),

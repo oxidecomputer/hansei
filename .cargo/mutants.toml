@@ -397,4 +397,12 @@ exclude_re = [
     # pinned where it is consulted (`never_ready`, unread > 0) — but no
     # target can reach the increment itself.
     "replace \\+= with [*-]= in Context<'b, T>::select_branches",
+    # Equivalent mutant: `StopNames::name` is a memo, not an answer.
+    # A member's type id and its recorded type name come from the same
+    # `view.ty(..)` — the runtime fills one in only where the other is
+    # there — so a `None` here falls through to `spell(member.future)`,
+    # which is the very string `name` would have memoized. The type-id
+    # route exists to fold a name once per type rather than once per
+    # member.
+    "replace StopNames<'a>::name -> Option<String> with None",
 ]
