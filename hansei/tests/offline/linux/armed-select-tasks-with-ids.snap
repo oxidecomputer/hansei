@@ -3,6 +3,6 @@ source: hansei/src/offline.rs
 description: "`tasks --with id 3,6` over linux/armed-select"
 ---
 ID  STATE  FUT  AWAITING AT                  WAITING ON                                                                                                                                                                                                                           TYPE
-3   idle     4  src/bin/armed-select.rs:48   mpsc 0xADDR (1 sender, capacity 4, 0 unread), oneshot rx 0xADDR (nothing sent, sender alive), timer (deadline TS on the target's monotonic clock), watch 0xADDR (version 0, 1 sender, 1 receiver)  async fn armed_select::selector
-6   idle     2  src/bin/armed-select.rs:100  slot 0xADDR in futures_core::task::__internal::atomic_waker::AtomicWaker                                                                                                                                                     async fn armed_select::driver
+3   idle     4  src/bin/armed-select.rs:49   mpsc 0xADDR (1 sender, capacity 4, 0 unread), oneshot rx 0xADDR (nothing sent, sender alive), timer (deadline TS on the target's monotonic clock), watch 0xADDR (version 0, 1 sender, 1 receiver)  async fn armed_select::selector
+6   idle     2  src/bin/armed-select.rs:101  slot 0xADDR in futures_core::task::__internal::atomic_waker::AtomicWaker                                                                                                                                                     async fn armed_select::driver
 [2 tasks]

@@ -5,39 +5,39 @@ description: "`census` over linux-floor/armed-select"
 Threads: 3 lwps, 3 in runtime 0 @ 0xADDR
 
 COUNT  RT  ROLE             STATE            LWPS
-    1  0   worker           in driver        806152
-    1  0   worker           parked           806153
-    1  0   entered runtime  block_on caller  806150
+    1  0   worker           in driver        2345558
+    1  0   worker           parked           2345557
+    1  0   entered runtime  block_on caller  2345555
     0  0   blocking pool    0 idle, 0 busy   —
 [3 lwps]
 
-Tasks: 6 owned by runtime 0 @ 0xADDR
+Tasks: 7 owned by runtime 0 @ 0xADDR
 
 COUNT  STATE
-    6  idle
-[6 tasks]
+    7  idle
+[7 tasks]
 
 COUNT  TYPE / WAITING ON
     1  async fn armed_select::driver
        └─ 1  one of several
+    1  async fn armed_select::forever
+       └─ 1  never ready
     1  async fn armed_select::holder
        └─ 1  oneshot rx
     1  async fn armed_select::pacer
        └─ 1  timer
     1  async fn armed_select::selector
        └─ 1  one of several
-    1  async fn armed_select::ticker
-       └─ 1  one of several
-    1  (1 more types)
-[6 types, 5 shown]
+    2  (2 more types)
+[7 types, 5 shown]
 
-Futures: 18 in flight, on 39 await-chain frames, up to 5 deep
+Futures: 21 in flight, on 44 await-chain frames, up to 5 deep
 
 COUNT  HELD IN
-    6  task (its own await chain)
-   10  frame (off any await chain)
+    7  task (its own await chain)
+   12  frame (off any await chain)
     2  set (1 FuturesUnordered)
-[18 futures]
+[21 futures]
 
 COUNT  TYPE / WAITING ON
     3  future tokio::time::sleep::Sleep
@@ -49,7 +49,7 @@ COUNT  TYPE / WAITING ON
        └─ 1  — (unresumed)
     2  future tokio::sync::oneshot::Receiver<u32>
        └─ 2  oneshot rx
-    1  async fn tokio::sync::mpsc::bounded::Receiver::recv<u32>
-       └─ 1  mpsc
-    2  (2 more types)
-[7 types, 5 shown]
+    1  async block armed_select::forever::{async_fn#0}
+       └─ 1  never ready
+    4  (4 more types)
+[9 types, 5 shown]

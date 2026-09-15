@@ -2402,96 +2402,114 @@ program: armed-select
 [tasks]
 task: armed_select::pacer::{async_fn_env#0}
   kind: AsyncFn
-  decl: armed-select.rs:137
+  decl: armed-select.rs:138
   entries: 2
   symbols-per-entry: 6,6
   stage: Stage<armed_select::pacer::{async_fn_env#0}>
   variants:
-    Unresumed @ armed-select.rs:137
-    Returned @ armed-select.rs:150
-    Panicked @ armed-select.rs:150
-    Suspend0 @ armed-select.rs:148
+    Unresumed @ armed-select.rs:138
+    Returned @ armed-select.rs:151
+    Panicked @ armed-select.rs:151
+    Suspend0 @ armed-select.rs:149
 task: armed_select::driver::{async_fn_env#0}
   kind: AsyncFn
-  decl: armed-select.rs:88
+  decl: armed-select.rs:89
   entries: 2
   symbols-per-entry: 6,6
   stage: Stage<armed_select::driver::{async_fn_env#0}>
   variants:
-    Unresumed @ armed-select.rs:92
-    Returned @ armed-select.rs:104
-    Panicked @ armed-select.rs:104
-    Suspend0 @ armed-select.rs:100
+    Unresumed @ armed-select.rs:93
+    Returned @ armed-select.rs:105
+    Panicked @ armed-select.rs:105
+    Suspend0 @ armed-select.rs:101
 task: armed_select::holder::{async_fn_env#0}
   kind: AsyncFn
-  decl: armed-select.rs:58
+  decl: armed-select.rs:59
   entries: 2
   symbols-per-entry: 6,6
   stage: Stage<armed_select::holder::{async_fn_env#0}>
   variants:
-    Unresumed @ armed-select.rs:62
-    Returned @ armed-select.rs:69
-    Panicked @ armed-select.rs:69
-    Suspend0 @ armed-select.rs:66
+    Unresumed @ armed-select.rs:63
+    Returned @ armed-select.rs:70
+    Panicked @ armed-select.rs:70
+    Suspend0 @ armed-select.rs:67
 task: armed_select::ticker::{async_fn_env#0}
   kind: AsyncFn
-  decl: armed-select.rs:117
+  decl: armed-select.rs:118
   entries: 2
   symbols-per-entry: 6,6
   stage: Stage<armed_select::ticker::{async_fn_env#0}>
   variants:
-    Unresumed @ armed-select.rs:117
-    Returned @ armed-select.rs:131
-    Panicked @ armed-select.rs:131
-    Suspend0 @ select.rs:743 (awaited at armed-select.rs:127)
+    Unresumed @ armed-select.rs:118
+    Returned @ armed-select.rs:132
+    Panicked @ armed-select.rs:132
+    Suspend0 @ select.rs:743 (awaited at armed-select.rs:128)
 task: armed_select::waiter::{async_fn_env#0}
   kind: AsyncFn
-  decl: armed-select.rs:73
+  decl: armed-select.rs:74
   entries: 2
   symbols-per-entry: 6,6
   stage: Stage<armed_select::waiter::{async_fn_env#0}>
   variants:
-    Unresumed @ armed-select.rs:73
-    Returned @ armed-select.rs:78
-    Panicked @ armed-select.rs:78
-    Suspend0 @ armed-select.rs:76
+    Unresumed @ armed-select.rs:74
+    Returned @ armed-select.rs:79
+    Panicked @ armed-select.rs:79
+    Suspend0 @ armed-select.rs:77
+task: armed_select::forever::{async_fn_env#0}
+  kind: AsyncFn
+  decl: armed-select.rs:160
+  entries: 2
+  symbols-per-entry: 6,6
+  stage: Stage<armed_select::forever::{async_fn_env#0}>
+  variants:
+    Unresumed @ armed-select.rs:160
+    Returned @ armed-select.rs:174
+    Panicked @ armed-select.rs:174
+    Suspend0 @ select.rs:743 (awaited at armed-select.rs:169)
 task: armed_select::selector::{async_fn_env#0}
   kind: AsyncFn
-  decl: armed-select.rs:30
+  decl: armed-select.rs:31
   entries: 2
   symbols-per-entry: 6,6
   stage: Stage<armed_select::selector::{async_fn_env#0}>
   variants:
-    Unresumed @ armed-select.rs:35
-    Returned @ armed-select.rs:54
-    Panicked @ armed-select.rs:54
-    Suspend0 @ select.rs:743 (awaited at armed-select.rs:48)
+    Unresumed @ armed-select.rs:36
+    Returned @ armed-select.rs:55
+    Panicked @ armed-select.rs:55
+    Suspend0 @ select.rs:743 (awaited at armed-select.rs:49)
 
 [dyn-futures]
 dyn: armed_select::child::{async_fn_env#0} (poll, drop_glue)
 dyn: armed_select::driver::{async_fn_env#0} (poll, drop_glue)
+dyn: armed_select::forever::{async_fn#0}::{async_block_env#0} (poll)
+dyn: armed_select::forever::{async_fn_env#0} (poll, drop_glue)
 dyn: armed_select::holder::{async_fn_env#0} (poll, drop_glue)
 dyn: armed_select::main::{async_block_env#0} (poll, drop_glue)
 dyn: armed_select::pacer::{async_fn_env#0} (poll, drop_glue)
 dyn: armed_select::selector::{async_fn_env#0} (poll, drop_glue)
 dyn: armed_select::ticker::{async_fn_env#0} (poll, drop_glue)
 dyn: armed_select::waiter::{async_fn_env#0} (poll, drop_glue)
+dyn: core::future::poll_fn::PollFn<armed_select::forever::{async_fn#0}::{closure_env#1}> (poll)
 dyn: core::future::poll_fn::PollFn<armed_select::selector::{async_fn#0}::{closure_env#0}> (poll)
 dyn: core::future::poll_fn::PollFn<armed_select::ticker::{async_fn#0}::{closure_env#0}> (poll)
 dyn: core::future::poll_fn::PollFn<tokio::runtime::scheduler::current_thread::{impl#0}::block_on::{closure#0}::{closure_env#0}<armed_select::main::{async_block_env#0}>> (poll)
+dyn: core::pin::Pin<&mut armed_select::forever::{async_fn#0}::{async_block_env#0}> (poll)
 dyn: core::pin::Pin<&mut armed_select::main::{async_block_env#0}> (poll)
 
 [env-decls]
-env: armed_select::child::{async_fn_env#0} @ armed-select.rs:82
-env: armed_select::driver::{async_fn_env#0} @ armed-select.rs:88
-env: armed_select::holder::{async_fn_env#0} @ armed-select.rs:58
-env: armed_select::main::{async_block_env#0} @ armed-select.rs:157
-env: armed_select::pacer::{async_fn_env#0} @ armed-select.rs:137
+env: armed_select::child::{async_fn_env#0} @ armed-select.rs:83
+env: armed_select::driver::{async_fn_env#0} @ armed-select.rs:89
+env: armed_select::forever::{async_fn#0}::{async_block_env#0} @ armed-select.rs:163
+env: armed_select::forever::{async_fn#0}::{closure_env#1} @ select.rs:661
+env: armed_select::forever::{async_fn_env#0} @ armed-select.rs:160
+env: armed_select::holder::{async_fn_env#0} @ armed-select.rs:59
+env: armed_select::main::{async_block_env#0} @ armed-select.rs:181
+env: armed_select::pacer::{async_fn_env#0} @ armed-select.rs:138
 env: armed_select::selector::{async_fn#0}::{closure_env#0} @ select.rs:661
-env: armed_select::selector::{async_fn_env#0} @ armed-select.rs:30
+env: armed_select::selector::{async_fn_env#0} @ armed-select.rs:31
 env: armed_select::ticker::{async_fn#0}::{closure_env#0} @ select.rs:661
-env: armed_select::ticker::{async_fn_env#0} @ armed-select.rs:117
-env: armed_select::waiter::{async_fn_env#0} @ armed-select.rs:73
+env: armed_select::ticker::{async_fn_env#0} @ armed-select.rs:118
+env: armed_select::waiter::{async_fn_env#0} @ armed-select.rs:74
 
 [infra]
 header: ok

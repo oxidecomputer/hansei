@@ -9,8 +9,9 @@
 //! `Notify` node and a `Sleep`'s wheel entry — while a holder keeps a
 //! `Notified` it never polled beside a oneshot it awaits, a waiter
 //! parks in a bare `Notify`, a `FuturesUnordered` drives two children
-//! whose oneshots hold the *set's* wakers rather than the task's, and
-//! two tasks park in an `Interval`'s `tick`. `READY` on stdout means
+//! whose oneshots hold the *set's* wakers rather than the task's, two
+//! tasks park in an `Interval`'s `tick`, and one parks in a `select!`
+//! whose every enabled branch is never ready. `READY` on stdout means
 //! every task has parked, signalled over oneshots, never by sleeping.
 
 use futures::stream::{FuturesUnordered, StreamExt};
@@ -149,6 +150,29 @@ async fn pacer(ready: oneshot::Sender<()>) -> u32 {
     11
 }
 
+/// A `select!` no poll returns from: two branches that are never
+/// ready — a bare `pending()` and an async block that awaits one — and
+/// a third that would complete at once, disabled by a false
+/// precondition, so its mask bit is all that keeps the select parked.
+/// All three are pinned locals the select borrows, so the census can
+/// name the finds: the block and the `Ready`. The bare `Pending` is
+/// zero-sized, storage nothing scans, and no find.
+async fn forever(ready: oneshot::Sender<()>) -> u32 {
+    census_expect::task("armed_select::forever");
+    let bare = std::future::pending::<u32>();
+    let wrapped = async { std::future::pending::<u32>().await };
+    let at_once = std::future::ready(12);
+    tokio::pin!(bare, wrapped, at_once);
+    census_expect::held(&*wrapped as *const _ as u64, "async_block_env");
+    census_expect::held(&*at_once as *const _ as u64, "Ready<u32>");
+    ready.send(()).expect("main waits for readiness");
+    tokio::select! {
+        got = &mut bare => got,
+        got = &mut wrapped => got,
+        got = &mut at_once, if false => got,
+    }
+}
+
 fn main() {
     test_programs::allow_any_tracer();
 
@@ -186,6 +210,10 @@ fn main() {
         let (pacer_ready_tx, pacer_ready_rx) = oneshot::channel();
         let _pacer = tokio::spawn(pacer(pacer_ready_tx));
         pacer_ready_rx.await.expect("pacer signals readiness");
+
+        let (forever_ready_tx, forever_ready_rx) = oneshot::channel();
+        let _forever = tokio::spawn(forever(forever_ready_tx));
+        forever_ready_rx.await.expect("forever signals readiness");
 
         // The senders that must never send: leaked, so no drop closes
         // a channel and wakes anyone. The mpsc and watch senders stay

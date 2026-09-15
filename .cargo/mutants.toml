@@ -387,4 +387,14 @@ exclude_re = [
     # binds exactly the same set. (The function's other `&&` are
     # let-chains, which the tool does not mutate.)
     "replace && with \\|\\| in collect_semantic_seeds",
+    # A defensive counter on impossible input: a `select!` branch's
+    # route is one named member step into the tuple value already in
+    # hand, and the validator resolves that name against the tuple
+    # type before the bundle is accepted, so the route cannot fail and
+    # `unread` is never incremented on a validated bundle. The counter
+    # is kept because the executor's answer is a Result and a verdict
+    # over the branches must decline if it ever is an error — that is
+    # pinned where it is consulted (`never_ready`, unread > 0) — but no
+    # target can reach the increment itself.
+    "replace \\+= with [*-]= in Context<'b, T>::select_branches",
 ]

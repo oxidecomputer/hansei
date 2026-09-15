@@ -3413,10 +3413,21 @@ mod table_tests {
         waits: &mut [TaskWait],
         slots: &hansei_runtime::tokio::attribution::Attributed,
     ) -> Vec<super::TaskRow> {
+        folded_rows_sized(list, waits, slots, &|_| None)
+    }
+
+    /// [`folded_rows`] with a size for every type, so a slot can lie
+    /// inside a member's storage.
+    fn folded_rows_sized(
+        list: &TaskList,
+        waits: &mut [TaskWait],
+        slots: &hansei_runtime::tokio::attribution::Attributed,
+        size_of: &dyn Fn(BundleTypeId) -> Option<u64>,
+    ) -> Vec<super::TaskRow> {
         for (task, wait) in list.tasks.iter().zip(waits.iter_mut()) {
             let owned: Vec<_> = slots.of_task(task.addr.0).collect();
             if !owned.is_empty() {
-                hansei_runtime::tokio::waitset::fold_wait(task, wait, &owned, None, &|_| None);
+                hansei_runtime::tokio::waitset::fold_wait(task, wait, &owned, None, size_of);
             }
         }
         let impls = Default::default();
@@ -3430,8 +3441,64 @@ mod table_tests {
             &Default::default(),
             &stops,
         );
-        super::apply_slots(&mut rows, list, waits, slots, None, &|_| None, &stops);
+        super::apply_slots(&mut rows, list, waits, slots, None, size_of, &stops);
         rows
+    }
+
+    /// A `select!` rolled up to never ready keeps the verdict as its
+    /// cell and its bucket whatever the sweep found: a swept slot
+    /// inside a branch arms that branch's line and nothing more, a
+    /// slot in no branch is a line of its own after the branches, and
+    /// the disabled branch is named among them.
+    #[test]
+    fn test_a_never_ready_select_keeps_its_verdict_beside_a_swept_slot() {
+        use hansei_runtime::tokio::attribution::{Attributed, AttributedSlot, Attribution};
+        use hansei_runtime::tokio::wakers::Owner;
+
+        let never_ready = |members, capped| WaitAssessment::NeverReady { members, capped };
+        let owner = Owner::Task {
+            header: 0x1000 + 0x100,
+            index: 0,
+        };
+        let slot = |hit: usize, at: u64| AttributedSlot {
+            hit,
+            slot: at,
+            owner,
+            attribution: Attribution::Unknown,
+            within: None,
+            through: Vec::new(),
+            aliases: Vec::new(),
+        };
+        let slots = Attributed::from_slots(vec![slot(0, 0x6010), slot(1, 0x7000)]);
+        let list = TaskList::new(vec![task(1, 0)]);
+        let mut waits = vec![assessed(
+            1,
+            never_ready(
+                vec![
+                    select_branch(0, never_ready(Vec::new(), 0), false),
+                    select_branch(1, never_ready(Vec::new(), 0), false),
+                    disabled(2),
+                ],
+                0,
+            ),
+        )];
+        let rows = folded_rows_sized(&list, &mut waits, &slots, &|_| Some(0x40));
+        assert!(
+            matches!(waits[0].assessment, WaitAssessment::NeverReady { .. }),
+            "{:?}",
+            waits[0].assessment
+        );
+        assert_eq!(rows[0].waiting_on, "never ready");
+        assert_eq!(rows[0].waiting_kind.as_deref(), Some("never ready"));
+        assert_eq!(
+            rows[0].wait_detail,
+            [
+                "branch 0 (borrowed): x::branch at 0x6000 — never ready; armed: unknown @ 0x6010",
+                "branch 1 (borrowed): x::branch at 0x6000 — never ready; held, not armed",
+                "branch 2: x::skipped: disabled",
+                "unknown @ 0x7000",
+            ]
+        );
     }
 
     /// A running task waits on nothing: its cell names the lwp polling

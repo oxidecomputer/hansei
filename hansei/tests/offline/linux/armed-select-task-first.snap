@@ -6,13 +6,13 @@ task 3
     state: idle
     thread: <none>
     type: async fn armed_select::selector
-    awaiting at: src/bin/armed-select.rs:48
+    awaiting at: src/bin/armed-select.rs:49
     waiting on:
         branch 0 (borrowed): tokio::sync::oneshot::Receiver at 0xADDR — oneshot rx 0xADDR (nothing sent, sender alive); armed: oneshot rx 0xADDR: waker in Inner.rx_task (rx_task_set), reached from the future at 0xADDR inner → * → data → rx_task
         branch 1 (borrowed): async fn tokio::sync::mpsc::bounded::Receiver::recv at 0xADDR — mpsc 0xADDR (1 sender, capacity 4, 0 unread); armed: mpsc 0xADDR: waker in Chan.rx_waker, reached from #1 queue → chan → inner → * → data → rx_waker → waker
         branch 2 (borrowed): async fn tokio::sync::watch::Receiver::changed at 0xADDR — watch 0xADDR (version 0, 1 sender, 1 receiver); armed: watch 0xADDR: waker in Notified.waiter, in the future at 0xADDR fut → waiter → waker
         branch 3 (borrowed): tokio::time::sleep::Sleep at 0xADDR — timer (deadline TS on the target's monotonic clock); armed: timer 0xADDR deadline TS on the target's monotonic clock
-    spawned at: src/bin/armed-select.rs:162:25
-    defined at: src/bin/armed-select.rs:30
+    spawned at: src/bin/armed-select.rs:186:25
+    defined at: src/bin/armed-select.rs:31
     held futures: 4
     join sets: 0

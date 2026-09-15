@@ -376,6 +376,15 @@ pub enum Branches {
         members: Vec<WaitMember>,
         capped: usize,
     },
+    /// The stop is a `select!` every branch of which its mask still
+    /// polls ends never ready: no poll of the task returns, and the
+    /// verdict is the terminal's, rolled up. The members are the
+    /// branches in order, the disabled ones among them, and any slot
+    /// in no branch — listed, since a slot changes nothing here.
+    NeverReady {
+        members: Vec<WaitMember>,
+        capped: usize,
+    },
     /// No branch and no slot.
     None,
 }
@@ -396,6 +405,15 @@ struct Enumerated<'b> {
     /// A `select!`'s disabled branches, as the members they are listed
     /// as: named, not inspected, and never armed.
     disabled: Vec<WaitMember>,
+    /// Branches whose route did not read: noted, and neither listed
+    /// nor counted among the capped. A verdict over the branches
+    /// needs every one of them, so this is a fact of its own, not a
+    /// note to parse.
+    unread: usize,
+    /// Whether these are a `select!`'s branches, read under its mask:
+    /// the one enumeration whose members are *all* the stop polls,
+    /// so a verdict every member shares is the stop's own.
+    select: bool,
 }
 
 /// Recognition for the branch scan: the census's, with borrowed
@@ -474,7 +492,7 @@ impl<'b, T: Target> Context<'b, T> {
             return Enumerated {
                 branches,
                 capped,
-                disabled: Vec::new(),
+                ..Enumerated::default()
             };
         }
         let mut branches = Vec::new();
@@ -526,7 +544,7 @@ impl<'b, T: Target> Context<'b, T> {
         Enumerated {
             branches,
             capped,
-            disabled: Vec::new(),
+            ..Enumerated::default()
         }
     }
 
@@ -566,12 +584,16 @@ impl<'b, T: Target> Context<'b, T> {
         word[..width].copy_from_slice(&mask.bytes[..width]);
         let mask = u64::from_le_bytes(word);
         let tuple = landed(&binding.futures.steps, "branch tuple")?;
-        let mut found = Enumerated::default();
+        let mut found = Enumerated {
+            select: true,
+            ..Enumerated::default()
+        };
         for (index, branch) in binding.branches.iter().enumerate() {
             let member = match self.route(tuple, &branch.steps, read) {
                 Ok(member) => member,
                 Err(e) => {
                     notes.push(format!("select! branch {index} did not read: {e:#}"));
+                    found.unread += 1;
                     continue;
                 }
             };
@@ -862,7 +884,10 @@ impl<'b, T: Target> Context<'b, T> {
     /// wheel entries and io waiters `registries` attribute to the task.
     /// Only for a chain ending in [`ChainEnd::UnknownContinuation`]:
     /// every other end already says what the task is doing. What
-    /// could not be read on the way is pushed onto `notes`.
+    /// could not be read on the way is pushed onto `notes`. One
+    /// verdict the branches can carry outranks the set: a `select!`
+    /// every enabled branch of which is never ready is itself never
+    /// ready ([`never_ready`]), whatever slots sit beside it.
     #[allow(clippy::too_many_arguments)]
     pub fn wait_set(
         &self,
@@ -886,7 +911,10 @@ impl<'b, T: Target> Context<'b, T> {
             branches,
             capped,
             disabled,
+            unread,
+            select,
         } = self.branches_at(stop, read, scan, notes);
+        let enabled = branches.len();
         let (mut members, chains) = self.members_of(
             pass,
             chain,
@@ -1001,7 +1029,9 @@ impl<'b, T: Target> Context<'b, T> {
         members.extend(disabled);
         order_by_branch(&mut members);
 
-        if members.iter().any(|m| m.armed.is_some()) {
+        if never_ready(select, enabled, unread, capped, &members) {
+            Branches::NeverReady { members, capped }
+        } else if members.iter().any(|m| m.armed.is_some()) {
             Branches::Set(WaitSet {
                 at: Some(*at),
                 reason: Some(*reason),
@@ -1083,6 +1113,47 @@ fn order_by_branch(members: &mut [WaitMember]) {
     members.sort_by_key(|m| m.route.select_index().unwrap_or(usize::MAX));
 }
 
+/// Whether a stop's members roll up to never ready: the stop is a
+/// `select!` (`select`), and every branch its mask still polls ends
+/// at a terminal no poll returns from, so no poll of the `select!`
+/// returns either. The verdict is over *all* the enabled branches, so
+/// every one of them must have been listed and assessed — none
+/// `unread`, none past the cap — and at least one must be enabled: a
+/// `select!` whose every branch is disabled has already returned its
+/// `else` arm, and a frame that reads so is torn, not parked. A branch
+/// assessed as anything else vetoes — an unknown continuation, which
+/// is what a nested `select!` is; a branch never polled; a fan-out
+/// container, which is no branch of its own. A slot in no branch
+/// changes nothing: a slot says the task can be scheduled, not that a
+/// poll can return `Ready`.
+fn never_ready(
+    select: bool,
+    enabled: usize,
+    unread: usize,
+    capped: usize,
+    members: &[WaitMember],
+) -> bool {
+    if !select || enabled == 0 || unread > 0 || capped > 0 {
+        return false;
+    }
+    let mut assessed = 0;
+    for member in members {
+        match member.route {
+            MemberRoute::Select { .. } => {
+                if !matches!(member.assessment, Some(WaitAssessment::NeverReady { .. })) {
+                    return false;
+                }
+                assessed += 1;
+            }
+            MemberRoute::Disabled { .. } | MemberRoute::SlotOnly { .. } => {}
+            MemberRoute::Branch { .. } | MemberRoute::Entry { .. } => return false,
+        }
+    }
+    // A branch the inspection folded into another — one it had seen,
+    // or a frame of the task's own chain — was not assessed on its own.
+    assessed == enabled
+}
+
 /// Where in the task's own chain `addr` lies, as a set member's
 /// placement text, or `None` when it lies in no frame.
 fn within_frames(
@@ -1130,6 +1201,46 @@ fn twin(
     }
 }
 
+/// Place the sweep's `slots` against `members`. Every member that
+/// accounts for a slot — a branch whose storage holds it or whose
+/// pointer reached it, a member whose own evidence it is — is found;
+/// a slot seen already anywhere adds nothing, otherwise it arms the
+/// first unarmed branch it lies in. The slots no member accounts for
+/// are returned as members of their own, each placed in the task's
+/// `frames` where it lies there, for the caller to list or not.
+fn place_slots(
+    members: &mut [WaitMember],
+    frames: &[ValueKey],
+    slots: &[&AttributedSlot],
+    stopped: Option<RawInstant>,
+    size_of: &dyn Fn(BundleTypeId) -> Option<u64>,
+) -> Vec<WaitMember> {
+    let mut alone = Vec::new();
+    for slot in slots {
+        let accounted: Vec<usize> = (0..members.len())
+            .filter(|&i| member_accounts(&members[i], slot, size_of))
+            .collect();
+        if accounted.iter().any(|&i| twin(&members[i], slot, size_of)) {
+            continue;
+        }
+        match accounted.iter().find(|&&i| members[i].armed.is_none()) {
+            Some(&i) => members[i].armed = Some(SlotRef::swept(slot, stopped)),
+            None => alone.push(WaitMember {
+                route: MemberRoute::SlotOnly {
+                    within: within_frames(frames, slot.slot, size_of),
+                },
+                key: None,
+                future: None,
+                assessment: None,
+                notes: Vec::new(),
+                armed: Some(SlotRef::swept(slot, stopped)),
+                entries: None,
+            }),
+        }
+    }
+    alone
+}
+
 /// Fold the slots the sweep attributed to one task into its wait.
 ///
 /// A blocking cell and a mid-poll task are not parked, whatever pair
@@ -1146,8 +1257,12 @@ fn twin(
 /// diagnostic note, never a member — the same rule the registries'
 /// slots follow — except the wheel and io pairs the registries already
 /// noted, and a pair in memory nothing typed reaches, which names
-/// nothing to contradict the wait with. Every other assessment is
-/// definite and is left alone.
+/// nothing to contradict the wait with. A never-ready verdict stands
+/// whatever the slots say — a slot means the task can be scheduled,
+/// not that a poll can return `Ready` — and the slots are placed
+/// against its branches for their detail lines, the rest left to the
+/// attribution's own. Every other assessment is definite and is left
+/// alone.
 pub fn fold_wait(
     task: &Task,
     wait: &mut TaskWait,
@@ -1180,6 +1295,10 @@ pub fn fold_wait(
         }
         return;
     }
+    if let WaitAssessment::NeverReady { members, .. } = &mut wait.assessment {
+        place_slots(members, &wait.frames, slots, stopped, size_of);
+        return;
+    }
     let placeholder = WaitAssessment::Unknown(WaitUnknownReason::Continuation);
     let (mut members, capped, at, reason) =
         match std::mem::replace(&mut wait.assessment, placeholder) {
@@ -1201,34 +1320,7 @@ pub fn fold_wait(
                 return;
             }
         };
-    let mut alone = Vec::new();
-    for slot in slots {
-        // Every member that accounts for the slot: a branch whose
-        // storage holds it or whose pointer reached it, a member whose
-        // own evidence it is. Seen already anywhere, it adds nothing;
-        // otherwise it arms the first unarmed branch it lies in, or
-        // stands alone.
-        let accounted: Vec<usize> = (0..members.len())
-            .filter(|&i| member_accounts(&members[i], slot, size_of))
-            .collect();
-        if accounted.iter().any(|&i| twin(&members[i], slot, size_of)) {
-            continue;
-        }
-        match accounted.iter().find(|&&i| members[i].armed.is_none()) {
-            Some(&i) => members[i].armed = Some(SlotRef::swept(slot, stopped)),
-            None => alone.push(WaitMember {
-                route: MemberRoute::SlotOnly {
-                    within: within_frames(&wait.frames, slot.slot, size_of),
-                },
-                key: None,
-                future: None,
-                assessment: None,
-                notes: Vec::new(),
-                armed: Some(SlotRef::swept(slot, stopped)),
-                entries: None,
-            }),
-        }
-    }
+    let alone = place_slots(&mut members, &wait.frames, slots, stopped, size_of);
     members.extend(alone);
     if members.iter().any(|member| member.armed.is_some()) {
         wait.assessment = WaitAssessment::Set(WaitSet {
@@ -2078,7 +2170,7 @@ mod tests {
         let driver = task_named(&list, "driver");
         let members = match branches_of(&ctx, &list, driver, &Registries::default()) {
             Branches::Set(set) => set.members,
-            Branches::Held { members, .. } => members,
+            Branches::Held { members, .. } | Branches::NeverReady { members, .. } => members,
             Branches::None => Vec::new(),
         };
         assert!(
@@ -2383,6 +2475,209 @@ mod tests {
             WaitAssessment::Set(set) => set,
             other => panic!("a set, not {other:?}"),
         }
+    }
+
+    /// Branch `index` of a `select!`, its storage at `0x6000 + index *
+    /// 0x100`, assessed as `assessment`.
+    fn select_member(index: usize, assessment: Option<WaitAssessment>) -> WaitMember {
+        WaitMember {
+            route: MemberRoute::Select {
+                index,
+                borrowed: true,
+            },
+            key: Some(key(0x6000 + index as u64 * 0x100)),
+            future: Some("x::B".to_string()),
+            assessment,
+            notes: Vec::new(),
+            armed: None,
+            entries: None,
+        }
+    }
+
+    /// The terminal's own verdict, as a branch ending at one carries it.
+    fn terminal() -> WaitAssessment {
+        WaitAssessment::NeverReady {
+            members: Vec::new(),
+            capped: 0,
+        }
+    }
+
+    /// A `select!` rolls up to never ready over exactly the branches
+    /// its mask still polls, every one of them assessed so: a disabled
+    /// branch is neither counted nor consulted, and a slot in no
+    /// branch changes nothing. Any other verdict on an enabled branch
+    /// vetoes, as does a branch the enumeration did not read, one past
+    /// the cap, one the inspection folded away, a stop that is no
+    /// `select!` at all, and a `select!` with nothing enabled.
+    #[test]
+    fn test_a_select_is_never_ready_over_every_enabled_branch() {
+        let disabled = || WaitMember {
+            route: MemberRoute::Disabled { index: 2, ty: TY },
+            key: None,
+            future: Some("x::D".to_string()),
+            assessment: None,
+            notes: Vec::new(),
+            armed: None,
+            entries: None,
+        };
+        let slot = WaitMember {
+            route: MemberRoute::SlotOnly { within: None },
+            key: None,
+            future: None,
+            assessment: None,
+            notes: Vec::new(),
+            armed: Some(SlotRef::swept(&typed(0x7000), None)),
+            entries: None,
+        };
+        let rolled = || {
+            vec![
+                select_member(0, Some(terminal())),
+                select_member(1, Some(terminal())),
+                disabled(),
+            ]
+        };
+        assert!(never_ready(true, 2, 0, 0, &rolled()));
+        let mut beside = rolled();
+        beside.push(slot);
+        assert!(never_ready(true, 2, 0, 0, &beside));
+
+        for other in [
+            WaitAssessment::Unknown(WaitUnknownReason::Continuation),
+            WaitAssessment::Unresumed,
+            WaitAssessment::Waiting(super::super::assess::VerifiedWait::testkit(
+                notify_target(0x8000),
+                None,
+            )),
+        ] {
+            let mut members = rolled();
+            members[1].assessment = Some(other);
+            assert!(!never_ready(true, 2, 0, 0, &members), "{members:?}");
+        }
+        assert!(!never_ready(true, 2, 1, 0, &rolled()), "an unread branch");
+        assert!(!never_ready(true, 2, 0, 1, &rolled()), "a capped branch");
+        assert!(
+            !never_ready(true, 3, 0, 0, &rolled()),
+            "a branch folded away"
+        );
+        assert!(!never_ready(false, 2, 0, 0, &rolled()), "no select!");
+        assert!(!never_ready(true, 0, 0, 0, &[]), "nothing enabled");
+        let mut all_disabled = rolled();
+        all_disabled.retain(|m| m.disabled());
+        assert!(!never_ready(true, 0, 0, 0, &all_disabled));
+        let mut fanning = rolled();
+        fanning.push(WaitMember {
+            route: MemberRoute::Entry {
+                index: 0,
+                under: None,
+                borrowed: false,
+            },
+            ..select_member(0, Some(terminal()))
+        });
+        assert!(!never_ready(true, 2, 0, 0, &fanning), "a fan-out entry");
+        let mut local = rolled();
+        local.push(branch(0x6300));
+        assert!(!never_ready(true, 2, 0, 0, &local), "a scanned local");
+    }
+
+    /// A never-ready verdict stands under the fold whatever the slots
+    /// say: a slot inside a branch arms that branch for its detail
+    /// line, and a slot in no branch joins no member — the attribution
+    /// lists it on its own — so the verdict never becomes a set. The
+    /// task-level verdict, with no branches, is left as it is.
+    #[test]
+    fn test_the_fold_leaves_a_never_ready_verdict_and_arms_its_branches() {
+        let task = idle();
+        let mut wait = stopped(Vec::new());
+        wait.assessment = WaitAssessment::NeverReady {
+            members: vec![
+                select_member(0, Some(terminal())),
+                select_member(1, Some(terminal())),
+            ],
+            capped: 0,
+        };
+        fold(
+            &task,
+            &mut wait,
+            &[typed(0x6010), typed(0x7000), typed(0x9008)],
+        );
+        let WaitAssessment::NeverReady { members, capped } = &wait.assessment else {
+            panic!("never ready, not {:?}", wait.assessment);
+        };
+        assert_eq!(*capped, 0);
+        assert_eq!(members.len(), 2, "{members:?}");
+        assert!(
+            matches!(&members[0].armed, Some(SlotRef::Swept { slot, .. }) if slot.slot == 0x6010),
+            "{members:?}"
+        );
+        assert!(members[1].armed.is_none(), "{members:?}");
+        assert!(wait.held.is_empty());
+
+        let mut bare = stopped(Vec::new());
+        bare.assessment = terminal();
+        fold(&task, &mut bare, &[typed(0x9008)]);
+        assert!(
+            matches!(&bare.assessment, WaitAssessment::NeverReady { members, capped: 0 } if members.is_empty()),
+            "{:?}",
+            bare.assessment
+        );
+    }
+
+    /// armed-select's `forever` is parked in a `select!` over two
+    /// branches that are never ready — a bare `Pending` and an async
+    /// block awaiting one, each borrowed through its pin — and a
+    /// third its mask disabled: never ready, rolled up, with the three
+    /// listed in branch order and nothing armed.
+    #[test]
+    fn test_a_select_over_never_ready_branches_is_never_ready() {
+        let (bundle, snapshot) = load_any("armed-select");
+        let ctx = testkit::context(&bundle, &snapshot);
+        let list = testkit::tasks(&ctx, &snapshot);
+        let task = task_named(&list, "forever");
+        let Branches::NeverReady { members, capped } =
+            branches_of(&ctx, &list, task, &Registries::default())
+        else {
+            panic!("never ready");
+        };
+        assert_eq!(capped, 0);
+        let listed: Vec<(String, &str, bool)> = members
+            .iter()
+            .map(|m| {
+                let route = match m.route {
+                    MemberRoute::Select { index, borrowed } => {
+                        format!(
+                            "branch {index}{}",
+                            if borrowed { " (borrowed)" } else { "" }
+                        )
+                    }
+                    MemberRoute::Disabled { index, .. } => format!("disabled {index}"),
+                    ref other => panic!("{other:?}"),
+                };
+                let verdict = match &m.assessment {
+                    Some(WaitAssessment::NeverReady { .. }) => "never ready",
+                    None => "-",
+                    other => panic!("{other:?}"),
+                };
+                (route, verdict, m.armed.is_some())
+            })
+            .collect();
+        assert_eq!(
+            listed,
+            [
+                ("branch 0 (borrowed)".to_string(), "never ready", false),
+                ("branch 1 (borrowed)".to_string(), "never ready", false),
+                ("disabled 2".to_string(), "-", false),
+            ]
+        );
+        let futures: Vec<&str> = members
+            .iter()
+            .map(|m| m.future.as_deref().unwrap())
+            .collect();
+        assert_eq!(futures[0], "core::future::pending::Pending<u32>");
+        assert!(
+            futures[1].ends_with("forever::{async_fn#0}::{async_block_env#0}"),
+            "{futures:?}"
+        );
+        assert_eq!(futures[2], "core::future::ready::Ready<u32>");
     }
 
     /// A slot inside a held branch arms it, and the held branches

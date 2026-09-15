@@ -332,6 +332,9 @@ pub fn analyze<T: Target>(
                         held = members;
                         held_capped = capped;
                     }
+                    Branches::NeverReady { members, capped } => {
+                        assessment = WaitAssessment::NeverReady { members, capped };
+                    }
                     Branches::None => {}
                 }
             }

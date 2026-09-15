@@ -1115,8 +1115,11 @@ fn test_the_census_accounting_is_exact_per_program() {
         // tick's chain; and six chain frames — the ticker's select
         // `PollFn` and its tick's, and on the pacer's own chain the
         // awaited tick, its `PollFn`, the box under `interval` and the
-        // `Sleep` behind it.
-        ("armed-select", 0, 16, 9, 0, 9),
+        // `Sleep` behind it. The forever task adds its pinned block and
+        // `Ready`, each met again through the select's borrow of it,
+        // and one chain frame, its select `PollFn`; its bare `Pending`
+        // is zero-sized and no find.
+        ("armed-select", 0, 17, 11, 0, 11),
         // Two selects' branch futures — a oneshot and a stream's `Next`
         // each — reached by descent and met again through the select's
         // borrow; the box each `WatchStream` owns, a find under the

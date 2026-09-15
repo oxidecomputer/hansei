@@ -2419,11 +2419,41 @@ fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
             "core::future::poll_fn::PollFn<armed_select::ticker::{async_fn#0}::{closure_env#",
             2,
         );
+        let table = exegesis::describe::describe_semantics(bundle);
+        // The forever task's three: the pinned `Pending`, the pinned
+        // block and the pinned `Ready` its mask disables, each
+        // borrowed. The terminal binds by the block's delegation on
+        // every target; whether the bare `Pending`'s own pin keeps a
+        // poll symbol and delegates too is the target's call (ELF
+        // keeps it, Mach-O inlines it away), so only the block's
+        // delegation and the verdict are pinned. The borrow of that
+        // pin is crossed by its access route either way, and that
+        // route is pinned rather than whether a poll stands beside it.
+        assert_select(
+            program,
+            bundle,
+            "core::future::poll_fn::PollFn<armed_select::forever::{async_fn#0}::{closure_env#",
+            3,
+        );
+        let pending = semantic_line(&table, "core::future::pending::Pending<u32> :: ");
+        assert!(
+            pending
+                .contains("delegated by armed_select::forever::{async_fn#0}::{async_block_env#0}")
+                && pending.ends_with("continuation rule # never ready"),
+            "{program}: {pending}"
+        );
+        let borrow = semantic_line(
+            &table,
+            "&mut core::pin::Pin<&mut core::future::pending::Pending<u32>> :: ",
+        );
+        assert!(
+            borrow.contains("access Borrowed rule # *@+0 -> core::pin::Pin<&mut core::future::pending::Pending<u32>>"),
+            "{program}: {borrow}"
+        );
         // The tick's `PollFn` forwards through its closure's capture to
         // the interval's pinned box, exclusively, under tokio's tick
         // rule; the box, proved a future by that delegation, crosses to
         // the `Sleep` by its own std record.
-        let table = exegesis::describe::describe_semantics(bundle);
         let tick_prefix = table
             .lines()
             .find(|line| {

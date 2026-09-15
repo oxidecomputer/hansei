@@ -4,10 +4,10 @@ description: "`runtime` over linux-floor/armed-select"
 ---
 runtime 0 @ 0xADDR
     flavor: multi_thread
-    tasks: 6
-    futures: 18
+    tasks: 7
+    futures: 21
     workers: 2
-    threads: 3 (lwp 806150, 806153, 806152)
+    threads: 3 (lwp 2345555, 2345558, 2345557)
     found via: a thread's runtime context
     drivers:
       tokio::runtime::driver::Handle {

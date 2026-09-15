@@ -4177,6 +4177,38 @@ fn test_armed_select_acceptance() {
         assert!(!unarmed.contains("`tick`"), "{unarmed}");
         assert!(!unarmed.contains("`interval`"), "{unarmed}");
 
+        // The forever task: a `select!` every enabled branch of which
+        // is never ready is never ready itself, and the verdict is the
+        // cell — no slot anywhere, so it is unarmed — with the two
+        // branches listed under it, each borrowed from the frame, and
+        // the disabled third named by its type alone. The pinned block
+        // and the pinned `Ready` are the finds the census lists for
+        // it; the bare `Pending` is zero-sized and no find.
+        let forever = task_with_future(&rows, "async fn armed_select::forever");
+        assert_eq!(forever.waiting, "unarmed: never ready", "{forever:?}");
+        let block = hansei_ok(&bundle, core, &format!("task {}", forever.id));
+        for line in [
+            r"(?m)^        branch 0 \(borrowed\): core::future::pending::Pending at 0x[0-9a-f]+ — never ready; held, not armed$",
+            r"(?m)^        branch 1 \(borrowed\): async block armed_select::forever::\{async_fn#0\} at 0x[0-9a-f]+ — never ready; held, not armed$",
+            r"(?m)^        branch 2: core::future::ready::Ready: disabled$",
+        ] {
+            assert!(
+                regex::Regex::new(line).unwrap().is_match(&block),
+                "{line}: {block}"
+            );
+        }
+        assert!(!block.contains("PollFn"), "{block}");
+        let grouped = hansei_ok(&bundle, core, "tasks --group waiting-on");
+        let bucket =
+            regex::Regex::new(&format!(r"(?m)^ +1 +unarmed: never ready +{}$", forever.id))
+                .unwrap();
+        assert!(bucket.is_match(&grouped), "{grouped}");
+        let census = hansei_ok(&bundle, core, "census");
+        assert!(census.contains("never ready"), "{census}");
+        assert!(unarmed.contains("`wrapped`"), "{unarmed}");
+        assert!(unarmed.contains("`at_once`"), "{unarmed}");
+        assert!(!unarmed.contains("`bare`"), "{unarmed}");
+
         // Both cross-checks run clean under `--audit`.
         let audited = hansei_with(&bundle, core, &["--audit"], "info");
         let stderr = String::from_utf8_lossy(&audited.stderr);
