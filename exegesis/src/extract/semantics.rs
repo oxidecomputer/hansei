@@ -20,6 +20,7 @@
 
 use super::emitter::Emitter;
 use super::passes::{members_of, state_name};
+use super::paths::{OwnedLoc, display_path};
 use super::sweep::PollSource;
 use crate::TypeId;
 use crate::bundle::names::coroutine_kind;
@@ -30,9 +31,9 @@ use crate::bundle::{
     FutureTarget, IoOperationKind, LayoutSelection, MemberRef, PollAction, PollCase, PollProgram,
     ResourceBinding, ResourceKind, SchedulerBinding, SchedulerClass, SelectBinding, Selector,
     SemanticIssue, SemanticIssueKind, SemanticOrigin, SemanticOriginId, SemanticRule,
-    SemanticRuleId, SemanticRuleKind, SemanticTable, SourceFileEvidence, Step, StoragePolicy,
-    StrRef, StringInterner, TaskEntryId, TaskFutureEntry, TypeDef, TypeSemantics, TypeTable,
-    TypedPath, WalkOutcome, WalkRole, WalksTable, container_roles, container_routes,
+    SemanticRuleId, SemanticRuleKind, SemanticTable, SourceFileEvidence, SourceLoc, Step,
+    StoragePolicy, StrRef, StringInterner, TaskEntryId, TaskFutureEntry, TypeDef, TypeSemantics,
+    TypeTable, TypedPath, WalkOutcome, WalkRole, WalksTable, container_roles, container_routes,
     required_resource_roles, required_resource_routes, scheduler_role, semantic_path_target,
 };
 use crate::detect::Family;
@@ -311,6 +312,35 @@ struct SelectSeed {
     tuple: BundleTypeId,
     branches: Vec<(String, BundleTypeId)>,
     source: Option<PollSource>,
+    /// Where each branch's arm is written, parallel to `branches`.
+    arms: Vec<ArmSite>,
+}
+
+/// What a closure environment's body function says about it: where the
+/// closure was declared, joined the way a poll declaration's file is so
+/// the same registry-path check applies, and — for a `select!`'s — the
+/// arms that body recorded, each keyed by its branch's canonical future
+/// type. One lookup answers both.
+pub(super) struct EnvFacts {
+    pub(super) source: Option<PollSource>,
+    pub(super) arms: Vec<(TypeId, Vec<OwnedLoc>)>,
+}
+
+/// What the join found for one branch of a `select!`: the source line
+/// its arm's pattern is written on, read from the closure the macro
+/// polls the branches in, where the arm binds a name and the join could
+/// settle which arm is the branch's.
+#[derive(Clone, Debug)]
+enum ArmSite {
+    /// The arm's pattern binds, and every binding agrees on where.
+    Written(OwnedLoc),
+    /// The arm's pattern binds nothing — `_ = …`, `Ok(()) = …` — the
+    /// ordinary shape, and no defect: rustc records no scope for it.
+    Unbound,
+    /// Something the join could not settle, with the reason: the
+    /// branch's type shared with another branch or another arm, no
+    /// arm of its type at all, or bindings on different lines.
+    Declined(Decline),
 }
 
 #[derive(Default)]
@@ -454,9 +484,10 @@ pub(super) fn collect_semantic_seeds(
     poll_sources: &BTreeMap<TypeId, BTreeSet<PollSource>>,
     coroutines: &BTreeSet<TypeId>,
     mut verdict: impl FnMut(TypeId, Reviewed) -> CompilerVerdict,
-    env_source: impl Fn(TypeId) -> Option<PollSource>,
+    env: impl Fn(TypeId) -> EnvFacts,
     type_sources: impl Fn(TypeId) -> BTreeSet<PollSource>,
 ) -> SemanticSeeds {
+    let env_source = |ty: TypeId| env(ty).source;
     let mut seeds = SemanticSeeds::new();
     let reader = em.reader;
     let bundle_id = |raw: TypeId| em.bundle_id_of(raw);
@@ -539,7 +570,7 @@ pub(super) fn collect_semantic_seeds(
             seeds.entry(ty).or_default().instrumented = Some(InstrumentedSeed { inner, future });
         } else if name.starts_with("core::future::poll_fn::PollFn<")
             && let Some(layout) = adapters::tokio_select(reader, raw)
-            && let Some(seed) = select_seed(layout, bundle_id, &env_source)
+            && let Some(seed) = select_seed(layout, bundle_id, &env)
         {
             seeds.entry(ty).or_default().select = Some(seed);
         } else if name.starts_with("core::future::pending::Pending<")
@@ -581,14 +612,16 @@ pub(super) fn collect_semantic_seeds(
 }
 
 /// The screen's `select!` layout by bundle id, with the closure
-/// environment's declaration site. `None` when any type it names was
-/// not emitted: a branch future the table does not carry cannot be a
-/// recorded route.
+/// environment's declaration site and each branch's arm. `None` when
+/// any type it names was not emitted: a branch future the table does
+/// not carry cannot be a recorded route.
 fn select_seed(
     layout: SelectLayout,
     bundle_id: impl Fn(TypeId) -> Option<BundleTypeId>,
-    env_source: &impl Fn(TypeId) -> Option<PollSource>,
+    env: &impl Fn(TypeId) -> EnvFacts,
 ) -> Option<SelectSeed> {
+    let EnvFacts { source, arms } = env(layout.env);
+    let arms = join_arms(&layout.branches, &arms);
     let branches = layout
         .branches
         .iter()
@@ -601,8 +634,69 @@ fn select_seed(
         futures: layout.futures,
         tuple: bundle_id(layout.tuple)?,
         branches,
-        source: env_source(layout.env),
+        source,
+        arms,
     })
+}
+
+/// Pair each tuple member with the arm of its future type, from the
+/// arms the closure the macro polls the branches in recorded: each an
+/// anchor's pointee, canonical like the members, and the arm's pattern
+/// bindings. Type is the only key there is — the macro's scopes carry
+/// no branch index, and their order is the compiler's — so a type that
+/// appears twice on either side settles nothing: with two members of
+/// one type and one arm, the arm belongs to either, and a wrong line
+/// would be worse than none. Bindings that disagree on where they are
+/// settle nothing for the same reason; an arm that binds nothing is
+/// simply unbound.
+fn join_arms(branches: &[(String, TypeId)], arms: &[(TypeId, Vec<OwnedLoc>)]) -> Vec<ArmSite> {
+    branches
+        .iter()
+        .enumerate()
+        .map(|(i, (_, future))| {
+            let members = branches.iter().filter(|(_, t)| t == future).count();
+            let of_type: Vec<&Vec<OwnedLoc>> = arms
+                .iter()
+                .filter(|(t, _)| t == future)
+                .map(|(_, bindings)| bindings)
+                .collect();
+            if members > 1 || of_type.len() > 1 {
+                return ArmSite::Declined((
+                    SemanticIssueKind::AmbiguousLayout,
+                    format!(
+                        "branch {i}'s future type is shared: {members} tuple members, {} arms",
+                        of_type.len()
+                    ),
+                ));
+            }
+            let [bindings] = of_type.as_slice() else {
+                return ArmSite::Declined((
+                    SemanticIssueKind::MissingLayout,
+                    format!("no arm of branch {i}'s future type in the closure"),
+                ));
+            };
+            let mut sites = bindings
+                .iter()
+                .filter(|b| b.file.is_some() && b.line.is_some());
+            let Some(first) = sites.next() else {
+                return ArmSite::Unbound;
+            };
+            let same = |a: &OwnedLoc, b: &OwnedLoc| {
+                a.file == b.file && a.dir == b.dir && a.comp_dir == b.comp_dir && a.line == b.line
+            };
+            if let Some(other) = sites.find(|b| !same(first, b)) {
+                return ArmSite::Declined((
+                    SemanticIssueKind::AmbiguousLayout,
+                    format!(
+                        "branch {i}'s bindings disagree: line {} and line {}",
+                        first.line.unwrap_or_default(),
+                        other.line.unwrap_or_default()
+                    ),
+                ));
+            }
+            ArmSite::Written(first.clone())
+        })
+        .collect()
 }
 
 /// The every-kind order the bindings are attempted in, which is also the
@@ -991,14 +1085,15 @@ struct Plan {
     delegate_is_future: bool,
 }
 
-/// A `select!` binding as planned: its rule, and the three routes held
-/// to the final table.
+/// A `select!` binding as planned: its rule, the three routes held
+/// to the final table, and where each branch's arm is written.
 #[derive(Clone, Debug)]
 struct SelectPlan {
     rule: RuleKey,
     mask: TypedPath,
     futures: TypedPath,
     branches: Vec<TypedPath>,
+    arms: Vec<Option<SourceLoc>>,
 }
 
 #[derive(Clone, Debug)]
@@ -1208,9 +1303,14 @@ pub(super) fn bind_semantics(
         }
         // The select binding is a fact beside the continuation, not a
         // program: the `PollFn` still polls nothing any rule follows.
+        // An arm the join could not place is an issue beside a binding
+        // that stands; a layout the plan could not read is no binding.
         if readable && let Some(select) = &seed.select {
             match plan_select(ty, select, types, strings) {
-                Ok(plan) => draft.select = Some(plan),
+                Ok((plan, mut declined)) => {
+                    draft.issues.append(&mut declined);
+                    draft.select = Some(plan);
+                }
                 Err(decline) => draft.issues.push(decline),
             }
         }
@@ -1440,6 +1540,7 @@ pub(super) fn bind_semantics(
             mask: plan.mask,
             futures: plan.futures,
             branches: plan.branches,
+            arms: plan.arms,
         });
         records.push(TypeSemantics {
             ty,
@@ -1954,7 +2055,7 @@ fn plan_select(
     seed: &SelectSeed,
     types: &TypeTable,
     strings: &mut StringInterner,
-) -> Result<SelectPlan, Decline> {
+) -> Result<(SelectPlan, Vec<Decline>), Decline> {
     let Some(source) = &seed.source else {
         return Err((
             SemanticIssueKind::UnsupportedOrigin,
@@ -2032,12 +2133,53 @@ fn plan_select(
             "the tuple has no members".to_owned(),
         ));
     }
-    Ok(SelectPlan {
-        rule,
-        mask,
-        futures,
-        branches,
-    })
+    if seed.arms.len() != branches.len() {
+        return Err((
+            SemanticIssueKind::MissingLayout,
+            format!(
+                "{} arms were joined for {} branches",
+                seed.arms.len(),
+                branches.len()
+            ),
+        ));
+    }
+    // Each written arm's path is cut the way every other source path
+    // in the bundle is; a declined one is an issue beside the binding.
+    let mut declined = Vec::new();
+    let arms = seed
+        .arms
+        .iter()
+        .map(|arm| match arm {
+            ArmSite::Written(loc) => {
+                let (Some(file), Some(line)) = (loc.file.as_deref(), loc.line) else {
+                    return None;
+                };
+                Some(SourceLoc {
+                    file: strings.intern(&display_path(
+                        loc.comp_dir.as_deref(),
+                        loc.dir.as_deref(),
+                        file,
+                    )),
+                    line: line as u32,
+                })
+            }
+            ArmSite::Unbound => None,
+            ArmSite::Declined(decline) => {
+                declined.push(decline.clone());
+                None
+            }
+        })
+        .collect();
+    Ok((
+        SelectPlan {
+            rule,
+            mask,
+            futures,
+            branches,
+            arms,
+        },
+        declined,
+    ))
 }
 
 /// Plan `Instrumented<F>`'s delegation: the origin first — every
@@ -4395,6 +4537,7 @@ mod tests {
             mask_word,
             futures: "_ref__futures".into(),
             tuple,
+            arms: vec![ArmSite::Unbound; branches.len()],
             branches: branches
                 .into_iter()
                 .map(|(m, t)| (m.to_owned(), t))
@@ -4413,13 +4556,15 @@ mod tests {
                 .collect::<Vec<_>>()
                 .join(".")
         };
-        let plan = plan_select(
+        let (plan, declined) = plan_select(
             poll_fn,
             &seed(u8_t, vec![("__0", fut), ("__1", other)], &reviewed),
             &types,
             &mut strings,
         )
         .unwrap();
+        assert!(declined.is_empty(), "{declined:?}");
+        assert_eq!(plan.arms, [None, None]);
         let RuleKey::Delegation { kind, origin } = &plan.rule else {
             panic!("{:?}", plan.rule);
         };
@@ -4498,6 +4643,158 @@ mod tests {
         .unwrap_err();
         assert_eq!(kind, SemanticIssueKind::AmbiguousLayout);
         assert!(detail.contains("no unique member"), "{detail}");
+        // The arms: a written one is interned with its path cut like
+        // every other, a declined one is handed back as an issue with
+        // no arm, and the join's list has to pair with the branches.
+        let mut with_arms = seed(u8_t, vec![("__0", fut), ("__1", other)], &reviewed);
+        with_arms.arms = vec![
+            ArmSite::Written(OwnedLoc {
+                file: Some("src/pool.rs".to_owned()),
+                dir: Some(format!("{ROOT}/qorb-0.4.1")),
+                comp_dir: None,
+                line: Some(286),
+            }),
+            ArmSite::Declined((
+                SemanticIssueKind::AmbiguousLayout,
+                "branch 1's future type is shared".to_owned(),
+            )),
+        ];
+        let (plan, declined) = plan_select(poll_fn, &with_arms, &types, &mut strings).unwrap();
+        let [Some(written), None] = plan.arms.as_slice() else {
+            panic!("{:?}", plan.arms);
+        };
+        assert_eq!(strings.get(written.file), Some("qorb-0.4.1/src/pool.rs"));
+        assert_eq!(written.line, 286);
+        assert_eq!(
+            declined,
+            [(
+                SemanticIssueKind::AmbiguousLayout,
+                "branch 1's future type is shared".to_owned()
+            )]
+        );
+        with_arms.arms.pop();
+        let (kind, detail) = plan_select(poll_fn, &with_arms, &types, &mut strings).unwrap_err();
+        assert_eq!(kind, SemanticIssueKind::MissingLayout);
+        assert!(
+            detail.contains("1 arms were joined for 2 branches"),
+            "{detail}"
+        );
+    }
+
+    /// The join pairs a branch with the arm of its type and nothing
+    /// else: a type on one side twice settles nothing for anything of
+    /// that type, an arm with no arm of its type is missing, an arm
+    /// whose pattern binds nothing is unbound, and bindings that do
+    /// not agree settle nothing either.
+    #[test]
+    fn test_select_arms_join_by_type_alone() {
+        use gimli::UnitSectionOffset;
+        let id = |offset: usize| TypeId(UnitSectionOffset(offset));
+        let loc = |line: u64| OwnedLoc {
+            file: Some("src/pool.rs".to_owned()),
+            dir: None,
+            comp_dir: None,
+            line: Some(line),
+        };
+        let branches = |types: &[usize]| -> Vec<(String, TypeId)> {
+            types
+                .iter()
+                .enumerate()
+                .map(|(i, &t)| (format!("__{i}"), id(t)))
+                .collect()
+        };
+        let kinds = |sites: &[ArmSite]| -> Vec<String> {
+            sites
+                .iter()
+                .map(|site| match site {
+                    ArmSite::Written(loc) => format!("written {}", loc.line.unwrap()),
+                    ArmSite::Unbound => "unbound".to_owned(),
+                    ArmSite::Declined((kind, detail)) => format!("declined {kind:?}: {detail}"),
+                })
+                .collect()
+        };
+        // Five branches of five types: bound, unbound, bound twice on
+        // one line, absent from the closure, bound on two lines.
+        let arms = vec![
+            (id(1), vec![loc(286)]),
+            (id(2), vec![]),
+            (id(3), vec![loc(332), loc(332)]),
+            (id(5), vec![loc(10), loc(11)]),
+        ];
+        assert_eq!(
+            kinds(&join_arms(&branches(&[1, 2, 3, 4, 5]), &arms)),
+            [
+                "written 286",
+                "unbound",
+                "written 332",
+                "declined MissingLayout: no arm of branch 3's future type in the closure",
+                "declined AmbiguousLayout: branch 4's bindings disagree: line 10 and line 11",
+            ]
+        );
+        // A binding without both coordinates is no site: not a
+        // disagreement beside one that has them, not a site on its own.
+        let bare = OwnedLoc {
+            file: None,
+            dir: None,
+            comp_dir: None,
+            line: None,
+        };
+        let file_only = OwnedLoc {
+            line: None,
+            ..loc(0)
+        };
+        let line_only = OwnedLoc {
+            file: None,
+            ..loc(300)
+        };
+        for half in [bare, file_only, line_only] {
+            assert_eq!(
+                kinds(&join_arms(
+                    &branches(&[1]),
+                    &[(id(1), vec![half.clone(), loc(286)])]
+                )),
+                ["written 286"],
+                "{half:?}"
+            );
+            assert_eq!(
+                kinds(&join_arms(&branches(&[1]), &[(id(1), vec![half.clone()])])),
+                ["unbound"],
+                "{half:?}"
+            );
+        }
+        // The type shared on either side: two members and two arms, two
+        // members and one arm, one member and two arms.
+        assert_eq!(
+            kinds(&join_arms(
+                &branches(&[1, 1]),
+                &[(id(1), vec![loc(33)]), (id(1), vec![loc(34)])]
+            )),
+            [
+                "declined AmbiguousLayout: branch 0's future type is shared: 2 tuple members, 2 arms",
+                "declined AmbiguousLayout: branch 1's future type is shared: 2 tuple members, 2 arms",
+            ]
+        );
+        assert_eq!(
+            kinds(&join_arms(&branches(&[1, 1]), &[(id(1), vec![loc(33)])])),
+            [
+                "declined AmbiguousLayout: branch 0's future type is shared: 2 tuple members, 1 arms",
+                "declined AmbiguousLayout: branch 1's future type is shared: 2 tuple members, 1 arms",
+            ]
+        );
+        assert_eq!(
+            kinds(&join_arms(
+                &branches(&[1, 2]),
+                &[
+                    (id(1), vec![loc(33)]),
+                    (id(1), vec![loc(34)]),
+                    (id(2), vec![loc(40)])
+                ]
+            )),
+            [
+                "declined AmbiguousLayout: branch 0's future type is shared: 1 tuple members, 2 arms",
+                "written 40",
+            ]
+        );
     }
 
     /// The tick's plan: the origin off the closure's declaration file

@@ -494,6 +494,13 @@ impl<'a> Check<'a> {
             require(seen.insert(*name), "duplicate select branch")?;
             self.path(binding.futures.target, branch)?;
         }
+        require(
+            binding.arms.len() == binding.branches.len(),
+            "select arms do not pair with its branches",
+        )?;
+        for arm in binding.arms.iter().flatten() {
+            self.string(arm.file)?;
+        }
         Ok(())
     }
 

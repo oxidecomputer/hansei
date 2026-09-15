@@ -787,13 +787,22 @@ pub fn describe_semantics(bundle: &Bundle) -> String {
                 .iter()
                 .map(|b| path(select.futures.target, b))
                 .collect();
+            let arms: Vec<String> = select
+                .arms
+                .iter()
+                .map(|arm| match arm {
+                    Some(loc) => format!("{}:{}", s(loc.file), loc.line),
+                    None => "-".to_owned(),
+                })
+                .collect();
             let _ = write!(
                 line,
-                " select rule {} mask {} futures {} branches [{}]",
+                " select rule {} mask {} futures {} branches [{}] arms [{}]",
                 select.rule.0,
                 path(record.ty, &select.mask),
                 path(record.ty, &select.futures),
-                branches.join(", ")
+                branches.join(", "),
+                arms.join(", ")
             );
         }
         for i in &record.issues {

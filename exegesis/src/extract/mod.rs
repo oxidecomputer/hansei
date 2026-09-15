@@ -1314,8 +1314,34 @@ fn extract_from_view(
     // Where a closure environment was declared, as the `select!` rule
     // reads its origin: the body fn's declaration file, joined the way
     // a poll declaration's is, so the same registry-path check applies.
-    let env_source =
-        |env: TypeId| env_decl_func(reader, view, env).and_then(|f| sweep::poll_source(reader, &f));
+    // Beside the origin, the arms of a `select!` as the closure its
+    // environment belongs to recorded them: each anchor's pointee — the
+    // `&mut` the macro took of a branch future, resolved to the
+    // branch's own type, canonical like the layout's tuple members —
+    // with the arm's pattern bindings. An anchor that is no pointer is
+    // nothing the join can key on and is dropped.
+    let env_facts = |env: TypeId| -> semantics::EnvFacts {
+        let body = env_decl_func(reader, view, env);
+        let arms = body
+            .iter()
+            .flat_map(|body| body.raw().select_arms.iter())
+            .filter_map(|arm| {
+                let Some(RawType::Pointer(p)) = reader.canonical_type(arm.anchor) else {
+                    return None;
+                };
+                let bindings = arm
+                    .bindings
+                    .iter()
+                    .map(|loc| paths::owned_loc(&SourceLocView::new(loc, reader)))
+                    .collect();
+                Some((reader.canonicalize(p.target_type_id), bindings))
+            })
+            .collect();
+        semantics::EnvFacts {
+            source: body.as_ref().and_then(|f| sweep::poll_source(reader, f)),
+            arms,
+        }
+    };
     // Where a type's own methods were declared, for a rule over a type
     // that is no future and so has no poll: every subprogram under an
     // impl of that type, or under the type's own DIE, that records a
@@ -1367,7 +1393,7 @@ fn extract_from_view(
         &poll_sources,
         &coroutine_candidates,
         compiler_verdict,
-        env_source,
+        env_facts,
         type_sources,
     );
     let emitter::Finished {

@@ -1610,6 +1610,7 @@ fn test_semantic_select_binding_reads_the_mask_and_the_tuple() {
         mask: capture(disabled, u8_t),
         futures: capture(futures, tuple),
         branches: vec![path(vec![named(first)], CHILD)],
+        arms: vec![None],
     });
     b.semantics.types = vec![record];
     b.validate().unwrap();
@@ -1655,6 +1656,17 @@ fn test_semantic_select_binding_reads_the_mask_and_the_tuple() {
     let dup = select(&mut wrong).branches[0].clone();
     select(&mut wrong).branches.push(dup);
     bad(&wrong, "more branches than tuple members");
+    // One arm per branch, and a written arm's file is a string the
+    // bundle has.
+    let mut wrong = b.clone();
+    select(&mut wrong).arms.clear();
+    bad(&wrong, "arms do not pair with its branches");
+    let mut wrong = b.clone();
+    select(&mut wrong).arms = vec![Some(SourceLoc {
+        file: StrRef(u32::MAX),
+        line: 286,
+    })];
+    bad(&wrong, "string");
     // The mask's bits bound the branches too: a nine-member tuple over
     // a `u8` mask is refused, eight members fill it exactly.
     let mut wide = b.clone();
@@ -1684,9 +1696,11 @@ fn test_semantic_select_binding_reads_the_mask_and_the_tuple() {
             .iter()
             .map(|&name| path(vec![named(name)], CHILD))
             .collect();
+        select(&mut wide).arms = vec![None; interned.len()];
     }
     bad(&wide, "more branches than tuple members or mask bits");
     select(&mut wide).branches.pop();
+    select(&mut wide).arms.pop();
     wide.validate().unwrap();
     let mut wrong = b.clone();
     select(&mut wrong).branches[0] = path(vec![named(first), named(FIELD)], BundleTypeId(0));

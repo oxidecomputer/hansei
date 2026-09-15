@@ -915,7 +915,10 @@ const SELECT_PROGRAMS: [&str; 5] = [
 /// kind under a tokio delegation origin. Every `PollFn` from outside
 /// the fixture crate — the mpsc receiver's, the scheduler's `block_on`
 /// — carries none.
-fn assert_select(program: &str, bundle: &Bundle, key: &str, branches: usize) {
+/// `arms` is the line each branch's arm is written on in the fixture's
+/// own file, in branch order: `None` where the arm's pattern binds
+/// nothing, or where the join declined it — two branches of one type.
+fn assert_select(program: &str, bundle: &Bundle, key: &str, branches: usize, arms: &[Option<u32>]) {
     use hansei_bundle::{MemberRef, SemanticOrigin, SemanticRuleKind, Step, TypeDef};
     let s = |id| bundle.strings.get(id).unwrap();
     let mut seen = 0;
@@ -981,6 +984,24 @@ fn assert_select(program: &str, bundle: &Bundle, key: &str, branches: usize) {
                 "{program}: {name}: a branch names a type the table lacks"
             );
         }
+        // Every written arm is on the fixture's own file, at the line
+        // the fixture writes it.
+        let own_file = format!("{program}.rs");
+        let lines: Vec<Option<u32>> = select
+            .arms
+            .iter()
+            .map(|arm| {
+                arm.as_ref().map(|loc| {
+                    let file = s(loc.file);
+                    assert!(
+                        file.ends_with(&own_file),
+                        "{program}: {name}: an arm is written in {file}"
+                    );
+                    loc.line
+                })
+            })
+            .collect();
+        assert_eq!(lines, arms, "{program}: {name}");
         seen += 1;
     }
     assert_eq!(seen, 1, "{program}: one PollFn named {key}");
@@ -2062,6 +2083,9 @@ fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
             bundle,
             "core::future::poll_fn::PollFn<select_combinator::selector::{async_fn#0}::{closure_env#",
             2,
+            // Both arms bind, but over one future type — the same
+            // `wait` — so neither can be told from the other.
+            &[None, None],
         );
         // A multi-line signature is where the two sources disagree: the
         // fn at 26, its resume fn at the `{` on 30. The fn wins.
@@ -2116,6 +2140,7 @@ fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
             bundle,
             "core::future::poll_fn::PollFn<futurelock::do_stuff::{async_fn#0}::{closure_env#",
             2,
+            &[None, None],
         );
     }
     if program == "simple-await" {
@@ -2411,6 +2436,7 @@ fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
             bundle,
             "core::future::poll_fn::PollFn<armed_select::selector::{async_fn#0}::{closure_env#",
             4,
+            &[Some(50), Some(51), Some(52), None],
         );
         // The ticker's two branches: the oneshot and the pinned tick.
         assert_select(
@@ -2418,6 +2444,7 @@ fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
             bundle,
             "core::future::poll_fn::PollFn<armed_select::ticker::{async_fn#0}::{closure_env#",
             2,
+            &[Some(129), None],
         );
         let table = exegesis::describe::describe_semantics(bundle);
         // The forever task's three: the pinned `Pending`, the pinned
@@ -2434,6 +2461,7 @@ fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
             bundle,
             "core::future::poll_fn::PollFn<armed_select::forever::{async_fn#0}::{closure_env#",
             3,
+            &[Some(170), Some(171), Some(172)],
         );
         let pending = semantic_line(&table, "core::future::pending::Pending<u32> :: ");
         assert!(
@@ -2563,12 +2591,14 @@ fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
             bundle,
             "core::future::poll_fn::PollFn<watch_stream::resolver::{async_fn#0}::{closure_env#",
             2,
+            &[Some(44), Some(45)],
         );
         assert_select(
             program,
             bundle,
             "core::future::poll_fn::PollFn<watch_stream::mapper::{async_fn#0}::{closure_env#",
             2,
+            &[Some(76), Some(77)],
         );
         // The linear route, record by record: `Next` forwards through
         // its `&mut` to the nominal stream, exclusively, and proves it
@@ -2724,6 +2754,7 @@ fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
             bundle,
             "core::future::poll_fn::PollFn<channels::send_waiter::{async_fn#0}::{closure_env#",
             3,
+            &[None, None, None],
         );
         // The impl table resolved mpsc's Sender impl from a member
         // symbol: the `{impl#N}` index is a source-order accident a

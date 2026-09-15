@@ -5,7 +5,7 @@
 //! Independent identity, storage, and polling facts. Absence of a capability
 //! is unknown; it does not establish that a value contains nothing of interest.
 
-use crate::{BundleTypeId, Step, StrRef, TaskEntryId};
+use crate::{BundleTypeId, SourceLoc, Step, StrRef, TaskEntryId};
 
 use serde::{Deserialize, Serialize};
 
@@ -285,6 +285,12 @@ pub struct SelectBinding {
     /// Branch `i`, as a path from the tuple: its member `__i` and the
     /// future type that member holds.
     pub branches: Vec<TypedPath>,
+    /// Where branch `i`'s arm is written in the caller's source — the
+    /// line its pattern is on — parallel to `branches`. `None` where
+    /// the arm's pattern binds nothing (`_ = …`), or where extraction
+    /// could not tell which arm is the branch's; the record's issues
+    /// say which.
+    pub arms: Vec<Option<SourceLoc>>,
 }
 
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
