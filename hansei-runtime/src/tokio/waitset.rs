@@ -208,14 +208,25 @@ pub enum MemberRoute {
     Branch { local: String, borrowed: bool },
     /// Branch `index` of a `select!`, in source order: member `index`
     /// of the tuple the stop's closure borrows, with `borrowed` where
-    /// that member is itself a `&mut` to the frame's own local.
-    Select { index: usize, borrowed: bool },
+    /// that member is itself a `&mut` to the frame's own local, and
+    /// `arm` the file and line the branch's arm is written on, where
+    /// the bundle recorded one.
+    Select {
+        index: usize,
+        borrowed: bool,
+        arm: Option<(String, u32)>,
+    },
     /// Branch `index` of a `select!` whose mask bit is set: disabled
     /// before its first poll by a false precondition, or after
     /// completing with an output that missed its pattern — which of
     /// the two, nothing in memory says. Not inspected: `ty` names
-    /// what it is, and that is all that is listed.
-    Disabled { index: usize, ty: BundleTypeId },
+    /// what it is, `arm` where it is written, and that is all that is
+    /// listed.
+    Disabled {
+        index: usize,
+        ty: BundleTypeId,
+        arm: Option<(String, u32)>,
+    },
     /// Entry `index` of a container that polls every entry with the
     /// task's own context — a `StreamMap` — so each entry holds the
     /// task's waker itself. `under` is the member the container was
@@ -594,6 +605,12 @@ impl<'b, T: Target> Context<'b, T> {
         word[..width].copy_from_slice(&mask.bytes[..width]);
         let mask = u64::from_le_bytes(word);
         let tuple = landed(&binding.futures.steps, "branch tuple")?;
+        // Where branch `index`'s arm is written, as the bundle recorded
+        // it: a fact about the source, the same whatever the mask says.
+        let arm_at = |index: usize| {
+            let loc = binding.arms.get(index)?.as_ref()?;
+            Some((self.view.str(loc.file)?.to_owned(), loc.line))
+        };
         let mut found = Enumerated {
             select: true,
             ..Enumerated::default()
@@ -617,7 +634,11 @@ impl<'b, T: Target> Context<'b, T> {
                 // took of it: a `&mut Pin<&mut Sleep>` is a sleep.
                 let ty = self.static_referent(member.ty.id());
                 found.disabled.push(WaitMember {
-                    route: MemberRoute::Disabled { index, ty },
+                    route: MemberRoute::Disabled {
+                        index,
+                        ty,
+                        arm: arm_at(index),
+                    },
                     key: None,
                     future: self.view.ty(ty).map(|t| t.name().to_string()),
                     assessment: None,
@@ -635,6 +656,7 @@ impl<'b, T: Target> Context<'b, T> {
                 route: MemberRoute::Select {
                     index,
                     borrowed: false,
+                    arm: arm_at(index),
                 },
                 value: member,
             });
@@ -830,9 +852,14 @@ impl<'b, T: Target> Context<'b, T> {
                     local,
                     borrowed: borrowed || via_borrow,
                 },
-                MemberRoute::Select { index, borrowed } => MemberRoute::Select {
+                MemberRoute::Select {
+                    index,
+                    borrowed,
+                    arm,
+                } => MemberRoute::Select {
                     index,
                     borrowed: borrowed || via_borrow,
+                    arm,
                 },
                 MemberRoute::Entry {
                     index,
@@ -2005,16 +2032,19 @@ mod tests {
             member(MemberRoute::Select {
                 index: 3,
                 borrowed: false,
+                arm: None,
             }),
             member(MemberRoute::Select {
                 index: 1,
                 borrowed: true,
+                arm: None,
             }),
             member(MemberRoute::Entry {
                 index: 0,
                 under: Some(Box::new(MemberRoute::Select {
                     index: 1,
                     borrowed: true,
+                    arm: None,
                 })),
                 borrowed: false,
             }),
@@ -2023,6 +2053,7 @@ mod tests {
                 under: Some(Box::new(MemberRoute::Select {
                     index: 1,
                     borrowed: true,
+                    arm: None,
                 })),
                 borrowed: false,
             }),
@@ -2033,10 +2064,12 @@ mod tests {
             member(MemberRoute::Disabled {
                 index: 0,
                 ty: BundleTypeId(0),
+                arm: None,
             }),
             member(MemberRoute::Disabled {
                 index: 2,
                 ty: BundleTypeId(0),
+                arm: None,
             }),
         ];
         order_by_branch(&mut members);
@@ -2141,7 +2174,8 @@ mod tests {
                 map.route,
                 MemberRoute::Select {
                     index: 1,
-                    borrowed: true
+                    borrowed: true,
+                    ..
                 }
             ),
             "{:?}",
@@ -2516,6 +2550,7 @@ mod tests {
             route: MemberRoute::Select {
                 index,
                 borrowed: true,
+                arm: None,
             },
             key: Some(key(0x6000 + index as u64 * 0x100)),
             future: Some("x::B".to_string()),
@@ -2544,7 +2579,11 @@ mod tests {
     #[test]
     fn test_a_select_is_never_ready_over_every_enabled_branch() {
         let disabled = || WaitMember {
-            route: MemberRoute::Disabled { index: 2, ty: TY },
+            route: MemberRoute::Disabled {
+                index: 2,
+                ty: TY,
+                arm: None,
+            },
             key: None,
             future: Some("x::D".to_string()),
             assessment: None,
@@ -2675,7 +2714,9 @@ mod tests {
             .iter()
             .map(|m| {
                 let route = match m.route {
-                    MemberRoute::Select { index, borrowed } => {
+                    MemberRoute::Select {
+                        index, borrowed, ..
+                    } => {
                         format!(
                             "branch {index}{}",
                             if borrowed { " (borrowed)" } else { "" }

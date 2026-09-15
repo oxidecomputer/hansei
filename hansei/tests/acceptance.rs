@@ -4228,9 +4228,12 @@ fn test_armed_select_acceptance() {
             // Each branch is named in full, generic arguments and
             // all: one line stands for one branch, so what the arm is
             // over is what tells it from its neighbour.
-            r"(?m)^        branch 0 \(borrowed\): core::future::pending::Pending<u32>\n            address: 0x[0-9a-f]+\n            armed: no\n            blocked on: never ready$",
-            r"(?m)^        branch 1 \(borrowed\): async block armed_select::forever::\{async_fn#0\}\n            address: 0x[0-9a-f]+\n            armed: no\n            blocked on: never ready$",
-            r"(?m)^        branch 2: core::future::ready::Ready<u32>: disabled$",
+            // Each branch ends on the line its arm is written on —
+            // the disabled one too, whose arm is where its `if false`
+            // is.
+            r"(?m)^        branch 0 \(borrowed\): core::future::pending::Pending<u32>\n            address: 0x[0-9a-f]+\n            armed: no\n            blocked on: never ready\n            defined at: [^\n]*armed-select\.rs:170$",
+            r"(?m)^        branch 1 \(borrowed\): async block armed_select::forever::\{async_fn#0\}\n            address: 0x[0-9a-f]+\n            armed: no\n            blocked on: never ready\n            defined at: [^\n]*armed-select\.rs:171$",
+            r"(?m)^        branch 2: core::future::ready::Ready<u32>: disabled\n            defined at: [^\n]*armed-select\.rs:172$",
         ] {
             assert!(
                 regex::Regex::new(line).unwrap().is_match(&block),

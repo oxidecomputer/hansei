@@ -1407,16 +1407,28 @@ fn member_line(
     armed_by: &[&attribution::AttributedSlot],
     stopped: Option<RawInstant>,
 ) -> Vec<String> {
-    let (local, borrowed) = match &member.route {
-        MemberRoute::Branch { local, borrowed } => (local.clone(), *borrowed),
-        MemberRoute::Select { index, borrowed } => (format!("branch {index}"), *borrowed),
-        MemberRoute::Disabled { index, ty } => {
+    // Where a `select!` branch's arm is written is a fact about the
+    // source, printed under the branch whatever its state: below the
+    // `blocked on` lines of a branch that was inspected, and as the
+    // second line of a disabled one, which has no other.
+    let (local, borrowed, arm) = match &member.route {
+        MemberRoute::Branch { local, borrowed } => (local.clone(), *borrowed, None),
+        MemberRoute::Select {
+            index,
+            borrowed,
+            arm,
+        } => (format!("branch {index}"), *borrowed, arm.as_ref()),
+        MemberRoute::Disabled { index, ty, arm } => {
             let future = member_future(member, stops, Some(*ty));
-            return vec![format!("branch {index}: {future}: disabled")];
+            let mut lines = vec![format!("branch {index}: {future}: disabled")];
+            if let Some((file, line)) = arm {
+                lines.push(format!("    defined at: {file}:{line}"));
+            }
+            return lines;
         }
         MemberRoute::Entry {
             index, borrowed, ..
-        } => (format!("entry {index}"), *borrowed),
+        } => (format!("entry {index}"), *borrowed, None),
         MemberRoute::SlotOnly { .. } => unreachable!("only branches print as members"),
     };
     let via = if borrowed { " (borrowed)" } else { "" };
@@ -1443,6 +1455,9 @@ fn member_line(
                     fanout.listed, fanout.total
                 ),
             );
+        }
+        if let Some((file, line)) = arm {
+            field("defined at", format!("{file}:{line}"));
         }
         for note in &member.notes {
             field("note", note.clone());
@@ -1520,6 +1535,9 @@ fn member_line(
                 None => "not inspected".to_string(),
             },
         );
+    }
+    if let Some((file, line)) = arm {
+        field("defined at", format!("{file}:{line}"));
     }
     // The slots themselves: one a path names says where it sits, and
     // one sitting where no path reaches — a wheel entry, an io
@@ -2797,6 +2815,7 @@ mod table_tests {
             route: MemberRoute::Disabled {
                 index,
                 ty: BundleTypeId(0),
+                arm: None,
             },
             key: None,
             future: Some("x::skipped".to_string()),
@@ -2813,9 +2832,85 @@ mod table_tests {
             route: MemberRoute::Select {
                 index,
                 borrowed: true,
+                arm: None,
             },
             ..branch("", assessment, armed)
         }
+    }
+
+    /// Where a branch's arm is written sits below its `blocked on`
+    /// line, under the count of a branch that fans out, and as the
+    /// second line of a disabled branch; a branch with none prints as
+    /// before, and an entry never carries one.
+    #[test]
+    fn test_defined_at_follows_the_verdict_on_every_kind_of_branch() {
+        let impls = Default::default();
+        let stops = StopNames::none(&impls);
+        let line = |member: &WaitMember| member_line(member, &stops, &[], None).join("\n");
+        let arm = || Some(("qorb-0.4.1/src/pool.rs".to_string(), 286));
+        let inspected = WaitMember {
+            route: MemberRoute::Select {
+                index: 0,
+                borrowed: true,
+                arm: arm(),
+            },
+            ..select_branch(
+                0,
+                WaitAssessment::Unknown(WaitUnknownReason::Continuation),
+                false,
+            )
+        };
+        assert_eq!(
+            line(&inspected),
+            "branch 0 (borrowed): x::branch\n    address: 0x6000\n    armed: no\n    blocked on: unknown\n    defined at: qorb-0.4.1/src/pool.rs:286"
+        );
+        let fanning = WaitMember {
+            route: MemberRoute::Select {
+                index: 1,
+                borrowed: false,
+                arm: arm(),
+            },
+            assessment: None,
+            entries: Some(hansei_runtime::tokio::waitset::Fanout {
+                listed: 2,
+                total: 5,
+            }),
+            ..branch("m", WaitAssessment::Unresumed, true)
+        };
+        assert_eq!(
+            line(&fanning),
+            "branch 1: x::branch\n    address: 0x6000\n    entries: 2 of 5, the rest not inspected\n    defined at: qorb-0.4.1/src/pool.rs:286"
+        );
+        let off = WaitMember {
+            route: MemberRoute::Disabled {
+                index: 2,
+                ty: BundleTypeId(0),
+                arm: arm(),
+            },
+            ..disabled(2)
+        };
+        assert_eq!(
+            line(&off),
+            "branch 2: x::skipped: disabled\n    defined at: qorb-0.4.1/src/pool.rs:286"
+        );
+        assert_eq!(line(&disabled(2)), "branch 2: x::skipped: disabled");
+        let entry = WaitMember {
+            route: MemberRoute::Entry {
+                index: 0,
+                under: Some(Box::new(MemberRoute::Select {
+                    index: 1,
+                    borrowed: false,
+                    arm: arm(),
+                })),
+                borrowed: false,
+            },
+            ..select_branch(
+                0,
+                WaitAssessment::Unknown(WaitUnknownReason::Continuation),
+                false,
+            )
+        };
+        assert!(!line(&entry).contains("defined at"), "{}", line(&entry));
     }
 
     fn one_of(members: Vec<WaitMember>) -> WaitAssessment {
@@ -2925,6 +3020,7 @@ mod table_tests {
             route: MemberRoute::Select {
                 index: 1,
                 borrowed: true,
+                arm: None,
             },
             assessment: None,
             entries: Some(hansei_runtime::tokio::waitset::Fanout { listed, total }),
@@ -2953,6 +3049,7 @@ mod table_tests {
         let under = MemberRoute::Select {
             index: 1,
             borrowed: true,
+            arm: None,
         };
         let wait = assessed(
             1,

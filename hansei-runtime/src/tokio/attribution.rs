@@ -2820,7 +2820,9 @@ mod tests {
             .members
             .iter()
             .map(|m| match m.route {
-                MemberRoute::Select { index, borrowed } => (index, borrowed),
+                MemberRoute::Select {
+                    index, borrowed, ..
+                } => (index, borrowed),
                 ref other => panic!("{other:?}"),
             })
             .collect();
