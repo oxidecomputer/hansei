@@ -1958,22 +1958,21 @@ fn test_blocking_pool_acceptance() {
         assert_eq!(running.waiting, "", "{rows:#?}");
 
         // The join edges point at listed rows, plainly named: the
-        // verified join heads the line of the trailer slot it accounts
-        // for, under a bare wait label.
+        // verified join is what the slot's block says it waits on,
+        // under a bare wait label.
+        let joined = |id: &str| {
+            vec![
+                "slot 0:".to_string(),
+                format!("    blocked on: task {id}"),
+                "    waker: waker in its trailer".to_string(),
+            ]
+        };
         let a = task_with_future(&rows, "async fn blocking_pool::running_waiter");
         assert_eq!(a.waiting, "", "{rows:#?}");
-        assert_eq!(
-            a.wait_lines,
-            [format!("task {}; armed: waker in its trailer", running.id)],
-            "{rows:#?}"
-        );
+        assert_eq!(a.wait_lines, joined(&running.id), "{rows:#?}");
         let b = task_with_future(&rows, "async fn blocking_pool::queued_waiter");
         assert_eq!(b.waiting, "", "{rows:#?}");
-        assert_eq!(
-            b.wait_lines,
-            [format!("task {}; armed: waker in its trailer", queued.id)],
-            "{rows:#?}"
-        );
+        assert_eq!(b.wait_lines, joined(&queued.id), "{rows:#?}");
     });
 }
 
@@ -4024,14 +4023,15 @@ fn test_armed_select_acceptance() {
         // agrees with it — under a bare wait label.
         let holder = task_with_future(&rows, "async fn armed_select::holder");
         assert_eq!(holder.waiting, "", "{holder:?}");
-        let [line, at] = holder.wait_lines.as_slice() else {
+        let [head, on, at] = holder.wait_lines.as_slice() else {
             panic!("{holder:?}");
         };
-        assert!(line.starts_with("oneshot rx 0x"), "{holder:?}");
+        assert_eq!(head, "slot 0:", "{holder:?}");
         assert!(
-            line.contains(" (nothing sent, sender alive); armed"),
+            on.starts_with("    blocked on: oneshot rx 0x"),
             "{holder:?}"
         );
+        assert!(on.ends_with(" (nothing sent, sender alive)"), "{holder:?}");
         // Where the slot sits is the line under it, and what vouches
         // for it closes that line.
         assert!(
@@ -4039,27 +4039,33 @@ fn test_armed_select_acceptance() {
             "{holder:?}"
         );
         // One entry: the leaf's reader and the slot agree on the one
-        // primitive, so the line does not say it twice.
-        assert_eq!(line.matches("oneshot rx").count(), 1, "{holder:?}");
+        // primitive, so the block does not name it twice.
+        assert_eq!(
+            holder.wait_lines.join("\n").matches("oneshot rx").count(),
+            1,
+            "{holder:?}"
+        );
         let waiter = task_with_future(&rows, "async fn armed_select::waiter");
         // The waiter's leaf reader walked the list: its state word and
-        // the one node it found, in the slot entry's grammar.
+        // the one node it found, on the line that names the primitive.
         assert_eq!(waiter.waiting, "", "{waiter:?}");
-        let [line, at] = waiter.wait_lines.as_slice() else {
+        let [head, on, at] = waiter.wait_lines.as_slice() else {
             panic!("{waiter:?}");
         };
-        assert!(line.starts_with("notify rx 0x"), "{waiter:?}");
-        assert!(line.ends_with(" (waiting, 1 queued); armed"), "{waiter:?}");
+        assert_eq!(head, "slot 0:", "{waiter:?}");
+        assert!(on.starts_with("    blocked on: notify rx 0x"), "{waiter:?}");
+        assert!(on.ends_with(" (waiting, 1 queued)"), "{waiter:?}");
         assert!(at.starts_with("    location: "), "{waiter:?}");
         let driver = task_with_future(&rows, "async fn armed_select::driver");
         assert_eq!(driver.waiting, "", "{driver:?}");
-        let [line, at] = driver.wait_lines.as_slice() else {
+        let [head, waker, at] = driver.wait_lines.as_slice() else {
             panic!("{driver:?}");
         };
-        // A slot no table names is its address and the type holding
-        // it, with the path to it under that.
-        assert!(line.starts_with("slot 0x"), "{driver:?}");
-        assert!(line.contains("AtomicWaker"), "{driver:?}");
+        // A slot no table names has no primitive to be blocked on: it
+        // is its address and the type holding it, with the path under.
+        assert_eq!(head, "slot 0:", "{driver:?}");
+        assert!(waker.starts_with("    waker: slot 0x"), "{driver:?}");
+        assert!(waker.contains("AtomicWaker"), "{driver:?}");
         assert!(at.starts_with("    location: "), "{driver:?}");
 
         // The older field names still select the same cell.
@@ -4169,17 +4175,24 @@ fn test_armed_select_acceptance() {
         assert_eq!(block.matches("timer 0x").count(), 1, "{block}");
         assert!(!block.contains("PollFn"), "{block}");
         // The pacer's bare tick: the task's own chain runs the same
-        // route to the `Sleep`, a verified timer wait whose one line
+        // route to the `Sleep`, a verified timer wait whose one slot
         // is the wheel entry that arms it, as a bare `sleep`'s is; the
         // spare interval's tick it holds unpolled reaches nothing and
         // nothing arms it, its `Sleep` never registered.
         let pacer = task_with_future(&rows, "async fn armed_select::pacer");
         assert_eq!(pacer.waiting, "", "{pacer:?}");
-        let [line] = pacer.wait_lines.as_slice() else {
+        let [head, on, waker] = pacer.wait_lines.as_slice() else {
             panic!("{pacer:?}");
         };
-        assert!(line.starts_with("timer 0x"), "{pacer:?}");
-        assert!(line.contains(" deadline "), "{pacer:?}");
+        assert_eq!(head, "slot 0:", "{pacer:?}");
+        // The deadline is the target's to give; the entry holding the
+        // waker is the slot's.
+        assert!(
+            on.starts_with("    blocked on: timer (deadline "),
+            "{pacer:?}"
+        );
+        assert!(waker.starts_with("    waker: timer 0x"), "{pacer:?}");
+        assert!(!waker.contains("deadline"), "{pacer:?}");
         // The chain, leaf up: the `Sleep`, the box, the closure's
         // `PollFn`, the tick, the task.
         let trace = hansei_ok(&bundle, core, &format!("trace {} -n", pacer.id));

@@ -8,7 +8,8 @@ task 3
     type: async fn nested_await::outer
     awaiting at: src/bin/nested-await.rs:23
     waiting on:
-        oneshot rx 0xADDR (nothing sent, sender alive); armed
+        slot 0:
+            blocked on: oneshot rx 0xADDR (nothing sent, sender alive)
             location: frame 0 inner.Some.data.rx_task (rx_task_set)
     spawned at: src/bin/nested-await.rs:37:21
     defined at: src/bin/nested-await.rs:20

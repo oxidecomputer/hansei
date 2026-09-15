@@ -8,7 +8,8 @@ task 3
     type: async fn channels::notify_waiter
     awaiting at: src/bin/channels.rs:37
     waiting on:
-        notify rx 0xADDR (waiting, 1 queued); armed
+        slot 0:
+            blocked on: notify rx 0xADDR (waiting, 1 queued)
             location: frame 0 waiter.waker.Some
     spawned at: src/bin/channels.rs:139:23
     defined at: src/bin/channels.rs:27

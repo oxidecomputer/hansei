@@ -1230,7 +1230,11 @@ pub(crate) fn wait_detail(
         WaitAssessment::Unknown(reason) => {
             lines.push(format!("unknown: {}", unknown_reason(*reason)));
         }
-        WaitAssessment::Waiting(_) => lines.extend(wait.notes.iter().cloned()),
+        // What the analysis saw beside the wait it verified, as a
+        // field like every other line under the label.
+        WaitAssessment::Waiting(_) => {
+            lines.extend(wait.notes.iter().map(|note| format!("note: {note}")))
+        }
         WaitAssessment::Set(_)
         | WaitAssessment::NeverReady { .. }
         | WaitAssessment::Unresumed
@@ -1275,12 +1279,11 @@ pub(crate) fn wait_detail(
     if capped > 0 {
         lines.push(format!("{capped} more branches not inspected"));
     }
-    // The remaining slots, each headed by its entry — the reading
-    // included, since no cell above carries it — except that the slot
-    // a verified target accounts for is headed by the target itself,
-    // the way a branch line is: the verdict, then what arms it. A
-    // wheel entry's own line already says everything its target does.
-    // Each carries its location under it, and sorts by its head.
+    // The remaining slots, one block each, in the grammar a branch's
+    // lines use: what the wait is on where the slot names it, the
+    // slot itself where the line above did not, and where it sits.
+    // They are numbered after sorting, so the same wait numbers them
+    // the same way twice.
     let verified = match &wait.assessment {
         WaitAssessment::Waiting(verified) => Some(verified),
         _ => None,
@@ -1288,51 +1291,59 @@ pub(crate) fn wait_detail(
     let mut slot_blocks: Vec<Vec<String>> = rest
         .iter()
         .map(|slot| {
-            let head = match verified {
-                Some(verified) if attribution::verified_accounts(verified, slot, size_of) => {
-                    let wheel = matches!(
-                        slot.attribution,
-                        attribution::Attribution::Registry(attribution::RegistrySlot::Timer { .. })
-                    );
-                    match (wheel, slot.detail(stopped)) {
-                        (false, Some(detail)) => {
-                            format!("{}; armed: {detail}", verified.target())
-                        }
-                        (false, None) => format!("{}; armed", verified.target()),
-                        (true, _) => slot.line(stopped),
-                    }
+            let accounts = verified.filter(|v| attribution::verified_accounts(v, slot, size_of));
+            let mut block = Vec::new();
+            let mut field =
+                |label: &str, value: String| block.push(format!("    {label}: {value}"));
+            // No `armed` field: a slot is listed here because it
+            // holds this task's waker, so the answer would be `yes`
+            // on every one of them. A branch's says something,
+            // because a branch can be held and unarmed.
+            // What the wait is on: the verified target where it
+            // accounts for this slot — with its reading, since this
+            // line carries the primitive and nothing else — else what
+            // the slot's own entry names.
+            let on = match accounts {
+                Some(verified) => {
+                    let target = verified.target();
+                    Some(match target.words() {
+                        Some(words) => format!("{target} ({words})"),
+                        None => target.to_string(),
+                    })
                 }
-                _ => slot.entry_line(stopped),
+                None => slot.waits_on(stopped),
             };
-            let mut block = vec![head];
-            block.extend(under_lines(
-                verified.map(|v| v.target()),
-                std::slice::from_ref(slot),
-            ));
+            if let Some(on) = &on {
+                field("blocked on", on.clone());
+            }
+            // The slot itself, where the line above named the
+            // resource rather than the place: the wheel entry holding
+            // the waker, the waiter node, or — for a slot no table
+            // names — the type it sits in.
+            let waker = match (slot.wheel_entry(), slot.detail(stopped)) {
+                (Some(entry), _) => Some(entry),
+                (None, Some(detail)) => Some(detail),
+                (None, None) => slot
+                    .waits_on(stopped)
+                    .is_none()
+                    .then(|| slot.entry(stopped)),
+            };
+            // A wheel entry with no deadline to give is named the
+            // same way twice; once is enough.
+            if let Some(waker) = waker.filter(|waker| Some(waker) != on.as_ref()) {
+                field("waker", waker);
+            }
+            if let Some(at) = slot.location() {
+                field("location", at);
+            }
             block
         })
         .collect();
     slot_blocks.sort();
-    lines.extend(slot_blocks.into_iter().flatten());
-    lines
-}
-
-/// The lines under a line that names a primitive, indented one step
-/// in: what a channel's or a watch's reading says, which is a line of
-/// its own because the line above carries a verdict, and then where
-/// each slot sits.
-fn under_lines(
-    target: Option<&bundle::WaitTarget>,
-    slots: &[&attribution::AttributedSlot],
-) -> Vec<String> {
-    let words = target
-        .and_then(|target| target.words())
-        .or_else(|| slots.iter().find_map(|slot| slot.words()));
-    let mut lines: Vec<String> = words
-        .into_iter()
-        .map(|words| format!("    {words}"))
-        .collect();
-    lines.extend(location_lines(slots.iter().copied()));
+    for (i, block) in slot_blocks.into_iter().enumerate() {
+        lines.push(format!("slot {i}:"));
+        lines.extend(block);
+    }
     lines
 }
 
@@ -3470,13 +3481,24 @@ mod table_tests {
         // One line per slot, sorted; a stop's own reason is the cell's.
         assert_eq!(
             rows[0].wait_detail,
-            vec![
-                "io 0xaa00 read: awaiting readable via the read-waiter slot".to_string(),
-                "join task 2: waker in its trailer".to_string(),
-                "semaphore 0x9000: waker in its wake-queue node 0xe100".to_string(),
-                "timer 0xdd00".to_string(),
-                "unknown @ 0x7000".to_string(),
-                "unknown @ 0x8000".to_string(),
+            [
+                "slot 0:",
+                "    blocked on: io 0xaa00 read",
+                "    waker: awaiting readable via the read-waiter slot",
+                "slot 1:",
+                "    blocked on: join task 2",
+                "    waker: waker in its trailer",
+                "slot 2:",
+                "    blocked on: semaphore 0x9000",
+                "    waker: waker in its wake-queue node 0xe100",
+                // A wheel entry with no deadline to give names itself
+                // once.
+                "slot 3:",
+                "    blocked on: timer 0xdd00",
+                "slot 4:",
+                "    waker: unknown @ 0x7000",
+                "slot 5:",
+                "    waker: unknown @ 0x8000",
             ]
         );
         // No slot: the assessment's own word, marked.
@@ -3496,7 +3518,10 @@ mod table_tests {
         // collapse to a count.
         assert_eq!(rows[3].waiting_on, "unknown @ 0x7100");
         assert_eq!(rows[3].waiting_kind.as_deref(), Some("unknown"));
-        assert_eq!(rows[3].wait_detail, ["unknown @ 0x7100"]);
+        assert_eq!(
+            rows[3].wait_detail,
+            ["slot 0:", "    waker: unknown @ 0x7100"]
+        );
         // A blocking cell waits on a pool thread, slot or no slot.
         assert_eq!(rows[4].waiting_on, "—");
         assert_eq!(rows[4].waiting_kind, None);
@@ -3565,7 +3590,13 @@ mod table_tests {
         // the cell whole; the timer stands as the slot it is.
         assert_eq!(
             rows[0].wait_detail,
-            ["task 2; armed: waker in its trailer", "timer 0xdd00"]
+            [
+                "slot 0:",
+                "    blocked on: task 2",
+                "    waker: waker in its trailer",
+                "slot 1:",
+                "    blocked on: timer 0xdd00",
+            ]
         );
         assert!(rows[0].wait_listed);
     }
@@ -3668,7 +3699,8 @@ mod table_tests {
                 "    armed: no",
                 "    blocked on: never ready",
                 "branch 2: x::skipped: disabled",
-                "unknown @ 0x7000",
+                "slot 0:",
+                "    waker: unknown @ 0x7000",
             ]
         );
     }
