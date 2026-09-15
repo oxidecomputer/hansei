@@ -4,8 +4,9 @@
 
 use crate::raw_types::{
     CommonAttrs, DiscrBits, Encoding, NamespaceTable, NsId, RawArray, RawAwaitee, RawBase, RawEnum,
-    RawEnumerator, RawFunc, RawGenericParameter, RawMember, RawPointer, RawStaticVariable,
-    RawStruct, RawSubParameter, RawType, RawUnion, RawVariant, SourceLoc, VariantShape,
+    RawEnumerator, RawFunc, RawGenericParameter, RawMember, RawPointer, RawSelectArm,
+    RawStaticVariable, RawStruct, RawSubParameter, RawType, RawUnion, RawVariant, SourceLoc,
+    VariantShape,
 };
 use crate::{Error, FuncId, Result, Slice, TypeId, VarId};
 
@@ -777,10 +778,19 @@ impl<'dw> CodegenUnit<'dw> {
         let resume_fn = common
             .name
             .is_some_and(|n| n.starts_with("{async_fn#") || n.starts_with("{async_block#"));
+        // The one other body worth descending: the closure
+        // `tokio::select!` polls its branches in, which is where each
+        // arm's pattern bindings — and so its source line — live. It
+        // is a closure the macro's own file declares, and that pair
+        // is the whole gate; whether the closure really is a
+        // `select!`'s is the binder's question over the same file.
+        let select_closure = common.name.is_some_and(|n| n.starts_with("{closure#"))
+            && declared_in_select_macro(&common.source_loc);
 
         let mut formal_parameters = vec![];
         let mut template_params = vec![];
         let mut awaitees = vec![];
+        let mut select_arms = vec![];
         if entry.has_children() {
             while cursor.next_entry()? {
                 if let Some(child) = cursor.current() {
@@ -793,6 +803,9 @@ impl<'dw> CodegenUnit<'dw> {
                         }
                         gimli::DW_TAG_lexical_block if resume_fn => {
                             collect_awaitees(unit, cursor, &mut awaitees)?;
+                        }
+                        gimli::DW_TAG_lexical_block if select_closure => {
+                            collect_select_arms(unit, cursor, &mut select_arms)?;
                         }
                         gimli::DW_TAG_variable if resume_fn => {
                             if let Some(awaitee) = process_awaitee(unit, cursor)? {
@@ -830,11 +843,115 @@ impl<'dw> CodegenUnit<'dw> {
                 template_params: template_params.into_boxed_slice(),
                 noreturn,
                 awaitees: awaitees.into_boxed_slice(),
+                select_arms: select_arms.into_boxed_slice(),
             },
         );
 
         Ok(())
     }
+}
+
+/// Whether a declaration's file is tokio's `src/macros/select.rs`: the
+/// file's own name first, so nearly every declaration is refused on a
+/// suffix test alone, then the file under its directory for the few
+/// named `select.rs` anywhere. Only the tail is asked about, so an
+/// absolute file joined under a directory it does not need answers
+/// the same as it would alone, and no case needs telling apart.
+fn declared_in_select_macro(loc: &SourceLoc<&str>) -> bool {
+    const MACRO_FILE: &str = "src/macros/select.rs";
+    let Some(file) = loc.file else {
+        return false;
+    };
+    if !file.ends_with("select.rs") {
+        return false;
+    }
+    let dir = loc.dir.unwrap_or_default();
+    format!("{dir}/{file}").ends_with(MACRO_FILE)
+}
+
+/// Walk a lexical block and everything under it for `select!` arms.
+///
+/// The macro's closure polls each branch in a scope of its own that
+/// opens by binding `fut`, a `&mut` to the branch's future; under it
+/// come the macro's other locals and, deepest, the arm's pattern
+/// bindings, which are the only variables there declared in a file
+/// other than the macro's. So an arm is one `fut` and every
+/// differently-filed variable beneath it. The first `fut` met opens
+/// the arm and any `fut` inside it (the macro pins the same reference
+/// under the same name) is skipped; the arm closes with the block that
+/// declared its `fut`. Depth is never assumed — how many blocks the
+/// macro nests is its own business — only that the bindings lie
+/// somewhere below the reference.
+fn collect_select_arms<'dw>(
+    unit: &UnitCtx<'_, 'dw>,
+    cursor: &mut EntriesCursor<Slice<'dw>>,
+    out: &mut Vec<RawSelectArm<&'dw str>>,
+) -> Result<()> {
+    debug_assert!(cursor.current().unwrap().tag() == gimli::DW_TAG_lexical_block);
+    if !cursor.current().unwrap().has_children() {
+        cursor.consume_entry()?;
+        return Ok(());
+    }
+    struct Open<'dw> {
+        anchor: TypeId,
+        file: Option<&'dw str>,
+        depth: usize,
+        bindings: Vec<SourceLoc<&'dw str>>,
+    }
+    let close = |open: Open<'dw>, out: &mut Vec<RawSelectArm<&'dw str>>| {
+        out.push(RawSelectArm {
+            anchor: open.anchor,
+            bindings: open.bindings.into_boxed_slice(),
+        });
+    };
+    let mut open: Option<Open<'dw>> = None;
+    let mut depth = 1usize;
+    while depth > 0 {
+        if !cursor.next_entry()? {
+            break;
+        }
+        match cursor.current() {
+            None => {
+                depth -= 1;
+                if open.as_ref().is_some_and(|o| depth < o.depth) {
+                    close(open.take().unwrap(), out);
+                }
+            }
+            Some(child) => match child.tag() {
+                gimli::DW_TAG_lexical_block if child.has_children() => depth += 1,
+                gimli::DW_TAG_variable => {
+                    let common = CommonAttrs::from_entry(unit, child, |_| Ok(()))?;
+                    cursor.consume_entry()?;
+                    let is_fut = common.name == Some("fut");
+                    match &mut open {
+                        None if is_fut => {
+                            if let Some(t) = common.type_id {
+                                open = Some(Open {
+                                    anchor: TypeId(t),
+                                    file: common.source_loc.file,
+                                    depth,
+                                    bindings: Vec::new(),
+                                });
+                            }
+                        }
+                        Some(arm)
+                            if !is_fut
+                                && common.source_loc.file.is_some()
+                                && common.source_loc.file != arm.file =>
+                        {
+                            arm.bindings.push(common.source_loc);
+                        }
+                        _ => {}
+                    }
+                }
+                _ => cursor.consume_entry()?,
+            },
+        }
+    }
+    if let Some(arm) = open {
+        close(arm, out);
+    }
+    Ok(())
 }
 
 /// Walk a lexical block and everything under it, gathering `__awaitee`
@@ -1234,7 +1351,7 @@ impl<'dw> DwString<'dw> for Attribute<Slice<'dw>> {
 #[cfg(test)]
 mod tests {
     use crate::StrId;
-    use crate::raw_types::{DiscrBits, RawType, VariantShape};
+    use crate::raw_types::{DiscrBits, RawType, SourceLoc, VariantShape};
     use crate::reader::{DwReader, ReadArgs};
 
     use gimli::write as gwrite;
@@ -1249,15 +1366,26 @@ mod tests {
         build: impl FnOnce(&mut gwrite::Dwarf, gwrite::UnitId),
         check: impl FnOnce(&DwReader<'_>) -> R,
     ) -> R {
-        let encoding = gimli::Encoding {
-            format: gimli::Format::Dwarf32,
-            version: 4,
-            address_size: 8,
-        };
+        parsed_with_lines(endian, gwrite::LineProgram::none(), build, check)
+    }
+
+    const ENCODING: gimli::Encoding = gimli::Encoding {
+        format: gimli::Format::Dwarf32,
+        version: 4,
+        address_size: 8,
+    };
+
+    /// [`parsed`], with a line program of the caller's — the file table
+    /// a `DW_AT_decl_file` resolves through.
+    fn parsed_with_lines<R>(
+        endian: gimli::RunTimeEndian,
+        lines: gwrite::LineProgram,
+        build: impl FnOnce(&mut gwrite::Dwarf, gwrite::UnitId),
+        check: impl FnOnce(&DwReader<'_>) -> R,
+    ) -> R {
+        let encoding = ENCODING;
         let mut dwarf = gwrite::Dwarf::new();
-        let unit_id = dwarf
-            .units
-            .add(gwrite::Unit::new(encoding, gwrite::LineProgram::none()));
+        let unit_id = dwarf.units.add(gwrite::Unit::new(encoding, lines));
         build(&mut dwarf, unit_id);
 
         let mut data: HashMap<gimli::SectionId, Vec<u8>> = HashMap::new();
@@ -1942,5 +2070,238 @@ mod tests {
                 assert_eq!(ordinary.formal_parameters.len(), 1);
             },
         );
+    }
+
+    #[test]
+    fn test_select_arms_are_collected_from_the_macro_closure() {
+        use gwrite::LineString as L;
+        // A file table with the macro's file and the caller's: both
+        // relative to a directory, which is how rustc writes them.
+        let mut lines = gwrite::LineProgram::new(
+            ENCODING,
+            gimli::LineEncoding::default(),
+            L::String(b"/crate".to_vec()),
+            None,
+            L::String(b"src/lib.rs".to_vec()),
+            None,
+        );
+        let macros = lines.add_directory(L::String(b"/reg/tokio-1.52.1/src/macros".to_vec()));
+        let select_rs = lines.add_file(L::String(b"select.rs".to_vec()), macros, None);
+        let src = lines.add_directory(L::String(b"src".to_vec()));
+        let pool_rs = lines.add_file(L::String(b"pool.rs".to_vec()), src, None);
+        parsed_with_lines(
+            gimli::RunTimeEndian::Little,
+            lines,
+            |dwarf, unit_id| {
+                let unit = dwarf.units.get_mut(unit_id);
+                let root = unit.root();
+                let named_struct = |unit: &mut gwrite::Unit, name: &[u8]| {
+                    let die = unit.add(root, gimli::DW_TAG_structure_type);
+                    let entry = unit.get_mut(die);
+                    entry.set(gimli::DW_AT_name, W::String(name.to_vec()));
+                    entry.set(gimli::DW_AT_byte_size, W::Udata(8));
+                    die
+                };
+                let pointer_to = |unit: &mut gwrite::Unit, target: gwrite::UnitEntryId| {
+                    let die = unit.add(root, gimli::DW_TAG_pointer_type);
+                    let entry = unit.get_mut(die);
+                    entry.set(gimli::DW_AT_type, W::UnitRef(target));
+                    entry.set(gimli::DW_AT_byte_size, W::Udata(8));
+                    die
+                };
+                let recv = named_struct(unit, b"Recv");
+                let tick = named_struct(unit, b"Tick");
+                let next = named_struct(unit, b"Next");
+                let sleep = named_struct(unit, b"Sleep");
+                let pin = named_struct(unit, b"Pin<&mut Recv>");
+                let recv_ref = pointer_to(unit, recv);
+                let tick_ref = pointer_to(unit, tick);
+                let next_ref = pointer_to(unit, next);
+                let sleep_ref = pointer_to(unit, sleep);
+
+                let var = |unit: &mut gwrite::Unit,
+                           parent: gwrite::UnitEntryId,
+                           name: &[u8],
+                           file: gwrite::FileId,
+                           line: u64,
+                           ty: gwrite::UnitEntryId| {
+                    let die = unit.add(parent, gimli::DW_TAG_variable);
+                    let entry = unit.get_mut(die);
+                    entry.set(gimli::DW_AT_name, W::String(name.to_vec()));
+                    entry.set(gimli::DW_AT_decl_file, W::FileIndex(Some(file)));
+                    entry.set(gimli::DW_AT_decl_line, W::Udata(line));
+                    entry.set(gimli::DW_AT_type, W::UnitRef(ty));
+                };
+                // One branch's scope chain as the macro nests it:
+                // `mask`, then `fut` (the `&mut`), then `fut` again
+                // (pinned), then `out`, and under that whatever the
+                // arm's pattern binds — each name at the line the
+                // caller wrote it.
+                // `late` bindings sit in a block of their own after the
+                // pinned scope has closed, still under the `fut`: they
+                // pin that the arm stays open until the block declaring
+                // its `fut` closes, and not a scope sooner. The stray
+                // caller-filed variable after that block pins that it
+                // closes at all.
+                let branch = |unit: &mut gwrite::Unit,
+                              closure: gwrite::UnitEntryId,
+                              fut: gwrite::UnitEntryId,
+                              bindings: &[(&[u8], u64)],
+                              late: &[(&[u8], u64)]| {
+                    let mask_block = unit.add(closure, gimli::DW_TAG_lexical_block);
+                    var(unit, mask_block, b"mask", select_rs, 689, recv);
+                    let fut_block = unit.add(mask_block, gimli::DW_TAG_lexical_block);
+                    var(unit, fut_block, b"fut", select_rs, 698, fut);
+                    let pin_block = unit.add(fut_block, gimli::DW_TAG_lexical_block);
+                    var(unit, pin_block, b"fut", select_rs, 702, pin);
+                    let ready = unit.add(pin_block, gimli::DW_TAG_lexical_block);
+                    var(unit, ready, b"out", select_rs, 705, recv);
+                    let arm = unit.add(ready, gimli::DW_TAG_lexical_block);
+                    for (name, line) in bindings {
+                        var(unit, arm, name, pool_rs, *line, recv);
+                    }
+                    let pending = unit.add(pin_block, gimli::DW_TAG_lexical_block);
+                    var(unit, pending, b"out", select_rs, 706, recv);
+                    if !late.is_empty() {
+                        let late_block = unit.add(fut_block, gimli::DW_TAG_lexical_block);
+                        for (name, line) in late {
+                            var(unit, late_block, name, pool_rs, *line, recv);
+                        }
+                    }
+                    var(unit, mask_block, b"stray", pool_rs, 999, recv);
+                };
+                let closure = |unit: &mut gwrite::Unit, name: &[u8], file: gwrite::FileId| {
+                    let die = unit.add(root, gimli::DW_TAG_subprogram);
+                    let entry = unit.get_mut(die);
+                    entry.set(gimli::DW_AT_name, W::String(name.to_vec()));
+                    entry.set(gimli::DW_AT_decl_file, W::FileIndex(Some(file)));
+                    entry.set(gimli::DW_AT_decl_line, W::Udata(659));
+                    // The macro's own locals above every branch.
+                    var(unit, die, b"disabled", select_rs, 627, recv);
+                    var(unit, die, b"futures", select_rs, 662, recv);
+                    die
+                };
+                // The select's closure: a bound arm, an unbound one,
+                // and one binding two names on one line.
+                let select = closure(unit, b"{closure#1}", select_rs);
+                branch(unit, select, recv_ref, &[(b"request", 286)], &[]);
+                branch(unit, select, tick_ref, &[], &[]);
+                branch(
+                    unit,
+                    select,
+                    next_ref,
+                    &[(b"name", 332), (b"status", 332)],
+                    &[],
+                );
+                branch(unit, select, sleep_ref, &[], &[(b"late", 300)]);
+                // The same shape in a closure the caller's own file
+                // declares is not descended.
+                let other = closure(unit, b"{closure#2}", pool_rs);
+                branch(unit, other, recv_ref, &[(b"request", 286)], &[]);
+            },
+            |reader| {
+                let func = |want: &str| {
+                    reader
+                        .functions
+                        .values()
+                        .find(|f| f.name.map(|n| reader.strings.get(n)) == Some(want))
+                        .unwrap_or_else(|| panic!("no function named {want}"))
+                };
+                let pointee = |anchor: crate::TypeId| match reader.canonical_type(anchor) {
+                    Some(RawType::Pointer(p)) => reader
+                        .canonical_type(p.target_type_id)
+                        .and_then(|t| t.name())
+                        .map(|n| reader.strings.get(n))
+                        .unwrap_or_else(|| panic!("{anchor:?} points at nothing named")),
+                    other => panic!("{anchor:?} is not a pointer: {other:?}"),
+                };
+                let lines = |arm: &crate::raw_types::RawSelectArm<StrId>| {
+                    arm.bindings
+                        .iter()
+                        .map(|loc| {
+                            (
+                                reader
+                                    .strings
+                                    .get(loc.file.expect("a binding names its file")),
+                                loc.line.map(|n| n.get()),
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                };
+                let select = func("{closure#1}");
+                assert_eq!(select.select_arms.len(), 4, "{:#?}", select.select_arms);
+                assert_eq!(pointee(select.select_arms[0].anchor), "Recv");
+                assert_eq!(lines(&select.select_arms[0]), [("pool.rs", Some(286))]);
+                assert_eq!(pointee(select.select_arms[1].anchor), "Tick");
+                assert_eq!(lines(&select.select_arms[1]), []);
+                assert_eq!(pointee(select.select_arms[2].anchor), "Next");
+                assert_eq!(
+                    lines(&select.select_arms[2]),
+                    [("pool.rs", Some(332)), ("pool.rs", Some(332))]
+                );
+                // The late binding is the arm's; the stray after its
+                // `fut`'s block is nobody's.
+                assert_eq!(pointee(select.select_arms[3].anchor), "Sleep");
+                assert_eq!(lines(&select.select_arms[3]), [("pool.rs", Some(300))]);
+                // The macro's own locals under an anchor are not
+                // bindings, and its top-level ones are not awaitees.
+                assert_eq!(select.awaitees.len(), 0);
+                let other = func("{closure#2}");
+                assert_eq!(other.select_arms.len(), 0);
+            },
+        );
+    }
+
+    #[test]
+    fn test_select_macro_declaration_is_recognized_by_path() {
+        let loc = |file: &'static str, dir: Option<&'static str>| SourceLoc {
+            file_id: None,
+            file: Some(file),
+            dir,
+            comp_dir: None,
+            line: None,
+            column: None,
+        };
+        // Absolute, relative under its directory, and a directory that
+        // is itself relative to the unit's compilation directory.
+        assert!(super::declared_in_select_macro(&loc(
+            "/reg/tokio-1.52.1/src/macros/select.rs",
+            None
+        )));
+        assert!(super::declared_in_select_macro(&loc(
+            "select.rs",
+            Some("/reg/tokio-1.52.1/src/macros")
+        )));
+        assert!(super::declared_in_select_macro(&loc(
+            "macros/select.rs",
+            Some("src")
+        )));
+        // An absolute file with a directory recorded beside it.
+        assert!(super::declared_in_select_macro(&loc(
+            "/reg/tokio-1.52.1/src/macros/select.rs",
+            Some("/reg/tokio-1.52.1/src/macros")
+        )));
+        // Another crate's `select.rs`, a file merely named like it, and
+        // a declaration with no file at all.
+        assert!(!super::declared_in_select_macro(&loc(
+            "select.rs",
+            Some("/reg/futures-util-0.3/src/future")
+        )));
+        assert!(!super::declared_in_select_macro(&loc(
+            "/crate/src/select.rs",
+            None
+        )));
+        assert!(!super::declared_in_select_macro(&loc(
+            "/reg/tokio-1.52.1/src/macros/select_priv.rs",
+            None
+        )));
+        assert!(!super::declared_in_select_macro(&SourceLoc {
+            file_id: None,
+            file: None,
+            dir: Some("/reg/tokio-1.52.1/src/macros"),
+            comp_dir: None,
+            line: None,
+            column: None,
+        }));
     }
 }

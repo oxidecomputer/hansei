@@ -1731,6 +1731,7 @@ mod tests {
                     template_params,
                     noreturn: false,
                     awaitees: Box::new([]),
+                    select_arms: Box::new([]),
                 },
             );
         }

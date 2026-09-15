@@ -476,6 +476,7 @@ mod tests {
                 template_params: Box::new([]),
                 noreturn: true,
                 awaitees: Box::new([]),
+                select_arms: Box::new([]),
             },
         );
         let view = reader.view();

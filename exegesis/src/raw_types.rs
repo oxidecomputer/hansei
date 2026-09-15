@@ -597,6 +597,37 @@ pub struct RawFunc<S> {
     /// lexical blocks a resume body piles up, so it is done only where
     /// they can exist.
     pub awaitees: Box<[RawAwaitee<S>]>,
+    /// The arms of a `tokio::select!`, read from the closure the macro
+    /// polls its branches in: one per `fut` reference the closure
+    /// binds. Empty for every other function, by the same reasoning as
+    /// `awaitees` — only a closure declared in the macro's own file is
+    /// descended.
+    pub select_arms: Box<[RawSelectArm<S>]>,
+}
+
+/// One arm of a `tokio::select!`, as the closure the macro polls its
+/// branches in describes it.
+///
+/// The macro's closure polls each branch inside its own scope, where it
+/// first binds `fut`, a `&mut` to that branch's future, and then matches
+/// the output against the arm's pattern. The pattern's bindings are
+/// declared where the arm is written — the only variables under that
+/// `fut` whose file is not the macro's own — so they are the one route
+/// from a branch to its source line. Nothing else carries one: the
+/// tuple of branch futures and the closure's captures record no
+/// declaration coordinates.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RawSelectArm<S> {
+    /// The declared type of the `fut` reference. Its pointee is the
+    /// branch's future type, exactly as the tuple member holds it — a
+    /// borrowed branch's member is itself a `&mut`, and so is the
+    /// pointee here.
+    pub anchor: TypeId,
+    /// Every pattern binding under the anchor, in scope order: all of
+    /// one arm, so they agree on file and line where the pattern fits
+    /// on one line. Empty for an arm whose pattern binds nothing
+    /// (`_ = …`, `Ok(()) = …`).
+    pub bindings: Box<[SourceLoc<S>]>,
 }
 
 /// One `__awaitee` local of a coroutine's resume function: the value a

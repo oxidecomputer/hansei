@@ -5,8 +5,8 @@
 use crate::cgu::{CodegenUnit, UnitCtx};
 use crate::raw_types::{
     Namespaces, NsId, RawAwaitee, RawBase, RawEnum, RawEnumerator, RawFunc, RawGenericParameter,
-    RawMember, RawPointer, RawStaticVariable, RawStruct, RawSubParameter, RawType, RawUnion,
-    RawVariant, ShardedNamespaces, SourceLoc, VariantShape,
+    RawMember, RawPointer, RawSelectArm, RawStaticVariable, RawStruct, RawSubParameter, RawType,
+    RawUnion, RawVariant, ShardedNamespaces, SourceLoc, VariantShape,
 };
 use crate::string_table::{FrozenStrings, ShardedInterner, StrId};
 use crate::{Error, FuncId, Result, Slice};
@@ -1530,6 +1530,20 @@ fn intern_func<'dw>(strings: &CguInterner<'_, 'dw>, func: RawFunc<&'dw str>) -> 
                     .source_loc
                     .map(|loc| Box::new(intern_source_loc(strings, *loc))),
                 type_id: a.type_id,
+            })
+            .collect(),
+        select_arms: func
+            .select_arms
+            .into_vec()
+            .into_iter()
+            .map(|arm| RawSelectArm {
+                anchor: arm.anchor,
+                bindings: arm
+                    .bindings
+                    .into_vec()
+                    .into_iter()
+                    .map(|loc| intern_source_loc(strings, loc))
+                    .collect(),
             })
             .collect(),
     }
