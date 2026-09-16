@@ -1,0 +1,40 @@
+---
+source: hansei/src/offline.rs
+description: "`task 4` over linux-floor/watch-stream"
+---
+task 4
+    state: idle
+    thread: <none>
+    type: async fn watch_stream::mapper
+    awaiting at: src/bin/watch-stream.rs:75
+    waiting on:
+        select!:
+            branch 0 (borrowed): tokio::sync::oneshot::Receiver<u32>
+                address: 0xADDR
+                armed: yes
+                blocked on: oneshot rx 0xADDR (nothing sent, sender alive)
+                defined at: src/bin/watch-stream.rs:76
+                location: future 0xADDR inner.Some.data.rx_task (rx_task_set)
+            branch 1 (borrowed): futures_util::stream::stream::next::Next<tokio_stream::stream_map::StreamMap<&str, tokio_stream::wrappers::watch::WatchStream<u32>>>
+                address: 0xADDR
+                defined at: src/bin/watch-stream.rs:77
+                entries:
+                    "alpha":
+                        address: 0xADDR
+                        armed: yes
+                        blocked on: watch rx 0xADDR (version 0, 1 sender, 1 receiver)
+                        location: future 0xADDR waiter.waker.Some
+                    "beta":
+                        address: 0xADDR
+                        armed: yes
+                        blocked on: watch rx 0xADDR (version 0, 1 sender, 1 receiver)
+                        location: future 0xADDR waiter.waker.Some
+                    "gamma":
+                        address: 0xADDR
+                        armed: yes
+                        blocked on: watch rx 0xADDR (version 0, 1 sender, 1 receiver)
+                        location: future 0xADDR waiter.waker.Some
+    spawned at: src/bin/watch-stream.rs:132:23
+    defined at: src/bin/watch-stream.rs:57
+    held futures: 5
+    join sets: 0

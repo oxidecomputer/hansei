@@ -255,6 +255,18 @@ fn commands(
             list.push(("trace-sender", format!("trace {id} -n")));
         }
     }
+    // The task polling a `StreamMap` through a `select!` branch: its
+    // block lists the map's entries under the branch, each headed by
+    // its key — the `&str` the fixture inserted it under.
+    if program == "watch-stream" {
+        let mapper = session.tasks.tasks.iter().find(|task| {
+            matches!(&task.future, bundle::FutureInfo::Known(known)
+                if known.display_name.starts_with("watch_stream::mapper"))
+        });
+        if let Some(id) = mapper.and_then(|task| task.task_id) {
+            list.push(("task-mapper", format!("task {id}")));
+        }
+    }
     // The register readout under whatever cursor the commands above
     // left: a task no thread is polling refuses, and a thread cursor
     // answers with the lwp's annotated block. One program pins the

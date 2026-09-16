@@ -1279,7 +1279,10 @@ impl<'b, T: Target> Walker<'_, 'b, T> {
         on_chain: &HashSet<ValueKey>,
     ) {
         let mut entries = Vec::new();
-        let visit = &mut |index: usize, stream: Value<'b>| -> std::result::Result<(), NodeStop> {
+        let visit = &mut |index: usize,
+                          _entry: Value<'b>,
+                          stream: Value<'b>|
+         -> std::result::Result<(), NodeStop> {
             entries.push((index, stream));
             Ok(())
         };
@@ -1944,18 +1947,49 @@ pub(crate) fn walk_set_nodes<'b, T: Target>(
     Ok(())
 }
 
+/// How deep an entry's key is rendered for its heading: a key is a
+/// string, an integer or a thin wrapper over one, and a level past
+/// the wrapper reads the string it holds.
+const KEY_DEPTH: usize = 2;
+
+/// The longest key text a heading takes. A key is a name, and a name
+/// fits here; what runs past it is a structural rendering of a type no
+/// formatter reads as text, which names nothing to a reader.
+const KEY_WIDTH: usize = 64;
+
+/// A `StreamMap` entry's key as text for a heading, or `None` where
+/// the bundle has no route to it, the read fails, or the value
+/// renders on more than one line or wider than a name — an aggregate
+/// no heading has room for, which the entry's index then stands in
+/// for. Read on demand by the one walker that lists entries, since
+/// the others only poll their streams.
+pub(crate) fn fanout_key<'b, T: Target>(
+    ctx: &Context<'b, T>,
+    read: &ReadContext<'_>,
+    entry: Value<'b>,
+) -> Option<String> {
+    let key = ctx
+        .walk(WalkRole::StreamMapEntryKey)
+        .walk_at_with(read, entry)
+        .ok()?;
+    let text = format!("{}", key.display_from_target(ctx.proc, KEY_DEPTH));
+    let fits = !text.is_empty() && !text.contains('\n') && text.chars().count() <= KEY_WIDTH;
+    fits.then_some(text)
+}
+
 /// Walk a `StreamMap`'s entries — the elements of its `Vec<(K, V)>`,
-/// read through the `Vec`'s own buffer route — handing each entry's
-/// stream to `visit` with its index, and returning how many entries
-/// the map holds. The buffer is one allocation, held to the
-/// allocator's word as a set's nodes are; past `max` entries the walk
-/// stops and says so, the count still being the map's own.
+/// read through the `Vec`'s own buffer route — handing each entry to
+/// `visit` with its index, the `(K, V)` element itself (for
+/// [`fanout_key`]) and its stream, and returning how many entries the
+/// map holds. The buffer is one allocation, held to the allocator's
+/// word as a set's nodes are; past `max` entries the walk stops and
+/// says so, the count still being the map's own.
 pub(crate) fn walk_fanout_entries<'b, T: Target>(
     ctx: &Context<'b, T>,
     read: &ReadContext<'_>,
     map: Value<'b>,
     max: usize,
-    visit: &mut dyn FnMut(usize, Value<'b>) -> std::result::Result<(), NodeStop>,
+    visit: &mut dyn FnMut(usize, Value<'b>, Value<'b>) -> std::result::Result<(), NodeStop>,
 ) -> std::result::Result<usize, NodeStop> {
     let entries = ctx
         .walk(WalkRole::StreamMapEntries)
@@ -1987,7 +2021,7 @@ pub(crate) fn walk_fanout_entries<'b, T: Target>(
         let stream = ctx
             .walk(WalkRole::StreamMapEntryStream)
             .walk_at_with(read, entry)?;
-        visit(index, stream)?;
+        visit(index, entry, stream)?;
     }
     if total > max {
         return Err(NodeStop::Capped {
@@ -4492,7 +4526,7 @@ mod fanout_tests {
         let map = mapper_map(&ctx, &list);
         let read = ReadContext::none();
         let mut seen: Vec<(usize, String)> = Vec::new();
-        let total = walk_fanout_entries(&ctx, &read, map, MAX_CHILDREN, &mut |i, v| {
+        let total = walk_fanout_entries(&ctx, &read, map, MAX_CHILDREN, &mut |i, _, v| {
             seen.push((i, v.ty.name().to_string()));
             Ok(())
         })
@@ -4505,14 +4539,14 @@ mod fanout_tests {
             "{seen:?}"
         );
         let mut n = 0;
-        let total = walk_fanout_entries(&ctx, &read, map, 3, &mut |_, _| {
+        let total = walk_fanout_entries(&ctx, &read, map, 3, &mut |_, _, _| {
             n += 1;
             Ok(())
         })
         .unwrap();
         assert_eq!((total, n), (3, 3));
         let mut n = 0;
-        let stop = walk_fanout_entries(&ctx, &read, map, 2, &mut |_, _| {
+        let stop = walk_fanout_entries(&ctx, &read, map, 2, &mut |_, _, _| {
             n += 1;
             Ok(())
         })
@@ -4553,7 +4587,7 @@ mod fanout_tests {
                 &ReadContext::with_heap(heap),
                 map,
                 MAX_CHILDREN,
-                &mut |_, _| {
+                &mut |_, _, _| {
                     n += 1;
                     Ok(())
                 },

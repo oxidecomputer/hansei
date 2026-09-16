@@ -2111,8 +2111,10 @@ fn decls() -> Vec<WalkDecl> {
         ),
         // The census's map walk: a tokio-stream `StreamMap`'s entries
         // are a `Vec<(K, V)>`, read element by element through the
-        // `Vec` formatter's own buffer route, and each element's `V`
-        // is a stream the map polls with the task's own context.
+        // `Vec` formatter's own buffer route; each element's `V` is a
+        // stream the map polls with the task's own context, and its
+        // `K` the key the map hands back with the stream's items,
+        // which is what names the entry in a listing.
         decl(
             WalkRole::StreamMapEntries,
             Leaf(STREAM_MAP),
@@ -2124,6 +2126,12 @@ fn decls() -> Vec<WalkDecl> {
             Elem(WalkRole::StreamMapEntries),
             Any,
             || vec![reach![Named("__1")]],
+        ),
+        decl(
+            WalkRole::StreamMapEntryKey,
+            Elem(WalkRole::StreamMapEntries),
+            Any,
+            || vec![reach![Named("__0")]],
         ),
     ]
 }

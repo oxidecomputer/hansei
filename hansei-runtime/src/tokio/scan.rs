@@ -745,7 +745,10 @@ impl<'b, T: Target> Scanner<'_, 'b, T> {
         let ctx = self.ctx;
         let read = self.read;
         let budget = &mut *self.budget;
-        let visit = &mut |_index: usize, stream: Value<'b>| -> std::result::Result<(), NodeStop> {
+        let visit = &mut |_index: usize,
+                          _entry: Value<'b>,
+                          stream: Value<'b>|
+         -> std::result::Result<(), NodeStop> {
             if !budget.charge_referent() {
                 return Err(Self::spent(budget));
             }

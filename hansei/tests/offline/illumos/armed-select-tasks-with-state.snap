@@ -2,12 +2,12 @@
 source: hansei/src/offline.rs
 description: "`tasks --with state idle` over illumos/armed-select"
 ---
-ID  STATE  FUT  AWAITING AT                  WAITING ON                                                                                                             TYPE
+ID  STATE  FUT  AWAITING AT                  WAITING ON                                                                                                          TYPE
 3   idle     4  src/bin/armed-select.rs:49   mpsc rx 0xADDR, oneshot rx 0xADDR (nothing sent, sender alive), timer (deadline TS), watch rx 0xADDR  async fn armed_select::selector
-4   idle     1  src/bin/armed-select.rs:67   oneshot rx 0xADDR (nothing sent, sender alive)                                                                      async fn armed_select::holder
-5   idle     0  src/bin/armed-select.rs:77   notify rx 0xADDR (waiting, 1 queued)                                                                                async fn armed_select::waiter
-6   idle     2  src/bin/armed-select.rs:101  slot 0xADDR in futures_core::task::__internal::atomic_waker::AtomicWaker                                            async fn armed_select::driver
-7   idle     3  src/bin/armed-select.rs:128  oneshot rx 0xADDR (nothing sent, sender alive), timer (deadline TS)                                         async fn armed_select::ticker
-8   idle     2  src/bin/armed-select.rs:149  timer (deadline TS)                                                                                            async fn armed_select::pacer
-9   idle     2  src/bin/armed-select.rs:169  unarmed: never ready                                                                                                   async fn armed_select::forever
+4   idle     1  src/bin/armed-select.rs:67   oneshot rx 0xADDR (nothing sent, sender alive)                                                                    async fn armed_select::holder
+5   idle     0  src/bin/armed-select.rs:77   notify rx 0xADDR (waiting, 1 queued)                                                                              async fn armed_select::waiter
+6   idle     2  src/bin/armed-select.rs:101  slot 0xADDR in futures_core::task::__internal::atomic_waker::AtomicWaker                                          async fn armed_select::driver
+7   idle     3  src/bin/armed-select.rs:128  oneshot rx 0xADDR (nothing sent, sender alive), timer (deadline TS)                                       async fn armed_select::ticker
+8   idle     2  src/bin/armed-select.rs:149  timer (deadline TS)                                                                                         async fn armed_select::pacer
+9   idle     2  src/bin/armed-select.rs:169  unarmed: never ready                                                                                                async fn armed_select::forever
 [7 tasks]

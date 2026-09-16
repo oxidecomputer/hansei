@@ -1258,6 +1258,24 @@ pub(crate) fn wait_detail(
     // held in a plain local is no branch of the macro and stays at
     // the level of the heading.
     let mut in_select = false;
+    // A map's entries sit under the `entries:` heading that closes the
+    // block of the member the map was reached through, two steps under
+    // that member; the entries of a stop that is the map itself sit
+    // under an `entries:` heading of their own at the top. The entries
+    // the walk did not inspect are counted after the run, at the
+    // entries' own depth.
+    let mut stop_is_map = false;
+    let mut uninspected: Option<(usize, usize)> = None;
+    let flush = |lines: &mut Vec<String>, uninspected: &mut Option<(usize, usize)>| {
+        if let Some((count, depth)) = uninspected.take()
+            && count > 0
+        {
+            lines.push(format!(
+                "{}{count} more entries not inspected",
+                "    ".repeat(depth)
+            ));
+        }
+    };
     for member in members {
         // A registry slot in no branch prints as the slot it is —
         // unless there are no slots at all (a target the sweep could
@@ -1281,19 +1299,32 @@ pub(crate) fn wait_detail(
             }
             depth += 1;
         }
-        // An entry reached through a member listed before it — a
-        // branch whose chain ends at the map, a local holding one —
-        // sits one step under that member; an entry of a stop that is
-        // the map itself is a branch of the stop like any other.
-        if let MemberRoute::Entry { under: Some(_), .. } = &member.route {
-            depth += 1;
+        match &member.route {
+            MemberRoute::Entry { under: Some(_), .. } => depth += 2,
+            MemberRoute::Entry { under: None, .. } => {
+                flush(&mut lines, &mut uninspected);
+                if !stop_is_map {
+                    lines.push("entries:".to_string());
+                    stop_is_map = true;
+                }
+                depth += 1;
+            }
+            _ => flush(&mut lines, &mut uninspected),
+        }
+        if let Some(fanout) = member.entries {
+            uninspected = Some((fanout.total - fanout.listed, depth + 2));
         }
         let indent = "    ".repeat(depth);
         lines.extend(block.into_iter().map(|line| format!("{indent}{line}")));
     }
+    flush(&mut lines, &mut uninspected);
     if capped > 0 {
-        let indent = if in_select { "    " } else { "" };
-        lines.push(format!("{indent}{capped} more branches not inspected"));
+        let (indent, unit) = match (stop_is_map, in_select) {
+            (true, _) => ("    ", "entries"),
+            (false, true) => ("    ", "branches"),
+            (false, false) => ("", "branches"),
+        };
+        lines.push(format!("{indent}{capped} more {unit} not inspected"));
     }
     // The remaining slots, one `waker N:` block each, in the grammar a
     // branch's lines use: what the wait is on where the slot names it,
@@ -1452,42 +1483,48 @@ fn member_line(
             }
             return lines;
         }
+        // An entry is headed by its key, the name the map hands back
+        // with each item; by its index where the key was not read.
         MemberRoute::Entry {
-            index, borrowed, ..
-        } => (format!("entry {index}"), *borrowed, None),
+            index,
+            key,
+            borrowed,
+            ..
+        } => (
+            key.clone().unwrap_or_else(|| format!("entry {index}")),
+            *borrowed,
+            None,
+        ),
         MemberRoute::SlotOnly { .. } => unreachable!("only branches print as members"),
     };
     let via = if borrowed { " (borrowed)" } else { "" };
     let future = member_future(member, stops, member.key.map(|key| key.ty));
-    let mut lines = vec![format!("{local}{via}: {future}")];
+    // An entry's heading is its key alone: the stream it is was named
+    // by the map's type on the line it sits under, and the future it
+    // holds is the stream's own affair — what it waits on is the line
+    // below.
+    let heading = match &member.route {
+        MemberRoute::Entry { .. } => format!("{local}{via}:"),
+        _ => format!("{local}{via}: {future}"),
+    };
+    let mut lines = vec![heading];
     let mut field = |label: &str, value: String| lines.push(format!("    {label}: {value}"));
     if let Some(key) = member.key {
         field("address", format!("{:#x}", key.addr));
     }
     // A member that fans out — a map polled with this task's own
     // context, or a chain ending at one — is listed for its entries,
-    // which follow it: it holds no waker of this task's itself, so
-    // nothing arms it, and the count is all it has to say. Any one
-    // entry wakes the task.
-    if let Some(fanout) = member.entries {
-        // The entries follow, so a count of them says what the lines
-        // under this one already show — unless some were not
-        // inspected, which nothing else says.
-        if fanout.listed < fanout.total {
-            field(
-                "entries",
-                format!(
-                    "{} of {}, the rest not inspected",
-                    fanout.listed, fanout.total
-                ),
-            );
-        }
+    // which follow it under an `entries:` heading that closes its
+    // block: it holds no waker of this task's itself, so nothing arms
+    // it. Any one entry wakes the task.
+    if member.entries.is_some() {
         if let Some((file, line)) = arm {
             field("defined at", format!("{file}:{line}"));
         }
         for note in &member.notes {
             field("note", note.clone());
         }
+        lines.push("    entries:".to_string());
         return lines;
     }
     let verified = match &member.assessment {
@@ -2905,7 +2942,7 @@ mod table_tests {
         };
         assert_eq!(
             line(&fanning),
-            "branch 1: x::branch\n    address: 0x6000\n    entries: 2 of 5, the rest not inspected\n    defined at: qorb-0.4.1/src/pool.rs:286"
+            "branch 1: x::branch\n    address: 0x6000\n    defined at: qorb-0.4.1/src/pool.rs:286\n    entries:"
         );
         let off = WaitMember {
             route: MemberRoute::Disabled {
@@ -2923,6 +2960,7 @@ mod table_tests {
         let entry = WaitMember {
             route: MemberRoute::Entry {
                 index: 0,
+                key: None,
                 under: Some(Box::new(MemberRoute::Select {
                     index: 1,
                     borrowed: false,
@@ -3023,16 +3061,18 @@ mod table_tests {
         )
     }
 
-    /// A member that fans out is listed for its count and arms nothing
-    /// itself: the count, with how many were inspected where the cap
-    /// cut it short, and no verdict or slot text; its entries follow
-    /// as `entry N` lines one step in, while an entry of a stop that
-    /// is the map itself sits at the top like any branch.
+    /// A member that fans out arms nothing itself and closes its block
+    /// with an `entries:` heading, no verdict or slot text; its entries
+    /// follow under that heading, each headed by its key — its index
+    /// where no key was read — and the count the cap left uninspected
+    /// closes the run. The entries of a stop that is the map itself
+    /// sit under an `entries:` heading of their own at the top.
     #[test]
     fn test_a_fan_out_member_lists_its_count_and_nests_its_entries() {
-        let entry = |index: usize, under: Option<MemberRoute>| WaitMember {
+        let entry = |index: usize, key: Option<&str>, under: Option<MemberRoute>| WaitMember {
             route: MemberRoute::Entry {
                 index,
+                key: key.map(str::to_string),
                 under: under.map(Box::new),
                 borrowed: false,
             },
@@ -3056,22 +3096,12 @@ mod table_tests {
         let stops = StopNames::none(&impls);
         // A fan-out member arms nothing, so its block is the one line.
         let line = |member: &WaitMember| member_line(member, &stops, &[], None).join("\n");
-        assert_eq!(
-            line(&fanning(3, 3)),
-            "branch 1 (borrowed): x::branch\n    address: 0x6000"
-        );
-        assert_eq!(
-            line(&fanning(8, 12)),
-            "branch 1 (borrowed): x::branch\n    address: 0x6000\n    entries: 8 of 12, the rest not inspected"
-        );
-        assert_eq!(
-            line(&fanning(1, 1)),
-            "branch 1 (borrowed): x::branch\n    address: 0x6000"
-        );
-        assert_eq!(
-            line(&fanning(0, 0)),
-            "branch 1 (borrowed): x::branch\n    address: 0x6000"
-        );
+        for (listed, total) in [(3, 3), (8, 12), (1, 1), (0, 0)] {
+            assert_eq!(
+                line(&fanning(listed, total)),
+                "branch 1 (borrowed): x::branch\n    address: 0x6000\n    entries:"
+            );
+        }
         let under = MemberRoute::Select {
             index: 1,
             borrowed: true,
@@ -3080,33 +3110,38 @@ mod table_tests {
         let wait = assessed(
             1,
             one_of(vec![
-                fanning(2, 2),
-                entry(0, Some(under.clone())),
-                entry(1, Some(under)),
-                entry(0, None),
+                fanning(2, 5),
+                entry(0, Some("\"key-a\""), Some(under.clone())),
+                entry(1, None, Some(under)),
+                entry(0, Some("7"), None),
             ]),
         );
         let lines = wait_detail(&wait, &stops, &[], None, &|_| None);
         // The `select!` branch and the entries reached through it sit
-        // under the heading; the entry of the stop itself does not.
+        // under the heading, the entries two steps under the branch and
+        // the uninspected count after them; the entry of the stop
+        // itself sits under a heading at the top.
         assert_eq!(
             lines,
             [
                 "select!:",
                 "    branch 1 (borrowed): x::branch",
                 "        address: 0x6000",
-                "        entry 0: x::branch",
-                "            address: 0x6000",
-                "            armed: no",
-                "            blocked on: unknown",
-                "        entry 1: x::branch",
-                "            address: 0x6000",
-                "            armed: no",
-                "            blocked on: unknown",
-                "entry 0: x::branch",
-                "    address: 0x6000",
-                "    armed: no",
-                "    blocked on: unknown",
+                "        entries:",
+                "            \"key-a\":",
+                "                address: 0x6000",
+                "                armed: no",
+                "                blocked on: unknown",
+                "            entry 1:",
+                "                address: 0x6000",
+                "                armed: no",
+                "                blocked on: unknown",
+                "            3 more entries not inspected",
+                "entries:",
+                "    7:",
+                "        address: 0x6000",
+                "        armed: no",
+                "        blocked on: unknown",
             ]
         );
     }

@@ -221,10 +221,11 @@ pub fn classify(role: WalkRole) -> Class {
         // only: a bundle without it still lists and traces.
         TrailerWaker => Class::Optional,
         // The census's map walk: a `StreamMap`'s entries, each a future
-        // the polling task holds. A bundle without them lists the map's
-        // `Next` as an unknown stop, as every other container walk
-        // degrades.
-        StreamMapEntries | StreamMapEntryStream => Class::Optional,
+        // the polling task holds, and each entry's key, which names it
+        // in a listing. A bundle without them lists the map's `Next` as
+        // an unknown stop, as every other container walk degrades; one
+        // without the key alone lists the entries by index.
+        StreamMapEntries | StreamMapEntryStream | StreamMapEntryKey => Class::Optional,
         // The bounded io operations, a readiness await's own node, and
         // the semaphore's queue state: resource bindings the semantic
         // table dispatches through. A bundle without them still lists and

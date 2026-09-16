@@ -229,12 +229,15 @@ pub enum MemberRoute {
     },
     /// Entry `index` of a container that polls every entry with the
     /// task's own context — a `StreamMap` — so each entry holds the
-    /// task's waker itself. `under` is the member the container was
+    /// task's waker itself. `key` is the entry's key as text, where
+    /// the bundle reached it and it fits a heading; the index names
+    /// the entry otherwise. `under` is the member the container was
     /// reached through, where it was not the stop itself: a branch
     /// whose chain ends at the map, or a local holding one. Listed
-    /// after that member, indented under it.
+    /// after that member, under its `entries:` heading.
     Entry {
         index: usize,
+        key: Option<String>,
         under: Option<Box<MemberRoute>>,
         borrowed: bool,
     },
@@ -679,10 +682,14 @@ impl<'b, T: Target> Context<'b, T> {
         notes: &mut Vec<String>,
     ) -> (Vec<Branch<'b>>, Option<Fanout>) {
         let mut branches = Vec::new();
-        let visit = &mut |index: usize, stream: Value<'b>| -> Result<(), census::NodeStop> {
+        let visit = &mut |index: usize,
+                          entry: Value<'b>,
+                          stream: Value<'b>|
+         -> Result<(), census::NodeStop> {
             branches.push(Branch {
                 route: MemberRoute::Entry {
                     index,
+                    key: census::fanout_key(self, read, entry),
                     under: under.clone(),
                     borrowed: false,
                 },
@@ -864,10 +871,12 @@ impl<'b, T: Target> Context<'b, T> {
                 },
                 MemberRoute::Entry {
                     index,
+                    key,
                     under,
                     borrowed,
                 } => MemberRoute::Entry {
                     index,
+                    key,
                     under,
                     borrowed: borrowed || via_borrow,
                 },
@@ -2036,6 +2045,7 @@ mod tests {
             }),
             member(MemberRoute::Entry {
                 index: 0,
+                key: None,
                 under: Some(Box::new(MemberRoute::Select {
                     index: 1,
                     borrowed: true,
@@ -2045,6 +2055,7 @@ mod tests {
             }),
             member(MemberRoute::Entry {
                 index: 1,
+                key: None,
                 under: Some(Box::new(MemberRoute::Select {
                     index: 1,
                     borrowed: true,
@@ -2194,7 +2205,7 @@ mod tests {
             assert!(
                 matches!(
                     &entry.route,
-                    MemberRoute::Entry { index, under: Some(under), borrowed: false }
+                    MemberRoute::Entry { index, key: _, under: Some(under), borrowed: false }
                         if *index == i && matches!(**under, MemberRoute::Select { index: 1, .. })
                 ),
                 "{:?}",
@@ -2634,6 +2645,7 @@ mod tests {
         fanning.push(WaitMember {
             route: MemberRoute::Entry {
                 index: 0,
+                key: None,
                 under: None,
                 borrowed: false,
             },
@@ -3042,7 +3054,7 @@ mod fanout_tests {
             assert!(
                 matches!(
                     &member.route,
-                    MemberRoute::Entry { index, under: Some(under), borrowed: false }
+                    MemberRoute::Entry { index, key: _, under: Some(under), borrowed: false }
                         if *index == i
                             && matches!(&**under, MemberRoute::Branch { local, .. } if local == "m0")
                 ),
@@ -3056,7 +3068,7 @@ mod fanout_tests {
         }
 
         let mut first = None;
-        let _ = census::walk_fanout_entries(&ctx, &ReadContext::none(), map, 1, &mut |_, v| {
+        let _ = census::walk_fanout_entries(&ctx, &ReadContext::none(), map, 1, &mut |_, _, v| {
             first = Some(v);
             Ok(())
         });
@@ -3069,6 +3081,7 @@ mod fanout_tests {
             vec![Branch {
                 route: MemberRoute::Entry {
                     index: 7,
+                    key: None,
                     under: None,
                     borrowed: true,
                 },
@@ -3083,6 +3096,7 @@ mod fanout_tests {
                 members[0].route,
                 MemberRoute::Entry {
                     index: 7,
+                    key: _,
                     under: None,
                     borrowed: true
                 }
@@ -3119,7 +3133,7 @@ mod fanout_tests {
         for (i, branch) in found.branches.iter().enumerate() {
             assert!(matches!(
                 branch.route,
-                MemberRoute::Entry { index, under: None, borrowed: false } if index == i
+                MemberRoute::Entry { index, key: _, under: None, borrowed: false } if index == i
             ));
         }
         let found = ctx.branches_at(

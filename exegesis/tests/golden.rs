@@ -3280,6 +3280,7 @@ fn run_golden(program: &str) {
                 );
                 assert_walk(program, &bundle, WalkRole::StreamMapEntries, "entries");
                 assert_walk(program, &bundle, WalkRole::StreamMapEntryStream, "__1");
+                assert_walk(program, &bundle, WalkRole::StreamMapEntryKey, "__0");
             }
             "unordered" => assert_container(
                 program,

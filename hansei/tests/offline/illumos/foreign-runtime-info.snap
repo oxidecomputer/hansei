@@ -5,8 +5,8 @@ description: "`info` over illumos/foreign-runtime"
 core:       <snapshot>
 tokio info: <tokio info>
 symbols resolved: 20/20
-allocator evidence: libumem index (58 caches, 34 slabs)
-waker slots: 1 copy of tokio's WAKER_VTABLE, 0 set vtables; 127.4 KiB swept in 3455 chunks
+allocator evidence: libumem index (58 caches, 35 slabs)
+waker slots: 1 copy of tokio's WAKER_VTABLE, 0 set vtables; 143.7 KiB swept in 3482 chunks
     hits: 3 task-pattern, 0 set-pattern; 3 admitted; 0 unlisted headers
     by class: 3 task extent
     attributed: 3 by a registry, 0 by owner type, 0 by holding type, 0 unknown; 0 stale

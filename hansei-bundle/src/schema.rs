@@ -1506,6 +1506,7 @@ walk_roles! {
     WatchSharedNotifyRx = "watch::Shared.notify_rx",
     StreamMapEntries = "StreamMap.entries",
     StreamMapEntryStream = "StreamMap.entry.stream",
+    StreamMapEntryKey = "StreamMap.entry.key",
 }
 
 /// What binding one walk role against the target's DWARF concluded.

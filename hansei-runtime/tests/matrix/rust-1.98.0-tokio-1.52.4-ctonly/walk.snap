@@ -2,7 +2,7 @@
 source: hansei-runtime/tests/matrix.rs
 ---
 program: ct-runtime
-walk contract (tokio 1.52.4, rustc 1.98.0 (88d9e12ae 2026-08-18)): 171 entries, 0 broken, 72 absent
+walk contract (tokio 1.52.4, rustc 1.98.0 (88d9e12ae 2026-08-18)): 172 entries, 0 broken, 73 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -174,3 +174,4 @@ walk contract (tokio 1.52.4, rustc 1.98.0 (88d9e12ae 2026-08-18)): 171 entries, 
   absent  watch::Shared.notify_rx — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
   absent  StreamMap.entries — no tokio_stream::stream_map::StreamMap<… type in the tokio info (the target does not reach one)
   absent  StreamMap.entry.stream — no tokio_stream::stream_map::StreamMap<… type in the tokio info (the target does not reach one)
+  absent  StreamMap.entry.key — no tokio_stream::stream_map::StreamMap<… type in the tokio info (the target does not reach one)
