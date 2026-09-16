@@ -4,4 +4,4 @@ description: "`trace 3 -l 1` over linux/blocking-pool"
 ---
 the task is mid-poll: its saved state below the root is not read as a chain
 #0  future        tokio::runtime::blocking::task::BlockingTask<blocking_pool::main::{async_block#0}::{closure_env#0}>
-      (<no_state>, 1 local)
+      defined at tokio-1.52.4/src/runtime/blocking/task.rs:27 (<no_state>, 1 local)

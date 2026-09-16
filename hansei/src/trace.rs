@@ -624,18 +624,21 @@ const KIND_WIDTH: usize = 13;
 const DETAIL_INDENT: &str = "      ";
 const ENTRY_INDENT: &str = "        ";
 
-/// The detail line under a frame, in one of three spellings making
-/// three distinct claims. `awaiting at <loc> (SuspendN, …)` is a
+/// The detail line under a frame, in one of four spellings making
+/// four distinct claims. `awaiting at <loc> (SuspendN, …)` is a
 /// coroutine's resume point — the frame is awaiting the next one at
 /// that source line; `state <Name>[ — <loc>]` is a coroutine's
 /// terminal state; `constructed at <loc> (<State>, …)` is a
 /// hand-written future — its decoded state enum's variant, or
 /// `<no_state>` where it keeps none, with the same locals tally a
 /// coroutine's line carries, anchored at the declaration site of the
-/// closure or coroutine environment it holds. A future built from
-/// plain values has no such anchor and prints the parenthetical
-/// alone. `held` futures the census found parked in the frame ride
-/// along as a tally.
+/// closure or coroutine environment it holds; `defined at <loc>
+/// (<State>, …)` is a hand-written future built from plain values,
+/// anchored where its type's `fn poll` is written — which `poll` to
+/// read, not where in it execution sits, since a struct future leaves
+/// no program counter. A future with neither anchor prints the
+/// parenthetical alone. `held` futures the census found parked in the
+/// frame ride along as a tally.
 fn frame_detail(
     frame: &bundle::AwaitFrame<'_>,
     held: usize,
@@ -692,12 +695,16 @@ fn frame_detail(
         quals.push_str("; ");
         quals.push_str(&holds);
     }
-    match frame.future.ty.construction_site() {
-        Some((file, line)) => {
-            let text = format!("{file}:{line}");
-            let loc = theme.loc(&text);
-            Some(format!("constructed at {loc} ({quals})"))
-        }
+    let site = |word: &str, (file, line): (&str, u32)| {
+        let text = format!("{file}:{line}");
+        let loc = theme.loc(&text);
+        format!("{word} at {loc} ({quals})")
+    };
+    if let Some(at) = frame.future.ty.construction_site() {
+        return Some(site("constructed", at));
+    }
+    match frame.future.ty.implementation_site() {
+        Some(at) => Some(site("defined", at)),
         None => Some(format!("({quals})")),
     }
 }
@@ -3089,11 +3096,11 @@ mod trace_render_tests {
 
     /// The three detail spellings in one chain: a coroutine's live
     /// state is `awaiting at` its resume point, a wrapper frame with no
-    /// decoded state has no detail at all — the reading convention
-    /// (frame N sits in frame N+1's live state) carries the chain — and
-    /// a plain enum's decoded variant is `constructed at`, which claims
-    /// no resume point. Frame 4 also holds `wz` — a future the chain
-    /// does not run through — which its detail line tallies.
+    /// decoded state is `defined at` its own `fn poll` — the reading
+    /// convention (frame N sits in frame N+1's live state) carries the
+    /// chain — and a plain enum's decoded variant is `constructed at`,
+    /// which claims no resume point. Frame 4 also holds `wz` — a future
+    /// the chain does not run through — which its detail line tallies.
     ///
     /// The hand-written wrappers are no reviewed implementation, so the
     /// chain steps through them only under the test bindings; the
@@ -3107,7 +3114,7 @@ mod trace_render_tests {
                 false
             ),
             "#0  future        walk_shapes::WrapS<walk_shapes::WrapE<walk_shapes::deep>>
-      (<no_state>, 2 locals; holds 1 pending future)
+      defined at src/bin/walk-shapes.rs:44 (<no_state>, 2 locals; holds 1 pending future)
 #1  async fn      walk_shapes::chained
       awaiting at src/bin/walk-shapes.rs:116 (Suspend0, 1 local; holds 1 pending future)
 "
@@ -3140,7 +3147,7 @@ mod trace_render_tests {
 #2  future        walk_shapes::WrapE<walk_shapes::deep>
       constructed at src/bin/walk-shapes.rs:100 (Running, 2 locals)
 #3  future        walk_shapes::WrapS<walk_shapes::WrapE<walk_shapes::deep>>
-      (<no_state>, 2 locals)
+      defined at src/bin/walk-shapes.rs:44 (<no_state>, 2 locals)
 #4  async fn      walk_shapes::chained
       awaiting at src/bin/walk-shapes.rs:116 (Suspend0, 1 local; holds 1 pending future)
 "
@@ -3234,7 +3241,7 @@ mod trace_render_tests {
 #1  async fn      dyn_future::boxed_leaf [dyn]
       awaiting at src/bin/dyn-future.rs:16 (Suspend0, 0 locals)
 #2  future        Pin<Box<(dyn Future<Output=u32> + Send)>>
-      (<no_state>, 1 local)
+      defined at library/core/src/future/future.rs:132 (<no_state>, 1 local)
 #3  async fn      dyn_future::driver
       awaiting at src/bin/dyn-future.rs:40 (Suspend0, 1 local)
 "
@@ -3262,7 +3269,7 @@ mod trace_render_tests {
 #1  async fn      dyn_future::box… [dyn]
       awaiting at src/bin/dyn-future.rs:16 (Suspend0, 0 locals)
 #2  future        Pin<Box<(dyn Future<O…
-      (<no_state>, 1 local)
+      defined at library/core/src/future/future.rs:132 (<no_state>, 1 local)
 #3  async fn      dyn_future::driver
       awaiting at src/bin/dyn-future.rs:40 (Suspend0, 1 local)
 "

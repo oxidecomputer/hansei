@@ -3,8 +3,8 @@ source: hansei/src/offline.rs
 description: "`trace 3 -n` over linux/unordered"
 ---
 #0  future        futures_util::stream::futures_unordered::FuturesUnordered<unordered::set_member>
-      (<no_state>, 3 locals)
+      defined at futures-util-0.3.33/src/stream/futures_unordered/mod.rs:411 (<no_state>, 3 locals)
 #1  future        futures_util::stream::stream::next::Next<futures_util::stream::futures_unordered::FuturesUnordered<unordered::set_member>>
-      (<no_state>, 1 local)
+      defined at futures-util-0.3.33/src/stream/stream/next.rs:31 (<no_state>, 1 local)
 #2  async fn      unordered::driver
       awaiting at src/bin/unordered.rs:119 (Suspend0, 8 locals; holds 5 pending futures)

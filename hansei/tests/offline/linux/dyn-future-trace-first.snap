@@ -7,6 +7,6 @@ description: "`trace 3 -n` over linux/dyn-future"
 #1  async fn      dyn_future::boxed_leaf [dyn]
       awaiting at src/bin/dyn-future.rs:16 (Suspend0, 0 locals)
 #2  future        Pin<Box<(dyn Future<Output=u32> + Send)>>
-      (<no_state>, 1 local)
+      defined at library/core/src/future/future.rs:132 (<no_state>, 1 local)
 #3  async fn      dyn_future::driver
       awaiting at src/bin/dyn-future.rs:40 (Suspend0, 1 local)

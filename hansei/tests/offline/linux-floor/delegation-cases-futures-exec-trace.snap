@@ -7,14 +7,14 @@ future 0xADDR: future delegation_cases::Probe<1>
 Held by: task 1 — future Pin<Box<delegation_cases::Gated<1>>> (frame 0, `child`)
 
 #0  future        delegation_cases::Probe<1>
-      (<no_state>, 3 locals)
+      defined at src/bin/delegation-cases.rs:33 (<no_state>, 3 locals)
 
 future 0xADDR
 future 0xADDR: future delegation_cases::Probe<2>
 Held by: task 2 — future Pin<Box<delegation_cases::Gated<2>>> (frame 0, `child`)
 
 #0  future        delegation_cases::Probe<2>
-      (<no_state>, 3 locals)
+      defined at src/bin/delegation-cases.rs:33 (<no_state>, 3 locals)
 
 future 0xADDR
 future 0xADDR: async block delegation_cases::main

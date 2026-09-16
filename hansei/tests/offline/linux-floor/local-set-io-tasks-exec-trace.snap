@@ -30,7 +30,7 @@ task 3
 
 task 4
 #0  future        tokio::io::util::read::Read<local_set_io::Gated>
-      (<no_state>, 2 locals)
+      defined at tokio-1.47.5/src/io/util/read.rs:49 (<no_state>, 2 locals)
 #1  async fn      local_set_io::local_gated_reader
       awaiting at src/bin/local-set-io.rs:100 (Suspend0, 2 locals)
 

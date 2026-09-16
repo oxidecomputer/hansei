@@ -5,6 +5,6 @@ description: "`trace 3 -n` over linux-floor/channels"
 #0  future        tokio::sync::notify::Notified
       waiting on notify rx 0xADDR (waiting, 1 queued)
 #1  future        Pin<&mut tokio::sync::notify::Notified>
-      (<no_state>, 1 local)
+      defined at library/core/src/future/future.rs:132 (<no_state>, 1 local)
 #2  async fn      channels::notify_waiter
       awaiting at src/bin/channels.rs:37 (Suspend0, 2 locals)

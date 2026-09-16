@@ -22,13 +22,13 @@ task 5
 
 task 6
 #0  future        gen_0007::GfSel2<core::future::pending::Pending<u64>, core::future::pending::Pending<u64>>
-      (<no_state>, 0 locals)
+      defined at src/bin/gen-0007.rs:40 (<no_state>, 0 locals)
 #1  async fn      gen_0007::member_06
       awaiting at src/bin/gen-0007.rs:184 (Suspend0, 3 locals)
 
 task 7
 #0  future        gen_0007::GfSel2<core::future::pending::Pending<u64>, core::future::pending::Pending<u64>>
-      (<no_state>, 0 locals)
+      defined at src/bin/gen-0007.rs:40 (<no_state>, 0 locals)
 #1  async fn      gen_0007::member_07
       awaiting at src/bin/gen-0007.rs:202 (Suspend0, 4 locals; holds 1 pending future)
 [Executed against 5 tasks, 0 failed]

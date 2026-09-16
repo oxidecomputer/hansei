@@ -61,7 +61,7 @@ future 0xADDR: future futures_util::stream::stream::next::Next<tokio_stream::str
 Held by: task 4 — async fn watch_stream::mapper (frame 1, `next`)
 
 #0  future        tokio_stream::stream_map::StreamMap<&str, tokio_stream::wrappers::watch::WatchStream<u32>>
-      (<no_state>, 1 local)
+      defined at tokio-stream-0.1.19/src/stream_map.rs:682 (<no_state>, 1 local)
 [2 frames, 1 shown]
 
 future 0xADDR

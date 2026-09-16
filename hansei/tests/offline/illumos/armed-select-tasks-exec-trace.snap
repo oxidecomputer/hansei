@@ -22,9 +22,9 @@ task 5
 
 task 6
 #0  future        futures_util::stream::futures_unordered::FuturesUnordered<armed_select::child>
-      (<no_state>, 3 locals)
+      defined at futures-util-0.3.33/src/stream/futures_unordered/mod.rs:411 (<no_state>, 3 locals)
 #1  future        futures_util::stream::stream::next::Next<futures_util::stream::futures_unordered::FuturesUnordered<armed_select::child>>
-      (<no_state>, 1 local)
+      defined at futures-util-0.3.33/src/stream/stream/next.rs:31 (<no_state>, 1 local)
 #2  async fn      armed_select::driver
       awaiting at src/bin/armed-select.rs:101 (Suspend0, 2 locals)
 
@@ -38,7 +38,7 @@ task 8
 #0  future        tokio::time::sleep::Sleep
       waiting on timer (deadline TS)
 #1  future        Pin<Box<tokio::time::sleep::Sleep>>
-      (<no_state>, 1 local)
+      defined at library/core/src/future/future.rs:132 (<no_state>, 1 local)
 #2  future        core::future::poll_fn::PollFn<tokio::time::interval::Interval::tick::{async_fn#0}::{closure_env#0}>
       constructed at tokio-1.52.4/src/time/interval.rs:445 (<no_state>, 1 local)
 #3  async fn      tokio::time::interval::Interval::tick

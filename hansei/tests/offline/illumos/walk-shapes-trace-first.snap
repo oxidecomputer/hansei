@@ -3,6 +3,6 @@ source: hansei/src/offline.rs
 description: "`trace 1 -n` over illumos/walk-shapes"
 ---
 #0  future        walk_shapes::WrapS<walk_shapes::WrapE<walk_shapes::deep>>
-      (<no_state>, 2 locals; holds 1 pending future)
+      defined at src/bin/walk-shapes.rs:44 (<no_state>, 2 locals; holds 1 pending future)
 #1  async fn      walk_shapes::chained
       awaiting at src/bin/walk-shapes.rs:116 (Suspend0, 1 local; holds 1 pending future)

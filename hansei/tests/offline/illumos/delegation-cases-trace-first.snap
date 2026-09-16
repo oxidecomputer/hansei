@@ -3,6 +3,6 @@ source: hansei/src/offline.rs
 description: "`trace 1 -n` over illumos/delegation-cases"
 ---
 #0  future        delegation_cases::Gated<1>
-      (<no_state>, 3 locals; holds 1 pending future)
+      defined at src/bin/delegation-cases.rs:63 (<no_state>, 3 locals; holds 1 pending future)
 #1  future        Pin<Box<delegation_cases::Gated<1>>>
-      (<no_state>, 1 local)
+      defined at library/core/src/future/future.rs:132 (<no_state>, 1 local)
