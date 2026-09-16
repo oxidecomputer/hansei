@@ -4091,24 +4091,31 @@ fn test_armed_select_acceptance() {
             unarmed.contains("future tokio::sync::notify::Notified"),
             "{unarmed}"
         );
-        // The unpolled `Notified` describes its `Notify` by the state
-        // word alone: the list is walked only for a verified wait.
-        assert!(unarmed.contains("unarmed: notify rx 0x"), "{unarmed}");
-        assert!(unarmed.contains(" (waiting)"), "{unarmed}");
-        assert!(!unarmed.contains("queued)"), "{unarmed}");
+        assert!(unarmed.contains("unarmed: notify rx"), "{unarmed}");
         assert!(!unarmed.contains("`once`"), "{unarmed}");
+        // The unpolled `Notified` describes its `Notify` by the state
+        // word alone: the list is walked only for a verified wait. The
+        // cell names the kind; the reading is the block's.
+        let notified =
+            regex::Regex::new(r"(?m)^(0x[0-9a-f]+) +\d+ +frame 1, `notified` ").unwrap();
+        let block = hansei_ok(
+            &bundle,
+            core,
+            &format!("future {}", &notified.captures(&unarmed).unwrap()[1]),
+        );
+        assert!(
+            block.contains("\n    waiting on: unarmed: notify rx 0x"),
+            "{block}"
+        );
+        assert!(block.contains(" (waiting)\n"), "{block}");
+        assert!(!block.contains("queued)"), "{block}");
         let armed = hansei_ok(&bundle, core, "futures --with armed yes");
         for local in ["`once`", "`recv`", "`changed`", "`sleep`"] {
             assert!(armed.contains(local), "{armed}");
         }
-        let once = regex::Regex::new(
-            // Two raw strings: a raw string has no line continuation.
-            concat!(
-                r"(?m)^(0x[0-9a-f]+) +\d+ +frame 1, `once` .* oneshot rx 0x[0-9a-f]+ ",
-                r"\(nothing sent, sender alive\) +yes ",
-            ),
-        )
-        .unwrap();
+        let once =
+            regex::Regex::new(r"(?m)^(0x[0-9a-f]+) +\d+ +frame 1, `once` .* oneshot rx +yes ")
+                .unwrap();
         assert!(once.is_match(&armed), "{armed}");
         let block = hansei_ok(
             &bundle,
@@ -4117,6 +4124,7 @@ fn test_armed_select_acceptance() {
         );
         assert!(block.contains("\n    armed: yes\n"), "{block}");
         assert!(block.contains("\n        oneshot rx 0x"), "{block}");
+        assert!(block.contains(" (nothing sent, sender alive)\n"), "{block}");
 
         // The channels as resources: one block per oneshot a slot
         // names — the selector's, the holder's, the ticker's, and the

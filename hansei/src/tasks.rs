@@ -841,13 +841,12 @@ fn cell_in_detail(
 /// sorted, distinct and comma-joined.
 pub(crate) fn slot_cell(
     slots: &[&attribution::AttributedSlot],
-    stopped: Option<RawInstant>,
     accounted: &dyn Fn(&attribution::AttributedSlot) -> Option<(String, String)>,
 ) -> (String, String) {
     let entries = waitset::counted(
         slots
             .iter()
-            .map(|slot| accounted(slot).unwrap_or_else(|| (slot.entry(stopped), slot.bucket())))
+            .map(|slot| accounted(slot).unwrap_or_else(|| (slot.cell(), slot.bucket())))
             .collect(),
     );
     let mut kinds: Vec<&str> = entries.iter().map(|(_, k)| k.as_str()).collect();

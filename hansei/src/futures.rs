@@ -74,14 +74,19 @@ pub(crate) struct FutureRow {
     pub(crate) via: Option<census::Via>,
     /// Its own suspend state, `Suspend1 — file:line` style.
     pub(crate) state: Option<String>,
-    /// The `WAITING ON` cell: the slots holding the polling task's
-    /// waker that sit in this future or were reached through a pointer
-    /// it holds, each spelled by its reader where the future's own
-    /// wait accounts for it; `unarmed: ` before what its chain says
-    /// where no slot does and no protocol read the waker. Built short
-    /// of the slots first and merged once the sweep is in
-    /// ([`with_slots`]).
+    /// The `WAITING ON` cell: the kind of every slot holding the
+    /// polling task's waker that sits in this future or was reached
+    /// through a pointer it holds, sorted, repeats counted and
+    /// comma-joined, as the task table's cell names the same waits;
+    /// `unarmed: ` before what its chain says where no slot does and
+    /// no protocol read the waker. Built short of the slots first and
+    /// merged once the sweep is in ([`with_slots`]).
     pub(crate) waiting_on: Option<String>,
+    /// What the future's own reader read of the resource its chain
+    /// ends in — the resource named, with its state — for the block's
+    /// `waiting on:` line where no slot line carries it. `None` where
+    /// the chain ends in no recognized primitive.
+    pub(crate) described: Option<String>,
     /// The kind-level bucket `--group waiting-on` files the row under:
     /// the slots' kinds, else the primitive's kind or what the
     /// continuation says instead, under `unarmed: ` where no slot
@@ -207,6 +212,7 @@ pub(crate) fn with_slots(
         if owned.is_empty() {
             row.waiting_on = row.waiting_on.take().map(|w| format!("unarmed: {w}"));
             row.waiting_kind = row.waiting_kind.take().map(|k| format!("unarmed: {k}"));
+            row.described = row.described.take().map(|d| format!("unarmed: {d}"));
             return;
         }
         // The find's own reader accounts for the slot of its kind:
@@ -216,7 +222,7 @@ pub(crate) fn with_slots(
             let kind = wait?;
             kind_matches(kind, slot).then(|| reader.clone()).flatten()
         };
-        let (cell, kind) = tasks::slot_cell(&owned, stopped, &accounted);
+        let (cell, kind) = tasks::slot_cell(&owned, &accounted);
         row.waiting_on = Some(cell);
         row.waiting_kind = Some(kind);
         row.slot_lines = tasks::slot_lines(&owned, stopped);
@@ -442,9 +448,10 @@ impl Rows<'_> {
             via: h.via,
             state: h.state.clone(),
             waiting_on: h
-                .waiting_on
-                .clone()
+                .wait
+                .map(|wait| wait_cell(wait, self.list, &self.task_at))
                 .or_else(|| tasks::continuation_bucket(&h.continuation, self.stops)),
+            described: h.waiting_on.clone(),
             waiting_kind: waiting_kind(
                 h.wait,
                 &h.continuation,
@@ -486,9 +493,10 @@ impl Rows<'_> {
             via: s.via,
             state: c.state.clone(),
             waiting_on: c
-                .waiting_on
-                .clone()
+                .wait
+                .map(|wait| wait_cell(wait, self.list, &self.task_at))
                 .or_else(|| tasks::continuation_bucket(&c.continuation, self.stops)),
+            described: c.waiting_on.clone(),
             waiting_kind: waiting_kind(
                 c.wait,
                 &c.continuation,
@@ -507,6 +515,23 @@ impl Rows<'_> {
     }
 }
 
+/// The `WAITING ON` cell a find's own wait gives: the kind word, a
+/// task by its label, as the task table's cell names the same wait.
+/// What the reader read of the resource is the block's to print.
+fn wait_cell(
+    wait: bundle::WaitKind,
+    list: &bundle::TaskList,
+    task_at: &HashMap<u64, usize>,
+) -> String {
+    match wait {
+        bundle::WaitKind::Task { addr } => match task_at.get(&addr) {
+            Some(&index) => tasks::task_label(list, index),
+            None => wait.word().to_string(),
+        },
+        _ => wait.word().to_string(),
+    }
+}
+
 /// The bucket `--group waiting-on` files a row under: the resource's
 /// kind where its chain ends in one — with the identity that groups
 /// usefully, which task, which kind of lock — else what the
@@ -520,20 +545,15 @@ fn waiting_kind(
     stops: &StopNames<'_>,
 ) -> Option<String> {
     match wait {
-        Some(bundle::WaitKind::Timer { .. }) => Some("timer".to_string()),
         Some(bundle::WaitKind::Task { addr }) => Some(match task_at.get(&addr) {
             Some(&index) => tasks::task_label(list, index),
             None => format!("the task at {addr:#x}"),
         }),
-        Some(bundle::WaitKind::Io) => Some("io".to_string()),
         Some(bundle::WaitKind::Semaphore { owner }) => Some(match owner {
             Some(owner) => format!("a {owner} (semaphore)"),
             None => "a semaphore".to_string(),
         }),
-        Some(bundle::WaitKind::Channel { .. }) => Some("mpsc rx".to_string()),
-        Some(bundle::WaitKind::Notify { .. }) => Some("notify rx".to_string()),
-        Some(bundle::WaitKind::Oneshot { .. }) => Some("oneshot rx".to_string()),
-        Some(bundle::WaitKind::Watch { .. }) => Some("watch rx".to_string()),
+        Some(wait) => Some(wait.word().to_string()),
         None => tasks::continuation_bucket(continuation, stops),
     }
 }
@@ -669,12 +689,17 @@ impl Blocks<'_> {
         writeln!(out, "    depth: {}", summary::counted(row.depth, "frame"))?;
         // The wait, one line per slot under it, and whether anything
         // arms the future at all — `no` is an answer, so it prints.
-        // Where the slots are listed they carry the cell whole, each
-        // line opening with the entry the cell holds, so the label
-        // stands bare over them rather than saying it twice.
+        // Where the slots are listed they carry the wait whole, each
+        // line naming its resource and what its reader read, so the
+        // label stands bare over them; where none is, the line carries
+        // what the future's own reader read, which the cell leaves to
+        // the block, else the cell.
         if let Some(waiting) = &row.waiting_on {
             match row.slot_lines.is_empty() {
-                true => writeln!(out, "    waiting on: {waiting}")?,
+                true => {
+                    let waiting = row.described.as_ref().unwrap_or(waiting);
+                    writeln!(out, "    waiting on: {waiting}")?
+                }
                 false => writeln!(out, "    waiting on:")?,
             }
             for line in &row.slot_lines {
@@ -1656,14 +1681,13 @@ mod tests {
         let rows = with_slots(rows_of(&census), &list(), &census, &slots, None);
         let row = |addr: u64| rows.iter().find(|r| r.addr == addr).unwrap();
         assert!(row(0x5000).armed);
-        assert_eq!(
-            row(0x5000).waiting_on.as_deref(),
-            Some("a timer, slot 0x5020 in x::Holder")
-        );
+        assert_eq!(row(0x5000).waiting_on.as_deref(), Some("timer, x::Holder"));
         assert_eq!(
             row(0x5000).waiting_kind.as_deref(),
             Some("timer, x::Holder")
         );
+        // What the reader read is the block's, not the cell's.
+        assert_eq!(row(0x5000).described.as_deref(), Some("a timer"));
         assert_eq!(
             row(0x5000).slot_lines,
             [
@@ -1673,28 +1697,30 @@ mod tests {
             ]
         );
         assert!(row(0x6000).armed);
-        assert_eq!(
-            row(0x6000).waiting_on.as_deref(),
-            Some("mpsc 0x9000 (1 sender, 0 unread)")
-        );
+        assert_eq!(row(0x6000).waiting_on.as_deref(), Some("mpsc rx"));
         assert_eq!(row(0x6000).waiting_kind.as_deref(), Some("mpsc rx"));
         assert!(!row(0x7000).armed);
         assert_eq!(
             row(0x7000).waiting_on.as_deref(),
-            Some("unarmed: notify 0x9100 (waiting)")
+            Some("unarmed: notify rx")
         );
         assert_eq!(
             row(0x7000).waiting_kind.as_deref(),
             Some("unarmed: notify rx")
         );
+        assert_eq!(
+            row(0x7000).described.as_deref(),
+            Some("unarmed: notify 0x9100 (waiting)")
+        );
         assert!(row(0x7000).slot_lines.is_empty());
         for (addr, cell) in [
-            (0xa000, "io fd 3 (readable)"),
-            (0xb000, "the semaphore at 0x9300"),
-            (0xc000, "notify 0x9400 (waiting)"),
-            (0xd000, "task 29"),
-            (0xe000, "oneshot rx 0x9600 (nothing sent, sender alive)"),
-            (0xf000, "watch 0x9700 (version 3, 1 receiver)"),
+            (0xa000, "io"),
+            (0xb000, "semaphore"),
+            (0xc000, "notify rx"),
+            // A task the list does not carry has no id to name.
+            (0xd000, "task"),
+            (0xe000, "oneshot rx"),
+            (0xf000, "watch rx"),
         ] {
             assert!(row(addr).armed, "{addr:#x}");
             assert_eq!(row(addr).waiting_on.as_deref(), Some(cell), "{addr:#x}");
@@ -1708,7 +1734,10 @@ mod tests {
         let rows = with_slots(rows_of(&census), &list(), &census, &child_slots, None);
         let joiner = rows.iter().find(|r| r.addr == 0x2010).unwrap();
         assert!(joiner.armed);
-        assert_eq!(joiner.waiting_on.as_deref(), Some("task 28"));
+        // The cell names the task the wait tallies, whatever the
+        // reader wrote; the reader's words are the block's.
+        assert_eq!(joiner.waiting_on.as_deref(), Some("task 12"));
+        assert_eq!(joiner.described.as_deref(), Some("task 28"));
         assert_eq!(joiner.slot_lines, ["join task 28: its trailer"]);
     }
 
@@ -1903,9 +1932,13 @@ mod tests {
     /// nothing rather than the empty string.
     #[test]
     fn test_clauses_read_their_fields() {
+        // A child waiting on nothing the census recognized: its cell
+        // is empty, and an empty text field matches nothing.
+        let mut unresumed = child(0x4000, Some("app::child"));
+        unresumed.wait = None;
         let census = census(
             vec![held(0, 0x3000, None), held(1, 0x5000, None)],
-            vec![set(0, vec![child(0x4000, Some("app::child"))])],
+            vec![set(0, vec![unresumed])],
         );
         let rows = rows_of(&census);
         let (h, c, other) = (&rows[0], &rows[1], &rows[2]);
@@ -2080,7 +2113,14 @@ mod tests {
         let mut long = held(0, 0x5000, None);
         long.future =
             "app::a::very::long::module::path::to::the::work::{async_fn_env#0}".to_string();
-        long.waiting_on = Some("mpsc 0x9000 (1 sender, 0 unread, cap 1024)".to_string());
+        // A cell long enough to cut: what a chain stopped at, since a
+        // kind word never is.
+        long.waiting_on = None;
+        long.wait = None;
+        long.continuation = ContinuationStatus::Incomplete {
+            reason: IncompleteReason::UnknownDyn,
+            detail: None,
+        };
         let rows = rows_of(&census(vec![long], vec![]));
         let rows: Vec<&FutureRow> = rows.iter().collect();
         let mut out = Vec::new();
@@ -2097,7 +2137,7 @@ mod tests {
         assert_eq!(
             out.lines().nth(1),
             Some(
-                "0x5000  1     frame 1, `arm`  Suspend1 — src/app.rs:9  mpsc 0x9000 …  no     async fn app…"
+                "0x5000  1     frame 1, `arm`  Suspend1 — src/app.rs:9  unknown (dyn…  no     async fn app…"
             ),
             "{out}"
         );

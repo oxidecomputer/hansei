@@ -1177,6 +1177,25 @@ pub enum WaitKind {
     Watch { addr: u64 },
 }
 
+impl WaitKind {
+    /// The kind word a listing's cell names the wait by, as
+    /// [`WaitTarget::cell`] names the target the kind was tallied from
+    /// — except a task, which a cell names by its id and a tally holds
+    /// only the address of.
+    pub fn word(&self) -> &'static str {
+        match self {
+            Self::Timer { .. } => "timer",
+            Self::Task { .. } => "task",
+            Self::Io => "io",
+            Self::Semaphore { .. } => "semaphore",
+            Self::Channel { .. } => "mpsc rx",
+            Self::Notify { .. } => "notify rx",
+            Self::Oneshot { .. } => "oneshot rx",
+            Self::Watch { .. } => "watch rx",
+        }
+    }
+}
+
 impl WaitTarget {
     /// The wait as a listing's cell names it: the kind word alone — a
     /// task by its id, which is what every listing calls it — and
@@ -1185,17 +1204,10 @@ impl WaitTarget {
     /// lines' to print, where a row's cell has no room for them.
     pub fn cell(&self) -> String {
         match self {
-            Self::Timer { .. } => "timer".to_string(),
-            Self::Task { task_id, .. } => match task_id {
-                Some(id) => format!("task {id}"),
-                None => "task".to_string(),
-            },
-            Self::Io { .. } => "io".to_string(),
-            Self::Semaphore { .. } => "semaphore".to_string(),
-            Self::Channel { .. } => "mpsc rx".to_string(),
-            Self::Notify { .. } => "notify rx".to_string(),
-            Self::Oneshot { .. } => "oneshot rx".to_string(),
-            Self::Watch { .. } => "watch rx".to_string(),
+            Self::Task {
+                task_id: Some(id), ..
+            } => format!("task {id}"),
+            _ => self.kind().word().to_string(),
         }
     }
 
