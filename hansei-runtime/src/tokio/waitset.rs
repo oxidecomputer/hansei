@@ -243,6 +243,11 @@ pub enum MemberRoute {
         key: Option<String>,
         under: Option<Box<MemberRoute>>,
         borrowed: bool,
+        /// The stream the entry is, as the map holds it — which is
+        /// not the member's own type where that stream is polled
+        /// through: the member is the first frame past the adapters,
+        /// and a `WatchStream`'s is the `changed` it boxes.
+        stream: BundleTypeId,
     },
     /// A registry slot attributed to the task that lies in no branch.
     /// `within` places it in the task's own chain where it does lie
@@ -720,6 +725,7 @@ impl<'b, T: Target> Context<'b, T> {
                     key: census::fanout_key(self, read, entry),
                     under: under.clone(),
                     borrowed: false,
+                    stream: stream.ty.id(),
                 },
                 value: stream,
             });
@@ -902,11 +908,13 @@ impl<'b, T: Target> Context<'b, T> {
                     key,
                     under,
                     borrowed,
+                    stream,
                 } => MemberRoute::Entry {
                     index,
                     key,
                     under,
                     borrowed: borrowed || via_borrow,
+                    stream,
                 },
                 other => other,
             };
@@ -2076,6 +2084,7 @@ mod tests {
                     arm: None,
                 })),
                 borrowed: false,
+                stream: BundleTypeId(0),
             }),
             member(MemberRoute::Entry {
                 index: 1,
@@ -2086,6 +2095,7 @@ mod tests {
                     arm: None,
                 })),
                 borrowed: false,
+                stream: BundleTypeId(0),
             }),
             member(MemberRoute::SlotOnly {
                 within: Some("a".to_string()),
@@ -2229,7 +2239,7 @@ mod tests {
             assert!(
                 matches!(
                     &entry.route,
-                    MemberRoute::Entry { index, key: _, under: Some(under), borrowed: false }
+                    MemberRoute::Entry { index, key: _, under: Some(under), borrowed: false, stream: _ }
                         if *index == i && matches!(**under, MemberRoute::Select { index: 1, .. })
                 ),
                 "{:?}",
@@ -2672,6 +2682,7 @@ mod tests {
                 key: None,
                 under: None,
                 borrowed: false,
+                stream: BundleTypeId(0),
             },
             ..select_member(0, Some(terminal()))
         });
@@ -3071,7 +3082,7 @@ mod fanout_tests {
             assert!(
                 matches!(
                     &member.route,
-                    MemberRoute::Entry { index, key: _, under: Some(under), borrowed: false }
+                    MemberRoute::Entry { index, key: _, under: Some(under), borrowed: false, stream: _ }
                         if *index == i
                             && matches!(&**under, MemberRoute::Branch { local, .. } if local == "m0")
                 ),
@@ -3101,6 +3112,7 @@ mod fanout_tests {
                     key: None,
                     under: None,
                     borrowed: true,
+                    stream: BundleTypeId(0),
                 },
                 value: first.expect("the map has a first entry"),
             }],
@@ -3115,7 +3127,8 @@ mod fanout_tests {
                     index: 7,
                     key: _,
                     under: None,
-                    borrowed: true
+                    borrowed: true,
+                    stream: _,
                 }
             ),
             "{:?}",
@@ -3150,7 +3163,7 @@ mod fanout_tests {
         for (i, branch) in found.branches.iter().enumerate() {
             assert!(matches!(
                 branch.route,
-                MemberRoute::Entry { index, key: _, under: None, borrowed: false } if index == i
+                MemberRoute::Entry { index, key: _, under: None, borrowed: false, stream: _ } if index == i
             ));
         }
         let found = ctx.branches_at(

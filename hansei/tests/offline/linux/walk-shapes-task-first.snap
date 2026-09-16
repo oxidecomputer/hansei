@@ -13,6 +13,7 @@ task 1
             address: 0xADDR
             armed: yes
             blocked on: notify rx 0xADDR (waiting)
+            defined at: src/bin/walk-shapes.rs:77
             location: future 0xADDR Running.inner.waiter.waker.Some
     spawned at: src/bin/walk-shapes.rs:258:9
     defined at: src/bin/walk-shapes.rs:105

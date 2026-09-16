@@ -1154,6 +1154,17 @@ impl<'a> StopNames<'a> {
         }
     }
 
+    /// Over a bundle built by hand, with no session around it.
+    #[cfg(test)]
+    pub(crate) fn over(view: BundleView<'a>, impls: &'a names::ImplFold) -> Self {
+        StopNames {
+            view: Some(view),
+            impls,
+            labels: RwLock::default(),
+            names: RwLock::default(),
+        }
+    }
+
     /// The stop's label, or `None` where the type is not in the bundle.
     fn label(&self, ty: BundleTypeId) -> Option<String> {
         if let Some(label) = self.labels.read().unwrap().get(&ty) {
@@ -1188,6 +1199,17 @@ impl<'a> StopNames<'a> {
             .entry(ty)
             .or_insert(name)
             .clone()
+    }
+
+    /// Where the type's poll method is written, for the `defined at`
+    /// line of a member that is a hand-written future or stream:
+    /// `None` where the type is not in the bundle, or is a coroutine,
+    /// or has no declaration recorded. Not memoized, unlike the two
+    /// above: those fold a name per call, and this is one map probe.
+    fn site(&self, ty: BundleTypeId) -> Option<(String, u32)> {
+        let ty = self.view?.ty(ty)?;
+        let (file, line) = ty.implementation_site()?;
+        Some((file.to_string(), line))
     }
 
     /// One type name as a line that names a future carries it: folded
@@ -1441,21 +1463,29 @@ fn member_line(
     armed_by: &[&attribution::AttributedSlot],
     stopped: Option<RawInstant>,
 ) -> Vec<String> {
-    // Where a `select!` branch's arm is written is a fact about the
-    // source, printed under the branch whatever its state: below the
-    // `blocked on` lines of a branch that was inspected, and as the
-    // second line of a disabled one, which has no other.
-    let (local, borrowed, arm) = match &member.route {
-        MemberRoute::Branch { local, borrowed } => (local.clone(), *borrowed, None),
+    // Where the thing on the heading is written is a fact about the
+    // source, printed under the member whatever its state: below the
+    // `blocked on` lines of one that was inspected, and as the second
+    // line of a disabled branch, which has no other. One line per
+    // member: a `select!` branch's is its arm, and any other member's
+    // is the `poll` of the first of its types that has one — the
+    // heading says which it is, so the label is the same word for
+    // both.
+    let defined_at = |arm: Option<&(String, u32)>, types: &[Option<BundleTypeId>]| {
+        arm.cloned()
+            .or_else(|| types.iter().flatten().find_map(|&ty| stops.site(ty)))
+    };
+    let (local, borrowed, arm, stream) = match &member.route {
+        MemberRoute::Branch { local, borrowed } => (local.clone(), *borrowed, None, None),
         MemberRoute::Select {
             index,
             borrowed,
             arm,
-        } => (format!("branch {index}"), *borrowed, arm.as_ref()),
+        } => (format!("branch {index}"), *borrowed, arm.as_ref(), None),
         MemberRoute::Disabled { index, ty, arm } => {
             let future = member_future(member, stops, Some(*ty));
             let mut lines = vec![format!("branch {index}: {future}: disabled")];
-            if let Some((file, line)) = arm {
+            if let Some((file, line)) = defined_at(arm.as_ref(), &[Some(*ty)]) {
                 lines.push(format!("    defined at: {file}:{line}"));
             }
             return lines;
@@ -1466,16 +1496,24 @@ fn member_line(
             index,
             key,
             borrowed,
+            stream,
             ..
         } => (
             key.clone().unwrap_or_else(|| format!("entry {index}")),
             *borrowed,
             None,
+            Some(*stream),
         ),
         MemberRoute::SlotOnly { .. } => unreachable!("only branches print as members"),
     };
     let via = if borrowed { " (borrowed)" } else { "" };
-    let future = member_future(member, stops, member.key.map(|key| key.ty));
+    let ty = member.key.map(|key| key.ty);
+    let future = member_future(member, stops, ty);
+    // An entry's line is its stream's, the type the map's own line
+    // names it by, since the member is whatever that stream is polled
+    // through to; a stream with no line of its own — a boxed trait
+    // object — leaves it to the member, as any other member's is.
+    let defined_at = defined_at(arm, &[stream, ty]);
     // An entry's heading is its key alone: the stream it is was named
     // by the map's type on the line it sits under, and the future it
     // holds is the stream's own affair — what it waits on is the line
@@ -1495,7 +1533,7 @@ fn member_line(
     // block: it holds no waker of this task's itself, so nothing arms
     // it. Any one entry wakes the task.
     if member.entries.is_some() {
-        if let Some((file, line)) = arm {
+        if let Some((file, line)) = &defined_at {
             field("defined at", format!("{file}:{line}"));
         }
         for note in &member.notes {
@@ -1576,7 +1614,7 @@ fn member_line(
             },
         );
     }
-    if let Some((file, line)) = arm {
+    if let Some((file, line)) = &defined_at {
         field("defined at", format!("{file}:{line}"));
     }
     // The slots themselves: one a path names says where it sits, and
@@ -2944,6 +2982,7 @@ mod table_tests {
                     arm: arm(),
                 })),
                 borrowed: false,
+                stream: BundleTypeId(0),
             },
             ..select_branch(
                 0,
@@ -2952,6 +2991,218 @@ mod table_tests {
             )
         };
         assert!(!line(&entry).contains("defined at"), "{}", line(&entry));
+    }
+
+    /// A member with no arm prints where its type's `poll` is written,
+    /// in the place an arm takes: after the verdict and before the
+    /// slots' locations, under the count of a member that fans out,
+    /// and as the second line of a disabled branch. An entry prints
+    /// its stream's. A branch with an arm prints the arm and never
+    /// its type's line, so no member carries two; a type the bundle
+    /// recorded no declaration for prints nothing.
+    #[test]
+    fn test_a_member_with_no_arm_prints_where_its_type_is_written() {
+        use hansei_bundle::{
+            Bundle, BundleView, FORMAT_VERSION, InfraTypes, Meta, SourceLoc, StringInterner,
+            TypeDef, TypeTable,
+        };
+        use hansei_runtime::tokio::attribution::{
+            AttributedSlot, Attribution, OwnerKind, SlotPath, SlotRoot, Validity,
+        };
+        use hansei_runtime::tokio::wakers::Owner;
+
+        let mut strings = StringInterner::new();
+        let n_branch = strings.intern("x::branch");
+        let n_plain = strings.intern("x::plain");
+        let n_file = strings.intern("hyper-1.10.1/src/proto/h1/dispatch.rs");
+        let strings = strings.finish();
+        let ty = BundleTypeId(0);
+        let bundle = Bundle {
+            meta: Meta {
+                format_version: FORMAT_VERSION,
+                ..Default::default()
+            },
+            strings,
+            types: TypeTable {
+                types: vec![
+                    TypeDef::Struct {
+                        name: n_branch,
+                        size: 8,
+                        members: vec![],
+                    },
+                    TypeDef::Struct {
+                        name: n_plain,
+                        size: 8,
+                        members: vec![],
+                    },
+                ],
+                poll_decls: [(
+                    ty,
+                    SourceLoc {
+                        file: n_file,
+                        line: 512,
+                    },
+                )]
+                .into_iter()
+                .collect(),
+                ..Default::default()
+            },
+            tasks: Default::default(),
+            dyn_futures: Default::default(),
+            statics: Default::default(),
+            walks: Default::default(),
+            infra: InfraTypes {
+                header: ty,
+                vtable: ty,
+                trailer: ty,
+                context: ty,
+                scheduler_handle: ty,
+                mt_handle: ty,
+                ct_handle: ty,
+                location: ty,
+                raw_waker_vtable: ty,
+            },
+            provenance: Default::default(),
+            impls: Default::default(),
+            semantics: Default::default(),
+        };
+        let impls = Default::default();
+        let stops = StopNames::over(BundleView::new(&bundle), &impls);
+        let site = "    defined at: hyper-1.10.1/src/proto/h1/dispatch.rs:512";
+        let arm = || Some(("src/bin/armed-select.rs".to_string(), 50));
+
+        // The line sits between the verdict and the slot's location.
+        let slot = AttributedSlot {
+            hit: 0,
+            slot: 0x6010,
+            owner: Owner::Task {
+                header: 0x1100,
+                index: 0,
+            },
+            attribution: Attribution::Owner {
+                kind: OwnerKind::Mpsc,
+                primitive: 0x9000,
+                holder: "Chan".to_string(),
+                member: "rx_waker".to_string(),
+                path: SlotPath {
+                    root: SlotRoot::Find {
+                        index: 0,
+                        addr: 0x6000,
+                        frame: 0,
+                    },
+                    steps: vec!["rx_waker".to_string()],
+                    hop: None,
+                },
+                validity: Validity::SelfDescribing,
+                reading: None,
+            },
+            within: None,
+            through: Vec::new(),
+            aliases: Vec::new(),
+        };
+        let held = branch(
+            "inner",
+            WaitAssessment::Unknown(WaitUnknownReason::Continuation),
+            false,
+        );
+        assert_eq!(
+            member_line(&held, &stops, &[&slot], None),
+            vec![
+                "inner: x::branch",
+                "    address: 0x6000",
+                "    armed: yes",
+                "    blocked on: mpsc rx 0x9000",
+                site,
+                "    location: future 0x6000 rx_waker",
+            ]
+        );
+
+        let line = |member: &WaitMember| member_line(member, &stops, &[], None).join("\n");
+        // An arm wins; a `select!` branch without one falls back to
+        // its type's line.
+        let armed = WaitMember {
+            route: MemberRoute::Select {
+                index: 0,
+                borrowed: true,
+                arm: arm(),
+            },
+            ..select_branch(0, WaitAssessment::Unresumed, false)
+        };
+        assert_eq!(
+            line(&armed),
+            "branch 0 (borrowed): x::branch\n    address: 0x6000\n    armed: no\n    blocked on: never polled\n    defined at: src/bin/armed-select.rs:50"
+        );
+        let unarmed = WaitMember {
+            route: MemberRoute::Select {
+                index: 0,
+                borrowed: true,
+                arm: None,
+            },
+            ..select_branch(0, WaitAssessment::Unresumed, false)
+        };
+        assert_eq!(
+            line(&unarmed),
+            format!(
+                "branch 0 (borrowed): x::branch\n    address: 0x6000\n    armed: no\n    blocked on: never polled\n{site}"
+            )
+        );
+        // One that fans out, and a disabled branch.
+        let fanning = WaitMember {
+            assessment: None,
+            entries: Some(hansei_runtime::tokio::waitset::Fanout {
+                listed: 2,
+                total: 5,
+            }),
+            ..branch("m", WaitAssessment::Unresumed, true)
+        };
+        assert_eq!(
+            line(&fanning),
+            format!("m: x::branch\n    address: 0x6000\n{site}\n    entries:")
+        );
+        let off = WaitMember {
+            future: Some("x::branch".to_string()),
+            ..disabled(2)
+        };
+        assert_eq!(line(&off), format!("branch 2: x::branch: disabled\n{site}"));
+        // An entry: its key on the heading, its stream's line below,
+        // whatever the member past the stream's adapters is; a stream
+        // with no line leaves it to that member.
+        let entry = |stream: u32, member: u32| WaitMember {
+            route: MemberRoute::Entry {
+                index: 0,
+                key: Some("\"alpha\"".to_string()),
+                under: None,
+                borrowed: false,
+                stream: BundleTypeId(stream),
+            },
+            key: Some(ValueKey {
+                addr: 0x6000,
+                ty: BundleTypeId(member),
+            }),
+            ..branch("", WaitAssessment::Unresumed, false)
+        };
+        for (stream, member) in [(0, 1), (1, 0)] {
+            assert_eq!(
+                line(&entry(stream, member)),
+                format!(
+                    "\"alpha\":\n    address: 0x6000\n    armed: no\n    blocked on: never polled\n{site}"
+                ),
+                "stream {stream}, member {member}"
+            );
+        }
+        assert!(!line(&entry(1, 1)).contains("defined at"));
+        // A type with no declaration recorded.
+        let plain = WaitMember {
+            key: Some(ValueKey {
+                addr: 0x6000,
+                ty: BundleTypeId(1),
+            }),
+            ..branch("inner", WaitAssessment::Unresumed, false)
+        };
+        assert_eq!(
+            line(&plain),
+            "inner: x::plain\n    address: 0x6000\n    armed: no\n    blocked on: never polled"
+        );
     }
 
     fn one_of(members: Vec<WaitMember>) -> WaitAssessment {
@@ -3052,6 +3303,7 @@ mod table_tests {
                 key: key.map(str::to_string),
                 under: under.map(Box::new),
                 borrowed: false,
+                stream: BundleTypeId(0),
             },
             ..branch(
                 "e",

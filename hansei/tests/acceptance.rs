@@ -3982,7 +3982,8 @@ fn test_armed_select_acceptance() {
         // the channel reads and where the slot sits on the lines
         // under it; the sleep's is the wheel entry the registry
         // decoded, which has no location — it is not in the task's
-        // storage.
+        // storage. Its arm binds nothing, so it has no arm line and
+        // says where tokio writes `Sleep`'s poll instead.
         let block = hansei_ok(&bundle, core, &format!("task {}", selector.id));
         // The branches sit under one `select!:` heading, which is
         // what makes them branches.
@@ -4008,7 +4009,7 @@ fn test_armed_select_acceptance() {
         .unwrap();
         assert_eq!(located.find_iter(&block).count(), 3, "{block}");
         let sleep = regex::Regex::new(
-            r"(?m)^            branch 3 \(borrowed\): tokio::time::sleep::Sleep\n                address: 0x[0-9a-f]+\n                armed: yes\n                blocked on: timer \(deadline [^\n]*\n                held in: timer @ 0x[0-9a-f]+$",
+            r"(?m)^            branch 3 \(borrowed\): tokio::time::sleep::Sleep\n                address: 0x[0-9a-f]+\n                armed: yes\n                blocked on: timer \(deadline [^\n]*\n                defined at: tokio-[0-9.]+/src/time/sleep\.rs:[0-9]+\n                held in: timer @ 0x[0-9a-f]+$",
         )
         .unwrap();
         assert!(sleep.is_match(&block), "{block}");

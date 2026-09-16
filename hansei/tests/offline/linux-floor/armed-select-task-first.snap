@@ -31,6 +31,7 @@ task 3
                 address: 0xADDR
                 armed: yes
                 blocked on: timer (deadline TS on the target's monotonic clock)
+                defined at: tokio-1.47.5/src/time/sleep.rs:439
                 held in: timer @ 0xADDR
     spawned at: src/bin/armed-select.rs:186:25
     defined at: src/bin/armed-select.rs:31

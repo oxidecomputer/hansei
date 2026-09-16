@@ -23,16 +23,19 @@ task 4
                         address: 0xADDR
                         armed: yes
                         blocked on: watch rx 0xADDR (version 0, 1 sender, 1 receiver)
+                        defined at: tokio-stream-0.1.19/src/wrappers/watch.rs:104
                         location: future 0xADDR waiter.waker.Some
                     "beta":
                         address: 0xADDR
                         armed: yes
                         blocked on: watch rx 0xADDR (version 0, 1 sender, 1 receiver)
+                        defined at: tokio-stream-0.1.19/src/wrappers/watch.rs:104
                         location: future 0xADDR waiter.waker.Some
                     "gamma":
                         address: 0xADDR
                         armed: yes
                         blocked on: watch rx 0xADDR (version 0, 1 sender, 1 receiver)
+                        defined at: tokio-stream-0.1.19/src/wrappers/watch.rs:104
                         location: future 0xADDR waiter.waker.Some
     spawned at: src/bin/watch-stream.rs:132:23
     defined at: src/bin/watch-stream.rs:57
