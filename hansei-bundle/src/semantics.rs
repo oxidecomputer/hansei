@@ -378,6 +378,13 @@ pub enum SemanticRuleKind {
     /// and does nothing else. A compiler-origin rule, since the source
     /// it reviews ships with the toolchain.
     CorePending,
+    /// futures-util's `future::pending::Pending<T>`, the future
+    /// `futures::future::pending()` returns: the same never-ready
+    /// terminal, under the crate's layout origin — a zero-sized future
+    /// over a `PhantomData<T>` holds nothing to poll and cannot produce
+    /// a `T`, and no build leaves a declaration of its poll to read a
+    /// version off.
+    FuturesUtilPending,
 }
 
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]

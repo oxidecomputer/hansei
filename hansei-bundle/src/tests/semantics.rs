@@ -1791,4 +1791,38 @@ fn test_semantic_never_ready_is_a_whole_program_under_its_own_rule() {
         selection: LayoutSelection::ReviewedRange,
     };
     bad(&b, "compiler rule needs a compiler origin");
+
+    // futures-util's terminal is the same program under the crate's
+    // layout origin — and only under that: the compiler kind refuses
+    // the library origin, and the library kind the compiler's.
+    let mut b = never_ready();
+    let (package, family) = {
+        let mut strings = StringInterner::new();
+        for s in b.strings.iter() {
+            strings.intern(s);
+        }
+        let refs = (
+            strings.intern("futures-util"),
+            strings.intern("unversioned"),
+        );
+        b.strings = strings.finish();
+        refs
+    };
+    b.semantics.origins[0] = SemanticOrigin::LibraryLayout {
+        package,
+        version: None,
+        family,
+        selection: LayoutSelection::VersionUnknown,
+    };
+    bad(&b, "compiler rule needs a compiler origin");
+    b.semantics.rules[0].kind = SemanticRuleKind::FuturesUtilPending;
+    b.validate().unwrap();
+    let mut bytes = Vec::new();
+    b.write_to(&mut bytes).unwrap();
+    assert_eq!(Bundle::read_from(bytes.as_slice()).unwrap(), b);
+    b.semantics.origins[0] = SemanticOrigin::Rustc {
+        producer: StrRef(6),
+        family: StrRef(7),
+    };
+    bad(&b, "layout rule has an incompatible library origin");
 }

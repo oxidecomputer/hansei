@@ -1596,13 +1596,21 @@ fn assert_library_bindings(program: &str, bundle: &Bundle) {
                 "{program}: {:?}",
                 facts.continuation
             ),
-            // The one terminal program: core's `Pending`, under its
-            // compiler rule, on a record with nothing to read.
+            // The one terminal program: a `Pending`, core's under its
+            // compiler rule or futures-util's under its layout rule, on
+            // a record with nothing to read.
             Continuation::Bound {
                 rule,
                 program: PollProgram::Direct(PollAction::NeverReady),
             } => {
-                assert_eq!(rule_kind(*rule), SemanticRuleKind::CorePending, "{program}");
+                assert!(
+                    matches!(
+                        rule_kind(*rule),
+                        SemanticRuleKind::CorePending | SemanticRuleKind::FuturesUtilPending
+                    ),
+                    "{program}: never ready under {:?}",
+                    rule_kind(*rule)
+                );
                 assert!(
                     record.resource.is_none() && record.coroutine.is_none(),
                     "{program}: never ready beside state"
@@ -1747,15 +1755,17 @@ fn assert_library_bindings(program: &str, bundle: &Bundle) {
 
 /// Structural assertions that hold for every fixture — the "zero silent
 /// drops" checks plus metadata sanity.
-/// Every `core::future::pending::Pending<T>` the program proves a
-/// future — by awaiting it, by spawning it — binds the never-ready
-/// terminal under the compiler rule, with its origin the target's own
-/// producer under the reviewed family; a record the evidence does not
-/// reach binds nothing. The two fixtures whose task-level wait is the
-/// terminal must hold at least one such binding, as must every
-/// program whose `main` parks on `pending()` — which is nearly all of
-/// them, but which programs keep that root out of line is the target's
-/// call, so no list.
+/// Every `Pending<T>` the program proves a future — core's or
+/// futures-util's, by awaiting it, by spawning it — binds the
+/// never-ready terminal under its own rule: core's under the compiler
+/// rule, with its origin the target's own producer under the reviewed
+/// family; futures-util's under the crate's layout origin, since no
+/// build leaves a declaration of it to read anything else off. A
+/// record the evidence does not reach binds nothing. The two fixtures
+/// whose task-level wait is the terminal must hold at least one such
+/// binding, as must every program whose `main` parks on `pending()` —
+/// which is nearly all of them, but which programs keep that root out
+/// of line is the target's call, so no list.
 fn assert_never_ready(program: &str, bundle: &Bundle) {
     use hansei_bundle::{Continuation, PollAction, PollProgram, SemanticOrigin, SemanticRuleKind};
     let s = |id| bundle.strings.get(id).unwrap();
@@ -1770,7 +1780,8 @@ fn assert_never_ready(program: &str, bundle: &Bundle) {
         else {
             continue;
         };
-        if !name.starts_with("core::future::pending::Pending<") {
+        let core = name.starts_with("core::future::pending::Pending<");
+        if !core && !name.starts_with("futures_util::future::pending::Pending<") {
             continue;
         }
         let Some(facts) = &record.future else {
@@ -1791,26 +1802,37 @@ fn assert_never_ready(program: &str, bundle: &Bundle) {
             "{program}: {name}: {p:?}"
         );
         let rule = &bundle.semantics.rules[rule.0 as usize];
-        assert_eq!(
-            rule.kind,
-            SemanticRuleKind::CorePending,
-            "{program}: {name}"
-        );
-        let SemanticOrigin::Rustc { producer, family } =
-            &bundle.semantics.origins[rule.origin.0 as usize]
-        else {
-            panic!("{program}: {name} under a library origin");
-        };
-        assert_eq!(
-            s(*family),
-            exegesis::detect::semantics::RUSTC_CORE_PENDING_V1_97.family,
-            "{program}: {name}"
-        );
-        assert!(
-            s(*producer).contains(&format!("rustc version {}", bundle.meta.rustc_version)),
-            "{program}: {name} under {:?}",
-            s(*producer)
-        );
+        let origin = &bundle.semantics.origins[rule.origin.0 as usize];
+        if core {
+            assert_eq!(
+                rule.kind,
+                SemanticRuleKind::CorePending,
+                "{program}: {name}"
+            );
+            let SemanticOrigin::Rustc { producer, family } = origin else {
+                panic!("{program}: {name} under a library origin");
+            };
+            assert_eq!(
+                s(*family),
+                exegesis::detect::semantics::RUSTC_CORE_PENDING_V1_97.family,
+                "{program}: {name}"
+            );
+            assert!(
+                s(*producer).contains(&format!("rustc version {}", bundle.meta.rustc_version)),
+                "{program}: {name} under {:?}",
+                s(*producer)
+            );
+        } else {
+            assert_eq!(
+                rule.kind,
+                SemanticRuleKind::FuturesUtilPending,
+                "{program}: {name}"
+            );
+            let SemanticOrigin::LibraryLayout { package, .. } = origin else {
+                panic!("{program}: {name} under {origin:?}");
+            };
+            assert_eq!(s(*package), "futures-util", "{program}: {name}");
+        }
         assert!(
             record.resource.is_none() && record.coroutine.is_none() && record.access.is_none(),
             "{program}: {name} carries another capability"
@@ -2447,13 +2469,14 @@ fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
             &[Some(129), None],
         );
         let table = exegesis::describe::describe_semantics(bundle);
-        // The forever task's three: the pinned `Pending`, the pinned
-        // block and the pinned `Ready` its mask disables, each
-        // borrowed. The terminal binds by the block's delegation on
-        // every target; whether the bare `Pending`'s own pin keeps a
-        // poll symbol and delegates too is the target's call (ELF
-        // keeps it, Mach-O inlines it away), so only the block's
-        // delegation and the verdict are pinned. The borrow of that
+        // The forever task's three: the pinned core `Pending`, the
+        // pinned block awaiting `never` — futures-util's `Pending` and
+        // then core's — and the pinned `Ready` its mask disables, each
+        // borrowed. Both terminals bind by `never`'s delegation on
+        // every target; whether the bare core `Pending`'s own pin keeps
+        // a poll symbol and delegates too is the target's call (ELF
+        // keeps it, Mach-O inlines it away), so only `never`'s
+        // delegations and the verdicts are pinned. The borrow of that
         // pin is crossed by its access route either way, and that
         // route is pinned rather than whether a poll stands beside it.
         assert_select(
@@ -2463,13 +2486,17 @@ fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
             3,
             &[Some(170), Some(171), Some(172)],
         );
-        let pending = semantic_line(&table, "core::future::pending::Pending<u32> :: ");
-        assert!(
-            pending
-                .contains("delegated by armed_select::forever::{async_fn#0}::{async_block_env#0}")
-                && pending.ends_with("continuation rule # never ready"),
-            "{program}: {pending}"
-        );
+        for name in [
+            "core::future::pending::Pending<u32> :: ",
+            "futures_util::future::pending::Pending<u32> :: ",
+        ] {
+            let pending = semantic_line(&table, name);
+            assert!(
+                pending.contains("delegated by armed_select::never::{async_fn_env#0}")
+                    && pending.ends_with("continuation rule # never ready"),
+                "{program}: {pending}"
+            );
+        }
         let borrow = semantic_line(
             &table,
             "&mut core::pin::Pin<&mut core::future::pending::Pending<u32>> :: ",

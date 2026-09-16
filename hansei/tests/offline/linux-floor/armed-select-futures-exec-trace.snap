@@ -97,9 +97,9 @@ future 0xADDR: async block armed_select::forever::{async_fn#0}
 Held by: task 9 — async fn armed_select::forever (frame 1, `wrapped`)
 
 the chain ends in a future that is never ready
-#0  future        core::future::pending::Pending<u32>
+#0  future        futures_util::future::pending::Pending<u32>
       (<no_state>, 0 locals)
-[2 frames, 1 shown]
+[3 frames, 1 shown]
 
 future 0xADDR
 future 0xADDR: future core::future::ready::Ready<u32>

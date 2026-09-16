@@ -151,16 +151,16 @@ async fn pacer(ready: oneshot::Sender<()>) -> u32 {
 }
 
 /// A `select!` no poll returns from: two branches that are never
-/// ready — a bare `pending()` and an async block that awaits one — and
-/// a third that would complete at once, disabled by a false
-/// precondition, so its mask bit is all that keeps the select parked.
+/// ready — core's bare `pending()` and an async block awaiting the
+/// `futures` crate's, then core's — and a third that would complete at
+/// once, disabled by a false precondition, so its mask bit keeps it parked.
 /// All three are pinned locals the select borrows, so the census can
 /// name the finds: the block and the `Ready`. The bare `Pending` is
 /// zero-sized, storage nothing scans, and no find.
 async fn forever(ready: oneshot::Sender<()>) -> u32 {
     census_expect::task("armed_select::forever");
     let bare = std::future::pending::<u32>();
-    let wrapped = async { std::future::pending::<u32>().await };
+    let wrapped = async { never().await };
     let at_once = std::future::ready(12);
     tokio::pin!(bare, wrapped, at_once);
     census_expect::held(&*wrapped as *const _ as u64, "async_block_env");
@@ -227,4 +227,14 @@ fn main() {
         println!("READY");
         std::future::pending::<()>().await
     })
+}
+
+/// Never ready twice over: the `futures` crate's `pending()` first,
+/// then core's. The second is never reached, but both are awaited
+/// here, so both terminals are proved futures on every target — by
+/// this fn's delegation, which no build inlines away the way it does
+/// a bare pin's poll. Last in the file so that nothing above moves.
+async fn never() -> u32 {
+    futures::future::pending::<u32>().await;
+    std::future::pending().await
 }

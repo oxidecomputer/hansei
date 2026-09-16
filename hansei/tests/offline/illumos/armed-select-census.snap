@@ -31,7 +31,7 @@ COUNT  TYPE / WAITING ON
     2  (2 more types)
 [7 types, 5 shown]
 
-Futures: 21 in flight, on 44 await-chain frames, up to 5 deep
+Futures: 21 in flight, on 45 await-chain frames, up to 5 deep
 
 COUNT  HELD IN
     7  task (its own await chain)

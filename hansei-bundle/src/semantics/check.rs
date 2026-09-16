@@ -199,7 +199,12 @@ impl<'a> Check<'a> {
             // member of the declared type is the whole of the evidence,
             // and no declaration has to say which implementation
             // forwards it — under its crate's layout origin.
-            FuturesUnordered | FuturesUtilMapErr | FuturesUtilIntoFuture => "futures-util",
+            // `Pending` binds on its layout too: a zero-sized future
+            // over a `PhantomData<T>` has nothing to poll and cannot
+            // produce a `T`, and no build leaves a declaration of it.
+            FuturesUnordered | FuturesUtilMapErr | FuturesUtilIntoFuture | FuturesUtilPending => {
+                "futures-util"
+            }
             TokioCoop
             | TokioSleep
             | TokioJoinHandle
@@ -688,7 +693,7 @@ impl<'a> Check<'a> {
             // coroutine, a container, a select — is not one whose poll
             // reads nothing.
             PollAction::NeverReady => {
-                self.rule(rule, &[CorePending])?;
+                self.rule(rule, &[CorePending, FuturesUtilPending])?;
                 require(guard.is_none(), "never ready is not a state")?;
                 require(
                     record.resource.is_none()
@@ -735,6 +740,7 @@ impl<'a> Check<'a> {
                 TokioNotified,
                 TokioOneshotRecv,
                 CorePending,
+                FuturesUtilPending,
             ],
         )?;
         require(

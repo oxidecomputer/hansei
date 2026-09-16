@@ -214,11 +214,21 @@ enum LibrarySeed {
         boxed: BundleTypeId,
         source: Option<PollSource>,
     },
+    /// futures-util's `Pending<T>`, the future `futures::future::pending()`
+    /// returns: `poll` returns `Poll::Pending` and does nothing else.
+    /// The layout is the whole of the evidence — a zero-sized future
+    /// over a `PhantomData<T>` holds nothing to poll and cannot produce
+    /// a `T` — and it has to be: its poll is a constant every build
+    /// inlines away, and neither it nor the constructor leaves a
+    /// declaration in the DWARF to read a version off. So the seed
+    /// carries nothing but the fact.
+    Pending,
 }
 
 impl LibrarySeed {
     fn rule_kind(&self) -> SemanticRuleKind {
         match self {
+            LibrarySeed::Pending => SemanticRuleKind::FuturesUtilPending,
             LibrarySeed::Map { .. } | LibrarySeed::MapWrapper(..) => {
                 SemanticRuleKind::FuturesUtilMap
             }
@@ -275,6 +285,17 @@ impl LibrarySeed {
         )
     }
 
+    /// Whether the type gets a record on the strength of its screen
+    /// alone: a route that is polled through and never polled — a
+    /// stream over the box it owns — is never proved a future by
+    /// anything, and a declined origin has nowhere else to be recorded.
+    fn records_on_its_screen(&self) -> bool {
+        matches!(
+            self,
+            LibrarySeed::WatchStream(..) | LibrarySeed::ReusableBox { .. }
+        )
+    }
+
     /// Whether the layout the screen proved is the whole of the rule's
     /// evidence. A wrapper whose one member is the future its own
     /// template parameter names can poll that member or nothing: there
@@ -287,7 +308,9 @@ impl LibrarySeed {
     /// mask and the box's refill keep the origin proof: their behavior
     /// is read from the source, not the layout. hyper-util's sleep is
     /// the same shape as these but keeps the proof too, for want of a
-    /// hyper-util layout origin to file it under.
+    /// hyper-util layout origin to file it under. `Pending` is the
+    /// extreme case: nothing in it to poll at all, and no declaration
+    /// left in any build to read a proof from.
     fn origin_is_the_layout(&self) -> bool {
         matches!(
             self,
@@ -295,6 +318,7 @@ impl LibrarySeed {
                 | LibrarySeed::MapWrapper(..)
                 | LibrarySeed::MapErr(..)
                 | LibrarySeed::IntoFuture(..)
+                | LibrarySeed::Pending
         )
     }
 }
@@ -454,6 +478,8 @@ fn library_seed(
     } else if name.starts_with("tokio_stream::wrappers::watch::WatchStream<") {
         let (member, inner) = forward(adapters::tokio_stream_watch_stream(reader, raw))?;
         Some(LibrarySeed::WatchStream(member, inner))
+    } else if name.starts_with("futures_util::future::pending::Pending<") {
+        adapters::futures_util_pending(reader, raw).then_some(LibrarySeed::Pending)
     } else if name.starts_with("tokio_util::sync::reusable_box::ReusableBoxFuture<") {
         let layout = adapters::tokio_util_reusable_box(reader, raw)?;
         Some(LibrarySeed::ReusableBox {
@@ -900,6 +926,7 @@ impl Rules {
                 | SemanticRuleKind::FuturesUtilMap
                 | SemanticRuleKind::FuturesUtilMapErr
                 | SemanticRuleKind::FuturesUtilIntoFuture
+                | SemanticRuleKind::FuturesUtilPending
         );
         let (slot, origin) = if futures_util {
             // The set walker's layout has held across every futures-util
@@ -1294,7 +1321,7 @@ pub(super) fn bind_semantics(
                 // strength of its screen alone: nothing will ever prove
                 // it a future, and a declined origin has nowhere else
                 // to be recorded.
-                draft.own_record |= library.origin_is_the_type();
+                draft.own_record |= library.records_on_its_screen();
                 match plan_library(ty, library, seed, types, strings) {
                     Ok(plan) => draft.plan = Some(plan),
                     Err(decline) => draft.decline = Some(decline),
@@ -1901,6 +1928,18 @@ fn plan_library(
             target: Target::Value(forward(member, *inner, strings)?),
             exclusive: true,
         },
+        // The terminal: nothing in the layout to poll, so the plan is
+        // the never-ready program under the crate's layout rule and
+        // nothing else — the same shape as core's, under a library
+        // origin instead of the compiler's.
+        LibrarySeed::Pending => {
+            return Ok(Plan {
+                rule,
+                program: Some(Delegation::NeverReady),
+                access: None,
+                delegate_is_future: false,
+            });
+        }
         // `Next` polls through its `&mut St`: the route dereferences the
         // reference to the stream itself, whose own record says what
         // polling it polls. A stream is no future, so the delegate is
@@ -3209,6 +3248,41 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// futures-util's `Pending<T>`: the never-ready terminal under the
+    /// crate's layout rule, whatever the seed says about declarations —
+    /// none survive in any build, and the layout is the whole proof.
+    #[test]
+    fn test_the_futures_util_pending_rule_binds_on_its_layout() {
+        let mut strings = StringInterner::new();
+        let types = TypeTable {
+            types: vec![TypeDef::Struct {
+                name: strings.intern("futures_util::future::pending::Pending<u32>"),
+                size: 0,
+                members: Vec::new(),
+            }],
+            ..Default::default()
+        };
+        let plan = plan_library(
+            BundleTypeId(0),
+            &LibrarySeed::Pending,
+            &Seed::default(),
+            &types,
+            &mut strings,
+        )
+        .unwrap();
+        assert!(
+            matches!(
+                plan.rule,
+                RuleKey::Library(SemanticRuleKind::FuturesUtilPending)
+            ),
+            "{:?}",
+            plan.rule
+        );
+        assert!(matches!(plan.program, Some(Delegation::NeverReady)));
+        assert!(plan.access.is_none());
+        assert!(!plan.delegate_is_future);
     }
 
     /// A container's rule: the two sets under their library's one

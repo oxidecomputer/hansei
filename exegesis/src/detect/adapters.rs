@@ -511,6 +511,22 @@ pub(crate) fn core_pending(reader: &DwReader<'_>, id: TypeId) -> bool {
             .is_some_and(|name| name.starts_with("core::marker::PhantomData<"))
 }
 
+/// Screen `id` as futures-util's `future::pending::Pending<T>`, the
+/// future `futures::future::pending()` returns: the same shape as
+/// core's — a zero-sized struct whose one member `_data` is the
+/// `PhantomData` carrying its `T` — declared in the crate's own module.
+pub(crate) fn futures_util_pending(reader: &DwReader<'_>, id: TypeId) -> bool {
+    let Some(st) = declared_in(reader, id, "futures_util::future::pending", "Pending<") else {
+        return false;
+    };
+    let Some(forward) = sole_member(reader, st, "_data") else {
+        return false;
+    };
+    st.size == 0
+        && fq_name(reader, forward.inner)
+            .is_some_and(|name| name.starts_with("core::marker::PhantomData<"))
+}
+
 /// Screen `id` as futures-util's `stream::Next<'_, St>`: one member
 /// `stream`, a `&mut St` whose target is the `St` the instantiation
 /// declares. The future's poll is that stream's `poll_next` and nothing

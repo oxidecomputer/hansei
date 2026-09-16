@@ -2485,6 +2485,7 @@ dyn: armed_select::forever::{async_fn#0}::{async_block_env#0} (poll)
 dyn: armed_select::forever::{async_fn_env#0} (poll, drop_glue)
 dyn: armed_select::holder::{async_fn_env#0} (poll, drop_glue)
 dyn: armed_select::main::{async_block_env#0} (poll, drop_glue)
+dyn: armed_select::never::{async_fn_env#0} (poll)
 dyn: armed_select::pacer::{async_fn_env#0} (poll, drop_glue)
 dyn: armed_select::selector::{async_fn_env#0} (poll, drop_glue)
 dyn: armed_select::ticker::{async_fn_env#0} (poll, drop_glue)
@@ -2504,6 +2505,7 @@ env: armed_select::forever::{async_fn#0}::{closure_env#1} @ select.rs:661
 env: armed_select::forever::{async_fn_env#0} @ armed-select.rs:160
 env: armed_select::holder::{async_fn_env#0} @ armed-select.rs:59
 env: armed_select::main::{async_block_env#0} @ armed-select.rs:181
+env: armed_select::never::{async_fn_env#0} @ armed-select.rs:237
 env: armed_select::pacer::{async_fn_env#0} @ armed-select.rs:138
 env: armed_select::selector::{async_fn#0}::{closure_env#0} @ select.rs:661
 env: armed_select::selector::{async_fn_env#0} @ armed-select.rs:31

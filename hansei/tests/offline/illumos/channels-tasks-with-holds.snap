@@ -2,6 +2,6 @@
 source: hansei/src/offline.rs
 description: "`tasks --with holds >0` over illumos/channels"
 ---
-ID  STATE  FUT  AWAITING AT             WAITING ON                                                                                                     TYPE
+ID  STATE  FUT  AWAITING AT             WAITING ON                                                                                                      TYPE
 6   idle     3  src/bin/channels.rs:95  a tokio::sync::mpsc bounded channel (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 6  async fn channels::send_waiter
 [1 task]
