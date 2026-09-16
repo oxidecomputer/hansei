@@ -1211,9 +1211,11 @@ fn incomplete_word(reason: IncompleteReason) -> &'static str {
 /// stop is named by the cell); then, at a stop that polls several
 /// things, one line per branch the census could read, each armed by
 /// the slots that sit in it or were reached through it, or `held, not
-/// armed`; then one line per remaining slot — where it sits and what
-/// says it is current, a wheel entry by its deadline. Any one slot
-/// wakes the task; nothing here is a dependency.
+/// armed` — the branches of a `select!` nested under a `select!:`
+/// heading, so the word names what they are branches of; then one
+/// block per remaining waker — where it sits and what says it is
+/// current, a wheel entry by its deadline. Any one waker wakes the
+/// task; nothing here is a dependency.
 pub(crate) fn wait_detail(
     wait: &rt_graph::TaskWait,
     stops: &StopNames<'_>,
@@ -1250,6 +1252,12 @@ pub(crate) fn wait_detail(
         _ => (&[][..], 0),
     };
     let mut rest: Vec<&attribution::AttributedSlot> = slots.to_vec();
+    // The branches of a `select!` sit one step under a `select!:`
+    // heading, pushed once before the first of them; they are sorted
+    // to the front, so the heading opens a contiguous run. A future
+    // held in a plain local is no branch of the macro and stays at
+    // the level of the heading.
+    let mut in_select = false;
     for member in members {
         // A registry slot in no branch prints as the slot it is —
         // unless there are no slots at all (a target the sweep could
@@ -1265,23 +1273,31 @@ pub(crate) fn wait_detail(
             .partition(|slot| attribution::member_accounts(member, slot, size_of));
         rest = others;
         let block = member_line(member, stops, &mine, stopped);
+        let mut depth = 0;
+        if in_select_branch(&member.route) {
+            if !in_select {
+                lines.push("select!:".to_string());
+                in_select = true;
+            }
+            depth += 1;
+        }
         // An entry reached through a member listed before it — a
         // branch whose chain ends at the map, a local holding one —
         // sits one step under that member; an entry of a stop that is
         // the map itself is a branch of the stop like any other.
-        match &member.route {
-            MemberRoute::Entry { under: Some(_), .. } => {
-                lines.extend(block.into_iter().map(|line| format!("    {line}")))
-            }
-            _ => lines.extend(block),
+        if let MemberRoute::Entry { under: Some(_), .. } = &member.route {
+            depth += 1;
         }
+        let indent = "    ".repeat(depth);
+        lines.extend(block.into_iter().map(|line| format!("{indent}{line}")));
     }
     if capped > 0 {
-        lines.push(format!("{capped} more branches not inspected"));
+        let indent = if in_select { "    " } else { "" };
+        lines.push(format!("{indent}{capped} more branches not inspected"));
     }
-    // The remaining slots, one block each, in the grammar a branch's
-    // lines use: what the wait is on where the slot names it, the
-    // slot itself where the line above did not, and where it sits.
+    // The remaining slots, one `waker N:` block each, in the grammar a
+    // branch's lines use: what the wait is on where the slot names it,
+    // the slot itself where the line above did not, and where it sits.
     // They are numbered after sorting, so the same wait numbers them
     // the same way twice.
     let verified = match &wait.assessment {
@@ -1320,18 +1336,17 @@ pub(crate) fn wait_detail(
             // resource rather than the place: the wheel entry holding
             // the waker, the waiter node, or — for a slot no table
             // names — the type it sits in.
-            let waker = match (slot.wheel_entry(), slot.detail(stopped)) {
+            let held_in = match (slot.wheel_entry(), slot.detail(stopped)) {
                 (Some(entry), _) => Some(entry),
                 (None, Some(detail)) => Some(detail),
-                (None, None) => slot
-                    .waits_on(stopped)
-                    .is_none()
-                    .then(|| slot.entry(stopped)),
+                (None, None) => slot.waits_on(stopped).is_none().then(|| slot.place()),
             };
-            // A wheel entry with no deadline to give is named the
-            // same way twice; once is enough.
-            if let Some(waker) = waker.filter(|waker| Some(waker) != on.as_ref()) {
-                field("waker", waker);
+            // A wheel entry with no deadline to give is named twice —
+            // by its address above and as the place `@` it here; once
+            // is enough.
+            let named_above = |held_in: &String| Some(held_in.replacen(" @ ", " ", 1)) == on;
+            if let Some(held_in) = held_in.filter(|held_in| !named_above(held_in)) {
+                field("held in", held_in);
             }
             if let Some(at) = slot.location() {
                 field("location", at);
@@ -1341,10 +1356,21 @@ pub(crate) fn wait_detail(
         .collect();
     slot_blocks.sort();
     for (i, block) in slot_blocks.into_iter().enumerate() {
-        lines.push(format!("slot {i}:"));
+        lines.push(format!("waker {i}:"));
         lines.extend(block);
     }
     lines
+}
+
+/// Whether a member is a branch of the stop's `select!` — one the
+/// macro polls by its own index, or an entry reached through one —
+/// as against a future the frame holds in a local of its own.
+fn in_select_branch(route: &MemberRoute) -> bool {
+    match route {
+        MemberRoute::Select { .. } | MemberRoute::Disabled { .. } => true,
+        MemberRoute::Entry { under, .. } => under.as_deref().is_some_and(in_select_branch),
+        MemberRoute::Branch { .. } | MemberRoute::SlotOnly { .. } => false,
+    }
 }
 
 /// The `location:` line each slot that has one contributes, indented
@@ -1569,7 +1595,7 @@ fn member_line(
     }
     wakers.sort();
     for waker in wakers {
-        field("waker", waker);
+        field("held in", waker);
     }
     let mut located: Vec<String> = armed_by.iter().filter_map(|slot| slot.location()).collect();
     if armed_by.is_empty()
@@ -3061,19 +3087,22 @@ mod table_tests {
             ]),
         );
         let lines = wait_detail(&wait, &stops, &[], None, &|_| None);
+        // The `select!` branch and the entries reached through it sit
+        // under the heading; the entry of the stop itself does not.
         assert_eq!(
             lines,
             [
-                "branch 1 (borrowed): x::branch",
-                "    address: 0x6000",
-                "    entry 0: x::branch",
+                "select!:",
+                "    branch 1 (borrowed): x::branch",
                 "        address: 0x6000",
-                "        armed: no",
-                "        blocked on: unknown",
-                "    entry 1: x::branch",
-                "        address: 0x6000",
-                "        armed: no",
-                "        blocked on: unknown",
+                "        entry 0: x::branch",
+                "            address: 0x6000",
+                "            armed: no",
+                "            blocked on: unknown",
+                "        entry 1: x::branch",
+                "            address: 0x6000",
+                "            armed: no",
+                "            blocked on: unknown",
                 "entry 0: x::branch",
                 "    address: 0x6000",
                 "    armed: no",
@@ -3167,7 +3196,7 @@ mod table_tests {
                 "    address: 0x6000",
                 "    armed: yes",
                 "    blocked on: io 0xaa00 read",
-                "    waker: awaiting readable via the read-waiter slot",
+                "    held in: the read-waiter slot, awaiting readable",
             ]
         );
         // Both, one line each, sorted.
@@ -3221,7 +3250,7 @@ mod table_tests {
                 "    address: 0x6000",
                 "    armed: yes",
                 "    blocked on: io 0xbb00 (readiness)",
-                "    waker: io 0xaa00 read: awaiting readable via the read-waiter slot",
+                "    held in: io 0xaa00 read: the read-waiter slot, awaiting readable",
             ]
         );
     }
@@ -3358,13 +3387,13 @@ mod table_tests {
                 "    address: 0x6000",
                 "    armed: yes",
                 "    blocked on: timer (deadline +10.000s)",
-                "    waker: its protocol read this task's waker",
+                "    held in: the resource, read by its protocol",
                 "b: x::branch",
                 "    address: 0x6000",
                 "    armed: no",
                 "    blocked on: unknown",
-                "io 0x7000 (readable): this task's waker in the read-waiter slot, inside #1's \
-                 storage at +0x10; in no branch of the stop",
+                "io 0x7000 (readable): the read-waiter slot, inside #1's storage at +0x10; \
+                 in no branch of the stop",
                 "1 more branches not inspected",
             ]
         );
@@ -3468,38 +3497,44 @@ mod table_tests {
             HashMap::new(),
         );
         assert_eq!(rows[0].waiting_on, "timer (deadline +10.000s)");
+        // Every branch sits under one `select!:` heading, the
+        // disabled ones included: the word says what they are
+        // branches of.
         assert_eq!(
             rows[0].wait_detail,
             [
-                "branch 0 (borrowed): x::branch",
-                "    address: 0x6000",
-                "    armed: no",
-                "    blocked on: unknown",
-                "branch 1 (borrowed): x::branch",
-                "    address: 0x6000",
-                "    armed: yes",
-                "    blocked on: timer (deadline +10.000s)",
-                "    waker: its protocol read this task's waker",
-                "branch 2: x::skipped: disabled",
+                "select!:",
+                "    branch 0 (borrowed): x::branch",
+                "        address: 0x6000",
+                "        armed: no",
+                "        blocked on: unknown",
+                "    branch 1 (borrowed): x::branch",
+                "        address: 0x6000",
+                "        armed: yes",
+                "        blocked on: timer (deadline +10.000s)",
+                "        held in: the resource, read by its protocol",
+                "    branch 2: x::skipped: disabled",
             ]
         );
         assert_eq!(rows[1].waiting_on, "unknown (holds 1 future)");
         assert_eq!(
             rows[1].wait_detail,
             [
-                "branch 0 (borrowed): x::branch",
-                "    address: 0x6000",
-                "    armed: no",
-                "    blocked on: unknown",
-                "branch 1: x::skipped: disabled",
+                "select!:",
+                "    branch 0 (borrowed): x::branch",
+                "        address: 0x6000",
+                "        armed: no",
+                "        blocked on: unknown",
+                "    branch 1: x::skipped: disabled",
             ]
         );
         assert_eq!(rows[2].waiting_on, "unknown");
         assert_eq!(
             rows[2].wait_detail,
             [
-                "branch 0: x::skipped: disabled",
-                "branch 1: x::skipped: disabled"
+                "select!:",
+                "    branch 0: x::skipped: disabled",
+                "    branch 1: x::skipped: disabled"
             ]
         );
     }
@@ -3761,27 +3796,28 @@ mod table_tests {
             rows[0].waiting_kind.as_deref(),
             Some("io read, join task 2, semaphore 0x9000, timer, unknown")
         );
-        // One line per slot, sorted; a stop's own reason is the cell's.
+        // One block per waker, sorted; a stop's own reason is the
+        // cell's.
         assert_eq!(
             rows[0].wait_detail,
             [
-                "slot 0:",
+                "waker 0:",
                 "    blocked on: io 0xaa00 read",
-                "    waker: awaiting readable via the read-waiter slot",
-                "slot 1:",
+                "    held in: the read-waiter slot, awaiting readable",
+                "waker 1:",
                 "    blocked on: join task 2",
-                "    waker: waker in its trailer",
-                "slot 2:",
+                "    held in: its trailer",
+                "waker 2:",
                 "    blocked on: semaphore 0x9000",
-                "    waker: waker in its wake-queue node 0xe100",
+                "    held in: its wake-queue node @ 0xe100",
                 // A wheel entry with no deadline to give names itself
                 // once.
-                "slot 3:",
+                "waker 3:",
                 "    blocked on: timer 0xdd00",
-                "slot 4:",
-                "    waker: unknown @ 0x7000",
-                "slot 5:",
-                "    waker: unknown @ 0x8000",
+                "waker 4:",
+                "    held in: unknown @ 0x7000",
+                "waker 5:",
+                "    held in: unknown @ 0x8000",
             ]
         );
         // No slot: the assessment's own word, marked.
@@ -3803,7 +3839,7 @@ mod table_tests {
         assert_eq!(rows[3].waiting_kind.as_deref(), Some("unknown"));
         assert_eq!(
             rows[3].wait_detail,
-            ["slot 0:", "    waker: unknown @ 0x7100"]
+            ["waker 0:", "    held in: unknown @ 0x7100"]
         );
         // A blocking cell waits on a pool thread, slot or no slot.
         assert_eq!(rows[4].waiting_on, "—");
@@ -3874,10 +3910,10 @@ mod table_tests {
         assert_eq!(
             rows[0].wait_detail,
             [
-                "slot 0:",
+                "waker 0:",
                 "    blocked on: task 2",
-                "    waker: waker in its trailer",
-                "slot 1:",
+                "    held in: its trailer",
+                "waker 1:",
                 "    blocked on: timer 0xdd00",
             ]
         );
@@ -3969,21 +4005,24 @@ mod table_tests {
         );
         assert_eq!(rows[0].waiting_on, "never ready");
         assert_eq!(rows[0].waiting_kind.as_deref(), Some("never ready"));
+        // The swept slot no branch accounts for is a `waker` block
+        // beside the `select!:` heading, not under it.
         assert_eq!(
             rows[0].wait_detail,
             [
-                "branch 0 (borrowed): x::branch",
-                "    address: 0x6000",
-                "    armed: yes",
-                "    blocked on: never ready",
-                "    waker: unknown @ 0x6010",
-                "branch 1 (borrowed): x::branch",
-                "    address: 0x6000",
-                "    armed: no",
-                "    blocked on: never ready",
-                "branch 2: x::skipped: disabled",
-                "slot 0:",
-                "    waker: unknown @ 0x7000",
+                "select!:",
+                "    branch 0 (borrowed): x::branch",
+                "        address: 0x6000",
+                "        armed: yes",
+                "        blocked on: never ready",
+                "        held in: unknown @ 0x6010",
+                "    branch 1 (borrowed): x::branch",
+                "        address: 0x6000",
+                "        armed: no",
+                "        blocked on: never ready",
+                "    branch 2: x::skipped: disabled",
+                "waker 0:",
+                "    held in: unknown @ 0x7000",
             ]
         );
     }

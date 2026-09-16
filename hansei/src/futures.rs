@@ -1709,7 +1709,7 @@ mod tests {
         let joiner = rows.iter().find(|r| r.addr == 0x2010).unwrap();
         assert!(joiner.armed);
         assert_eq!(joiner.waiting_on.as_deref(), Some("task 28"));
-        assert_eq!(joiner.slot_lines, ["join task 28: waker in its trailer"]);
+        assert_eq!(joiner.slot_lines, ["join task 28: its trailer"]);
     }
 
     /// A find whose chain ends in no described resource says what cut

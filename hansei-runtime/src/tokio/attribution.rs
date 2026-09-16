@@ -461,6 +461,17 @@ impl AttributedSlot {
         }
     }
 
+    /// The place the waker is held, for a `held in:` line of a slot
+    /// whose entry is all there is to say: the holding type at the
+    /// slot's address, or an unknown slot's address alone — the type
+    /// first, as an unknown slot's entry already reads.
+    pub fn place(&self) -> String {
+        match &self.attribution {
+            Attribution::Typed { holder, .. } => format!("{holder} @ {:#x}", self.slot),
+            _ => self.entry(None),
+        }
+    }
+
     /// The bucket `--group waiting-on` files the slot under: the kind,
     /// with identity kept where it groups usefully.
     pub fn bucket(&self) -> String {
@@ -477,9 +488,10 @@ impl AttributedSlot {
         }
     }
 
-    /// The detail line's text after the entry: where the slot is and
-    /// what says it is current. `None` for an unknown slot, whose
-    /// address is all there is to say.
+    /// The detail line's text after the entry: the place the waker is
+    /// held, then what says it is current — worded to follow the
+    /// entry on one line, or a `held in:` label. `None` for an
+    /// unknown slot, whose address is all there is to say.
     pub fn detail(&self, stopped: Option<RawInstant>) -> Option<String> {
         Some(match &self.attribution {
             Attribution::Registry(RegistrySlot::Timer {
@@ -493,7 +505,7 @@ impl AttributedSlot {
                     Some(deadline) => format!(", {}", deadline_text(*deadline, stopped)),
                     None => String::new(),
                 };
-                format!("waker in the wheel entry{state}{due}")
+                format!("the wheel entry{state}{due}")
             }
             Attribution::Registry(RegistrySlot::Io { slot, ready, .. }) => {
                 let site = match slot {
@@ -509,12 +521,12 @@ impl AttributedSlot {
                     Some(ready) => format!(", ready: {ready}"),
                     None => String::new(),
                 };
-                format!("{interest} via {site}{ready}")
+                format!("{site}, {interest}{ready}")
             }
             Attribution::Registry(RegistrySlot::Semaphore { node, .. }) => {
-                format!("waker in its wake-queue node {node:#x}")
+                format!("its wake-queue node @ {node:#x}")
             }
-            Attribution::Registry(RegistrySlot::Join { .. }) => "waker in its trailer".to_string(),
+            Attribution::Registry(RegistrySlot::Join { .. }) => "its trailer".to_string(),
             // Where the slot sits is a path, which is a line of its
             // own ([`Self::location`]): the members it names say what
             // holds the waker, and say it the way a `print` reads it.
@@ -2281,9 +2293,9 @@ impl AttributedSlot {
         };
         Some(match state {
             Some(state) if *state != WheelState::Registered => {
-                format!("timer {entry:#x} ({state})")
+                format!("timer @ {entry:#x} ({state})")
             }
-            _ => format!("timer {entry:#x}"),
+            _ => format!("timer @ {entry:#x}"),
         })
     }
 
@@ -2896,10 +2908,7 @@ mod tests {
             panic!("{:?}", slots[0]);
         };
         assert_eq!(task.addr, sleeper.addr);
-        assert_eq!(
-            slots[0].detail(None).as_deref(),
-            Some("waker in its trailer")
-        );
+        assert_eq!(slots[0].detail(None).as_deref(), Some("its trailer"));
         let wait = &over.analysis.waits[index(joiner)];
         let join = wait.verified().expect("the verified join");
         assert_eq!(

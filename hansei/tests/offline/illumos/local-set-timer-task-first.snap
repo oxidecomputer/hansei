@@ -9,9 +9,9 @@ task 1
     type: async fn local_set_timer::local_sleeper
     awaiting at: src/bin/local-set-timer.rs:22
     waiting on:
-        slot 0:
+        waker 0:
             blocked on: timer (deadline TS)
-            waker: timer 0xADDR
+            held in: timer @ 0xADDR
     spawned at: src/bin/local-set-timer.rs:62:20
     defined at: src/bin/local-set-timer.rs:19
     held futures: 0

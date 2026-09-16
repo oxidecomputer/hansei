@@ -9,9 +9,9 @@ task 1
     type: async fn local_set_io::local_reader
     awaiting at: src/bin/local-set-io.rs:32
     waiting on:
-        slot 0:
+        waker 0:
             blocked on: io fd 11 (readable)
-            waker: awaiting readable via the read-waiter slot, ready: writable
+            held in: the read-waiter slot, awaiting readable, ready: writable
     spawned at: src/bin/local-set-io.rs:143:20
     defined at: src/bin/local-set-io.rs:28
     held futures: 0

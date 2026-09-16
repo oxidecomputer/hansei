@@ -345,8 +345,9 @@ impl SlotRef {
         }
     }
 
-    /// The evidence, in words, for a detail line; `None` for a swept
-    /// slot that has none beyond its entry.
+    /// The evidence, in words, for a `held in:` line: the place the
+    /// task's waker was found; `None` for a swept slot that has none
+    /// beyond its entry.
     pub fn detail(&self) -> Option<String> {
         Some(match self {
             Self::Wheel { entry, state, .. } => {
@@ -354,7 +355,7 @@ impl SlotRef {
                     Some(state) => format!(", {state}"),
                     None => String::new(),
                 };
-                format!("this task's waker in wheel entry {entry:#x}{state}")
+                format!("wheel entry @ {entry:#x}{state}")
             }
             // The resource is not named here: the line this sits on
             // already names it, as the member's entry or its target.
@@ -368,9 +369,9 @@ impl SlotRef {
                     Some(ready) => format!(", ready: {ready}"),
                     None => String::new(),
                 };
-                format!("this task's waker in {site}{ready}")
+                format!("{site}{ready}")
             }
-            Self::Protocol => "its protocol read this task's waker".to_string(),
+            Self::Protocol => "the resource, read by its protocol".to_string(),
             Self::Swept { slot, stopped } => return slot.detail(*stopped),
         })
     }
@@ -1691,10 +1692,7 @@ mod tests {
         };
         assert_eq!(
             registered.detail(),
-            Some(format!(
-                "this task's waker in wheel entry 0x10, {}",
-                timer::REGISTERED
-            ))
+            Some(format!("wheel entry @ 0x10, {}", timer::REGISTERED))
         );
         assert_eq!(registered.cell_entry(), Some("timer 0x10".to_string()));
         let unread = SlotRef::Wheel {
@@ -1703,10 +1701,7 @@ mod tests {
             deadline: None,
             stopped: None,
         };
-        assert_eq!(
-            unread.detail().as_deref(),
-            Some("this task's waker in wheel entry 0x10")
-        );
+        assert_eq!(unread.detail().as_deref(), Some("wheel entry @ 0x10"));
         // A word that encodes a deadline prints it the way a verified
         // sleep does, in the cell and on the evidence line.
         let at = |tv_sec| RawInstant { tv_sec, tv_nsec: 0 };

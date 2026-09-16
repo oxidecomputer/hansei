@@ -8,18 +8,19 @@ task 3
     type: async fn watch_stream::resolver
     awaiting at: src/bin/watch-stream.rs:43
     waiting on:
-        branch 0 (borrowed): tokio::sync::oneshot::Receiver<u32>
-            address: 0xADDR
-            armed: yes
-            blocked on: oneshot rx 0xADDR (nothing sent, sender alive)
-            defined at: src/bin/watch-stream.rs:44
-            location: future 0xADDR inner.Some.data.rx_task (rx_task_set)
-        branch 1 (borrowed): futures_util::stream::stream::next::Next<tokio_stream::wrappers::watch::WatchStream<u32>>
-            address: 0xADDR
-            armed: yes
-            blocked on: watch rx 0xADDR (version 0, 1 sender, 1 receiver)
-            defined at: src/bin/watch-stream.rs:45
-            location: future 0xADDR waiter.waker.Some
+        select!:
+            branch 0 (borrowed): tokio::sync::oneshot::Receiver<u32>
+                address: 0xADDR
+                armed: yes
+                blocked on: oneshot rx 0xADDR (nothing sent, sender alive)
+                defined at: src/bin/watch-stream.rs:44
+                location: future 0xADDR inner.Some.data.rx_task (rx_task_set)
+            branch 1 (borrowed): futures_util::stream::stream::next::Next<tokio_stream::wrappers::watch::WatchStream<u32>>
+                address: 0xADDR
+                armed: yes
+                blocked on: watch rx 0xADDR (version 0, 1 sender, 1 receiver)
+                defined at: src/bin/watch-stream.rs:45
+                location: future 0xADDR waiter.waker.Some
     spawned at: src/bin/watch-stream.rs:120:25
     defined at: src/bin/watch-stream.rs:30
     held futures: 3
