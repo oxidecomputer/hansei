@@ -186,13 +186,17 @@ pub enum DisplayNode<'a> {
 /// The resolved `(pointer, length[, capacity])` header a [`DisplayNode::Str`]
 /// or [`DisplayNode::Slice`] reads its buffer through: where the value keeps
 /// the data pointer and the length, and — for an owned buffer — the capacity
-/// word the length is validated against.
+/// word the length is validated against. `data_offset` is how far past the
+/// address the pointer holds the buffer begins: zero for a pointer to the
+/// bytes themselves, the refcount header's size for the unsized tail of an
+/// `ArcInner<str>`.
 #[derive(Clone, Copy, Debug)]
 pub struct FatHeader {
     pub pointer_offset: u64,
     pub length_offset: u64,
     pub length_size: u32,
     pub capacity: Option<(u64, u32)>,
+    pub data_offset: u64,
 }
 
 /// One resolved [`DisplayNode::CustomList`] body statement, mirroring the bundle
@@ -684,6 +688,7 @@ impl<'a> DisplayNode<'a> {
             pointer: &Selector,
             length: &Selector,
             capacity: &Option<Selector>,
+            data_offset: u64,
         ) -> Option<FatHeader> {
             let (pointer_ty, pointer_offset) = resolve_selector(scope, pointer)?;
             pointer_ty.pointer_target()?;
@@ -700,6 +705,7 @@ impl<'a> DisplayNode<'a> {
                 length_offset,
                 length_size: length_ty.size() as u32,
                 capacity,
+                data_offset,
             })
         }
 
@@ -788,8 +794,9 @@ impl<'a> DisplayNode<'a> {
                     length,
                     capacity,
                     nul_terminated,
+                    offset,
                 } => Some(DisplayNode::Str {
-                    header: resolve_fat_header(scope, pointer, length, capacity)?,
+                    header: resolve_fat_header(scope, pointer, length, capacity, *offset)?,
                     nul_terminated: *nul_terminated,
                 }),
                 BundleNode::Slice {
@@ -800,7 +807,7 @@ impl<'a> DisplayNode<'a> {
                 } => {
                     let element = scope.related_type(*element);
                     Some(DisplayNode::Slice {
-                        header: resolve_fat_header(scope, pointer, length, capacity)?,
+                        header: resolve_fat_header(scope, pointer, length, capacity, 0)?,
                         element,
                         element_size: element.size() as u32,
                     })

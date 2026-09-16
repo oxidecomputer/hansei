@@ -397,10 +397,60 @@ pub(super) fn str_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayN
         return None;
     }
     Some(DisplayNode::Str {
+        offset: 0,
         pointer: emitter.walk(id, &reach![Named("data_ptr")])?.0,
         length: emitter.walk(id, &reach![Named("length")])?.0,
         capacity: None,
         nul_terminated: false,
+    })
+}
+
+/// The refcounted allocations whose unsized tail a shared string is: an
+/// `Arc`'s, and an `Rc`'s under either name std has given it.
+const REFCOUNT_HEADERS: &[&str] = &[
+    "alloc::sync::ArcInner<",
+    "alloc::rc::RcInner<",
+    "alloc::rc::RcBox<",
+];
+
+/// An `Arc<str>` or `Rc<str>` — and the `Path`/`OsStr` forms over the same
+/// bytes — is a fat pointer to the refcounted allocation holding the text:
+/// `ptr: NonNull<ArcInner<str>>`, whose `*const ArcInner<str>` is the
+/// `{ data_ptr, length }` pair, with the counter words ahead of the text.
+/// DWARF records the inner as an opaque struct of the header's size, and the
+/// text is its unsized tail, at that size rounded up to the text's own
+/// alignment, which is one — so the header's size as recorded is the offset
+/// the `Str` node adds. The prefix key admits only the string-like tails;
+/// the body checks that the pointer does reach a refcount header, which is
+/// what keeps a same-shaped fat pointer over something else from rendering
+/// sixteen bytes in.
+pub(super) fn refcounted_str_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
+    let reader = emitter.reader;
+    let inner = emitter.landed(
+        id,
+        &reach![Named("ptr"), Named("pointer"), Named("data_ptr"), Deref],
+    )?;
+    let name = fq_name(reader, inner)?;
+    if !REFCOUNT_HEADERS
+        .iter()
+        .any(|header| name.starts_with(header))
+    {
+        return None;
+    }
+    let header = struct_of(reader, inner)?.size;
+    Some(DisplayNode::Str {
+        pointer: emitter
+            .walk(
+                id,
+                &reach![Named("ptr"), Named("pointer"), Named("data_ptr")],
+            )?
+            .0,
+        length: emitter
+            .walk(id, &reach![Named("ptr"), Named("pointer"), Named("length")])?
+            .0,
+        capacity: None,
+        nul_terminated: false,
+        offset: header,
     })
 }
 
@@ -411,6 +461,7 @@ pub(super) fn str_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayN
 /// name key is the screen.
 pub(super) fn cstr_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
     Some(DisplayNode::Str {
+        offset: 0,
         pointer: emitter.walk(id, &reach![Named("data_ptr")])?.0,
         length: emitter.walk(id, &reach![Named("length")])?.0,
         capacity: None,
@@ -428,6 +479,7 @@ pub(super) fn cstring_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<Disp
         return None;
     }
     Some(DisplayNode::Str {
+        offset: 0,
         pointer: emitter
             .walk(id, &reach![Named("inner"), Named("data_ptr")])?
             .0,
@@ -484,6 +536,7 @@ pub(super) fn buffer_node(
         Some(emitter.walk(root, &path)?.0)
     };
     Some(DisplayNode::Str {
+        offset: 0,
         pointer: under(emitter, shape.pointer)?,
         length: under(emitter, shape.length)?,
         capacity: Some(under(emitter, shape.capacity)?),

@@ -1952,10 +1952,11 @@ pub(crate) fn walk_set_nodes<'b, T: Target>(
 /// the wrapper reads the string it holds.
 const KEY_DEPTH: usize = 2;
 
-/// The longest key text a heading takes. A key is a name, and a name
-/// fits here; what runs past it is a structural rendering of a type no
+/// The longest key text a heading takes. A key is a name — a DNS name
+/// of seventy characters inside the newtype that wraps it still fits —
+/// and what runs past this is a structural rendering of a type no
 /// formatter reads as text, which names nothing to a reader.
-const KEY_WIDTH: usize = 64;
+const KEY_WIDTH: usize = 128;
 
 /// A `StreamMap` entry's key as text for a heading, or `None` where
 /// the bundle has no route to it, the read fails, or the value

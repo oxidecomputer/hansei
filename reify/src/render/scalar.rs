@@ -594,6 +594,28 @@ mod tests {
         );
     }
 
+    /// A string that is the tail of a refcounted allocation begins past
+    /// the header its pointer addresses: the offset the node carries is
+    /// added to a live pointer, and a null one still degrades as null
+    /// rather than reading the header's width into the zero page.
+    #[test]
+    fn test_a_refcounted_string_reads_past_its_header() {
+        let mut inner = vec![1u8, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0];
+        inner.extend_from_slice(b"alpha");
+        let mem = FakeMem::new().at(0x3000, inner);
+
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+        let show = |addr: u64, len: u64| {
+            let bytes: Vec<u8> = [addr, len].into_iter().flat_map(u64::to_le_bytes).collect();
+            let value = Value::new(v.ty(ARC_STR).unwrap(), 0, &bytes);
+            format!("{}", value.display_from_target(&mem, 8))
+        };
+        assert_eq!(show(0x3000, 5), "\"alpha\"");
+        assert_eq!(show(0x3000, 2), "\"al\"");
+        assert_eq!(show(0, 5), "<invalid string: the data pointer is null>");
+    }
+
     /// A code pointer the target cannot name keeps its address and says so.
     /// With no target attached there is nothing to have failed, so the bare
     /// address is printed without a marker.

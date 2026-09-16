@@ -282,6 +282,7 @@ pub fn describe_node(bundle: &Bundle, root: BundleTypeId, node: &DisplayNode) ->
             length,
             capacity,
             nul_terminated,
+            offset,
         } => {
             let capacity = match capacity {
                 Some(capacity) => format!(", capacity={}", field(bundle, root, capacity)),
@@ -291,12 +292,17 @@ pub fn describe_node(bundle: &Bundle, root: BundleTypeId, node: &DisplayNode) ->
                 true => ", nul_terminated",
                 false => "",
             };
+            let offset = match offset {
+                0 => String::new(),
+                offset => format!(", offset=+{offset:#x}"),
+            };
             format!(
-                "Str {{ pointer={}, length={}{}{} }}",
+                "Str {{ pointer={}, length={}{}{}{} }}",
                 field(bundle, root, pointer),
                 field(bundle, root, length),
                 capacity,
                 nul,
+                offset,
             )
         }
         DisplayNode::Slice {

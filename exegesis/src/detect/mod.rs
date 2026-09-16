@@ -36,8 +36,9 @@ use self::crates::{hex_bytes_node, raw_mutex_node, utf8_path_buf_node, utf8_path
 use self::std::{
     atomic_node, btree_map_node, cstr_node, cstring_node, dyn_pointer_node, function_pointer_node,
     instant_alias_node, ip_address_node, non_null_node, nonzero_inner_node, nonzero_node,
-    raw_waker_node, raw_waker_vtable_node, scalar_newtype_node, slice_node, str_node, string_node,
-    unique_node, unsafe_cell_node, usize_no_high_bit_node, vec_node, waker_node,
+    raw_waker_node, raw_waker_vtable_node, refcounted_str_node, scalar_newtype_node, slice_node,
+    str_node, string_node, unique_node, unsafe_cell_node, usize_no_high_bit_node, vec_node,
+    waker_node,
 };
 use self::tokio::{
     batch_semaphore_node, bounded_semaphore_node, cache_padded_node, loom_atomic_node,
@@ -488,6 +489,26 @@ static BY_NAME: &[(&str, Row<Detector>)] = &[
 static BY_PREFIX: &[(&str, Row<Detector>)] = &[
     ("&[", All(slice_node)),
     ("alloc::boxed::Box<[", All(slice_node)),
+    // A boxed `str` is the `&str` fat pointer with an owner, and renders
+    // as one; the shared forms put the counter words ahead of the
+    // text, so each is the refcounted detector, keyed per tail since the
+    // same `Arc<` also heads every sized and every `dyn` pointee.
+    ("alloc::boxed::Box<str,", All(str_node)),
+    ("alloc::sync::Arc<str,", All(refcounted_str_node)),
+    ("alloc::rc::Rc<str,", All(refcounted_str_node)),
+    (
+        "alloc::sync::Arc<std::path::Path,",
+        All(refcounted_str_node),
+    ),
+    ("alloc::rc::Rc<std::path::Path,", All(refcounted_str_node)),
+    (
+        "alloc::sync::Arc<std::ffi::os_str::OsStr,",
+        All(refcounted_str_node),
+    ),
+    (
+        "alloc::rc::Rc<std::ffi::os_str::OsStr,",
+        All(refcounted_str_node),
+    ),
     ("core::num::niche_types::NonZero", All(nonzero_inner_node)),
     ("tokio::loom::std::atomic_", All(loom_atomic_node)),
     (
@@ -1450,7 +1471,9 @@ fn transparent(
 #[cfg(test)]
 mod tests {
     use super::ReachStep::{Named, PeelTo};
-    use super::std::{dyn_tail_prefixes, has_dyn_tail, scalar_newtype_node, str_node};
+    use super::std::{
+        dyn_tail_prefixes, has_dyn_tail, refcounted_str_node, scalar_newtype_node, str_node,
+    };
     use super::{Detector, Family, trace};
     use crate::bundle::{DisplayNode, MemberRef, Notation, POINTER_SIZE, Shape, Step};
     use crate::extract::Emitter;
@@ -2103,6 +2126,102 @@ mod tests {
         // the detector to it.
         assert!(detect(&reader, str_node, bad_id).is_some());
         assert_eq!(format_of(&reader, bad_id), None);
+    }
+
+    /// An `Arc<str>` is the `&str` pair behind `ptr.pointer`, over a
+    /// refcount header the text follows: the detector records the header's
+    /// size as the offset, and declines the same shape over a pointee that
+    /// is no refcount header, where sixteen bytes in would be anyone's.
+    #[test]
+    fn test_a_refcounted_str_reads_past_the_header_it_recognizes() {
+        let mut reader = DwReader::default();
+        let (data_ptr, length, pointer, ptr) = (
+            reader.strings.intern("data_ptr"),
+            reader.strings.intern("length"),
+            reader.strings.intern("pointer"),
+            reader.strings.intern("ptr"),
+        );
+        let usize_id = type_id(1);
+        let usize_name = reader.strings.intern("usize");
+        reader
+            .types
+            .insert(usize_id, base(usize_name, POINTER_SIZE, Encoding::Unsigned));
+        let member = |name, type_id| RawMember {
+            name: Some(name),
+            offset: 0,
+            type_id,
+            source_loc: None,
+        };
+        // The chain from the `Arc` down to the opaque inner, laid out
+        // once per pointee name: the refcount header, and an impostor.
+        let mut build = |inner_name: &'static str, arc_name: &'static str, first: usize| {
+            let (inner_id, inner_ptr_id, fat_id, nonnull_id, arc_id) = (
+                type_id(first),
+                type_id(first + 1),
+                type_id(first + 2),
+                type_id(first + 3),
+                type_id(first + 4),
+            );
+            let inner_name = reader.strings.intern(inner_name);
+            let fat_name = reader.strings.intern("*const inner");
+            let nonnull_name = reader.strings.intern("core::ptr::non_null::NonNull<inner>");
+            let arc_name = reader.strings.intern(arc_name);
+            reader
+                .types
+                .insert(inner_id, ns_struct(None, inner_name, 16, vec![]));
+            reader.types.insert(
+                inner_ptr_id,
+                RawPointer {
+                    name: None,
+                    target_type_id: inner_id,
+                }
+                .into(),
+            );
+            reader.types.insert(
+                fat_id,
+                fat_pointer(fat_name, data_ptr, inner_ptr_id, length, usize_id),
+            );
+            reader.types.insert(
+                nonnull_id,
+                ns_struct(None, nonnull_name, 16, vec![member(pointer, fat_id)]),
+            );
+            reader.types.insert(
+                arc_id,
+                ns_struct(None, arc_name, 16, vec![member(ptr, nonnull_id)]),
+            );
+            arc_id
+        };
+        let arc = build(
+            "alloc::sync::ArcInner<str>",
+            "alloc::sync::Arc<str, alloc::alloc::Global>",
+            10,
+        );
+        let rc = build(
+            "alloc::rc::RcInner<str>",
+            "alloc::rc::Rc<str, alloc::alloc::Global>",
+            20,
+        );
+        let impostor = build("app::Header<str>", "app::Shared<str, app::Alloc>", 30);
+
+        let format_of = |reader: &DwReader<'_>, id, name| {
+            Emitter::new(reader, BTreeMap::new(), None, None).debug_format_of(id, Some(name))
+        };
+        for (id, name) in [
+            (arc, "alloc::sync::Arc<str, alloc::alloc::Global>"),
+            (rc, "alloc::rc::Rc<str, alloc::alloc::Global>"),
+        ] {
+            let Some(DisplayNode::Str {
+                offset,
+                capacity: None,
+                nul_terminated: false,
+                ..
+            }) = format_of(&reader, id, name)
+            else {
+                panic!("{name} renders as a refcounted string");
+            };
+            assert_eq!(offset, 16, "{name}");
+        }
+        assert!(detect(&reader, refcounted_str_node, impostor).is_none());
     }
 
     /// A `uuid::Uuid`-shaped newtype over `[u8; count]`, so a test can vary the

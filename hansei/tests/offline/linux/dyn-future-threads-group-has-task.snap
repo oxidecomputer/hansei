@@ -3,5 +3,5 @@ source: hansei/src/offline.rs
 description: "`threads --without role ^worker --group has-task` over linux/dyn-future"
 ---
 COUNT  HAS TASK  LWPS
-    1  no        4181532
+    1  no        199085
 [1 group]

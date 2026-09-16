@@ -521,11 +521,20 @@ pub enum DisplayNode {
     /// includes its terminator. reify renders one byte fewer, and flags a
     /// buffer whose last byte turns out not to be NUL rather than trusting the
     /// layout blindly.
+    ///
+    /// `offset` is how far past the address the data pointer holds the bytes
+    /// begin: zero for a pointer to the bytes themselves, and the refcount
+    /// header's size for a buffer that is the unsized tail of an
+    /// `ArcInner<str>`/`RcInner<str>` — two counter words ahead of the text,
+    /// which the fat pointer's length still measures. The tail sits at that
+    /// prefix rounded up to its own alignment, one for text, so the detector
+    /// records the rounded figure and reify adds it to a non-null pointer.
     Str {
         pointer: Selector,
         length: Selector,
         capacity: Option<Selector>,
         nul_terminated: bool,
+        offset: u64,
     },
     /// Follow a `(data, len)` fat pointer to a contiguous buffer and render its
     /// first `length` `element`s as `[elem, elem, …]`.

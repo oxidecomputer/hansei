@@ -117,6 +117,7 @@ pub(super) fn hex_bytes_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<Di
 /// `Str` node with no capacity.
 pub(super) fn utf8_path_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
     Some(DisplayNode::Str {
+        offset: 0,
         pointer: emitter.walk(id, &reach![Named("data_ptr")])?.0,
         length: emitter.walk(id, &reach![Named("length")])?.0,
         capacity: None,
@@ -441,6 +442,7 @@ mod tests {
         assert!(matches!(
             utf8_path_buf_node(&mut fx.emitter(), buf),
             Some(DisplayNode::Str {
+                offset: 0,
                 capacity: Some(_),
                 ..
             })

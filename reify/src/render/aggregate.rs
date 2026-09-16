@@ -395,6 +395,7 @@ mod tests {
         b.types.debug_formats.insert(
             WRAP,
             BundleNode::Str {
+                offset: 0,
                 pointer: sel(&[0, 0]),
                 length: sel(&[0, 1]),
                 capacity: Some(sel(&[0, 2])),

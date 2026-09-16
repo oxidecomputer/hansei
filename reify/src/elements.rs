@@ -309,6 +309,16 @@ pub(crate) fn decode_header(
     }
     let base = read_u64_at(bytes, header.pointer_offset)
         .ok_or(SeqError::Invalid("the data pointer does not fit the value"))?;
+    // A buffer that is the tail of a refcounted allocation begins past
+    // the header the pointer addresses; a null pointer stays null, so
+    // it degrades as one rather than reading the header's width into
+    // the zero page.
+    let base = match base {
+        0 => 0,
+        base => base
+            .checked_add(header.data_offset)
+            .ok_or(SeqError::Invalid("the data offset overflows the pointer"))?,
+    };
     Ok((base, count))
 }
 

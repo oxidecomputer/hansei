@@ -620,6 +620,10 @@ fixture_ids! {
     // A CString: STR's shape, but the length counts a trailing NUL that is
     // not part of the string.
     C_STRING,
+    // An `Arc<str>` flattened to its fat-pointer words: STR's shape, but
+    // the bytes begin past the sixteen-byte refcount header the pointer
+    // addresses.
+    ARC_STR,
     // The path resolver's fixtures: Rc's heap header behind a raw
     // pointer, a wrapper whose one sized member sits past a zero-sized
     // field, and a niche pointer enum an explicit `*` must cross.
@@ -1866,6 +1870,17 @@ pub fn test_bundle() -> Bundle {
             members: vec![m(data_ptrn, U8_PTR, 0), m(length2n, U64, 8)],
         },
     );
+    // An `Arc<str>` flattened the same way: the pointer addresses the
+    // `ArcInner`, whose two counter words precede the text.
+    let arc_strn = s("alloc::sync::Arc<str, alloc::alloc::Global>");
+    types.add(
+        ARC_STR,
+        TypeDef::Struct {
+            name: arc_strn,
+            size: 16,
+            members: vec![m(data_ptrn, U8_PTR, 0), m(length2n, U64, 8)],
+        },
+    );
     // RcBox { strong, weak, value: Point } behind a raw pointer — the
     // Rc spelling of the heap header the member step hops past.
     let rc_boxn = s("alloc::rc::RcBox<Point>");
@@ -2310,6 +2325,7 @@ pub fn test_bundle() -> Bundle {
                 (
                     STR,
                     BundleNode::Str {
+                        offset: 0,
                         pointer: sel(&[0]),
                         length: sel(&[1]),
                         capacity: None,
@@ -2319,6 +2335,7 @@ pub fn test_bundle() -> Bundle {
                 (
                     STRING,
                     BundleNode::Str {
+                        offset: 0,
                         pointer: sel(&[0]),
                         length: sel(&[1]),
                         capacity: Some(sel(&[2])),
@@ -2328,10 +2345,21 @@ pub fn test_bundle() -> Bundle {
                 (
                     C_STRING,
                     BundleNode::Str {
+                        offset: 0,
                         pointer: sel(&[0]),
                         length: sel(&[1]),
                         capacity: None,
                         nul_terminated: true,
+                    },
+                ),
+                (
+                    ARC_STR,
+                    BundleNode::Str {
+                        offset: 16,
+                        pointer: sel(&[0]),
+                        length: sel(&[1]),
+                        capacity: None,
+                        nul_terminated: false,
                     },
                 ),
                 (
