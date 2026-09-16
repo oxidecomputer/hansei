@@ -2,6 +2,6 @@
 source: hansei/src/offline.rs
 description: "`tasks --with id 3,6` over linux/simple-await"
 ---
-ID  STATE  FUT  AWAITING AT                 WAITING ON                                              TYPE
-3   idle     0  src/bin/simple-await.rs:47  oneshot rx 0xADDR (nothing sent, sender alive)  async fn simple_await::work
+ID  STATE  FUT  AWAITING AT                 WAITING ON  TYPE
+3   idle     0  src/bin/simple-await.rs:47  oneshot rx  async fn simple_await::work
 [1 task]

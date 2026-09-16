@@ -3,7 +3,7 @@ source: hansei/src/offline.rs
 description: "`graph` over linux/futurelock"
 ---
 TASK                                        STATE  WAITING ON
-5                                           idle   a tokio::sync::Mutex (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 5
+5                                           idle   semaphore
 └─ 5 [holds permits awaited above] (above)  idle   
 
 futurelock: task 5 holds 1 granted permit of a tokio::sync::Mutex (semaphore 0xADDR) in a future it cannot poll until the future tokio::sync::batch_semaphore::Acquire it awaits completes:

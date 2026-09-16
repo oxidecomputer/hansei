@@ -4,4 +4,4 @@ description: "`graph` over illumos/sleep-join"
 ---
 TASK  STATE  WAITING ON
 4     idle   task 3
-└─ 3  idle   timer (deadline TS)
+└─ 3  idle   timer

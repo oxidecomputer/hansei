@@ -443,6 +443,24 @@ impl AttributedSlot {
         }
     }
 
+    /// The slot's entry in a listing's cell: the kind of thing the
+    /// waker is parked in, as a verified wait's cell names the same
+    /// kind — the kind word alone, with the address and whatever a
+    /// reader read left to the detail lines. A typed slot is named by
+    /// the type it sits in, as the task block's `held in:` names it;
+    /// an unknown one is `unknown`.
+    pub fn cell(&self) -> String {
+        match &self.attribution {
+            Attribution::Registry(RegistrySlot::Timer { .. }) => "timer".to_string(),
+            Attribution::Registry(RegistrySlot::Io { .. }) => "io".to_string(),
+            Attribution::Registry(RegistrySlot::Semaphore { .. }) => "semaphore".to_string(),
+            Attribution::Registry(RegistrySlot::Join { task }) => format!("join {task}"),
+            Attribution::Owner { kind, .. } => kind.word().to_string(),
+            Attribution::Typed { holder, .. } => holder.to_string(),
+            Attribution::Unknown => "unknown".to_string(),
+        }
+    }
+
     /// The slot's label for a detail line: the kind word and the
     /// address that identifies the slot, whatever a reader would add.
     /// A typed slot is named by its holder as well, since nothing
@@ -483,7 +501,7 @@ impl AttributedSlot {
             }
             Attribution::Registry(RegistrySlot::Join { task }) => format!("join {task}"),
             Attribution::Owner { kind, .. } => kind.word().to_string(),
-            Attribution::Typed { holder, .. } => format!("slot in {holder}"),
+            Attribution::Typed { holder, .. } => holder.to_string(),
             Attribution::Unknown => "unknown".to_string(),
         }
     }
@@ -2692,7 +2710,8 @@ mod tests {
             driver[0].entry(stopped),
             format!("slot {:#x} in {holds}", driver[0].slot)
         );
-        assert_eq!(driver[0].bucket(), format!("slot in {holds}"));
+        assert_eq!(driver[0].bucket(), *holds);
+        assert_eq!(driver[0].cell(), *holds);
         // A typed slot's label names the holder too: nothing else on
         // its line does.
         assert_eq!(
@@ -2839,11 +2858,7 @@ mod tests {
             })
             .collect();
         assert_eq!(routes, [(0, true), (1, true), (2, true), (3, true)]);
-        let cell = set.cell();
-        assert!(cell.starts_with("mpsc rx 0x"), "{cell}");
-        assert!(cell.contains(", oneshot rx 0x"), "{cell}");
-        assert!(cell.contains(", timer (deadline "), "{cell}");
-        assert!(cell.contains(", watch rx 0x"), "{cell}");
+        assert_eq!(set.cell(), "mpsc rx, oneshot rx, timer, watch rx");
         assert_eq!(set.group_label(), "mpsc rx, oneshot rx, timer, watch rx");
         assert!(selector.held.is_empty());
 
@@ -2854,7 +2869,7 @@ mod tests {
         assert_eq!(set.armed().count(), 1);
         assert_eq!(
             set.group_label(),
-            "slot in futures_core::task::__internal::atomic_waker::AtomicWaker"
+            "futures_core::task::__internal::atomic_waker::AtomicWaker"
         );
 
         for name in ["holder", "waiter"] {

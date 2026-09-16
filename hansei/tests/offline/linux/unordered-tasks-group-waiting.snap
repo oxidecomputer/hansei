@@ -2,6 +2,6 @@
 source: hansei/src/offline.rs
 description: "`tasks --group waiting-on` over linux/unordered"
 ---
-COUNT  WAITING ON                                                         TASKS
-    1  slot in futures_core::task::__internal::atomic_waker::AtomicWaker  3
+COUNT  WAITING ON                                                 TASKS
+    1  futures_core::task::__internal::atomic_waker::AtomicWaker  3
 [1 group]

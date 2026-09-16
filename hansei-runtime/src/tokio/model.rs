@@ -1178,6 +1178,27 @@ pub enum WaitKind {
 }
 
 impl WaitTarget {
+    /// The wait as a listing's cell names it: the kind word alone — a
+    /// task by its id, which is what every listing calls it — and
+    /// nothing the reader read about the resource. Its address, a
+    /// deadline, a channel's counts, a wake queue are the detail
+    /// lines' to print, where a row's cell has no room for them.
+    pub fn cell(&self) -> String {
+        match self {
+            Self::Timer { .. } => "timer".to_string(),
+            Self::Task { task_id, .. } => match task_id {
+                Some(id) => format!("task {id}"),
+                None => "task".to_string(),
+            },
+            Self::Io { .. } => "io".to_string(),
+            Self::Semaphore { .. } => "semaphore".to_string(),
+            Self::Channel { .. } => "mpsc rx".to_string(),
+            Self::Notify { .. } => "notify rx".to_string(),
+            Self::Oneshot { .. } => "oneshot rx".to_string(),
+            Self::Watch { .. } => "watch rx".to_string(),
+        }
+    }
+
     /// The kind-level spelling `tasks --group waiting-on` buckets rows
     /// by: the identity that groups usefully — which task, which
     /// semaphore — with the per-row detail (deadlines, permit counts,
@@ -1690,6 +1711,9 @@ mod tests {
             timer(at(12, 0), Some(at(2, 0))).to_string(),
             "timer (deadline +10.000s)"
         );
+        // The cell is the kind word alone: the deadline is the detail
+        // lines' to print.
+        assert_eq!(timer(at(12, 0), Some(at(2, 0))).cell(), "timer");
         assert_eq!(
             timer(at(2, 641_000_000), Some(at(12, 0))).to_string(),
             "timer (overdue by 9.359s)"

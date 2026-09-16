@@ -4,4 +4,4 @@ expression: actual
 ---
 TASK         STATE  WAITING ON
 #joiner      idle   task #sleeper
-└─ #sleeper  idle   timer (deadline TS)
+└─ #sleeper  idle   timer

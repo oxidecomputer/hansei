@@ -3,9 +3,9 @@ source: hansei/src/offline.rs
 description: "`tasks` over illumos/local-set-io"
 ---
 ID  STATE  RT  FUT  AWAITING AT                  WAITING ON                                       TYPE
-1   idle   1     0  src/bin/local-set-io.rs:32   io fd 11 (readable)                              async fn local_set_io::local_reader
-2   idle   1     0  src/bin/local-set-io.rs:40   io fd 13 (readable)                              async fn local_set_io::local_watcher
-3   idle   1     0  src/bin/local-set-io.rs:60   io fd 15 (writable)                              async fn local_set_io::local_writer
+1   idle   1     0  src/bin/local-set-io.rs:32   io                                               async fn local_set_io::local_reader
+2   idle   1     0  src/bin/local-set-io.rs:40   io                                               async fn local_set_io::local_watcher
+3   idle   1     0  src/bin/local-set-io.rs:60   io                                               async fn local_set_io::local_writer
 4   idle   1     0  src/bin/local-set-io.rs:100  unarmed: unknown at tokio::io::util::read::Read  async fn local_set_io::local_gated_reader
-5   idle   0     0  src/bin/local-set-io.rs:114  io fd 17 (readable)                              async fn local_set_io::reader
+5   idle   0     0  src/bin/local-set-io.rs:114  io                                               async fn local_set_io::reader
 [5 tasks]

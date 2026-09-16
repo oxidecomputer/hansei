@@ -2,6 +2,6 @@
 source: hansei/src/offline.rs
 description: "`tasks --with state idle` over linux-floor/nested-await"
 ---
-ID  STATE  FUT  AWAITING AT                 WAITING ON                                              TYPE
-3   idle     0  src/bin/nested-await.rs:23  oneshot rx 0xADDR (nothing sent, sender alive)  async fn nested_await::outer
+ID  STATE  FUT  AWAITING AT                 WAITING ON  TYPE
+3   idle     0  src/bin/nested-await.rs:23  oneshot rx  async fn nested_await::outer
 [1 task]

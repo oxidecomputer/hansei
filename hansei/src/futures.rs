@@ -1662,7 +1662,7 @@ mod tests {
         );
         assert_eq!(
             row(0x5000).waiting_kind.as_deref(),
-            Some("slot in x::Holder, timer")
+            Some("timer, x::Holder")
         );
         assert_eq!(
             row(0x5000).slot_lines,

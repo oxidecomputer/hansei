@@ -431,23 +431,21 @@ fn print_trace_chain<'b, T: proc::Target>(
 }
 
 /// What a task's chain verifiably ends in, from its assessment: the
-/// wait cell every listing prints, which the leaf frame's detail line
-/// carries in place of its live state. `None` for an assessment that
-/// names no resource — the leaf then describes itself, and the
+/// verified target with its reading, which the leaf frame's detail
+/// line carries in place of its live state. `None` for an assessment
+/// that names no resource — the leaf then describes itself, and the
 /// assessment and its notes are the task block's to print.
 pub(crate) fn assessed_wait<T: proc::Target>(
     session: &Session<'_, T>,
     index: usize,
 ) -> Option<String> {
     let wait: &TaskWait = &session.analysis().waits[index];
-    let words = wait.verified()?.target().words();
-    let stops = crate::tasks::StopNames::of(session);
-    let cell = crate::tasks::assessment_cell(wait, &stops);
+    let target = wait.verified()?.target();
     // Nothing else stands on this line, so it carries the reading a
     // cell leaves to a line of its own.
-    Some(match words {
-        Some(words) => format!("{cell} ({words})"),
-        None => cell,
+    Some(match target.words() {
+        Some(words) => format!("{target} ({words})"),
+        None => target.to_string(),
     })
 }
 

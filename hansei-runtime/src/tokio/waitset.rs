@@ -94,35 +94,14 @@ impl WaitSet {
         self.members.iter().filter(|m| m.armed.is_some())
     }
 
-    /// The armed members' `(entry, kind)` pairs, sorted, with every
-    /// `unknown` entry past the first collapsed into a count: the
-    /// slots in allocations nothing typed reaches tell a reader
-    /// nothing apart, and a task parked in six of them reads as
-    /// `6× unknown`, not six addresses.
+    /// The armed members' `(entry, kind)` pairs, sorted and counted
+    /// ([`counted`]).
     fn entries(&self) -> Vec<(String, String)> {
-        let mut entries: Vec<(String, String)> = Vec::new();
-        let mut unknown = 0usize;
-        for member in self.armed() {
-            let (Some(entry), Some(kind)) = (member.cell_entry(), member.kind()) else {
-                continue;
-            };
-            if kind == "unknown" {
-                unknown += 1;
-                if unknown > 1 {
-                    continue;
-                }
-            }
-            entries.push((entry, kind));
-        }
-        if unknown > 1 {
-            for entry in &mut entries {
-                if entry.1 == "unknown" {
-                    entry.0 = format!("{unknown}× unknown");
-                }
-            }
-        }
-        entries.sort();
-        entries
+        counted(
+            self.armed()
+                .filter_map(|member| Some((member.cell_entry()?, member.kind()?)))
+                .collect(),
+        )
     }
 
     /// The cell: every armed member's entry, sorted and joined with
@@ -144,6 +123,30 @@ impl WaitSet {
         kinds.dedup();
         kinds.join(", ")
     }
+}
+
+/// A cell's `(entry, kind)` pairs sorted by entry, with the repeats of
+/// one entry collapsed into a count: a `select!` over six watch
+/// channels reads as `6x watch rx`, and a task parked in six slots
+/// nothing typed reaches as `6x unknown`. The entries name kinds, not
+/// resources, so two that read alike are the same kind twice and
+/// nothing is lost by counting them; the kind rides with the count.
+pub fn counted(mut entries: Vec<(String, String)>) -> Vec<(String, String)> {
+    entries.sort();
+    let mut counted: Vec<(String, String, usize)> = Vec::new();
+    for (entry, kind) in entries {
+        match counted.last_mut() {
+            Some((last, _, n)) if *last == entry => *n += 1,
+            _ => counted.push((entry, kind, 1)),
+        }
+    }
+    counted
+        .into_iter()
+        .map(|(entry, kind, n)| match n {
+            1 => (entry, kind),
+            n => (format!("{n}x {entry}"), kind),
+        })
+        .collect()
 }
 
 /// One thing the task's waker may be parked in.
@@ -179,7 +182,7 @@ impl WaitMember {
     pub fn cell_entry(&self) -> Option<String> {
         let armed = self.armed.as_ref()?;
         if let Some(WaitAssessment::Waiting(verified)) = &self.assessment {
-            return Some(verified.target().to_string());
+            return Some(verified.target().cell());
         }
         armed.cell_entry()
     }
@@ -305,10 +308,23 @@ pub enum SlotRef {
 
 impl SlotRef {
     /// The bare entry, for a member whose assessment names no
-    /// target: a wheel entry's deadline where its word encodes one —
-    /// the text a verified `Sleep` prints — else the slot kind and
-    /// the resource.
+    /// target: the slot's kind word, as a verified wait's cell names
+    /// the same kind of resource.
     pub fn cell_entry(&self) -> Option<String> {
+        match self {
+            Self::Wheel { .. } => Some("timer".to_string()),
+            Self::Io { .. } => Some("io".to_string()),
+            Self::Protocol => None,
+            Self::Swept { slot, .. } => Some(slot.cell()),
+        }
+    }
+
+    /// The slot named for a line of its own in the task block: the
+    /// kind and the resource — a wheel entry by its deadline where its
+    /// word encodes one, the text a verified `Sleep` prints, else the
+    /// entry's address; an io registration by its resource and the
+    /// readiness awaited; a swept slot as its own entry.
+    pub fn label(&self) -> Option<String> {
         match self {
             Self::Wheel {
                 deadline: Some(deadline),
@@ -353,12 +369,24 @@ impl SlotRef {
     /// beyond its entry.
     pub fn detail(&self) -> Option<String> {
         Some(match self {
-            Self::Wheel { entry, state, .. } => {
+            // The deadline rides along where the word encodes one: the
+            // cell names the entry and nothing more, so this line is
+            // where the wait's own reading goes.
+            Self::Wheel {
+                entry,
+                state,
+                deadline,
+                stopped,
+            } => {
                 let state = match state {
                     Some(state) => format!(", {state}"),
                     None => String::new(),
                 };
-                format!("wheel entry @ {entry:#x}{state}")
+                let due = match deadline {
+                    Some(deadline) => format!(", {}", deadline_text(*deadline, *stopped)),
+                    None => String::new(),
+                };
+                format!("wheel entry @ {entry:#x}{state}{due}")
             }
             // The resource is not named here: the line this sits on
             // already names it, as the member's entry or its target.
@@ -1522,7 +1550,7 @@ mod tests {
         };
         assert_eq!(set.members.len(), 1, "{set:#?}");
         assert_eq!(set.armed().count(), 1);
-        assert_eq!(set.cell(), format!("timer {inside:#x}"));
+        assert_eq!(set.cell(), "timer");
         assert_eq!(set.group_label(), "timer");
         let member = &set.members[0];
         assert!(
@@ -1614,19 +1642,11 @@ mod tests {
                 outside - root.addr
             ))
         );
-        assert_eq!(
-            set.members[1].cell_entry(),
-            Some(format!("timer {outside:#x}"))
-        );
+        assert_eq!(set.members[1].cell_entry(), Some("timer".to_string()));
         assert_eq!(within(&set.members[2]), None);
-        assert_eq!(
-            set.members[2].cell_entry(),
-            Some("io 0x7000 (readable)".to_string())
-        );
-        assert_eq!(
-            set.cell(),
-            format!("io 0x7000 (readable), io 0x7100 (readiness), timer {outside:#x}")
-        );
+        assert_eq!(set.members[2].cell_entry(), Some("io".to_string()));
+        // Two io slots are one kind twice, counted rather than named.
+        assert_eq!(set.cell(), "2x io, timer");
         assert_eq!(set.group_label(), "io, timer");
     }
 
@@ -1703,7 +1723,7 @@ mod tests {
             registered.detail(),
             Some(format!("wheel entry @ 0x10, {}", timer::REGISTERED))
         );
-        assert_eq!(registered.cell_entry(), Some("timer 0x10".to_string()));
+        assert_eq!(registered.cell_entry(), Some("timer".to_string()));
         let unread = SlotRef::Wheel {
             entry: 0x10,
             state: None,
@@ -1711,8 +1731,9 @@ mod tests {
             stopped: None,
         };
         assert_eq!(unread.detail().as_deref(), Some("wheel entry @ 0x10"));
-        // A word that encodes a deadline prints it the way a verified
-        // sleep does, in the cell and on the evidence line.
+        // A word that encodes a deadline prints it on the evidence
+        // line, the way a verified sleep's `held in:` does; the cell
+        // names the kind alone.
         let at = |tv_sec| RawInstant { tv_sec, tv_nsec: 0 };
         let due = SlotRef::Wheel {
             entry: 0x10,
@@ -1720,12 +1741,15 @@ mod tests {
             deadline: Some(at(40)),
             stopped: Some(at(12)),
         };
-        assert_eq!(
-            due.cell_entry(),
-            Some("timer (deadline +28.000s)".to_string())
-        );
+        assert_eq!(due.cell_entry(), Some("timer".to_string()));
         assert_eq!(due.kind(), Some("timer".to_string()));
-        assert_eq!(due.detail(), registered.detail());
+        assert_eq!(
+            due.detail(),
+            Some(format!(
+                "wheel entry @ 0x10, {}, deadline +28.000s",
+                timer::REGISTERED
+            ))
+        );
         assert_eq!(SlotRef::Protocol.cell_entry(), None);
         assert_eq!(SlotRef::Protocol.kind(), None);
     }
@@ -2794,12 +2818,8 @@ mod tests {
         );
         assert_eq!(within(&set.members[2]), None);
         assert_eq!(within(&set.members[3]), None, "one past the root's end");
-        assert_eq!(
-            set.cell(),
-            "slot 0x6010 in x::Holder, slot 0x7000 in x::Holder, slot 0x9008 in x::Holder, \
-             slot 0x9040 in x::Holder"
-        );
-        assert_eq!(set.group_label(), "slot in x::Holder");
+        assert_eq!(set.cell(), "4x x::Holder");
+        assert_eq!(set.group_label(), "x::Holder");
         assert!(wait.held.is_empty());
     }
 
@@ -2882,10 +2902,7 @@ mod tests {
             &set.members[4].armed,
             Some(SlotRef::Swept { slot, .. }) if slot.slot == 0x6020
         ));
-        assert_eq!(
-            set.cell(),
-            "io 0x7700 (readable), notify rx 0x7000, notify rx 0x7100, timer 0x6008, timer 0xee00"
-        );
+        assert_eq!(set.cell(), "io, 2x notify rx, 2x timer");
         assert_eq!(set.group_label(), "io, notify rx, timer");
         // Folding the same slots again changes nothing: every one is
         // now a twin.
@@ -2982,11 +2999,11 @@ mod tests {
         let set = set_of(&wait);
         assert_eq!((set.at, set.reason), (None, None));
         assert_eq!(set.members.len(), 3);
-        assert_eq!(set.cell(), "2× unknown, slot 0x6010 in x::Holder");
-        assert_eq!(set.group_label(), "slot in x::Holder, unknown");
+        assert_eq!(set.cell(), "2x unknown, x::Holder");
+        assert_eq!(set.group_label(), "unknown, x::Holder");
         let mut one = stopped(Vec::new());
         fold(&task, &mut one, &[nowhere(0x7000)]);
-        assert_eq!(set_of(&one).cell(), "unknown @ 0x7000");
+        assert_eq!(set_of(&one).cell(), "unknown");
     }
 }
 

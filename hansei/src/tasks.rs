@@ -15,7 +15,7 @@ use hansei_runtime::tokio::assess::{
     WaitAssessment, WaitUnknownReason,
 };
 use hansei_runtime::tokio::graph as rt_graph;
-use hansei_runtime::tokio::waitset::{MemberRoute, WaitMember};
+use hansei_runtime::tokio::waitset::{self, MemberRoute, WaitMember};
 use hansei_runtime::tokio::{Lifecycle, RawInstant, attribution, bundle, census};
 
 use std::collections::{BTreeMap, HashMap};
@@ -627,11 +627,11 @@ pub(crate) struct TaskRow {
     /// The leaf await site — the line of the reader's own code the
     /// task is parked behind.
     pub(crate) awaiting_at: Option<String>,
-    /// What would wake the task: every live slot holding its waker,
-    /// each spelled by what holds it and — where the task's own
-    /// assessment accounts for the slot — by that reader's detail,
-    /// sorted and comma-joined, so a `select!` over a timer and a
-    /// channel names both. `unarmed: ` before the assessment's own
+    /// What would wake the task: the kind of every live slot holding
+    /// its waker, sorted, repeats counted and comma-joined, so a
+    /// `select!` over a timer and two channels reads `2x mpsc rx,
+    /// timer`; which resource, and what its reader read, are the
+    /// detail lines' to print. `unarmed: ` before the assessment's own
     /// word where no slot was found; `—` and its reasons for a task
     /// waiting on nothing at all. Built short of the slots first
     /// ([`base_rows`]) and merged once the sweep is in
@@ -836,33 +836,20 @@ fn cell_in_detail(
     }
 }
 
-/// The cell and the bucket a list of slots spells: entries sorted and
-/// comma-joined, `unknown` entries past the first collapsed to their
-/// count, buckets sorted, distinct and comma-joined.
+/// The cell and the bucket a list of slots amounts to: entries sorted,
+/// repeats counted ([`waitset::counted`]) and comma-joined; buckets
+/// sorted, distinct and comma-joined.
 pub(crate) fn slot_cell(
     slots: &[&attribution::AttributedSlot],
     stopped: Option<RawInstant>,
     accounted: &dyn Fn(&attribution::AttributedSlot) -> Option<(String, String)>,
 ) -> (String, String) {
-    let mut entries: Vec<(String, String)> = Vec::new();
-    let mut unknown = 0usize;
-    for slot in slots {
-        if matches!(slot.attribution, attribution::Attribution::Unknown) {
-            unknown += 1;
-            if unknown > 1 {
-                continue;
-            }
-        }
-        entries.push(accounted(slot).unwrap_or_else(|| (slot.entry(stopped), slot.bucket())));
-    }
-    if unknown > 1 {
-        for entry in &mut entries {
-            if entry.1 == "unknown" {
-                entry.0 = format!("{unknown}× unknown");
-            }
-        }
-    }
-    entries.sort();
+    let entries = waitset::counted(
+        slots
+            .iter()
+            .map(|slot| accounted(slot).unwrap_or_else(|| (slot.entry(stopped), slot.bucket())))
+            .collect(),
+    );
     let mut kinds: Vec<&str> = entries.iter().map(|(_, k)| k.as_str()).collect();
     kinds.sort_unstable();
     kinds.dedup();
@@ -990,15 +977,18 @@ fn waiting_on(
     }
 }
 
-/// The one-word (or one-target) spelling of an assessment: the
-/// `WAITING ON` cell every listing shares, so a task, a future and a
-/// tally agree on what a wait is called. A wait set lists its armed
-/// members, sorted and comma-joined, so a set of one reads as the wait
-/// it is. An unknown says what made it one ([`unknown_cell`]), and one
-/// whose stop holds futures none of which is armed counts them.
+/// The one-word (or one-target) form of an assessment: the
+/// `WAITING ON` cell every listing shares, so a task, a graph line and
+/// a tally agree on what a wait is called. A verified wait is its
+/// target's kind word, with the address and what the reader read
+/// about it left to the detail lines. A wait set lists its armed
+/// members' kinds, sorted, repeats counted and comma-joined, so a set
+/// of one reads as the wait it is. An unknown says what made it one
+/// ([`unknown_cell`]), and one whose stop holds futures none of which
+/// is armed counts them.
 pub(crate) fn assessment_cell(wait: &rt_graph::TaskWait, stops: &StopNames<'_>) -> String {
     match &wait.assessment {
-        WaitAssessment::Waiting(verified) => verified.target().to_string(),
+        WaitAssessment::Waiting(verified) => verified.target().cell(),
         WaitAssessment::Set(set) => set.cell(),
         WaitAssessment::ResourceReady(_) => "ready".to_string(),
         WaitAssessment::Unknown(_) => match wait.held_count() {
@@ -1422,11 +1412,12 @@ fn location_lines<'a>(
 /// A registry slot in no branch, as the analysis placed it, for a
 /// session with no sweep to spell it as a slot.
 fn slot_only_line(member: &WaitMember, within: Option<&str>) -> String {
-    let name = member.cell_entry().unwrap_or_else(|| "a slot".to_string());
-    let evidence = member
-        .armed
-        .as_ref()
-        .and_then(hansei_runtime::tokio::waitset::SlotRef::detail)
+    let slot = member.armed.as_ref();
+    let name = slot
+        .and_then(waitset::SlotRef::label)
+        .unwrap_or_else(|| "a slot".to_string());
+    let evidence = slot
+        .and_then(waitset::SlotRef::detail)
         .map(|evidence| format!(": {evidence}"))
         .unwrap_or_default();
     let within = within.map(|w| format!(", {w}")).unwrap_or_default();
@@ -3410,10 +3401,7 @@ mod table_tests {
             vec![set, held],
             HashMap::new(),
         );
-        assert_eq!(
-            rows[0].waiting_on,
-            "io 0x7000 (readable), timer (deadline +10.000s)"
-        );
+        assert_eq!(rows[0].waiting_on, "io, timer");
         assert_eq!(rows[0].waiting_kind.as_deref(), Some("io, timer"));
         assert_eq!(
             rows[0].wait_detail,
@@ -3531,7 +3519,7 @@ mod table_tests {
             vec![set, held, all_disabled],
             HashMap::new(),
         );
-        assert_eq!(rows[0].waiting_on, "timer (deadline +10.000s)");
+        assert_eq!(rows[0].waiting_on, "timer");
         // Every branch sits under one `select!:` heading, the
         // disabled ones included: the word says what they are
         // branches of.
@@ -3600,11 +3588,7 @@ mod table_tests {
         );
 
         assert_eq!(rows[0].awaiting_at.as_deref(), Some("src/app.rs:42"));
-        assert!(
-            rows[0].waiting_on.starts_with("timer (deadline 12.000s"),
-            "{}",
-            rows[0].waiting_on
-        );
+        assert_eq!(rows[0].waiting_on, "timer");
         assert_eq!(rows[0].waiting_kind.as_deref(), Some("timer"));
         assert_eq!(rows[0].state, "idle");
 
@@ -3825,7 +3809,7 @@ mod table_tests {
         let rows = folded_rows(&list, &mut waits, &slots);
         assert_eq!(
             rows[0].waiting_on,
-            "2× unknown, io 0xaa00 read, join task 2, semaphore 0x9000, timer 0xdd00"
+            "io, join task 2, semaphore, timer, 2x unknown"
         );
         assert_eq!(
             rows[0].waiting_kind.as_deref(),
@@ -3868,9 +3852,9 @@ mod table_tests {
         // Mid-poll: not parked, so nothing to mark.
         assert_eq!(rows[2].waiting_on, "— (mid-poll)");
         assert_eq!(rows[2].waiting_kind, None);
-        // One unknown slot is named by its address; only several
-        // collapse to a count.
-        assert_eq!(rows[3].waiting_on, "unknown @ 0x7100");
+        // One unknown slot is `unknown`; several are counted, and the
+        // address is the waker block's to print.
+        assert_eq!(rows[3].waiting_on, "unknown");
         assert_eq!(rows[3].waiting_kind.as_deref(), Some("unknown"));
         assert_eq!(
             rows[3].wait_detail,

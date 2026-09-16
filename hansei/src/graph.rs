@@ -561,8 +561,8 @@ mod graph_tests {
             "\
 TASK                                    STATE  WAITING ON
 12                                      idle   task 40
-└─ 40                                   idle   a tokio::sync::Mutex (semaphore 0x9000): 1 permit requested, 0 available
-   └─ 51 [holds permits awaited above]  idle   timer (deadline +10.000s)
+└─ 40                                   idle   semaphore
+   └─ 51 [holds permits awaited above]  idle   timer
 "
         );
     }
@@ -606,9 +606,9 @@ TASK           STATE  WAITING ON
             page,
             "\
 TASK                                         STATE  WAITING ON
-40                                           idle   a tokio::sync::Mutex (semaphore 0x9000): 1 permit requested, 0 available
-└─ 51 [holds permits awaited above]          idle   timer (deadline +10.000s)
-41                                           idle   a tokio::sync::Mutex (semaphore 0x9000): 1 permit requested, 0 available
+40                                           idle   semaphore
+└─ 51 [holds permits awaited above]          idle   timer
+41                                           idle   semaphore
 └─ 51 [holds permits awaited above] (above)  idle   
 "
         );
@@ -674,7 +674,7 @@ TASK                                    STATE  WAITING ON
             page,
             "\
 TASK                                         STATE  WAITING ON
-40                                           idle   a tokio::sync::Mutex (semaphore 0x9000): 1 permit requested, 0 available
+40                                           idle   semaphore
 └─ 40 [holds permits awaited above] (above)  idle   
 "
         );
@@ -749,7 +749,7 @@ TASK                         STATE  WAITING ON
             "\
 TASK                          STATE  WAITING ON
 7                             idle   unknown (no root in the tokio info)
-└─ 8 [its handle held above]  idle   timer (deadline +10.000s)
+└─ 8 [its handle held above]  idle   timer
 "
         );
     }
@@ -775,7 +775,7 @@ TASK                          STATE  WAITING ON
             "\
 TASK                          STATE  WAITING ON
 7                             idle   unknown (no root in the tokio info)
-└─ 8 [its handle held above]  idle   timer (deadline +10.000s)
+└─ 8 [its handle held above]  idle   timer
 "
         );
     }

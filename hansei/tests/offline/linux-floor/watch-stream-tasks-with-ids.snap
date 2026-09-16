@@ -2,7 +2,7 @@
 source: hansei/src/offline.rs
 description: "`tasks --with id 3,6` over linux-floor/watch-stream"
 ---
-ID  STATE  FUT  AWAITING AT                  WAITING ON                                                                       TYPE
-3   idle     3  src/bin/watch-stream.rs:43   oneshot rx 0xADDR (nothing sent, sender alive), watch rx 0xADDR  async fn watch_stream::resolver
-6   idle     0  src/bin/watch-stream.rs:108  watch rx 0xADDR                                                          async fn watch_stream::direct
+ID  STATE  FUT  AWAITING AT                  WAITING ON            TYPE
+3   idle     3  src/bin/watch-stream.rs:43   oneshot rx, watch rx  async fn watch_stream::resolver
+6   idle     0  src/bin/watch-stream.rs:108  watch rx              async fn watch_stream::direct
 [2 tasks]

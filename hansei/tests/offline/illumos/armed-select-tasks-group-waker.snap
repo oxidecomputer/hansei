@@ -2,12 +2,12 @@
 source: hansei/src/offline.rs
 description: "`tasks --group waker` over illumos/armed-select"
 ---
-COUNT  WAITING ON                                                         TASKS
-    1  mpsc rx, oneshot rx, timer, watch rx                               3
-    1  notify rx                                                          5
-    1  oneshot rx                                                         4
-    1  oneshot rx, timer                                                  7
-    1  slot in futures_core::task::__internal::atomic_waker::AtomicWaker  6
-    1  timer                                                              8
-    1  unarmed: never ready                                               9
+COUNT  WAITING ON                                                 TASKS
+    1  futures_core::task::__internal::atomic_waker::AtomicWaker  6
+    1  mpsc rx, oneshot rx, timer, watch rx                       3
+    1  notify rx                                                  5
+    1  oneshot rx                                                 4
+    1  oneshot rx, timer                                          7
+    1  timer                                                      8
+    1  unarmed: never ready                                       9
 [7 groups]
