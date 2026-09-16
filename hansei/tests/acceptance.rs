@@ -4096,8 +4096,7 @@ fn test_armed_select_acceptance() {
         // The unpolled `Notified` describes its `Notify` by the state
         // word alone: the list is walked only for a verified wait. The
         // cell names the kind; the reading is the block's.
-        let notified =
-            regex::Regex::new(r"(?m)^(0x[0-9a-f]+) +\d+ +frame 1, `notified` ").unwrap();
+        let notified = regex::Regex::new(r"(?m)^(0x[0-9a-f]+) +\d+ +frame 1, `notified` ").unwrap();
         let block = hansei_ok(
             &bundle,
             core,
@@ -4123,7 +4122,10 @@ fn test_armed_select_acceptance() {
             &format!("future {}", &once.captures(&armed).unwrap()[1]),
         );
         assert!(block.contains("\n    armed: yes\n"), "{block}");
-        assert!(block.contains("\n        oneshot rx 0x"), "{block}");
+        assert!(
+            block.contains("\n        waker 0:\n            blocked on: oneshot rx 0x"),
+            "{block}"
+        );
         assert!(block.contains(" (nothing sent, sender alive)\n"), "{block}");
 
         // The channels as resources: one block per oneshot a slot

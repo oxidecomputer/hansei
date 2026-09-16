@@ -98,8 +98,9 @@ pub(crate) struct FutureRow {
     /// waker in the resource. `no` is a future held and awaited by
     /// nothing found.
     pub(crate) armed: bool,
-    /// One detail line per slot, for the block: where it sits and
-    /// what says it is current.
+    /// One `waker N:` block per slot, for the block, in the task
+    /// block's grammar ([`tasks::waker_blocks`]): what it is blocked
+    /// on, where the waker is held, and where that sits.
     pub(crate) slot_lines: Vec<String>,
     /// The concrete future type, folded and never truncated.
     pub(crate) future: String,
@@ -216,16 +217,17 @@ pub(crate) fn with_slots(
             return;
         }
         // The find's own reader accounts for the slot of its kind:
-        // that slot takes the reader's cell.
+        // that slot takes the reader's cell, and its block is headed
+        // by what the reader read.
         let reader = wait.and_then(|_| Some((row.waiting_on.clone()?, row.waiting_kind.clone()?)));
-        let accounted = |slot: &attribution::AttributedSlot| {
-            let kind = wait?;
-            kind_matches(kind, slot).then(|| reader.clone()).flatten()
-        };
+        let accounts = |slot: &attribution::AttributedSlot| kind_matches(wait?, slot).then_some(());
+        let accounted = |slot: &attribution::AttributedSlot| accounts(slot).and(reader.clone());
         let (cell, kind) = tasks::slot_cell(&owned, &accounted);
+        let described = row.described.clone();
+        let read = |slot: &attribution::AttributedSlot| accounts(slot).and(described.clone());
         row.waiting_on = Some(cell);
         row.waiting_kind = Some(kind);
-        row.slot_lines = tasks::slot_lines(&owned, stopped);
+        row.slot_lines = tasks::waker_blocks(&owned, &read, stopped);
     });
     rows
 }
@@ -689,8 +691,8 @@ impl Blocks<'_> {
         writeln!(out, "    depth: {}", summary::counted(row.depth, "frame"))?;
         // The wait, one line per slot under it, and whether anything
         // arms the future at all — `no` is an answer, so it prints.
-        // Where the slots are listed they carry the wait whole, each
-        // line naming its resource and what its reader read, so the
+        // Where the wakers are listed they carry the wait whole, each
+        // block naming its resource and what its reader read, so the
         // label stands bare over them; where none is, the line carries
         // what the future's own reader read, which the cell leaves to
         // the block, else the cell.
@@ -1688,12 +1690,18 @@ mod tests {
         );
         // What the reader read is the block's, not the cell's.
         assert_eq!(row(0x5000).described.as_deref(), Some("a timer"));
+        // One block per waker, in the task block's grammar: the
+        // reader's words head the slot of its kind, the typed slot is
+        // named by where it sits.
         assert_eq!(
             row(0x5000).slot_lines,
             [
-                "slot 0x5020 in x::Holder",
+                "waker 0:",
+                "    blocked on: a timer",
+                "    held in: timer @ 0x5010",
+                "waker 1:",
+                "    held in: x::Holder @ 0x5020",
                 "    location: future 0x5000 w",
-                "timer 0x5010"
             ]
         );
         assert!(row(0x6000).armed);
@@ -1738,7 +1746,14 @@ mod tests {
         // reader wrote; the reader's words are the block's.
         assert_eq!(joiner.waiting_on.as_deref(), Some("task 12"));
         assert_eq!(joiner.described.as_deref(), Some("task 28"));
-        assert_eq!(joiner.slot_lines, ["join task 28: its trailer"]);
+        assert_eq!(
+            joiner.slot_lines,
+            [
+                "waker 0:",
+                "    blocked on: task 28",
+                "    held in: its trailer"
+            ]
+        );
     }
 
     /// A find whose chain ends in no described resource says what cut

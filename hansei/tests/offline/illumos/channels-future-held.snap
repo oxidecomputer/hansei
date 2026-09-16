@@ -1,6 +1,6 @@
 ---
 source: hansei/src/offline.rs
-description: "`future 0x16ebdd0` over illumos/channels"
+description: "`future 0x12c5dd0` over illumos/channels"
 ---
 future 0xADDR
     type: async fn tokio::sync::mpsc::bounded::Sender::send<u32>
@@ -8,7 +8,8 @@ future 0xADDR
     state: Suspend0 — tokio-1.52.4/src/sync/mpsc/bounded.rs:817
     depth: 4 frames
     waiting on:
-        slot 0xADDR in tokio::sync::batch_semaphore::Waiter
+        waker 0:
+            held in: tokio::sync::batch_semaphore::Waiter @ 0xADDR
             location: future 0xADDR node.waker.Some
     armed: yes
     held futures: 0

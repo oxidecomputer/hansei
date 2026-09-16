@@ -861,23 +861,68 @@ pub(crate) fn slot_cell(
     (cell, kind)
 }
 
-/// One detail line per slot, sorted: what it is and what says it is
-/// current, a wheel entry by its deadline, with the `location:` line
-/// of a slot a path names under it.
-pub(crate) fn slot_lines(
+/// One `waker N:` block per slot, in the grammar a branch's lines
+/// use: what the wait is on where something names it, the slot itself
+/// where that line did not name the place, and where it sits. `on` is
+/// the reading the owner's own reader gave for a slot it accounts
+/// for — the verified target with its words, a find's description —
+/// which heads the block in place of what the slot's entry names. The
+/// blocks are numbered after sorting, so the same slots number them
+/// the same way twice.
+pub(crate) fn waker_blocks(
     slots: &[&attribution::AttributedSlot],
+    on: &dyn Fn(&attribution::AttributedSlot) -> Option<String>,
     stopped: Option<RawInstant>,
 ) -> Vec<String> {
     let mut blocks: Vec<Vec<String>> = slots
         .iter()
-        .map(|slot| {
-            let mut block = vec![slot.line(stopped)];
-            block.extend(location_lines([*slot]));
-            block
-        })
+        .map(|slot| waker_block(slot, on(slot), stopped))
         .collect();
     blocks.sort();
-    blocks.into_iter().flatten().collect()
+    let mut lines = Vec::new();
+    for (i, block) in blocks.into_iter().enumerate() {
+        lines.push(format!("waker {i}:"));
+        lines.extend(block);
+    }
+    lines
+}
+
+/// One waker's lines, indented one step for the `waker N:` heading
+/// over them. No `armed` field: a slot is listed because it holds the
+/// waker, so the answer would be `yes` on every one of them. A
+/// branch's says something, because a branch can be held and unarmed.
+fn waker_block(
+    slot: &attribution::AttributedSlot,
+    on: Option<String>,
+    stopped: Option<RawInstant>,
+) -> Vec<String> {
+    let mut block = Vec::new();
+    let mut field = |label: &str, value: String| block.push(format!("    {label}: {value}"));
+    // What the wait is on: the reader's account where it has one —
+    // with its reading, since this line carries the primitive and
+    // nothing else — else what the slot's own entry names.
+    let on = on.or_else(|| slot.waits_on(stopped));
+    if let Some(on) = &on {
+        field("blocked on", on.clone());
+    }
+    // The slot itself, where the line above named the resource rather
+    // than the place: the wheel entry holding the waker, the waiter
+    // node, or — for a slot no table names — the type it sits in.
+    let held_in = match (slot.wheel_entry(), slot.detail(stopped)) {
+        (Some(entry), _) => Some(entry),
+        (None, Some(detail)) => Some(detail),
+        (None, None) => slot.waits_on(stopped).is_none().then(|| slot.place()),
+    };
+    // A wheel entry with no deadline to give is named twice — by its
+    // address above and as the place `@` it here; once is enough.
+    let named_above = |held_in: &String| Some(held_in.replacen(" @ ", " ", 1)) == on;
+    if let Some(held_in) = held_in.filter(|held_in| !named_above(held_in)) {
+        field("held in", held_in);
+    }
+    if let Some(at) = slot.location() {
+        field("location", at);
+    }
+    block
 }
 
 /// Which lwp runs each claimed blocking task: unwind the stacks once
@@ -1324,61 +1369,18 @@ pub(crate) fn wait_detail(
         WaitAssessment::Waiting(verified) => Some(verified),
         _ => None,
     };
-    let mut slot_blocks: Vec<Vec<String>> = rest
-        .iter()
-        .map(|slot| {
-            let accounts = verified.filter(|v| attribution::verified_accounts(v, slot, size_of));
-            let mut block = Vec::new();
-            let mut field =
-                |label: &str, value: String| block.push(format!("    {label}: {value}"));
-            // No `armed` field: a slot is listed here because it
-            // holds this task's waker, so the answer would be `yes`
-            // on every one of them. A branch's says something,
-            // because a branch can be held and unarmed.
-            // What the wait is on: the verified target where it
-            // accounts for this slot — with its reading, since this
-            // line carries the primitive and nothing else — else what
-            // the slot's own entry names.
-            let on = match accounts {
-                Some(verified) => {
-                    let target = verified.target();
-                    Some(match target.words() {
-                        Some(words) => format!("{target} ({words})"),
-                        None => target.to_string(),
-                    })
-                }
-                None => slot.waits_on(stopped),
-            };
-            if let Some(on) = &on {
-                field("blocked on", on.clone());
-            }
-            // The slot itself, where the line above named the
-            // resource rather than the place: the wheel entry holding
-            // the waker, the waiter node, or — for a slot no table
-            // names — the type it sits in.
-            let held_in = match (slot.wheel_entry(), slot.detail(stopped)) {
-                (Some(entry), _) => Some(entry),
-                (None, Some(detail)) => Some(detail),
-                (None, None) => slot.waits_on(stopped).is_none().then(|| slot.place()),
-            };
-            // A wheel entry with no deadline to give is named twice —
-            // by its address above and as the place `@` it here; once
-            // is enough.
-            let named_above = |held_in: &String| Some(held_in.replacen(" @ ", " ", 1)) == on;
-            if let Some(held_in) = held_in.filter(|held_in| !named_above(held_in)) {
-                field("held in", held_in);
-            }
-            if let Some(at) = slot.location() {
-                field("location", at);
-            }
-            block
+    // The verified target accounts for the slot it was read from, and
+    // heads that slot's block with its reading.
+    let accounted = |slot: &attribution::AttributedSlot| {
+        let target = verified
+            .filter(|v| attribution::verified_accounts(v, slot, size_of))?
+            .target();
+        Some(match target.words() {
+            Some(words) => format!("{target} ({words})"),
+            None => target.to_string(),
         })
-        .collect();
-    slot_blocks.sort();
-    for (i, block) in slot_blocks.into_iter().enumerate() {
-        lines.push(format!("waker {i}:"));
-        lines.extend(block);
-    }
+    };
+    lines.extend(waker_blocks(&rest, &accounted, stopped));
     lines
 }
 
@@ -1391,21 +1393,6 @@ fn in_select_branch(route: &MemberRoute) -> bool {
         MemberRoute::Entry { under, .. } => under.as_deref().is_some_and(in_select_branch),
         MemberRoute::Branch { .. } | MemberRoute::SlotOnly { .. } => false,
     }
-}
-
-/// The `location:` line each slot that has one contributes, indented
-/// one step under the line it belongs to: where the slot sits, as a
-/// path `print` follows from the root the selector names.
-fn location_lines<'a>(
-    slots: impl IntoIterator<Item = &'a attribution::AttributedSlot>,
-) -> Vec<String> {
-    let mut lines: Vec<String> = slots
-        .into_iter()
-        .filter_map(|slot| slot.location())
-        .map(|at| format!("    location: {at}"))
-        .collect();
-    lines.sort();
-    lines
 }
 
 /// A registry slot in no branch, as the analysis placed it, for a

@@ -1,13 +1,14 @@
 ---
 source: hansei/src/offline.rs
-description: "`future 0x5595bde69e90` over linux-floor/armed-select"
+description: "`future 0x555eef3bde90` over linux-floor/armed-select"
 ---
 future 0xADDR
     type: future tokio::sync::oneshot::Receiver<u32>
     held by: task 3 (frame 1, `once`)
     depth: 1 frame
     waiting on:
-        oneshot rx 0xADDR (nothing sent, sender alive)
+        waker 0:
+            blocked on: oneshot rx 0xADDR (nothing sent, sender alive)
             location: future 0xADDR inner.Some.data.rx_task (rx_task_set)
     armed: yes
     held futures: 0
