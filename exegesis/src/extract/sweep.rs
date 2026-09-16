@@ -35,6 +35,10 @@ const VTABLE_FNS: [&str; 6] = [
 /// Demangled suffix of `<T as core::future::Future>::poll` impls.
 const FUTURE_POLL_SUFFIX: &str = " as core::future::future::Future>::poll";
 
+/// Demangled suffix of `<T as futures_core::Stream>::poll_next` impls.
+/// tokio-stream re-exports the trait, so its wrappers mangle the same.
+const STREAM_POLL_NEXT_SUFFIX: &str = " as futures_core::stream::Stream>::poll_next";
+
 /// Below this many subprograms, sweeping them by hand beats spawning threads.
 const SWEEP_PARALLEL_THRESHOLD: usize = 4096;
 
@@ -54,6 +58,12 @@ pub(super) struct Sweep {
     /// carries one. A third-party rule reads its origin — which crate,
     /// which version — off this path.
     pub(super) poll_sources: BTreeMap<TypeId, BTreeSet<PollSource>>,
+    /// Where each explicit `Future::poll` or `Stream::poll_next` is
+    /// *written*: the `Future` ones are the DIEs `poll_sources` screens,
+    /// kept with their line; the `Stream` ones are screened here alone.
+    /// Separate from `PollSource` because that type's identity decides
+    /// how the origin rules dedupe.
+    pub(super) poll_decls: BTreeMap<TypeId, Vec<(PollTrait, OwnedLoc)>>,
     /// Resume shapes requiring a reviewed compiler convention before they
     /// establish future identity or initialized storage.
     pub(super) coroutine_candidates: BTreeSet<TypeId>,
@@ -83,6 +93,14 @@ pub(super) struct Sweep {
 pub(super) struct PollSource {
     pub(super) path: String,
     pub(super) md5: Option<[u8; 16]>,
+}
+
+/// Which trait method a poll declaration is. A `StreamMap`'s entries
+/// are `Stream`s, and their line is `poll_next`'s.
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
+pub(super) enum PollTrait {
+    Future,
+    Stream,
 }
 
 /// The declaration file of `func`, joined the way the line table meant
@@ -143,6 +161,9 @@ impl Sweep {
         }
         for (t, sources) in other.poll_sources {
             self.poll_sources.entry(t).or_default().extend(sources);
+        }
+        for (t, decls) in other.poll_decls {
+            self.poll_decls.entry(t).or_default().extend(decls);
         }
         self.coroutine_candidates.extend(other.coroutine_candidates);
         for (t, syms) in other.drop_glues {
@@ -341,6 +362,20 @@ fn sweep_function(
             return;
         }
         let demangled = format!("{:#}", rustc_demangle::demangle(linkage));
+        // A stream's `poll_next` is recorded for where it is written and
+        // nothing else: the dyn-future tables and the origin rules are
+        // about futures, and must not learn a trait as a side effect.
+        if demangled.ends_with(STREAM_POLL_NEXT_SUFFIX) {
+            if let Ok(t) = future_poll_self_type(reader, func)
+                && let Some(loc) = func.source_loc()
+            {
+                out.poll_decls
+                    .entry(t)
+                    .or_default()
+                    .push((PollTrait::Stream, owned_loc(&loc)));
+            }
+            return;
+        }
         if !demangled.ends_with(FUTURE_POLL_SUFFIX) {
             return;
         }
@@ -352,6 +387,12 @@ fn sweep_function(
                     .insert(strip(linkage).to_owned());
                 if let Some(source) = poll_source(reader, func) {
                     out.poll_sources.entry(t).or_default().insert(source);
+                }
+                if let Some(loc) = func.source_loc() {
+                    out.poll_decls
+                        .entry(t)
+                        .or_default()
+                        .push((PollTrait::Future, owned_loc(&loc)));
                 }
                 out.fut_polls
                     .entry(t)

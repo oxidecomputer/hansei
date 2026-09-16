@@ -29,6 +29,8 @@ env: simple_await::main::{async_block_env#0} @ simple-await.rs:76
 env: simple_await::ready_value::{async_fn_env#0} @ simple-await.rs:17
 env: simple_await::work::{async_fn_env#0} @ simple-await.rs:21
 
+[poll-decls]
+
 [infra]
 header: ok
 vtable: ok

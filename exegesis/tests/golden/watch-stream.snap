@@ -69,6 +69,8 @@ env: watch_stream::mapper::{async_fn_env#0} @ watch-stream.rs:57
 env: watch_stream::resolver::{async_fn#0}::{closure_env#0} @ select.rs:659
 env: watch_stream::resolver::{async_fn_env#0} @ watch-stream.rs:30
 
+[poll-decls]
+
 [infra]
 header: ok
 vtable: ok

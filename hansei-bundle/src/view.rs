@@ -444,6 +444,19 @@ impl<'a> BundleType<'a> {
             })
     }
 
+    /// Where this type's poll method is written — its
+    /// `<T as Future>::poll`, or `<T as Stream>::poll_next` for a type
+    /// that is only a stream — when the bundle recorded it: the line a
+    /// trace frame or a wait-set member of this type prints as
+    /// `defined at`. A direct lookup on the type's own id, unlike
+    /// [`construction_site`](Self::construction_site). `None` for a
+    /// coroutine, which has no such impl, and for a type whose
+    /// declarations disagreed.
+    pub fn implementation_site(&self) -> Option<(&'a str, u32)> {
+        let loc = self.bundle.types.poll_decls.get(&self.id)?;
+        Some((self.str(loc.file), loc.line))
+    }
+
     /// Where a value of this type was built, when a member is a closure
     /// or coroutine environment whose declaration the bundle recorded:
     /// an environment is constructed where it is written, so its decl

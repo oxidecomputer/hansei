@@ -36,9 +36,12 @@ mod vtables;
 pub(crate) use emitter::Emitter;
 pub use sources::DebugFlavor;
 
-use self::paths::{OwnedLoc, display_path, rustc_below_floor, rustc_version_of, tokio_version_of};
+use self::paths::{
+    Agreement, OwnedLoc, agreed_site, display_path, rustc_below_floor, rustc_version_of,
+    tokio_version_of,
+};
 use self::statics::find_statics;
-use self::sweep::{Sweep, cell_from_dealloc_param, find_stage, sweep_functions};
+use self::sweep::{PollTrait, Sweep, cell_from_dealloc_param, find_stage, sweep_functions};
 use self::vtables::{
     VtableImage, VtableTypeHint, discover_vtable_types, resolve_vtable_type_hints,
 };
@@ -54,7 +57,7 @@ use crate::view::{DwView, Func, SourceLocView};
 use crate::{DwReader, TypeId};
 
 use object::{Object, ObjectSymbol};
-use tracing::warn;
+use tracing::{debug, warn};
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -136,6 +139,14 @@ pub struct ExtractStats {
     /// name rather than a template-parameter DIE reference (release
     /// builds omit the parameter on out-of-line glue definitions).
     pub dyn_glue_by_name: usize,
+    /// Emitted types whose `Future::poll` or `Stream::poll_next`
+    /// declaration the bundle records the line of.
+    pub poll_decls: usize,
+    /// Emitted types whose declarations of one poll method disagreed on
+    /// where it is written, so no line was recorded for that method.
+    /// A toolchain that starts spelling one `poll` two ways shows up
+    /// here rather than as silence.
+    pub poll_decls_declined: usize,
     /// Infra types that were not found.
     pub infra_missing: Vec<String>,
     /// Statics that were not found.
@@ -221,6 +232,8 @@ impl fmt::Display for ExtractStats {
         writeln!(f, "  glue matched by name:   {}", self.dyn_glue_by_name)?;
         writeln!(f, "  unresolved self params: {}", self.dyn_unresolved_self)?;
         writeln!(f, "  decl-only self params:  {}", self.dyn_decl_only_self)?;
+        writeln!(f, "  poll decls:             {}", self.poll_decls)?;
+        writeln!(f, "  poll decls declined:    {}", self.poll_decls_declined)?;
         writeln!(f, "types:")?;
         writeln!(f, "  emitted:                {}", self.types_emitted)?;
         writeln!(f, "  opaque:                 {}", self.opaque_types)?;
@@ -875,6 +888,7 @@ fn extract_from_view(
         fut_polls,
         explicit_polls,
         poll_sources,
+        poll_decls,
         coroutine_candidates,
         drop_glues,
         glue_by_name,
@@ -1279,6 +1293,33 @@ fn extract_from_view(
         }
     }
 
+    // Where each emitted hand-written future's or stream's poll method
+    // is written — the `defined at` of a trace frame or a wait-set
+    // member of that type. Per trait, agree-or-nothing: a generic
+    // `poll` instantiated in several units spells its file several
+    // ways and agrees under the display path; two different `poll`s
+    // for one self type would not, and a wrong line is worse than
+    // none. A type that is both a future and a stream records the
+    // future's line, since a chain is where its line prints most.
+    // Bundle-id order again, for the same string-table reason.
+    let mut poll_types: Vec<(TypeId, crate::bundle::BundleTypeId)> = poll_decls
+        .keys()
+        .filter_map(|&tid| Some((tid, em.bundle_id_of(tid)?)))
+        .collect();
+    poll_types.sort_by_key(|&(_, bid)| bid);
+    for (tid, bid) in poll_types {
+        let name = reader
+            .canonical_type(tid)
+            .and_then(|t| t.name())
+            .map(|n| reader.strings.get(n))
+            .unwrap_or("<anon>");
+        if let Some(site) = poll_site(name, &poll_decls[&tid], &mut stats)
+            && let Some(loc) = site.bundle_loc(&mut em.interner)
+        {
+            em.record_poll_decl(bid, loc);
+        }
+    }
+
     // Which reviewed compiler convention, if any, a candidate's defining
     // units agree on — the coroutine convention for a coroutine, the
     // adapter or vtable one for a std pointer. Decided here, where the
@@ -1525,6 +1566,33 @@ fn env_decl_func<'a>(reader: &DwReader<'a>, view: &DwView<'a>, env: TypeId) -> O
     located(view.find_func_in(ns, &body))
 }
 
+/// The site the type `name`'s poll declarations settle on, counted
+/// into `stats`: per trait, agree-or-nothing, and the `Future` line
+/// where a type has both, since a chain is where its line prints
+/// most. A trait whose declarations disagree records nothing for that
+/// trait and is counted; the other trait may still answer.
+fn poll_site<'a>(
+    name: &str,
+    decls: &'a [(PollTrait, OwnedLoc)],
+    stats: &mut ExtractStats,
+) -> Option<&'a OwnedLoc> {
+    for kind in [PollTrait::Future, PollTrait::Stream] {
+        let of_kind = decls.iter().filter(|(k, _)| *k == kind).map(|(_, loc)| loc);
+        match agreed_site(of_kind) {
+            Agreement::Site(site) => {
+                stats.poll_decls += 1;
+                return Some(site);
+            }
+            Agreement::Unplaced => {}
+            Agreement::Disagreed => {
+                stats.poll_decls_declined += 1;
+                debug!("{kind:?} poll declarations of {name} disagree; recording none");
+            }
+        }
+    }
+    None
+}
+
 /// A subprogram's coordinates as the bundle records them.
 fn intern_loc(em: &mut Emitter<'_>, loc: &SourceLocView<'_>) -> Option<SourceLoc> {
     let (file, line) = (loc.file()?, loc.line()?);
@@ -1606,6 +1674,90 @@ mod tests {
 
     fn func_id(offset: usize) -> FuncId {
         FuncId(UnitSectionOffset(offset))
+    }
+
+    /// A poll declaration in a registry crate, at `line`.
+    fn decl(kind: PollTrait, line: u64) -> (PollTrait, OwnedLoc) {
+        (
+            kind,
+            OwnedLoc {
+                file: Some("http1.rs".to_owned()),
+                dir: Some("src/client/conn".to_owned()),
+                comp_dir: Some(
+                    "/home/wfc/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/hyper-1.10.1"
+                        .to_owned(),
+                ),
+                line: Some(line),
+            },
+        )
+    }
+
+    /// Per trait, agree-or-nothing, and the future's line where a type
+    /// has both: a disagreement in one trait is counted and leaves the
+    /// other to answer.
+    #[test]
+    fn test_poll_site_prefers_the_future_and_counts_declines() {
+        use PollTrait::{Future, Stream};
+        let line = |site: Option<&OwnedLoc>| site.and_then(|s| s.line);
+
+        let mut stats = ExtractStats::default();
+        assert_eq!(
+            line(poll_site("app::Manual", &[decl(Future, 40)], &mut stats)),
+            Some(40)
+        );
+        assert_eq!(
+            line(poll_site("app::Manual", &[decl(Stream, 104)], &mut stats)),
+            Some(104)
+        );
+        assert_eq!(
+            line(poll_site(
+                "app::Manual",
+                &[decl(Stream, 104), decl(Future, 40), decl(Future, 40)],
+                &mut stats
+            )),
+            Some(40),
+            "a type that is both records the future's line"
+        );
+        assert_eq!((stats.poll_decls, stats.poll_decls_declined), (3, 0));
+
+        assert_eq!(
+            line(poll_site(
+                "app::Manual",
+                &[decl(Future, 40), decl(Future, 64), decl(Stream, 104)],
+                &mut stats
+            )),
+            Some(104),
+            "a disagreeing future leaves the stream to answer"
+        );
+        assert_eq!((stats.poll_decls, stats.poll_decls_declined), (4, 1));
+
+        assert_eq!(
+            line(poll_site(
+                "app::Manual",
+                &[
+                    decl(Future, 40),
+                    decl(Future, 64),
+                    decl(Stream, 104),
+                    decl(Stream, 105)
+                ],
+                &mut stats
+            )),
+            None
+        );
+        assert_eq!((stats.poll_decls, stats.poll_decls_declined), (4, 3));
+
+        let mut unplaced = decl(Future, 40);
+        unplaced.1.line = None;
+        assert_eq!(
+            line(poll_site("app::Manual", &[unplaced], &mut stats)),
+            None
+        );
+        assert_eq!(line(poll_site("app::Manual", &[], &mut stats)), None);
+        assert_eq!(
+            (stats.poll_decls, stats.poll_decls_declined),
+            (4, 3),
+            "an unplaced declaration is neither recorded nor declined"
+        );
     }
 
     #[derive(Default)]

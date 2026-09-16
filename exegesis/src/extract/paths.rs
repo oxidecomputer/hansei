@@ -7,7 +7,7 @@
 //! the versions recovered from producer strings and registry paths.
 
 use super::RUSTC_FLOOR;
-use crate::bundle::strip_build_prefix;
+use crate::bundle::{SourceLoc, StringInterner, strip_build_prefix};
 use crate::view::SourceLocView;
 
 /// `Some(version)` when the producer string names a rustc older than
@@ -20,7 +20,7 @@ pub(super) fn rustc_below_floor(rustc_version: &str) -> Option<String> {
 }
 
 /// An owned copy of a source location.
-#[derive(Clone, Debug)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub(crate) struct OwnedLoc {
     pub(super) file: Option<String>,
     pub(super) dir: Option<String>,
@@ -34,6 +34,66 @@ pub(super) fn owned_loc(l: &SourceLocView<'_>) -> OwnedLoc {
         dir: l.dir().map(str::to_owned),
         comp_dir: l.comp_dir().map(str::to_owned),
         line: l.line().map(|n| n.get()),
+    }
+}
+
+impl OwnedLoc {
+    /// The location as the bundle records it: the file cut to its
+    /// display path and interned, the line as `u32`. `None` without
+    /// both a file and a line — a site with only a file is dropped,
+    /// never half-recorded.
+    pub(super) fn bundle_loc(&self, strings: &mut StringInterner) -> Option<SourceLoc> {
+        let (file, line) = self.site()?;
+        Some(SourceLoc {
+            file: strings.intern(&file),
+            line: line as u32,
+        })
+    }
+
+    /// The location's display path and line — its identity to the
+    /// bundle — or `None` without both a file and a line.
+    fn site(&self) -> Option<(String, u64)> {
+        let (Some(file), Some(line)) = (self.file.as_deref(), self.line) else {
+            return None;
+        };
+        Some((
+            display_path(self.comp_dir.as_deref(), self.dir.as_deref(), file),
+            line,
+        ))
+    }
+}
+
+/// What several declarations of one thing agree on.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum Agreement<'a> {
+    /// Every placed declaration names this site.
+    Site(&'a OwnedLoc),
+    /// No declaration carries both a file and a line.
+    Unplaced,
+    /// Two placed declarations name different sites: a wrong line is
+    /// worse than none, so nothing is recorded.
+    Disagreed,
+}
+
+/// The site several declarations of one thing agree on — a generic
+/// `poll` instantiated in several units, a local the compiler
+/// duplicated — compared by display path and line rather than by the
+/// raw file, directory and compilation directory: the same registry
+/// file is spelled relative under the crate's own compilation
+/// directory in that crate's unit and in full from a unit that
+/// monomorphized it, and under the display path both spellings are
+/// one file. Declarations with no file or no line are skipped, not
+/// disagreed with.
+pub(super) fn agreed_site<'a>(sites: impl IntoIterator<Item = &'a OwnedLoc>) -> Agreement<'a> {
+    let mut placed = sites
+        .into_iter()
+        .filter_map(|s| s.site().map(|site| (s, site)));
+    let Some((first, site)) = placed.next() else {
+        return Agreement::Unplaced;
+    };
+    match placed.all(|(_, other)| other == site) {
+        true => Agreement::Site(first),
+        false => Agreement::Disagreed,
     }
 }
 
@@ -103,7 +163,8 @@ pub(super) fn display_path(comp_dir: Option<&str>, dir: Option<&str>, file: &str
 
 #[cfg(test)]
 mod tests {
-    use super::display_path;
+    use super::{Agreement, OwnedLoc, agreed_site, display_path};
+    use crate::bundle::StringInterner;
 
     #[test]
     fn test_rustc_floor_warning() {
@@ -260,5 +321,147 @@ mod tests {
             display_path(Some("/data/omicron"), Some("/opt/vendored/src"), "lib.rs"),
             "/opt/vendored/src/lib.rs"
         );
+    }
+
+    const HYPER: &str =
+        "/home/wfc/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/hyper-1.10.1";
+
+    fn loc(
+        comp_dir: Option<&str>,
+        dir: Option<&str>,
+        file: Option<&str>,
+        line: Option<u64>,
+    ) -> OwnedLoc {
+        OwnedLoc {
+            file: file.map(str::to_owned),
+            dir: dir.map(str::to_owned),
+            comp_dir: comp_dir.map(str::to_owned),
+            line,
+        }
+    }
+
+    fn site(a: &Agreement<'_>) -> Option<(Option<String>, Option<u64>)> {
+        match a {
+            Agreement::Site(l) => Some((l.file.clone(), l.line)),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn test_agreed_site_one() {
+        let one = loc(
+            Some(HYPER),
+            Some("src/client/conn"),
+            Some("http1.rs"),
+            Some(40),
+        );
+        assert_eq!(
+            site(&agreed_site([&one])),
+            Some((Some("http1.rs".to_owned()), Some(40)))
+        );
+    }
+
+    #[test]
+    fn test_agreed_site_agreeing() {
+        let a = loc(
+            Some(HYPER),
+            Some("src/client/conn"),
+            Some("http1.rs"),
+            Some(40),
+        );
+        let b = a.clone();
+        assert_eq!(
+            site(&agreed_site([&a, &b])),
+            Some((Some("http1.rs".to_owned()), Some(40)))
+        );
+    }
+
+    /// Two lines for one type are two different `poll`s, and nothing
+    /// says which the reader wants: neither is recorded.
+    #[test]
+    fn test_agreed_site_disagreeing() {
+        let a = loc(
+            Some(HYPER),
+            Some("src/client/conn"),
+            Some("http1.rs"),
+            Some(40),
+        );
+        let b = loc(
+            Some(HYPER),
+            Some("src/client/conn"),
+            Some("http1.rs"),
+            Some(64),
+        );
+        assert_eq!(agreed_site([&a, &b]), Agreement::Disagreed);
+        let c = loc(
+            Some(HYPER),
+            Some("src/client/conn"),
+            Some("http2.rs"),
+            Some(40),
+        );
+        assert_eq!(agreed_site([&a, &c]), Agreement::Disagreed);
+    }
+
+    /// A declaration with a file and no line is not a site: it is
+    /// skipped, not disagreed with, and alone it places nothing.
+    #[test]
+    fn test_agreed_site_skips_the_unplaced() {
+        let placed = loc(
+            Some(HYPER),
+            Some("src/client/conn"),
+            Some("http1.rs"),
+            Some(40),
+        );
+        let fileless = loc(Some(HYPER), Some("src/client/conn"), None, Some(40));
+        let lineless = loc(Some(HYPER), Some("src/client/conn"), Some("http1.rs"), None);
+        assert_eq!(
+            site(&agreed_site([&fileless, &placed, &lineless])),
+            Some((Some("http1.rs".to_owned()), Some(40)))
+        );
+        assert_eq!(agreed_site([&fileless, &lineless]), Agreement::Unplaced);
+        assert_eq!(agreed_site([]), Agreement::Unplaced);
+    }
+
+    /// One registry file, spelled relative under the crate's own
+    /// compilation directory in its unit and in full from a unit that
+    /// monomorphized it: one site under the display path, where the
+    /// raw triple would have called it two.
+    #[test]
+    fn test_agreed_site_registry_spellings() {
+        let own_unit = loc(
+            Some(HYPER),
+            Some("src/client/conn"),
+            Some("http1.rs"),
+            Some(40),
+        );
+        let other_unit = loc(
+            Some("/data/omicron"),
+            None,
+            Some(&format!("{HYPER}/src/client/conn/http1.rs")),
+            Some(40),
+        );
+        assert!(matches!(
+            agreed_site([&own_unit, &other_unit]),
+            Agreement::Site(l) if l.file.as_deref() == Some("http1.rs")
+        ));
+    }
+
+    #[test]
+    fn test_bundle_loc_requires_file_and_line() {
+        let mut strings = StringInterner::new();
+        let placed = loc(
+            Some(HYPER),
+            Some("src/client/conn"),
+            Some("http1.rs"),
+            Some(40),
+        );
+        let recorded = placed.bundle_loc(&mut strings).unwrap();
+        assert_eq!(
+            strings.get(recorded.file),
+            Some("hyper-1.10.1/src/client/conn/http1.rs")
+        );
+        assert_eq!(recorded.line, 40);
+        let lineless = loc(Some(HYPER), Some("src/client/conn"), Some("http1.rs"), None);
+        assert!(lineless.bundle_loc(&mut strings).is_none());
     }
 }

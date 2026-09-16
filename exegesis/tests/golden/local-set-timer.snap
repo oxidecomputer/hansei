@@ -54,6 +54,8 @@ env: local_set_timer::main::{async_block#0}::{async_block_env#0} @ local-set-tim
 env: local_set_timer::main::{async_block_env#0} @ local-set-timer.rs:50
 env: local_set_timer::sleeper::{async_fn_env#0} @ local-set-timer.rs:39
 
+[poll-decls]
+
 [infra]
 header: ok
 vtable: ok

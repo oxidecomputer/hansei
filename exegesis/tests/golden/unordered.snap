@@ -37,6 +37,8 @@ env: unordered::leaf::{async_fn_env#0} @ unordered.rs:40
 env: unordered::main::{async_block_env#0} @ unordered.rs:135
 env: unordered::set_member::{async_fn_env#0} @ unordered.rs:60
 
+[poll-decls]
+
 [infra]
 header: ok
 vtable: ok

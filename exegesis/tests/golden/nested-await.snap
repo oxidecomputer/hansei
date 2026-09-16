@@ -30,6 +30,8 @@ env: nested_await::main::{async_block_env#0} @ nested-await.rs:32
 env: nested_await::middle::{async_fn_env#0} @ nested-await.rs:15
 env: nested_await::outer::{async_fn_env#0} @ nested-await.rs:20
 
+[poll-decls]
+
 [infra]
 header: ok
 vtable: ok

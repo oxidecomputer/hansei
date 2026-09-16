@@ -1724,6 +1724,57 @@ mod view_tests {
     use crate::strings::StringInterner;
     use crate::view::{BundleView, TypeKind, VariantError};
 
+    /// A type's implementation site is its own `poll_decls` entry, file
+    /// and line as recorded, and nothing for a type without one.
+    #[test]
+    fn test_implementation_site_is_the_types_own_entry() {
+        let mut b = super::tiny_bundle();
+        let mut strings = StringInterner::new();
+        let u64_name = strings.intern("u64");
+        let manual = strings.intern("app::Manual");
+        let plain = strings.intern("app::Plain");
+        let file = strings.intern("hyper-1.10.1/src/client/conn/http1.rs");
+        b.types = TypeTable {
+            types: vec![
+                TypeDef::Base {
+                    name: u64_name,
+                    size: 8,
+                    encoding: Encoding::Unsigned,
+                },
+                TypeDef::Struct {
+                    name: manual,
+                    size: 0,
+                    members: vec![],
+                },
+                TypeDef::Struct {
+                    name: plain,
+                    size: 0,
+                    members: vec![],
+                },
+            ],
+            poll_decls: std::collections::BTreeMap::from([(
+                BundleTypeId(1),
+                SourceLoc { file, line: 40 },
+            )]),
+            ..Default::default()
+        };
+        b.strings = strings.finish();
+        b.validate().unwrap();
+        let view = BundleView::new(&b);
+        assert_eq!(
+            view.ty(BundleTypeId(1)).unwrap().implementation_site(),
+            Some(("hyper-1.10.1/src/client/conn/http1.rs", 40))
+        );
+        assert_eq!(
+            view.ty(BundleTypeId(2)).unwrap().implementation_site(),
+            None
+        );
+        assert_eq!(
+            view.ty(BundleTypeId(0)).unwrap().implementation_site(),
+            None
+        );
+    }
+
     /// Build a bundle whose type 0 is `u64`, type 1 is a zero-sized unit
     /// struct, and type 2 is an enum with the given shape. Additional
     /// payload types may be appended first via `extra`.

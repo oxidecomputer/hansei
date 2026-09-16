@@ -49,6 +49,8 @@ env: futurelock::main::{async_block_env#0} @ futurelock.rs:19
 env: futurelock::start_background_task::{async_fn#0}::{async_block_env#0} @ futurelock.rs:48
 env: futurelock::start_background_task::{async_fn_env#0} @ futurelock.rs:42
 
+[poll-decls]
+
 [infra]
 header: ok
 vtable: ok

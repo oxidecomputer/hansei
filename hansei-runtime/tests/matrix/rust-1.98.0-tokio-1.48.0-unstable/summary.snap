@@ -49,6 +49,8 @@ env: futurelock::main::{async_block_env#0} @ futurelock.rs:19
 env: futurelock::start_background_task::{async_fn#0}::{async_block_env#0} @ futurelock.rs:48
 env: futurelock::start_background_task::{async_fn_env#0} @ futurelock.rs:42
 
+[poll-decls]
+
 [infra]
 header: ok
 vtable: ok
@@ -162,6 +164,8 @@ dyn: simple_await::work::{async_fn_env#0} (poll, drop_glue)
 env: simple_await::main::{async_block_env#0} @ simple-await.rs:76
 env: simple_await::ready_value::{async_fn_env#0} @ simple-await.rs:17
 env: simple_await::work::{async_fn_env#0} @ simple-await.rs:21
+
+[poll-decls]
 
 [infra]
 header: ok
@@ -277,6 +281,8 @@ env: nested_await::leaf::{async_fn_env#0} @ nested-await.rs:11
 env: nested_await::main::{async_block_env#0} @ nested-await.rs:32
 env: nested_await::middle::{async_fn_env#0} @ nested-await.rs:15
 env: nested_await::outer::{async_fn_env#0} @ nested-await.rs:20
+
+[poll-decls]
 
 [infra]
 header: ok
@@ -417,6 +423,8 @@ env: dyn_future::driver::{async_fn_env#0} @ dyn-future.rs:24
 env: dyn_future::hold_aligned::{async_fn_env#0} @ dyn-future.rs:93
 env: dyn_future::main::{async_block_env#0} @ dyn-future.rs:50
 env: dyn_future::set_member::{async_fn_env#0} @ dyn-future.rs:19
+
+[poll-decls]
 
 [infra]
 header: ok
@@ -591,6 +599,10 @@ env: select_combinator::selector::{async_fn#0}::{closure_env#0} @ select.rs:661
 env: select_combinator::selector::{async_fn_env#0} @ select-combinator.rs:26
 env: select_combinator::wait::{async_fn_env#0} @ select-combinator.rs:22
 
+[poll-decls]
+poll: select_combinator::Fallible @ select-combinator.rs:79
+poll: select_combinator::Park @ select-combinator.rs:68
+
 [infra]
 header: ok
 vtable: ok
@@ -701,6 +713,8 @@ dyn: many_tasks::park_task::{async_fn_env#0} (poll, drop_glue)
 [env-decls]
 env: many_tasks::main::{async_block_env#0} @ many-tasks.rs:23
 env: many_tasks::park_task::{async_fn_env#0} @ many-tasks.rs:13
+
+[poll-decls]
 
 [infra]
 header: ok
@@ -825,6 +839,8 @@ dyn: sleep_join::sleeper::{async_fn_env#0} (poll, drop_glue)
 env: sleep_join::joiner::{async_fn_env#0} @ sleep-join.rs:20
 env: sleep_join::main::{async_block_env#0} @ sleep-join.rs:31
 env: sleep_join::sleeper::{async_fn_env#0} @ sleep-join.rs:13
+
+[poll-decls]
 
 [infra]
 header: ok
@@ -981,6 +997,8 @@ env: channels::send_waiter::{async_fn#0}::{async_block_env#0} @ channels.rs:89
 env: channels::send_waiter::{async_fn#0}::{closure_env#1} @ select.rs:661
 env: channels::send_waiter::{async_fn_env#0} @ channels.rs:85
 
+[poll-decls]
+
 [infra]
 header: ok
 vtable: ok
@@ -1102,6 +1120,8 @@ env: unordered::holder::{async_fn_env#0}<unordered::leaf::{async_fn_env#0}> @ un
 env: unordered::leaf::{async_fn_env#0} @ unordered.rs:40
 env: unordered::main::{async_block_env#0} @ unordered.rs:135
 env: unordered::set_member::{async_fn_env#0} @ unordered.rs:60
+
+[poll-decls]
 
 [infra]
 header: ok
@@ -1242,6 +1262,8 @@ env: joinset::finisher::{async_fn_env#0} @ joinset.rs:43
 env: joinset::main::{async_block_env#0} @ joinset.rs:94
 env: joinset::member::{async_fn_env#0} @ joinset.rs:31
 
+[poll-decls]
+
 [infra]
 header: ok
 vtable: ok
@@ -1365,6 +1387,8 @@ dyn: ct_runtime::sleeper::{async_fn_env#0} (poll, drop_glue)
 env: ct_runtime::acquirer::{async_fn_env#0} @ ct-runtime.rs:21
 env: ct_runtime::main::{async_block_env#0} @ ct-runtime.rs:32
 env: ct_runtime::sleeper::{async_fn_env#0} @ ct-runtime.rs:14
+
+[poll-decls]
 
 [infra]
 header: ok
@@ -1505,6 +1529,8 @@ env: local_set::local_sleeper::{async_fn_env#0} @ local-set.rs:17
 env: local_set::main::{async_block#0}::{async_block_env#0} @ local-set.rs:54
 env: local_set::main::{async_block_env#0} @ local-set.rs:41
 
+[poll-decls]
+
 [infra]
 header: ok
 vtable: ok
@@ -1643,6 +1669,8 @@ env: local_set_timer::local_sleeper::{async_fn_env#0} @ local-set-timer.rs:19
 env: local_set_timer::main::{async_block#0}::{async_block_env#0} @ local-set-timer.rs:70
 env: local_set_timer::main::{async_block_env#0} @ local-set-timer.rs:50
 env: local_set_timer::sleeper::{async_fn_env#0} @ local-set-timer.rs:39
+
+[poll-decls]
 
 [infra]
 header: ok
@@ -1810,6 +1838,8 @@ env: local_set_io::main::{async_block#0}::{async_block_env#0} @ local-set-io.rs:
 env: local_set_io::main::{async_block_env#0} @ local-set-io.rs:121
 env: local_set_io::reader::{async_fn_env#0} @ local-set-io.rs:110
 
+[poll-decls]
+
 [infra]
 header: ok
 vtable: ok
@@ -1966,6 +1996,8 @@ env: foreign_runtime::joiner::{async_fn_env#0} @ foreign-runtime.rs:27
 env: foreign_runtime::local_sleeper::{async_fn_env#0} @ foreign-runtime.rs:62
 env: foreign_runtime::main::{async_block_env#1} @ foreign-runtime.rs:130
 
+[poll-decls]
+
 [infra]
 header: ok
 vtable: ok
@@ -2111,6 +2143,8 @@ env: blocking_pool::main::{async_block#0}::{closure_env#0} @ blocking-pool.rs:39
 env: blocking_pool::main::{async_block_env#0} @ blocking-pool.rs:36
 env: blocking_pool::queued_waiter::{async_fn_env#0} @ blocking-pool.rs:25
 env: blocking_pool::running_waiter::{async_fn_env#0} @ blocking-pool.rs:19
+
+[poll-decls]
 
 [infra]
 header: ok
@@ -2310,6 +2344,21 @@ env: delegation_cases::main::{async_block_env#1} @ delegation-cases.rs:361
 env: delegation_cases::main::{async_block_env#2} @ delegation-cases.rs:375
 env: delegation_cases::main::{async_block_env#3} @ delegation-cases.rs:380
 env: delegation_cases::main::{async_block_env#5} @ delegation-cases.rs:401
+
+[poll-decls]
+poll: delegation_cases::Gated<1> @ delegation-cases.rs:63
+poll: delegation_cases::Gated<2> @ delegation-cases.rs:63
+poll: delegation_cases::Handle @ delegation-cases.rs:149
+poll: delegation_cases::Holder<delegation_cases::main::{async_block_env#0}> @ delegation-cases.rs:125
+poll: delegation_cases::Leaf @ delegation-cases.rs:176
+poll: delegation_cases::Probe<1> @ delegation-cases.rs:33
+poll: delegation_cases::Probe<2> @ delegation-cases.rs:33
+poll: delegation_cases::Probe<5> @ delegation-cases.rs:33
+poll: delegation_cases::Probe<6> @ delegation-cases.rs:33
+poll: delegation_cases::Probe<7> @ delegation-cases.rs:33
+poll: delegation_cases::Probe<8> @ delegation-cases.rs:33
+poll: delegation_cases::RawHolder @ delegation-cases.rs:104
+poll: delegation_cases::Retained @ delegation-cases.rs:85
 
 [infra]
 header: ok
@@ -2513,6 +2562,8 @@ env: armed_select::ticker::{async_fn#0}::{closure_env#0} @ select.rs:661
 env: armed_select::ticker::{async_fn_env#0} @ armed-select.rs:118
 env: armed_select::waiter::{async_fn_env#0} @ armed-select.rs:74
 
+[poll-decls]
+
 [infra]
 header: ok
 vtable: ok
@@ -2666,6 +2717,8 @@ env: watch_stream::mapper::{async_fn#0}::{closure_env#0} @ select.rs:661
 env: watch_stream::mapper::{async_fn_env#0} @ watch-stream.rs:57
 env: watch_stream::resolver::{async_fn#0}::{closure_env#0} @ select.rs:661
 env: watch_stream::resolver::{async_fn_env#0} @ watch-stream.rs:30
+
+[poll-decls]
 
 [infra]
 header: ok

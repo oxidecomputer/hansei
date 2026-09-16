@@ -59,6 +59,10 @@ pub(crate) struct Emitter<'a> {
     /// Declaration sites of closure/coroutine environment types, keyed
     /// by their emitted id — the type table's `env_decls`.
     env_decls: BTreeMap<BundleTypeId, SourceLoc>,
+    /// Where each emitted hand-written future's or stream's poll method
+    /// is written, keyed by its emitted id — the type table's
+    /// `poll_decls`.
+    poll_decls: BTreeMap<BundleTypeId, SourceLoc>,
     debug_formats: BTreeMap<BundleTypeId, DisplayNode>,
     /// Fully-qualified names for the name index, parallel to `defs`.
     names: Vec<Option<String>>,
@@ -87,6 +91,7 @@ impl<'a> Emitter<'a> {
             ids: BTreeMap::new(),
             defs: Vec::new(),
             env_decls: BTreeMap::new(),
+            poll_decls: BTreeMap::new(),
             debug_formats: BTreeMap::new(),
             names: Vec::new(),
             pending: VecDeque::new(),
@@ -270,6 +275,13 @@ impl<'a> Emitter<'a> {
     /// from the defining subprogram.
     pub(super) fn record_env_decl(&mut self, bid: BundleTypeId, loc: SourceLoc) {
         self.env_decls.insert(bid, loc);
+    }
+
+    /// Record where a hand-written future's or stream's poll method is
+    /// written — the type table's `poll_decls`, the line a trace frame
+    /// or a wait-set member of that type prints as its `defined at`.
+    pub(super) fn record_poll_decl(&mut self, bid: BundleTypeId, loc: SourceLoc) {
+        self.poll_decls.insert(bid, loc);
     }
 
     /// The type a coroutine suspend variant awaits, from the `__awaitee`
@@ -585,6 +597,7 @@ impl<'a> Emitter<'a> {
             debug_formats: self.debug_formats,
             name_index,
             env_decls: self.env_decls,
+            poll_decls: self.poll_decls,
             ..Default::default()
         };
         let demoted = demote_types_with_members_out_of_bounds(&mut types, &self.names);

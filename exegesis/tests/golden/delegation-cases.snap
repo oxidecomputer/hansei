@@ -114,6 +114,21 @@ env: delegation_cases::main::{async_block_env#2} @ delegation-cases.rs:375
 env: delegation_cases::main::{async_block_env#3} @ delegation-cases.rs:380
 env: delegation_cases::main::{async_block_env#5} @ delegation-cases.rs:401
 
+[poll-decls]
+poll: delegation_cases::Gated<1> @ delegation-cases.rs:63
+poll: delegation_cases::Gated<2> @ delegation-cases.rs:63
+poll: delegation_cases::Handle @ delegation-cases.rs:149
+poll: delegation_cases::Holder<delegation_cases::main::{async_block_env#0}> @ delegation-cases.rs:125
+poll: delegation_cases::Leaf @ delegation-cases.rs:176
+poll: delegation_cases::Probe<1> @ delegation-cases.rs:33
+poll: delegation_cases::Probe<2> @ delegation-cases.rs:33
+poll: delegation_cases::Probe<5> @ delegation-cases.rs:33
+poll: delegation_cases::Probe<6> @ delegation-cases.rs:33
+poll: delegation_cases::Probe<7> @ delegation-cases.rs:33
+poll: delegation_cases::Probe<8> @ delegation-cases.rs:33
+poll: delegation_cases::RawHolder @ delegation-cases.rs:104
+poll: delegation_cases::Retained @ delegation-cases.rs:85
+
 [infra]
 header: ok
 vtable: ok

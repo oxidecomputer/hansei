@@ -39,6 +39,8 @@ env: ct_runtime::acquirer::{async_fn_env#0} @ ct-runtime.rs:21
 env: ct_runtime::main::{async_block_env#0} @ ct-runtime.rs:32
 env: ct_runtime::sleeper::{async_fn_env#0} @ ct-runtime.rs:14
 
+[poll-decls]
+
 [infra]
 header: ok
 vtable: ok

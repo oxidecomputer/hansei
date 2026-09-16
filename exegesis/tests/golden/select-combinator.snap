@@ -88,6 +88,10 @@ env: select_combinator::selector::{async_fn#0}::{closure_env#0} @ select.rs:659
 env: select_combinator::selector::{async_fn_env#0} @ select-combinator.rs:26
 env: select_combinator::wait::{async_fn_env#0} @ select-combinator.rs:22
 
+[poll-decls]
+poll: select_combinator::Fallible @ select-combinator.rs:79
+poll: select_combinator::Park @ select-combinator.rs:68
+
 [infra]
 header: ok
 vtable: ok

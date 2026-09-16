@@ -71,6 +71,8 @@ env: foreign_runtime::joiner::{async_fn_env#0} @ foreign-runtime.rs:27
 env: foreign_runtime::local_sleeper::{async_fn_env#0} @ foreign-runtime.rs:62
 env: foreign_runtime::main::{async_block_env#1} @ foreign-runtime.rs:130
 
+[poll-decls]
+
 [infra]
 header: ok
 vtable: ok

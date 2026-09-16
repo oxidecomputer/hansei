@@ -117,6 +117,8 @@ env: armed_select::ticker::{async_fn#0}::{closure_env#0} @ select.rs:659
 env: armed_select::ticker::{async_fn_env#0} @ armed-select.rs:118
 env: armed_select::waiter::{async_fn_env#0} @ armed-select.rs:74
 
+[poll-decls]
+
 [infra]
 header: ok
 vtable: ok

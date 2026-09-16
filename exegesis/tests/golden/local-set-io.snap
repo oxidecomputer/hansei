@@ -81,6 +81,8 @@ env: local_set_io::main::{async_block#0}::{async_block_env#0} @ local-set-io.rs:
 env: local_set_io::main::{async_block_env#0} @ local-set-io.rs:121
 env: local_set_io::reader::{async_fn_env#0} @ local-set-io.rs:110
 
+[poll-decls]
+
 [infra]
 header: ok
 vtable: ok

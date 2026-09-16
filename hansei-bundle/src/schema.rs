@@ -186,6 +186,14 @@ pub struct TypeTable {
     /// combinator frame's `constructed at` line. Sparse — only env types
     /// with a recorded declaration appear.
     pub env_decls: BTreeMap<BundleTypeId, SourceLoc>,
+    /// Where each hand-written future or stream type's poll method is
+    /// written, keyed by type id: the `DW_AT_decl_file`/`decl_line` of
+    /// its `<T as Future>::poll`, or of `<T as Stream>::poll_next` for
+    /// a type that is only a stream. The line a trace frame or a
+    /// wait-set member of the type prints as `defined at`. Sparse —
+    /// coroutines have no such impl, and a type whose declarations
+    /// disagreed records nothing.
+    pub poll_decls: BTreeMap<BundleTypeId, SourceLoc>,
     /// O(1) view of `debug_formats`, built on first use: a position per
     /// type id (`u32::MAX` for types without a format) into a flat list
     /// of the display nodes. A census-style walk asks for a type's

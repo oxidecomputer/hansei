@@ -55,6 +55,8 @@ env: dyn_future::hold_aligned::{async_fn_env#0} @ dyn-future.rs:93
 env: dyn_future::main::{async_block_env#0} @ dyn-future.rs:50
 env: dyn_future::set_member::{async_fn_env#0} @ dyn-future.rs:19
 
+[poll-decls]
+
 [infra]
 header: ok
 vtable: ok

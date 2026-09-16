@@ -344,6 +344,7 @@ fn stats(path: &Path) -> Result<()> {
         }
     }
     println!("  strings:         {}", bundle.strings.len());
+    println!("  poll decls:      {}", bundle.types.poll_decls.len());
     println!(
         "  task entries:    {} ({} symbol keys)",
         bundle.tasks.entries.len(),

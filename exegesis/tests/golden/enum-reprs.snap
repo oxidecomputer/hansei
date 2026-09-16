@@ -26,6 +26,8 @@ dyn: enum_reprs::main::{async_block_env#0} (poll, drop_glue)
 env: enum_reprs::hold::{async_fn_env#0} @ enum-reprs.rs:64
 env: enum_reprs::main::{async_block_env#0} @ enum-reprs.rs:93
 
+[poll-decls]
+
 [infra]
 header: ok
 vtable: ok

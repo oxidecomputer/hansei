@@ -70,6 +70,8 @@ env: channels::send_waiter::{async_fn#0}::{async_block_env#0} @ channels.rs:89
 env: channels::send_waiter::{async_fn#0}::{closure_env#1} @ select.rs:659
 env: channels::send_waiter::{async_fn_env#0} @ channels.rs:85
 
+[poll-decls]
+
 [infra]
 header: ok
 vtable: ok

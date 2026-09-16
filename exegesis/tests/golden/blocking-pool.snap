@@ -61,6 +61,8 @@ env: blocking_pool::main::{async_block_env#0} @ blocking-pool.rs:36
 env: blocking_pool::queued_waiter::{async_fn_env#0} @ blocking-pool.rs:25
 env: blocking_pool::running_waiter::{async_fn_env#0} @ blocking-pool.rs:19
 
+[poll-decls]
+
 [infra]
 header: ok
 vtable: ok

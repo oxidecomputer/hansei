@@ -1899,6 +1899,18 @@ fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
         stats.dyn_unresolved_self, 0,
         "{program}: Future::poll impls with unresolvable self"
     );
+    // Every fixture links tokio, whose primitives are hand-written
+    // futures, so a bundle with no poll declaration at all means the
+    // collector went quiet; and no fixture links two versions of one
+    // crate, which is the only way a declaration disagrees.
+    assert!(
+        stats.poll_decls > 0,
+        "{program}: no poll declaration was recorded"
+    );
+    assert_eq!(
+        stats.poll_decls_declined, 0,
+        "{program}: poll declarations disagreed"
+    );
     assert!(
         stats.infra_missing.is_empty(),
         "{program}: {:?}",
@@ -2626,6 +2638,32 @@ fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
             "core::future::poll_fn::PollFn<watch_stream::mapper::{async_fn#0}::{closure_env#",
             2,
             &[Some(76), Some(77)],
+        );
+        // The map's entries are `WatchStream`s, a hand-written `Stream`
+        // with no `Future::poll`: the line an entry's `defined at`
+        // prints is its `poll_next`'s, which the sweep screens under
+        // the stream trait's suffix. No fixture-crate type is a stream,
+        // so the golden's `[poll-decls]` cannot show this; the bundle's
+        // table is asserted directly.
+        let watch_stream_sites: Vec<&str> = bundle
+            .types
+            .poll_decls
+            .iter()
+            .filter(|(id, _)| match &bundle.types.types[id.0 as usize] {
+                TypeDef::Struct { name, .. } => bundle
+                    .strings
+                    .get(*name)
+                    .is_some_and(|n| n.starts_with("tokio_stream::wrappers::watch::WatchStream<")),
+                _ => false,
+            })
+            .filter_map(|(_, loc)| bundle.strings.get(loc.file))
+            .collect();
+        assert!(
+            !watch_stream_sites.is_empty()
+                && watch_stream_sites
+                    .iter()
+                    .all(|file| file.ends_with("/src/wrappers/watch.rs")),
+            "{program}: WatchStream's poll_next declaration was not recorded: {watch_stream_sites:?}"
         );
         // The linear route, record by record: `Next` forwards through
         // its `&mut` to the nominal stream, exclusively, and proves it

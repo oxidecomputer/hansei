@@ -54,6 +54,8 @@ env: joinset::finisher::{async_fn_env#0} @ joinset.rs:43
 env: joinset::main::{async_block_env#0} @ joinset.rs:94
 env: joinset::member::{async_fn_env#0} @ joinset.rs:31
 
+[poll-decls]
+
 [infra]
 header: ok
 vtable: ok

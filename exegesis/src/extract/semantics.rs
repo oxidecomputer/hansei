@@ -20,7 +20,7 @@
 
 use super::emitter::Emitter;
 use super::passes::{members_of, state_name};
-use super::paths::{OwnedLoc, display_path};
+use super::paths::OwnedLoc;
 use super::sweep::PollSource;
 use crate::TypeId;
 use crate::bundle::names::coroutine_kind;
@@ -2189,19 +2189,7 @@ fn plan_select(
         .arms
         .iter()
         .map(|arm| match arm {
-            ArmSite::Written(loc) => {
-                let (Some(file), Some(line)) = (loc.file.as_deref(), loc.line) else {
-                    return None;
-                };
-                Some(SourceLoc {
-                    file: strings.intern(&display_path(
-                        loc.comp_dir.as_deref(),
-                        loc.dir.as_deref(),
-                        file,
-                    )),
-                    line: line as u32,
-                })
-            }
+            ArmSite::Written(loc) => loc.bundle_loc(strings),
             ArmSite::Unbound => None,
             ArmSite::Declined(decline) => {
                 declined.push(decline.clone());

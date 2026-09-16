@@ -30,7 +30,7 @@ pub const MAGIC: [u8; 8] = *b"exegesis";
 
 /// The current bundle format version. Bump on any schema change, including
 /// indirect ones (e.g. new [`crate::Encoding`] variants).
-pub const FORMAT_VERSION: u32 = 71;
+pub const FORMAT_VERSION: u32 = 72;
 
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -1287,6 +1287,11 @@ impl Bundle {
         for (&id, loc) in &self.types.env_decls {
             check_ty("env decl", id)?;
             check_str("env decl", loc.file)?;
+        }
+
+        for (&id, loc) in &self.types.poll_decls {
+            check_ty("poll decl", id)?;
+            check_str("poll decl", loc.file)?;
         }
 
         let mut prev: Option<&str> = None;

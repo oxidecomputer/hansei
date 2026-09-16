@@ -211,6 +211,25 @@ pub fn portable_summary(bundle: &Bundle, program: &str, crate_str: &str) -> Stri
         writeln!(out, "env: {name} @ {at}").unwrap();
     }
 
+    // Where each of the fixture's own hand-written futures and streams
+    // is polled from — the `defined at` of a trace frame or a wait-set
+    // member of that type. Filtered to the fixture crate like the envs.
+    writeln!(out, "\n[poll-decls]").unwrap();
+    let mut poll_decls: Vec<(String, String)> = bundle
+        .types
+        .poll_decls
+        .iter()
+        .filter_map(|(id, loc)| {
+            let name = type_name(*id);
+            name.starts_with(crate_str)
+                .then(|| (name, format!("{}:{}", basename(s(loc.file)), loc.line)))
+        })
+        .collect();
+    poll_decls.sort();
+    for (name, at) in &poll_decls {
+        writeln!(out, "poll: {name} @ {at}").unwrap();
+    }
+
     writeln!(out, "\n[infra]").unwrap();
     let infra = &bundle.infra;
     for (what, id) in [

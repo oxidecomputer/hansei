@@ -54,6 +54,8 @@ env: local_set::local_sleeper::{async_fn_env#0} @ local-set.rs:17
 env: local_set::main::{async_block#0}::{async_block_env#0} @ local-set.rs:54
 env: local_set::main::{async_block_env#0} @ local-set.rs:41
 
+[poll-decls]
+
 [infra]
 header: ok
 vtable: ok
