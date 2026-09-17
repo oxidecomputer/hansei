@@ -8,11 +8,9 @@ task 1
     owner: local set 0 @ 0xADDR (lwp 296386)
     type: async fn local_set_io::local_reader
     awaiting at: src/bin/local-set-io.rs:32
-    waiting on:
-        waker 0:
-            blocked on: io fd 9 (readable)
-            held in: the read-waiter slot, awaiting readable, ready: writable
+    awaiting on: io fd 9 (readable)
+        waker: the read-waiter slot, awaiting readable, ready: writable
     spawned at: src/bin/local-set-io.rs:143:20
-    defined at: src/bin/local-set-io.rs:28
+    type defined at: src/bin/local-set-io.rs:28
     held futures: 0
     join sets: 0

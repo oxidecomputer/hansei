@@ -1063,6 +1063,7 @@ mod sync_tests {
             held: Vec::new(),
             held_capped: 0,
             frames: Vec::new(),
+            frame_sites: Vec::new(),
         }
     }
 
@@ -1280,6 +1281,7 @@ mod sync_tests {
             within: None,
             through: Vec::new(),
             aliases: Vec::new(),
+            reach: hansei_runtime::tokio::attribution::Reach::Unlocated,
         }
     }
 

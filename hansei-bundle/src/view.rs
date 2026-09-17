@@ -457,6 +457,17 @@ impl<'a> BundleType<'a> {
         Some((self.str(loc.file), loc.line))
     }
 
+    /// Where this type itself is declared, when it is a closure or
+    /// coroutine environment the bundle recorded: the `async fn` or
+    /// `async` block whose body the coroutine is. The counterpart of
+    /// [`implementation_site`](Self::implementation_site) for the one
+    /// kind of future that has no `fn poll` of its own. `None` for any
+    /// other type.
+    pub fn declaration_site(&self) -> Option<(&'a str, u32)> {
+        let loc = self.bundle.types.env_decls.get(&self.id)?;
+        Some((self.str(loc.file), loc.line))
+    }
+
     /// Where a value of this type was built, when a member is a closure
     /// or coroutine environment whose declaration the bundle recorded:
     /// an environment is constructed where it is written, so its decl

@@ -7,37 +7,33 @@ task 4
     thread: <none>
     type: async fn watch_stream::mapper
     awaiting at: src/bin/watch-stream.rs:75
-    waiting on:
+    awaiting on:
         select!:
+            held in: frame 1
+            awaiting at: src/bin/watch-stream.rs:75
             branch 0 (borrowed): tokio::sync::oneshot::Receiver<u32>
-                address: 0xADDR
-                armed: yes
-                blocked on: oneshot rx 0xADDR (nothing sent, sender alive)
-                defined at: src/bin/watch-stream.rs:76
-                location: future 0xADDR inner.Some.data.rx_task (rx_task_set)
+                held in: frame 1 `once`
+                awaiting at: src/bin/watch-stream.rs:76
+                awaiting on: oneshot rx 0xADDR (nothing sent, sender alive)
+                type defined at: tokio-1.47.5/src/sync/oneshot.rs:1241
             branch 1 (borrowed): futures_util::stream::stream::next::Next<tokio_stream::stream_map::StreamMap<&str, tokio_stream::wrappers::watch::WatchStream<u32>>>
-                address: 0xADDR
-                defined at: src/bin/watch-stream.rs:77
+                held in: frame 1 `next`
+                awaiting at: src/bin/watch-stream.rs:77
+                type defined at: futures-util-0.3.33/src/stream/stream/next.rs:31
                 entries:
                     "alpha":
-                        address: 0xADDR
-                        armed: yes
-                        blocked on: watch rx 0xADDR (version 0, 1 sender, 1 receiver)
-                        defined at: tokio-stream-0.1.19/src/wrappers/watch.rs:104
-                        location: future 0xADDR waiter.waker.Some
+                        held in: frame 1 `map[0]`
+                        awaiting on: watch rx 0xADDR (version 0, 1 sender, 1 receiver)
+                        type defined at: tokio-stream-0.1.19/src/wrappers/watch.rs:104
                     "beta":
-                        address: 0xADDR
-                        armed: yes
-                        blocked on: watch rx 0xADDR (version 0, 1 sender, 1 receiver)
-                        defined at: tokio-stream-0.1.19/src/wrappers/watch.rs:104
-                        location: future 0xADDR waiter.waker.Some
+                        held in: frame 1 `map[1]`
+                        awaiting on: watch rx 0xADDR (version 0, 1 sender, 1 receiver)
+                        type defined at: tokio-stream-0.1.19/src/wrappers/watch.rs:104
                     "gamma":
-                        address: 0xADDR
-                        armed: yes
-                        blocked on: watch rx 0xADDR (version 0, 1 sender, 1 receiver)
-                        defined at: tokio-stream-0.1.19/src/wrappers/watch.rs:104
-                        location: future 0xADDR waiter.waker.Some
+                        held in: frame 1 `map[2]`
+                        awaiting on: watch rx 0xADDR (version 0, 1 sender, 1 receiver)
+                        type defined at: tokio-stream-0.1.19/src/wrappers/watch.rs:104
     spawned at: src/bin/watch-stream.rs:132:23
-    defined at: src/bin/watch-stream.rs:57
+    type defined at: src/bin/watch-stream.rs:57
     held futures: 5
     join sets: 0

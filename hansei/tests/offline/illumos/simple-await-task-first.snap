@@ -7,11 +7,8 @@ task 3
     thread: <none>
     type: async fn simple_await::work
     awaiting at: src/bin/simple-await.rs:47
-    waiting on:
-        waker 0:
-            blocked on: oneshot rx 0xADDR (nothing sent, sender alive)
-            location: frame 0 inner.Some.data.rx_task (rx_task_set)
+    awaiting on: oneshot rx 0xADDR (nothing sent, sender alive)
     spawned at: src/bin/simple-await.rs:83:21
-    defined at: src/bin/simple-await.rs:21
+    type defined at: src/bin/simple-await.rs:21
     held futures: 0
     join sets: 0

@@ -91,6 +91,11 @@ pub struct TaskWait {
     /// slot attribution walks down into after the analysis has dropped
     /// the values themselves. Empty where no chain was walked.
     pub frames: Vec<ValueKey>,
+    /// Each frame's own await site, parallel to `frames`: the line a
+    /// coroutine frame is suspended at, `None` for a plain future and
+    /// for a coroutine whose state records none. What a task block
+    /// prints as `awaiting at:` under an item held in that frame.
+    pub frame_sites: Vec<Option<(String, u32)>>,
 }
 
 impl TaskWait {
@@ -252,6 +257,7 @@ pub fn analyze<T: Target>(
             held: Vec::new(),
             held_capped: 0,
             frames: Vec::new(),
+            frame_sites: Vec::new(),
         };
         let no_root = ContinuationStatus::Incomplete {
             reason: IncompleteReason::NoRoot,
@@ -278,6 +284,7 @@ pub fn analyze<T: Target>(
                 held: Vec::new(),
                 held_capped: 0,
                 frames: Vec::new(),
+                frame_sites: Vec::new(),
             });
             continue;
         }
@@ -362,6 +369,16 @@ pub fn analyze<T: Target>(
                 .iter()
                 .map(|f| ValueKey::of(f.future))
                 .collect(),
+            frame_sites: chain
+                .frames
+                .iter()
+                .map(|f| {
+                    f.state
+                        .as_ref()?
+                        .await_loc
+                        .map(|(file, line)| (file.to_string(), line))
+                })
+                .collect(),
         });
     }
     Analysis {
@@ -415,6 +432,7 @@ mod tests {
             held: Vec::new(),
             held_capped: 0,
             frames: Vec::new(),
+            frame_sites: Vec::new(),
         }
     }
 

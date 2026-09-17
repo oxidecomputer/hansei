@@ -2479,6 +2479,7 @@ mod tests {
             held,
             held_capped: 0,
             frames: vec![key(0x9000), key(0x5000)],
+            frame_sites: Vec::new(),
         }
     }
 
@@ -2510,6 +2511,7 @@ mod tests {
             within: None,
             through: Vec::new(),
             aliases: Vec::new(),
+            reach: crate::tokio::attribution::Reach::Unlocated,
         }
     }
 

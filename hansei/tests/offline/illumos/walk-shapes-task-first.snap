@@ -8,14 +8,12 @@ task 1
     owner: runtime 0 @ 0xADDR (current_thread)
     type: async fn walk_shapes::chained
     awaiting at: src/bin/walk-shapes.rs:116
-    waiting on:
+    awaiting on:
         inner: walk_shapes::WrapE<walk_shapes::deep>
-            address: 0xADDR
-            armed: yes
-            blocked on: notify rx 0xADDR (waiting)
-            defined at: src/bin/walk-shapes.rs:77
-            location: future 0xADDR Running.inner.waiter.waker.Some
+            held in: frame 0 `inner`
+            awaiting on: notify rx 0xADDR (waiting)
+            type defined at: src/bin/walk-shapes.rs:77
     spawned at: src/bin/walk-shapes.rs:258:9
-    defined at: src/bin/walk-shapes.rs:105
+    type defined at: src/bin/walk-shapes.rs:105
     held futures: 2
     join sets: 0

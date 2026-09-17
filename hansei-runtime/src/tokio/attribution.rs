@@ -176,6 +176,41 @@ pub struct Hop {
     pub steps: Vec<String>,
 }
 
+/// Whether the task's current await reaches a slot. A task's chain is
+/// linear and every coroutine frame has exactly one awaitee, so what
+/// the task awaits is always frame #0's construct, and every slot the
+/// current await installed sits in that construct or in something an
+/// inner frame borrows from an outer one. Every other slot was
+/// installed by an await that has since returned: it will wake the
+/// task, and the poll that follows will not consume it.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum Reach {
+    /// Frame #0 holds the slot, or a frame strictly inside the holding
+    /// one borrows the container: the current await reaches it.
+    Awaited(Holding),
+    /// Held by an outer frame that nothing inside it borrows: parked
+    /// by a completed await.
+    Parked(Holding),
+    /// A registry slot no typed value of the task's holds.
+    Unlocated,
+}
+
+/// Where a located slot is held, as a task block names the item the
+/// slot is listed under.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Holding {
+    /// The value the item is named by: the borrowed value where an
+    /// inner frame borrows one along the slot's path, else the frame
+    /// local the path starts from (a held find, or the local a frame
+    /// path enters), else the holding frame itself.
+    pub container: ValueKey,
+    /// The chain frame holding it, numbered as the listings number
+    /// frames.
+    pub frame: usize,
+    /// That frame's local the slot is under, where the path names one.
+    pub local: Option<String>,
+}
+
 impl SlotPath {
     /// The path as a `print` follows it: the root's selector, then the
     /// members from it joined by `.`, the pointer a hop crossed left
@@ -407,6 +442,9 @@ pub struct AttributedSlot {
     /// path; every root here reaches this slot as truly as that one
     /// does. Empty for a slot no hop reached.
     pub aliases: Vec<SlotRoot>,
+    /// Whether the task's current await reaches the slot, and where
+    /// it is held.
+    pub reach: Reach,
 }
 
 impl AttributedSlot {
@@ -597,7 +635,14 @@ impl AttributedSlot {
 
     /// The path, where the slot was located by type.
     pub fn path(&self) -> Option<&SlotPath> {
-        match &self.attribution {
+        self.attribution.path()
+    }
+}
+
+impl Attribution {
+    /// The path, where the slot was located by type.
+    pub fn path(&self) -> Option<&SlotPath> {
+        match self {
             Attribution::Owner { path, .. } | Attribution::Typed { path, .. } => Some(path),
             _ => None,
         }
@@ -1001,11 +1046,19 @@ impl<'a, 'b, T: Target> Attributor<'a, 'b, T> {
     ) {
         let roots = self.roots_of(owner);
         let mut pointers: Option<Vec<PointerMember>> = None;
+        // The pointers of one root at a time, for the reach verdict,
+        // which wants only the roots inside the holding frame: most
+        // owners never need the whole enumeration above, and are not
+        // made to walk every root for it.
+        let mut per_root: Vec<Option<Vec<PointerMember>>> = vec![None; roots.len()];
         let mut chain_roots: Option<Vec<Root<'b>>> = None;
         for &i in indexes {
             let hit = &hits[i];
             let mut within = None;
             let mut through = Vec::new();
+            // The root the slot was placed under and the values from
+            // it down to the slot, for the reach verdict below.
+            let mut placed: Option<(SlotRoot, Vec<ValueKey>)> = None;
             let attribution = if let Some(slot) = self.registry.get(&hit.slot) {
                 // A registry slot is filed under the value it lies in:
                 // a chain frame or a find. It also arms every find whose
@@ -1018,11 +1071,12 @@ impl<'a, 'b, T: Target> Attributor<'a, 'b, T> {
                 // value of its own holds the slot, the first such
                 // frame is what it is filed under.
                 let chain = chain_roots.get_or_insert_with(|| self.chain_roots_of(owner));
-                within = roots
+                let holder = roots
                     .iter()
                     .find(|r| contains(r.value, hit.slot))
-                    .or_else(|| chain.iter().find(|r| contains(r.value, hit.slot)))
-                    .map(|r| r.at);
+                    .or_else(|| chain.iter().find(|r| contains(r.value, hit.slot)));
+                within = holder.map(|r| r.at);
+                placed = holder.map(|r| (r.at, vec![ValueKey::of(r.value)]));
                 for root in chain.iter().filter(|r| contains(r.value, hit.slot)) {
                     if let SlotRoot::Find { index, .. } = root.at
                         && within != Some(root.at)
@@ -1033,8 +1087,8 @@ impl<'a, 'b, T: Target> Attributor<'a, 'b, T> {
                 }
                 Attribution::Registry(slot.clone())
             } else {
-                match self.by_containment(hit, &roots) {
-                    Ok(Some(attribution)) => attribution,
+                let located = match self.by_containment(hit, &roots) {
+                    Ok(Some(located)) => Some(located),
                     Err(mut demoted) => {
                         demoted.hit = i;
                         stale.push(demoted);
@@ -1042,11 +1096,15 @@ impl<'a, 'b, T: Target> Attributor<'a, 'b, T> {
                     }
                     Ok(None) => {
                         let pointers = pointers.get_or_insert_with(|| self.pointer_members(&roots));
-                        match self.by_hop(hit, &roots, pointers) {
-                            Some(attribution) => attribution,
-                            None => Attribution::Unknown,
-                        }
+                        self.by_hop(hit, &roots, pointers)
                     }
+                };
+                match located {
+                    Some((attribution, spine)) => {
+                        placed = attribution.path().map(|path| (path.root, spine));
+                        attribution
+                    }
+                    None => Attribution::Unknown,
                 }
             };
             // The readers' roles refine an owner slot: the oneshot's
@@ -1133,6 +1191,20 @@ impl<'a, 'b, T: Target> Attributor<'a, 'b, T> {
                 ) => self.aliases_of(&roots, pointers, path),
                 _ => Vec::new(),
             };
+            let reach = match &placed {
+                Some((at, spine)) => {
+                    let steps = attribution.path().map(|p| p.steps.as_slice());
+                    self.reach(
+                        *at,
+                        steps.unwrap_or(&[]),
+                        spine,
+                        &roots,
+                        pointers.as_deref(),
+                        &mut per_root,
+                    )
+                }
+                None => Reach::Unlocated,
+            };
             slots.push(AttributedSlot {
                 hit: i,
                 slot: hit.slot,
@@ -1141,6 +1213,7 @@ impl<'a, 'b, T: Target> Attributor<'a, 'b, T> {
                 within,
                 through,
                 aliases,
+                reach,
             });
         }
     }
@@ -1372,18 +1445,22 @@ impl<'a, 'b, T: Target> Attributor<'a, 'b, T> {
     }
 
     /// Rule 2: the innermost root whose storage holds the hit, walked
-    /// down to it. `Ok(None)` where no root holds it.
-    fn by_containment(&self, hit: &Hit, roots: &[Root<'b>]) -> Result<Option<Attribution>, Stale> {
+    /// down to it, with the values from the root down to the slot.
+    /// `Ok(None)` where no root holds it.
+    fn by_containment(
+        &self,
+        hit: &Hit,
+        roots: &[Root<'b>],
+    ) -> Result<Option<(Attribution, Vec<ValueKey>)>, Stale> {
         // The roots come innermost first.
         let containing = roots.iter().find(|r| contains(r.value, hit.slot));
         let Some(root) = containing else {
             return Ok(None);
         };
         match self.locate_member(root.value, hit.slot - root.value.addr) {
-            Located::Slot { trail, validity } => Ok(Some(self.name_slot(
-                self.path_from(root, &trail, None),
-                &trail,
-                validity,
+            Located::Slot { trail, validity } => Ok(Some((
+                self.name_slot(self.path_from(root, &trail, None), &trail, validity),
+                spine(root.value, &trail),
             ))),
             Located::Stale(reason) => Err(Stale {
                 // Filled in by the caller, which knows the index.
@@ -1405,7 +1482,7 @@ impl<'a, 'b, T: Target> Attributor<'a, 'b, T> {
         hit: &Hit,
         roots: &[Root<'b>],
         pointers: &[PointerMember],
-    ) -> Option<Attribution> {
+    ) -> Option<(Attribution, Vec<ValueKey>)> {
         let buffer = self
             .sources
             .heap
@@ -1443,23 +1520,180 @@ impl<'a, 'b, T: Target> Attributor<'a, 'b, T> {
             };
             let root = &roots[p.root];
             let to_pointer = self.steps_to(root.value, p.at - root.value.addr);
-            return Some(self.name_slot(
-                self.path_from(
-                    root,
-                    &to_pointer,
-                    Some(Hop {
-                        from: p.at,
-                        addr: p.target,
-                        pointee: pointee.name().to_string(),
-                        pointee_ty: pointee.id(),
-                        steps: trail.iter().map(|s| s.name.clone()).collect(),
-                    }),
+            let mut keys = spine(root.value, &to_pointer);
+            keys.extend(spine(value, &trail));
+            return Some((
+                self.name_slot(
+                    self.path_from(
+                        root,
+                        &to_pointer,
+                        Some(Hop {
+                            from: p.at,
+                            addr: p.target,
+                            pointee: pointee.name().to_string(),
+                            pointee_ty: pointee.id(),
+                            steps: trail.iter().map(|s| s.name.clone()).collect(),
+                        }),
+                    ),
+                    &trail,
+                    validity,
                 ),
-                &trail,
-                validity,
+                keys,
             ));
         }
         None
+    }
+
+    /// Whether the task's current await reaches a slot placed under
+    /// `at`, with `steps` the path's steps from it and `spine` the
+    /// values from the root down to the slot ([`spine`]).
+    ///
+    /// The holding frame is the root's own for a chain frame, the
+    /// frame of the find for a find (of the find the task's frame
+    /// holds, where finds nest), and #0 for a set child, which is a
+    /// chain of its own. A slot held in frame #0 is awaited: the
+    /// container is the stop itself. Otherwise the pointers the owner's
+    /// roots hold — collected once per owner, innermost root first —
+    /// are scanned for one a frame *strictly inside* the holding one
+    /// holds whose target and pointee type are a value on the spine,
+    /// deepest first: the `&mut JoinSet` a `join_next` captures, the
+    /// `&mut Interval` a tick holds. The type constraint is what keeps
+    /// a `&mut self` in an inner frame, whose struct happens to
+    /// contain things, from reading as awaiting whatever it contains.
+    /// Nothing else borrows it: the slot is parked, installed by an
+    /// await that has returned.
+    fn reach(
+        &self,
+        at: SlotRoot,
+        steps: &[String],
+        spine: &[ValueKey],
+        roots: &[Root<'b>],
+        pointers: Option<&[PointerMember]>,
+        per_root: &mut [Option<Vec<PointerMember>>],
+    ) -> Reach {
+        let Some(first) = spine.first().copied() else {
+            return Reach::Unlocated;
+        };
+        let (frame, local, container, mut keys) = match at {
+            SlotRoot::Child { .. } => (0, None, first, spine.to_vec()),
+            // Frame #0 is the stop itself, and its own value is the
+            // container.
+            SlotRoot::Frame { frame: 0, .. } => (0, None, first, spine.to_vec()),
+            SlotRoot::Frame { frame, .. } => {
+                // The local is what the first named step enters — a
+                // coroutine's state step is a frame boundary, not a
+                // local, and a plain future's first member is the
+                // local's counterpart — or the frame itself where
+                // that step enters the slot and no aggregate.
+                let named = steps.iter().position(|s| step_text(s).is_some());
+                let local = named.and_then(|i| step_text(&steps[i])).map(str::to_string);
+                let container = named.and_then(|i| spine.get(i + 1)).copied();
+                (frame, local, container.unwrap_or(first), spine.to_vec())
+            }
+            SlotRoot::Find { index, .. } => {
+                let Some((frame, top)) = self.find_frame(index) else {
+                    return Reach::Unlocated;
+                };
+                // The find itself is the container; the frame and local
+                // are the outermost find's, which is the one a frame of
+                // the task's own holds.
+                let held = &self.sources.census.held;
+                let container = ValueKey {
+                    addr: held[index].addr,
+                    ty: held[index].ty,
+                };
+                // The local holding the find is a value on the way to
+                // the slot too, and what a `&mut Interval` borrows.
+                let mut keys = spine.to_vec();
+                if let Some(local) = self.local_key(roots, frame, &held[top].local) {
+                    keys.insert(0, local);
+                }
+                (frame, Some(held[top].local.clone()), container, keys)
+            }
+        };
+        let holding = |container| Holding {
+            container,
+            frame,
+            local: local.clone(),
+        };
+        if frame == 0 {
+            return Reach::Awaited(holding(container));
+        }
+        // The pointers of the roots strictly inside the holding frame:
+        // from the owner's whole enumeration where a hop already paid
+        // for it, else each inner root walked once and kept.
+        let inner: Vec<usize> = (0..roots.len())
+            .filter(|&r| self.frame_of(roots[r].at).is_some_and(|f| f < frame))
+            .collect();
+        let borrowed = |members: &[PointerMember], key: &ValueKey| {
+            members
+                .iter()
+                .any(|p| p.target == key.addr && p.pointee == key.ty)
+        };
+        keys.dedup();
+        for key in keys.iter().rev() {
+            let hit = match pointers {
+                Some(pointers) => borrowed(
+                    &pointers
+                        .iter()
+                        .filter(|p| inner.contains(&p.root))
+                        .copied()
+                        .collect::<Vec<_>>(),
+                    key,
+                ),
+                None => inner.iter().any(|&r| {
+                    let members = per_root[r].get_or_insert_with(|| {
+                        let mut out = Vec::new();
+                        self.collect_pointers(roots[r].value, r, 0, &mut out);
+                        out
+                    });
+                    borrowed(members, key)
+                }),
+            };
+            if hit {
+                return Reach::Awaited(holding(*key));
+            }
+        }
+        Reach::Parked(holding(container))
+    }
+
+    /// The chain frame a root is held in, numbered as the listings
+    /// number frames: a chain frame's own, a find's holding frame,
+    /// none for a set child.
+    fn frame_of(&self, at: SlotRoot) -> Option<usize> {
+        match at {
+            SlotRoot::Frame { frame, .. } => Some(frame),
+            SlotRoot::Find { index, .. } => self.find_frame(index).map(|(frame, _)| frame),
+            SlotRoot::Child { .. } => None,
+        }
+    }
+
+    /// The task's chain frame holding find `index` — through the finds
+    /// it nests under, up to the one a frame of the task's own holds —
+    /// and that outermost find's own index. `None` for a find under a
+    /// set child, whose frames are the child's.
+    fn find_frame(&self, index: usize) -> Option<(usize, usize)> {
+        let held = &self.sources.census.held;
+        let mut top = index;
+        loop {
+            match held.get(top)?.via {
+                None => return Some((held[top].frame, top)),
+                Some(Via::Held(outer)) => top = outer,
+                Some(Via::SetChild { .. }) => return None,
+            }
+        }
+    }
+
+    /// The value of `local` in the coroutine frame `frame` of the
+    /// owner's chain, where that frame is among `roots` and its state
+    /// holds the local: what a borrow of the local targets.
+    fn local_key(&self, roots: &[Root<'b>], frame: usize, local: &str) -> Option<ValueKey> {
+        let root = roots
+            .iter()
+            .find(|r| matches!(r.at, SlotRoot::Frame { frame: f, .. } if f == frame))?;
+        let (_, payload) = root.value.active_variant_raw().ok()?;
+        let value = payload.try_member_raw(local).ok()??;
+        Some(ValueKey::of(value))
     }
 
     /// The roots other than the one `path` names that hold the very
@@ -2013,6 +2247,18 @@ fn order_roots(roots: &mut Vec<Root<'_>>, branches: &HashSet<u64>) {
         )
     });
     roots.dedup_by_key(|r| (r.value.addr, r.value.bytes.len()));
+}
+
+/// The values an offset walk passed through, outermost first: the
+/// root, then the value each step entered — every aggregate on the
+/// way to the slot, which is what a borrow from an inner frame can
+/// target. The step's `holder` is the value it was taken in, so the
+/// value a step entered is the next step's holder; the last step
+/// enters the slot itself, which is no aggregate.
+fn spine(root: Value<'_>, trail: &[Step<'_>]) -> Vec<ValueKey> {
+    std::iter::once(ValueKey::of(root))
+        .chain(trail.iter().skip(1).map(|s| ValueKey::of(s.holder)))
+        .collect()
 }
 
 /// The `ty`-typed view at `offset` within `value`, or `None` where the
@@ -3004,6 +3250,7 @@ mod tests {
             within: None,
             through: Vec::new(),
             aliases: Vec::new(),
+            reach: Reach::Unlocated,
         };
         let one = slot(0x7000);
         assert_eq!(one.entry(None), "unknown @ 0x7000");
@@ -3067,6 +3314,7 @@ mod join_tests {
             within: None,
             through: Vec::new(),
             aliases: Vec::new(),
+            reach: Reach::Unlocated,
         }
     }
 
@@ -3079,6 +3327,7 @@ mod join_tests {
             within,
             through: Vec::new(),
             aliases: Vec::new(),
+            reach: Reach::Unlocated,
         }
     }
 
@@ -3103,6 +3352,7 @@ mod join_tests {
             within: None,
             through: Vec::new(),
             aliases: Vec::new(),
+            reach: Reach::Unlocated,
         }
     }
 
@@ -3632,7 +3882,7 @@ mod synthetic_tests {
     use std::ops::Range;
 
     /// Where the planted mapping sits: high, and in no fixture.
-    const BASE: u64 = 0x5f20_0000_0000;
+    pub(super) const BASE: u64 = 0x5f20_0000_0000;
     const SIZE: u64 = 0x2000;
 
     // The synthetic bundle's type ids.
@@ -3640,19 +3890,19 @@ mod synthetic_tests {
     const RAW_WAKER: u32 = 1;
     const WAKER: u32 = 2;
     const UNIT: u32 = 3;
-    const OPT_WAKER: u32 = 4;
+    pub(super) const OPT_WAKER: u32 = 4;
     const SLIM: u32 = 5;
-    const HOLDER: u32 = 6;
+    pub(super) const HOLDER: u32 = 6;
     const ARR: u32 = 7;
     const BOXED: u32 = 8;
     const PTR_HOLDER: u32 = 9;
-    const FRAME: u32 = 10;
+    pub(super) const FRAME: u32 = 10;
     const PADDED: u32 = 11;
     const CHANLIKE: u32 = 12;
     const NOTIFY_ARR: u32 = 13;
     const SHARED: u32 = 14;
     const ARC_SHARED: u32 = 15;
-    const CORO: u32 = 16;
+    pub(super) const CORO: u32 = 16;
     const CORO_STATE: u32 = 17;
     const MAYBE: u32 = 18;
     const UNION_HOLDER: u32 = 19;
@@ -3660,7 +3910,7 @@ mod synthetic_tests {
     const UNIT_FRAME: u32 = 21;
     const TWO_PTR: u32 = 22;
 
-    fn id(i: u32) -> BundleTypeId {
+    pub(super) fn id(i: u32) -> BundleTypeId {
         BundleTypeId(i)
     }
 
@@ -3671,7 +3921,7 @@ mod synthetic_tests {
     /// CachePadded<Option<Waker>> }` whose wrapper is wider than a
     /// waker, and a watch `Shared` behind an `ArcInner` with the roles
     /// the watch row reads bound.
-    fn bundle() -> Bundle {
+    pub(super) fn bundle() -> Bundle {
         let mut strings = StringInterner::new();
         let mut n = |s: &str| strings.intern(s);
         let (u64n, rawn, wakern, unitn) = (
@@ -3987,14 +4237,14 @@ mod synthetic_tests {
 
     /// A fixture snapshot with one anonymous, writable mapping planted
     /// beside it, holding the bytes a test lays down.
-    struct Planted<'a> {
+    pub(super) struct Planted<'a> {
         inner: &'a Snapshot,
         base: u64,
         bytes: Vec<u8>,
     }
 
     impl<'a> Planted<'a> {
-        fn new(inner: &'a Snapshot) -> Self {
+        pub(super) fn new(inner: &'a Snapshot) -> Self {
             Self::at(inner, BASE)
         }
 
@@ -4008,13 +4258,13 @@ mod synthetic_tests {
             }
         }
 
-        fn word(&mut self, at: u64, value: u64) {
+        pub(super) fn word(&mut self, at: u64, value: u64) {
             let off = (at - self.base) as usize;
             self.bytes[off..off + 8].copy_from_slice(&value.to_le_bytes());
         }
 
         /// A waker pair at `at`: a data word and a nonzero vtable word.
-        fn pair(&mut self, at: u64) {
+        pub(super) fn pair(&mut self, at: u64) {
             self.word(at, 0x1234);
             self.word(at + 8, 0xf000);
         }
@@ -4091,7 +4341,7 @@ mod synthetic_tests {
     }
 
     impl Empty {
-        fn new(bundle: &Bundle) -> Self {
+        pub(super) fn new(bundle: &Bundle) -> Self {
             Empty {
                 list: TaskList::new(Vec::new()),
                 census: FutureCensus::from_finds(Vec::new(), Vec::new(), Vec::new()),
@@ -4143,7 +4393,7 @@ mod synthetic_tests {
         Value::read(at.proc, at.types.view.ty(id(ty)).unwrap(), addr).unwrap()
     }
 
-    fn hit(slot: u64) -> Hit {
+    pub(super) fn hit(slot: u64) -> Hit {
         Hit {
             slot,
             vtable: 0xf000,
@@ -4328,7 +4578,7 @@ mod synthetic_tests {
             (holder, frame, id(HOLDER))
         );
         match at.by_hop(&hit(holder + 8), &roots, &pointers) {
-            Some(Attribution::Typed { path, .. }) => {
+            Some((Attribution::Typed { path, .. }, _)) => {
                 assert_eq!(path.root, SlotRoot::Frame { task: 0, frame: 1 });
                 assert_eq!(path.steps, ["p"]);
                 let hop = path.hop.expect("a hop");
@@ -4357,7 +4607,7 @@ mod synthetic_tests {
         }];
         assert!(matches!(
             at.by_containment(&hit(holder + 8), &contained),
-            Ok(Some(Attribution::Typed { .. }))
+            Ok(Some((Attribution::Typed { .. }, _)))
         ));
         assert!(matches!(
             at.by_containment(&hit(holder + 24), &contained),
@@ -4676,7 +4926,7 @@ mod synthetic_tests {
         let aliases = |roots: &[Root<'_>]| -> Vec<SlotRoot> {
             let pointers = at.pointer_members(roots);
             let path = match at.by_hop(&hit(holder + 8), roots, &pointers) {
-                Some(Attribution::Typed { path, .. }) => path,
+                Some((Attribution::Typed { path, .. }, _)) => path,
                 other => panic!("{other:?}"),
             };
             assert_eq!(path.root, roots[0].at, "the hop is the first root's");
@@ -4820,7 +5070,7 @@ mod synthetic_tests {
         let hop_of = |at: &Attributor<'_, '_, Planted<'_>>, pointers: &[PointerMember]| match at
             .by_hop(&hit(slot), &roots, pointers)
         {
-            Some(Attribution::Typed { path, .. }) => {
+            Some((Attribution::Typed { path, .. }, _)) => {
                 let hop = path.hop.expect("a hop");
                 Some((hop.addr, hop.steps))
             }
@@ -4844,6 +5094,270 @@ mod synthetic_tests {
         assert_eq!(
             hop_of(&at, &[ptr(slot)]),
             Some((slot, vec!["live".to_string()]))
+        );
+    }
+}
+
+#[cfg(test)]
+mod reach_tests {
+    //! Whether the current await reaches a slot, over the synthetic
+    //! bundle's shapes planted beside a fixture pair: a `Holder`
+    //! holding the waker in one frame, a `Frame` whose pointer may or
+    //! may not borrow it in the frame inside, and the same holder as
+    //! a find of the frame's.
+
+    use super::synthetic_tests::{BASE, CORO, FRAME, HOLDER, OPT_WAKER, Planted, bundle, hit, id};
+    use super::*;
+    use crate::tokio::assess::{ContinuationStatus, IncompleteReason, WaitAssessment};
+    use crate::tokio::bundle::{FutureInfo, OwnerResolution, Registries, Task, TaskKind, TaskList};
+    use crate::tokio::census::{FutureCensus, HeldFuture, Via};
+    use crate::tokio::graph::{Analysis, TaskRef, TaskWait};
+    use crate::tokio::semantics::SemanticIndex;
+    use crate::tokio::{TaskAddr, TaskState};
+
+    use hansei_bundle::{Bundle, BundleView};
+
+    /// The owner every planted hit names, as [`hit`] fills it in.
+    const OWNER: Owner = Owner::Task {
+        header: 0x1000,
+        index: 0,
+    };
+
+    /// Everything an attributor reads besides the target and the
+    /// bundle: one task whose chain is `frames`, root first, and the
+    /// finds the census lists under it.
+    struct Owned {
+        list: TaskList,
+        census: FutureCensus,
+        registries: Registries,
+        analysis: Analysis,
+        impls: ImplFold,
+        semantics: SemanticIndex,
+    }
+
+    impl Owned {
+        fn new(bundle: &Bundle, frames: Vec<ValueKey>, held: Vec<HeldFuture>) -> Self {
+            let task = Task {
+                addr: TaskAddr(0x1000),
+                state: TaskState(1 << 6),
+                owner_id: Some(1),
+                task_id: Some(1),
+                spawn_location: None,
+                future: FutureInfo::Unknown { poll_symbol: None },
+                kind: TaskKind::Async,
+                owner: OwnerResolution::Unknown,
+            };
+            let wait = TaskWait {
+                task: TaskRef {
+                    addr: TaskAddr(0x1000),
+                    task_id: Some(1),
+                },
+                assessment: WaitAssessment::Unknown(
+                    crate::tokio::assess::WaitUnknownReason::Continuation,
+                ),
+                continuation: ContinuationStatus::Incomplete {
+                    reason: IncompleteReason::NoRoot,
+                    detail: None,
+                },
+                depth: frames.len(),
+                site: None,
+                observation: None,
+                notes: Vec::new(),
+                held: Vec::new(),
+                held_capped: 0,
+                frame_sites: vec![None; frames.len()],
+                frames,
+            };
+            Owned {
+                list: TaskList::new(vec![task]),
+                census: FutureCensus::from_finds(held, Vec::new(), Vec::new()),
+                registries: Registries::default(),
+                analysis: Analysis {
+                    waits: vec![wait],
+                    barriers: Vec::new(),
+                    join_wakers: Vec::new(),
+                    errors: Vec::new(),
+                },
+                impls: ImplFold::default(),
+                semantics: SemanticIndex::new(bundle.types.types.len(), &bundle.semantics.types)
+                    .expect("an empty semantic table indexes"),
+            }
+        }
+
+        fn sources(&self) -> Sources<'_> {
+            Sources {
+                list: &self.list,
+                census: &self.census,
+                registries: &self.registries,
+                analysis: &self.analysis,
+                heap: None,
+                impls: &self.impls,
+            }
+        }
+    }
+
+    /// A find of the task's at `addr`, a `Holder` in `frame`'s local
+    /// `local`, nested under `via`.
+    fn find(addr: u64, frame: usize, local: &str, via: Option<Via>) -> HeldFuture {
+        HeldFuture {
+            owner: 0,
+            frame,
+            local: local.to_string(),
+            via,
+            slot: addr,
+            addr,
+            ty: id(HOLDER),
+            depth: 1,
+            frames: Vec::new(),
+            future: "x::Holder".to_string(),
+            state: None,
+            waiting_on: None,
+            wait: None,
+            continuation: ContinuationStatus::Primitive,
+        }
+    }
+
+    fn key(ty: u32, addr: u64) -> ValueKey {
+        ValueKey { addr, ty: id(ty) }
+    }
+
+    /// The verdict on the one hit at `slot`, attributed through the
+    /// owner walk over `owned`.
+    fn reach_of(planted: &Planted<'_>, bundle: &Bundle, owned: &Owned, slot: u64) -> Reach {
+        let sources = owned.sources();
+        let at = Attributor {
+            proc: planted,
+            types: Types {
+                view: BundleView::new(bundle),
+                semantics: &owned.semantics,
+                test_bindings: &[],
+            },
+            sources: &sources,
+            registry: HashMap::default(),
+            finds: finds_by_owner(&owned.census),
+        };
+        let (mut slots, mut stale) = (Vec::new(), Vec::new());
+        at.owner(OWNER, &[0], &[hit(slot)], &mut slots, &mut stale);
+        assert!(stale.is_empty(), "{stale:?}");
+        let [slot] = slots.as_slice() else {
+            panic!("{slots:?}");
+        };
+        slot.reach.clone()
+    }
+
+    fn holding(container: ValueKey, frame: usize, local: Option<&str>) -> Holding {
+        Holding {
+            container,
+            frame,
+            local: local.map(str::to_string),
+        }
+    }
+
+    /// A slot in an outer frame's local is awaited where a frame
+    /// strictly inside borrows that local — the pointer's target and
+    /// pointee type are the local's — and parked where the inner
+    /// frame's pointer goes elsewhere, or is the outer frame's own,
+    /// or its pointee is another type at the same address. A slot in
+    /// frame #0 is awaited whatever points where: the stop is the
+    /// container.
+    #[test]
+    fn test_a_borrow_from_an_inner_frame_makes_a_slot_awaited() {
+        let (_, snapshot) = crate::testkit::load_any("sleep-join");
+        let bundle = bundle();
+        let (frame0, holder, other, coro) = (BASE, BASE + 0x100, BASE + 0x200, BASE + 0x300);
+        let mut planted = Planted::new(&snapshot);
+        planted.word(holder, 7);
+        planted.pair(holder + 8);
+        planted.word(other, 7);
+        planted.pair(other + 8);
+        // A coroutine in state 3 with a live waker as its first local
+        // and a null in its live pointer.
+        planted.word(coro, 3);
+        planted.pair(coro + 8);
+
+        // Root first: the holder is frame #1, the frame with the
+        // pointer is #0.
+        let chain = |inner| vec![key(HOLDER, holder), key(FRAME, inner)];
+        let owned = Owned::new(&bundle, chain(frame0), Vec::new());
+        planted.word(frame0, holder);
+        assert_eq!(
+            reach_of(&planted, &bundle, &owned, holder + 8),
+            Reach::Awaited(holding(key(HOLDER, holder), 1, Some("w")))
+        );
+        // The pointer goes elsewhere: nothing inside borrows the local,
+        // and the container is the local the path enters.
+        planted.word(frame0, other);
+        assert_eq!(
+            reach_of(&planted, &bundle, &owned, holder + 8),
+            Reach::Parked(holding(key(OPT_WAKER, holder + 8), 1, Some("w")))
+        );
+        // The borrow comes from an outer frame, not an inner one: the
+        // holder is #0 of a chain whose root points at it, and awaited
+        // as the stop itself; the frame's own slot, with the holder
+        // outside it, is parked.
+        planted.word(frame0, holder);
+        let reversed = Owned::new(
+            &bundle,
+            vec![key(FRAME, frame0), key(HOLDER, holder)],
+            Vec::new(),
+        );
+        assert_eq!(
+            reach_of(&planted, &bundle, &reversed, holder + 8),
+            Reach::Awaited(holding(key(HOLDER, holder), 0, None))
+        );
+        // The pointee type is not the borrowed value's: a `*const
+        // Holder` at a coroutine's address borrows no coroutine.
+        planted.word(frame0, coro);
+        let typed = Owned::new(
+            &bundle,
+            vec![key(CORO, coro), key(FRAME, frame0)],
+            Vec::new(),
+        );
+        assert_eq!(
+            reach_of(&planted, &bundle, &typed, coro + 8),
+            Reach::Parked(holding(key(CORO, coro), 1, Some("live")))
+        );
+    }
+
+    /// A slot in a find is held in the find's frame and local — the
+    /// outermost find's, where finds nest — and is awaited where a
+    /// frame inside that one borrows the find.
+    #[test]
+    fn test_a_slot_in_a_find_is_held_where_the_census_found_it() {
+        let (_, snapshot) = crate::testkit::load_any("sleep-join");
+        let bundle = bundle();
+        let (frame0, coro, holder, nested) = (BASE, BASE + 0x100, BASE + 0x200, BASE + 0x300);
+        let mut planted = Planted::new(&snapshot);
+        planted.word(coro, 3);
+        planted.word(holder, 7);
+        planted.pair(holder + 8);
+        planted.word(nested, 7);
+        planted.pair(nested + 8);
+        let held = vec![
+            find(holder, 1, "h", None),
+            find(nested, 0, "inner", Some(Via::Held(0))),
+        ];
+        let chain = vec![key(CORO, coro), key(FRAME, frame0)];
+        let owned = Owned::new(&bundle, chain, held);
+        planted.word(frame0, holder);
+        assert_eq!(
+            reach_of(&planted, &bundle, &owned, holder + 8),
+            Reach::Awaited(holding(key(HOLDER, holder), 1, Some("h")))
+        );
+        planted.word(frame0, 0);
+        assert_eq!(
+            reach_of(&planted, &bundle, &owned, holder + 8),
+            Reach::Parked(holding(key(HOLDER, holder), 1, Some("h")))
+        );
+        // The nested find is held where the find it nests under is.
+        assert_eq!(
+            reach_of(&planted, &bundle, &owned, nested + 8),
+            Reach::Parked(holding(key(HOLDER, nested), 1, Some("h")))
+        );
+        planted.word(frame0, nested);
+        assert_eq!(
+            reach_of(&planted, &bundle, &owned, nested + 8),
+            Reach::Awaited(holding(key(HOLDER, nested), 1, Some("h")))
         );
     }
 }

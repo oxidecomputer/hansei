@@ -7,11 +7,12 @@ task 3
     thread: <none>
     type: async fn joinset::driver
     awaiting at: src/bin/joinset.rs:83
-    waiting on:
-        waker 0:
-            held in: tokio::util::idle_notified_set::ListsInner @ 0xADDR
-            location: frame 2 set.inner.lists.data.data.waker.Some
+    awaiting on:
+        join set 0xADDR (3 tasks)
+            held in: frame 2 `set`
+            awaiting at: src/bin/joinset.rs:83
+            waker: tokio::util::idle_notified_set::ListsInner @ 0xADDR
     spawned at: src/bin/joinset.rs:100:21
-    defined at: src/bin/joinset.rs:48
+    type defined at: src/bin/joinset.rs:48
     held futures: 0
     join sets: 2 (6 tasks)

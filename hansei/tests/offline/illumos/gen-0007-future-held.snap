@@ -1,12 +1,11 @@
 ---
 source: hansei/src/offline.rs
-description: "`future 0x11250e8` over illumos/gen-0007"
+description: "`future 0xf110e8` over illumos/gen-0007"
 ---
 future 0xADDR
     type: async fn gen_0007::leaf_05
     held by: task 5 (frame 0, `inner`), via held future at 0xADDR
     state: Unresumed
     depth: 1 frame
-    armed: no
     held futures: 0
     join sets: 0

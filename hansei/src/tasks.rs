@@ -15,6 +15,7 @@ use hansei_runtime::tokio::assess::{
     WaitAssessment, WaitUnknownReason,
 };
 use hansei_runtime::tokio::graph as rt_graph;
+use hansei_runtime::tokio::observe::ValueKey;
 use hansei_runtime::tokio::waitset::{self, MemberRoute, WaitMember};
 use hansei_runtime::tokio::{Lifecycle, RawInstant, attribution, bundle, census};
 
@@ -643,16 +644,22 @@ pub(crate) struct TaskRow {
     /// ([`assessment_kind`]) under `unarmed: `; `None` where the row
     /// waits on nothing nameable — mid-poll included.
     pub(crate) waiting_kind: Option<String>,
-    /// The detail lines under the wait: what the assessment has to say
-    /// beyond the cell, then one line per slot — where it sits, and
-    /// what says it is current.
+    /// The detail lines under `awaiting on:`: what the assessment has
+    /// to say beyond the cell, the members of the stop, and one item
+    /// per container the current await reaches a slot in.
     pub(crate) wait_detail: Vec<String>,
-    /// Whether those lines carry every word of the cell — a wait
-    /// set's entries, each on its slot's line; a verified target,
-    /// heading the line of the slot it accounts for — so the task
-    /// block prints the lines under a bare `waiting on:` rather than
-    /// the cell and then the lines again.
-    pub(crate) wait_listed: bool,
+    /// What follows `awaiting on:` on its line: the cell, or the
+    /// verified target with its reading where a slot accounts for it;
+    /// `None` where the lines under it carry the wait whole — a set's
+    /// members — so the label stands bare over them rather than
+    /// listing the members the lines are about to list.
+    pub(crate) wait_line: Option<String>,
+    /// The lines under `will wake:`: one item per container holding a
+    /// slot the current await does not reach — installed by an await
+    /// that has since returned, so its wake runs the task and the poll
+    /// that follows consumes nothing. Empty for a task with none,
+    /// which prints no such label.
+    pub(crate) will_wake: Vec<String>,
     /// The root future's display name, folded and never truncated.
     pub(crate) future: String,
     /// `Spawned at:` — where the target records one
@@ -716,6 +723,7 @@ pub(crate) fn with_slots<T: proc::Target>(
     session: &Session<'_, T>,
 ) -> Vec<TaskRow> {
     let view = session.ctx.view;
+    let containers = Containers::of(session.census());
     apply_slots(
         &mut rows,
         &session.tasks,
@@ -724,6 +732,7 @@ pub(crate) fn with_slots<T: proc::Target>(
         session.registries.stopped,
         &|ty| view.ty(ty).map(|t| t.size()),
         &StopNames::of(session),
+        Some(&containers),
     );
     rows
 }
@@ -744,6 +753,15 @@ pub(crate) fn build_rows(
         .enumerate()
         .map(|(index, task)| {
             let lwp = task_lwp(task, polling, blocking_lwps);
+            let waiting_on = waiting_on(task, waits.get(index), polling, stops);
+            let detail = Detail {
+                containers: None,
+                armed: show_armed(task),
+            };
+            let lines = waits
+                .get(index)
+                .map(|wait| wait_detail(wait, stops, &[], None, &|_| None, detail))
+                .unwrap_or_default();
             TaskRow {
                 id: task_id(list, index),
                 state: row_state(task, lwp),
@@ -752,13 +770,11 @@ pub(crate) fn build_rows(
                     .get(index)
                     .and_then(|w| w.site.as_ref())
                     .map(|(file, line)| format!("{file}:{line}")),
-                waiting_on: waiting_on(task, waits.get(index), polling, stops),
+                wait_line: lines.head.line(&waiting_on),
+                waiting_on,
                 waiting_kind: waiting_kind(task, waits.get(index), stops),
-                wait_detail: waits
-                    .get(index)
-                    .map(|wait| wait_detail(wait, stops, &[], None, &|_| None))
-                    .unwrap_or_default(),
-                wait_listed: false,
+                wait_detail: lines.awaiting,
+                will_wake: lines.wake,
                 future: future_name(&task.future, impls),
                 spawned: task.spawn_location.as_ref().map(|loc| loc.to_string()),
                 defined: match &task.future {
@@ -784,6 +800,7 @@ pub(crate) fn build_rows(
 /// a task waiting on nothing (`—` and its reasons), which has no slot
 /// to miss. Blocking and mid-poll rows are untouched: neither is
 /// parked, and the fold left their waits alone.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn apply_slots(
     rows: &mut [TaskRow],
     list: &bundle::TaskList,
@@ -792,6 +809,7 @@ pub(crate) fn apply_slots(
     stopped: Option<RawInstant>,
     size_of: &dyn Fn(BundleTypeId) -> Option<u64>,
     stops: &StopNames<'_>,
+    containers: Option<&Containers<'_>>,
 ) {
     for (index, (row, task)) in rows.iter_mut().zip(&list.tasks).enumerate() {
         if task.is_blocking() || task.state.lifecycle() == Lifecycle::Running {
@@ -802,38 +820,119 @@ pub(crate) fn apply_slots(
         };
         row.waiting_on = assessment_cell(wait, stops);
         row.waiting_kind = assessment_kind(wait, stops);
+        let detail = Detail {
+            containers,
+            armed: show_armed(task),
+        };
         let owned: Vec<&attribution::AttributedSlot> = slots.of_task(task.addr.0).collect();
-        if owned.is_empty() {
-            row.wait_detail = wait_detail(wait, stops, &[], stopped, size_of);
-            if !row.waiting_on.starts_with('—') {
-                row.waiting_on = format!("unarmed: {}", row.waiting_on);
-                row.waiting_kind = row.waiting_kind.take().map(|k| format!("unarmed: {k}"));
-            }
-            continue;
+        if owned.is_empty() && !row.waiting_on.starts_with('—') {
+            row.waiting_on = format!("unarmed: {}", row.waiting_on);
+            row.waiting_kind = row.waiting_kind.take().map(|k| format!("unarmed: {k}"));
         }
-        row.wait_detail = wait_detail(wait, stops, &owned, stopped, size_of);
-        row.wait_listed = cell_in_detail(wait, &owned, size_of);
+        let lines = wait_detail(wait, stops, &owned, stopped, size_of, detail);
+        row.wait_line = lines.head.line(&row.waiting_on);
+        row.wait_detail = lines.awaiting;
+        row.will_wake = lines.wake;
     }
 }
 
-/// Whether the detail lines carry the cell whole: a wait set's cell
-/// is its members' entries, and each armed member's line opens with
-/// its entry; a verified wait's cell is its target, and the line of
-/// the slot the target accounts for opens with it. Every other cell —
-/// a stop's type, a reason, `ready` — says something the lines do
-/// not, and stays on the wait line.
-fn cell_in_detail(
-    wait: &rt_graph::TaskWait,
-    slots: &[&attribution::AttributedSlot],
-    size_of: &dyn Fn(BundleTypeId) -> Option<u64>,
-) -> bool {
-    match &wait.assessment {
-        WaitAssessment::Set(_) => !slots.is_empty(),
-        WaitAssessment::Waiting(verified) => slots
-            .iter()
-            .any(|slot| attribution::verified_accounts(verified, slot, size_of)),
-        _ => false,
+/// Whether a task's members print their `armed:` line. While a
+/// `select!` is pending on an idle task, every enabled branch was
+/// polled to `Pending` on the last poll and a well-behaved future
+/// registered its waker first, so every enabled branch is armed; an
+/// unarmed branch there is disabled or never ready by construction,
+/// which its own lines already say. The line carries something only
+/// on a task that is not idle — notified, on a run queue, running —
+/// where a wake may already have consumed the slot, or a poll that
+/// ran out of budget left the branches after it unarmed.
+fn show_armed(task: &bundle::Task) -> bool {
+    task.state.lifecycle() != Lifecycle::Idle
+}
+
+/// What the lines under a wait read beside the wait itself.
+#[derive(Clone, Copy)]
+pub(crate) struct Detail<'a> {
+    /// The census's finds by address, which name a container the way
+    /// the census found it: a join set by its tasks, a find by its
+    /// wait and its type, a member by the frame and local holding it.
+    /// `None` for a listing laid out by hand, where every container is
+    /// named by its type.
+    pub(crate) containers: Option<&'a Containers<'a>>,
+    /// Whether the members' `armed:` line prints ([`show_armed`]).
+    pub(crate) armed: bool,
+}
+
+/// The census's finds by address — built once for a listing, since
+/// every row's lines look its containers up, and the census holds
+/// tens of thousands of finds on a large core.
+pub(crate) struct Containers<'a> {
+    census: &'a census::FutureCensus,
+    held: HashMap<u64, usize>,
+    sets: HashMap<u64, usize>,
+    join_sets: HashMap<u64, usize>,
+}
+
+impl<'a> Containers<'a> {
+    pub(crate) fn of(census: &'a census::FutureCensus) -> Self {
+        let by_addr = |addrs: &mut dyn Iterator<Item = u64>| -> HashMap<u64, usize> {
+            addrs.enumerate().map(|(i, addr)| (addr, i)).collect()
+        };
+        Containers {
+            census,
+            held: by_addr(&mut census.held.iter().map(|h| h.addr)),
+            sets: by_addr(&mut census.sets.iter().map(|s| s.addr)),
+            join_sets: by_addr(&mut census.join_sets.iter().map(|s| s.addr)),
+        }
     }
+
+    fn held_at(&self, addr: u64) -> Option<&'a census::HeldFuture> {
+        self.held.get(&addr).map(|&i| &self.census.held[i])
+    }
+
+    fn set_at(&self, addr: u64) -> Option<&'a census::FutureSet> {
+        self.sets.get(&addr).map(|&i| &self.census.sets[i])
+    }
+
+    fn join_set_at(&self, addr: u64) -> Option<&'a census::JoinSet> {
+        self.join_sets
+            .get(&addr)
+            .map(|&i| &self.census.join_sets[i])
+    }
+}
+
+/// What stands on the `awaiting on:` line.
+#[derive(Default)]
+pub(crate) enum WaitHead {
+    /// The cell: what the table says, which the lines under it add to.
+    #[default]
+    Cell,
+    /// Nothing: the lines under it carry the wait whole.
+    Listed,
+    /// The verified target with its reading — the account of the slot
+    /// it was read from, lifted onto the line, since the wait is that
+    /// one resource and the slot adds only where the waker sits.
+    Verified(String),
+}
+
+impl WaitHead {
+    /// The text after `awaiting on:`, given the cell; `None` for a
+    /// bare label.
+    fn line(&self, cell: &str) -> Option<String> {
+        match self {
+            WaitHead::Cell => Some(cell.to_string()),
+            WaitHead::Listed => None,
+            WaitHead::Verified(text) => Some(text.clone()),
+        }
+    }
+}
+
+/// The lines a wait prints: what heads its label line, the lines
+/// under `awaiting on:`, and the lines under `will wake:`.
+#[derive(Default)]
+pub(crate) struct WaitLines {
+    pub(crate) head: WaitHead,
+    pub(crate) awaiting: Vec<String>,
+    pub(crate) wake: Vec<String>,
 }
 
 /// The cell and the bucket a list of slots amounts to: entries sorted,
@@ -861,14 +960,14 @@ pub(crate) fn slot_cell(
     (cell, kind)
 }
 
-/// One `waker N:` block per slot, in the grammar a branch's lines
-/// use: what the wait is on where something names it, the slot itself
-/// where that line did not name the place, and where it sits. `on` is
-/// the reading the owner's own reader gave for a slot it accounts
-/// for — the verified target with its words, a find's description —
-/// which heads the block in place of what the slot's entry names. The
-/// blocks are numbered after sorting, so the same slots number them
-/// the same way twice.
+/// One `waker N:` block per slot, in the grammar an item's lines use:
+/// what the wait is on where something names it, and the slot itself
+/// where that line did not name the place. `on` is the reading the
+/// owner's own reader gave for a slot it accounts for — the verified
+/// target with its words, a find's description — which heads the
+/// block in place of what the slot's entry names. The blocks are
+/// numbered after sorting, so the same slots number them the same way
+/// twice.
 pub(crate) fn waker_blocks(
     slots: &[&attribution::AttributedSlot],
     on: &dyn Fn(&attribution::AttributedSlot) -> Option<String>,
@@ -888,41 +987,49 @@ pub(crate) fn waker_blocks(
 }
 
 /// One waker's lines, indented one step for the `waker N:` heading
-/// over them. No `armed` field: a slot is listed because it holds the
-/// waker, so the answer would be `yes` on every one of them. A
-/// branch's says something, because a branch can be held and unarmed.
+/// over them: what the wait is on, and the slot itself. No `armed`
+/// field: a slot is listed because it holds the waker, so the answer
+/// would be `yes` on every one of them. A branch's says something,
+/// because a branch can be held and unarmed.
 fn waker_block(
     slot: &attribution::AttributedSlot,
     on: Option<String>,
     stopped: Option<RawInstant>,
 ) -> Vec<String> {
     let mut block = Vec::new();
-    let mut field = |label: &str, value: String| block.push(format!("    {label}: {value}"));
     // What the wait is on: the reader's account where it has one —
     // with its reading, since this line carries the primitive and
     // nothing else — else what the slot's own entry names.
     let on = on.or_else(|| slot.waits_on(stopped));
     if let Some(on) = &on {
-        field("blocked on", on.clone());
+        block.push(format!("    awaiting on: {on}"));
     }
-    // The slot itself, where the line above named the resource rather
-    // than the place: the wheel entry holding the waker, the waiter
-    // node, or — for a slot no table names — the type it sits in.
-    let held_in = match (slot.wheel_entry(), slot.detail(stopped)) {
-        (Some(entry), _) => Some(entry),
-        (None, Some(detail)) => Some(detail),
-        (None, None) => slot.waits_on(stopped).is_none().then(|| slot.place()),
-    };
-    // A wheel entry with no deadline to give is named twice — by its
-    // address above and as the place `@` it here; once is enough.
-    let named_above = |held_in: &String| Some(held_in.replacen(" @ ", " ", 1)) == on;
-    if let Some(held_in) = held_in.filter(|held_in| !named_above(held_in)) {
-        field("held in", held_in);
-    }
-    if let Some(at) = slot.location() {
-        field("location", at);
+    if let Some(waker) = slot_waker(slot, on.as_deref(), stopped) {
+        block.push(format!("    waker: {waker}"));
     }
     block
+}
+
+/// The `waker:` line of a slot: the slot itself, where the line naming
+/// the resource (`on`) named the resource rather than the place — the
+/// wheel entry holding the waker, the waiter node, or, for a slot no
+/// table names, the type it sits in at its address, so a reader who
+/// wants the bytes has an address to hand `print` or `whatis`. `None`
+/// where there is nothing to add to the resource, or where the line
+/// above named the very same thing: a wheel entry with no deadline to
+/// give is `timer 0x…` there and `timer @ 0x…` here, and once is
+/// enough.
+pub(crate) fn slot_waker(
+    slot: &attribution::AttributedSlot,
+    on: Option<&str>,
+    stopped: Option<RawInstant>,
+) -> Option<String> {
+    let waker = match (slot.wheel_entry(), slot.detail(stopped)) {
+        (Some(entry), _) => entry,
+        (None, Some(detail)) => detail,
+        (None, None) => slot.waits_on(stopped).is_none().then(|| slot.place())?,
+    };
+    (on != Some(waker.replacen(" @ ", " ", 1).as_str())).then_some(waker)
 }
 
 /// Which lwp runs each claimed blocking task: unwind the stacks once
@@ -1201,14 +1308,15 @@ impl<'a> StopNames<'a> {
             .clone()
     }
 
-    /// Where the type's poll method is written, for the `defined at`
-    /// line of a member that is a hand-written future or stream:
-    /// `None` where the type is not in the bundle, or is a coroutine,
-    /// or has no declaration recorded. Not memoized, unlike the two
-    /// above: those fold a name per call, and this is one map probe.
+    /// Where the type is written, for the `type defined at:` line of
+    /// a member or an item: a hand-written future's or stream's `poll`,
+    /// or a coroutine's own `async fn` or block. `None` where the type
+    /// is not in the bundle or has no declaration recorded. Not
+    /// memoized, unlike the two above: those fold a name per call, and
+    /// this is two map probes at most.
     fn site(&self, ty: BundleTypeId) -> Option<(String, u32)> {
         let ty = self.view?.ty(ty)?;
-        let (file, line) = ty.implementation_site()?;
+        let (file, line) = ty.implementation_site().or_else(|| ty.declaration_site())?;
         Some((file.to_string(), line))
     }
 
@@ -1261,25 +1369,32 @@ fn incomplete_word(reason: IncompleteReason) -> &'static str {
     }
 }
 
-/// The detail lines under a row's wait. What the assessment has to say
+/// The lines under a row's wait. What the assessment has to say
 /// beyond the cell where it is a word rather than a place (`ready:`,
 /// `unknown:` with a reason other than the continuation — an unknown
 /// stop is named by the cell); then, at a stop that polls several
 /// things, one line per branch the census could read, each armed by
 /// the slots that sit in it or were reached through it, or `held, not
 /// armed` — the branches of a `select!` nested under a `select!:`
-/// heading, so the word names what they are branches of; then one
-/// block per remaining waker — where it sits and what says it is
-/// current, a wheel entry by its deadline. Any one waker wakes the
-/// task; nothing here is a dependency.
+/// heading, so the word names what they are branches of, with the
+/// frame holding the `select!` and its suspend point under the
+/// heading; then one item per container holding a slot no member
+/// accounts for — under `awaiting on:` where the task's current await
+/// reaches it, under `will wake:` where an await that has returned
+/// installed it ([`slot_items`]). A verified wait's own slot is lifted
+/// onto the label line ([`WaitHead::Verified`]), with only its
+/// `waker:` line under it. Any one waker wakes the task; nothing here
+/// is a dependency.
 pub(crate) fn wait_detail(
     wait: &rt_graph::TaskWait,
     stops: &StopNames<'_>,
     slots: &[&attribution::AttributedSlot],
     stopped: Option<RawInstant>,
     size_of: &dyn Fn(BundleTypeId) -> Option<u64>,
-) -> Vec<String> {
+    detail: Detail<'_>,
+) -> WaitLines {
     let mut lines = Vec::new();
+    let mut head = WaitHead::Cell;
     match &wait.assessment {
         WaitAssessment::ResourceReady(reason) => {
             lines.push(format!("ready: {}", ready_reason(*reason)));
@@ -1293,6 +1408,10 @@ pub(crate) fn wait_detail(
         WaitAssessment::Waiting(_) => {
             lines.extend(wait.notes.iter().map(|note| format!("note: {note}")))
         }
+        // A set's cell is its members' entries, and each armed
+        // member's line opens with its entry: the lines carry the
+        // cell whole, and the label stands bare over them.
+        WaitAssessment::Set(_) if !slots.is_empty() => head = WaitHead::Listed,
         WaitAssessment::Set(_)
         | WaitAssessment::NeverReady { .. }
         | WaitAssessment::Unresumed
@@ -1346,11 +1465,12 @@ pub(crate) fn wait_detail(
             .into_iter()
             .partition(|slot| attribution::member_accounts(member, slot, size_of));
         rest = others;
-        let block = member_line(member, stops, &mine, stopped);
+        let block = member_line(member, stops, &mine, stopped, detail);
         let mut depth = 0;
         if in_select_branch(&member.route) {
             if !in_select {
                 lines.push("select!:".to_string());
+                lines.extend(select_holder(wait));
                 in_select = true;
             }
             depth += 1;
@@ -1382,28 +1502,202 @@ pub(crate) fn wait_detail(
         };
         lines.push(format!("{indent}{capped} more {unit} not inspected"));
     }
-    // The remaining slots, one `waker N:` block each, in the grammar a
-    // branch's lines use: what the wait is on where the slot names it,
-    // the slot itself where the line above did not, and where it sits.
-    // They are numbered after sorting, so the same wait numbers them
-    // the same way twice.
-    let verified = match &wait.assessment {
-        WaitAssessment::Waiting(verified) => Some(verified),
-        _ => None,
-    };
-    // The verified target accounts for the slot it was read from, and
-    // heads that slot's block with its reading.
-    let accounted = |slot: &attribution::AttributedSlot| {
-        let target = verified
-            .filter(|v| attribution::verified_accounts(v, slot, size_of))?
-            .target();
-        Some(match target.words() {
-            Some(words) => format!("{target} ({words})"),
-            None => target.to_string(),
-        })
-    };
-    lines.extend(waker_blocks(&rest, &accounted, stopped));
+    // The verified target accounts for the slot it was read from: the
+    // wait is that one resource, so its reading heads the label line
+    // and the slot adds only where the waker sits.
+    if let WaitAssessment::Waiting(verified) = &wait.assessment {
+        let (accounted, others): (Vec<_>, Vec<_>) = rest
+            .into_iter()
+            .partition(|slot| attribution::verified_accounts(verified, slot, size_of));
+        rest = others;
+        if !accounted.is_empty() {
+            let target = verified.target();
+            let text = match target.words() {
+                Some(words) => format!("{target} ({words})"),
+                None => target.to_string(),
+            };
+            let mut wakers: Vec<String> = accounted
+                .iter()
+                .filter_map(|slot| slot_waker(slot, Some(&text), stopped))
+                .collect();
+            wakers.sort();
+            wakers.dedup();
+            lines.extend(wakers.into_iter().map(|waker| format!("waker: {waker}")));
+            head = WaitHead::Verified(text);
+        }
+    }
+    // The remaining slots, one item per container.
+    let (awaited, wake) = slot_items(&rest, wait, stops, stopped, detail);
+    lines.extend(awaited);
+    WaitLines {
+        head,
+        awaiting: lines,
+        wake,
+    }
+}
+
+/// The lines under a `select!:` heading that place the `select!`
+/// itself: the frame holding it — the coroutine whose awaitee the
+/// `select!`'s own future is, one out from the stop at frame #0 — and
+/// that frame's suspend point, the line of this task's code the
+/// `select!` is written on. Nothing where the chain has no such frame.
+fn select_holder(wait: &rt_graph::TaskWait) -> Vec<String> {
+    if wait.frames.len() < 2 {
+        return Vec::new();
+    }
+    let mut lines = vec!["    held in: frame 1".to_string()];
+    if let Some(site) = frame_site(wait, 1) {
+        lines.push(format!("    awaiting at: {site}"));
+    }
     lines
+}
+
+/// The suspend point of chain frame `frame`, numbered as the listings
+/// number frames, where the analysis recorded one for it.
+fn frame_site(wait: &rt_graph::TaskWait, frame: usize) -> Option<String> {
+    let index = wait.frames.len().checked_sub(1 + frame)?;
+    let (file, line) = wait.frame_sites.get(index)?.as_ref()?;
+    Some(format!("{file}:{line}"))
+}
+
+/// The items the slots no member accounts for are listed under, one
+/// per container, split by whether the task's current await reaches
+/// the slot ([`attribution::Reach`]): the items under `awaiting on:`,
+/// then the items under `will wake:`. An item is headed by its
+/// container as the census names it ([`container_heading`]), then
+/// says where it lives (`held in:`), where this task's code reaches
+/// it (`awaiting at:`, the holding frame's suspend point — an awaited
+/// item's only, since nothing under `will wake:` is awaited), what its
+/// slots wait on (`awaiting on:`, or `woken by:` under `will wake:`),
+/// where its type is written (`type defined at:`), and the slots
+/// themselves last (`waker:`). A slot nothing located is an item of
+/// its own, headed by what it names and listed as awaited: the
+/// stronger claim, that the poll will not consume it, is the one that
+/// needs evidence. Items are sorted by heading, so the same slots
+/// list the same way twice.
+fn slot_items(
+    slots: &[&attribution::AttributedSlot],
+    wait: &rt_graph::TaskWait,
+    stops: &StopNames<'_>,
+    stopped: Option<RawInstant>,
+    detail: Detail<'_>,
+) -> (Vec<String>, Vec<String>) {
+    use attribution::Reach;
+
+    type Items<'a> = BTreeMap<
+        (u64, u32),
+        (
+            &'a attribution::Holding,
+            Vec<&'a attribution::AttributedSlot>,
+        ),
+    >;
+    let mut awaited: Items<'_> = BTreeMap::new();
+    let mut parked: Items<'_> = BTreeMap::new();
+    let mut loose = Vec::new();
+    for &slot in slots {
+        let (items, holding) = match &slot.reach {
+            Reach::Awaited(holding) => (&mut awaited, holding),
+            Reach::Parked(holding) => (&mut parked, holding),
+            Reach::Unlocated => {
+                loose.push(slot);
+                continue;
+            }
+        };
+        items
+            .entry((holding.container.addr, holding.container.ty.0))
+            .or_insert((holding, Vec::new()))
+            .1
+            .push(slot);
+    }
+    let item = |holding: &attribution::Holding,
+                slots: &[&attribution::AttributedSlot],
+                parked: bool|
+     -> Vec<String> {
+        let mut lines = vec![container_heading(holding.container, stops, detail)];
+        let mut field = |label: &str, value: String| lines.push(format!("    {label}: {value}"));
+        field(
+            "held in",
+            match &holding.local {
+                Some(local) => format!("frame {} `{local}`", holding.frame),
+                None => format!("frame {}", holding.frame),
+            },
+        );
+        if !parked && let Some(site) = frame_site(wait, holding.frame) {
+            field("awaiting at", site);
+        }
+        let mut on: Vec<String> = slots.iter().filter_map(|s| s.waits_on(stopped)).collect();
+        on.sort();
+        on.dedup();
+        for on in &on {
+            field(if parked { "woken by" } else { "awaiting on" }, on.clone());
+        }
+        if let Some((file, line)) = stops.site(holding.container.ty) {
+            field("type defined at", format!("{file}:{line}"));
+        }
+        let mut wakers: Vec<String> = slots
+            .iter()
+            .filter_map(|s| slot_waker(s, s.waits_on(stopped).as_deref(), stopped))
+            .collect();
+        wakers.sort();
+        wakers.dedup();
+        for waker in wakers {
+            field("waker", waker);
+        }
+        lines
+    };
+    let flatten = |mut items: Vec<Vec<String>>| -> Vec<String> {
+        items.sort();
+        items.into_iter().flatten().collect()
+    };
+    let mut first: Vec<Vec<String>> = awaited
+        .values()
+        .map(|(holding, slots)| item(holding, slots, false))
+        .collect();
+    first.extend(loose.iter().map(|slot| {
+        let on = slot.waits_on(stopped);
+        let mut lines = vec![on.clone().unwrap_or_else(|| slot.place())];
+        if let Some(waker) = on.and_then(|on| slot_waker(slot, Some(&on), stopped)) {
+            lines.push(format!("    waker: {waker}"));
+        }
+        lines
+    }));
+    let second: Vec<Vec<String>> = parked
+        .values()
+        .map(|(holding, slots)| item(holding, slots, true))
+        .collect();
+    (flatten(first), flatten(second))
+}
+
+/// How an item names its container: the census's account where it
+/// found one there — a join set by its tasks, a set of futures by its
+/// children in flight, a find by the kind of wait its chain ends in
+/// and its type — else the type at the address.
+fn container_heading(key: ValueKey, stops: &StopNames<'_>, detail: Detail<'_>) -> String {
+    if let Some(containers) = detail.containers {
+        if let Some(set) = containers.join_set_at(key.addr) {
+            return format!(
+                "join set {:#x} ({})",
+                set.addr,
+                summary::counted(set.children.len(), "task")
+            );
+        }
+        if let Some(set) = containers.set_at(key.addr) {
+            let live = set.children.iter().filter(|c| c.future.is_some()).count();
+            return format!(
+                "set {:#x} ({} in flight)",
+                set.addr,
+                summary::counted(live, "future")
+            );
+        }
+        if let Some(held) = containers.held_at(key.addr) {
+            let kind = held.wait.map(|wait| wait.word()).unwrap_or("future");
+            return format!("{kind} {:#x}: {}", held.addr, stops.spell(&held.future));
+        }
+    }
+    match stops.name(key.ty) {
+        Some(name) => format!("{:#x}: {name}", key.addr),
+        None => format!("{:#x}", key.addr),
+    }
 }
 
 /// Whether a member is a branch of the stop's `select!` — one the
@@ -1445,35 +1739,53 @@ fn member_future(member: &WaitMember, stops: &StopNames<'_>, ty: Option<BundleTy
         .unwrap_or_default()
 }
 
-/// One branch's line: its local — or its `select!` branch number —
-/// whether it was borrowed, the future it is and where, the engine's
-/// verdict on it, and what arms it — the slots that sit in it or were
-/// reached through it, else the registry or protocol evidence the
-/// analysis had, else `held, not armed`. A `select!` branch its mask
-/// has disabled is named and nothing more: `disabled` is the whole
-/// verdict, and why it is — a false precondition, a completed output
-/// that missed its pattern — is not in memory to be read.
+/// One branch's lines: its local — or its `select!` branch number —
+/// whether it was borrowed, the future it is, and under it where it
+/// lives, the engine's verdict on it, where its type is written, and
+/// what arms it — the slots that sit in it or were reached through
+/// it, else the registry or protocol evidence the analysis had. A
+/// `select!` branch its mask has disabled is named and placed and
+/// nothing more: `disabled` is the whole verdict, and why it is — a
+/// false precondition, a completed output that missed its pattern —
+/// is not in memory to be read.
 ///
-/// A slot that is somewhere a path can name puts that path on a
-/// `location:` line under the branch, which is what the lines after
-/// the first are.
+/// The fields read in one order at every depth, the order the task
+/// block's own read in: where it lives (`held in:`), where this
+/// task's code reaches it (`awaiting at:`), what it awaits
+/// (`awaiting on:`), where its type is written (`type defined at:`),
+/// then the memory-side `waker:` line last. `armed:` opens the block
+/// on a task that is not idle ([`show_armed`]).
 fn member_line(
     member: &WaitMember,
     stops: &StopNames<'_>,
     armed_by: &[&attribution::AttributedSlot],
     stopped: Option<RawInstant>,
+    detail: Detail<'_>,
 ) -> Vec<String> {
-    // Where the thing on the heading is written is a fact about the
-    // source, printed under the member whatever its state: below the
-    // `blocked on` lines of one that was inspected, and as the second
-    // line of a disabled branch, which has no other. One line per
-    // member: a `select!` branch's is its arm, and any other member's
-    // is the `poll` of the first of its types that has one — the
-    // heading says which it is, so the label is the same word for
-    // both.
-    let defined_at = |arm: Option<&(String, u32)>, types: &[Option<BundleTypeId>]| {
-        arm.cloned()
-            .or_else(|| types.iter().flatten().find_map(|&ty| stops.site(ty)))
+    // Where the type on the heading is written is a fact about the
+    // source, printed under the member whatever its state: the `poll`
+    // of the first of its types that has one, or a coroutine's own
+    // `async fn`. A `select!` branch's arm is a line of this task's
+    // code, and is `awaiting at:` — absent on a `_ =` arm, which
+    // binds nothing and leaves no declaration.
+    let site =
+        |types: &[Option<BundleTypeId>]| types.iter().flatten().find_map(|&ty| stops.site(ty));
+    // The frame and local holding the member, where the census found
+    // it there: a borrowed branch is a find of the frame's own. A
+    // `select!` branch the macro owns lives in the macro's own tuple,
+    // which the `select!:` heading has already placed.
+    let held_in = |key: Option<ValueKey>| -> Option<String> {
+        if matches!(
+            member.route,
+            MemberRoute::Select {
+                borrowed: false,
+                ..
+            }
+        ) {
+            return None;
+        }
+        let held = detail.containers?.held_at(key?.addr)?;
+        Some(format!("frame {} `{}`", held.frame, held.local))
     };
     let (local, borrowed, arm, stream) = match &member.route {
         MemberRoute::Branch { local, borrowed } => (local.clone(), *borrowed, None, None),
@@ -1485,8 +1797,11 @@ fn member_line(
         MemberRoute::Disabled { index, ty, arm } => {
             let future = member_future(member, stops, Some(*ty));
             let mut lines = vec![format!("branch {index}: {future}: disabled")];
-            if let Some((file, line)) = defined_at(arm.as_ref(), &[Some(*ty)]) {
-                lines.push(format!("    defined at: {file}:{line}"));
+            if let Some((file, line)) = arm {
+                lines.push(format!("    awaiting at: {file}:{line}"));
+            }
+            if let Some((file, line)) = site(&[Some(*ty)]) {
+                lines.push(format!("    type defined at: {file}:{line}"));
             }
             return lines;
         }
@@ -1513,7 +1828,7 @@ fn member_line(
     // names it by, since the member is whatever that stream is polled
     // through to; a stream with no line of its own — a boxed trait
     // object — leaves it to the member, as any other member's is.
-    let defined_at = defined_at(arm, &[stream, ty]);
+    let type_site = site(&[stream, ty]);
     // An entry's heading is its key alone: the stream it is was named
     // by the map's type on the line it sits under, and the future it
     // holds is the stream's own affair — what it waits on is the line
@@ -1524,8 +1839,24 @@ fn member_line(
     };
     let mut lines = vec![heading];
     let mut field = |label: &str, value: String| lines.push(format!("    {label}: {value}"));
-    if let Some(key) = member.key {
-        field("address", format!("{:#x}", key.addr));
+    // Whether a waker of this task's sits in the branch at all, which
+    // is the question a reader asks first on a task that is not idle:
+    // the rest of the lines say what it waits on and where the waker
+    // is. A member that fans out holds no waker of its own.
+    if detail.armed && member.entries.is_none() {
+        field(
+            "armed",
+            match !armed_by.is_empty() || member.armed.is_some() {
+                true => "yes".to_string(),
+                false => "no".to_string(),
+            },
+        );
+    }
+    if let Some(held) = held_in(member.key) {
+        field("held in", held);
+    }
+    if let Some((file, line)) = arm {
+        field("awaiting at", format!("{file}:{line}"));
     }
     // A member that fans out — a map polled with this task's own
     // context, or a chain ending at one — is listed for its entries,
@@ -1533,8 +1864,8 @@ fn member_line(
     // block: it holds no waker of this task's itself, so nothing arms
     // it. Any one entry wakes the task.
     if member.entries.is_some() {
-        if let Some((file, line)) = &defined_at {
-            field("defined at", format!("{file}:{line}"));
+        if let Some((file, line)) = &type_site {
+            field("type defined at", format!("{file}:{line}"));
         }
         for note in &member.notes {
             field("note", note.clone());
@@ -1546,25 +1877,15 @@ fn member_line(
         Some(WaitAssessment::Waiting(verified)) => Some(verified.target()),
         _ => None,
     };
-    // Whether a waker of this task's sits in the branch at all, which
-    // is the question a reader asks first: the rest of the lines say
-    // what it waits on and where the waker is.
-    field(
-        "armed",
-        match !armed_by.is_empty() || member.armed.is_some() {
-            true => "yes".to_string(),
-            false => "no".to_string(),
-        },
-    );
     // What the wait is on has two routes to it, and they fail apart:
     // the chain route reads the primitive a chain ends at, and stops
     // at a hand-written future it cannot follow through; the slot
     // route names the type a waker sits in, whatever polled it. Where
     // the chain route named nothing, a slot of this task's still
     // names the primitive it is parked in, so that is the answer —
-    // the same one arrived at the other way. The slot blocks below
-    // already fall back like this; a branch that did not read
-    // `unknown` here while `future` printed the name.
+    // the same one arrived at the other way. The items below already
+    // fall back like this; a branch that did not read `unknown` here
+    // while `future` printed the name.
     let lifted: Vec<String> = match &member.assessment {
         Some(WaitAssessment::Unknown(_)) => {
             let mut named: Vec<String> = armed_by
@@ -1577,67 +1898,62 @@ fn member_line(
         }
         _ => Vec::new(),
     };
+    // What the `awaiting on` lines name, lifted or verified: a slot
+    // naming the same thing adds only its detail below.
+    let mut named = lifted.clone();
     for on in &lifted {
-        field("blocked on", on.clone());
+        field("awaiting on", on.clone());
     }
     if lifted.is_empty() {
-        field(
-            "blocked on",
-            match &member.assessment {
-                Some(WaitAssessment::Waiting(verified)) => match verified.target().words() {
-                    Some(words) => format!("{} ({words})", verified.target()),
-                    None => verified.target().to_string(),
-                },
-                Some(WaitAssessment::Set(set)) => set.cell(),
-                Some(WaitAssessment::ResourceReady(reason)) => {
-                    format!("ready: {}", ready_reason(*reason))
-                }
-                Some(WaitAssessment::Unknown(WaitUnknownReason::Continuation)) => {
-                    "unknown".to_string()
-                }
-                Some(WaitAssessment::Unknown(reason)) => {
-                    format!("unknown ({})", unknown_word(*reason))
-                }
-                Some(WaitAssessment::NeverReady { .. }) => "never ready".to_string(),
-                Some(WaitAssessment::Unresumed) => "never polled".to_string(),
-                Some(WaitAssessment::NotWaiting(NotWaitingReason::Returned)) => {
-                    "returned".to_string()
-                }
-                Some(WaitAssessment::NotWaiting(NotWaitingReason::Panicked)) => {
-                    "panicked".to_string()
-                }
-                Some(WaitAssessment::NotWaiting(NotWaitingReason::Complete)) => {
-                    "complete".to_string()
-                }
-                Some(WaitAssessment::Runnable(_)) => "runnable".to_string(),
-                None => "not inspected".to_string(),
+        let on = match &member.assessment {
+            Some(WaitAssessment::Waiting(verified)) => match verified.target().words() {
+                Some(words) => format!("{} ({words})", verified.target()),
+                None => verified.target().to_string(),
             },
-        );
+            Some(WaitAssessment::Set(set)) => set.cell(),
+            Some(WaitAssessment::ResourceReady(reason)) => {
+                format!("ready: {}", ready_reason(*reason))
+            }
+            Some(WaitAssessment::Unknown(WaitUnknownReason::Continuation)) => "unknown".to_string(),
+            Some(WaitAssessment::Unknown(reason)) => {
+                format!("unknown ({})", unknown_word(*reason))
+            }
+            Some(WaitAssessment::NeverReady { .. }) => "never ready".to_string(),
+            Some(WaitAssessment::Unresumed) => "never polled".to_string(),
+            Some(WaitAssessment::NotWaiting(NotWaitingReason::Returned)) => "returned".to_string(),
+            Some(WaitAssessment::NotWaiting(NotWaitingReason::Panicked)) => "panicked".to_string(),
+            Some(WaitAssessment::NotWaiting(NotWaitingReason::Complete)) => "complete".to_string(),
+            Some(WaitAssessment::Runnable(_)) => "runnable".to_string(),
+            None => "not inspected".to_string(),
+        };
+        named.push(on.clone());
+        field("awaiting on", on);
     }
-    if let Some((file, line)) = &defined_at {
-        field("defined at", format!("{file}:{line}"));
+    if let Some((file, line)) = &type_site {
+        field("type defined at", format!("{file}:{line}"));
     }
-    // The slots themselves: one a path names says where it sits, and
-    // one sitting where no path reaches — a wheel entry, an io
-    // waiter, a queue node — is named by what the registry that
-    // decoded it calls it. A wheel entry under a timer verdict drops
-    // its deadline, which the line above just gave.
+    // The slots themselves, last: a wheel entry under a timer verdict
+    // drops its deadline, which the line above just gave; a slot
+    // whose own name stands on an `awaiting on` line above carries
+    // only its detail, the way an item's does — naming it twice says
+    // nothing the second time, and a slot with no detail to add says
+    // nothing at all; a slot beside a verified wait that did not name
+    // it is the slot whole, since nothing above it carries its name;
+    // and a slot no table names is the type it sits in at its
+    // address.
     let timer = matches!(verified, Some(bundle::WaitTarget::Timer { .. }));
     let mut wakers: Vec<String> = armed_by
         .iter()
-        .filter(|slot| slot.location().is_none())
-        .filter_map(|slot| match (timer, slot.wheel_entry()) {
-            (true, Some(entry)) => Some(entry),
-            // A slot whose own name stands on a `blocked on` line
-            // above carries only its detail here, the way a slot
-            // block's does: naming it twice says nothing the second
-            // time, and a slot with no detail to add says nothing at
-            // all.
-            _ if !lifted.is_empty() && slot.waits_on(stopped).is_some() => slot.detail(stopped),
-            _ => Some(match verified.is_some() {
-                true => slot.line(stopped),
-                false => slot.entry_line(stopped),
-            }),
+        .filter_map(|slot| {
+            if timer && let Some(entry) = slot.wheel_entry() {
+                return Some(entry);
+            }
+            match slot.waits_on(stopped) {
+                Some(on) if named.contains(&on) => slot_waker(slot, Some(&on), stopped),
+                Some(_) if verified.is_some() => Some(slot.line(stopped)),
+                Some(_) => Some(slot.entry_line(stopped)),
+                None => Some(slot.place()),
+            }
         })
         .collect();
     if armed_by.is_empty()
@@ -1646,18 +1962,9 @@ fn member_line(
         wakers.extend(slot.detail().or_else(|| slot.cell_entry()));
     }
     wakers.sort();
+    wakers.dedup();
     for waker in wakers {
-        field("held in", waker);
-    }
-    let mut located: Vec<String> = armed_by.iter().filter_map(|slot| slot.location()).collect();
-    if armed_by.is_empty()
-        && let Some(slot) = &member.armed
-    {
-        located.extend(hansei_runtime::tokio::waitset::SlotRef::location(slot));
-    }
-    located.sort();
-    for at in located {
-        field("location", at);
+        field("waker", waker);
     }
     for note in &member.notes {
         field("note", note.clone());
@@ -1806,12 +2113,22 @@ pub(crate) fn print_task_view(
     // whole, the label stands bare over them rather than listing the
     // wakers the lines are about to list.
     if !polled && row.waiting_on != "—" {
-        match row.wait_listed {
-            true => writeln!(out, "    waiting on:")?,
-            false => writeln!(out, "    waiting on: {}", row.waiting_on)?,
+        match &row.wait_line {
+            Some(line) => writeln!(out, "    awaiting on: {line}")?,
+            None => writeln!(out, "    awaiting on:")?,
         }
         for line in &row.wait_detail {
             writeln!(out, "        {line}")?;
+        }
+        // The slots the current await does not reach: installed by an
+        // await that has returned, each will wake the task, and the
+        // poll that follows will not consume it. Nothing under this
+        // label says "awaiting".
+        if !row.will_wake.is_empty() {
+            writeln!(out, "    will wake:")?;
+            for line in &row.will_wake {
+                writeln!(out, "        {line}")?;
+            }
         }
     }
     if let Some(loc) = &task.spawn_location {
@@ -1820,7 +2137,7 @@ pub(crate) fn print_task_view(
     if let bundle::FutureInfo::Known(known) = &task.future
         && let Some((file, line)) = &known.decl
     {
-        writeln!(out, "    defined at: {file}:{line}")?;
+        writeln!(out, "    type defined at: {file}:{line}")?;
     }
     // What the task has off its spine, in two rows rather than one:
     // the futures held in its own frames, and the sets it drives from
@@ -2843,7 +3160,7 @@ fn optional<T>(read: Result<T>, what: &str) -> Result<Option<T>> {
 #[cfg(test)]
 mod table_tests {
     use super::{
-        StopNames, build_rows, listing_footer, member_line, print_task_table, stop_label,
+        Detail, StopNames, build_rows, listing_footer, member_line, print_task_table, stop_label,
         wait_detail,
     };
 
@@ -2863,7 +3180,14 @@ mod table_tests {
     use std::collections::HashMap;
 
     const REF_ONE: u64 = 1 << 6;
+    /// A block whose members print their `armed:` line, as one of a
+    /// task that is not idle does — what the line tests here assert.
+    const ARMED: Detail<'static> = Detail {
+        containers: None,
+        armed: true,
+    };
     const RUNNING: u64 = 0b0001;
+    const NOTIFIED: u64 = 0b0100;
     const CANCELLED: u64 = 0b100_000;
 
     /// A branch of a stop frame, held in `local`, with the engine's
@@ -2916,15 +3240,16 @@ mod table_tests {
         }
     }
 
-    /// Where a branch's arm is written sits below its `blocked on`
-    /// line, under the count of a branch that fans out, and as the
-    /// second line of a disabled branch; a branch with none prints as
-    /// before, and an entry never carries one.
+    /// Where a branch's arm is written is its `awaiting at:` line — a
+    /// line of this task's code — above its verdict, under the
+    /// heading of a branch that fans out, and as the second line of a
+    /// disabled branch; a branch with none prints as before, and an
+    /// entry never carries one.
     #[test]
     fn test_defined_at_follows_the_verdict_on_every_kind_of_branch() {
         let impls = Default::default();
         let stops = StopNames::none(&impls);
-        let line = |member: &WaitMember| member_line(member, &stops, &[], None).join("\n");
+        let line = |member: &WaitMember| member_line(member, &stops, &[], None, ARMED).join("\n");
         let arm = || Some(("qorb-0.4.1/src/pool.rs".to_string(), 286));
         let inspected = WaitMember {
             route: MemberRoute::Select {
@@ -2940,7 +3265,7 @@ mod table_tests {
         };
         assert_eq!(
             line(&inspected),
-            "branch 0 (borrowed): x::branch\n    address: 0x6000\n    armed: no\n    blocked on: unknown\n    defined at: qorb-0.4.1/src/pool.rs:286"
+            "branch 0 (borrowed): x::branch\n    armed: no\n    awaiting at: qorb-0.4.1/src/pool.rs:286\n    awaiting on: unknown"
         );
         let fanning = WaitMember {
             route: MemberRoute::Select {
@@ -2957,7 +3282,7 @@ mod table_tests {
         };
         assert_eq!(
             line(&fanning),
-            "branch 1: x::branch\n    address: 0x6000\n    defined at: qorb-0.4.1/src/pool.rs:286\n    entries:"
+            "branch 1: x::branch\n    awaiting at: qorb-0.4.1/src/pool.rs:286\n    entries:"
         );
         let off = WaitMember {
             route: MemberRoute::Disabled {
@@ -2969,7 +3294,7 @@ mod table_tests {
         };
         assert_eq!(
             line(&off),
-            "branch 2: x::skipped: disabled\n    defined at: qorb-0.4.1/src/pool.rs:286"
+            "branch 2: x::skipped: disabled\n    awaiting at: qorb-0.4.1/src/pool.rs:286"
         );
         assert_eq!(line(&disabled(2)), "branch 2: x::skipped: disabled");
         let entry = WaitMember {
@@ -2993,12 +3318,13 @@ mod table_tests {
         assert!(!line(&entry).contains("defined at"), "{}", line(&entry));
     }
 
-    /// A member with no arm prints where its type's `poll` is written,
-    /// in the place an arm takes: after the verdict and before the
-    /// slots' locations, under the count of a member that fans out,
-    /// and as the second line of a disabled branch. An entry prints
-    /// its stream's. A branch with an arm prints the arm and never
-    /// its type's line, so no member carries two; a type the bundle
+    /// A member prints where its type's `poll` is written as `type
+    /// defined at:`, after the verdict and before the slots, under the
+    /// heading of a member that fans out, and as the last line of a
+    /// disabled branch. An entry prints its stream's. A branch with an
+    /// arm prints both: the arm is a line of this task's code, the
+    /// type's line is where the thing on the heading is written, and
+    /// the two labels name different things; a type the bundle
     /// recorded no declaration for prints nothing.
     #[test]
     fn test_a_member_with_no_arm_prints_where_its_type_is_written() {
@@ -3014,7 +3340,9 @@ mod table_tests {
         let mut strings = StringInterner::new();
         let n_branch = strings.intern("x::branch");
         let n_plain = strings.intern("x::plain");
+        let n_coro = strings.intern("x::run::{async_fn_env#0}");
         let n_file = strings.intern("hyper-1.10.1/src/proto/h1/dispatch.rs");
+        let n_src = strings.intern("src/run.rs");
         let strings = strings.finish();
         let ty = BundleTypeId(0);
         let bundle = Bundle {
@@ -3035,12 +3363,28 @@ mod table_tests {
                         size: 8,
                         members: vec![],
                     },
+                    TypeDef::Struct {
+                        name: n_coro,
+                        size: 8,
+                        members: vec![],
+                    },
                 ],
                 poll_decls: [(
                     ty,
                     SourceLoc {
                         file: n_file,
                         line: 512,
+                    },
+                )]
+                .into_iter()
+                .collect(),
+                // A coroutine has no `poll` of its own: its line is the
+                // `async fn` it is the body of.
+                env_decls: [(
+                    BundleTypeId(2),
+                    SourceLoc {
+                        file: n_src,
+                        line: 33,
                     },
                 )]
                 .into_iter()
@@ -3068,7 +3412,7 @@ mod table_tests {
         };
         let impls = Default::default();
         let stops = StopNames::over(BundleView::new(&bundle), &impls);
-        let site = "    defined at: hyper-1.10.1/src/proto/h1/dispatch.rs:512";
+        let site = "    type defined at: hyper-1.10.1/src/proto/h1/dispatch.rs:512";
         let arm = || Some(("src/bin/armed-select.rs".to_string(), 50));
 
         // The line sits between the verdict and the slot's location.
@@ -3099,6 +3443,7 @@ mod table_tests {
             within: None,
             through: Vec::new(),
             aliases: Vec::new(),
+            reach: hansei_runtime::tokio::attribution::Reach::Unlocated,
         };
         let held = branch(
             "inner",
@@ -3106,20 +3451,18 @@ mod table_tests {
             false,
         );
         assert_eq!(
-            member_line(&held, &stops, &[&slot], None),
+            member_line(&held, &stops, &[&slot], None, ARMED),
             vec![
                 "inner: x::branch",
-                "    address: 0x6000",
                 "    armed: yes",
-                "    blocked on: mpsc rx 0x9000",
+                "    awaiting on: mpsc rx 0x9000",
                 site,
-                "    location: future 0x6000 rx_waker",
             ]
         );
 
-        let line = |member: &WaitMember| member_line(member, &stops, &[], None).join("\n");
-        // An arm wins; a `select!` branch without one falls back to
-        // its type's line.
+        let line = |member: &WaitMember| member_line(member, &stops, &[], None, ARMED).join("\n");
+        // A `select!` branch with an arm prints both lines; one without
+        // prints its type's alone.
         let armed = WaitMember {
             route: MemberRoute::Select {
                 index: 0,
@@ -3130,7 +3473,7 @@ mod table_tests {
         };
         assert_eq!(
             line(&armed),
-            "branch 0 (borrowed): x::branch\n    address: 0x6000\n    armed: no\n    blocked on: never polled\n    defined at: src/bin/armed-select.rs:50"
+            "branch 0 (borrowed): x::branch\n    armed: no\n    awaiting at: src/bin/armed-select.rs:50\n    awaiting on: never polled\n    type defined at: hyper-1.10.1/src/proto/h1/dispatch.rs:512"
         );
         let unarmed = WaitMember {
             route: MemberRoute::Select {
@@ -3143,7 +3486,7 @@ mod table_tests {
         assert_eq!(
             line(&unarmed),
             format!(
-                "branch 0 (borrowed): x::branch\n    address: 0x6000\n    armed: no\n    blocked on: never polled\n{site}"
+                "branch 0 (borrowed): x::branch\n    armed: no\n    awaiting on: never polled\n{site}"
             )
         );
         // One that fans out, and a disabled branch.
@@ -3157,7 +3500,7 @@ mod table_tests {
         };
         assert_eq!(
             line(&fanning),
-            format!("m: x::branch\n    address: 0x6000\n{site}\n    entries:")
+            format!("m: x::branch\n{site}\n    entries:")
         );
         let off = WaitMember {
             future: Some("x::branch".to_string()),
@@ -3184,13 +3527,11 @@ mod table_tests {
         for (stream, member) in [(0, 1), (1, 0)] {
             assert_eq!(
                 line(&entry(stream, member)),
-                format!(
-                    "\"alpha\":\n    address: 0x6000\n    armed: no\n    blocked on: never polled\n{site}"
-                ),
+                format!("\"alpha\":\n    armed: no\n    awaiting on: never polled\n{site}"),
                 "stream {stream}, member {member}"
             );
         }
-        assert!(!line(&entry(1, 1)).contains("defined at"));
+        assert!(!line(&entry(1, 1)).contains("type defined at"));
         // A type with no declaration recorded.
         let plain = WaitMember {
             key: Some(ValueKey {
@@ -3201,7 +3542,19 @@ mod table_tests {
         };
         assert_eq!(
             line(&plain),
-            "inner: x::plain\n    address: 0x6000\n    armed: no\n    blocked on: never polled"
+            "inner: x::plain\n    armed: no\n    awaiting on: never polled"
+        );
+        // A coroutine's line is its own `async fn`'s.
+        let coro = WaitMember {
+            key: Some(ValueKey {
+                addr: 0x6000,
+                ty: BundleTypeId(2),
+            }),
+            ..branch("inner", WaitAssessment::Unresumed, false)
+        };
+        assert_eq!(
+            line(&coro),
+            "inner: async fn x::run\n    armed: no\n    awaiting on: never polled\n    type defined at: src/run.rs:33"
         );
     }
 
@@ -3257,6 +3610,7 @@ mod table_tests {
             held: Vec::new(),
             held_capped: 0,
             frames: Vec::new(),
+            frame_sites: Vec::new(),
         }
     }
 
@@ -3324,11 +3678,11 @@ mod table_tests {
         let impls = Default::default();
         let stops = StopNames::none(&impls);
         // A fan-out member arms nothing, so its block is the one line.
-        let line = |member: &WaitMember| member_line(member, &stops, &[], None).join("\n");
+        let line = |member: &WaitMember| member_line(member, &stops, &[], None, ARMED).join("\n");
         for (listed, total) in [(3, 3), (8, 12), (1, 1), (0, 0)] {
             assert_eq!(
                 line(&fanning(listed, total)),
-                "branch 1 (borrowed): x::branch\n    address: 0x6000\n    entries:"
+                "branch 1 (borrowed): x::branch\n    entries:"
             );
         }
         let under = MemberRoute::Select {
@@ -3345,7 +3699,7 @@ mod table_tests {
                 entry(0, Some("7"), None),
             ]),
         );
-        let lines = wait_detail(&wait, &stops, &[], None, &|_| None);
+        let lines = wait_detail(&wait, &stops, &[], None, &|_| None, ARMED).awaiting;
         // The `select!` branch and the entries reached through it sit
         // under the heading, the entries two steps under the branch and
         // the uninspected count after them; the entry of the stop
@@ -3355,22 +3709,18 @@ mod table_tests {
             [
                 "select!:",
                 "    branch 1 (borrowed): x::branch",
-                "        address: 0x6000",
                 "        entries:",
                 "            \"key-a\":",
-                "                address: 0x6000",
                 "                armed: no",
-                "                blocked on: unknown",
+                "                awaiting on: unknown",
                 "            entry 1:",
-                "                address: 0x6000",
                 "                armed: no",
-                "                blocked on: unknown",
+                "                awaiting on: unknown",
                 "            3 more entries not inspected",
                 "entries:",
                 "    7:",
-                "        address: 0x6000",
                 "        armed: no",
-                "        blocked on: unknown",
+                "        awaiting on: unknown",
             ]
         );
     }
@@ -3405,6 +3755,7 @@ mod table_tests {
             within: None,
             through: Vec::new(),
             aliases: Vec::new(),
+            reach: hansei_runtime::tokio::attribution::Reach::Unlocated,
         };
         let channel = slot(
             0x6010,
@@ -3442,42 +3793,41 @@ mod table_tests {
         // The slot names the primitive the chain route never reached,
         // and still says where the waker sits.
         assert_eq!(
-            member_line(&cannot_name, &stops, &[&channel], None),
+            member_line(&cannot_name, &stops, &[&channel], None, ARMED),
             [
                 "inner: x::branch",
-                "    address: 0x6000",
                 "    armed: yes",
-                "    blocked on: mpsc rx 0x9000",
-                "    location: future 0x6000 rx_waker",
+                "    awaiting on: mpsc rx 0x9000",
             ]
         );
         // A registry slot answers the same way, and having been named
         // on the line above it adds only its detail below.
         assert_eq!(
-            member_line(&cannot_name, &stops, &[&reader], None),
+            member_line(&cannot_name, &stops, &[&reader], None, ARMED),
             [
                 "inner: x::branch",
-                "    address: 0x6000",
                 "    armed: yes",
-                "    blocked on: io 0xaa00 read",
-                "    held in: the read-waiter slot, awaiting readable",
+                "    awaiting on: io 0xaa00 read",
+                "    waker: the read-waiter slot, awaiting readable",
             ]
         );
         // Both, one line each, sorted.
         assert_eq!(
-            member_line(&cannot_name, &stops, &[&channel, &reader], None)
+            member_line(&cannot_name, &stops, &[&channel, &reader], None, ARMED)
                 .iter()
-                .filter(|line| line.starts_with("    blocked on: "))
+                .filter(|line| line.starts_with("    awaiting on: "))
                 .collect::<Vec<_>>(),
             [
-                "    blocked on: io 0xaa00 read",
-                "    blocked on: mpsc rx 0x9000"
+                "    awaiting on: io 0xaa00 read",
+                "    awaiting on: mpsc rx 0x9000"
             ]
         );
         // With no slot to ask, the chain route's own word stands.
         assert_eq!(
-            member_line(&cannot_name, &stops, &[], None).last().unwrap(),
-            "    blocked on: unknown"
+            member_line(&cannot_name, &stops, &[], None, ARMED)
+                .last()
+                .unwrap(),
+            "    awaiting on: unknown"
         );
         // A chain route that answered is not second-guessed: its
         // target is the line, and the slot beside it is its own.
@@ -3494,27 +3844,70 @@ mod table_tests {
             false,
         );
         assert_eq!(
-            member_line(&named, &stops, &[&channel], None),
+            member_line(&named, &stops, &[&channel], None, ARMED),
             [
                 "inner: x::branch",
-                "    address: 0x6000",
                 "    armed: yes",
-                "    blocked on: io 0xbb00 (readiness)",
-                "    location: future 0x6000 rx_waker",
+                "    awaiting on: io 0xbb00 (readiness)",
+                "    waker: mpsc rx 0x9000",
             ]
         );
-        // And a registry slot beside an answered chain route keeps
-        // its own name, since nothing above it carries one: the line
-        // is the slot whole, not the detail a lifted slot is left
-        // with.
+        // A registry slot beside an answered chain route keeps its own
+        // name the same way, since nothing above it carries one: the
+        // line is the slot whole, not the detail a lifted slot is
+        // left with.
         assert_eq!(
-            member_line(&named, &stops, &[&reader], None),
+            member_line(&named, &stops, &[&reader], None, ARMED),
             [
                 "inner: x::branch",
-                "    address: 0x6000",
                 "    armed: yes",
-                "    blocked on: io 0xbb00 (readiness)",
-                "    held in: io 0xaa00 read: the read-waiter slot, awaiting readable",
+                "    awaiting on: io 0xbb00 (readiness)",
+                "    waker: io 0xaa00 read: the read-waiter slot, awaiting readable",
+            ]
+        );
+        // An owner slot with a reading beside an answered chain route
+        // is the slot whole too, its reading and all; beside a branch
+        // whose verdict names no resource — never polled — the line
+        // is the entry, the reading left to a line that has room for
+        // it.
+        let read = slot(
+            0x6010,
+            Attribution::Owner {
+                kind: OwnerKind::Mpsc,
+                primitive: 0x9000,
+                holder: "Chan".to_string(),
+                member: "rx_waker".to_string(),
+                path: SlotPath {
+                    root: SlotRoot::Find {
+                        index: 0,
+                        addr: 0x6000,
+                        frame: 0,
+                    },
+                    steps: vec!["rx_waker".to_string()],
+                    hop: None,
+                },
+                validity: Validity::SelfDescribing,
+                reading: Some(hansei_runtime::tokio::attribution::Reading::Mpsc {
+                    senders: 1,
+                    capacity: Some(4),
+                    unread: 0,
+                }),
+            },
+        );
+        assert_eq!(
+            member_line(&named, &stops, &[&read], None, ARMED)
+                .last()
+                .unwrap(),
+            "    waker: mpsc rx 0x9000 (1 sender, capacity 4, 0 unread)"
+        );
+        let unpolled = branch("inner", WaitAssessment::Unresumed, false);
+        assert_eq!(
+            member_line(&unpolled, &stops, &[&read], None, ARMED),
+            [
+                "inner: x::branch",
+                "    armed: yes",
+                "    awaiting on: never polled",
+                "    waker: mpsc rx 0x9000",
             ]
         );
     }
@@ -3640,19 +4033,18 @@ mod table_tests {
             HashMap::new(),
         );
         assert_eq!(rows[0].waiting_on, "io, timer");
+        // With no swept slot the members' entries are the cell's, but
+        // the lines do not carry it whole: the label keeps the cell.
+        assert_eq!(rows[0].wait_line.as_deref(), Some("io, timer"));
         assert_eq!(rows[0].waiting_kind.as_deref(), Some("io, timer"));
         assert_eq!(
             rows[0].wait_detail,
             [
                 "a: x::branch",
-                "    address: 0x6000",
-                "    armed: yes",
-                "    blocked on: timer (deadline +10.000s)",
-                "    held in: the resource, read by its protocol",
+                "    awaiting on: timer (deadline +10.000s)",
+                "    waker: the resource, read by its protocol",
                 "b: x::branch",
-                "    address: 0x6000",
-                "    armed: no",
-                "    blocked on: unknown",
+                "    awaiting on: unknown",
                 "io 0x7000 (readable): the read-waiter slot, inside #1's storage at +0x10; \
                  in no branch of the stop",
                 "1 more branches not inspected",
@@ -3664,13 +4056,9 @@ mod table_tests {
             rows[1].wait_detail,
             [
                 "a: x::branch",
-                "    address: 0x6000",
-                "    armed: no",
-                "    blocked on: unknown",
+                "    awaiting on: unknown",
                 "b: x::branch",
-                "    address: 0x6000",
-                "    armed: no",
-                "    blocked on: unknown",
+                "    awaiting on: unknown",
                 "1 more branches not inspected",
             ]
         );
@@ -3700,13 +4088,9 @@ mod table_tests {
             rows[0].wait_detail,
             [
                 "a: x::branch",
-                "    address: 0x6000",
-                "    armed: no",
-                "    blocked on: never ready",
+                "    awaiting on: never ready",
                 "b: x::branch",
-                "    address: 0x6000",
-                "    armed: no",
-                "    blocked on: never ready",
+                "    awaiting on: never ready",
                 "1 more branches not inspected",
             ]
         );
@@ -3766,14 +4150,10 @@ mod table_tests {
             [
                 "select!:",
                 "    branch 0 (borrowed): x::branch",
-                "        address: 0x6000",
-                "        armed: no",
-                "        blocked on: unknown",
+                "        awaiting on: unknown",
                 "    branch 1 (borrowed): x::branch",
-                "        address: 0x6000",
-                "        armed: yes",
-                "        blocked on: timer (deadline +10.000s)",
-                "        held in: the resource, read by its protocol",
+                "        awaiting on: timer (deadline +10.000s)",
+                "        waker: the resource, read by its protocol",
                 "    branch 2: x::skipped: disabled",
             ]
         );
@@ -3783,9 +4163,7 @@ mod table_tests {
             [
                 "select!:",
                 "    branch 0 (borrowed): x::branch",
-                "        address: 0x6000",
-                "        armed: no",
-                "        blocked on: unknown",
+                "        awaiting on: unknown",
                 "    branch 1: x::skipped: disabled",
             ]
         );
@@ -3964,6 +4342,7 @@ mod table_tests {
             within: None,
             through: Vec::new(),
             aliases: Vec::new(),
+            reach: hansei_runtime::tokio::attribution::Reach::Unlocated,
         };
         let slots = Attributed::from_slots(vec![
             slot(
@@ -4012,6 +4391,7 @@ mod table_tests {
                 within: None,
                 through: Vec::new(),
                 aliases: Vec::new(),
+                reach: hansei_runtime::tokio::attribution::Reach::Unlocated,
             },
             AttributedSlot {
                 hit: 8,
@@ -4028,6 +4408,7 @@ mod table_tests {
                 within: None,
                 through: Vec::new(),
                 aliases: Vec::new(),
+                reach: hansei_runtime::tokio::attribution::Reach::Unlocated,
             },
         ]);
         let list = TaskList::new(vec![
@@ -4053,30 +4434,26 @@ mod table_tests {
             rows[0].waiting_kind.as_deref(),
             Some("io read, join task 2, semaphore 0x9000, timer, unknown")
         );
-        // One block per waker, sorted; a stop's own reason is the
-        // cell's.
+        // One item per slot, sorted, each headed by what it names —
+        // nothing located these, so nothing places them; a stop's own
+        // reason is the cell's.
         assert_eq!(
             rows[0].wait_detail,
             [
-                "waker 0:",
-                "    blocked on: io 0xaa00 read",
-                "    held in: the read-waiter slot, awaiting readable",
-                "waker 1:",
-                "    blocked on: join task 2",
-                "    held in: its trailer",
-                "waker 2:",
-                "    blocked on: semaphore 0x9000",
-                "    held in: its wake-queue node @ 0xe100",
+                "io 0xaa00 read",
+                "    waker: the read-waiter slot, awaiting readable",
+                "join task 2",
+                "    waker: its trailer",
+                "semaphore 0x9000",
+                "    waker: its wake-queue node @ 0xe100",
                 // A wheel entry with no deadline to give names itself
                 // once.
-                "waker 3:",
-                "    blocked on: timer 0xdd00",
-                "waker 4:",
-                "    held in: unknown @ 0x7000",
-                "waker 5:",
-                "    held in: unknown @ 0x8000",
+                "timer 0xdd00",
+                "unknown @ 0x7000",
+                "unknown @ 0x8000",
             ]
         );
+        assert!(rows[0].will_wake.is_empty());
         // No slot: the assessment's own word, marked.
         assert_eq!(
             rows[1].waiting_on,
@@ -4094,10 +4471,7 @@ mod table_tests {
         // address is the waker block's to print.
         assert_eq!(rows[3].waiting_on, "unknown");
         assert_eq!(rows[3].waiting_kind.as_deref(), Some("unknown"));
-        assert_eq!(
-            rows[3].wait_detail,
-            ["waker 0:", "    held in: unknown @ 0x7100"]
-        );
+        assert_eq!(rows[3].wait_detail, ["unknown @ 0x7100"]);
         // A blocking cell waits on a pool thread, slot or no slot.
         assert_eq!(rows[4].waiting_on, "—");
         assert_eq!(rows[4].waiting_kind, None);
@@ -4135,6 +4509,7 @@ mod table_tests {
                 within: None,
                 through: Vec::new(),
                 aliases: Vec::new(),
+                reach: hansei_runtime::tokio::attribution::Reach::Unlocated,
             },
             AttributedSlot {
                 hit: 1,
@@ -4148,6 +4523,7 @@ mod table_tests {
                 within: None,
                 through: Vec::new(),
                 aliases: Vec::new(),
+                reach: hansei_runtime::tokio::attribution::Reach::Unlocated,
             },
         ]);
         let target = WaitTarget::Task {
@@ -4162,19 +4538,187 @@ mod table_tests {
         let rows = folded_rows(&list, &mut waits, &slots);
         assert_eq!(rows[0].waiting_on, "task 2");
         assert_eq!(rows[0].waiting_kind.as_deref(), Some("task 2"));
-        // The join heads the trailer slot's line, so the lines carry
-        // the cell whole; the timer stands as the slot it is.
+        // The join is the label line, with the trailer slot's own
+        // line under it; the timer stands as the item it is.
+        assert_eq!(rows[0].wait_line.as_deref(), Some("task 2"));
+        assert_eq!(rows[0].wait_detail, ["waker: its trailer", "timer 0xdd00"]);
+    }
+
+    /// The slots no member accounts for are listed by what the
+    /// attribution says about the current await: those it reaches are
+    /// items under `awaiting on:`, one per container, placed in the
+    /// holding frame and local with that frame's suspend point and
+    /// every slot's `waker:` line; those an await that has returned
+    /// installed are items under `will wake:`, placed the same way
+    /// but with no `awaiting at:` — nothing under that label is
+    /// awaited — and their resource under `woken by:`; a slot nothing
+    /// located is an item headed by what it names, under `awaiting
+    /// on:`. Items sort by heading.
+    #[test]
+    fn test_slots_split_into_awaited_items_and_the_ones_that_will_wake() {
+        use hansei_runtime::tokio::attribution::{
+            Attributed, AttributedSlot, Attribution, Holding, OwnerKind, Reach, RegistrySlot,
+            SlotPath, SlotRoot, Validity,
+        };
+        use hansei_runtime::tokio::wakers::Owner;
+
+        let owner = Owner::Task {
+            header: 0x1000 + 0x100,
+            index: 0,
+        };
+        let container = |addr: u64| ValueKey {
+            addr,
+            ty: BundleTypeId(0),
+        };
+        let held = |addr: u64, frame: usize, local: &str| Holding {
+            container: container(addr),
+            frame,
+            local: Some(local.to_string()),
+        };
+        let typed = |hit: usize, at: u64, reach: Reach| AttributedSlot {
+            hit,
+            slot: at,
+            owner,
+            attribution: Attribution::Typed {
+                holder: "ListsInner".to_string(),
+                member: "waker".to_string(),
+                path: SlotPath {
+                    root: SlotRoot::Frame { task: 0, frame: 3 },
+                    steps: vec!["set".to_string()],
+                    hop: None,
+                },
+                validity: Validity::SelfDescribing,
+            },
+            within: None,
+            through: Vec::new(),
+            aliases: Vec::new(),
+            reach,
+        };
+        let slots = Attributed::from_slots(vec![
+            // Two slots in one awaited container are one item.
+            typed(0, 0x6010, Reach::Awaited(held(0x6000, 3, "tasks"))),
+            typed(1, 0x6020, Reach::Awaited(held(0x6000, 3, "tasks"))),
+            // A parked typed slot, and a parked owner slot whose
+            // resource is named under `woken by:`.
+            typed(2, 0x7010, Reach::Parked(held(0x7000, 7, "interval"))),
+            AttributedSlot {
+                attribution: Attribution::Owner {
+                    kind: OwnerKind::Mpsc,
+                    primitive: 0x9000,
+                    holder: "Chan".to_string(),
+                    member: "rx_waker".to_string(),
+                    path: SlotPath {
+                        root: SlotRoot::Frame { task: 0, frame: 5 },
+                        steps: vec!["rx".to_string()],
+                        hop: None,
+                    },
+                    validity: Validity::SelfDescribing,
+                    reading: None,
+                },
+                ..typed(3, 0x8010, Reach::Parked(held(0x8000, 5, "rx")))
+            },
+            // A registry slot nothing located.
+            AttributedSlot {
+                attribution: Attribution::Registry(RegistrySlot::Timer {
+                    entry: 0xdd00,
+                    state: None,
+                    deadline: None,
+                }),
+                ..typed(4, 0xdd00, Reach::Unlocated)
+            },
+        ]);
+        let list = TaskList::new(vec![task(1, 0)]);
+        let mut wait = wait(1, None);
+        // A chain of eight frames, root first; frame 3's site is the
+        // one the awaited item prints.
+        wait.frames = (0..8)
+            .map(|i| ValueKey {
+                addr: 0x2000 + i * 0x100,
+                ty: BundleTypeId(2),
+            })
+            .collect();
+        wait.frame_sites = (0..8)
+            .map(|i| Some((format!("src/f{}.rs", 7 - i), 10 + i as u32)))
+            .collect();
+        let mut waits = vec![wait];
+        let rows = folded_rows(&list, &mut waits, &slots);
+        // The slots made a set, whose members the lines list whole.
+        assert_eq!(rows[0].wait_line, None);
         assert_eq!(
             rows[0].wait_detail,
             [
-                "waker 0:",
-                "    blocked on: task 2",
-                "    held in: its trailer",
-                "waker 1:",
-                "    blocked on: timer 0xdd00",
+                "0x6000",
+                "    held in: frame 3 `tasks`",
+                "    awaiting at: src/f3.rs:14",
+                "    waker: ListsInner @ 0x6010",
+                "    waker: ListsInner @ 0x6020",
+                "timer 0xdd00",
             ]
         );
-        assert!(rows[0].wait_listed);
+        assert_eq!(
+            rows[0].will_wake,
+            [
+                "0x7000",
+                "    held in: frame 7 `interval`",
+                "    waker: ListsInner @ 0x7010",
+                "0x8000",
+                "    held in: frame 5 `rx`",
+                "    woken by: mpsc rx 0x9000",
+            ]
+        );
+    }
+
+    /// The `armed:` line prints only on a task that is not idle: on an
+    /// idle one every enabled branch of a pending `select!` is armed
+    /// by construction, so the line says nothing; on a notified one a
+    /// wake may have consumed a slot already, which is what the line
+    /// is for.
+    #[test]
+    fn test_armed_prints_only_on_a_task_that_is_not_idle() {
+        let impls = Default::default();
+        let stops = StopNames::none(&impls);
+        let member = select_branch(0, WaitAssessment::Unresumed, true);
+        let idle = Detail {
+            containers: None,
+            armed: false,
+        };
+        assert_eq!(
+            member_line(&member, &stops, &[], None, idle),
+            [
+                "branch 0 (borrowed): x::branch",
+                "    awaiting on: never polled",
+                "    waker: the resource, read by its protocol",
+            ]
+        );
+        assert_eq!(
+            member_line(&member, &stops, &[], None, ARMED),
+            [
+                "branch 0 (borrowed): x::branch",
+                "    armed: yes",
+                "    awaiting on: never polled",
+                "    waker: the resource, read by its protocol",
+            ]
+        );
+        // Through the rows: the same set on an idle task and on a
+        // notified one.
+        let set = || one_of(vec![select_branch(0, WaitAssessment::Unresumed, true)]);
+        let rows = rows_of(
+            vec![task(1, 0), task(2, NOTIFIED)],
+            vec![assessed(1, set()), assessed(2, set())],
+            HashMap::new(),
+        );
+        assert!(
+            !rows[0].wait_detail.iter().any(|l| l.contains("armed:")),
+            "{:?}",
+            rows[0].wait_detail
+        );
+        assert!(
+            rows[1]
+                .wait_detail
+                .contains(&"        armed: yes".to_string()),
+            "{:?}",
+            rows[1].wait_detail
+        );
     }
 
     /// The rows as the launch builds them: the slots folded into each
@@ -4213,7 +4757,7 @@ mod table_tests {
             &Default::default(),
             &stops,
         );
-        super::apply_slots(&mut rows, list, waits, slots, None, size_of, &stops);
+        super::apply_slots(&mut rows, list, waits, slots, None, size_of, &stops, None);
         rows
     }
 
@@ -4240,6 +4784,7 @@ mod table_tests {
             within: None,
             through: Vec::new(),
             aliases: Vec::new(),
+            reach: hansei_runtime::tokio::attribution::Reach::Unlocated,
         };
         let slots = Attributed::from_slots(vec![slot(0, 0x6010), slot(1, 0x7000)]);
         let list = TaskList::new(vec![task(1, 0)]);
@@ -4269,17 +4814,12 @@ mod table_tests {
             [
                 "select!:",
                 "    branch 0 (borrowed): x::branch",
-                "        address: 0x6000",
-                "        armed: yes",
-                "        blocked on: never ready",
-                "        held in: unknown @ 0x6010",
+                "        awaiting on: never ready",
+                "        waker: unknown @ 0x6010",
                 "    branch 1 (borrowed): x::branch",
-                "        address: 0x6000",
-                "        armed: no",
-                "        blocked on: never ready",
+                "        awaiting on: never ready",
                 "    branch 2: x::skipped: disabled",
-                "waker 0:",
-                "    held in: unknown @ 0x7000",
+                "unknown @ 0x7000",
             ]
         );
     }
@@ -4419,7 +4959,8 @@ mod filter_tests {
             waiting_on: "—".to_string(),
             waiting_kind: None,
             wait_detail: Vec::new(),
-            wait_listed: false,
+            wait_line: None,
+            will_wake: Vec::new(),
             future: "async fn app::work".to_string(),
             spawned: None,
             defined: None,

@@ -6,10 +6,6 @@ future 0xADDR
     type: future tokio::sync::oneshot::Receiver<u32>
     held by: task 3 (frame 1, `once`)
     depth: 1 frame
-    waiting on:
-        waker 0:
-            blocked on: oneshot rx 0xADDR (nothing sent, sender alive)
-            location: future 0xADDR inner.Some.data.rx_task (rx_task_set)
-    armed: yes
+    awaiting on: oneshot rx 0xADDR (nothing sent, sender alive)
     held futures: 0
     join sets: 0

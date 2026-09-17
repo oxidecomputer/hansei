@@ -7,11 +7,9 @@ task 5
     thread: <none>
     type: async block futurelock::main::{async_block#0}
     awaiting at: src/bin/futurelock.rs:32
-    waiting on:
-        waker 0:
-            blocked on: a tokio::sync::Mutex (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 5
-            held in: its wake-queue node @ 0xADDR
+    awaiting on: a tokio::sync::Mutex (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 5
+        waker: its wake-queue node @ 0xADDR
     spawned at: src/bin/futurelock.rs:20:17
-    defined at: src/bin/futurelock.rs:20
+    type defined at: src/bin/futurelock.rs:20
     held futures: 1
     join sets: 0

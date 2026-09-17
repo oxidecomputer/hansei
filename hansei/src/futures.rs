@@ -18,7 +18,7 @@ use crate::{Session, print_warnings, repl, summary};
 use anyhow::{Context as _, Result};
 use hansei_bundle::names;
 use hansei_runtime::tokio::assess::ContinuationStatus;
-use hansei_runtime::tokio::{RawInstant, attribution, bundle, census};
+use hansei_runtime::tokio::{Lifecycle, RawInstant, attribution, bundle, census};
 
 use rayon::iter::{IntoParallelRefIterator, IntoParallelRefMutIterator, ParallelIterator};
 use std::collections::{BTreeMap, HashMap};
@@ -98,9 +98,16 @@ pub(crate) struct FutureRow {
     /// waker in the resource. `no` is a future held and awaited by
     /// nothing found.
     pub(crate) armed: bool,
-    /// One `waker N:` block per slot, for the block, in the task
-    /// block's grammar ([`tasks::waker_blocks`]): what it is blocked
-    /// on, where the waker is held, and where that sits.
+    /// What follows `awaiting on:` on the block's line: the one slot's
+    /// account where one slot arms the future, lifted onto the line
+    /// as the task block lifts a verified wait's; `None` where the
+    /// lines under it carry the wait, or where there are none and the
+    /// line carries what the reader read, else the cell.
+    pub(crate) wait_line: Option<String>,
+    /// The lines under `awaiting on:`, in the task block's grammar
+    /// ([`tasks::waker_blocks`]): the one slot's `waker:` line, or one
+    /// `waker N:` block per slot where several arm the future — what
+    /// each waits on, and where the waker is held.
     pub(crate) slot_lines: Vec<String>,
     /// The concrete future type, folded and never truncated.
     pub(crate) future: String,
@@ -227,7 +234,23 @@ pub(crate) fn with_slots(
         let read = |slot: &attribution::AttributedSlot| accounts(slot).and(described.clone());
         row.waiting_on = Some(cell);
         row.waiting_kind = Some(kind);
-        row.slot_lines = tasks::waker_blocks(&owned, &read, stopped);
+        let mut lines = tasks::waker_blocks(&owned, &read, stopped);
+        // One slot is the wait: its first line — the resource, or the
+        // slot itself where nothing names a resource — heads the label
+        // line, and what remains sits under it.
+        if owned.len() == 1 {
+            lines.remove(0);
+            let head = lines.remove(0);
+            row.wait_line = head
+                .trim_start()
+                .split_once(": ")
+                .map(|(_, v)| v.to_string());
+            lines = lines
+                .into_iter()
+                .map(|line| line.trim_start().to_string())
+                .collect();
+        }
+        row.slot_lines = lines;
     });
     rows
 }
@@ -462,6 +485,7 @@ impl Rows<'_> {
                 self.stops,
             ),
             armed: false,
+            wait_line: None,
             slot_lines: Vec::new(),
             future: names::display_future_name(&h.future, self.impls),
             depth: h.depth,
@@ -507,6 +531,7 @@ impl Rows<'_> {
                 self.stops,
             ),
             armed: false,
+            wait_line: None,
             slot_lines: Vec::new(),
             future: names::display_future_name(future, self.impls),
             depth: c.depth,
@@ -689,26 +714,33 @@ impl Blocks<'_> {
             writeln!(out, "    state: {state}")?;
         }
         writeln!(out, "    depth: {}", summary::counted(row.depth, "frame"))?;
-        // The wait, one line per slot under it, and whether anything
-        // arms the future at all — `no` is an answer, so it prints.
-        // Where the wakers are listed they carry the wait whole, each
-        // block naming its resource and what its reader read, so the
-        // label stands bare over them; where none is, the line carries
-        // what the future's own reader read, which the cell leaves to
-        // the block, else the cell.
+        // The wait, and the slots under it. One slot's account heads
+        // the line; several are listed under a bare label, each block
+        // naming its resource and what its reader read; where none is,
+        // the line carries what the future's own reader read, which
+        // the cell leaves to the block, else the cell.
         if let Some(waiting) = &row.waiting_on {
-            match row.slot_lines.is_empty() {
-                true => {
-                    let waiting = row.described.as_ref().unwrap_or(waiting);
-                    writeln!(out, "    waiting on: {waiting}")?
-                }
-                false => writeln!(out, "    waiting on:")?,
+            let head = match (&row.wait_line, row.slot_lines.is_empty()) {
+                (Some(line), _) => Some(line),
+                (None, true) => Some(row.described.as_ref().unwrap_or(waiting)),
+                (None, false) => None,
+            };
+            match head {
+                Some(head) => writeln!(out, "    awaiting on: {head}")?,
+                None => writeln!(out, "    awaiting on:")?,
             }
             for line in &row.slot_lines {
                 writeln!(out, "        {line}")?;
             }
         }
-        writeln!(out, "    armed: {}", armed_word(row.armed))?;
+        // Whether anything arms the future at all — on a task that is
+        // not idle, where a wake may already have consumed the slot.
+        // Relative to its own chain the future is frame #0, so its
+        // slots are all awaited, and the block follows its holder's
+        // task as a task's members do ([`tasks::show_armed`]).
+        if self.list.tasks[row.owner].state.lifecycle() != Lifecycle::Idle {
+            writeln!(out, "    armed: {}", armed_word(row.armed))?;
+        }
         // What the census found inside this future, the way `children`
         // lists what it found in a task's own frames: the futures
         // held in its frames, then the sets driven from them.
@@ -1494,6 +1526,7 @@ mod tests {
             within,
             through: Vec::new(),
             aliases: Vec::new(),
+            reach: hansei_runtime::tokio::attribution::Reach::Unlocated,
         };
         let slots = Attributed::from_slots(vec![
             // The Sleep's wheel entry, inside the Sleep.
@@ -1678,6 +1711,7 @@ mod tests {
             within: None,
             through: Vec::new(),
             aliases: Vec::new(),
+            reach: hansei_runtime::tokio::attribution::Reach::Unlocated,
         }]);
 
         let rows = with_slots(rows_of(&census), &list(), &census, &slots, None);
@@ -1697,11 +1731,10 @@ mod tests {
             row(0x5000).slot_lines,
             [
                 "waker 0:",
-                "    blocked on: a timer",
-                "    held in: timer @ 0x5010",
+                "    awaiting on: a timer",
+                "    waker: timer @ 0x5010",
                 "waker 1:",
-                "    held in: x::Holder @ 0x5020",
-                "    location: future 0x5000 w",
+                "    waker: x::Holder @ 0x5020",
             ]
         );
         assert!(row(0x6000).armed);
@@ -1746,14 +1779,10 @@ mod tests {
         // reader wrote; the reader's words are the block's.
         assert_eq!(joiner.waiting_on.as_deref(), Some("task 12"));
         assert_eq!(joiner.described.as_deref(), Some("task 28"));
-        assert_eq!(
-            joiner.slot_lines,
-            [
-                "waker 0:",
-                "    blocked on: task 28",
-                "    held in: its trailer"
-            ]
-        );
+        // One slot is the wait: its account heads the label line and
+        // the slot itself sits under it.
+        assert_eq!(joiner.wait_line.as_deref(), Some("task 28"));
+        assert_eq!(joiner.slot_lines, ["waker: its trailer"]);
     }
 
     /// A find whose chain ends in no described resource says what cut

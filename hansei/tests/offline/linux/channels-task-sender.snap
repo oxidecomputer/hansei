@@ -7,17 +7,20 @@ task 6
     thread: <none>
     type: async fn channels::send_waiter
     awaiting at: src/bin/channels.rs:95
-    waiting on:
+    awaiting on:
         select!:
+            held in: frame 1
+            awaiting at: src/bin/channels.rs:95
             branch 0 (borrowed): async fn tokio::sync::mpsc::bounded::Sender::send<u32>
-                address: 0xADDR
-                armed: yes
-                blocked on: a tokio::sync::mpsc bounded channel (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 6
-                location: future 0xADDR node.waker.Some
+                held in: frame 1 `send`
+                awaiting on: a tokio::sync::mpsc bounded channel (semaphore 0xADDR): 1 permit requested, 0 available; wake queue: task 6
+                type defined at: tokio-1.52.4/src/sync/mpsc/bounded.rs:816
+                waker: tokio::sync::batch_semaphore::Waiter @ 0xADDR
             branch 1: tokio::time::sleep::Sleep: disabled
-                defined at: tokio-1.52.4/src/time/sleep.rs:457
+                type defined at: tokio-1.52.4/src/time/sleep.rs:457
             branch 2: async block channels::send_waiter::{async_fn#0}: disabled
+                type defined at: src/bin/channels.rs:89
     spawned at: src/bin/channels.rs:178:28
-    defined at: src/bin/channels.rs:85
+    type defined at: src/bin/channels.rs:85
     held futures: 3
     join sets: 0

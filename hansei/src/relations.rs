@@ -295,6 +295,7 @@ mod relations_tests {
             held: Vec::new(),
             held_capped: 0,
             frames: Vec::new(),
+            frame_sites: Vec::new(),
         }
     }
 
@@ -434,6 +435,7 @@ mod relations_tests {
             within: None,
             through: Vec::new(),
             aliases: Vec::new(),
+            reach: hansei_runtime::tokio::attribution::Reach::Unlocated,
         };
         let mut set = wait(1, None);
         set.assessment = WaitAssessment::Set(WaitSet {

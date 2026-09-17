@@ -7,33 +7,31 @@ task 3
     thread: <none>
     type: async fn armed_select::selector
     awaiting at: src/bin/armed-select.rs:49
-    waiting on:
+    awaiting on:
         select!:
+            held in: frame 1
+            awaiting at: src/bin/armed-select.rs:49
             branch 0 (borrowed): tokio::sync::oneshot::Receiver<u32>
-                address: 0xADDR
-                armed: yes
-                blocked on: oneshot rx 0xADDR (nothing sent, sender alive)
-                defined at: src/bin/armed-select.rs:50
-                location: future 0xADDR inner.Some.data.rx_task (rx_task_set)
+                held in: frame 1 `once`
+                awaiting at: src/bin/armed-select.rs:50
+                awaiting on: oneshot rx 0xADDR (nothing sent, sender alive)
+                type defined at: tokio-1.52.4/src/sync/oneshot.rs:1271
             branch 1 (borrowed): async fn tokio::sync::mpsc::bounded::Receiver::recv<u32>
-                address: 0xADDR
-                armed: yes
-                blocked on: mpsc rx 0xADDR (1 sender, capacity 4, 0 unread)
-                defined at: src/bin/armed-select.rs:51
-                location: frame 1 queue.chan.inner.data.rx_waker.waker.Some
+                held in: frame 1 `recv`
+                awaiting at: src/bin/armed-select.rs:51
+                awaiting on: mpsc rx 0xADDR (1 sender, capacity 4, 0 unread)
+                type defined at: tokio-1.52.4/src/sync/mpsc/bounded.rs:243
             branch 2 (borrowed): async fn tokio::sync::watch::Receiver::changed<u32>
-                address: 0xADDR
-                armed: yes
-                blocked on: watch rx 0xADDR (version 0, 1 sender, 1 receiver)
-                defined at: src/bin/armed-select.rs:52
-                location: future 0xADDR waiter.waker.Some
+                held in: frame 1 `changed`
+                awaiting at: src/bin/armed-select.rs:52
+                awaiting on: watch rx 0xADDR (version 0, 1 sender, 1 receiver)
+                type defined at: tokio-1.52.4/src/sync/watch.rs:818
             branch 3 (borrowed): tokio::time::sleep::Sleep
-                address: 0xADDR
-                armed: yes
-                blocked on: timer (deadline TS on the target's monotonic clock)
-                defined at: tokio-1.52.4/src/time/sleep.rs:457
-                held in: timer @ 0xADDR
+                held in: frame 1 `sleep`
+                awaiting on: timer (deadline TS on the target's monotonic clock)
+                type defined at: tokio-1.52.4/src/time/sleep.rs:457
+                waker: timer @ 0xADDR
     spawned at: src/bin/armed-select.rs:186:25
-    defined at: src/bin/armed-select.rs:31
+    type defined at: src/bin/armed-select.rs:31
     held futures: 4
     join sets: 0

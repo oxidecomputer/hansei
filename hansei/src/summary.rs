@@ -1233,6 +1233,7 @@ mod tests {
             held: Vec::new(),
             held_capped: 0,
             frames: Vec::new(),
+            frame_sites: Vec::new(),
         }
     }
 

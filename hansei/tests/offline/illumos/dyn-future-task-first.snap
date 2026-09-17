@@ -7,11 +7,8 @@ task 3
     thread: <none>
     type: async fn dyn_future::driver
     awaiting at: src/bin/dyn-future.rs:40
-    waiting on:
-        waker 0:
-            blocked on: oneshot rx 0xADDR (nothing sent, sender alive)
-            location: frame 0 inner.Some.data.rx_task (rx_task_set)
+    awaiting on: oneshot rx 0xADDR (nothing sent, sender alive)
     spawned at: src/bin/dyn-future.rs:57:21
-    defined at: src/bin/dyn-future.rs:24
+    type defined at: src/bin/dyn-future.rs:24
     held futures: 0
     join sets: 1 (1 task)

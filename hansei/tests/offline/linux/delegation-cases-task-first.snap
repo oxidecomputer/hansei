@@ -6,12 +6,11 @@ task 1
     state: idle
     thread: <none>
     type: future Pin<Box<delegation_cases::Gated<1>>>
-    waiting on: unarmed: unknown at delegation_cases::Gated (holds 1 future)
+    awaiting on: unarmed: unknown at delegation_cases::Gated (holds 1 future)
         child: delegation_cases::Probe<1>
-            address: 0xADDR
-            armed: no
-            blocked on: unknown
-            defined at: src/bin/delegation-cases.rs:33
+            held in: frame 0 `child`
+            awaiting on: unknown
+            type defined at: src/bin/delegation-cases.rs:33
     spawned at: src/bin/delegation-cases.rs:197:8
     held futures: 1
     join sets: 0

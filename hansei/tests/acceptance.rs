@@ -558,11 +558,16 @@ struct TaskRow {
     awaiting: String,
     /// The thread the task is on, `<none>` where it is on none.
     thread: String,
-    /// The wait, spelled as the table's cell — empty for a task
+    /// What follows `awaiting on:` — the cell, or a verified target
+    /// with its reading — empty under a bare label, and for a task
     /// waiting on nothing nameable, which gets no line either.
     waiting: String,
-    /// The lines under `waiting on`, one per branch or slot.
+    /// The lines under `awaiting on`: the stop's members and the items
+    /// the current await reaches.
     wait_lines: Vec<String>,
+    /// The lines under `will wake`: the items an await that has
+    /// returned installed, empty for a task that prints no such label.
+    wake_lines: Vec<String>,
 }
 
 /// Run `task` under every task — `tasks --exec task` — and parse what
@@ -609,45 +614,64 @@ fn list_tasks(bundle: &Path, core: &Path) -> Vec<TaskRow> {
             thread: String::new(),
             waiting: String::new(),
             wait_lines: Vec::new(),
+            wake_lines: Vec::new(),
         };
+        // Which label the detail lines are under: `awaiting on` or
+        // `will wake`, the two that carry any.
+        let mut under: Option<&str> = None;
         while let Some(line) = lines.peek() {
             if line.is_empty() || line.starts_with("[Executed against ") {
                 break;
             }
             let line = lines.next().expect("peeked");
             // A field sits four columns in; anything deeper is detail
-            // under the field above it (a wheel entry, an io slot, a
-            // wake-queue node), not a field.
+            // under the field above it (a member, an item, a wheel
+            // entry), not a field.
             let field_line = line
                 .strip_prefix("    ")
                 .unwrap_or_else(|| panic!("unexpected task line {line:?}"));
             if let Some(detail) = field_line.strip_prefix("    ") {
-                row.wait_lines.push(detail.to_string());
+                match under {
+                    Some("awaiting on") => row.wait_lines.push(detail.to_string()),
+                    Some("will wake") => row.wake_lines.push(detail.to_string()),
+                    _ => panic!("detail under no wait label {line:?}"),
+                }
                 continue;
             }
-            // A bare `waiting on:` stands over the lines that list the
-            // wait whole; every other field carries its value.
+            // A bare `awaiting on:` stands over the lines that list the
+            // wait whole, and `will wake:` is only ever bare; every
+            // other field carries its value.
             let (label, value) = match field_line.strip_suffix(':') {
-                Some("waiting on") => ("waiting on", ""),
+                Some(label @ ("awaiting on" | "will wake")) => (label, ""),
                 _ => field_line
                     .split_once(": ")
                     .unwrap_or_else(|| panic!("unexpected task line {line:?}")),
             };
+            under = matches!(label, "awaiting on" | "will wake").then_some(label);
             let field = match label {
                 "state" => &mut row.state,
                 "thread" => &mut row.thread,
                 "owner" => &mut row.owner,
                 "type" => &mut row.future,
                 "awaiting at" => &mut row.awaiting,
-                "waiting on" => &mut row.waiting,
+                "awaiting on" => &mut row.waiting,
                 "spawned at" => &mut row.spawned,
-                "defined at" => &mut row.defined,
+                "type defined at" => &mut row.defined,
                 "held futures" => &mut row.futures,
                 "join sets" => &mut row.sets,
+                // `will wake` carries no value of its own.
+                "will wake" => {
+                    assert!(row.wake_lines.is_empty(), "repeated task field {line:?}");
+                    assert!(
+                        !row.waiting.is_empty() || !row.wait_lines.is_empty(),
+                        "will wake before awaiting on {line:?}"
+                    );
+                    continue;
+                }
                 _ => panic!("unexpected task field {line:?}"),
             };
             assert!(
-                field.is_empty() && (label != "waiting on" || row.wait_lines.is_empty()),
+                field.is_empty() && (label != "awaiting on" || row.wait_lines.is_empty()),
                 "repeated task field {line:?}"
             );
             *field = value.to_string();
@@ -1958,21 +1982,14 @@ fn test_blocking_pool_acceptance() {
         assert_eq!(running.waiting, "", "{rows:#?}");
 
         // The join edges point at listed rows, plainly named: the
-        // verified join is what the slot's block says it waits on,
-        // under a bare wait label.
-        let joined = |id: &str| {
-            vec![
-                "waker 0:".to_string(),
-                format!("    blocked on: task {id}"),
-                "    held in: its trailer".to_string(),
-            ]
-        };
+        // verified join is the wait line, with the trailer slot under
+        // it.
         let a = task_with_future(&rows, "async fn blocking_pool::running_waiter");
-        assert_eq!(a.waiting, "", "{rows:#?}");
-        assert_eq!(a.wait_lines, joined(&running.id), "{rows:#?}");
+        assert_eq!(a.waiting, format!("task {}", running.id), "{rows:#?}");
+        assert_eq!(a.wait_lines, ["waker: its trailer"], "{rows:#?}");
         let b = task_with_future(&rows, "async fn blocking_pool::queued_waiter");
-        assert_eq!(b.waiting, "", "{rows:#?}");
-        assert_eq!(b.wait_lines, joined(&queued.id), "{rows:#?}");
+        assert_eq!(b.waiting, format!("task {}", queued.id), "{rows:#?}");
+        assert_eq!(b.wait_lines, ["waker: its trailer"], "{rows:#?}");
     });
 }
 
@@ -3976,104 +3993,93 @@ fn test_armed_select_acceptance() {
             grouped.contains("mpsc rx, oneshot rx, timer, watch rx"),
             "{grouped}"
         );
-        // One detail line per `select!` branch under the wait, each a
-        // borrow of the frame's own local, the verdict naming the
-        // primitive and `armed` saying a slot sits in it, with what
-        // the channel reads and where the slot sits on the lines
-        // under it; the sleep's is the wheel entry the registry
-        // decoded, which has no location — it is not in the task's
-        // storage. Its arm binds nothing, so it has no arm line and
-        // says where tokio writes `Sleep`'s poll instead.
+        // One block per `select!` branch under the wait, each a
+        // borrow of the frame's own local, placed in the frame and
+        // local holding it, its arm as the line of this task's code
+        // it is reached at, the verdict naming the primitive with
+        // what the channel reads. The task is idle, so no branch
+        // carries an `armed` line: every enabled branch of a pending
+        // `select!` on an idle task is armed by construction. The
+        // sleep's slot is the wheel entry the registry decoded, on a
+        // `waker` line; its arm binds nothing, so it has no arm line
+        // and says where tokio writes `Sleep`'s poll instead.
         let block = hansei_ok(&bundle, core, &format!("task {}", selector.id));
         // The branches sit under one `select!:` heading, which is
-        // what makes them branches.
-        assert!(
-            block.contains("\n    waiting on:\n        select!:\n            branch 0"),
-            "{block}"
-        );
+        // what makes them branches, placed in the frame holding the
+        // `select!` at the line it is written on.
+        let select = regex::Regex::new(
+            r"(?m)^    awaiting on:\n        select!:\n            held in: frame 1\n            awaiting at: [^\n]*armed-select\.rs:49\n            branch 0",
+        )
+        .unwrap();
+        assert!(select.is_match(&block), "{block}");
         let detail = regex::Regex::new(
-            r"(?m)^            branch [0-2] \(borrowed\): [^\n]+\n                address: 0x[0-9a-f]+\n                armed: yes\n                blocked on: (mpsc rx|watch rx|oneshot rx) 0x[0-9a-f]+ \([^)]*\)$",
+            r"(?m)^            branch [0-2] \(borrowed\): [^\n]+\n                held in: frame 1 `(once|recv|changed)`\n                awaiting at: [^\n]*armed-select\.rs:5[0-2]\n                awaiting on: (mpsc rx|watch rx|oneshot rx) 0x[0-9a-f]+ \([^)]*\)$",
         )
         .unwrap();
         assert_eq!(detail.find_iter(&block).count(), 3, "{block}");
         // Each primitive stands on a line of its own and carries its
         // whole reading.
         let words = regex::Regex::new(
-            r"(?m)^                blocked on: .*(1 sender, capacity 4, 0 unread|version 0, 1 sender, 1 receiver|nothing sent, sender alive)\)$",
+            r"(?m)^                awaiting on: .*(1 sender, capacity 4, 0 unread|version 0, 1 sender, 1 receiver|nothing sent, sender alive)\)$",
         )
         .unwrap();
         assert_eq!(words.find_iter(&block).count(), 3, "{block}");
-        let located = regex::Regex::new(
-            r"(?m)^                location: (frame [0-9]+|future 0x[0-9a-f]+( frame [0-9]+)?) [a-zA-Z_0-9.]+",
-        )
-        .unwrap();
-        assert_eq!(located.find_iter(&block).count(), 3, "{block}");
         let sleep = regex::Regex::new(
-            r"(?m)^            branch 3 \(borrowed\): tokio::time::sleep::Sleep\n                address: 0x[0-9a-f]+\n                armed: yes\n                blocked on: timer \(deadline [^\n]*\n                defined at: tokio-[0-9.]+/src/time/sleep\.rs:[0-9]+\n                held in: timer @ 0x[0-9a-f]+$",
+            r"(?m)^            branch 3 \(borrowed\): tokio::time::sleep::Sleep\n                held in: frame 1 `sleep`\n                awaiting on: timer \(deadline [^\n]*\n                type defined at: tokio-[0-9.]+/src/time/sleep\.rs:[0-9]+\n                waker: timer @ 0x[0-9a-f]+$",
         )
         .unwrap();
         assert!(sleep.is_match(&block), "{block}");
-        // The oneshot's state word vouches for its slot, and the
-        // channel's is reached from the frame that holds the receiver.
+        // The oneshot's `poll` is where tokio writes it; a slot named
+        // on its branch's `awaiting on` line is not named again.
         assert!(
-            block.contains(" inner.Some.data.rx_task (rx_task_set)"),
+            block.contains("\n                type defined at: tokio-1.")
+                && block.contains("/src/sync/oneshot.rs:"),
             "{block}"
         );
-        assert!(
-            block.contains("location: frame 1 queue.chan.inner."),
-            "{block}"
-        );
-        assert!(!block.contains("\n    held in:"), "{block}");
+        assert_eq!(block.matches("oneshot rx 0x").count(), 1, "{block}");
+        assert!(!block.contains("armed:"), "{block}");
+        assert!(!block.contains("location:"), "{block}");
+        assert!(!block.contains("will wake:"), "{block}");
 
         // The holder's leaf is the receiver itself: a verified wait,
-        // printed by its reader, heading the one slot's line — which
-        // agrees with it — under a bare wait label.
+        // printed by its reader on the wait line; the one slot agrees
+        // with it and adds nothing under it.
         let holder = task_with_future(&rows, "async fn armed_select::holder");
-        assert_eq!(holder.waiting, "", "{holder:?}");
-        let [head, on, at] = holder.wait_lines.as_slice() else {
-            panic!("{holder:?}");
-        };
-        assert_eq!(head, "waker 0:", "{holder:?}");
+        assert!(holder.waiting.starts_with("oneshot rx 0x"), "{holder:?}");
         assert!(
-            on.starts_with("    blocked on: oneshot rx 0x"),
+            holder.waiting.ends_with(" (nothing sent, sender alive)"),
             "{holder:?}"
         );
-        assert!(on.ends_with(" (nothing sent, sender alive)"), "{holder:?}");
-        // Where the slot sits is the line under it, and what vouches
-        // for it closes that line.
-        assert!(
-            at.starts_with("    location: ") && at.ends_with(".rx_task (rx_task_set)"),
-            "{holder:?}"
-        );
-        // One entry: the leaf's reader and the slot agree on the one
-        // primitive, so the block does not name it twice.
-        assert_eq!(
-            holder.wait_lines.join("\n").matches("oneshot rx").count(),
-            1,
-            "{holder:?}"
-        );
+        assert!(holder.wait_lines.is_empty(), "{holder:?}");
+        assert!(holder.wake_lines.is_empty(), "{holder:?}");
         let waiter = task_with_future(&rows, "async fn armed_select::waiter");
         // The waiter's leaf reader walked the list: its state word and
         // the one node it found, on the line that names the primitive.
-        assert_eq!(waiter.waiting, "", "{waiter:?}");
-        let [head, on, at] = waiter.wait_lines.as_slice() else {
-            panic!("{waiter:?}");
-        };
-        assert_eq!(head, "waker 0:", "{waiter:?}");
-        assert!(on.starts_with("    blocked on: notify rx 0x"), "{waiter:?}");
-        assert!(on.ends_with(" (waiting, 1 queued)"), "{waiter:?}");
-        assert!(at.starts_with("    location: "), "{waiter:?}");
+        assert!(waiter.waiting.starts_with("notify rx 0x"), "{waiter:?}");
+        assert!(
+            waiter.waiting.ends_with(" (waiting, 1 queued)"),
+            "{waiter:?}"
+        );
+        assert!(waiter.wait_lines.is_empty(), "{waiter:?}");
         let driver = task_with_future(&rows, "async fn armed_select::driver");
         assert_eq!(driver.waiting, "", "{driver:?}");
-        let [head, waker, at] = driver.wait_lines.as_slice() else {
+        // A slot no table names has no primitive to await: the item is
+        // the container the census found it in — the set of futures
+        // the driver polls, in its own frame — and the slot is the
+        // type holding it at its address.
+        let [heading, held, site, waker] = driver.wait_lines.as_slice() else {
             panic!("{driver:?}");
         };
-        // A slot no table names has no primitive to be blocked on: it
-        // is its address and the type holding it, with the path under.
-        assert_eq!(head, "waker 0:", "{driver:?}");
-        assert!(waker.starts_with("    held in: "), "{driver:?}");
+        assert!(heading.starts_with("set 0x"), "{driver:?}");
+        assert!(heading.ends_with(" in flight)"), "{driver:?}");
+        assert_eq!(held, "    held in: frame 0", "{driver:?}");
+        assert!(
+            site.starts_with("    type defined at: futures-util-"),
+            "{driver:?}"
+        );
+        assert!(waker.starts_with("    waker: "), "{driver:?}");
         assert!(waker.contains("AtomicWaker @ 0x"), "{driver:?}");
-        assert!(at.starts_with("    location: "), "{driver:?}");
+        assert!(driver.wake_lines.is_empty(), "{driver:?}");
 
         // The older field names still select the same cell.
         let by_alias = hansei_ok(&bundle, core, "tasks --with waker 'oneshot rx'");
@@ -4104,11 +4110,14 @@ fn test_armed_select_acceptance() {
             &format!("future {}", &notified.captures(&unarmed).unwrap()[1]),
         );
         assert!(
-            block.contains("\n    waiting on: unarmed: notify rx 0x"),
+            block.contains("\n    awaiting on: unarmed: notify rx 0x"),
             "{block}"
         );
         assert!(block.contains(" (waiting)\n"), "{block}");
         assert!(!block.contains("queued)"), "{block}");
+        // Its holder is idle, so the block carries no `armed` line:
+        // the `unarmed:` prefix on the wait already says it.
+        assert!(!block.contains("\n    armed:"), "{block}");
         let armed = hansei_ok(&bundle, core, "futures --with armed yes");
         for local in ["`once`", "`recv`", "`changed`", "`sleep`"] {
             assert!(armed.contains(local), "{armed}");
@@ -4122,12 +4131,15 @@ fn test_armed_select_acceptance() {
             core,
             &format!("future {}", &once.captures(&armed).unwrap()[1]),
         );
-        assert!(block.contains("\n    armed: yes\n"), "{block}");
+        // One slot is the wait: its account is the wait line, with
+        // nothing under it, and the idle holder means no `armed` line.
         assert!(
-            block.contains("\n        waker 0:\n            blocked on: oneshot rx 0x"),
+            block.contains("\n    awaiting on: oneshot rx 0x"),
             "{block}"
         );
         assert!(block.contains(" (nothing sent, sender alive)\n"), "{block}");
+        assert!(!block.contains("waker 0:"), "{block}");
+        assert!(!block.contains("\n    armed:"), "{block}");
 
         // The channels as resources: one block per oneshot a slot
         // names — the selector's, the holder's, the ticker's, and the
@@ -4185,7 +4197,7 @@ fn test_armed_select_acceptance() {
         assert_eq!(ticker.waiting, "", "{ticker:?}");
         let block = hansei_ok(&bundle, core, &format!("task {}", ticker.id));
         let tick = regex::Regex::new(
-            r"(?m)^            branch 1 \(borrowed\): async fn tokio::time::interval::Interval::tick\n                address: 0x[0-9a-f]+\n                armed: yes\n                blocked on: timer \(deadline [^\n]*\n                held in: timer @ 0x[0-9a-f]+$",
+            r"(?m)^            branch 1 \(borrowed\): async fn tokio::time::interval::Interval::tick\n                held in: frame 1 `tick`\n                awaiting on: timer \(deadline [^\n]*(\n                type defined at: [^\n]*)?\n                waker: timer @ 0x[0-9a-f]+$",
         )
         .unwrap();
         assert!(tick.is_match(&block), "{block}");
@@ -4197,19 +4209,15 @@ fn test_armed_select_acceptance() {
         // spare interval's tick it holds unpolled reaches nothing and
         // nothing arms it, its `Sleep` never registered.
         let pacer = task_with_future(&rows, "async fn armed_select::pacer");
-        assert_eq!(pacer.waiting, "", "{pacer:?}");
-        let [head, on, waker] = pacer.wait_lines.as_slice() else {
+        // The deadline is the target's to give, on the wait line; the
+        // entry holding the waker is the slot's, under it.
+        assert!(pacer.waiting.starts_with("timer (deadline "), "{pacer:?}");
+        let [waker] = pacer.wait_lines.as_slice() else {
             panic!("{pacer:?}");
         };
-        assert_eq!(head, "waker 0:", "{pacer:?}");
-        // The deadline is the target's to give; the entry holding the
-        // waker is the slot's.
-        assert!(
-            on.starts_with("    blocked on: timer (deadline "),
-            "{pacer:?}"
-        );
-        assert!(waker.starts_with("    held in: timer @ 0x"), "{pacer:?}");
+        assert!(waker.starts_with("waker: timer @ 0x"), "{pacer:?}");
         assert!(!waker.contains("deadline"), "{pacer:?}");
+        assert!(pacer.wake_lines.is_empty(), "{pacer:?}");
         // The chain, leaf up: the `Sleep`, the box, the closure's
         // `PollFn`, the tick, the task.
         let trace = hansei_ok(&bundle, core, &format!("trace {} -n", pacer.id));
@@ -4245,12 +4253,14 @@ fn test_armed_select_acceptance() {
             // Each branch is named in full, generic arguments and
             // all: one line stands for one branch, so what the arm is
             // over is what tells it from its neighbour.
-            // Each branch ends on the line its arm is written on —
-            // the disabled one too, whose arm is where its `if false`
-            // is.
-            r"(?m)^    waiting on: unarmed: never ready\n        select!:\n            branch 0 \(borrowed\): core::future::pending::Pending<u32>\n                address: 0x[0-9a-f]+\n                armed: no\n                blocked on: never ready\n                defined at: [^\n]*armed-select\.rs:170$",
-            r"(?m)^            branch 1 \(borrowed\): async block armed_select::forever::\{async_fn#0\}\n                address: 0x[0-9a-f]+\n                armed: no\n                blocked on: never ready\n                defined at: [^\n]*armed-select\.rs:171$",
-            r"(?m)^            branch 2: core::future::ready::Ready<u32>: disabled\n                defined at: [^\n]*armed-select\.rs:172$",
+            // Each branch is placed at the line its arm is written on
+            // — the disabled one too, whose arm is where its `if
+            // false` is — and none carries an `armed` line, the task
+            // being idle. The `select!` itself is placed in the frame
+            // holding it, at the line it is written on.
+            r"(?m)^    awaiting on: unarmed: never ready\n        select!:\n            held in: frame 1\n            awaiting at: [^\n]*armed-select\.rs:169\n            branch 0 \(borrowed\): core::future::pending::Pending<u32>\n                awaiting at: [^\n]*armed-select\.rs:170\n                awaiting on: never ready$",
+            r"(?m)^            branch 1 \(borrowed\): async block armed_select::forever::\{async_fn#0\}\n                held in: frame 1 `wrapped`\n                awaiting at: [^\n]*armed-select\.rs:171\n                awaiting on: never ready$",
+            r"(?m)^            branch 2: core::future::ready::Ready<u32>: disabled\n                awaiting at: [^\n]*armed-select\.rs:172$",
         ] {
             assert!(
                 regex::Regex::new(line).unwrap().is_match(&block),

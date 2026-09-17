@@ -1278,8 +1278,8 @@ mod tests {
             // wait, and the census's counts — the last always, since
             // their empty spellings are answers.
             assert!(text.contains("\n    spawned at: "), "{text}");
-            assert!(text.contains("\n    defined at: "), "{text}");
-            assert!(labels.contains(&"waiting on"), "{text}");
+            assert!(text.contains("\n    type defined at: "), "{text}");
+            assert!(labels.contains(&"awaiting on"), "{text}");
             assert!(labels.contains(&"held futures"), "{text}");
             assert!(labels.ends_with(&["held futures", "join sets"]), "{text}");
         }
