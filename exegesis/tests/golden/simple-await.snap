@@ -31,6 +31,23 @@ env: simple_await::work::{async_fn_env#0} @ simple-await.rs:21
 
 [poll-decls]
 
+[local-decls]
+local: simple_await::work::{async_fn_env#0} :: borrowed @ simple-await.rs:36
+local: simple_await::work::{async_fn_env#0} :: boxed @ simple-await.rs:32
+local: simple_await::work::{async_fn_env#0} :: c_borrowed @ simple-await.rs:41
+local: simple_await::work::{async_fn_env#0} :: c_owned @ simple-await.rs:40
+local: simple_await::work::{async_fn_env#0} :: count @ simple-await.rs:23
+local: simple_await::work::{async_fn_env#0} :: first @ simple-await.rs:45
+local: simple_await::work::{async_fn_env#0} :: glyph @ simple-await.rs:44
+local: simple_await::work::{async_fn_env#0} :: ipv4 @ simple-await.rs:34
+local: simple_await::work::{async_fn_env#0} :: ipv6 @ simple-await.rs:35
+local: simple_await::work::{async_fn_env#0} :: labels @ simple-await.rs:24
+local: simple_await::work::{async_fn_env#0} :: owned @ simple-await.rs:37
+local: simple_await::work::{async_fn_env#0} :: park @ simple-await.rs:21
+local: simple_await::work::{async_fn_env#0} :: ready @ simple-await.rs:21
+local: simple_await::work::{async_fn_env#0} :: slice @ simple-await.rs:33
+local: simple_await::work::{async_fn_env#0} :: values @ simple-await.rs:28
+
 [infra]
 header: ok
 vtable: ok

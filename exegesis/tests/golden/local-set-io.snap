@@ -83,6 +83,31 @@ env: local_set_io::reader::{async_fn_env#0} @ local-set-io.rs:110
 
 [poll-decls]
 
+[local-decls]
+local: local_set_io::local_gated_reader::{async_fn_env#0} :: buf @ local-set-io.rs:98
+local: local_set_io::local_gated_reader::{async_fn_env#0} :: gated @ local-set-io.rs:94
+local: local_set_io::local_gated_reader::{async_fn_env#0} :: ready @ local-set-io.rs:92
+local: local_set_io::local_gated_reader::{async_fn_env#0} :: stream @ local-set-io.rs:92
+local: local_set_io::local_reader::{async_fn_env#0} :: buf @ local-set-io.rs:30
+local: local_set_io::local_reader::{async_fn_env#0} :: ready @ local-set-io.rs:28
+local: local_set_io::local_reader::{async_fn_env#0} :: stream @ local-set-io.rs:28
+local: local_set_io::local_watcher::{async_fn_env#0} :: ready @ local-set-io.rs:37
+local: local_set_io::local_watcher::{async_fn_env#0} :: stream @ local-set-io.rs:37
+local: local_set_io::local_watcher::{async_fn_env#0} :: tag @ local-set-io.rs:37
+local: local_set_io::local_writer::{async_fn_env#0} :: fill @ local-set-io.rs:49
+local: local_set_io::local_writer::{async_fn_env#0} :: ready @ local-set-io.rs:49
+local: local_set_io::local_writer::{async_fn_env#0} :: stream @ local-set-io.rs:49
+local: local_set_io::main::{async_block#0}::{async_block_env#0} :: ready_a_rx @ local-set-io.rs:134
+local: local_set_io::main::{async_block#0}::{async_block_env#0} :: ready_b_rx @ local-set-io.rs:135
+local: local_set_io::main::{async_block#0}::{async_block_env#0} :: ready_c_rx @ local-set-io.rs:136
+local: local_set_io::main::{async_block#0}::{async_block_env#0} :: ready_d_rx @ local-set-io.rs:137
+local: local_set_io::main::{async_block#0}::{async_block_env#0} :: ready_e_rx @ local-set-io.rs:138
+local: local_set_io::main::{async_block_env#0} :: local @ local-set-io.rs:139
+local: local_set_io::reader::{async_fn_env#0} :: buf @ local-set-io.rs:112
+local: local_set_io::reader::{async_fn_env#0} :: ready @ local-set-io.rs:110
+local: local_set_io::reader::{async_fn_env#0} :: seed @ local-set-io.rs:110
+local: local_set_io::reader::{async_fn_env#0} :: stream @ local-set-io.rs:110
+
 [infra]
 header: ok
 vtable: ok

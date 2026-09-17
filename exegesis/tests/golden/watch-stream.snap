@@ -71,6 +71,36 @@ env: watch_stream::resolver::{async_fn_env#0} @ watch-stream.rs:30
 
 [poll-decls]
 
+[local-decls]
+local: watch_stream::direct::{async_fn_env#0} :: published @ watch-stream.rs:105
+local: watch_stream::direct::{async_fn_env#0} :: ready @ watch-stream.rs:105
+local: watch_stream::fresh::{async_fn_env#0} :: current @ watch-stream.rs:88
+local: watch_stream::fresh::{async_fn_env#0} :: next @ watch-stream.rs:93
+local: watch_stream::fresh::{async_fn_env#0} :: once @ watch-stream.rs:87
+local: watch_stream::fresh::{async_fn_env#0} :: ready @ watch-stream.rs:86
+local: watch_stream::fresh::{async_fn_env#0} :: stream @ watch-stream.rs:91
+local: watch_stream::main::{async_block_env#0} :: alpha_tx @ watch-stream.rs:128
+local: watch_stream::main::{async_block_env#0} :: beta_tx @ watch-stream.rs:129
+local: watch_stream::main::{async_block_env#0} :: direct_watch_tx @ watch-stream.rs:145
+local: watch_stream::main::{async_block_env#0} :: fresh_once_tx @ watch-stream.rs:139
+local: watch_stream::main::{async_block_env#0} :: fresh_watch_tx @ watch-stream.rs:140
+local: watch_stream::main::{async_block_env#0} :: gamma_tx @ watch-stream.rs:130
+local: watch_stream::main::{async_block_env#0} :: mapper_once_tx @ watch-stream.rs:127
+local: watch_stream::main::{async_block_env#0} :: resolver_once_tx @ watch-stream.rs:117
+local: watch_stream::main::{async_block_env#0} :: resolver_watch_tx @ watch-stream.rs:118
+local: watch_stream::mapper::{async_fn_env#0} :: disabled @ watch-stream.rs:75
+local: watch_stream::mapper::{async_fn_env#0} :: futures @ watch-stream.rs:75
+local: watch_stream::mapper::{async_fn_env#0} :: map @ watch-stream.rs:63
+local: watch_stream::mapper::{async_fn_env#0} :: once @ watch-stream.rs:59
+local: watch_stream::mapper::{async_fn_env#0} :: ready @ watch-stream.rs:58
+local: watch_stream::mapper::{async_fn_env#0} :: receivers @ watch-stream.rs:60
+local: watch_stream::resolver::{async_fn_env#0} :: disabled @ watch-stream.rs:43
+local: watch_stream::resolver::{async_fn_env#0} :: futures @ watch-stream.rs:43
+local: watch_stream::resolver::{async_fn_env#0} :: once @ watch-stream.rs:32
+local: watch_stream::resolver::{async_fn_env#0} :: published @ watch-stream.rs:33
+local: watch_stream::resolver::{async_fn_env#0} :: ready @ watch-stream.rs:31
+local: watch_stream::resolver::{async_fn_env#0} :: stream @ watch-stream.rs:36
+
 [infra]
 header: ok
 vtable: ok

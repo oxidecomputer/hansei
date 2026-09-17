@@ -41,6 +41,12 @@ env: ct_runtime::sleeper::{async_fn_env#0} @ ct-runtime.rs:14
 
 [poll-decls]
 
+[local-decls]
+local: ct_runtime::acquirer::{async_fn_env#0} :: ready @ ct-runtime.rs:21
+local: ct_runtime::acquirer::{async_fn_env#0} :: semaphore @ ct-runtime.rs:21
+local: ct_runtime::main::{async_block_env#0} :: ready_b_rx @ ct-runtime.rs:36
+local: ct_runtime::sleeper::{async_fn_env#0} :: ready @ ct-runtime.rs:14
+
 [infra]
 header: ok
 vtable: ok

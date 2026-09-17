@@ -597,6 +597,12 @@ pub struct RawFunc<S> {
     /// lexical blocks a resume body piles up, so it is done only where
     /// they can exist.
     pub awaitees: Box<[RawAwaitee<S>]>,
+    /// The named locals of a coroutine's resume function — its `let`
+    /// bindings and its arguments alike, which rustc emits as
+    /// variables of the resume body — minus the compiler's own
+    /// (`__awaitee`, `__self`, …). Collected under the same gate as
+    /// `awaitees`, from the same walk; empty for every other function.
+    pub locals: Box<[RawLocal<S>]>,
     /// The arms of a `tokio::select!`, read from the closure the macro
     /// polls its branches in: one per `fut` reference the closure
     /// binds. Empty for every other function, by the same reasoning as
@@ -645,6 +651,16 @@ pub struct RawAwaitee<S> {
     /// The awaited value's type, which is what ties the local back to the
     /// suspend variant whose payload holds it.
     pub type_id: Option<TypeId>,
+}
+
+/// One named local of a coroutine's resume function: the name the
+/// coroutine's payload members carry it under, and where it is
+/// declared. The type is not recorded — the name is the join, and the
+/// payload member the name lands on carries the type.
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+pub struct RawLocal<S> {
+    pub name: S,
+    pub source_loc: Option<Box<SourceLoc<S>>>,
 }
 
 /// Parameter to a function.

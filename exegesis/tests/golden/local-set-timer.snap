@@ -56,6 +56,17 @@ env: local_set_timer::sleeper::{async_fn_env#0} @ local-set-timer.rs:39
 
 [poll-decls]
 
+[local-decls]
+local: local_set_timer::local_acquirer::{async_fn_env#0} :: ready @ local-set-timer.rs:26
+local: local_set_timer::local_acquirer::{async_fn_env#0} :: semaphore @ local-set-timer.rs:26
+local: local_set_timer::local_sleeper::{async_fn_env#0} :: ready @ local-set-timer.rs:19
+local: local_set_timer::main::{async_block#0}::{async_block_env#0} :: ready_a_rx @ local-set-timer.rs:55
+local: local_set_timer::main::{async_block#0}::{async_block_env#0} :: ready_b_rx @ local-set-timer.rs:56
+local: local_set_timer::main::{async_block#0}::{async_block_env#0} :: ready_c_rx @ local-set-timer.rs:57
+local: local_set_timer::main::{async_block_env#0} :: local @ local-set-timer.rs:58
+local: local_set_timer::sleeper::{async_fn_env#0} :: ready @ local-set-timer.rs:39
+local: local_set_timer::sleeper::{async_fn_env#0} :: tag @ local-set-timer.rs:39
+
 [infra]
 header: ok
 vtable: ok

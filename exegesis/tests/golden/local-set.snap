@@ -56,6 +56,17 @@ env: local_set::main::{async_block_env#0} @ local-set.rs:41
 
 [poll-decls]
 
+[local-decls]
+local: local_set::joiner::{async_fn_env#0} :: handle @ local-set.rs:31
+local: local_set::joiner::{async_fn_env#0} :: ready @ local-set.rs:31
+local: local_set::local_acquirer::{async_fn_env#0} :: ready @ local-set.rs:24
+local: local_set::local_acquirer::{async_fn_env#0} :: semaphore @ local-set.rs:24
+local: local_set::local_sleeper::{async_fn_env#0} :: ready @ local-set.rs:17
+local: local_set::main::{async_block#0}::{async_block_env#0} :: ready_a_rx @ local-set.rs:44
+local: local_set::main::{async_block#0}::{async_block_env#0} :: ready_b_rx @ local-set.rs:45
+local: local_set::main::{async_block#0}::{async_block_env#0} :: ready_c_rx @ local-set.rs:46
+local: local_set::main::{async_block_env#0} :: local @ local-set.rs:47
+
 [infra]
 header: ok
 vtable: ok

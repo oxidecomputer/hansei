@@ -464,6 +464,41 @@ fn assert_env_decl(program: &str, bundle: &Bundle, type_name: &str, expected: u3
     assert_eq!(line, expected, "{program}: {type_name}'s line");
 }
 
+/// The local-decl table's entry for `local` of the coroutine named
+/// `type_name`, as (file, line), or `None` where the table carries
+/// none: a local never held across an await, or one whose copies
+/// disagreed.
+fn local_decl<'b>(bundle: &'b Bundle, type_name: &str, local: &str) -> Option<(&'b str, u32)> {
+    bundle.types.local_decls.iter().find_map(|(id, locals)| {
+        let name = match &bundle.types.types[id.0 as usize] {
+            TypeDef::Enum { name, .. } | TypeDef::Struct { name, .. } => *name,
+            _ => return None,
+        };
+        if bundle.strings.get(name)? != type_name {
+            return None;
+        }
+        let (_, loc) = locals
+            .iter()
+            .find(|(n, _)| bundle.strings.get(*n) == Some(local))?;
+        Some((
+            bundle.strings.get(loc.file).expect("interned file"),
+            loc.line,
+        ))
+    })
+}
+
+/// The coroutine `type_name` declares its frame-resident local `local`
+/// in the fixture's own source at line `expected`.
+fn assert_local_decl(program: &str, bundle: &Bundle, type_name: &str, local: &str, expected: u32) {
+    let (file, line) = local_decl(bundle, type_name, local)
+        .unwrap_or_else(|| panic!("{program}: {type_name} records no declaration of `{local}`"));
+    assert!(
+        file.ends_with(&format!("src/bin/{program}.rs")),
+        "{program}: {type_name}'s `{local}` declared in {file}"
+    );
+    assert_eq!(line, expected, "{program}: {type_name}'s `{local}` line");
+}
+
 fn walk_path(program: &str, bundle: &Bundle, role: WalkRole) -> String {
     let binding = &bundle.walks.entries[&role];
     assert!(
@@ -1911,6 +1946,15 @@ fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
         stats.poll_decls_declined, 0,
         "{program}: poll declarations disagreed"
     );
+    // Every fixture's coroutines hold something across an await — an
+    // argument if nothing else — so a bundle with no local declaration
+    // means that collector went quiet. Declines are expected: a
+    // `tokio::pin!` shadows the local it pins, and the two `let`s
+    // disagree by design.
+    assert!(
+        stats.local_decls > 0,
+        "{program}: no local declaration was recorded"
+    );
     assert!(
         stats.infra_missing.is_empty(),
         "{program}: {:?}",
@@ -2061,6 +2105,49 @@ fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
             bundle,
             "simple_await::ready_value::{async_fn_env#0}",
             17,
+        );
+    }
+    if program == "joinset" {
+        // The local-decl table, from both kinds of resume-function
+        // variable: `set` is a `let` two statements into the driver's
+        // body, `ready` an argument, declared at the `fn` line like the
+        // env itself.
+        assert_local_decl(
+            program,
+            bundle,
+            "joinset::driver::{async_fn_env#0}",
+            "set",
+            52,
+        );
+        assert_local_decl(
+            program,
+            bundle,
+            "joinset::driver::{async_fn_env#0}",
+            "ready",
+            48,
+        );
+    }
+    if program == "armed-select" {
+        // `recv` is declared at 37 and pinned at 40, and `tokio::pin!`
+        // pins by shadowing: two `let recv` in one body, two lines, and
+        // the payload member cannot say which it is. Nothing is
+        // recorded, and the decline is counted. `once`, an argument
+        // nothing shadows, is recorded.
+        assert_eq!(
+            local_decl(bundle, "armed_select::selector::{async_fn_env#0}", "recv"),
+            None,
+            "{program}: a shadowed local records nothing"
+        );
+        assert_local_decl(
+            program,
+            bundle,
+            "armed_select::selector::{async_fn_env#0}",
+            "once",
+            33,
+        );
+        assert!(
+            stats.local_decls_declined > 0,
+            "{program}: the shadowed locals were not counted as declined"
         );
     }
     if program == "enum-reprs" {

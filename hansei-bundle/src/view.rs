@@ -468,6 +468,22 @@ impl<'a> BundleType<'a> {
         Some((self.str(loc.file), loc.line))
     }
 
+    /// Where this coroutine's frame-resident local `name` is declared,
+    /// when the bundle recorded it: the `let` or argument behind the
+    /// payload member of that name, the line a task block prints as
+    /// `declared at` under a value held there. `None` for a type that
+    /// is no coroutine, a name the table does not carry, and a local
+    /// whose declarations disagreed. A linear scan comparing strings:
+    /// the list is sorted by string ref, not by string, and the longest
+    /// one a large program produces is a few dozen entries.
+    pub fn local_site(&self, name: &str) -> Option<(&'a str, u32)> {
+        let locals = self.bundle.types.local_decls.get(&self.id)?;
+        locals
+            .iter()
+            .find(|(n, _)| self.str(*n) == name)
+            .map(|(_, loc)| (self.str(loc.file), loc.line))
+    }
+
     /// Where a value of this type was built, when a member is a closure
     /// or coroutine environment whose declaration the bundle recorded:
     /// an environment is constructed where it is written, so its decl

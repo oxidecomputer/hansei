@@ -754,13 +754,16 @@ pub(crate) fn build_rows(
         .map(|(index, task)| {
             let lwp = task_lwp(task, polling, blocking_lwps);
             let waiting_on = waiting_on(task, waits.get(index), polling, stops);
-            let detail = Detail {
-                containers: None,
-                armed: show_armed(task),
-            };
             let lines = waits
                 .get(index)
-                .map(|wait| wait_detail(wait, stops, &[], None, &|_| None, detail))
+                .map(|wait| {
+                    let detail = Detail {
+                        containers: None,
+                        armed: show_armed(task),
+                        frames: &wait.frames,
+                    };
+                    wait_detail(wait, stops, &[], None, &|_| None, detail)
+                })
                 .unwrap_or_default();
             TaskRow {
                 id: task_id(list, index),
@@ -823,6 +826,7 @@ pub(crate) fn apply_slots(
         let detail = Detail {
             containers,
             armed: show_armed(task),
+            frames: &wait.frames,
         };
         let owned: Vec<&attribution::AttributedSlot> = slots.of_task(task.addr.0).collect();
         if owned.is_empty() && !row.waiting_on.starts_with('—') {
@@ -860,6 +864,10 @@ pub(crate) struct Detail<'a> {
     pub(crate) containers: Option<&'a Containers<'a>>,
     /// Whether the members' `armed:` line prints ([`show_armed`]).
     pub(crate) armed: bool,
+    /// The task's chain frames, root first ([`rt_graph::TaskWait::frames`]),
+    /// which a `held in:` line's frame number indexes: the frame's type
+    /// is what says where the local named beside it is declared.
+    pub(crate) frames: &'a [ValueKey],
 }
 
 /// The census's finds by address — built once for a listing, since
@@ -1320,6 +1328,16 @@ impl<'a> StopNames<'a> {
         Some((file.to_string(), line))
     }
 
+    /// Where the coroutine `ty` declares its frame-resident local
+    /// `name` — the `let` or argument behind a `held in:` line's
+    /// backticked name, printed under it as `declared at:`. `None`
+    /// where the frame is no coroutine, or the bundle recorded no
+    /// declaration for the name.
+    fn local_site(&self, ty: BundleTypeId, name: &str) -> Option<(String, u32)> {
+        let (file, line) = self.view?.ty(ty)?.local_site(name)?;
+        Some((file.to_string(), line))
+    }
+
     /// One type name as a line that names a future carries it: folded
     /// for display, its generic arguments kept — they are what tells
     /// one `select!` arm from the arm beside it — with a coroutine's
@@ -1560,6 +1578,22 @@ fn frame_site(wait: &rt_graph::TaskWait, frame: usize) -> Option<String> {
     Some(format!("{file}:{line}"))
 }
 
+/// Where chain frame `frame` — numbered as the listings number frames,
+/// over `frames` root first — declares its local `local`: the line a
+/// `held in: frame N \`local\`` line is followed by as `declared at:`.
+/// `None` where the frame is no coroutine or the bundle recorded no
+/// declaration for the name.
+fn declared_at(
+    stops: &StopNames<'_>,
+    frames: &[ValueKey],
+    frame: usize,
+    local: &str,
+) -> Option<String> {
+    let index = frames.len().checked_sub(1 + frame)?;
+    let (file, line) = stops.local_site(frames[index].ty, local)?;
+    Some(format!("{file}:{line}"))
+}
+
 /// The items the slots no member accounts for are listed under, one
 /// per container, split by whether the task's current await reaches
 /// the slot ([`attribution::Reach`]): the items under `awaiting on:`,
@@ -1622,6 +1656,11 @@ fn slot_items(
                 None => format!("frame {}", holding.frame),
             },
         );
+        if let Some(local) = &holding.local
+            && let Some(site) = declared_at(stops, detail.frames, holding.frame, local)
+        {
+            field("declared at", site);
+        }
         if !parked && let Some(site) = frame_site(wait, holding.frame) {
             field("awaiting at", site);
         }
@@ -1774,7 +1813,10 @@ fn member_line(
     // it there: a borrowed branch is a find of the frame's own. A
     // `select!` branch the macro owns lives in the macro's own tuple,
     // which the `select!:` heading has already placed.
-    let held_in = |key: Option<ValueKey>| -> Option<String> {
+    // A find of the task's own chain also says where its frame
+    // declares the local — a find reached through another chain
+    // numbers a frame of that chain, which `detail.frames` is not.
+    let held_in = |key: Option<ValueKey>| -> Option<(String, Option<String>)> {
         if matches!(
             member.route,
             MemberRoute::Select {
@@ -1785,7 +1827,12 @@ fn member_line(
             return None;
         }
         let held = detail.containers?.held_at(key?.addr)?;
-        Some(format!("frame {} `{}`", held.frame, held.local))
+        let declared = held
+            .via
+            .is_none()
+            .then(|| declared_at(stops, detail.frames, held.frame, &held.local))
+            .flatten();
+        Some((format!("frame {} `{}`", held.frame, held.local), declared))
     };
     let (local, borrowed, arm, stream) = match &member.route {
         MemberRoute::Branch { local, borrowed } => (local.clone(), *borrowed, None, None),
@@ -1852,8 +1899,11 @@ fn member_line(
             },
         );
     }
-    if let Some(held) = held_in(member.key) {
+    if let Some((held, declared)) = held_in(member.key) {
         field("held in", held);
+        if let Some(declared) = declared {
+            field("declared at", declared);
+        }
     }
     if let Some((file, line)) = arm {
         field("awaiting at", format!("{file}:{line}"));
@@ -3185,6 +3235,7 @@ mod table_tests {
     const ARMED: Detail<'static> = Detail {
         containers: None,
         armed: true,
+        frames: &[],
     };
     const RUNNING: u64 = 0b0001;
     const NOTIFIED: u64 = 0b0100;
@@ -3326,16 +3377,14 @@ mod table_tests {
     /// type's line is where the thing on the heading is written, and
     /// the two labels name different things; a type the bundle
     /// recorded no declaration for prints nothing.
-    #[test]
-    fn test_a_member_with_no_arm_prints_where_its_type_is_written() {
+    /// A bundle laid out by hand with every kind of source line a
+    /// listing reads: a hand-written future's `poll` (`x::branch`, type
+    /// 0), a coroutine's own `async fn` (`x::run`, type 2) and the
+    /// `let` of that coroutine's frame-resident local `tasks`.
+    fn sited_bundle() -> hansei_bundle::Bundle {
         use hansei_bundle::{
-            Bundle, BundleView, FORMAT_VERSION, InfraTypes, Meta, SourceLoc, StringInterner,
-            TypeDef, TypeTable,
+            Bundle, FORMAT_VERSION, InfraTypes, Meta, SourceLoc, StringInterner, TypeDef, TypeTable,
         };
-        use hansei_runtime::tokio::attribution::{
-            AttributedSlot, Attribution, OwnerKind, SlotPath, SlotRoot, Validity,
-        };
-        use hansei_runtime::tokio::wakers::Owner;
 
         let mut strings = StringInterner::new();
         let n_branch = strings.intern("x::branch");
@@ -3343,9 +3392,10 @@ mod table_tests {
         let n_coro = strings.intern("x::run::{async_fn_env#0}");
         let n_file = strings.intern("hyper-1.10.1/src/proto/h1/dispatch.rs");
         let n_src = strings.intern("src/run.rs");
+        let n_tasks = strings.intern("tasks");
         let strings = strings.finish();
         let ty = BundleTypeId(0);
-        let bundle = Bundle {
+        Bundle {
             meta: Meta {
                 format_version: FORMAT_VERSION,
                 ..Default::default()
@@ -3389,6 +3439,20 @@ mod table_tests {
                 )]
                 .into_iter()
                 .collect(),
+                // The coroutine holds `tasks` across an await, declared
+                // two lines into its body.
+                local_decls: [(
+                    BundleTypeId(2),
+                    vec![(
+                        n_tasks,
+                        SourceLoc {
+                            file: n_src,
+                            line: 35,
+                        },
+                    )],
+                )]
+                .into_iter()
+                .collect(),
                 ..Default::default()
             },
             tasks: Default::default(),
@@ -3409,7 +3473,18 @@ mod table_tests {
             provenance: Default::default(),
             impls: Default::default(),
             semantics: Default::default(),
+        }
+    }
+
+    #[test]
+    fn test_a_member_with_no_arm_prints_where_its_type_is_written() {
+        use hansei_bundle::BundleView;
+        use hansei_runtime::tokio::attribution::{
+            AttributedSlot, Attribution, OwnerKind, SlotPath, SlotRoot, Validity,
         };
+        use hansei_runtime::tokio::wakers::Owner;
+
+        let bundle = sited_bundle();
         let impls = Default::default();
         let stops = StopNames::over(BundleView::new(&bundle), &impls);
         let site = "    type defined at: hyper-1.10.1/src/proto/h1/dispatch.rs:512";
@@ -4668,6 +4743,163 @@ mod table_tests {
         );
     }
 
+    /// A `held in:` line naming a local is followed by where the frame
+    /// declares it, when the frame is a coroutine whose `let` the
+    /// bundle recorded: under an awaited item and a parked one alike,
+    /// and under a member the census found in the task's own frame.
+    /// Nothing follows a `held in:` naming no local, a local the table
+    /// does not carry, a frame that is no coroutine, or a find reached
+    /// through another chain, whose frame number is that chain's.
+    #[test]
+    fn test_declared_at_follows_a_held_in_naming_a_coroutines_local() {
+        use super::Containers;
+        use hansei_bundle::BundleView;
+        use hansei_runtime::tokio::attribution::{
+            AttributedSlot, Attribution, Holding, Reach, SlotPath, SlotRoot, Validity,
+        };
+        use hansei_runtime::tokio::census::{FutureCensus, HeldFuture, Via};
+        use hansei_runtime::tokio::wakers::Owner;
+
+        let bundle = sited_bundle();
+        let impls = Default::default();
+        let stops = StopNames::over(BundleView::new(&bundle), &impls);
+        // Eight frames, all the coroutine but frame 5 (index 2), a
+        // hand-written future.
+        let frames: Vec<ValueKey> = (0..8)
+            .map(|i| ValueKey {
+                addr: 0x2000 + i * 0x100,
+                ty: BundleTypeId(if i == 2 { 0 } else { 2 }),
+            })
+            .collect();
+        let owner = Owner::Task {
+            header: 0x1100,
+            index: 0,
+        };
+        let held = |addr: u64, frame: usize, local: Option<&str>| Holding {
+            container: ValueKey {
+                addr,
+                ty: BundleTypeId(1),
+            },
+            frame,
+            local: local.map(str::to_string),
+        };
+        let slot = |hit: usize, at: u64, reach: Reach| AttributedSlot {
+            hit,
+            slot: at,
+            owner,
+            attribution: Attribution::Typed {
+                holder: "ListsInner".to_string(),
+                member: "waker".to_string(),
+                path: SlotPath {
+                    root: SlotRoot::Frame { task: 0, frame: 3 },
+                    steps: vec!["set".to_string()],
+                    hop: None,
+                },
+                validity: Validity::SelfDescribing,
+            },
+            within: None,
+            through: Vec::new(),
+            aliases: Vec::new(),
+            reach,
+        };
+        let slots = [
+            slot(0, 0x6010, Reach::Awaited(held(0x6000, 3, Some("tasks")))),
+            slot(1, 0x7010, Reach::Parked(held(0x7000, 7, Some("tasks")))),
+            slot(2, 0x8010, Reach::Parked(held(0x8000, 5, Some("tasks")))),
+            slot(3, 0x9010, Reach::Parked(held(0x9000, 4, Some("interval")))),
+            slot(4, 0xa010, Reach::Parked(held(0xa000, 4, None))),
+        ];
+        let refs: Vec<&AttributedSlot> = slots.iter().collect();
+        let mut wait = wait(1, None);
+        wait.frames = frames.clone();
+        let detail = Detail {
+            containers: None,
+            armed: false,
+            frames: &frames,
+        };
+        let lines = wait_detail(&wait, &stops, &refs, None, &|_| None, detail);
+        assert_eq!(
+            lines.awaiting,
+            [
+                "0x6000: x::plain",
+                "    held in: frame 3 `tasks`",
+                "    declared at: src/run.rs:35",
+                "    waker: ListsInner @ 0x6010",
+            ]
+        );
+        assert_eq!(
+            lines.wake,
+            [
+                "0x7000: x::plain",
+                "    held in: frame 7 `tasks`",
+                "    declared at: src/run.rs:35",
+                "    waker: ListsInner @ 0x7010",
+                "0x8000: x::plain",
+                "    held in: frame 5 `tasks`",
+                "    waker: ListsInner @ 0x8010",
+                "0x9000: x::plain",
+                "    held in: frame 4 `interval`",
+                "    waker: ListsInner @ 0x9010",
+                "0xa000: x::plain",
+                "    held in: frame 4",
+                "    waker: ListsInner @ 0xa010",
+            ]
+        );
+
+        // A member the census placed in frame 2's `tasks`, then the
+        // same find reached through a held future's chain.
+        let find = |via: Option<Via>| HeldFuture {
+            owner: 0,
+            frame: 2,
+            local: "tasks".to_string(),
+            via,
+            slot: 0x6000,
+            addr: 0x6000,
+            ty: BundleTypeId(0),
+            depth: 1,
+            frames: Vec::new(),
+            future: "x::branch".to_string(),
+            state: None,
+            waiting_on: None,
+            wait: None,
+            continuation: ContinuationStatus::Incomplete {
+                reason: IncompleteReason::NoRoot,
+                detail: None,
+            },
+        };
+        let member = branch("inner", WaitAssessment::Unresumed, false);
+        let member_lines = |census: &FutureCensus| {
+            let containers = Containers::of(census);
+            let detail = Detail {
+                containers: Some(&containers),
+                armed: false,
+                frames: &frames,
+            };
+            member_line(&member, &stops, &[], None, detail)
+        };
+        let own = FutureCensus::from_finds(vec![find(None)], vec![], vec![]);
+        assert_eq!(
+            member_lines(&own),
+            [
+                "inner: x::branch",
+                "    held in: frame 2 `tasks`",
+                "    declared at: src/run.rs:35",
+                "    awaiting on: never polled",
+                "    type defined at: hyper-1.10.1/src/proto/h1/dispatch.rs:512",
+            ]
+        );
+        let through = FutureCensus::from_finds(vec![find(Some(Via::Held(0)))], vec![], vec![]);
+        assert_eq!(
+            member_lines(&through),
+            [
+                "inner: x::branch",
+                "    held in: frame 2 `tasks`",
+                "    awaiting on: never polled",
+                "    type defined at: hyper-1.10.1/src/proto/h1/dispatch.rs:512",
+            ]
+        );
+    }
+
     /// The `armed:` line prints only on a task that is not idle: on an
     /// idle one every enabled branch of a pending `select!` is armed
     /// by construction, so the line says nothing; on a notified one a
@@ -4681,6 +4913,7 @@ mod table_tests {
         let idle = Detail {
             containers: None,
             armed: false,
+            frames: &[],
         };
         assert_eq!(
             member_line(&member, &stops, &[], None, idle),

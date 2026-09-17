@@ -13,6 +13,7 @@ task 4
             awaiting at: src/bin/watch-stream.rs:75
             branch 0 (borrowed): tokio::sync::oneshot::Receiver<u32>
                 held in: frame 1 `once`
+                declared at: src/bin/watch-stream.rs:59
                 awaiting at: src/bin/watch-stream.rs:76
                 awaiting on: oneshot rx 0xADDR (nothing sent, sender alive)
                 type defined at: tokio-1.52.4/src/sync/oneshot.rs:1271

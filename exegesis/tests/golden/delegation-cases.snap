@@ -129,6 +129,14 @@ poll: delegation_cases::Probe<8> @ delegation-cases.rs:33
 poll: delegation_cases::RawHolder @ delegation-cases.rs:104
 poll: delegation_cases::Retained @ delegation-cases.rs:85
 
+[local-decls]
+local: delegation_cases::main::{async_block_env#0} :: tag @ delegation-cases.rs:322
+local: delegation_cases::main::{async_block_env#1} :: boxed @ delegation-cases.rs:356
+local: delegation_cases::main::{async_block_env#2} :: tag @ delegation-cases.rs:374
+local: delegation_cases::main::{async_block_env#3} :: idle @ delegation-cases.rs:382
+local: delegation_cases::main::{async_block_env#3} :: ready @ delegation-cases.rs:210
+local: delegation_cases::main::{async_block_env#5} :: after @ delegation-cases.rs:400
+
 [infra]
 header: ok
 vtable: ok

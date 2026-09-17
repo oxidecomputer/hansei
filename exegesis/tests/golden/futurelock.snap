@@ -51,6 +51,19 @@ env: futurelock::start_background_task::{async_fn_env#0} @ futurelock.rs:42
 
 [poll-decls]
 
+[local-decls]
+local: futurelock::do_async_thing::{async_fn_env#0} :: label @ futurelock.rs:88
+local: futurelock::do_async_thing::{async_fn_env#0} :: lock @ futurelock.rs:88
+local: futurelock::do_stuff::{async_fn_env#0} :: disabled @ futurelock.rs:77
+local: futurelock::do_stuff::{async_fn_env#0} :: future1 @ futurelock.rs:69
+local: futurelock::do_stuff::{async_fn_env#0} :: futures @ futurelock.rs:77
+local: futurelock::do_stuff::{async_fn_env#0} :: lock @ futurelock.rs:68
+local: futurelock::main::{async_block#0}::{async_block_env#0} :: lock @ futurelock.rs:24
+local: futurelock::start_background_task::{async_fn#0}::{async_block_env#0} :: guard @ futurelock.rs:50
+local: futurelock::start_background_task::{async_fn#0}::{async_block_env#0} :: lock @ futurelock.rs:42
+local: futurelock::start_background_task::{async_fn#0}::{async_block_env#0} :: tx @ futurelock.rs:45
+local: futurelock::start_background_task::{async_fn_env#0} :: lock @ futurelock.rs:42
+
 [infra]
 header: ok
 vtable: ok

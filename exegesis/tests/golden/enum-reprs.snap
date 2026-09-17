@@ -28,6 +28,14 @@ env: enum_reprs::main::{async_block_env#0} @ enum-reprs.rs:93
 
 [poll-decls]
 
+[local-decls]
+local: enum_reprs::hold::{async_fn_env#0} :: level @ enum-reprs.rs:69
+local: enum_reprs::hold::{async_fn_env#0} :: park @ enum-reprs.rs:64
+local: enum_reprs::hold::{async_fn_env#0} :: ready @ enum-reprs.rs:64
+local: enum_reprs::hold::{async_fn_env#0} :: signed32 @ enum-reprs.rs:66
+local: enum_reprs::hold::{async_fn_env#0} :: signed64 @ enum-reprs.rs:67
+local: enum_reprs::hold::{async_fn_env#0} :: unsigned32 @ enum-reprs.rs:68
+
 [infra]
 header: ok
 vtable: ok

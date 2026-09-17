@@ -30,7 +30,7 @@ pub const MAGIC: [u8; 8] = *b"exegesis";
 
 /// The current bundle format version. Bump on any schema change, including
 /// indirect ones (e.g. new [`crate::Encoding`] variants).
-pub const FORMAT_VERSION: u32 = 72;
+pub const FORMAT_VERSION: u32 = 73;
 
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -1292,6 +1292,26 @@ impl Bundle {
         for (&id, loc) in &self.types.poll_decls {
             check_ty("poll decl", id)?;
             check_str("poll decl", loc.file)?;
+        }
+
+        // Strictly increasing by the name's ref: one check for both the
+        // order the accessor's scan assumes nothing of and the
+        // uniqueness a name-keyed lookup needs.
+        for (&id, locals) in &self.types.local_decls {
+            check_ty("local decl", id)?;
+            let mut prev: Option<StrRef> = None;
+            for &(name, loc) in locals {
+                check_str("local decl", name)?;
+                check_str("local decl", loc.file)?;
+                if prev.is_some_and(|p| p >= name) {
+                    return corrupt(format!(
+                        "local decls of type {} not sorted by name at {:?}",
+                        id.0,
+                        self.strings.get(name).unwrap()
+                    ));
+                }
+                prev = Some(name);
+            }
         }
 
         let mut prev: Option<&str> = None;

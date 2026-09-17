@@ -4,7 +4,7 @@
 
 use crate::raw_types::{
     CommonAttrs, DiscrBits, Encoding, NamespaceTable, NsId, RawArray, RawAwaitee, RawBase, RawEnum,
-    RawEnumerator, RawFunc, RawGenericParameter, RawMember, RawPointer, RawSelectArm,
+    RawEnumerator, RawFunc, RawGenericParameter, RawLocal, RawMember, RawPointer, RawSelectArm,
     RawStaticVariable, RawStruct, RawSubParameter, RawType, RawUnion, RawVariant, SourceLoc,
     VariantShape,
 };
@@ -775,6 +775,10 @@ impl<'dw> CodegenUnit<'dw> {
         // blocks the body nests one per suspend point. Every other
         // function's blocks stay unvisited: on a large binary that walk
         // would cost far more than the handful of awaits it would find.
+        // The body's named locals ride along on the same walk: a local
+        // held across an await is a payload member of the coroutine's
+        // env under its own name, and its `let` is where a task block
+        // says the thing held there is declared.
         let resume_fn = common
             .name
             .is_some_and(|n| n.starts_with("{async_fn#") || n.starts_with("{async_block#"));
@@ -790,6 +794,7 @@ impl<'dw> CodegenUnit<'dw> {
         let mut formal_parameters = vec![];
         let mut template_params = vec![];
         let mut awaitees = vec![];
+        let mut locals = vec![];
         let mut select_arms = vec![];
         if entry.has_children() {
             while cursor.next_entry()? {
@@ -802,15 +807,13 @@ impl<'dw> CodegenUnit<'dw> {
                             template_params.extend(process_generic_parameter(unit, cursor)?);
                         }
                         gimli::DW_TAG_lexical_block if resume_fn => {
-                            collect_awaitees(unit, cursor, &mut awaitees)?;
+                            collect_resume_vars(unit, cursor, &mut awaitees, &mut locals)?;
                         }
                         gimli::DW_TAG_lexical_block if select_closure => {
                             collect_select_arms(unit, cursor, &mut select_arms)?;
                         }
                         gimli::DW_TAG_variable if resume_fn => {
-                            if let Some(awaitee) = process_awaitee(unit, cursor)? {
-                                awaitees.push(awaitee);
-                            }
+                            process_resume_var(unit, cursor, &mut awaitees, &mut locals)?;
                         }
                         _ => {
                             //println!("skipping function content: {:x?}", child.tag());
@@ -843,6 +846,7 @@ impl<'dw> CodegenUnit<'dw> {
                 template_params: template_params.into_boxed_slice(),
                 noreturn,
                 awaitees: awaitees.into_boxed_slice(),
+                locals: locals.into_boxed_slice(),
                 select_arms: select_arms.into_boxed_slice(),
             },
         );
@@ -954,13 +958,16 @@ fn collect_select_arms<'dw>(
     Ok(())
 }
 
-/// Walk a lexical block and everything under it, gathering `__awaitee`
-/// locals. A resume body nests one block per suspend point, so the
-/// awaits of a coroutine with several of them sit at different depths.
-fn collect_awaitees<'dw>(
+/// Walk a lexical block and everything under it, gathering the resume
+/// function's variables: its `__awaitee` locals into `awaitees`, its
+/// named locals into `locals`. A resume body nests one block per
+/// suspend point, so the awaits of a coroutine with several of them
+/// sit at different depths, and so do the `let`s between them.
+fn collect_resume_vars<'dw>(
     unit: &UnitCtx<'_, 'dw>,
     cursor: &mut EntriesCursor<Slice<'dw>>,
-    out: &mut Vec<RawAwaitee<&'dw str>>,
+    awaitees: &mut Vec<RawAwaitee<&'dw str>>,
+    locals: &mut Vec<RawLocal<&'dw str>>,
 ) -> Result<()> {
     debug_assert!(cursor.current().unwrap().tag() == gimli::DW_TAG_lexical_block);
     if !cursor.current().unwrap().has_children() {
@@ -979,11 +986,7 @@ fn collect_awaitees<'dw>(
             None => depth -= 1,
             Some(child) => match child.tag() {
                 gimli::DW_TAG_lexical_block if child.has_children() => depth += 1,
-                gimli::DW_TAG_variable => {
-                    if let Some(awaitee) = process_awaitee(unit, cursor)? {
-                        out.push(awaitee);
-                    }
-                }
+                gimli::DW_TAG_variable => process_resume_var(unit, cursor, awaitees, locals)?,
                 _ => cursor.consume_entry()?,
             },
         }
@@ -991,24 +994,36 @@ fn collect_awaitees<'dw>(
     Ok(())
 }
 
-/// Read a `DW_TAG_variable` if it is an `__awaitee`, else skip it.
-fn process_awaitee<'dw>(
+/// Read one `DW_TAG_variable` of a resume function into the list it
+/// belongs to: an `__awaitee` into `awaitees`; any other variable the
+/// compiler named — `__self`, `__state`, the `__` family — into
+/// neither, since no payload member is addressed by such a name; a
+/// nameless one into neither; every other named variable into
+/// `locals`. The async fn's arguments arrive here too, as variables of
+/// the body rather than formal parameters, which is why they need no
+/// second tag.
+fn process_resume_var<'dw>(
     unit: &UnitCtx<'_, 'dw>,
     cursor: &mut EntriesCursor<Slice<'dw>>,
-) -> Result<Option<RawAwaitee<&'dw str>>> {
+    awaitees: &mut Vec<RawAwaitee<&'dw str>>,
+    locals: &mut Vec<RawLocal<&'dw str>>,
+) -> Result<()> {
     let entry = cursor.current().unwrap();
     debug_assert!(entry.tag() == gimli::DW_TAG_variable);
     let common = CommonAttrs::from_entry(unit, entry, |_| Ok(()))?;
-    if common.name != Some("__awaitee") {
-        cursor.consume_entry()?;
-        return Ok(None);
+    match common.name {
+        Some("__awaitee") => awaitees.push(RawAwaitee {
+            source_loc: boxed_source_loc(common.source_loc),
+            type_id: common.type_id.map(TypeId),
+        }),
+        Some(name) if !name.starts_with("__") => locals.push(RawLocal {
+            name,
+            source_loc: boxed_source_loc(common.source_loc),
+        }),
+        _ => {}
     }
-    let awaitee = RawAwaitee {
-        source_loc: boxed_source_loc(common.source_loc),
-        type_id: common.type_id.map(TypeId),
-    };
     cursor.consume_entry()?;
-    Ok(Some(awaitee))
+    Ok(())
 }
 
 /// Box a [`SourceLoc`] for storage, or `None` if it carries no information.
@@ -2047,6 +2062,23 @@ mod tests {
                     let entry = unit.get_mut(direct);
                     entry.set(gimli::DW_AT_name, W::String(b"__awaitee".to_vec()));
                     entry.set(gimli::DW_AT_type, W::UnitRef(word));
+                    // Named locals at both depths, the compiler's own
+                    // `__self` beside them, and one with no name.
+                    let set = unit.add(block, gimli::DW_TAG_variable);
+                    let entry = unit.get_mut(set);
+                    entry.set(gimli::DW_AT_name, W::String(b"set".to_vec()));
+                    entry.set(gimli::DW_AT_type, W::UnitRef(word));
+                    entry.set(gimli::DW_AT_decl_line, W::Udata(52));
+                    let arg = unit.add(fn_die, gimli::DW_TAG_variable);
+                    let entry = unit.get_mut(arg);
+                    entry.set(gimli::DW_AT_name, W::String(b"ready".to_vec()));
+                    entry.set(gimli::DW_AT_type, W::UnitRef(word));
+                    let this = unit.add(fn_die, gimli::DW_TAG_variable);
+                    let entry = unit.get_mut(this);
+                    entry.set(gimli::DW_AT_name, W::String(b"__self".to_vec()));
+                    entry.set(gimli::DW_AT_type, W::UnitRef(word));
+                    let anon = unit.add(fn_die, gimli::DW_TAG_variable);
+                    unit.get_mut(anon).set(gimli::DW_AT_type, W::UnitRef(word));
                 };
                 body(unit, b"{async_fn#0}");
                 body(unit, b"ordinary");
@@ -2064,9 +2096,24 @@ mod tests {
                 let resume = func("{async_fn#0}");
                 assert_eq!(resume.awaitees.len(), 2);
                 assert_eq!(resume.formal_parameters.len(), 1);
+                // The named locals at either depth, with their
+                // coordinates where they have any; `__self` and the
+                // nameless one are neither awaitee nor local.
+                let locals: Vec<(&str, Option<u64>)> = resume
+                    .locals
+                    .iter()
+                    .map(|l| {
+                        (
+                            reader.strings.get(l.name),
+                            l.source_loc.as_ref().and_then(|s| s.line).map(|n| n.get()),
+                        )
+                    })
+                    .collect();
+                assert_eq!(locals, [("set", Some(52)), ("ready", None)]);
                 // An ordinary fn collects no awaitees, wherever they sit.
                 let ordinary = func("ordinary");
                 assert_eq!(ordinary.awaitees.len(), 0);
+                assert_eq!(ordinary.locals.len(), 0);
                 assert_eq!(ordinary.formal_parameters.len(), 1);
             },
         );

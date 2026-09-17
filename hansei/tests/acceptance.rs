@@ -4013,10 +4013,21 @@ fn test_armed_select_acceptance() {
         .unwrap();
         assert!(select.is_match(&block), "{block}");
         let detail = regex::Regex::new(
-            r"(?m)^            branch [0-2] \(borrowed\): [^\n]+\n                held in: frame 1 `(once|recv|changed)`\n                awaiting at: [^\n]*armed-select\.rs:5[0-2]\n                awaiting on: (mpsc rx|watch rx|oneshot rx) 0x[0-9a-f]+ \([^)]*\)$",
+            r"(?m)^            branch [0-2] \(borrowed\): [^\n]+\n                held in: frame 1 `(once|recv|changed)`\n(                declared at: [^\n]*armed-select\.rs:33\n)?                awaiting at: [^\n]*armed-select\.rs:5[0-2]\n                awaiting on: (mpsc rx|watch rx|oneshot rx) 0x[0-9a-f]+ \([^)]*\)$",
         )
         .unwrap();
         assert_eq!(detail.find_iter(&block).count(), 3, "{block}");
+        // Where the frame declares the local follows `held in:` — for
+        // `once`, an argument, the `fn`'s own line. `recv` and `changed`
+        // are declared and then pinned, and `tokio::pin!` pins by
+        // shadowing: two `let`s of one name at two lines, and nothing
+        // says which the member is, so neither gets a line.
+        let declared = regex::Regex::new(
+            r"(?m)^                held in: frame 1 `once`\n                declared at: [^\n]*armed-select\.rs:33$",
+        )
+        .unwrap();
+        assert!(declared.is_match(&block), "{block}");
+        assert_eq!(block.matches("declared at:").count(), 1, "{block}");
         // Each primitive stands on a line of its own and carries its
         // whole reading.
         let words = regex::Regex::new(

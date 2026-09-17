@@ -63,6 +63,15 @@ env: blocking_pool::running_waiter::{async_fn_env#0} @ blocking-pool.rs:19
 
 [poll-decls]
 
+[local-decls]
+local: blocking_pool::main::{async_block_env#0} :: never_tx @ blocking-pool.rs:38
+local: blocking_pool::main::{async_block_env#0} :: ready_b_rx @ blocking-pool.rs:54
+local: blocking_pool::main::{async_block_env#0} :: running @ blocking-pool.rs:39
+local: blocking_pool::queued_waiter::{async_fn_env#0} :: handle @ blocking-pool.rs:25
+local: blocking_pool::queued_waiter::{async_fn_env#0} :: ready @ blocking-pool.rs:25
+local: blocking_pool::running_waiter::{async_fn_env#0} :: handle @ blocking-pool.rs:19
+local: blocking_pool::running_waiter::{async_fn_env#0} :: ready @ blocking-pool.rs:19
+
 [infra]
 header: ok
 vtable: ok

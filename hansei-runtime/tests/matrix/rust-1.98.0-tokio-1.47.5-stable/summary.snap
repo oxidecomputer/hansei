@@ -51,6 +51,19 @@ env: futurelock::start_background_task::{async_fn_env#0} @ futurelock.rs:42
 
 [poll-decls]
 
+[local-decls]
+local: futurelock::do_async_thing::{async_fn_env#0} :: label @ futurelock.rs:88
+local: futurelock::do_async_thing::{async_fn_env#0} :: lock @ futurelock.rs:88
+local: futurelock::do_stuff::{async_fn_env#0} :: disabled @ futurelock.rs:77
+local: futurelock::do_stuff::{async_fn_env#0} :: future1 @ futurelock.rs:69
+local: futurelock::do_stuff::{async_fn_env#0} :: futures @ futurelock.rs:77
+local: futurelock::do_stuff::{async_fn_env#0} :: lock @ futurelock.rs:68
+local: futurelock::main::{async_block#0}::{async_block_env#0} :: lock @ futurelock.rs:24
+local: futurelock::start_background_task::{async_fn#0}::{async_block_env#0} :: guard @ futurelock.rs:50
+local: futurelock::start_background_task::{async_fn#0}::{async_block_env#0} :: lock @ futurelock.rs:42
+local: futurelock::start_background_task::{async_fn#0}::{async_block_env#0} :: tx @ futurelock.rs:45
+local: futurelock::start_background_task::{async_fn_env#0} :: lock @ futurelock.rs:42
+
 [infra]
 header: ok
 vtable: ok
@@ -166,6 +179,23 @@ env: simple_await::ready_value::{async_fn_env#0} @ simple-await.rs:17
 env: simple_await::work::{async_fn_env#0} @ simple-await.rs:21
 
 [poll-decls]
+
+[local-decls]
+local: simple_await::work::{async_fn_env#0} :: borrowed @ simple-await.rs:36
+local: simple_await::work::{async_fn_env#0} :: boxed @ simple-await.rs:32
+local: simple_await::work::{async_fn_env#0} :: c_borrowed @ simple-await.rs:41
+local: simple_await::work::{async_fn_env#0} :: c_owned @ simple-await.rs:40
+local: simple_await::work::{async_fn_env#0} :: count @ simple-await.rs:23
+local: simple_await::work::{async_fn_env#0} :: first @ simple-await.rs:45
+local: simple_await::work::{async_fn_env#0} :: glyph @ simple-await.rs:44
+local: simple_await::work::{async_fn_env#0} :: ipv4 @ simple-await.rs:34
+local: simple_await::work::{async_fn_env#0} :: ipv6 @ simple-await.rs:35
+local: simple_await::work::{async_fn_env#0} :: labels @ simple-await.rs:24
+local: simple_await::work::{async_fn_env#0} :: owned @ simple-await.rs:37
+local: simple_await::work::{async_fn_env#0} :: park @ simple-await.rs:21
+local: simple_await::work::{async_fn_env#0} :: ready @ simple-await.rs:21
+local: simple_await::work::{async_fn_env#0} :: slice @ simple-await.rs:33
+local: simple_await::work::{async_fn_env#0} :: values @ simple-await.rs:28
 
 [infra]
 header: ok
@@ -283,6 +313,12 @@ env: nested_await::middle::{async_fn_env#0} @ nested-await.rs:15
 env: nested_await::outer::{async_fn_env#0} @ nested-await.rs:20
 
 [poll-decls]
+
+[local-decls]
+local: nested_await::leaf::{async_fn_env#0} :: park @ nested-await.rs:11
+local: nested_await::middle::{async_fn_env#0} :: park @ nested-await.rs:15
+local: nested_await::outer::{async_fn_env#0} :: park @ nested-await.rs:20
+local: nested_await::outer::{async_fn_env#0} :: ready @ nested-await.rs:20
 
 [infra]
 header: ok
@@ -425,6 +461,20 @@ env: dyn_future::main::{async_block_env#0} @ dyn-future.rs:50
 env: dyn_future::set_member::{async_fn_env#0} @ dyn-future.rs:19
 
 [poll-decls]
+
+[local-decls]
+local: dyn_future::boxed_leaf::{async_fn_env#0} :: park @ dyn-future.rs:15
+local: dyn_future::driver::{async_fn_env#0} :: a @ dyn-future.rs:40
+local: dyn_future::driver::{async_fn_env#0} :: park_boxed @ dyn-future.rs:26
+local: dyn_future::driver::{async_fn_env#0} :: park_set @ dyn-future.rs:27
+local: dyn_future::driver::{async_fn_env#0} :: ready @ dyn-future.rs:25
+local: dyn_future::driver::{async_fn_env#0} :: set @ dyn-future.rs:31
+local: dyn_future::hold_aligned::{async_fn_env#0} :: aligned @ dyn-future.rs:95
+local: dyn_future::hold_aligned::{async_fn_env#0} :: padded @ dyn-future.rs:94
+local: dyn_future::hold_aligned::{async_fn_env#0} :: park @ dyn-future.rs:93
+local: dyn_future::hold_aligned::{async_fn_env#0} :: ready @ dyn-future.rs:93
+local: dyn_future::main::{async_block_env#0} :: aligned_ready_rx @ dyn-future.rs:58
+local: dyn_future::set_member::{async_fn_env#0} :: park @ dyn-future.rs:19
 
 [infra]
 header: ok
@@ -603,6 +653,28 @@ env: select_combinator::wait::{async_fn_env#0} @ select-combinator.rs:22
 poll: select_combinator::Fallible @ select-combinator.rs:79
 poll: select_combinator::Park @ select-combinator.rs:68
 
+[local-decls]
+local: select_combinator::dynamic::{async_fn_env#0} :: park @ select-combinator.rs:105
+local: select_combinator::dynamic::{async_fn_env#0} :: ready @ select-combinator.rs:105
+local: select_combinator::joiner::{async_fn_env#0} :: futures @ select-combinator.rs:44
+local: select_combinator::joiner::{async_fn_env#0} :: park_a @ select-combinator.rs:40
+local: select_combinator::joiner::{async_fn_env#0} :: park_b @ select-combinator.rs:41
+local: select_combinator::joiner::{async_fn_env#0} :: ready @ select-combinator.rs:39
+local: select_combinator::main::{async_block_env#0} :: ready_dyn_rx @ select-combinator.rs:135
+local: select_combinator::main::{async_block_env#0} :: ready_join_rx @ select-combinator.rs:128
+local: select_combinator::main::{async_block_env#0} :: ready_map_rx @ select-combinator.rs:133
+local: select_combinator::main::{async_block_env#0} :: ready_remap_rx @ select-combinator.rs:134
+local: select_combinator::mapper::{async_fn_env#0} :: park @ select-combinator.rs:93
+local: select_combinator::mapper::{async_fn_env#0} :: ready @ select-combinator.rs:93
+local: select_combinator::remapper::{async_fn_env#0} :: park @ select-combinator.rs:99
+local: select_combinator::remapper::{async_fn_env#0} :: ready @ select-combinator.rs:99
+local: select_combinator::selector::{async_fn_env#0} :: disabled @ select-combinator.rs:32
+local: select_combinator::selector::{async_fn_env#0} :: futures @ select-combinator.rs:32
+local: select_combinator::selector::{async_fn_env#0} :: park_a @ select-combinator.rs:28
+local: select_combinator::selector::{async_fn_env#0} :: park_b @ select-combinator.rs:29
+local: select_combinator::selector::{async_fn_env#0} :: ready @ select-combinator.rs:27
+local: select_combinator::wait::{async_fn_env#0} :: park @ select-combinator.rs:22
+
 [infra]
 header: ok
 vtable: ok
@@ -715,6 +787,11 @@ env: many_tasks::main::{async_block_env#0} @ many-tasks.rs:23
 env: many_tasks::park_task::{async_fn_env#0} @ many-tasks.rs:13
 
 [poll-decls]
+
+[local-decls]
+local: many_tasks::main::{async_block_env#0} :: ready @ many-tasks.rs:24
+local: many_tasks::park_task::{async_fn_env#0} :: park @ many-tasks.rs:13
+local: many_tasks::park_task::{async_fn_env#0} :: ready @ many-tasks.rs:13
 
 [infra]
 header: ok
@@ -841,6 +918,12 @@ env: sleep_join::main::{async_block_env#0} @ sleep-join.rs:31
 env: sleep_join::sleeper::{async_fn_env#0} @ sleep-join.rs:13
 
 [poll-decls]
+
+[local-decls]
+local: sleep_join::joiner::{async_fn_env#0} :: handle @ sleep-join.rs:20
+local: sleep_join::joiner::{async_fn_env#0} :: ready @ sleep-join.rs:20
+local: sleep_join::main::{async_block_env#0} :: ready_b_rx @ sleep-join.rs:33
+local: sleep_join::sleeper::{async_fn_env#0} :: ready @ sleep-join.rs:13
 
 [infra]
 header: ok
@@ -999,6 +1082,31 @@ env: channels::send_waiter::{async_fn_env#0} @ channels.rs:85
 
 [poll-decls]
 
+[local-decls]
+local: channels::hold::{async_fn_env#0} :: park @ channels.rs:66
+local: channels::hold::{async_fn_env#0} :: ready @ channels.rs:65
+local: channels::main::{async_block_env#0} :: closed_rx @ channels.rs:120
+local: channels::main::{async_block_env#0} :: closed_tx @ channels.rs:120
+local: channels::main::{async_block_env#0} :: drained_rx @ channels.rs:123
+local: channels::main::{async_block_env#0} :: drained_tx @ channels.rs:123
+local: channels::main::{async_block_env#0} :: full_rx @ channels.rs:151
+local: channels::main::{async_block_env#0} :: full_tx @ channels.rs:151
+local: channels::main::{async_block_env#0} :: notify @ channels.rs:137
+local: channels::main::{async_block_env#0} :: recv_tx @ channels.rs:144
+local: channels::main::{async_block_env#0} :: rx @ channels.rs:111
+local: channels::main::{async_block_env#0} :: sem @ channels.rs:134
+local: channels::main::{async_block_env#0} :: tx @ channels.rs:111
+local: channels::main::{async_block_env#0} :: watch_rx @ channels.rs:130
+local: channels::main::{async_block_env#0} :: watch_tx @ channels.rs:130
+local: channels::notify_waiter::{async_fn_env#0} :: notify @ channels.rs:27
+local: channels::notify_waiter::{async_fn_env#0} :: ready @ channels.rs:27
+local: channels::recv_waiter::{async_fn_env#0} :: ready @ channels.rs:45
+local: channels::recv_waiter::{async_fn_env#0} :: rx @ channels.rs:45
+local: channels::send_waiter::{async_fn_env#0} :: disabled @ channels.rs:95
+local: channels::send_waiter::{async_fn_env#0} :: futures @ channels.rs:95
+local: channels::send_waiter::{async_fn_env#0} :: ready @ channels.rs:85
+local: channels::send_waiter::{async_fn_env#0} :: tx @ channels.rs:85
+
 [infra]
 header: ok
 vtable: ok
@@ -1122,6 +1230,24 @@ env: unordered::main::{async_block_env#0} @ unordered.rs:135
 env: unordered::set_member::{async_fn_env#0} @ unordered.rs:60
 
 [poll-decls]
+
+[local-decls]
+local: unordered::driver::{async_fn_env#0} :: boxed @ unordered.rs:90
+local: unordered::driver::{async_fn_env#0} :: held @ unordered.rs:89
+local: unordered::driver::{async_fn_env#0} :: maybe @ unordered.rs:96
+local: unordered::driver::{async_fn_env#0} :: nested_hold @ unordered.rs:100
+local: unordered::driver::{async_fn_env#0} :: notify @ unordered.rs:82
+local: unordered::driver::{async_fn_env#0} :: pair @ unordered.rs:95
+local: unordered::driver::{async_fn_env#0} :: ready @ unordered.rs:82
+local: unordered::driver::{async_fn_env#0} :: set @ unordered.rs:83
+local: unordered::driver::{async_fn_env#0} :: sum @ unordered.rs:118
+local: unordered::holder::{async_fn_env#0}<unordered::leaf::{async_fn_env#0}> :: inner @ unordered.rs:50
+local: unordered::holder::{async_fn_env#0}<unordered::leaf::{async_fn_env#0}> :: notify @ unordered.rs:50
+local: unordered::leaf::{async_fn_env#0} :: notify @ unordered.rs:40
+local: unordered::set_member::{async_fn_env#0} :: held @ unordered.rs:63
+local: unordered::set_member::{async_fn_env#0} :: inner @ unordered.rs:61
+local: unordered::set_member::{async_fn_env#0} :: nest @ unordered.rs:60
+local: unordered::set_member::{async_fn_env#0} :: notify @ unordered.rs:60
 
 [infra]
 header: ok
@@ -1264,6 +1390,18 @@ env: joinset::member::{async_fn_env#0} @ joinset.rs:31
 
 [poll-decls]
 
+[local-decls]
+local: joinset::driver::{async_fn_env#0} :: kept @ joinset.rs:60
+local: joinset::driver::{async_fn_env#0} :: notify @ joinset.rs:48
+local: joinset::driver::{async_fn_env#0} :: ready @ joinset.rs:48
+local: joinset::driver::{async_fn_env#0} :: set @ joinset.rs:52
+local: joinset::driver::{async_fn_env#0} :: started_rx @ joinset.rs:51
+local: joinset::driver::{async_fn_env#0} :: started_tx @ joinset.rs:51
+local: joinset::driver::{async_fn_env#0} :: sum @ joinset.rs:82
+local: joinset::finisher::{async_fn_env#0} :: started @ joinset.rs:43
+local: joinset::member::{async_fn_env#0} :: notify @ joinset.rs:31
+local: joinset::member::{async_fn_env#0} :: started @ joinset.rs:31
+
 [infra]
 header: ok
 vtable: ok
@@ -1389,6 +1527,12 @@ env: ct_runtime::main::{async_block_env#0} @ ct-runtime.rs:32
 env: ct_runtime::sleeper::{async_fn_env#0} @ ct-runtime.rs:14
 
 [poll-decls]
+
+[local-decls]
+local: ct_runtime::acquirer::{async_fn_env#0} :: ready @ ct-runtime.rs:21
+local: ct_runtime::acquirer::{async_fn_env#0} :: semaphore @ ct-runtime.rs:21
+local: ct_runtime::main::{async_block_env#0} :: ready_b_rx @ ct-runtime.rs:36
+local: ct_runtime::sleeper::{async_fn_env#0} :: ready @ ct-runtime.rs:14
 
 [infra]
 header: ok
@@ -1531,6 +1675,17 @@ env: local_set::main::{async_block_env#0} @ local-set.rs:41
 
 [poll-decls]
 
+[local-decls]
+local: local_set::joiner::{async_fn_env#0} :: handle @ local-set.rs:31
+local: local_set::joiner::{async_fn_env#0} :: ready @ local-set.rs:31
+local: local_set::local_acquirer::{async_fn_env#0} :: ready @ local-set.rs:24
+local: local_set::local_acquirer::{async_fn_env#0} :: semaphore @ local-set.rs:24
+local: local_set::local_sleeper::{async_fn_env#0} :: ready @ local-set.rs:17
+local: local_set::main::{async_block#0}::{async_block_env#0} :: ready_a_rx @ local-set.rs:44
+local: local_set::main::{async_block#0}::{async_block_env#0} :: ready_b_rx @ local-set.rs:45
+local: local_set::main::{async_block#0}::{async_block_env#0} :: ready_c_rx @ local-set.rs:46
+local: local_set::main::{async_block_env#0} :: local @ local-set.rs:47
+
 [infra]
 header: ok
 vtable: ok
@@ -1671,6 +1826,17 @@ env: local_set_timer::main::{async_block_env#0} @ local-set-timer.rs:50
 env: local_set_timer::sleeper::{async_fn_env#0} @ local-set-timer.rs:39
 
 [poll-decls]
+
+[local-decls]
+local: local_set_timer::local_acquirer::{async_fn_env#0} :: ready @ local-set-timer.rs:26
+local: local_set_timer::local_acquirer::{async_fn_env#0} :: semaphore @ local-set-timer.rs:26
+local: local_set_timer::local_sleeper::{async_fn_env#0} :: ready @ local-set-timer.rs:19
+local: local_set_timer::main::{async_block#0}::{async_block_env#0} :: ready_a_rx @ local-set-timer.rs:55
+local: local_set_timer::main::{async_block#0}::{async_block_env#0} :: ready_b_rx @ local-set-timer.rs:56
+local: local_set_timer::main::{async_block#0}::{async_block_env#0} :: ready_c_rx @ local-set-timer.rs:57
+local: local_set_timer::main::{async_block_env#0} :: local @ local-set-timer.rs:58
+local: local_set_timer::sleeper::{async_fn_env#0} :: ready @ local-set-timer.rs:39
+local: local_set_timer::sleeper::{async_fn_env#0} :: tag @ local-set-timer.rs:39
 
 [infra]
 header: ok
@@ -1840,6 +2006,31 @@ env: local_set_io::reader::{async_fn_env#0} @ local-set-io.rs:110
 
 [poll-decls]
 
+[local-decls]
+local: local_set_io::local_gated_reader::{async_fn_env#0} :: buf @ local-set-io.rs:98
+local: local_set_io::local_gated_reader::{async_fn_env#0} :: gated @ local-set-io.rs:94
+local: local_set_io::local_gated_reader::{async_fn_env#0} :: ready @ local-set-io.rs:92
+local: local_set_io::local_gated_reader::{async_fn_env#0} :: stream @ local-set-io.rs:92
+local: local_set_io::local_reader::{async_fn_env#0} :: buf @ local-set-io.rs:30
+local: local_set_io::local_reader::{async_fn_env#0} :: ready @ local-set-io.rs:28
+local: local_set_io::local_reader::{async_fn_env#0} :: stream @ local-set-io.rs:28
+local: local_set_io::local_watcher::{async_fn_env#0} :: ready @ local-set-io.rs:37
+local: local_set_io::local_watcher::{async_fn_env#0} :: stream @ local-set-io.rs:37
+local: local_set_io::local_watcher::{async_fn_env#0} :: tag @ local-set-io.rs:37
+local: local_set_io::local_writer::{async_fn_env#0} :: fill @ local-set-io.rs:49
+local: local_set_io::local_writer::{async_fn_env#0} :: ready @ local-set-io.rs:49
+local: local_set_io::local_writer::{async_fn_env#0} :: stream @ local-set-io.rs:49
+local: local_set_io::main::{async_block#0}::{async_block_env#0} :: ready_a_rx @ local-set-io.rs:134
+local: local_set_io::main::{async_block#0}::{async_block_env#0} :: ready_b_rx @ local-set-io.rs:135
+local: local_set_io::main::{async_block#0}::{async_block_env#0} :: ready_c_rx @ local-set-io.rs:136
+local: local_set_io::main::{async_block#0}::{async_block_env#0} :: ready_d_rx @ local-set-io.rs:137
+local: local_set_io::main::{async_block#0}::{async_block_env#0} :: ready_e_rx @ local-set-io.rs:138
+local: local_set_io::main::{async_block_env#0} :: local @ local-set-io.rs:139
+local: local_set_io::reader::{async_fn_env#0} :: buf @ local-set-io.rs:112
+local: local_set_io::reader::{async_fn_env#0} :: ready @ local-set-io.rs:110
+local: local_set_io::reader::{async_fn_env#0} :: seed @ local-set-io.rs:110
+local: local_set_io::reader::{async_fn_env#0} :: stream @ local-set-io.rs:110
+
 [infra]
 header: ok
 vtable: ok
@@ -1998,6 +2189,23 @@ env: foreign_runtime::main::{async_block_env#1} @ foreign-runtime.rs:130
 
 [poll-decls]
 
+[local-decls]
+local: foreign_runtime::detached::{async_fn_env#0} :: ready @ foreign-runtime.rs:50
+local: foreign_runtime::detached::{async_fn_env#0} :: tag @ foreign-runtime.rs:50
+local: foreign_runtime::hidden_runtime::{async_block#0}::{async_block_env#0} :: ready_d_rx @ foreign-runtime.rs:82
+local: foreign_runtime::hidden_runtime::{async_block#0}::{async_block_env#0} :: ready_j_rx @ foreign-runtime.rs:81
+local: foreign_runtime::hidden_runtime::{async_block#0}::{async_block_env#0} :: ready_l_rx @ foreign-runtime.rs:83
+local: foreign_runtime::hidden_runtime::{async_block_env#0} :: ready_d_rx @ foreign-runtime.rs:82
+local: foreign_runtime::hidden_runtime::{async_block_env#0} :: ready_j_rx @ foreign-runtime.rs:81
+local: foreign_runtime::hidden_runtime::{async_block_env#0} :: ready_l_rx @ foreign-runtime.rs:83
+local: foreign_runtime::joined::{async_fn_env#0} :: ready @ foreign-runtime.rs:35
+local: foreign_runtime::joined::{async_fn_env#0} :: semaphore @ foreign-runtime.rs:35
+local: foreign_runtime::joiner::{async_fn_env#0} :: handle @ foreign-runtime.rs:27
+local: foreign_runtime::joiner::{async_fn_env#0} :: ready @ foreign-runtime.rs:27
+local: foreign_runtime::local_sleeper::{async_fn_env#0} :: ready @ foreign-runtime.rs:62
+local: foreign_runtime::main::{async_block_env#1} :: handle_rx @ foreign-runtime.rs:125
+local: foreign_runtime::main::{async_block_env#1} :: parked_rx @ foreign-runtime.rs:126
+
 [infra]
 header: ok
 vtable: ok
@@ -2145,6 +2353,15 @@ env: blocking_pool::queued_waiter::{async_fn_env#0} @ blocking-pool.rs:25
 env: blocking_pool::running_waiter::{async_fn_env#0} @ blocking-pool.rs:19
 
 [poll-decls]
+
+[local-decls]
+local: blocking_pool::main::{async_block_env#0} :: never_tx @ blocking-pool.rs:38
+local: blocking_pool::main::{async_block_env#0} :: ready_b_rx @ blocking-pool.rs:54
+local: blocking_pool::main::{async_block_env#0} :: running @ blocking-pool.rs:39
+local: blocking_pool::queued_waiter::{async_fn_env#0} :: handle @ blocking-pool.rs:25
+local: blocking_pool::queued_waiter::{async_fn_env#0} :: ready @ blocking-pool.rs:25
+local: blocking_pool::running_waiter::{async_fn_env#0} :: handle @ blocking-pool.rs:19
+local: blocking_pool::running_waiter::{async_fn_env#0} :: ready @ blocking-pool.rs:19
 
 [infra]
 header: ok
@@ -2360,6 +2577,14 @@ poll: delegation_cases::Probe<8> @ delegation-cases.rs:33
 poll: delegation_cases::RawHolder @ delegation-cases.rs:104
 poll: delegation_cases::Retained @ delegation-cases.rs:85
 
+[local-decls]
+local: delegation_cases::main::{async_block_env#0} :: tag @ delegation-cases.rs:322
+local: delegation_cases::main::{async_block_env#1} :: boxed @ delegation-cases.rs:356
+local: delegation_cases::main::{async_block_env#2} :: tag @ delegation-cases.rs:374
+local: delegation_cases::main::{async_block_env#3} :: idle @ delegation-cases.rs:382
+local: delegation_cases::main::{async_block_env#3} :: ready @ delegation-cases.rs:210
+local: delegation_cases::main::{async_block_env#5} :: after @ delegation-cases.rs:400
+
 [infra]
 header: ok
 vtable: ok
@@ -2564,6 +2789,44 @@ env: armed_select::waiter::{async_fn_env#0} @ armed-select.rs:74
 
 [poll-decls]
 
+[local-decls]
+local: armed_select::child::{async_fn_env#0} :: park @ armed-select.rs:83
+local: armed_select::driver::{async_fn_env#0} :: first @ armed-select.rs:91
+local: armed_select::driver::{async_fn_env#0} :: ready @ armed-select.rs:90
+local: armed_select::driver::{async_fn_env#0} :: second @ armed-select.rs:92
+local: armed_select::driver::{async_fn_env#0} :: set @ armed-select.rs:95
+local: armed_select::driver::{async_fn_env#0} :: sum @ armed-select.rs:100
+local: armed_select::forever::{async_fn_env#0} :: disabled @ armed-select.rs:169
+local: armed_select::forever::{async_fn_env#0} :: futures @ armed-select.rs:169
+local: armed_select::forever::{async_fn_env#0} :: ready @ armed-select.rs:160
+local: armed_select::holder::{async_fn_env#0} :: notified @ armed-select.rs:61
+local: armed_select::holder::{async_fn_env#0} :: park @ armed-select.rs:62
+local: armed_select::holder::{async_fn_env#0} :: ready @ armed-select.rs:60
+local: armed_select::main::{async_block_env#0} :: first_tx @ armed-select.rs:199
+local: armed_select::main::{async_block_env#0} :: holder_park_tx @ armed-select.rs:190
+local: armed_select::main::{async_block_env#0} :: notify @ armed-select.rs:189
+local: armed_select::main::{async_block_env#0} :: once_tx @ armed-select.rs:182
+local: armed_select::main::{async_block_env#0} :: published_tx @ armed-select.rs:184
+local: armed_select::main::{async_block_env#0} :: queue_tx @ armed-select.rs:183
+local: armed_select::main::{async_block_env#0} :: second_tx @ armed-select.rs:200
+local: armed_select::main::{async_block_env#0} :: ticker_once_tx @ armed-select.rs:205
+local: armed_select::pacer::{async_fn_env#0} :: interval @ armed-select.rs:142
+local: armed_select::pacer::{async_fn_env#0} :: ready @ armed-select.rs:138
+local: armed_select::pacer::{async_fn_env#0} :: spare @ armed-select.rs:141
+local: armed_select::selector::{async_fn_env#0} :: disabled @ armed-select.rs:49
+local: armed_select::selector::{async_fn_env#0} :: futures @ armed-select.rs:49
+local: armed_select::selector::{async_fn_env#0} :: once @ armed-select.rs:33
+local: armed_select::selector::{async_fn_env#0} :: published @ armed-select.rs:35
+local: armed_select::selector::{async_fn_env#0} :: queue @ armed-select.rs:34
+local: armed_select::selector::{async_fn_env#0} :: ready @ armed-select.rs:32
+local: armed_select::ticker::{async_fn_env#0} :: disabled @ armed-select.rs:128
+local: armed_select::ticker::{async_fn_env#0} :: futures @ armed-select.rs:128
+local: armed_select::ticker::{async_fn_env#0} :: interval @ armed-select.rs:121
+local: armed_select::ticker::{async_fn_env#0} :: once @ armed-select.rs:118
+local: armed_select::ticker::{async_fn_env#0} :: ready @ armed-select.rs:118
+local: armed_select::waiter::{async_fn_env#0} :: notify @ armed-select.rs:74
+local: armed_select::waiter::{async_fn_env#0} :: ready @ armed-select.rs:74
+
 [infra]
 header: ok
 vtable: ok
@@ -2719,6 +2982,36 @@ env: watch_stream::resolver::{async_fn#0}::{closure_env#0} @ select.rs:662
 env: watch_stream::resolver::{async_fn_env#0} @ watch-stream.rs:30
 
 [poll-decls]
+
+[local-decls]
+local: watch_stream::direct::{async_fn_env#0} :: published @ watch-stream.rs:105
+local: watch_stream::direct::{async_fn_env#0} :: ready @ watch-stream.rs:105
+local: watch_stream::fresh::{async_fn_env#0} :: current @ watch-stream.rs:88
+local: watch_stream::fresh::{async_fn_env#0} :: next @ watch-stream.rs:93
+local: watch_stream::fresh::{async_fn_env#0} :: once @ watch-stream.rs:87
+local: watch_stream::fresh::{async_fn_env#0} :: ready @ watch-stream.rs:86
+local: watch_stream::fresh::{async_fn_env#0} :: stream @ watch-stream.rs:91
+local: watch_stream::main::{async_block_env#0} :: alpha_tx @ watch-stream.rs:128
+local: watch_stream::main::{async_block_env#0} :: beta_tx @ watch-stream.rs:129
+local: watch_stream::main::{async_block_env#0} :: direct_watch_tx @ watch-stream.rs:145
+local: watch_stream::main::{async_block_env#0} :: fresh_once_tx @ watch-stream.rs:139
+local: watch_stream::main::{async_block_env#0} :: fresh_watch_tx @ watch-stream.rs:140
+local: watch_stream::main::{async_block_env#0} :: gamma_tx @ watch-stream.rs:130
+local: watch_stream::main::{async_block_env#0} :: mapper_once_tx @ watch-stream.rs:127
+local: watch_stream::main::{async_block_env#0} :: resolver_once_tx @ watch-stream.rs:117
+local: watch_stream::main::{async_block_env#0} :: resolver_watch_tx @ watch-stream.rs:118
+local: watch_stream::mapper::{async_fn_env#0} :: disabled @ watch-stream.rs:75
+local: watch_stream::mapper::{async_fn_env#0} :: futures @ watch-stream.rs:75
+local: watch_stream::mapper::{async_fn_env#0} :: map @ watch-stream.rs:63
+local: watch_stream::mapper::{async_fn_env#0} :: once @ watch-stream.rs:59
+local: watch_stream::mapper::{async_fn_env#0} :: ready @ watch-stream.rs:58
+local: watch_stream::mapper::{async_fn_env#0} :: receivers @ watch-stream.rs:60
+local: watch_stream::resolver::{async_fn_env#0} :: disabled @ watch-stream.rs:43
+local: watch_stream::resolver::{async_fn_env#0} :: futures @ watch-stream.rs:43
+local: watch_stream::resolver::{async_fn_env#0} :: once @ watch-stream.rs:32
+local: watch_stream::resolver::{async_fn_env#0} :: published @ watch-stream.rs:33
+local: watch_stream::resolver::{async_fn_env#0} :: ready @ watch-stream.rs:31
+local: watch_stream::resolver::{async_fn_env#0} :: stream @ watch-stream.rs:36
 
 [infra]
 header: ok

@@ -57,6 +57,20 @@ env: dyn_future::set_member::{async_fn_env#0} @ dyn-future.rs:19
 
 [poll-decls]
 
+[local-decls]
+local: dyn_future::boxed_leaf::{async_fn_env#0} :: park @ dyn-future.rs:15
+local: dyn_future::driver::{async_fn_env#0} :: a @ dyn-future.rs:40
+local: dyn_future::driver::{async_fn_env#0} :: park_boxed @ dyn-future.rs:26
+local: dyn_future::driver::{async_fn_env#0} :: park_set @ dyn-future.rs:27
+local: dyn_future::driver::{async_fn_env#0} :: ready @ dyn-future.rs:25
+local: dyn_future::driver::{async_fn_env#0} :: set @ dyn-future.rs:31
+local: dyn_future::hold_aligned::{async_fn_env#0} :: aligned @ dyn-future.rs:95
+local: dyn_future::hold_aligned::{async_fn_env#0} :: padded @ dyn-future.rs:94
+local: dyn_future::hold_aligned::{async_fn_env#0} :: park @ dyn-future.rs:93
+local: dyn_future::hold_aligned::{async_fn_env#0} :: ready @ dyn-future.rs:93
+local: dyn_future::main::{async_block_env#0} :: aligned_ready_rx @ dyn-future.rs:58
+local: dyn_future::set_member::{async_fn_env#0} :: park @ dyn-future.rs:19
+
 [infra]
 header: ok
 vtable: ok

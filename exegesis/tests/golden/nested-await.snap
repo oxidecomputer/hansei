@@ -32,6 +32,12 @@ env: nested_await::outer::{async_fn_env#0} @ nested-await.rs:20
 
 [poll-decls]
 
+[local-decls]
+local: nested_await::leaf::{async_fn_env#0} :: park @ nested-await.rs:11
+local: nested_await::middle::{async_fn_env#0} :: park @ nested-await.rs:15
+local: nested_await::outer::{async_fn_env#0} :: park @ nested-await.rs:20
+local: nested_await::outer::{async_fn_env#0} :: ready @ nested-await.rs:20
+
 [infra]
 header: ok
 vtable: ok

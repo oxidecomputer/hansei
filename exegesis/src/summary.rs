@@ -230,6 +230,39 @@ pub fn portable_summary(bundle: &Bundle, program: &str, crate_str: &str) -> Stri
         writeln!(out, "poll: {name} @ {at}").unwrap();
     }
 
+    // Where each of the fixture's own coroutines declares the locals it
+    // holds across an await — the `declared at` under a value held in
+    // one. Filtered to the fixture crate like the envs, and to locals
+    // the program reads: a `_`-prefixed binding is held for its drop
+    // alone, and whether the optimizer keeps a variable nothing reads
+    // is the target's call — `blocking_pool::main`'s `_keep`, whose
+    // drop sits past an await that never completes, has a variable
+    // DIE on Linux and macOS and none on illumos.
+    writeln!(out, "\n[local-decls]").unwrap();
+    let mut local_decls: Vec<(String, String, String)> = bundle
+        .types
+        .local_decls
+        .iter()
+        .flat_map(|(id, locals)| {
+            let name = type_name(*id);
+            locals
+                .iter()
+                .filter(|(local, _)| name.starts_with(crate_str) && !s(*local).starts_with('_'))
+                .map(|(local, loc)| {
+                    (
+                        name.clone(),
+                        s(*local).to_owned(),
+                        format!("{}:{}", basename(s(loc.file)), loc.line),
+                    )
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    local_decls.sort();
+    for (name, local, at) in &local_decls {
+        writeln!(out, "local: {name} :: {local} @ {at}").unwrap();
+    }
+
     writeln!(out, "\n[infra]").unwrap();
     let infra = &bundle.infra;
     for (what, id) in [

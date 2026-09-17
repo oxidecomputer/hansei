@@ -37,7 +37,7 @@ pub(crate) use emitter::Emitter;
 pub use sources::DebugFlavor;
 
 use self::paths::{
-    Agreement, OwnedLoc, agreed_site, display_path, rustc_below_floor, rustc_version_of,
+    Agreement, OwnedLoc, agreed_site, display_path, owned_loc, rustc_below_floor, rustc_version_of,
     tokio_version_of,
 };
 use self::statics::find_statics;
@@ -147,6 +147,13 @@ pub struct ExtractStats {
     /// A toolchain that starts spelling one `poll` two ways shows up
     /// here rather than as silence.
     pub poll_decls_declined: usize,
+    /// Frame-resident locals of emitted coroutines whose declaration
+    /// the bundle records the line of.
+    pub local_decls: usize,
+    /// Payload members of emitted coroutines whose resume-function
+    /// locals of that name disagreed on where they are declared — a
+    /// name shadowed across scopes — so no line was recorded for them.
+    pub local_decls_declined: usize,
     /// Infra types that were not found.
     pub infra_missing: Vec<String>,
     /// Statics that were not found.
@@ -234,6 +241,8 @@ impl fmt::Display for ExtractStats {
         writeln!(f, "  decl-only self params:  {}", self.dyn_decl_only_self)?;
         writeln!(f, "  poll decls:             {}", self.poll_decls)?;
         writeln!(f, "  poll decls declined:    {}", self.poll_decls_declined)?;
+        writeln!(f, "  local decls:            {}", self.local_decls)?;
+        writeln!(f, "  local decls declined:   {}", self.local_decls_declined)?;
         writeln!(f, "types:")?;
         writeln!(f, "  emitted:                {}", self.types_emitted)?;
         writeln!(f, "  opaque:                 {}", self.opaque_types)?;
@@ -893,6 +902,7 @@ fn extract_from_view(
         drop_glues,
         glue_by_name,
         resume_awaitees,
+        resume_locals,
         vtable_missing_linkage,
         dyn_decl_only_self,
         dyn_unresolved_self,
@@ -1320,6 +1330,44 @@ fn extract_from_view(
         }
     }
 
+    // Where each emitted coroutine's frame-resident locals are declared
+    // — the `declared at` a task block prints under a value held in one.
+    // The candidates are the coroutine's payload members' names: a
+    // local that never crosses an await is in no payload, and no slot
+    // path can step through it, so nothing is recorded for it. Per
+    // name, agree-or-nothing once more: a `let` the compiler duplicated
+    // agrees with itself, two `let x` in two scopes do not, and the
+    // member does not say which scope's `x` it is. Bundle-id order, for
+    // the string-table reason above.
+    let mut coroutines: Vec<(TypeId, crate::bundle::BundleTypeId)> = resume_locals
+        .keys()
+        .filter_map(|&tid| Some((tid, em.bundle_id_of(tid)?)))
+        .collect();
+    coroutines.sort_by_key(|&(_, bid)| bid);
+    for (tid, bid) in coroutines {
+        let coroutine = reader
+            .canonical_type(tid)
+            .and_then(|t| t.name())
+            .map(|n| reader.strings.get(n))
+            .unwrap_or("<anon>");
+        let locals = &resume_locals[&tid];
+        let mut decls = Vec::new();
+        for member in coroutine_payload_names(reader, tid) {
+            let name = reader.strings.get(member);
+            let sites: Vec<OwnedLoc> = locals
+                .iter()
+                .filter(|(n, _)| *n == member)
+                .map(|(_, loc)| owned_loc(&SourceLocView::new(loc, reader)))
+                .collect();
+            if let Some(site) = local_decl_site(coroutine, name, &sites, &mut stats)
+                && let Some(loc) = site.bundle_loc(&mut em.interner)
+            {
+                decls.push((em.intern(name), loc));
+            }
+        }
+        em.record_local_decls(bid, decls);
+    }
+
     // Which reviewed compiler convention, if any, a candidate's defining
     // units agree on — the coroutine convention for a coroutine, the
     // adapter or vtable one for a std pointer. Decided here, where the
@@ -1593,6 +1641,64 @@ fn poll_site<'a>(
     None
 }
 
+/// The declaration the resume-function locals of one name settle on —
+/// `decls`, the copies of `name` in `coroutine`'s resume function —
+/// counted into `stats`: agree-or-nothing, like [`poll_site`]. `None`
+/// with no placed copy, which is neither recorded nor declined; `None`
+/// and counted where two placed copies disagree, since the payload
+/// member the name lands on cannot say which scope's local it is.
+fn local_decl_site<'a>(
+    coroutine: &str,
+    name: &str,
+    decls: &'a [OwnedLoc],
+    stats: &mut ExtractStats,
+) -> Option<&'a OwnedLoc> {
+    match agreed_site(decls) {
+        Agreement::Site(site) => {
+            stats.local_decls += 1;
+            Some(site)
+        }
+        Agreement::Unplaced => None,
+        Agreement::Disagreed => {
+            stats.local_decls_declined += 1;
+            debug!("declarations of local `{name}` in {coroutine} disagree; recording none");
+            None
+        }
+    }
+}
+
+/// The names a coroutine env's payload members carry, across every
+/// variant, minus the compiler's own (`__awaitee`, `__state`, …): the
+/// names a slot path can step through, and so the only ones worth a
+/// declaration. A local held across two awaits is in two payloads and
+/// named once here.
+fn coroutine_payload_names(reader: &DwReader<'_>, env: TypeId) -> BTreeSet<crate::StrId> {
+    use crate::raw_types::VariantShape;
+    let mut names = BTreeSet::new();
+    let Some(RawType::Enum(e)) = reader.canonical_type(env) else {
+        return names;
+    };
+    let payloads: Vec<TypeId> = match &e.shape {
+        VariantShape::One(v) => vec![v.member.type_id],
+        VariantShape::Many { variants, .. } => {
+            variants.iter().map(|(_, v)| v.member.type_id).collect()
+        }
+        VariantShape::Zero | VariantShape::CStyle { .. } => Vec::new(),
+    };
+    for payload in payloads {
+        let Some(RawType::Struct(s)) = reader.canonical_type(payload) else {
+            continue;
+        };
+        names.extend(
+            s.members
+                .iter()
+                .filter_map(|m| m.name)
+                .filter(|&n| !reader.strings.get(n).starts_with("__")),
+        );
+    }
+    names
+}
+
 /// A subprogram's coordinates as the bundle records them.
 fn intern_loc(em: &mut Emitter<'_>, loc: &SourceLocView<'_>) -> Option<SourceLoc> {
     let (file, line) = (loc.file()?, loc.line()?);
@@ -1760,6 +1866,65 @@ mod tests {
         );
     }
 
+    /// A local's declaration is recorded where its copies agree — a
+    /// `let` in a loop body the compiler duplicated — and declined,
+    /// counted, where two placed copies disagree: a name shadowed
+    /// across scopes, which the payload member cannot tell apart. A
+    /// copy with no line neither records nor declines.
+    #[test]
+    fn test_local_decl_site_records_agreement_and_counts_shadowing() {
+        let at = |line: u64| OwnedLoc {
+            file: Some("src/bin/joinset.rs".to_owned()),
+            dir: None,
+            comp_dir: Some("/crate".to_owned()),
+            line: Some(line),
+        };
+        let line = |site: Option<&OwnedLoc>| site.and_then(|s| s.line);
+
+        let mut stats = ExtractStats::default();
+        assert_eq!(
+            line(local_decl_site("driver", "set", &[at(52)], &mut stats)),
+            Some(52)
+        );
+        assert_eq!(
+            line(local_decl_site(
+                "driver",
+                "set",
+                &[at(52), at(52)],
+                &mut stats
+            )),
+            Some(52)
+        );
+        assert_eq!((stats.local_decls, stats.local_decls_declined), (2, 0));
+
+        assert_eq!(
+            line(local_decl_site(
+                "selector",
+                "recv",
+                &[at(37), at(40)],
+                &mut stats
+            )),
+            None
+        );
+        assert_eq!((stats.local_decls, stats.local_decls_declined), (2, 1));
+
+        let mut unplaced = at(52);
+        unplaced.line = None;
+        assert_eq!(
+            line(local_decl_site("driver", "set", &[unplaced], &mut stats)),
+            None
+        );
+        assert_eq!(
+            line(local_decl_site("driver", "set", &[], &mut stats)),
+            None
+        );
+        assert_eq!(
+            (stats.local_decls, stats.local_decls_declined),
+            (2, 1),
+            "an unplaced declaration is neither recorded nor declined"
+        );
+    }
+
     #[derive(Default)]
     struct Fx {
         reader: DwReader<'static>,
@@ -1909,6 +2074,7 @@ mod tests {
                     template_params,
                     noreturn: false,
                     awaitees: Box::new([]),
+                    locals: Box::new([]),
                     select_arms: Box::new([]),
                 },
             );

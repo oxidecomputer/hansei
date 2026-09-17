@@ -56,6 +56,18 @@ env: joinset::member::{async_fn_env#0} @ joinset.rs:31
 
 [poll-decls]
 
+[local-decls]
+local: joinset::driver::{async_fn_env#0} :: kept @ joinset.rs:60
+local: joinset::driver::{async_fn_env#0} :: notify @ joinset.rs:48
+local: joinset::driver::{async_fn_env#0} :: ready @ joinset.rs:48
+local: joinset::driver::{async_fn_env#0} :: set @ joinset.rs:52
+local: joinset::driver::{async_fn_env#0} :: started_rx @ joinset.rs:51
+local: joinset::driver::{async_fn_env#0} :: started_tx @ joinset.rs:51
+local: joinset::driver::{async_fn_env#0} :: sum @ joinset.rs:82
+local: joinset::finisher::{async_fn_env#0} :: started @ joinset.rs:43
+local: joinset::member::{async_fn_env#0} :: notify @ joinset.rs:31
+local: joinset::member::{async_fn_env#0} :: started @ joinset.rs:31
+
 [infra]
 header: ok
 vtable: ok

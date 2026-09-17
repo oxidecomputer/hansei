@@ -63,6 +63,10 @@ pub(crate) struct Emitter<'a> {
     /// is written, keyed by its emitted id — the type table's
     /// `poll_decls`.
     poll_decls: BTreeMap<BundleTypeId, SourceLoc>,
+    /// Where each emitted coroutine's frame-resident locals are
+    /// declared, keyed by its emitted id — the type table's
+    /// `local_decls`.
+    local_decls: BTreeMap<BundleTypeId, Vec<(StrRef, SourceLoc)>>,
     debug_formats: BTreeMap<BundleTypeId, DisplayNode>,
     /// Fully-qualified names for the name index, parallel to `defs`.
     names: Vec<Option<String>>,
@@ -92,6 +96,7 @@ impl<'a> Emitter<'a> {
             defs: Vec::new(),
             env_decls: BTreeMap::new(),
             poll_decls: BTreeMap::new(),
+            local_decls: BTreeMap::new(),
             debug_formats: BTreeMap::new(),
             names: Vec::new(),
             pending: VecDeque::new(),
@@ -282,6 +287,22 @@ impl<'a> Emitter<'a> {
     /// or a wait-set member of that type prints as its `defined at`.
     pub(super) fn record_poll_decl(&mut self, bid: BundleTypeId, loc: SourceLoc) {
         self.poll_decls.insert(bid, loc);
+    }
+
+    /// Record where a coroutine's frame-resident locals are declared —
+    /// the type table's `local_decls`, the line a task block prints as
+    /// `declared at` under a value held in one of them. `locals` is
+    /// sorted by name here, which is the order the table promises.
+    pub(super) fn record_local_decls(
+        &mut self,
+        bid: BundleTypeId,
+        mut locals: Vec<(StrRef, SourceLoc)>,
+    ) {
+        if locals.is_empty() {
+            return;
+        }
+        locals.sort_by_key(|&(name, _)| name);
+        self.local_decls.insert(bid, locals);
     }
 
     /// The type a coroutine suspend variant awaits, from the `__awaitee`
@@ -598,6 +619,7 @@ impl<'a> Emitter<'a> {
             name_index,
             env_decls: self.env_decls,
             poll_decls: self.poll_decls,
+            local_decls: self.local_decls,
             ..Default::default()
         };
         let demoted = demote_types_with_members_out_of_bounds(&mut types, &self.names);

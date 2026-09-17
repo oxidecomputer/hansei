@@ -1775,6 +1775,83 @@ mod view_tests {
         );
     }
 
+    /// A coroutine's local site is the entry of that name in its own
+    /// `local_decls` list, compared as strings; nothing for a name the
+    /// list lacks or a type with no list.
+    #[test]
+    fn test_local_site_is_the_coroutines_entry_for_that_name() {
+        let mut b = super::tiny_bundle();
+        let mut strings = StringInterner::new();
+        let u64_name = strings.intern("u64");
+        let coro = strings.intern("app::run::{async_fn_env#0}");
+        let plain = strings.intern("app::Plain");
+        let file = strings.intern("src/run.rs");
+        let tasks = strings.intern("tasks");
+        let interval = strings.intern("interval");
+        b.types = TypeTable {
+            types: vec![
+                TypeDef::Base {
+                    name: u64_name,
+                    size: 8,
+                    encoding: Encoding::Unsigned,
+                },
+                TypeDef::Struct {
+                    name: coro,
+                    size: 0,
+                    members: vec![],
+                },
+                TypeDef::Struct {
+                    name: plain,
+                    size: 0,
+                    members: vec![],
+                },
+            ],
+            local_decls: std::collections::BTreeMap::from([(
+                BundleTypeId(1),
+                vec![
+                    (tasks, SourceLoc { file, line: 149 }),
+                    (interval, SourceLoc { file, line: 280 }),
+                ],
+            )]),
+            ..Default::default()
+        };
+        b.strings = strings.finish();
+        b.validate().unwrap();
+        let view = BundleView::new(&b);
+        let coro = view.ty(BundleTypeId(1)).unwrap();
+        assert_eq!(coro.local_site("tasks"), Some(("src/run.rs", 149)));
+        assert_eq!(coro.local_site("interval"), Some(("src/run.rs", 280)));
+        assert_eq!(coro.local_site("set"), None);
+        assert_eq!(view.ty(BundleTypeId(2)).unwrap().local_site("tasks"), None);
+
+        // The list is sorted by name ref, strictly: a descending pair
+        // and a repeated name are both corruption.
+        b.types.local_decls = std::collections::BTreeMap::from([(
+            BundleTypeId(1),
+            vec![
+                (interval, SourceLoc { file, line: 280 }),
+                (tasks, SourceLoc { file, line: 149 }),
+            ],
+        )]);
+        assert!(
+            super::corruption(&b).contains("local decls of type 1 not sorted by name"),
+            "{}",
+            super::corruption(&b)
+        );
+        b.types.local_decls = std::collections::BTreeMap::from([(
+            BundleTypeId(1),
+            vec![
+                (tasks, SourceLoc { file, line: 149 }),
+                (tasks, SourceLoc { file, line: 150 }),
+            ],
+        )]);
+        assert!(
+            super::corruption(&b).contains("local decls of type 1 not sorted by name"),
+            "{}",
+            super::corruption(&b)
+        );
+    }
+
     /// Build a bundle whose type 0 is `u64`, type 1 is a zero-sized unit
     /// struct, and type 2 is an enum with the given shape. Additional
     /// payload types may be appended first via `extra`.

@@ -346,6 +346,16 @@ fn stats(path: &Path) -> Result<()> {
     println!("  strings:         {}", bundle.strings.len());
     println!("  poll decls:      {}", bundle.types.poll_decls.len());
     println!(
+        "  local decls:     {} coroutines, {} locals",
+        bundle.types.local_decls.len(),
+        bundle
+            .types
+            .local_decls
+            .values()
+            .map(Vec::len)
+            .sum::<usize>()
+    );
+    println!(
         "  task entries:    {} ({} symbol keys)",
         bundle.tasks.entries.len(),
         bundle.tasks.by_symbol.len()

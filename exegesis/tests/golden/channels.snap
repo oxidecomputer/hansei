@@ -72,6 +72,31 @@ env: channels::send_waiter::{async_fn_env#0} @ channels.rs:85
 
 [poll-decls]
 
+[local-decls]
+local: channels::hold::{async_fn_env#0} :: park @ channels.rs:66
+local: channels::hold::{async_fn_env#0} :: ready @ channels.rs:65
+local: channels::main::{async_block_env#0} :: closed_rx @ channels.rs:120
+local: channels::main::{async_block_env#0} :: closed_tx @ channels.rs:120
+local: channels::main::{async_block_env#0} :: drained_rx @ channels.rs:123
+local: channels::main::{async_block_env#0} :: drained_tx @ channels.rs:123
+local: channels::main::{async_block_env#0} :: full_rx @ channels.rs:151
+local: channels::main::{async_block_env#0} :: full_tx @ channels.rs:151
+local: channels::main::{async_block_env#0} :: notify @ channels.rs:137
+local: channels::main::{async_block_env#0} :: recv_tx @ channels.rs:144
+local: channels::main::{async_block_env#0} :: rx @ channels.rs:111
+local: channels::main::{async_block_env#0} :: sem @ channels.rs:134
+local: channels::main::{async_block_env#0} :: tx @ channels.rs:111
+local: channels::main::{async_block_env#0} :: watch_rx @ channels.rs:130
+local: channels::main::{async_block_env#0} :: watch_tx @ channels.rs:130
+local: channels::notify_waiter::{async_fn_env#0} :: notify @ channels.rs:27
+local: channels::notify_waiter::{async_fn_env#0} :: ready @ channels.rs:27
+local: channels::recv_waiter::{async_fn_env#0} :: ready @ channels.rs:45
+local: channels::recv_waiter::{async_fn_env#0} :: rx @ channels.rs:45
+local: channels::send_waiter::{async_fn_env#0} :: disabled @ channels.rs:95
+local: channels::send_waiter::{async_fn_env#0} :: futures @ channels.rs:95
+local: channels::send_waiter::{async_fn_env#0} :: ready @ channels.rs:85
+local: channels::send_waiter::{async_fn_env#0} :: tx @ channels.rs:85
+
 [infra]
 header: ok
 vtable: ok

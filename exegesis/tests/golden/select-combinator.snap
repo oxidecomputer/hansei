@@ -92,6 +92,28 @@ env: select_combinator::wait::{async_fn_env#0} @ select-combinator.rs:22
 poll: select_combinator::Fallible @ select-combinator.rs:79
 poll: select_combinator::Park @ select-combinator.rs:68
 
+[local-decls]
+local: select_combinator::dynamic::{async_fn_env#0} :: park @ select-combinator.rs:105
+local: select_combinator::dynamic::{async_fn_env#0} :: ready @ select-combinator.rs:105
+local: select_combinator::joiner::{async_fn_env#0} :: futures @ select-combinator.rs:44
+local: select_combinator::joiner::{async_fn_env#0} :: park_a @ select-combinator.rs:40
+local: select_combinator::joiner::{async_fn_env#0} :: park_b @ select-combinator.rs:41
+local: select_combinator::joiner::{async_fn_env#0} :: ready @ select-combinator.rs:39
+local: select_combinator::main::{async_block_env#0} :: ready_dyn_rx @ select-combinator.rs:135
+local: select_combinator::main::{async_block_env#0} :: ready_join_rx @ select-combinator.rs:128
+local: select_combinator::main::{async_block_env#0} :: ready_map_rx @ select-combinator.rs:133
+local: select_combinator::main::{async_block_env#0} :: ready_remap_rx @ select-combinator.rs:134
+local: select_combinator::mapper::{async_fn_env#0} :: park @ select-combinator.rs:93
+local: select_combinator::mapper::{async_fn_env#0} :: ready @ select-combinator.rs:93
+local: select_combinator::remapper::{async_fn_env#0} :: park @ select-combinator.rs:99
+local: select_combinator::remapper::{async_fn_env#0} :: ready @ select-combinator.rs:99
+local: select_combinator::selector::{async_fn_env#0} :: disabled @ select-combinator.rs:32
+local: select_combinator::selector::{async_fn_env#0} :: futures @ select-combinator.rs:32
+local: select_combinator::selector::{async_fn_env#0} :: park_a @ select-combinator.rs:28
+local: select_combinator::selector::{async_fn_env#0} :: park_b @ select-combinator.rs:29
+local: select_combinator::selector::{async_fn_env#0} :: ready @ select-combinator.rs:27
+local: select_combinator::wait::{async_fn_env#0} :: park @ select-combinator.rs:22
+
 [infra]
 header: ok
 vtable: ok

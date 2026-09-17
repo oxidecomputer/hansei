@@ -10,6 +10,7 @@ task 3
     awaiting on:
         join set 0xADDR (3 tasks)
             held in: frame 2 `set`
+            declared at: src/bin/joinset.rs:52
             awaiting at: src/bin/joinset.rs:83
             waker: tokio::util::idle_notified_set::ListsInner @ 0xADDR
     spawned at: src/bin/joinset.rs:100:21

@@ -119,6 +119,44 @@ env: armed_select::waiter::{async_fn_env#0} @ armed-select.rs:74
 
 [poll-decls]
 
+[local-decls]
+local: armed_select::child::{async_fn_env#0} :: park @ armed-select.rs:83
+local: armed_select::driver::{async_fn_env#0} :: first @ armed-select.rs:91
+local: armed_select::driver::{async_fn_env#0} :: ready @ armed-select.rs:90
+local: armed_select::driver::{async_fn_env#0} :: second @ armed-select.rs:92
+local: armed_select::driver::{async_fn_env#0} :: set @ armed-select.rs:95
+local: armed_select::driver::{async_fn_env#0} :: sum @ armed-select.rs:100
+local: armed_select::forever::{async_fn_env#0} :: disabled @ armed-select.rs:169
+local: armed_select::forever::{async_fn_env#0} :: futures @ armed-select.rs:169
+local: armed_select::forever::{async_fn_env#0} :: ready @ armed-select.rs:160
+local: armed_select::holder::{async_fn_env#0} :: notified @ armed-select.rs:61
+local: armed_select::holder::{async_fn_env#0} :: park @ armed-select.rs:62
+local: armed_select::holder::{async_fn_env#0} :: ready @ armed-select.rs:60
+local: armed_select::main::{async_block_env#0} :: first_tx @ armed-select.rs:199
+local: armed_select::main::{async_block_env#0} :: holder_park_tx @ armed-select.rs:190
+local: armed_select::main::{async_block_env#0} :: notify @ armed-select.rs:189
+local: armed_select::main::{async_block_env#0} :: once_tx @ armed-select.rs:182
+local: armed_select::main::{async_block_env#0} :: published_tx @ armed-select.rs:184
+local: armed_select::main::{async_block_env#0} :: queue_tx @ armed-select.rs:183
+local: armed_select::main::{async_block_env#0} :: second_tx @ armed-select.rs:200
+local: armed_select::main::{async_block_env#0} :: ticker_once_tx @ armed-select.rs:205
+local: armed_select::pacer::{async_fn_env#0} :: interval @ armed-select.rs:142
+local: armed_select::pacer::{async_fn_env#0} :: ready @ armed-select.rs:138
+local: armed_select::pacer::{async_fn_env#0} :: spare @ armed-select.rs:141
+local: armed_select::selector::{async_fn_env#0} :: disabled @ armed-select.rs:49
+local: armed_select::selector::{async_fn_env#0} :: futures @ armed-select.rs:49
+local: armed_select::selector::{async_fn_env#0} :: once @ armed-select.rs:33
+local: armed_select::selector::{async_fn_env#0} :: published @ armed-select.rs:35
+local: armed_select::selector::{async_fn_env#0} :: queue @ armed-select.rs:34
+local: armed_select::selector::{async_fn_env#0} :: ready @ armed-select.rs:32
+local: armed_select::ticker::{async_fn_env#0} :: disabled @ armed-select.rs:128
+local: armed_select::ticker::{async_fn_env#0} :: futures @ armed-select.rs:128
+local: armed_select::ticker::{async_fn_env#0} :: interval @ armed-select.rs:121
+local: armed_select::ticker::{async_fn_env#0} :: once @ armed-select.rs:118
+local: armed_select::ticker::{async_fn_env#0} :: ready @ armed-select.rs:118
+local: armed_select::waiter::{async_fn_env#0} :: notify @ armed-select.rs:74
+local: armed_select::waiter::{async_fn_env#0} :: ready @ armed-select.rs:74
+
 [infra]
 header: ok
 vtable: ok

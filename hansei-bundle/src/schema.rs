@@ -194,6 +194,14 @@ pub struct TypeTable {
     /// coroutines have no such impl, and a type whose declarations
     /// disagreed records nothing.
     pub poll_decls: BTreeMap<BundleTypeId, SourceLoc>,
+    /// Where each coroutine's frame-resident locals are declared, keyed
+    /// by the coroutine env type: `(name, site)` pairs sorted by the
+    /// name's string ref, one per payload member whose resume-function
+    /// variable was found and unambiguous. The `let` (or argument) a
+    /// task block prints as `declared at` under a value held in that
+    /// local. Sparse — a local shadowed across scopes, or one the DWARF
+    /// did not place, records nothing.
+    pub local_decls: BTreeMap<BundleTypeId, Vec<(StrRef, SourceLoc)>>,
     /// O(1) view of `debug_formats`, built on first use: a position per
     /// type id (`u32::MAX` for types without a format) into a flat list
     /// of the display nodes. A census-style walk asks for a type's

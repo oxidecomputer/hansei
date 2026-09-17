@@ -392,6 +392,13 @@ What varies by target, and so must never be pinned in a portable test:
   named in the golden dyn-future list while ELF names both. Give a fixture's
   futures distinct shapes — capture something different — rather than
   discovering this a cross-platform round trip later.
+- **Whether a never-read local keeps its variable DIE.** A `_`-prefixed
+  binding is held for its drop alone, and when that drop is dead code
+  (it sits past an await that never completes) the optimizer may drop
+  the `DW_TAG_variable` while keeping the payload member: `_keep` in
+  `blocking-pool` has one on Linux and macOS and none on illumos. The
+  golden `[local-decls]` section skips `_`-prefixed locals for that
+  reason; read locals survive on every target.
 - **Offsets reached through tokio's `driver::Handle`,** whose io and signal
   members embed OS-specific types. The `TimerEntry` `assert_format` carries one
   arm per system because no two agree. Every other offset these asserts pin is

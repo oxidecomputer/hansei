@@ -11,9 +11,9 @@
 use super::paths::{OwnedLoc, owned_loc};
 use super::strip;
 use crate::detect::struct_of;
-use crate::raw_types::{NsId, RawType};
+use crate::raw_types::{NsId, RawType, SourceLoc};
 use crate::view::{DwView, Func};
-use crate::{DwReader, FuncId, TypeId};
+use crate::{DwReader, FuncId, StrId, TypeId};
 
 use rayon::iter::ParallelIterator;
 use rayon::slice::ParallelSlice;
@@ -76,6 +76,21 @@ pub(super) struct Sweep {
     /// of its awaits is *written*, which for an await produced by a macro
     /// is not where the coroutine type says it is.
     pub(super) resume_awaitees: BTreeMap<TypeId, Vec<(Option<TypeId>, OwnedLoc)>>,
+    /// Coroutine env → the named locals of its resume fn, each with
+    /// where it is declared: the `let` behind a payload member of the
+    /// env, which is what a task block prints as `declared at` under a
+    /// value held in that local. Every unit's copy of the function
+    /// contributes, unlike `resume_awaitees`: an optimized copy keeps
+    /// only the variables it still needs, and which copy sorts first
+    /// varies by platform, so one copy alone would drop a local one
+    /// system's build retains and another's does not. The copies of
+    /// one name agree or decline at emission. Reader-interned, not
+    /// owned: the sweep sees every coroutine in the binary and only
+    /// the emitted ones' locals are ever joined, so the strings are
+    /// resolved per emitted coroutine at emission. Locals with no
+    /// coordinates are dropped here — nothing could be recorded for
+    /// them.
+    pub(super) resume_locals: BTreeMap<TypeId, Vec<(StrId, SourceLoc<StrId>)>>,
     pub(super) vtable_missing_linkage: usize,
     pub(super) dyn_decl_only_self: usize,
     pub(super) dyn_unresolved_self: usize,
@@ -174,6 +189,9 @@ impl Sweep {
         }
         for (t, awaitees) in other.resume_awaitees {
             self.resume_awaitees.entry(t).or_insert(awaitees);
+        }
+        for (t, locals) in other.resume_locals {
+            self.resume_locals.entry(t).or_default().extend(locals);
         }
         self.vtable_missing_linkage += other.vtable_missing_linkage;
         self.dyn_decl_only_self += other.dyn_decl_only_self;
@@ -351,6 +369,14 @@ fn sweep_function(
                             })
                             .collect()
                     });
+                }
+                let locals = func.raw().locals.as_ref();
+                if !locals.is_empty() {
+                    out.resume_locals.entry(t).or_default().extend(
+                        locals
+                            .iter()
+                            .filter_map(|l| Some((l.name, (**l.source_loc.as_ref()?).clone()))),
+                    );
                 }
             }
             _ => {}
@@ -696,10 +722,12 @@ fn is_coroutine_env(reader: &DwReader<'_>, id: TypeId) -> bool {
 mod tests {
     use super::*;
     use crate::raw_types::{
-        RawEnum, RawFunc, RawGenericParameter, RawMember, RawPointer, RawStruct, RawSubParameter,
-        RawUnion, VariantShape,
+        RawEnum, RawFunc, RawGenericParameter, RawLocal, RawMember, RawPointer, RawStruct,
+        RawSubParameter, RawUnion, VariantShape,
     };
     use gimli::UnitSectionOffset;
+
+    use std::num::NonZero;
 
     fn type_id(offset: usize) -> TypeId {
         TypeId(UnitSectionOffset(offset))
@@ -838,6 +866,7 @@ mod tests {
                 template_params,
                 noreturn: false,
                 awaitees: Box::new([]),
+                locals: Box::new([]),
                 select_arms: Box::new([]),
             },
         );
@@ -1042,6 +1071,98 @@ mod tests {
         assert_eq!(symbols(&sweep.fut_polls[&env]), ["resume_sym"]);
         assert!(sweep.explicit_polls.is_empty());
         assert_eq!(sweep.coroutine_candidates, BTreeSet::from([env]));
+    }
+
+    /// Every unit's copy of a resume function contributes its named
+    /// locals: an optimized copy keeps only the variables it still
+    /// needs, so two copies of one body can name different subsets, and
+    /// the coroutine's list is their union — the copies of one name are
+    /// left for emission to agree on. Locals with no coordinates are
+    /// dropped at the sweep.
+    #[test]
+    fn test_sweep_unions_a_resume_functions_locals_across_its_copies() {
+        let mut reader = DwReader::default();
+        let poll_ret = type_id(0x10);
+        insert_struct(&mut reader, poll_ret, None, "Poll<()>", &[]);
+        let env = type_id(0x20);
+        insert_struct(&mut reader, env, None, "{async_fn_env#0}", &[]);
+        let env_pin = insert_pin_of(&mut reader, type_id(0x30), type_id(0x40), env);
+        let file = reader.strings.intern("src/bin/joinset.rs");
+        let at = |line: u64| {
+            Some(Box::new(SourceLoc {
+                file_id: None,
+                file: Some(file),
+                dir: None,
+                comp_dir: None,
+                line: NonZero::new(line),
+                column: None,
+            }))
+        };
+        let set = reader.strings.intern("set");
+        let kept = reader.strings.intern("kept");
+        let sum = reader.strings.intern("sum");
+        for (id, locals) in [
+            (
+                func_id(0x100),
+                vec![
+                    RawLocal {
+                        name: set,
+                        source_loc: at(52),
+                    },
+                    RawLocal {
+                        name: sum,
+                        source_loc: None,
+                    },
+                ],
+            ),
+            (
+                func_id(0x110),
+                vec![
+                    RawLocal {
+                        name: set,
+                        source_loc: at(52),
+                    },
+                    RawLocal {
+                        name: kept,
+                        source_loc: at(60),
+                    },
+                ],
+            ),
+        ] {
+            insert_func(
+                &mut reader,
+                id,
+                None,
+                "{async_fn#0}",
+                Some("resume_sym"),
+                &[],
+                &[env_pin],
+                Some(poll_ret),
+            );
+            reader.functions.get_mut(&id).unwrap().locals = locals.into_boxed_slice();
+        }
+
+        let view = reader.view();
+        let sweep = sweep_functions(&view, None, None);
+        let locals: Vec<(&str, u64)> = sweep.resume_locals[&env]
+            .iter()
+            .map(|(name, loc)| (reader.strings.get(*name), loc.line.unwrap().get()))
+            .collect();
+        assert_eq!(
+            locals,
+            [("set", 52), ("set", 52), ("kept", 60)],
+            "both copies contribute; the unplaced `sum` is dropped"
+        );
+
+        // Merging two sweeps unions the same way.
+        let mut halves = (Sweep::default(), Sweep::default());
+        for (i, func) in view.functions().map(|(_, f)| f).enumerate() {
+            let out = if i == 0 { &mut halves.0 } else { &mut halves.1 };
+            sweep_function(view.collector(), None, None, &func, out);
+        }
+        let (mut merged, other) = halves;
+        merged.merge(other);
+        assert_eq!(merged.resume_locals[&env].len(), 3);
     }
 
     #[test]

@@ -73,6 +73,23 @@ env: foreign_runtime::main::{async_block_env#1} @ foreign-runtime.rs:130
 
 [poll-decls]
 
+[local-decls]
+local: foreign_runtime::detached::{async_fn_env#0} :: ready @ foreign-runtime.rs:50
+local: foreign_runtime::detached::{async_fn_env#0} :: tag @ foreign-runtime.rs:50
+local: foreign_runtime::hidden_runtime::{async_block#0}::{async_block_env#0} :: ready_d_rx @ foreign-runtime.rs:82
+local: foreign_runtime::hidden_runtime::{async_block#0}::{async_block_env#0} :: ready_j_rx @ foreign-runtime.rs:81
+local: foreign_runtime::hidden_runtime::{async_block#0}::{async_block_env#0} :: ready_l_rx @ foreign-runtime.rs:83
+local: foreign_runtime::hidden_runtime::{async_block_env#0} :: ready_d_rx @ foreign-runtime.rs:82
+local: foreign_runtime::hidden_runtime::{async_block_env#0} :: ready_j_rx @ foreign-runtime.rs:81
+local: foreign_runtime::hidden_runtime::{async_block_env#0} :: ready_l_rx @ foreign-runtime.rs:83
+local: foreign_runtime::joined::{async_fn_env#0} :: ready @ foreign-runtime.rs:35
+local: foreign_runtime::joined::{async_fn_env#0} :: semaphore @ foreign-runtime.rs:35
+local: foreign_runtime::joiner::{async_fn_env#0} :: handle @ foreign-runtime.rs:27
+local: foreign_runtime::joiner::{async_fn_env#0} :: ready @ foreign-runtime.rs:27
+local: foreign_runtime::local_sleeper::{async_fn_env#0} :: ready @ foreign-runtime.rs:62
+local: foreign_runtime::main::{async_block_env#1} :: handle_rx @ foreign-runtime.rs:125
+local: foreign_runtime::main::{async_block_env#1} :: parked_rx @ foreign-runtime.rs:126
+
 [infra]
 header: ok
 vtable: ok
