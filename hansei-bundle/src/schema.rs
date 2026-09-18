@@ -180,11 +180,13 @@ pub struct TypeTable {
     /// the hash function changing is a format change.
     pub by_normalized_name: Vec<(u64, u32)>,
     /// Declaration sites for closure and coroutine *environment* types —
-    /// `{closure_env#N}`, `{async_fn_env#N}`, … — keyed by type id. An
-    /// environment is constructed where it is written, so its decl site
-    /// is the construction site of whatever holds it: the join behind a
-    /// combinator frame's `constructed at` line. Sparse — only env types
-    /// with a recorded declaration appear.
+    /// `{closure_env#N}`, `{async_fn_env#N}`, … — keyed by type id: what
+    /// a coroutine prints as `type defined at`, since a coroutine has no
+    /// `fn poll` of its own for `poll_decls` to place. An environment is
+    /// also constructed where it is written, so the same site answers
+    /// the construction site of whatever holds it; nothing prints that
+    /// today. Sparse — only env types with a recorded declaration
+    /// appear.
     pub env_decls: BTreeMap<BundleTypeId, SourceLoc>,
     /// Where each hand-written future or stream type's poll method is
     /// written, keyed by type id: the `DW_AT_decl_file`/`decl_line` of

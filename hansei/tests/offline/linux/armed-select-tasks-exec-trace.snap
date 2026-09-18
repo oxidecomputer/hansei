@@ -4,7 +4,7 @@ description: "`tasks --exec trace -n` over linux/armed-select"
 ---
 task 3
 #0  future        core::future::poll_fn::PollFn<armed_select::selector::{async_fn#0}::{closure_env#0}>
-      constructed at tokio-1.52.4/src/macros/select.rs:659 (<no_state>, 1 local)
+      defined at library/core/src/future/poll_fn.rs:149 (<no_state>, 1 local)
 #1  async fn      armed_select::selector
       awaiting at src/bin/armed-select.rs:49 (Suspend0, 8 locals; holds 4 pending futures)
 
@@ -30,7 +30,7 @@ task 6
 
 task 7
 #0  future        core::future::poll_fn::PollFn<armed_select::ticker::{async_fn#0}::{closure_env#0}>
-      constructed at tokio-1.52.4/src/macros/select.rs:659 (<no_state>, 1 local)
+      defined at library/core/src/future/poll_fn.rs:149 (<no_state>, 1 local)
 #1  async fn      armed_select::ticker
       awaiting at src/bin/armed-select.rs:128 (Suspend0, 5 locals; holds 3 pending futures)
 
@@ -40,7 +40,7 @@ task 8
 #1  future        Pin<Box<tokio::time::sleep::Sleep>>
       defined at library/core/src/future/future.rs:132 (<no_state>, 1 local)
 #2  future        core::future::poll_fn::PollFn<tokio::time::interval::Interval::tick::{async_fn#0}::{closure_env#0}>
-      constructed at tokio-1.52.4/src/time/interval.rs:445 (<no_state>, 1 local)
+      defined at library/core/src/future/poll_fn.rs:149 (<no_state>, 1 local)
 #3  async fn      tokio::time::interval::Interval::tick
       awaiting at tokio-1.52.4/src/time/interval.rs:447 (Suspend0, 0 locals)
 #4  async fn      armed_select::pacer
@@ -48,7 +48,7 @@ task 8
 
 task 9
 #0  future        core::future::poll_fn::PollFn<armed_select::forever::{async_fn#0}::{closure_env#1}>
-      constructed at tokio-1.52.4/src/macros/select.rs:659 (<no_state>, 1 local)
+      defined at library/core/src/future/poll_fn.rs:149 (<no_state>, 1 local)
 #1  async fn      armed_select::forever
       awaiting at src/bin/armed-select.rs:169 (Suspend0, 4 locals; holds 2 pending futures)
 [Executed against 7 tasks, 0 failed]

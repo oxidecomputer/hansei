@@ -191,7 +191,8 @@ pub fn portable_summary(bundle: &Bundle, program: &str, crate_str: &str) -> Stri
     }
 
     // Where each of the fixture's own closure and coroutine environments
-    // was written — the `constructed at` anchor for a frame holding one.
+    // was written — what a coroutine of that type prints as `type
+    // defined at`, and the site a holder's construction site would read.
     // Filtered to envs the fixture crate declares: an env of tokio's or
     // std's that merely mentions the crate in its arguments lives in a
     // file whose lines are the dependency's business.

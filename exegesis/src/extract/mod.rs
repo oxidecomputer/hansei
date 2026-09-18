@@ -1270,9 +1270,11 @@ fn extract_from_view(
     stats.tokio_family_guessed = (em.versioned_dispatch && em.tokio_version.is_none())
         .then(|| Family::select(None).name().to_owned());
     // Declaration sites for every emitted closure/coroutine environment
-    // type — the anchor behind a combinator frame's `constructed at`
-    // line. `env_decl_site` is the rule task provenance uses too, so a
-    // task's `Defined at` and a frame holding the same env agree.
+    // type — the anchor behind a coroutine's `type defined at` line.
+    // `env_decl_site` is the rule task provenance uses too, so a task's
+    // `Defined at` and a frame holding the same env agree. Recorded for
+    // closure envs as well as coroutine ones: nothing prints a closure's
+    // today, and the site is a fact about the type either way.
     const ENV_MARKERS: [&str; 5] = [
         "{closure_env#",
         "{async_fn_env#",

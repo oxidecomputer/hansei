@@ -275,9 +275,9 @@ impl<'a> Emitter<'a> {
 
     /// Record the declaration site recovered for a closure/coroutine
     /// environment type — the type table's `env_decls`, the anchor
-    /// behind a combinator frame's `constructed at` line. The env DIEs
-    /// carry no coordinates of their own, so the caller recovers each
-    /// from the defining subprogram.
+    /// behind a coroutine's `type defined at` line. The env DIEs carry
+    /// no coordinates of their own, so the caller recovers each from
+    /// the defining subprogram.
     pub(super) fn record_env_decl(&mut self, bid: BundleTypeId, loc: SourceLoc) {
         self.env_decls.insert(bid, loc);
     }

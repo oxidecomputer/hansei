@@ -492,6 +492,14 @@ impl<'a> BundleType<'a> {
     /// members — futures_util's `map::Map` keeps its closure in the
     /// `Incomplete` payload. `None` when no member is an environment,
     /// the honest answer for a future built from plain values.
+    ///
+    /// Nothing calls this today. A trace frame used to print it as
+    /// `constructed at`, and stopped: the site behind it is recovered
+    /// from the environment's sibling body fn, which rustc omits for a
+    /// closure it inlined away, so the line stood under some
+    /// monomorphizations of a generic and not under others. The table
+    /// it reads is still filled, for a coroutine's own
+    /// [`declaration_site`](Self::declaration_site).
     pub fn construction_site(&self) -> Option<(&'a str, u32)> {
         let lookup = |id: BundleTypeId| -> Option<(&'a str, u32)> {
             let loc = self.bundle.types.env_decls.get(&id)?;

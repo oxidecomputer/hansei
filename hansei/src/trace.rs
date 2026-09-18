@@ -624,21 +624,29 @@ const KIND_WIDTH: usize = 13;
 const DETAIL_INDENT: &str = "      ";
 const ENTRY_INDENT: &str = "        ";
 
-/// The detail line under a frame, in one of four spellings making
-/// four distinct claims. `awaiting at <loc> (SuspendN, …)` is a
+/// The detail line under a frame, in one of three spellings making
+/// three distinct claims. `awaiting at <loc> (SuspendN, …)` is a
 /// coroutine's resume point — the frame is awaiting the next one at
 /// that source line; `state <Name>[ — <loc>]` is a coroutine's
-/// terminal state; `constructed at <loc> (<State>, …)` is a
-/// hand-written future — its decoded state enum's variant, or
-/// `<no_state>` where it keeps none, with the same locals tally a
-/// coroutine's line carries, anchored at the declaration site of the
-/// closure or coroutine environment it holds; `defined at <loc>
-/// (<State>, …)` is a hand-written future built from plain values,
-/// anchored where its type's `fn poll` is written — which `poll` to
-/// read, not where in it execution sits, since a struct future leaves
-/// no program counter. A future with neither anchor prints the
-/// parenthetical alone. `held` futures the census found parked in the
-/// frame ride along as a tally.
+/// terminal state; `defined at <loc> (<State>, …)` is a hand-written
+/// future — its decoded state enum's variant, or `<no_state>` where it
+/// keeps none, with the same locals tally a coroutine's line carries,
+/// anchored where its type's `fn poll` is written, which says which
+/// `poll` to read, not where in it execution sits, since a struct
+/// future leaves no program counter. A future whose `poll` the bundle
+/// did not place prints the parenthetical alone. `held` futures the
+/// census found parked in the frame ride along as a tally.
+///
+/// A hand-written future that holds a closure or coroutine environment
+/// has a fourth anchor available — that environment's declaration site,
+/// the `constructed at` spelling — which is not printed. The site is
+/// recovered from the environment's sibling body fn, and rustc emits no
+/// such fn for a closure it inlined away, so the line stood under some
+/// monomorphizations of a generic and not under others. Extraction
+/// still records the sites and the bundle still carries them: a
+/// coroutine's `type defined at` reads the same table, and restoring
+/// the spelling is restoring the arm that asked
+/// `BundleType::construction_site` before this one.
 fn frame_detail(
     frame: &bundle::AwaitFrame<'_>,
     held: usize,
@@ -695,16 +703,12 @@ fn frame_detail(
         quals.push_str("; ");
         quals.push_str(&holds);
     }
-    let site = |word: &str, (file, line): (&str, u32)| {
-        let text = format!("{file}:{line}");
-        let loc = theme.loc(&text);
-        format!("{word} at {loc} ({quals})")
-    };
-    if let Some(at) = frame.future.ty.construction_site() {
-        return Some(site("constructed", at));
-    }
     match frame.future.ty.implementation_site() {
-        Some(at) => Some(site("defined", at)),
+        Some((file, line)) => {
+            let text = format!("{file}:{line}");
+            let loc = theme.loc(&text);
+            Some(format!("defined at {loc} ({quals})"))
+        }
         None => Some(format!("({quals})")),
     }
 }
@@ -3094,13 +3098,15 @@ mod trace_render_tests {
         );
     }
 
-    /// The three detail spellings in one chain: a coroutine's live
-    /// state is `awaiting at` its resume point, a wrapper frame with no
-    /// decoded state is `defined at` its own `fn poll` — the reading
-    /// convention (frame N sits in frame N+1's live state) carries the
-    /// chain — and a plain enum's decoded variant is `constructed at`,
-    /// which claims no resume point. Frame 4 also holds `wz` — a future
-    /// the chain does not run through — which its detail line tallies.
+    /// The two detail spellings in one chain: a coroutine's live state
+    /// is `awaiting at` its resume point, and a wrapper frame is
+    /// `defined at` its own `fn poll` — the reading convention (frame N
+    /// sits in frame N+1's live state) carries the chain — with the
+    /// parenthetical carrying the decoded state enum's variant where
+    /// the wrapper keeps one and `<no_state>` where it does not.
+    /// Neither spelling claims a resume point a hand-written future
+    /// does not have. Frame 4 also holds `wz` — a future the chain does
+    /// not run through — which its detail line tallies.
     ///
     /// The hand-written wrappers are no reviewed implementation, so the
     /// chain steps through them only under the test bindings; the
@@ -3145,7 +3151,7 @@ mod trace_render_tests {
 #1  async fn      walk_shapes::deep
       awaiting at src/bin/walk-shapes.rs:101 (Suspend0, 1 local)
 #2  future        walk_shapes::WrapE<walk_shapes::deep>
-      constructed at src/bin/walk-shapes.rs:100 (Running, 2 locals)
+      defined at src/bin/walk-shapes.rs:77 (Running, 2 locals)
 #3  future        walk_shapes::WrapS<walk_shapes::WrapE<walk_shapes::deep>>
       defined at src/bin/walk-shapes.rs:44 (<no_state>, 2 locals)
 #4  async fn      walk_shapes::chained
