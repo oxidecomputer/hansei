@@ -520,15 +520,27 @@ fn future_poll_self_type(
     func: &Func<'_>,
 ) -> std::result::Result<TypeId, SelfRecovery> {
     let unresolved = SelfRecovery::Unresolved;
-    let param = func.params().next().ok_or(SelfRecovery::Unresolved)?;
-    let pin_id = param.raw().type_id.ok_or(SelfRecovery::Unresolved)?;
-    let Some(RawType::Struct(pin)) = reader.canonical_type(pin_id) else {
-        return Err(unresolved);
+    // A `mut self` the optimizer moved into a local is recorded as a
+    // variable of the body rather than a formal parameter, so the first
+    // parameter is `cx` and the pin is nowhere in the signature; the
+    // mangled name still carries the self type.
+    let pin = func
+        .params()
+        .next()
+        .and_then(|param| param.raw().type_id)
+        .and_then(|pin_id| match reader.canonical_type(pin_id) {
+            Some(RawType::Struct(pin))
+                if pin
+                    .name
+                    .is_some_and(|n| reader.strings.get(n).starts_with("Pin<")) =>
+            {
+                Some(pin)
+            }
+            _ => None,
+        });
+    let Some(pin) = pin else {
+        return self_type_by_name(reader, func).ok_or(unresolved);
     };
-    let name = pin.name.map(|n| reader.strings.get(n)).unwrap_or_default();
-    if !name.starts_with("Pin<") {
-        return Err(unresolved);
-    }
     let Some(inner) = pin.members.first() else {
         // The pin is a declaration in every unit — the impl was
         // inlined at each call and no unit needed the pin's layout —
@@ -1445,6 +1457,94 @@ mod tests {
         assert!(!sweep.explicit_polls.contains_key(&ghost));
         assert_eq!(sweep.dyn_decl_only_self, 2);
         assert_eq!(sweep.dyn_unresolved_self, 0);
+    }
+
+    /// A `mut self` the optimizer demoted to a body variable leaves the
+    /// poll with `cx` as its only formal parameter; the self type is
+    /// still recovered, by name, from the mangled linkage name — and a
+    /// poll whose name matches no defined type stays unresolved.
+    #[test]
+    fn test_sweep_recovers_a_demoted_self_type_by_name() {
+        let mut reader = DwReader::default();
+        let oneshot = reader.strings.intern("oneshot");
+        let oneshot_ns = reader.namespaces.insert(None, oneshot);
+        let unit = type_id(0x1);
+        insert_struct(&mut reader, unit, None, "()", &[]);
+        let receiver = type_id(0x10);
+        insert_struct(
+            &mut reader,
+            receiver,
+            Some(oneshot_ns),
+            "Receiver<()>",
+            &[("inner", unit)],
+        );
+        let context = type_id(0x20);
+        insert_struct(&mut reader, context, None, "Context", &[("waker", unit)]);
+        let cx = type_id(0x21);
+        reader.types.insert(
+            cx,
+            RawType::Pointer(RawPointer {
+                name: None,
+                target_type_id: context,
+            }),
+        );
+        insert_func(
+            &mut reader,
+            func_id(0x100),
+            None,
+            "poll<()>",
+            Some("<oneshot::Receiver<()> as core::future::future::Future>::poll"),
+            &[],
+            &[cx],
+            None,
+        );
+        insert_func(
+            &mut reader,
+            func_id(0x110),
+            None,
+            "poll",
+            Some("<oneshot::Nowhere as core::future::future::Future>::poll"),
+            &[],
+            &[cx],
+            None,
+        );
+        // A first parameter that is a struct but not a `Pin<…>` — a
+        // by-value `self` of some other shape — is not the pin either,
+        // whatever pointer it happens to hold: the name decides, not
+        // the first member's target.
+        let decoy_target = type_id(0x30);
+        insert_struct(&mut reader, decoy_target, None, "Decoy", &[("x", unit)]);
+        let decoy_ptr = type_id(0x31);
+        reader.types.insert(
+            decoy_ptr,
+            RawType::Pointer(RawPointer {
+                name: None,
+                target_type_id: decoy_target,
+            }),
+        );
+        let not_pin = type_id(0x32);
+        insert_struct(&mut reader, not_pin, None, "NotPin", &[("p", decoy_ptr)]);
+        insert_func(
+            &mut reader,
+            func_id(0x120),
+            None,
+            "poll<()>",
+            Some("<oneshot::Receiver<()> as core::future::future::Future>::poll"),
+            &[],
+            &[not_pin, cx],
+            None,
+        );
+        reader.types_by_name = reader.index_type_names();
+
+        let view = reader.view();
+        let sweep = sweep_functions(&view, None, None);
+        assert_eq!(
+            symbols(&sweep.explicit_polls[&receiver]),
+            ["<oneshot::Receiver<()> as core::future::future::Future>::poll"]
+        );
+        assert!(!sweep.explicit_polls.contains_key(&decoy_target));
+        assert_eq!(sweep.dyn_decl_only_self, 0);
+        assert_eq!(sweep.dyn_unresolved_self, 1);
     }
 
     #[test]
