@@ -1,0 +1,18 @@
+---
+source: hansei/src/offline.rs
+description: "`locals` over linux/http-conns"
+---
+scheduled_io: &tokio::runtime::io::scheduled_io::ScheduledIo = 0xADDR -> tokio::runtime::io::scheduled_io::ScheduledIo {
+          linked_list_pointers: core::cell::UnsafeCell<tokio::util::linked_list::Pointers<tokio::runtime::io::scheduled_io::ScheduledIo>> { .. } @ 0xADDR,
+          readiness: 196608,
+          waiters: tokio::loom::std::parking_lot::Mutex<tokio::runtime::io::scheduled_io::Waiters> { .. } @ 0xADDR,
+      }
+state: tokio::runtime::io::scheduled_io::State = Waiting
+waiter: core::cell::UnsafeCell<tokio::runtime::io::scheduled_io::Waiter> = tokio::runtime::io::scheduled_io::Waiter {
+      pointers: tokio::util::linked_list::Pointers<tokio::runtime::io::scheduled_io::Waiter> {
+          inner: core::cell::UnsafeCell<tokio::util::linked_list::PointersInner<tokio::runtime::io::scheduled_io::Waiter>> { .. } @ 0xADDR (task 3),
+      },
+      waker: core::option::Option<core::task::wake::Waker>::Some(task 3),
+      interest: 1,
+      is_ready: false,
+  }

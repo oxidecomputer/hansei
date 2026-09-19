@@ -1,0 +1,11 @@
+---
+source: hansei/src/offline.rs
+description: "`future 0x55a7fab30900` over linux-floor/http-conns"
+---
+future 0xADDR
+    type: future hyper::proto::h1::dispatch::Dispatcher<hyper::proto::h1::dispatch::Client<http_body_util::empty::Empty<bytes::bytes::Bytes>>, http_body_util::empty::Empty<bytes::bytes::Bytes>, hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>, hyper::proto::h1::role::Client>
+    held by: task 4 (frame 0, `inner`)
+    depth: 1 frame
+    awaiting on: mpsc rx 0xADDR
+    held futures: 0
+    join sets: 0

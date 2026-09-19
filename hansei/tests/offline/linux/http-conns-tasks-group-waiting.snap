@@ -1,0 +1,12 @@
+---
+source: hansei/src/offline.rs
+description: "`tasks --group waiting-on` over linux/http-conns"
+---
+COUNT  WAITING ON      TASKS
+    3  io              3, 4, 10
+    1  io, mpsc rx     5
+    1  io, notify rx   8
+    1  io, oneshot tx  9
+    1  oneshot rx      11
+    1  unknown         7
+[6 groups]

@@ -1,0 +1,41 @@
+---
+source: hansei/src/offline.rs
+description: "`futures --with type auto::ReadVersion --exec print` over linux/http-conns"
+---
+future 0xADDR
+hyper_util::server::conn::auto::ReadVersion<hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>> {
+    io: core::option::Option<hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>>::Some {
+        io: core::option::Option<mio::net::tcp::stream::TcpStream> { .. } @ 0xADDR,
+        registration: tokio::runtime::io::registration::Registration { .. } @ 0xADDR,
+    },
+    buf: [
+        core::mem::maybe_uninit::MaybeUninit<u8> { .. } @ 0xADDR,
+        core::mem::maybe_uninit::MaybeUninit<u8> { .. } @ 0xADDR,
+        core::mem::maybe_uninit::MaybeUninit<u8> { .. } @ 0xADDR,
+        core::mem::maybe_uninit::MaybeUninit<u8> { .. } @ 0xADDR,
+        core::mem::maybe_uninit::MaybeUninit<u8> { .. } @ 0xADDR,
+        core::mem::maybe_uninit::MaybeUninit<u8> { .. } @ 0xADDR,
+        core::mem::maybe_uninit::MaybeUninit<u8> { .. } @ 0xADDR,
+        core::mem::maybe_uninit::MaybeUninit<u8> { .. } @ 0xADDR,
+        core::mem::maybe_uninit::MaybeUninit<u8> { .. } @ 0xADDR,
+        core::mem::maybe_uninit::MaybeUninit<u8> { .. } @ 0xADDR,
+        core::mem::maybe_uninit::MaybeUninit<u8> { .. } @ 0xADDR,
+        core::mem::maybe_uninit::MaybeUninit<u8> { .. } @ 0xADDR,
+        core::mem::maybe_uninit::MaybeUninit<u8> { .. } @ 0xADDR,
+        core::mem::maybe_uninit::MaybeUninit<u8> { .. } @ 0xADDR,
+        core::mem::maybe_uninit::MaybeUninit<u8> { .. } @ 0xADDR,
+        core::mem::maybe_uninit::MaybeUninit<u8> { .. } @ 0xADDR,
+        core::mem::maybe_uninit::MaybeUninit<u8> { .. } @ 0xADDR,
+        core::mem::maybe_uninit::MaybeUninit<u8> { .. } @ 0xADDR,
+        core::mem::maybe_uninit::MaybeUninit<u8> { .. } @ 0xADDR,
+        core::mem::maybe_uninit::MaybeUninit<u8> { .. } @ 0xADDR,
+        core::mem::maybe_uninit::MaybeUninit<u8> { .. } @ 0xADDR,
+        core::mem::maybe_uninit::MaybeUninit<u8> { .. } @ 0xADDR,
+        core::mem::maybe_uninit::MaybeUninit<u8> { .. } @ 0xADDR,
+        core::mem::maybe_uninit::MaybeUninit<u8> { .. } @ 0xADDR,
+    ],
+    filled: 0,
+    version: H2,
+    cancelled: false,
+}
+[Executed against 1 future, 0 failed]

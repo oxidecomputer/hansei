@@ -1,0 +1,30 @@
+---
+source: hansei/src/offline.rs
+description: "`futures --with type h1::dispatch::Client --exec print conn` over linux-floor/http-conns"
+---
+future 0xADDR
+hyper::proto::h1::conn::Conn<hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>, bytes::bytes::Bytes, hyper::proto::h1::role::Client> {
+    version: http::version::Version(
+        Http11,
+    ),
+    keep_alive: Idle,
+    reading: hyper::proto::h1::conn::Reading::Init,
+    writing: hyper::proto::h1::conn::Writing::Init,
+    method: core::option::Option<http::method::Method>::None,
+    read_buf_len: 0,
+    read_buf_cap: 8192,
+}
+
+future 0xADDR
+hyper::proto::h1::conn::Conn<hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>, bytes::bytes::Bytes, hyper::proto::h1::role::Client> {
+    version: http::version::Version(
+        Http11,
+    ),
+    keep_alive: Busy,
+    reading: hyper::proto::h1::conn::Reading::Init,
+    writing: hyper::proto::h1::conn::Writing::KeepAlive,
+    method: core::option::Option<http::method::Method>::Some(http::method::Inner { .. } @ 0xADDR),
+    read_buf_len: 0,
+    read_buf_cap: 8192,
+}
+[Executed against 2 futures, 0 failed]

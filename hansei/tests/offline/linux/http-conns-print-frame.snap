@@ -1,0 +1,14 @@
+---
+source: hansei/src/offline.rs
+description: "`print` over linux/http-conns"
+---
+tokio::runtime::io::scheduled_io::Readiness {
+    scheduled_io: 0xADDR -> tokio::runtime::io::scheduled_io::ScheduledIo { .. },
+    state: Waiting,
+    waiter: tokio::runtime::io::scheduled_io::Waiter {
+        pointers: tokio::util::linked_list::Pointers<tokio::runtime::io::scheduled_io::Waiter> { .. } @ 0xADDR,
+        waker: core::option::Option<core::task::wake::Waker> { .. } @ 0xADDR,
+        interest: 1,
+        is_ready: false,
+    },
+}

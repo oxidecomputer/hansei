@@ -1,0 +1,15 @@
+---
+source: hansei/src/offline.rs
+description: "`task 3` over illumos/http-conns"
+---
+task 3
+    state: idle
+    thread: <none>
+    type: async fn http_conns::accept_loop
+    awaiting at: src/bin/http-conns.rs:128
+    awaiting on: io fd 9 (readable)
+        waker: a waiter node, awaiting readable, ready: <none>
+    spawned at: src/bin/http-conns.rs:171:28
+    type defined at: src/bin/http-conns.rs:121
+    held futures: 0
+    join sets: 0

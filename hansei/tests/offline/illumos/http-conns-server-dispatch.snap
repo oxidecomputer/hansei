@@ -1,0 +1,24 @@
+---
+source: hansei/src/offline.rs
+description: "`futures --with type h1::dispatch::Server --exec print Some.conn.dispatch` over illumos/http-conns"
+---
+future 0xADDR
+hyper::proto::h1::dispatch::Server<hyper::service::util::ServiceFn<http_conns::serve::{async_fn#0}::{closure_env#0}, hyper::body::incoming::Incoming>, hyper::body::incoming::Incoming> {
+    in_flight: core::pin::Pin<alloc::boxed::Box<core::option::Option<http_conns::handle::{async_fn_env#0}>, alloc::alloc::Global>> {
+        pointer: 0xADDR -> core::option::Option<http_conns::handle::{async_fn_env#0}> { .. },
+    },
+    service: hyper::service::util::ServiceFn<http_conns::serve::{async_fn#0}::{closure_env#0}, hyper::body::incoming::Incoming> {
+        f: http_conns::serve::{async_fn#0}::{closure_env#0} { .. } @ 0xADDR,
+    },
+}
+
+future 0xADDR
+hyper::proto::h1::dispatch::Server<hyper::service::util::ServiceFn<http_conns::serve::{async_fn#0}::{closure_env#0}, hyper::body::incoming::Incoming>, hyper::body::incoming::Incoming> {
+    in_flight: core::pin::Pin<alloc::boxed::Box<core::option::Option<http_conns::handle::{async_fn_env#0}>, alloc::alloc::Global>> {
+        pointer: 0xADDR -> core::option::Option<http_conns::handle::{async_fn_env#0}> { .. },
+    },
+    service: hyper::service::util::ServiceFn<http_conns::serve::{async_fn#0}::{closure_env#0}, hyper::body::incoming::Incoming> {
+        f: http_conns::serve::{async_fn#0}::{closure_env#0} { .. } @ 0xADDR,
+    },
+}
+[Executed against 2 futures, 0 failed]

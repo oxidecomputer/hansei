@@ -1,0 +1,14 @@
+---
+source: hansei/src/offline.rs
+description: "`info` over illumos/http-conns"
+---
+core:       <snapshot>
+tokio info: <tokio info>
+symbols resolved: 28/28
+allocator evidence: libumem index (58 caches, 50 slabs)
+waker slots: 1 copy of tokio's WAKER_VTABLE, 0 set vtables; 235.9 KiB swept in 3813 chunks
+    hits: 17 task-pattern, 0 set-pattern; 11 admitted; 5 unlisted headers
+    by class: 1 task extent, 10 umem live, 1 umem freed, 5 lwp stack
+    attributed: 6 by a registry, 4 by owner type, 0 by holding type, 1 unknown; 0 stale
+process: not recorded by this target
+signal: none recorded

@@ -1,0 +1,16 @@
+---
+source: hansei/src/offline.rs
+description: "`trace 3 -n` over linux-floor/http-conns"
+---
+#0  future        tokio::runtime::io::scheduled_io::Readiness
+      waiting on io fd 9 (readable)
+#1  async fn      tokio::runtime::io::scheduled_io::ScheduledIo::readiness
+      awaiting at tokio-1.47.5/src/runtime/io/scheduled_io.rs:385 (Suspend0, 0 locals)
+#2  async fn      tokio::runtime::io::registration::Registration::readiness
+      awaiting at tokio-1.47.5/src/runtime/io/registration.rs:205 (Suspend0, 0 locals)
+#3  async fn      tokio::runtime::io::registration::Registration::async_io<(mio::net::tcp::stream::TcpStream, core::net::socket_addr::SocketAddr), tokio::net::tcp::listener::TcpListener::accept::{async_fn#0}::{closure_env#0}>
+      awaiting at tokio-1.47.5/src/runtime/io/registration.rs:220 (Suspend0, 3 locals)
+#4  async fn      tokio::net::tcp::listener::TcpListener::accept
+      awaiting at tokio-1.47.5/src/net/tcp/listener.rs:162 (Suspend0, 0 locals)
+#5  async fn      http_conns::accept_loop
+      awaiting at src/bin/http-conns.rs:128 (Suspend0, 3 locals)

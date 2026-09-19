@@ -1,0 +1,53 @@
+---
+source: hansei/src/offline.rs
+description: "`futures --exec trace -l 1` over illumos/http-conns"
+---
+future 0xADDR
+future 0xADDR: future hyper::server::conn::http1::UpgradeableConnection<hyper_util::common::rewind::Rewind<hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>>, hyper::service::util::ServiceFn<http_conns::serve::{async_fn#0}::{closure_env#0}, hyper::body::incoming::Incoming>>
+Held by: task 4 — async fn http_conns::serve (frame 0, `state`)
+
+#0  future        hyper::server::conn::http1::UpgradeableConnection<hyper_util::common::rewind::Rewind<hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>>, hyper::service::util::ServiceFn<http_conns::serve::{async_fn#0}::{closure_env#0}, hyper::body::incoming::Incoming>>
+      defined at hyper-1.10.1/src/server/conn/http1.rs:550 (<no_state>, 1 local; holds 1 pending future)
+
+future 0xADDR
+future 0xADDR: future hyper::server::conn::http1::UpgradeableConnection<hyper_util::common::rewind::Rewind<hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>>, hyper::service::util::ServiceFn<http_conns::serve::{async_fn#0}::{closure_env#0}, hyper::body::incoming::Incoming>>
+Held by: task 4 — async fn http_conns::serve (frame 0, `state`)
+
+#0  future        hyper::server::conn::http1::UpgradeableConnection<hyper_util::common::rewind::Rewind<hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>>, hyper::service::util::ServiceFn<http_conns::serve::{async_fn#0}::{closure_env#0}, hyper::body::incoming::Incoming>>
+      defined at hyper-1.10.1/src/server/conn/http1.rs:550 (<no_state>, 1 local; holds 1 pending future)
+
+future 0xADDR
+future 0xADDR: future hyper::proto::h1::dispatch::Dispatcher<hyper::proto::h1::dispatch::Client<http_body_util::empty::Empty<bytes::bytes::Bytes>>, http_body_util::empty::Empty<bytes::bytes::Bytes>, hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>, hyper::proto::h1::role::Client>
+Held by: task 5 — async block http_conns::Reporting::execute<Pin<Box<(dyn Future<Output=()> + Send)>>> (frame 0, `inner`)
+
+#0  future        hyper::proto::h1::dispatch::Dispatcher<hyper::proto::h1::dispatch::Client<http_body_util::empty::Empty<bytes::bytes::Bytes>>, http_body_util::empty::Empty<bytes::bytes::Bytes>, hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>, hyper::proto::h1::role::Client>
+      defined at hyper-1.10.1/src/proto/h1/dispatch.rs:497 (<no_state>, 5 locals)
+
+future 0xADDR
+future 0xADDR: future hyper::server::conn::http1::UpgradeableConnection<hyper_util::common::rewind::Rewind<hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>>, hyper::service::util::ServiceFn<http_conns::serve::{async_fn#0}::{closure_env#0}, hyper::body::incoming::Incoming>>
+Held by: task 8 — async fn http_conns::serve (frame 0, `state`)
+
+#0  future        hyper::server::conn::http1::UpgradeableConnection<hyper_util::common::rewind::Rewind<hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>>, hyper::service::util::ServiceFn<http_conns::serve::{async_fn#0}::{closure_env#0}, hyper::body::incoming::Incoming>>
+      defined at hyper-1.10.1/src/server/conn/http1.rs:550 (<no_state>, 1 local; holds 1 pending future)
+
+future 0xADDR
+future 0xADDR: future hyper::server::conn::http1::UpgradeableConnection<hyper_util::common::rewind::Rewind<hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>>, hyper::service::util::ServiceFn<http_conns::serve::{async_fn#0}::{closure_env#0}, hyper::body::incoming::Incoming>>
+Held by: task 8 — async fn http_conns::serve (frame 0, `state`)
+
+#0  future        hyper::server::conn::http1::UpgradeableConnection<hyper_util::common::rewind::Rewind<hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>>, hyper::service::util::ServiceFn<http_conns::serve::{async_fn#0}::{closure_env#0}, hyper::body::incoming::Incoming>>
+      defined at hyper-1.10.1/src/server/conn/http1.rs:550 (<no_state>, 1 local; holds 1 pending future)
+
+future 0xADDR
+future 0xADDR: future hyper::proto::h1::dispatch::Dispatcher<hyper::proto::h1::dispatch::Client<http_body_util::empty::Empty<bytes::bytes::Bytes>>, http_body_util::empty::Empty<bytes::bytes::Bytes>, hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>, hyper::proto::h1::role::Client>
+Held by: task 9 — async block http_conns::Reporting::execute<Pin<Box<(dyn Future<Output=()> + Send)>>> (frame 0, `inner`)
+
+#0  future        hyper::proto::h1::dispatch::Dispatcher<hyper::proto::h1::dispatch::Client<http_body_util::empty::Empty<bytes::bytes::Bytes>>, http_body_util::empty::Empty<bytes::bytes::Bytes>, hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>, hyper::proto::h1::role::Client>
+      defined at hyper-1.10.1/src/proto/h1/dispatch.rs:497 (<no_state>, 5 locals)
+
+future 0xADDR
+future 0xADDR: future hyper_util::server::conn::auto::ReadVersion<hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>>
+Held by: task 10 — async fn http_conns::serve (frame 0, `state`)
+
+#0  future        hyper_util::server::conn::auto::ReadVersion<hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>>
+      defined at hyper-util-0.1.20/src/server/conn/auto/mod.rs:337 (<no_state>, 5 locals)
+[Executed against 7 futures, 0 failed]

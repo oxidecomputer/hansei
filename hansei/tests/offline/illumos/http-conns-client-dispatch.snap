@@ -1,0 +1,24 @@
+---
+source: hansei/src/offline.rs
+description: "`futures --with type h1::dispatch::Client --exec print dispatch` over illumos/http-conns"
+---
+future 0xADDR
+hyper::proto::h1::dispatch::Client<http_body_util::empty::Empty<bytes::bytes::Bytes>> {
+    callback: core::option::Option<hyper::client::dispatch::Callback<http::request::Request<http_body_util::empty::Empty<bytes::bytes::Bytes>>, http::response::Response<hyper::body::incoming::Incoming>>>::None,
+    rx: hyper::client::dispatch::Receiver<http::request::Request<http_body_util::empty::Empty<bytes::bytes::Bytes>>, http::response::Response<hyper::body::incoming::Incoming>> {
+        inner: tokio::sync::mpsc::unbounded::UnboundedReceiver<hyper::client::dispatch::Envelope<http::request::Request<http_body_util::empty::Empty<bytes::bytes::Bytes>>, http::response::Response<hyper::body::incoming::Incoming>>> { .. } @ 0xADDR,
+        taker: want::Taker { .. } @ 0xADDR,
+    },
+    rx_closed: false,
+}
+
+future 0xADDR
+hyper::proto::h1::dispatch::Client<http_body_util::empty::Empty<bytes::bytes::Bytes>> {
+    callback: core::option::Option<hyper::client::dispatch::Callback<http::request::Request<http_body_util::empty::Empty<bytes::bytes::Bytes>>, http::response::Response<hyper::body::incoming::Incoming>>>::Some(hyper::client::dispatch::Callback<http::request::Request<http_body_util::empty::Empty<bytes::bytes::Bytes>>, http::response::Response<hyper::body::incoming::Incoming>> { .. } @ 0xADDR),
+    rx: hyper::client::dispatch::Receiver<http::request::Request<http_body_util::empty::Empty<bytes::bytes::Bytes>>, http::response::Response<hyper::body::incoming::Incoming>> {
+        inner: tokio::sync::mpsc::unbounded::UnboundedReceiver<hyper::client::dispatch::Envelope<http::request::Request<http_body_util::empty::Empty<bytes::bytes::Bytes>>, http::response::Response<hyper::body::incoming::Incoming>>> { .. } @ 0xADDR,
+        taker: want::Taker { .. } @ 0xADDR,
+    },
+    rx_closed: false,
+}
+[Executed against 2 futures, 0 failed]

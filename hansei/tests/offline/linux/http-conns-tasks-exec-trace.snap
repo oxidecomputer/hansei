@@ -1,0 +1,90 @@
+---
+source: hansei/src/offline.rs
+description: "`tasks --exec trace -n` over linux/http-conns"
+---
+task 3
+#0  future        tokio::runtime::io::scheduled_io::Readiness
+      waiting on io fd 9 (readable)
+#1  async fn      tokio::runtime::io::scheduled_io::ScheduledIo::readiness
+      awaiting at tokio-1.52.4/src/runtime/io/scheduled_io.rs:385 (Suspend0, 0 locals)
+#2  async fn      tokio::runtime::io::registration::Registration::readiness
+      awaiting at tokio-1.52.4/src/runtime/io/registration.rs:205 (Suspend0, 0 locals)
+#3  async fn      tokio::runtime::io::registration::Registration::async_io<(mio::net::tcp::stream::TcpStream, core::net::socket_addr::SocketAddr), tokio::net::tcp::listener::TcpListener::accept::{async_fn#0}::{closure_env#0}>
+      awaiting at tokio-1.52.4/src/runtime/io/registration.rs:220 (Suspend0, 3 locals)
+#4  async fn      tokio::net::tcp::listener::TcpListener::accept
+      awaiting at tokio-1.52.4/src/net/tcp/listener.rs:164 (Suspend0, 0 locals)
+#5  async fn      http_conns::accept_loop
+      awaiting at src/bin/http-conns.rs:128 (Suspend0, 3 locals)
+
+task 4
+#0  future        hyper_util::server::conn::auto::UpgradeableConnection<hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>, hyper::service::util::ServiceFn<http_conns::serve::{async_fn#0}::{closure_env#0}, hyper::body::incoming::Incoming>, hyper_util::rt::tokio::TokioExecutor>
+      defined at hyper-util-0.1.20/src/server/conn/auto/mod.rs:664 (<no_state>, 1 local; holds 1 pending future)
+#1  async fn      http_conns::serve
+      awaiting at src/bin/http-conns.rs:114 (Suspend0, 0 locals)
+
+task 5
+#0  future        hyper::client::conn::http1::upgrades::UpgradeableConnection<hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>, http_body_util::empty::Empty<bytes::bytes::Bytes>>
+      defined at hyper-1.10.1/src/client/conn/http1.rs:622 (<no_state>, 1 local; holds 1 pending future)
+#1  future        futures_util::future::try_future::into_future::IntoFuture<hyper::client::conn::http1::upgrades::UpgradeableConnection<hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>, http_body_util::empty::Empty<bytes::bytes::Bytes>>>
+      defined at futures-util-0.3.33/src/future/try_future/into_future.rs:33 (<no_state>, 1 local)
+#2  future        futures_util::future::future::map::Map<futures_util::future::try_future::into_future::IntoFuture<hyper::client::conn::http1::upgrades::UpgradeableConnection<hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>, http_body_util::empty::Empty<bytes::bytes::Bytes>>>, futures_util::fns::MapErrFn<hyper_util::client::legacy::client::Client::connect_to::{closure#0}::{closure#1}::{async_block#0}::{closure_env#2}<hyper_util::client::legacy::connect::http::HttpConnector<hyper_util::client::legacy::connect::dns::GaiResolver>, http_body_util::empty::Empty<bytes::bytes::Bytes>>>>
+      defined at futures-util-0.3.33/src/future/future/map.rs:52 (Incomplete, 2 locals)
+#3  future        futures_util::future::future::Map<futures_util::future::try_future::into_future::IntoFuture<hyper::client::conn::http1::upgrades::UpgradeableConnection<hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>, http_body_util::empty::Empty<bytes::bytes::Bytes>>>, futures_util::fns::MapErrFn<hyper_util::client::legacy::client::Client::connect_to::{closure#0}::{closure#1}::{async_block#0}::{closure_env#2}<hyper_util::client::legacy::connect::http::HttpConnector<hyper_util::client::legacy::connect::dns::GaiResolver>, http_body_util::empty::Empty<bytes::bytes::Bytes>>>>
+      defined at futures-util-0.3.33/src/lib.rs:81 (<no_state>, 1 local)
+#4  future        futures_util::future::try_future::MapErr<hyper::client::conn::http1::upgrades::UpgradeableConnection<hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>, http_body_util::empty::Empty<bytes::bytes::Bytes>>, hyper_util::client::legacy::client::Client::connect_to::{closure#0}::{closure#1}::{async_block#0}::{closure_env#2}<hyper_util::client::legacy::connect::http::HttpConnector<hyper_util::client::legacy::connect::dns::GaiResolver>, http_body_util::empty::Empty<bytes::bytes::Bytes>>>
+      defined at futures-util-0.3.33/src/lib.rs:81 (<no_state>, 1 local)
+#5  future        futures_util::future::future::map::Map<futures_util::future::try_future::MapErr<hyper::client::conn::http1::upgrades::UpgradeableConnection<hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>, http_body_util::empty::Empty<bytes::bytes::Bytes>>, hyper_util::client::legacy::client::Client::connect_to::{closure#0}::{closure#1}::{async_block#0}::{closure_env#2}<hyper_util::client::legacy::connect::http::HttpConnector<hyper_util::client::legacy::connect::dns::GaiResolver>, http_body_util::empty::Empty<bytes::bytes::Bytes>>>, hyper_util::client::legacy::client::Client::connect_to::{closure#0}::{closure#1}::{async_block#0}::{closure_env#3}<hyper_util::client::legacy::connect::http::HttpConnector<hyper_util::client::legacy::connect::dns::GaiResolver>, http_body_util::empty::Empty<bytes::bytes::Bytes>>>
+      defined at futures-util-0.3.33/src/future/future/map.rs:52 (Incomplete, 1 local)
+#6  future        futures_util::future::future::Map<futures_util::future::try_future::MapErr<hyper::client::conn::http1::upgrades::UpgradeableConnection<hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>, http_body_util::empty::Empty<bytes::bytes::Bytes>>, hyper_util::client::legacy::client::Client::connect_to::{closure#0}::{closure#1}::{async_block#0}::{closure_env#2}<hyper_util::client::legacy::connect::http::HttpConnector<hyper_util::client::legacy::connect::dns::GaiResolver>, http_body_util::empty::Empty<bytes::bytes::Bytes>>>, hyper_util::client::legacy::client::Client::connect_to::{closure#0}::{closure#1}::{async_block#0}::{closure_env#3}<hyper_util::client::legacy::connect::http::HttpConnector<hyper_util::client::legacy::connect::dns::GaiResolver>, http_body_util::empty::Empty<bytes::bytes::Bytes>>> [dyn]
+      defined at futures-util-0.3.33/src/lib.rs:81 (<no_state>, 1 local)
+#7  future        Pin<Box<(dyn Future<Output=()> + Send)>>
+      defined at library/core/src/future/future.rs:132 (<no_state>, 1 local)
+#8  async block   http_conns::Reporting::execute<Pin<Box<(dyn Future<Output=()> + Send)>>>
+      awaiting at src/bin/http-conns.rs:71 (Suspend0, 2 locals)
+
+task 7
+#0  future        hyper_util::client::legacy::client::ResponseFuture
+      defined at hyper-util-0.1.20/src/client/legacy/client.rs:757 (<no_state>, 1 local)
+#1  async fn      http_conns::get
+      awaiting at src/bin/http-conns.rs:143 (Suspend0, 0 locals)
+#2  async fn      http_conns::requester
+      awaiting at src/bin/http-conns.rs:150 (Suspend0, 2 locals)
+
+task 8
+#0  future        hyper_util::server::conn::auto::UpgradeableConnection<hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>, hyper::service::util::ServiceFn<http_conns::serve::{async_fn#0}::{closure_env#0}, hyper::body::incoming::Incoming>, hyper_util::rt::tokio::TokioExecutor>
+      defined at hyper-util-0.1.20/src/server/conn/auto/mod.rs:664 (<no_state>, 1 local; holds 1 pending future)
+#1  async fn      http_conns::serve
+      awaiting at src/bin/http-conns.rs:114 (Suspend0, 0 locals)
+
+task 9
+#0  future        hyper::client::conn::http1::upgrades::UpgradeableConnection<hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>, http_body_util::empty::Empty<bytes::bytes::Bytes>>
+      defined at hyper-1.10.1/src/client/conn/http1.rs:622 (<no_state>, 1 local; holds 1 pending future)
+#1  future        futures_util::future::try_future::into_future::IntoFuture<hyper::client::conn::http1::upgrades::UpgradeableConnection<hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>, http_body_util::empty::Empty<bytes::bytes::Bytes>>>
+      defined at futures-util-0.3.33/src/future/try_future/into_future.rs:33 (<no_state>, 1 local)
+#2  future        futures_util::future::future::map::Map<futures_util::future::try_future::into_future::IntoFuture<hyper::client::conn::http1::upgrades::UpgradeableConnection<hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>, http_body_util::empty::Empty<bytes::bytes::Bytes>>>, futures_util::fns::MapErrFn<hyper_util::client::legacy::client::Client::connect_to::{closure#0}::{closure#1}::{async_block#0}::{closure_env#2}<hyper_util::client::legacy::connect::http::HttpConnector<hyper_util::client::legacy::connect::dns::GaiResolver>, http_body_util::empty::Empty<bytes::bytes::Bytes>>>>
+      defined at futures-util-0.3.33/src/future/future/map.rs:52 (Incomplete, 2 locals)
+#3  future        futures_util::future::future::Map<futures_util::future::try_future::into_future::IntoFuture<hyper::client::conn::http1::upgrades::UpgradeableConnection<hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>, http_body_util::empty::Empty<bytes::bytes::Bytes>>>, futures_util::fns::MapErrFn<hyper_util::client::legacy::client::Client::connect_to::{closure#0}::{closure#1}::{async_block#0}::{closure_env#2}<hyper_util::client::legacy::connect::http::HttpConnector<hyper_util::client::legacy::connect::dns::GaiResolver>, http_body_util::empty::Empty<bytes::bytes::Bytes>>>>
+      defined at futures-util-0.3.33/src/lib.rs:81 (<no_state>, 1 local)
+#4  future        futures_util::future::try_future::MapErr<hyper::client::conn::http1::upgrades::UpgradeableConnection<hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>, http_body_util::empty::Empty<bytes::bytes::Bytes>>, hyper_util::client::legacy::client::Client::connect_to::{closure#0}::{closure#1}::{async_block#0}::{closure_env#2}<hyper_util::client::legacy::connect::http::HttpConnector<hyper_util::client::legacy::connect::dns::GaiResolver>, http_body_util::empty::Empty<bytes::bytes::Bytes>>>
+      defined at futures-util-0.3.33/src/lib.rs:81 (<no_state>, 1 local)
+#5  future        futures_util::future::future::map::Map<futures_util::future::try_future::MapErr<hyper::client::conn::http1::upgrades::UpgradeableConnection<hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>, http_body_util::empty::Empty<bytes::bytes::Bytes>>, hyper_util::client::legacy::client::Client::connect_to::{closure#0}::{closure#1}::{async_block#0}::{closure_env#2}<hyper_util::client::legacy::connect::http::HttpConnector<hyper_util::client::legacy::connect::dns::GaiResolver>, http_body_util::empty::Empty<bytes::bytes::Bytes>>>, hyper_util::client::legacy::client::Client::connect_to::{closure#0}::{closure#1}::{async_block#0}::{closure_env#3}<hyper_util::client::legacy::connect::http::HttpConnector<hyper_util::client::legacy::connect::dns::GaiResolver>, http_body_util::empty::Empty<bytes::bytes::Bytes>>>
+      defined at futures-util-0.3.33/src/future/future/map.rs:52 (Incomplete, 1 local)
+#6  future        futures_util::future::future::Map<futures_util::future::try_future::MapErr<hyper::client::conn::http1::upgrades::UpgradeableConnection<hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>, http_body_util::empty::Empty<bytes::bytes::Bytes>>, hyper_util::client::legacy::client::Client::connect_to::{closure#0}::{closure#1}::{async_block#0}::{closure_env#2}<hyper_util::client::legacy::connect::http::HttpConnector<hyper_util::client::legacy::connect::dns::GaiResolver>, http_body_util::empty::Empty<bytes::bytes::Bytes>>>, hyper_util::client::legacy::client::Client::connect_to::{closure#0}::{closure#1}::{async_block#0}::{closure_env#3}<hyper_util::client::legacy::connect::http::HttpConnector<hyper_util::client::legacy::connect::dns::GaiResolver>, http_body_util::empty::Empty<bytes::bytes::Bytes>>> [dyn]
+      defined at futures-util-0.3.33/src/lib.rs:81 (<no_state>, 1 local)
+#7  future        Pin<Box<(dyn Future<Output=()> + Send)>>
+      defined at library/core/src/future/future.rs:132 (<no_state>, 1 local)
+#8  async block   http_conns::Reporting::execute<Pin<Box<(dyn Future<Output=()> + Send)>>>
+      awaiting at src/bin/http-conns.rs:71 (Suspend0, 2 locals)
+
+task 10
+#0  future        hyper_util::server::conn::auto::UpgradeableConnection<hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>, hyper::service::util::ServiceFn<http_conns::serve::{async_fn#0}::{closure_env#0}, hyper::body::incoming::Incoming>, hyper_util::rt::tokio::TokioExecutor>
+      defined at hyper-util-0.1.20/src/server/conn/auto/mod.rs:664 (<no_state>, 1 local; holds 1 pending future)
+#1  async fn      http_conns::serve
+      awaiting at src/bin/http-conns.rs:114 (Suspend0, 0 locals)
+
+task 11
+#0  future        tokio::sync::oneshot::Receiver<()>
+      waiting on oneshot rx 0xADDR (nothing sent, sender alive)
+#1  async fn      http_conns::raw_holder
+      awaiting at src/bin/http-conns.rs:156 (Suspend0, 1 local)
+[Executed against 8 tasks, 0 failed]

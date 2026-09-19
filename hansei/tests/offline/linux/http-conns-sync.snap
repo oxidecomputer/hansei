@@ -1,0 +1,15 @@
+---
+source: hansei/src/offline.rs
+description: "`sync` over linux/http-conns"
+---
+oneshot 0xADDR: nothing sent, sender alive
+    rx: task 11
+
+oneshot 0xADDR: nothing sent, sender alive
+    tx: task 9
+
+mpsc 0xADDR: state not read
+    rx: task 5
+
+notify 0xADDR: waiting
+    rx: task 8
