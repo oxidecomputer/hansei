@@ -1318,9 +1318,12 @@ fn assert_library_bindings(program: &str, bundle: &Bundle) {
             } => match s(*package) {
                 "tracing" => {
                     assert_eq!(s(*version), "0.1.40", "{program}");
-                    assert_eq!(
-                        program, "delegation-cases",
-                        "{program}: only the delegation fixture instruments a future"
+                    // The delegation fixture instruments a future itself;
+                    // the hyper fixture links h2, whose handshake wraps its
+                    // preface futures in trace spans.
+                    assert!(
+                        ["delegation-cases", "http-conns"].contains(&program),
+                        "{program}: only the delegation and hyper fixtures instrument a future"
                     );
                 }
                 "futures-util" => {
@@ -1330,11 +1333,13 @@ fn assert_library_bindings(program: &str, bundle: &Bundle) {
                         "{program}: futures-util {} is outside the reviewed range",
                         s(*version)
                     );
-                    // Only the combinator fixture maps a future; every
-                    // other program binding this origin does so for a
-                    // `Next` — and which programs keep a `Next::poll`
-                    // out of line is the target's call, so no list.
-                    if program != "select-combinator" {
+                    // Only the combinator fixture maps a future itself,
+                    // and hyper-util's legacy client maps the background
+                    // futures it spawns; every other program binding this
+                    // origin does so for a `Next` — and which programs
+                    // keep a `Next::poll` out of line is the target's
+                    // call, so no list.
+                    if !["select-combinator", "http-conns"].contains(&program) {
                         let origin_id = bundle
                             .semantics
                             .origins
@@ -1393,6 +1398,28 @@ fn assert_library_bindings(program: &str, bundle: &Bundle) {
                         s(*version)
                     );
                     assert_eq!(program, "watch-stream", "{program}");
+                }
+                // hyper-util's sleep over tokio's, which only the hyper
+                // fixture links; whether its poll survives out of line
+                // for the origin to be recorded at all is the target's
+                // call (the Mach-O build inlines it).
+                "hyper-util" => {
+                    use exegesis::detect::semantics::HYPER_UTIL_TOKIO_SLEEP_V0_1_10;
+                    let SemanticOrigin::LibraryDelegation { family, .. } = origin else {
+                        unreachable!()
+                    };
+                    assert_eq!(
+                        s(*family),
+                        HYPER_UTIL_TOKIO_SLEEP_V0_1_10.family,
+                        "{program}"
+                    );
+                    assert_eq!(
+                        HYPER_UTIL_TOKIO_SLEEP_V0_1_10.select(&s(*version).parse().unwrap()),
+                        LayoutSelection::ReviewedRange,
+                        "{program}: hyper-util {} is outside the reviewed range",
+                        s(*version)
+                    );
+                    assert_eq!(program, "http-conns", "{program}");
                 }
                 // The `select!` rule is the one tokio delegation read
                 // off a declaration file (`Coop` binds on its layout,
@@ -2896,6 +2923,89 @@ fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
             "{program}: the task::local::CURRENT static was not recorded"
         );
     }
+    // The hyper formatters, on both ends of an HTTP/1 connection: the
+    // curated `Conn` record aliases each state word and reaches the read
+    // buffer's fill through the buffered io, the server's alone carrying
+    // the header-read timer flag; the `Dispatcher` names its three
+    // members and never the body plumbing between them; hyper-util's two
+    // io wrappers alias their `inner`. Pinning the resolved paths catches
+    // a detector that fires on a moved member.
+    if program == "http-conns" {
+        const SOCKET: &str = "hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>";
+        const REWOUND: &str = "hyper_util::common::rewind::Rewind<\
+            hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>>";
+        const SERVICE: &str = "hyper::service::util::ServiceFn<\
+            http_conns::serve::{async_fn#0}::{closure_env#0}, hyper::body::incoming::Incoming>";
+        let server_conn = format!(
+            "hyper::proto::h1::conn::Conn<{REWOUND}, bytes::bytes::Bytes, \
+             hyper::proto::h1::role::Server>"
+        );
+        assert_format(
+            program,
+            bundle,
+            &server_conn,
+            &format!(
+                "{server_conn} :: Node Struct \
+                 {{ version: Alias {{ state.version@+600, follow }}, \
+                 keep_alive: Alias {{ state.keep_alive@+599, follow }}, \
+                 reading: Alias {{ state.reading@+352, follow }}, \
+                 writing: Alias {{ state.writing@+456, follow }}, \
+                 method: Alias {{ state.method@+504, follow }}, \
+                 read_buf_len: io.read_buf.len@+192, \
+                 read_buf_cap: io.read_buf.cap@+200, \
+                 header_read_timer: state.h1_header_read_timeout_running@+592 }}"
+            ),
+        );
+        let client_conn = format!(
+            "hyper::proto::h1::conn::Conn<{SOCKET}, bytes::bytes::Bytes, \
+             hyper::proto::h1::role::Client>"
+        );
+        assert_format(
+            program,
+            bundle,
+            &client_conn,
+            &format!(
+                "{client_conn} :: Node Struct \
+                 {{ version: Alias {{ state.version@+568, follow }}, \
+                 keep_alive: Alias {{ state.keep_alive@+567, follow }}, \
+                 reading: Alias {{ state.reading@+320, follow }}, \
+                 writing: Alias {{ state.writing@+424, follow }}, \
+                 method: Alias {{ state.method@+472, follow }}, \
+                 read_buf_len: io.read_buf.len@+160, \
+                 read_buf_cap: io.read_buf.cap@+168 }}"
+            ),
+        );
+        let server_dispatcher = format!(
+            "hyper::proto::h1::dispatch::Dispatcher<hyper::proto::h1::dispatch::Server<{SERVICE}, \
+             hyper::body::incoming::Incoming>, http_body_util::full::Full<bytes::bytes::Bytes>, \
+             {REWOUND}, hyper::proto::h1::role::Server>"
+        );
+        let client_dispatcher = format!(
+            "hyper::proto::h1::dispatch::Dispatcher<hyper::proto::h1::dispatch::Client<\
+             http_body_util::empty::Empty<bytes::bytes::Bytes>>, \
+             http_body_util::empty::Empty<bytes::bytes::Bytes>, {SOCKET}, \
+             hyper::proto::h1::role::Client>"
+        );
+        for dispatcher in [&server_dispatcher, &client_dispatcher] {
+            assert_format(
+                program,
+                bundle,
+                dispatcher,
+                &format!(
+                    "{dispatcher} :: Node Struct \
+                     {{ conn: <structural>, dispatch: <structural>, is_closing: <structural> }}"
+                ),
+            );
+        }
+        for wrapper in [REWOUND, SOCKET] {
+            assert_format(
+                program,
+                bundle,
+                wrapper,
+                &format!("{wrapper} :: Node Alias {{ inner@+0, follow }}"),
+            );
+        }
+    }
     if program == "channels" {
         // The sender's `select!`: three branches behind the one
         // `PollFn` the macro expands to, whatever the two disabled
@@ -3517,6 +3627,11 @@ fn test_golden_armed_select() {
 #[test]
 fn test_golden_watch_stream() {
     run_golden("watch-stream");
+}
+
+#[test]
+fn test_golden_http_conns() {
+    run_golden("http-conns");
 }
 
 #[test]

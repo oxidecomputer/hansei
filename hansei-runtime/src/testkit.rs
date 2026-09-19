@@ -254,6 +254,7 @@ pub const PROGRAMS: &[&str] = &[
     "delegation-cases",
     "armed-select",
     "watch-stream",
+    "http-conns",
 ];
 
 /// Mask the run-varying values analysis output carries — heap
@@ -667,6 +668,11 @@ pub mod expect {
         JoinSet { addr: u64, members: u64 },
         /// A listed task whose future name contains `name`.
         Task { name: String },
+        /// A held find somewhere in the frames of a task whose future
+        /// name contains `task`, itself named `name` — a future inside a
+        /// library's own, whose slot the fixture cannot name and whose
+        /// carrier is a chain frame rather than a held find.
+        HeldByTask { task: String, name: String },
     }
 
     /// Read the registry through any target: `None` where the target
@@ -738,6 +744,15 @@ pub mod expect {
                     members: count,
                 },
                 5 => Expectation::Task { name },
+                // The write side packs both names into the one name
+                // field, tab-separated; no type name carries a tab.
+                6 => match name.split_once('\t') {
+                    Some((task, name)) => Expectation::HeldByTask {
+                        task: task.to_string(),
+                        name: name.to_string(),
+                    },
+                    None => bail!("a held-by-task registry entry names no task: {name:?}"),
+                },
                 other => bail!("unknown census registry entry kind {other}"),
             });
         }
@@ -828,6 +843,23 @@ pub mod expect {
                         None => v.push(format!(
                             "registered carried future `{name}` was not found \
                              via the held find at {parent:#x}"
+                        )),
+                    }
+                }
+                Expectation::HeldByTask { task, name } => {
+                    let owned_by = |h: &crate::tokio::census::HeldFuture| {
+                        matches!(&list.tasks[h.owner].future,
+                            FutureInfo::Known(k) if k.display_name.contains(task))
+                    };
+                    let row =
+                        census.held.iter().enumerate().find(|(i, h)| {
+                            !held_claimed[*i] && owned_by(h) && h.future.contains(name)
+                        });
+                    match row {
+                        Some((i, _)) => held_claimed[i] = true,
+                        None => v.push(format!(
+                            "registered future `{name}` was not found held by a \
+                             task named `{task}`"
                         )),
                     }
                 }

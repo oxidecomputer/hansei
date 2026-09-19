@@ -89,6 +89,7 @@ const PROGRAMS: &[&str] = &[
     "delegation-cases",
     "armed-select",
     "watch-stream",
+    "http-conns",
 ];
 
 fn test_programs_dir() -> PathBuf {

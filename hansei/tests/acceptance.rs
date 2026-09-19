@@ -88,6 +88,7 @@ const PROGRAMS: &[&str] = &[
     "enum-reprs",
     "armed-select",
     "watch-stream",
+    "http-conns",
 ];
 
 fn workspace_root() -> &'static Path {

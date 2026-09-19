@@ -250,6 +250,11 @@ pub mod census_expect {
     const SET: u32 = 3;
     const JOIN_SET: u32 = 4;
     const TASK: u32 = 5;
+    const HELD_BY_TASK: u32 = 6;
+
+    /// Separates the two names a [`held_by_task`] entry carries in its
+    /// one name field. No Rust type name contains a tab.
+    pub const HELD_BY_TASK_SEPARATOR: char = '\t';
 
     /// One expectation. `flags` is reserved (a later phase marks
     /// cappable registrations there); `name` is NUL-padded UTF-8.
@@ -327,6 +332,22 @@ pub mod census_expect {
     /// reached via the held find at `parent_slot`, named `name`.
     pub fn held_in(parent_slot: u64, name: &str) {
         register(HELD_IN, parent_slot, 0, name);
+    }
+
+    /// A future held somewhere in the frames of a task whose future name
+    /// contains `task`, keyed by that task alone: for a find inside a
+    /// library's own future — a hyper connection's dispatcher under the
+    /// boxed connection future hyper-util spawns — whose slot the
+    /// fixture cannot name and whose carrier is a chain frame, not a
+    /// held find. The census must list one held find under such a task
+    /// whose future name contains `name`, per registration.
+    pub fn held_by_task(task: &str, name: &str) {
+        register(
+            HELD_BY_TASK,
+            0,
+            0,
+            &format!("{task}{HELD_BY_TASK_SEPARATOR}{name}"),
+        );
     }
 
     /// A `FuturesUnordered` at `addr` holding exactly `children`

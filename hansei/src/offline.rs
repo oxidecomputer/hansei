@@ -267,6 +267,26 @@ fn commands(
             list.push(("task-mapper", format!("task {id}")));
         }
     }
+    // The hyper formatters over every connection the fixture parks:
+    // the curated `Conn` record and the role's dispatch under each h1
+    // dispatcher the census holds — the idle and the busy client, the
+    // idle and the in-flight server — and the version-choosing read on
+    // the connection that never spoke.
+    if program == "http-conns" {
+        // A client find is rooted at the dispatcher itself; a server
+        // find at the `Option<Connection>` around it, one step up.
+        let under = |role: &str, member: &str| {
+            format!("futures --with type h1::dispatch::{role} --exec print {member}")
+        };
+        list.push(("client-conn", under("Client", "conn")));
+        list.push(("client-dispatch", under("Client", "dispatch")));
+        list.push(("server-conn", under("Server", "Some.conn.conn")));
+        list.push(("server-dispatch", under("Server", "Some.conn.dispatch")));
+        list.push((
+            "read-version",
+            "futures --with type auto::ReadVersion --exec print".to_owned(),
+        ));
+    }
     // The register readout under whatever cursor the commands above
     // left: a task no thread is polling refuses, and a thread cursor
     // answers with the lwp's annotated block. One program pins the
@@ -376,6 +396,7 @@ offline_commands! {
     test_delegation_cases_commands: "delegation-cases",
     test_armed_select_commands: "armed-select",
     test_watch_stream_commands: "watch-stream",
+    test_http_conns_commands: "http-conns",
 }
 
 /// The macro above and [`testkit::PROGRAMS`] name the same population:
@@ -403,6 +424,7 @@ fn test_every_program_has_a_command_golden() {
         "delegation-cases",
         "armed-select",
         "watch-stream",
+        "http-conns",
     ];
     assert_eq!(COVERED, PROGRAMS);
 }
