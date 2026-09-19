@@ -3,18 +3,20 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 //! Detectors for third-party crates (camino, uuid, parking_lot,
-//! allocator-api2, digest newtypes). Each layout here moves on its own
-//! crate's release cadence, independent of both the toolchain and tokio.
+//! allocator-api2, digest newtypes, hyper and hyper-util). Each layout
+//! here moves on its own crate's release cadence, independent of both
+//! the toolchain and tokio.
 
 use super::ReachStep::{Named, PeelTo, Resolved};
 use super::std::{VecShape, buffer_node, vec_shape};
 use super::{
-    Reach, Through, Want, find_unique, is_byte_array, is_unsigned_integer, reach, struct_of,
-    unique_member,
+    Reach, Through, Want, find_unique, is_byte_array, is_unsigned_integer, reach,
+    sole_param_target, struct_of, unique_member,
 };
-use crate::bundle::{DisplayNode, Notation, ScalarDecode, Shape};
+use crate::bundle::{DisplayNode, Field, Notation, ScalarDecode, Shape};
 use crate::extract::{Emitter, fq_name};
-use crate::{DwReader, TypeId};
+use crate::raw_types::RawStruct;
+use crate::{DwReader, StrId, TypeId};
 
 /// Recognize `allocator_api2::stable::vec::Vec<T, A>`, the `allocator-api2`
 /// crate's stable-channel reimplementation of `Vec`. It renders through the
@@ -177,10 +179,123 @@ impl Emitter<'_> {
     }
 }
 
+/// Which end of an HTTP/1 exchange a `hyper::proto::h1` type drives, from
+/// its `T: Http1Transaction` parameter. hyper's two roles are the empty
+/// enums `role::Client` and `role::Server`; a type whose `T` is neither is
+/// not one the detectors below know.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum H1Role {
+    Client,
+    Server,
+}
+
+fn h1_role(reader: &DwReader<'_>, st: &RawStruct<StrId>) -> Option<H1Role> {
+    let param = st
+        .template_params
+        .iter()
+        .find(|param| param.name.map(|name| reader.strings.get(name)) == Some("T"))?;
+    match fq_name(reader, reader.canonicalize(param.type_id))?.as_str() {
+        "hyper::proto::h1::role::Client" => Some(H1Role::Client),
+        "hyper::proto::h1::role::Server" => Some(H1Role::Server),
+        _ => None,
+    }
+}
+
+/// `hyper::proto::h1::conn::Conn<I, B, T>`, the HTTP/1 connection state
+/// machine both hyper's client and its server drive, as the words that say
+/// where a connection stands: the protocol version, the keep-alive state,
+/// what the connection is reading and writing, the method of the message
+/// in flight, how much of the read buffer is filled, and — for the server,
+/// which alone arms one — whether the header-read timer is running.
+/// Everything else in its `State` and its buffered io (the write buffer,
+/// the read strategy, the cached headers, the parser configuration) is
+/// hidden; `config ugly on` shows it.
+///
+/// Each state word is aliased to the member holding it and rendered as its
+/// own type, so a `Reading`/`Writing` payload — a body's decoder or
+/// encoder — prints as it does structurally.
+pub(super) fn hyper_h1_conn_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
+    let reader = emitter.reader;
+    let role = h1_role(reader, struct_of(reader, id)?)?;
+    let mut fields = Vec::new();
+    for word in ["version", "keep_alive", "reading", "writing", "method"] {
+        let at = emitter.walk(id, &reach![Named("state"), Named(word)])?.0;
+        fields.push(Field::Synth {
+            label: emitter.intern(word),
+            node: DisplayNode::Alias {
+                at,
+                follow_pointers: true,
+            },
+        });
+    }
+    for (label, word) in [("read_buf_len", "len"), ("read_buf_cap", "cap")] {
+        let at = emitter
+            .walk(id, &reach![Named("io"), Named("read_buf"), Named(word)])?
+            .0;
+        fields.push(emitter.named_scalar(label, at, ScalarDecode::Raw));
+    }
+    if role == H1Role::Server {
+        let at = emitter
+            .walk(
+                id,
+                &reach![Named("state"), Named("h1_header_read_timeout_running")],
+            )?
+            .0;
+        let decode = ScalarDecode::Bits(vec![emitter.enum_field(
+            "",
+            0,
+            1,
+            &[(0, "idle"), (1, "armed")],
+        )]);
+        fields.push(emitter.named_scalar("header_read_timer", at, decode));
+    }
+    Some(DisplayNode::Struct { fields })
+}
+
+/// `hyper::proto::h1::dispatch::Dispatcher<D, Bs, I, T>`, the future a
+/// hyper HTTP/1 connection task polls: the connection, the role's dispatch
+/// (the client's response callback and request receiver, the server's
+/// service and in-flight handler), and the closing flag. The body plumbing
+/// between them — the guard on the incoming body's sender, the boxed
+/// outgoing body — is hidden: it says nothing about the connection the
+/// connection's own words do not, and it is the part of the layout hyper
+/// has changed between releases, so it is never addressed.
+pub(super) fn hyper_h1_dispatcher_node(
+    emitter: &mut Emitter<'_>,
+    id: TypeId,
+) -> Option<DisplayNode> {
+    let mut fields = Vec::new();
+    for member in ["conn", "dispatch", "is_closing"] {
+        fields.push(Field::member(emitter.member_named(id, member)?));
+    }
+    Some(DisplayNode::Struct { fields })
+}
+
+/// hyper-util's transparent io wrappers: `rt::tokio::TokioIo<T>`, which
+/// adapts a tokio socket to hyper's io traits, and `common::rewind::Rewind<T>`,
+/// which replays the bytes the version-choosing server read ahead. Each
+/// holds its `T` as `inner` and displays as that value — the socket behind
+/// it — so a connection's io reads as what it is connected to rather than
+/// the adapter around it.
+pub(super) fn hyper_util_io_wrapper_node(
+    emitter: &mut Emitter<'_>,
+    id: TypeId,
+) -> Option<DisplayNode> {
+    let reader = emitter.reader;
+    let inner = sole_param_target(reader, struct_of(reader, id)?)?;
+    let (at, landed) = emitter.walk(id, &reach![Named("inner")])?;
+    (landed == inner).then_some(DisplayNode::Alias {
+        at,
+        follow_pointers: true,
+    })
+}
+
 #[cfg(test)]
 mod tests {
+    use super::super::Detector;
     use super::*;
     use crate::DwReader;
+    use crate::bundle::MemberRef;
     use crate::raw_types::{
         NsId, RawBase, RawGenericParameter, RawMember, RawPointer, RawStruct, RawType,
     };
@@ -451,6 +566,214 @@ mod tests {
         // A Vec over anything but bytes is not a UTF-8 buffer.
         let (fx, buf) = path_buf("i64");
         assert!(utf8_path_buf_node(&mut fx.emitter(), buf).is_none());
+    }
+
+    /// A `Conn<I, B, T>` over the members the detector reaches, with
+    /// `T` the role named. `timer` leaves out the server's
+    /// header-read flag when false.
+    fn h1_conn(role: &'static str, timer: bool) -> (Fx, TypeId) {
+        let mut fx = Fx::default();
+        let conn_ns = fx.ns("hyper::proto::h1::conn");
+        let role_ns = fx.ns("hyper::proto::h1::role");
+        let u8t = type_id(1);
+        let usize_t = type_id(2);
+        let boolean = type_id(3);
+        fx.base(u8t, "u8", Encoding::Unsigned, 1);
+        fx.base(usize_t, "usize", Encoding::Unsigned, 8);
+        fx.base(boolean, "bool", Encoding::Unsigned, 1);
+        let io_ty = type_id(4);
+        let body = type_id(5);
+        let role_ty = type_id(6);
+        fx.strukt(io_ty, None, "Io", &[], &[]);
+        fx.strukt(body, None, "Bytes", &[], &[]);
+        fx.strukt(role_ty, Some(role_ns), role, &[], &[]);
+
+        let state = type_id(0x10);
+        let mut members = vec![
+            ("version", u8t, 0),
+            ("keep_alive", u8t, 1),
+            ("reading", u8t, 2),
+            ("writing", u8t, 3),
+            ("method", u8t, 4),
+        ];
+        if timer {
+            members.push(("h1_header_read_timeout_running", boolean, 5));
+        }
+        fx.strukt(state, Some(conn_ns), "State", &members, &[]);
+        let bytes_mut = type_id(0x11);
+        fx.strukt(
+            bytes_mut,
+            None,
+            "BytesMut",
+            &[("len", usize_t, 0), ("cap", usize_t, 8)],
+            &[],
+        );
+        let buffered = type_id(0x12);
+        fx.strukt(
+            buffered,
+            None,
+            "Buffered",
+            &[("read_buf", bytes_mut, 0)],
+            &[],
+        );
+        let conn = type_id(0x13);
+        fx.strukt(
+            conn,
+            Some(conn_ns),
+            "Conn<Io, Bytes, Role>",
+            &[("io", buffered, 0), ("state", state, 16)],
+            &[("I", io_ty), ("B", body), ("T", role_ty)],
+        );
+        (fx, conn)
+    }
+
+    /// The labels of the curated record `detector` builds for `id`, in
+    /// order, resolved through the emitter that interned them.
+    fn labels(detector: Detector, fx: &Fx, id: TypeId) -> Vec<String> {
+        let mut emitter = fx.emitter();
+        let node = detector(&mut emitter, id);
+        let Some(DisplayNode::Struct { fields }) = node else {
+            panic!("not a curated record: {node:?}");
+        };
+        fields
+            .iter()
+            .map(|field| match field {
+                Field::Synth { label, .. } => emitter.interner.get(*label).unwrap().to_owned(),
+                Field::Member {
+                    at: MemberRef::Named(name),
+                    ..
+                } => emitter.interner.get(*name).unwrap().to_owned(),
+                Field::Member {
+                    at: MemberRef::Index(index),
+                    ..
+                } => format!("#{index}"),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn test_h1_conn_shows_the_header_read_timer_to_the_server_alone() {
+        let (fx, conn) = h1_conn("Client", true);
+        assert_eq!(
+            labels(hyper_h1_conn_node, &fx, conn),
+            [
+                "version",
+                "keep_alive",
+                "reading",
+                "writing",
+                "method",
+                "read_buf_len",
+                "read_buf_cap",
+            ]
+        );
+
+        let (fx, conn) = h1_conn("Server", true);
+        assert_eq!(
+            labels(hyper_h1_conn_node, &fx, conn),
+            [
+                "version",
+                "keep_alive",
+                "reading",
+                "writing",
+                "method",
+                "read_buf_len",
+                "read_buf_cap",
+                "header_read_timer",
+            ]
+        );
+    }
+
+    #[test]
+    fn test_h1_conn_declines_an_unknown_role_and_a_missing_word() {
+        let (fx, conn) = h1_conn("Proxy", true);
+        assert_eq!(hyper_h1_conn_node(&mut fx.emitter(), conn), None);
+
+        // The client never addresses the timer flag; the server needs it.
+        let (fx, conn) = h1_conn("Client", false);
+        assert!(hyper_h1_conn_node(&mut fx.emitter(), conn).is_some());
+        let (fx, conn) = h1_conn("Server", false);
+        assert_eq!(hyper_h1_conn_node(&mut fx.emitter(), conn), None);
+    }
+
+    #[test]
+    fn test_h1_dispatcher_needs_each_member_it_names() {
+        let mut fx = Fx::default();
+        let word = type_id(1);
+        fx.base(word, "u64", Encoding::Unsigned, 8);
+        let whole = type_id(0x10);
+        fx.strukt(
+            whole,
+            None,
+            "Dispatcher",
+            &[
+                ("conn", word, 0),
+                ("dispatch", word, 8),
+                ("body_tx", word, 16),
+                ("body_rx", word, 24),
+                ("is_closing", word, 32),
+            ],
+            &[],
+        );
+        assert_eq!(
+            labels(hyper_h1_dispatcher_node, &fx, whole),
+            ["conn", "dispatch", "is_closing"]
+        );
+
+        let partial = type_id(0x11);
+        fx.strukt(
+            partial,
+            None,
+            "Dispatcher",
+            &[("conn", word, 0), ("dispatch", word, 8)],
+            &[],
+        );
+        assert_eq!(hyper_h1_dispatcher_node(&mut fx.emitter(), partial), None);
+    }
+
+    #[test]
+    fn test_hyper_util_io_wrapper_aliases_only_its_parameter() {
+        let mut fx = Fx::default();
+        let socket = type_id(1);
+        let other = type_id(2);
+        fx.strukt(socket, None, "TcpStream", &[], &[]);
+        fx.strukt(other, None, "Bytes", &[], &[]);
+
+        let wrapper = type_id(0x10);
+        fx.strukt(
+            wrapper,
+            None,
+            "TokioIo<TcpStream>",
+            &[("inner", socket, 0)],
+            &[("T", socket)],
+        );
+        assert!(matches!(
+            hyper_util_io_wrapper_node(&mut fx.emitter(), wrapper),
+            Some(DisplayNode::Alias { .. })
+        ));
+
+        // `inner` holding something other than the declared `T`, and a
+        // wrapper declaring two parameters, are not the layout.
+        let retargeted = type_id(0x11);
+        fx.strukt(
+            retargeted,
+            None,
+            "TokioIo<TcpStream>",
+            &[("inner", other, 0)],
+            &[("T", socket)],
+        );
+        assert_eq!(
+            hyper_util_io_wrapper_node(&mut fx.emitter(), retargeted),
+            None
+        );
+        let two = type_id(0x12);
+        fx.strukt(
+            two,
+            None,
+            "Rewind<TcpStream>",
+            &[("inner", socket, 8)],
+            &[("T", socket), ("U", other)],
+        );
+        assert_eq!(hyper_util_io_wrapper_node(&mut fx.emitter(), two), None);
     }
 
     #[test]

@@ -32,7 +32,10 @@ mod tokio_v1_49;
 mod tokio_v1_53;
 pub mod walk;
 
-use self::crates::{hex_bytes_node, raw_mutex_node, utf8_path_buf_node, utf8_path_node, uuid_node};
+use self::crates::{
+    hex_bytes_node, hyper_h1_conn_node, hyper_h1_dispatcher_node, hyper_util_io_wrapper_node,
+    raw_mutex_node, utf8_path_buf_node, utf8_path_node, uuid_node,
+};
 use self::std::{
     atomic_node, btree_map_node, cstr_node, cstring_node, dyn_pointer_node, function_pointer_node,
     instant_alias_node, ip_address_node, non_null_node, nonzero_inner_node, nonzero_node,
@@ -419,6 +422,19 @@ static BY_NAME: &[(&str, Row<Detector>)] = &[
         All(raw_waker_vtable_node),
     ),
     ("core::task::wake::Waker", All(waker_node)),
+    ("hyper::proto::h1::conn::Conn", All(hyper_h1_conn_node)),
+    (
+        "hyper::proto::h1::dispatch::Dispatcher",
+        All(hyper_h1_dispatcher_node),
+    ),
+    (
+        "hyper_util::common::rewind::Rewind",
+        All(hyper_util_io_wrapper_node),
+    ),
+    (
+        "hyper_util::rt::tokio::TokioIo",
+        All(hyper_util_io_wrapper_node),
+    ),
     ("parking_lot::raw_mutex::RawMutex", All(raw_mutex_node)),
     ("std::sys::time::unix::Instant", All(instant_alias_node)),
     ("std::time::Instant", All(instant_alias_node)),
