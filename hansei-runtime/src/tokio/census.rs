@@ -66,8 +66,13 @@ use std::rc::Rc;
 /// and a walk that hits it keeps the children found up to there.
 const MAX_CHILDREN: usize = 65_536;
 
-/// How deep the locals scan descends through nested aggregates.
-pub(crate) const MAX_SCAN_DEPTH: usize = 12;
+/// How deep the locals scan descends through nested aggregates. The
+/// scan follows no pointers, so the bound is on a type's own nesting,
+/// and the deepest a reviewed layout goes is hyper's HTTP/1 connection:
+/// fifteen aggregates from a server task's frame, through hyper-util's
+/// version-choosing state and the h1 dispatcher's connection, to the
+/// socket's io registration.
+pub(crate) const MAX_SCAN_DEPTH: usize = 20;
 
 /// How many held-future/set-child hops the census follows away from a
 /// task's own frames before it stops recursing.
