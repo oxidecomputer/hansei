@@ -654,6 +654,12 @@ pub(crate) struct TaskRow {
     /// members — so the label stands bare over them rather than
     /// listing the members the lines are about to list.
     pub(crate) wait_line: Option<String>,
+    /// What a `waiting-on` clause matches: the label line and every
+    /// detail line under it, so a filter can name the wait by its
+    /// cell word, by the address of the resource on the label, or by
+    /// the address of a primitive a detail names — the one a
+    /// connection is parked on `via`, an item's slot.
+    pub(crate) wait_text: String,
     /// The lines under `will wake:`: one item per container holding a
     /// slot the current await does not reach — installed by an await
     /// that has since returned, so its wake runs the task and the poll
@@ -774,6 +780,7 @@ pub(crate) fn build_rows(
                     .and_then(|w| w.site.as_ref())
                     .map(|(file, line)| format!("{file}:{line}")),
                 wait_line: lines.head.line(&waiting_on),
+                wait_text: wait_text(&lines, &waiting_on),
                 waiting_on,
                 waiting_kind: waiting_kind(task, waits.get(index), stops),
                 wait_detail: lines.awaiting,
@@ -835,6 +842,7 @@ pub(crate) fn apply_slots(
         }
         let lines = wait_detail(wait, stops, &owned, stopped, size_of, detail);
         row.wait_line = lines.head.line(&row.waiting_on);
+        row.wait_text = wait_text(&lines, &row.waiting_on);
         row.wait_detail = lines.awaiting;
         row.will_wake = lines.wake;
     }
@@ -941,6 +949,19 @@ pub(crate) struct WaitLines {
     pub(crate) head: WaitHead,
     pub(crate) awaiting: Vec<String>,
     pub(crate) wake: Vec<String>,
+}
+
+/// What a `waiting-on` clause matches for a row: the label line as it
+/// prints — the verified target where a slot lifted it, else the cell
+/// — and every line under it, one per line, so an address a detail
+/// carries is reachable to a filter.
+fn wait_text(lines: &WaitLines, cell: &str) -> String {
+    let mut text = lines.head.line(cell).unwrap_or_else(|| cell.to_string());
+    for line in &lines.awaiting {
+        text.push('\n');
+        text.push_str(line);
+    }
+    text
 }
 
 /// The cell and the bucket a list of slots amounts to: entries sorted,
@@ -1530,10 +1551,13 @@ pub(crate) fn wait_detail(
         rest = others;
         if !accounted.is_empty() {
             let target = verified.target();
-            let text = match target.words() {
-                Some(words) => format!("{target} ({words})"),
-                None => target.to_string(),
-            };
+            let text = target.line();
+            // A connection's verdict names the primitive it is parked
+            // on one level under it: the slot in that primitive is
+            // accounted for, and this is where it is said.
+            if let Some(via) = target.via() {
+                lines.push(format!("via: {}", via.line()));
+            }
             let mut wakers: Vec<String> = accounted
                 .iter()
                 .filter_map(|slot| slot_waker(slot, Some(&text), stopped))
@@ -1956,10 +1980,7 @@ fn member_line(
     }
     if lifted.is_empty() {
         let on = match &member.assessment {
-            Some(WaitAssessment::Waiting(verified)) => match verified.target().words() {
-                Some(words) => format!("{} ({words})", verified.target()),
-                None => verified.target().to_string(),
-            },
+            Some(WaitAssessment::Waiting(verified)) => verified.target().line(),
             Some(WaitAssessment::Set(set)) => set.cell(),
             Some(WaitAssessment::ResourceReady(reason)) => {
                 format!("ready: {}", ready_reason(*reason))
@@ -1978,6 +1999,11 @@ fn member_line(
         };
         named.push(on.clone());
         field("awaiting on", on);
+        // A connection's verdict names the primitive it is parked on
+        // one level under it, as the task block's own does.
+        if let Some(via) = verified.and_then(bundle::WaitTarget::via) {
+            field("via", via.line());
+        }
     }
     if let Some((file, line)) = &type_site {
         field("type defined at", format!("{file}:{line}"));
@@ -2724,7 +2750,7 @@ fn field_text(field: Field, row: &TaskRow) -> Option<&str> {
     match field {
         Field::Type => Some(&row.future),
         Field::Awaiting => row.awaiting_at.as_deref(),
-        Field::WaitingOn => Some(&row.waiting_on),
+        Field::WaitingOn => Some(&row.wait_text),
         Field::Spawned => row.spawned.as_deref(),
         Field::Defined => row.defined.as_deref(),
         Field::State => Some(&row.state),
@@ -5193,6 +5219,7 @@ mod filter_tests {
             waiting_kind: None,
             wait_detail: Vec::new(),
             wait_line: None,
+            wait_text: "—".to_string(),
             will_wake: Vec::new(),
             future: "async fn app::work".to_string(),
             spawned: None,
@@ -5221,7 +5248,8 @@ mod filter_tests {
         let mut r = row("129");
         r.state = "idle (cancelled)".to_string();
         r.awaiting_at = Some("src/app.rs:42".to_string());
-        r.waiting_on = "timer (deadline +38.364s)".to_string();
+        r.waiting_on = "timer".to_string();
+        r.wait_text = "timer (deadline +38.364s)".to_string();
         r.spawned = Some("src/main.rs:10:5".to_string());
         r.defined = Some("src/app.rs:7".to_string());
 
@@ -5232,12 +5260,23 @@ mod filter_tests {
         assert!(keeps(&clause("waiting-on", "^timer"), &r));
         assert!(keeps(&clause("spawned", "main.rs"), &r));
         assert!(keeps(&clause("defined", "app.rs:7"), &r));
-        r.waiting_on = "task 2, timer (deadline +38.364s)".to_string();
+        r.waiting_on = "task 2, timer".to_string();
+        r.wait_text = "task 2, timer (deadline +38.364s)".to_string();
         // The older names reach the same field.
         assert!(keeps(&clause("waker", "task 2"), &r));
         assert!(keeps(&clause("slots", "task 2"), &r));
         assert!(!keeps(&clause("waker", "semaphore"), &r));
         assert!(!keeps(&clause("waker", "unknown"), &row("1")));
+        // The field is the wait as the block prints it, detail lines
+        // included: an address on the label line or on a line under
+        // it — a connection's `via:` primitive — reaches the filter,
+        // and the cell alone is not what is matched.
+        r.waiting_on = "http1 client".to_string();
+        r.wait_text = "http1 client 0xc72d000 (idle, keep-alive)\nvia: mpsc rx 0xfb0f700 (1 sender, 0 unread)".to_string();
+        assert!(keeps(&clause("waiting-on", "0xc72d000"), &r));
+        assert!(keeps(&clause("waiting-on", "0xfb0f700"), &r));
+        assert!(keeps(&clause("waiting-on", "^http1 client"), &r));
+        assert!(!keeps(&clause("waiting-on", "^via"), &r));
 
         // Nothing in the field is nothing to match.
         assert!(!keeps(&clause("awaiting", "."), &row("1")));

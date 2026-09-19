@@ -440,13 +440,20 @@ pub(crate) fn assessed_wait<T: proc::Target>(
     index: usize,
 ) -> Option<String> {
     let wait: &TaskWait = &session.analysis().waits[index];
-    let target = wait.verified()?.target();
-    // Nothing else stands on this line, so it carries the reading a
-    // cell leaves to a line of its own.
-    Some(match target.words() {
-        Some(words) => format!("{target} ({words})"),
-        None => target.to_string(),
-    })
+    Some(leaf_wait(wait.verified()?.target()))
+}
+
+/// The leaf frame's wait as `trace` details it: the target with its
+/// reading — nothing else stands on the line, so it carries the words
+/// a cell leaves to a line of its own — and, where the target is a
+/// connection parked on a primitive its rule names, that primitive on
+/// a `via` line under it.
+fn leaf_wait(target: &bundle::WaitTarget) -> String {
+    let mut text = target.line();
+    if let Some(via) = target.via() {
+        text.push_str(&format!("\nvia {}", via.line()));
+    }
+    text
 }
 
 /// What a held future's chain observably ends in: the resource,
@@ -462,10 +469,7 @@ pub(crate) fn observed_wait<'b, T: proc::Target>(
     let observation = inspection.primitive.value.as_ref()?;
     let mut pass = hansei_runtime::tokio::assess::AssessmentPass::new();
     let target = ctx.observed_target(&mut pass, observation, &inspection.chain, list, read)?;
-    Some(match target.words() {
-        Some(words) => format!("{target} ({words})"),
-        None => target.to_string(),
-    })
+    Some(leaf_wait(&target))
 }
 
 /// How many census-found futures each frame of this chain holds beside
@@ -601,7 +605,15 @@ pub(crate) fn print_frame<'b, T: proc::Target>(
     let held = holds.get(i).copied().unwrap_or(0);
     match wait {
         Some(wait) if Some(i) == last => {
-            writeln!(out, "{DETAIL_INDENT}waiting on {}", opts.theme.bold(wait))?;
+            // The target heads the line; a connection's `via` line
+            // follows it at the same depth, labelled already.
+            let mut lines = wait.lines();
+            if let Some(target) = lines.next() {
+                writeln!(out, "{DETAIL_INDENT}waiting on {}", opts.theme.bold(target))?;
+            }
+            for line in lines {
+                writeln!(out, "{DETAIL_INDENT}{line}")?;
+            }
         }
         _ => {
             if let Some(detail) = frame_detail(frame, held, &opts.theme) {

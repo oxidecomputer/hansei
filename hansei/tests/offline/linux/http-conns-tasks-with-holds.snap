@@ -2,10 +2,8 @@
 source: hansei/src/offline.rs
 description: "`tasks --with holds >0` over linux/http-conns"
 ---
-ID  STATE  FUT  AWAITING AT                WAITING ON      TYPE
-4   idle     1  src/bin/http-conns.rs:114  io              async fn http_conns::serve
-5   idle     1  src/bin/http-conns.rs:71   io, mpsc rx     async block http_conns::Reporting::execute<Pin<Box<(dyn Future<Output=()> + Send)>>>
-8   idle     1  src/bin/http-conns.rs:114  io, notify rx   async fn http_conns::serve
-9   idle     1  src/bin/http-conns.rs:71   io, oneshot tx  async block http_conns::Reporting::execute<Pin<Box<(dyn Future<Output=()> + Send)>>>
-10  idle     1  src/bin/http-conns.rs:114  io              async fn http_conns::serve
-[5 tasks]
+ID  STATE  FUT  AWAITING AT                WAITING ON     TYPE
+4   idle     1  src/bin/http-conns.rs:114  io             async fn http_conns::serve
+8   idle     1  src/bin/http-conns.rs:114  io, notify rx  async fn http_conns::serve
+10  idle     1  src/bin/http-conns.rs:114  io             async fn http_conns::serve
+[3 tasks]

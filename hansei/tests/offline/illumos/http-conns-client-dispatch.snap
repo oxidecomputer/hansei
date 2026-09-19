@@ -1,8 +1,8 @@
 ---
 source: hansei/src/offline.rs
-description: "`futures --with type h1::dispatch::Client --exec print dispatch` over illumos/http-conns"
+description: "`tasks --with type Reporting::execute --exec print dispatch` over illumos/http-conns"
 ---
-future 0xADDR
+task 5
 hyper::proto::h1::dispatch::Client<http_body_util::empty::Empty<bytes::bytes::Bytes>> {
     callback: core::option::Option<hyper::client::dispatch::Callback<http::request::Request<http_body_util::empty::Empty<bytes::bytes::Bytes>>, http::response::Response<hyper::body::incoming::Incoming>>>::None,
     rx: hyper::client::dispatch::Receiver<http::request::Request<http_body_util::empty::Empty<bytes::bytes::Bytes>>, http::response::Response<hyper::body::incoming::Incoming>> {
@@ -12,7 +12,7 @@ hyper::proto::h1::dispatch::Client<http_body_util::empty::Empty<bytes::bytes::By
     rx_closed: false,
 }
 
-future 0xADDR
+task 9
 hyper::proto::h1::dispatch::Client<http_body_util::empty::Empty<bytes::bytes::Bytes>> {
     callback: core::option::Option<hyper::client::dispatch::Callback<http::request::Request<http_body_util::empty::Empty<bytes::bytes::Bytes>>, http::response::Response<hyper::body::incoming::Incoming>>>::Some(hyper::client::dispatch::Callback<http::request::Request<http_body_util::empty::Empty<bytes::bytes::Bytes>>, http::response::Response<hyper::body::incoming::Incoming>> { .. } @ 0xADDR),
     rx: hyper::client::dispatch::Receiver<http::request::Request<http_body_util::empty::Empty<bytes::bytes::Bytes>>, http::response::Response<hyper::body::incoming::Incoming>> {
@@ -21,4 +21,4 @@ hyper::proto::h1::dispatch::Client<http_body_util::empty::Empty<bytes::bytes::By
     },
     rx_closed: false,
 }
-[Executed against 2 futures, 0 failed]
+[Executed against 2 tasks, 0 failed]

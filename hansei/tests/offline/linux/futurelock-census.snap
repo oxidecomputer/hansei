@@ -5,9 +5,9 @@ description: "`census` over linux/futurelock"
 Threads: 5 lwps, 5 in runtime 0 @ 0xADDR
 
 COUNT  RT  ROLE             STATE            LWPS
-    3  0   worker           parked           2483202, 2483201, 2483200
-    1  0   worker           in driver        2483199
-    1  0   entered runtime  block_on caller  2483197
+    3  0   worker           parked           3260857, 3260856, 3260855
+    1  0   worker           in driver        3260854
+    1  0   entered runtime  block_on caller  3260852
     0  0   blocking pool    0 idle, 0 busy   —
 [5 lwps]
 

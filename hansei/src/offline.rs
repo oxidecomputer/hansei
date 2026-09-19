@@ -273,19 +273,33 @@ fn commands(
     // idle and the in-flight server — and the version-choosing read on
     // the connection that never spoke.
     if program == "http-conns" {
-        // A client find is rooted at the dispatcher itself; a server
-        // find at the `Option<Connection>` around it, one step up.
-        let under = |role: &str, member: &str| {
-            format!("futures --with type h1::dispatch::{role} --exec print {member}")
+        // A client connection's dispatcher is the leaf of its task's
+        // own chain — the wrappers hyper puts around it forward to it —
+        // so a fresh task cursor stands on it; a server find is rooted
+        // at the `Option<Connection>` around its dispatcher, one step
+        // up.
+        let client =
+            |member: &str| format!("tasks --with type Reporting::execute --exec print {member}");
+        let server = |member: &str| {
+            format!("futures --with type h1::dispatch::Server --exec print {member}")
         };
-        list.push(("client-conn", under("Client", "conn")));
-        list.push(("client-dispatch", under("Client", "dispatch")));
-        list.push(("server-conn", under("Server", "Some.conn.conn")));
-        list.push(("server-dispatch", under("Server", "Some.conn.dispatch")));
+        list.push(("client-conn", client("conn")));
+        list.push(("client-dispatch", client("dispatch")));
+        list.push(("server-conn", server("Some.conn.conn")));
+        list.push(("server-dispatch", server("Some.conn.dispatch")));
         list.push((
             "read-version",
             "futures --with type auto::ReadVersion --exec print".to_owned(),
         ));
+        // The connection verdicts in the task blocks, and a filter
+        // matching the `via:` detail line under one — text the label
+        // line does not carry, so it reaches a filter only because the
+        // detail lines do.
+        list.push((
+            "client-tasks",
+            "tasks --with type Reporting::execute --exec task".to_owned(),
+        ));
+        list.push(("tasks-with-via", "tasks --with waiting-on via:".to_owned()));
     }
     // The register readout under whatever cursor the commands above
     // left: a task no thread is polling refuses, and a thread cursor

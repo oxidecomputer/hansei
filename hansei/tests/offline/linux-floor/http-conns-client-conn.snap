@@ -1,8 +1,8 @@
 ---
 source: hansei/src/offline.rs
-description: "`futures --with type h1::dispatch::Client --exec print conn` over linux-floor/http-conns"
+description: "`tasks --with type Reporting::execute --exec print conn` over linux-floor/http-conns"
 ---
-future 0xADDR
+task 4
 hyper::proto::h1::conn::Conn<hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>, bytes::bytes::Bytes, hyper::proto::h1::role::Client> {
     version: http::version::Version(
         Http11,
@@ -15,7 +15,7 @@ hyper::proto::h1::conn::Conn<hyper_util::rt::tokio::TokioIo<tokio::net::tcp::str
     read_buf_cap: 8192,
 }
 
-future 0xADDR
+task 9
 hyper::proto::h1::conn::Conn<hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>, bytes::bytes::Bytes, hyper::proto::h1::role::Client> {
     version: http::version::Version(
         Http11,
@@ -27,4 +27,4 @@ hyper::proto::h1::conn::Conn<hyper_util::rt::tokio::TokioIo<tokio::net::tcp::str
     read_buf_len: 0,
     read_buf_cap: 8192,
 }
-[Executed against 2 futures, 0 failed]
+[Executed against 2 tasks, 0 failed]

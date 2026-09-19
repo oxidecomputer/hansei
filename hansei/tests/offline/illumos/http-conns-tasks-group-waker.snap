@@ -2,11 +2,11 @@
 source: hansei/src/offline.rs
 description: "`tasks --group waker` over illumos/http-conns"
 ---
-COUNT  WAITING ON      TASKS
-    3  io              3, 4, 10
-    1  io, mpsc rx     5
-    1  io, notify rx   8
-    1  io, oneshot tx  9
-    1  oneshot rx      11
-    1  unknown         7
+COUNT  WAITING ON                      TASKS
+    3  io                              3, 4, 10
+    1  http1 client awaiting response  9
+    1  http1 client idle               5
+    1  io, notify rx                   8
+    1  oneshot rx                      11
+    1  unknown                         7
 [6 groups]

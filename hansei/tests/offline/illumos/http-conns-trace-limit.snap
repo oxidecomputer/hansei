@@ -3,5 +3,5 @@ source: hansei/src/offline.rs
 description: "`trace 3 -l 1` over illumos/http-conns"
 ---
 #0  future        tokio::runtime::io::scheduled_io::Readiness
-      waiting on io fd 9 (readable)
+      waiting on io fd 11 (readable)
 [6 frames, 1 shown]
