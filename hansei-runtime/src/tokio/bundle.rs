@@ -18,12 +18,12 @@ use super::discovery::{
     DiscoveryIssue, Observation, OwnerClaim, OwnerEvidence, TaskRecordId, TaskSource, list_claim,
 };
 use super::observe::{
-    AcquireObservation, ChannelObservation, Consistency, IoFutureState, IoObservation,
-    JoinObservation, NotifiedObservation, NotifiedState, NotifyObservation, Observed,
-    OneshotObservation, QueueObservation, ReadContext, RecvObservation, ReferenceSink,
-    ReferenceSource, ResourceObservation, ScanBudget, ScanLimits, SlotState, TaskReference,
-    TimerObservation, TimerRegistrationState, ValueKey, WalkIssue, WalkIssueKind, issue_of,
-    lock_consistency,
+    AcquireObservation, ChannelObservation, Consistency, HttpClientObservation,
+    HttpConnObservation, HttpReading, HttpWriting, IoFutureState, IoObservation, JoinObservation,
+    KeepAlive, NotifiedObservation, NotifiedState, NotifyObservation, Observed, OneshotObservation,
+    QueueObservation, ReadContext, RecvObservation, ReferenceSink, ReferenceSource,
+    ResourceObservation, ScanBudget, ScanLimits, SlotState, TaskReference, TimerObservation,
+    TimerRegistrationState, ValueKey, WalkIssue, WalkIssueKind, issue_of, lock_consistency,
 };
 use super::semantics::SemanticIndex;
 use super::work::{DiscoveryWorld, Registry, Roots, sweep};
@@ -35,8 +35,8 @@ use hansei_bundle::tokio::{semaphore, timer};
 use hansei_bundle::{
     AccessKind, BundleType, BundleTypeId, BundleView, ContainerKind, FutureKind, IoOperationKind,
     MemberRef, ResourceKind, SchedulerClass, SelectBinding, StaticRole, Step, StoragePolicy,
-    SymbolLookup, TaskEntryId, TaskFutureEntry, TypeDef, TypeSemantics, WalkOutcome, WalkRole,
-    strip_build_prefix, strip_llvm_suffix,
+    SymbolLookup, TaskEntryId, TaskFutureEntry, TypeDef, TypeSemantics, TypedPath, WalkOutcome,
+    WalkRole, strip_build_prefix, strip_llvm_suffix,
 };
 use proc::{LwpInfo, Mappings, SymbolBuf, Target};
 use reify::Value;
@@ -3066,7 +3066,9 @@ impl<'b, T: Target> Context<'b, T> {
             ResourceKind::OneshotRecv => self
                 .observe_oneshot(value, read)
                 .map(ResourceObservation::Oneshot),
-            ResourceKind::HttpConn => return Observed::none(),
+            ResourceKind::HttpConn => self
+                .observe_http_conn(value, read)
+                .map(ResourceObservation::HttpConn),
         };
         match observed {
             Ok(observation) => Observed::of(observation),
@@ -3255,20 +3257,178 @@ impl<'b, T: Target> Context<'b, T> {
             word,
             value_present,
         };
-        let rx_waker = if state.rx_task_set() {
-            match self.walk(WalkRole::OneshotRxTask).walk_with(read, arc)? {
+        let task = |role: WalkRole, set: bool| -> Result<Option<QueuedWaker>> {
+            if !set {
+                return Ok(None);
+            }
+            Ok(match self.walk(role).walk_with(read, arc)? {
                 Walked::At(raw) => Some(self.raw_waker(raw)?),
                 _ => None,
-            }
-        } else {
-            None
+            })
         };
+        let rx_waker = task(WalkRole::OneshotRxTask, state.rx_task_set())?;
+        let tx_waker = task(WalkRole::OneshotTxTask, state.tx_task_set())?;
         Ok(OneshotObservation {
             future,
             arc: ValueKey::of(arc),
             inner,
             state,
             rx_waker,
+            tx_waker,
+        })
+    }
+
+    /// The oneshot behind a `Sender` value: the `ArcInner<Inner<T>>`
+    /// its pointer names, read whole under `read`, and its words — for
+    /// a connection's response callback, watched from the sending side.
+    fn observe_oneshot_sender(
+        &self,
+        sender: Value<'b>,
+        read: &ReadContext<'_>,
+    ) -> Result<OneshotObservation> {
+        let ptr = self
+            .walk(WalkRole::OneshotSenderInner)
+            .walk_at_with(read, sender)?;
+        let arc_ty = ptr
+            .ty
+            .pointer_target()
+            .ok_or_else(|| anyhow!("oneshot::Sender.inner is not pointer-shaped"))?;
+        let arc_addr: u64 = ptr.parse(self.proc)?;
+        ensure!(arc_addr != 0, "the oneshot sender's Arc pointer is null");
+        let arc = self.read_keyed(
+            ValueKey {
+                addr: arc_addr,
+                ty: arc_ty.id(),
+            },
+            read,
+        )?;
+        self.observe_oneshot_inner(ValueKey::of(sender), arc, read)
+    }
+
+    /// hyper's HTTP/1 `Dispatcher`: every word the connection verdict
+    /// reads, each by the route its binding records from the
+    /// dispatcher, and for a client the primitives its dispatch is
+    /// parked on — the response callback's oneshot, read from the
+    /// `Sender` the callback's active variant carries, and the channel
+    /// behind the request receiver. A word whose route lands on an
+    /// enumerator or variant the reviewed range does not have is kept
+    /// as unknown, for the assessor to decline with; a framing or a
+    /// method that does not read is left out, since the phase stands
+    /// without it.
+    fn observe_http_conn(
+        &self,
+        dispatcher: Value<'b>,
+        read: &ReadContext<'_>,
+    ) -> Result<HttpConnObservation> {
+        let binding = self
+            .type_semantics(dispatcher.ty.id())
+            .and_then(|record| record.http.as_ref())
+            .ok_or_else(|| anyhow!("{} has no connection binding", dispatcher.ty.name()))?;
+        let at = |path: &TypedPath| -> Result<Walked<'b>> {
+            contract::execute_steps(self, read, dispatcher, &path.steps)
+        };
+        let word = |path: &TypedPath, what: &str| -> Result<Value<'b>> {
+            let value = at(path)?.at(what)?;
+            ensure!(
+                value.ty.id() == path.target,
+                "the {what} route landed on {} rather than its recorded type",
+                value.ty.name()
+            );
+            Ok(value)
+        };
+        // The connection is the first member every state route enters.
+        let conn = self
+            .route(dispatcher, &binding.keep_alive.steps[..1], read)?
+            .addr;
+        let keep_alive = word(&binding.keep_alive, "keep-alive")?;
+        let keep_alive = match keep_alive.ty.enumerator_name(keep_alive.bytes) {
+            Some("Idle") => KeepAlive::Idle,
+            Some("Busy") => KeepAlive::Busy,
+            Some("Disabled") => KeepAlive::Disabled,
+            other => KeepAlive::Unknown(other.unwrap_or("<unreadable>").to_owned()),
+        };
+        // A body's framing, from the codec's `kind` the variant carries;
+        // `None` where that did not read.
+        let framing = |path: &TypedPath| -> Option<BodyFraming> {
+            let Ok(Walked::At(kind)) = at(path) else {
+                return None;
+            };
+            let (name, payload) = kind.active_variant_raw().ok()?;
+            body_framing(name, || payload.member("__0").ok()?.parse(self.proc).ok())
+        };
+        let reading = word(&binding.reading, "reading")?;
+        let reading = match reading.active_variant_raw()?.0 {
+            "Init" => HttpReading::Init,
+            "Continue" => HttpReading::Continue(framing(&binding.read_continue_kind)),
+            "Body" => HttpReading::Body(framing(&binding.read_body_kind)),
+            "KeepAlive" => HttpReading::KeepAlive,
+            "Closed" => HttpReading::Closed,
+            other => HttpReading::Unknown(other.to_owned()),
+        };
+        let writing = word(&binding.writing, "writing")?;
+        let writing = match writing.active_variant_raw()?.0 {
+            "Init" => HttpWriting::Init,
+            "Body" => HttpWriting::Body(framing(&binding.write_body_kind)),
+            "KeepAlive" => HttpWriting::KeepAlive,
+            "Closed" => HttpWriting::Closed,
+            other => HttpWriting::Unknown(other.to_owned()),
+        };
+        // The method's name is its enum's variant, uppercased the way
+        // the wire writes it; an extension method carries its text
+        // elsewhere and is left unnamed.
+        let method = match word(&binding.method, "method")?.active_variant_raw()?.0 {
+            "Some" => match at(&binding.method_inner) {
+                Ok(Walked::At(inner)) => inner
+                    .active_variant_raw()
+                    .ok()
+                    .map(|(name, _)| name)
+                    .filter(|name| !name.starts_with("Extension"))
+                    .map(|name| name.to_ascii_uppercase()),
+                _ => None,
+            },
+            _ => None,
+        };
+        let is_closing = word(&binding.is_closing, "closing flag")?;
+        let is_closing = is_closing.bytes.first().is_some_and(|byte| *byte != 0);
+        let client = match &binding.client {
+            Some(client) => {
+                let callback = match word(&client.callback, "callback")?.active_variant_raw()?.0 {
+                    "Some" => {
+                        let mut found = None;
+                        for path in [&client.retry, &client.no_retry] {
+                            if let Walked::At(sender) = at(path)? {
+                                found = Some(self.observe_oneshot_sender(sender, read)?);
+                                break;
+                            }
+                        }
+                        found
+                    }
+                    _ => None,
+                };
+                // The receiver's route lands on the `Chan` behind its
+                // `Arc`, keyed by the `Chan`'s own type so its words
+                // decode with the layout this receiver was compiled
+                // against; a null `Arc` is no channel to read.
+                let receiver = word(&client.rx, "request receiver")?;
+                let rx = self
+                    .walk(WalkRole::MpscReceiverChan)
+                    .walk_with(read, receiver)?
+                    .optional()
+                    .map(ValueKey::of);
+                Some(HttpClientObservation { callback, rx })
+            }
+            None => None,
+        };
+        Ok(HttpConnObservation {
+            dispatcher: ValueKey::of(dispatcher),
+            conn,
+            role: binding.role,
+            keep_alive,
+            reading,
+            writing,
+            method,
+            is_closing,
+            client,
         })
     }
 
@@ -4137,6 +4297,22 @@ impl<'b, T: Target> Context<'b, T> {
     }
 }
 
+/// A body's framing, from the codec's `Kind` variant hyper's decoder or
+/// encoder carries and — for a `Content-Length` body — the bytes still
+/// to go, read on demand. The decoder's `Eof` and the encoder's
+/// `CloseDelimited` are one framing: the body ends with the connection.
+/// A variant the reviewed range does not have is no framing.
+fn body_framing(variant: &str, remaining: impl FnOnce() -> Option<u64>) -> Option<BodyFraming> {
+    match variant {
+        "Length" => Some(BodyFraming::Length {
+            remaining: remaining()?,
+        }),
+        "Chunked" => Some(BodyFraming::Chunked),
+        "Eof" | "CloseDelimited" => Some(BodyFraming::CloseDelimited),
+        _ => None,
+    }
+}
+
 /// The issue a read charged to a spent referent budget reports.
 fn spent(at: ValueKey, budget: &ScanBudget) -> WalkIssue {
     WalkIssue::new(
@@ -4266,6 +4442,28 @@ mod tests {
     use proc::snapshot::Snapshot;
 
     use std::sync::OnceLock;
+
+    /// The body framing each codec variant names, and the count only a
+    /// `Length` body reads — the rows the fixture never parks in.
+    #[test]
+    fn test_body_framing_names_each_codec_variant() {
+        let never = || panic!("only a Length body reads its count");
+        assert_eq!(
+            body_framing("Length", || Some(1234)),
+            Some(BodyFraming::Length { remaining: 1234 })
+        );
+        assert_eq!(body_framing("Length", || None), None);
+        assert_eq!(body_framing("Chunked", never), Some(BodyFraming::Chunked));
+        assert_eq!(
+            body_framing("Eof", never),
+            Some(BodyFraming::CloseDelimited)
+        );
+        assert_eq!(
+            body_framing("CloseDelimited", never),
+            Some(BodyFraming::CloseDelimited)
+        );
+        assert_eq!(body_framing("Trailers", never), None);
+    }
 
     /// The `unordered` fixture pair: coroutines held plain and behind
     /// `Pin<Box<dyn Future>>`, a `FuturesUnordered`, and the tokio

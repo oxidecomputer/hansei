@@ -1133,14 +1133,16 @@ fn test_the_census_accounting_is_exact_per_program() {
         // The two client connection tasks are async blocks polled
         // past their first poll, so their two captures each — the box
         // the executor was handed and the completion sender — are
-        // uncertain. Seven finds, every one by descent through an
+        // uncertain. Seven finds by descent, five of them through an
         // active variant: under each of the two h1 server connections
         // hyper's connection future behind the version-choosing
-        // state's `H1` arm and the dispatcher behind its `Some`, the
-        // version-choosing read behind `ReadVersion` on the third, and
-        // under each client task the dispatcher behind the connection's
-        // `Some`; and the chains behind them all.
-        ("http-conns", 4, 25, 7, 7, 0),
+        // state's `H1` arm and the dispatcher behind its `Some`, and
+        // the version-choosing read behind `ReadVersion` on the third.
+        // The client dispatchers are no finds: each client task's own
+        // chain runs through hyper's connection wrappers to it, so it
+        // is met as a chain frame — two of the chain hits — and its
+        // `Some` is walked by the chain, not descended into.
+        ("http-conns", 4, 27, 7, 5, 0),
     ];
     let named: Vec<&str> = ACCOUNTING.iter().map(|row| row.0).collect();
     assert_eq!(named, PROGRAMS, "every program is accounted for");

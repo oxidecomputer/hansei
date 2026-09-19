@@ -633,6 +633,33 @@ impl<'b, T: Target> Scanner<'_, 'b, T> {
                     self.reference(TaskAddr(task), ReferenceSource::OneshotWaker, key);
                 }
             }
+            // A connection's dispatch primitives: the waker parked in
+            // its request channel, and the one its response callback's
+            // sender cell holds — each names the connection task itself.
+            Some(ResourceObservation::HttpConn(http)) => {
+                let Some(client) = http.client else {
+                    return;
+                };
+                if let Some(chan) = client.rx
+                    && self.queues.insert(chan)
+                {
+                    let channel = self.ctx.observe_channel(chan, &self.read, self.budget);
+                    for issue in channel.issues {
+                        self.report(issue);
+                    }
+                    if let Some(task) = channel.waker.as_ref().and_then(|w| w.task()) {
+                        self.reference(TaskAddr(task), ReferenceSource::ChannelWaker, key);
+                    }
+                }
+                if let Some(task) = client
+                    .callback
+                    .as_ref()
+                    .and_then(|callback| callback.tx_waker.as_ref())
+                    .and_then(|w| w.task())
+                {
+                    self.reference(TaskAddr(task), ReferenceSource::OneshotWaker, key);
+                }
+            }
             // A timer entry's waker is the wheel's to hand over: the
             // sleep names no task itself.
             Some(ResourceObservation::Timer(_)) | None => {}

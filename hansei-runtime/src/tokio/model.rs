@@ -1056,11 +1056,15 @@ pub enum WaitTarget {
     /// A `oneshot::Receiver`, parked with its waker in the shared
     /// `Inner`'s `rx_task` until the sender completes. Only the
     /// receiver is ever a chain leaf: a sender's `poll_closed` is
-    /// reached through its `tx_task` slot, never through a wait.
+    /// reached through its `tx_task` slot, never through a wait — but
+    /// an HTTP client connection names the sender it watches as what
+    /// it is parked on, so the side is recorded.
     Oneshot {
         /// The `Inner` behind both handles' `Arc`.
         addr: u64,
         state: OneshotState,
+        /// Which handle's slot the wait is worded for.
+        side: OneshotSide,
     },
     /// A watch receiver's `changed`, queued on one of the channel's
     /// `Notify`s: a `Notified` whose `Notify` lies in the `Shared` a
@@ -1075,6 +1079,181 @@ pub enum WaitTarget {
         receivers: u64,
         senders: u64,
     },
+    /// hyper's HTTP/1 connection, read from its dispatcher's state
+    /// words: where the exchange stands, and the primitive the
+    /// connection is parked on for the next step where the rule
+    /// itself knows it — the client's request receiver while idle,
+    /// its response callback while a request is in flight.
+    HttpConn {
+        /// The `Conn`'s address, which is what a filter names.
+        addr: u64,
+        role: HttpRole,
+        /// `None` while the server is still choosing the version.
+        version: Option<HttpVersion>,
+        phase: HttpPhase,
+        /// The method of the message in flight, as its name reads
+        /// (`GET`); `None` between exchanges, or where it did not read.
+        method: Option<String>,
+        /// Whether the connection stays open after this exchange:
+        /// false where hyper disabled keep-alive.
+        keep_alive: bool,
+        /// The primitive the connection is parked on, where the rule
+        /// names one.
+        via: Option<Box<WaitTarget>>,
+    },
+}
+
+pub use hansei_bundle::HttpRole;
+
+/// The HTTP version a connection speaks, once it knows.
+#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
+pub enum HttpVersion {
+    Http1,
+}
+
+/// How a message body is framed on the wire, as hyper's decoder or
+/// encoder carries it.
+#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
+pub enum BodyFraming {
+    /// A `Content-Length` body, with the bytes still to go.
+    Length {
+        remaining: u64,
+    },
+    Chunked,
+    /// Ends when the connection closes.
+    CloseDelimited,
+}
+
+impl fmt::Display for BodyFraming {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Length { remaining } => {
+                write!(f, "{} remaining", counted_noun(*remaining, "byte"))
+            }
+            Self::Chunked => f.write_str("chunked"),
+            Self::CloseDelimited => f.write_str("close-delimited"),
+        }
+    }
+}
+
+/// Where an HTTP/1 exchange stands, decided from the connection's
+/// state words.
+#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
+pub enum HttpPhase {
+    /// Between exchanges: a client parked for its next request, a
+    /// server for the peer's.
+    Idle,
+    /// The client has written its request and awaits the response
+    /// head.
+    AwaitingResponse,
+    /// The client has written the request head and is still writing
+    /// its body; `None` where the encoder's framing did not read.
+    SendingBody(Option<BodyFraming>),
+    /// A message head has been read and its body is still arriving.
+    ReceivingBody(Option<BodyFraming>),
+    /// One or both directions are closed.
+    Closing,
+    /// The server is still reading the first bytes to choose the
+    /// version.
+    Negotiating,
+    /// The server has read a request and its handler is running.
+    HandlingRequest,
+}
+
+impl HttpPhase {
+    /// The phase as a bucket names it, without the framing or counts
+    /// that would fragment one.
+    pub fn word(&self) -> &'static str {
+        match self {
+            Self::Idle => "idle",
+            Self::AwaitingResponse => "awaiting response",
+            Self::SendingBody(_) => "sending body",
+            Self::ReceivingBody(_) => "receiving body",
+            Self::Closing => "closing",
+            Self::Negotiating => "negotiating",
+            Self::HandlingRequest => "handling request",
+        }
+    }
+
+    /// The phase alone, for a tally.
+    pub fn kind(&self) -> HttpPhaseKind {
+        match self {
+            Self::Idle => HttpPhaseKind::Idle,
+            Self::AwaitingResponse => HttpPhaseKind::AwaitingResponse,
+            Self::SendingBody(_) => HttpPhaseKind::SendingBody,
+            Self::ReceivingBody(_) => HttpPhaseKind::ReceivingBody,
+            Self::Closing => HttpPhaseKind::Closing,
+            Self::Negotiating => HttpPhaseKind::Negotiating,
+            Self::HandlingRequest => HttpPhaseKind::HandlingRequest,
+        }
+    }
+}
+
+/// [`HttpPhase`] without its framing, as a tally counts it.
+#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
+pub enum HttpPhaseKind {
+    Idle,
+    AwaitingResponse,
+    SendingBody,
+    ReceivingBody,
+    Closing,
+    Negotiating,
+    HandlingRequest,
+}
+
+/// The kind word a connection's cell and bucket open with: the version
+/// and the role, or the bare `http` for a connection still choosing.
+pub fn http_kind_word(role: HttpRole, version: Option<HttpVersion>) -> &'static str {
+    match (version, role) {
+        (Some(HttpVersion::Http1), HttpRole::Client) => "http1 client",
+        (Some(HttpVersion::Http1), HttpRole::Server) => "http1 server",
+        (None, HttpRole::Client) => "http client",
+        (None, HttpRole::Server) => "http server",
+    }
+}
+
+/// The parenthesised reading of a connection line: the phase, the
+/// method where one is in flight, the body's framing where a body is
+/// moving, and keep-alive where it is off.
+pub fn http_words(
+    role: HttpRole,
+    phase: HttpPhase,
+    method: Option<&str>,
+    keep_alive: bool,
+) -> String {
+    let method = method.unwrap_or("request");
+    let in_flight = match role {
+        HttpRole::Client => format!("{method} sent"),
+        HttpRole::Server => format!("{method} in flight"),
+    };
+    let mut words: Vec<String> = match phase {
+        HttpPhase::Idle => vec![
+            "idle".to_owned(),
+            if keep_alive {
+                "keep-alive".to_owned()
+            } else {
+                "keep-alive off".to_owned()
+            },
+        ],
+        HttpPhase::AwaitingResponse => vec![in_flight, "awaiting response headers".to_owned()],
+        HttpPhase::SendingBody(framing) => {
+            let mut words = vec![in_flight, "sending body".to_owned()];
+            words.extend(framing.map(|f| f.to_string()));
+            words
+        }
+        HttpPhase::ReceivingBody(framing) => {
+            let mut words = vec![in_flight, "receiving body".to_owned()];
+            words.extend(framing.map(|f| f.to_string()));
+            words
+        }
+        HttpPhase::Closing => vec!["closing".to_owned()],
+        HttpPhase::Negotiating => vec!["negotiating version".to_owned()],
+        HttpPhase::HandlingRequest => vec![in_flight, "handler running".to_owned()],
+    };
+    if !keep_alive && phase != HttpPhase::Idle {
+        words.push("keep-alive off".to_owned());
+    }
+    words.join(", ")
 }
 
 /// A oneshot's shared state word with the presence of its value: what
@@ -1175,6 +1354,14 @@ pub enum WaitKind {
     /// A watch channel, by the address of its `Shared` — the primitive
     /// a slot queued on one of its `Notify`s names.
     Watch { addr: u64 },
+    /// An HTTP connection, by its role, version and phase — the
+    /// identity a bucket keeps; the method and the body's counts are a
+    /// row's detail.
+    HttpConn {
+        role: HttpRole,
+        version: Option<HttpVersion>,
+        phase: HttpPhaseKind,
+    },
 }
 
 impl WaitKind {
@@ -1192,6 +1379,7 @@ impl WaitKind {
             Self::Notify { .. } => "notify rx",
             Self::Oneshot { .. } => "oneshot rx",
             Self::Watch { .. } => "watch rx",
+            Self::HttpConn { role, version, .. } => http_kind_word(*role, *version),
         }
     }
 }
@@ -1235,6 +1423,14 @@ impl WaitTarget {
             Self::Notify { .. } => "notify rx".to_string(),
             Self::Oneshot { .. } => "oneshot rx".to_string(),
             Self::Watch { .. } => "watch rx".to_string(),
+            // The cell plus the phase and nothing else, so a method or
+            // a byte count never fragments a bucket.
+            Self::HttpConn {
+                role,
+                version,
+                phase,
+                ..
+            } => format!("{} {}", http_kind_word(*role, *version), phase.word()),
         }
     }
 
@@ -1276,6 +1472,35 @@ impl WaitTarget {
             Self::Notify { addr, .. } => WaitKind::Notify { addr: *addr },
             Self::Oneshot { addr, .. } => WaitKind::Oneshot { addr: *addr },
             Self::Watch { addr, .. } => WaitKind::Watch { addr: *addr },
+            Self::HttpConn {
+                role,
+                version,
+                phase,
+                ..
+            } => WaitKind::HttpConn {
+                role: *role,
+                version: *version,
+                phase: phase.kind(),
+            },
+        }
+    }
+
+    /// The primitive a connection is parked on, where its rule names
+    /// one: the `via:` line under the connection's own.
+    pub fn via(&self) -> Option<&WaitTarget> {
+        match self {
+            Self::HttpConn { via, .. } => via.as_deref(),
+            _ => None,
+        }
+    }
+
+    /// The line a target prints as, reading included: the target with
+    /// its words in parentheses where those are a line of their own,
+    /// the target alone where they are already on it.
+    pub fn line(&self) -> String {
+        match self.words() {
+            Some(words) => format!("{self} ({words})"),
+            None => self.to_string(),
         }
     }
 }
@@ -1511,9 +1736,30 @@ impl fmt::Display for WaitTarget {
                 }
                 Ok(())
             }
-            Self::Oneshot { addr, state } => {
-                write!(f, "oneshot rx {addr:#x} ({})", state.words(OneshotSide::Rx))
+            Self::Oneshot { addr, state, side } => {
+                let end = match side {
+                    OneshotSide::Rx => "rx",
+                    OneshotSide::Tx => "tx",
+                };
+                write!(f, "oneshot {end} {addr:#x} ({})", state.words(*side))
             }
+            // The connection's reading is its verdict, so it sits on
+            // the line; the primitive it is parked on is a line of its
+            // own below ([`WaitTarget::via`]).
+            Self::HttpConn {
+                addr,
+                role,
+                version,
+                phase,
+                method,
+                keep_alive,
+                ..
+            } => write!(
+                f,
+                "{} {addr:#x} ({})",
+                http_kind_word(*role, *version),
+                http_words(*role, *phase, method.as_deref(), *keep_alive)
+            ),
             // Only a receiver's `changed` parks on a watch channel's
             // `Notify`, so the side is not in doubt; the version and
             // the handle counts are a line of their own, as a
@@ -1613,6 +1859,164 @@ mod tests {
 
     /// The compact wait spellings every surface shares — the row, the
     /// trace's `waiting on`, the graph — and the kind-level labels
+    /// The connection target, one line per client row the protocol
+    /// decides — the fixture parks in two of them, so the rest are
+    /// pinned here: the kind word and the `Conn`'s address, the
+    /// reading in parentheses with the method, the framing and the
+    /// keep-alive flag where each applies; the cell is the kind word,
+    /// the bucket the cell plus the phase and nothing else; and the
+    /// primitive the rule names is a line of its own, never on the
+    /// connection's.
+    #[test]
+    fn test_http_conn_target_words() {
+        let conn = |phase, method: Option<&str>, keep_alive, via: Option<WaitTarget>| {
+            WaitTarget::HttpConn {
+                addr: 0xc72d000,
+                role: HttpRole::Client,
+                version: Some(HttpVersion::Http1),
+                phase,
+                method: method.map(str::to_owned),
+                keep_alive,
+                via: via.map(Box::new),
+            }
+        };
+        let rx = WaitTarget::Channel {
+            addr: 0xfb0f700,
+            senders: 1,
+            capacity: None,
+            unread: 0,
+        };
+        let idle = conn(HttpPhase::Idle, None, true, Some(rx));
+        assert_eq!(
+            idle.to_string(),
+            "http1 client 0xc72d000 (idle, keep-alive)"
+        );
+        assert_eq!(idle.words(), None);
+        assert_eq!(idle.cell(), "http1 client");
+        assert_eq!(idle.group_label(), "http1 client idle");
+        assert_eq!(
+            idle.via().map(WaitTarget::line).as_deref(),
+            Some("mpsc rx 0xfb0f700 (1 sender, 0 unread)")
+        );
+        assert_eq!(
+            idle.kind(),
+            WaitKind::HttpConn {
+                role: HttpRole::Client,
+                version: Some(HttpVersion::Http1),
+                phase: HttpPhaseKind::Idle,
+            }
+        );
+        assert_eq!(idle.kind().word(), "http1 client");
+        assert_eq!(
+            conn(HttpPhase::Idle, None, false, None).to_string(),
+            "http1 client 0xc72d000 (idle, keep-alive off)"
+        );
+        let tx = WaitTarget::Oneshot {
+            addr: 0xc72d9e0,
+            state: OneshotState {
+                word: 0b1000,
+                value_present: Some(false),
+            },
+            side: OneshotSide::Tx,
+        };
+        let awaiting = conn(HttpPhase::AwaitingResponse, Some("GET"), true, Some(tx));
+        assert_eq!(
+            awaiting.to_string(),
+            "http1 client 0xc72d000 (GET sent, awaiting response headers)"
+        );
+        assert_eq!(awaiting.group_label(), "http1 client awaiting response");
+        assert_eq!(
+            awaiting.via().map(WaitTarget::line).as_deref(),
+            Some("oneshot tx 0xc72d9e0 (nothing sent, receiver alive)")
+        );
+        // No method read: the request is named as such.
+        assert_eq!(
+            conn(HttpPhase::AwaitingResponse, None, true, None).to_string(),
+            "http1 client 0xc72d000 (request sent, awaiting response headers)"
+        );
+        assert_eq!(
+            conn(
+                HttpPhase::SendingBody(Some(BodyFraming::Chunked)),
+                Some("POST"),
+                true,
+                None
+            )
+            .to_string(),
+            "http1 client 0xc72d000 (POST sent, sending body, chunked)"
+        );
+        let receiving = conn(
+            HttpPhase::ReceivingBody(Some(BodyFraming::Length { remaining: 1234 })),
+            Some("GET"),
+            true,
+            None,
+        );
+        assert_eq!(
+            receiving.to_string(),
+            "http1 client 0xc72d000 (GET sent, receiving body, 1234 bytes remaining)"
+        );
+        assert_eq!(receiving.group_label(), "http1 client receiving body");
+        assert!(receiving.via().is_none());
+        assert_eq!(
+            conn(
+                HttpPhase::ReceivingBody(Some(BodyFraming::Length { remaining: 1 })),
+                Some("GET"),
+                false,
+                None
+            )
+            .to_string(),
+            "http1 client 0xc72d000 (GET sent, receiving body, 1 byte remaining, keep-alive off)"
+        );
+        assert_eq!(
+            conn(
+                HttpPhase::ReceivingBody(Some(BodyFraming::CloseDelimited)),
+                Some("GET"),
+                true,
+                None
+            )
+            .to_string(),
+            "http1 client 0xc72d000 (GET sent, receiving body, close-delimited)"
+        );
+        // A framing that did not read leaves the phase alone.
+        assert_eq!(
+            conn(HttpPhase::ReceivingBody(None), Some("GET"), true, None).to_string(),
+            "http1 client 0xc72d000 (GET sent, receiving body)"
+        );
+        let closing = conn(HttpPhase::Closing, Some("GET"), true, None);
+        assert_eq!(closing.to_string(), "http1 client 0xc72d000 (closing)");
+        assert_eq!(closing.group_label(), "http1 client closing");
+        // The server's words, ready for its binding: a version still
+        // being chosen is the bare `http`.
+        let negotiating = WaitTarget::HttpConn {
+            addr: 0x8058d80,
+            role: HttpRole::Server,
+            version: None,
+            phase: HttpPhase::Negotiating,
+            method: None,
+            keep_alive: true,
+            via: None,
+        };
+        assert_eq!(
+            negotiating.to_string(),
+            "http server 0x8058d80 (negotiating version)"
+        );
+        assert_eq!(negotiating.cell(), "http server");
+        assert_eq!(negotiating.group_label(), "http server negotiating");
+        let handling = WaitTarget::HttpConn {
+            addr: 0x8058d80,
+            role: HttpRole::Server,
+            version: Some(HttpVersion::Http1),
+            phase: HttpPhase::HandlingRequest,
+            method: Some("GET".to_owned()),
+            keep_alive: true,
+            via: None,
+        };
+        assert_eq!(
+            handling.to_string(),
+            "http1 server 0x8058d80 (GET in flight, handler running)"
+        );
+        assert_eq!(handling.group_label(), "http1 server handling request");
+    }
+
     /// The channel targets: each printed as the kind word, the
     /// primitive's address and its words in parentheses — the same
     /// shape a slot entry for the primitive takes — with the bucket a
@@ -1648,6 +2052,7 @@ mod tests {
                     word: 0,
                     value_present: Some(false),
                 },
+                side: OneshotSide::Rx,
             }
             .words(),
             None
@@ -1660,6 +2065,7 @@ mod tests {
         let oneshot = WaitTarget::Oneshot {
             addr: 0xa000,
             state: parked,
+            side: OneshotSide::Rx,
         };
         assert_eq!(
             oneshot.to_string(),
@@ -1667,6 +2073,21 @@ mod tests {
         );
         assert_eq!(oneshot.group_label(), "oneshot rx");
         assert_eq!(oneshot.kind(), WaitKind::Oneshot { addr: 0xa000 });
+        // The sending side, as a connection's callback names it: the
+        // words are the sender's, the kind the oneshot's.
+        let watched = WaitTarget::Oneshot {
+            addr: 0xa000,
+            state: OneshotState {
+                word: 0b1000,
+                value_present: Some(false),
+            },
+            side: OneshotSide::Tx,
+        };
+        assert_eq!(
+            watched.to_string(),
+            "oneshot tx 0xa000 (nothing sent, receiver alive)"
+        );
+        assert_eq!(watched.kind(), WaitKind::Oneshot { addr: 0xa000 });
 
         let watch = WaitTarget::Watch {
             addr: 0xc000,

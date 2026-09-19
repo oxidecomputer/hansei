@@ -2442,6 +2442,27 @@ pub fn verified_accounts(
             },
             WaitTarget::Watch { addr, .. },
         ) => primitive == addr,
+        // A connection is parked on the primitive its `via` names — the
+        // request channel while idle, the response callback's sender
+        // cell while a request is in flight — so the slot that primitive
+        // accounts for is the connection's; a slot inside the dispatcher
+        // itself is too.
+        (
+            Attribution::Owner {
+                kind: OwnerKind::Mpsc,
+                primitive,
+                ..
+            },
+            WaitTarget::HttpConn { via: Some(via), .. },
+        ) if matches!(**via, WaitTarget::Channel { addr, .. } if addr == *primitive) => true,
+        (
+            Attribution::Owner {
+                kind: OwnerKind::OneshotTx,
+                primitive,
+                ..
+            },
+            WaitTarget::HttpConn { via: Some(via), .. },
+        ) if matches!(**via, WaitTarget::Oneshot { addr, .. } if addr == *primitive) => true,
         (Attribution::Owner { .. } | Attribution::Typed { .. }, _) => {
             within(verified.primitive(), slot.slot)
         }
@@ -3271,7 +3292,9 @@ mod join_tests {
 
     use super::*;
     use crate::tokio::assess::{VerifiedWait, WaitAssessment};
-    use crate::tokio::bundle::{FutureInfo, IoSlot, OwnerResolution, Task, TaskKind};
+    use crate::tokio::bundle::{
+        FutureInfo, HttpPhase, HttpRole, HttpVersion, IoSlot, OwnerResolution, Task, TaskKind,
+    };
     use crate::tokio::waitset::{MemberRoute, SlotRef, WaitMember};
     use crate::tokio::{TaskAddr, TaskState};
 
@@ -3572,6 +3595,67 @@ mod join_tests {
             &owned(0x8080, OwnerKind::Mpsc, 0x8100),
             &size_of
         ));
+        // A connection accounts for the slot in the primitive its `via`
+        // names — the request channel, the response callback's sender
+        // cell — by address and side alike, and for nothing else.
+        let conn = |via: WaitTarget| {
+            VerifiedWait::testkit(
+                WaitTarget::HttpConn {
+                    addr: 0xc000,
+                    role: HttpRole::Client,
+                    version: Some(HttpVersion::Http1),
+                    phase: HttpPhase::Idle,
+                    method: None,
+                    keep_alive: true,
+                    via: Some(Box::new(via)),
+                },
+                None,
+            )
+        };
+        let idle = conn(WaitTarget::Channel {
+            addr: 0xb000,
+            senders: 1,
+            capacity: None,
+            unread: 0,
+        });
+        assert!(verified_accounts(
+            &idle,
+            &owned(0xb040, OwnerKind::Mpsc, 0xb000),
+            &size_of
+        ));
+        assert!(!verified_accounts(
+            &idle,
+            &owned(0xb140, OwnerKind::Mpsc, 0xb100),
+            &size_of
+        ));
+        assert!(!verified_accounts(
+            &idle,
+            &owned(0xb040, OwnerKind::OneshotTx, 0xb000),
+            &size_of
+        ));
+        let in_flight = conn(WaitTarget::Oneshot {
+            addr: 0xd000,
+            state: OneshotState {
+                word: 0b1000,
+                value_present: Some(false),
+            },
+            side: OneshotSide::Tx,
+        });
+        assert!(verified_accounts(
+            &in_flight,
+            &owned(0xd020, OwnerKind::OneshotTx, 0xd000),
+            &size_of
+        ));
+        assert!(!verified_accounts(
+            &in_flight,
+            &owned(0xd120, OwnerKind::OneshotTx, 0xd100),
+            &size_of
+        ));
+        assert!(!verified_accounts(
+            &in_flight,
+            &owned(0xd020, OwnerKind::OneshotRx, 0xd000),
+            &size_of
+        ));
         // A oneshot's `Inner` and a watch's `Shared`, by address and
         // by kind alike.
         let oneshot = VerifiedWait::testkit(
@@ -3581,6 +3665,7 @@ mod join_tests {
                     word: 0b1001,
                     value_present: Some(false),
                 },
+                side: OneshotSide::Rx,
             },
             None,
         );

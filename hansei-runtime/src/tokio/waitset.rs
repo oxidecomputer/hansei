@@ -1153,7 +1153,17 @@ impl<'b, T: Target> Context<'b, T> {
             }
         }
         for (resource, waiter) in registries.io_of(task.addr.0) {
-            let placed = matches!(target, WaitTarget::Io { addr, .. } if *addr == resource.addr);
+            // A connection is parked on its socket as well as on the
+            // primitive its `via` names — the two wakers its
+            // dispatcher registers — so an io slot is the wait's own,
+            // not a second registration. Which registration is the
+            // connection's is not established from the dispatcher, so
+            // the slot is listed as an item rather than placed.
+            let placed = match target {
+                WaitTarget::Io { addr, .. } => *addr == resource.addr,
+                WaitTarget::HttpConn { .. } => true,
+                _ => false,
+            };
             if !placed {
                 let site = match waiter.slot {
                     IoSlot::Reader => "read-waiter slot",

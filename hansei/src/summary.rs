@@ -686,6 +686,9 @@ struct Waits {
     /// Keyed by the primitive wrapping the semaphore, which is `None`
     /// where the awaiting frame did not name one (a channel's, say).
     semaphores: BTreeMap<Option<&'static str>, usize>,
+    /// An HTTP connection parked between or inside exchanges, keyed by
+    /// the cell word its role and version give (`http1 client`).
+    http: BTreeMap<&'static str, usize>,
     /// Parked on several things at once — a `select!`, a hand-written
     /// state machine — with its waker in at least one: any one wakes
     /// it, and no one of them is its dependency.
@@ -774,6 +777,7 @@ impl Waits {
             WaitKind::Notify { .. } => self.notify += 1,
             WaitKind::Oneshot { .. } => self.oneshot += 1,
             WaitKind::Watch { .. } => self.watch += 1,
+            WaitKind::HttpConn { .. } => *self.http.entry(kind.word()).or_default() += 1,
         }
     }
 
@@ -817,6 +821,9 @@ impl Waits {
                 None => "a semaphore".to_string(),
             };
             rows.push(Row::new(*count, what));
+        }
+        for (word, count) in &self.http {
+            rows.push(Row::new(*count, *word));
         }
         rank(rows)
     }

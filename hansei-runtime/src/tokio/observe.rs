@@ -24,7 +24,9 @@
 //! the census's — so no caller inherits the renderer's implicit
 //! peeling or an unstated heap by accident.
 
-use super::bundle::{Interest, NotifyWaiter, OneshotState, QueuedWaker, SemaphoreWaiter};
+use super::bundle::{
+    BodyFraming, HttpRole, Interest, NotifyWaiter, OneshotState, QueuedWaker, SemaphoreWaiter,
+};
 use super::{RawInstant, TaskAddr};
 
 use hansei_bundle::{BundleTypeId, IoOperationKind, Step};
@@ -356,6 +358,79 @@ pub struct OneshotObservation {
     pub state: OneshotState,
     /// The waker in `rx_task`, where the state word says one is there.
     pub rx_waker: Option<QueuedWaker>,
+    /// The waker in `tx_task`, where the state word says one is there:
+    /// a sender's `poll_closed` registration, which an HTTP client
+    /// connection parks its response callback on.
+    pub tx_waker: Option<QueuedWaker>,
+}
+
+/// hyper's `KA`, the connection's keep-alive word.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum KeepAlive {
+    /// Between exchanges.
+    Idle,
+    /// An exchange is in progress — also a fresh connection's word,
+    /// before its first.
+    Busy,
+    /// The connection closes after this exchange.
+    Disabled,
+    /// An enumerator the reviewed range does not have.
+    Unknown(String),
+}
+
+/// hyper's `Reading`, with the body's framing where the variant
+/// carries a decoder and that decoder's `kind` read.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum HttpReading {
+    Init,
+    Continue(Option<BodyFraming>),
+    Body(Option<BodyFraming>),
+    KeepAlive,
+    Closed,
+    Unknown(String),
+}
+
+/// hyper's `Writing`, with the body's framing where the variant
+/// carries an encoder and that encoder's `kind` read.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum HttpWriting {
+    Init,
+    Body(Option<BodyFraming>),
+    KeepAlive,
+    Closed,
+    Unknown(String),
+}
+
+/// hyper's HTTP/1 `Dispatcher` as one read found it: every word the
+/// connection verdict reads, in place, and the primitive the role's
+/// dispatch is parked on where it names one.
+#[derive(Clone, PartialEq, Debug)]
+pub struct HttpConnObservation {
+    pub dispatcher: ValueKey,
+    /// The `Conn`'s address: what a filter names the connection by.
+    pub conn: u64,
+    pub role: HttpRole,
+    pub keep_alive: KeepAlive,
+    pub reading: HttpReading,
+    pub writing: HttpWriting,
+    /// The method's name (`GET`), where a message is in flight and its
+    /// method is one of the named ones; `None` between exchanges, for
+    /// an extension method, and where the word did not read.
+    pub method: Option<String>,
+    pub is_closing: bool,
+    /// The client dispatch's words, for a client.
+    pub client: Option<HttpClientObservation>,
+}
+
+/// The client dispatch as one read found it.
+#[derive(Clone, PartialEq, Debug)]
+pub struct HttpClientObservation {
+    /// The response callback's oneshot, where a request is in flight:
+    /// the `Sender` the dispatcher watches for cancellation.
+    pub callback: Option<OneshotObservation>,
+    /// The channel behind the request receiver, keyed by the `Chan`'s
+    /// own type.
+    pub rx: Option<ValueKey>,
 }
 
 /// What one resource value was observed to be.
@@ -368,6 +443,7 @@ pub enum ResourceObservation {
     Recv(RecvObservation),
     Notified(NotifiedObservation),
     Oneshot(OneshotObservation),
+    HttpConn(HttpConnObservation),
 }
 
 /// What a pop at the receiver's read index would find, as `Rx::pop`

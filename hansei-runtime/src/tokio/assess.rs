@@ -32,15 +32,16 @@
 //! consumer from turning a weaker relation into one.
 
 use super::bundle::{
-    AwaitChain, ChainEnd, Context, IoResourceInfo, IoSlot, QueuedWaker, Task, TaskKind, TaskList,
-    WaitTarget, semaphore_owner,
+    AwaitChain, ChainEnd, Context, HttpPhase, HttpRole, HttpVersion, IoResourceInfo, IoSlot,
+    OneshotSide, QueuedWaker, Task, TaskKind, TaskList, WaitTarget, semaphore_owner,
 };
 use super::chain::{FutureInspection, InspectionMode};
 use super::observe::{
-    AcquireObservation, ChannelObservation, Consistency, IoFutureState, IoObservation,
-    JoinObservation, NotifiedObservation, NotifiedState, NotifyObservation, Observed,
-    OneshotObservation, QueueObservation, ReadContext, RecvObservation, ResourceObservation,
-    ScanBudget, SlotState, TimerObservation, TimerRegistrationState, ValueKey,
+    AcquireObservation, ChannelObservation, Consistency, HttpConnObservation, HttpReading,
+    HttpWriting, IoFutureState, IoObservation, JoinObservation, KeepAlive, NotifiedObservation,
+    NotifiedState, NotifyObservation, Observed, OneshotObservation, QueueObservation, ReadContext,
+    RecvObservation, ResourceObservation, ScanBudget, SlotState, TimerObservation,
+    TimerRegistrationState, ValueKey,
 };
 use super::waitset::{WaitMember, WaitSet};
 use super::{Lifecycle, TaskAddr, TaskState};
@@ -575,6 +576,9 @@ impl<'b, T: Target> Context<'b, T> {
             ResourceObservation::Timer(timer) => self.assess_timer(timer, primitive),
             ResourceObservation::Recv(recv) => self.assess_recv(pass, recv, task, primitive, read),
             ResourceObservation::Oneshot(oneshot) => self.assess_oneshot(oneshot, task, primitive),
+            ResourceObservation::HttpConn(http) => {
+                self.assess_http_conn(pass, http, task, primitive, read)
+            }
             ResourceObservation::Notified(notified) => {
                 let mut assessed = self.assess_notified(pass, notified, task, primitive, read);
                 // A `Notified` on one of a watch channel's `Notify`s is
@@ -780,6 +784,130 @@ impl<'b, T: Target> Context<'b, T> {
             target: WaitTarget::Oneshot {
                 addr: oneshot.inner,
                 state,
+                side: OneshotSide::Rx,
+            },
+            primitive,
+            queue_position: None,
+        }))
+    }
+
+    /// hyper's HTTP/1 client connection: the phase its state words put
+    /// it in ([`client_phase`]), and the primitive the dispatch is
+    /// parked on for that phase, held to the same conditions the
+    /// tokio protocols are — the request receiver's waker cell at rest
+    /// and holding this task's waker while idle, the response
+    /// callback's sender cell holding it while a request is in flight
+    /// or its body is being sent. While a response body arrives, or
+    /// the connection closes, the dispatch names no primitive: the
+    /// socket the connection reads is the registry's to name, and the
+    /// verdict stands on the words alone.
+    fn assess_http_conn(
+        &self,
+        pass: &mut AssessmentPass,
+        http: &HttpConnObservation,
+        task: &TaskFacts,
+        primitive: ValueKey,
+        read: &ReadContext<'_>,
+    ) -> Assessed {
+        use hansei_bundle::tokio::atomic_waker;
+        let (phase, keep_alive) = match client_phase(http) {
+            Ok(decided) => decided,
+            Err(reason) => {
+                return Assessed::unknown(WaitUnknownReason::ResourceStateUnproven, reason);
+            }
+        };
+        let Some(client) = &http.client else {
+            return Assessed::unknown(
+                WaitUnknownReason::ResourceStateUnproven,
+                "the server connection's dispatch is not bound",
+            );
+        };
+        let waker_is_this_task =
+            |waker: &Option<QueuedWaker>, cell: &str| waker_names_task(waker, task.addr, cell);
+        let via = match phase {
+            HttpPhase::Idle => {
+                let Some(chan) = client.rx else {
+                    return Assessed::unknown(
+                        WaitUnknownReason::ResourceUnreadable,
+                        "the request receiver's channel did not read",
+                    );
+                };
+                let channel = pass.channel(self, chan, read);
+                match channel.waker_state {
+                    Some(atomic_waker::WAITING) => {}
+                    Some(state) => {
+                        return Assessed::unknown(
+                            WaitUnknownReason::ResourceStateUnproven,
+                            format!(
+                                "the request receiver's waker is mid-flight (state {state:#b})"
+                            ),
+                        );
+                    }
+                    None => {
+                        return Assessed::unknown(
+                            WaitUnknownReason::ResourceUnreadable,
+                            "the request receiver's waker state did not read",
+                        );
+                    }
+                }
+                if let Err(declined) =
+                    waker_is_this_task(&channel.waker, "request receiver's waker")
+                {
+                    return declined;
+                }
+                let (Some(senders), Some(index), Some(tail)) =
+                    (channel.senders, channel.index, channel.tail_position)
+                else {
+                    return Assessed::unknown(
+                        WaitUnknownReason::ResourceUnreadable,
+                        "the request channel's words did not read",
+                    );
+                };
+                Some(Box::new(WaitTarget::Channel {
+                    addr: chan.addr,
+                    senders,
+                    capacity: channel.capacity,
+                    unread: tail.saturating_sub(index),
+                }))
+            }
+            HttpPhase::AwaitingResponse | HttpPhase::SendingBody(_) => {
+                let Some(callback) = &client.callback else {
+                    return Assessed::unknown(
+                        WaitUnknownReason::ResourceUnreadable,
+                        "the response callback's oneshot did not read",
+                    );
+                };
+                if !callback.state.tx_task_set() {
+                    return Assessed::unknown(
+                        WaitUnknownReason::ConflictingEvidence,
+                        "the connection awaits a response but watches no callback",
+                    );
+                }
+                if let Err(declined) =
+                    waker_is_this_task(&callback.tx_waker, "response callback's sender cell")
+                {
+                    return declined;
+                }
+                Some(Box::new(WaitTarget::Oneshot {
+                    addr: callback.inner,
+                    state: callback.state,
+                    side: OneshotSide::Tx,
+                }))
+            }
+            HttpPhase::ReceivingBody(_) | HttpPhase::Closing => None,
+            HttpPhase::Negotiating | HttpPhase::HandlingRequest => {
+                unreachable!("a client connection is never in a server phase")
+            }
+        };
+        Assessed::of(WaitAssessment::Waiting(VerifiedWait {
+            target: WaitTarget::HttpConn {
+                addr: http.conn,
+                role: HttpRole::Client,
+                version: Some(HttpVersion::Http1),
+                phase,
+                method: http.method.clone(),
+                keep_alive,
+                via,
             },
             primitive,
             queue_position: None,
@@ -1437,9 +1565,136 @@ impl<'b, T: Target> Context<'b, T> {
             ResourceObservation::Oneshot(oneshot) => Some(WaitTarget::Oneshot {
                 addr: oneshot.inner,
                 state: oneshot.state,
+                side: OneshotSide::Rx,
             }),
+            // The connection's words, read under no protocol: the phase
+            // they decide, and the primitive the dispatch holds for it,
+            // described without the waker checks a verified wait makes.
+            ResourceObservation::HttpConn(http) => {
+                let (phase, keep_alive) = client_phase(http).ok()?;
+                let client = http.client.as_ref()?;
+                let via = match phase {
+                    HttpPhase::Idle => {
+                        let chan = client.rx?;
+                        let channel = pass.channel(self, chan, read);
+                        Some(Box::new(WaitTarget::Channel {
+                            addr: chan.addr,
+                            senders: channel.senders?,
+                            capacity: channel.capacity,
+                            unread: channel.tail_position?.saturating_sub(channel.index?),
+                        }))
+                    }
+                    HttpPhase::AwaitingResponse | HttpPhase::SendingBody(_) => {
+                        let callback = client.callback.as_ref()?;
+                        Some(Box::new(WaitTarget::Oneshot {
+                            addr: callback.inner,
+                            state: callback.state,
+                            side: OneshotSide::Tx,
+                        }))
+                    }
+                    _ => None,
+                };
+                Some(WaitTarget::HttpConn {
+                    addr: http.conn,
+                    role: HttpRole::Client,
+                    version: Some(HttpVersion::Http1),
+                    phase,
+                    method: http.method.clone(),
+                    keep_alive,
+                    via,
+                })
+            }
         }
     }
+}
+
+/// Whether a primitive's waker cell holds `task`'s own waker — what a
+/// connection's wait on the primitive is held to, as the tokio
+/// protocols hold theirs: another task's waker is conflicting
+/// evidence, a waker that is not a task's is a state the protocol does
+/// not vouch for, an empty cell beside a parked connection contradicts
+/// it, and a cell that did not read decides nothing. `cell` names the
+/// slot in the decline.
+fn waker_names_task(
+    waker: &Option<QueuedWaker>,
+    task: TaskAddr,
+    cell: &str,
+) -> Result<(), Assessed> {
+    match waker {
+        Some(QueuedWaker::Task { addr, .. }) if *addr == task.0 => Ok(()),
+        Some(QueuedWaker::Task { addr, .. }) => Err(Assessed::unknown(
+            WaitUnknownReason::ConflictingEvidence,
+            format!("the {cell} names the task at {addr:#x}, not this one"),
+        )),
+        Some(QueuedWaker::Other { vtable }) => Err(Assessed::unknown(
+            WaitUnknownReason::ResourceStateUnproven,
+            format!("the {cell} is not a task's (vtable {vtable:#x})"),
+        )),
+        Some(QueuedWaker::Unarmed) => Err(Assessed::unknown(
+            WaitUnknownReason::ConflictingEvidence,
+            format!("the connection parked but the {cell} is empty"),
+        )),
+        None => Err(Assessed::unknown(
+            WaitUnknownReason::ResourceUnreadable,
+            format!("the {cell} did not read"),
+        )),
+    }
+}
+
+/// The client rows of the connection protocol, decided from the words
+/// alone. In the order hyper's own state machine settles them: a
+/// closed direction or the dispatcher's closing flag is closing,
+/// whatever else the words say; a decoder in `reading` is a response
+/// body arriving; a callback beside an encoder in `writing` is a
+/// request body going out; a callback with the request head written
+/// (`writing` at `KeepAlive`, or still `Init` for the head about to
+/// go) is a request awaiting its response; no callback with both
+/// directions at `Init` is a connection between exchanges. The second
+/// value is whether keep-alive is on — `KA::Disabled` turns it off,
+/// `Busy` is also what a fresh connection reads before its first
+/// exchange. Any other combination is one the protocol does not
+/// produce, and is declined with the words.
+pub fn client_phase(http: &HttpConnObservation) -> Result<(HttpPhase, bool), String> {
+    let keep_alive = match &http.keep_alive {
+        KeepAlive::Idle | KeepAlive::Busy => true,
+        KeepAlive::Disabled => false,
+        KeepAlive::Unknown(word) => {
+            return Err(format!(
+                "keep-alive reads {word}, which the reviewed range does not have"
+            ));
+        }
+    };
+    let in_flight = http
+        .client
+        .as_ref()
+        .is_some_and(|client| client.callback.is_some());
+    let phase = match (&http.reading, &http.writing) {
+        (HttpReading::Unknown(word), _) | (_, HttpWriting::Unknown(word)) => {
+            return Err(format!(
+                "a state word reads {word}, which the reviewed range does not have"
+            ));
+        }
+        _ if http.is_closing => HttpPhase::Closing,
+        (HttpReading::Closed, _) | (_, HttpWriting::Closed) => HttpPhase::Closing,
+        (HttpReading::Body(framing) | HttpReading::Continue(framing), _) => {
+            HttpPhase::ReceivingBody(*framing)
+        }
+        (HttpReading::Init, HttpWriting::Body(framing)) if in_flight => {
+            HttpPhase::SendingBody(*framing)
+        }
+        (HttpReading::Init, HttpWriting::KeepAlive | HttpWriting::Init) if in_flight => {
+            HttpPhase::AwaitingResponse
+        }
+        (HttpReading::Init, HttpWriting::Init) => HttpPhase::Idle,
+        (reading, writing) => {
+            return Err(format!(
+                "reading {reading:?} and writing {writing:?} with{} a callback is not a state \
+                 the client protocol produces",
+                if in_flight { "" } else { "out" }
+            ));
+        }
+    };
+    Ok((phase, keep_alive))
 }
 
 /// Each frame's live storage — its state's payload, or the future
@@ -1681,6 +1936,270 @@ mod tests {
     const NOTIFIED: u64 = 0b0100;
     const JOIN_WAKER: u64 = 0b10_000;
     const STATE_BITS: u64 = 0b111111;
+
+    /// A client dispatcher's words as one read might find them.
+    fn http_words(
+        keep_alive: KeepAlive,
+        reading: HttpReading,
+        writing: HttpWriting,
+        in_flight: bool,
+        is_closing: bool,
+    ) -> HttpConnObservation {
+        use crate::tokio::observe::HttpClientObservation;
+        let key = ValueKey {
+            addr: 0xc72d000,
+            ty: hansei_bundle::BundleTypeId(7),
+        };
+        HttpConnObservation {
+            dispatcher: key,
+            conn: key.addr,
+            role: HttpRole::Client,
+            keep_alive,
+            reading,
+            writing,
+            method: in_flight.then(|| "GET".to_owned()),
+            is_closing,
+            client: Some(HttpClientObservation {
+                callback: in_flight.then(|| OneshotObservation {
+                    future: key,
+                    arc: key,
+                    inner: 0xc72d9e0,
+                    state: super::super::model::OneshotState {
+                        word: 0b1000,
+                        value_present: Some(false),
+                    },
+                    rx_waker: None,
+                    tx_waker: None,
+                }),
+                rx: Some(key),
+            }),
+        }
+    }
+
+    /// The client rows of the connection protocol, decided from
+    /// constructed words: the two the fixture parks in, and every row
+    /// it never reaches — a body going out or coming in, either
+    /// direction closed, the dispatcher's own closing flag, keep-alive
+    /// disabled — plus the combinations the protocol never produces,
+    /// which decline naming the words rather than guess.
+    #[test]
+    fn test_client_phase_decides_every_row() {
+        use crate::tokio::bundle::BodyFraming;
+        use HttpReading as R;
+        use HttpWriting as W;
+        let decide =
+            |ka, r, w, in_flight, closing| client_phase(&http_words(ka, r, w, in_flight, closing));
+        assert_eq!(
+            decide(KeepAlive::Idle, R::Init, W::Init, false, false),
+            Ok((HttpPhase::Idle, true))
+        );
+        // A fresh connection reads `Busy` before its first exchange
+        // and is idle all the same; a disabled keep-alive is idle with
+        // the flag off.
+        assert_eq!(
+            decide(KeepAlive::Busy, R::Init, W::Init, false, false),
+            Ok((HttpPhase::Idle, true))
+        );
+        assert_eq!(
+            decide(KeepAlive::Disabled, R::Init, W::Init, false, false),
+            Ok((HttpPhase::Idle, false))
+        );
+        assert_eq!(
+            decide(KeepAlive::Busy, R::Init, W::KeepAlive, true, false),
+            Ok((HttpPhase::AwaitingResponse, true))
+        );
+        // The request taken from the channel, its head about to go.
+        assert_eq!(
+            decide(KeepAlive::Busy, R::Init, W::Init, true, false),
+            Ok((HttpPhase::AwaitingResponse, true))
+        );
+        assert_eq!(
+            decide(
+                KeepAlive::Busy,
+                R::Init,
+                W::Body(Some(BodyFraming::Chunked)),
+                true,
+                false
+            ),
+            Ok((HttpPhase::SendingBody(Some(BodyFraming::Chunked)), true))
+        );
+        // The response head delivered, its body arriving: the callback
+        // is gone by then.
+        let length = Some(BodyFraming::Length { remaining: 1234 });
+        assert_eq!(
+            decide(KeepAlive::Busy, R::Body(length), W::KeepAlive, false, false),
+            Ok((HttpPhase::ReceivingBody(length), true))
+        );
+        assert_eq!(
+            decide(
+                KeepAlive::Busy,
+                R::Continue(None),
+                W::KeepAlive,
+                false,
+                false
+            ),
+            Ok((HttpPhase::ReceivingBody(None), true))
+        );
+        assert_eq!(
+            decide(
+                KeepAlive::Disabled,
+                R::Body(length),
+                W::KeepAlive,
+                false,
+                false
+            ),
+            Ok((HttpPhase::ReceivingBody(length), false))
+        );
+        // Closing outranks everything else the words say.
+        assert_eq!(
+            decide(KeepAlive::Busy, R::Closed, W::KeepAlive, false, false),
+            Ok((HttpPhase::Closing, true))
+        );
+        assert_eq!(
+            decide(KeepAlive::Busy, R::Body(length), W::Closed, false, false),
+            Ok((HttpPhase::Closing, true))
+        );
+        assert_eq!(
+            decide(KeepAlive::Idle, R::Init, W::Init, false, true),
+            Ok((HttpPhase::Closing, true))
+        );
+        // A body going out with no callback to deliver the response
+        // to, or a written head with no callback, is no client state.
+        assert!(
+            decide(KeepAlive::Busy, R::Init, W::Body(None), false, false)
+                .is_err_and(|reason| reason.contains("without a callback"))
+        );
+        assert!(decide(KeepAlive::Busy, R::Init, W::KeepAlive, false, false).is_err());
+        assert!(decide(KeepAlive::Busy, R::KeepAlive, W::Init, false, false).is_err());
+        // A word the reviewed range does not have declines with it.
+        assert!(
+            decide(
+                KeepAlive::Unknown("Paused".to_owned()),
+                R::Init,
+                W::Init,
+                false,
+                false
+            )
+            .is_err_and(|reason| reason.contains("Paused"))
+        );
+        assert!(
+            decide(
+                KeepAlive::Idle,
+                R::Unknown("Draining".to_owned()),
+                W::Init,
+                false,
+                false
+            )
+            .is_err_and(|reason| reason
+                == "a state word reads Draining, which the reviewed range does not have")
+        );
+    }
+
+    /// The waker cell a connection's primitive holds is held to this
+    /// task's waker: another task's, a non-task waker, an empty cell and
+    /// an unread one each decline with their own reason.
+    #[test]
+    fn test_a_connection_primitive_must_hold_this_tasks_waker() {
+        let task = TaskAddr(0x7000);
+        let reason = |waker| match waker_names_task(&waker, task, "cell") {
+            Ok(()) => None,
+            Err(assessed) => match assessed.assessment {
+                WaitAssessment::Unknown(reason) => Some((reason, assessed.notes.join(""))),
+                other => panic!("{other:?}"),
+            },
+        };
+        let mine = QueuedWaker::Task {
+            addr: 0x7000,
+            task_id: Some(1),
+        };
+        let theirs = QueuedWaker::Task {
+            addr: 0x7100,
+            task_id: Some(2),
+        };
+        assert_eq!(reason(Some(mine)), None);
+        assert_eq!(
+            reason(Some(theirs)),
+            Some((
+                WaitUnknownReason::ConflictingEvidence,
+                "the cell names the task at 0x7100, not this one".to_owned()
+            ))
+        );
+        assert_eq!(
+            reason(Some(QueuedWaker::Other { vtable: 0x40 })),
+            Some((
+                WaitUnknownReason::ResourceStateUnproven,
+                "the cell is not a task's (vtable 0x40)".to_owned()
+            ))
+        );
+        assert_eq!(
+            reason(Some(QueuedWaker::Unarmed)),
+            Some((
+                WaitUnknownReason::ConflictingEvidence,
+                "the connection parked but the cell is empty".to_owned()
+            ))
+        );
+        assert_eq!(
+            reason(None),
+            Some((
+                WaitUnknownReason::ResourceUnreadable,
+                "the cell did not read".to_owned()
+            ))
+        );
+    }
+
+    /// The connection's target described under no protocol reads the
+    /// same words the verdict does, `via` included: the idle client's
+    /// request channel and the in-flight client's response callback,
+    /// each the target the assessment verified.
+    #[test]
+    fn test_the_observed_connection_names_its_primitive() {
+        let (bundle, snapshot) = load_any("http-conns");
+        let ctx = testkit::context(&bundle, &snapshot);
+        let e = testkit::enumerate(&ctx, &snapshot);
+        let read = ReadContext::none();
+        let mut pass = AssessmentPass::new();
+        let mut seen = 0;
+        for task in e
+            .list
+            .tasks
+            .iter()
+            .filter(|t| matches!(&t.future, FutureInfo::Known(k) if k.display_name.contains("{impl#0}::execute")))
+        {
+            let inspection = ctx.inspect_task(task, &read).unwrap().unwrap();
+            let observation = inspection.primitive.value.as_ref().unwrap();
+            let observed = ctx
+                .observed_target(&mut pass, observation, &inspection.chain, &e.list, &read)
+                .unwrap();
+            let assessed = ctx.assess_wait(&mut pass, &inspection, &task.into(), &e.list, &read);
+            let WaitAssessment::Waiting(verified) = &assessed.assessment else {
+                panic!("{:?} {:?}", assessed.assessment, assessed.notes);
+            };
+            assert_eq!(observed.line(), verified.target().line());
+            let (WaitTarget::HttpConn { phase, via, .. }, Some(verified_via)) =
+                (&observed, verified.target().via())
+            else {
+                panic!("{observed:?}");
+            };
+            let via = via.as_deref().expect("a client phase with a primitive");
+            assert_eq!(via.line(), verified_via.line());
+            match phase {
+                HttpPhase::Idle => assert!(matches!(via, WaitTarget::Channel { .. }), "{via}"),
+                HttpPhase::AwaitingResponse => assert!(
+                    matches!(
+                        via,
+                        WaitTarget::Oneshot {
+                            side: OneshotSide::Tx,
+                            ..
+                        }
+                    ),
+                    "{via}"
+                ),
+                other => panic!("{other:?}"),
+            }
+            seen += 1;
+        }
+        assert_eq!(seen, 2);
+    }
 
     fn task_named<'a>(list: &'a TaskList, name: &str) -> &'a Task {
         let hits: Vec<&Task> = list
@@ -2380,7 +2899,7 @@ mod tests {
         let WaitAssessment::Waiting(wait) = &parked.assessment else {
             panic!("oneshot waits: {:?} {:?}", parked.assessment, parked.notes);
         };
-        let WaitTarget::Oneshot { addr, state } = wait.target() else {
+        let WaitTarget::Oneshot { addr, state, .. } = wait.target() else {
             panic!("on a oneshot: {:?}", wait.target());
         };
         assert!(state.rx_task_set() && !state.complete() && !state.closed());
