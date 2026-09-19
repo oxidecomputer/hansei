@@ -604,6 +604,9 @@ fn assert_resource(program: &str, bundle: &Bundle, key: &str, kind: hansei_bundl
             ResourceKind::MpscRecv => SemanticRuleKind::TokioMpscRecvState,
             ResourceKind::Notified => SemanticRuleKind::TokioNotifiedState,
             ResourceKind::OneshotRecv => SemanticRuleKind::TokioOneshotRecvState,
+            // Bound under hyper's delegation origin, not a tokio
+            // layout rule: asserted by `assert_http_conn`.
+            ResourceKind::HttpConn => panic!("{program}: assert the connection by its own helper"),
         };
         assert_eq!(state.kind, expected, "{program}: {name}");
         assert_eq!(state.origin, rule.origin, "{program}: {name}");
@@ -2720,7 +2723,7 @@ fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
             program,
             bundle,
             WalkRole::MpscReceiverChan,
-            "chan.inner.ptr.pointer",
+            "chan.inner.ptr.pointer.*.data",
         );
         assert_walk(
             program,

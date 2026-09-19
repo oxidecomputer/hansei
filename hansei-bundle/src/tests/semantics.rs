@@ -34,6 +34,7 @@ fn record(ty: BundleTypeId) -> TypeSemantics {
         resource: None,
         container: None,
         select: None,
+        http: None,
         issues: Vec::new(),
     }
 }
@@ -1825,4 +1826,458 @@ fn test_semantic_never_ready_is_a_whole_program_under_its_own_rule() {
         family: StrRef(7),
     };
     bad(&b, "layout rule has an incompatible library origin");
+}
+
+/// hyper's dispatcher as the HTTP connection resource, laid out by
+/// hand: the words the binding routes to, each of the shape the
+/// verdict reads, under the hyper rule read off its registry path. The
+/// second value is the client's dispatch routes, kept apart so a
+/// server-shaped record can be built from the same table.
+fn http_conn() -> (Bundle, HttpClientBinding) {
+    let mut b = base();
+    let mut strings = StringInterner::new();
+    for s in b.strings.iter() {
+        strings.intern(s);
+    }
+    let mut name = |s: &str| strings.intern(s);
+    let (
+        hyper,
+        version,
+        family,
+        source,
+        u8_name,
+        bool_name,
+        unit,
+        conn,
+        state,
+        keep_alive,
+        reading,
+        writing,
+        method,
+        is_closing,
+        dispatch,
+        callback,
+        rx,
+        inner,
+        some,
+        none,
+        first,
+        kind,
+    ) = (
+        name("hyper"),
+        name("1.10.1"),
+        name("hyper-h1-conn-1.6.0"),
+        name("registry/src/index.crates.io-1949cf8c6b5b557f/hyper-1.10.1/src/proto/h1/dispatch.rs"),
+        name("u8"),
+        name("bool"),
+        name("()"),
+        name("conn"),
+        name("state"),
+        name("keep_alive"),
+        name("reading"),
+        name("writing"),
+        name("method"),
+        name("is_closing"),
+        name("dispatch"),
+        name("callback"),
+        name("rx"),
+        name("inner"),
+        name("Some"),
+        name("None"),
+        name("__0"),
+        name("kind"),
+    );
+    let (idle, busy, disabled, init, cont, body, length, chunked, get, post, retry, no_retry) = (
+        name("Idle"),
+        name("Busy"),
+        name("Disabled"),
+        name("Init"),
+        name("Continue"),
+        name("Body"),
+        name("Length"),
+        name("Chunked"),
+        name("Get"),
+        name("Post"),
+        name("Retry"),
+        name("NoRetry"),
+    );
+    let (
+        ka_name,
+        kind_name,
+        decoder,
+        encoder,
+        reading_name,
+        writing_name,
+        inner_name,
+        method_name,
+        option,
+        state_name,
+        conn_name,
+        sender,
+        callback_name,
+        unbounded,
+        receiver,
+        client,
+        dispatcher,
+    ) = (
+        name("hyper::proto::h1::conn::KA"),
+        name("Kind"),
+        name("Decoder"),
+        name("Encoder"),
+        name("hyper::proto::h1::conn::Reading"),
+        name("hyper::proto::h1::conn::Writing"),
+        name("http::method::Inner"),
+        name("http::method::Method"),
+        name("Option"),
+        name("hyper::proto::h1::conn::State"),
+        name("hyper::proto::h1::conn::Conn<I, B, T>"),
+        name("tokio::sync::oneshot::Sender<T>"),
+        name("hyper::client::dispatch::Callback<T, U>"),
+        name("tokio::sync::mpsc::unbounded::UnboundedReceiver<T>"),
+        name("hyper::client::dispatch::Receiver<T, U>"),
+        name("hyper::proto::h1::dispatch::Client<B>"),
+        name("hyper::proto::h1::dispatch::Dispatcher<D, Bs, I, T>"),
+    );
+    b.strings = strings.finish();
+    let member = |name, ty, offset| MemberDef { name, ty, offset };
+    let mut next = b.types.types.len() as u32;
+    let mut id = || {
+        next += 1;
+        BundleTypeId(next - 1)
+    };
+    let (u8_t, bool_t, unit_t, ka, length_p, dkind, decoder_t, cont_p, body_p, reading_t) =
+        (id(), id(), id(), id(), id(), id(), id(), id(), id(), id());
+    let (encoder_t, wbody_p, writing_t, inner_t, method_t, some_m, opt_method, state_t, conn_t) =
+        (id(), id(), id(), id(), id(), id(), id(), id(), id());
+    let (sender_t, some_s, opt_sender, retry_p, no_retry_p, callback_t, some_c, opt_callback) =
+        (id(), id(), id(), id(), id(), id(), id(), id());
+    let (unbounded_t, receiver_t, client_t, dispatcher_t) = (id(), id(), id(), id());
+    let variant = |name, discr: u128, payload: MemberDef| VariantDef {
+        name,
+        discr_values: Some(DiscrValues(vec![DiscrValue::Value(discr)])),
+        payload,
+        decl: None,
+        await_site: None,
+    };
+    let enumeration = |name, size, variants| TypeDef::Enum {
+        name,
+        size,
+        shape: VariantShape {
+            discr: Some(DiscrDef {
+                offset: 0,
+                ty: u8_t,
+            }),
+            variants,
+        },
+    };
+    let strukt = |name, size, members| TypeDef::Struct {
+        name,
+        size,
+        members,
+    };
+    let word = BundleTypeId(0);
+    let pointer = BundleTypeId(8);
+    b.types.types.extend([
+        TypeDef::Base {
+            name: u8_name,
+            size: 1,
+            encoding: Encoding::Unsigned,
+        },
+        TypeDef::Base {
+            name: bool_name,
+            size: 1,
+            encoding: Encoding::Unsigned,
+        },
+        strukt(unit, 0, vec![]),
+        TypeDef::CEnum {
+            name: ka_name,
+            size: 1,
+            repr: u8_t,
+            enumerators: vec![(idle, 0), (busy, 1), (disabled, 2)],
+        },
+        strukt(length, 8, vec![member(first, word, 0)]),
+        enumeration(
+            kind_name,
+            16,
+            vec![
+                variant(length, 0, member(length, length_p, 8)),
+                variant(chunked, 1, member(chunked, unit_t, 8)),
+            ],
+        ),
+        strukt(decoder, 16, vec![member(kind, dkind, 0)]),
+        strukt(cont, 16, vec![member(first, decoder_t, 0)]),
+        strukt(body, 16, vec![member(first, decoder_t, 0)]),
+        enumeration(
+            reading_name,
+            24,
+            vec![
+                variant(init, 0, member(init, unit_t, 8)),
+                variant(cont, 1, member(cont, cont_p, 8)),
+                variant(body, 2, member(body, body_p, 8)),
+            ],
+        ),
+        strukt(encoder, 16, vec![member(kind, dkind, 0)]),
+        strukt(body, 16, vec![member(first, encoder_t, 0)]),
+        enumeration(
+            writing_name,
+            24,
+            vec![
+                variant(init, 0, member(init, unit_t, 8)),
+                variant(body, 1, member(body, wbody_p, 8)),
+            ],
+        ),
+        enumeration(
+            inner_name,
+            1,
+            vec![
+                variant(get, 0, member(get, unit_t, 1)),
+                variant(post, 1, member(post, unit_t, 1)),
+            ],
+        ),
+        strukt(method_name, 1, vec![member(first, inner_t, 0)]),
+        strukt(some, 1, vec![member(first, method_t, 0)]),
+        enumeration(
+            option,
+            2,
+            vec![
+                variant(none, 0, member(none, unit_t, 1)),
+                variant(some, 1, member(some, some_m, 1)),
+            ],
+        ),
+        strukt(
+            state_name,
+            80,
+            vec![
+                member(keep_alive, ka, 0),
+                member(reading, reading_t, 8),
+                member(writing, writing_t, 32),
+                member(method, opt_method, 56),
+            ],
+        ),
+        strukt(conn_name, 96, vec![member(state, state_t, 8)]),
+        strukt(sender, 8, vec![member(inner, pointer, 0)]),
+        strukt(some, 8, vec![member(first, sender_t, 0)]),
+        enumeration(
+            option,
+            16,
+            vec![
+                variant(none, 0, member(none, unit_t, 8)),
+                variant(some, 1, member(some, some_s, 8)),
+            ],
+        ),
+        strukt(retry, 16, vec![member(first, opt_sender, 0)]),
+        strukt(no_retry, 16, vec![member(first, opt_sender, 0)]),
+        enumeration(
+            callback_name,
+            24,
+            vec![
+                variant(retry, 0, member(retry, retry_p, 8)),
+                variant(no_retry, 1, member(no_retry, no_retry_p, 8)),
+            ],
+        ),
+        strukt(some, 24, vec![member(first, callback_t, 0)]),
+        enumeration(
+            option,
+            32,
+            vec![
+                variant(none, 0, member(none, unit_t, 8)),
+                variant(some, 1, member(some, some_c, 8)),
+            ],
+        ),
+        strukt(unbounded, 8, vec![member(inner, pointer, 0)]),
+        strukt(receiver, 8, vec![member(inner, unbounded_t, 0)]),
+        strukt(
+            client,
+            48,
+            vec![
+                member(callback, opt_callback, 0),
+                member(rx, receiver_t, 32),
+            ],
+        ),
+        strukt(
+            dispatcher,
+            160,
+            vec![
+                member(conn, conn_t, 0),
+                member(dispatch, client_t, 96),
+                member(is_closing, bool_t, 152),
+            ],
+        ),
+    ]);
+    b.semantics.origins.push(SemanticOrigin::LibraryDelegation {
+        package: hyper,
+        version,
+        family,
+        source,
+        files: Vec::new(),
+    });
+    b.semantics.rules.push(SemanticRule {
+        kind: SemanticRuleKind::HyperH1Conn,
+        revision: 1,
+        origin: SemanticOriginId(1),
+    });
+    let rule = SemanticRuleId(1);
+    let route = |steps: Vec<Step>, target| TypedPath { steps, target };
+    let state_word = |word, target| route(vec![named(conn), named(state), named(word)], target);
+    let framing = |word, through, target| {
+        route(
+            vec![
+                named(conn),
+                named(state),
+                named(word),
+                Step::Variant(through),
+                named(first),
+                named(kind),
+            ],
+            target,
+        )
+    };
+    let sender_route = |through| {
+        route(
+            vec![
+                named(dispatch),
+                named(callback),
+                Step::Variant(some),
+                named(first),
+                Step::Variant(through),
+                named(first),
+                Step::Variant(some),
+                named(first),
+            ],
+            sender_t,
+        )
+    };
+    let client_binding = HttpClientBinding {
+        callback: route(vec![named(dispatch), named(callback)], opt_callback),
+        retry: sender_route(retry),
+        no_retry: sender_route(no_retry),
+        rx: route(vec![named(dispatch), named(rx), named(inner)], unbounded_t),
+    };
+    let mut r = record(dispatcher_t);
+    r.future = None;
+    r.resource = Some(ResourceBinding {
+        rule,
+        kind: ResourceKind::HttpConn,
+        state_rule: Some(rule),
+        exclusive_pending: true,
+    });
+    r.http = Some(HttpConnBinding {
+        rule,
+        role: HttpRole::Client,
+        keep_alive: state_word(keep_alive, ka),
+        reading: state_word(reading, reading_t),
+        writing: state_word(writing, writing_t),
+        method: state_word(method, opt_method),
+        method_inner: route(
+            vec![
+                named(conn),
+                named(state),
+                named(method),
+                Step::Variant(some),
+                named(first),
+                named(first),
+            ],
+            inner_t,
+        ),
+        read_continue_kind: framing(reading, cont, dkind),
+        read_body_kind: framing(reading, body, dkind),
+        write_body_kind: framing(writing, body, dkind),
+        is_closing: route(vec![named(is_closing)], bool_t),
+        client: Some(client_binding.clone()),
+        server: None,
+    });
+    b.semantics.types = vec![r];
+    b.validate().unwrap();
+    (b, client_binding)
+}
+
+/// The HTTP connection binding: the resource and the binding come
+/// together under one hyper rule; every word is an enum of the shape
+/// the verdict reads, the words inside a word are selected through the
+/// variant that carries them, the closing flag is a byte, the client's
+/// senders are reached through its callback, and the dispatch routes
+/// present are the role's own.
+#[test]
+fn test_semantic_http_conn_binding_routes_every_word() {
+    let (b, client) = http_conn();
+    let mut bytes = Vec::new();
+    b.write_to(&mut bytes).unwrap();
+    assert_eq!(Bundle::read_from(bytes.as_slice()).unwrap(), b);
+
+    fn http(b: &mut Bundle) -> &mut HttpConnBinding {
+        b.semantics.types[0].http.as_mut().unwrap()
+    }
+    // The resource and the binding stand together, under one rule.
+    let mut wrong = b.clone();
+    wrong.semantics.types[0].http = None;
+    bad(&wrong, "resource and binding disagree");
+    let mut wrong = b.clone();
+    wrong.semantics.types[0].resource = None;
+    bad(&wrong, "binding has no resource");
+    let mut wrong = b.clone();
+    http(&mut wrong).rule = SemanticRuleId(0);
+    bad(&wrong, "resource and binding disagree");
+    let mut wrong = b.clone();
+    wrong.semantics.types[0]
+        .resource
+        .as_mut()
+        .unwrap()
+        .state_rule = Some(SemanticRuleId(0));
+    bad(&wrong, "incompatible capability");
+    let mut wrong = b.clone();
+    wrong.semantics.types[0].storage = StoragePolicy::Unavailable(issue());
+    bad(&wrong, "unavailable storage carries a readable capability");
+    // Each word is the shape the verdict reads.
+    let mut wrong = b.clone();
+    http(&mut wrong).keep_alive = http(&mut wrong).reading.clone();
+    bad(&wrong, "keep-alive is not a C-like enum");
+    let mut wrong = b.clone();
+    http(&mut wrong).reading = http(&mut wrong).keep_alive.clone();
+    bad(&wrong, "reading is not an enum");
+    let mut wrong = b.clone();
+    http(&mut wrong).is_closing = http(&mut wrong).reading.clone();
+    bad(&wrong, "closing flag is not one byte");
+    // A word inside a word is selected from the word it sits in: a
+    // route that is an enum but starts elsewhere is refused even when
+    // a variant step sits where the selection would.
+    let mut wrong = b.clone();
+    http(&mut wrong).method_inner = http(&mut wrong).read_body_kind.clone();
+    bad(&wrong, "method name is not selected from its word");
+    let mut wrong = b.clone();
+    http(&mut wrong).write_body_kind = http(&mut wrong).read_body_kind.clone();
+    bad(&wrong, "write framing is not selected from its word");
+    // A sender is reached through the callback, further than it.
+    let mut wrong = b.clone();
+    http(&mut wrong).client.as_mut().unwrap().retry = client.callback.clone();
+    bad(&wrong, "sender is not reached through the callback");
+    // The dispatch routes present are the role's own: both, or the
+    // other role's, disagree.
+    let server = HttpServerBinding {
+        in_flight: http(&mut b.clone()).is_closing.clone(),
+        header_read_timeout_running: http(&mut b.clone()).is_closing.clone(),
+    };
+    let mut wrong = b.clone();
+    http(&mut wrong).server = Some(server.clone());
+    bad(&wrong, "dispatch paths disagree with the role");
+    let mut wrong = b.clone();
+    http(&mut wrong).role = HttpRole::Server;
+    bad(&wrong, "dispatch paths disagree with the role");
+    // A server-shaped record: the client's routes gone, the server's
+    // two present, its flag a byte.
+    let mut server_conn = b.clone();
+    http(&mut server_conn).role = HttpRole::Server;
+    http(&mut server_conn).client = None;
+    http(&mut server_conn).server = Some(server);
+    server_conn.validate().unwrap();
+    let mut wrong = server_conn.clone();
+    http(&mut wrong)
+        .server
+        .as_mut()
+        .unwrap()
+        .header_read_timeout_running = http(&mut wrong).reading.clone();
+    bad(&wrong, "header-read timer flag is not one byte");
+    // The rule is hyper's, read off its own file.
+    let mut wrong = b.clone();
+    wrong.semantics.rules[1].kind = SemanticRuleKind::HyperUtilTokioSleep;
+    bad(&wrong, "third-party delegation needs source evidence");
 }

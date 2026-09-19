@@ -194,6 +194,7 @@ pub fn classify(role: WalkRole) -> Class {
         | NotifyWaiterWaker
         | NotifyWaiterNotification
         | OneshotInner
+        | OneshotSenderInner
         | OneshotState
         | OneshotRxTask
         | OneshotTxTask

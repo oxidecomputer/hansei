@@ -167,6 +167,8 @@ impl<'a> Check<'a> {
             }
             TracingInstrumented
             | HyperUtilTokioSleep
+            | HyperUtilAutoConn
+            | HyperH1Conn
             | TokioSelect
             | TokioIntervalTick
             | FuturesUtilNext
@@ -175,7 +177,8 @@ impl<'a> Check<'a> {
             | TokioStreamStreamMap => {
                 let crate_name = match rule.kind {
                     TracingInstrumented => "tracing",
-                    HyperUtilTokioSleep => "hyper-util",
+                    HyperUtilTokioSleep | HyperUtilAutoConn => "hyper-util",
+                    HyperH1Conn => "hyper",
                     // tokio's own macro and its own async fn, but read
                     // like a third-party rule: the declaration file is
                     // the evidence, and tokio's version comes off its
@@ -423,8 +426,9 @@ impl<'a> Check<'a> {
         Ok(())
     }
 
-    fn resource(&self, ty: BundleTypeId, binding: &ResourceBinding) -> Result<()> {
+    fn resource(&self, record: &TypeSemantics, binding: &ResourceBinding) -> Result<()> {
         use SemanticRuleKind::*;
+        let ty = record.ty;
         let kind = match binding.kind {
             ResourceKind::Sleep => TokioSleep,
             ResourceKind::JoinHandle => TokioJoinHandle,
@@ -433,10 +437,22 @@ impl<'a> Check<'a> {
             ResourceKind::MpscRecv => TokioMpscRecv,
             ResourceKind::Notified => TokioNotified,
             ResourceKind::OneshotRecv => TokioOneshotRecv,
+            ResourceKind::HttpConn => HyperH1Conn,
         };
         self.rule(binding.rule, &[kind])?;
         self.roles(ty, required_resource_roles(binding.kind))?;
         self.routes(required_resource_routes(binding.kind))?;
+        // The connection's words are reached by the record's own
+        // paths, not by walk roles: the binding that holds them is the
+        // resource's, under the same rule.
+        require(
+            (binding.kind == ResourceKind::HttpConn)
+                == record
+                    .http
+                    .as_ref()
+                    .is_some_and(|http| http.rule == binding.rule),
+            "HTTP connection resource and binding disagree",
+        )?;
         if let Some(rule) = binding.state_rule {
             let kind = match binding.kind {
                 ResourceKind::Sleep => TokioSleepState,
@@ -446,6 +462,9 @@ impl<'a> Check<'a> {
                 ResourceKind::MpscRecv => TokioMpscRecvState,
                 ResourceKind::Notified => TokioNotifiedState,
                 ResourceKind::OneshotRecv => TokioOneshotRecvState,
+                // The reviewed range is the state protocol: the same
+                // rule, whose delegation origin binds only inside it.
+                ResourceKind::HttpConn => HyperH1Conn,
             };
             self.rule(rule, &[kind])?;
         }
@@ -456,6 +475,92 @@ impl<'a> Check<'a> {
             !binding.exclusive_pending || binding.state_rule.is_some(),
             "unreviewed exclusive-pending guarantee",
         )
+    }
+
+    /// An HTTP/1 connection binding: every path walks from the record's
+    /// type — the dispatcher — to a word of the shape the verdict reads,
+    /// under the hyper rule, and the role's own dispatch paths are
+    /// there for the role and for no other.
+    fn http(&self, record: &TypeSemantics, binding: &HttpConnBinding) -> Result<()> {
+        self.rule(binding.rule, &[SemanticRuleKind::HyperH1Conn])?;
+        // The binding is the resource's: the words it routes to are
+        // what the connection resource reads. That the resource is the
+        // connection kind under this same rule is the resource check's
+        // to hold, which it does before this runs; here only its
+        // presence is in question.
+        require(
+            record.resource.is_some(),
+            "HTTP connection binding has no resource",
+        )?;
+        let enumeration = |path: &TypedPath, what: &str| -> Result<()> {
+            self.path(record.ty, path)?;
+            require(
+                matches!(self.ty(path.target)?, TypeDef::Enum { .. }),
+                &format!("HTTP connection {what} is not an enum"),
+            )
+        };
+        // `KA` carries no payload: a C-like enum, read by enumerator.
+        self.path(record.ty, &binding.keep_alive)?;
+        require(
+            matches!(self.ty(binding.keep_alive.target)?, TypeDef::CEnum { .. }),
+            "HTTP connection keep-alive is not a C-like enum",
+        )?;
+        enumeration(&binding.reading, "reading")?;
+        enumeration(&binding.writing, "writing")?;
+        enumeration(&binding.method, "method")?;
+        // The words inside a word: each is reached through the enum it
+        // sits in, selecting the variant that carries it.
+        for (inner, through, what) in [
+            (&binding.method_inner, &binding.method, "method name"),
+            (
+                &binding.read_continue_kind,
+                &binding.reading,
+                "continue framing",
+            ),
+            (&binding.read_body_kind, &binding.reading, "read framing"),
+            (&binding.write_body_kind, &binding.writing, "write framing"),
+        ] {
+            enumeration(inner, what)?;
+            require(
+                inner.steps.starts_with(&through.steps)
+                    && matches!(inner.steps.get(through.steps.len()), Some(Step::Variant(_))),
+                &format!("HTTP connection {what} is not selected from its word"),
+            )?;
+        }
+        self.path(record.ty, &binding.is_closing)?;
+        require(
+            self.0.types.size_of(binding.is_closing.target) == Some(1),
+            "HTTP connection closing flag is not one byte",
+        )?;
+        require(
+            (binding.role == HttpRole::Client) == binding.client.is_some()
+                && (binding.role == HttpRole::Server) == binding.server.is_some(),
+            "HTTP connection dispatch paths disagree with the role",
+        )?;
+        if let Some(client) = &binding.client {
+            enumeration(&client.callback, "callback")?;
+            for sender in [&client.retry, &client.no_retry] {
+                self.path(record.ty, sender)?;
+                require(
+                    sender.steps.starts_with(&client.callback.steps)
+                        && sender.steps.len() > client.callback.steps.len(),
+                    "HTTP callback sender is not reached through the callback",
+                )?;
+            }
+            self.path(record.ty, &client.rx)?;
+        }
+        if let Some(server) = &binding.server {
+            self.path(record.ty, &server.in_flight)?;
+            self.path(record.ty, &server.header_read_timeout_running)?;
+            require(
+                self.0
+                    .types
+                    .size_of(server.header_read_timeout_running.target)
+                    == Some(1),
+                "HTTP header-read timer flag is not one byte",
+            )?;
+        }
+        Ok(())
     }
 
     /// A `select!` binding: both routes walk from the record's type
@@ -605,6 +710,7 @@ impl<'a> Check<'a> {
                         TokioCoop,
                         FuturesUtilNext,
                         TokioIntervalTick,
+                        HyperH1Conn,
                     ],
                 )?;
                 self.target(record.ty, target)?;
@@ -620,7 +726,9 @@ impl<'a> Check<'a> {
                 // enters a span around its poll, running subscriber
                 // callbacks the review does not bound, so it stays
                 // false. The tick's `PollFn` polls the interval's box
-                // and, while that is pending, nothing else.
+                // and, while that is pending, nothing else. hyper's
+                // connection wrappers poll the dispatcher inside them
+                // and act only on its output.
                 let reviewed = matches!(
                     binding.kind,
                     RustcAsyncFn
@@ -636,6 +744,7 @@ impl<'a> Check<'a> {
                         | TokioCoop
                         | FuturesUtilNext
                         | TokioIntervalTick
+                        | HyperH1Conn
                 );
                 require(!exclusive || reviewed, "unreviewed delegation exclusivity")?;
                 let path = match target {
@@ -666,6 +775,7 @@ impl<'a> Check<'a> {
                         TokioMpscRecv,
                         TokioNotified,
                         TokioOneshotRecv,
+                        HyperH1Conn,
                     ],
                 )?;
                 require(
@@ -741,6 +851,7 @@ impl<'a> Check<'a> {
                 TokioOneshotRecv,
                 CorePending,
                 FuturesUtilPending,
+                HyperH1Conn,
             ],
         )?;
         require(
@@ -848,6 +959,9 @@ pub fn required_resource_roles(kind: ResourceKind) -> &'static [WalkRole] {
         ResourceKind::MpscRecv => &[MpscRecvRx],
         ResourceKind::Notified => &[NotifiedNotify, NotifiedState, NotifiedCalls, NotifiedWaiter],
         ResourceKind::OneshotRecv => &[OneshotInner],
+        // The connection's words are the record's own paths, under a
+        // third-party rule the walk contract does not bind.
+        ResourceKind::HttpConn => &[],
     }
 }
 
@@ -901,6 +1015,7 @@ pub fn required_resource_routes(kind: ResourceKind) -> &'static [WalkRole] {
         // whether a completion carried one, and the receiver's own
         // waker slot.
         ResourceKind::OneshotRecv => &[OneshotState, OneshotValue, OneshotRxTask],
+        ResourceKind::HttpConn => &[],
     }
 }
 
@@ -994,7 +1109,8 @@ pub(crate) fn check_semantics(bundle: &Bundle) -> Result<()> {
                     record.access.is_none()
                         && record.resource.is_none()
                         && record.container.is_none()
-                        && record.select.is_none(),
+                        && record.select.is_none()
+                        && record.http.is_none(),
                     "unavailable storage carries a readable capability",
                 )?;
             }
@@ -1037,7 +1153,14 @@ pub(crate) fn check_semantics(bundle: &Bundle) -> Result<()> {
             check.target(record.ty, &access.target)?;
         }
         if let Some(resource) = &record.resource {
-            check.resource(record.ty, resource)?;
+            check.resource(record, resource)?;
+        }
+        if let Some(http) = &record.http {
+            require(
+                matches!(record.storage, StoragePolicy::DeclaredMembers),
+                "HTTP connection binding needs declared-member storage",
+            )?;
+            check.http(record, http)?;
         }
         if let Some(container) = &record.container {
             let kind = match container.kind {

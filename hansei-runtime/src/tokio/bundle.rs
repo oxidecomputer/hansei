@@ -3066,6 +3066,7 @@ impl<'b, T: Target> Context<'b, T> {
             ResourceKind::OneshotRecv => self
                 .observe_oneshot(value, read)
                 .map(ResourceObservation::Oneshot),
+            ResourceKind::HttpConn => return Observed::none(),
         };
         match observed {
             Ok(observation) => Observed::of(observation),

@@ -1581,6 +1581,7 @@ pub(super) fn bind_semantics(
             resource,
             container,
             select,
+            http: None,
             issues,
         });
     }

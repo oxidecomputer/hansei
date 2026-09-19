@@ -42,6 +42,10 @@ pub struct TypeSemantics {
     /// The branches this future polls in turn, where it is the
     /// `PollFn` a reviewed `select!` expansion parks in.
     pub select: Option<SelectBinding>,
+    /// The state words of the HTTP/1 connection this future drives,
+    /// where it is hyper's `Dispatcher` under a reviewed range: the
+    /// paths the [`ResourceKind::HttpConn`] resource is read through.
+    pub http: Option<HttpConnBinding>,
     pub issues: Vec<SemanticIssue>,
 }
 
@@ -211,6 +215,93 @@ pub enum ResourceKind {
     /// `tokio::sync::oneshot::Receiver<T>`, which is its own future:
     /// its `poll` reads the shared `Inner`'s state word.
     OneshotRecv,
+    /// hyper's `proto::h1::dispatch::Dispatcher`, the future an HTTP/1
+    /// connection task polls: its poll drives the connection's state
+    /// machine, and the words that machine keeps — keep-alive, what is
+    /// being read and written, the method in flight — say where the
+    /// connection stands. The record's [`HttpConnBinding`] holds the
+    /// paths to them.
+    HttpConn,
+}
+
+/// Which end of an HTTP exchange a connection drives.
+#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug, Serialize, Deserialize)]
+pub enum HttpRole {
+    Client,
+    Server,
+}
+
+/// hyper's HTTP/1 `Dispatcher<D, Bs, I, T>` as a reviewed range lays it
+/// out: the routes from the dispatcher to every word the connection
+/// verdict reads. The connection's own words sit in `conn.state`; the
+/// role's dispatch holds what it is parked on — the client's response
+/// callback and request receiver, the server's in-flight handler and
+/// header-read timer flag. Every path starts at the dispatcher and
+/// names its members; a variant step selects the payload it reads
+/// through, and the read reports the variant inactive where it is not.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub struct HttpConnBinding {
+    pub rule: SemanticRuleId,
+    pub role: HttpRole,
+    /// `conn.state.keep_alive`: the `KA` enum — `Idle`, `Busy`,
+    /// `Disabled`.
+    pub keep_alive: TypedPath,
+    /// `conn.state.reading`: the `Reading` enum, whose `Continue` and
+    /// `Body` carry the body's `Decoder`.
+    pub reading: TypedPath,
+    /// `conn.state.writing`: the `Writing` enum, whose `Body` carries
+    /// the `Encoder`.
+    pub writing: TypedPath,
+    /// `conn.state.method`: the `Option<Method>` of the message in
+    /// flight, `None` between exchanges.
+    pub method: TypedPath,
+    /// The method's own enum, through the option and the newtype:
+    /// `conn.state.method.Some.__0.__0`, whose variant is the method's
+    /// name. Read only where `method` is `Some`.
+    pub method_inner: TypedPath,
+    /// The body decoder's framing while reading a body, through
+    /// `Reading::Continue`: `conn.state.reading.Continue.__0.kind`, a
+    /// `Length(remaining)`, `Chunked { .. }` or `Eof(..)`.
+    pub read_continue_kind: TypedPath,
+    /// The same through `Reading::Body`.
+    pub read_body_kind: TypedPath,
+    /// The body encoder's framing while writing one, through
+    /// `Writing::Body`: `conn.state.writing.Body.__0.kind`, a
+    /// `Length(remaining)`, `Chunked(..)` or `CloseDelimited`.
+    pub write_body_kind: TypedPath,
+    /// `is_closing`: set once the dispatcher has closed both directions.
+    pub is_closing: TypedPath,
+    /// The client's dispatch, where `T` is `role::Client`.
+    pub client: Option<HttpClientBinding>,
+    /// The server's dispatch, where `T` is `role::Server`.
+    pub server: Option<HttpServerBinding>,
+}
+
+/// The client dispatch's words: what a client connection is parked on.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub struct HttpClientBinding {
+    /// `dispatch.callback`: the `Option<Callback<..>>` holding the
+    /// response oneshot while a request is in flight, `None` when idle.
+    pub callback: TypedPath,
+    /// The oneshot `Sender` inside the callback's `Retry` variant, from
+    /// the dispatcher: `dispatch.callback.Some.__0.Retry.__0.Some.__0`.
+    pub retry: TypedPath,
+    /// The same through the `NoRetry` variant.
+    pub no_retry: TypedPath,
+    /// `dispatch.rx.inner`: the unbounded mpsc receiver the connection
+    /// takes requests from, parked on while idle.
+    pub rx: TypedPath,
+}
+
+/// The server dispatch's words: what a server connection is parked on.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub struct HttpServerBinding {
+    /// `dispatch.in_flight`: the pinned box holding the handler's future
+    /// while a request is being handled, `None` between requests.
+    pub in_flight: TypedPath,
+    /// `conn.state.h1_header_read_timeout_running`: whether the
+    /// header-read timer the server arms while idle is running.
+    pub header_read_timeout_running: TypedPath,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
@@ -385,6 +476,16 @@ pub enum SemanticRuleKind {
     /// a `T`, and no build leaves a declaration of its poll to read a
     /// version off.
     FuturesUtilPending,
+    /// hyper's HTTP/1 connection under a reviewed range: the
+    /// `Dispatcher` as the resource whose state words are the
+    /// connection's verdict, and the `client::conn::http1` and
+    /// `server::conn::http1` wrappers whose polls forward to it.
+    HyperH1Conn,
+    /// hyper-util's version-choosing server connection
+    /// (`server::conn::auto::UpgradeableConnection`), whose state says
+    /// whether the connection is still reading its first bytes, is
+    /// HTTP/1 (and defers to the dispatcher inside), or HTTP/2.
+    HyperUtilAutoConn,
 }
 
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]

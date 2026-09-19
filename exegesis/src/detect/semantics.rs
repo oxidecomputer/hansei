@@ -861,6 +861,9 @@ pub fn tokio_state_protocol(
         ResourceKind::MpscRecv => &TOKIO_MPSC_RECV_STATE_V1_47,
         ResourceKind::Notified => &TOKIO_NOTIFIED_STATE_V1_47,
         ResourceKind::OneshotRecv => &TOKIO_ONESHOT_RECV_STATE_V1_47,
+        // Not tokio's: the connection's protocol is the hyper
+        // convention its own rule binds under.
+        ResourceKind::HttpConn => return None,
     };
     protocol.covers(version?).then_some(protocol)
 }

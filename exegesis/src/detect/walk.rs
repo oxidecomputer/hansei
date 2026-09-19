@@ -88,6 +88,7 @@ const MPSC_RECV: &str = "PollFn<mpsc::bounded::Receiver::recv::{closure}>";
 /// and watch receivers whose shared state a slot in it is read against.
 const MPSC_RECEIVER: &str = "mpsc::Receiver";
 const ONESHOT_RECEIVER: &str = "tokio::sync::oneshot::Receiver<";
+const ONESHOT_SENDER: &str = "tokio::sync::oneshot::Sender<";
 const WATCH_RECEIVER: &str = "tokio::sync::watch::Receiver<";
 /// The scheduler `S` of a task cell, per flavor: the flavor handles and
 /// the `LocalSet`'s shared state are `Arc`s, the blocking pool's is a
@@ -1778,15 +1779,37 @@ fn decls() -> Vec<WalkDecl> {
                 ]]
             },
         ),
+        // The channel behind either receiver, bounded or unbounded: the
+        // `Chan` in the `Arc` its `Rx` holds. The words the two flavors
+        // share are rooted here, so a target whose only receivers are
+        // unbounded — or whose bounded ones are never awaited through
+        // `recv` — still reads them; the bounded semaphore's two words
+        // stay rooted at the `recv` future's channel, since an
+        // unbounded semaphore has neither.
+        decl(
+            WalkRole::MpscReceiverChan,
+            WalkRoot::LeafWhere(MPSC_RECEIVER, mpsc_receiver),
+            Aggregate,
+            || {
+                vec![reach![
+                    Named("chan"),
+                    Named("inner"),
+                    Named("ptr"),
+                    Named("pointer"),
+                    Deref,
+                    Named("data"),
+                ]]
+            },
+        ),
         decl(
             WalkRole::ChanTxCount,
-            End(WalkRole::MpscRecvChan),
+            End(WalkRole::MpscReceiverChan),
             Word,
             || vec![reach![Named("tx_count"), PeelTo(WORD)]],
         ),
         decl(
             WalkRole::ChanTailPosition,
-            End(WalkRole::MpscRecvChan),
+            End(WalkRole::MpscReceiverChan),
             Word,
             || {
                 vec![reach![
@@ -1799,7 +1822,7 @@ fn decls() -> Vec<WalkDecl> {
         ),
         decl(
             WalkRole::ChanRxIndex,
-            End(WalkRole::MpscRecvChan),
+            End(WalkRole::MpscReceiverChan),
             Word,
             || {
                 vec![reach![
@@ -1813,7 +1836,7 @@ fn decls() -> Vec<WalkDecl> {
         ),
         decl(
             WalkRole::ChanRxHead,
-            End(WalkRole::MpscRecvChan),
+            End(WalkRole::MpscReceiverChan),
             Pointer,
             || {
                 vec![reach![
@@ -1828,7 +1851,7 @@ fn decls() -> Vec<WalkDecl> {
         ),
         decl(
             WalkRole::ChanRxClosed,
-            End(WalkRole::MpscRecvChan),
+            End(WalkRole::MpscReceiverChan),
             Word,
             || {
                 vec![reach![
@@ -1841,7 +1864,7 @@ fn decls() -> Vec<WalkDecl> {
         ),
         decl(
             WalkRole::ChanRxWakerState,
-            End(WalkRole::MpscRecvChan),
+            End(WalkRole::MpscReceiverChan),
             Word,
             || {
                 vec![reach![
@@ -1854,7 +1877,7 @@ fn decls() -> Vec<WalkDecl> {
         ),
         decl(
             WalkRole::ChanRxWaker,
-            End(WalkRole::MpscRecvChan),
+            End(WalkRole::MpscReceiverChan),
             Aggregate,
             || {
                 vec![reach![
@@ -2035,6 +2058,24 @@ fn decls() -> Vec<WalkDecl> {
                 ]]
             },
         ),
+        // The sender holds the same `Option<Arc<Inner<T>>>`: what a
+        // connection's response callback is read through from the
+        // sending side, the `Inner`'s words being rooted at the
+        // receiver's pointee above.
+        decl(
+            WalkRole::OneshotSenderInner,
+            Leaf(ONESHOT_SENDER),
+            Pointer,
+            || {
+                vec![reach![
+                    Named("inner"),
+                    Variant("Some"),
+                    Named("__0"),
+                    Named("ptr"),
+                    Named("pointer"),
+                ]]
+            },
+        ),
         decl(
             WalkRole::OneshotState,
             Pointee(WalkRole::OneshotInner),
@@ -2063,19 +2104,6 @@ fn decls() -> Vec<WalkDecl> {
                     Named("value"),
                     Named("__0"),
                     Named("value"),
-                ]]
-            },
-        ),
-        decl(
-            WalkRole::MpscReceiverChan,
-            WalkRoot::LeafWhere(MPSC_RECEIVER, mpsc_receiver),
-            Pointer,
-            || {
-                vec![reach![
-                    Named("chan"),
-                    Named("inner"),
-                    Named("ptr"),
-                    Named("pointer"),
                 ]]
             },
         ),

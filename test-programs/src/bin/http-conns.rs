@@ -226,16 +226,13 @@ fn main() {
         // fixture can name only by the task holding them: under each of
         // the two HTTP/1 server connections, hyper's connection future
         // and the dispatcher inside it; under the connection that never
-        // spoke, the version-choosing read; and under each client
-        // connection task, the dispatcher behind the box its executor
-        // was handed.
+        // spoke, the version-choosing read. The client connection tasks
+        // register nothing: the dispatcher behind the box each executor
+        // was handed is a frame of the task's own await chain, reached
+        // through hyper's connection wrappers, so it is no held find.
         for _ in 0..2 {
             census_expect::held_by_task("http_conns::serve", "http1::UpgradeableConnection");
             census_expect::held_by_task("http_conns::serve", "h1::dispatch::Dispatcher");
-            census_expect::held_by_task(
-                "http_conns::{impl#0}::execute",
-                "h1::dispatch::Dispatcher",
-            );
         }
         census_expect::held_by_task("http_conns::serve", "auto::ReadVersion");
 
