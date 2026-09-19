@@ -398,6 +398,297 @@ pub const HYPER_UTIL_TOKIO_SLEEP_V0_1_10: LibraryConvention = LibraryConvention 
     ],
 };
 
+/// hyper's HTTP/1 connection as 1.6.0 through 1.10.1 implement it,
+/// reviewed in `src/proto/h1/conn.rs`, `src/proto/h1/dispatch.rs`,
+/// `src/proto/h1/decode.rs`, `src/proto/h1/encode.rs`,
+/// `src/client/dispatch.rs`, `src/client/conn/http1.rs` and
+/// `src/server/conn/http1.rs` of every release in the range. The
+/// declarations the rule addresses are the same text in all of them:
+/// `Dispatcher { conn, dispatch, body_tx, body_rx, is_closing }` (only
+/// `body_tx`'s type moved, in 1.10.0, and nothing here names it),
+/// `Conn { io, state, _marker }`, `State`, and its `KA { Idle, Busy,
+/// Disabled }`, `Reading { Init, Continue(Decoder), Body(Decoder),
+/// KeepAlive, Closed }`, `Writing { Init, Body(Encoder), KeepAlive,
+/// Closed }` and `method: Option<Method>`; `Decoder { kind: Kind }`
+/// with `Kind { Length(u64), Chunked { .. }, Eof(bool) }` and `Encoder
+/// { kind: Kind, is_last }` with `Kind { Chunked(..), Length(u64),
+/// CloseDelimited }` (1.9.0 changed what `Chunked` carries, not its
+/// name); the client dispatch `Client { callback: Option<Callback>,
+/// rx: Receiver, rx_closed }` with `Callback { Retry(Option<
+/// oneshot::Sender>), NoRetry(Option<oneshot::Sender>) }` and
+/// `Receiver { inner: UnboundedReceiver, taker }`; and the wrappers
+/// `Connection { inner: Dispatcher }` and `UpgradeableConnection {
+/// inner: Option<Connection> }` on each side. The releases differ in
+/// the dispatcher's write-again loop (1.8.0, 1.10.x), the body
+/// sender's drop guard (1.10.0), where a trailers frame leaves
+/// `reading` (1.9.0: `KeepAlive`, before it `Closed`), h2 plumbing
+/// and docs — none of which changes what a word means.
+///
+/// What the words mean, from `Conn` and the dispatch: `State::busy`
+/// sets `KA::Busy` as a message head is read or written, and
+/// `State::idle` — run by `try_keep_alive` once `reading` and
+/// `writing` are both `KeepAlive` — clears `method` and sets
+/// `KA::Idle`, so `Idle` is a connection between exchanges;
+/// `Disabled` is set by a `Connection: close` or an HTTP/1.0 peer and
+/// never cleared, and `close` puts both directions in `Closed`. The
+/// client's `write_head` records the request's method in `method`
+/// and moves `writing` to `Body(encoder)` when a body follows, else to
+/// `KeepAlive` (or `Closed`); `reading` moves from `Init` to
+/// `Body(decoder)` (or `Continue`) once the response head is parsed
+/// and back through `KeepAlive` when the body ends. The client's
+/// `Dispatch` keeps the response callback in `callback` from the
+/// request's arrival on `rx` until the response head is delivered,
+/// and its `poll_ready` registers the dispatcher's waker on that
+/// callback's oneshot (`poll_canceled`) while `poll_msg` registers it
+/// on `rx` (`poll_recv`) — the two primitives an idle and an in-flight
+/// client connection are parked on beside the socket. `is_closing` is
+/// set by the dispatcher's `close`, after which its poll only flushes.
+/// `Connection::poll` and `UpgradeableConnection::poll` poll the
+/// dispatcher inside them and act on its output alone.
+///
+/// The ceiling is the newest release the cores on hand build; it
+/// advances by hand when a newer one is read.
+pub const HYPER_H1_CONN_V1_6_0: LibraryConvention = LibraryConvention {
+    package: "hyper",
+    family: "hyper-h1-conn-1.6.0",
+    floor: (1, 6, 0),
+    ceiling: (1, 10, 1),
+    checksums: &[
+        // src/proto/h1/conn.rs, 1.6.0
+        (
+            "src/proto/h1/conn.rs",
+            [
+                0x3d, 0x44, 0xbd, 0x56, 0xe0, 0x95, 0x0c, 0x99, 0xf5, 0x34, 0xc2, 0x50, 0xb5, 0x98,
+                0xe5, 0xb1,
+            ],
+        ),
+        // src/proto/h1/conn.rs, 1.7.0
+        (
+            "src/proto/h1/conn.rs",
+            [
+                0x08, 0xa2, 0xeb, 0x1c, 0xde, 0x95, 0x6f, 0x75, 0x9c, 0x1f, 0x31, 0xea, 0x7e, 0xa2,
+                0xa5, 0x2a,
+            ],
+        ),
+        // src/proto/h1/conn.rs, 1.8.0 and 1.8.1
+        (
+            "src/proto/h1/conn.rs",
+            [
+                0x02, 0xa6, 0x2f, 0xd9, 0x7b, 0x3d, 0x89, 0x6b, 0x6c, 0xe7, 0xa8, 0x93, 0xcc, 0x5e,
+                0x8c, 0xa7,
+            ],
+        ),
+        // src/proto/h1/conn.rs, 1.9.0
+        (
+            "src/proto/h1/conn.rs",
+            [
+                0xc2, 0x89, 0xdb, 0x9e, 0x7a, 0x0b, 0x9e, 0xaf, 0x1b, 0x94, 0xaa, 0x53, 0x50, 0x4e,
+                0xbd, 0x16,
+            ],
+        ),
+        // src/proto/h1/conn.rs, 1.10.0 and 1.10.1
+        (
+            "src/proto/h1/conn.rs",
+            [
+                0x22, 0x0a, 0xf9, 0x30, 0xeb, 0x47, 0xdc, 0x8f, 0x43, 0x56, 0xb8, 0x80, 0x26, 0xfb,
+                0xe7, 0x7a,
+            ],
+        ),
+        // src/proto/h1/dispatch.rs, 1.6.0
+        (
+            "src/proto/h1/dispatch.rs",
+            [
+                0xfc, 0xfd, 0xc6, 0x3f, 0xaf, 0x53, 0x8e, 0x7f, 0xc0, 0x7b, 0x74, 0xa5, 0x02, 0x7b,
+                0x15, 0x58,
+            ],
+        ),
+        // src/proto/h1/dispatch.rs, 1.7.0, 1.8.1 and 1.9.0
+        (
+            "src/proto/h1/dispatch.rs",
+            [
+                0x0c, 0x70, 0xa9, 0x91, 0x88, 0xae, 0xc6, 0xb1, 0x47, 0x8d, 0x44, 0x0a, 0x6b, 0x02,
+                0xb7, 0xd0,
+            ],
+        ),
+        // src/proto/h1/dispatch.rs, 1.8.0
+        (
+            "src/proto/h1/dispatch.rs",
+            [
+                0x1f, 0x1d, 0xb4, 0xb1, 0x59, 0x5d, 0x86, 0xe8, 0xbc, 0xc4, 0x22, 0xd4, 0x87, 0x05,
+                0xbd, 0x76,
+            ],
+        ),
+        // src/proto/h1/dispatch.rs, 1.10.0
+        (
+            "src/proto/h1/dispatch.rs",
+            [
+                0x21, 0x01, 0x38, 0x3b, 0x21, 0xc1, 0x16, 0xe8, 0x13, 0x5b, 0xf5, 0x7c, 0xa9, 0x67,
+                0x29, 0xf3,
+            ],
+        ),
+        // src/proto/h1/dispatch.rs, 1.10.1
+        (
+            "src/proto/h1/dispatch.rs",
+            [
+                0x57, 0x66, 0x29, 0x8d, 0x64, 0x24, 0x15, 0x7d, 0x53, 0xb3, 0x1c, 0x64, 0x97, 0x84,
+                0xae, 0x41,
+            ],
+        ),
+        // src/client/dispatch.rs, 1.6.0
+        (
+            "src/client/dispatch.rs",
+            [
+                0x0b, 0xc5, 0xe0, 0xc3, 0x36, 0x94, 0xe5, 0x26, 0x2c, 0xe2, 0x9a, 0xbd, 0xd4, 0x76,
+                0xf3, 0xdc,
+            ],
+        ),
+        // src/client/dispatch.rs, 1.7.0
+        (
+            "src/client/dispatch.rs",
+            [
+                0x39, 0xfd, 0x82, 0x23, 0x02, 0xa8, 0x1e, 0xc0, 0xd9, 0x2c, 0xe3, 0x03, 0x5d, 0x2f,
+                0xd3, 0xce,
+            ],
+        ),
+        // src/client/dispatch.rs, 1.8.0 and 1.8.1
+        (
+            "src/client/dispatch.rs",
+            [
+                0xa2, 0xdf, 0x19, 0x03, 0xef, 0xb0, 0x11, 0xd1, 0xe2, 0xff, 0x75, 0xd0, 0xa1, 0xdd,
+                0x93, 0x8e,
+            ],
+        ),
+        // src/client/dispatch.rs, 1.9.0
+        (
+            "src/client/dispatch.rs",
+            [
+                0xe5, 0x6b, 0xed, 0x79, 0xbf, 0x2c, 0xa0, 0x34, 0xd2, 0x0f, 0xf5, 0x73, 0x75, 0x90,
+                0x72, 0xa9,
+            ],
+        ),
+        // src/client/dispatch.rs, 1.10.0 and 1.10.1
+        (
+            "src/client/dispatch.rs",
+            [
+                0xfb, 0x37, 0x87, 0xcb, 0x63, 0x54, 0x6b, 0x1d, 0x63, 0xf2, 0x1d, 0xc5, 0xb7, 0x46,
+                0x57, 0x32,
+            ],
+        ),
+        // src/client/conn/http1.rs, 1.6.0
+        (
+            "src/client/conn/http1.rs",
+            [
+                0xcc, 0x38, 0x4a, 0xb5, 0xcf, 0xc5, 0x3c, 0xdd, 0x44, 0x94, 0xa4, 0xdc, 0x59, 0xaa,
+                0x5a, 0x4f,
+            ],
+        ),
+        // src/client/conn/http1.rs, 1.7.0 through 1.9.0
+        (
+            "src/client/conn/http1.rs",
+            [
+                0x24, 0xcb, 0x90, 0xdd, 0x18, 0x5f, 0x65, 0xe4, 0x62, 0x07, 0xb2, 0xdd, 0x89, 0x72,
+                0x64, 0xa9,
+            ],
+        ),
+        // src/client/conn/http1.rs, 1.10.0 and 1.10.1
+        (
+            "src/client/conn/http1.rs",
+            [
+                0x7f, 0x04, 0xed, 0x84, 0x3e, 0xd6, 0x12, 0x54, 0xfe, 0xc3, 0x7c, 0xf1, 0x73, 0x21,
+                0xad, 0x27,
+            ],
+        ),
+        // src/server/conn/http1.rs, 1.6.0
+        (
+            "src/server/conn/http1.rs",
+            [
+                0x11, 0xdf, 0x9f, 0x52, 0xaf, 0xa2, 0xe0, 0x05, 0xb8, 0x8d, 0x9a, 0x3d, 0xec, 0xf9,
+                0xaf, 0xba,
+            ],
+        ),
+        // src/server/conn/http1.rs, 1.7.0
+        (
+            "src/server/conn/http1.rs",
+            [
+                0xdf, 0xf8, 0x78, 0xf1, 0x5d, 0xbf, 0x41, 0xc1, 0xfb, 0xb6, 0x54, 0x82, 0x41, 0x48,
+                0x84, 0x98,
+            ],
+        ),
+        // src/server/conn/http1.rs, 1.8.0 and 1.8.1
+        (
+            "src/server/conn/http1.rs",
+            [
+                0x12, 0x73, 0x4d, 0xfb, 0x58, 0x77, 0xfd, 0xfa, 0x39, 0xc7, 0xa9, 0x57, 0x78, 0x8a,
+                0xf7, 0xcf,
+            ],
+        ),
+        // src/server/conn/http1.rs, 1.9.0
+        (
+            "src/server/conn/http1.rs",
+            [
+                0x20, 0xf3, 0xea, 0x38, 0xaa, 0x33, 0x29, 0x35, 0x4a, 0x2f, 0x53, 0xec, 0x50, 0xc6,
+                0x50, 0xaf,
+            ],
+        ),
+        // src/server/conn/http1.rs, 1.10.0 and 1.10.1
+        (
+            "src/server/conn/http1.rs",
+            [
+                0x56, 0xf0, 0x4a, 0xf8, 0xb7, 0x68, 0x81, 0x43, 0x05, 0x05, 0xd5, 0x6b, 0xa7, 0x77,
+                0x5b, 0x75,
+            ],
+        ),
+        // src/proto/h1/decode.rs, 1.6.0
+        (
+            "src/proto/h1/decode.rs",
+            [
+                0xf2, 0xc6, 0xdd, 0x9f, 0x51, 0xf2, 0x06, 0xd7, 0x1e, 0x45, 0xa3, 0x9a, 0xca, 0x58,
+                0xba, 0x16,
+            ],
+        ),
+        // src/proto/h1/decode.rs, 1.7.0 through 1.8.1
+        (
+            "src/proto/h1/decode.rs",
+            [
+                0x35, 0xcc, 0x59, 0xc2, 0x72, 0x8a, 0x59, 0x80, 0x55, 0x5e, 0xf7, 0x95, 0x4a, 0x85,
+                0x75, 0xaa,
+            ],
+        ),
+        // src/proto/h1/decode.rs, 1.9.0
+        (
+            "src/proto/h1/decode.rs",
+            [
+                0x38, 0xe1, 0xbb, 0xc3, 0x1b, 0xb1, 0x91, 0x7b, 0x04, 0xc2, 0x2e, 0x25, 0x05, 0x42,
+                0x4d, 0x55,
+            ],
+        ),
+        // src/proto/h1/decode.rs, 1.10.0 and 1.10.1
+        (
+            "src/proto/h1/decode.rs",
+            [
+                0x16, 0x86, 0xd1, 0xa7, 0xa7, 0x01, 0x81, 0x6e, 0xe0, 0x3d, 0x9c, 0xb2, 0xda, 0x31,
+                0x89, 0xbe,
+            ],
+        ),
+        // src/proto/h1/encode.rs, 1.6.0 through 1.8.1
+        (
+            "src/proto/h1/encode.rs",
+            [
+                0x04, 0xf6, 0xcc, 0x0d, 0x8f, 0x35, 0xfb, 0xd5, 0x1a, 0xe1, 0xe6, 0x4d, 0x96, 0x37,
+                0x9f, 0xc1,
+            ],
+        ),
+        // src/proto/h1/encode.rs, 1.9.0 through 1.10.1
+        (
+            "src/proto/h1/encode.rs",
+            [
+                0xa1, 0x03, 0xfa, 0x60, 0x2b, 0xf7, 0x71, 0xcd, 0x33, 0x61, 0x9b, 0x88, 0x0f, 0x5e,
+                0x15, 0x9d,
+            ],
+        ),
+    ],
+};
+
 /// tokio's `select!` as 1.47 through 1.53 expand it (`src/macros/select.rs`;
 /// the releases differ only in doc comments and in spelling `Poll`,
 /// `Pin` and `ready!` through `$crate::macros::support`). The macro
@@ -983,6 +1274,15 @@ mod tests {
                 "1.46.1",
                 "1.53.2",
             ),
+            (
+                &HYPER_H1_CONN_V1_6_0,
+                [
+                    "1.6.0", "1.7.0", "1.8.0", "1.8.1", "1.9.0", "1.10.0", "1.10.1",
+                ]
+                .as_slice(),
+                "1.5.2",
+                "1.11.0",
+            ),
         ] {
             for version in inside {
                 assert_eq!(
@@ -1017,6 +1317,10 @@ mod tests {
         assert_eq!(TOKIO_STREAM_WATCH_V0_1_14.range(), "0.1.14–0.1.19");
         assert_eq!(TOKIO_UTIL_REUSABLE_BOX_V0_7_11.range(), "0.7.11–0.7.19");
         assert_eq!(TOKIO_INTERVAL_TICK_V1_47.range(), "1.47.0–1.53.1");
+        // Seven files reviewed at seven releases: every revision of
+        // each is listed once.
+        assert_eq!(HYPER_H1_CONN_V1_6_0.range(), "1.6.0–1.10.1");
+        assert_eq!(HYPER_H1_CONN_V1_6_0.checksums.len(), 29);
         // Three revisions of `interval.rs` in the range, none shared
         // with the select's file.
         assert_eq!(TOKIO_INTERVAL_TICK_V1_47.checksums.len(), 3);

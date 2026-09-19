@@ -3098,3 +3098,221 @@ ok      blocking::queue.buf
 ok      blocking::queue.cap
 ok      Trailer.waker
 ok      ScheduledIo.waiters.lock (spelling 1 of 2)
+
+program: http-conns
+
+[tasks]
+task: hyper::proto::h2::server::H2Stream<http_conns::handle::{async_fn_env#0}, http_body_util::full::Full<bytes::bytes::Bytes>, hyper_util::rt::tokio::TokioExecutor>
+  kind: Manual
+  decl: <none>
+  entries: 2
+  symbols-per-entry: 6,6
+  stage: Stage<hyper::proto::h2::server::H2Stream<http_conns::handle::{async_fn_env#0}, http_body_util::full::Full<bytes::bytes::Bytes>, hyper_util::rt::tokio::TokioExecutor>>
+task: http_conns::raw_holder::{async_fn_env#0}
+  kind: AsyncFn
+  decl: http-conns.rs:154
+  entries: 2
+  symbols-per-entry: 6,6
+  stage: Stage<http_conns::raw_holder::{async_fn_env#0}>
+  variants:
+    Unresumed @ http-conns.rs:154
+    Returned @ http-conns.rs:157
+    Panicked @ http-conns.rs:157
+    Suspend0 @ http-conns.rs:156
+task: http_conns::accept_loop::{async_fn_env#0}
+  kind: AsyncFn
+  decl: http-conns.rs:121
+  entries: 2
+  symbols-per-entry: 6,6
+  stage: Stage<http_conns::accept_loop::{async_fn_env#0}>
+  variants:
+    Unresumed @ http-conns.rs:125
+    Returned @ http-conns.rs:134
+    Panicked @ http-conns.rs:134
+    Suspend0 @ http-conns.rs:128
+task: http_conns::serve::{async_fn_env#0}
+  kind: AsyncFn
+  decl: http-conns.rs:112
+  entries: 2
+  symbols-per-entry: 6,6
+  stage: Stage<http_conns::serve::{async_fn_env#0}>
+  variants:
+    Unresumed @ http-conns.rs:112
+    Returned @ http-conns.rs:117
+    Panicked @ http-conns.rs:117
+    Suspend0 @ http-conns.rs:116 (awaited at http-conns.rs:114)
+task: http_conns::requester::{async_fn_env#0}
+  kind: AsyncFn
+  decl: http-conns.rs:148
+  entries: 2
+  symbols-per-entry: 6,6
+  stage: Stage<http_conns::requester::{async_fn_env#0}>
+  variants:
+    Unresumed @ http-conns.rs:148
+    Returned @ http-conns.rs:151
+    Panicked @ http-conns.rs:151
+    Suspend0 @ http-conns.rs:150
+task: http_conns::{impl#0}::execute::{async_block_env#0}<core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output=()> + core::marker::Send), alloc::alloc::Global>>>
+  kind: AsyncBlock
+  decl: http-conns.rs:70
+  entries: 2
+  symbols-per-entry: 6,6
+  stage: Stage<http_conns::{impl#0}::execute::{async_block_env#0}<core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output=()> + core::marker::Send), alloc::alloc::Global>>>>
+  variants:
+    {async_block_env#0}<core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output=()> + core::marker::Send), alloc::alloc::Global>>>::Unresumed @ http-conns.rs:70
+    {async_block_env#0}<core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output=()> + core::marker::Send), alloc::alloc::Global>>>::Returned @ http-conns.rs:73
+    {async_block_env#0}<core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output=()> + core::marker::Send), alloc::alloc::Global>>>::Panicked @ http-conns.rs:73
+    {async_block_env#0}<core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output=()> + core::marker::Send), alloc::alloc::Global>>>::Suspend0 @ http-conns.rs:71
+
+[dyn-futures]
+dyn: core::future::poll_fn::PollFn<tokio::runtime::scheduler::current_thread::{impl#0}::block_on::{closure#0}::{closure_env#0}<http_conns::main::{async_block_env#0}>> (poll)
+dyn: core::future::poll_fn::PollFn<tokio::sync::mpsc::unbounded::{impl#3}::recv::{async_fn#0}::{closure_env#0}<http_conns::Event>> (poll)
+dyn: core::pin::Pin<&mut http_conns::main::{async_block_env#0}> (poll)
+dyn: http_conns::accept_loop::{async_fn_env#0} (poll, drop_glue)
+dyn: http_conns::get::{async_fn_env#0} (poll, drop_glue)
+dyn: http_conns::handle::{async_fn_env#0} (poll, drop_glue)
+dyn: http_conns::main::{async_block_env#0} (poll, drop_glue)
+dyn: http_conns::raw_holder::{async_fn_env#0} (poll, drop_glue)
+dyn: http_conns::requester::{async_fn_env#0} (poll, drop_glue)
+dyn: http_conns::serve::{async_fn_env#0} (poll, drop_glue)
+dyn: http_conns::settled::{async_fn_env#0} (poll)
+dyn: http_conns::{impl#0}::execute::{async_block_env#0}<core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output=()> + core::marker::Send), alloc::alloc::Global>>> (poll, drop_glue)
+dyn: hyper::proto::h1::dispatch::Dispatcher<hyper::proto::h1::dispatch::Server<hyper::service::util::ServiceFn<http_conns::serve::{async_fn#0}::{closure_env#0}, hyper::body::incoming::Incoming>, hyper::body::incoming::Incoming>, http_body_util::full::Full<bytes::bytes::Bytes>, hyper_util::common::rewind::Rewind<hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>>, hyper::proto::h1::role::Server> (poll, drop_glue)
+dyn: hyper::proto::h2::server::H2Stream<http_conns::handle::{async_fn_env#0}, http_body_util::full::Full<bytes::bytes::Bytes>, hyper_util::rt::tokio::TokioExecutor> (poll, drop_glue)
+dyn: hyper::proto::h2::server::Server<hyper_util::common::rewind::Rewind<hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>>, hyper::service::util::ServiceFn<http_conns::serve::{async_fn#0}::{closure_env#0}, hyper::body::incoming::Incoming>, http_body_util::full::Full<bytes::bytes::Bytes>, hyper_util::rt::tokio::TokioExecutor> (poll, drop_glue)
+dyn: hyper::server::conn::http1::UpgradeableConnection<hyper_util::common::rewind::Rewind<hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>>, hyper::service::util::ServiceFn<http_conns::serve::{async_fn#0}::{closure_env#0}, hyper::body::incoming::Incoming>> (poll, drop_glue)
+dyn: hyper::server::conn::http2::Connection<hyper_util::common::rewind::Rewind<hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>>, hyper::service::util::ServiceFn<http_conns::serve::{async_fn#0}::{closure_env#0}, hyper::body::incoming::Incoming>, hyper_util::rt::tokio::TokioExecutor> (poll, drop_glue)
+dyn: hyper_util::server::conn::auto::UpgradeableConnection<hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>, hyper::service::util::ServiceFn<http_conns::serve::{async_fn#0}::{closure_env#0}, hyper::body::incoming::Incoming>, hyper_util::rt::tokio::TokioExecutor> (poll, drop_glue)
+dyn: tokio::sync::mpsc::unbounded::{impl#3}::recv::{async_fn_env#0}<http_conns::Event> (poll)
+
+[env-decls]
+env: http_conns::accept_loop::{async_fn_env#0} @ http-conns.rs:121
+env: http_conns::get::{async_fn_env#0} @ http-conns.rs:138
+env: http_conns::handle::{async_fn_env#0} @ http-conns.rs:96
+env: http_conns::main::{async_block_env#0} @ http-conns.rs:164
+env: http_conns::raw_holder::{async_fn_env#0} @ http-conns.rs:154
+env: http_conns::requester::{async_fn_env#0} @ http-conns.rs:148
+env: http_conns::serve::{async_fn#0}::{closure_env#0} @ http-conns.rs:113
+env: http_conns::serve::{async_fn_env#0} @ http-conns.rs:112
+env: http_conns::settled::{async_fn_env#0} @ http-conns.rs:86
+env: http_conns::{impl#0}::execute::{async_block_env#0}<core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output=()> + core::marker::Send), alloc::alloc::Global>>> @ http-conns.rs:70
+
+[poll-decls]
+
+[local-decls]
+local: http_conns::accept_loop::{async_fn_env#0} :: events @ http-conns.rs:123
+local: http_conns::accept_loop::{async_fn_env#0} :: listener @ http-conns.rs:122
+local: http_conns::accept_loop::{async_fn_env#0} :: park @ http-conns.rs:124
+local: http_conns::get::{async_fn_env#0} :: client @ http-conns.rs:138
+local: http_conns::get::{async_fn_env#0} :: uri @ http-conns.rs:138
+local: http_conns::handle::{async_fn_env#0} :: events @ http-conns.rs:98
+local: http_conns::handle::{async_fn_env#0} :: park @ http-conns.rs:99
+local: http_conns::handle::{async_fn_env#0} :: req @ http-conns.rs:97
+local: http_conns::main::{async_block_env#0} :: addr @ http-conns.rs:168
+local: http_conns::main::{async_block_env#0} :: completed @ http-conns.rs:178
+local: http_conns::main::{async_block_env#0} :: done @ http-conns.rs:173
+local: http_conns::main::{async_block_env#0} :: events @ http-conns.rs:169
+local: http_conns::main::{async_block_env#0} :: executor @ http-conns.rs:174
+local: http_conns::main::{async_block_env#0} :: listener @ http-conns.rs:165
+local: http_conns::main::{async_block_env#0} :: park @ http-conns.rs:170
+local: http_conns::main::{async_block_env#0} :: pooled @ http-conns.rs:186
+local: http_conns::main::{async_block_env#0} :: raw @ http-conns.rs:216
+local: http_conns::main::{async_block_env#0} :: uri @ http-conns.rs:187
+local: http_conns::raw_holder::{async_fn_env#0} :: park @ http-conns.rs:154
+local: http_conns::requester::{async_fn_env#0} :: client @ http-conns.rs:148
+local: http_conns::requester::{async_fn_env#0} :: uri @ http-conns.rs:148
+local: http_conns::serve::{async_fn_env#0} :: events @ http-conns.rs:112
+local: http_conns::serve::{async_fn_env#0} :: park @ http-conns.rs:112
+local: http_conns::serve::{async_fn_env#0} :: stream @ http-conns.rs:112
+local: http_conns::settled::{async_fn_env#0} :: completed @ http-conns.rs:84
+local: http_conns::settled::{async_fn_env#0} :: done @ http-conns.rs:83
+local: http_conns::settled::{async_fn_env#0} :: executor @ http-conns.rs:82
+local: http_conns::settled::{async_fn_env#0} :: live @ http-conns.rs:85
+local: http_conns::{impl#0}::execute::{async_block_env#0}<core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output=()> + core::marker::Send), alloc::alloc::Global>>> :: done @ http-conns.rs:69
+local: http_conns::{impl#0}::execute::{async_block_env#0}<core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output=()> + core::marker::Send), alloc::alloc::Global>>> :: fut @ http-conns.rs:67
+
+[infra]
+header: ok
+vtable: ok
+trailer: ok
+context: ok
+scheduler_handle: ok
+mt_handle: ok
+ct_handle: ok
+location: ok
+raw_waker_vtable: ok
+
+[statics]
+tls-context-key: ok
+task-waker-vtable: ok
+
+[walks]
+ok      Context.current_task_id
+ok      Context.thread_id
+ok      Context.handle
+ok      Context.handle.current_thread
+ok      Context.scheduler
+ok      Context.scheduler.current_thread
+ok      worker::Context.index
+ok      current_thread::Context.core
+ok      current_thread::Core.driver
+ok      Handle.shared
+ok      Shared.remotes
+ok      Remote.unpark
+ok      parker::Inner.state
+ok      parker::Inner.driver_lock
+ok      current_thread::Shared.woken
+ok      Handle.blocking_metrics
+ok      SpawnerMetrics.num_threads
+ok      SpawnerMetrics.num_idle_threads
+ok      SpawnerMetrics.queue_depth
+ok      Shared.owned_lists
+ok      Shared.owned_id
+ok      Shard.head
+ok      Header.state
+ok      Header.owner_id
+ok      Header.vtable
+ok      Trailer.owned_next
+ok      Vtable.poll
+ok      Vtable.trailer_offset
+ok      Vtable.id_offset
+ok      Vtable.dealloc
+ok      Vtable.try_read_output
+ok      Vtable.drop_join_handle_slow
+ok      Vtable.drop_abort_handle
+ok      Vtable.shutdown
+ok      Vtable.spawn_location_offset
+ok      Location.file (spelling 1 of 3)
+ok      Location.line
+ok      Location.col
+ok      Cell.stage
+ok      Cell.stage_running
+ok      Cell.stage_finished
+ok      Cell.stage_consumed
+ok      Cell.trailer
+ok      Cell.task_id
+ok      Cell.scheduler
+ok      time::Wheel.levels (family v1_47)
+ok      wheel::Level.slot
+ok      wheel::Slot.head
+ok      TimerShared.next
+ok      TimerShared.waker
+ok      io::Synced.registrations
+ok      ScheduledIo.next
+ok      ScheduledIo.waiters
+ok      io::Waiters.list
+ok      io::Waiters.reader
+ok      io::Waiters.writer
+ok      io::Waiter.next
+ok      io::Waiter.waker
+ok      TimerShared.state
+ok      time::Handle.time_source.start_time
+ok      ScheduledIo.readiness
+ok      io::Waiter.interest
+ok      blocking::Shared.queue (spelling 1 of 3)
+ok      blocking::queue.head
+ok      blocking::queue.len
+ok      blocking::queue.buf
+ok      blocking::queue.cap
+ok      Trailer.waker
+ok      ScheduledIo.waiters.lock (spelling 1 of 2)

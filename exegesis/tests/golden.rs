@@ -658,6 +658,191 @@ fn assert_no_resource(program: &str, bundle: &Bundle, key: &str) {
     assert!(seen > 0, "{program}: no type named {key}");
 }
 
+/// A recorded route as `a.b.Some.__0`, for pinning the members and
+/// variants a binding navigates.
+fn route_text(bundle: &Bundle, path: &hansei_bundle::TypedPath) -> String {
+    use hansei_bundle::{MemberRef, Step};
+    let s = |id| bundle.strings.get(id).unwrap();
+    path.steps
+        .iter()
+        .map(|step| match step {
+            Step::Member(MemberRef::Named(n)) | Step::Variant(n) => s(*n).to_owned(),
+            Step::Deref => "*".to_owned(),
+            other => format!("{other:?}"),
+        })
+        .collect::<Vec<_>>()
+        .join(".")
+}
+
+/// hyper's dispatcher as the HTTP connection resource: every
+/// instantiation the key names carries the resource under the hyper
+/// rule — read off `proto/h1/dispatch.rs` at a reviewed version, and
+/// its own protocol — with the exclusive-pending guarantee, the
+/// primitive continuation, and a binding whose routes name exactly the
+/// reviewed members and land on the reviewed words. `client` says
+/// whether the client dispatch's routes are expected.
+fn assert_http_conn(program: &str, bundle: &Bundle, key: &str, client: bool) {
+    use hansei_bundle::{
+        Continuation, HttpRole, PollAction, PollProgram, ResourceKind, SemanticOrigin,
+        SemanticRuleKind, TypeDef,
+    };
+    let s = |id| bundle.strings.get(id).unwrap();
+    let name_of = |id: hansei_bundle::BundleTypeId| match bundle.types.get(id) {
+        Some(
+            TypeDef::Struct { name, .. }
+            | TypeDef::Enum { name, .. }
+            | TypeDef::CEnum { name, .. }
+            | TypeDef::Base { name, .. }
+            | TypeDef::Opaque { name, .. },
+        ) => s(*name).to_owned(),
+        other => format!("{other:?}"),
+    };
+    let mut seen = 0;
+    for (name, _, record) in types_named(bundle, key) {
+        let record = record.unwrap_or_else(|| panic!("{program}: {name} has no semantic record"));
+        let resource = record
+            .resource
+            .as_ref()
+            .unwrap_or_else(|| panic!("{program}: {name} has no resource binding"));
+        assert_eq!(resource.kind, ResourceKind::HttpConn, "{program}: {name}");
+        assert_eq!(
+            resource.state_rule,
+            Some(resource.rule),
+            "{program}: {name}"
+        );
+        assert!(resource.exclusive_pending, "{program}: {name}");
+        let rule = &bundle.semantics.rules[resource.rule.0 as usize];
+        assert_eq!(
+            rule.kind,
+            SemanticRuleKind::HyperH1Conn,
+            "{program}: {name}"
+        );
+        assert!(
+            matches!(
+                &bundle.semantics.origins[rule.origin.0 as usize],
+                SemanticOrigin::LibraryDelegation { package, source, .. }
+                    if s(*package) == "hyper" && s(*source).ends_with("/src/proto/h1/dispatch.rs")
+            ),
+            "{program}: {name}: {:?}",
+            bundle.semantics.origins[rule.origin.0 as usize]
+        );
+        let facts = record
+            .future
+            .as_ref()
+            .unwrap_or_else(|| panic!("{program}: {name} is not a future"));
+        assert!(
+            matches!(
+                &facts.continuation,
+                Continuation::Bound { rule, program: PollProgram::Direct(PollAction::Primitive) }
+                    if *rule == resource.rule
+            ),
+            "{program}: {name}: {:?}",
+            facts.continuation
+        );
+        let http = record
+            .http
+            .as_ref()
+            .unwrap_or_else(|| panic!("{program}: {name} has no connection binding"));
+        assert_eq!(http.rule, resource.rule, "{program}: {name}");
+        let route = |path: &hansei_bundle::TypedPath| {
+            format!("{} -> {}", route_text(bundle, path), name_of(path.target))
+        };
+        assert_eq!(
+            route(&http.keep_alive),
+            "conn.state.keep_alive -> hyper::proto::h1::conn::KA",
+            "{program}: {name}"
+        );
+        assert_eq!(
+            route(&http.reading),
+            "conn.state.reading -> hyper::proto::h1::conn::Reading",
+            "{program}: {name}"
+        );
+        assert_eq!(
+            route(&http.writing),
+            "conn.state.writing -> hyper::proto::h1::conn::Writing",
+            "{program}: {name}"
+        );
+        assert_eq!(
+            route(&http.method),
+            "conn.state.method -> core::option::Option<http::method::Method>",
+            "{program}: {name}"
+        );
+        assert_eq!(
+            route(&http.method_inner),
+            "conn.state.method.Some.__0.__0 -> http::method::Inner",
+            "{program}: {name}"
+        );
+        assert_eq!(
+            route(&http.read_continue_kind),
+            "conn.state.reading.Continue.__0.kind -> hyper::proto::h1::decode::Kind",
+            "{program}: {name}"
+        );
+        assert_eq!(
+            route(&http.read_body_kind),
+            "conn.state.reading.Body.__0.kind -> hyper::proto::h1::decode::Kind",
+            "{program}: {name}"
+        );
+        assert_eq!(
+            route(&http.write_body_kind),
+            "conn.state.writing.Body.__0.kind -> hyper::proto::h1::encode::Kind",
+            "{program}: {name}"
+        );
+        assert_eq!(
+            route(&http.is_closing),
+            "is_closing -> bool",
+            "{program}: {name}"
+        );
+        assert_eq!(http.role == HttpRole::Client, client, "{program}: {name}");
+        assert!(
+            http.server.is_none(),
+            "{program}: {name}: no server binding yet"
+        );
+        match &http.client {
+            Some(dispatch) if client => {
+                assert_eq!(
+                    route_text(bundle, &dispatch.callback),
+                    "dispatch.callback",
+                    "{program}: {name}"
+                );
+                assert!(
+                    name_of(dispatch.callback.target)
+                        .starts_with("core::option::Option<hyper::client::dispatch::Callback<"),
+                    "{program}: {name}: {}",
+                    name_of(dispatch.callback.target)
+                );
+                for (path, variant) in [(&dispatch.retry, "Retry"), (&dispatch.no_retry, "NoRetry")]
+                {
+                    assert_eq!(
+                        route_text(bundle, path),
+                        format!("dispatch.callback.Some.__0.{variant}.__0.Some.__0"),
+                        "{program}: {name}"
+                    );
+                    assert!(
+                        name_of(path.target).starts_with("tokio::sync::oneshot::Sender<"),
+                        "{program}: {name}: {}",
+                        name_of(path.target)
+                    );
+                }
+                assert_eq!(
+                    route_text(bundle, &dispatch.rx),
+                    "dispatch.rx.inner",
+                    "{program}: {name}"
+                );
+                assert!(
+                    name_of(dispatch.rx.target)
+                        .starts_with("tokio::sync::mpsc::unbounded::UnboundedReceiver<"),
+                    "{program}: {name}: {}",
+                    name_of(dispatch.rx.target)
+                );
+            }
+            None if !client => {}
+            other => panic!("{program}: {name}: client dispatch {other:?}"),
+        }
+        seen += 1;
+    }
+    assert!(seen > 0, "{program}: no type named {key}");
+}
+
 /// One coroutine's bound states, rendered as `key:Stage[locals](uncertain)`
 /// lines with the member names sorted, so an expectation reads as the
 /// convention says it should and a state whose members moved fails
@@ -1424,6 +1609,31 @@ fn assert_library_bindings(program: &str, bundle: &Bundle) {
                     );
                     assert_eq!(program, "http-conns", "{program}");
                 }
+                // hyper's HTTP/1 connection: the dispatcher and the client
+                // wrappers, each read off its own file of the reviewed set,
+                // which only the hyper fixture links.
+                "hyper" => {
+                    use exegesis::detect::semantics::HYPER_H1_CONN_V1_6_0;
+                    let SemanticOrigin::LibraryDelegation { family, source, .. } = origin else {
+                        unreachable!()
+                    };
+                    assert_eq!(s(*family), HYPER_H1_CONN_V1_6_0.family, "{program}");
+                    assert_eq!(
+                        HYPER_H1_CONN_V1_6_0.select(&s(*version).parse().unwrap()),
+                        LayoutSelection::ReviewedRange,
+                        "{program}: hyper {} is outside the reviewed range",
+                        s(*version)
+                    );
+                    assert!(
+                        HYPER_H1_CONN_V1_6_0
+                            .checksums
+                            .iter()
+                            .any(|(file, _)| s(*source).ends_with(&format!("/{file}"))),
+                        "{program}: {} is not a reviewed file",
+                        s(*source)
+                    );
+                    assert_eq!(program, "http-conns", "{program}");
+                }
                 // The `select!` rule is the one tokio delegation read
                 // off a declaration file (`Coop` binds on its layout,
                 // under tokio's layout origin): it reads tokio's version
@@ -1727,26 +1937,34 @@ fn assert_library_bindings(program: &str, bundle: &Bundle) {
                 rule,
                 program: PollProgram::MatchVariant { state, cases },
             } => {
-                // A coroutine's states, or futures-util's `Map`, whose
-                // two states are the only other reviewed match.
+                // A coroutine's states, futures-util's `Map`, or the
+                // `Option` a hyper connection wrapper holds its
+                // connection in — the only reviewed matches, and only
+                // the last is on a member rather than the type itself.
                 let states = match &record.coroutine {
                     Some(layout) => {
                         assert_eq!(layout.rule, *rule, "{program}");
                         layout.states.len()
                     }
                     None => {
-                        assert_eq!(
-                            rule_kind(*rule),
-                            SemanticRuleKind::FuturesUtilMap,
+                        assert!(
+                            matches!(
+                                rule_kind(*rule),
+                                SemanticRuleKind::FuturesUtilMap | SemanticRuleKind::HyperH1Conn
+                            ),
                             "{program}: a match program on a non-coroutine"
                         );
                         2
                     }
                 };
-                assert!(
-                    state.steps.is_empty() && state.target == record.ty,
-                    "{program}"
-                );
+                if rule_kind(*rule) == SemanticRuleKind::HyperH1Conn {
+                    assert_eq!(state.steps.len(), 1, "{program}");
+                } else {
+                    assert!(
+                        state.steps.is_empty() && state.target == record.ty,
+                        "{program}"
+                    );
+                }
                 assert_eq!(cases.len(), states, "{program}");
                 for case in cases {
                     if let PollAction::Delegate { exclusive, .. } = &case.action {
@@ -3007,6 +3225,84 @@ fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
                 wrapper,
                 &format!("{wrapper} :: Node Alias {{ inner@+0, follow }}"),
             );
+        }
+        // The client dispatcher is the connection resource, its words
+        // routed by the reviewed members; the server's is not yet bound
+        // and stays a future no rule follows.
+        assert_http_conn(program, bundle, &client_dispatcher, true);
+        assert_no_resource(program, bundle, &server_dispatcher);
+        // The upgradeable connection the legacy client spawns matches
+        // on its `inner` option: `Some` polls the dispatcher inside the
+        // connection, exclusively; `None` is no state a parked
+        // connection is in.
+        {
+            use hansei_bundle::{
+                Continuation, FutureTarget, PollAction, PollProgram, SemanticIssueKind,
+                SemanticRuleKind, TypeDef,
+            };
+            let name_of = |id: hansei_bundle::BundleTypeId| match bundle.types.get(id) {
+                Some(TypeDef::Struct { name, .. }) => bundle.strings.get(*name).unwrap(),
+                other => panic!("{program}: the dispatcher is not a struct: {other:?}"),
+            };
+            let key = format!(
+                "hyper::client::conn::http1::upgrades::UpgradeableConnection<{SOCKET}, \
+                 http_body_util::empty::Empty<bytes::bytes::Bytes>>"
+            );
+            let mut seen = 0;
+            for (name, _, record) in types_named(bundle, &key) {
+                let record =
+                    record.unwrap_or_else(|| panic!("{program}: {name} has no semantic record"));
+                let facts = record
+                    .future
+                    .as_ref()
+                    .unwrap_or_else(|| panic!("{program}: {name} is not a future"));
+                let Continuation::Bound {
+                    rule,
+                    program: PollProgram::MatchVariant { state, cases },
+                } = &facts.continuation
+                else {
+                    panic!("{program}: {name}: {:?}", facts.continuation);
+                };
+                assert_eq!(
+                    bundle.semantics.rules[rule.0 as usize].kind,
+                    SemanticRuleKind::HyperH1Conn,
+                    "{program}: {name}"
+                );
+                assert_eq!(route_text(bundle, state), "inner", "{program}: {name}");
+                let mut listed: Vec<String> = cases
+                    .iter()
+                    .map(|case| {
+                        let variant = bundle.strings.get(case.variant).unwrap();
+                        match &case.action {
+                            PollAction::Delegate {
+                                target: FutureTarget::Value(path),
+                                exclusive,
+                            } => format!(
+                                "{variant}: {} -> {}{}",
+                                route_text(bundle, path),
+                                name_of(path.target),
+                                if *exclusive { " (exclusive)" } else { "" }
+                            ),
+                            PollAction::Unknown(issue) => {
+                                assert_eq!(issue.kind, SemanticIssueKind::UnsupportedState);
+                                format!("{variant}: unknown")
+                            }
+                            other => format!("{variant}: {other:?}"),
+                        }
+                    })
+                    .collect();
+                listed.sort();
+                assert_eq!(
+                    listed,
+                    [
+                        "None: unknown".to_owned(),
+                        format!("Some: inner.Some.__0.inner -> {client_dispatcher} (exclusive)"),
+                    ],
+                    "{program}: {name}"
+                );
+                seen += 1;
+            }
+            assert_eq!(seen, 1, "{program}: one upgradeable client connection");
         }
     }
     if program == "channels" {

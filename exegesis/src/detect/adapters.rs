@@ -14,6 +14,7 @@
 //! type table and the defining units' compiler verdicts; a screen's
 //! answer authorizes no poll and reads no storage.
 
+pub(crate) use super::crates::H1Role;
 use super::std::dyn_pointer_layout;
 use super::{struct_of, unique_member};
 use crate::bundle::names::{generic_args, is_future_trait_object};
@@ -748,6 +749,284 @@ pub(crate) fn tokio_interval_tick(reader: &DwReader<'_>, id: TypeId) -> Option<I
             delay: "delay".to_owned(),
             boxed: reader.canonicalize(delay.type_id),
         }
+    })
+}
+
+/// The payload type of the variant named `variant` of the enum `id`,
+/// canonicalized; `None` for anything that is not an enum with a
+/// variant of that name.
+fn variant_payload(reader: &DwReader<'_>, id: TypeId, variant: &str) -> Option<TypeId> {
+    let RawType::Enum(en) = reader.canonical_type(id)? else {
+        return None;
+    };
+    let named = |v: &RawVariant<crate::StrId>| {
+        v.member
+            .name
+            .is_some_and(|name| reader.strings.get(name) == variant)
+    };
+    let payload = match &en.shape {
+        VariantShape::One(v) if named(v) => v.member.type_id,
+        VariantShape::Many { variants, .. } => {
+            let mut found = variants.iter().filter(|(_, v)| named(v));
+            let (_, v) = found.next()?;
+            if found.next().is_some() {
+                return None;
+            }
+            v.member.type_id
+        }
+        _ => return None,
+    };
+    Some(reader.canonicalize(payload))
+}
+
+/// Whether `id` is an enum declared in `module` under exactly `name`.
+fn enum_declared_in(reader: &DwReader<'_>, id: TypeId, module: &str, name: &str) -> bool {
+    let Some(RawType::Enum(en)) = reader.canonical_type(id) else {
+        return false;
+    };
+    en.namespace.map(|ns| ns_path(reader, ns)).as_deref() == Some(module)
+        && en.name.map(|n| reader.strings.get(n)) == Some(name)
+}
+
+/// The unique member `member` of the struct `id`, canonicalized.
+fn member_of(reader: &DwReader<'_>, id: TypeId, member: &str) -> Option<TypeId> {
+    let st = struct_of(reader, id)?;
+    let (_, found) = unique_member(reader, &st.members, member)?;
+    Some(reader.canonicalize(found.type_id))
+}
+
+/// hyper's `proto::h1::dispatch::Dispatcher<D, Bs, I, T>` as the raw
+/// screen saw it: the role its `T` names, and the type at the end of
+/// every route the connection binding records — each reached by the
+/// member and variant names the reviewed layout declares, so the
+/// binder can hold the same names to the final table.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct HttpDispatcherLayout {
+    pub(crate) role: H1Role,
+    /// `conn.state.keep_alive`, the `KA` enum.
+    pub(crate) keep_alive: TypeId,
+    /// `conn.state.reading`, the `Reading` enum.
+    pub(crate) reading: TypeId,
+    /// `conn.state.writing`, the `Writing` enum.
+    pub(crate) writing: TypeId,
+    /// `conn.state.method`, the `Option<Method>`.
+    pub(crate) method: TypeId,
+    /// The method's enum inside it: `Some.__0.__0`.
+    pub(crate) method_inner: TypeId,
+    /// The decoder's `kind` inside `Reading::Continue` and
+    /// `Reading::Body`, and the encoder's inside `Writing::Body`.
+    pub(crate) read_continue_kind: TypeId,
+    pub(crate) read_body_kind: TypeId,
+    pub(crate) write_body_kind: TypeId,
+    /// `is_closing`, a `bool`.
+    pub(crate) is_closing: TypeId,
+    /// The client dispatch's words, for a `T` of `role::Client`.
+    pub(crate) client: Option<HttpClientLayout>,
+}
+
+/// The client dispatch as the raw screen saw it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct HttpClientLayout {
+    /// `dispatch.callback`, the `Option<Callback<..>>`.
+    pub(crate) callback: TypeId,
+    /// The oneshot `Sender` in `callback`'s `Some.__0.Retry.__0.Some.__0`.
+    pub(crate) retry: TypeId,
+    /// The same through `NoRetry`.
+    pub(crate) no_retry: TypeId,
+    /// `dispatch.rx.inner`, the `UnboundedReceiver<Envelope<..>>`.
+    pub(crate) rx: TypeId,
+}
+
+/// The member names the connection binding's routes are made of, as
+/// the reviewed hyper layout declares them. One list, shared by the
+/// screen that finds the shape in the DWARF and the binder that holds
+/// it to the final table.
+pub(crate) mod hyper_h1 {
+    pub(crate) const CONN: &str = "conn";
+    pub(crate) const STATE: &str = "state";
+    pub(crate) const KEEP_ALIVE: &str = "keep_alive";
+    pub(crate) const READING: &str = "reading";
+    pub(crate) const WRITING: &str = "writing";
+    pub(crate) const METHOD: &str = "method";
+    pub(crate) const IS_CLOSING: &str = "is_closing";
+    pub(crate) const DISPATCH: &str = "dispatch";
+    pub(crate) const CALLBACK: &str = "callback";
+    pub(crate) const RETRY: &str = "Retry";
+    pub(crate) const NO_RETRY: &str = "NoRetry";
+    pub(crate) const RX: &str = "rx";
+    pub(crate) const INNER: &str = "inner";
+    pub(crate) const SOME: &str = "Some";
+    pub(crate) const PAYLOAD: &str = "__0";
+    pub(crate) const CONTINUE: &str = "Continue";
+    pub(crate) const BODY: &str = "Body";
+    pub(crate) const KIND: &str = "kind";
+}
+
+/// Screen `id` as hyper's HTTP/1 `Dispatcher`: declared in
+/// `hyper::proto::h1::dispatch` with a `T` of `role::Client` or
+/// `role::Server`, holding `conn` (a `proto::h1::conn::Conn` whose
+/// `state` is the `State` with the four words), `dispatch` and
+/// `is_closing`. For the client, `dispatch` is the `dispatch::Client`
+/// whose `callback` is an `Option` of the `Callback` enum, each of
+/// whose two variants carries an `Option` of a oneshot `Sender`, and
+/// whose `rx` holds the unbounded receiver in `inner`. A server
+/// dispatcher is recognized by its role and declines here: its
+/// dispatch's words are not yet bound.
+pub(crate) fn hyper_h1_dispatcher(
+    reader: &DwReader<'_>,
+    id: TypeId,
+) -> Option<HttpDispatcherLayout> {
+    use hyper_h1::*;
+    let st = declared_in(reader, id, "hyper::proto::h1::dispatch", "Dispatcher<")?;
+    let role = super::crates::h1_role(reader, st)?;
+    let conn = member_of(reader, id, CONN)?;
+    declared_in(reader, conn, "hyper::proto::h1::conn", "Conn<")?;
+    let state = member_of(reader, conn, STATE)?;
+    declared_in(reader, state, "hyper::proto::h1::conn", "State")?;
+    let word = |name: &str, expected: &str| {
+        let ty = member_of(reader, state, name)?;
+        (fq_name(reader, ty).as_deref() == Some(expected)).then_some(ty)
+    };
+    let keep_alive = word(KEEP_ALIVE, "hyper::proto::h1::conn::KA")?;
+    let reading = word(READING, "hyper::proto::h1::conn::Reading")?;
+    let writing = word(WRITING, "hyper::proto::h1::conn::Writing")?;
+    let method = word(METHOD, "core::option::Option<http::method::Method>")?;
+    // The method's own enum, through the option and the `Method`
+    // newtype; the body framing, through the variant carrying the
+    // decoder or encoder to its `kind`.
+    let method_inner = member_of(
+        reader,
+        member_of(reader, variant_payload(reader, method, SOME)?, PAYLOAD)?,
+        PAYLOAD,
+    )?;
+    if fq_name(reader, method_inner).as_deref() != Some("http::method::Inner") {
+        return None;
+    }
+    let framing = |word: TypeId, variant: &str, module: &str, codec_name: &str| {
+        let module = format!("hyper::proto::h1::{module}");
+        let codec = member_of(reader, variant_payload(reader, word, variant)?, PAYLOAD)?;
+        declared_in(reader, codec, &module, codec_name)?;
+        let kind = member_of(reader, codec, KIND)?;
+        enum_declared_in(reader, kind, &module, "Kind").then_some(kind)
+    };
+    let read_continue_kind = framing(reading, CONTINUE, "decode", "Decoder")?;
+    let read_body_kind = framing(reading, BODY, "decode", "Decoder")?;
+    let write_body_kind = framing(writing, BODY, "encode", "Encoder")?;
+    let is_closing = member_of(reader, id, IS_CLOSING)?;
+    if fq_name(reader, is_closing).as_deref() != Some("bool") {
+        return None;
+    }
+    let client = match role {
+        H1Role::Server => return None,
+        H1Role::Client => {
+            let dispatch = member_of(reader, id, DISPATCH)?;
+            declared_in(reader, dispatch, "hyper::proto::h1::dispatch", "Client<")?;
+            let callback = member_of(reader, dispatch, CALLBACK)?;
+            if !fq_name(reader, callback)?
+                .starts_with("core::option::Option<hyper::client::dispatch::Callback<")
+            {
+                return None;
+            }
+            let some = variant_payload(reader, callback, SOME)?;
+            let enum_ = member_of(reader, some, PAYLOAD)?;
+            let sender = |variant: &str| {
+                let payload = variant_payload(reader, enum_, variant)?;
+                let option = member_of(reader, payload, PAYLOAD)?;
+                let some = variant_payload(reader, option, SOME)?;
+                let sender = member_of(reader, some, PAYLOAD)?;
+                fq_name(reader, sender)?
+                    .starts_with("tokio::sync::oneshot::Sender<")
+                    .then_some(sender)
+            };
+            let retry = sender(RETRY)?;
+            let no_retry = sender(NO_RETRY)?;
+            let receiver = member_of(reader, dispatch, RX)?;
+            declared_in(reader, receiver, "hyper::client::dispatch", "Receiver<")?;
+            let rx = member_of(reader, receiver, INNER)?;
+            if !fq_name(reader, rx)?.starts_with("tokio::sync::mpsc::unbounded::UnboundedReceiver<")
+            {
+                return None;
+            }
+            Some(HttpClientLayout {
+                callback,
+                retry,
+                no_retry,
+                rx,
+            })
+        }
+    };
+    Some(HttpDispatcherLayout {
+        role,
+        keep_alive,
+        reading,
+        writing,
+        method,
+        method_inner,
+        read_continue_kind,
+        read_body_kind,
+        write_body_kind,
+        is_closing,
+        client,
+    })
+}
+
+/// hyper's `client::conn::http1::upgrades::UpgradeableConnection<T, B>`
+/// as the raw screen saw it: the member holding the `Option` of the
+/// `Connection`, the option, and the dispatcher inside the connection's
+/// `inner` — what its poll reaches through `inner.as_mut().unwrap().inner`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct HttpUpgradeableLayout {
+    pub(crate) inner: String,
+    pub(crate) option: TypeId,
+    pub(crate) connection: TypeId,
+    pub(crate) dispatcher: TypeId,
+}
+
+/// Screen `id` as hyper's `Connection<T, B>` of `client::conn::http1`:
+/// one member `inner` holding the `Dispatcher` its poll forwards to.
+pub(crate) fn hyper_h1_client_connection(
+    reader: &DwReader<'_>,
+    id: TypeId,
+) -> Option<ForwardLayout> {
+    let st = declared_in(reader, id, "hyper::client::conn::http1", "Connection<")?;
+    let forward = sole_member(reader, st, hyper_h1::INNER)?;
+    declared_in(
+        reader,
+        forward.inner,
+        "hyper::proto::h1::dispatch",
+        "Dispatcher<",
+    )?;
+    Some(forward)
+}
+
+/// Screen `id` as hyper's `UpgradeableConnection<T, B>` of
+/// `client::conn::http1::upgrades`: one member `inner` holding an
+/// `Option` of the `Connection` above, whose own `inner` is the
+/// dispatcher the poll reaches.
+pub(crate) fn hyper_h1_client_upgradeable(
+    reader: &DwReader<'_>,
+    id: TypeId,
+) -> Option<HttpUpgradeableLayout> {
+    let st = declared_in(
+        reader,
+        id,
+        "hyper::client::conn::http1::upgrades",
+        "UpgradeableConnection<",
+    )?;
+    let forward = sole_member(reader, st, hyper_h1::INNER)?;
+    if !fq_name(reader, forward.inner)?
+        .starts_with("core::option::Option<hyper::client::conn::http1::Connection<")
+    {
+        return None;
+    }
+    let some = variant_payload(reader, forward.inner, hyper_h1::SOME)?;
+    let connection = member_of(reader, some, hyper_h1::PAYLOAD)?;
+    let dispatcher = hyper_h1_client_connection(reader, connection)?.inner;
+    Some(HttpUpgradeableLayout {
+        inner: forward.member,
+        option: forward.inner,
+        connection,
+        dispatcher,
     })
 }
 
@@ -2069,5 +2348,84 @@ mod tests {
                 "{members:?}"
             );
         }
+    }
+
+    /// The enum helpers the dispatcher screen navigates with: a variant
+    /// is found by its own name and no other, on a one-variant enum as
+    /// on a many-variant one, and an enum is declared where it is
+    /// declared under the name it has — both halves of that test.
+    #[test]
+    fn test_variant_payload_and_enum_declared_in_match_by_name() {
+        const ONE: TypeId = TypeId(UnitSectionOffset(0xa0));
+        const MANY: TypeId = TypeId(UnitSectionOffset(0xa1));
+        const A: TypeId = TypeId(UnitSectionOffset(0xa2));
+        const B: TypeId = TypeId(UnitSectionOffset(0xa3));
+        const NOT_ENUM: TypeId = TypeId(UnitSectionOffset(0xa4));
+        let mut fx = Fx::default();
+        let decode = fx.ns("hyper::proto::h1::decode");
+        let encode = fx.ns("hyper::proto::h1::encode");
+        fx.strukt(A, None, "A", &[], &[]);
+        fx.strukt(B, None, "B", &[], &[]);
+        fx.strukt(NOT_ENUM, Some(decode), "Kind", &[], &[]);
+        fx.enumm(MANY, Some(decode), "Kind", &[("Length", A), ("Chunked", B)]);
+        // A one-variant enum has no discriminant and one member.
+        let only = RawVariant {
+            member: RawMember {
+                name: Some(fx.reader.strings.intern("Only")),
+                offset: 0,
+                type_id: A,
+                source_loc: None,
+            },
+        };
+        let name = Some(fx.reader.strings.intern("Kind"));
+        fx.reader.types.insert(
+            ONE,
+            RawType::Enum(crate::raw_types::RawEnum {
+                name,
+                namespace: Some(encode),
+                size: 8,
+                alignment: None,
+                shape: VariantShape::One(only),
+                template_params: Box::default(),
+                source_loc: None,
+            }),
+        );
+        let reader = &fx.reader;
+        assert_eq!(variant_payload(reader, MANY, "Length"), Some(A));
+        assert_eq!(variant_payload(reader, MANY, "Chunked"), Some(B));
+        assert_eq!(variant_payload(reader, MANY, "Eof"), None);
+        assert_eq!(variant_payload(reader, ONE, "Only"), Some(A));
+        assert_eq!(variant_payload(reader, ONE, "Other"), None);
+        assert_eq!(variant_payload(reader, NOT_ENUM, "Only"), None);
+        assert!(enum_declared_in(
+            reader,
+            MANY,
+            "hyper::proto::h1::decode",
+            "Kind"
+        ));
+        assert!(!enum_declared_in(
+            reader,
+            MANY,
+            "hyper::proto::h1::encode",
+            "Kind"
+        ));
+        assert!(!enum_declared_in(
+            reader,
+            MANY,
+            "hyper::proto::h1::decode",
+            "Decoder"
+        ));
+        assert!(enum_declared_in(
+            reader,
+            ONE,
+            "hyper::proto::h1::encode",
+            "Kind"
+        ));
+        assert!(!enum_declared_in(
+            reader,
+            NOT_ENUM,
+            "hyper::proto::h1::decode",
+            "Kind"
+        ));
     }
 }

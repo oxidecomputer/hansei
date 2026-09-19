@@ -2,7 +2,7 @@
 source: hansei-runtime/tests/matrix.rs
 ---
 program: ct-runtime
-walk contract (tokio 1.52.4, rustc 1.98.0 (88d9e12ae 2026-08-18)): 172 entries, 0 broken, 73 absent
+walk contract (tokio 1.52.4, rustc 1.98.0 (88d9e12ae 2026-08-18)): 173 entries, 0 broken, 73 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -139,18 +139,19 @@ walk contract (tokio 1.52.4, rustc 1.98.0 (88d9e12ae 2026-08-18)): 172 entries, 
   ok      ScheduledIo.waiters.lock (spelling 2 of 2; no multi_thread Handle)
   absent  mpsc::recv.rx — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
   absent  mpsc::Rx.inner.data — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
-  absent  Chan.tx_count — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
-  absent  Chan.tx.tail_position — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
-  absent  Chan.rx_fields.list.index — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
-  absent  Chan.rx_fields.list.head — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
-  absent  Chan.rx_fields.rx_closed — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
-  absent  Chan.rx_waker.state — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
-  absent  Chan.rx_waker.waker — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  mpsc::Receiver.chan.inner.data — no mpsc::Receiver type in the tokio info (the target does not reach one)
+  absent  Chan.tx_count — no mpsc::Receiver type in the tokio info (the target does not reach one)
+  absent  Chan.tx.tail_position — no mpsc::Receiver type in the tokio info (the target does not reach one)
+  absent  Chan.rx_fields.list.index — no mpsc::Receiver type in the tokio info (the target does not reach one)
+  absent  Chan.rx_fields.list.head — no mpsc::Receiver type in the tokio info (the target does not reach one)
+  absent  Chan.rx_fields.rx_closed — no mpsc::Receiver type in the tokio info (the target does not reach one)
+  absent  Chan.rx_waker.state — no mpsc::Receiver type in the tokio info (the target does not reach one)
+  absent  Chan.rx_waker.waker — no mpsc::Receiver type in the tokio info (the target does not reach one)
   absent  Chan.semaphore.permits — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
   absent  Chan.semaphore.bound — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
-  absent  Block.header.start_index — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
-  absent  Block.header.next — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
-  absent  Block.header.ready_slots — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
+  absent  Block.header.start_index — no mpsc::Receiver type in the tokio info (the target does not reach one)
+  absent  Block.header.next — no mpsc::Receiver type in the tokio info (the target does not reach one)
+  absent  Block.header.ready_slots — no mpsc::Receiver type in the tokio info (the target does not reach one)
   ok      Notified.notify
   ok      Notified.state
   ok      Notified.notify_waiters_calls
@@ -162,11 +163,11 @@ walk contract (tokio 1.52.4, rustc 1.98.0 (88d9e12ae 2026-08-18)): 172 entries, 
   ok      notify::Waiter.waker
   ok      notify::Waiter.notification
   ok      oneshot::Receiver.inner
+  ok      oneshot::Sender.inner
   ok      oneshot::Inner.state
   ok      oneshot::Inner.rx_task (spelling 1 of 2)
   ok      oneshot::Inner.tx_task (spelling 1 of 2)
   ok      oneshot::Inner.value
-  absent  mpsc::Receiver.chan — no mpsc::Receiver type in the tokio info (the target does not reach one)
   absent  watch::Receiver.shared — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
   absent  watch::Shared.state — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
   absent  watch::Shared.ref_count_rx — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)

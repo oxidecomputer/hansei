@@ -184,12 +184,12 @@ impl Emitter<'_> {
 /// enums `role::Client` and `role::Server`; a type whose `T` is neither is
 /// not one the detectors below know.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum H1Role {
+pub(crate) enum H1Role {
     Client,
     Server,
 }
 
-fn h1_role(reader: &DwReader<'_>, st: &RawStruct<StrId>) -> Option<H1Role> {
+pub(crate) fn h1_role(reader: &DwReader<'_>, st: &RawStruct<StrId>) -> Option<H1Role> {
     let param = st
         .template_params
         .iter()

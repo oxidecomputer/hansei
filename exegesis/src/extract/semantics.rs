@@ -28,24 +28,27 @@ use crate::bundle::origin::registry_origin;
 use crate::bundle::{
     AccessBinding, AccessKind, BundleTypeId, ContainerBinding, ContainerKind, Continuation,
     CoroutineLayout, CoroutinePhase, CoroutineState, DynFutureLayout, FutureEvidence, FutureFacts,
-    FutureTarget, IoOperationKind, LayoutSelection, MemberRef, PollAction, PollCase, PollProgram,
-    ResourceBinding, ResourceKind, SchedulerBinding, SchedulerClass, SelectBinding, Selector,
-    SemanticIssue, SemanticIssueKind, SemanticOrigin, SemanticOriginId, SemanticRule,
-    SemanticRuleId, SemanticRuleKind, SemanticTable, SourceFileEvidence, SourceLoc, Step,
-    StoragePolicy, StrRef, StringInterner, TaskEntryId, TaskFutureEntry, TypeDef, TypeSemantics,
-    TypeTable, TypedPath, WalkOutcome, WalkRole, WalksTable, container_roles, container_routes,
-    required_resource_roles, required_resource_routes, scheduler_role, semantic_path_target,
+    FutureTarget, HttpClientBinding, HttpConnBinding, HttpRole, IoOperationKind, LayoutSelection,
+    MemberRef, PollAction, PollCase, PollProgram, ResourceBinding, ResourceKind, SchedulerBinding,
+    SchedulerClass, SelectBinding, Selector, SemanticIssue, SemanticIssueKind, SemanticOrigin,
+    SemanticOriginId, SemanticRule, SemanticRuleId, SemanticRuleKind, SemanticTable,
+    SourceFileEvidence, SourceLoc, Step, StoragePolicy, StrRef, StringInterner, TaskEntryId,
+    TaskFutureEntry, TypeDef, TypeSemantics, TypeTable, TypedPath, WalkOutcome, WalkRole,
+    WalksTable, container_roles, container_routes, required_resource_roles,
+    required_resource_routes, scheduler_role, semantic_path_target,
 };
 use crate::detect::Family;
 use crate::detect::adapters::{
-    self, InstrumentedLayout, Pointee, SelectLayout, StdAdapter, WidePointer,
+    self, H1Role, HttpDispatcherLayout, InstrumentedLayout, Pointee, SelectLayout, StdAdapter,
+    WidePointer, hyper_h1,
 };
 use crate::detect::semantics::{
-    FUTURES_UTIL_ADAPTERS_V0_3_30, HYPER_UTIL_TOKIO_SLEEP_V0_1_10, LibraryConvention,
-    RustcConvention, TOKIO_INTERVAL_TICK_V1_47, TOKIO_SELECT_V1_47, TOKIO_STREAM_MAP_V0_1_14,
-    TOKIO_STREAM_WATCH_V0_1_14, TOKIO_UTIL_REUSABLE_BOX_V0_7_11, TRACING_INSTRUMENTED_V0_1_40,
-    library_convention, rustc_core_pending_convention, rustc_coroutine_convention,
-    rustc_dyn_future_abi_convention, rustc_std_adapter_convention, tokio_state_protocol,
+    FUTURES_UTIL_ADAPTERS_V0_3_30, HYPER_H1_CONN_V1_6_0, HYPER_UTIL_TOKIO_SLEEP_V0_1_10,
+    LibraryConvention, RustcConvention, TOKIO_INTERVAL_TICK_V1_47, TOKIO_SELECT_V1_47,
+    TOKIO_STREAM_MAP_V0_1_14, TOKIO_STREAM_WATCH_V0_1_14, TOKIO_UTIL_REUSABLE_BOX_V0_7_11,
+    TRACING_INSTRUMENTED_V0_1_40, library_convention, rustc_core_pending_convention,
+    rustc_coroutine_convention, rustc_dyn_future_abi_convention, rustc_std_adapter_convention,
+    tokio_state_protocol,
 };
 
 use std::borrow::Cow;
@@ -223,12 +226,26 @@ enum LibrarySeed {
     /// declaration in the DWARF to read a version off. So the seed
     /// carries nothing but the fact.
     Pending,
+    /// hyper's `client::conn::http1::Connection<T, B>` over the
+    /// dispatcher in its `inner`, which its poll forwards to.
+    HyperClientConnection(String, BundleTypeId),
+    /// hyper's `client::conn::http1::upgrades::UpgradeableConnection<T,
+    /// B>`: the member holding the `Option<Connection>`, the option,
+    /// and the dispatcher its poll reaches through `Some`'s connection.
+    HyperClientUpgradeable {
+        inner: String,
+        option: BundleTypeId,
+        dispatcher: BundleTypeId,
+    },
 }
 
 impl LibrarySeed {
     fn rule_kind(&self) -> SemanticRuleKind {
         match self {
             LibrarySeed::Pending => SemanticRuleKind::FuturesUtilPending,
+            LibrarySeed::HyperClientConnection(..) | LibrarySeed::HyperClientUpgradeable { .. } => {
+                SemanticRuleKind::HyperH1Conn
+            }
             LibrarySeed::Map { .. } | LibrarySeed::MapWrapper(..) => {
                 SemanticRuleKind::FuturesUtilMap
             }
@@ -249,6 +266,9 @@ impl LibrarySeed {
     fn convention(&self) -> &'static LibraryConvention {
         match self {
             LibrarySeed::TokioSleep(..) => &HYPER_UTIL_TOKIO_SLEEP_V0_1_10,
+            LibrarySeed::HyperClientConnection(..) | LibrarySeed::HyperClientUpgradeable { .. } => {
+                &HYPER_H1_CONN_V1_6_0
+            }
             LibrarySeed::WatchStream(..) => &TOKIO_STREAM_WATCH_V0_1_14,
             LibrarySeed::ReusableBox { .. } => &TOKIO_UTIL_REUSABLE_BOX_V0_7_11,
             LibrarySeed::IntervalTick { .. } => &TOKIO_INTERVAL_TICK_V1_47,
@@ -367,6 +387,33 @@ enum ArmSite {
     Declined(Decline),
 }
 
+/// hyper's HTTP/1 `Dispatcher` as its screen saw it, by bundle id: the
+/// role, and the type every route of the connection binding lands on.
+/// The member names are the reviewed layout's ([`hyper_h1`]); the
+/// binder holds each route to the final table and to these targets.
+#[derive(Clone, Debug)]
+struct HttpSeed {
+    role: H1Role,
+    keep_alive: BundleTypeId,
+    reading: BundleTypeId,
+    writing: BundleTypeId,
+    method: BundleTypeId,
+    method_inner: BundleTypeId,
+    read_continue_kind: BundleTypeId,
+    read_body_kind: BundleTypeId,
+    write_body_kind: BundleTypeId,
+    is_closing: BundleTypeId,
+    client: Option<HttpClientSeed>,
+}
+
+#[derive(Clone, Debug)]
+struct HttpClientSeed {
+    callback: BundleTypeId,
+    retry: BundleTypeId,
+    no_retry: BundleTypeId,
+    rx: BundleTypeId,
+}
+
 #[derive(Default)]
 pub(super) struct Seed {
     polls: BTreeSet<String>,
@@ -379,6 +426,9 @@ pub(super) struct Seed {
     instrumented: Option<InstrumentedSeed>,
     library: Option<LibrarySeed>,
     select: Option<SelectSeed>,
+    /// hyper's HTTP/1 dispatcher, where the type is one: the resource
+    /// whose words are the connection's verdict.
+    http: Option<HttpSeed>,
     /// core's `Pending<T>` as its screen saw it: the compiler verdict on
     /// its defining units, which is the whole of the rule's origin. The
     /// layout is the screen's; there is no member to route through.
@@ -400,6 +450,7 @@ impl Seed {
             || self.resource.is_some()
             || self.container.is_some()
             || self.select.is_some()
+            || self.http.is_some()
     }
 }
 
@@ -499,9 +550,50 @@ fn library_seed(
             boxed: bundle_id(layout.boxed)?,
             source: env_source(layout.env),
         })
+    } else if name.starts_with("hyper::client::conn::http1::Connection<") {
+        let (member, inner) = forward(adapters::hyper_h1_client_connection(reader, raw))?;
+        Some(LibrarySeed::HyperClientConnection(member, inner))
+    } else if name.starts_with("hyper::client::conn::http1::upgrades::UpgradeableConnection<") {
+        let layout = adapters::hyper_h1_client_upgradeable(reader, raw)?;
+        Some(LibrarySeed::HyperClientUpgradeable {
+            inner: layout.inner,
+            option: bundle_id(layout.option)?,
+            dispatcher: bundle_id(layout.dispatcher)?,
+        })
     } else {
         None
     }
+}
+
+/// The screen's dispatcher layout by bundle id. `None` when any type
+/// it names was not emitted: a word the table does not carry cannot be
+/// a recorded route.
+fn http_seed(
+    layout: HttpDispatcherLayout,
+    bundle_id: impl Fn(TypeId) -> Option<BundleTypeId>,
+) -> Option<HttpSeed> {
+    let client = match layout.client {
+        Some(client) => Some(HttpClientSeed {
+            callback: bundle_id(client.callback)?,
+            retry: bundle_id(client.retry)?,
+            no_retry: bundle_id(client.no_retry)?,
+            rx: bundle_id(client.rx)?,
+        }),
+        None => None,
+    };
+    Some(HttpSeed {
+        role: layout.role,
+        keep_alive: bundle_id(layout.keep_alive)?,
+        reading: bundle_id(layout.reading)?,
+        writing: bundle_id(layout.writing)?,
+        method: bundle_id(layout.method)?,
+        method_inner: bundle_id(layout.method_inner)?,
+        read_continue_kind: bundle_id(layout.read_continue_kind)?,
+        read_body_kind: bundle_id(layout.read_body_kind)?,
+        write_body_kind: bundle_id(layout.write_body_kind)?,
+        is_closing: bundle_id(layout.is_closing)?,
+        client,
+    })
 }
 
 pub(super) fn collect_semantic_seeds(
@@ -603,6 +695,11 @@ pub(super) fn collect_semantic_seeds(
             && adapters::core_pending(reader, raw)
         {
             seeds.entry(ty).or_default().pending = Some(verdict(raw, Reviewed::CorePending));
+        } else if name.starts_with("hyper::proto::h1::dispatch::Dispatcher<")
+            && let Some(layout) = adapters::hyper_h1_dispatcher(reader, raw)
+            && let Some(seed) = http_seed(layout, bundle_id)
+        {
+            seeds.entry(ty).or_default().http = Some(seed);
         } else if let Some(library) = library_seed(
             reader,
             raw,
@@ -1130,9 +1227,12 @@ enum Delegation {
         exclusive: bool,
     },
     /// One action per state of an enum the reviewed implementation
-    /// matches on: a compiler coroutine's states, or futures-util's
-    /// two-state `Map`.
+    /// matches on: a compiler coroutine's states, futures-util's
+    /// two-state `Map`, or the `Option` a hyper connection wrapper
+    /// holds its connection in. `state` is the route from the future
+    /// to that enum — empty where the future is the enum itself.
     Match {
+        state: TypedPath,
         cases: Vec<(StrRef, CaseAction)>,
     },
     /// The reviewed poll returns `Pending` and does nothing else: no
@@ -1148,7 +1248,7 @@ impl Plan {
         match &self.program {
             None => Vec::new(),
             Some(Delegation::Direct { target, .. }) => target.static_child().into_iter().collect(),
-            Some(Delegation::Match { cases }) => cases
+            Some(Delegation::Match { cases, .. }) => cases
                 .iter()
                 .filter_map(|(_, action)| match action {
                     CaseAction::Delegate(target) => target.static_child(),
@@ -1185,6 +1285,9 @@ struct Draft {
     pointee: Option<BundleTypeId>,
     /// The `select!` branches this `PollFn` polls, where it is one.
     select: Option<SelectPlan>,
+    /// The connection words this dispatcher's poll drives, where it is
+    /// hyper's under a reviewed range.
+    http: Option<HttpPlan>,
     own_record: bool,
 }
 
@@ -1341,6 +1444,16 @@ pub(super) fn bind_semantics(
                 Err(decline) => draft.issues.push(decline),
             }
         }
+        // The dispatcher is the connection resource: its words are a
+        // fact beside its continuation, which the resource makes the
+        // primitive boundary. A declined origin or a moved layout is
+        // the continuation's reason, as any other declined shape's.
+        if readable && let Some(http) = &seed.http {
+            match plan_http(ty, http, &seed.poll_sources, types, strings) {
+                Ok(plan) => draft.http = Some(plan),
+                Err(decline) => draft.decline = Some(decline),
+            }
+        }
         draft.storage = Some(storage);
     }
 
@@ -1449,6 +1562,42 @@ pub(super) fn bind_semantics(
                 exclusive_pending: state_rule.is_some(),
             }
         });
+        // The connection resource binds under the hyper rule its
+        // delegation origin selected, which is also its protocol: the
+        // reviewed range is what says what the words mean. A pending
+        // dispatcher has registered its waker on the socket and on its
+        // dispatch primitive and polls nothing outside itself, which is
+        // the exclusive-pending guarantee.
+        let http = draft.http.filter(|_| readable).map(|plan| {
+            let rule = rules.rule(&plan.rule, strings, library);
+            (
+                ResourceBinding {
+                    rule,
+                    kind: ResourceKind::HttpConn,
+                    state_rule: Some(rule),
+                    exclusive_pending: true,
+                },
+                HttpConnBinding {
+                    rule,
+                    role: plan.role,
+                    keep_alive: plan.keep_alive,
+                    reading: plan.reading,
+                    writing: plan.writing,
+                    method: plan.method,
+                    method_inner: plan.method_inner,
+                    read_continue_kind: plan.read_continue_kind,
+                    read_body_kind: plan.read_body_kind,
+                    write_body_kind: plan.write_body_kind,
+                    is_closing: plan.is_closing,
+                    client: plan.client,
+                    server: None,
+                },
+            )
+        });
+        let (resource, http) = match http {
+            Some((resource_binding, http)) => (resource.or(Some(resource_binding)), Some(http)),
+            None => (resource, None),
+        };
         let container = draft.container.map(|(kind, rule)| ContainerBinding {
             rule: rules.rule(&rule, strings, library),
             kind,
@@ -1503,11 +1652,8 @@ pub(super) fn bind_semantics(
                             })
                         }
                         Delegation::NeverReady => PollProgram::Direct(PollAction::NeverReady),
-                        Delegation::Match { cases } => PollProgram::MatchVariant {
-                            state: TypedPath {
-                                steps: Vec::new(),
-                                target: ty,
-                            },
+                        Delegation::Match { state, cases } => PollProgram::MatchVariant {
+                            state,
                             cases: cases
                                 .into_iter()
                                 .map(|(variant, action)| PollCase {
@@ -1581,7 +1727,7 @@ pub(super) fn bind_semantics(
             resource,
             container,
             select,
-            http: None,
+            http,
             issues,
         });
     }
@@ -1910,6 +2056,10 @@ fn plan_library(
                 *future,
             )?;
             Delegation::Match {
+                state: TypedPath {
+                    steps: Vec::new(),
+                    target: ty,
+                },
                 cases: vec![
                     (
                         incomplete_name,
@@ -2021,6 +2171,108 @@ fn plan_library(
                 delegate_is_future: true,
             });
         }
+        // hyper's client connection polls the dispatcher in `inner` and
+        // acts on its output alone.
+        LibrarySeed::HyperClientConnection(member, inner) => Delegation::Direct {
+            target: Target::Value(forward(member, *inner, strings)?),
+            exclusive: true,
+        },
+        // The upgradeable connection polls the dispatcher inside the
+        // connection its `inner` holds — `inner.as_mut().unwrap().inner`
+        // — and nothing else while that is pending; the `None` state,
+        // which only `into_parts` or a completed upgrade leaves behind,
+        // is not a state a parked connection is in, and polling it
+        // panics, so it gets no action.
+        LibrarySeed::HyperClientUpgradeable {
+            inner,
+            option,
+            dispatcher,
+        } => {
+            let (inner_name, inner_ty, _) = member_named(types, strings, ty, inner).ok_or((
+                SemanticIssueKind::AmbiguousLayout,
+                format!("no unique member {inner:?}"),
+            ))?;
+            if inner_ty != *option {
+                return Err((
+                    SemanticIssueKind::MissingLayout,
+                    format!("{inner} holds another type than the screen declared"),
+                ));
+            }
+            let Some(TypeDef::Enum { shape, .. }) = types.get(*option) else {
+                return Err((
+                    SemanticIssueKind::MissingLayout,
+                    "the connection's Option is not an enum in the final table".to_owned(),
+                ));
+            };
+            let variant = |name: &str| {
+                shape
+                    .variants
+                    .iter()
+                    .find(|v| strings.get(v.name) == Some(name))
+                    .map(|v| (v.name, v.payload.ty))
+            };
+            let (some, payload) = variant(hyper_h1::SOME).ok_or((
+                SemanticIssueKind::MissingLayout,
+                "the connection's Option has no Some state".to_owned(),
+            ))?;
+            let (none, _) = variant("None").ok_or((
+                SemanticIssueKind::MissingLayout,
+                "the connection's Option has no None state".to_owned(),
+            ))?;
+            if shape.variants.len() != 2 {
+                return Err((
+                    SemanticIssueKind::MissingLayout,
+                    "the connection's Option has states beyond the two reviewed ones".to_owned(),
+                ));
+            }
+            let (payload_name, connection, _) =
+                member_named(types, strings, payload, hyper_h1::PAYLOAD).ok_or((
+                    SemanticIssueKind::AmbiguousLayout,
+                    "the connection's Some state has no unique payload member".to_owned(),
+                ))?;
+            let (dispatcher_name, dispatcher_ty, _) =
+                member_named(types, strings, connection, hyper_h1::INNER).ok_or((
+                    SemanticIssueKind::AmbiguousLayout,
+                    "the connection has no unique member inner".to_owned(),
+                ))?;
+            if dispatcher_ty != *dispatcher {
+                return Err((
+                    SemanticIssueKind::MissingLayout,
+                    "the connection's inner is not the dispatcher the screen declared".to_owned(),
+                ));
+            }
+            let state = checked_path(
+                types,
+                ty,
+                vec![Step::Member(MemberRef::Named(inner_name))],
+                *option,
+            )?;
+            let path = checked_path(
+                types,
+                ty,
+                vec![
+                    Step::Member(MemberRef::Named(inner_name)),
+                    Step::Variant(some),
+                    Step::Member(MemberRef::Named(payload_name)),
+                    Step::Member(MemberRef::Named(dispatcher_name)),
+                ],
+                *dispatcher,
+            )?;
+            let taken = strings.intern("the connection was taken for an upgrade");
+            Delegation::Match {
+                state,
+                cases: vec![
+                    (some, CaseAction::Delegate(Box::new(Target::Value(path)))),
+                    (
+                        none,
+                        CaseAction::Unknown(SemanticIssue {
+                            kind: SemanticIssueKind::UnsupportedState,
+                            detail: Some(taken),
+                        }),
+                    ),
+                ],
+            }
+        }
         // The tick's closure runs `self.poll_tick(cx)`, and `poll_tick`
         // is `ready!(Pin::new(&mut self.delay).poll(cx))` before
         // anything else: pending, the `PollFn` polls the pinned box in
@@ -2080,6 +2332,180 @@ fn plan_library(
         program: Some(program),
         access: None,
         delegate_is_future: true,
+    })
+}
+
+/// An HTTP/1 connection binding as planned: its rule, and every route
+/// held to the final table.
+#[derive(Clone, Debug)]
+struct HttpPlan {
+    rule: RuleKey,
+    role: HttpRole,
+    keep_alive: TypedPath,
+    reading: TypedPath,
+    writing: TypedPath,
+    method: TypedPath,
+    method_inner: TypedPath,
+    read_continue_kind: TypedPath,
+    read_body_kind: TypedPath,
+    write_body_kind: TypedPath,
+    is_closing: TypedPath,
+    client: Option<HttpClientBinding>,
+}
+
+/// Plan hyper's dispatcher as the connection resource: the origin first
+/// — every declaration of its `poll` in hyper's `proto/h1/dispatch.rs`
+/// on a cargo registry path at a version inside the reviewed range —
+/// then each route the screen described, held to the final table by
+/// the reviewed layout's member and variant names, landing on the type
+/// the screen saw. The client's callback routes run through the
+/// `Option` and the `Callback` enum's two variants to the oneshot
+/// sender each holds; the read reports the variant inactive where the
+/// callback is `None` or the other variant.
+fn plan_http(
+    ty: BundleTypeId,
+    seed: &HttpSeed,
+    sources: &BTreeSet<PollSource>,
+    types: &TypeTable,
+    strings: &mut StringInterner,
+) -> Result<HttpPlan, Decline> {
+    use hyper_h1::*;
+    let origin = delegation_origin(sources, &HYPER_H1_CONN_V1_6_0, "poll")?;
+    let rule = RuleKey::Delegation {
+        kind: SemanticRuleKind::HyperH1Conn,
+        origin,
+    };
+    let member = |strings: &mut StringInterner, parent: BundleTypeId, name: &str| {
+        member_named(types, strings, parent, name).ok_or((
+            SemanticIssueKind::AmbiguousLayout,
+            format!("no unique member {name:?}"),
+        ))
+    };
+    let variant = |strings: &mut StringInterner, parent: BundleTypeId, name: &str| {
+        let Some(TypeDef::Enum { shape, .. }) = types.get(parent) else {
+            return Err((
+                SemanticIssueKind::MissingLayout,
+                format!("no enum to select {name} from in the final table"),
+            ));
+        };
+        shape
+            .variants
+            .iter()
+            .find(|v| strings.get(v.name) == Some(name))
+            .map(|v| (v.name, v.payload.ty))
+            .ok_or((
+                SemanticIssueKind::MissingLayout,
+                format!("no variant {name} in the final table"),
+            ))
+    };
+    // A route as a run of members and variants from the dispatcher,
+    // each level checked as it is entered, then held whole to the
+    // declared target.
+    let route = |strings: &mut StringInterner,
+                 names: &[(bool, &str)],
+                 target: BundleTypeId|
+     -> Result<TypedPath, Decline> {
+        let mut steps = Vec::with_capacity(names.len());
+        let mut current = ty;
+        for &(is_variant, name) in names {
+            if is_variant {
+                let (name, payload) = variant(strings, current, name)?;
+                steps.push(Step::Variant(name));
+                current = payload;
+            } else {
+                let (name, member_ty, _) = member(strings, current, name)?;
+                steps.push(Step::Member(MemberRef::Named(name)));
+                current = member_ty;
+            }
+        }
+        checked_path(types, ty, steps, target)
+    };
+    const M: bool = false;
+    const V: bool = true;
+    let word = |strings: &mut StringInterner, name: &str, target| {
+        route(strings, &[(M, CONN), (M, STATE), (M, name)], target)
+    };
+    let keep_alive = word(strings, KEEP_ALIVE, seed.keep_alive)?;
+    let reading = word(strings, READING, seed.reading)?;
+    let writing = word(strings, WRITING, seed.writing)?;
+    let method = word(strings, METHOD, seed.method)?;
+    // The words inside a word: the method's enum through the option
+    // and the newtype, the body framing through the variant carrying
+    // the codec to its `kind`.
+    let method_inner = route(
+        strings,
+        &[
+            (M, CONN),
+            (M, STATE),
+            (M, METHOD),
+            (V, SOME),
+            (M, PAYLOAD),
+            (M, PAYLOAD),
+        ],
+        seed.method_inner,
+    )?;
+    let framing = |strings: &mut StringInterner, word: &str, variant: &str, target| {
+        route(
+            strings,
+            &[
+                (M, CONN),
+                (M, STATE),
+                (M, word),
+                (V, variant),
+                (M, PAYLOAD),
+                (M, KIND),
+            ],
+            target,
+        )
+    };
+    let read_continue_kind = framing(strings, READING, CONTINUE, seed.read_continue_kind)?;
+    let read_body_kind = framing(strings, READING, BODY, seed.read_body_kind)?;
+    let write_body_kind = framing(strings, WRITING, BODY, seed.write_body_kind)?;
+    let is_closing = route(strings, &[(M, IS_CLOSING)], seed.is_closing)?;
+    let client = match &seed.client {
+        Some(client) => {
+            let callback = route(strings, &[(M, DISPATCH), (M, CALLBACK)], client.callback)?;
+            let sender = |strings: &mut StringInterner, variant: &str, target| {
+                route(
+                    strings,
+                    &[
+                        (M, DISPATCH),
+                        (M, CALLBACK),
+                        (V, SOME),
+                        (M, PAYLOAD),
+                        (V, variant),
+                        (M, PAYLOAD),
+                        (V, SOME),
+                        (M, PAYLOAD),
+                    ],
+                    target,
+                )
+            };
+            Some(HttpClientBinding {
+                callback,
+                retry: sender(strings, RETRY, client.retry)?,
+                no_retry: sender(strings, NO_RETRY, client.no_retry)?,
+                rx: route(strings, &[(M, DISPATCH), (M, RX), (M, INNER)], client.rx)?,
+            })
+        }
+        None => None,
+    };
+    Ok(HttpPlan {
+        rule,
+        role: match seed.role {
+            H1Role::Client => HttpRole::Client,
+            H1Role::Server => HttpRole::Server,
+        },
+        keep_alive,
+        reading,
+        writing,
+        method,
+        method_inner,
+        read_continue_kind,
+        read_body_kind,
+        write_body_kind,
+        is_closing,
+        client,
     })
 }
 
@@ -2447,7 +2873,13 @@ fn coroutine_plan(
         .collect();
     Plan {
         rule: rule.clone(),
-        program: Some(Delegation::Match { cases }),
+        program: Some(Delegation::Match {
+            state: TypedPath {
+                steps: Vec::new(),
+                target: ty,
+            },
+            cases,
+        }),
         access: None,
         delegate_is_future: true,
     }
@@ -2632,6 +3064,33 @@ mod tests {
     use super::*;
     use crate::bundle::{MemberDef, VariantDef, VariantShape, WalkBinding};
     use crate::detect::semantics::{RUSTC_DYN_FUTURE_ABI_V1_97, RUSTC_STD_ADAPTERS_V1_97};
+
+    /// A dispatcher screened as the connection resource is a record on
+    /// that alone, as a tokio resource or a `select!` is: the binding
+    /// is a fact worth a record whether or not a poll declaration
+    /// survived to prove the type a future.
+    #[test]
+    fn test_a_screened_dispatcher_is_its_own_record() {
+        let id = BundleTypeId(7);
+        let seed = Seed {
+            http: Some(HttpSeed {
+                role: H1Role::Client,
+                keep_alive: id,
+                reading: id,
+                writing: id,
+                method: id,
+                method_inner: id,
+                read_continue_kind: id,
+                read_body_kind: id,
+                write_body_kind: id,
+                is_closing: id,
+                client: None,
+            }),
+            ..Seed::default()
+        };
+        assert!(seed.is_own_record());
+        assert!(!Seed::default().is_own_record());
+    }
 
     fn binding(roots: &[u32], bound: bool) -> WalkBinding {
         WalkBinding {
@@ -4275,7 +4734,7 @@ mod tests {
             future: fut,
         };
         let plan = plan_library(map, &layout, &futures_util, &types, &mut strings).unwrap();
-        let Delegation::Match { cases } = plan.program.as_ref().unwrap() else {
+        let Delegation::Match { cases, .. } = plan.program.as_ref().unwrap() else {
             panic!("a map matches its state");
         };
         let [
@@ -5806,7 +6265,7 @@ mod tests {
             family: "rustc-coroutine-1.97",
         };
         let plan = coroutine_plan(e.env, &rule, &layout, &e.types, &mut e.strings);
-        let Delegation::Match { cases } = plan.program.as_ref().unwrap() else {
+        let Delegation::Match { cases, .. } = plan.program.as_ref().unwrap() else {
             panic!("coroutine")
         };
         let spelled: Vec<String> = cases
@@ -5858,7 +6317,7 @@ mod tests {
             states,
         };
         let plan = coroutine_plan(e.env, &rule, &layout, &e.types, &mut e.strings);
-        let Delegation::Match { cases } = plan.program.as_ref().unwrap() else {
+        let Delegation::Match { cases, .. } = plan.program.as_ref().unwrap() else {
             panic!("coroutine")
         };
         assert!(matches!(
