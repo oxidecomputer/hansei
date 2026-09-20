@@ -273,31 +273,38 @@ fn commands(
     // idle and the in-flight server — and the version-choosing read on
     // the connection that never spoke.
     if program == "http-conns" {
-        // A client connection's dispatcher is the leaf of its task's
-        // own chain — the wrappers hyper puts around it forward to it —
-        // so a fresh task cursor stands on it; a server find is rooted
-        // at the `Option<Connection>` around its dispatcher, one step
-        // up.
-        let client =
-            |member: &str| format!("tasks --with type Reporting::execute --exec print {member}");
+        // A connection's dispatcher is the leaf of its task's own chain
+        // on either side — the wrappers hyper and hyper-util put around
+        // it forward to it — so a fresh task cursor stands on it; the
+        // connection still choosing its version ends one frame up, at
+        // the wrapper reading the first bytes, where the cursor stands
+        // on the selected state's payload and the read is its member.
+        let client = |member: &str| format!("tasks --with type execute<Pin --exec print {member}");
         let server = |member: &str| {
-            format!("futures --with type h1::dispatch::Server --exec print {member}")
+            format!(
+                "tasks --with type http_conns::serve --with waiting-on http1.server --exec print \
+                 {member}"
+            )
         };
         list.push(("client-conn", client("conn")));
         list.push(("client-dispatch", client("dispatch")));
-        list.push(("server-conn", server("Some.conn.conn")));
-        list.push(("server-dispatch", server("Some.conn.dispatch")));
+        list.push(("server-conn", server("conn")));
+        list.push(("server-dispatch", server("dispatch")));
         list.push((
             "read-version",
-            "futures --with type auto::ReadVersion --exec print".to_owned(),
+            "tasks --with waiting-on negotiating --exec print read_version".to_owned(),
         ));
-        // The connection verdicts in the task blocks, and a filter
-        // matching the `via:` detail line under one — text the label
-        // line does not carry, so it reaches a filter only because the
-        // detail lines do.
+        // The connection verdicts in the task blocks on both sides, and
+        // a filter matching the `via:` detail line under a client's —
+        // text the label line does not carry, so it reaches a filter
+        // only because the detail lines do.
         list.push((
             "client-tasks",
-            "tasks --with type Reporting::execute --exec task".to_owned(),
+            "tasks --with type execute<Pin --exec task".to_owned(),
+        ));
+        list.push((
+            "server-tasks",
+            "tasks --with type http_conns::serve --exec task".to_owned(),
         ));
         list.push(("tasks-with-via", "tasks --with waiting-on via:".to_owned()));
     }
