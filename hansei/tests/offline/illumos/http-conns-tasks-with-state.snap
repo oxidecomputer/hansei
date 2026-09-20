@@ -2,13 +2,13 @@
 source: hansei/src/offline.rs
 description: "`tasks --with state idle` over illumos/http-conns"
 ---
-ID  STATE  FUT  AWAITING AT                WAITING ON     TYPE
-3   idle     0  src/bin/http-conns.rs:128  io             async fn http_conns::accept_loop
-4   idle     1  src/bin/http-conns.rs:114  io             async fn http_conns::serve
-5   idle     0  src/bin/http-conns.rs:71   http1 client   async block http_conns::Reporting::execute<Pin<Box<(dyn Future<Output=()> + Send)>>>
-7   idle     0  src/bin/http-conns.rs:150  unknown        async fn http_conns::requester
-8   idle     1  src/bin/http-conns.rs:114  io, notify rx  async fn http_conns::serve
-9   idle     0  src/bin/http-conns.rs:71   http1 client   async block http_conns::Reporting::execute<Pin<Box<(dyn Future<Output=()> + Send)>>>
-10  idle     1  src/bin/http-conns.rs:114  io             async fn http_conns::serve
-11  idle     0  src/bin/http-conns.rs:156  oneshot rx     async fn http_conns::raw_holder
+ID  STATE  FUT  AWAITING AT                WAITING ON    TYPE
+3   idle     0  src/bin/http-conns.rs:128  io            async fn http_conns::accept_loop
+4   idle     0  src/bin/http-conns.rs:114  http1 server  async fn http_conns::serve
+5   idle     0  src/bin/http-conns.rs:71   http1 client  async block http_conns::{impl#0}::execute<Pin<Box<(dyn Future<Output=()> + Send)>>>
+7   idle     0  src/bin/http-conns.rs:150  unknown       async fn http_conns::requester
+8   idle     0  src/bin/http-conns.rs:114  http1 server  async fn http_conns::serve
+9   idle     0  src/bin/http-conns.rs:71   http1 client  async block http_conns::{impl#0}::execute<Pin<Box<(dyn Future<Output=()> + Send)>>>
+10  idle     1  src/bin/http-conns.rs:114  http server   async fn http_conns::serve
+11  idle     0  src/bin/http-conns.rs:156  oneshot rx    async fn http_conns::raw_holder
 [8 tasks]

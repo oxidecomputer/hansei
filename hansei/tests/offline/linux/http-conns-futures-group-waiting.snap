@@ -2,9 +2,6 @@
 source: hansei/src/offline.rs
 description: "`futures --group waiting-on` over linux/http-conns"
 ---
-COUNT  WAITING ON                                                             FUTURES
-    2  unarmed: unknown at hyper::proto::h1::dispatch::Dispatcher             0xADDR, 0xADDR
-    1  notify rx                                                              0xADDR
-    1  unarmed: unknown at hyper::server::conn::http1::UpgradeableConnection  0xADDR
-    1  unarmed: unknown at hyper_util::server::conn::auto::ReadVersion        0xADDR
-[4 groups]
+COUNT  WAITING ON                                                       FUTURES
+    1  unarmed: unknown at hyper_util::server::conn::auto::ReadVersion  0xADDR
+[1 group]

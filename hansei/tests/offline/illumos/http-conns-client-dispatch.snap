@@ -1,6 +1,6 @@
 ---
 source: hansei/src/offline.rs
-description: "`tasks --with type Reporting::execute --exec print dispatch` over illumos/http-conns"
+description: "`tasks --with type execute<Pin --exec print dispatch` over illumos/http-conns"
 ---
 task 5
 hyper::proto::h1::dispatch::Client<http_body_util::empty::Empty<bytes::bytes::Bytes>> {

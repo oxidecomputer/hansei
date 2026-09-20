@@ -1,11 +1,11 @@
 ---
 source: hansei/src/offline.rs
-description: "`tasks --with type Reporting::execute --exec task` over linux-floor/http-conns"
+description: "`tasks --with type execute<Pin --exec task` over linux-floor/http-conns"
 ---
-task 4
+task 5
     state: idle
     thread: <none>
-    type: async block http_conns::Reporting::execute<Pin<Box<(dyn Future<Output=()> + Send)>>>
+    type: async block http_conns::{impl#0}::execute<Pin<Box<(dyn Future<Output=()> + Send)>>>
     awaiting at: src/bin/http-conns.rs:71
     awaiting on: http1 client 0xADDR (idle, keep-alive)
         via: mpsc rx 0xADDR (1 sender, 0 unread)
@@ -19,7 +19,7 @@ task 4
 task 9
     state: idle
     thread: <none>
-    type: async block http_conns::Reporting::execute<Pin<Box<(dyn Future<Output=()> + Send)>>>
+    type: async block http_conns::{impl#0}::execute<Pin<Box<(dyn Future<Output=()> + Send)>>>
     awaiting at: src/bin/http-conns.rs:71
     awaiting on: http1 client 0xADDR (GET sent, awaiting response headers)
         via: oneshot tx 0xADDR (nothing sent, receiver alive)

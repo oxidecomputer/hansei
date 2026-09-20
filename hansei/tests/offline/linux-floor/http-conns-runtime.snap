@@ -5,9 +5,9 @@ description: "`runtime` over linux-floor/http-conns"
 runtime 0 @ 0xADDR
     flavor: multi_thread
     tasks: 8
-    futures: 13
+    futures: 9
     workers: 2
-    threads: 3 (lwp 3271864, 3271867, 3271866)
+    threads: 3 (lwp 3464415, 3464418, 3464417)
     found via: a thread's runtime context
     drivers:
       tokio::runtime::driver::Handle {

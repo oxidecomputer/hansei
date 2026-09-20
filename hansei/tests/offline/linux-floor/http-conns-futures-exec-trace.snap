@@ -3,37 +3,9 @@ source: hansei/src/offline.rs
 description: "`futures --exec trace -l 1` over linux-floor/http-conns"
 ---
 future 0xADDR
-future 0xADDR: future hyper::server::conn::http1::UpgradeableConnection<hyper_util::common::rewind::Rewind<hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>>, hyper::service::util::ServiceFn<http_conns::serve::{async_fn#0}::{closure_env#0}, hyper::body::incoming::Incoming>>
-Held by: task 5 — async fn http_conns::serve (frame 0, `state`)
-
-#0  future        hyper::server::conn::http1::UpgradeableConnection<hyper_util::common::rewind::Rewind<hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>>, hyper::service::util::ServiceFn<http_conns::serve::{async_fn#0}::{closure_env#0}, hyper::body::incoming::Incoming>>
-      defined at hyper-1.10.1/src/server/conn/http1.rs:550 (<no_state>, 1 local; holds 1 pending future)
-
-future 0xADDR
-future 0xADDR: future hyper::server::conn::http1::UpgradeableConnection<hyper_util::common::rewind::Rewind<hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>>, hyper::service::util::ServiceFn<http_conns::serve::{async_fn#0}::{closure_env#0}, hyper::body::incoming::Incoming>>
-Held by: task 5 — async fn http_conns::serve (frame 0, `state`)
-
-#0  future        hyper::server::conn::http1::UpgradeableConnection<hyper_util::common::rewind::Rewind<hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>>, hyper::service::util::ServiceFn<http_conns::serve::{async_fn#0}::{closure_env#0}, hyper::body::incoming::Incoming>>
-      defined at hyper-1.10.1/src/server/conn/http1.rs:550 (<no_state>, 1 local; holds 1 pending future)
-
-future 0xADDR
-future 0xADDR: future hyper::server::conn::http1::UpgradeableConnection<hyper_util::common::rewind::Rewind<hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>>, hyper::service::util::ServiceFn<http_conns::serve::{async_fn#0}::{closure_env#0}, hyper::body::incoming::Incoming>>
-Held by: task 8 — async fn http_conns::serve (frame 0, `state`)
-
-#0  future        hyper::server::conn::http1::UpgradeableConnection<hyper_util::common::rewind::Rewind<hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>>, hyper::service::util::ServiceFn<http_conns::serve::{async_fn#0}::{closure_env#0}, hyper::body::incoming::Incoming>>
-      defined at hyper-1.10.1/src/server/conn/http1.rs:550 (<no_state>, 1 local; holds 1 pending future)
-
-future 0xADDR
-future 0xADDR: future hyper::server::conn::http1::UpgradeableConnection<hyper_util::common::rewind::Rewind<hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>>, hyper::service::util::ServiceFn<http_conns::serve::{async_fn#0}::{closure_env#0}, hyper::body::incoming::Incoming>>
-Held by: task 8 — async fn http_conns::serve (frame 0, `state`)
-
-#0  future        hyper::server::conn::http1::UpgradeableConnection<hyper_util::common::rewind::Rewind<hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>>, hyper::service::util::ServiceFn<http_conns::serve::{async_fn#0}::{closure_env#0}, hyper::body::incoming::Incoming>>
-      defined at hyper-1.10.1/src/server/conn/http1.rs:550 (<no_state>, 1 local; holds 1 pending future)
-
-future 0xADDR
 future 0xADDR: future hyper_util::server::conn::auto::ReadVersion<hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>>
-Held by: task 10 — async fn http_conns::serve (frame 0, `state`)
+Held by: task 10 — async fn http_conns::serve (frame 0, `read_version`)
 
 #0  future        hyper_util::server::conn::auto::ReadVersion<hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>>
       defined at hyper-util-0.1.20/src/server/conn/auto/mod.rs:337 (<no_state>, 5 locals)
-[Executed against 5 futures, 0 failed]
+[Executed against 1 future, 0 failed]

@@ -222,18 +222,13 @@ fn main() {
         std::mem::forget(park_tx);
         let _raw_holder = tokio::spawn(raw_holder(raw, park_rx));
 
-        // What the census finds inside hyper's own futures, which the
-        // fixture can name only by the task holding them: under each of
-        // the two HTTP/1 server connections, hyper's connection future
-        // and the dispatcher inside it; under the connection that never
-        // spoke, the version-choosing read. The client connection tasks
-        // register nothing: the dispatcher behind the box each executor
-        // was handed is a frame of the task's own await chain, reached
-        // through hyper's connection wrappers, so it is no held find.
-        for _ in 0..2 {
-            census_expect::held_by_task("http_conns::serve", "http1::UpgradeableConnection");
-            census_expect::held_by_task("http_conns::serve", "h1::dispatch::Dispatcher");
-        }
+        // What the census finds inside hyper-util's own futures, which
+        // the fixture can name only by the task holding it: under the
+        // connection that never spoke, the version-choosing read the
+        // wrapper is parked on. The HTTP/1 connection tasks register
+        // nothing: on either side the dispatcher is a frame of the
+        // task's own await chain, reached through hyper's and
+        // hyper-util's connection wrappers, so it is no held find.
         census_expect::held_by_task("http_conns::serve", "auto::ReadVersion");
 
         test_programs::quiesce();
