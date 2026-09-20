@@ -20,6 +20,7 @@
 
 use std::convert::Infallible;
 use std::future::Future;
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -90,11 +91,12 @@ async fn settled(
     }
 }
 
-/// The service: a small body for any path, except that `/park` first
-/// says so on `events` and then waits on `park`, which nothing ever
-/// signals, so that request stays in flight on both ends.
+/// The service: a small body naming the peer, for any path, except that
+/// `/park` first says so on `events` and then waits on `park`, which
+/// nothing ever signals, so that request stays in flight on both ends.
 async fn handle(
     req: Request<Incoming>,
+    peer: SocketAddr,
     events: mpsc::UnboundedSender<Event>,
     park: Arc<Notify>,
 ) -> Result<Response<Full<Bytes>>, Infallible> {
@@ -104,20 +106,29 @@ async fn handle(
             .expect("main waits for the handler");
         park.notified().await;
     }
-    Ok(Response::new(Full::new(Bytes::from_static(b"hello"))))
+    Ok(Response::new(Full::new(Bytes::from(format!(
+        "hello {peer}"
+    )))))
 }
 
 /// Serve one accepted connection through hyper-util's version-choosing
-/// server, with upgrades, the way a dropshot server does.
-async fn serve(stream: TcpStream, events: mpsc::UnboundedSender<Event>, park: Arc<Notify>) {
-    let service = service_fn(move |req| handle(req, events.clone(), park.clone()));
+/// server, with upgrades, the way a dropshot server does. The service
+/// keeps the accepted socket's peer address, as dropshot's does, so a
+/// server connection's dispatch holds a `SocketAddr`.
+async fn serve(
+    stream: TcpStream,
+    peer: SocketAddr,
+    events: mpsc::UnboundedSender<Event>,
+    park: Arc<Notify>,
+) {
+    let service = service_fn(move |req| handle(req, peer, events.clone(), park.clone()));
     let _ = auto::Builder::new(TokioExecutor::new())
         .serve_connection_with_upgrades(TokioIo::new(stream), service)
         .await;
 }
 
 /// Accept forever, reporting each connection on `events` before
-/// handing it to its own task.
+/// handing it, with its peer's address, to its own task.
 async fn accept_loop(
     listener: TcpListener,
     events: mpsc::UnboundedSender<Event>,
@@ -125,11 +136,11 @@ async fn accept_loop(
 ) {
     census_expect::task("http_conns::accept_loop");
     loop {
-        let (stream, _) = listener.accept().await.expect("accept");
+        let (stream, peer) = listener.accept().await.expect("accept");
         events
             .send(Event::Accepted)
             .expect("main waits for accepts");
-        tokio::spawn(serve(stream, events.clone(), park.clone()));
+        tokio::spawn(serve(stream, peer, events.clone(), park.clone()));
     }
 }
 
