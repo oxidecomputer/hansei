@@ -2795,6 +2795,7 @@ mod future_trace_tests {
                         state: Some("Suspend0 — step.rs:9".to_string()),
                         waiting_on: None,
                         wait: None,
+                        observation: None,
                         continuation: ContinuationStatus::Unresumed,
                     },
                     census::SetChild {
@@ -2805,6 +2806,7 @@ mod future_trace_tests {
                         state: None,
                         waiting_on: None,
                         wait: None,
+                        observation: None,
                         continuation: ContinuationStatus::Unresumed,
                     },
                 ],
@@ -2823,6 +2825,7 @@ mod future_trace_tests {
                 state: None,
                 waiting_on: None,
                 wait: None,
+                observation: None,
                 continuation: ContinuationStatus::Unresumed,
             }];
 

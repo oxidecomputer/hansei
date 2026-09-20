@@ -4888,6 +4888,7 @@ mod table_tests {
             state: None,
             waiting_on: None,
             wait: None,
+            observation: None,
             continuation: ContinuationStatus::Incomplete {
                 reason: IncompleteReason::NoRoot,
                 detail: None,
@@ -5765,6 +5766,7 @@ mod census_listing_tests {
             state: None,
             waiting_on: None,
             wait: None,
+            observation: None,
             continuation: ContinuationStatus::Unresumed,
         }
     }
@@ -5778,6 +5780,7 @@ mod census_listing_tests {
             state: None,
             waiting_on: None,
             wait: None,
+            observation: None,
             continuation: ContinuationStatus::Unresumed,
         }
     }

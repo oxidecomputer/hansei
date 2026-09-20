@@ -44,6 +44,7 @@ use super::TaskState;
 use super::assess::{AssessmentPass, ContinuationStatus};
 use super::bundle::{AwaitChain, Context, TaskList, WaitKind};
 use super::chain::{FutureInspection, InspectionMode, NextFuture};
+use super::observe::ResourceObservation;
 // The by-value types sets and join sets are recognized as; the trailing
 // `<` keeps each match on the real generic, not a lookalike suffix. A
 // `JoinSet` holds *tasks* rather than futures, so it is walked and
@@ -295,6 +296,10 @@ pub struct SetChild {
     /// The same wait as a tally counts it, so a summary over thousands
     /// of children need not read the line back.
     pub wait: Option<WaitKind>,
+    /// The raw observation read from the chain's primitive, whatever
+    /// the summary made of it: what a listing of one kind of resource
+    /// reads its columns from.
+    pub observation: Option<ResourceObservation>,
     /// How the child's chain ended: at a primitive (which `waiting_on`
     /// then describes), in a terminal state, or without its
     /// continuation established.
@@ -346,6 +351,10 @@ pub struct HeldFuture {
     pub waiting_on: Option<String>,
     /// The same wait as a tally counts it; see [`SetChild::wait`].
     pub wait: Option<WaitKind>,
+    /// The raw observation read from the chain's primitive, whatever
+    /// the summary made of it: what a listing of one kind of resource
+    /// reads its columns from.
+    pub observation: Option<ResourceObservation>,
     /// How its chain ended; see [`SetChild::continuation`].
     pub continuation: ContinuationStatus,
 }
@@ -1199,6 +1208,7 @@ impl<'b, T: Target> Walker<'_, 'b, T> {
                     state: summary.state,
                     waiting_on: summary.waiting_on,
                     wait: summary.wait,
+                    observation: summary.observation,
                     continuation: summary.continuation,
                 });
                 if nesting < self.bounds.nesting {
@@ -1613,6 +1623,7 @@ struct Summary {
     state: Option<String>,
     waiting_on: Option<String>,
     wait: Option<WaitKind>,
+    observation: Option<ResourceObservation>,
     continuation: ContinuationStatus,
 }
 
@@ -1661,6 +1672,7 @@ impl<'b, T: Target> Walker<'_, 'b, T> {
             state,
             waiting_on: target.as_ref().map(|t| t.to_string()),
             wait: target.as_ref().map(|t| t.kind()),
+            observation: inspection.primitive.value.clone(),
             continuation: ContinuationStatus::of(&chain.end),
         }
     }
@@ -1684,6 +1696,7 @@ impl<'b, T: Target> Walker<'_, 'b, T> {
                     state: None,
                     waiting_on: None,
                     wait: None,
+                    observation: None,
                     continuation: ContinuationStatus::Incomplete {
                         reason: super::assess::IncompleteReason::NoRoot,
                         detail: None,
@@ -1712,6 +1725,7 @@ impl<'b, T: Target> Walker<'_, 'b, T> {
                 state: summary.state,
                 waiting_on: summary.waiting_on,
                 wait: summary.wait,
+                observation: summary.observation,
                 continuation: summary.continuation,
             },
             Some(inspection.chain),
@@ -3614,6 +3628,7 @@ mod tests {
             state: None,
             waiting_on: None,
             wait: None,
+            observation: None,
             continuation: no_chain(),
         }
     }
@@ -3638,6 +3653,7 @@ mod tests {
             state: None,
             waiting_on: None,
             wait: None,
+            observation: None,
             continuation: no_chain(),
         }
     }

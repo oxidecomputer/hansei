@@ -5347,6 +5347,7 @@ mod reach_tests {
             state: None,
             waiting_on: None,
             wait: None,
+            observation: None,
             continuation: ContinuationStatus::Primitive,
         }
     }

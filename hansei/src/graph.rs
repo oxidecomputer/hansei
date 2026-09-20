@@ -537,6 +537,7 @@ mod graph_tests {
             state: None,
             waiting_on: None,
             wait: Some(WaitKind::Task { addr: addr(id).0 }),
+            observation: None,
             continuation: ContinuationStatus::Primitive,
         }
     }

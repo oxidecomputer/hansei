@@ -1777,6 +1777,7 @@ mod sync_tests {
                 state: None,
                 waiting_on: None,
                 wait: None,
+                observation: None,
                 continuation: no_chain(),
             }],
         }];
@@ -1915,6 +1916,7 @@ mod sync_tests {
                     state: None,
                     waiting_on: None,
                     wait: None,
+                    observation: None,
                     continuation: ContinuationStatus::Unresumed,
                 },
                 census::SetChild {
@@ -1925,6 +1927,7 @@ mod sync_tests {
                     state: None,
                     waiting_on: None,
                     wait: None,
+                    observation: None,
                     continuation: no_chain(),
                 },
             ],

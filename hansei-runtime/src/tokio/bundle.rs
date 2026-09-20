@@ -3071,7 +3071,7 @@ impl<'b, T: Target> Context<'b, T> {
             // version-choosing wrapper, which binds none.
             ResourceKind::HttpConn if record.http.is_some() => self
                 .observe_http_conn(value, read)
-                .map(ResourceObservation::HttpConn),
+                .map(|http| ResourceObservation::HttpConn(Box::new(http))),
             ResourceKind::HttpConn => self
                 .observe_http_negotiating(record, value, read)
                 .map(ResourceObservation::HttpNegotiating),
@@ -3439,6 +3439,13 @@ impl<'b, T: Target> Context<'b, T> {
         };
         let is_closing = word(&binding.is_closing, "closing flag")?;
         let is_closing = is_closing.bytes.first().is_some_and(|byte| *byte != 0);
+        // The read buffer's two words, a fact beside the verdict: a
+        // buffer that does not read leaves the verdict standing.
+        let buffer_word = |path: &TypedPath, what: &str| -> Option<u64> {
+            word(path, what).ok()?.parse::<u64>(self.proc).ok()
+        };
+        let read_buf = buffer_word(&binding.read_buf_len, "read buffer length")
+            .zip(buffer_word(&binding.read_buf_cap, "read buffer capacity"));
         let client = match &binding.client {
             Some(client) => {
                 let callback = match word(&client.callback, "callback")?.active_variant_raw()?.0 {
@@ -3473,15 +3480,33 @@ impl<'b, T: Target> Context<'b, T> {
         let server = match &binding.server {
             Some(server) => {
                 let in_flight = word(&server.in_flight, "in-flight handler")?;
-                let in_flight = in_flight.active_variant_raw()?.0 == "Some";
+                let (variant, payload) = in_flight.active_variant_raw()?;
+                let in_flight = variant == "Some";
+                // The handler's type: the pinned box the option holds,
+                // walked as a held future is, past its adapters to the
+                // future itself — which names a boxed `dyn` handler by
+                // its vtable where the bundle carries the pointee.
+                let handler = in_flight
+                    .then(|| payload.member("__0").ok())
+                    .flatten()
+                    .and_then(|boxed| self.handler_name(boxed, read));
                 let flag = word(
                     &server.header_read_timeout_running,
                     "header-read timer flag",
                 )?;
                 let header_read_timer_running = flag.bytes.first().is_some_and(|byte| *byte != 0);
+                // The peer, where a convention routes to one: a fact
+                // beside the verdict, like the buffer.
+                let peer = server
+                    .peer
+                    .as_ref()
+                    .and_then(|peer| word(&peer.addr, "peer address").ok())
+                    .and_then(socket_addr_text);
                 Some(HttpServerObservation {
                     in_flight,
+                    handler,
                     header_read_timer_running,
+                    peer,
                 })
             }
             None => None,
@@ -3495,9 +3520,28 @@ impl<'b, T: Target> Context<'b, T> {
             writing,
             method,
             is_closing,
+            read_buf,
             client,
             server,
         })
+    }
+
+    /// The type name of the future a server's in-flight handler is: the
+    /// pinned box walked as a held future, and the first frame of its
+    /// chain that is not an access adapter — past the `Pin` and the
+    /// `Box`, the handler itself. `None` where the walk reached no such
+    /// frame, as when a `dyn` box's pointee is not in the bundle.
+    fn handler_name(&self, boxed: Value<'b>, read: &ReadContext<'_>) -> Option<String> {
+        let inspection = self.inspect_future(boxed, super::chain::InspectionMode::Held, read);
+        inspection
+            .chain
+            .frames
+            .iter()
+            .find(|frame| {
+                self.type_semantics(frame.future.ty.id())
+                    .is_none_or(|record| record.access.is_none())
+            })
+            .map(|frame| frame.future.ty.name().to_string())
     }
 
     /// A `Sleep`: the deadline it caches and where its timer entry is.
@@ -4370,6 +4414,59 @@ impl<'b, T: Target> Context<'b, T> {
 /// to go, read on demand. The decoder's `Eof` and the encoder's
 /// `CloseDelimited` are one framing: the body ends with the connection.
 /// A variant the reviewed range does not have is no framing.
+/// A `core::net::SocketAddr` as std spells it — `192.0.2.1:80`,
+/// `[2001:db8::1]:80`, the scope after a `%` when nonzero — read off the
+/// enum's active variant: `V4`/`V6`, whose payload holds the address
+/// struct with its `ip.octets` array, `port` word and, for v6, `scope_id`.
+/// `None` where any of those did not read.
+fn socket_addr_text(addr: Value<'_>) -> Option<String> {
+    let (variant, payload) = addr.active_variant_raw().ok()?;
+    let inner = payload.member("__0").ok()?;
+    let word = |name: &str| -> Option<u64> {
+        let bytes = inner.member(name).ok()?.bytes;
+        match bytes.len() {
+            2 => Some(u64::from(u16::from_le_bytes(bytes.try_into().ok()?))),
+            4 => Some(u64::from(u32::from_le_bytes(bytes.try_into().ok()?))),
+            _ => None,
+        }
+    };
+    let octets = inner.member("ip").ok()?.member("octets").ok()?.bytes;
+    let scope_id = match variant {
+        "V6" => Some(word("scope_id")?),
+        _ => None,
+    };
+    spell_socket_addr(variant, octets, word("port")?, scope_id)
+}
+
+/// The spelling itself: `V4` with four octets as `a.b.c.d:port`, `V6`
+/// with sixteen as `[addr]:port`, the scope after a `%` when it is
+/// set; another variant or count is no address.
+fn spell_socket_addr(
+    variant: &str,
+    octets: &[u8],
+    port: u64,
+    scope_id: Option<u64>,
+) -> Option<String> {
+    match variant {
+        "V4" => {
+            let octets: [u8; 4] = octets.try_into().ok()?;
+            Some(format!("{}:{port}", std::net::Ipv4Addr::from(octets)))
+        }
+        "V6" => {
+            let octets: [u8; 16] = octets.try_into().ok()?;
+            let scope = match scope_id? {
+                0 => String::new(),
+                scope => format!("%{scope}"),
+            };
+            Some(format!(
+                "[{}{scope}]:{port}",
+                std::net::Ipv6Addr::from(octets)
+            ))
+        }
+        _ => None,
+    }
+}
+
 fn body_framing(variant: &str, remaining: impl FnOnce() -> Option<u64>) -> Option<BodyFraming> {
     match variant {
         "Length" => Some(BodyFraming::Length {
@@ -4498,6 +4595,121 @@ struct HeaderIdentity {
 
 #[cfg(test)]
 mod tests {
+    /// A socket address spells as std does, from the enum's active
+    /// variant: the v4 form bare, the v6 form bracketed with its scope
+    /// only when set, and a variant or an octet count that is neither
+    /// is no address.
+    #[test]
+    fn test_a_socket_address_spells_as_std_does() {
+        assert_eq!(
+            spell_socket_addr("V4", &[127, 0, 0, 1], 8080, None).as_deref(),
+            Some("127.0.0.1:8080")
+        );
+        let v6 = [
+            0xfd, 0, 0x11, 0x22, 0x33, 0x44, 0x01, 0x0d, 0, 0, 0, 0, 0, 0, 0, 0x25,
+        ];
+        assert_eq!(
+            spell_socket_addr("V6", &v6, 57400, Some(0)).as_deref(),
+            Some("[fd00:1122:3344:10d::25]:57400")
+        );
+        assert_eq!(
+            spell_socket_addr("V6", &v6, 57400, Some(3)).as_deref(),
+            Some("[fd00:1122:3344:10d::25%3]:57400")
+        );
+        assert_eq!(spell_socket_addr("V6", &v6, 1, None), None);
+        assert_eq!(spell_socket_addr("V4", &v6, 1, None), None);
+        assert_eq!(spell_socket_addr("V6", &[1, 2, 3, 4], 1, Some(0)), None);
+        assert_eq!(spell_socket_addr("Other", &[1, 2, 3, 4], 1, None), None);
+    }
+
+    /// The same read off values of the fixture's own `SocketAddr` type:
+    /// the peer the server's service captured — a loopback v4 address
+    /// and the port the client connected from — and a v6 value laid
+    /// down by hand at the type's own offsets, with and without a
+    /// scope, so both variants read through the value's members.
+    #[test]
+    fn test_a_socket_address_reads_off_the_enum() {
+        use crate::testkit::{self, load_any};
+        let (bundle, snapshot) = load_any("http-conns");
+        let ctx = testkit::context(&bundle, &snapshot);
+        let e = testkit::enumerate(&ctx, &snapshot);
+        // The peer the service captured, reached through the server
+        // dispatcher's frame on a connection that has chosen HTTP/1.
+        let read = ReadContext::none();
+        let peer = e
+            .list
+            .tasks
+            .iter()
+            .filter(|t| {
+                matches!(&t.future, FutureInfo::Known(known) if known.display_name.contains("http_conns::serve"))
+            })
+            .find_map(|serve| {
+                let inspection = ctx.inspect_task(serve, &read).ok()??;
+                let dispatcher = inspection.chain.frames.iter().find(|f| {
+                    f.future
+                        .ty
+                        .name()
+                        .contains("Dispatcher<hyper::proto::h1::dispatch::Server<")
+                })?;
+                // `member` peels the one-member `ServiceFn` to the
+                // closure it wraps, whose capture is the peer.
+                dispatcher
+                    .future
+                    .member("dispatch")
+                    .ok()?
+                    .member("service")
+                    .ok()?
+                    .member("peer")
+                    .ok()
+            })
+            .expect("an HTTP/1 server connection holding its peer");
+        let text = socket_addr_text(peer).expect("the peer reads");
+        let (ip, port) = text.split_once(':').unwrap();
+        assert_eq!(ip, "127.0.0.1");
+        assert!(port.parse::<u16>().unwrap() > 1024, "{text}");
+
+        let ty = ctx
+            .view
+            .find_by_name("core::net::socket_addr::SocketAddr")
+            .find(|t| t.variant("V6").is_some())
+            .expect("the address enum");
+        let (payload, at) = ty.variant("V6").unwrap();
+        let inner = payload.member("__0").unwrap();
+        let v6 = inner.ty();
+        let base = (at + inner.offset()) as usize;
+        let offset = |name: &str| base + v6.member(name).unwrap().offset() as usize;
+        let mut bytes = vec![0u8; ty.size() as usize];
+        // The discriminant: `V6`'s value at the enum's discriminant word.
+        let discr = ty.variant_shape().unwrap().discr.as_ref().unwrap();
+        let v6_index = ty
+            .variant_shape()
+            .unwrap()
+            .variants
+            .iter()
+            .position(|v| bundle.strings.get(v.name) == Some("V6"))
+            .unwrap();
+        let discr_value = match &ty.variant_shape().unwrap().variants[v6_index].discr_values {
+            Some(hansei_bundle::DiscrValues(values)) => match values[0] {
+                hansei_bundle::DiscrValue::Value(v) => v as u64,
+                _ => panic!("a ranged discriminant"),
+            },
+            None => panic!("no discriminant value"),
+        };
+        let discr_size = ctx.view.ty(discr.ty).unwrap().size() as usize;
+        bytes[discr.offset as usize..discr.offset as usize + discr_size]
+            .copy_from_slice(&discr_value.to_le_bytes()[..discr_size]);
+        let ip = offset("ip");
+        bytes[ip..ip + 16].copy_from_slice(&[0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
+        let port = offset("port");
+        bytes[port..port + 2].copy_from_slice(&443u16.to_le_bytes());
+        let value = reify::Value::new(ty, 0x1000, &bytes);
+        assert_eq!(socket_addr_text(value).as_deref(), Some("[fe80::1]:443"));
+        let scope = offset("scope_id");
+        bytes[scope..scope + 4].copy_from_slice(&7u32.to_le_bytes());
+        let value = reify::Value::new(ty, 0x1000, &bytes);
+        assert_eq!(socket_addr_text(value).as_deref(), Some("[fe80::1%7]:443"));
+    }
+
     use super::*;
 
     use crate::testkit;

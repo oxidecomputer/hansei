@@ -952,6 +952,7 @@ mod whatis_tests {
             state: None,
             waiting_on: None,
             wait: None,
+            observation: None,
             continuation: hansei_runtime::tokio::assess::ContinuationStatus::Unresumed,
         };
         census.sets.push(census::FutureSet {

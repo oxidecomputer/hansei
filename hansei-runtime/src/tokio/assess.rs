@@ -2114,6 +2114,7 @@ mod tests {
             writing,
             method: in_flight.then(|| "GET".to_owned()),
             is_closing,
+            read_buf: Some((0, 8192)),
             client: Some(HttpClientObservation {
                 callback: in_flight.then(|| OneshotObservation {
                     future: key,
@@ -2325,10 +2326,13 @@ mod tests {
             writing,
             method: in_flight.then(|| "GET".to_owned()),
             is_closing,
+            read_buf: Some((0, 8192)),
             client: None,
             server: Some(HttpServerObservation {
                 in_flight,
+                handler: in_flight.then(|| "app::handle::{async_fn_env#0}".to_owned()),
                 header_read_timer_running: false,
+                peer: Some("[fd00::25]:57400".to_owned()),
             }),
         }
     }
@@ -2601,7 +2605,9 @@ mod tests {
         // A server observation never carries a client's dispatch.
         let _ = HttpServerObservation {
             in_flight: false,
+            handler: None,
             header_read_timer_running: false,
+            peer: None,
         };
     }
 

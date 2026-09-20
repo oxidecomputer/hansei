@@ -1284,6 +1284,7 @@ mod tests {
             state: None,
             waiting_on: wait.map(|_| "something".to_string()),
             wait,
+            observation: None,
             continuation: match wait {
                 Some(_) => ContinuationStatus::Primitive,
                 None => ContinuationStatus::Unresumed,
@@ -1304,6 +1305,7 @@ mod tests {
             state: None,
             waiting_on: wait.map(|_| "something".to_string()),
             wait,
+            observation: None,
             continuation: match wait {
                 Some(_) => ContinuationStatus::Primitive,
                 None => ContinuationStatus::Unresumed,

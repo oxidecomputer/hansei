@@ -1374,6 +1374,7 @@ mod tests {
             state: Some("Suspend1 — src/app.rs:9".to_string()),
             waiting_on: Some("a timer".to_string()),
             wait: Some(WaitKind::Timer { past_due: None }),
+            observation: None,
             continuation: ContinuationStatus::Primitive,
         }
     }
@@ -1390,6 +1391,7 @@ mod tests {
             state: None,
             waiting_on: None,
             wait: Some(WaitKind::Task { addr: 0x1c00 }),
+            observation: None,
             continuation: ContinuationStatus::Unresumed,
         }
     }

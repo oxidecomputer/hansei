@@ -418,6 +418,10 @@ pub struct HttpConnObservation {
     /// an extension method, and where the word did not read.
     pub method: Option<String>,
     pub is_closing: bool,
+    /// The read buffer's fill: bytes read off the socket and not yet
+    /// parsed, and the buffer's capacity; `None` where the words did
+    /// not read.
+    pub read_buf: Option<(u64, u64)>,
     /// The client dispatch's words, for a client.
     pub client: Option<HttpClientObservation>,
     /// The server dispatch's words, for a server.
@@ -436,13 +440,21 @@ pub struct HttpClientObservation {
 }
 
 /// The server dispatch as one read found it.
-#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub struct HttpServerObservation {
     /// Whether a handler is running: the `Option` behind `in_flight`
     /// is `Some`.
     pub in_flight: bool,
+    /// The running handler's future type, as the chain walk names it
+    /// past its adapters — the concrete type behind a boxed `dyn` where
+    /// the bundle carries it. `None` between requests, and where the
+    /// box's pointee could not be named.
+    pub handler: Option<String>,
     /// Whether the header-read timer is armed.
     pub header_read_timer_running: bool,
+    /// The peer's address as std spells it, where the binding routes to
+    /// one and it read.
+    pub peer: Option<String>,
 }
 
 /// hyper-util's version-choosing wrapper as one read found it, still
@@ -463,7 +475,9 @@ pub enum ResourceObservation {
     Recv(RecvObservation),
     Notified(NotifiedObservation),
     Oneshot(OneshotObservation),
-    HttpConn(HttpConnObservation),
+    /// Boxed: the connection's words are several times any other
+    /// observation's, and every chain end carries one of these.
+    HttpConn(Box<HttpConnObservation>),
     HttpNegotiating(HttpNegotiatingObservation),
 }
 
