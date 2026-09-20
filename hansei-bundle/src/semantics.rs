@@ -271,6 +271,13 @@ pub struct HttpConnBinding {
     pub write_body_kind: TypedPath,
     /// `is_closing`: set once the dispatcher has closed both directions.
     pub is_closing: TypedPath,
+    /// `conn.io.read_buf.len` and `.cap`: how much of the read buffer
+    /// holds bytes read off the socket and not yet parsed, and its
+    /// capacity — the buffer is `bytes::BytesMut`, whose two words are
+    /// read by name under hyper's rule, since hyper's buffered io owns
+    /// the member that holds it.
+    pub read_buf_len: TypedPath,
+    pub read_buf_cap: TypedPath,
     /// The client's dispatch, where `T` is `role::Client`.
     pub client: Option<HttpClientBinding>,
     /// The server's dispatch, where `T` is `role::Server`.
@@ -303,6 +310,19 @@ pub struct HttpServerBinding {
     /// `conn.state.h1_header_read_timeout_running`: whether the
     /// header-read timer the server arms while idle is running.
     pub header_read_timeout_running: TypedPath,
+    /// The peer's address, where the service the dispatch drives is one
+    /// a reviewed convention says stores it: dropshot's request handler.
+    /// `None` for a service the review does not cover.
+    pub peer: Option<HttpPeerBinding>,
+}
+
+/// Where a server connection's peer address is stored, under the rule
+/// of the crate whose service type keeps it.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub struct HttpPeerBinding {
+    pub rule: SemanticRuleId,
+    /// `dispatch.service.remote_addr`, landing on the `SocketAddr` enum.
+    pub addr: TypedPath,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
@@ -490,6 +510,11 @@ pub enum SemanticRuleKind {
     /// `server::conn::http1` connection inside and acting only on its
     /// output, or HTTP/2.
     HyperUtilAutoConn,
+    /// dropshot's `server::ServerRequestHandler`, the service its server
+    /// hands hyper for each accepted connection, under a reviewed
+    /// range: it keeps the accepted socket's peer address in
+    /// `remote_addr`, which is what names a server connection's peer.
+    DropshotRequestHandler,
 }
 
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]

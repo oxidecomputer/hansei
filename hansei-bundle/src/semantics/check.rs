@@ -169,6 +169,7 @@ impl<'a> Check<'a> {
             | HyperUtilTokioSleep
             | HyperUtilAutoConn
             | HyperH1Conn
+            | DropshotRequestHandler
             | TokioSelect
             | TokioIntervalTick
             | FuturesUtilNext
@@ -179,6 +180,7 @@ impl<'a> Check<'a> {
                     TracingInstrumented => "tracing",
                     HyperUtilTokioSleep | HyperUtilAutoConn => "hyper-util",
                     HyperH1Conn => "hyper",
+                    DropshotRequestHandler => "dropshot",
                     // tokio's own macro and its own async fn, but read
                     // like a third-party rule: the declaration file is
                     // the evidence, and tokio's version comes off its
@@ -545,6 +547,31 @@ impl<'a> Check<'a> {
             self.0.types.size_of(binding.is_closing.target) == Some(1),
             "HTTP connection closing flag is not one byte",
         )?;
+        // The read buffer's two words: each an unsigned machine word,
+        // reached through the connection's buffered io.
+        for (word, what) in [
+            (&binding.read_buf_len, "read buffer length"),
+            (&binding.read_buf_cap, "read buffer capacity"),
+        ] {
+            self.path(record.ty, word)?;
+            require(
+                matches!(
+                    self.ty(word.target)?,
+                    TypeDef::Base {
+                        encoding: crate::Encoding::Unsigned,
+                        size: 8,
+                        ..
+                    }
+                ),
+                &format!("HTTP connection {what} is not an unsigned word"),
+            )?;
+            // Under the connection member: a word of the right width
+            // reached from anywhere else is not this buffer's.
+            require(
+                word.steps.first() == binding.keep_alive.steps.first(),
+                &format!("HTTP connection {what} is not reached through the connection"),
+            )?;
+        }
         require(
             (binding.role == HttpRole::Client) == binding.client.is_some()
                 && (binding.role == HttpRole::Server) == binding.server.is_some(),
@@ -574,6 +601,16 @@ impl<'a> Check<'a> {
                     == Some(1),
                 "HTTP header-read timer flag is not one byte",
             )?;
+            // The peer: under the service crate's own rule, an address
+            // enum reached through the dispatch, past the handler.
+            if let Some(peer) = &server.peer {
+                self.rule(peer.rule, &[SemanticRuleKind::DropshotRequestHandler])?;
+                enumeration(&peer.addr, "peer address")?;
+                require(
+                    peer.addr.steps.len() > 2 && peer.addr.steps[0] == server.in_flight.steps[0],
+                    "HTTP peer address is not reached through the dispatch",
+                )?;
+            }
         }
         Ok(())
     }

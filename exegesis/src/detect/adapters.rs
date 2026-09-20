@@ -832,6 +832,9 @@ pub(crate) struct HttpDispatcherLayout {
     pub(crate) write_body_kind: TypeId,
     /// `is_closing`, a `bool`.
     pub(crate) is_closing: TypeId,
+    /// `conn.io.read_buf.len` and `.cap`, the read buffer's two words.
+    pub(crate) read_buf_len: TypeId,
+    pub(crate) read_buf_cap: TypeId,
     /// The client dispatch's words, for a `T` of `role::Client`.
     pub(crate) client: Option<HttpClientLayout>,
     /// The server dispatch's words, for a `T` of `role::Server`.
@@ -862,6 +865,10 @@ pub(crate) struct HttpServerLayout {
     pub(crate) in_flight: TypeId,
     /// `conn.state.h1_header_read_timeout_running`, a `bool`.
     pub(crate) header_read_timeout_running: TypeId,
+    /// The service the dispatch drives, and where it keeps the peer's
+    /// address where a reviewed convention says it does.
+    pub(crate) service: TypeId,
+    pub(crate) peer: Option<TypeId>,
 }
 
 /// The member names the connection binding's routes are made of, as
@@ -889,6 +896,14 @@ pub(crate) mod hyper_h1 {
     pub(crate) const KIND: &str = "kind";
     pub(crate) const IN_FLIGHT: &str = "in_flight";
     pub(crate) const HEADER_READ_TIMEOUT_RUNNING: &str = "h1_header_read_timeout_running";
+    pub(crate) const IO: &str = "io";
+    pub(crate) const READ_BUF: &str = "read_buf";
+    pub(crate) const LEN: &str = "len";
+    pub(crate) const CAP: &str = "cap";
+    pub(crate) const SERVICE: &str = "service";
+    /// dropshot's request handler: the member its server stores the
+    /// accepted socket's peer address in.
+    pub(crate) const REMOTE_ADDR: &str = "remote_addr";
     /// hyper-util's version-choosing wrapper: its state member and
     /// the state's three variants.
     pub(crate) const READ_VERSION: &str = "ReadVersion";
@@ -951,6 +966,20 @@ pub(crate) fn hyper_h1_dispatcher(
     if fq_name(reader, is_closing).as_deref() != Some("bool") {
         return None;
     }
+    // The read buffer: hyper's buffered io holds a `BytesMut`, whose
+    // length and capacity words are read by name.
+    let io = member_of(reader, conn, IO)?;
+    declared_in(reader, io, "hyper::proto::h1::io", "Buffered<")?;
+    let read_buf = member_of(reader, io, READ_BUF)?;
+    if fq_name(reader, read_buf).as_deref() != Some("bytes::bytes_mut::BytesMut") {
+        return None;
+    }
+    let buffer_word = |name: &str| {
+        let ty = member_of(reader, read_buf, name)?;
+        (fq_name(reader, ty).as_deref() == Some("usize")).then_some(ty)
+    };
+    let read_buf_len = buffer_word(LEN)?;
+    let read_buf_cap = buffer_word(CAP)?;
     let dispatch = member_of(reader, id, DISPATCH)?;
     let mut server = None;
     let client = match role {
@@ -969,11 +998,14 @@ pub(crate) fn hyper_h1_dispatcher(
             if fq_name(reader, flag).as_deref() != Some("bool") {
                 return None;
             }
+            let service = member_of(reader, dispatch, SERVICE)?;
             server = Some(HttpServerLayout {
                 in_flight_member,
                 in_flight_box,
                 in_flight: option,
                 header_read_timeout_running: flag,
+                service,
+                peer: dropshot_request_handler(reader, service),
             });
             None
         }
@@ -1024,9 +1056,21 @@ pub(crate) fn hyper_h1_dispatcher(
         read_body_kind,
         write_body_kind,
         is_closing,
+        read_buf_len,
+        read_buf_cap,
         client,
         server,
     })
+}
+
+/// Screen `service` as dropshot's `ServerRequestHandler<C>`, declared in
+/// `dropshot::server` with a `remote_addr` member holding the accepted
+/// socket's peer as `core::net::SocketAddr`: the address's type, or
+/// `None` for any other service, which the review says nothing about.
+pub(crate) fn dropshot_request_handler(reader: &DwReader<'_>, service: TypeId) -> Option<TypeId> {
+    declared_in(reader, service, "dropshot::server", "ServerRequestHandler<")?;
+    let addr = member_of(reader, service, hyper_h1::REMOTE_ADDR)?;
+    (fq_name(reader, addr).as_deref() == Some("core::net::socket_addr::SocketAddr")).then_some(addr)
 }
 
 /// hyper's `UpgradeableConnection` of either side as the raw screen
@@ -2602,6 +2646,56 @@ mod tests {
     /// wrapper's state is an enum declared in hyper-util's auto module
     /// under its generic name: the same name elsewhere, or a struct of
     /// that name, is not it.
+    /// dropshot's request handler is the service that keeps a peer
+    /// address: declared in its server module, with `remote_addr` a
+    /// `SocketAddr`. Another crate's handler of the same shape, or the
+    /// member under another type, is no peer.
+    #[test]
+    fn test_dropshot_request_handler_keeps_the_peer_address() {
+        const HANDLER: TypeId = TypeId(UnitSectionOffset(0xa0));
+        const ADDR: TypeId = TypeId(UnitSectionOffset(0xa1));
+        const OTHER: TypeId = TypeId(UnitSectionOffset(0xa2));
+        const PAYLOAD: TypeId = TypeId(UnitSectionOffset(0xa3));
+        let mut fx = Fx::default();
+        let server = fx.ns("dropshot::server");
+        let net = fx.ns("core::net::socket_addr");
+        let app = fx.ns("app");
+        fx.strukt(PAYLOAD, Some(net), "SocketAddrV4", &[], &[]);
+        fx.enumm(
+            ADDR,
+            Some(net),
+            "SocketAddr",
+            &[("V4", PAYLOAD), ("V6", PAYLOAD)],
+        );
+        fx.strukt(OTHER, Some(app), "Other", &[], &[]);
+        fx.strukt(
+            HANDLER,
+            Some(server),
+            "ServerRequestHandler<C>",
+            &[("server", OTHER, 0), ("remote_addr", ADDR, 8)],
+            &[],
+        );
+        assert_eq!(dropshot_request_handler(&fx.reader, HANDLER), Some(ADDR));
+        // The same shape in another crate says nothing.
+        fx.strukt(
+            HANDLER,
+            Some(app),
+            "ServerRequestHandler<C>",
+            &[("server", OTHER, 0), ("remote_addr", ADDR, 8)],
+            &[],
+        );
+        assert_eq!(dropshot_request_handler(&fx.reader, HANDLER), None);
+        // The member has to hold the address type.
+        fx.strukt(
+            HANDLER,
+            Some(server),
+            "ServerRequestHandler<C>",
+            &[("server", OTHER, 0), ("remote_addr", OTHER, 8)],
+            &[],
+        );
+        assert_eq!(dropshot_request_handler(&fx.reader, HANDLER), None);
+    }
+
     #[test]
     fn test_hyper_connections_hold_their_dispatcher_and_the_auto_state_is_its_enum() {
         const DISPATCHER: TypeId = TypeId(UnitSectionOffset(0x90));

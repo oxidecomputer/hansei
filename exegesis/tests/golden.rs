@@ -794,6 +794,18 @@ fn assert_http_conn(program: &str, bundle: &Bundle, key: &str, client: bool) {
             "is_closing -> bool",
             "{program}: {name}"
         );
+        // The read buffer's words, through hyper's buffered io to the
+        // `BytesMut` it holds.
+        assert_eq!(
+            route(&http.read_buf_len),
+            "conn.io.read_buf.len -> usize",
+            "{program}: {name}"
+        );
+        assert_eq!(
+            route(&http.read_buf_cap),
+            "conn.io.read_buf.cap -> usize",
+            "{program}: {name}"
+        );
         assert_eq!(http.role == HttpRole::Client, client, "{program}: {name}");
         // The server's handler is read behind its pinned box — the
         // route crosses the `Pin`'s member and dereferences the `Box`
@@ -815,6 +827,9 @@ fn assert_http_conn(program: &str, bundle: &Bundle, key: &str, client: bool) {
                     "conn.state.h1_header_read_timeout_running -> bool",
                     "{program}: {name}"
                 );
+                // The fixture's service is its own closure, which no
+                // convention says keeps a peer address.
+                assert_eq!(dispatch.peer, None, "{program}: {name}");
             }
             None if client => {}
             other => panic!("{program}: {name}: server dispatch {other:?}"),

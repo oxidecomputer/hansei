@@ -28,14 +28,14 @@ use crate::bundle::origin::registry_origin;
 use crate::bundle::{
     AccessBinding, AccessKind, BundleTypeId, ContainerBinding, ContainerKind, Continuation,
     CoroutineLayout, CoroutinePhase, CoroutineState, DynFutureLayout, FutureEvidence, FutureFacts,
-    FutureTarget, HttpClientBinding, HttpConnBinding, HttpRole, HttpServerBinding, IoOperationKind,
-    LayoutSelection, MemberRef, PollAction, PollCase, PollProgram, ResourceBinding, ResourceKind,
-    SchedulerBinding, SchedulerClass, SelectBinding, Selector, SemanticIssue, SemanticIssueKind,
-    SemanticOrigin, SemanticOriginId, SemanticRule, SemanticRuleId, SemanticRuleKind,
-    SemanticTable, SourceFileEvidence, SourceLoc, Step, StoragePolicy, StrRef, StringInterner,
-    TaskEntryId, TaskFutureEntry, TypeDef, TypeSemantics, TypeTable, TypedPath, WalkOutcome,
-    WalkRole, WalksTable, container_roles, container_routes, required_resource_roles,
-    required_resource_routes, scheduler_role, semantic_path_target,
+    FutureTarget, HttpClientBinding, HttpConnBinding, HttpPeerBinding, HttpRole, HttpServerBinding,
+    IoOperationKind, LayoutSelection, MemberRef, PollAction, PollCase, PollProgram,
+    ResourceBinding, ResourceKind, SchedulerBinding, SchedulerClass, SelectBinding, Selector,
+    SemanticIssue, SemanticIssueKind, SemanticOrigin, SemanticOriginId, SemanticRule,
+    SemanticRuleId, SemanticRuleKind, SemanticTable, SourceFileEvidence, SourceLoc, Step,
+    StoragePolicy, StrRef, StringInterner, TaskEntryId, TaskFutureEntry, TypeDef, TypeSemantics,
+    TypeTable, TypedPath, WalkOutcome, WalkRole, WalksTable, container_roles, container_routes,
+    required_resource_roles, required_resource_routes, scheduler_role, semantic_path_target,
 };
 use crate::detect::Family;
 use crate::detect::adapters::{
@@ -43,12 +43,12 @@ use crate::detect::adapters::{
     WidePointer, hyper_h1,
 };
 use crate::detect::semantics::{
-    FUTURES_UTIL_ADAPTERS_V0_3_30, HYPER_H1_CONN_V1_6_0, HYPER_UTIL_AUTO_CONN_V0_1_10,
-    HYPER_UTIL_TOKIO_SLEEP_V0_1_10, LibraryConvention, RustcConvention, TOKIO_INTERVAL_TICK_V1_47,
-    TOKIO_SELECT_V1_47, TOKIO_STREAM_MAP_V0_1_14, TOKIO_STREAM_WATCH_V0_1_14,
-    TOKIO_UTIL_REUSABLE_BOX_V0_7_11, TRACING_INSTRUMENTED_V0_1_40, library_convention,
-    rustc_core_pending_convention, rustc_coroutine_convention, rustc_dyn_future_abi_convention,
-    rustc_std_adapter_convention, tokio_state_protocol,
+    DROPSHOT_SERVER_V0_17_0, FUTURES_UTIL_ADAPTERS_V0_3_30, HYPER_H1_CONN_V1_6_0,
+    HYPER_UTIL_AUTO_CONN_V0_1_10, HYPER_UTIL_TOKIO_SLEEP_V0_1_10, LibraryConvention,
+    RustcConvention, TOKIO_INTERVAL_TICK_V1_47, TOKIO_SELECT_V1_47, TOKIO_STREAM_MAP_V0_1_14,
+    TOKIO_STREAM_WATCH_V0_1_14, TOKIO_UTIL_REUSABLE_BOX_V0_7_11, TRACING_INSTRUMENTED_V0_1_40,
+    library_convention, rustc_core_pending_convention, rustc_coroutine_convention,
+    rustc_dyn_future_abi_convention, rustc_std_adapter_convention, tokio_state_protocol,
 };
 
 use std::borrow::Cow;
@@ -418,6 +418,8 @@ struct HttpSeed {
     read_body_kind: BundleTypeId,
     write_body_kind: BundleTypeId,
     is_closing: BundleTypeId,
+    read_buf_len: BundleTypeId,
+    read_buf_cap: BundleTypeId,
     client: Option<HttpClientSeed>,
     server: Option<HttpServerSeed>,
 }
@@ -439,6 +441,16 @@ struct HttpServerSeed {
     in_flight_box: BundleTypeId,
     in_flight: BundleTypeId,
     header_read_timeout_running: BundleTypeId,
+    /// The peer address the service keeps, where the screen recognized
+    /// the service: the address's type and the service's own method
+    /// declarations, which are what its crate's version is read off.
+    peer: Option<HttpPeerSeed>,
+}
+
+#[derive(Clone, Debug)]
+struct HttpPeerSeed {
+    addr: BundleTypeId,
+    sources: BTreeSet<PollSource>,
 }
 
 #[derive(Default)]
@@ -616,6 +628,7 @@ fn library_seed(
 fn http_seed(
     layout: HttpDispatcherLayout,
     bundle_id: impl Fn(TypeId) -> Option<BundleTypeId>,
+    type_sources: impl Fn(TypeId) -> BTreeSet<PollSource>,
 ) -> Option<HttpSeed> {
     let client = match layout.client {
         Some(client) => Some(HttpClientSeed {
@@ -632,6 +645,14 @@ fn http_seed(
             in_flight_box: bundle_id(server.in_flight_box)?,
             in_flight: bundle_id(server.in_flight)?,
             header_read_timeout_running: bundle_id(server.header_read_timeout_running)?,
+            // A peer the table does not carry is no recorded route; the
+            // binding stands without it.
+            peer: server.peer.and_then(|addr| {
+                Some(HttpPeerSeed {
+                    addr: bundle_id(addr)?,
+                    sources: type_sources(server.service),
+                })
+            }),
         }),
         None => None,
     };
@@ -646,6 +667,8 @@ fn http_seed(
         read_body_kind: bundle_id(layout.read_body_kind)?,
         write_body_kind: bundle_id(layout.write_body_kind)?,
         is_closing: bundle_id(layout.is_closing)?,
+        read_buf_len: bundle_id(layout.read_buf_len)?,
+        read_buf_cap: bundle_id(layout.read_buf_cap)?,
         client,
         server,
     })
@@ -752,7 +775,7 @@ pub(super) fn collect_semantic_seeds(
             seeds.entry(ty).or_default().pending = Some(verdict(raw, Reviewed::CorePending));
         } else if name.starts_with("hyper::proto::h1::dispatch::Dispatcher<")
             && let Some(layout) = adapters::hyper_h1_dispatcher(reader, raw)
-            && let Some(seed) = http_seed(layout, bundle_id)
+            && let Some(seed) = http_seed(layout, bundle_id, &type_sources)
         {
             seeds.entry(ty).or_default().http = Some(seed);
         } else if let Some(library) = library_seed(
@@ -1513,7 +1536,10 @@ pub(super) fn bind_semantics(
         // the continuation's reason, as any other declined shape's.
         if readable && let Some(http) = &seed.http {
             match plan_http(ty, http, &seed.poll_sources, types, strings) {
-                Ok(plan) => draft.http = Some(plan),
+                Ok(mut plan) => {
+                    draft.issues.extend(plan.peer_declined.take());
+                    draft.http = Some(plan);
+                }
                 Err(decline) => draft.decline = Some(decline),
             }
         }
@@ -1655,8 +1681,17 @@ pub(super) fn bind_semantics(
                     read_body_kind: plan.read_body_kind,
                     write_body_kind: plan.write_body_kind,
                     is_closing: plan.is_closing,
+                    read_buf_len: plan.read_buf_len,
+                    read_buf_cap: plan.read_buf_cap,
                     client: plan.client,
-                    server: plan.server,
+                    server: plan.server.map(|server| HttpServerBinding {
+                        in_flight: server.in_flight,
+                        header_read_timeout_running: server.header_read_timeout_running,
+                        peer: server.peer.map(|(key, addr)| HttpPeerBinding {
+                            rule: rules.rule(&key, strings, library),
+                            addr,
+                        }),
+                    }),
                 },
             )
         });
@@ -2555,8 +2590,23 @@ struct HttpPlan {
     read_body_kind: TypedPath,
     write_body_kind: TypedPath,
     is_closing: TypedPath,
+    read_buf_len: TypedPath,
+    read_buf_cap: TypedPath,
     client: Option<HttpClientBinding>,
-    server: Option<HttpServerBinding>,
+    server: Option<HttpServerPlan>,
+    /// Why the peer was not routed, where the service was recognized
+    /// and its crate's origin declined: a fact beside the binding, not
+    /// a reason to decline it.
+    peer_declined: Option<Decline>,
+}
+
+/// The server dispatch's routes with the peer's under the key its rule
+/// is interned by once the plan is bound.
+#[derive(Clone, Debug)]
+struct HttpServerPlan {
+    in_flight: TypedPath,
+    header_read_timeout_running: TypedPath,
+    peer: Option<(RuleKey, TypedPath)>,
 }
 
 /// Plan hyper's dispatcher as the connection resource: the origin first
@@ -2668,6 +2718,16 @@ fn plan_http(
     let read_body_kind = framing(strings, READING, BODY, seed.read_body_kind)?;
     let write_body_kind = framing(strings, WRITING, BODY, seed.write_body_kind)?;
     let is_closing = route(strings, &[(M, IS_CLOSING)], seed.is_closing)?;
+    let buffer_word = |strings: &mut StringInterner, name: &str, target| {
+        route(
+            strings,
+            &[(M, CONN), (M, IO), (M, READ_BUF), (M, name)],
+            target,
+        )
+    };
+    let read_buf_len = buffer_word(strings, LEN, seed.read_buf_len)?;
+    let read_buf_cap = buffer_word(strings, CAP, seed.read_buf_cap)?;
+    let mut peer_declined = None;
     let client = match &seed.client {
         Some(client) => {
             let callback = route(strings, &[(M, DISPATCH), (M, CALLBACK)], client.callback)?;
@@ -2731,13 +2791,40 @@ fn plan_http(
                 ],
                 server.in_flight,
             )?;
-            Some(HttpServerBinding {
+            // The peer under its own crate's rule: the service's method
+            // declarations say which dropshot, and a version outside the
+            // reviewed range leaves the binding without a peer rather
+            // than without a verdict.
+            let peer = match &server.peer {
+                Some(peer) => {
+                    match delegation_origin(&peer.sources, &DROPSHOT_SERVER_V0_17_0, "method") {
+                        Ok(origin) => Some((
+                            RuleKey::Delegation {
+                                kind: SemanticRuleKind::DropshotRequestHandler,
+                                origin,
+                            },
+                            route(
+                                strings,
+                                &[(M, DISPATCH), (M, SERVICE), (M, REMOTE_ADDR)],
+                                peer.addr,
+                            )?,
+                        )),
+                        Err(declined) => {
+                            peer_declined = Some(declined);
+                            None
+                        }
+                    }
+                }
+                None => None,
+            };
+            Some(HttpServerPlan {
                 in_flight,
                 header_read_timeout_running: word(
                     strings,
                     HEADER_READ_TIMEOUT_RUNNING,
                     server.header_read_timeout_running,
                 )?,
+                peer,
             })
         }
         None => None,
@@ -2757,8 +2844,11 @@ fn plan_http(
         read_body_kind,
         write_body_kind,
         is_closing,
+        read_buf_len,
+        read_buf_cap,
         client,
         server,
+        peer_declined,
     })
 }
 
@@ -3339,6 +3429,8 @@ mod tests {
                 read_body_kind: id,
                 write_body_kind: id,
                 is_closing: id,
+                read_buf_len: id,
+                read_buf_cap: id,
                 client: None,
                 server: None,
             }),

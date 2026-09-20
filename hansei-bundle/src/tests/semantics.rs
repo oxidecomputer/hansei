@@ -1887,6 +1887,20 @@ fn http_conn() -> (Bundle, HttpClientBinding) {
         name("__0"),
         name("kind"),
     );
+    let (io, read_buf, len, cap, buffered_name, bytes_mut_name, dropshot, dropshot_version) = (
+        name("io"),
+        name("read_buf"),
+        name("len"),
+        name("cap"),
+        name("hyper::proto::h1::io::Buffered<T, B>"),
+        name("bytes::bytes_mut::BytesMut"),
+        name("dropshot"),
+        name("0.17.1"),
+    );
+    let (dropshot_family, dropshot_source) = (
+        name("dropshot-server-0.17.0"),
+        name("registry/src/index.crates.io-1949cf8c6b5b557f/dropshot-0.17.1/src/server.rs"),
+    );
     let (idle, busy, disabled, init, cont, body, length, chunked, get, post, retry, no_retry) = (
         name("Idle"),
         name("Busy"),
@@ -1952,6 +1966,7 @@ fn http_conn() -> (Bundle, HttpClientBinding) {
     let (sender_t, some_s, opt_sender, retry_p, no_retry_p, callback_t, some_c, opt_callback) =
         (id(), id(), id(), id(), id(), id(), id(), id());
     let (unbounded_t, receiver_t, client_t, dispatcher_t) = (id(), id(), id(), id());
+    let (bytes_mut_t, buffered_t) = (id(), id());
     let variant = |name, discr: u128, payload: MemberDef| VariantDef {
         name,
         discr_values: Some(DiscrValues(vec![DiscrValue::Value(discr)])),
@@ -2054,7 +2069,11 @@ fn http_conn() -> (Bundle, HttpClientBinding) {
                 member(method, opt_method, 56),
             ],
         ),
-        strukt(conn_name, 96, vec![member(state, state_t, 8)]),
+        strukt(
+            conn_name,
+            96,
+            vec![member(io, buffered_t, 0), member(state, state_t, 16)],
+        ),
         strukt(sender, 8, vec![member(inner, pointer, 0)]),
         strukt(some, 8, vec![member(first, sender_t, 0)]),
         enumeration(
@@ -2103,6 +2122,12 @@ fn http_conn() -> (Bundle, HttpClientBinding) {
                 member(is_closing, bool_t, 152),
             ],
         ),
+        strukt(
+            bytes_mut_name,
+            16,
+            vec![member(len, word, 0), member(cap, word, 8)],
+        ),
+        strukt(buffered_name, 16, vec![member(read_buf, bytes_mut_t, 0)]),
     ]);
     b.semantics.origins.push(SemanticOrigin::LibraryDelegation {
         package: hyper,
@@ -2117,6 +2142,20 @@ fn http_conn() -> (Bundle, HttpClientBinding) {
         origin: SemanticOriginId(1),
     });
     let rule = SemanticRuleId(1);
+    // dropshot's rule beside hyper's, for the server-shaped records the
+    // tests build: its origin is dropshot's own server file.
+    b.semantics.origins.push(SemanticOrigin::LibraryDelegation {
+        package: dropshot,
+        version: dropshot_version,
+        family: dropshot_family,
+        source: dropshot_source,
+        files: Vec::new(),
+    });
+    b.semantics.rules.push(SemanticRule {
+        kind: SemanticRuleKind::DropshotRequestHandler,
+        revision: 1,
+        origin: SemanticOriginId(2),
+    });
     let route = |steps: Vec<Step>, target| TypedPath { steps, target };
     let state_word = |word, target| route(vec![named(conn), named(state), named(word)], target);
     let framing = |word, through, target| {
@@ -2183,6 +2222,14 @@ fn http_conn() -> (Bundle, HttpClientBinding) {
         read_body_kind: framing(reading, body, dkind),
         write_body_kind: framing(writing, body, dkind),
         is_closing: route(vec![named(is_closing)], bool_t),
+        read_buf_len: route(
+            vec![named(conn), named(io), named(read_buf), named(len)],
+            word,
+        ),
+        read_buf_cap: route(
+            vec![named(conn), named(io), named(read_buf), named(cap)],
+            word,
+        ),
         client: Some(client_binding.clone()),
         server: None,
     });
@@ -2252,9 +2299,33 @@ fn test_semantic_http_conn_binding_routes_every_word() {
     bad(&wrong, "sender is not reached through the callback");
     // The dispatch routes present are the role's own: both, or the
     // other role's, disagree.
+    // The read buffer's words: unsigned words, under the connection.
+    let mut wrong = b.clone();
+    http(&mut wrong).read_buf_len = http(&mut wrong).reading.clone();
+    bad(&wrong, "read buffer length is not an unsigned word");
+    let mut wrong = b.clone();
+    http(&mut wrong).read_buf_cap = http(&mut wrong).is_closing.clone();
+    bad(&wrong, "read buffer capacity is not an unsigned word");
+    // A word of the right width reached from the dispatch is not the
+    // connection's read buffer: the receiver's route, retyped to a word.
+    let mut wrong = b.clone();
+    wrong.types.types[client.rx.target.0 as usize] = TypeDef::Base {
+        name: StrRef(0),
+        size: 8,
+        encoding: Encoding::Unsigned,
+    };
+    http(&mut wrong).read_buf_len = client.rx.clone();
+    bad(
+        &wrong,
+        "read buffer length is not reached through the connection",
+    );
+    // The server's handler option is reached through the dispatch —
+    // here the client's callback stands in for it, an enum under
+    // `dispatch` as the handler's option is.
     let server = HttpServerBinding {
-        in_flight: http(&mut b.clone()).method.clone(),
+        in_flight: client.callback.clone(),
         header_read_timeout_running: http(&mut b.clone()).is_closing.clone(),
+        peer: None,
     };
     let mut wrong = b.clone();
     http(&mut wrong).server = Some(server.clone());
@@ -2279,6 +2350,47 @@ fn test_semantic_http_conn_binding_routes_every_word() {
     let mut wrong = server_conn.clone();
     http(&mut wrong).server.as_mut().unwrap().in_flight = http(&mut wrong).is_closing.clone();
     bad(&wrong, "in-flight handler is not an enum");
+    // The peer: an address enum under the service crate's rule, reached
+    // through the dispatch the handler is.
+    let peer = |rule, addr| Some(HttpPeerBinding { rule, addr });
+    let with_peer = |peer| {
+        let mut conn = server_conn.clone();
+        http(&mut conn).server.as_mut().unwrap().peer = peer;
+        conn
+    };
+    let dropshot_rule = SemanticRuleId(2);
+    // An enum three members under the dispatch: the callback's own
+    // enum through the option, standing in for the service's address.
+    let under_dispatch = client.callback.clone();
+    let callback_enum = TypedPath {
+        steps: client.retry.steps[..4].to_vec(),
+        target: {
+            // `dispatch.callback.Some.__0` lands on the `Callback` enum.
+            let some = client.retry.steps[..4].to_vec();
+            semantic_path_target(&b.types, b.semantics.types[0].ty, &Selector(some)).unwrap()
+        },
+    };
+    with_peer(peer(dropshot_rule, callback_enum.clone()))
+        .validate()
+        .unwrap();
+    bad(
+        &with_peer(peer(SemanticRuleId(1), callback_enum.clone())),
+        "rule has an incompatible capability",
+    );
+    bad(
+        &with_peer(peer(dropshot_rule, http(&mut b.clone()).is_closing.clone())),
+        "peer address is not an enum",
+    );
+    // An enum under the connection rather than the dispatch, and the
+    // dispatch's own two-step member, are not a service's address.
+    bad(
+        &with_peer(peer(dropshot_rule, http(&mut b.clone()).method.clone())),
+        "peer address is not reached through the dispatch",
+    );
+    bad(
+        &with_peer(peer(dropshot_rule, under_dispatch)),
+        "peer address is not reached through the dispatch",
+    );
     // The rule is hyper's, read off its own file.
     let mut wrong = b.clone();
     wrong.semantics.rules[1].kind = SemanticRuleKind::HyperUtilTokioSleep;

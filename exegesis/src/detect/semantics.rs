@@ -547,6 +547,44 @@ pub const HYPER_UTIL_TOKIO_SLEEP_V0_1_10: LibraryConvention = LibraryConvention 
 ///
 /// The ceiling is the newest release the cores on hand build; it
 /// advances by hand when a newer one is read.
+/// dropshot's server as 0.17.0 and 0.17.1 implement it, reviewed in
+/// `src/server.rs` of each release (0.17.1 differs from 0.17.0 in import
+/// order and rustfmt reflow alone): the accept loop takes each
+/// connection's peer address off the socket (`TcpListener::accept` for
+/// plain HTTP, the `TlsConn` it wraps a TLS stream in for HTTPS) and
+/// hands it to `make_http_request_handler`, which builds the
+/// `ServerRequestHandler { server, remote_addr }` hyper-util's server
+/// drives as its service. `remote_addr` is the accepted socket's peer
+/// as `SocketAddr`, set once at construction and never changed, so a
+/// server connection's peer is the word its dispatch's service holds.
+///
+/// The ceiling is the newest release the cores on hand build; it
+/// advances by hand when a newer one is read.
+pub const DROPSHOT_SERVER_V0_17_0: LibraryConvention = LibraryConvention {
+    package: "dropshot",
+    family: "dropshot-server-0.17.0",
+    floor: (0, 17, 0),
+    ceiling: (0, 17, 1),
+    checksums: &[
+        // src/server.rs, 0.17.0
+        (
+            "src/server.rs",
+            [
+                0x94, 0x37, 0xcb, 0xa6, 0x5a, 0xa8, 0xa8, 0x47, 0xf0, 0x67, 0x90, 0x33, 0x1c, 0xa9,
+                0x06, 0xe3,
+            ],
+        ),
+        // src/server.rs, 0.17.1
+        (
+            "src/server.rs",
+            [
+                0x0b, 0x1f, 0xf0, 0xd3, 0x4f, 0x82, 0x8b, 0x7d, 0xf9, 0xce, 0x12, 0xa5, 0x76, 0x69,
+                0x81, 0xa2,
+            ],
+        ),
+    ],
+};
+
 pub const HYPER_H1_CONN_V1_6_0: LibraryConvention = LibraryConvention {
     package: "hyper",
     family: "hyper-h1-conn-1.6.0",
@@ -1388,6 +1426,12 @@ mod tests {
                 "1.5.2",
                 "1.11.0",
             ),
+            (
+                &DROPSHOT_SERVER_V0_17_0,
+                ["0.17.0", "0.17.1"].as_slice(),
+                "0.16.7",
+                "0.17.2",
+            ),
         ] {
             for version in inside {
                 assert_eq!(
@@ -1430,6 +1474,8 @@ mod tests {
         // eleven releases, none shared with the sleep's file.
         assert_eq!(HYPER_UTIL_AUTO_CONN_V0_1_10.range(), "0.1.10–0.1.20");
         assert_eq!(HYPER_UTIL_AUTO_CONN_V0_1_10.checksums.len(), 8);
+        assert_eq!(DROPSHOT_SERVER_V0_17_0.range(), "0.17.0–0.17.1");
+        assert_eq!(DROPSHOT_SERVER_V0_17_0.checksums.len(), 2);
         for (_, checksum) in HYPER_UTIL_TOKIO_SLEEP_V0_1_10.checksums {
             assert!(!HYPER_UTIL_AUTO_CONN_V0_1_10.reviewed_checksum(checksum));
         }
