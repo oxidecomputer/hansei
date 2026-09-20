@@ -33,15 +33,15 @@ mod tokio_v1_53;
 pub mod walk;
 
 use self::crates::{
-    hex_bytes_node, hyper_h1_conn_node, hyper_h1_dispatcher_node, hyper_util_io_wrapper_node,
-    raw_mutex_node, utf8_path_buf_node, utf8_path_node, uuid_node,
+    bytes_node, hex_bytes_node, http_text_node, hyper_h1_conn_node, hyper_h1_dispatcher_node,
+    hyper_util_io_wrapper_node, raw_mutex_node, utf8_path_buf_node, utf8_path_node, uuid_node,
 };
 use self::std::{
     atomic_node, btree_map_node, cstr_node, cstring_node, dyn_pointer_node, function_pointer_node,
     instant_alias_node, ip_address_node, non_null_node, nonzero_inner_node, nonzero_node,
     raw_waker_node, raw_waker_vtable_node, refcounted_str_node, scalar_newtype_node, slice_node,
-    str_node, string_node, unique_node, unsafe_cell_node, usize_no_high_bit_node, vec_node,
-    waker_node,
+    socket_addr_node, str_node, string_node, unique_node, unsafe_cell_node, usize_no_high_bit_node,
+    vec_node, waker_node,
 };
 use self::tokio::{
     batch_semaphore_node, bounded_semaphore_node, cache_padded_node, loom_atomic_node,
@@ -404,10 +404,19 @@ static BY_NAME: &[(&str, Row<Detector>)] = &[
     ("alloc::string::String", All(string_node)),
     ("alloc::vec::Vec", All(vec_node)),
     ("allocator_api2::stable::vec::Vec", All(vec_node)),
+    ("bytes::bytes::Bytes", All(bytes_node)),
     ("camino::Utf8PathBuf", All(utf8_path_buf_node)),
     ("core::cell::UnsafeCell", All(unsafe_cell_node)),
     ("core::net::ip_addr::Ipv4Addr", All(ip_address_node)),
     ("core::net::ip_addr::Ipv6Addr", All(ip_address_node)),
+    (
+        "core::net::socket_addr::SocketAddrV4",
+        All(socket_addr_node),
+    ),
+    (
+        "core::net::socket_addr::SocketAddrV6",
+        All(socket_addr_node),
+    ),
     (
         "core::num::niche_types::UsizeNoHighBit",
         All(usize_no_high_bit_node),
@@ -422,6 +431,9 @@ static BY_NAME: &[(&str, Row<Detector>)] = &[
         All(raw_waker_vtable_node),
     ),
     ("core::task::wake::Waker", All(waker_node)),
+    ("http::byte_str::ByteStr", All(http_text_node)),
+    ("http::uri::authority::Authority", All(http_text_node)),
+    ("http::uri::path::PathAndQuery", All(http_text_node)),
     ("hyper::proto::h1::conn::Conn", All(hyper_h1_conn_node)),
     (
         "hyper::proto::h1::dispatch::Dispatcher",

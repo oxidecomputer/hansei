@@ -64,6 +64,7 @@ alloc::vec::Vec<tokio::sync::oneshot::Receiver<()>, alloc::alloc::Global> :: Nod
 alloc::vec::Vec<u32, alloc::alloc::Global> :: Node Slice { pointer=buf.inner.ptr.pointer.pointer, length=len, capacity=buf.inner.cap.__0, element=u32 }
 alloc::vec::Vec<u8, alloc::alloc::Global> :: Node Slice { pointer=buf.inner.ptr.pointer.pointer, length=len, capacity=buf.inner.cap.__0, element=u8 }
 alloc::vec::Vec<usize, alloc::alloc::Global> :: Node Slice { pointer=buf.inner.ptr.pointer.pointer, length=len, capacity=buf.inner.cap.__0, element=usize }
+bytes::bytes::Bytes :: Node Str { pointer=ptr, length=len }
 core::cell::UnsafeCell<()> :: Node Alias { value, follow }
 core::cell::UnsafeCell<*const futures_util::stream::futures_unordered::task::Task<armed_select::child::{async_fn_env#0}>> :: Node Alias { value, follow }
 core::cell::UnsafeCell<*const futures_util::stream::futures_unordered::task::Task<unordered::leaf::{async_fn_env#0}>> :: Node Alias { value, follow }
@@ -264,6 +265,8 @@ core::mem::maybe_dangling::MaybeDangling<u8> :: Node Alias { __0, follow }
 core::mem::maybe_dangling::MaybeDangling<usize> :: Node Alias { __0, follow }
 core::net::ip_addr::Ipv4Addr :: Node Bytes IpAddr { octets }
 core::net::ip_addr::Ipv6Addr :: Node Bytes IpAddr { octets }
+core::net::socket_addr::SocketAddrV4 :: Node SocketAddr { ip=ip.octets, port=port }
+core::net::socket_addr::SocketAddrV6 :: Node SocketAddr { ip=ip.octets, port=port, scope_id=scope_id }
 core::num::niche_types::I32NotAllOnes :: Node Alias { __0, follow }
 core::num::niche_types::Nanoseconds :: Node Alias { __0, follow }
 core::num::niche_types::NonZeroU16Inner :: Node Alias { __0, follow }
@@ -389,7 +392,10 @@ h2::frame::stream_id::StreamId :: Node Alias { __0, follow }
 h2::hpack::table::HashValue :: Node Alias { __0, follow }
 h2::proto::streams::flow_control::Window :: Node Alias { __0, follow }
 h2::proto::streams::store::SlabIndex :: Node Alias { __0, follow }
+http::byte_str::ByteStr :: Node Alias { bytes, follow }
 http::header::map::HashValue :: Node Alias { __0, follow }
+http::uri::authority::Authority :: Node Alias { data, follow }
+http::uri::path::PathAndQuery :: Node Alias { data, follow }
 hyper::body::length::DecodedLength :: Node Alias { __0, follow }
 hyper::proto::h1::conn::Conn<hyper_util::common::rewind::Rewind<hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>>, bytes::bytes::Bytes, hyper::proto::h1::role::Server> :: Node Struct { version: Alias { state.version, follow }, keep_alive: Alias { state.keep_alive, follow }, reading: Alias { state.reading, follow }, writing: Alias { state.writing, follow }, method: Alias { state.method, follow }, read_buf_len: io.read_buf.len, read_buf_cap: io.read_buf.cap, header_read_timer: state.h1_header_read_timeout_running }
 hyper::proto::h1::conn::Conn<hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>, bytes::bytes::Bytes, hyper::proto::h1::role::Client> :: Node Struct { version: Alias { state.version, follow }, keep_alive: Alias { state.keep_alive, follow }, reading: Alias { state.reading, follow }, writing: Alias { state.writing, follow }, method: Alias { state.method, follow }, read_buf_len: io.read_buf.len, read_buf_cap: io.read_buf.cap }

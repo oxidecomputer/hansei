@@ -3265,6 +3265,41 @@ fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
                 &format!("{wrapper} :: Node Alias {{ inner@+0, follow }}"),
             );
         }
+        // The text the http crates carry: a `Bytes` reads as the string at
+        // its view, and each newtype over one peels to it. The socket
+        // addresses spell as std does, the v6 form with its scope word.
+        assert_format(
+            program,
+            bundle,
+            "bytes::bytes::Bytes",
+            "bytes::bytes::Bytes :: Node Str { pointer=ptr@+8, length=len@+16 }",
+        );
+        for (text, member) in [
+            ("http::byte_str::ByteStr", "bytes"),
+            ("http::uri::authority::Authority", "data"),
+            ("http::uri::path::PathAndQuery", "data"),
+        ] {
+            assert_format(
+                program,
+                bundle,
+                text,
+                &format!("{text} :: Node Alias {{ {member}@+0, follow }}"),
+            );
+        }
+        assert_format(
+            program,
+            bundle,
+            "core::net::socket_addr::SocketAddrV4",
+            "core::net::socket_addr::SocketAddrV4 :: Node SocketAddr \
+             { ip=ip.octets@+0, port=port@+4 }",
+        );
+        assert_format(
+            program,
+            bundle,
+            "core::net::socket_addr::SocketAddrV6",
+            "core::net::socket_addr::SocketAddrV6 :: Node SocketAddr \
+             { ip=ip.octets@+0, port=port@+24, scope_id=scope_id@+20 }",
+        );
         // Both dispatchers are the connection resource, their words
         // routed by the reviewed members and the role's own dispatch
         // routes beside them.

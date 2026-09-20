@@ -201,6 +201,55 @@ pub(crate) fn h1_role(reader: &DwReader<'_>, st: &RawStruct<StrId>) -> Option<H1
     }
 }
 
+/// `bytes::Bytes`, the shared byte buffer the http crates carry text in:
+/// `{ vtable, ptr, len, data }`, where `ptr` and `len` are the view
+/// whichever vtable owns the storage. Rendered as the text at that view,
+/// the way a `String` is — a body or a header value that is not UTF-8
+/// prints lossily, each bad byte escaped, so a binary buffer is still
+/// legible for its length. The vtable and the storage word are hidden;
+/// `config ugly on` shows them.
+pub(super) fn bytes_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
+    let reader = emitter.reader;
+    let byte = emitter.landed(id, &reach![Named("ptr"), super::ReachStep::Deref])?;
+    if !is_unsigned_integer(reader, byte, 1) {
+        return None;
+    }
+    let (length, len_ty) = emitter.walk(id, &reach![Named("len")])?;
+    if !is_unsigned_integer(reader, len_ty, 8) {
+        return None;
+    }
+    Some(DisplayNode::Str {
+        offset: 0,
+        pointer: emitter.walk(id, &reach![Named("ptr")])?.0,
+        length,
+        capacity: None,
+        nul_terminated: false,
+    })
+}
+
+/// The http crate's text newtypes over a `Bytes`: `byte_str::ByteStr {
+/// bytes }`, and the URI parts `uri::authority::Authority { data }` and
+/// `uri::path::PathAndQuery { data, query }` over a `ByteStr`. Each
+/// displays as the text it holds, so a request's authority and its path
+/// with query read as the strings they were parsed from; the path's
+/// `query` member is the index of the `?` in that text, which the text
+/// already shows.
+pub(super) fn http_text_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
+    let reader = emitter.reader;
+    let (member, inner) = match fq_name(reader, id).as_deref()? {
+        "http::byte_str::ByteStr" => ("bytes", "bytes::bytes::Bytes"),
+        "http::uri::authority::Authority" | "http::uri::path::PathAndQuery" => {
+            ("data", "http::byte_str::ByteStr")
+        }
+        _ => return None,
+    };
+    let (at, landed) = emitter.walk(id, &reach![Named(member)])?;
+    (fq_name(reader, landed).as_deref() == Some(inner)).then_some(DisplayNode::Alias {
+        at,
+        follow_pointers: true,
+    })
+}
+
 /// `hyper::proto::h1::conn::Conn<I, B, T>`, the HTTP/1 connection state
 /// machine both hyper's client and its server drive, as the words that say
 /// where a connection stands: the protocol version, the keep-alive state,

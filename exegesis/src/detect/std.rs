@@ -388,6 +388,45 @@ pub(super) fn ip_address_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<D
     })
 }
 
+/// `core::net::SocketAddrV4 { ip, port }` and `SocketAddrV6 { ip, port,
+/// flowinfo, scope_id }`, rendered as std spells them — `192.0.2.1:80`,
+/// `[2001:db8::1]:80` — rather than as a record of an address and a port.
+/// The octets are the `ip` member's array, as the address formatter above
+/// reaches them; the name says how many there are, and the v6 form alone
+/// carries the scope id the spelling shows when it is set. The `SocketAddr`
+/// enum around them keeps its structural display, so the variant is named
+/// and the payload prints through this node.
+pub(super) fn socket_addr_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
+    let reader = emitter.reader;
+    let (expected_octets, scoped) = match fq_name(reader, id).as_deref()? {
+        "core::net::socket_addr::SocketAddrV4" => (4, false),
+        "core::net::socket_addr::SocketAddrV6" => (16, true),
+        _ => return None,
+    };
+    let octets = reach![Named("ip"), Named("octets")];
+    if !is_byte_array(emitter, id, &octets, Some(expected_octets)) {
+        return None;
+    }
+    let (port, port_ty) = emitter.walk(id, &reach![Named("port")])?;
+    if !is_unsigned_integer(reader, port_ty, 2) {
+        return None;
+    }
+    let scope_id = if scoped {
+        let (scope_id, scope_ty) = emitter.walk(id, &reach![Named("scope_id")])?;
+        if !is_unsigned_integer(reader, scope_ty, 4) {
+            return None;
+        }
+        Some(scope_id)
+    } else {
+        None
+    };
+    Some(DisplayNode::SocketAddr {
+        ip: emitter.walk(id, &octets)?.0,
+        port,
+        scope_id,
+    })
+}
+
 pub(super) fn str_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
     // The `Str` node accepts any data pointer, since camino's is typed; a `&str`
     // is the byte-erased one, and screening for that here is what keeps this
