@@ -350,6 +350,105 @@ pub const FUTURES_UTIL_ADAPTERS_V0_3_30: LibraryConvention = LibraryConvention {
     ],
 };
 
+/// hyper-util's version-choosing server connection as 0.1.10 through
+/// 0.1.20 implement it, reviewed in `src/server/conn/auto/mod.rs` and
+/// `src/common/rewind.rs` of every release in the range. The
+/// declarations the rule addresses are the same text in all of them:
+/// `UpgradeableConnection { state: UpgradeableConnState }` with
+/// `UpgradeableConnState { ReadVersion { read_version, builder,
+/// service }, H1 { conn: hyper::server::conn::http1::
+/// UpgradeableConnection<Rewind<I>, S> }, H2 { conn } }`, and `Rewind
+/// { inner, pre }`, the io the chosen connection is handed. The
+/// releases differ in builder methods, docs, a `Default` impl and
+/// where `ready!` is imported from (the auto module), and in two
+/// local buffer helpers the rewind gave up for the cursor's own
+/// (0.1.12) — none of which changes what a state means.
+///
+/// What the states mean, from the wrapper's `poll`: `ReadVersion`
+/// polls the `read_version` future, which reads the connection's first
+/// bytes off the socket to tell an HTTP/2 preface from an HTTP/1
+/// request line and registers the task's waker on that read alone;
+/// once it is ready the wrapper builds the connection for the version
+/// it saw — the HTTP/1 one with upgrades, over the bytes rewound — and
+/// sets `H1` or `H2`. In `H1` the poll is `conn.poll(cx)` on the
+/// HTTP/1 connection and nothing else, acting only on its output; `H2`
+/// polls the HTTP/2 connection the same way.
+///
+/// The ceiling is the newest release the cores on hand build; it
+/// advances by hand when a newer one is read.
+pub const HYPER_UTIL_AUTO_CONN_V0_1_10: LibraryConvention = LibraryConvention {
+    package: "hyper-util",
+    family: "hyper-util-auto-conn-0.1.10",
+    floor: (0, 1, 10),
+    ceiling: (0, 1, 20),
+    checksums: &[
+        // src/server/conn/auto/mod.rs, 0.1.10
+        (
+            "src/server/conn/auto/mod.rs",
+            [
+                0xef, 0xca, 0x84, 0x6d, 0x33, 0x62, 0xa0, 0xa3, 0x70, 0xae, 0x7d, 0x8d, 0x0f, 0x8b,
+                0x01, 0xff,
+            ],
+        ),
+        // src/server/conn/auto/mod.rs, 0.1.11
+        (
+            "src/server/conn/auto/mod.rs",
+            [
+                0x69, 0xbb, 0xea, 0x69, 0x79, 0x3b, 0x7e, 0x4f, 0x23, 0x36, 0x17, 0x5d, 0xaf, 0x7a,
+                0x7f, 0x2c,
+            ],
+        ),
+        // src/server/conn/auto/mod.rs, 0.1.12
+        (
+            "src/server/conn/auto/mod.rs",
+            [
+                0x9d, 0x75, 0x53, 0xed, 0x68, 0xc6, 0x9b, 0x74, 0x1f, 0x86, 0x53, 0x4f, 0x0f, 0x7e,
+                0x04, 0x6c,
+            ],
+        ),
+        // src/server/conn/auto/mod.rs, 0.1.13 through 0.1.14
+        (
+            "src/server/conn/auto/mod.rs",
+            [
+                0x2d, 0x8e, 0xd7, 0xa8, 0x5f, 0x7a, 0xb8, 0x49, 0xca, 0xe8, 0x01, 0x9c, 0x11, 0xee,
+                0xad, 0xe2,
+            ],
+        ),
+        // src/server/conn/auto/mod.rs, 0.1.15 through 0.1.19
+        (
+            "src/server/conn/auto/mod.rs",
+            [
+                0x3b, 0xf1, 0x0e, 0x4e, 0x85, 0xea, 0xc1, 0x97, 0xe9, 0x23, 0x56, 0xbb, 0x85, 0x73,
+                0x09, 0xf3,
+            ],
+        ),
+        // src/server/conn/auto/mod.rs, 0.1.20
+        (
+            "src/server/conn/auto/mod.rs",
+            [
+                0x8b, 0x3e, 0xaa, 0xe6, 0x5e, 0xfd, 0xef, 0xe3, 0x78, 0xdd, 0x91, 0x0b, 0x8a, 0x14,
+                0xbf, 0xf9,
+            ],
+        ),
+        // src/common/rewind.rs, 0.1.10 through 0.1.11
+        (
+            "src/common/rewind.rs",
+            [
+                0xc1, 0x58, 0xd7, 0xa8, 0x08, 0xbe, 0xf8, 0xa3, 0x75, 0x4f, 0x05, 0xb8, 0xa0, 0xff,
+                0xb5, 0x12,
+            ],
+        ),
+        // src/common/rewind.rs, 0.1.12 through 0.1.20
+        (
+            "src/common/rewind.rs",
+            [
+                0xac, 0x4f, 0xcb, 0x08, 0x93, 0xaa, 0x98, 0xbc, 0x0e, 0xe9, 0x38, 0x0f, 0x6e, 0x07,
+                0x1c, 0x2d,
+            ],
+        ),
+    ],
+};
+
 /// hyper-util's `TokioSleep` as 0.1.10 through 0.1.20 implement it
 /// (`src/rt/tokio.rs`, whose `struct TokioSleep { inner:
 /// tokio::time::Sleep }` and `Future` impl are identical across the
@@ -1251,6 +1350,12 @@ mod tests {
                 "0.1.21",
             ),
             (
+                &HYPER_UTIL_AUTO_CONN_V0_1_10,
+                ["0.1.10", "0.1.12", "0.1.15", "0.1.20"].as_slice(),
+                "0.1.9",
+                "0.1.21",
+            ),
+            (
                 &TOKIO_STREAM_WATCH_V0_1_14,
                 ["0.1.14", "0.1.15", "0.1.16", "0.1.17", "0.1.18", "0.1.19"].as_slice(),
                 "0.1.13",
@@ -1321,6 +1426,13 @@ mod tests {
         // each is listed once.
         assert_eq!(HYPER_H1_CONN_V1_6_0.range(), "1.6.0–1.10.1");
         assert_eq!(HYPER_H1_CONN_V1_6_0.checksums.len(), 29);
+        // Six revisions of the auto module and two of the rewind across
+        // eleven releases, none shared with the sleep's file.
+        assert_eq!(HYPER_UTIL_AUTO_CONN_V0_1_10.range(), "0.1.10–0.1.20");
+        assert_eq!(HYPER_UTIL_AUTO_CONN_V0_1_10.checksums.len(), 8);
+        for (_, checksum) in HYPER_UTIL_TOKIO_SLEEP_V0_1_10.checksums {
+            assert!(!HYPER_UTIL_AUTO_CONN_V0_1_10.reviewed_checksum(checksum));
+        }
         // Three revisions of `interval.rs` in the range, none shared
         // with the select's file.
         assert_eq!(TOKIO_INTERVAL_TICK_V1_47.checksums.len(), 3);

@@ -788,6 +788,18 @@ fn enum_declared_in(reader: &DwReader<'_>, id: TypeId, module: &str, name: &str)
         && en.name.map(|n| reader.strings.get(n)) == Some(name)
 }
 
+/// Whether `id` is an enum declared in `module` whose name starts with
+/// `prefix` — a generic enum, whose name carries its arguments.
+fn enum_declared_in_prefix(reader: &DwReader<'_>, id: TypeId, module: &str, prefix: &str) -> bool {
+    let Some(RawType::Enum(en)) = reader.canonical_type(id) else {
+        return false;
+    };
+    en.namespace.map(|ns| ns_path(reader, ns)).as_deref() == Some(module)
+        && en
+            .name
+            .is_some_and(|n| reader.strings.get(n).starts_with(prefix))
+}
+
 /// The unique member `member` of the struct `id`, canonicalized.
 fn member_of(reader: &DwReader<'_>, id: TypeId, member: &str) -> Option<TypeId> {
     let st = struct_of(reader, id)?;
@@ -822,6 +834,8 @@ pub(crate) struct HttpDispatcherLayout {
     pub(crate) is_closing: TypeId,
     /// The client dispatch's words, for a `T` of `role::Client`.
     pub(crate) client: Option<HttpClientLayout>,
+    /// The server dispatch's words, for a `T` of `role::Server`.
+    pub(crate) server: Option<HttpServerLayout>,
 }
 
 /// The client dispatch as the raw screen saw it.
@@ -835,6 +849,19 @@ pub(crate) struct HttpClientLayout {
     pub(crate) no_retry: TypeId,
     /// `dispatch.rx.inner`, the `UnboundedReceiver<Envelope<..>>`.
     pub(crate) rx: TypeId,
+}
+
+/// The server dispatch as the raw screen saw it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct HttpServerLayout {
+    /// `dispatch.in_flight`'s one member — the `Pin`'s pointer — and
+    /// the `Box` it holds.
+    pub(crate) in_flight_member: String,
+    pub(crate) in_flight_box: TypeId,
+    /// The `Option` behind that box, `Some` while a handler runs.
+    pub(crate) in_flight: TypeId,
+    /// `conn.state.h1_header_read_timeout_running`, a `bool`.
+    pub(crate) header_read_timeout_running: TypeId,
 }
 
 /// The member names the connection binding's routes are made of, as
@@ -860,6 +887,13 @@ pub(crate) mod hyper_h1 {
     pub(crate) const CONTINUE: &str = "Continue";
     pub(crate) const BODY: &str = "Body";
     pub(crate) const KIND: &str = "kind";
+    pub(crate) const IN_FLIGHT: &str = "in_flight";
+    pub(crate) const HEADER_READ_TIMEOUT_RUNNING: &str = "h1_header_read_timeout_running";
+    /// hyper-util's version-choosing wrapper: its state member and
+    /// the state's three variants.
+    pub(crate) const READ_VERSION: &str = "ReadVersion";
+    pub(crate) const H1: &str = "H1";
+    pub(crate) const H2: &str = "H2";
 }
 
 /// Screen `id` as hyper's HTTP/1 `Dispatcher`: declared in
@@ -869,9 +903,10 @@ pub(crate) mod hyper_h1 {
 /// `is_closing`. For the client, `dispatch` is the `dispatch::Client`
 /// whose `callback` is an `Option` of the `Callback` enum, each of
 /// whose two variants carries an `Option` of a oneshot `Sender`, and
-/// whose `rx` holds the unbounded receiver in `inner`. A server
-/// dispatcher is recognized by its role and declines here: its
-/// dispatch's words are not yet bound.
+/// whose `rx` holds the unbounded receiver in `inner`. For the server,
+/// `dispatch` is the `dispatch::Server` whose `in_flight` is a `Pin` of
+/// a `Box` of the `Option` holding the running handler, and the state
+/// carries the header-read timer's flag beside its words.
 pub(crate) fn hyper_h1_dispatcher(
     reader: &DwReader<'_>,
     id: TypeId,
@@ -916,10 +951,33 @@ pub(crate) fn hyper_h1_dispatcher(
     if fq_name(reader, is_closing).as_deref() != Some("bool") {
         return None;
     }
+    let dispatch = member_of(reader, id, DISPATCH)?;
+    let mut server = None;
     let client = match role {
-        H1Role::Server => return None,
+        H1Role::Server => {
+            declared_in(reader, dispatch, "hyper::proto::h1::dispatch", "Server<")?;
+            // The handler behind its pinned box: the `Pin`'s one member
+            // is the `Box`, and the box's pointee is the `Option`.
+            let in_flight = member_of(reader, dispatch, IN_FLIGHT)?;
+            let (in_flight_member, in_flight_box) = pin(reader, in_flight)?;
+            let option = box_thin(reader, in_flight_box)?;
+            if !fq_name(reader, option)?.starts_with("core::option::Option<") {
+                return None;
+            }
+            variant_payload(reader, option, SOME)?;
+            let flag = member_of(reader, state, HEADER_READ_TIMEOUT_RUNNING)?;
+            if fq_name(reader, flag).as_deref() != Some("bool") {
+                return None;
+            }
+            server = Some(HttpServerLayout {
+                in_flight_member,
+                in_flight_box,
+                in_flight: option,
+                header_read_timeout_running: flag,
+            });
+            None
+        }
         H1Role::Client => {
-            let dispatch = member_of(reader, id, DISPATCH)?;
             declared_in(reader, dispatch, "hyper::proto::h1::dispatch", "Client<")?;
             let callback = member_of(reader, dispatch, CALLBACK)?;
             if !fq_name(reader, callback)?
@@ -967,19 +1025,74 @@ pub(crate) fn hyper_h1_dispatcher(
         write_body_kind,
         is_closing,
         client,
+        server,
     })
 }
 
-/// hyper's `client::conn::http1::upgrades::UpgradeableConnection<T, B>`
-/// as the raw screen saw it: the member holding the `Option` of the
-/// `Connection`, the option, and the dispatcher inside the connection's
-/// `inner` — what its poll reaches through `inner.as_mut().unwrap().inner`.
+/// hyper's `UpgradeableConnection` of either side as the raw screen
+/// saw it: the member holding the `Option` of the `Connection`, the
+/// option, the connection, the member of it holding the dispatcher —
+/// `inner` on the client, `conn` on the server — and the dispatcher,
+/// which is what the poll reaches through
+/// `inner.as_mut().unwrap().<member>`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct HttpUpgradeableLayout {
     pub(crate) inner: String,
     pub(crate) option: TypeId,
     pub(crate) connection: TypeId,
+    pub(crate) dispatcher_member: String,
     pub(crate) dispatcher: TypeId,
+}
+
+/// Screen `id` as hyper's `Connection` declared in `module` — the
+/// client's `client::conn::http1` or the server's `server::conn::http1`
+/// — with one member, `member`, holding the `Dispatcher` its poll
+/// forwards to.
+fn hyper_h1_connection(
+    reader: &DwReader<'_>,
+    id: TypeId,
+    module: &str,
+    member: &str,
+) -> Option<ForwardLayout> {
+    let st = declared_in(reader, id, module, "Connection<")?;
+    let forward = sole_member(reader, st, member)?;
+    declared_in(
+        reader,
+        forward.inner,
+        "hyper::proto::h1::dispatch",
+        "Dispatcher<",
+    )?;
+    Some(forward)
+}
+
+/// Screen `id` as hyper's `UpgradeableConnection` declared in `module`:
+/// one member `inner` holding an `Option` of the `Connection` declared
+/// in `connection_module`, whose `member` is the dispatcher the poll
+/// reaches.
+fn hyper_h1_upgradeable(
+    reader: &DwReader<'_>,
+    id: TypeId,
+    module: &str,
+    connection_module: &str,
+    member: &str,
+) -> Option<HttpUpgradeableLayout> {
+    let st = declared_in(reader, id, module, "UpgradeableConnection<")?;
+    let forward = sole_member(reader, st, hyper_h1::INNER)?;
+    if !fq_name(reader, forward.inner)?.starts_with(&format!(
+        "core::option::Option<{connection_module}::Connection<"
+    )) {
+        return None;
+    }
+    let some = variant_payload(reader, forward.inner, hyper_h1::SOME)?;
+    let connection = member_of(reader, some, hyper_h1::PAYLOAD)?;
+    let dispatcher = hyper_h1_connection(reader, connection, connection_module, member)?;
+    Some(HttpUpgradeableLayout {
+        inner: forward.member,
+        option: forward.inner,
+        connection,
+        dispatcher_member: dispatcher.member,
+        dispatcher: dispatcher.inner,
+    })
 }
 
 /// Screen `id` as hyper's `Connection<T, B>` of `client::conn::http1`:
@@ -988,15 +1101,7 @@ pub(crate) fn hyper_h1_client_connection(
     reader: &DwReader<'_>,
     id: TypeId,
 ) -> Option<ForwardLayout> {
-    let st = declared_in(reader, id, "hyper::client::conn::http1", "Connection<")?;
-    let forward = sole_member(reader, st, hyper_h1::INNER)?;
-    declared_in(
-        reader,
-        forward.inner,
-        "hyper::proto::h1::dispatch",
-        "Dispatcher<",
-    )?;
-    Some(forward)
+    hyper_h1_connection(reader, id, "hyper::client::conn::http1", hyper_h1::INNER)
 }
 
 /// Screen `id` as hyper's `UpgradeableConnection<T, B>` of
@@ -1007,26 +1112,87 @@ pub(crate) fn hyper_h1_client_upgradeable(
     reader: &DwReader<'_>,
     id: TypeId,
 ) -> Option<HttpUpgradeableLayout> {
-    let st = declared_in(
+    hyper_h1_upgradeable(
         reader,
         id,
         "hyper::client::conn::http1::upgrades",
-        "UpgradeableConnection<",
-    )?;
-    let forward = sole_member(reader, st, hyper_h1::INNER)?;
-    if !fq_name(reader, forward.inner)?
-        .starts_with("core::option::Option<hyper::client::conn::http1::Connection<")
-    {
+        "hyper::client::conn::http1",
+        hyper_h1::INNER,
+    )
+}
+
+/// Screen `id` as hyper's `Connection<I, S>` of `server::conn::http1`:
+/// one member `conn` holding the `Dispatcher` its poll forwards to.
+pub(crate) fn hyper_h1_server_connection(
+    reader: &DwReader<'_>,
+    id: TypeId,
+) -> Option<ForwardLayout> {
+    hyper_h1_connection(reader, id, "hyper::server::conn::http1", hyper_h1::CONN)
+}
+
+/// Screen `id` as hyper's `UpgradeableConnection<I, S>` of
+/// `server::conn::http1` — declared beside its `Connection`, not in an
+/// `upgrades` module of its own as the client's is: one member `inner`
+/// holding an `Option` of that `Connection`, whose `conn` is the
+/// dispatcher the poll reaches.
+pub(crate) fn hyper_h1_server_upgradeable(
+    reader: &DwReader<'_>,
+    id: TypeId,
+) -> Option<HttpUpgradeableLayout> {
+    hyper_h1_upgradeable(
+        reader,
+        id,
+        "hyper::server::conn::http1",
+        "hyper::server::conn::http1",
+        hyper_h1::CONN,
+    )
+}
+
+/// hyper-util's `server::conn::auto::UpgradeableConnection<I, S, E>` as
+/// the raw screen saw it: the member holding its state enum, the enum,
+/// and under the enum's `H1` the member holding hyper's HTTP/1
+/// upgradeable connection and that connection's type — what the poll
+/// forwards to once the version is chosen.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct HttpAutoLayout {
+    pub(crate) state: String,
+    pub(crate) state_ty: TypeId,
+    pub(crate) h1_conn: String,
+    pub(crate) h1: TypeId,
+}
+
+/// Screen `id` as hyper-util's version-choosing `UpgradeableConnection`:
+/// one member `state` holding the `UpgradeableConnState` enum declared
+/// beside it, whose `ReadVersion` carries the `read_version` future of
+/// the same module, whose `H1` carries hyper's server-side upgradeable
+/// connection in `conn`, and whose `H2` carries hyper's HTTP/2 server
+/// connection in `conn`.
+pub(crate) fn hyper_util_auto_upgradeable(
+    reader: &DwReader<'_>,
+    id: TypeId,
+) -> Option<HttpAutoLayout> {
+    use hyper_h1::*;
+    const MODULE: &str = "hyper_util::server::conn::auto";
+    let st = declared_in(reader, id, MODULE, "UpgradeableConnection<")?;
+    let forward = sole_member(reader, st, STATE)?;
+    if !enum_declared_in_prefix(reader, forward.inner, MODULE, "UpgradeableConnState<") {
         return None;
     }
-    let some = variant_payload(reader, forward.inner, hyper_h1::SOME)?;
-    let connection = member_of(reader, some, hyper_h1::PAYLOAD)?;
-    let dispatcher = hyper_h1_client_connection(reader, connection)?.inner;
-    Some(HttpUpgradeableLayout {
-        inner: forward.member,
-        option: forward.inner,
-        connection,
-        dispatcher,
+    let read_version = member_of(
+        reader,
+        variant_payload(reader, forward.inner, READ_VERSION)?,
+        "read_version",
+    )?;
+    declared_in(reader, read_version, MODULE, "ReadVersion<")?;
+    let h1 = member_of(reader, variant_payload(reader, forward.inner, H1)?, CONN)?;
+    hyper_h1_server_upgradeable(reader, h1)?;
+    let h2 = member_of(reader, variant_payload(reader, forward.inner, H2)?, CONN)?;
+    declared_in(reader, h2, "hyper::server::conn::http2", "Connection<")?;
+    Some(HttpAutoLayout {
+        state: forward.member,
+        state_ty: forward.inner,
+        h1_conn: CONN.to_owned(),
+        h1,
     })
 }
 
@@ -2426,6 +2592,131 @@ mod tests {
             NOT_ENUM,
             "hyper::proto::h1::decode",
             "Kind"
+        ));
+    }
+
+    /// hyper's `Connection` of either side holds its dispatcher in the
+    /// one member its poll forwards through — `inner` on the client,
+    /// `conn` on the server — declared in its own module and no other,
+    /// and holding the dispatcher and nothing else. The version-choosing
+    /// wrapper's state is an enum declared in hyper-util's auto module
+    /// under its generic name: the same name elsewhere, or a struct of
+    /// that name, is not it.
+    #[test]
+    fn test_hyper_connections_hold_their_dispatcher_and_the_auto_state_is_its_enum() {
+        const DISPATCHER: TypeId = TypeId(UnitSectionOffset(0x90));
+        const CLIENT: TypeId = TypeId(UnitSectionOffset(0x91));
+        const SERVER: TypeId = TypeId(UnitSectionOffset(0x92));
+        const OTHER: TypeId = TypeId(UnitSectionOffset(0x93));
+        const STATE: TypeId = TypeId(UnitSectionOffset(0x94));
+        const PAYLOAD: TypeId = TypeId(UnitSectionOffset(0x95));
+        let mut fx = Fx::default();
+        let dispatch = fx.ns("hyper::proto::h1::dispatch");
+        let client_mod = fx.ns("hyper::client::conn::http1");
+        let server_mod = fx.ns("hyper::server::conn::http1");
+        let app = fx.ns("app");
+        fx.strukt(
+            DISPATCHER,
+            Some(dispatch),
+            "Dispatcher<D, Bs, I, T>",
+            &[],
+            &[],
+        );
+        fx.strukt(OTHER, Some(app), "Other", &[], &[]);
+        fx.strukt(
+            CLIENT,
+            Some(client_mod),
+            "Connection<T, B>",
+            &[("inner", DISPATCHER, 0)],
+            &[],
+        );
+        fx.strukt(
+            SERVER,
+            Some(server_mod),
+            "Connection<I, S>",
+            &[("conn", DISPATCHER, 0)],
+            &[],
+        );
+        let forward = |member: &str| {
+            Some(ForwardLayout {
+                member: member.to_owned(),
+                inner: DISPATCHER,
+            })
+        };
+        assert_eq!(
+            hyper_h1_client_connection(&fx.reader, CLIENT),
+            forward("inner")
+        );
+        assert_eq!(
+            hyper_h1_server_connection(&fx.reader, SERVER),
+            forward("conn")
+        );
+        // Each side's screen is its own module's.
+        assert_eq!(hyper_h1_client_connection(&fx.reader, SERVER), None);
+        assert_eq!(hyper_h1_server_connection(&fx.reader, CLIENT), None);
+        // The member holds the dispatcher and nothing else.
+        fx.strukt(
+            CLIENT,
+            Some(client_mod),
+            "Connection<T, B>",
+            &[("inner", OTHER, 0)],
+            &[],
+        );
+        assert_eq!(hyper_h1_client_connection(&fx.reader, CLIENT), None);
+        fx.strukt(
+            SERVER,
+            Some(server_mod),
+            "Connection<I, S>",
+            &[("conn", DISPATCHER, 0), ("extra", OTHER, 8)],
+            &[],
+        );
+        assert_eq!(hyper_h1_server_connection(&fx.reader, SERVER), None);
+        // The wrapper's state: the enum by prefix, in its module.
+        let auto = fx.ns("hyper_util::server::conn::auto");
+        fx.strukt(PAYLOAD, Some(auto), "ReadVersion<I>", &[], &[]);
+        fx.enumm(
+            STATE,
+            Some(auto),
+            "UpgradeableConnState<I, S, E>",
+            &[("ReadVersion", PAYLOAD), ("H1", PAYLOAD)],
+        );
+        let auto_path = "hyper_util::server::conn::auto";
+        assert!(enum_declared_in_prefix(
+            &fx.reader,
+            STATE,
+            auto_path,
+            "UpgradeableConnState<"
+        ));
+        assert!(!enum_declared_in_prefix(
+            &fx.reader,
+            STATE,
+            auto_path,
+            "ConnState<"
+        ));
+        assert!(!enum_declared_in_prefix(
+            &fx.reader,
+            STATE,
+            "app",
+            "UpgradeableConnState<"
+        ));
+        fx.enumm(
+            STATE,
+            Some(app),
+            "UpgradeableConnState<I, S, E>",
+            &[("ReadVersion", PAYLOAD), ("H1", PAYLOAD)],
+        );
+        assert!(!enum_declared_in_prefix(
+            &fx.reader,
+            STATE,
+            auto_path,
+            "UpgradeableConnState<"
+        ));
+        fx.strukt(STATE, Some(auto), "UpgradeableConnState<I, S, E>", &[], &[]);
+        assert!(!enum_declared_in_prefix(
+            &fx.reader,
+            STATE,
+            auto_path,
+            "UpgradeableConnState<"
         ));
     }
 }

@@ -3183,7 +3183,7 @@ dyn: hyper::proto::h2::server::Server<hyper_util::common::rewind::Rewind<hyper_u
 dyn: hyper::server::conn::http1::UpgradeableConnection<hyper_util::common::rewind::Rewind<hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>>, hyper::service::util::ServiceFn<http_conns::serve::{async_fn#0}::{closure_env#0}, hyper::body::incoming::Incoming>> (poll, drop_glue)
 dyn: hyper::server::conn::http2::Connection<hyper_util::common::rewind::Rewind<hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>>, hyper::service::util::ServiceFn<http_conns::serve::{async_fn#0}::{closure_env#0}, hyper::body::incoming::Incoming>, hyper_util::rt::tokio::TokioExecutor> (poll, drop_glue)
 dyn: hyper_util::server::conn::auto::UpgradeableConnection<hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>, hyper::service::util::ServiceFn<http_conns::serve::{async_fn#0}::{closure_env#0}, hyper::body::incoming::Incoming>, hyper_util::rt::tokio::TokioExecutor> (poll, drop_glue)
-dyn: tokio::sync::mpsc::unbounded::{impl#3}::recv::{async_fn_env#0}<http_conns::Event> (poll, drop_glue)
+dyn: tokio::sync::mpsc::unbounded::{impl#3}::recv::{async_fn_env#0}<http_conns::Event> (poll)
 
 [env-decls]
 env: http_conns::accept_loop::{async_fn_env#0} @ http-conns.rs:121

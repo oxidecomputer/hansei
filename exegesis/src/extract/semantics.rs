@@ -28,13 +28,13 @@ use crate::bundle::origin::registry_origin;
 use crate::bundle::{
     AccessBinding, AccessKind, BundleTypeId, ContainerBinding, ContainerKind, Continuation,
     CoroutineLayout, CoroutinePhase, CoroutineState, DynFutureLayout, FutureEvidence, FutureFacts,
-    FutureTarget, HttpClientBinding, HttpConnBinding, HttpRole, IoOperationKind, LayoutSelection,
-    MemberRef, PollAction, PollCase, PollProgram, ResourceBinding, ResourceKind, SchedulerBinding,
-    SchedulerClass, SelectBinding, Selector, SemanticIssue, SemanticIssueKind, SemanticOrigin,
-    SemanticOriginId, SemanticRule, SemanticRuleId, SemanticRuleKind, SemanticTable,
-    SourceFileEvidence, SourceLoc, Step, StoragePolicy, StrRef, StringInterner, TaskEntryId,
-    TaskFutureEntry, TypeDef, TypeSemantics, TypeTable, TypedPath, WalkOutcome, WalkRole,
-    WalksTable, container_roles, container_routes, required_resource_roles,
+    FutureTarget, HttpClientBinding, HttpConnBinding, HttpRole, HttpServerBinding, IoOperationKind,
+    LayoutSelection, MemberRef, PollAction, PollCase, PollProgram, ResourceBinding, ResourceKind,
+    SchedulerBinding, SchedulerClass, SelectBinding, Selector, SemanticIssue, SemanticIssueKind,
+    SemanticOrigin, SemanticOriginId, SemanticRule, SemanticRuleId, SemanticRuleKind,
+    SemanticTable, SourceFileEvidence, SourceLoc, Step, StoragePolicy, StrRef, StringInterner,
+    TaskEntryId, TaskFutureEntry, TypeDef, TypeSemantics, TypeTable, TypedPath, WalkOutcome,
+    WalkRole, WalksTable, container_roles, container_routes, required_resource_roles,
     required_resource_routes, scheduler_role, semantic_path_target,
 };
 use crate::detect::Family;
@@ -43,12 +43,12 @@ use crate::detect::adapters::{
     WidePointer, hyper_h1,
 };
 use crate::detect::semantics::{
-    FUTURES_UTIL_ADAPTERS_V0_3_30, HYPER_H1_CONN_V1_6_0, HYPER_UTIL_TOKIO_SLEEP_V0_1_10,
-    LibraryConvention, RustcConvention, TOKIO_INTERVAL_TICK_V1_47, TOKIO_SELECT_V1_47,
-    TOKIO_STREAM_MAP_V0_1_14, TOKIO_STREAM_WATCH_V0_1_14, TOKIO_UTIL_REUSABLE_BOX_V0_7_11,
-    TRACING_INSTRUMENTED_V0_1_40, library_convention, rustc_core_pending_convention,
-    rustc_coroutine_convention, rustc_dyn_future_abi_convention, rustc_std_adapter_convention,
-    tokio_state_protocol,
+    FUTURES_UTIL_ADAPTERS_V0_3_30, HYPER_H1_CONN_V1_6_0, HYPER_UTIL_AUTO_CONN_V0_1_10,
+    HYPER_UTIL_TOKIO_SLEEP_V0_1_10, LibraryConvention, RustcConvention, TOKIO_INTERVAL_TICK_V1_47,
+    TOKIO_SELECT_V1_47, TOKIO_STREAM_MAP_V0_1_14, TOKIO_STREAM_WATCH_V0_1_14,
+    TOKIO_UTIL_REUSABLE_BOX_V0_7_11, TRACING_INSTRUMENTED_V0_1_40, library_convention,
+    rustc_core_pending_convention, rustc_coroutine_convention, rustc_dyn_future_abi_convention,
+    rustc_std_adapter_convention, tokio_state_protocol,
 };
 
 use std::borrow::Cow;
@@ -226,16 +226,29 @@ enum LibrarySeed {
     /// declaration in the DWARF to read a version off. So the seed
     /// carries nothing but the fact.
     Pending,
-    /// hyper's `client::conn::http1::Connection<T, B>` over the
-    /// dispatcher in its `inner`, which its poll forwards to.
-    HyperClientConnection(String, BundleTypeId),
-    /// hyper's `client::conn::http1::upgrades::UpgradeableConnection<T,
-    /// B>`: the member holding the `Option<Connection>`, the option,
-    /// and the dispatcher its poll reaches through `Some`'s connection.
-    HyperClientUpgradeable {
+    /// hyper's `Connection` of either side — `client::conn::http1`'s
+    /// over the dispatcher in its `inner`, `server::conn::http1`'s over
+    /// the one in its `conn` — which its poll forwards to.
+    HyperConnection(String, BundleTypeId),
+    /// hyper's `UpgradeableConnection` of either side: the member
+    /// holding the `Option<Connection>`, the option, the connection's
+    /// member holding the dispatcher, and the dispatcher its poll
+    /// reaches through `Some`'s connection.
+    HyperUpgradeable {
         inner: String,
         option: BundleTypeId,
+        dispatcher_member: String,
         dispatcher: BundleTypeId,
+    },
+    /// hyper-util's `server::conn::auto::UpgradeableConnection<I, S,
+    /// E>`: the member holding its state, the state enum, and under
+    /// its `H1` the member holding hyper's server-side upgradeable
+    /// connection and that connection.
+    HyperUtilAuto {
+        state: String,
+        state_ty: BundleTypeId,
+        h1_conn: String,
+        h1: BundleTypeId,
     },
 }
 
@@ -243,9 +256,10 @@ impl LibrarySeed {
     fn rule_kind(&self) -> SemanticRuleKind {
         match self {
             LibrarySeed::Pending => SemanticRuleKind::FuturesUtilPending,
-            LibrarySeed::HyperClientConnection(..) | LibrarySeed::HyperClientUpgradeable { .. } => {
+            LibrarySeed::HyperConnection(..) | LibrarySeed::HyperUpgradeable { .. } => {
                 SemanticRuleKind::HyperH1Conn
             }
+            LibrarySeed::HyperUtilAuto { .. } => SemanticRuleKind::HyperUtilAutoConn,
             LibrarySeed::Map { .. } | LibrarySeed::MapWrapper(..) => {
                 SemanticRuleKind::FuturesUtilMap
             }
@@ -266,9 +280,10 @@ impl LibrarySeed {
     fn convention(&self) -> &'static LibraryConvention {
         match self {
             LibrarySeed::TokioSleep(..) => &HYPER_UTIL_TOKIO_SLEEP_V0_1_10,
-            LibrarySeed::HyperClientConnection(..) | LibrarySeed::HyperClientUpgradeable { .. } => {
+            LibrarySeed::HyperConnection(..) | LibrarySeed::HyperUpgradeable { .. } => {
                 &HYPER_H1_CONN_V1_6_0
             }
+            LibrarySeed::HyperUtilAuto { .. } => &HYPER_UTIL_AUTO_CONN_V0_1_10,
             LibrarySeed::WatchStream(..) => &TOKIO_STREAM_WATCH_V0_1_14,
             LibrarySeed::ReusableBox { .. } => &TOKIO_UTIL_REUSABLE_BOX_V0_7_11,
             LibrarySeed::IntervalTick { .. } => &TOKIO_INTERVAL_TICK_V1_47,
@@ -404,6 +419,7 @@ struct HttpSeed {
     write_body_kind: BundleTypeId,
     is_closing: BundleTypeId,
     client: Option<HttpClientSeed>,
+    server: Option<HttpServerSeed>,
 }
 
 #[derive(Clone, Debug)]
@@ -412,6 +428,17 @@ struct HttpClientSeed {
     retry: BundleTypeId,
     no_retry: BundleTypeId,
     rx: BundleTypeId,
+}
+
+/// The server dispatch by bundle id: the handler's pinned box — the
+/// `Pin`'s member holding the `Box`, the box, and the `Option` behind
+/// it — and the header-read timer's flag.
+#[derive(Clone, Debug)]
+struct HttpServerSeed {
+    in_flight_member: String,
+    in_flight_box: BundleTypeId,
+    in_flight: BundleTypeId,
+    header_read_timeout_running: BundleTypeId,
 }
 
 #[derive(Default)]
@@ -552,13 +579,31 @@ fn library_seed(
         })
     } else if name.starts_with("hyper::client::conn::http1::Connection<") {
         let (member, inner) = forward(adapters::hyper_h1_client_connection(reader, raw))?;
-        Some(LibrarySeed::HyperClientConnection(member, inner))
-    } else if name.starts_with("hyper::client::conn::http1::upgrades::UpgradeableConnection<") {
-        let layout = adapters::hyper_h1_client_upgradeable(reader, raw)?;
-        Some(LibrarySeed::HyperClientUpgradeable {
+        Some(LibrarySeed::HyperConnection(member, inner))
+    } else if name.starts_with("hyper::server::conn::http1::Connection<") {
+        let (member, inner) = forward(adapters::hyper_h1_server_connection(reader, raw))?;
+        Some(LibrarySeed::HyperConnection(member, inner))
+    } else if name.starts_with("hyper::client::conn::http1::upgrades::UpgradeableConnection<")
+        || name.starts_with("hyper::server::conn::http1::UpgradeableConnection<")
+    {
+        let layout = if name.starts_with("hyper::client::") {
+            adapters::hyper_h1_client_upgradeable(reader, raw)?
+        } else {
+            adapters::hyper_h1_server_upgradeable(reader, raw)?
+        };
+        Some(LibrarySeed::HyperUpgradeable {
             inner: layout.inner,
             option: bundle_id(layout.option)?,
+            dispatcher_member: layout.dispatcher_member,
             dispatcher: bundle_id(layout.dispatcher)?,
+        })
+    } else if name.starts_with("hyper_util::server::conn::auto::UpgradeableConnection<") {
+        let layout = adapters::hyper_util_auto_upgradeable(reader, raw)?;
+        Some(LibrarySeed::HyperUtilAuto {
+            state: layout.state,
+            state_ty: bundle_id(layout.state_ty)?,
+            h1_conn: layout.h1_conn,
+            h1: bundle_id(layout.h1)?,
         })
     } else {
         None
@@ -581,6 +626,15 @@ fn http_seed(
         }),
         None => None,
     };
+    let server = match layout.server {
+        Some(server) => Some(HttpServerSeed {
+            in_flight_member: server.in_flight_member,
+            in_flight_box: bundle_id(server.in_flight_box)?,
+            in_flight: bundle_id(server.in_flight)?,
+            header_read_timeout_running: bundle_id(server.header_read_timeout_running)?,
+        }),
+        None => None,
+    };
     Some(HttpSeed {
         role: layout.role,
         keep_alive: bundle_id(layout.keep_alive)?,
@@ -593,6 +647,7 @@ fn http_seed(
         write_body_kind: bundle_id(layout.write_body_kind)?,
         is_closing: bundle_id(layout.is_closing)?,
         client,
+        server,
     })
 }
 
@@ -1188,6 +1243,9 @@ enum CaseAction {
     Returned,
     Panicked,
     Delegate(Box<Target>),
+    /// The state in which the type is itself the resource: its poll
+    /// registers on what the resource names and forwards to nothing.
+    Primitive,
     Unknown(SemanticIssue),
 }
 
@@ -1207,6 +1265,11 @@ struct Plan {
     /// forwarded to a poll proves it, a poll that runs the delegate's
     /// `poll_next` names a stream and proves nothing.
     delegate_is_future: bool,
+    /// The resource the type is in the state its program marks
+    /// [`CaseAction::Primitive`]: hyper-util's version-choosing wrapper
+    /// is the connection while it reads the first bytes, under the
+    /// program's own rule as its protocol.
+    resource: Option<ResourceKind>,
 }
 
 /// A `select!` binding as planned: its rule, the three routes held
@@ -1565,9 +1628,12 @@ pub(super) fn bind_semantics(
         // The connection resource binds under the hyper rule its
         // delegation origin selected, which is also its protocol: the
         // reviewed range is what says what the words mean. A pending
-        // dispatcher has registered its waker on the socket and on its
-        // dispatch primitive and polls nothing outside itself, which is
-        // the exclusive-pending guarantee.
+        // client dispatcher has registered its waker on the socket and
+        // on its dispatch primitive and polls nothing outside itself,
+        // which is the exclusive-pending guarantee; a server dispatcher
+        // polls the handler it holds while a request is in flight,
+        // which awaits whatever the application wrote, so it carries
+        // no such guarantee.
         let http = draft.http.filter(|_| readable).map(|plan| {
             let rule = rules.rule(&plan.rule, strings, library);
             (
@@ -1575,7 +1641,7 @@ pub(super) fn bind_semantics(
                     rule,
                     kind: ResourceKind::HttpConn,
                     state_rule: Some(rule),
-                    exclusive_pending: true,
+                    exclusive_pending: plan.role == HttpRole::Client,
                 },
                 HttpConnBinding {
                     rule,
@@ -1590,7 +1656,7 @@ pub(super) fn bind_semantics(
                     write_body_kind: plan.write_body_kind,
                     is_closing: plan.is_closing,
                     client: plan.client,
-                    server: None,
+                    server: plan.server,
                 },
             )
         });
@@ -1598,6 +1664,20 @@ pub(super) fn bind_semantics(
             Some((resource_binding, http)) => (resource.or(Some(resource_binding)), Some(http)),
             None => (resource, None),
         };
+        // A program whose state marks the type itself the resource —
+        // hyper-util's wrapper reading a connection's first bytes —
+        // binds the resource under the program's rule, which is also
+        // its protocol: the reviewed poll registers on the socket read
+        // alone in that state. The program stays the continuation,
+        // since it is what selects the state, and the resource is bound
+        // once the program is, below: like any program it needs a
+        // future to be about.
+        let plan_resource = draft
+            .plan
+            .as_ref()
+            .filter(|_| readable)
+            .and_then(|plan| plan.resource.map(|kind| (kind, plan.rule.clone())));
+        let mut resource = resource;
         let container = draft.container.map(|(kind, rule)| ContainerBinding {
             rule: rules.rule(&rule, strings, library),
             kind,
@@ -1662,6 +1742,7 @@ pub(super) fn bind_semantics(
                                         CaseAction::Unresumed => PollAction::Unresumed,
                                         CaseAction::Returned => PollAction::Returned,
                                         CaseAction::Panicked => PollAction::Panicked,
+                                        CaseAction::Primitive => PollAction::Primitive,
                                         CaseAction::Delegate(target) => PollAction::Delegate {
                                             target: target
                                                 .into_future_target(&mut rules, strings, library),
@@ -1683,16 +1764,37 @@ pub(super) fn bind_semantics(
             }
             None => None,
         };
+        let program_is_the_resource = match (plan_resource, &program) {
+            (Some((kind, rule)), Some((program_rule, _))) => {
+                debug_assert!(
+                    resource.is_none(),
+                    "a program's resource beside a walk-bound one"
+                );
+                let rule = rules.rule(&rule, strings, library);
+                debug_assert_eq!(rule, *program_rule);
+                resource = Some(ResourceBinding {
+                    rule,
+                    kind,
+                    state_rule: Some(rule),
+                    exclusive_pending: true,
+                });
+                true
+            }
+            _ => false,
+        };
         // A resource that is positively a future polls its own state and
         // nothing else: its continuation is the primitive boundary. What
         // that state means — ready, pending, closed — is the state
-        // rule's to say, and none is bound here.
+        // rule's to say, and none is bound here. A program that made
+        // its type the resource is the boundary itself, in the state
+        // it marks.
         let continuation = match (&resource, program) {
-            (Some(resource), _) => Continuation::Bound {
+            (Some(resource), _) if !program_is_the_resource => Continuation::Bound {
                 rule: resource.rule,
                 program: PollProgram::Direct(PollAction::Primitive),
             },
-            (None, Some((rule, program))) => Continuation::Bound { rule, program },
+            (_, Some((rule, program))) => Continuation::Bound { rule, program },
+            (Some(_), None) => unreachable!("a program marked its type the resource"),
             (None, None) => match &draft.decline {
                 Some((kind, detail)) => {
                     let detail = strings.intern(detail);
@@ -1822,6 +1924,7 @@ fn plan_pending(verdict: &CompilerVerdict) -> Result<Plan, Decline> {
         program: Some(Delegation::NeverReady),
         access: None,
         delegate_is_future: false,
+        resource: None,
     })
 }
 
@@ -1889,6 +1992,7 @@ fn plan_adapter(
             exclusive: true,
         }),
         delegate_is_future: true,
+        resource: None,
     })
 }
 
@@ -2089,6 +2193,7 @@ fn plan_library(
                 program: Some(Delegation::NeverReady),
                 access: None,
                 delegate_is_future: false,
+                resource: None,
             });
         }
         // `Next` polls through its `&mut St`: the route dereferences the
@@ -2121,6 +2226,7 @@ fn plan_library(
                 }),
                 access: None,
                 delegate_is_future: false,
+                resource: None,
             });
         }
         // The stream owns the box it polls through, and is polled
@@ -2132,6 +2238,7 @@ fn plan_library(
                 program: None,
                 access: Some((rule, AccessKind::Owned, Target::Value(path))),
                 delegate_is_future: true,
+                resource: None,
             });
         }
         // The box's every poll is the trait object's: the route runs
@@ -2169,23 +2276,26 @@ fn plan_library(
                 program: None,
                 access: Some((rule, AccessKind::Owned, target)),
                 delegate_is_future: true,
+                resource: None,
             });
         }
-        // hyper's client connection polls the dispatcher in `inner` and
-        // acts on its output alone.
-        LibrarySeed::HyperClientConnection(member, inner) => Delegation::Direct {
+        // hyper's connection, either side, polls the dispatcher in its
+        // one member and acts on its output alone.
+        LibrarySeed::HyperConnection(member, inner) => Delegation::Direct {
             target: Target::Value(forward(member, *inner, strings)?),
             exclusive: true,
         },
         // The upgradeable connection polls the dispatcher inside the
         // connection its `inner` holds — `inner.as_mut().unwrap().inner`
-        // — and nothing else while that is pending; the `None` state,
-        // which only `into_parts` or a completed upgrade leaves behind,
-        // is not a state a parked connection is in, and polling it
-        // panics, so it gets no action.
-        LibrarySeed::HyperClientUpgradeable {
+        // on the client, `.conn` on the server — and nothing else while
+        // that is pending; the `None` state, which only `into_parts` or
+        // a completed upgrade leaves behind, is not a state a parked
+        // connection is in (the client's poll panics on it, the
+        // server's returns at once), so it gets no action.
+        LibrarySeed::HyperUpgradeable {
             inner,
             option,
+            dispatcher_member,
             dispatcher,
         } => {
             let (inner_name, inner_ty, _) = member_named(types, strings, ty, inner).ok_or((
@@ -2231,9 +2341,9 @@ fn plan_library(
                     "the connection's Some state has no unique payload member".to_owned(),
                 ))?;
             let (dispatcher_name, dispatcher_ty, _) =
-                member_named(types, strings, connection, hyper_h1::INNER).ok_or((
+                member_named(types, strings, connection, dispatcher_member).ok_or((
                     SemanticIssueKind::AmbiguousLayout,
-                    "the connection has no unique member inner".to_owned(),
+                    format!("the connection has no unique member {dispatcher_member}"),
                 ))?;
             if dispatcher_ty != *dispatcher {
                 return Err((
@@ -2268,6 +2378,99 @@ fn plan_library(
                         CaseAction::Unknown(SemanticIssue {
                             kind: SemanticIssueKind::UnsupportedState,
                             detail: Some(taken),
+                        }),
+                    ),
+                ],
+            }
+        }
+        // hyper-util's version-choosing wrapper matches on its state:
+        // reading the first bytes, it polls the read of the socket and
+        // registers on nothing else, so the wrapper is the connection
+        // resource in that state and its own rule the protocol; once
+        // HTTP/1 it polls hyper's upgradeable connection in `conn` and
+        // acts only on its output; HTTP/2 is not read. The enum has
+        // exactly those three states in the reviewed range — a build
+        // that drops one behind a feature is another layout.
+        LibrarySeed::HyperUtilAuto {
+            state,
+            state_ty,
+            h1_conn,
+            h1,
+        } => {
+            let (state_name, actual_ty, _) = member_named(types, strings, ty, state).ok_or((
+                SemanticIssueKind::AmbiguousLayout,
+                format!("no unique member {state:?}"),
+            ))?;
+            if actual_ty != *state_ty {
+                return Err((
+                    SemanticIssueKind::MissingLayout,
+                    format!("{state} holds another type than the screen declared"),
+                ));
+            }
+            let Some(TypeDef::Enum { shape, .. }) = types.get(*state_ty) else {
+                return Err((
+                    SemanticIssueKind::MissingLayout,
+                    "the wrapper's state is not an enum in the final table".to_owned(),
+                ));
+            };
+            let variant = |name: &str| {
+                shape
+                    .variants
+                    .iter()
+                    .find(|v| strings.get(v.name) == Some(name))
+                    .map(|v| (v.name, v.payload.ty))
+                    .ok_or((
+                        SemanticIssueKind::MissingLayout,
+                        format!("the wrapper's state has no {name} variant"),
+                    ))
+            };
+            let (read_version, _) = variant(hyper_h1::READ_VERSION)?;
+            let (h1_name, h1_payload) = variant(hyper_h1::H1)?;
+            let (h2, _) = variant(hyper_h1::H2)?;
+            if shape.variants.len() != 3 {
+                return Err((
+                    SemanticIssueKind::MissingLayout,
+                    "the wrapper's state has states beyond the three reviewed ones".to_owned(),
+                ));
+            }
+            let (conn_name, conn_ty, _) =
+                member_named(types, strings, h1_payload, h1_conn).ok_or((
+                    SemanticIssueKind::AmbiguousLayout,
+                    format!("the HTTP/1 state has no unique member {h1_conn}"),
+                ))?;
+            if conn_ty != *h1 {
+                return Err((
+                    SemanticIssueKind::MissingLayout,
+                    format!("{h1_conn} holds another type than the screen declared"),
+                ));
+            }
+            let state_path = checked_path(
+                types,
+                ty,
+                vec![Step::Member(MemberRef::Named(state_name))],
+                *state_ty,
+            )?;
+            let path = checked_path(
+                types,
+                ty,
+                vec![
+                    Step::Member(MemberRef::Named(state_name)),
+                    Step::Variant(h1_name),
+                    Step::Member(MemberRef::Named(conn_name)),
+                ],
+                *h1,
+            )?;
+            let unread = strings.intern("an HTTP/2 connection is not read");
+            Delegation::Match {
+                state: state_path,
+                cases: vec![
+                    (read_version, CaseAction::Primitive),
+                    (h1_name, CaseAction::Delegate(Box::new(Target::Value(path)))),
+                    (
+                        h2,
+                        CaseAction::Unknown(SemanticIssue {
+                            kind: SemanticIssueKind::UnsupportedState,
+                            detail: Some(unread),
                         }),
                     ),
                 ],
@@ -2332,6 +2535,8 @@ fn plan_library(
         program: Some(program),
         access: None,
         delegate_is_future: true,
+        resource: matches!(seed_layout, LibrarySeed::HyperUtilAuto { .. })
+            .then_some(ResourceKind::HttpConn),
     })
 }
 
@@ -2351,6 +2556,7 @@ struct HttpPlan {
     write_body_kind: TypedPath,
     is_closing: TypedPath,
     client: Option<HttpClientBinding>,
+    server: Option<HttpServerBinding>,
 }
 
 /// Plan hyper's dispatcher as the connection resource: the origin first
@@ -2490,6 +2696,52 @@ fn plan_http(
         }
         None => None,
     };
+    // The server's handler sits behind a pinned box: the route runs
+    // through the `Pin`'s member to the `Box` and dereferences it to
+    // the `Option`, each level held to what the screen declared.
+    let server = match &seed.server {
+        Some(server) => {
+            let (dispatch_name, dispatch_ty, _) = member(strings, ty, DISPATCH)?;
+            let (in_flight_name, pin_ty, _) = member(strings, dispatch_ty, IN_FLIGHT)?;
+            let (pointer_name, box_ty, _) = member(strings, pin_ty, &server.in_flight_member)?;
+            if box_ty != server.in_flight_box {
+                return Err((
+                    SemanticIssueKind::MissingLayout,
+                    format!(
+                        "{} holds another type than the screen declared",
+                        server.in_flight_member
+                    ),
+                ));
+            }
+            if !matches!(types.get(box_ty), Some(TypeDef::Pointer { target, .. }) if *target == server.in_flight)
+            {
+                return Err((
+                    SemanticIssueKind::MissingLayout,
+                    "the handler's box does not target the declared option".to_owned(),
+                ));
+            }
+            let in_flight = checked_path(
+                types,
+                ty,
+                vec![
+                    Step::Member(MemberRef::Named(dispatch_name)),
+                    Step::Member(MemberRef::Named(in_flight_name)),
+                    Step::Member(MemberRef::Named(pointer_name)),
+                    Step::Deref,
+                ],
+                server.in_flight,
+            )?;
+            Some(HttpServerBinding {
+                in_flight,
+                header_read_timeout_running: word(
+                    strings,
+                    HEADER_READ_TIMEOUT_RUNNING,
+                    server.header_read_timeout_running,
+                )?,
+            })
+        }
+        None => None,
+    };
     Ok(HttpPlan {
         rule,
         role: match seed.role {
@@ -2506,6 +2758,7 @@ fn plan_http(
         write_body_kind,
         is_closing,
         client,
+        server,
     })
 }
 
@@ -2713,6 +2966,7 @@ fn plan_instrumented(
         }),
         access: None,
         delegate_is_future: true,
+        resource: None,
     })
 }
 
@@ -2882,6 +3136,7 @@ fn coroutine_plan(
         }),
         access: None,
         delegate_is_future: true,
+        resource: None,
     }
 }
 
@@ -3085,11 +3340,47 @@ mod tests {
                 write_body_kind: id,
                 is_closing: id,
                 client: None,
+                server: None,
             }),
             ..Seed::default()
         };
         assert!(seed.is_own_record());
         assert!(!Seed::default().is_own_record());
+    }
+
+    /// Each hyper seed runs under the convention that reviewed its
+    /// crate: the connection wrappers under hyper's, the
+    /// version-choosing wrapper under hyper-util's own — not the sleep's,
+    /// which is another file of the same crate.
+    #[test]
+    fn test_hyper_seeds_name_their_conventions() {
+        let id = BundleTypeId(7);
+        let auto = LibrarySeed::HyperUtilAuto {
+            state: "state".to_owned(),
+            state_ty: id,
+            h1_conn: "conn".to_owned(),
+            h1: id,
+        };
+        assert_eq!(
+            auto.convention().family,
+            HYPER_UTIL_AUTO_CONN_V0_1_10.family
+        );
+        assert_eq!(auto.rule_kind(), SemanticRuleKind::HyperUtilAutoConn);
+        let connection = LibrarySeed::HyperConnection("conn".to_owned(), id);
+        assert_eq!(connection.convention().family, HYPER_H1_CONN_V1_6_0.family);
+        assert_eq!(connection.rule_kind(), SemanticRuleKind::HyperH1Conn);
+        let upgradeable = LibrarySeed::HyperUpgradeable {
+            inner: "inner".to_owned(),
+            option: id,
+            dispatcher_member: "conn".to_owned(),
+            dispatcher: id,
+        };
+        assert_eq!(upgradeable.convention().family, HYPER_H1_CONN_V1_6_0.family);
+        assert_eq!(upgradeable.rule_kind(), SemanticRuleKind::HyperH1Conn);
+        assert_ne!(
+            HYPER_UTIL_AUTO_CONN_V0_1_10.family,
+            HYPER_UTIL_TOKIO_SLEEP_V0_1_10.family
+        );
     }
 
     fn binding(roots: &[u32], bound: bool) -> WalkBinding {
@@ -6282,6 +6573,7 @@ mod tests {
                         }
                         Target::Dynamic { .. } => format!("{s}:dyn"),
                     },
+                    CaseAction::Primitive => format!("{s}:primitive"),
                     CaseAction::Unknown(i) => format!("{s}:unknown {:?}", i.kind),
                 }
             })
