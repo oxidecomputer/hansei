@@ -22,6 +22,7 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 mod bundle_cmd;
+mod connections;
 mod cursor;
 mod futures;
 mod graph;
@@ -709,6 +710,56 @@ pub enum Command {
     /// walks every task's await chain — the slowest thing a session
     /// does on a large target. The walk is kept, so a later `census`,
     /// `futures`, `graph` or `whatis` costs nothing.
+    /// List every HTTP connection the target holds, one row each:
+    /// the address a filter names it by, the task driving it, its
+    /// role and version, the phase the connection's own words put it
+    /// in (the verdict its task block carries), the method in flight,
+    /// the peer where the server's service keeps one (a dropshot
+    /// server's does; hyper itself keeps none on either side), the
+    /// read buffer's fill over its capacity, the header-read timer's
+    /// deadline where the server has armed one, and a server's running
+    /// handler by its type.
+    ///
+    /// The rows are the connection resources the wait analysis and the
+    /// census observed, so the first `connections` walks every task's
+    /// await chain like the first `futures`.
+    ///
+    /// Filters are the selection: repeatable `--with FIELD ARG` /
+    /// `--without FIELD ARG` clauses AND together, and `--group FIELD`
+    /// tallies the survivors. The string fields — role, version,
+    /// phase, method, peer, handler — are case-insensitive regexes over
+    /// the spelled value; task, rt and addr are exact; buffered
+    /// compares the bytes read and not yet parsed, spelled '>N', '<N'
+    /// or '=N' (quote them from a shell).
+    Connections {
+        /// Show at most this many connections — or, under --group,
+        /// this many buckets; a footer counts what the cut left out.
+        /// Everything is listed when the flag is absent and no
+        /// `config limit` stands.
+        #[arg(long, short = 'l', value_name = "N")]
+        limit: Option<usize>,
+
+        /// Keep only the connections whose FIELD matches ARG; repeat
+        /// for more clauses, which AND. Fields: role, version, phase,
+        /// method, peer, handler (case-insensitive regexes); task, rt,
+        /// addr (exact); buffered ('>N', '<N', '=N'). ARG may list
+        /// alternatives, `idle,closing`, of which any matches; a
+        /// literal comma is `\,`.
+        #[arg(long, short = 'w', num_args = 2, value_names = ["FIELD", "ARG"])]
+        with: Vec<String>,
+
+        /// Drop the connections whose FIELD matches ARG; the same
+        /// fields as --with.
+        #[arg(long, short = 'W', num_args = 2, value_names = ["FIELD", "ARG"])]
+        without: Vec<String>,
+
+        /// Bucket the surviving connections by FIELD's spelled value:
+        /// one `COUNT VALUE` row per bucket, most numerous first, each
+        /// with a few member labels.
+        #[arg(long, short = 'g', value_name = "FIELD")]
+        group: Option<String>,
+    },
+
     Runtimes {
         // The runtime names the old grammar took, kept so the refusal
         // can name the way forward rather than clap's bare "unexpected
@@ -1561,6 +1612,8 @@ pub struct Session<'b, T: Target> {
     /// The `tasks` table's rows, built from the analysis at launch
     /// and shared with the filters and the JSON printer.
     task_rows: OnceCell<Vec<tasks::TaskRow>>,
+    /// The `connections` rows, built on first use.
+    conn_rows: OnceCell<Vec<connections::ConnRow>>,
     /// The `futures` table's rows, likewise; building them reads the
     /// census and nothing more.
     future_rows: OnceCell<Vec<futures::FutureRow>>,
@@ -1718,6 +1771,7 @@ impl<'b, T: Target> Session<'b, T> {
             analysis: OnceCell::new(),
             relations: OnceCell::new(),
             task_rows: OnceCell::new(),
+            conn_rows: OnceCell::new(),
             future_rows: OnceCell::new(),
             thread_rows: OnceCell::new(),
             settings: RefCell::new(settings),
@@ -2078,6 +2132,21 @@ pub fn dispatch<T: Target>(
         Command::Runtime { scope } => {
             let render = RenderOpts::from_settings(&session.settings.borrow());
             runtimes::exec_runtime(session, scope, render, out)?
+        }
+        Command::Connections {
+            limit,
+            with,
+            without,
+            group,
+        } => {
+            session.note_version_ceiling();
+            let cmd = connections::ConnectionsCmd {
+                limit: limit.or(session.settings.borrow().limit),
+                with,
+                without,
+                group,
+            };
+            connections::exec_connections(session, cmd, theme, out)?
         }
         Command::Runtimes {
             scope,

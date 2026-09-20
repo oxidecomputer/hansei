@@ -3954,6 +3954,72 @@ fn test_wrong_binary_refused_by_build_id() {
     });
 }
 
+/// The connection listing over the fixture that holds connections: the
+/// two clients — one idle in its pool, one awaiting the parked GET's
+/// response — and the three servers: idle, running the parked handler,
+/// and still choosing its version. No row names a peer: hyper keeps
+/// none on either side, and the fixture's service is its own closure,
+/// which no reviewed convention says stores one (dropshot's does). The
+/// handler is the fixture's own async fn, the buffers hold nothing
+/// unparsed at the parked state, and no server armed a header-read
+/// timer. Grouping by phase files the five under four buckets, and a
+/// filter on the role keeps the servers.
+///
+/// The rows are compared without their address and task cells and in
+/// sorted order. Every connection is parked by the time the core is
+/// taken — that is what `READY` waits for — but the ids tokio hands
+/// the parked request's tasks are not the fixture's to order: its
+/// connection task is spawned by hyper-util's client inside
+/// `client.request()` on the requester's worker, the server's by the
+/// accept loop on the other, and the client's pool spawns background
+/// tasks of its own between them, so the same capture assigns the ids
+/// in either order. The buffer capacities are pinned: each is what the
+/// first read left of a fresh 16 KiB buffer, fixed by the request's
+/// byte length, and the ephemeral port in its `host` header is five
+/// digits on every host the suite runs on.
+#[test]
+fn test_http_conns_connections_acceptance() {
+    let bundle = fixtures().bundle("http-conns");
+    with_core("http-conns", |core| {
+        let out = hansei_ok(&bundle, core, "connections");
+        assert!(out.ends_with("[5 connections]\n"), "{out}");
+        assert!(!out.contains("127.0.0.1"), "{out}");
+        let mut rows: Vec<String> = out
+            .lines()
+            .skip(1)
+            .take(5)
+            .map(|line| {
+                let cells: Vec<&str> = line.split_whitespace().skip(2).collect();
+                cells.join(" ")
+            })
+            .collect();
+        rows.sort();
+        assert_eq!(
+            rows,
+            [
+                "client http1 awaiting response GET — 0/8192 — —",
+                "client http1 idle — — 0/8192 — —",
+                "server http1 handling request GET — 0/16339 — async fn http_conns::handle",
+                "server http1 idle — — 0/16302 — —",
+                "server — negotiating — — — — —",
+            ],
+            "{out}"
+        );
+        let grouped = hansei_ok(&bundle, core, "connections --group phase");
+        for bucket in [
+            "2  idle",
+            "1  awaiting response",
+            "1  handling request",
+            "1  negotiating",
+        ] {
+            assert!(grouped.contains(bucket), "{grouped}");
+        }
+        let servers = hansei_ok(&bundle, core, "connections --with role server");
+        assert!(servers.ends_with("[3 connections]\n"), "{servers}");
+        assert!(!servers.contains("client"), "{servers}");
+    });
+}
+
 /// The waker slots over the fixture built for them. The selector's
 /// `select!` parks its waker in four places the registries do not all
 /// reach, and the merged `WAITING ON` cell names every one by what

@@ -266,6 +266,7 @@ fn target_values<T: proc::Target>(
         "futures" => crate::futures::field_values(session, field),
         "threads" => crate::threads::field_values(session, field),
         "runtimes" => crate::runtimes::field_values(session, field),
+        "connections" => crate::connections::field_values(session, field),
         _ => None,
     };
     let Some((values, pattern)) = found else {
@@ -620,7 +621,14 @@ const HELP_SECTIONS: &[(&str, &[&str])] = &[
     ("Overview", &["info", "census"]),
     (
         "Listings",
-        &["tasks", "futures", "threads", "runtimes", "graph"],
+        &[
+            "tasks",
+            "futures",
+            "threads",
+            "runtimes",
+            "connections",
+            "graph",
+        ],
     ),
     ("Selection", &["task", "future", "thread"]),
     ("Frame navigation", &["frame", "up", "down"]),
@@ -1202,12 +1210,19 @@ fn values_of(
         ("futures", "with" | "without" | "group", []) => crate::futures::Field::names().collect(),
         ("threads", "with" | "without" | "group", []) => crate::threads::Field::names().collect(),
         ("runtimes", "with" | "without" | "group", []) => crate::runtimes::Field::names().collect(),
+        ("connections", "with" | "without" | "group", []) => {
+            crate::connections::Field::names().collect()
+        }
         // The clause's argument: what the target holds for the field
         // the first word named. The argument is a comma list of
         // alternatives, so the word completes at its last unescaped
         // comma — the alternatives before it kept, the one being
         // typed offered.
-        ("tasks" | "futures" | "threads" | "runtimes", "with" | "without", [field]) => {
+        (
+            "tasks" | "futures" | "threads" | "runtimes" | "connections",
+            "with" | "without",
+            [field],
+        ) => {
             let ask = Ask::Values {
                 command: command.to_string(),
                 field: field.to_string(),
@@ -1963,6 +1978,26 @@ mod tests {
     /// hold, the fixed kinds a future can be — spelled for the line,
     /// and nothing for a count field, an unknown field, or a command
     /// without a population.
+    /// The connection listing's values come from its own rows: over
+    /// the pair that holds connections, the roles it lists.
+    #[test]
+    fn test_target_values_read_the_connection_rows() {
+        use crate::offline::session_args;
+        use hansei_runtime::testkit;
+        let (bundle, snapshot) = testkit::load("illumos", "http-conns");
+        let args = session_args("illumos", "http-conns");
+        let session = Session::attach(&snapshot, &bundle, &args).expect("the pair attaches");
+        let ask = Ask::Values {
+            command: "connections".to_string(),
+            field: "role".to_string(),
+        };
+        let roles: Vec<String> = answer(&session, &ask)
+            .into_iter()
+            .map(|v| v.spelled)
+            .collect();
+        assert_eq!(roles, ["server", "client"]);
+    }
+
     #[test]
     fn test_target_values_read_each_listings_rows() {
         use crate::offline::session_args;
@@ -2174,6 +2209,12 @@ mod tests {
         assert_eq!(completions("tasks --without "), tasks);
         assert_eq!(completions("futures --group "), futures);
         assert_eq!(completions("futures --with "), futures);
+        let connections: Vec<String> = crate::connections::Field::names()
+            .map(String::from)
+            .collect();
+        assert_eq!(completions("connections --group "), connections);
+        assert_eq!(completions("connections --with "), connections);
+        assert_eq!(completions("connections --without "), connections);
         let threads: Vec<String> = crate::threads::Field::names().map(String::from).collect();
         assert_eq!(completions("threads --group "), threads);
         assert_eq!(completions("threads --without "), threads);
@@ -2692,7 +2733,7 @@ mod tests {
 
         // The short spellings: `-w`/`-W` for the pairs, `-g` for the
         // field, on every listing command.
-        for listing in ["tasks", "futures", "threads", "runtimes"] {
+        for listing in ["tasks", "futures", "threads", "runtimes", "connections"] {
             let words = [listing, "-w", "a", "b", "-W", "c", "d", "-g", "e"];
             let line = Line::try_parse_from(words).expect("the short filter spellings parse");
             let (with, without, group) = match line.command {
@@ -2715,6 +2756,12 @@ mod tests {
                     ..
                 }
                 | Command::Runtimes {
+                    with,
+                    without,
+                    group,
+                    ..
+                }
+                | Command::Connections {
                     with,
                     without,
                     group,

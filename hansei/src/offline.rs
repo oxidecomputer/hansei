@@ -135,6 +135,10 @@ fn commands(
             "runtimes --group flavor".to_owned(),
         ),
         ("runtime", "runtime".to_owned()),
+        // The connection listing: empty on every fixture but the one
+        // that holds connections, where the rows read the peers, the
+        // handler and the buffers, and a grouping tallies the phases.
+        ("connections", "connections".to_owned()),
         // The info summary and each section. A snapshot records no
         // process notes and no fd table, so the goldens pin the
         // degraded spellings; objects rows come from the recorded
@@ -290,6 +294,9 @@ fn commands(
         list.push(("client-dispatch", client("dispatch")));
         list.push(("server-conn", server("conn")));
         list.push(("server-dispatch", server("dispatch")));
+        // The peer the fixture's service captured, a socket address
+        // read from a real value through its node.
+        list.push(("server-peer", server("dispatch.service.f.peer")));
         list.push((
             "read-version",
             "tasks --with waiting-on negotiating --exec print read_version".to_owned(),
@@ -307,6 +314,14 @@ fn commands(
             "tasks --with type http_conns::serve --exec task".to_owned(),
         ));
         list.push(("tasks-with-via", "tasks --with waiting-on via:".to_owned()));
+        list.push((
+            "connections-group-phase",
+            "connections --group phase".to_owned(),
+        ));
+        list.push((
+            "connections-with-role",
+            "connections --with role server --with buffered =0".to_owned(),
+        ));
     }
     // The register readout under whatever cursor the commands above
     // left: a task no thread is polling refuses, and a thread cursor

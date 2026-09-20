@@ -454,6 +454,10 @@ hansei_example::Config {
 
 `census`, `graph`, and `futures` may be interesting to view as well.
 
+// WILLTODO: Add documentation for the `connections` listing (one row per
+// HTTP connection: role, version, phase, method, peer, read buffer,
+// header-read deadline, running handler).
+
 == Development
 
 On illumos, we build test programs that link against `libproc` to sanity check our cross-platform
