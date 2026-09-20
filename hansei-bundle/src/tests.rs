@@ -3047,6 +3047,67 @@ mod node_validation {
     }
 
     // -------------------------------------------------------------------
+    // SocketAddr
+    // -------------------------------------------------------------------
+
+    fn socket_addr(ip: u32, port: u32, scope_id: Option<u32>) -> DisplayNode {
+        DisplayNode::SocketAddr {
+            ip: Selector::member(ip),
+            port: Selector::member(port),
+            scope_id: scope_id.map(Selector::member),
+        }
+    }
+
+    /// The holder's members are a u64, a `[u8; 4]`, a `[u8; 5]`, an
+    /// `[i8; 16]` and a `[u8; 0]`, so no member is a two-byte word: the
+    /// port and scope shapes refuse every one, and the octet count and
+    /// signedness are checked once a port would have passed.
+    #[test]
+    fn test_validate_holds_a_socket_address_to_its_shapes() {
+        rejects(
+            &with_format(socket_addr(1, 0, None)),
+            "a socket address's port for type 7 lands on a type incompatible",
+        );
+        rejects(
+            &with_format(socket_addr(0, 1, None)),
+            "a socket address's octets for type 7 lands on a type incompatible",
+        );
+        rejects(
+            &with_format(socket_addr(1, 1, Some(0))),
+            "a socket address's port for type 7 lands on a type incompatible",
+        );
+    }
+
+    #[test]
+    fn test_validate_rejects_socket_address_octets_of_the_wrong_length() {
+        // Reached with a two-byte port: the holder gains one for the test.
+        let port = |node: DisplayNode| {
+            let mut b = with_format(node);
+            b.types.types.push(TypeDef::Base {
+                name: StrRef(0),
+                size: 2,
+                encoding: Encoding::Unsigned,
+            });
+            match &mut b.types.types[7] {
+                TypeDef::Struct { members, .. } => members[0].ty = BundleTypeId(9),
+                _ => unreachable!(),
+            }
+            b
+        };
+        rejects(
+            &port(socket_addr(2, 0, None)),
+            "5 octets is not a length a socket address spells",
+        );
+        rejects(
+            &port(socket_addr(3, 0, None)),
+            "a socket address's octets are not unsigned bytes",
+        );
+        port(socket_addr(1, 0, None))
+            .validate()
+            .expect("four unsigned octets and a two-byte port are a socket address");
+    }
+
+    // -------------------------------------------------------------------
     // DynPointer
     // -------------------------------------------------------------------
 

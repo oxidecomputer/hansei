@@ -262,6 +262,42 @@ pub(crate) fn eval_bytes(
     }
 }
 
+/// Render the `octets` at `ip` and the two-byte port at `port` as `std`'s
+/// `SocketAddr` does — `192.0.2.1:80`, `[2001:db8::1]:80` — with the
+/// four-byte scope id at `scope_id` after a `%` inside the brackets when it
+/// is recorded and nonzero, as `[fe80::1%3]:80`. The family follows from
+/// the octet count that resolution validated to be 4 or 16.
+pub(crate) fn eval_socket_addr(
+    f: &mut fmt::Formatter<'_>,
+    bytes: &[u8],
+    ip: u64,
+    octets: u64,
+    port: u64,
+    scope_id: Option<u64>,
+) -> fmt::Result {
+    let (Some(ip), Some(port)) = (
+        byte_range(bytes, ip, octets),
+        read_unsigned_at(bytes, port, 2),
+    ) else {
+        return write!(f, "<truncated>");
+    };
+    if let Ok(octets) = <&[u8; 4]>::try_from(ip) {
+        return write!(f, "{}:{port}", std::net::Ipv4Addr::from(*octets));
+    }
+    let Ok(octets) = <&[u8; 16]>::try_from(ip) else {
+        return write!(f, "<invalid socket address layout>");
+    };
+    let scope = match scope_id {
+        Some(scope_id) => match read_unsigned_at(bytes, scope_id, 4) {
+            Some(0) => String::new(),
+            Some(scope) => format!("%{scope}"),
+            None => return write!(f, "<truncated>"),
+        },
+        None => String::new(),
+    };
+    write!(f, "[{}{scope}]:{port}", std::net::Ipv6Addr::from(*octets))
+}
+
 /// Write 16 bytes as a hyphenated lowercase UUID: the bytes in order, grouped
 /// 8-4-4-4-12 hex digits, which is what `uuid::Uuid`'s own `Display` produces.
 /// Spelled here rather than taken from the crate so reify does not depend on a
@@ -298,6 +334,32 @@ mod tests {
             format!("{}", Value::new(v.ty(IPV6).unwrap(), 0, &ipv6).display()),
             "2001:db8::1"
         );
+    }
+
+    /// A socket address spells as std's `SocketAddr` does: the v4 form
+    /// bare, the v6 form bracketed, with the scope id after a `%` only
+    /// when it is nonzero, and a short read is a marker rather than a
+    /// port read out of the octets.
+    #[test]
+    fn test_socket_addresses_spell_as_std_does() {
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+        let show =
+            |ty, bytes: &[u8]| format!("{}", Value::new(v.ty(ty).unwrap(), 0, bytes).display());
+
+        let v4 = [192, 0, 2, 1, 0x50, 0x00];
+        assert_eq!(show(SOCKADDR_V4, &v4), "192.0.2.1:80");
+
+        let mut v6 = [0u8; 28];
+        v6[..16].copy_from_slice(&[0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
+        v6[16..20].copy_from_slice(&7u32.to_le_bytes());
+        v6[24..26].copy_from_slice(&8080u16.to_le_bytes());
+        assert_eq!(show(SOCKADDR_V6, &v6), "[fe80::1]:8080");
+        v6[20..24].copy_from_slice(&3u32.to_le_bytes());
+        assert_eq!(show(SOCKADDR_V6, &v6), "[fe80::1%3]:8080");
+
+        assert_eq!(show(SOCKADDR_V4, &v4[..5]), "<truncated>");
+        assert_eq!(show(SOCKADDR_V6, &v6[..24]), "<truncated>");
     }
 
     /// A `Uuid` and an `Ipv6Addr` are both `[u8; 16]`, so the same sixteen bytes

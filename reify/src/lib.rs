@@ -4,6 +4,10 @@
 
 //! Render values from a debug-info-described process image.
 
+// The test fixture's `fixture_ids!` numbers each id by recursing over
+// every name before it, and the zoo has outgrown the default limit.
+#![recursion_limit = "256"]
+
 mod debug_type;
 mod elements;
 mod error;

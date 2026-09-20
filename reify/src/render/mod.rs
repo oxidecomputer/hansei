@@ -666,6 +666,7 @@ fn elision_brackets<'a, T: Target>(
             | DisplayNode::Symbol { .. }
             | DisplayNode::Str { .. }
             | DisplayNode::Bytes { .. }
+            | DisplayNode::SocketAddr { .. }
             | DisplayNode::SlotCount { .. } => None,
             // A transparent wrapper elides with its payload's brackets,
             // the same way it renders.

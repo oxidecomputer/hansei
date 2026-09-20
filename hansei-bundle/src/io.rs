@@ -30,7 +30,7 @@ pub const MAGIC: [u8; 8] = *b"exegesis";
 
 /// The current bundle format version. Bump on any schema change, including
 /// indirect ones (e.g. new [`crate::Encoding`] variants).
-pub const FORMAT_VERSION: u32 = 75;
+pub const FORMAT_VERSION: u32 = 76;
 
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -697,6 +697,26 @@ fn check_node(bundle: &Bundle, scope: BundleTypeId, node: &DisplayNode, what: &s
             if !admitted {
                 return corrupt(format!(
                     "{count} bytes is not a length the {notation:?} notation spells"
+                ));
+            }
+        }
+        DisplayNode::SocketAddr { ip, .. } => {
+            // The shape table held the port and scope words to their
+            // widths; the octets are checked as a notation's are, since
+            // the count is what says which address family is spelled.
+            let target = selector_target(bundle, scope, ip, what)?;
+            let Some(TypeDef::Array { elem, count }) = bundle.types.get(target) else {
+                unreachable!("the shape table verified an array");
+            };
+            let Some(TypeDef::Base { size, encoding, .. }) = bundle.types.get(*elem) else {
+                return corrupt("a socket address's octets are not a base type".to_string());
+            };
+            if *size != 1 || !matches!(encoding, crate::Encoding::Unsigned) {
+                return corrupt("a socket address's octets are not unsigned bytes".to_string());
+            }
+            if !matches!(count, 4 | 16) {
+                return corrupt(format!(
+                    "{count} octets is not a length a socket address spells"
                 ));
             }
         }

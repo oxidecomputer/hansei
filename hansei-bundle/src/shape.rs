@@ -152,6 +152,20 @@ impl DisplayNode {
             DisplayNode::Bytes { at, .. } => {
                 vec![Addressed::new("an inline byte array", at, Shape::Array)]
             }
+            DisplayNode::SocketAddr { ip, port, scope_id } => {
+                let mut addressed = vec![
+                    Addressed::new("a socket address's octets", ip, Shape::Array),
+                    Addressed::new("a socket address's port", port, Shape::Uint(2)),
+                ];
+                if let Some(scope_id) = scope_id {
+                    addressed.push(Addressed::new(
+                        "a socket address's scope id",
+                        scope_id,
+                        Shape::Uint(4),
+                    ));
+                }
+                addressed
+            }
             DisplayNode::Alias { at, .. } => {
                 // An aliased value may have any type — a peeled atomic is a
                 // plain integer, a pointer, or a small struct — so the only

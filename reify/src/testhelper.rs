@@ -650,6 +650,10 @@ fixture_ids! {
     // display format, so a path that lands on a layer can be told from
     // one peeled past it.
     WRAP_WRAP,
+    // `SocketAddrV4 { ip, port }` and `SocketAddrV6 { ip, flowinfo,
+    // scope_id, port }` over the address types above: the two spellings
+    // of the socket-address node, the v6 one with a scope word to read.
+    SOCKADDR_V4, SOCKADDR_V6,
 }
 
 /// A hand-built mini-bundle exercising every TypeDef kind reify touches:
@@ -716,6 +720,14 @@ pub fn test_bundle() -> Bundle {
         s("octets"),
     );
     let (uuidn, uuid_bytesn) = (s("uuid::Uuid"), s("__0"));
+    let (sockv4n, sockv6n, ipn, portn, flowinfon, scope_idn) = (
+        s("core::net::socket_addr::SocketAddrV4"),
+        s("core::net::socket_addr::SocketAddrV6"),
+        s("ip"),
+        s("port"),
+        s("flowinfo"),
+        s("scope_id"),
+    );
     let hashn = s("tufaceous_artifact::artifact::ArtifactHash");
     let (vecn, ptrn, vec_lenn, capacityn) =
         (s("alloc::vec::Vec<u32>"), s("ptr"), s("len"), s("capacity"));
@@ -2065,6 +2077,30 @@ pub fn test_bundle() -> Bundle {
             members: vec![m(innern, PAD_WRAP, 0)],
         },
     );
+    // The socket addresses as std lays them out: the v4 form is the
+    // octets then the port; the v6 form keeps the flow and scope words
+    // between them, the port last.
+    types.add(
+        SOCKADDR_V4,
+        TypeDef::Struct {
+            name: sockv4n,
+            size: 6,
+            members: vec![m(ipn, IPV4, 0), m(portn, U16, 4)],
+        },
+    );
+    types.add(
+        SOCKADDR_V6,
+        TypeDef::Struct {
+            name: sockv6n,
+            size: 28,
+            members: vec![
+                m(ipn, IPV6, 0),
+                m(flowinfon, U32, 16),
+                m(scope_idn, U32, 20),
+                m(portn, U16, 24),
+            ],
+        },
+    );
 
     let types = types.finish();
 
@@ -2600,6 +2636,22 @@ pub fn test_bundle() -> Bundle {
                     },
                 ),
                 (WATCH_RECEIVER, watch_receiver_node),
+                (
+                    SOCKADDR_V4,
+                    BundleNode::SocketAddr {
+                        ip: sel(&[0, 0]),
+                        port: sel(&[1]),
+                        scope_id: None,
+                    },
+                ),
+                (
+                    SOCKADDR_V6,
+                    BundleNode::SocketAddr {
+                        ip: sel(&[0, 0]),
+                        port: sel(&[3]),
+                        scope_id: Some(sel(&[2])),
+                    },
+                ),
             ]),
             name_index: vec![(pointn, POINT), (self_refn, SELF_REF)],
             ..Default::default()

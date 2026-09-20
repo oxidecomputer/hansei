@@ -110,6 +110,15 @@ pub enum DisplayNode<'a> {
         size: u32,
         notation: Notation,
     },
+    /// Render the `octets`-byte address at `ip` and the two-byte port at
+    /// `port` as `std`'s `SocketAddr` spells them, with the four-byte scope
+    /// id at `scope_id` inside the brackets when it is recorded and nonzero.
+    SocketAddr {
+        ip: u64,
+        octets: u32,
+        port: u64,
+        scope_id: Option<u64>,
+    },
     /// Render the `target` value at `place` as though it were the whole value,
     /// peeling a transparent wrapper. `place` is usually a plain local offset
     /// (a wrapper member), but may cross a pointer — that is how a
@@ -822,6 +831,21 @@ impl<'a> DisplayNode<'a> {
                         offset,
                         size: count as u32,
                         notation: *notation,
+                    })
+                }
+                BundleNode::SocketAddr { ip, port, scope_id } => {
+                    let (array_ty, ip) = resolve_selector(scope, ip)?;
+                    let (_, octets) = array_ty.array_info()?;
+                    let (_, port) = resolve_selector(scope, port)?;
+                    let scope_id = match scope_id {
+                        Some(scope_id) => Some(resolve_selector(scope, scope_id)?.1),
+                        None => None,
+                    };
+                    Some(DisplayNode::SocketAddr {
+                        ip,
+                        octets: octets as u32,
+                        port,
+                        scope_id,
                     })
                 }
                 BundleNode::Alias {

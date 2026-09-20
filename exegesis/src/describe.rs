@@ -326,6 +326,17 @@ pub fn describe_node(bundle: &Bundle, root: BundleTypeId, node: &DisplayNode) ->
         DisplayNode::Bytes { at, notation } => {
             format!("Bytes {notation:?} {{ {} }}", field(bundle, root, at))
         }
+        DisplayNode::SocketAddr { ip, port, scope_id } => {
+            let scope = match scope_id {
+                Some(scope_id) => format!(", scope_id={}", field(bundle, root, scope_id)),
+                None => String::new(),
+            };
+            format!(
+                "SocketAddr {{ ip={}, port={}{scope} }}",
+                field(bundle, root, ip),
+                field(bundle, root, port)
+            )
+        }
         DisplayNode::Alias {
             at,
             follow_pointers,

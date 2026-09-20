@@ -586,6 +586,24 @@ pub enum DisplayNode {
     /// `Uuid` and an `Ipv6Addr` are both `[u8; 16]`, and reading one as the
     /// other would be wrong rather than merely ugly.
     Bytes { at: Selector, notation: Notation },
+    /// Render an IP address and port as `std`'s `SocketAddr` spells them:
+    /// `192.0.2.1:80` for four octets, `[2001:db8::1]:80` for sixteen —
+    /// with the scope id after a `%` inside the brackets when one is
+    /// recorded and nonzero, as `[fe80::1%3]:80`.
+    ///
+    /// `ip` reaches the inline octet array (an `Ipv4Addr`'s or an
+    /// `Ipv6Addr`'s, like a [`DisplayNode::Bytes`] under
+    /// [`Notation::IpAddr`]) and `port` the two-byte unsigned port word;
+    /// `scope_id` reaches a `SocketAddrV6`'s four-byte scope word and is
+    /// absent for the v4 form, which has none. The address family follows
+    /// from the octet count, as the notation's does. This is a leaf like
+    /// `Bytes`: every datum lives in the value's own bytes and no pointer
+    /// is followed.
+    SocketAddr {
+        ip: Selector,
+        port: Selector,
+        scope_id: Option<Selector>,
+    },
     /// Render the value reached by `at` as though it were the whole value,
     /// peeling a transparent wrapper down to one inner member.
     ///

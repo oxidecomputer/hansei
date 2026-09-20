@@ -18,7 +18,8 @@ use std::fmt;
 use super::collections::{eval_list, eval_map, eval_slice};
 use super::dyn_ptr::eval_dyn_pointer;
 use super::scalar::{
-    apply, byte_range, eval_bytes, read_u64_at, read_unsigned_at, write_symbol, write_utf8_string,
+    apply, byte_range, eval_bytes, eval_socket_addr, read_u64_at, read_unsigned_at, write_symbol,
+    write_utf8_string,
 };
 use super::{
     RenderCtx, write_display_value, write_field_prefix, write_record_close, write_seq_close,
@@ -98,6 +99,12 @@ pub(crate) fn eval_node<'a, T: Target>(
             size,
             notation,
         } => eval_bytes(f, bytes, *offset, u64::from(*size), *notation),
+        DisplayNode::SocketAddr {
+            ip,
+            octets,
+            port,
+            scope_id,
+        } => eval_socket_addr(f, bytes, *ip, u64::from(*octets), *port, *scope_id),
         DisplayNode::Alias {
             target,
             place,
