@@ -2223,7 +2223,7 @@ fn test_semantic_http_conn_binding_routes_every_word() {
         .as_mut()
         .unwrap()
         .state_rule = Some(SemanticRuleId(0));
-    bad(&wrong, "incompatible capability");
+    bad(&wrong, "protocol is not the connection's own rule");
     let mut wrong = b.clone();
     wrong.semantics.types[0].storage = StoragePolicy::Unavailable(issue());
     bad(&wrong, "unavailable storage carries a readable capability");
@@ -2253,7 +2253,7 @@ fn test_semantic_http_conn_binding_routes_every_word() {
     // The dispatch routes present are the role's own: both, or the
     // other role's, disagree.
     let server = HttpServerBinding {
-        in_flight: http(&mut b.clone()).is_closing.clone(),
+        in_flight: http(&mut b.clone()).method.clone(),
         header_read_timeout_running: http(&mut b.clone()).is_closing.clone(),
     };
     let mut wrong = b.clone();
@@ -2276,8 +2276,183 @@ fn test_semantic_http_conn_binding_routes_every_word() {
         .unwrap()
         .header_read_timeout_running = http(&mut wrong).reading.clone();
     bad(&wrong, "header-read timer flag is not one byte");
+    let mut wrong = server_conn.clone();
+    http(&mut wrong).server.as_mut().unwrap().in_flight = http(&mut wrong).is_closing.clone();
+    bad(&wrong, "in-flight handler is not an enum");
     // The rule is hyper's, read off its own file.
     let mut wrong = b.clone();
     wrong.semantics.rules[1].kind = SemanticRuleKind::HyperUtilTokioSleep;
     bad(&wrong, "third-party delegation needs source evidence");
+}
+
+/// hyper-util's version-choosing wrapper as the connection resource:
+/// while it reads a connection's first bytes it has no HTTP/1 words,
+/// so the resource stands under the wrapper's own rule with no binding
+/// beside it, and its program matches on the state — the reading state
+/// a primitive, the HTTP/1 state an exclusive delegate to the
+/// connection inside — while the dispatcher's resource keeps its
+/// binding. Either resource with the other's shape is refused, and so
+/// is a protocol that is not the connection's own rule.
+#[test]
+fn test_semantic_http_negotiating_wrapper_is_the_connection_resource() {
+    let (mut b, _) = http_conn();
+    let dispatcher_t = b.semantics.types[0].ty;
+    let hyper_rule = b.semantics.types[0].resource.as_ref().unwrap().rule;
+    let u8_t = BundleTypeId(
+        b.types
+            .types
+            .iter()
+            .position(
+                |t| matches!(t, TypeDef::Base { name, .. } if b.strings.get(*name) == Some("u8")),
+            )
+            .unwrap() as u32,
+    );
+    let mut strings = StringInterner::new();
+    for s in b.strings.iter() {
+        strings.intern(s);
+    }
+    let mut name = |s: &str| strings.intern(s);
+    let (package, version, family, source) = (
+        name("hyper-util"),
+        name("0.1.20"),
+        name("hyper-util-auto-conn-0.1.10"),
+        name(
+            "registry/src/index.crates.io-1949cf8c6b5b557f/hyper-util-0.1.20/src/server/conn/auto/mod.rs",
+        ),
+    );
+    let (state, conn, read_version, h1, h2, wrapper_name, state_name) = (
+        name("state"),
+        name("conn"),
+        name("ReadVersion"),
+        name("H1"),
+        name("H2"),
+        name("hyper_util::server::conn::auto::UpgradeableConnection<I, S, E>"),
+        name("hyper_util::server::conn::auto::UpgradeableConnState<I, S, E>"),
+    );
+    b.strings = strings.finish();
+    let member = |name, ty, offset| MemberDef { name, ty, offset };
+    let variant = |name, discr: u128, payload: MemberDef| VariantDef {
+        name,
+        discr_values: Some(DiscrValues(vec![DiscrValue::Value(discr)])),
+        payload,
+        decl: None,
+        await_site: None,
+    };
+    let strukt = |name, size, members| TypeDef::Struct {
+        name,
+        size,
+        members,
+    };
+    let next = b.types.types.len() as u32;
+    let (rv_p, h1_p, h2_p, state_t, wrapper_t) = (
+        BundleTypeId(next),
+        BundleTypeId(next + 1),
+        BundleTypeId(next + 2),
+        BundleTypeId(next + 3),
+        BundleTypeId(next + 4),
+    );
+    b.types.types.extend([
+        strukt(read_version, 0, vec![]),
+        strukt(h1, 160, vec![member(conn, dispatcher_t, 0)]),
+        strukt(h2, 0, vec![]),
+        TypeDef::Enum {
+            name: state_name,
+            size: 168,
+            shape: VariantShape {
+                discr: Some(DiscrDef {
+                    offset: 0,
+                    ty: u8_t,
+                }),
+                variants: vec![
+                    variant(read_version, 0, member(read_version, rv_p, 8)),
+                    variant(h1, 1, member(h1, h1_p, 8)),
+                    variant(h2, 2, member(h2, h2_p, 8)),
+                ],
+            },
+        },
+        strukt(wrapper_name, 168, vec![member(state, state_t, 0)]),
+    ]);
+    let origin = SemanticOriginId(b.semantics.origins.len() as u32);
+    b.semantics.origins.push(SemanticOrigin::LibraryDelegation {
+        package,
+        version,
+        family,
+        source,
+        files: Vec::new(),
+    });
+    let rule = SemanticRuleId(b.semantics.rules.len() as u32);
+    b.semantics.rules.push(SemanticRule {
+        kind: SemanticRuleKind::HyperUtilAutoConn,
+        revision: 1,
+        origin,
+    });
+    let poll = b.strings.get(POLL).unwrap().to_owned();
+    b.dyn_futures
+        .by_symbol
+        .get_mut(&poll)
+        .unwrap()
+        .push(wrapper_t);
+    let mut wrapper = record(wrapper_t);
+    wrapper.future.as_mut().unwrap().continuation = Continuation::Bound {
+        rule,
+        program: PollProgram::MatchVariant {
+            state: path(vec![named(state)], state_t),
+            cases: vec![
+                PollCase {
+                    variant: read_version,
+                    action: PollAction::Primitive,
+                },
+                PollCase {
+                    variant: h1,
+                    action: PollAction::Delegate {
+                        target: FutureTarget::Value(path(
+                            vec![named(state), Step::Variant(h1), named(conn)],
+                            dispatcher_t,
+                        )),
+                        exclusive: true,
+                    },
+                },
+                PollCase {
+                    variant: h2,
+                    action: PollAction::Unknown(SemanticIssue {
+                        kind: SemanticIssueKind::UnsupportedState,
+                        detail: None,
+                    }),
+                },
+            ],
+        },
+    };
+    wrapper.resource = Some(ResourceBinding {
+        rule,
+        kind: ResourceKind::HttpConn,
+        state_rule: Some(rule),
+        exclusive_pending: true,
+    });
+    b.semantics.types.push(wrapper);
+    b.validate().unwrap();
+    let mut bytes = Vec::new();
+    b.write_to(&mut bytes).unwrap();
+    assert_eq!(Bundle::read_from(bytes.as_slice()).unwrap(), b);
+
+    fn auto(b: &mut Bundle) -> &mut TypeSemantics {
+        &mut b.semantics.types[1]
+    }
+    // A connection resource under hyper's rule needs the words.
+    let mut wrong = b.clone();
+    auto(&mut wrong).resource.as_mut().unwrap().rule = hyper_rule;
+    auto(&mut wrong).resource.as_mut().unwrap().state_rule = Some(hyper_rule);
+    bad(&wrong, "resource and binding disagree");
+    // The protocol is the connection's own rule, whichever it is.
+    let mut wrong = b.clone();
+    auto(&mut wrong).resource.as_mut().unwrap().state_rule = Some(hyper_rule);
+    bad(&wrong, "protocol is not the connection's own rule");
+    // Only the two connection rules carry the connection resource.
+    let mut wrong = b.clone();
+    wrong.semantics.rules[rule.0 as usize].kind = SemanticRuleKind::HyperUtilTokioSleep;
+    bad(&wrong, "incompatible capability");
+    // The reading state's primitive is the resource's; without the
+    // resource it names nothing.
+    let mut wrong = b.clone();
+    auto(&mut wrong).resource = None;
+    bad(&wrong, "primitive has no compatible resource binding");
 }

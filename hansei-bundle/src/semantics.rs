@@ -296,7 +296,8 @@ pub struct HttpClientBinding {
 /// The server dispatch's words: what a server connection is parked on.
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub struct HttpServerBinding {
-    /// `dispatch.in_flight`: the pinned box holding the handler's future
+    /// The `Option` behind `dispatch.in_flight`'s pinned box —
+    /// `dispatch.in_flight.pointer.*` — holding the handler's future
     /// while a request is being handled, `None` between requests.
     pub in_flight: TypedPath,
     /// `conn.state.h1_header_read_timeout_running`: whether the
@@ -482,9 +483,12 @@ pub enum SemanticRuleKind {
     /// `server::conn::http1` wrappers whose polls forward to it.
     HyperH1Conn,
     /// hyper-util's version-choosing server connection
-    /// (`server::conn::auto::UpgradeableConnection`), whose state says
-    /// whether the connection is still reading its first bytes, is
-    /// HTTP/1 (and defers to the dispatcher inside), or HTTP/2.
+    /// (`server::conn::auto::UpgradeableConnection`) under a reviewed
+    /// range, whose state says whether the connection is still reading
+    /// its first bytes — the wrapper is then the connection resource
+    /// itself, with no HTTP/1 words to bind — is HTTP/1, polling the
+    /// `server::conn::http1` connection inside and acting only on its
+    /// output, or HTTP/2.
     HyperUtilAutoConn,
 }
 

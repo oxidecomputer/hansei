@@ -429,31 +429,38 @@ impl<'a> Check<'a> {
     fn resource(&self, record: &TypeSemantics, binding: &ResourceBinding) -> Result<()> {
         use SemanticRuleKind::*;
         let ty = record.ty;
-        let kind = match binding.kind {
-            ResourceKind::Sleep => TokioSleep,
-            ResourceKind::JoinHandle => TokioJoinHandle,
-            ResourceKind::SemaphoreAcquire => TokioAcquire,
-            ResourceKind::IoOperation(_) => TokioIoOperation,
-            ResourceKind::MpscRecv => TokioMpscRecv,
-            ResourceKind::Notified => TokioNotified,
-            ResourceKind::OneshotRecv => TokioOneshotRecv,
-            ResourceKind::HttpConn => HyperH1Conn,
+        // A connection resource is hyper's dispatcher, whose state words
+        // the connection binding routes to, or hyper-util's
+        // version-choosing wrapper while it still reads the first
+        // bytes — a connection with no HTTP/1 words yet, under the
+        // wrapper's own rule.
+        let kinds: &[SemanticRuleKind] = match binding.kind {
+            ResourceKind::Sleep => &[TokioSleep],
+            ResourceKind::JoinHandle => &[TokioJoinHandle],
+            ResourceKind::SemaphoreAcquire => &[TokioAcquire],
+            ResourceKind::IoOperation(_) => &[TokioIoOperation],
+            ResourceKind::MpscRecv => &[TokioMpscRecv],
+            ResourceKind::Notified => &[TokioNotified],
+            ResourceKind::OneshotRecv => &[TokioOneshotRecv],
+            ResourceKind::HttpConn => &[HyperH1Conn, HyperUtilAutoConn],
         };
-        self.rule(binding.rule, &[kind])?;
+        let rule = self.rule(binding.rule, kinds)?;
         self.roles(ty, required_resource_roles(binding.kind))?;
         self.routes(required_resource_routes(binding.kind))?;
         // The connection's words are reached by the record's own
         // paths, not by walk roles: the binding that holds them is the
-        // resource's, under the same rule.
+        // resource's, under the same rule — and only the dispatcher
+        // has words to hold; the wrapper still choosing a version
+        // carries none.
         require(
-            (binding.kind == ResourceKind::HttpConn)
+            (binding.kind == ResourceKind::HttpConn && rule.kind == HyperH1Conn)
                 == record
                     .http
                     .as_ref()
                     .is_some_and(|http| http.rule == binding.rule),
             "HTTP connection resource and binding disagree",
         )?;
-        if let Some(rule) = binding.state_rule {
+        if let Some(state_rule) = binding.state_rule {
             let kind = match binding.kind {
                 ResourceKind::Sleep => TokioSleepState,
                 ResourceKind::JoinHandle => TokioJoinHandleState,
@@ -464,9 +471,15 @@ impl<'a> Check<'a> {
                 ResourceKind::OneshotRecv => TokioOneshotRecvState,
                 // The reviewed range is the state protocol: the same
                 // rule, whose delegation origin binds only inside it.
-                ResourceKind::HttpConn => HyperH1Conn,
+                ResourceKind::HttpConn => {
+                    require(
+                        state_rule == binding.rule,
+                        "HTTP connection protocol is not the connection's own rule",
+                    )?;
+                    rule.kind
+                }
             };
-            self.rule(rule, &[kind])?;
+            self.rule(state_rule, &[kind])?;
         }
         // Whether a pending primitive polls nothing else is a fact about
         // its reviewed implementation, and the state protocol is the
@@ -550,7 +563,9 @@ impl<'a> Check<'a> {
             self.path(record.ty, &client.rx)?;
         }
         if let Some(server) = &binding.server {
-            self.path(record.ty, &server.in_flight)?;
+            // The handler's `Option`, behind the pinned box the route
+            // crosses: read for whether a request is being handled.
+            enumeration(&server.in_flight, "in-flight handler")?;
             self.path(record.ty, &server.header_read_timeout_running)?;
             require(
                 self.0
@@ -711,6 +726,7 @@ impl<'a> Check<'a> {
                         FuturesUtilNext,
                         TokioIntervalTick,
                         HyperH1Conn,
+                        HyperUtilAutoConn,
                     ],
                 )?;
                 self.target(record.ty, target)?;
@@ -728,7 +744,9 @@ impl<'a> Check<'a> {
                 // false. The tick's `PollFn` polls the interval's box
                 // and, while that is pending, nothing else. hyper's
                 // connection wrappers poll the dispatcher inside them
-                // and act only on its output.
+                // and act only on its output, and hyper-util's
+                // version-choosing wrapper polls the HTTP/1 connection
+                // its `H1` state holds the same way.
                 let reviewed = matches!(
                     binding.kind,
                     RustcAsyncFn
@@ -745,6 +763,7 @@ impl<'a> Check<'a> {
                         | FuturesUtilNext
                         | TokioIntervalTick
                         | HyperH1Conn
+                        | HyperUtilAutoConn
                 );
                 require(!exclusive || reviewed, "unreviewed delegation exclusivity")?;
                 let path = match target {
@@ -776,6 +795,7 @@ impl<'a> Check<'a> {
                         TokioNotified,
                         TokioOneshotRecv,
                         HyperH1Conn,
+                        HyperUtilAutoConn,
                     ],
                 )?;
                 require(
@@ -852,6 +872,7 @@ impl<'a> Check<'a> {
                 CorePending,
                 FuturesUtilPending,
                 HyperH1Conn,
+                HyperUtilAutoConn,
             ],
         )?;
         require(
