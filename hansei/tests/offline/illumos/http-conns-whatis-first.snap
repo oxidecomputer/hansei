@@ -1,6 +1,6 @@
 ---
 source: hansei/src/offline.rs
-description: "`whatis 0x10f9e00` over illumos/http-conns"
+description: "`whatis 0x138aa00` over illumos/http-conns"
 ---
 Status: live
 Size:   528 byte block
@@ -9,4 +9,4 @@ Offset: +16 in block
 Task 3: async fn http_conns::accept_loop
     At: offset 0xADDR in the task's allocation (header 0xADDR)
     State: idle
-    Spawned at: src/bin/http-conns.rs:171:28
+    Spawned at: src/bin/http-conns.rs:182:28

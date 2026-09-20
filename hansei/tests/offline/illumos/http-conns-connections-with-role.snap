@@ -1,0 +1,8 @@
+---
+source: hansei/src/offline.rs
+description: "`connections --with role server --with buffered =0` over illumos/http-conns"
+---
+ADDR       TASK  ROLE    VER    PHASE             METHOD  PEER  BUF      DEADLINE  HANDLER
+0xADDR  4     server  http1  idle              —       —     0/16302  —         —
+0xADDR  9     server  http1  handling request  GET     —     0/16339  —         async fn http_conns::handle
+[2 connections]

@@ -1,0 +1,11 @@
+---
+source: hansei/src/offline.rs
+description: "`connections` over linux-floor/http-conns"
+---
+ADDR            TASK  ROLE    VER    PHASE              METHOD  PEER  BUF      DEADLINE  HANDLER
+0xADDR  4     client  http1  idle               —       —     0/8192   —         —
+0xADDR  5     server  http1  idle               —       —     0/16302  —         —
+0xADDR  8     server  http1  handling request   GET     —     0/16339  —         async fn http_conns::handle
+0xADDR  9     client  http1  awaiting response  GET     —     0/8192   —         —
+0xADDR  10    server  —      negotiating        —       —     —        —         —
+[5 connections]

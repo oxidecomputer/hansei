@@ -3,10 +3,10 @@ source: hansei/src/offline.rs
 description: "`channels` over linux/http-conns"
 ---
 oneshot 0xADDR: nothing sent, sender alive
-    rx: task 12
+    rx: task 11
 
 oneshot 0xADDR: nothing sent, sender alive
-    tx: task 10
+    tx: task 9
 
 mpsc 0xADDR: 1 sender, 0 unread
-    rx: task 4
+    rx: task 5

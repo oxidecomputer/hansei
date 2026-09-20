@@ -5,9 +5,9 @@ description: "`census` over linux/http-conns"
 Threads: 3 lwps, 3 in runtime 0 @ 0xADDR
 
 COUNT  RT  ROLE             STATE            LWPS
-    1  0   worker           in driver        3458025
-    1  0   worker           parked           3458026
-    1  0   entered runtime  block_on caller  3458023
+    1  0   worker           in driver        2981656
+    1  0   worker           parked           2981655
+    1  0   entered runtime  block_on caller  2981653
     0  0   blocking pool    0 idle, 0 busy   —
 [3 lwps]
 
@@ -21,7 +21,7 @@ COUNT  TYPE / WAITING ON
     3  async fn http_conns::serve
        ├─ 2  http1 server
        └─ 1  http server
-    2  async block http_conns::{impl#0}::execute<Pin<Box<(dyn Future<Output=()> + Send)>>>
+    2  async block http_conns::Reporting::execute<Pin<Box<(dyn Future<Output=()> + Send)>>>
        └─ 2  http1 client
     1  async fn http_conns::accept_loop
        └─ 1  io
