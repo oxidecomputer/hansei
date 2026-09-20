@@ -19,11 +19,12 @@ use super::discovery::{
 };
 use super::observe::{
     AcquireObservation, ChannelObservation, Consistency, HttpClientObservation,
-    HttpConnObservation, HttpReading, HttpWriting, IoFutureState, IoObservation, JoinObservation,
-    KeepAlive, NotifiedObservation, NotifiedState, NotifyObservation, Observed, OneshotObservation,
-    QueueObservation, ReadContext, RecvObservation, ReferenceSink, ReferenceSource,
-    ResourceObservation, ScanBudget, ScanLimits, SlotState, TaskReference, TimerObservation,
-    TimerRegistrationState, ValueKey, WalkIssue, WalkIssueKind, issue_of, lock_consistency,
+    HttpConnObservation, HttpNegotiatingObservation, HttpReading, HttpServerObservation,
+    HttpWriting, IoFutureState, IoObservation, JoinObservation, KeepAlive, NotifiedObservation,
+    NotifiedState, NotifyObservation, Observed, OneshotObservation, QueueObservation, ReadContext,
+    RecvObservation, ReferenceSink, ReferenceSource, ResourceObservation, ScanBudget, ScanLimits,
+    SlotState, TaskReference, TimerObservation, TimerRegistrationState, ValueKey, WalkIssue,
+    WalkIssueKind, issue_of, lock_consistency,
 };
 use super::semantics::SemanticIndex;
 use super::work::{DiscoveryWorld, Registry, Roots, sweep};
@@ -33,10 +34,11 @@ use anyhow::{Context as _, Result, anyhow, bail, ensure};
 use hansei_bundle::symbols::normalized_v0_key;
 use hansei_bundle::tokio::{semaphore, timer};
 use hansei_bundle::{
-    AccessKind, BundleType, BundleTypeId, BundleView, ContainerKind, FutureKind, IoOperationKind,
-    MemberRef, ResourceKind, SchedulerClass, SelectBinding, StaticRole, Step, StoragePolicy,
-    SymbolLookup, TaskEntryId, TaskFutureEntry, TypeDef, TypeSemantics, TypedPath, WalkOutcome,
-    WalkRole, strip_build_prefix, strip_llvm_suffix,
+    AccessKind, BundleType, BundleTypeId, BundleView, ContainerKind, Continuation, FutureKind,
+    IoOperationKind, MemberRef, PollAction, PollProgram, ResourceKind, SchedulerClass,
+    SelectBinding, StaticRole, Step, StoragePolicy, SymbolLookup, TaskEntryId, TaskFutureEntry,
+    TypeDef, TypeSemantics, TypedPath, WalkOutcome, WalkRole, strip_build_prefix,
+    strip_llvm_suffix,
 };
 use proc::{LwpInfo, Mappings, SymbolBuf, Target};
 use reify::Value;
@@ -3038,10 +3040,9 @@ impl<'b, T: Target> Context<'b, T> {
         value: Value<'b>,
         read: &ReadContext<'_>,
     ) -> Observed<ResourceObservation> {
-        let Some(kind) = self
+        let Some((record, kind)) = self
             .type_semantics(value.ty.id())
-            .and_then(|record| record.resource.as_ref())
-            .map(|binding| binding.kind)
+            .and_then(|record| Some((record, record.resource.as_ref()?.kind)))
         else {
             return Observed::none();
         };
@@ -3066,14 +3067,61 @@ impl<'b, T: Target> Context<'b, T> {
             ResourceKind::OneshotRecv => self
                 .observe_oneshot(value, read)
                 .map(ResourceObservation::Oneshot),
-            ResourceKind::HttpConn => self
+            // The dispatcher, with its words bound, or hyper-util's
+            // version-choosing wrapper, which binds none.
+            ResourceKind::HttpConn if record.http.is_some() => self
                 .observe_http_conn(value, read)
                 .map(ResourceObservation::HttpConn),
+            ResourceKind::HttpConn => self
+                .observe_http_negotiating(record, value, read)
+                .map(ResourceObservation::HttpNegotiating),
         };
         match observed {
             Ok(observation) => Observed::of(observation),
             Err(e) => Observed::failed(issue_of(key, &e)),
         }
+    }
+
+    /// hyper-util's version-choosing wrapper as the connection resource.
+    /// It is one only in the state its program marks the primitive —
+    /// reading a connection's first bytes — so the state the program
+    /// matches on is read and held to that case: a wrapper that has
+    /// chosen its version is not the connection, the one inside is.
+    fn observe_http_negotiating(
+        &self,
+        record: &TypeSemantics,
+        wrapper: Value<'b>,
+        read: &ReadContext<'_>,
+    ) -> Result<HttpNegotiatingObservation> {
+        let Some(Continuation::Bound {
+            program: PollProgram::MatchVariant { state, cases },
+            ..
+        }) = record.future.as_ref().map(|facts| &facts.continuation)
+        else {
+            bail!(
+                "{} binds the connection resource with no state to read it in",
+                wrapper.ty.name()
+            );
+        };
+        let state_value = self.route(wrapper, &state.steps, read)?;
+        ensure!(
+            state_value.ty.id() == state.target,
+            "the state route landed on {} rather than its recorded type",
+            state_value.ty.name()
+        );
+        let (active, _) = state_value.active_variant_raw()?;
+        let negotiating = cases.iter().any(|case| {
+            matches!(case.action, PollAction::Primitive)
+                && self.view.str(case.variant) == Some(active)
+        });
+        ensure!(
+            negotiating,
+            "{} has chosen its version ({active}); the connection is the one inside",
+            wrapper.ty.name()
+        );
+        Ok(HttpNegotiatingObservation {
+            wrapper: ValueKey::of(wrapper),
+        })
     }
 
     /// A `JoinHandle`: the task header its raw pointer names.
@@ -3310,11 +3358,12 @@ impl<'b, T: Target> Context<'b, T> {
     /// dispatcher, and for a client the primitives its dispatch is
     /// parked on — the response callback's oneshot, read from the
     /// `Sender` the callback's active variant carries, and the channel
-    /// behind the request receiver. A word whose route lands on an
-    /// enumerator or variant the reviewed range does not have is kept
-    /// as unknown, for the assessor to decline with; a framing or a
-    /// method that does not read is left out, since the phase stands
-    /// without it.
+    /// behind the request receiver; for a server, whether a handler is
+    /// in flight and whether the header-read timer is armed. A word
+    /// whose route lands on an enumerator or variant the reviewed range
+    /// does not have is kept as unknown, for the assessor to decline
+    /// with; a framing or a method that does not read is left out,
+    /// since the phase stands without it.
     fn observe_http_conn(
         &self,
         dispatcher: Value<'b>,
@@ -3419,6 +3468,24 @@ impl<'b, T: Target> Context<'b, T> {
             }
             None => None,
         };
+        // The server's handler: `Some` behind the pinned box while one
+        // runs. The timer flag is a byte.
+        let server = match &binding.server {
+            Some(server) => {
+                let in_flight = word(&server.in_flight, "in-flight handler")?;
+                let in_flight = in_flight.active_variant_raw()?.0 == "Some";
+                let flag = word(
+                    &server.header_read_timeout_running,
+                    "header-read timer flag",
+                )?;
+                let header_read_timer_running = flag.bytes.first().is_some_and(|byte| *byte != 0);
+                Some(HttpServerObservation {
+                    in_flight,
+                    header_read_timer_running,
+                })
+            }
+            None => None,
+        };
         Ok(HttpConnObservation {
             dispatcher: ValueKey::of(dispatcher),
             conn,
@@ -3429,6 +3496,7 @@ impl<'b, T: Target> Context<'b, T> {
             method,
             is_closing,
             client,
+            server,
         })
     }
 

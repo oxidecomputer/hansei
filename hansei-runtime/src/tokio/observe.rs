@@ -420,6 +420,8 @@ pub struct HttpConnObservation {
     pub is_closing: bool,
     /// The client dispatch's words, for a client.
     pub client: Option<HttpClientObservation>,
+    /// The server dispatch's words, for a server.
+    pub server: Option<HttpServerObservation>,
 }
 
 /// The client dispatch as one read found it.
@@ -433,6 +435,24 @@ pub struct HttpClientObservation {
     pub rx: Option<ValueKey>,
 }
 
+/// The server dispatch as one read found it.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub struct HttpServerObservation {
+    /// Whether a handler is running: the `Option` behind `in_flight`
+    /// is `Some`.
+    pub in_flight: bool,
+    /// Whether the header-read timer is armed.
+    pub header_read_timer_running: bool,
+}
+
+/// hyper-util's version-choosing wrapper as one read found it, still
+/// reading a connection's first bytes: a connection with no HTTP/1
+/// words yet, named by the wrapper's own address.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub struct HttpNegotiatingObservation {
+    pub wrapper: ValueKey,
+}
+
 /// What one resource value was observed to be.
 #[derive(Clone, PartialEq, Debug)]
 pub enum ResourceObservation {
@@ -444,6 +464,7 @@ pub enum ResourceObservation {
     Notified(NotifiedObservation),
     Oneshot(OneshotObservation),
     HttpConn(HttpConnObservation),
+    HttpNegotiating(HttpNegotiatingObservation),
 }
 
 /// What a pop at the receiver's read index would find, as `Rx::pop`

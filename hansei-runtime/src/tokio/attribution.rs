@@ -2463,6 +2463,16 @@ pub fn verified_accounts(
             },
             WaitTarget::HttpConn { via: Some(via), .. },
         ) if matches!(**via, WaitTarget::Oneshot { addr, .. } if addr == *primitive) => true,
+        // A connection whose rule names no primitive — a server between
+        // requests or handling one, a client with a body arriving, a
+        // connection still choosing its version — is parked on its
+        // socket, so the io slot is the wait's own. Which registration
+        // is the connection's is not established from the dispatcher,
+        // so any io slot of the task's is taken for it.
+        (
+            Attribution::Registry(RegistrySlot::Io { .. }),
+            WaitTarget::HttpConn { via: None, .. },
+        ) => true,
         (Attribution::Owner { .. } | Attribution::Typed { .. }, _) => {
             within(verified.primitive(), slot.slot)
         }
@@ -3607,6 +3617,7 @@ mod join_tests {
                     phase: HttpPhase::Idle,
                     method: None,
                     keep_alive: true,
+                    header_read_timer: false,
                     via: Some(Box::new(via)),
                 },
                 None,
@@ -3654,6 +3665,43 @@ mod join_tests {
         assert!(!verified_accounts(
             &in_flight,
             &owned(0xd020, OwnerKind::OneshotRx, 0xd000),
+            &size_of
+        ));
+        // An io slot is the connection's own exactly where its rule
+        // names no primitive: a client parked on its dispatch lists
+        // the socket as an item, a server or a body-receiving client
+        // is parked on the socket itself.
+        assert!(!verified_accounts(
+            &idle,
+            &registry(0xe000, io(0xe100), None),
+            &size_of
+        ));
+        let on_socket = VerifiedWait::testkit(
+            WaitTarget::HttpConn {
+                addr: 0xc000,
+                role: HttpRole::Server,
+                version: Some(HttpVersion::Http1),
+                phase: HttpPhase::Idle,
+                method: None,
+                keep_alive: true,
+                header_read_timer: false,
+                via: None,
+            },
+            None,
+        );
+        assert!(verified_accounts(
+            &on_socket,
+            &registry(0xe000, io(0xe100), None),
+            &size_of
+        ));
+        assert!(!verified_accounts(
+            &on_socket,
+            &registry(0xe000, timer(0xe100), None),
+            &size_of
+        ));
+        assert!(!verified_accounts(
+            &on_socket,
+            &owned(0xb040, OwnerKind::Mpsc, 0xb000),
             &size_of
         ));
         // A oneshot's `Inner` and a watch's `Shared`, by address and

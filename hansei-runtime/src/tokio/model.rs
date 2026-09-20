@@ -1097,6 +1097,10 @@ pub enum WaitTarget {
         /// Whether the connection stays open after this exchange:
         /// false where hyper disabled keep-alive.
         keep_alive: bool,
+        /// Whether the server has armed its header-read timer, which
+        /// only an idle server connection does; the timer itself is a
+        /// held future of the task's, listed with its deadline.
+        header_read_timer: bool,
         /// The primitive the connection is parked on, where the rule
         /// names one.
         via: Option<Box<WaitTarget>>,
@@ -1214,12 +1218,14 @@ pub fn http_kind_word(role: HttpRole, version: Option<HttpVersion>) -> &'static 
 
 /// The parenthesised reading of a connection line: the phase, the
 /// method where one is in flight, the body's framing where a body is
-/// moving, and keep-alive where it is off.
+/// moving, keep-alive where it is off, and the header-read timer where
+/// an idle server has armed one.
 pub fn http_words(
     role: HttpRole,
     phase: HttpPhase,
     method: Option<&str>,
     keep_alive: bool,
+    header_read_timer: bool,
 ) -> String {
     let method = method.unwrap_or("request");
     let in_flight = match role {
@@ -1227,14 +1233,20 @@ pub fn http_words(
         HttpRole::Server => format!("{method} in flight"),
     };
     let mut words: Vec<String> = match phase {
-        HttpPhase::Idle => vec![
-            "idle".to_owned(),
-            if keep_alive {
-                "keep-alive".to_owned()
-            } else {
-                "keep-alive off".to_owned()
-            },
-        ],
+        HttpPhase::Idle => {
+            let mut words = vec![
+                "idle".to_owned(),
+                if keep_alive {
+                    "keep-alive".to_owned()
+                } else {
+                    "keep-alive off".to_owned()
+                },
+            ];
+            if header_read_timer {
+                words.push("header-read timer armed".to_owned());
+            }
+            words
+        }
         HttpPhase::AwaitingResponse => vec![in_flight, "awaiting response headers".to_owned()],
         HttpPhase::SendingBody(framing) => {
             let mut words = vec![in_flight, "sending body".to_owned()];
@@ -1753,12 +1765,19 @@ impl fmt::Display for WaitTarget {
                 phase,
                 method,
                 keep_alive,
+                header_read_timer,
                 ..
             } => write!(
                 f,
                 "{} {addr:#x} ({})",
                 http_kind_word(*role, *version),
-                http_words(*role, *phase, method.as_deref(), *keep_alive)
+                http_words(
+                    *role,
+                    *phase,
+                    method.as_deref(),
+                    *keep_alive,
+                    *header_read_timer
+                )
             ),
             // Only a receiver's `changed` parks on a watch channel's
             // `Notify`, so the side is not in doubt; the version and
@@ -1877,6 +1896,7 @@ mod tests {
                 phase,
                 method: method.map(str::to_owned),
                 keep_alive,
+                header_read_timer: false,
                 via: via.map(Box::new),
             }
         };
@@ -1993,6 +2013,7 @@ mod tests {
             phase: HttpPhase::Negotiating,
             method: None,
             keep_alive: true,
+            header_read_timer: false,
             via: None,
         };
         assert_eq!(
@@ -2008,6 +2029,7 @@ mod tests {
             phase: HttpPhase::HandlingRequest,
             method: Some("GET".to_owned()),
             keep_alive: true,
+            header_read_timer: false,
             via: None,
         };
         assert_eq!(
@@ -2015,6 +2037,30 @@ mod tests {
             "http1 server 0x8058d80 (GET in flight, handler running)"
         );
         assert_eq!(handling.group_label(), "http1 server handling request");
+        // An idle server names the header-read timer it armed — a word
+        // on the line, never a change to the cell or the bucket — and
+        // only an idle one does.
+        let armed = |phase| WaitTarget::HttpConn {
+            addr: 0x8058d80,
+            role: HttpRole::Server,
+            version: Some(HttpVersion::Http1),
+            phase,
+            method: None,
+            keep_alive: true,
+            header_read_timer: true,
+            via: None,
+        };
+        let idle = armed(HttpPhase::Idle);
+        assert_eq!(
+            idle.to_string(),
+            "http1 server 0x8058d80 (idle, keep-alive, header-read timer armed)"
+        );
+        assert_eq!(idle.cell(), "http1 server");
+        assert_eq!(idle.group_label(), "http1 server idle");
+        assert_eq!(
+            armed(HttpPhase::Closing).to_string(),
+            "http1 server 0x8058d80 (closing)"
+        );
     }
 
     /// The channel targets: each printed as the kind word, the

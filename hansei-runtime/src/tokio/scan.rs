@@ -661,8 +661,11 @@ impl<'b, T: Target> Scanner<'_, 'b, T> {
                 }
             }
             // A timer entry's waker is the wheel's to hand over: the
-            // sleep names no task itself.
-            Some(ResourceObservation::Timer(_)) | None => {}
+            // sleep names no task itself; a connection still reading
+            // its first bytes is parked on the socket alone, which the
+            // io registry names.
+            Some(ResourceObservation::Timer(_) | ResourceObservation::HttpNegotiating(_))
+            | None => {}
         }
     }
 

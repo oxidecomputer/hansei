@@ -37,11 +37,11 @@ use super::bundle::{
 };
 use super::chain::{FutureInspection, InspectionMode};
 use super::observe::{
-    AcquireObservation, ChannelObservation, Consistency, HttpConnObservation, HttpReading,
-    HttpWriting, IoFutureState, IoObservation, JoinObservation, KeepAlive, NotifiedObservation,
-    NotifiedState, NotifyObservation, Observed, OneshotObservation, QueueObservation, ReadContext,
-    RecvObservation, ResourceObservation, ScanBudget, SlotState, TimerObservation,
-    TimerRegistrationState, ValueKey,
+    AcquireObservation, ChannelObservation, Consistency, HttpConnObservation,
+    HttpNegotiatingObservation, HttpReading, HttpWriting, IoFutureState, IoObservation,
+    JoinObservation, KeepAlive, NotifiedObservation, NotifiedState, NotifyObservation, Observed,
+    OneshotObservation, QueueObservation, ReadContext, RecvObservation, ResourceObservation,
+    ScanBudget, SlotState, TimerObservation, TimerRegistrationState, ValueKey,
 };
 use super::waitset::{WaitMember, WaitSet};
 use super::{Lifecycle, TaskAddr, TaskState};
@@ -579,6 +579,9 @@ impl<'b, T: Target> Context<'b, T> {
             ResourceObservation::HttpConn(http) => {
                 self.assess_http_conn(pass, http, task, primitive, read)
             }
+            ResourceObservation::HttpNegotiating(negotiating) => {
+                assess_http_negotiating(negotiating, primitive)
+            }
             ResourceObservation::Notified(notified) => {
                 let mut assessed = self.assess_notified(pass, notified, task, primitive, read);
                 // A `Notified` on one of a watch channel's `Notify`s is
@@ -791,6 +794,21 @@ impl<'b, T: Target> Context<'b, T> {
         }))
     }
 
+    /// hyper's HTTP/1 connection, by the role its dispatcher drives.
+    fn assess_http_conn(
+        &self,
+        pass: &mut AssessmentPass,
+        http: &HttpConnObservation,
+        task: &TaskFacts,
+        primitive: ValueKey,
+        read: &ReadContext<'_>,
+    ) -> Assessed {
+        match http.role {
+            HttpRole::Client => self.assess_http_client(pass, http, task, primitive, read),
+            HttpRole::Server => assess_http_server(http, primitive),
+        }
+    }
+
     /// hyper's HTTP/1 client connection: the phase its state words put
     /// it in ([`client_phase`]), and the primitive the dispatch is
     /// parked on for that phase, held to the same conditions the
@@ -801,7 +819,7 @@ impl<'b, T: Target> Context<'b, T> {
     /// the connection closes, the dispatch names no primitive: the
     /// socket the connection reads is the registry's to name, and the
     /// verdict stands on the words alone.
-    fn assess_http_conn(
+    fn assess_http_client(
         &self,
         pass: &mut AssessmentPass,
         http: &HttpConnObservation,
@@ -819,7 +837,7 @@ impl<'b, T: Target> Context<'b, T> {
         let Some(client) = &http.client else {
             return Assessed::unknown(
                 WaitUnknownReason::ResourceStateUnproven,
-                "the server connection's dispatch is not bound",
+                "the client connection's dispatch is not bound",
             );
         };
         let waker_is_this_task =
@@ -907,6 +925,7 @@ impl<'b, T: Target> Context<'b, T> {
                 phase,
                 method: http.method.clone(),
                 keep_alive,
+                header_read_timer: false,
                 via,
             },
             primitive,
@@ -1568,42 +1587,70 @@ impl<'b, T: Target> Context<'b, T> {
                 side: OneshotSide::Rx,
             }),
             // The connection's words, read under no protocol: the phase
-            // they decide, and the primitive the dispatch holds for it,
-            // described without the waker checks a verified wait makes.
-            ResourceObservation::HttpConn(http) => {
-                let (phase, keep_alive) = client_phase(http).ok()?;
-                let client = http.client.as_ref()?;
-                let via = match phase {
-                    HttpPhase::Idle => {
-                        let chan = client.rx?;
-                        let channel = pass.channel(self, chan, read);
-                        Some(Box::new(WaitTarget::Channel {
-                            addr: chan.addr,
-                            senders: channel.senders?,
-                            capacity: channel.capacity,
-                            unread: channel.tail_position?.saturating_sub(channel.index?),
-                        }))
-                    }
-                    HttpPhase::AwaitingResponse | HttpPhase::SendingBody(_) => {
-                        let callback = client.callback.as_ref()?;
-                        Some(Box::new(WaitTarget::Oneshot {
-                            addr: callback.inner,
-                            state: callback.state,
-                            side: OneshotSide::Tx,
-                        }))
-                    }
-                    _ => None,
-                };
-                Some(WaitTarget::HttpConn {
-                    addr: http.conn,
-                    role: HttpRole::Client,
-                    version: Some(HttpVersion::Http1),
-                    phase,
-                    method: http.method.clone(),
-                    keep_alive,
-                    via,
-                })
-            }
+            // they decide, and the primitive the client's dispatch holds
+            // for it, described without the waker checks a verified
+            // wait makes.
+            ResourceObservation::HttpConn(http) => match http.role {
+                HttpRole::Client => {
+                    let (phase, keep_alive) = client_phase(http).ok()?;
+                    let client = http.client.as_ref()?;
+                    let via = match phase {
+                        HttpPhase::Idle => {
+                            let chan = client.rx?;
+                            let channel = pass.channel(self, chan, read);
+                            Some(Box::new(WaitTarget::Channel {
+                                addr: chan.addr,
+                                senders: channel.senders?,
+                                capacity: channel.capacity,
+                                unread: channel.tail_position?.saturating_sub(channel.index?),
+                            }))
+                        }
+                        HttpPhase::AwaitingResponse | HttpPhase::SendingBody(_) => {
+                            let callback = client.callback.as_ref()?;
+                            Some(Box::new(WaitTarget::Oneshot {
+                                addr: callback.inner,
+                                state: callback.state,
+                                side: OneshotSide::Tx,
+                            }))
+                        }
+                        _ => None,
+                    };
+                    Some(WaitTarget::HttpConn {
+                        addr: http.conn,
+                        role: HttpRole::Client,
+                        version: Some(HttpVersion::Http1),
+                        phase,
+                        method: http.method.clone(),
+                        keep_alive,
+                        header_read_timer: false,
+                        via,
+                    })
+                }
+                HttpRole::Server => {
+                    let (phase, keep_alive) = server_phase(http).ok()?;
+                    let server = http.server.as_ref()?;
+                    Some(WaitTarget::HttpConn {
+                        addr: http.conn,
+                        role: HttpRole::Server,
+                        version: Some(HttpVersion::Http1),
+                        phase,
+                        method: http.method.clone(),
+                        keep_alive,
+                        header_read_timer: server.header_read_timer_running,
+                        via: None,
+                    })
+                }
+            },
+            ResourceObservation::HttpNegotiating(negotiating) => Some(WaitTarget::HttpConn {
+                addr: negotiating.wrapper.addr,
+                role: HttpRole::Server,
+                version: None,
+                phase: HttpPhase::Negotiating,
+                method: None,
+                keep_alive: true,
+                header_read_timer: false,
+                via: None,
+            }),
         }
     }
 }
@@ -1655,15 +1702,7 @@ fn waker_names_task(
 /// exchange. Any other combination is one the protocol does not
 /// produce, and is declined with the words.
 pub fn client_phase(http: &HttpConnObservation) -> Result<(HttpPhase, bool), String> {
-    let keep_alive = match &http.keep_alive {
-        KeepAlive::Idle | KeepAlive::Busy => true,
-        KeepAlive::Disabled => false,
-        KeepAlive::Unknown(word) => {
-            return Err(format!(
-                "keep-alive reads {word}, which the reviewed range does not have"
-            ));
-        }
-    };
+    let keep_alive = keep_alive_on(&http.keep_alive)?;
     let in_flight = http
         .client
         .as_ref()
@@ -1695,6 +1734,122 @@ pub fn client_phase(http: &HttpConnObservation) -> Result<(HttpPhase, bool), Str
         }
     };
     Ok((phase, keep_alive))
+}
+
+/// The server rows of the connection protocol, decided from the words
+/// and the handler alone, in the order hyper's own state machine
+/// settles them: a closed direction or the dispatcher's closing flag is
+/// closing; a decoder in `reading` is a request body arriving, whether
+/// or not the handler has returned yet; a handler in flight otherwise
+/// is a request being handled, whatever the head's words say (the
+/// request may be read through and the response not yet begun); an
+/// encoder in `writing` with no handler left is the response body
+/// going out; both directions at `Init` with no handler is a
+/// connection between exchanges. The second value is whether keep-alive
+/// is on, as for the client. Any other combination is one the protocol
+/// does not produce, and is declined with the words.
+pub fn server_phase(http: &HttpConnObservation) -> Result<(HttpPhase, bool), String> {
+    let keep_alive = keep_alive_on(&http.keep_alive)?;
+    let in_flight = http.server.as_ref().is_some_and(|server| server.in_flight);
+    let phase = match (&http.reading, &http.writing) {
+        (HttpReading::Unknown(word), _) | (_, HttpWriting::Unknown(word)) => {
+            return Err(format!(
+                "a state word reads {word}, which the reviewed range does not have"
+            ));
+        }
+        _ if http.is_closing => HttpPhase::Closing,
+        (HttpReading::Closed, _) | (_, HttpWriting::Closed) => HttpPhase::Closing,
+        (HttpReading::Body(framing) | HttpReading::Continue(framing), _) => {
+            HttpPhase::ReceivingBody(*framing)
+        }
+        _ if in_flight => HttpPhase::HandlingRequest,
+        (HttpReading::Init | HttpReading::KeepAlive, HttpWriting::Body(framing)) => {
+            HttpPhase::SendingBody(*framing)
+        }
+        (HttpReading::Init, HttpWriting::Init) => HttpPhase::Idle,
+        (reading, writing) => {
+            return Err(format!(
+                "reading {reading:?} and writing {writing:?} with no handler in flight is not a \
+                 state the server protocol produces"
+            ));
+        }
+    };
+    Ok((phase, keep_alive))
+}
+
+/// Whether the connection stays open after the exchange: `Disabled`
+/// turns it off; `Busy` is also what a fresh connection reads before
+/// its first exchange. A word outside the reviewed range declines.
+fn keep_alive_on(keep_alive: &KeepAlive) -> Result<bool, String> {
+    match keep_alive {
+        KeepAlive::Idle | KeepAlive::Busy => Ok(true),
+        KeepAlive::Disabled => Ok(false),
+        KeepAlive::Unknown(word) => Err(format!(
+            "keep-alive reads {word}, which the reviewed range does not have"
+        )),
+    }
+}
+
+/// hyper's HTTP/1 server connection: the phase its state words and
+/// its in-flight handler put it in ([`server_phase`]). The dispatch
+/// names no primitive of its own: idle, the connection is parked on
+/// the socket read, which the registry names, and the header-read
+/// timer it may have armed is a held future of its own; handling a
+/// request, it is parked on whatever the handler awaits, which the
+/// census lists under the handler. So the verdict stands on the
+/// words, as the client's body and closing rows do.
+pub fn assess_http_server(http: &HttpConnObservation, primitive: ValueKey) -> Assessed {
+    let (phase, keep_alive) = match server_phase(http) {
+        Ok(decided) => decided,
+        Err(reason) => {
+            return Assessed::unknown(WaitUnknownReason::ResourceStateUnproven, reason);
+        }
+    };
+    let Some(server) = &http.server else {
+        return Assessed::unknown(
+            WaitUnknownReason::ResourceStateUnproven,
+            "the server connection's dispatch is not bound",
+        );
+    };
+    Assessed::of(WaitAssessment::Waiting(VerifiedWait {
+        target: WaitTarget::HttpConn {
+            addr: http.conn,
+            role: HttpRole::Server,
+            version: Some(HttpVersion::Http1),
+            phase,
+            method: http.method.clone(),
+            keep_alive,
+            header_read_timer: server.header_read_timer_running,
+            via: None,
+        },
+        primitive,
+        queue_position: None,
+    }))
+}
+
+/// hyper-util's version-choosing wrapper, still reading a
+/// connection's first bytes: a server connection with no version
+/// yet, parked on the socket read the registry names. The state
+/// was read when the wrapper was observed, so the words are the
+/// verdict.
+pub fn assess_http_negotiating(
+    negotiating: &HttpNegotiatingObservation,
+    primitive: ValueKey,
+) -> Assessed {
+    Assessed::of(WaitAssessment::Waiting(VerifiedWait {
+        target: WaitTarget::HttpConn {
+            addr: negotiating.wrapper.addr,
+            role: HttpRole::Server,
+            version: None,
+            phase: HttpPhase::Negotiating,
+            method: None,
+            keep_alive: true,
+            header_read_timer: false,
+            via: None,
+        },
+        primitive,
+        queue_position: None,
+    }))
 }
 
 /// Each frame's live storage — its state's payload, or the future
@@ -1973,6 +2128,7 @@ mod tests {
                 }),
                 rx: Some(key),
             }),
+            server: None,
         }
     }
 
@@ -2145,6 +2301,308 @@ mod tests {
                 "the cell did not read".to_owned()
             ))
         );
+    }
+
+    /// A server dispatcher's words as one read might find them.
+    fn server_words(
+        keep_alive: KeepAlive,
+        reading: HttpReading,
+        writing: HttpWriting,
+        in_flight: bool,
+        is_closing: bool,
+    ) -> HttpConnObservation {
+        use crate::tokio::observe::HttpServerObservation;
+        let key = ValueKey {
+            addr: 0x8058d80,
+            ty: hansei_bundle::BundleTypeId(7),
+        };
+        HttpConnObservation {
+            dispatcher: key,
+            conn: key.addr,
+            role: HttpRole::Server,
+            keep_alive,
+            reading,
+            writing,
+            method: in_flight.then(|| "GET".to_owned()),
+            is_closing,
+            client: None,
+            server: Some(HttpServerObservation {
+                in_flight,
+                header_read_timer_running: false,
+            }),
+        }
+    }
+
+    /// The server rows of the connection protocol, decided from
+    /// constructed words: the two the fixture parks in — idle between
+    /// exchanges and a handler in flight — and every row it never
+    /// reaches: a request body arriving (with or without the handler
+    /// still running), the response body going out, either direction
+    /// closed, the dispatcher's own closing flag, keep-alive disabled;
+    /// and the combinations the protocol never produces, which decline
+    /// naming the words rather than guess.
+    #[test]
+    fn test_server_phase_decides_every_row() {
+        use crate::tokio::bundle::BodyFraming;
+        use HttpReading as R;
+        use HttpWriting as W;
+        let decide = |ka, r, w, in_flight, closing| {
+            server_phase(&server_words(ka, r, w, in_flight, closing))
+        };
+        assert_eq!(
+            decide(KeepAlive::Idle, R::Init, W::Init, false, false),
+            Ok((HttpPhase::Idle, true))
+        );
+        // A fresh connection reads `Busy` before its first request and
+        // is idle all the same; a disabled keep-alive is idle with the
+        // flag off.
+        assert_eq!(
+            decide(KeepAlive::Busy, R::Init, W::Init, false, false),
+            Ok((HttpPhase::Idle, true))
+        );
+        assert_eq!(
+            decide(KeepAlive::Disabled, R::Init, W::Init, false, false),
+            Ok((HttpPhase::Idle, false))
+        );
+        // The handler runs whatever the head's words say once the
+        // request is read: still `Busy` reading nothing, or the request
+        // read through to keep-alive with the response not yet begun.
+        assert_eq!(
+            decide(KeepAlive::Busy, R::Init, W::Init, true, false),
+            Ok((HttpPhase::HandlingRequest, true))
+        );
+        assert_eq!(
+            decide(KeepAlive::Busy, R::KeepAlive, W::Init, true, false),
+            Ok((HttpPhase::HandlingRequest, true))
+        );
+        // A body arriving is the reading, handler or not.
+        let length = Some(BodyFraming::Length { remaining: 1234 });
+        assert_eq!(
+            decide(KeepAlive::Busy, R::Body(length), W::Init, true, false),
+            Ok((HttpPhase::ReceivingBody(length), true))
+        );
+        assert_eq!(
+            decide(
+                KeepAlive::Busy,
+                R::Continue(None),
+                W::KeepAlive,
+                false,
+                false
+            ),
+            Ok((HttpPhase::ReceivingBody(None), true))
+        );
+        // The response body going out, the request read through.
+        assert_eq!(
+            decide(
+                KeepAlive::Busy,
+                R::KeepAlive,
+                W::Body(Some(BodyFraming::Chunked)),
+                false,
+                false
+            ),
+            Ok((HttpPhase::SendingBody(Some(BodyFraming::Chunked)), true))
+        );
+        assert_eq!(
+            decide(KeepAlive::Busy, R::Init, W::Body(None), false, false),
+            Ok((HttpPhase::SendingBody(None), true))
+        );
+        // Closing, whatever else the words say.
+        assert_eq!(
+            decide(KeepAlive::Busy, R::Closed, W::Init, true, false),
+            Ok((HttpPhase::Closing, true))
+        );
+        assert_eq!(
+            decide(KeepAlive::Disabled, R::Init, W::Closed, false, false),
+            Ok((HttpPhase::Closing, false))
+        );
+        assert_eq!(
+            decide(KeepAlive::Idle, R::Init, W::Init, false, true),
+            Ok((HttpPhase::Closing, true))
+        );
+        // Combinations the protocol does not produce decline with the
+        // words, as do words outside the reviewed range.
+        let declined = decide(KeepAlive::Busy, R::KeepAlive, W::Init, false, false).unwrap_err();
+        assert!(
+            declined.contains("KeepAlive") && declined.contains("no handler in flight"),
+            "{declined}"
+        );
+        let declined = decide(KeepAlive::Busy, R::Init, W::KeepAlive, false, false).unwrap_err();
+        assert!(
+            declined.contains("Init") && declined.contains("KeepAlive"),
+            "{declined}"
+        );
+        assert!(
+            decide(
+                KeepAlive::Unknown("Odd".into()),
+                R::Init,
+                W::Init,
+                false,
+                false
+            )
+            .unwrap_err()
+            .contains("Odd")
+        );
+        for declined in [
+            decide(
+                KeepAlive::Idle,
+                R::Unknown("Odd".into()),
+                W::Init,
+                false,
+                false,
+            ),
+            decide(
+                KeepAlive::Idle,
+                R::Init,
+                W::Unknown("Odd".into()),
+                false,
+                false,
+            ),
+        ] {
+            let declined = declined.unwrap_err();
+            assert!(
+                declined.contains("Odd") && declined.contains("reviewed range does not have"),
+                "{declined}"
+            );
+        }
+    }
+
+    /// The version-choosing wrapper is observed as the connection only
+    /// while it reads the first bytes: on the fixture's two HTTP/1
+    /// server tasks the wrapper has chosen its version and observing it
+    /// fails naming that, while the third's reads as negotiating.
+    #[test]
+    fn test_a_wrapper_that_chose_its_version_is_not_negotiating() {
+        use crate::tokio::observe::ResourceObservation;
+        let (bundle, snapshot) = load_any("http-conns");
+        let ctx = testkit::context(&bundle, &snapshot);
+        let e = testkit::enumerate(&ctx, &snapshot);
+        let read = ReadContext::none();
+        let (mut chosen, mut negotiating) = (0, 0);
+        for task in e
+            .list
+            .tasks
+            .iter()
+            .filter(|t| matches!(&t.future, FutureInfo::Known(k) if k.display_name.contains("http_conns::serve")))
+        {
+            let inspection = ctx.inspect_task(task, &read).unwrap().unwrap();
+            let wrapper = inspection
+                .chain
+                .frames
+                .iter()
+                .map(|frame| frame.future)
+                .find(|future| {
+                    future
+                        .ty
+                        .name()
+                        .starts_with("hyper_util::server::conn::auto::UpgradeableConnection<")
+                })
+                .expect("the serving task's chain crosses the wrapper");
+            let observed = ctx.observe_resource(wrapper, &read);
+            match observed.value {
+                Some(ResourceObservation::HttpNegotiating(n)) => {
+                    assert_eq!(n.wrapper.addr, wrapper.addr);
+                    negotiating += 1;
+                }
+                None => {
+                    let detail = observed
+                        .issues
+                        .iter()
+                        .filter_map(|issue| issue.detail.as_deref())
+                        .collect::<Vec<_>>()
+                        .join("; ");
+                    assert!(
+                        detail.contains("has chosen its version (H1)"),
+                        "{detail}"
+                    );
+                    chosen += 1;
+                }
+                other => panic!("{other:?}"),
+            }
+        }
+        assert_eq!((chosen, negotiating), (2, 1));
+    }
+
+    /// The server's verdict from its words, and the version-choosing
+    /// wrapper's: neither names a primitive of its own, the idle
+    /// server's line carries the header-read timer where it is armed,
+    /// and a server whose dispatch did not bind is declined rather than
+    /// assessed as a client.
+    #[test]
+    fn test_server_and_negotiating_verdicts_stand_on_the_words() {
+        use crate::tokio::observe::{HttpNegotiatingObservation, HttpServerObservation};
+        use HttpReading as R;
+        use HttpWriting as W;
+        let primitive = ValueKey {
+            addr: 0x8058d80,
+            ty: hansei_bundle::BundleTypeId(7),
+        };
+        let mut idle = server_words(KeepAlive::Idle, R::Init, W::Init, false, false);
+        idle.server.as_mut().unwrap().header_read_timer_running = true;
+        let assessed = assess_http_server(&idle, primitive);
+        let WaitAssessment::Waiting(verified) = &assessed.assessment else {
+            panic!("{:?}", assessed.assessment);
+        };
+        assert_eq!(
+            verified.target().line(),
+            "http1 server 0x8058d80 (idle, keep-alive, header-read timer armed)"
+        );
+        assert!(verified.target().via().is_none());
+        assert_eq!(verified.primitive(), primitive);
+        let handling = server_words(KeepAlive::Busy, R::Init, W::Init, true, false);
+        let assessed = assess_http_server(&handling, primitive);
+        let WaitAssessment::Waiting(verified) = &assessed.assessment else {
+            panic!("{:?}", assessed.assessment);
+        };
+        assert_eq!(
+            verified.target().line(),
+            "http1 server 0x8058d80 (GET in flight, handler running)"
+        );
+        let mut unbound = server_words(KeepAlive::Idle, R::Init, W::Init, false, false);
+        unbound.server = None;
+        let assessed = assess_http_server(&unbound, primitive);
+        assert!(
+            matches!(
+                assessed.assessment,
+                WaitAssessment::Unknown(WaitUnknownReason::ResourceStateUnproven)
+            ),
+            "{:?}",
+            assessed.assessment
+        );
+        let odd = server_words(
+            KeepAlive::Unknown("Odd".into()),
+            R::Init,
+            W::Init,
+            false,
+            false,
+        );
+        let assessed = assess_http_server(&odd, primitive);
+        assert!(
+            matches!(
+                assessed.assessment,
+                WaitAssessment::Unknown(WaitUnknownReason::ResourceStateUnproven)
+            ),
+            "{:?}",
+            assessed.assessment
+        );
+        let wrapper = ValueKey {
+            addr: 0x12345,
+            ty: hansei_bundle::BundleTypeId(9),
+        };
+        let assessed = assess_http_negotiating(&HttpNegotiatingObservation { wrapper }, wrapper);
+        let WaitAssessment::Waiting(verified) = &assessed.assessment else {
+            panic!("{:?}", assessed.assessment);
+        };
+        assert_eq!(
+            verified.target().line(),
+            "http server 0x12345 (negotiating version)"
+        );
+        assert_eq!(verified.target().group_label(), "http server negotiating");
+        assert!(verified.target().via().is_none());
+        // A server observation never carries a client's dispatch.
+        let _ = HttpServerObservation {
+            in_flight: false,
+            header_read_timer_running: false,
+        };
     }
 
     /// The connection's target described under no protocol reads the
