@@ -29,6 +29,10 @@ ct-tokio = ["tokio/rt", "tokio/time", "tokio/sync", "tokio/net"]
 # tokio drift. Both advance by hand, like the tokio floor.
 bytes = "1.10.1"
 futures = "0.3.32"
+# http is what hyper and reqwest hand the fixture; pinned exactly like
+# them, since a request line is read off its `Request` under a reviewed
+# range, and the cores on hand build this release.
+http = "=1.4.2"
 http-body-util = "0.1.3"
 hyper = { version = "=1.10.1", features = ["client", "http1", "server"] }
 # `server-auto` is server + http1 + http2, so h2 is in every cell's
@@ -42,6 +46,12 @@ hyper-util = { version = "=0.1.20", features = [
     "tokio",
 ] }
 oxide-tokio-rt = { version = "0.1.2", optional = true }
+# `http-conns` also sends one request through reqwest, whose `send()`
+# future keeps the request's method and URL: the words a request line
+# is read from. Pinned exactly for the same reason as hyper; no TLS,
+# no HTTP/2, no proxy discovery, since the fixture talks plain HTTP/1
+# to its own listener.
+reqwest = { version = "=0.13.2", default-features = false }
 tokio = { version = ">=1.47", default-features = false }
 # `watch-stream` parks on tokio-stream's `WatchStream` and `StreamMap`;
 # the box behind a `WatchStream` is tokio-util's `ReusableBoxFuture`.

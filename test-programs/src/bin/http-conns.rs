@@ -12,11 +12,15 @@
 //! connection is busy awaiting the response, the server connection is
 //! running the handler. (c) One raw `TcpStream` connected and never
 //! written, so the server side is still reading the first bytes to
-//! choose between HTTP/1 and HTTP/2. `READY` on stdout means every
-//! connection has reached its parked state; there are no timing sleeps
-//! — readiness is observed over channels, including the moment a
-//! client connection returns to its pool, which hyper-util does on a
-//! background task the client's executor spawns.
+//! choose between HTTP/1 and HTTP/2. (d) The in-flight GET of (b) sent
+//! once more through reqwest, whose `send()` future keeps the request's
+//! method and URL the way a client on a real target does, so the
+//! request behind a connection can be read from the requester's side.
+//! `READY` on stdout means every connection has reached its parked
+//! state; there are no timing sleeps — readiness is observed over
+//! channels, including the moment a client connection returns to its
+//! pool, which hyper-util does on a background task the client's
+//! executor spawns.
 
 use std::convert::Infallible;
 use std::future::Future;
@@ -161,6 +165,13 @@ async fn requester(client: Client<HttpConnector, Empty<Bytes>>, uri: String) {
     get(&client, &uri).await;
 }
 
+/// Park awaiting the response to `/park` through reqwest, which keeps
+/// the request it sent — method and URL — in the future being awaited.
+async fn reqwest_requester(client: reqwest::Client, url: String) {
+    census_expect::task("http_conns::reqwest_requester");
+    let _ = client.get(url).send().await;
+}
+
 /// Park forever holding a connected socket nothing writes to.
 async fn raw_holder(_stream: TcpStream, park: oneshot::Receiver<()>) {
     census_expect::task("http_conns::raw_holder");
@@ -222,6 +233,28 @@ fn main() {
             "the handler parks"
         );
 
+        // (d) The same parked GET through reqwest: its client keeps no
+        // executor of the fixture's, so nothing here counts what it
+        // spawns; the server side reports the connection and the
+        // handler as for (b). No proxy discovery, so the request goes
+        // to the listener whatever the environment says.
+        let via_reqwest = reqwest::Client::builder()
+            .no_proxy()
+            .build()
+            .expect("a reqwest client");
+        let _reqwest_requester = tokio::spawn(reqwest_requester(
+            via_reqwest,
+            format!("http://{addr}/park"),
+        ));
+        assert!(
+            matches!(events.recv().await, Some(Event::Accepted)),
+            "the reqwest GET opens its own connection"
+        );
+        assert!(
+            matches!(events.recv().await, Some(Event::HandlerParked)),
+            "its handler parks"
+        );
+
         // (c) A connection that never speaks, so the server side is
         // still choosing the protocol version.
         let raw = TcpStream::connect(addr).await.expect("a loopback connect");
@@ -241,6 +274,16 @@ fn main() {
         // task's own await chain, reached through hyper's and
         // hyper-util's connection wrappers, so it is no held find.
         census_expect::held_by_task("http_conns::serve", "auto::ReadVersion");
+        // Under the reqwest requester: the request itself behind the
+        // box reqwest's `send()` future keeps it in, and the two tower
+        // layers under it the census descends through to the response
+        // future — library values the fixture cannot address either.
+        census_expect::held_by_task("http_conns::reqwest_requester", "PendingRequest");
+        census_expect::held_by_task(
+            "http_conns::reqwest_requester",
+            "follow_redirect::ResponseFuture",
+        );
+        census_expect::held_by_task("http_conns::reqwest_requester", "either::Either");
 
         test_programs::quiesce();
         println!("READY");
