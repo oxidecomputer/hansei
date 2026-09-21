@@ -462,6 +462,38 @@ pub struct HttpServerObservation {
     /// The peer's address as std spells it, where the binding routes to
     /// one and it read.
     pub peer: Option<String>,
+    /// The request the handler is running for, where a frame of the
+    /// handler's chain holds a value a reviewed range keeps one in.
+    pub request: Option<HttpRequestObservation>,
+}
+
+/// A request as one read found it, off a value a reviewed range says
+/// keeps one: reqwest's in-flight request, a server handler's request
+/// or request context. Each half is `None` where its word did not read.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct HttpRequestObservation {
+    /// The value the words were read from.
+    pub at: ValueKey,
+    /// The method's name (`GET`), where it is one of the named ones;
+    /// `None` for an extension method, and where the word did not read.
+    pub method: Option<String>,
+    /// What the target's text is.
+    pub target: hansei_bundle::HttpRequestTarget,
+    /// The target's text: the whole URL, or the path and query.
+    pub text: Option<String>,
+}
+
+impl std::fmt::Display for HttpRequestObservation {
+    /// The request line as a block prints it: `GET http://host/path`,
+    /// `GET /path?query`; a method that did not name itself prints as
+    /// `request`, a text that did not read is left off.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.method.as_deref().unwrap_or("request"))?;
+        if let Some(text) = &self.text {
+            write!(f, " {text}")?;
+        }
+        Ok(())
+    }
 }
 
 /// hyper-util's version-choosing wrapper as one read found it, still

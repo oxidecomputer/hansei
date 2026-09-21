@@ -19,12 +19,12 @@ use super::discovery::{
 };
 use super::observe::{
     AcquireObservation, ChannelObservation, Consistency, HttpClientObservation,
-    HttpConnObservation, HttpNegotiatingObservation, HttpReading, HttpServerObservation,
-    HttpWriting, IoFutureState, IoObservation, JoinObservation, KeepAlive, NotifiedObservation,
-    NotifiedState, NotifyObservation, Observed, OneshotObservation, QueueObservation, ReadContext,
-    RecvObservation, ReferenceSink, ReferenceSource, ResourceObservation, ScanBudget, ScanLimits,
-    SlotState, TaskReference, TimerObservation, TimerRegistrationState, ValueKey, WalkIssue,
-    WalkIssueKind, issue_of, lock_consistency,
+    HttpConnObservation, HttpNegotiatingObservation, HttpReading, HttpRequestObservation,
+    HttpServerObservation, HttpWriting, IoFutureState, IoObservation, JoinObservation, KeepAlive,
+    NotifiedObservation, NotifiedState, NotifyObservation, Observed, OneshotObservation,
+    QueueObservation, ReadContext, RecvObservation, ReferenceSink, ReferenceSource,
+    ResourceObservation, ScanBudget, ScanLimits, SlotState, TaskReference, TimerObservation,
+    TimerRegistrationState, ValueKey, WalkIssue, WalkIssueKind, issue_of, lock_consistency,
 };
 use super::semantics::SemanticIndex;
 use super::work::{DiscoveryWorld, Registry, Roots, sweep};
@@ -247,6 +247,25 @@ impl<K: Eq + std::hash::Hash, V: Clone> Memo<K, V> {
     }
 }
 
+/// The longest request text a read takes as one: a URL or a path and
+/// query past this many bytes is a length word that did not read as
+/// the text's.
+const MAX_REQUEST_TEXT: u64 = 64 * 1024;
+
+/// A request's text: the `len` bytes at `ptr`, where they decode as
+/// UTF-8. An empty text is a fact; a text past any sane request line
+/// is a word that did not read as one.
+fn read_request_text<T: proc::Target>(proc: &T, ptr: u64, len: u64) -> Option<String> {
+    if len > MAX_REQUEST_TEXT {
+        return None;
+    }
+    if len == 0 {
+        return Some(String::new());
+    }
+    let bytes = proc.read_bytes(ptr, len).ok()?;
+    String::from_utf8(bytes.to_vec()).ok()
+}
+
 /// Everything needed to interpret a target process through a loaded bundle.
 pub struct Context<'b, T> {
     pub proc: &'b T,
@@ -261,6 +280,10 @@ pub struct Context<'b, T> {
     object_symbols: RefCell<Option<HashMap<String, Vec<SymbolBuf>>>>,
     /// Task vtables decoded from target memory, keyed by vtable address.
     vtables: RefCell<HashMap<u64, TaskVtable>>,
+    /// Whether a frame of the type can hold a request-bound local at
+    /// all — any member of it, or of any state of it, binds one — so
+    /// the chain scan lists locals only for the few types that can.
+    request_holders: Memo<BundleTypeId, bool>,
     /// Memoized address of tokio's task `WAKER_VTABLE` static in the
     /// target, including a cached diagnostic when resolution is ambiguous.
     waker_vtable: RefCell<Option<std::result::Result<Vec<u64>, String>>>,
@@ -314,6 +337,7 @@ impl<'b, T: Target> Context<'b, T> {
             view,
             mappings,
             symbols: Memo::default(),
+            request_holders: Memo::default(),
             object_symbols: RefCell::new(None),
             vtables: RefCell::new(HashMap::default()),
             waker_vtable: RefCell::new(None),
@@ -3495,10 +3519,11 @@ impl<'b, T: Target> Context<'b, T> {
                 // walked as a held future is, past its adapters to the
                 // future itself — which names a boxed `dyn` handler by
                 // its vtable where the bundle carries the pointee.
-                let handler = in_flight
+                let (handler, request) = in_flight
                     .then(|| payload.member("__0").ok())
                     .flatten()
-                    .and_then(|boxed| self.handler_name(boxed, read));
+                    .map(|boxed| self.handler_facts(boxed, read))
+                    .unwrap_or((None, None));
                 let flag = word(
                     &server.header_read_timeout_running,
                     "header-read timer flag",
@@ -3516,6 +3541,7 @@ impl<'b, T: Target> Context<'b, T> {
                     handler,
                     header_read_timer_running,
                     peer,
+                    request,
                 })
             }
             None => None,
@@ -3535,14 +3561,19 @@ impl<'b, T: Target> Context<'b, T> {
         })
     }
 
-    /// The type name of the future a server's in-flight handler is: the
-    /// pinned box walked as a held future, and the first frame of its
+    /// What a server's in-flight handler is and what it is running for:
+    /// the pinned box walked as a held future, the first frame of its
     /// chain that is not an access adapter — past the `Pin` and the
-    /// `Box`, the handler itself. `None` where the walk reached no such
-    /// frame, as when a `dyn` box's pointee is not in the bundle.
-    fn handler_name(&self, boxed: Value<'b>, read: &ReadContext<'_>) -> Option<String> {
+    /// `Box`, the handler itself — named by its type, and the request a
+    /// frame of that chain holds. Each `None` where the walk reached no
+    /// such frame, as when a `dyn` box's pointee is not in the bundle.
+    fn handler_facts(
+        &self,
+        boxed: Value<'b>,
+        read: &ReadContext<'_>,
+    ) -> (Option<String>, Option<HttpRequestObservation>) {
         let inspection = self.inspect_future(boxed, super::chain::InspectionMode::Held, read);
-        inspection
+        let handler = inspection
             .chain
             .frames
             .iter()
@@ -3550,7 +3581,99 @@ impl<'b, T: Target> Context<'b, T> {
                 self.type_semantics(frame.future.ty.id())
                     .is_none_or(|record| record.access.is_none())
             })
-            .map(|frame| frame.future.ty.name().to_string())
+            .map(|frame| frame.future.ty.name().to_string());
+        (handler, self.chain_request(&inspection.chain, read))
+    }
+
+    /// The request a chain carries: the first frame that is itself a
+    /// value a reviewed range keeps a request in, or holds one as a
+    /// local — reqwest's in-flight request is the future the caller's
+    /// chain runs into, a handler's request or request context is a
+    /// local of its frame. `None` where no frame of the chain does.
+    pub fn chain_request(
+        &self,
+        chain: &AwaitChain<'b>,
+        read: &ReadContext<'_>,
+    ) -> Option<HttpRequestObservation> {
+        chain.frames.iter().find_map(|frame| {
+            if self.keeps_request(frame.future.ty.id()) {
+                return Some(self.observe_request(frame.future, read));
+            }
+            if !self.may_hold_request(frame.future.ty) {
+                return None;
+            }
+            super::census::frame_locals(self, frame)
+                .locals
+                .into_iter()
+                .find(|(_, local)| self.keeps_request(local.ty.id()))
+                .map(|(_, local)| self.observe_request(local, read))
+        })
+    }
+
+    /// Whether a frame of `ty` can hold a request as a local: a member
+    /// of it, or of one of its states, is of a type that binds one. A
+    /// fact of the type, remembered per type, since the chain scan asks
+    /// it of every frame of every find on a target.
+    fn may_hold_request(&self, ty: BundleType<'b>) -> bool {
+        self.request_holders.get_or(&ty.id(), || {
+            let member_keeps = |ty: BundleType<'b>| {
+                ty.members()
+                    .any(|member| self.keeps_request(member.ty().id()))
+            };
+            member_keeps(ty) || ty.variants().any(|variant| member_keeps(variant.ty))
+        })
+    }
+
+    /// Whether a value of `ty` keeps a request's words.
+    fn keeps_request(&self, ty: BundleTypeId) -> bool {
+        self.type_semantics(ty)
+            .is_some_and(|record| record.request.is_some())
+    }
+
+    /// The request a value keeps, read through its binding: the
+    /// method's name is its enum's variant, uppercased the way the wire
+    /// writes it, with an extension method left unnamed as the
+    /// connection's is; the target's text is the bytes at the pointer
+    /// the binding routes to, for the length beside it, where they
+    /// decode as UTF-8. Each half reads on its own, so a text that does
+    /// not read still leaves the method.
+    pub fn observe_request(
+        &self,
+        value: Value<'b>,
+        read: &ReadContext<'_>,
+    ) -> HttpRequestObservation {
+        let binding = self
+            .type_semantics(value.ty.id())
+            .and_then(|record| record.request.as_ref())
+            .expect("a request is read only off a type that binds one");
+        let at = |path: &TypedPath| -> Option<Value<'b>> {
+            let landed = contract::execute_steps(self, read, value, &path.steps)
+                .ok()?
+                .optional()?;
+            (landed.ty.id() == path.target).then_some(landed)
+        };
+        let method = at(&binding.method)
+            .and_then(|inner| {
+                inner
+                    .active_variant_raw()
+                    .ok()
+                    .map(|(name, _)| name.to_owned())
+            })
+            .filter(|name| !name.starts_with("Extension"))
+            .map(|name| name.to_ascii_uppercase());
+        let text = at(&binding.target_ptr)
+            .zip(at(&binding.target_len))
+            .and_then(|(ptr, len)| {
+                let ptr: u64 = ptr.parse(self.proc).ok()?;
+                let len: u64 = len.parse(self.proc).ok()?;
+                read_request_text(self.proc, ptr, len)
+            });
+        HttpRequestObservation {
+            at: ValueKey::of(value),
+            method,
+            target: binding.target,
+            text,
+        }
     }
 
     /// A `Sleep`: the deadline it caches and where its timer entry is.
@@ -4604,6 +4727,37 @@ struct HeaderIdentity {
 
 #[cfg(test)]
 mod tests {
+    /// A request's text is its bytes up to the limit, the limit
+    /// included: an empty text is one, a longer one or bytes that are
+    /// not UTF-8 are none.
+    #[test]
+    fn test_a_request_text_reads_up_to_the_limit() {
+        use crate::testkit::fake::FakeTarget;
+        let base = 0x1000;
+        // The limit written out, not read back off the constant.
+        let limit: u64 = 64 * 1024;
+        let target = FakeTarget {
+            base,
+            bytes: vec![b'a'; limit as usize + 1],
+            has_symbol: false,
+            seam: None,
+        };
+        let text = super::read_request_text(&target, base, limit);
+        assert_eq!(text.map(|t| t.len() as u64), Some(limit));
+        assert_eq!(super::read_request_text(&target, base, limit + 1), None);
+        assert_eq!(
+            super::read_request_text(&target, base, 0).as_deref(),
+            Some("")
+        );
+        let invalid = FakeTarget {
+            base,
+            bytes: vec![0xff; 4],
+            has_symbol: false,
+            seam: None,
+        };
+        assert_eq!(super::read_request_text(&invalid, base, 4), None);
+    }
+
     /// A socket address spells as std does, from the enum's active
     /// variant: the v4 form bare, the v6 form bracketed with its scope
     /// only when set, and a variant or an octet count that is neither

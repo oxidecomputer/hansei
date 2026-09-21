@@ -51,7 +51,7 @@ use super::observe::ResourceObservation;
 // reported apart from a set of futures; anything built on one
 // (omicron's `ParallelTaskSet`, which pairs it with a semaphore) is
 // reached by the same scan, since it holds its `JoinSet` by value.
-use super::observe::{ReadContext, Refusal, ValueKey};
+use super::observe::{HttpRequestObservation, ReadContext, Refusal, ValueKey};
 
 use anyhow::{Context as _, Result, anyhow, ensure};
 use foldhash::{HashMap, HashSet};
@@ -300,6 +300,9 @@ pub struct SetChild {
     /// the summary made of it: what a listing of one kind of resource
     /// reads its columns from.
     pub observation: Option<ResourceObservation>,
+    /// The request a frame of the child's chain keeps, where one does:
+    /// what names the request behind the connection a child awaits.
+    pub request: Option<HttpRequestObservation>,
     /// How the child's chain ended: at a primitive (which `waiting_on`
     /// then describes), in a terminal state, or without its
     /// continuation established.
@@ -355,6 +358,8 @@ pub struct HeldFuture {
     /// the summary made of it: what a listing of one kind of resource
     /// reads its columns from.
     pub observation: Option<ResourceObservation>,
+    /// The request a frame of its chain keeps; see [`SetChild::request`].
+    pub request: Option<HttpRequestObservation>,
     /// How its chain ended; see [`SetChild::continuation`].
     pub continuation: ContinuationStatus,
 }
@@ -1209,6 +1214,7 @@ impl<'b, T: Target> Walker<'_, 'b, T> {
                     waiting_on: summary.waiting_on,
                     wait: summary.wait,
                     observation: summary.observation,
+                    request: summary.request,
                     continuation: summary.continuation,
                 });
                 if nesting < self.bounds.nesting {
@@ -1624,6 +1630,7 @@ struct Summary {
     waiting_on: Option<String>,
     wait: Option<WaitKind>,
     observation: Option<ResourceObservation>,
+    request: Option<HttpRequestObservation>,
     continuation: ContinuationStatus,
 }
 
@@ -1673,6 +1680,7 @@ impl<'b, T: Target> Walker<'_, 'b, T> {
             waiting_on: target.as_ref().map(|t| t.to_string()),
             wait: target.as_ref().map(|t| t.kind()),
             observation: inspection.primitive.value.clone(),
+            request: self.ctx.chain_request(chain, &self.read),
             continuation: ContinuationStatus::of(&chain.end),
         }
     }
@@ -1697,6 +1705,7 @@ impl<'b, T: Target> Walker<'_, 'b, T> {
                     waiting_on: None,
                     wait: None,
                     observation: None,
+                    request: None,
                     continuation: ContinuationStatus::Incomplete {
                         reason: super::assess::IncompleteReason::NoRoot,
                         detail: None,
@@ -1726,6 +1735,7 @@ impl<'b, T: Target> Walker<'_, 'b, T> {
                 waiting_on: summary.waiting_on,
                 wait: summary.wait,
                 observation: summary.observation,
+                request: summary.request,
                 continuation: summary.continuation,
             },
             Some(inspection.chain),
@@ -3629,6 +3639,7 @@ mod tests {
             waiting_on: None,
             wait: None,
             observation: None,
+            request: None,
             continuation: no_chain(),
         }
     }
@@ -3654,6 +3665,7 @@ mod tests {
             waiting_on: None,
             wait: None,
             observation: None,
+            request: None,
             continuation: no_chain(),
         }
     }

@@ -2383,6 +2383,7 @@ mod tests {
                 handler: in_flight.then(|| "app::handle::{async_fn_env#0}".to_owned()),
                 header_read_timer_running: false,
                 peer: Some("[fd00::25]:57400".to_owned()),
+                request: None,
             }),
         }
     }
@@ -2573,7 +2574,7 @@ mod tests {
                 other => panic!("{other:?}"),
             }
         }
-        assert_eq!((chosen, negotiating), (2, 1));
+        assert_eq!((chosen, negotiating), (3, 1));
     }
 
     /// The server's verdict from its words, and the version-choosing
@@ -2658,6 +2659,7 @@ mod tests {
             handler: None,
             header_read_timer_running: false,
             peer: None,
+            request: None,
         };
     }
 

@@ -388,6 +388,11 @@ exclude_re = [
     # member for the pointer's route to take. (`&&` → `||` there is
     # pinned by the two-holder case in the request binding's test.)
     "replace > with >= in Check<'a>::request",
+    # Equivalent mutant: `may_hold_request` is a memoized pre-screen.
+    # The frame's locals it spares are the same members and variant
+    # members it checks, and each is screened by `keeps_request` again,
+    # so admitting every frame finds exactly the same request.
+    "replace Context<'b, T>::may_hold_request -> bool with true",
     # Equivalent mutant: the `Pending` screen's name test is a
     # pre-screen that saves the walk, the same shape as the adapter
     # branch above it — `core_pending` itself checks the declaring

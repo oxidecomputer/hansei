@@ -3526,7 +3526,9 @@ mod tests {
         };
         assert_eq!(tx_primitive, inner);
         assert_ne!(tx.slot, slots[0].slot);
-        assert_eq!(attributed.stats.joined, 1);
+        // Two requesters await a response — the hyper-util one and the
+        // reqwest one — so two callbacks join.
+        assert_eq!(attributed.stats.joined, 2);
     }
 
     /// A callback joins only when its receiver cell holds a waker by
@@ -5655,6 +5657,7 @@ mod reach_tests {
             waiting_on: None,
             wait: None,
             observation: None,
+            request: None,
             continuation: ContinuationStatus::Primitive,
         }
     }

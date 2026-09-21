@@ -1143,7 +1143,11 @@ fn test_the_census_accounting_is_exact_per_program() {
         // through the version-choosing state's `H1` and the
         // upgradeable connection's `Some`, walked by the chain, not
         // descended into — so each is met as a chain frame.
-        ("http-conns", 4, 31, 4, 0, 0),
+        // The reqwest requester adds three finds by descent — the
+        // request behind the client's box, the tower layers under it —
+        // and its executor's async blocks two enum finds, one of them
+        // a second sighting of a chain frame.
+        ("http-conns", 4, 42, 8, 2, 1),
     ];
     let named: Vec<&str> = ACCOUNTING.iter().map(|row| row.0).collect();
     assert_eq!(named, PROGRAMS, "every program is accounted for");
