@@ -3,5 +3,5 @@ source: hansei/src/offline.rs
 description: "`threads --without role ^worker --group has-task` over linux-floor/watch-stream"
 ---
 COUNT  HAS TASK  LWPS
-    1  no        2991968
+    1  no        2752028
 [1 group]

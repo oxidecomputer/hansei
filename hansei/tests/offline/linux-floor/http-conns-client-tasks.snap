@@ -2,32 +2,32 @@
 source: hansei/src/offline.rs
 description: "`tasks --with type execute<Pin --exec task` over linux-floor/http-conns"
 ---
-task 4
+task 5
     state: idle
     thread: <none>
     type: async block http_conns::Reporting::execute<Pin<Box<(dyn Future<Output=()> + Send)>>>
-    awaiting at: src/bin/http-conns.rs:72
+    awaiting at: src/bin/http-conns.rs:76
     awaiting on: http1 client 0xADDR (idle, keep-alive)
         via: mpsc rx 0xADDR (1 sender, 0 unread)
         io 0xADDR read
             waker: the read-waiter slot, awaiting readable, ready: writable
-    spawned at: src/bin/http-conns.rs:71:9
-    type defined at: src/bin/http-conns.rs:71
+    spawned at: src/bin/http-conns.rs:75:9
+    type defined at: src/bin/http-conns.rs:75
     held futures: 0
     join sets: 0
 
-task 9
+task 8
     state: idle
     thread: <none>
     type: async block http_conns::Reporting::execute<Pin<Box<(dyn Future<Output=()> + Send)>>>
-    awaiting at: src/bin/http-conns.rs:72
+    awaiting at: src/bin/http-conns.rs:76
     awaiting on: http1 client 0xADDR (GET sent, awaiting response headers)
         via: oneshot tx 0xADDR (nothing sent, receiver alive)
-        caller: task 7
+        caller: task 6
         io 0xADDR read
             waker: the read-waiter slot, awaiting readable, ready: writable
-    spawned at: src/bin/http-conns.rs:71:9
-    type defined at: src/bin/http-conns.rs:71
+    spawned at: src/bin/http-conns.rs:75:9
+    type defined at: src/bin/http-conns.rs:75
     held futures: 0
     join sets: 0
 [Executed against 2 tasks, 0 failed]

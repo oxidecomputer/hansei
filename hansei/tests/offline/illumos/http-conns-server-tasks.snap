@@ -6,11 +6,11 @@ task 4
     state: idle
     thread: <none>
     type: async fn http_conns::serve
-    awaiting at: src/bin/http-conns.rs:125
+    awaiting at: src/bin/http-conns.rs:129
     awaiting on: http1 server 0xADDR (idle, keep-alive)
         waker: the read-waiter slot, awaiting readable, ready: writable
-    spawned at: src/bin/http-conns.rs:143:9
-    type defined at: src/bin/http-conns.rs:118
+    spawned at: src/bin/http-conns.rs:147:9
+    type defined at: src/bin/http-conns.rs:122
     held futures: 0
     join sets: 0
 
@@ -18,28 +18,47 @@ task 9
     state: idle
     thread: <none>
     type: async fn http_conns::serve
-    awaiting at: src/bin/http-conns.rs:125
+    awaiting at: src/bin/http-conns.rs:129
     awaiting on: http1 server 0xADDR (GET in flight, handler running)
         note: notify rx 0xADDR also holds this task's waker, outside the verified wait
+        request: GET /park
         waker: the read-waiter slot, awaiting readable, ready: writable
         0xADDR: hyper::proto::h1::dispatch::Dispatcher<hyper::proto::h1::dispatch::Server<hyper::service::util::ServiceFn<http_conns::serve::{async_fn#0}::{closure_env#0}, hyper::body::incoming::Incoming>, hyper::body::incoming::Incoming>, http_body_util::full::Full<bytes::bytes::Bytes>, hyper_util::common::rewind::Rewind<hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>>, hyper::proto::h1::role::Server>
             held in: frame 0
             awaiting on: notify rx 0xADDR (waiting)
             type defined at: hyper-1.10.1/src/proto/h1/dispatch.rs:497
-    spawned at: src/bin/http-conns.rs:143:9
-    type defined at: src/bin/http-conns.rs:118
+    spawned at: src/bin/http-conns.rs:147:9
+    type defined at: src/bin/http-conns.rs:122
     held futures: 0
     join sets: 0
 
-task 10
+task 12
     state: idle
     thread: <none>
     type: async fn http_conns::serve
-    awaiting at: src/bin/http-conns.rs:125
+    awaiting at: src/bin/http-conns.rs:129
+    awaiting on: http1 server 0xADDR (GET in flight, handler running)
+        note: notify rx 0xADDR also holds this task's waker, outside the verified wait
+        request: GET /park
+        waker: the read-waiter slot, awaiting readable, ready: writable
+        0xADDR: hyper::proto::h1::dispatch::Dispatcher<hyper::proto::h1::dispatch::Server<hyper::service::util::ServiceFn<http_conns::serve::{async_fn#0}::{closure_env#0}, hyper::body::incoming::Incoming>, hyper::body::incoming::Incoming>, http_body_util::full::Full<bytes::bytes::Bytes>, hyper_util::common::rewind::Rewind<hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>>, hyper::proto::h1::role::Server>
+            held in: frame 0
+            awaiting on: notify rx 0xADDR (waiting)
+            type defined at: hyper-1.10.1/src/proto/h1/dispatch.rs:497
+    spawned at: src/bin/http-conns.rs:147:9
+    type defined at: src/bin/http-conns.rs:122
+    held futures: 0
+    join sets: 0
+
+task 14
+    state: idle
+    thread: <none>
+    type: async fn http_conns::serve
+    awaiting at: src/bin/http-conns.rs:129
     awaiting on: http server 0xADDR (negotiating version)
         waker: the read-waiter slot, awaiting readable, ready: writable
-    spawned at: src/bin/http-conns.rs:143:9
-    type defined at: src/bin/http-conns.rs:118
+    spawned at: src/bin/http-conns.rs:147:9
+    type defined at: src/bin/http-conns.rs:122
     held futures: 1
     join sets: 0
-[Executed against 3 tasks, 0 failed]
+[Executed against 4 tasks, 0 failed]

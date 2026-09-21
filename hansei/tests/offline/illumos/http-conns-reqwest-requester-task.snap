@@ -1,0 +1,22 @@
+---
+source: hansei/src/offline.rs
+description: "`tasks --with type http_conns::reqwest_requester --exec task` over illumos/http-conns"
+---
+task 11
+    state: idle
+    thread: <none>
+    type: async fn http_conns::reqwest_requester
+    awaiting at: src/bin/http-conns.rs:172
+    awaiting on:
+        inner: reqwest::async_impl::client::PendingRequest
+            held in: frame 0 `inner`
+            awaiting on: unknown
+            request: GET http://127.0.0.1:62503/park
+            type defined at: reqwest-0.13.2/src/async_impl/client.rs:3039
+        oneshot rx 0xADDR (response for http1 client 0xADDR)
+            waker: the response callback's receiver cell, held by task 13
+    spawned at: src/bin/http-conns.rs:245:34
+    type defined at: src/bin/http-conns.rs:170
+    held futures: 1
+    join sets: 0
+[Executed against 1 task, 0 failed]

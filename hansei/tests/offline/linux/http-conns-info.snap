@@ -4,11 +4,11 @@ description: "`info` over linux/http-conns"
 ---
 core:       <snapshot>
 tokio info: <tokio info>
-symbols resolved: 17/17
+symbols resolved: 21/21
 allocator evidence: unavailable
-waker slots: 1 copy of tokio's WAKER_VTABLE, 0 set vtables; 4.2 MiB swept in 97 chunks
-    hits: 27 task-pattern, 0 set-pattern; 12 admitted; 4 unlisted headers
-    by class: 2 task extent, 15 lwp stack, 10 anon
-    attributed: 6 by a registry, 4 by owner type, 0 by holding type, 1 from another task's side, 1 unknown; 0 stale
+waker slots: 1 copy of tokio's WAKER_VTABLE, 0 set vtables; 4.2 MiB swept in 147 chunks
+    hits: 32 task-pattern, 0 set-pattern; 16 admitted; 5 unlisted headers
+    by class: 2 task extent, 14 lwp stack, 15 anon, 1 unmapped companion
+    attributed: 8 by a registry, 6 by owner type, 0 by holding type, 2 from another task's side, 0 unknown; 0 stale
 process: not recorded by this target
 signal: none recorded

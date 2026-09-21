@@ -1,0 +1,9 @@
+---
+source: hansei/src/offline.rs
+description: "`connections --with request park` over linux-floor/http-conns"
+---
+ADDR            TASK  ROLE    VER    PHASE              METHOD  PEER  BUF      DEADLINE  HANDLER                      REQUEST
+0xADDR  7     server  http1  handling request   GET     —     0/16339  —         async fn http_conns::handle  GET /park
+0xADDR  10    server  http1  handling request   GET     —     0/16326  —         async fn http_conns::handle  GET /park
+0xADDR  11    client  http1  awaiting response  GET     —     0/8192   —         —                            GET http://127.0.0.1:43435/park
+[3 connections]

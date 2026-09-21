@@ -5,9 +5,9 @@ description: "`census` over linux-floor/joinset"
 Threads: 3 lwps, 3 in runtime 0 @ 0xADDR
 
 COUNT  RT  ROLE             STATE            LWPS
-    1  0   worker           in driver        2989064
-    1  0   worker           parked           2989063
-    1  0   entered runtime  block_on caller  2989061
+    1  0   worker           in driver        2749211
+    1  0   worker           parked           2749210
+    1  0   entered runtime  block_on caller  2749208
     0  0   blocking pool    0 idle, 0 busy   —
 [3 lwps]
 

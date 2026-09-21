@@ -3,5 +3,8 @@ source: hansei/src/offline.rs
 description: "`futures --group waiting-on` over linux-floor/http-conns"
 ---
 COUNT  WAITING ON                                                       FUTURES
+    1  unarmed: unknown at futures_util::future::either::Either         0xADDR
     1  unarmed: unknown at hyper_util::server::conn::auto::ReadVersion  0xADDR
-[1 group]
+    1  unarmed: unknown at reqwest::async_impl::client::PendingRequest  0xADDR
+    1  unarmed: unknown at tower_http::follow_redirect::ResponseFuture  0xADDR
+[4 groups]

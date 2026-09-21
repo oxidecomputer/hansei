@@ -4,8 +4,8 @@ description: "`runtime` over illumos/http-conns"
 ---
 runtime 0 @ 0xADDR
     flavor: multi_thread
-    tasks: 8
-    futures: 9
+    tasks: 11
+    futures: 15
     workers: 2
     threads: 3 (lwp 1, 2, 3)
     found via: a thread's runtime context

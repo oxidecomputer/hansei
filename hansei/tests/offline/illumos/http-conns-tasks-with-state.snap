@@ -3,12 +3,15 @@ source: hansei/src/offline.rs
 description: "`tasks --with state idle` over illumos/http-conns"
 ---
 ID  STATE  FUT  AWAITING AT                WAITING ON    TYPE
-3   idle     0  src/bin/http-conns.rs:139  io            async fn http_conns::accept_loop
-4   idle     0  src/bin/http-conns.rs:125  http1 server  async fn http_conns::serve
-5   idle     0  src/bin/http-conns.rs:72   http1 client  async block http_conns::{impl#0}::execute<Pin<Box<(dyn Future<Output=()> + Send)>>>
-7   idle     0  src/bin/http-conns.rs:161  oneshot rx    async fn http_conns::requester
-8   idle     0  src/bin/http-conns.rs:72   http1 client  async block http_conns::{impl#0}::execute<Pin<Box<(dyn Future<Output=()> + Send)>>>
-9   idle     0  src/bin/http-conns.rs:125  http1 server  async fn http_conns::serve
-10  idle     1  src/bin/http-conns.rs:125  http server   async fn http_conns::serve
-11  idle     0  src/bin/http-conns.rs:167  oneshot rx    async fn http_conns::raw_holder
-[8 tasks]
+3   idle     0  src/bin/http-conns.rs:143  io            async fn http_conns::accept_loop
+4   idle     0  src/bin/http-conns.rs:129  http1 server  async fn http_conns::serve
+5   idle     0  src/bin/http-conns.rs:76   http1 client  async block http_conns::{impl#0}::execute<Pin<Box<(dyn Future<Output=()> + Send)>>>
+8   idle     0  src/bin/http-conns.rs:165  oneshot rx    async fn http_conns::requester
+9   idle     0  src/bin/http-conns.rs:129  http1 server  async fn http_conns::serve
+10  idle     0  src/bin/http-conns.rs:76   http1 client  async block http_conns::{impl#0}::execute<Pin<Box<(dyn Future<Output=()> + Send)>>>
+11  idle     1  src/bin/http-conns.rs:172  oneshot rx    async fn http_conns::reqwest_requester
+12  idle     0  src/bin/http-conns.rs:129  http1 server  async fn http_conns::serve
+13  idle     0  —                          http1 client  future Pin<Box<(dyn Future<Output=()> + Send)>>
+14  idle     1  src/bin/http-conns.rs:129  http server   async fn http_conns::serve
+15  idle     0  src/bin/http-conns.rs:178  oneshot rx    async fn http_conns::raw_holder
+[11 tasks]

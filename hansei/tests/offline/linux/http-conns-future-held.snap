@@ -1,11 +1,11 @@
 ---
 source: hansei/src/offline.rs
-description: "`future 0x7faff4009978` over linux/http-conns"
+description: "`future 0x7f48b000ff40` over linux/http-conns"
 ---
 future 0xADDR
-    type: future hyper_util::server::conn::auto::ReadVersion<hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>>
-    held by: task 10 (frame 0, `read_version`)
+    type: future futures_util::future::either::Either<tower::retry::future::ResponseFuture<reqwest::retry::Policy, reqwest::async_impl::client::HyperService, http::request::Request<reqwest::async_impl::body::Body>>, tower::util::oneshot::Oneshot<tower::retry::Retry<reqwest::retry::Policy, reqwest::async_impl::client::HyperService>, http::request::Request<reqwest::async_impl::body::Body>>>
+    held by: task 10 (frame 0, `future`), via held future at 0xADDR
     depth: 1 frame
-    awaiting on: unarmed: unknown at hyper_util::server::conn::auto::ReadVersion
+    awaiting on: unarmed: unknown at futures_util::future::either::Either
     held futures: 0
     join sets: 0

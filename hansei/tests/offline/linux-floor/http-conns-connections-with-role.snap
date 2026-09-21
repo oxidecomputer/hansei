@@ -2,7 +2,8 @@
 source: hansei/src/offline.rs
 description: "`connections --with role server --with buffered =0` over linux-floor/http-conns"
 ---
-ADDR            TASK  ROLE    VER    PHASE             METHOD  PEER  BUF      DEADLINE  HANDLER
-0xADDR  5     server  http1  idle              —       —     0/16302  —         —
-0xADDR  8     server  http1  handling request  GET     —     0/16339  —         async fn http_conns::handle
-[2 connections]
+ADDR            TASK  ROLE    VER    PHASE             METHOD  PEER  BUF      DEADLINE  HANDLER                      REQUEST
+0xADDR  4     server  http1  idle              —       —     0/16302  —         —                            —
+0xADDR  7     server  http1  handling request  GET     —     0/16339  —         async fn http_conns::handle  GET /park
+0xADDR  10    server  http1  handling request  GET     —     0/16326  —         async fn http_conns::handle  GET /park
+[3 connections]
