@@ -6,7 +6,7 @@ ID  STATE  FUT  AWAITING AT                WAITING ON    TYPE
 3   idle     0  src/bin/http-conns.rs:139  io            async fn http_conns::accept_loop
 4   idle     0  src/bin/http-conns.rs:125  http1 server  async fn http_conns::serve
 5   idle     0  src/bin/http-conns.rs:72   http1 client  async block http_conns::{impl#0}::execute<Pin<Box<(dyn Future<Output=()> + Send)>>>
-7   idle     0  src/bin/http-conns.rs:161  unknown       async fn http_conns::requester
+7   idle     0  src/bin/http-conns.rs:161  oneshot rx    async fn http_conns::requester
 8   idle     0  src/bin/http-conns.rs:72   http1 client  async block http_conns::{impl#0}::execute<Pin<Box<(dyn Future<Output=()> + Send)>>>
 9   idle     0  src/bin/http-conns.rs:125  http1 server  async fn http_conns::serve
 10  idle     1  src/bin/http-conns.rs:125  http server   async fn http_conns::serve

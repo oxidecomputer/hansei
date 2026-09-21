@@ -28,6 +28,12 @@ pub(crate) enum EdgeKind {
     /// the join, but nothing says it is blocked on this one, so the
     /// edge is a relation and closes no cycle.
     WaitingOneOf,
+    /// The task awaits the response to a request in flight on it: an
+    /// HTTP client connection whose response callback's receiver cell
+    /// holds the task's waker, read from the connection's side. The
+    /// task's own wait set may hold other slots beside that one, so
+    /// the edge is a relation and closes no cycle.
+    Response,
     /// The task's verified semaphore wait is short of permits a
     /// polling barrier's acquire holds granted in a future the task
     /// below cannot poll until its own terminal completes: a
@@ -56,6 +62,7 @@ impl EdgeKind {
         match self {
             Self::Waiting => "",
             Self::WaitingOneOf => " [one of the waits above]",
+            Self::Response => " [its response awaited above]",
             Self::Reservation => " [holds permits awaited above]",
             Self::QueueOrder => " [queued ahead of the task above]",
             Self::JoinSet => " [in the JoinSet above]",
@@ -142,6 +149,20 @@ impl Relations {
                     kind: EdgeKind::Waiting,
                 });
                 waited_by[to].push(from);
+            }
+            // A client connection with a request in flight names who
+            // awaits the response: that task hangs over the connection,
+            // by the connection's own reading of its callback.
+            if let Some(bundle::WaitTarget::HttpConn {
+                caller: Some(bundle::HttpCaller::Task(caller)),
+                ..
+            }) = wait.verified().map(|verified| verified.target())
+                && let Some(from_caller) = resolve(caller.addr.0)
+            {
+                edges[from_caller].push(Edge {
+                    to: from,
+                    kind: EdgeKind::Response,
+                });
             }
             // A set's members: a join among them is a join the task is
             // polling — its waker sits in the joined task's trailer,
@@ -408,6 +429,57 @@ mod relations_tests {
             errors: Vec::new(),
         };
         Relations::build(&list, &analysis, held, join_sets)
+    }
+
+    /// A client connection's verified wait names who awaits its
+    /// response, so that task hangs over the connection by the weaker
+    /// kind: a relation, not a join — nothing reversed into
+    /// `waited_by`, nothing that closes a cycle — and nothing at all
+    /// where the caller is no listed task.
+    #[test]
+    fn test_a_connections_caller_hangs_over_it() {
+        use hansei_runtime::tokio::bundle::{HttpCaller, HttpPhase, HttpRole, HttpVersion};
+        let connection = |caller: Option<HttpCaller>| WaitTarget::HttpConn {
+            addr: 0xc72d000,
+            role: HttpRole::Client,
+            version: Some(HttpVersion::Http1),
+            phase: HttpPhase::AwaitingResponse,
+            method: Some("GET".to_string()),
+            keep_alive: true,
+            header_read_timer: false,
+            via: None,
+            caller,
+        };
+        let caller = |id: u64| {
+            HttpCaller::Task(TaskRef {
+                addr: addr(id),
+                task_id: Some(id),
+            })
+        };
+        let rel = build(
+            vec![task(1), task(2), task(3)],
+            vec![
+                wait(1, None),
+                wait(2, Some(connection(Some(caller(1))))),
+                wait(3, Some(connection(Some(caller(9))))),
+            ],
+            &[],
+            &[],
+        );
+        assert_eq!(
+            rel.edges[0],
+            vec![super::Edge {
+                to: 1,
+                kind: EdgeKind::Response
+            }]
+        );
+        assert!(rel.edges[1].is_empty() && rel.edges[2].is_empty());
+        assert!(rel.waited_by.iter().all(Vec::is_empty));
+        assert!(!rel.joined(1));
+        assert!(!EdgeKind::Response.is_wait());
+        assert_eq!(EdgeKind::Response.mark(), " [its response awaited above]");
+        assert!(EdgeKind::WaitingOneOf < EdgeKind::Response);
+        assert!(EdgeKind::Response < EdgeKind::Reservation);
     }
 
     /// A join slot the sweep found in the awaited task's trailer is the

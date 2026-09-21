@@ -12,7 +12,6 @@ use hansei_bundle::BundleView;
 use hansei_bundle::names;
 use hansei_runtime::heap::umem::{Allocation, Size};
 use hansei_runtime::tokio::attribution::AttributedSlot;
-use hansei_runtime::tokio::wakers::Owner;
 use hansei_runtime::tokio::{bundle, census};
 
 use std::io;
@@ -220,14 +219,8 @@ fn report_whatis(
     // the pair is not one.
     if let Some(slot) = slot {
         separate(&mut blocks, out)?;
-        let owner = match slot.owner {
-            Owner::Task { index, .. } => task_label(list, index),
-            Owner::Child { set, child } => format!(
-                "child {child} of the set at {:#x} (polled by {})",
-                census.sets[set].addr,
-                task_label(list, census.sets[set].owner)
-            ),
-        };
+        let owner =
+            crate::tasks::owner_label(list, Some(census), slot.owner).expect("a census is at hand");
         // The reading the entry leaves to a line of its own has room
         // here: this line is the slot and nothing else.
         let entry = match slot.words() {

@@ -453,6 +453,9 @@ fn leaf_wait(target: &bundle::WaitTarget) -> String {
     if let Some(via) = target.via() {
         text.push_str(&format!("\nvia {}", via.line()));
     }
+    if let Some(caller) = target.caller() {
+        text.push_str(&format!("\ncaller {caller}"));
+    }
     text
 }
 

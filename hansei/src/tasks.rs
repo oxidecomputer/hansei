@@ -17,6 +17,7 @@ use hansei_runtime::tokio::assess::{
 use hansei_runtime::tokio::graph as rt_graph;
 use hansei_runtime::tokio::observe::ValueKey;
 use hansei_runtime::tokio::waitset::{self, MemberRoute, WaitMember};
+use hansei_runtime::tokio::wakers::Owner;
 use hansei_runtime::tokio::{Lifecycle, RawInstant, attribution, bundle, census};
 
 use std::collections::{BTreeMap, HashMap};
@@ -32,6 +33,28 @@ pub(crate) fn task_id(list: &bundle::TaskList, index: usize) -> String {
         Some(id) => id.to_string(),
         None => format!("{:?}", list.tasks[index].addr),
     }
+}
+
+/// Whose waker a sweep slot holds, as a listing names them: a task by
+/// [`task_label`], a set child by its index in the set, the set's
+/// address and the task polling it — the census's account of the set,
+/// without which a child cannot be named.
+pub(crate) fn owner_label(
+    list: &bundle::TaskList,
+    census: Option<&census::FutureCensus>,
+    owner: Owner,
+) -> Option<String> {
+    Some(match owner {
+        Owner::Task { index, .. } => task_label(list, index),
+        Owner::Child { set, child } => {
+            let set = &census?.sets[set];
+            format!(
+                "child {child} of the set at {:#x} (polled by {})",
+                set.addr,
+                task_label(list, set.owner)
+            )
+        }
+    })
 }
 
 /// [`task_id`] worded as a noun phrase: `task 42`, or `task at 0x…`.
@@ -767,6 +790,7 @@ pub(crate) fn build_rows(
                         containers: None,
                         armed: show_armed(task),
                         frames: &wait.frames,
+                        caller_at: None,
                     };
                     wait_detail(wait, stops, &[], None, &|_| None, detail)
                 })
@@ -821,6 +845,13 @@ pub(crate) fn apply_slots(
     stops: &StopNames<'_>,
     containers: Option<&Containers<'_>>,
 ) {
+    // Whose waker the sweep found at an address: a connection's caller
+    // where its callback's receiver is a set child's, which only the
+    // sweep can name.
+    let caller_at = |cell: u64| -> Option<String> {
+        let slot = slots.at(cell)?;
+        owner_label(list, containers.map(|c| c.census), slot.owner)
+    };
     for (index, (row, task)) in rows.iter_mut().zip(&list.tasks).enumerate() {
         if task.is_blocking() || task.state.lifecycle() == Lifecycle::Running {
             continue;
@@ -834,6 +865,7 @@ pub(crate) fn apply_slots(
             containers,
             armed: show_armed(task),
             frames: &wait.frames,
+            caller_at: Some(&caller_at),
         };
         let owned: Vec<&attribution::AttributedSlot> = slots.of_task(task.addr.0).collect();
         if owned.is_empty() && !row.waiting_on.starts_with('—') {
@@ -876,6 +908,12 @@ pub(crate) struct Detail<'a> {
     /// which a `held in:` line's frame number indexes: the frame's type
     /// is what says where the local named beside it is declared.
     pub(crate) frames: &'a [ValueKey],
+    /// Who the waker sweep found parked at an address, as a listing
+    /// names them ([`owner_label`]): what a connection's `caller:` line
+    /// says where its callback's receiver is no task's — a set child,
+    /// which the sweep alone can place. `None` for a listing laid out
+    /// by hand, where the caller prints as the connection read it.
+    pub(crate) caller_at: Option<&'a dyn Fn(u64) -> Option<String>>,
 }
 
 /// The census's finds by address — built once for a listing, since
@@ -1557,6 +1595,26 @@ pub(crate) fn wait_detail(
             // accounted for, and this is where it is said.
             if let Some(via) = target.via() {
                 lines.push(format!("via: {}", via.line()));
+            }
+            // And who awaits the response it is carrying, read from
+            // the callback the `via` line names — a receiver that is no
+            // task's named by the sweep's account of its cell, where
+            // the listing has one: the set child holding it, and the
+            // task polling that set.
+            if let Some(caller) = target.caller() {
+                let swept = match (caller, detail.caller_at) {
+                    (
+                        bundle::HttpCaller::NotATask {
+                            cell: Some(cell), ..
+                        },
+                        Some(at),
+                    ) => at(*cell),
+                    _ => None,
+                };
+                lines.push(format!(
+                    "caller: {}",
+                    swept.unwrap_or_else(|| caller.to_string())
+                ));
             }
             let mut wakers: Vec<String> = accounted
                 .iter()
@@ -3262,6 +3320,7 @@ mod table_tests {
         containers: None,
         armed: true,
         frames: &[],
+        caller_at: None,
     };
     const RUNNING: u64 = 0b0001;
     const NOTIFIED: u64 = 0b0100;
@@ -4842,6 +4901,7 @@ mod table_tests {
             containers: None,
             armed: false,
             frames: &frames,
+            caller_at: None,
         };
         let lines = wait_detail(&wait, &stops, &refs, None, &|_| None, detail);
         assert_eq!(
@@ -4901,6 +4961,7 @@ mod table_tests {
                 containers: Some(&containers),
                 armed: false,
                 frames: &frames,
+                caller_at: None,
             };
             member_line(&member, &stops, &[], None, detail)
         };
@@ -4941,6 +5002,7 @@ mod table_tests {
             containers: None,
             armed: false,
             frames: &[],
+            caller_at: None,
         };
         assert_eq!(
             member_line(&member, &stops, &[], None, idle),
@@ -4978,6 +5040,159 @@ mod table_tests {
                 .contains(&"        armed: yes".to_string()),
             "{:?}",
             rows[1].wait_detail
+        );
+    }
+
+    /// A connection's `caller:` line under its `via:`: the task the
+    /// callback's receiver cell names; a receiver that is no task's,
+    /// named by the sweep's account of its cell where the listing has
+    /// one — the set child holding it and the task polling the set —
+    /// and by its vtable where it has none.
+    #[test]
+    fn test_a_connections_caller_prints_under_its_via() {
+        use hansei_runtime::tokio::attribution::{
+            AttributedSlot, Attribution, OwnerKind, Reach, SlotPath, SlotRoot, Validity,
+        };
+        use hansei_runtime::tokio::bundle::{
+            HttpCaller, HttpPhase, HttpRole, HttpVersion, OneshotSide, OneshotState,
+        };
+        use hansei_runtime::tokio::wakers::Owner;
+        let state = OneshotState {
+            word: 0b1001,
+            value_present: Some(false),
+        };
+        let conn = |caller| WaitTarget::HttpConn {
+            addr: 0xc000,
+            role: HttpRole::Client,
+            version: Some(HttpVersion::Http1),
+            phase: HttpPhase::AwaitingResponse,
+            method: Some("GET".to_string()),
+            keep_alive: true,
+            header_read_timer: false,
+            via: Some(Box::new(WaitTarget::Oneshot {
+                addr: 0xd000,
+                state,
+                side: OneshotSide::Tx,
+            })),
+            caller: Some(caller),
+        };
+        let slot = AttributedSlot {
+            hit: 0,
+            slot: 0xd000,
+            owner: Owner::Task {
+                header: 0x1100,
+                index: 0,
+            },
+            attribution: Attribution::Owner {
+                kind: OwnerKind::OneshotTx,
+                primitive: 0xd000,
+                holder: "Inner".to_string(),
+                member: "tx_task".to_string(),
+                path: SlotPath {
+                    root: SlotRoot::Frame { task: 0, frame: 0 },
+                    steps: vec!["tx_task".to_string()],
+                    hop: None,
+                },
+                validity: Validity::Gated("tx_task_set"),
+                reading: None,
+            },
+            within: None,
+            through: Vec::new(),
+            aliases: Vec::new(),
+            reach: Reach::Unlocated,
+        };
+        let impls = Default::default();
+        let stops = StopNames::none(&impls);
+        let named = |cell: u64| {
+            (cell == 0xd010)
+                .then(|| "child 3 of the set at 0xfeb66c0 (polled by task 621)".to_string())
+        };
+        let lines = |caller, caller_at: Option<&dyn Fn(u64) -> Option<String>>| {
+            let detail = Detail {
+                containers: None,
+                armed: false,
+                frames: &[],
+                caller_at,
+            };
+            wait_detail(
+                &wait(1, Some(conn(caller))),
+                &stops,
+                &[&slot],
+                None,
+                &|_| None,
+                detail,
+            )
+            .awaiting
+        };
+        let child = HttpCaller::NotATask {
+            vtable: 0xeebc0d0,
+            cell: Some(0xd010),
+        };
+        assert_eq!(
+            lines(child.clone(), Some(&named)),
+            [
+                "via: oneshot tx 0xd000 (nothing sent, receiver alive)",
+                "caller: child 3 of the set at 0xfeb66c0 (polled by task 621)",
+            ]
+        );
+        assert_eq!(
+            lines(child, None)[1],
+            "caller: not a task (waker vtable 0xeebc0d0)"
+        );
+        let uncelled = HttpCaller::NotATask {
+            vtable: 0xeebc0d0,
+            cell: None,
+        };
+        assert_eq!(
+            lines(uncelled, Some(&named))[1],
+            "caller: not a task (waker vtable 0xeebc0d0)"
+        );
+        let task = HttpCaller::Task(TaskRef {
+            addr: TaskAddr(0x1700),
+            task_id: Some(7),
+        });
+        assert_eq!(lines(task, Some(&named))[1], "caller: task 7");
+        assert_eq!(
+            lines(HttpCaller::Gone, Some(&named))[1],
+            "caller: gone (receiver dropped)"
+        );
+    }
+
+    /// Whose waker a slot holds, named for a listing: a task by its
+    /// id, a set child by its index, its set's address and the task
+    /// polling it — and nothing for a child without the census that
+    /// knows the set.
+    #[test]
+    fn test_an_owner_label_names_a_child_by_its_set() {
+        use hansei_runtime::tokio::census::{FutureCensus, FutureSet};
+        use hansei_runtime::tokio::wakers::Owner;
+        let list = TaskList::new(vec![task(7, 0), task(621, 0)]);
+        let by_task = Owner::Task {
+            header: 0,
+            index: 1,
+        };
+        assert_eq!(
+            super::owner_label(&list, None, by_task).as_deref(),
+            Some("task 621")
+        );
+        let child = Owner::Child { set: 0, child: 3 };
+        assert_eq!(super::owner_label(&list, None, child), None);
+        let census = FutureCensus::from_finds(
+            Vec::new(),
+            vec![FutureSet {
+                owner: 1,
+                frame: 10,
+                local: "dependencies".to_string(),
+                via: None,
+                addr: 0xfeb66c0,
+                ty: "futures_util::stream::futures_unordered::FuturesUnordered<()>".to_string(),
+                children: Vec::new(),
+            }],
+            Vec::new(),
+        );
+        assert_eq!(
+            super::owner_label(&list, Some(&census), child).as_deref(),
+            Some("child 3 of the set at 0xfeb66c0 (polled by task 621)")
         );
     }
 
@@ -5278,6 +5493,10 @@ mod filter_tests {
         assert!(keeps(&clause("waiting-on", "0xfb0f700"), &r));
         assert!(keeps(&clause("waiting-on", "^http1 client"), &r));
         assert!(!keeps(&clause("waiting-on", "^via"), &r));
+        // The caller a connection names is a detail line too.
+        r.wait_text.push_str("\ncaller: task 4307675");
+        assert!(keeps(&clause("waiting-on", "4307675"), &r));
+        assert!(!keeps(&clause("waiting-on", "^caller"), &r));
 
         // Nothing in the field is nothing to match.
         assert!(!keeps(&clause("awaiting", "."), &row("1")));

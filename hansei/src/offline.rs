@@ -314,6 +314,17 @@ fn commands(
             "tasks --with type http_conns::serve --exec task".to_owned(),
         ));
         list.push(("tasks-with-via", "tasks --with waiting-on via:".to_owned()));
+        // The caller join: the requester's slot in the busy connection's
+        // response callback, named from the connection's side, and the
+        // connection's `caller:` line — a detail line a filter reaches.
+        list.push((
+            "requester-task",
+            "tasks --with type http_conns::requester --exec task".to_owned(),
+        ));
+        list.push((
+            "tasks-with-caller",
+            "tasks --with waiting-on caller:".to_owned(),
+        ));
         list.push((
             "connections-group-phase",
             "connections --group phase".to_owned(),

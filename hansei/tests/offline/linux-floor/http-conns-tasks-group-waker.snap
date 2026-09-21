@@ -10,5 +10,5 @@ COUNT  WAITING ON                      TASKS
     1  http1 server idle               5
     1  io                              3
     1  oneshot rx                      11
-    1  unknown                         7
+    1  oneshot rx, unknown             7
 [8 groups]

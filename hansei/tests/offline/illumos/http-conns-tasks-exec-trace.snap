@@ -61,6 +61,7 @@ task 8
 #0  future        hyper::proto::h1::dispatch::Dispatcher<hyper::proto::h1::dispatch::Client<http_body_util::empty::Empty<bytes::bytes::Bytes>>, http_body_util::empty::Empty<bytes::bytes::Bytes>, hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>, hyper::proto::h1::role::Client>
       waiting on http1 client 0xADDR (GET sent, awaiting response headers)
       via oneshot tx 0xADDR (nothing sent, receiver alive)
+      caller task 7
 #1  future        hyper::client::conn::http1::upgrades::UpgradeableConnection<hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>, http_body_util::empty::Empty<bytes::bytes::Bytes>>
       defined at hyper-1.10.1/src/client/conn/http1.rs:622 (Some, 0 locals)
 #2  future        futures_util::future::try_future::into_future::IntoFuture<hyper::client::conn::http1::upgrades::UpgradeableConnection<hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>, http_body_util::empty::Empty<bytes::bytes::Bytes>>>

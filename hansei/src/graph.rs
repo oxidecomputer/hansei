@@ -547,6 +547,41 @@ mod graph_tests {
     /// permits of the lock that task waits on — the holder under that,
     /// marked as the reservation it is rather than a wait. Every task
     /// keeps its one row.
+    /// A caller hangs over the connection carrying its request, marked
+    /// as awaiting its response: a relation the connection's own
+    /// verdict established, with the connection's cell on its row.
+    #[test]
+    fn test_a_caller_hangs_over_its_connection() {
+        use hansei_runtime::tokio::bundle::{HttpCaller, HttpPhase, HttpRole, HttpVersion};
+        let connection = WaitTarget::HttpConn {
+            addr: 0xc72d000,
+            role: HttpRole::Client,
+            version: Some(HttpVersion::Http1),
+            phase: HttpPhase::AwaitingResponse,
+            method: Some("GET".to_string()),
+            keep_alive: true,
+            header_read_timer: false,
+            via: None,
+            caller: Some(HttpCaller::Task(TaskRef {
+                addr: addr(1),
+                task_id: Some(1),
+            })),
+        };
+        let out = graph(
+            vec![task(1), task(2)],
+            vec![wait(1, None), wait(2, Some(connection))],
+            Vec::new(),
+        );
+        let rows: Vec<&str> = out.lines().skip(1).collect();
+        assert!(rows[0].starts_with("1 "), "{out}");
+        assert!(
+            rows[1].starts_with("└─ 2 [its response awaited above]")
+                && rows[1].contains("http1 client"),
+            "{out}"
+        );
+        assert_eq!(rows.len(), 2, "{out}");
+    }
+
     #[test]
     fn test_a_wait_chain_nests_to_its_depth() {
         let page = graph(
