@@ -9,7 +9,7 @@ use crate::debug_type::DisplayNode;
 use crate::value::Value;
 use proc::Target;
 
-use hansei_bundle::BundleType;
+use hansei_bundle::{BundleType, BundleTypeId, SymbolLookup};
 
 use std::fmt;
 
@@ -22,6 +22,9 @@ use super::{
 #[derive(Debug)]
 struct VtableFunction {
     slot: u32,
+    /// The symbol as the target's table has it, its LLVM suffix
+    /// stripped: the key the bundle's symbol tables are joined on.
+    symbol: String,
     display: String,
     concrete: Option<String>,
 }
@@ -63,20 +66,27 @@ pub(crate) fn eval_dyn_pointer<'a, T: Target>(
             if slot == *size_slot || slot == *align_slot || address == 0 {
                 continue;
             }
-            let Some(display) = resolve_function_symbol(Some(proc), address) else {
+            let Some((symbol, display)) = function_symbols(Some(proc), address) else {
                 continue;
             };
             let concrete = hansei_bundle::symbols::concrete_type_from_vtable_symbol(&display)
                 .map(str::to_owned);
             functions.push(VtableFunction {
                 slot,
+                symbol,
                 display,
                 concrete,
             });
         }
     }
 
-    let inferred = infer_concrete_type(ty, words.as_deref(), *size_slot, &functions);
+    let inferred = infer_concrete_type(
+        ty,
+        words.as_deref(),
+        *size_slot,
+        *drop_in_place_slot,
+        &functions,
+    );
     let (concrete, concrete_ty) = match inferred {
         Some((name, resolved)) => (Some(name), resolved),
         None => (None, None),
@@ -234,16 +244,22 @@ fn tail_offset(prefixes: &[u64], align: Option<u64>) -> Option<u64> {
 }
 
 pub(crate) fn resolve_function_symbol<T: Target>(proc: Option<&T>, address: u64) -> Option<String> {
+    function_symbols(proc, address).map(|(_, display)| display)
+}
+
+/// The function symbol at `address`, both as the target's table has it
+/// with its LLVM suffix stripped — the bundle's join key — and
+/// demangled for display.
+fn function_symbols<T: Target>(proc: Option<&T>, address: u64) -> Option<(String, String)> {
     if address == 0 {
         return None;
     }
     let symbol = crate::target::function_symbol(proc?, address)?;
     let stripped = hansei_bundle::strip_llvm_suffix(&symbol);
-    Some(
-        rustc_demangle::try_demangle(stripped)
-            .map(|symbol| format!("{symbol:#}"))
-            .unwrap_or_else(|_| stripped.to_owned()),
-    )
+    let display = rustc_demangle::try_demangle(stripped)
+        .map(|symbol| format!("{symbol:#}"))
+        .unwrap_or_else(|_| stripped.to_owned());
+    Some((stripped.to_owned(), display))
 }
 
 /// Punctuation before one field of the dyn-pointer record (or its nested
@@ -290,22 +306,41 @@ fn read_vtable_words<'a, T: Target>(
     )
 }
 
-/// The concrete type the vtable's function symbols agree on, corroborated
-/// against the size word the vtable carries, together with the type that
-/// name resolves to where it resolves to exactly one.
+/// The concrete type behind the vtable: what its function symbols join
+/// in the bundle's own symbol tables, and only where no slot joins
+/// anything, the type the symbols' demangled names agree on. Either
+/// answer is corroborated against the size word the vtable carries, and
+/// comes with the type where one resolves.
 ///
-/// The caller needs both, and a name lookup is not cheap — it compares
-/// against every named type in the bundle that shares its hash — so the
-/// resolved type answers the size question too: a name that resolves has
-/// one id, hence one size. Only a name borne by several ids, which
-/// [`type_by_name`](BundleType::type_by_name) declines, still needs asking
-/// whether those ids at least agree on a size.
+/// The join comes first because a symbol's name is not always a type's.
+/// A coroutine's poll slot holds the coroutine's own body, whose symbol
+/// gives its path the way symbols do (`<Self as Trait>::method::
+/// {closure#0}`) while the bundle names the type the way DWARF does
+/// (`{impl#1}::method::{async_block_env#0}`), and no normalization
+/// bridges the two; the bundle joined the symbol to the type at
+/// extraction, so the symbol is the key.
+///
+/// The name route needs both the name and the type, and a name lookup is
+/// not cheap — it compares against every named type in the bundle that
+/// shares its hash — so the resolved type answers the size question too:
+/// a name that resolves has one id, hence one size. Only a name borne by
+/// several ids, which [`type_by_name`](BundleType::type_by_name)
+/// declines, still needs asking whether those ids at least agree on a
+/// size.
 fn infer_concrete_type<'a>(
     ty: BundleType<'a>,
     words: Option<&[u64]>,
     size_slot: u32,
+    drop_slot: u32,
     functions: &[VtableFunction],
 ) -> Option<(String, Option<BundleType<'a>>)> {
+    let size_word = words.and_then(|words| words.get(size_slot as usize).copied());
+    if let Some(joined) = joined_concrete_type(ty, drop_slot, functions)
+        && size_word.is_none_or(|actual| actual == joined.size())
+    {
+        return Some((joined.name().to_owned(), Some(joined)));
+    }
+
     let mut concrete = functions
         .iter()
         .filter_map(|function| function.concrete.as_deref());
@@ -318,12 +353,75 @@ fn infer_concrete_type<'a>(
         Some(resolved) => Some(resolved.size()),
         None => ty.size_by_name(&candidate),
     };
-    if let (Some(expected), Some(actual)) = (expected, words?.get(size_slot as usize).copied())
+    if let (Some(expected), Some(actual)) = (expected, size_word)
         && expected != actual
     {
         return None;
     }
     Some((candidate, resolved))
+}
+
+/// The type the vtable's slots join in the bundle's dyn-future and task
+/// tables, the slots ranked rather than pooled: a method slot leads, the
+/// drop slot only where no method slot joins, and a lead naming one type
+/// is believed over a trailing slot that disagrees. `drop_glue::<T>` is
+/// derived from T's drop layout alone, so futures that drop alike fold
+/// to one function whose surviving name belongs to whichever won, while
+/// a coroutine's poll is its own state machine that no other future
+/// shares. A lead naming several types is the one case the trailing
+/// slots narrow: the fold can only add a type the lead did not name, so
+/// an intersection leaves the truth standing alone or leaves nothing.
+fn joined_concrete_type<'a>(
+    ty: BundleType<'a>,
+    drop_slot: u32,
+    functions: &[VtableFunction],
+) -> Option<BundleType<'a>> {
+    let view = ty.view();
+    let joins = |function: &VtableFunction| -> Option<Vec<BundleTypeId>> {
+        match view.dyn_future_ids_for_symbol(&function.symbol) {
+            SymbolLookup::Unique(id) => Some(vec![id]),
+            SymbolLookup::Ambiguous(ids) => Some(ids),
+            // A spawned future's poll is in the task table instead; its
+            // drop glue is in neither.
+            SymbolLookup::Missing if function.slot != drop_slot => {
+                let entries = &view.bundle().tasks.entries;
+                let ids = match view.task_ids_for_symbol(&function.symbol) {
+                    SymbolLookup::Missing => return None,
+                    SymbolLookup::Unique(id) => vec![id],
+                    SymbolLookup::Ambiguous(ids) => ids,
+                };
+                let mut futures: Vec<BundleTypeId> = ids
+                    .into_iter()
+                    .filter_map(|id| entries.get(id.0 as usize))
+                    .map(|entry| entry.future)
+                    .collect();
+                futures.sort();
+                futures.dedup();
+                (!futures.is_empty()).then_some(futures)
+            }
+            SymbolLookup::Missing => None,
+        }
+    };
+    let method_slots = functions.iter().filter(|f| f.slot != drop_slot);
+    let drop = functions.iter().filter(|f| f.slot == drop_slot);
+    let evidence: Vec<Vec<BundleTypeId>> = method_slots.chain(drop).filter_map(joins).collect();
+    let (lead, trailing) = evidence.split_first()?;
+    let id = match lead.as_slice() {
+        [one] => *one,
+        several => {
+            let mut narrowed: Vec<BundleTypeId> = several
+                .iter()
+                .copied()
+                .filter(|id| trailing.iter().all(|ids| ids.contains(id)))
+                .collect();
+            narrowed.dedup();
+            match narrowed.as_slice() {
+                [one] => *one,
+                _ => return None,
+            }
+        }
+    };
+    view.ty(id)
 }
 
 #[cfg(test)]
@@ -332,7 +430,9 @@ mod tests {
     use crate::Value;
     use crate::testhelper::*;
 
-    use hansei_bundle::{BundleView, TypeDef};
+    use hansei_bundle::{
+        BundleTypeId, BundleView, FutureKind, Provenance, TaskEntryId, TaskFutureEntry, TypeDef,
+    };
 
     #[test]
     fn test_dyn_pointer_formats_unknown_concrete_type() {
@@ -392,6 +492,213 @@ mod tests {
             shown.contains("method[3]: 0x4000 -> <Point as app::Trait>::run,"),
             "{shown}"
         );
+    }
+
+    /// The test bundle with a four-word vtable: drop, size, align and one
+    /// method slot, as a `dyn Future`'s is.
+    fn four_slot_bundle() -> hansei_bundle::Bundle {
+        let mut b = test_bundle();
+        let TypeDef::Array { count, .. } = &mut b.types.types[VTABLE_ARRAY.0 as usize] else {
+            panic!("vtable is not an array");
+        };
+        *count = 4;
+        b
+    }
+
+    /// Render `FAT_PTR` over `b`, its data pointer at `0x1234` and its
+    /// vtable at `0x3000`, which `mem` must lay out.
+    fn show_fat_ptr(b: &hansei_bundle::Bundle, mem: &FakeMem) -> String {
+        let v = BundleView::new(b);
+        let bytes = u64s(&[0x1234, 0x3000]);
+        let value = Value::new(v.ty(FAT_PTR).unwrap(), 0, &bytes);
+        format!("{:#}", value.display_from_target(mem, 8))
+    }
+
+    /// A `dyn Future` vtable's poll slot holds the coroutine's own body,
+    /// whose symbol is the coroutine's path — inside a trait impl's
+    /// method, that method's `<Self as Trait>` pair continued into the
+    /// closure. The pair alone names the impl's type; the whole path
+    /// names the coroutine, and the drop glue carries the same path, so
+    /// the slots agree on it. The bundle names that type DWARF's way,
+    /// so the name resolves nothing and the pointee stays unread.
+    #[test]
+    fn test_dyn_pointer_names_a_coroutine_behind_a_trait_impl_method() {
+        const BODY: &str = "<Point as app::Trait>::run::{closure#0}";
+        let mem = FakeMem::new()
+            .at(0x1234, u32s(&[1, 2]))
+            .at(0x3000, u64s(&[0x4000, 8, 8, 0x5000]))
+            .symbol(0x4000, &format!("core::ptr::drop_glue::<{BODY}>"))
+            .symbol(0x5000, BODY);
+
+        let mut b = four_slot_bundle();
+        b.validate().expect("expanded vtable must validate");
+        let shown = show_fat_ptr(&b, &mem);
+        assert!(shown.contains("pointer: 0x1234,\n"), "{shown}");
+        assert!(
+            shown.contains(&format!("concrete type: {BODY},")),
+            "{shown}"
+        );
+    }
+
+    /// The slot symbols are joined in the bundle's dyn-future table
+    /// before their names are parsed: the poll slot's symbol names a
+    /// type the bundle joined it to at extraction, and that type is
+    /// believed over what the drop glue's name says.
+    #[test]
+    fn test_dyn_pointer_joins_the_poll_slot_symbol_before_parsing_names() {
+        let mem = FakeMem::new()
+            .at(0x1234, u32s(&[1, 2]))
+            .at(0x3000, u64s(&[0x4000, 8, 8, 0x5000]))
+            .symbol(0x4000, "core::ptr::drop_glue::<Other>")
+            .symbol(0x5000, "point_poll");
+
+        let mut b = four_slot_bundle();
+        b.dyn_futures
+            .by_symbol
+            .insert("point_poll".to_owned(), vec![POINT]);
+        b.validate().expect("bundle must validate");
+        let shown = show_fat_ptr(&b, &mem);
+        assert!(
+            shown.contains("pointer: 0x1234 -> Point {\n        x: 1,\n        y: 2,\n    },"),
+            "{shown}"
+        );
+        assert!(shown.contains("concrete type: Point,"), "{shown}");
+    }
+
+    /// Both slots join, and disagree: the drop glue's is a folded
+    /// function whose surviving name belongs to another type, so the
+    /// poll slot leads and decides.
+    #[test]
+    fn test_dyn_pointer_believes_the_poll_slot_over_folded_drop_glue() {
+        let mem = FakeMem::new()
+            .at(0x1234, u32s(&[1, 2]))
+            .at(0x3000, u64s(&[0x4000, 8, 8, 0x5000]))
+            .symbol(0x4000, "folded_drop")
+            .symbol(0x5000, "point_poll");
+
+        let mut b = four_slot_bundle();
+        b.dyn_futures
+            .by_symbol
+            .insert("folded_drop".to_owned(), vec![SELF_REF]);
+        b.dyn_futures
+            .by_symbol
+            .insert("point_poll".to_owned(), vec![POINT]);
+        b.validate().expect("bundle must validate");
+        let shown = show_fat_ptr(&b, &mem);
+        assert!(shown.contains("concrete type: Point,"), "{shown}");
+        assert!(shown.contains("-> Point {"), "{shown}");
+    }
+
+    /// A poll slot joined to several types is narrowed by the drop
+    /// glue to the one they share; where they share none, the join
+    /// names nothing and the names — plain functions here — name
+    /// nothing either.
+    #[test]
+    fn test_dyn_pointer_narrows_an_ambiguous_poll_slot_by_the_drop_glue() {
+        let mem = FakeMem::new()
+            .at(0x1234, u32s(&[1, 2]))
+            .at(0x3000, u64s(&[0x4000, 8, 8, 0x5000]))
+            .symbol(0x4000, "point_drop")
+            .symbol(0x5000, "shared_poll");
+
+        let mut b = four_slot_bundle();
+        let mut shared = vec![SELF_REF, POINT];
+        shared.sort();
+        b.dyn_futures
+            .by_symbol
+            .insert("shared_poll".to_owned(), shared);
+        b.dyn_futures
+            .by_symbol
+            .insert("point_drop".to_owned(), vec![POINT]);
+        b.validate().expect("bundle must validate");
+        let shown = show_fat_ptr(&b, &mem);
+        assert!(shown.contains("concrete type: Point,"), "{shown}");
+
+        b.dyn_futures
+            .by_symbol
+            .insert("point_drop".to_owned(), vec![U32]);
+        b.validate().expect("bundle must validate");
+        let shown = show_fat_ptr(&b, &mem);
+        assert!(shown.contains("concrete type: <unknown>,"), "{shown}");
+        assert!(shown.contains("pointer: 0x1234,\n"), "{shown}");
+    }
+
+    /// A joined type the vtable's size word denies is not believed, and
+    /// with no name to fall back on the pointee stays unread.
+    #[test]
+    fn test_dyn_pointer_declines_a_joined_type_the_size_word_denies() {
+        let mem = FakeMem::new()
+            .at(0x1234, u32s(&[1, 2]))
+            .at(0x3000, u64s(&[0, 16, 8, 0x5000]))
+            .symbol(0x5000, "point_poll");
+
+        let mut b = four_slot_bundle();
+        b.dyn_futures
+            .by_symbol
+            .insert("point_poll".to_owned(), vec![POINT]);
+        b.validate().expect("bundle must validate");
+        let shown = show_fat_ptr(&b, &mem);
+        assert!(shown.contains("concrete type: <unknown>,"), "{shown}");
+        assert!(shown.contains("pointer: 0x1234,\n"), "{shown}");
+    }
+
+    /// Register `symbol` in the bundle's task table as the poll of a
+    /// spawned future of type `future`, the way a task's own vtable
+    /// slot joins: the entry's other types are placeholders the
+    /// validator accepts.
+    fn spawn_task(b: &mut hansei_bundle::Bundle, symbol: &str, future: BundleTypeId) {
+        let display_name = strref(b, "Point");
+        let id = TaskEntryId(b.tasks.entries.len() as u32);
+        b.tasks.entries.push(TaskFutureEntry {
+            future,
+            cell: U32,
+            stage: U32,
+            scheduler: U32,
+            scheduler_binding: None,
+            display_name,
+        });
+        b.provenance.entries.push(Provenance {
+            decl: None,
+            kind: FutureKind::AsyncFn,
+        });
+        b.tasks.by_symbol.insert(symbol.to_owned(), vec![id]);
+    }
+
+    /// A spawned future's poll is in the task table, not the dyn-future
+    /// table: a method slot the dyn-future table does not know is looked
+    /// up as a task's, and names the entry's future.
+    #[test]
+    fn test_dyn_pointer_joins_a_spawned_futures_poll_slot_through_the_task_table() {
+        let mem = FakeMem::new()
+            .at(0x1234, u32s(&[1, 2]))
+            .at(0x3000, u64s(&[0, 8, 8, 0x5000]))
+            .symbol(0x5000, "task_poll");
+
+        let mut b = four_slot_bundle();
+        spawn_task(&mut b, "task_poll", POINT);
+        b.validate().expect("bundle must validate");
+        let shown = show_fat_ptr(&b, &mem);
+        assert!(shown.contains("concrete type: Point,"), "{shown}");
+        assert!(shown.contains("-> Point {"), "{shown}");
+    }
+
+    /// The drop slot is never looked up as a task's poll: drop glue
+    /// whose symbol happens to be a task table key joins nothing, and a
+    /// method slot no table knows leaves the box unnamed.
+    #[test]
+    fn test_dyn_pointer_never_joins_the_drop_slot_through_the_task_table() {
+        let mem = FakeMem::new()
+            .at(0x1234, u32s(&[1, 2]))
+            .at(0x3000, u64s(&[0x4000, 8, 8, 0x5000]))
+            .symbol(0x4000, "task_poll")
+            .symbol(0x5000, "plain_fn");
+
+        let mut b = four_slot_bundle();
+        spawn_task(&mut b, "task_poll", POINT);
+        b.validate().expect("bundle must validate");
+        let shown = show_fat_ptr(&b, &mem);
+        assert!(shown.contains("concrete type: <unknown>,"), "{shown}");
+        assert!(shown.contains("pointer: 0x1234,\n"), "{shown}");
     }
 
     /// An `Arc<dyn Trait>`'s data pointer targets `ArcInner`, whose two

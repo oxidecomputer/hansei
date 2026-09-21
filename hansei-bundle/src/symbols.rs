@@ -64,9 +64,16 @@ pub fn normalized_v0_key(symbol: &str) -> Option<String> {
 
 /// Recover the concrete `T` named by a demangled vtable function symbol.
 ///
-/// Rust trait-object vtables identify their concrete type through either
-/// `drop_glue::<T>`/`drop_in_place::<T>` or a method named
-/// `<T as Trait>::method`. The returned slice borrows the demangled symbol.
+/// Rust trait-object vtables identify their concrete type through
+/// `drop_glue::<T>`/`drop_in_place::<T>`, through a method named
+/// `<T as Trait>::method`, or — where `T` is a coroutine, an `async`
+/// block or a closure — through the coroutine's own body, whose symbol
+/// is `T`'s path: the item it was written in, continued into a brace
+/// item such as `{closure#0}`. A coroutine written inside a trait
+/// impl's method opens with that method's `<Self as Trait>` pair, and
+/// reading the pair alone would name `Self`, a type the vtable does not
+/// dispatch for; the whole path is the type. The returned slice borrows
+/// the demangled symbol.
 pub fn concrete_type_from_vtable_symbol(symbol: &str) -> Option<&str> {
     for marker in ["core::ptr::drop_glue::<", "core::ptr::drop_in_place::<"] {
         if let Some(rest) = symbol
@@ -76,7 +83,9 @@ pub fn concrete_type_from_vtable_symbol(symbol: &str) -> Option<&str> {
             return Some(rest);
         }
     }
-
+    if ends_in_brace_item(symbol) {
+        return Some(symbol);
+    }
     trait_object_pair(symbol).map(|(concrete, _)| concrete)
 }
 
@@ -90,7 +99,12 @@ pub fn concrete_type_from_vtable_symbol(symbol: &str) -> Option<&str> {
 ///
 /// Bracket depth decides where each half ends, because both halves are
 /// type names carrying generic arguments full of `<`, `>` and ` as ` of
-/// their own. The returned slices borrow the demangled symbol.
+/// their own. The pair has to be followed by the method alone, with or
+/// without the method's own generic arguments: a path that goes on past
+/// the method into an item nested in it — a closure or async block,
+/// `<Self as Trait>::method::{closure#0}` — is that item's own symbol,
+/// not the method's, and names no pair. The returned slices borrow the
+/// demangled symbol.
 pub fn trait_object_pair(symbol: &str) -> Option<(&str, &str)> {
     let rest = symbol.strip_prefix('<')?;
     let mut depth = 1usize;
@@ -106,10 +120,53 @@ pub fn trait_object_pair(symbol: &str) -> Option<(&str, &str)> {
         }
         if depth == 0 {
             let split = split?;
+            if path_items(&rest[index + 1..]).count() > 1 {
+                return None;
+            }
             return Some((&rest[..split], rest.get(split + " as ".len()..index)?));
         }
     }
     None
+}
+
+/// Whether a symbol's last path item is a brace item — `{closure#0}`,
+/// `{async_block#0}`, a shim — which makes the symbol a coroutine's or
+/// closure's own body, and the whole path its type's.
+fn ends_in_brace_item(symbol: &str) -> bool {
+    path_items(symbol)
+        .last()
+        .is_some_and(|item| item.starts_with('{'))
+}
+
+/// The items of a path, split on the `::` at bracket depth zero: the
+/// segments naming something, with empty segments and every segment
+/// opening a bracket left out — a generic argument list (`::<T>`), and
+/// the `<Self as Trait>` pair a path may open with, which is one
+/// segment because its own `::` sit inside its brackets.
+fn path_items(path: &str) -> impl Iterator<Item = &str> {
+    let bytes = path.as_bytes();
+    let mut items = Vec::new();
+    let mut depth = 0usize;
+    let mut start = 0;
+    let mut index = 0;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'<' => depth += 1,
+            b'>' => depth = depth.saturating_sub(1),
+            b':' if depth == 0 && bytes.get(index + 1) == Some(&b':') => {
+                items.push(&path[start..index]);
+                index += 2;
+                start = index;
+                continue;
+            }
+            _ => {}
+        }
+        index += 1;
+    }
+    items.push(&path[start..]);
+    items
+        .into_iter()
+        .filter(|item| !item.is_empty() && !item.starts_with('<'))
 }
 
 /// The allocator argument one formatting path spells out and the other
@@ -332,6 +389,62 @@ mod tests {
             ),
             Some("app::Thing<alloc::vec::Vec<u8>>")
         );
+        // A method's own generic arguments are the method's, not a path
+        // beyond it.
+        assert_eq!(
+            concrete_type_from_vtable_symbol("<app::Thing as app::Trait>::method::<u8>"),
+            Some("app::Thing")
+        );
+        // A plain function names no type at all.
+        assert_eq!(concrete_type_from_vtable_symbol("app::run"), None);
+    }
+
+    /// A `dyn Future` vtable's poll slot holds the coroutine's own body,
+    /// and its symbol is the coroutine type's path: the item it was
+    /// written in, continued into the brace item. Inside a trait impl's
+    /// method that path opens with the method's `<Self as Trait>` pair,
+    /// which names the impl's type, not the coroutine — the whole path
+    /// does. The drop glue carries the same path, so the two slots agree.
+    #[test]
+    fn vtable_symbols_name_a_coroutine_by_its_whole_path() {
+        const BODY: &str = "<app::Svc as app::Service<app::Req<u8>>>::call::{closure#0}";
+        assert_eq!(concrete_type_from_vtable_symbol(BODY), Some(BODY));
+        assert_eq!(
+            concrete_type_from_vtable_symbol(&format!("core::ptr::drop_glue::<{BODY}>")),
+            Some(BODY)
+        );
+        assert_eq!(
+            concrete_type_from_vtable_symbol("app::run::{closure#0}"),
+            Some("app::run::{closure#0}")
+        );
+        assert_eq!(
+            concrete_type_from_vtable_symbol(
+                "<app::Svc as app::Service<u8>>::call::<u8>::{closure#0}"
+            ),
+            Some("<app::Svc as app::Service<u8>>::call::<u8>::{closure#0}")
+        );
+        // Nested one deeper, still one path.
+        assert_eq!(
+            concrete_type_from_vtable_symbol("app::run::{closure#0}::{closure#1}"),
+            Some("app::run::{closure#0}::{closure#1}")
+        );
+    }
+
+    /// A path splits on `::` alone, at bracket depth zero alone: a lone
+    /// colon is part of its item, the `::` inside brackets belongs to
+    /// what the brackets hold, and a bracketed segment — a generic
+    /// argument list, an opening `<Self as Trait>` pair — is no item.
+    #[test]
+    fn path_items_split_on_double_colons_at_depth_zero() {
+        let items = |path| super::path_items(path).collect::<Vec<_>>();
+        assert_eq!(items("a:b::c"), ["a:b", "c"]);
+        assert_eq!(items("a::b<c::d>::e"), ["a", "b<c::d>", "e"]);
+        assert_eq!(
+            items("<a::T as b::Tr>::m::<c::G>::{closure#0}"),
+            ["m", "{closure#0}"]
+        );
+        assert_eq!(items("::x"), ["x"]);
+        assert!(items("").is_empty());
     }
 
     /// A method symbol names both halves, and where each ends is
@@ -347,10 +460,26 @@ mod tests {
             super::trait_object_pair("<a::Map<<b::T as b::Tr>::Out> as c::Trait<d::E<u8>>>::poll"),
             Some(("a::Map<<b::T as b::Tr>::Out>", "c::Trait<d::E<u8>>"))
         );
+        // The method's own generic arguments do not end the method.
+        assert_eq!(
+            super::trait_object_pair("<a::T as b::Tr>::method::<c::G<u8>>"),
+            Some(("a::T", "b::Tr"))
+        );
         // Neither a pair nor anything that could be mistaken for one.
         assert_eq!(super::trait_object_pair("core::ptr::drop_glue::<u8>"), None);
         assert_eq!(super::trait_object_pair("<a::T>::method"), None);
         assert_eq!(super::trait_object_pair("<a::T as b::Tr"), None);
+        // A path that goes on past the method is an item inside it, not
+        // the method: reading the pair would name the impl's type for a
+        // symbol that belongs to the closure.
+        assert_eq!(
+            super::trait_object_pair("<a::T as b::Tr>::method::{closure#0}"),
+            None
+        );
+        assert_eq!(
+            super::trait_object_pair("<a::T as b::Tr>::method::<u8>::{closure#0}"),
+            None
+        );
     }
 
     #[test]

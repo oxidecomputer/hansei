@@ -3603,10 +3603,11 @@ fn test_the_allocator_index_answers_for_what_it_can_read() {
 /// Every other fixture here is healthy, so the corroboration declines
 /// nothing when the suite runs and a gate wired to nothing would pass
 /// every one of those tests. `stale-local` parks a task holding the
-/// address of a block it has handed back, which is exactly one pointer
-/// the renderer must not follow — on a target whose allocator is
-/// libumem. On glibc there is no allocator to ask, and the same frame
-/// renders the way it always did, which is the other half of the claim.
+/// addresses of two blocks it has handed back, a thin pointer's and a
+/// boxed future's, which are exactly the pointers the renderer must
+/// not follow — on a target whose allocator is libumem. On glibc there
+/// is no allocator to ask, and the same frame renders the way it always
+/// did, which is the other half of the claim.
 #[test]
 fn test_a_stale_pointer_is_not_expanded_into_what_the_bytes_say() {
     let bundle = fixtures().bundle("stale-local");
@@ -3623,15 +3624,15 @@ fn test_a_stale_pointer_is_not_expanded_into_what_the_bytes_say() {
         // per-CPU magazine, most likely, since a free reaches a slab's
         // freelist only when that magazine fills.
         assert!(out.contains("-> <freed>"), "{out}");
-        // One refusal, not two, though the frame holds two stale
-        // pointers: the boxed future's is a wide pointer, which the
-        // renderer prints as its vtable's own account of itself —
-        // concrete type, size, drop glue, all of it read from rodata
-        // — rather than by expanding the value at the far end. There
-        // is nothing there for a gate to refuse. What follows that
-        // pointer is the census, below.
+        // Two refusals, one per stale pointer. The boxed future's is a
+        // wide pointer whose concrete type the renderer recovers from
+        // the vtable's function symbols, joined against the bundle's
+        // dyn-future table; with the type in hand it reads the value at
+        // the far end, and that read is the gate's to refuse like the
+        // thin pointer's. The census never follows the wide pointer at
+        // all, below.
         assert!(
-            out.contains("gates: 1 pointer(s) into freed memory"),
+            out.contains("gates: 2 pointer(s) into freed memory"),
             "{out}"
         );
         assert!(out.contains("self-check: clean"), "{out}");

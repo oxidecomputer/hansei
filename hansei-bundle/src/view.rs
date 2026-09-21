@@ -179,6 +179,12 @@ impl<'a> BundleType<'a> {
         self.id
     }
 
+    /// The view over the bundle this type belongs to, for what spans
+    /// the bundle rather than one type: the symbol joins, a type by id.
+    pub fn view(&self) -> BundleView<'a> {
+        BundleView::new(self.bundle)
+    }
+
     /// The unique size associated with a fully-qualified type name in this
     /// bundle. Duplicate DIEs with the same layout are benign; conflicting
     /// sizes make the lookup ambiguous.
