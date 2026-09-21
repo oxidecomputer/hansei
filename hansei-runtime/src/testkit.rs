@@ -105,6 +105,7 @@ pub fn walk_shapes_bindings(
         container: None,
         select: None,
         http: None,
+        request: None,
         issues: Vec::new(),
     };
     let bindings = vec![

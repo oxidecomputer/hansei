@@ -46,6 +46,12 @@ pub struct TypeSemantics {
     /// where it is hyper's `Dispatcher` under a reviewed range: the
     /// paths the [`ResourceKind::HttpConn`] resource is read through.
     pub http: Option<HttpConnBinding>,
+    /// The request line this value carries, where its type is one a
+    /// reviewed range says keeps a request's method and target: a
+    /// client's in-flight request, a server's request context. A fact
+    /// beside the record, read wherever a chain or a frame holds the
+    /// value; the type polls nothing through it.
+    pub request: Option<HttpRequestBinding>,
     pub issues: Vec<SemanticIssue>,
 }
 
@@ -325,6 +331,36 @@ pub struct HttpPeerBinding {
     pub addr: TypedPath,
 }
 
+/// Where a request's method and target are stored in a value, under
+/// the rule of the crate whose type keeps them: the routes from the
+/// record's type to the method's enum and to the text of the target.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub struct HttpRequestBinding {
+    pub rule: SemanticRuleId,
+    /// The method's own enum, through the `Method` newtype —
+    /// `http::method::Inner`, whose variant names the method.
+    pub method: TypedPath,
+    /// What the target's text is: the whole URL a client wrote, or the
+    /// path and query a server parsed.
+    pub target: HttpRequestTarget,
+    /// The pointer to the target's bytes: a `*const u8`, the data
+    /// pointer of the `String` or `Bytes` holding the text.
+    pub target_ptr: TypedPath,
+    /// The target's length in bytes: the `usize` beside that pointer.
+    pub target_len: TypedPath,
+}
+
+/// What a request binding's target text spells.
+#[derive(Copy, Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub enum HttpRequestTarget {
+    /// The whole URL, scheme and authority included, as the client
+    /// wrote it.
+    Url,
+    /// The request target as the server parsed it: the path, and the
+    /// query after its `?` where there is one.
+    PathAndQuery,
+}
+
 #[derive(Copy, Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub enum IoOperationKind {
     Read,
@@ -515,6 +551,21 @@ pub enum SemanticRuleKind {
     /// range: it keeps the accepted socket's peer address in
     /// `remote_addr`, which is what names a server connection's peer.
     DropshotRequestHandler,
+    /// reqwest's `async_impl::client::PendingRequest`, the future a
+    /// client's `send()` resolves through, under a reviewed range: it
+    /// keeps the request's `method` and its whole `url` for retries and
+    /// redirects, which is what names the request a client connection
+    /// is carrying.
+    ReqwestPendingRequest,
+    /// http's `request::Request<B>` under a reviewed range: its head
+    /// keeps the `method` and the `uri`, which is what names the
+    /// request a server's handler is running for, where the handler
+    /// holds the request itself.
+    HttpRequest,
+    /// dropshot's `handler::RequestContext<C>` under a reviewed range:
+    /// its `request` keeps the `method` and `uri` of the request its
+    /// handler is running for.
+    DropshotRequestContext,
 }
 
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]

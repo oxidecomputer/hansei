@@ -380,6 +380,14 @@ exclude_re = [
     # under it (a `changed` wrapped in `Coop`); pin it there when a
     # fixture has one.
     "delete ! in Context<'b, T>::watch_target",
+    # Equivalent mutants: a request's text routes each running one step
+    # only cannot pass the checks above them. A one-step pointer route
+    # makes its member the byte pointer itself, and a route into that
+    # member reaches a byte, never the unsigned word a length must be;
+    # a one-step length route makes its member the word, which has no
+    # member for the pointer's route to take. (`&&` → `||` there is
+    # pinned by the two-holder case in the request binding's test.)
+    "replace > with >= in Check<'a>::request",
     # Equivalent mutant: the `Pending` screen's name test is a
     # pre-screen that saves the walk, the same shape as the adapter
     # branch above it — `core_pending` itself checks the declaring

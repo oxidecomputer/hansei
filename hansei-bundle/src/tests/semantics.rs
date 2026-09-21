@@ -35,6 +35,7 @@ fn record(ty: BundleTypeId) -> TypeSemantics {
         container: None,
         select: None,
         http: None,
+        request: None,
         issues: Vec::new(),
     }
 }
@@ -2567,4 +2568,240 @@ fn test_semantic_http_negotiating_wrapper_is_the_connection_resource() {
     let mut wrong = b.clone();
     auto(&mut wrong).resource = None;
     bad(&wrong, "primitive has no compatible resource binding");
+}
+
+/// A server's request as http lays it out — `Request { head: Parts {
+/// method, uri }, body }` down to the path's `Bytes` — with the request
+/// binding on the request under http's rule.
+fn http_request() -> (Bundle, HttpRequestBinding) {
+    let mut b = base();
+    let mut strings = StringInterner::new();
+    for s in b.strings.iter() {
+        strings.intern(s);
+    }
+    let mut name = |s: &str| strings.intern(s);
+    let (http, version, family, source, u8_name, unit, first, head, method, uri, body) = (
+        name("http"),
+        name("1.4.2"),
+        name("http-request-1.0.0"),
+        name("registry/src/index.crates.io-1949cf8c6b5b557f/http-1.4.2/src/request.rs"),
+        name("u8"),
+        name("()"),
+        name("__0"),
+        name("head"),
+        name("method"),
+        name("uri"),
+        name("body"),
+    );
+    let (path_and_query, data, bytes, ptr, len, query, get, post, extra) = (
+        name("path_and_query"),
+        name("data"),
+        name("bytes"),
+        name("ptr"),
+        name("len"),
+        name("query"),
+        name("Get"),
+        name("Post"),
+        name("extra"),
+    );
+    let (inner_name, method_name, bytes_name, byte_str, pq_name, uri_name, parts, request) = (
+        name("http::method::Inner"),
+        name("http::method::Method"),
+        name("bytes::bytes::Bytes"),
+        name("http::byte_str::ByteStr"),
+        name("http::uri::path::PathAndQuery"),
+        name("http::uri::Uri"),
+        name("http::request::Parts"),
+        name("http::request::Request<B>"),
+    );
+    b.strings = strings.finish();
+    let member = |name, ty, offset| MemberDef { name, ty, offset };
+    let mut next = b.types.types.len() as u32;
+    let mut id = || {
+        next += 1;
+        BundleTypeId(next - 1)
+    };
+    let (u8_t, unit_t, byte_ptr, inner_t, method_t, bytes_t, byte_str_t, pq_t, uri_t, parts_t) =
+        (id(), id(), id(), id(), id(), id(), id(), id(), id(), id());
+    let request_t = id();
+    let word = BundleTypeId(0);
+    let strukt = |name, size, members| TypeDef::Struct {
+        name,
+        size,
+        members,
+    };
+    let variant = |name, discr: u128| VariantDef {
+        name,
+        discr_values: Some(DiscrValues(vec![DiscrValue::Value(discr)])),
+        payload: member(name, unit_t, 1),
+        decl: None,
+        await_site: None,
+    };
+    b.types.types.extend([
+        TypeDef::Base {
+            name: u8_name,
+            size: 1,
+            encoding: Encoding::Unsigned,
+        },
+        strukt(unit, 0, vec![]),
+        TypeDef::Pointer {
+            name: None,
+            target: u8_t,
+        },
+        TypeDef::Enum {
+            name: inner_name,
+            size: 1,
+            shape: VariantShape {
+                discr: Some(DiscrDef {
+                    offset: 0,
+                    ty: u8_t,
+                }),
+                variants: vec![variant(get, 0), variant(post, 1)],
+            },
+        },
+        strukt(method_name, 1, vec![member(first, inner_t, 0)]),
+        strukt(
+            bytes_name,
+            32,
+            vec![member(ptr, byte_ptr, 8), member(len, word, 16)],
+        ),
+        strukt(byte_str, 32, vec![member(bytes, bytes_t, 0)]),
+        strukt(
+            pq_name,
+            40,
+            vec![member(data, byte_str_t, 0), member(query, word, 32)],
+        ),
+        strukt(uri_name, 40, vec![member(path_and_query, pq_t, 0)]),
+        strukt(
+            parts,
+            48,
+            vec![member(method, method_t, 0), member(uri, uri_t, 8)],
+        ),
+        strukt(
+            request,
+            64,
+            vec![
+                member(head, parts_t, 0),
+                member(body, unit_t, 48),
+                member(extra, word, 56),
+            ],
+        ),
+    ]);
+    let origin = SemanticOriginId(b.semantics.origins.len() as u32);
+    b.semantics.origins.push(SemanticOrigin::LibraryDelegation {
+        package: http,
+        version,
+        family,
+        source,
+        files: Vec::new(),
+    });
+    // Another crate's consistent origin beside it, for the test to
+    // point the rule at.
+    b.semantics.origins.push(delegation_origin(StrRef(18)));
+    let rule = SemanticRuleId(b.semantics.rules.len() as u32);
+    b.semantics.rules.push(SemanticRule {
+        kind: SemanticRuleKind::HttpRequest,
+        revision: 1,
+        origin,
+    });
+    let route = |steps: Vec<Step>, target| TypedPath { steps, target };
+    let text = |last, target| {
+        route(
+            vec![
+                named(head),
+                named(uri),
+                named(path_and_query),
+                named(data),
+                named(bytes),
+                named(last),
+            ],
+            target,
+        )
+    };
+    let binding = HttpRequestBinding {
+        rule,
+        method: route(vec![named(head), named(method), named(first)], inner_t),
+        target: HttpRequestTarget::PathAndQuery,
+        target_ptr: text(ptr, byte_ptr),
+        target_len: text(len, word),
+    };
+    let mut r = record(request_t);
+    r.future = None;
+    r.request = Some(binding.clone());
+    b.semantics.types = vec![r];
+    b.validate().unwrap();
+    (b, binding)
+}
+
+/// The request binding: under a rule of one of the crates that keep a
+/// request's words, the method is an enum, the target's text is a byte
+/// pointer and a word out of one holder, and a record with no readable
+/// storage carries none.
+#[test]
+fn test_semantic_request_binding_routes_the_method_and_the_target_text() {
+    let (b, binding) = http_request();
+    let mut bytes = Vec::new();
+    b.write_to(&mut bytes).unwrap();
+    assert_eq!(Bundle::read_from(bytes.as_slice()).unwrap(), b);
+
+    fn request(b: &mut Bundle) -> &mut HttpRequestBinding {
+        b.semantics.types[0].request.as_mut().unwrap()
+    }
+    // The rule has to be one that keeps a request: hyper's connection
+    // rule is not.
+    let mut wrong = b.clone();
+    request(&mut wrong).rule = SemanticRuleId(0);
+    bad(&wrong, "rule has an incompatible capability");
+    // The rule's origin is the crate whose type is bound.
+    let mut wrong = b.clone();
+    let origin = wrong.semantics.rules[binding.rule.0 as usize].origin;
+    wrong.semantics.rules[binding.rule.0 as usize].origin = SemanticOriginId(origin.0 + 1);
+    bad(&wrong, "third-party delegation needs source evidence");
+    // The method lands on an enum: the newtype around it is not one.
+    let mut wrong = b.clone();
+    request(&mut wrong).method.steps.pop();
+    request(&mut wrong).method.target = BundleTypeId(b.types.types.len() as u32 - 7);
+    bad(&wrong, "method is not an enum");
+    // The target's pointer is a pointer to bytes, and its length a word.
+    let mut wrong = b.clone();
+    request(&mut wrong).target_ptr = binding.target_len.clone();
+    bad(&wrong, "target is not reached by a pointer");
+    let mut wrong = b.clone();
+    request(&mut wrong).target_len = binding.target_ptr.clone();
+    bad(&wrong, "target length is not an unsigned word");
+    // The two are read out of one value: a word elsewhere in the
+    // record is no length of the text.
+    let mut wrong = b.clone();
+    let extra = StrRef(wrong.strings.iter().position(|s| s == "extra").unwrap() as u32);
+    request(&mut wrong).target_len = TypedPath {
+        steps: vec![named(extra)],
+        target: BundleTypeId(0),
+    };
+    bad(&wrong, "not under one member");
+    // However deep both routes run, they enter through one member: a
+    // word under another holder of its own is no length of the text.
+    let mut wrong = b.clone();
+    let find = |s: &str| StrRef(wrong.strings.iter().position(|x| x == s).unwrap() as u32);
+    let (query, pq_name) = (find("query"), find("http::uri::path::PathAndQuery"));
+    let pq_t = wrong
+        .types
+        .types
+        .iter()
+        .position(|t| matches!(t, TypeDef::Struct { name, .. } if *name == pq_name))
+        .unwrap();
+    let request_t = wrong.semantics.types[0].ty;
+    let TypeDef::Struct { size, members, .. } = &mut wrong.types.types[request_t.0 as usize] else {
+        panic!("the request is a struct");
+    };
+    *size = 96;
+    members.last_mut().unwrap().ty = BundleTypeId(pq_t as u32);
+    request(&mut wrong).target_len = TypedPath {
+        steps: vec![named(extra), named(query)],
+        target: BundleTypeId(0),
+    };
+    bad(&wrong, "not under one member");
+    // A record with no readable storage keeps no binding.
+    let mut wrong = b.clone();
+    wrong.semantics.types[0].storage = StoragePolicy::Unavailable(issue());
+    bad(&wrong, "unavailable storage carries a readable capability");
 }

@@ -170,6 +170,9 @@ impl<'a> Check<'a> {
             | HyperUtilAutoConn
             | HyperH1Conn
             | DropshotRequestHandler
+            | DropshotRequestContext
+            | ReqwestPendingRequest
+            | HttpRequest
             | TokioSelect
             | TokioIntervalTick
             | FuturesUtilNext
@@ -180,7 +183,9 @@ impl<'a> Check<'a> {
                     TracingInstrumented => "tracing",
                     HyperUtilTokioSleep | HyperUtilAutoConn => "hyper-util",
                     HyperH1Conn => "hyper",
-                    DropshotRequestHandler => "dropshot",
+                    DropshotRequestHandler | DropshotRequestContext => "dropshot",
+                    ReqwestPendingRequest => "reqwest",
+                    HttpRequest => "http",
                     // tokio's own macro and its own async fn, but read
                     // like a third-party rule: the declaration file is
                     // the evidence, and tokio's version comes off its
@@ -496,6 +501,65 @@ impl<'a> Check<'a> {
     /// type — the dispatcher — to a word of the shape the verdict reads,
     /// under the hyper rule, and the role's own dispatch paths are
     /// there for the role and for no other.
+    /// A request binding: under one of the rules whose crate keeps a
+    /// request's words, the method routes to an enum and the target's
+    /// text to a byte pointer and a word, the three from the record's
+    /// own type.
+    fn request(&self, record: &TypeSemantics, binding: &HttpRequestBinding) -> Result<()> {
+        self.rule(
+            binding.rule,
+            &[
+                SemanticRuleKind::ReqwestPendingRequest,
+                SemanticRuleKind::HttpRequest,
+                SemanticRuleKind::DropshotRequestContext,
+            ],
+        )?;
+        self.path(record.ty, &binding.method)?;
+        require(
+            matches!(self.ty(binding.method.target)?, TypeDef::Enum { .. }),
+            "HTTP request method is not an enum",
+        )?;
+        self.path(record.ty, &binding.target_ptr)?;
+        let byte = match self.ty(binding.target_ptr.target)? {
+            TypeDef::Pointer { target, .. } => self.ty(*target)?,
+            _ => return require(false, "HTTP request target is not reached by a pointer"),
+        };
+        require(
+            matches!(
+                byte,
+                TypeDef::Base {
+                    encoding: crate::Encoding::Unsigned,
+                    size: 1,
+                    ..
+                }
+            ),
+            "HTTP request target pointer does not point at bytes",
+        )?;
+        self.path(record.ty, &binding.target_len)?;
+        require(
+            matches!(
+                self.ty(binding.target_len.target)?,
+                TypeDef::Base {
+                    encoding: crate::Encoding::Unsigned,
+                    size: 8,
+                    ..
+                }
+            ),
+            "HTTP request target length is not an unsigned word",
+        )?;
+        // The pointer and the length are read out of one value — the
+        // `Bytes` of a path, the `String` of a URL — so both routes
+        // enter the record through the member holding it; where they
+        // part below that is the holder's own layout (a `String`'s
+        // length sits beside its raw buffer, not beside the pointer).
+        require(
+            binding.target_ptr.steps.len() > 1
+                && binding.target_len.steps.len() > 1
+                && binding.target_ptr.steps[0] == binding.target_len.steps[0],
+            "HTTP request target pointer and length are not under one member",
+        )
+    }
+
     fn http(&self, record: &TypeSemantics, binding: &HttpConnBinding) -> Result<()> {
         self.rule(binding.rule, &[SemanticRuleKind::HyperH1Conn])?;
         // The binding is the resource's: the words it routes to are
@@ -1168,7 +1232,8 @@ pub(crate) fn check_semantics(bundle: &Bundle) -> Result<()> {
                         && record.resource.is_none()
                         && record.container.is_none()
                         && record.select.is_none()
-                        && record.http.is_none(),
+                        && record.http.is_none()
+                        && record.request.is_none(),
                     "unavailable storage carries a readable capability",
                 )?;
             }
@@ -1219,6 +1284,13 @@ pub(crate) fn check_semantics(bundle: &Bundle) -> Result<()> {
                 "HTTP connection binding needs declared-member storage",
             )?;
             check.http(record, http)?;
+        }
+        if let Some(request) = &record.request {
+            require(
+                matches!(record.storage, StoragePolicy::DeclaredMembers),
+                "HTTP request binding needs declared-member storage",
+            )?;
+            check.request(record, request)?;
         }
         if let Some(container) = &record.container {
             let kind = match container.kind {

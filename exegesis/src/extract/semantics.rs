@@ -1865,6 +1865,7 @@ pub(super) fn bind_semantics(
             container,
             select,
             http,
+            request: None,
             issues,
         });
     }
