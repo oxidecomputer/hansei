@@ -1073,6 +1073,173 @@ pub(crate) fn dropshot_request_handler(reader: &DwReader<'_>, service: TypeId) -
     (fq_name(reader, addr).as_deref() == Some("core::net::socket_addr::SocketAddr")).then_some(addr)
 }
 
+/// The member names a request binding's routes are made of, as the
+/// reviewed reqwest, http and dropshot layouts declare them, and std's
+/// `String` down to its byte pointer. One list, shared by the screens
+/// that find the shapes in the DWARF and the binder that holds them
+/// to the final table.
+pub(crate) mod request {
+    pub(crate) const METHOD: &str = "method";
+    pub(crate) const PAYLOAD: &str = "__0";
+    /// reqwest's `PendingRequest`: the `Url`, whose `serialization` is
+    /// the whole URL as a `String`.
+    pub(crate) const URL: &str = "url";
+    pub(crate) const SERIALIZATION: &str = "serialization";
+    /// http's `Request`: its `Parts`, whose `uri`'s `path_and_query` is
+    /// a `ByteStr` over a `Bytes`.
+    pub(crate) const HEAD: &str = "head";
+    pub(crate) const URI: &str = "uri";
+    pub(crate) const PATH_AND_QUERY: &str = "path_and_query";
+    pub(crate) const DATA: &str = "data";
+    pub(crate) const BYTES: &str = "bytes";
+    /// `Bytes`' view, and std's `String` from its `Vec<u8>` through the
+    /// raw buffer to the byte pointer: `vec.buf.inner.ptr.pointer.pointer`
+    /// and `vec.len`.
+    pub(crate) const PTR: &str = "ptr";
+    pub(crate) const LEN: &str = "len";
+    pub(crate) const VEC: &str = "vec";
+    pub(crate) const BUF: &str = "buf";
+    pub(crate) const INNER: &str = "inner";
+    pub(crate) const POINTER: &str = "pointer";
+    /// dropshot's `RequestContext`: its `RequestInfo`.
+    pub(crate) const REQUEST: &str = "request";
+    pub(crate) const STRING_PTR: [&str; 6] = [VEC, BUF, INNER, PTR, POINTER, POINTER];
+    pub(crate) const STRING_LEN: [&str; 2] = [VEC, LEN];
+    pub(crate) const PATH_PTR: [&str; 5] = [URI, PATH_AND_QUERY, DATA, BYTES, PTR];
+    pub(crate) const PATH_LEN: [&str; 5] = [URI, PATH_AND_QUERY, DATA, BYTES, LEN];
+}
+
+/// Which crate's type a request binding was screened as.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub(crate) enum HttpRequestKind {
+    ReqwestPendingRequest,
+    HttpRequest,
+    DropshotRequestContext,
+}
+
+/// A type keeping a request's words as the raw screen saw it: the
+/// method's enum and the two words the target's text is read from.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct HttpRequestLayout {
+    pub(crate) kind: HttpRequestKind,
+    /// `http::method::Inner`, reached through the `Method` newtype.
+    pub(crate) method_inner: TypeId,
+    /// The `*const u8` the target's bytes start at, and their count.
+    pub(crate) target_ptr: TypeId,
+    pub(crate) target_len: TypeId,
+}
+
+/// Whether `id` is a pointer to a byte.
+fn is_byte_pointer(reader: &DwReader<'_>, id: TypeId) -> bool {
+    matches!(
+        reader.canonical_type(id),
+        Some(RawType::Pointer(RawPointer { target_type_id, .. }))
+            if super::is_unsigned_integer(reader, *target_type_id, 1)
+    )
+}
+
+/// http's `Method` newtype around its `Inner` enum: the enum's type.
+fn method_inner(reader: &DwReader<'_>, method: TypeId) -> Option<TypeId> {
+    declared_in(reader, method, "http::method", "Method")?;
+    let inner = member_of(reader, method, request::PAYLOAD)?;
+    enum_declared_in(reader, inner, "http::method", "Inner").then_some(inner)
+}
+
+/// bytes' `Bytes`: its `ptr` and `len`, the view whatever vtable owns
+/// the storage.
+fn bytes_text(reader: &DwReader<'_>, bytes: TypeId) -> Option<(TypeId, TypeId)> {
+    declared_in(reader, bytes, "bytes::bytes", "Bytes")?;
+    let ptr = member_of(reader, bytes, request::PTR)?;
+    let len = member_of(reader, bytes, request::LEN)?;
+    (is_byte_pointer(reader, ptr) && super::is_unsigned_integer(reader, len, 8))
+        .then_some((ptr, len))
+}
+
+/// http's `Uri`, down to the bytes of its `path_and_query`.
+fn path_and_query_text(reader: &DwReader<'_>, uri: TypeId) -> Option<(TypeId, TypeId)> {
+    declared_in(reader, uri, "http::uri", "Uri")?;
+    let path_and_query = member_of(reader, uri, request::PATH_AND_QUERY)?;
+    declared_in(reader, path_and_query, "http::uri::path", "PathAndQuery")?;
+    let data = member_of(reader, path_and_query, request::DATA)?;
+    declared_in(reader, data, "http::byte_str", "ByteStr")?;
+    bytes_text(reader, member_of(reader, data, request::BYTES)?)
+}
+
+/// std's `String`, down to its byte pointer and length.
+fn string_text(reader: &DwReader<'_>, string: TypeId) -> Option<(TypeId, TypeId)> {
+    declared_in(reader, string, "alloc::string", "String")?;
+    let mut ptr = string;
+    for member in request::STRING_PTR {
+        ptr = member_of(reader, ptr, member)?;
+    }
+    let mut len = string;
+    for member in request::STRING_LEN {
+        len = member_of(reader, len, member)?;
+    }
+    (is_byte_pointer(reader, ptr) && super::is_unsigned_integer(reader, len, 8))
+        .then_some((ptr, len))
+}
+
+/// Screen `id` as reqwest's `PendingRequest`, declared in
+/// `reqwest::async_impl::client` with `method` http's `Method` and `url`
+/// the `url` crate's `Url`, whose `serialization` is the whole URL as
+/// a `String`.
+pub(crate) fn reqwest_pending_request(
+    reader: &DwReader<'_>,
+    id: TypeId,
+) -> Option<HttpRequestLayout> {
+    declared_in(reader, id, "reqwest::async_impl::client", "PendingRequest")?;
+    let method_inner = method_inner(reader, member_of(reader, id, request::METHOD)?)?;
+    let url = member_of(reader, id, request::URL)?;
+    declared_in(reader, url, "url", "Url")?;
+    let (target_ptr, target_len) =
+        string_text(reader, member_of(reader, url, request::SERIALIZATION)?)?;
+    Some(HttpRequestLayout {
+        kind: HttpRequestKind::ReqwestPendingRequest,
+        method_inner,
+        target_ptr,
+        target_len,
+    })
+}
+
+/// Screen `id` as http's `Request<B>`, declared in `http::request` with
+/// its `head` the `Parts` holding `method` and `uri`.
+pub(crate) fn http_request(reader: &DwReader<'_>, id: TypeId) -> Option<HttpRequestLayout> {
+    declared_in(reader, id, "http::request", "Request<")?;
+    let head = member_of(reader, id, request::HEAD)?;
+    declared_in(reader, head, "http::request", "Parts")?;
+    let method_inner = method_inner(reader, member_of(reader, head, request::METHOD)?)?;
+    let (target_ptr, target_len) =
+        path_and_query_text(reader, member_of(reader, head, request::URI)?)?;
+    Some(HttpRequestLayout {
+        kind: HttpRequestKind::HttpRequest,
+        method_inner,
+        target_ptr,
+        target_len,
+    })
+}
+
+/// Screen `id` as dropshot's `RequestContext<C>`, declared in
+/// `dropshot::handler` with its `request` the `RequestInfo` holding
+/// `method` and `uri`.
+pub(crate) fn dropshot_request_context(
+    reader: &DwReader<'_>,
+    id: TypeId,
+) -> Option<HttpRequestLayout> {
+    declared_in(reader, id, "dropshot::handler", "RequestContext<")?;
+    let info = member_of(reader, id, request::REQUEST)?;
+    declared_in(reader, info, "dropshot::handler", "RequestInfo")?;
+    let method_inner = method_inner(reader, member_of(reader, info, request::METHOD)?)?;
+    let (target_ptr, target_len) =
+        path_and_query_text(reader, member_of(reader, info, request::URI)?)?;
+    Some(HttpRequestLayout {
+        kind: HttpRequestKind::DropshotRequestContext,
+        method_inner,
+        target_ptr,
+        target_len,
+    })
+}
+
 /// hyper's `UpgradeableConnection` of either side as the raw screen
 /// saw it: the member holding the `Option` of the `Connection`, the
 /// option, the connection, the member of it holding the dispatcher —
@@ -2694,6 +2861,254 @@ mod tests {
             &[],
         );
         assert_eq!(dropshot_request_handler(&fx.reader, HANDLER), None);
+    }
+
+    /// The three request layouts: each screen wants its own crate's
+    /// type, the method's `Inner` through the `Method` newtype, and the
+    /// target's text down to a byte pointer and a word — reqwest's URL
+    /// through std's `String`, the two servers' path through http's
+    /// `Uri` to its `Bytes`. Another crate's type of the same shape, a
+    /// `Method` that is no newtype over `Inner`, or a text whose pointer
+    /// is not to bytes is no layout.
+    #[test]
+    fn test_request_layouts_reach_the_method_and_the_target_text() {
+        let t = |n: u32| TypeId(UnitSectionOffset(0xb00 + n as usize));
+        let (u8_t, word, byte_ptr, unit) = (t(0), t(1), t(2), t(3));
+        let (inner, method, other_method, non_null, unique, raw_vec_inner, raw_vec, vec) =
+            (t(4), t(5), t(6), t(7), t(8), t(9), t(10), t(11));
+        let (string, url, pending, bytes, byte_str, pq, uri, parts, request, info, rqctx) = (
+            t(12),
+            t(13),
+            t(14),
+            t(15),
+            t(16),
+            t(17),
+            t(18),
+            t(19),
+            t(20),
+            t(21),
+            t(22),
+        );
+        let mut fx = Fx::default();
+        fx.base(u8_t, "u8", Encoding::Unsigned, 1);
+        fx.base(word, "usize", Encoding::Unsigned, 8);
+        fx.pointer(byte_ptr, Some("*const u8"), u8_t);
+        let core_ns = fx.ns("core");
+        fx.strukt(unit, Some(core_ns), "()", &[], &[]);
+        let method_mod = fx.ns("http::method");
+        fx.enumm(
+            inner,
+            Some(method_mod),
+            "Inner",
+            &[("Get", unit), ("Post", unit)],
+        );
+        fx.strukt(
+            method,
+            Some(method_mod),
+            "Method",
+            &[("__0", inner, 0)],
+            &[],
+        );
+        fx.strukt(
+            other_method,
+            Some(method_mod),
+            "Method",
+            &[("__0", word, 0)],
+            &[],
+        );
+        let ptr_mod = fx.ns("core::ptr::non_null");
+        fx.strukt(
+            non_null,
+            Some(ptr_mod),
+            "NonNull<u8>",
+            &[("pointer", byte_ptr, 0)],
+            &[],
+        );
+        let unique_mod = fx.ns("core::ptr::unique");
+        fx.strukt(
+            unique,
+            Some(unique_mod),
+            "Unique<u8>",
+            &[("pointer", non_null, 0)],
+            &[],
+        );
+        let raw_vec_mod = fx.ns("alloc::raw_vec");
+        fx.strukt(
+            raw_vec_inner,
+            Some(raw_vec_mod),
+            "RawVecInner",
+            &[("ptr", unique, 0), ("cap", word, 8)],
+            &[],
+        );
+        fx.strukt(
+            raw_vec,
+            Some(raw_vec_mod),
+            "RawVec<u8>",
+            &[("inner", raw_vec_inner, 0)],
+            &[],
+        );
+        let vec_mod = fx.ns("alloc::vec");
+        fx.strukt(
+            vec,
+            Some(vec_mod),
+            "Vec<u8>",
+            &[("buf", raw_vec, 0), ("len", word, 16)],
+            &[],
+        );
+        let string_mod = fx.ns("alloc::string");
+        fx.strukt(string, Some(string_mod), "String", &[("vec", vec, 0)], &[]);
+        let url_mod = fx.ns("url");
+        fx.strukt(
+            url,
+            Some(url_mod),
+            "Url",
+            &[("serialization", string, 0)],
+            &[],
+        );
+        let client = fx.ns("reqwest::async_impl::client");
+        fx.strukt(
+            pending,
+            Some(client),
+            "PendingRequest",
+            &[("method", method, 0), ("url", url, 8)],
+            &[],
+        );
+        let bytes_mod = fx.ns("bytes::bytes");
+        fx.strukt(
+            bytes,
+            Some(bytes_mod),
+            "Bytes",
+            &[("ptr", byte_ptr, 8), ("len", word, 16)],
+            &[],
+        );
+        let byte_str_mod = fx.ns("http::byte_str");
+        fx.strukt(
+            byte_str,
+            Some(byte_str_mod),
+            "ByteStr",
+            &[("bytes", bytes, 0)],
+            &[],
+        );
+        let path_mod = fx.ns("http::uri::path");
+        fx.strukt(
+            pq,
+            Some(path_mod),
+            "PathAndQuery",
+            &[("data", byte_str, 0), ("query", word, 32)],
+            &[],
+        );
+        let uri_mod = fx.ns("http::uri");
+        fx.strukt(uri, Some(uri_mod), "Uri", &[("path_and_query", pq, 0)], &[]);
+        let request_mod = fx.ns("http::request");
+        fx.strukt(
+            parts,
+            Some(request_mod),
+            "Parts",
+            &[("method", method, 0), ("uri", uri, 8)],
+            &[],
+        );
+        fx.strukt(
+            request,
+            Some(request_mod),
+            "Request<B>",
+            &[("head", parts, 0), ("body", unit, 48)],
+            &[],
+        );
+        let handler = fx.ns("dropshot::handler");
+        fx.strukt(
+            info,
+            Some(handler),
+            "RequestInfo",
+            &[("method", method, 0), ("uri", uri, 8)],
+            &[],
+        );
+        fx.strukt(
+            rqctx,
+            Some(handler),
+            "RequestContext<C>",
+            &[("request", info, 8)],
+            &[],
+        );
+        let layout = |kind| HttpRequestLayout {
+            kind,
+            method_inner: inner,
+            target_ptr: byte_ptr,
+            target_len: word,
+        };
+        assert_eq!(
+            reqwest_pending_request(&fx.reader, pending),
+            Some(layout(HttpRequestKind::ReqwestPendingRequest))
+        );
+        assert_eq!(
+            http_request(&fx.reader, request),
+            Some(layout(HttpRequestKind::HttpRequest))
+        );
+        assert_eq!(
+            dropshot_request_context(&fx.reader, rqctx),
+            Some(layout(HttpRequestKind::DropshotRequestContext))
+        );
+        // Each screen wants its own type: the others are no layout to it.
+        assert_eq!(reqwest_pending_request(&fx.reader, request), None);
+        assert_eq!(http_request(&fx.reader, rqctx), None);
+        assert_eq!(dropshot_request_context(&fx.reader, pending), None);
+        // The text's pointer has to be to bytes and its length a word,
+        // in `Bytes` and in `String` alike.
+        let bytes_as = |fx: &mut Fx, ptr, len| {
+            fx.strukt(
+                bytes,
+                Some(bytes_mod),
+                "Bytes",
+                &[("ptr", ptr, 8), ("len", len, 16)],
+                &[],
+            )
+        };
+        bytes_as(&mut fx, word, word);
+        assert_eq!(http_request(&fx.reader, request), None);
+        bytes_as(&mut fx, byte_ptr, u8_t);
+        assert_eq!(http_request(&fx.reader, request), None);
+        bytes_as(&mut fx, byte_ptr, word);
+        assert!(http_request(&fx.reader, request).is_some());
+        let vec_as = |fx: &mut Fx, len| {
+            fx.strukt(
+                vec,
+                Some(vec_mod),
+                "Vec<u8>",
+                &[("buf", raw_vec, 0), ("len", len, 16)],
+                &[],
+            )
+        };
+        vec_as(&mut fx, u8_t);
+        assert_eq!(reqwest_pending_request(&fx.reader, pending), None);
+        vec_as(&mut fx, word);
+        assert!(reqwest_pending_request(&fx.reader, pending).is_some());
+        // The same shape in another crate says nothing.
+        let app = fx.ns("app");
+        fx.strukt(
+            request,
+            Some(app),
+            "Request<B>",
+            &[("head", parts, 0), ("body", unit, 48)],
+            &[],
+        );
+        assert_eq!(http_request(&fx.reader, request), None);
+        // A `Method` that is no newtype over `Inner` names no method.
+        fx.strukt(
+            info,
+            Some(handler),
+            "RequestInfo",
+            &[("method", other_method, 0), ("uri", uri, 8)],
+            &[],
+        );
+        assert_eq!(dropshot_request_context(&fx.reader, rqctx), None);
+        // A `url` that is no `Url` names no target.
+        fx.strukt(
+            pending,
+            Some(client),
+            "PendingRequest",
+            &[("method", method, 0), ("url", string, 8)],
+            &[],
+        );
+        assert_eq!(reqwest_pending_request(&fx.reader, pending), None);
     }
 
     #[test]

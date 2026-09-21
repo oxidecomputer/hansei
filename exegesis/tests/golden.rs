@@ -681,6 +681,89 @@ fn route_text(bundle: &Bundle, path: &hansei_bundle::TypedPath) -> String {
 /// primitive continuation, and a binding whose routes name exactly the
 /// reviewed members and land on the reviewed words. `client` says
 /// whether the client dispatch's routes are expected.
+/// Every type named by `key` carries a request binding under `kind`'s
+/// rule, from `package`'s reviewed file, whose method route lands on
+/// http's `Inner` and whose text routes read as `method` and `text`.
+fn assert_request(
+    program: &str,
+    bundle: &Bundle,
+    key: &str,
+    kind: hansei_bundle::SemanticRuleKind,
+    package: &str,
+    target: hansei_bundle::HttpRequestTarget,
+    method: &str,
+    ptr: &str,
+    len: &str,
+) {
+    use hansei_bundle::SemanticOrigin;
+    let s = |id| bundle.strings.get(id).unwrap();
+    let mut seen = 0;
+    for (name, _, record) in types_named(bundle, key) {
+        let record = record.unwrap_or_else(|| panic!("{program}: {name} has no semantic record"));
+        let request = record
+            .request
+            .as_ref()
+            .unwrap_or_else(|| panic!("{program}: {name} has no request binding: {record:?}"));
+        let rule = &bundle.semantics.rules[request.rule.0 as usize];
+        assert_eq!(rule.kind, kind, "{program}: {name}");
+        assert!(
+            matches!(
+                &bundle.semantics.origins[rule.origin.0 as usize],
+                SemanticOrigin::LibraryDelegation { package: p, .. } if s(*p) == package
+            ),
+            "{program}: {name}: {:?}",
+            bundle.semantics.origins[rule.origin.0 as usize]
+        );
+        assert_eq!(request.target, target, "{program}: {name}");
+        assert_eq!(
+            format!(
+                "{} -> {}",
+                route_text(bundle, &request.method),
+                type_name_of(bundle, request.method.target)
+            ),
+            format!("{method} -> http::method::Inner"),
+            "{program}: {name}"
+        );
+        assert_eq!(
+            format!(
+                "{} -> {}",
+                route_text(bundle, &request.target_ptr),
+                type_name_of(bundle, request.target_ptr.target)
+            ),
+            format!("{ptr} -> *const u8"),
+            "{program}: {name}"
+        );
+        assert_eq!(
+            format!(
+                "{} -> {}",
+                route_text(bundle, &request.target_len),
+                type_name_of(bundle, request.target_len.target)
+            ),
+            format!("{len} -> usize"),
+            "{program}: {name}"
+        );
+        seen += 1;
+    }
+    assert!(seen > 0, "{program}: no type named {key}");
+}
+
+fn type_name_of(bundle: &Bundle, id: hansei_bundle::BundleTypeId) -> String {
+    use hansei_bundle::TypeDef;
+    match bundle.types.get(id) {
+        Some(
+            TypeDef::Struct { name, .. }
+            | TypeDef::Enum { name, .. }
+            | TypeDef::CEnum { name, .. }
+            | TypeDef::Base { name, .. }
+            | TypeDef::Opaque { name, .. },
+        ) => bundle.strings.get(*name).unwrap().to_owned(),
+        Some(TypeDef::Pointer {
+            name: Some(name), ..
+        }) => bundle.strings.get(*name).unwrap().to_owned(),
+        other => format!("{other:?}"),
+    }
+}
+
 fn assert_http_conn(program: &str, bundle: &Bundle, key: &str, client: bool) {
     use hansei_bundle::{
         Continuation, HttpRole, PollAction, PollProgram, ResourceKind, SemanticOrigin,
@@ -1685,6 +1768,40 @@ fn assert_library_bindings(program: &str, bundle: &Bundle) {
                             .any(|(file, _)| s(*source).ends_with(&format!("/{file}"))),
                         "{program}: {} is not a reviewed file",
                         s(*source)
+                    );
+                    assert_eq!(program, "http-conns", "{program}");
+                }
+                // The request bindings: reqwest's in-flight request off its
+                // `poll`, http's request off the type's own methods, each
+                // under its crate's reviewed range, which only the hyper
+                // fixture links.
+                "reqwest" | "http" => {
+                    use exegesis::detect::semantics::{
+                        HTTP_REQUEST_V1_0_0, REQWEST_PENDING_REQUEST_V0_12_0,
+                    };
+                    let SemanticOrigin::LibraryDelegation { family, source, .. } = origin else {
+                        unreachable!()
+                    };
+                    let convention = match s(*package) {
+                        "reqwest" => &REQWEST_PENDING_REQUEST_V0_12_0,
+                        _ => &HTTP_REQUEST_V1_0_0,
+                    };
+                    assert_eq!(s(*family), convention.family, "{program}");
+                    assert_eq!(
+                        convention.select(&s(*version).parse().unwrap()),
+                        LayoutSelection::ReviewedRange,
+                        "{program}: {} {} is outside the reviewed range",
+                        s(*package),
+                        s(*version)
+                    );
+                    assert!(
+                        convention
+                            .checksums
+                            .iter()
+                            .any(|(file, _)| s(*source).ends_with(&format!("/{file}"))),
+                        "{program}: {} is not a reviewed file of {}",
+                        s(*source),
+                        convention.family
                     );
                     assert_eq!(program, "http-conns", "{program}");
                 }
@@ -3320,6 +3437,33 @@ fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
         // routes beside them.
         assert_http_conn(program, bundle, &client_dispatcher, true);
         assert_http_conn(program, bundle, &server_dispatcher, false);
+        // The request behind a connection, from either side: reqwest's
+        // in-flight request keeps the method and the whole URL as text
+        // through std's `String`; the handler's request keeps the
+        // method and the path's bytes in http's own layout.
+        use hansei_bundle::{HttpRequestTarget, SemanticRuleKind};
+        assert_request(
+            program,
+            bundle,
+            "reqwest::async_impl::client::PendingRequest",
+            SemanticRuleKind::ReqwestPendingRequest,
+            "reqwest",
+            HttpRequestTarget::Url,
+            "method.__0",
+            "url.serialization.vec.buf.inner.ptr.pointer.pointer",
+            "url.serialization.vec.len",
+        );
+        assert_request(
+            program,
+            bundle,
+            "http::request::Request<hyper::body::incoming::Incoming>",
+            SemanticRuleKind::HttpRequest,
+            "http",
+            HttpRequestTarget::PathAndQuery,
+            "head.method.__0",
+            "head.uri.path_and_query.data.bytes.ptr",
+            "head.uri.path_and_query.data.bytes.len",
+        );
         // Each upgradeable connection matches on its `inner` option:
         // `Some` polls the dispatcher inside the connection — `inner`
         // on the client, `conn` on the server — exclusively; `None` is

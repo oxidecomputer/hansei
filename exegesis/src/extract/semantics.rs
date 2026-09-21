@@ -28,23 +28,25 @@ use crate::bundle::origin::registry_origin;
 use crate::bundle::{
     AccessBinding, AccessKind, BundleTypeId, ContainerBinding, ContainerKind, Continuation,
     CoroutineLayout, CoroutinePhase, CoroutineState, DynFutureLayout, FutureEvidence, FutureFacts,
-    FutureTarget, HttpClientBinding, HttpConnBinding, HttpPeerBinding, HttpRole, HttpServerBinding,
-    IoOperationKind, LayoutSelection, MemberRef, PollAction, PollCase, PollProgram,
-    ResourceBinding, ResourceKind, SchedulerBinding, SchedulerClass, SelectBinding, Selector,
-    SemanticIssue, SemanticIssueKind, SemanticOrigin, SemanticOriginId, SemanticRule,
-    SemanticRuleId, SemanticRuleKind, SemanticTable, SourceFileEvidence, SourceLoc, Step,
-    StoragePolicy, StrRef, StringInterner, TaskEntryId, TaskFutureEntry, TypeDef, TypeSemantics,
-    TypeTable, TypedPath, WalkOutcome, WalkRole, WalksTable, container_roles, container_routes,
-    required_resource_roles, required_resource_routes, scheduler_role, semantic_path_target,
+    FutureTarget, HttpClientBinding, HttpConnBinding, HttpPeerBinding, HttpRequestBinding,
+    HttpRequestTarget, HttpRole, HttpServerBinding, IoOperationKind, LayoutSelection, MemberRef,
+    PollAction, PollCase, PollProgram, ResourceBinding, ResourceKind, SchedulerBinding,
+    SchedulerClass, SelectBinding, Selector, SemanticIssue, SemanticIssueKind, SemanticOrigin,
+    SemanticOriginId, SemanticRule, SemanticRuleId, SemanticRuleKind, SemanticTable,
+    SourceFileEvidence, SourceLoc, Step, StoragePolicy, StrRef, StringInterner, TaskEntryId,
+    TaskFutureEntry, TypeDef, TypeSemantics, TypeTable, TypedPath, WalkOutcome, WalkRole,
+    WalksTable, container_roles, container_routes, required_resource_roles,
+    required_resource_routes, scheduler_role, semantic_path_target,
 };
 use crate::detect::Family;
 use crate::detect::adapters::{
-    self, H1Role, HttpDispatcherLayout, InstrumentedLayout, Pointee, SelectLayout, StdAdapter,
-    WidePointer, hyper_h1,
+    self, H1Role, HttpDispatcherLayout, HttpRequestKind, HttpRequestLayout, InstrumentedLayout,
+    Pointee, SelectLayout, StdAdapter, WidePointer, hyper_h1, request,
 };
 use crate::detect::semantics::{
-    DROPSHOT_SERVER_V0_17_0, FUTURES_UTIL_ADAPTERS_V0_3_30, HYPER_H1_CONN_V1_6_0,
-    HYPER_UTIL_AUTO_CONN_V0_1_10, HYPER_UTIL_TOKIO_SLEEP_V0_1_10, LibraryConvention,
+    DROPSHOT_HANDLER_V0_17_0, DROPSHOT_SERVER_V0_17_0, FUTURES_UTIL_ADAPTERS_V0_3_30,
+    HTTP_REQUEST_V1_0_0, HYPER_H1_CONN_V1_6_0, HYPER_UTIL_AUTO_CONN_V0_1_10,
+    HYPER_UTIL_TOKIO_SLEEP_V0_1_10, LibraryConvention, REQWEST_PENDING_REQUEST_V0_12_0,
     RustcConvention, TOKIO_INTERVAL_TICK_V1_47, TOKIO_SELECT_V1_47, TOKIO_STREAM_MAP_V0_1_14,
     TOKIO_STREAM_WATCH_V0_1_14, TOKIO_UTIL_REUSABLE_BOX_V0_7_11, TRACING_INSTRUMENTED_V0_1_40,
     library_convention, rustc_core_pending_convention, rustc_coroutine_convention,
@@ -453,6 +455,20 @@ struct HttpPeerSeed {
     sources: BTreeSet<PollSource>,
 }
 
+/// A type keeping a request's words as its screen saw it, by bundle
+/// id: which crate's type, the method's enum, the two words of the
+/// target's text, and — for the two that are no future — the type's
+/// own method declarations, which its crate's version is read off. A
+/// future's version comes off its `poll` like any other's.
+#[derive(Clone, Debug)]
+struct RequestSeed {
+    kind: HttpRequestKind,
+    method_inner: BundleTypeId,
+    target_ptr: BundleTypeId,
+    target_len: BundleTypeId,
+    sources: BTreeSet<PollSource>,
+}
+
 #[derive(Default)]
 pub(super) struct Seed {
     polls: BTreeSet<String>,
@@ -468,6 +484,9 @@ pub(super) struct Seed {
     /// hyper's HTTP/1 dispatcher, where the type is one: the resource
     /// whose words are the connection's verdict.
     http: Option<HttpSeed>,
+    /// A type keeping a request's words, where the type is one: a fact
+    /// read wherever a chain or a frame holds a value of it.
+    request: Option<RequestSeed>,
     /// core's `Pending<T>` as its screen saw it: the compiler verdict on
     /// its defining units, which is the whole of the rule's origin. The
     /// layout is the screen's; there is no member to route through.
@@ -490,6 +509,7 @@ impl Seed {
             || self.container.is_some()
             || self.select.is_some()
             || self.http.is_some()
+            || self.request.is_some()
     }
 }
 
@@ -674,6 +694,23 @@ fn http_seed(
     })
 }
 
+/// The screen's request layout by bundle id, with the declarations its
+/// crate's version is read off. `None` when a type it names was not
+/// emitted: a word the table does not carry cannot be a recorded route.
+fn request_seed(
+    layout: HttpRequestLayout,
+    bundle_id: impl Fn(TypeId) -> Option<BundleTypeId>,
+    sources: BTreeSet<PollSource>,
+) -> Option<RequestSeed> {
+    Some(RequestSeed {
+        kind: layout.kind,
+        method_inner: bundle_id(layout.method_inner)?,
+        target_ptr: bundle_id(layout.target_ptr)?,
+        target_len: bundle_id(layout.target_len)?,
+        sources,
+    })
+}
+
 pub(super) fn collect_semantic_seeds(
     em: &Emitter<'_>,
     polls: &BTreeMap<TypeId, BTreeSet<String>>,
@@ -778,6 +815,21 @@ pub(super) fn collect_semantic_seeds(
             && let Some(seed) = http_seed(layout, bundle_id, &type_sources)
         {
             seeds.entry(ty).or_default().http = Some(seed);
+        } else if name.starts_with("reqwest::async_impl::client::PendingRequest")
+            && let Some(layout) = adapters::reqwest_pending_request(reader, raw)
+            && let Some(seed) = request_seed(layout, bundle_id, BTreeSet::new())
+        {
+            seeds.entry(ty).or_default().request = Some(seed);
+        } else if name.starts_with("http::request::Request<")
+            && let Some(layout) = adapters::http_request(reader, raw)
+            && let Some(seed) = request_seed(layout, bundle_id, type_sources(raw))
+        {
+            seeds.entry(ty).or_default().request = Some(seed);
+        } else if name.starts_with("dropshot::handler::RequestContext<")
+            && let Some(layout) = adapters::dropshot_request_context(reader, raw)
+            && let Some(seed) = request_seed(layout, bundle_id, type_sources(raw))
+        {
+            seeds.entry(ty).or_default().request = Some(seed);
         } else if let Some(library) = library_seed(
             reader,
             raw,
@@ -1374,6 +1426,9 @@ struct Draft {
     /// The connection words this dispatcher's poll drives, where it is
     /// hyper's under a reviewed range.
     http: Option<HttpPlan>,
+    /// The request's words this value keeps, where its type is one a
+    /// reviewed range says does.
+    request: Option<RequestPlan>,
     own_record: bool,
 }
 
@@ -1541,6 +1596,16 @@ pub(super) fn bind_semantics(
                     draft.http = Some(plan);
                 }
                 Err(decline) => draft.decline = Some(decline),
+            }
+        }
+        // The request's words are a fact beside whatever else the record
+        // says, and route through nothing the type polls: a declined
+        // origin or a moved layout is an issue beside the record, not
+        // the continuation's reason.
+        if readable && let Some(request) = &seed.request {
+            match plan_request(ty, request, &seed.poll_sources, types, strings) {
+                Ok(plan) => draft.request = Some(plan),
+                Err(decline) => draft.issues.push(decline),
             }
         }
         draft.storage = Some(storage);
@@ -1852,6 +1917,16 @@ pub(super) fn bind_semantics(
             branches: plan.branches,
             arms: plan.arms,
         });
+        let request = draft
+            .request
+            .filter(|_| readable)
+            .map(|plan| HttpRequestBinding {
+                rule: rules.rule(&plan.rule, strings, library),
+                method: plan.method,
+                target: plan.target,
+                target_ptr: plan.target_ptr,
+                target_len: plan.target_len,
+            });
         records.push(TypeSemantics {
             ty,
             storage,
@@ -1865,7 +1940,7 @@ pub(super) fn bind_semantics(
             container,
             select,
             http,
-            request: None,
+            request,
             issues,
         });
     }
@@ -2853,6 +2928,129 @@ fn plan_http(
     })
 }
 
+/// A request binding as planned: its rule, and every route held to
+/// the final table.
+#[derive(Clone, Debug)]
+struct RequestPlan {
+    rule: RuleKey,
+    target: HttpRequestTarget,
+    method: TypedPath,
+    target_ptr: TypedPath,
+    target_len: TypedPath,
+}
+
+/// A route as a run of members from `root`, each level checked as it
+/// is entered, then held whole to the declared target.
+fn member_route(
+    types: &TypeTable,
+    strings: &mut StringInterner,
+    root: BundleTypeId,
+    names: &[&str],
+    target: BundleTypeId,
+) -> Result<TypedPath, Decline> {
+    let mut steps = Vec::with_capacity(names.len());
+    let mut current = root;
+    for name in names {
+        let (name, member_ty, _) = member_named(types, strings, current, name).ok_or((
+            SemanticIssueKind::AmbiguousLayout,
+            format!("no unique member {name:?}"),
+        ))?;
+        steps.push(Step::Member(MemberRef::Named(name)));
+        current = member_ty;
+    }
+    checked_path(types, root, steps, target)
+}
+
+/// Plan a request binding: the origin first — a future's `poll`
+/// declarations, or the type's own method declarations for the two
+/// request records that are no future, on a cargo registry path at a
+/// version inside the crate's reviewed range — then the three routes
+/// the screen described, by the reviewed layout's member names, held to
+/// the final table and landing on the types the screen saw. The target
+/// text's two words come out of one holder: the `Bytes` view of a
+/// server's path, or the `String` of a client's URL through std's
+/// vector and raw buffer, crossed by name under the request's own rule
+/// as the connection binding crosses into the buffer it reads.
+fn plan_request(
+    ty: BundleTypeId,
+    seed: &RequestSeed,
+    poll_sources: &BTreeSet<PollSource>,
+    types: &TypeTable,
+    strings: &mut StringInterner,
+) -> Result<RequestPlan, Decline> {
+    use request::*;
+    let (convention, kind, declared_by, sources) = match seed.kind {
+        HttpRequestKind::ReqwestPendingRequest => (
+            &REQWEST_PENDING_REQUEST_V0_12_0,
+            SemanticRuleKind::ReqwestPendingRequest,
+            "poll",
+            poll_sources,
+        ),
+        HttpRequestKind::HttpRequest => (
+            &HTTP_REQUEST_V1_0_0,
+            SemanticRuleKind::HttpRequest,
+            "method",
+            &seed.sources,
+        ),
+        HttpRequestKind::DropshotRequestContext => (
+            &DROPSHOT_HANDLER_V0_17_0,
+            SemanticRuleKind::DropshotRequestContext,
+            "method",
+            &seed.sources,
+        ),
+    };
+    // A type's own method declarations are the ones in its crate: a
+    // foreign trait implemented on it — reqwest converting its request
+    // into http's — is declared in the implementing crate's file and
+    // says nothing about which http declared the type. Where nothing is
+    // left the whole set goes to the decline, so its reason names what
+    // was found.
+    let own: BTreeSet<PollSource> = sources
+        .iter()
+        .filter(|source| {
+            registry_origin(&source.path).is_some_and(|origin| origin.package == convention.package)
+        })
+        .cloned()
+        .collect();
+    let sources = if declared_by == "method" && !own.is_empty() {
+        &own
+    } else {
+        sources
+    };
+    let origin = delegation_origin(sources, convention, declared_by)?;
+    let rule = RuleKey::Delegation { kind, origin };
+    fn under(prefix: &[&'static str], rest: &[&'static str]) -> Vec<&'static str> {
+        prefix.iter().chain(rest).copied().collect()
+    }
+    let (target, method, ptr, len) = match seed.kind {
+        HttpRequestKind::ReqwestPendingRequest => (
+            HttpRequestTarget::Url,
+            vec![METHOD, PAYLOAD],
+            under(&[URL, SERIALIZATION], &STRING_PTR),
+            under(&[URL, SERIALIZATION], &STRING_LEN),
+        ),
+        HttpRequestKind::HttpRequest => (
+            HttpRequestTarget::PathAndQuery,
+            vec![HEAD, METHOD, PAYLOAD],
+            under(&[HEAD], &PATH_PTR),
+            under(&[HEAD], &PATH_LEN),
+        ),
+        HttpRequestKind::DropshotRequestContext => (
+            HttpRequestTarget::PathAndQuery,
+            vec![REQUEST, METHOD, PAYLOAD],
+            under(&[REQUEST], &PATH_PTR),
+            under(&[REQUEST], &PATH_LEN),
+        ),
+    };
+    Ok(RequestPlan {
+        rule,
+        target,
+        method: member_route(types, strings, ty, &method, seed.method_inner)?,
+        target_ptr: member_route(types, strings, ty, &ptr, seed.target_ptr)?,
+        target_len: member_route(types, strings, ty, &len, seed.target_len)?,
+    })
+}
+
 /// Plan a `select!`'s binding: the origin first — the closure
 /// environment declared in tokio's `src/macros/select.rs` on a cargo
 /// registry path at a version inside the reviewed range — then the two
@@ -3081,7 +3279,7 @@ fn delegation_origin(
             "no {declared_by} declaration records where this instantiation's implementation lives"
         )));
     }
-    let mut agreed: Option<(String, semver::Version)> = None;
+    let mut declared: Vec<(String, semver::Version)> = Vec::new();
     let mut files: Vec<(String, [u8; 16])> = Vec::new();
     for source in sources {
         let Some(origin) = registry_origin(&source.path) else {
@@ -3096,21 +3294,47 @@ fn delegation_origin(
                 source.path
             )));
         }
-        match &agreed {
-            Some((path, _)) if path != origin.path => {
-                return Err(decline(format!(
-                    "declared in both {path} and {}",
-                    origin.path
-                )));
-            }
-            Some(_) => {}
-            None => agreed = Some((origin.path.to_owned(), origin.version)),
+        if !declared.iter().any(|(path, _)| path == origin.path) {
+            declared.push((origin.path.to_owned(), origin.version));
         }
         if let Some(md5) = source.md5 {
             files.push((origin.path.to_owned(), md5));
         }
     }
-    let (source, version) = agreed.expect("at least one source");
+    // A target linking two releases of one crate — two reqwests, each
+    // with its own copy of the type — declares the type in both, and
+    // the layouts are one type here only because they are identical.
+    // Where every release declared is inside the reviewed range the
+    // binding holds for each of them, and the origin names the newest;
+    // a release outside it is the decline it would be alone, and two
+    // files of one release is a type the review did not describe.
+    declared.sort_by(|a, b| a.1.cmp(&b.1));
+    let (source, version) = match declared.as_slice() {
+        [] => unreachable!("at least one source"),
+        [one] => one.clone(),
+        [first, .., last] => {
+            let mut versions: Vec<&semver::Version> = declared.iter().map(|(_, v)| v).collect();
+            versions.dedup();
+            if versions.len() != declared.len() {
+                return Err(decline(format!(
+                    "declared in both {} and {}",
+                    first.0, last.0
+                )));
+            }
+            if let Some((_, outside)) = declared
+                .iter()
+                .find(|(_, v)| library_convention(convention, v).is_err())
+            {
+                return Err(decline(format!(
+                    "declared in both {} and {}, and {outside} is outside the reviewed range {}",
+                    first.0,
+                    last.0,
+                    convention.range()
+                )));
+            }
+            last.clone()
+        }
+    };
     let convention = match library_convention(convention, &version) {
         Ok(convention) => convention,
         Err(side) => {
@@ -4354,6 +4578,49 @@ mod tests {
         }
     }
 
+    /// A request's origin is read from its own crate's method
+    /// declarations where it has any, but a method-declared type with
+    /// none keeps what it has, so the decline names it; and a
+    /// poll-declared one is never narrowed to its own crate.
+    #[test]
+    fn test_a_request_origin_keeps_foreign_declarations_to_decline_on() {
+        const ROOT: &str = "/home/u/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f";
+        let reqwest = format!("{ROOT}/reqwest-0.13.2/src/async_impl/request.rs");
+        let tokio = format!("{ROOT}/tokio-1.52.4/src/runtime/task/core.rs");
+        let seed = |kind, sources| RequestSeed {
+            kind,
+            method_inner: BundleTypeId(1),
+            target_ptr: BundleTypeId(2),
+            target_len: BundleTypeId(3),
+            sources,
+        };
+        let decline = |seed: &RequestSeed, polls: &BTreeSet<PollSource>| {
+            let mut strings = StringInterner::new();
+            plan_request(
+                BundleTypeId(0),
+                seed,
+                polls,
+                &TypeTable::default(),
+                &mut strings,
+            )
+            .map(|_| ())
+            .unwrap_err()
+            .1
+        };
+        // http's `Request` with only reqwest's conversion declared on it.
+        let request = seed(
+            HttpRequestKind::HttpRequest,
+            BTreeSet::from([source(&reqwest, None)]),
+        );
+        let why = decline(&request, &BTreeSet::new());
+        assert!(why.contains("which is not the http crate"), "{why}");
+        // reqwest's `PendingRequest` whose polls include another crate's.
+        let pending = seed(HttpRequestKind::ReqwestPendingRequest, BTreeSet::new());
+        let polls = BTreeSet::from([source(&reqwest, None), source(&tokio, None)]);
+        let why = decline(&pending, &polls);
+        assert!(why.contains("which is not the reqwest crate"), "{why}");
+    }
+
     const REGISTRY: &str = "/home/u/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tracing-0.1.40/src/instrument.rs";
 
     /// The origin is what every poll declaration agrees on: a registry
@@ -4446,15 +4713,32 @@ mod tests {
             )])
             .contains("0.1.45 is above the reviewed range 0.1.40–0.1.44")
         );
+        // Two releases declaring the type, both reviewed, agree on the
+        // newest: a target linking both has one type for their one
+        // layout. A release outside the range declines the pair.
+        let both = delegation_origin(
+            &BTreeSet::from([
+                source(REGISTRY, None),
+                source(
+                    "/home/u/.cargo/registry/src/idx/tracing-0.1.41/src/instrument.rs",
+                    None,
+                ),
+            ]),
+            &TRACING_INSTRUMENTED_V0_1_40,
+            "poll",
+        )
+        .unwrap();
+        assert_eq!(both.version, "0.1.41");
+        assert!(both.source.ends_with("tracing-0.1.41/src/instrument.rs"));
         assert!(
             declined(&[
                 source(REGISTRY, None),
                 source(
-                    "/home/u/.cargo/registry/src/idx/tracing-0.1.41/src/instrument.rs",
+                    "/home/u/.cargo/registry/src/idx/tracing-0.1.45/src/instrument.rs",
                     None
                 ),
             ])
-            .contains("declared in both")
+            .contains("0.1.45 is outside the reviewed range 0.1.40–0.1.44")
         );
         let mismatch = declined(&[source(REGISTRY, Some([0xab; 16]))]);
         assert!(

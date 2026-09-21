@@ -585,6 +585,501 @@ pub const DROPSHOT_SERVER_V0_17_0: LibraryConvention = LibraryConvention {
     ],
 };
 
+/// reqwest's client request as 0.12.0 through 0.13.2 implement it,
+/// reviewed in `src/async_impl/client.rs` of each release: `send()`
+/// returns a `Pending` whose `PendingInner::Request` holds the
+/// `PendingRequest` the client polls — inline through 0.12.19, behind a
+/// `Pin<Box<..>>` from 0.12.20 — and that request keeps `method:
+/// Method` and `url: Url` for the retries and redirects its `poll`
+/// may issue, unchanged in every release. The file churns with the
+/// client builder, the retry policy and the redirect handling around
+/// them; the two members the binding addresses, and `PendingRequest`
+/// implementing `Future` in its own right, hold across the range, so
+/// the boxing is no divergence the binding sees: the request is met
+/// as its own future either way. `url.serialization` is the whole URL
+/// as text, which is what the `url` crate keeps its parsed form as.
+///
+/// The ceiling is the newest release the cores on hand build; it
+/// advances by hand when a newer one is read (0.13.3 and 0.13.4 match
+/// on every addressed declaration).
+pub const REQWEST_PENDING_REQUEST_V0_12_0: LibraryConvention = LibraryConvention {
+    package: "reqwest",
+    family: "reqwest-pending-request-0.12.0",
+    floor: (0, 12, 0),
+    ceiling: (0, 13, 2),
+    checksums: &[
+        // src/async_impl/client.rs, 0.12.0
+        (
+            "src/async_impl/client.rs",
+            [
+                0x84, 0x35, 0x9d, 0x45, 0x46, 0x6f, 0xbc, 0x6e, 0xa9, 0xb6, 0x0d, 0x9e, 0x20, 0x50,
+                0xb3, 0x1d,
+            ],
+        ),
+        // src/async_impl/client.rs, 0.12.1
+        (
+            "src/async_impl/client.rs",
+            [
+                0xfc, 0x3b, 0x79, 0xfd, 0x3a, 0x17, 0x99, 0x73, 0xad, 0xfa, 0xf8, 0xfb, 0x35, 0xa2,
+                0xbf, 0x0f,
+            ],
+        ),
+        // src/async_impl/client.rs, 0.12.2
+        (
+            "src/async_impl/client.rs",
+            [
+                0x9b, 0xb5, 0xe4, 0xa7, 0x09, 0x69, 0x11, 0x09, 0x26, 0x8f, 0x67, 0x0b, 0xa5, 0xf5,
+                0x85, 0xf1,
+            ],
+        ),
+        // src/async_impl/client.rs, 0.12.3
+        (
+            "src/async_impl/client.rs",
+            [
+                0x15, 0x9f, 0x99, 0x05, 0x86, 0x57, 0xa3, 0x72, 0x8f, 0x31, 0x6a, 0x9e, 0x72, 0xd2,
+                0xcf, 0x95,
+            ],
+        ),
+        // src/async_impl/client.rs, 0.12.4
+        (
+            "src/async_impl/client.rs",
+            [
+                0xea, 0xd0, 0x61, 0xb1, 0xbd, 0x74, 0xbc, 0xd9, 0x4b, 0xef, 0x6a, 0xe8, 0xfd, 0x93,
+                0xd2, 0xbc,
+            ],
+        ),
+        // src/async_impl/client.rs, 0.12.5
+        (
+            "src/async_impl/client.rs",
+            [
+                0x07, 0x39, 0x73, 0xfb, 0x18, 0x4b, 0x3b, 0x4c, 0x45, 0xe6, 0x38, 0xc5, 0x8b, 0x50,
+                0x45, 0x60,
+            ],
+        ),
+        // src/async_impl/client.rs, 0.12.6
+        (
+            "src/async_impl/client.rs",
+            [
+                0xfb, 0xf6, 0x70, 0x0a, 0x75, 0xac, 0x3f, 0xc1, 0xf0, 0x75, 0xce, 0x95, 0x7a, 0x35,
+                0xcc, 0xbb,
+            ],
+        ),
+        // src/async_impl/client.rs, 0.12.7
+        (
+            "src/async_impl/client.rs",
+            [
+                0x57, 0xbb, 0x08, 0xdc, 0xcf, 0xc3, 0x36, 0x03, 0xdc, 0x99, 0xe0, 0x2a, 0xb8, 0xc8,
+                0xc1, 0x55,
+            ],
+        ),
+        // src/async_impl/client.rs, 0.12.8
+        (
+            "src/async_impl/client.rs",
+            [
+                0x4d, 0xad, 0x39, 0xcc, 0x68, 0x76, 0x36, 0xd3, 0xdd, 0x9f, 0x8d, 0xa1, 0x69, 0xfc,
+                0x05, 0x70,
+            ],
+        ),
+        // src/async_impl/client.rs, 0.12.9
+        (
+            "src/async_impl/client.rs",
+            [
+                0xf0, 0x62, 0x20, 0x6e, 0x84, 0x69, 0x5a, 0x33, 0x56, 0x67, 0x8e, 0x6a, 0x6b, 0x29,
+                0xf2, 0xea,
+            ],
+        ),
+        // src/async_impl/client.rs, 0.12.10
+        (
+            "src/async_impl/client.rs",
+            [
+                0x42, 0x37, 0x18, 0x8e, 0xd3, 0x44, 0xf5, 0x67, 0x3c, 0xac, 0xa0, 0x1a, 0xef, 0x8f,
+                0xcc, 0x3c,
+            ],
+        ),
+        // src/async_impl/client.rs, 0.12.11 through 0.12.15
+        (
+            "src/async_impl/client.rs",
+            [
+                0x1e, 0xad, 0xb8, 0xc9, 0x85, 0xa7, 0xf9, 0x3a, 0x09, 0xbf, 0xee, 0x79, 0xa2, 0xa2,
+                0x64, 0xdd,
+            ],
+        ),
+        // src/async_impl/client.rs, 0.12.16
+        (
+            "src/async_impl/client.rs",
+            [
+                0x8a, 0x13, 0x6e, 0xa2, 0xd3, 0x4f, 0x69, 0x2c, 0xf8, 0xde, 0x4b, 0xc9, 0x23, 0x26,
+                0x1d, 0x38,
+            ],
+        ),
+        // src/async_impl/client.rs, 0.12.17 through 0.12.19
+        (
+            "src/async_impl/client.rs",
+            [
+                0x5e, 0xbd, 0xcb, 0xeb, 0xdd, 0xd8, 0xa0, 0x81, 0x1c, 0xd1, 0xdf, 0x44, 0x6a, 0x60,
+                0x2b, 0x9d,
+            ],
+        ),
+        // src/async_impl/client.rs, 0.12.20
+        (
+            "src/async_impl/client.rs",
+            [
+                0x11, 0x47, 0x8e, 0xc2, 0xad, 0x12, 0xb7, 0xd5, 0x87, 0x65, 0x0c, 0x4c, 0x4c, 0x69,
+                0xcd, 0xda,
+            ],
+        ),
+        // src/async_impl/client.rs, 0.12.21 through 0.12.22
+        (
+            "src/async_impl/client.rs",
+            [
+                0x1d, 0x18, 0xb9, 0x12, 0xcf, 0x8f, 0xaa, 0xd4, 0x2e, 0xd1, 0x55, 0x0f, 0x61, 0x87,
+                0x82, 0xf6,
+            ],
+        ),
+        // src/async_impl/client.rs, 0.12.23
+        (
+            "src/async_impl/client.rs",
+            [
+                0xc3, 0x9f, 0x8e, 0x00, 0xd5, 0xb6, 0x40, 0x62, 0x8c, 0xaa, 0x95, 0x02, 0x6f, 0x67,
+                0x9a, 0x92,
+            ],
+        ),
+        // src/async_impl/client.rs, 0.12.24
+        (
+            "src/async_impl/client.rs",
+            [
+                0x06, 0xbe, 0x11, 0xaf, 0xe2, 0xd6, 0xaa, 0x4a, 0xd9, 0x06, 0xdb, 0xac, 0x30, 0x3b,
+                0x13, 0xa3,
+            ],
+        ),
+        // src/async_impl/client.rs, 0.12.25
+        (
+            "src/async_impl/client.rs",
+            [
+                0xa2, 0x02, 0xb2, 0x6c, 0x6c, 0xd9, 0x65, 0x3b, 0x80, 0x53, 0x52, 0x89, 0x0e, 0x2c,
+                0x43, 0x5e,
+            ],
+        ),
+        // src/async_impl/client.rs, 0.12.26
+        (
+            "src/async_impl/client.rs",
+            [
+                0x78, 0x39, 0x38, 0x88, 0x80, 0x06, 0x83, 0xc5, 0x77, 0x62, 0x02, 0x81, 0x30, 0x7f,
+                0xb3, 0xe7,
+            ],
+        ),
+        // src/async_impl/client.rs, 0.12.27 through 0.12.28
+        (
+            "src/async_impl/client.rs",
+            [
+                0xbe, 0x74, 0x52, 0x73, 0x81, 0xbe, 0x91, 0x47, 0xdf, 0xf3, 0x0e, 0x99, 0xcc, 0x28,
+                0xc9, 0x55,
+            ],
+        ),
+        // src/async_impl/client.rs, 0.13.0
+        (
+            "src/async_impl/client.rs",
+            [
+                0x6f, 0xef, 0xab, 0x6b, 0xec, 0xd2, 0x5b, 0xca, 0x65, 0x54, 0xda, 0xbb, 0x1a, 0xd5,
+                0x2b, 0x49,
+            ],
+        ),
+        // src/async_impl/client.rs, 0.13.1
+        (
+            "src/async_impl/client.rs",
+            [
+                0xc6, 0xd9, 0x0a, 0xfa, 0x7b, 0xc6, 0x4e, 0x34, 0x06, 0xf7, 0x84, 0xb5, 0x10, 0x8e,
+                0x62, 0x1f,
+            ],
+        ),
+        // src/async_impl/client.rs, 0.13.2
+        (
+            "src/async_impl/client.rs",
+            [
+                0x14, 0x1e, 0x93, 0x91, 0x30, 0xc2, 0xa9, 0x7f, 0x54, 0x7f, 0x02, 0xfb, 0x1c, 0xc9,
+                0xfa, 0xd8,
+            ],
+        ),
+    ],
+};
+
+/// http's request as 1.0.0 through 1.4.2 implement it, reviewed in
+/// `src/request.rs`, `src/method.rs`, `src/uri/mod.rs`, `src/uri/path.rs`
+/// and `src/byte_str.rs` of each release: `Request<T> { head: Parts,
+/// body: T }`, `Parts { method, uri, version, headers, extensions }`,
+/// `Method(Inner)` with `Inner`'s variants naming the standard methods
+/// and the two extension forms, `Uri { scheme, authority,
+/// path_and_query }`, `PathAndQuery { data: ByteStr, query: u16 }` and
+/// `ByteStr { bytes: Bytes }` are byte-identical across the range; the
+/// files churn with parsing, validation and docs around them. A
+/// server's handler holds the request it is running for as this type
+/// where nothing wraps it, so the request line is read off its head.
+///
+/// The ceiling is the newest release the cores on hand build; it
+/// advances by hand when a newer one is read (1.5.0 adds a variant to
+/// `Inner`, which the binding reads by name).
+pub const HTTP_REQUEST_V1_0_0: LibraryConvention = LibraryConvention {
+    package: "http",
+    family: "http-request-1.0.0",
+    floor: (1, 0, 0),
+    ceiling: (1, 4, 2),
+    checksums: &[
+        // src/request.rs, 1.0.0
+        (
+            "src/request.rs",
+            [
+                0xda, 0x86, 0x1a, 0x88, 0x72, 0xe3, 0x09, 0x49, 0xd7, 0x3c, 0x81, 0x30, 0xe0, 0x40,
+                0xa5, 0x8f,
+            ],
+        ),
+        // src/request.rs, 1.1.0
+        (
+            "src/request.rs",
+            [
+                0x85, 0x93, 0xd7, 0x9c, 0xc4, 0x47, 0xfa, 0x4a, 0x07, 0x8c, 0xb3, 0xf4, 0xdf, 0xfe,
+                0x77, 0xf5,
+            ],
+        ),
+        // src/request.rs, 1.2.0 through 1.3.1
+        (
+            "src/request.rs",
+            [
+                0x91, 0xb3, 0x19, 0x87, 0xbb, 0xec, 0x77, 0xe1, 0xff, 0xd4, 0xcb, 0xea, 0xf1, 0xf7,
+                0x84, 0xa9,
+            ],
+        ),
+        // src/request.rs, 1.4.0
+        (
+            "src/request.rs",
+            [
+                0x79, 0x71, 0xb6, 0xd4, 0x81, 0xf3, 0x81, 0xb3, 0x19, 0x1e, 0x80, 0x7a, 0x59, 0xa0,
+                0xbc, 0x36,
+            ],
+        ),
+        // src/request.rs, 1.4.1 through 1.4.2
+        (
+            "src/request.rs",
+            [
+                0xb8, 0x46, 0xa8, 0x29, 0xa5, 0xdf, 0x9d, 0xea, 0xa2, 0x3a, 0x43, 0x94, 0x07, 0x56,
+                0xa2, 0xf9,
+            ],
+        ),
+        // src/method.rs, 1.0.0
+        (
+            "src/method.rs",
+            [
+                0x46, 0xad, 0x2e, 0x29, 0xd6, 0xc5, 0x4b, 0xec, 0x6f, 0x08, 0xbf, 0xd2, 0x4c, 0x03,
+                0xa9, 0x0f,
+            ],
+        ),
+        // src/method.rs, 1.1.0
+        (
+            "src/method.rs",
+            [
+                0x5e, 0xe4, 0xf2, 0x47, 0x04, 0xd1, 0x00, 0x5d, 0x05, 0xd5, 0x30, 0x0c, 0x9d, 0x60,
+                0x3f, 0x44,
+            ],
+        ),
+        // src/method.rs, 1.2.0 through 1.4.0
+        (
+            "src/method.rs",
+            [
+                0x3d, 0x13, 0x02, 0x02, 0x35, 0x5e, 0x84, 0x03, 0xcf, 0xe2, 0x15, 0x49, 0x76, 0xa8,
+                0x14, 0x77,
+            ],
+        ),
+        // src/method.rs, 1.4.1
+        (
+            "src/method.rs",
+            [
+                0x7a, 0x4f, 0x16, 0x84, 0xb4, 0x5a, 0xc6, 0xc4, 0xda, 0xf4, 0xac, 0x0b, 0x25, 0x78,
+                0x0c, 0xff,
+            ],
+        ),
+        // src/method.rs, 1.4.2
+        (
+            "src/method.rs",
+            [
+                0xb8, 0x81, 0xb1, 0x5d, 0xe0, 0x80, 0x85, 0x3f, 0xb2, 0x9c, 0x22, 0xec, 0x7d, 0x21,
+                0x45, 0x4e,
+            ],
+        ),
+        // src/uri/mod.rs, 1.0.0
+        (
+            "src/uri/mod.rs",
+            [
+                0x9c, 0x28, 0xf7, 0x1d, 0xb0, 0x40, 0x27, 0x27, 0x0b, 0xd5, 0x18, 0x7b, 0xae, 0x3c,
+                0x0d, 0x59,
+            ],
+        ),
+        // src/uri/mod.rs, 1.1.0
+        (
+            "src/uri/mod.rs",
+            [
+                0x8b, 0x0e, 0x0e, 0x21, 0x1e, 0x5d, 0x1d, 0xd1, 0x4e, 0x8a, 0xed, 0xcb, 0x41, 0xa7,
+                0xfe, 0x0a,
+            ],
+        ),
+        // src/uri/mod.rs, 1.2.0 through 1.4.0
+        (
+            "src/uri/mod.rs",
+            [
+                0x84, 0xc6, 0xc1, 0x4b, 0xa2, 0xc2, 0x2e, 0xb3, 0xea, 0x59, 0x37, 0x03, 0x7d, 0x94,
+                0x4f, 0xcc,
+            ],
+        ),
+        // src/uri/mod.rs, 1.4.1 through 1.4.2
+        (
+            "src/uri/mod.rs",
+            [
+                0xe4, 0x04, 0x37, 0xc6, 0xa2, 0x08, 0xb3, 0x37, 0xe6, 0x48, 0x06, 0xa0, 0xd9, 0x41,
+                0x9d, 0x82,
+            ],
+        ),
+        // src/uri/path.rs, 1.0.0
+        (
+            "src/uri/path.rs",
+            [
+                0xe5, 0x9d, 0x05, 0xfb, 0x1f, 0x08, 0xc9, 0xce, 0x42, 0x4e, 0x95, 0x2e, 0x44, 0xac,
+                0xb7, 0x72,
+            ],
+        ),
+        // src/uri/path.rs, 1.1.0
+        (
+            "src/uri/path.rs",
+            [
+                0x02, 0xc4, 0x71, 0xdb, 0x9c, 0x3e, 0x49, 0x4b, 0x05, 0xbb, 0x93, 0xcc, 0x76, 0x9e,
+                0xf5, 0x0a,
+            ],
+        ),
+        // src/uri/path.rs, 1.2.0
+        (
+            "src/uri/path.rs",
+            [
+                0x0b, 0x84, 0x02, 0x4a, 0x3f, 0x66, 0x59, 0xf3, 0x46, 0xe7, 0x21, 0x48, 0x08, 0x1d,
+                0xa5, 0x9d,
+            ],
+        ),
+        // src/uri/path.rs, 1.3.0
+        (
+            "src/uri/path.rs",
+            [
+                0x91, 0xd6, 0x33, 0x45, 0x43, 0x35, 0x70, 0x08, 0x09, 0x4d, 0x66, 0xe3, 0x01, 0x2e,
+                0x8a, 0x9a,
+            ],
+        ),
+        // src/uri/path.rs, 1.3.1
+        (
+            "src/uri/path.rs",
+            [
+                0x86, 0xd9, 0x20, 0xdf, 0x48, 0x43, 0xb6, 0x53, 0xa6, 0x1a, 0xad, 0xe5, 0xfd, 0x0d,
+                0x15, 0x0d,
+            ],
+        ),
+        // src/uri/path.rs, 1.4.0
+        (
+            "src/uri/path.rs",
+            [
+                0x85, 0x5f, 0x94, 0x75, 0xcb, 0xe8, 0x0a, 0xec, 0xa4, 0x37, 0x6d, 0x43, 0x6d, 0x32,
+                0x9a, 0xdc,
+            ],
+        ),
+        // src/uri/path.rs, 1.4.1
+        (
+            "src/uri/path.rs",
+            [
+                0xd3, 0x5f, 0xde, 0xae, 0x0c, 0x2d, 0x34, 0xbe, 0xe3, 0x5f, 0xed, 0xb1, 0x1a, 0x0f,
+                0xd9, 0x6c,
+            ],
+        ),
+        // src/uri/path.rs, 1.4.2
+        (
+            "src/uri/path.rs",
+            [
+                0x73, 0xb5, 0x5d, 0xd5, 0x01, 0x3e, 0x85, 0x33, 0x40, 0x4f, 0xc0, 0x92, 0x0e, 0x75,
+                0x1e, 0x6a,
+            ],
+        ),
+        // src/byte_str.rs, 1.0.0
+        (
+            "src/byte_str.rs",
+            [
+                0x88, 0xf7, 0x9c, 0x06, 0xac, 0xb5, 0x1d, 0x2e, 0x9a, 0x4d, 0x6c, 0x48, 0x67, 0x39,
+                0x58, 0x35,
+            ],
+        ),
+        // src/byte_str.rs, 1.1.0
+        (
+            "src/byte_str.rs",
+            [
+                0x6e, 0x67, 0x94, 0xaf, 0xb4, 0x44, 0x48, 0x78, 0x0c, 0xb2, 0xe9, 0x12, 0x55, 0x1f,
+                0x93, 0xc5,
+            ],
+        ),
+        // src/byte_str.rs, 1.2.0 through 1.3.0
+        (
+            "src/byte_str.rs",
+            [
+                0x0a, 0x9e, 0xd1, 0x00, 0x91, 0x99, 0x21, 0x78, 0x30, 0x81, 0x22, 0x72, 0xed, 0xb7,
+                0xd3, 0x4d,
+            ],
+        ),
+        // src/byte_str.rs, 1.3.1 through 1.4.0
+        (
+            "src/byte_str.rs",
+            [
+                0x85, 0xbc, 0xfe, 0x19, 0x27, 0xcf, 0x06, 0xdd, 0xda, 0x5c, 0xa2, 0x47, 0xfc, 0x51,
+                0x48, 0x5f,
+            ],
+        ),
+        // src/byte_str.rs, 1.4.1 through 1.4.2
+        (
+            "src/byte_str.rs",
+            [
+                0x3f, 0x0e, 0x8a, 0xb2, 0x79, 0x89, 0xaa, 0x2f, 0xc0, 0xb8, 0x57, 0x42, 0x31, 0xea,
+                0x57, 0x8e,
+            ],
+        ),
+    ],
+};
+
+/// dropshot's request context as 0.17.0 and 0.17.1 implement it,
+/// reviewed in `src/handler.rs` of each release (0.17.1 differs in
+/// import order, rustfmt reflow and match-ergonomics spelling alone):
+/// every endpoint handler runs with a `RequestContext<C> { server,
+/// endpoint, request_id, log, request }`, whose `request: RequestInfo
+/// { method, uri, version, headers, remote_addr }` is copied off the
+/// hyper request as the handler is dispatched and never changed, so
+/// the request a server connection's handler is running for is the
+/// method and URI its context holds.
+///
+/// The ceiling is the newest release the cores on hand build; it
+/// advances by hand when a newer one is read.
+pub const DROPSHOT_HANDLER_V0_17_0: LibraryConvention = LibraryConvention {
+    package: "dropshot",
+    family: "dropshot-handler-0.17.0",
+    floor: (0, 17, 0),
+    ceiling: (0, 17, 1),
+    checksums: &[
+        // src/handler.rs, 0.17.0
+        (
+            "src/handler.rs",
+            [
+                0xf8, 0x3e, 0x3f, 0x31, 0x28, 0x9e, 0x13, 0x5e, 0x5c, 0x02, 0xa3, 0xe8, 0x01, 0xf9,
+                0x01, 0x5d,
+            ],
+        ),
+        // src/handler.rs, 0.17.1
+        (
+            "src/handler.rs",
+            [
+                0xfd, 0xf8, 0x78, 0x0f, 0x2f, 0x71, 0x88, 0xba, 0x8d, 0x0c, 0xfa, 0xa7, 0xe6, 0xae,
+                0x89, 0xce,
+            ],
+        ),
+    ],
+};
+
 pub const HYPER_H1_CONN_V1_6_0: LibraryConvention = LibraryConvention {
     package: "hyper",
     family: "hyper-h1-conn-1.6.0",
@@ -1432,6 +1927,27 @@ mod tests {
                 "0.16.7",
                 "0.17.2",
             ),
+            (
+                &REQWEST_PENDING_REQUEST_V0_12_0,
+                [
+                    "0.12.0", "0.12.19", "0.12.20", "0.12.28", "0.13.0", "0.13.2",
+                ]
+                .as_slice(),
+                "0.11.27",
+                "0.13.3",
+            ),
+            (
+                &HTTP_REQUEST_V1_0_0,
+                ["1.0.0", "1.1.0", "1.2.0", "1.3.1", "1.4.2"].as_slice(),
+                "0.2.12",
+                "1.5.0",
+            ),
+            (
+                &DROPSHOT_HANDLER_V0_17_0,
+                ["0.17.0", "0.17.1"].as_slice(),
+                "0.16.7",
+                "0.17.2",
+            ),
         ] {
             for version in inside {
                 assert_eq!(
@@ -1476,6 +1992,12 @@ mod tests {
         assert_eq!(HYPER_UTIL_AUTO_CONN_V0_1_10.checksums.len(), 8);
         assert_eq!(DROPSHOT_SERVER_V0_17_0.range(), "0.17.0–0.17.1");
         assert_eq!(DROPSHOT_SERVER_V0_17_0.checksums.len(), 2);
+        assert_eq!(REQWEST_PENDING_REQUEST_V0_12_0.range(), "0.12.0–0.13.2");
+        assert_eq!(REQWEST_PENDING_REQUEST_V0_12_0.checksums.len(), 24);
+        assert_eq!(HTTP_REQUEST_V1_0_0.range(), "1.0.0–1.4.2");
+        assert_eq!(HTTP_REQUEST_V1_0_0.checksums.len(), 27);
+        assert_eq!(DROPSHOT_HANDLER_V0_17_0.range(), "0.17.0–0.17.1");
+        assert_eq!(DROPSHOT_HANDLER_V0_17_0.checksums.len(), 2);
         for (_, checksum) in HYPER_UTIL_TOKIO_SLEEP_V0_1_10.checksums {
             assert!(!HYPER_UTIL_AUTO_CONN_V0_1_10.reviewed_checksum(checksum));
         }

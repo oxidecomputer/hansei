@@ -798,6 +798,16 @@ pub fn describe_semantics(bundle: &Bundle) -> String {
                 container.kind, container.rule.0
             );
         }
+        if let Some(request) = &record.request {
+            let _ = write!(
+                line,
+                " request {:?} rule {} method {} text {}",
+                request.target,
+                request.rule.0,
+                path(record.ty, &request.method),
+                path(record.ty, &request.target_ptr)
+            );
+        }
         if let Some(select) = &record.select {
             let branches: Vec<String> = select
                 .branches
