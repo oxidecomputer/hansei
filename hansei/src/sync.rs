@@ -1779,6 +1779,7 @@ mod sync_tests {
                 wait: None,
                 observation: None,
                 continuation: no_chain(),
+                request: None,
             }],
         }];
         assert_eq!(
@@ -1918,6 +1919,7 @@ mod sync_tests {
                     wait: None,
                     observation: None,
                     continuation: ContinuationStatus::Unresumed,
+                    request: None,
                 },
                 census::SetChild {
                     node: 0xc100,
@@ -1929,6 +1931,7 @@ mod sync_tests {
                     wait: None,
                     observation: None,
                     continuation: no_chain(),
+                    request: None,
                 },
             ],
         }];

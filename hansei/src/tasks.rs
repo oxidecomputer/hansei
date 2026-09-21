@@ -791,6 +791,7 @@ pub(crate) fn build_rows(
                         armed: show_armed(task),
                         frames: &wait.frames,
                         caller_at: None,
+                        request_of: None,
                     };
                     wait_detail(wait, stops, &[], None, &|_| None, detail)
                 })
@@ -852,6 +853,11 @@ pub(crate) fn apply_slots(
         let slot = slots.at(cell)?;
         owner_label(list, containers.map(|c| c.census), slot.owner)
     };
+    // What that caller asked for, read off the finds the census holds
+    // for it.
+    let request_of = |caller: &bundle::HttpCaller| -> Option<String> {
+        crate::connections::caller_request(list, &containers?.requests, slots, caller)
+    };
     for (index, (row, task)) in rows.iter_mut().zip(&list.tasks).enumerate() {
         if task.is_blocking() || task.state.lifecycle() == Lifecycle::Running {
             continue;
@@ -866,6 +872,7 @@ pub(crate) fn apply_slots(
             armed: show_armed(task),
             frames: &wait.frames,
             caller_at: Some(&caller_at),
+            request_of: Some(&request_of),
         };
         let owned: Vec<&attribution::AttributedSlot> = slots.of_task(task.addr.0).collect();
         if owned.is_empty() && !row.waiting_on.starts_with('—') {
@@ -914,7 +921,16 @@ pub(crate) struct Detail<'a> {
     /// which the sweep alone can place. `None` for a listing laid out
     /// by hand, where the caller prints as the connection read it.
     pub(crate) caller_at: Option<&'a dyn Fn(u64) -> Option<String>>,
+    /// The request a connection's caller holds, as the census read it
+    /// off the caller's finds ([`crate::connections::caller_request`]):
+    /// what a connection's `request:` line says. `None` for a listing
+    /// laid out by hand.
+    pub(crate) request_of: Option<RequestOf<'a>>,
 }
+
+/// What a connection's caller asked for, by the caller the connection
+/// names; see [`Detail::request_of`].
+pub(crate) type RequestOf<'a> = &'a dyn Fn(&bundle::HttpCaller) -> Option<String>;
 
 /// The census's finds by address — built once for a listing, since
 /// every row's lines look its containers up, and the census holds
@@ -922,11 +938,30 @@ pub(crate) struct Detail<'a> {
 pub(crate) struct Containers<'a> {
     census: &'a census::FutureCensus,
     held: HashMap<u64, usize>,
+    /// The same finds by address and type: two finds share an address
+    /// where one is the first member of the other — reqwest's response
+    /// future inside the request the client boxed — and a member names
+    /// the one of its own type.
+    held_by_key: HashMap<(u64, BundleTypeId), usize>,
     sets: HashMap<u64, usize>,
     join_sets: HashMap<u64, usize>,
+    /// The requests the census read, by holder, for the `request:`
+    /// lines a listing prints per connection and per find.
+    requests: crate::connections::RequestIndex,
 }
 
 impl<'a> Containers<'a> {
+    /// The held find a member's key names, with its index in the
+    /// census: the find of the key's own type at its address, or
+    /// whichever find is at the address where none is of that type.
+    pub(crate) fn held_index(&self, key: ValueKey) -> Option<(usize, &'a census::HeldFuture)> {
+        let index = *self
+            .held_by_key
+            .get(&(key.addr, key.ty))
+            .or_else(|| self.held.get(&key.addr))?;
+        Some((index, &self.census.held[index]))
+    }
+
     pub(crate) fn of(census: &'a census::FutureCensus) -> Self {
         let by_addr = |addrs: &mut dyn Iterator<Item = u64>| -> HashMap<u64, usize> {
             addrs.enumerate().map(|(i, addr)| (addr, i)).collect()
@@ -934,13 +969,16 @@ impl<'a> Containers<'a> {
         Containers {
             census,
             held: by_addr(&mut census.held.iter().map(|h| h.addr)),
+            held_by_key: census
+                .held
+                .iter()
+                .enumerate()
+                .map(|(i, h)| ((h.addr, h.ty), i))
+                .collect(),
             sets: by_addr(&mut census.sets.iter().map(|s| s.addr)),
             join_sets: by_addr(&mut census.join_sets.iter().map(|s| s.addr)),
+            requests: crate::connections::RequestIndex::of(census),
         }
-    }
-
-    fn held_at(&self, addr: u64) -> Option<&'a census::HeldFuture> {
-        self.held.get(&addr).map(|&i| &self.census.held[i])
     }
 
     fn set_at(&self, addr: u64) -> Option<&'a census::FutureSet> {
@@ -1615,6 +1653,15 @@ pub(crate) fn wait_detail(
                     "caller: {}",
                     swept.unwrap_or_else(|| caller.to_string())
                 ));
+                // And what that caller asked for, where its finds say.
+                if let Some(request) = detail.request_of.and_then(|of| of(caller)) {
+                    lines.push(format!("request: {request}"));
+                }
+            }
+            // A server's request is the handler's, read off the frame
+            // holding it when the connection was observed.
+            if let Some(request) = server_request(wait.observation.as_ref()) {
+                lines.push(format!("request: {request}"));
             }
             let mut wakers: Vec<String> = accounted
                 .iter()
@@ -1810,7 +1857,7 @@ fn container_heading(key: ValueKey, stops: &StopNames<'_>, detail: Detail<'_>) -
                 summary::counted(live, "future")
             );
         }
-        if let Some(held) = containers.held_at(key.addr) {
+        if let Some((_, held)) = containers.held_index(key) {
             let kind = held.wait.map(|wait| wait.word()).unwrap_or("future");
             return format!("{kind} {:#x}: {}", held.addr, stops.spell(&held.future));
         }
@@ -1908,7 +1955,7 @@ fn member_line(
         ) {
             return None;
         }
-        let held = detail.containers?.held_at(key?.addr)?;
+        let (_, held) = detail.containers?.held_index(key?)?;
         let declared = held
             .via
             .is_none()
@@ -2058,9 +2105,32 @@ fn member_line(
         named.push(on.clone());
         field("awaiting on", on);
         // A connection's verdict names the primitive it is parked on
-        // one level under it, as the task block's own does.
+        // one level under it, as the task block's own does, and who
+        // awaits the response with what they asked for.
         if let Some(via) = verified.and_then(bundle::WaitTarget::via) {
             field("via", via.line());
+        }
+        if let Some(caller) = verified.and_then(bundle::WaitTarget::caller) {
+            field("caller", caller.to_string());
+            if let Some(request) = detail.request_of.and_then(|of| of(caller)) {
+                field("request", request);
+            }
+        }
+    }
+    // What the find itself keeps, where the census read a request off
+    // its chain: the caller's in-flight request, or — a server
+    // connection the census found held — the handler's.
+    if let Some((index, held)) = member
+        .key
+        .and_then(|key| detail.containers?.held_index(key))
+    {
+        if let Some(request) = detail
+            .containers
+            .and_then(|containers| containers.requests.of_held(index))
+        {
+            field("request", request);
+        } else if let Some(request) = server_request(held.observation.as_ref()) {
+            field("request", request);
         }
     }
     if let Some((file, line)) = &type_site {
@@ -2104,6 +2174,23 @@ fn member_line(
         field("note", note.clone());
     }
     lines
+}
+
+/// The request a server connection's handler is running for, where
+/// the connection's observation read one off the handler's frames.
+pub(crate) fn server_request(
+    observation: Option<&hansei_runtime::tokio::observe::ResourceObservation>,
+) -> Option<String> {
+    use hansei_runtime::tokio::observe::ResourceObservation;
+    match observation? {
+        ResourceObservation::HttpConn(http) => http
+            .server
+            .as_ref()?
+            .request
+            .as_ref()
+            .map(ToString::to_string),
+        _ => None,
+    }
 }
 
 /// What a ready resource has already done, in words.
@@ -3321,6 +3408,7 @@ mod table_tests {
         armed: true,
         frames: &[],
         caller_at: None,
+        request_of: None,
     };
     const RUNNING: u64 = 0b0001;
     const NOTIFIED: u64 = 0b0100;
@@ -4902,6 +4990,7 @@ mod table_tests {
             armed: false,
             frames: &frames,
             caller_at: None,
+            request_of: None,
         };
         let lines = wait_detail(&wait, &stops, &refs, None, &|_| None, detail);
         assert_eq!(
@@ -4949,6 +5038,7 @@ mod table_tests {
             waiting_on: None,
             wait: None,
             observation: None,
+            request: None,
             continuation: ContinuationStatus::Incomplete {
                 reason: IncompleteReason::NoRoot,
                 detail: None,
@@ -4962,6 +5052,7 @@ mod table_tests {
                 armed: false,
                 frames: &frames,
                 caller_at: None,
+                request_of: None,
             };
             member_line(&member, &stops, &[], None, detail)
         };
@@ -5003,6 +5094,7 @@ mod table_tests {
             armed: false,
             frames: &[],
             caller_at: None,
+            request_of: None,
         };
         assert_eq!(
             member_line(&member, &stops, &[], None, idle),
@@ -5113,6 +5205,7 @@ mod table_tests {
                 armed: false,
                 frames: &[],
                 caller_at,
+                request_of: None,
             };
             wait_detail(
                 &wait(1, Some(conn(caller))),
@@ -5986,6 +6079,7 @@ mod census_listing_tests {
             waiting_on: None,
             wait: None,
             observation: None,
+            request: None,
             continuation: ContinuationStatus::Unresumed,
         }
     }
@@ -6000,6 +6094,7 @@ mod census_listing_tests {
             waiting_on: None,
             wait: None,
             observation: None,
+            request: None,
             continuation: ContinuationStatus::Unresumed,
         }
     }

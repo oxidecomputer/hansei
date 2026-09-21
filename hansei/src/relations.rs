@@ -390,6 +390,7 @@ mod relations_tests {
             wait: Some(WaitKind::Task { addr: addr(id).0 }),
             observation: None,
             continuation: ContinuationStatus::Primitive,
+            request: None,
         }
     }
 

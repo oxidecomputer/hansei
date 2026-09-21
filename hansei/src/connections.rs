@@ -15,12 +15,15 @@ use crate::{Session, output, print_warnings};
 use anyhow::{Context as _, Result, anyhow};
 use hansei_bundle::names::ImplFold;
 use hansei_bundle::{HttpRole, names};
-use hansei_runtime::tokio::assess::{client_phase, server_phase};
-use hansei_runtime::tokio::bundle::{HttpPhase, HttpVersion, deadline_text, http_kind_word};
+use hansei_runtime::tokio::assess::{client_phase, http_caller, server_phase};
+use hansei_runtime::tokio::bundle::{
+    HttpCaller, HttpPhase, HttpVersion, TaskList, deadline_text, http_kind_word,
+};
 use hansei_runtime::tokio::observe::ResourceObservation;
-use hansei_runtime::tokio::{RawInstant, census};
+use hansei_runtime::tokio::wakers::Owner;
+use hansei_runtime::tokio::{RawInstant, attribution, census};
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io;
 
 /// One row of the listing: a connection the target holds, as its
@@ -52,6 +55,10 @@ pub(crate) struct ConnRow {
     /// The header-read timer's deadline, where the server has armed
     /// one and the task holds it.
     pub(crate) deadline: Option<String>,
+    /// The request behind the connection: what the server's handler is
+    /// running for, or what the client's caller sent, where either was
+    /// read.
+    pub(crate) request: Option<String>,
 }
 
 impl ConnRow {
@@ -98,11 +105,12 @@ pub(crate) fn rows<'s, T: proc::Target>(session: &'s Session<'_, T>) -> &'s [Con
 
 fn build_rows<T: proc::Target>(session: &Session<'_, T>) -> Vec<ConnRow> {
     let census = session.census();
+    let requests = RequestIndex::of(census);
     let stopped = session.registries.stopped;
     let mut rows: Vec<ConnRow> = Vec::new();
     let mut seen = std::collections::HashSet::new();
     let mut push = |owner: usize, observation: &ResourceObservation| {
-        let Some(row) = row_of(session, owner, observation, census, stopped) else {
+        let Some(row) = row_of(session, owner, observation, census, &requests, stopped) else {
             return;
         };
         if seen.insert(row.addr) {
@@ -137,6 +145,7 @@ fn row_of<T: proc::Target>(
     owner: usize,
     observation: &ResourceObservation,
     census: &census::FutureCensus,
+    requests: &RequestIndex,
     stopped: Option<RawInstant>,
 ) -> Option<ConnRow> {
     let list = &session.tasks;
@@ -153,14 +162,119 @@ fn row_of<T: proc::Target>(
         handler: None,
         read_buf: None,
         deadline: None,
+        request: None,
     };
+    let request_of =
+        |caller: &HttpCaller| caller_request(list, requests, session.attribution(), caller);
     conn_row(
         base,
         observation,
         held_deadline(census, owner),
         stopped,
         &session.impl_fold,
+        &request_of,
     )
+}
+
+/// The requests the census read, by who holds them: a task's finds, a
+/// set child's chain and the finds under it, a held find's chain and
+/// the finds under it. Built in one pass over the census, since a
+/// listing asks it of every connection on a target and a walk of the
+/// finds per connection would square the work.
+#[derive(Default)]
+pub(crate) struct RequestIndex {
+    by_task: HashMap<usize, BTreeSet<String>>,
+    by_child: HashMap<(usize, usize), BTreeSet<String>>,
+    by_held: HashMap<usize, BTreeSet<String>>,
+}
+
+impl RequestIndex {
+    pub(crate) fn of(census: &census::FutureCensus) -> Self {
+        let mut index = RequestIndex::default();
+        for (i, held) in census.held.iter().enumerate() {
+            let Some(request) = &held.request else {
+                continue;
+            };
+            let text = request.to_string();
+            index
+                .by_task
+                .entry(held.owner)
+                .or_default()
+                .insert(text.clone());
+            index.by_held.entry(i).or_default().insert(text.clone());
+            match held.via {
+                Some(census::Via::SetChild { set, child }) => {
+                    index.by_child.entry((set, child)).or_default().insert(text);
+                }
+                Some(census::Via::Held(parent)) => {
+                    index.by_held.entry(parent).or_default().insert(text);
+                }
+                None => {}
+            }
+        }
+        for (set, futures) in census.sets.iter().enumerate() {
+            for (child, found) in futures.children.iter().enumerate() {
+                if let Some(request) = &found.request {
+                    index
+                        .by_child
+                        .entry((set, child))
+                        .or_default()
+                        .insert(request.to_string());
+                }
+            }
+        }
+        index
+    }
+
+    /// The one request among `requests`; several name none.
+    fn unique(requests: Option<&BTreeSet<String>>) -> Option<String> {
+        let requests = requests?;
+        match requests.len() {
+            1 => requests.iter().next().cloned(),
+            _ => None,
+        }
+    }
+
+    /// The one request a held find carries: read off its own chain, or
+    /// off the finds under it — a caller's future awaiting reqwest's
+    /// request holds it one chain down, behind the box the client put
+    /// it in. A find with several under it names none.
+    pub(crate) fn of_held(&self, index: usize) -> Option<String> {
+        Self::unique(self.by_held.get(&index))
+    }
+
+    /// The one request among an owner's finds: a task's held finds, or a
+    /// set child's own chain and the finds under it.
+    fn of_owner(&self, owner: Owner) -> Option<String> {
+        match owner {
+            Owner::Task { index, .. } => Self::unique(self.by_task.get(&index)),
+            Owner::Child { set, child } => Self::unique(self.by_child.get(&(set, child))),
+        }
+    }
+}
+
+/// The request a connection's caller holds, as the census read it: the
+/// caller's own in-flight request where it is a task with one, the
+/// child's where it is a set child the sweep placed. A caller holding
+/// several in flight names none — the connection cannot tell which is
+/// its — and a caller nothing places names none either.
+pub(crate) fn caller_request(
+    list: &TaskList,
+    requests: &RequestIndex,
+    slots: &attribution::Attributed,
+    caller: &HttpCaller,
+) -> Option<String> {
+    let owner = match caller {
+        HttpCaller::Task(task) => Owner::Task {
+            header: task.addr.0,
+            index: list.tasks.iter().position(|t| t.addr == task.addr)?,
+        },
+        HttpCaller::NotATask {
+            cell: Some(cell), ..
+        } => slots.at(*cell)?.owner,
+        _ => return None,
+    };
+    requests.of_owner(owner)
 }
 
 /// Fill `base` — the row's task cells — from the observation: the
@@ -174,6 +288,7 @@ fn conn_row(
     held: Option<RawInstant>,
     stopped: Option<RawInstant>,
     impls: &ImplFold,
+    request_of: &dyn Fn(&HttpCaller) -> Option<String>,
 ) -> Option<ConnRow> {
     match observation {
         // A wrapper still reading the first bytes has no version, no
@@ -188,6 +303,7 @@ fn conn_row(
             handler: None,
             read_buf: None,
             deadline: None,
+            request: None,
             ..base
         }),
         ResourceObservation::HttpConn(http) => {
@@ -198,6 +314,23 @@ fn conn_row(
             .ok()
             .map(|(phase, _)| phase);
             let server = http.server.as_ref();
+            // The request: the handler's for a server, the caller's for a
+            // client with one in flight — the caller the response
+            // callback names, as the verdict names it.
+            let request = match http.role {
+                HttpRole::Server => server
+                    .and_then(|server| server.request.as_ref())
+                    .map(ToString::to_string),
+                HttpRole::Client => match phase {
+                    Some(HttpPhase::AwaitingResponse | HttpPhase::SendingBody(_)) => http
+                        .client
+                        .as_ref()
+                        .and_then(|client| client.callback.as_ref())
+                        .map(http_caller)
+                        .and_then(|caller| request_of(&caller)),
+                    _ => None,
+                },
+            };
             let deadline = server
                 .filter(|server| server.header_read_timer_running)
                 .and(held)
@@ -217,6 +350,7 @@ fn conn_row(
                 }),
                 read_buf: http.read_buf,
                 deadline,
+                request,
                 ..base
             })
         }
@@ -253,12 +387,13 @@ fn row_cells(row: &ConnRow, groups: bool) -> Vec<String> {
         row.buffer_cell().unwrap_or_else(dash),
         row.deadline.clone().unwrap_or_else(dash),
         row.handler.clone().unwrap_or_else(dash),
+        row.request.clone().unwrap_or_else(dash),
     ]);
     cells
 }
 
-/// Print the listing: one row per connection, the handler's type last
-/// since it is the one cell that runs wide, and the count under it.
+/// Print the listing: one row per connection, the request last since a
+/// URL is the one cell that runs wide, and the count under it.
 fn print_table(
     rows: &[&ConnRow],
     groups: bool,
@@ -273,7 +408,7 @@ fn print_table(
         header.push("RT");
     }
     header.extend([
-        "ROLE", "VER", "PHASE", "METHOD", "PEER", "BUF", "DEADLINE", "HANDLER",
+        "ROLE", "VER", "PHASE", "METHOD", "PEER", "BUF", "DEADLINE", "HANDLER", "REQUEST",
     ]);
     let columns = header.len();
     let mut table = output::Table::new(columns)
@@ -321,12 +456,14 @@ pub(crate) enum Field {
     Peer,
     /// The running handler's type.
     Handler,
+    /// The request behind the connection, as printed.
+    Request,
     /// The bytes read and not yet parsed — compared.
     Buffered,
 }
 
 impl Field {
-    const NAMES: [(&'static str, Field); 10] = [
+    const NAMES: [(&'static str, Field); 11] = [
         ("task", Field::Task),
         ("rt", Field::Rt),
         ("addr", Field::Addr),
@@ -336,6 +473,7 @@ impl Field {
         ("method", Field::Method),
         ("peer", Field::Peer),
         ("handler", Field::Handler),
+        ("request", Field::Request),
         ("buffered", Field::Buffered),
     ];
 
@@ -374,6 +512,7 @@ impl Field {
                 | Field::Method
                 | Field::Peer
                 | Field::Handler
+                | Field::Request
         )
     }
 
@@ -390,6 +529,7 @@ impl Field {
             Field::Method => row.method.clone(),
             Field::Peer => row.peer.clone(),
             Field::Handler => row.handler.clone(),
+            Field::Request => row.request.clone(),
             Field::Buffered => row.read_buf.map(|(len, _)| len.to_string()),
         }
     }
@@ -617,6 +757,7 @@ mod tests {
             handler: None,
             read_buf: Some((12, 8192)),
             deadline: None,
+            request: None,
         }
     }
 
@@ -706,6 +847,7 @@ mod tests {
                 "[fd00::25]:57400",
                 "12/8192",
                 "—",
+                "—",
                 "—"
             ]
         );
@@ -730,7 +872,8 @@ mod tests {
                 "—",
                 "—",
                 "deadline +29.981s",
-                "app::handle"
+                "app::handle",
+                "—"
             ]
         );
         assert_eq!(full.label(), "http1 client 0x10");
@@ -768,6 +911,7 @@ mod tests {
                 handler: Some("app::handle::{async_fn_env#0}".to_string()),
                 header_read_timer_running,
                 peer: Some("[fd00::25]:57400".to_string()),
+                request: None,
             }),
         }))
     }
@@ -790,17 +934,20 @@ mod tests {
             handler: Some("SENTINEL".to_string()),
             read_buf: Some((1, 1)),
             deadline: Some("SENTINEL".to_string()),
+            request: Some("SENTINEL".to_string()),
             ..row(0, HttpRole::Client, None)
         };
         let impls = ImplFold::default();
         let held = Some(instant(130));
         let stopped = Some(instant(100));
+        let none = |_: &HttpCaller| None;
         let armed = conn_row(
             base.clone(),
             &server_observation(true),
             held,
             stopped,
             &impls,
+            &none,
         )
         .unwrap();
         assert_eq!(armed.addr, 0x7b78948);
@@ -812,6 +959,7 @@ mod tests {
         assert_eq!(armed.handler.as_deref(), Some("async fn app::handle"));
         assert_eq!(armed.read_buf, Some((0, 8192)));
         assert_eq!(armed.deadline.as_deref(), Some("deadline +30.000s"));
+        assert_eq!(armed.request, None);
         // The task's cells come from the base.
         assert_eq!(armed.task, "7");
         let idle = conn_row(
@@ -820,6 +968,7 @@ mod tests {
             held,
             stopped,
             &impls,
+            &none,
         )
         .unwrap();
         assert_eq!(idle.deadline, None);
@@ -829,6 +978,7 @@ mod tests {
             None,
             stopped,
             &impls,
+            &none,
         )
         .unwrap();
         assert_eq!(unheld.deadline, None);
@@ -840,6 +990,7 @@ mod tests {
             held,
             stopped,
             &impls,
+            &none,
         )
         .unwrap();
         assert_eq!(negotiating.addr, 0x12345);
@@ -851,12 +1002,44 @@ mod tests {
         assert_eq!(negotiating.handler, None);
         assert_eq!(negotiating.read_buf, None);
         assert_eq!(negotiating.deadline, None);
+        assert_eq!(negotiating.request, None);
         assert_eq!(negotiating.label(), "http server 0x12345");
         let other = ResourceObservation::Join(JoinObservation {
             handle: key(0x1),
             header: TaskAddr(0x1),
         });
-        assert!(conn_row(base, &other, held, stopped, &impls).is_none());
+        assert!(conn_row(base, &other, held, stopped, &impls, &none).is_none());
+    }
+
+    /// A caller that is no task is placed by the waker sweep's slot at
+    /// the cell its waker was read from, and names that child's
+    /// request; no cell, or a cell no slot covers, places nothing.
+    #[test]
+    fn test_a_caller_that_is_no_task_is_placed_by_its_waker_cell() {
+        use hansei_runtime::tokio::attribution::{Attributed, AttributedSlot, Attribution, Reach};
+        let requests = RequestIndex {
+            by_child: HashMap::from([((0, 1), BTreeSet::from(["GET /one".to_string()]))]),
+            ..RequestIndex::default()
+        };
+        let slots = Attributed::from_slots(vec![AttributedSlot {
+            hit: 0,
+            slot: 0x6010,
+            owner: Owner::Child { set: 0, child: 1 },
+            attribution: Attribution::Unknown,
+            within: None,
+            through: Vec::new(),
+            aliases: Vec::new(),
+            reach: Reach::Unlocated,
+        }]);
+        let list = TaskList::new(Vec::new());
+        let caller = |cell| HttpCaller::NotATask {
+            vtable: 0xeeb0,
+            cell,
+        };
+        let request = |cell| caller_request(&list, &requests, &slots, &caller(cell));
+        assert_eq!(request(Some(0x6010)).as_deref(), Some("GET /one"));
+        assert_eq!(request(Some(0x7000)), None);
+        assert_eq!(request(None), None);
     }
 
     /// The held deadline is the owner's own timer find and nothing
@@ -883,6 +1066,7 @@ mod tests {
                 state: TimerRegistrationState::Deregistered,
             })),
             continuation: ContinuationStatus::Primitive,
+            request: None,
         };
         let join = census::HeldFuture {
             observation: Some(ResourceObservation::Join(JoinObservation {
@@ -933,11 +1117,23 @@ mod tests {
         );
         let (phases, pattern) = field_values(&session, "phase").unwrap();
         assert!(pattern);
-        assert_eq!(phases[0], "idle");
+        assert!(phases.contains(&"idle".to_string()), "{phases:?}");
         assert_eq!(phases.len(), 4, "{phases:?}");
         let (addrs, pattern) = field_values(&session, "addr").unwrap();
         assert!(!pattern);
-        assert_eq!(addrs.len(), 5, "{addrs:?}");
+        assert_eq!(addrs.len(), 7, "{addrs:?}");
+        // The request reaches the prompt's offers as the URL and the
+        // path the two parked handlers and the reqwest requester carry.
+        let (requests, pattern) = field_values(&session, "request").unwrap();
+        assert!(pattern);
+        assert_eq!(requests.len(), 2, "{requests:?}");
+        assert!(requests.iter().any(|r| r == "GET /park"), "{requests:?}");
+        assert!(
+            requests
+                .iter()
+                .any(|r| r.starts_with("GET http://127.0.0.1:") && r.ends_with("/park")),
+            "{requests:?}"
+        );
         assert!(addrs.iter().all(|a| a.starts_with("0x")), "{addrs:?}");
         assert_eq!(field_values(&session, "buffered"), None);
         assert_eq!(field_values(&session, "colour"), None);
@@ -955,7 +1151,7 @@ mod tests {
         assert!(Field::Peer.is_pattern());
         assert!(!Field::Addr.is_pattern());
         let names: Vec<&str> = Field::names().collect();
-        assert_eq!(names.len(), 10);
+        assert_eq!(names.len(), 11);
         for name in names {
             assert_eq!(Field::parse(name).unwrap().name(), name);
         }

@@ -325,6 +325,19 @@ fn commands(
             "tasks-with-caller",
             "tasks --with waiting-on caller:".to_owned(),
         ));
+        // The request behind each connection: the reqwest requester's
+        // block, whose in-flight request the census read the method and
+        // URL off; the connection blocks carry it under `caller:` on the
+        // client side and under the verdict on the server's, where a
+        // filter reaches it as it reaches any detail line.
+        list.push((
+            "reqwest-requester-task",
+            "tasks --with type http_conns::reqwest_requester --exec task".to_owned(),
+        ));
+        list.push((
+            "tasks-with-request",
+            "tasks --with waiting-on request:".to_owned(),
+        ));
         list.push((
             "connections-group-phase",
             "connections --group phase".to_owned(),
@@ -332,6 +345,10 @@ fn commands(
         list.push((
             "connections-with-role",
             "connections --with role server --with buffered =0".to_owned(),
+        ));
+        list.push((
+            "connections-with-request",
+            "connections --with request park".to_owned(),
         ));
     }
     // The register readout under whatever cursor the commands above

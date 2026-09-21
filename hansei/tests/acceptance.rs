@@ -3982,41 +3982,51 @@ fn test_http_conns_connections_acceptance() {
     let bundle = fixtures().bundle("http-conns");
     with_core("http-conns", |core| {
         let out = hansei_ok(&bundle, core, "connections");
-        assert!(out.ends_with("[5 connections]\n"), "{out}");
-        assert!(!out.contains("127.0.0.1"), "{out}");
+        assert!(out.ends_with("[7 connections]\n"), "{out}");
+        // The listener's port is the kernel's to pick, so the URL the
+        // reqwest requester sent is compared with it masked; nothing
+        // else on a row names the loopback address (the peer column is
+        // a dropshot server's).
+        let port = regex::Regex::new(r"127\.0\.0\.1:\d+").unwrap();
         let mut rows: Vec<String> = out
             .lines()
             .skip(1)
-            .take(5)
+            .take(7)
             .map(|line| {
                 let cells: Vec<&str> = line.split_whitespace().skip(2).collect();
-                cells.join(" ")
+                port.replace_all(&cells.join(" "), "127.0.0.1:PORT")
+                    .into_owned()
             })
             .collect();
         rows.sort();
         assert_eq!(
             rows,
             [
-                "client http1 awaiting response GET — 0/8192 — —",
-                "client http1 idle — — 0/8192 — —",
-                "server http1 handling request GET — 0/16339 — async fn http_conns::handle",
-                "server http1 idle — — 0/16302 — —",
-                "server — negotiating — — — — —",
+                "client http1 awaiting response GET — 0/8192 — — GET http://127.0.0.1:PORT/park",
+                "client http1 awaiting response GET — 0/8192 — — —",
+                "client http1 idle — — 0/8192 — — —",
+                "server http1 handling request GET — 0/16326 — async fn http_conns::handle GET /park",
+                "server http1 handling request GET — 0/16339 — async fn http_conns::handle GET /park",
+                "server http1 idle — — 0/16302 — — —",
+                "server — negotiating — — — — — —",
             ],
             "{out}"
         );
         let grouped = hansei_ok(&bundle, core, "connections --group phase");
         for bucket in [
             "2  idle",
-            "1  awaiting response",
-            "1  handling request",
+            "2  awaiting response",
+            "2  handling request",
             "1  negotiating",
         ] {
             assert!(grouped.contains(bucket), "{grouped}");
         }
         let servers = hansei_ok(&bundle, core, "connections --with role server");
-        assert!(servers.ends_with("[3 connections]\n"), "{servers}");
+        assert!(servers.ends_with("[4 connections]\n"), "{servers}");
         assert!(!servers.contains("client"), "{servers}");
+        // The request reaches a filter, on either side of the exchange.
+        let parked = hansei_ok(&bundle, core, "connections --with request park");
+        assert!(parked.ends_with("[3 connections]\n"), "{parked}");
     });
 }
 

@@ -717,8 +717,10 @@ pub enum Command {
     /// the peer where the server's service keeps one (a dropshot
     /// server's does; hyper itself keeps none on either side), the
     /// read buffer's fill over its capacity, the header-read timer's
-    /// deadline where the server has armed one, and a server's running
-    /// handler by its type.
+    /// deadline where the server has armed one, a server's running
+    /// handler by its type, and the request behind the connection —
+    /// what the handler is running for, or what the caller awaiting the
+    /// response sent — where either side keeps it.
     ///
     /// The rows are the connection resources the wait analysis and the
     /// census observed, so the first `connections` walks every task's

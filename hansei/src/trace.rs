@@ -440,7 +440,21 @@ pub(crate) fn assessed_wait<T: proc::Target>(
     index: usize,
 ) -> Option<String> {
     let wait: &TaskWait = &session.analysis().waits[index];
-    Some(leaf_wait(wait.verified()?.target()))
+    let target = wait.verified()?.target();
+    // The request behind a connection: the caller's, read off its
+    // finds, or the server handler's, read when the connection was.
+    let request = target
+        .caller()
+        .and_then(|caller| {
+            crate::connections::caller_request(
+                &session.tasks,
+                &crate::connections::RequestIndex::of(session.census()),
+                session.attribution(),
+                caller,
+            )
+        })
+        .or_else(|| crate::tasks::server_request(wait.observation.as_ref()));
+    Some(leaf_wait(target, request))
 }
 
 /// The leaf frame's wait as `trace` details it: the target with its
@@ -448,13 +462,16 @@ pub(crate) fn assessed_wait<T: proc::Target>(
 /// a cell leaves to a line of its own — and, where the target is a
 /// connection parked on a primitive its rule names, that primitive on
 /// a `via` line under it.
-fn leaf_wait(target: &bundle::WaitTarget) -> String {
+fn leaf_wait(target: &bundle::WaitTarget, request: Option<String>) -> String {
     let mut text = target.line();
     if let Some(via) = target.via() {
         text.push_str(&format!("\nvia {}", via.line()));
     }
     if let Some(caller) = target.caller() {
         text.push_str(&format!("\ncaller {caller}"));
+    }
+    if let Some(request) = request {
+        text.push_str(&format!("\nrequest {request}"));
     }
     text
 }
@@ -472,7 +489,7 @@ pub(crate) fn observed_wait<'b, T: proc::Target>(
     let observation = inspection.primitive.value.as_ref()?;
     let mut pass = hansei_runtime::tokio::assess::AssessmentPass::new();
     let target = ctx.observed_target(&mut pass, observation, &inspection.chain, list, read)?;
-    Some(leaf_wait(&target))
+    Some(leaf_wait(&target, None))
 }
 
 /// How many census-found futures each frame of this chain holds beside
@@ -2799,6 +2816,7 @@ mod future_trace_tests {
                         waiting_on: None,
                         wait: None,
                         observation: None,
+                        request: None,
                         continuation: ContinuationStatus::Unresumed,
                     },
                     census::SetChild {
@@ -2810,6 +2828,7 @@ mod future_trace_tests {
                         waiting_on: None,
                         wait: None,
                         observation: None,
+                        request: None,
                         continuation: ContinuationStatus::Unresumed,
                     },
                 ],
@@ -2829,6 +2848,7 @@ mod future_trace_tests {
                 waiting_on: None,
                 wait: None,
                 observation: None,
+                request: None,
                 continuation: ContinuationStatus::Unresumed,
             }];
 

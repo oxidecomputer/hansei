@@ -1376,6 +1376,7 @@ mod tests {
             wait: Some(WaitKind::Timer { past_due: None }),
             observation: None,
             continuation: ContinuationStatus::Primitive,
+            request: None,
         }
     }
 
@@ -1393,6 +1394,7 @@ mod tests {
             wait: Some(WaitKind::Task { addr: 0x1c00 }),
             observation: None,
             continuation: ContinuationStatus::Unresumed,
+            request: None,
         }
     }
 

@@ -1289,6 +1289,7 @@ mod tests {
                 Some(_) => ContinuationStatus::Primitive,
                 None => ContinuationStatus::Unresumed,
             },
+            request: None,
         }
     }
 
@@ -1310,6 +1311,7 @@ mod tests {
                 Some(_) => ContinuationStatus::Primitive,
                 None => ContinuationStatus::Unresumed,
             },
+            request: None,
         }
     }
 
