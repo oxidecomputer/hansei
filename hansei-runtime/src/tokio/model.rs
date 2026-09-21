@@ -1104,10 +1104,49 @@ pub enum WaitTarget {
         /// The primitive the connection is parked on, where the rule
         /// names one.
         via: Option<Box<WaitTarget>>,
+        /// Who awaits the response, for a client with a request in
+        /// flight; `None` in every other phase.
+        caller: Option<HttpCaller>,
     },
 }
 
 pub use hansei_bundle::HttpRole;
+
+/// Who awaits an in-flight client connection's response: what the
+/// response callback's receiver cell holds, read from the connection's
+/// side by the oneshot's own layout. The caller's own frames never
+/// reach the receiver — it sits behind the client library's boxed
+/// future — so the connection's side is where the join is made.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum HttpCaller {
+    /// The task parked on the receiver.
+    Task(super::graph::TaskRef),
+    /// The receiver was dropped while the request stayed in flight: the
+    /// caller gave up on the response — a timeout, a cancelled future.
+    Gone,
+    /// The receiver is alive and holds no waker: not polled yet, or
+    /// mid-poll.
+    Unparked,
+    /// The receiver's waker is not a task's — a set child's, a
+    /// `block_on` thread's — named by its vtable, with the cell it was
+    /// read from, for a reader holding the waker sweep's account of
+    /// that address to name the child by.
+    NotATask { vtable: u64, cell: Option<u64> },
+    /// The state word says a waker is stored, and it did not read.
+    Unread,
+}
+
+impl fmt::Display for HttpCaller {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Task(task) => write!(f, "{task}"),
+            Self::Gone => write!(f, "gone (receiver dropped)"),
+            Self::Unparked => write!(f, "receiver alive, no waker stored"),
+            Self::NotATask { vtable, .. } => write!(f, "not a task (waker vtable {vtable:#x})"),
+            Self::Unread => write!(f, "receiver alive, waker unreadable"),
+        }
+    }
+}
 
 /// The HTTP version a connection speaks, once it knows.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
@@ -1506,6 +1545,15 @@ impl WaitTarget {
         }
     }
 
+    /// Who awaits a client connection's response, where a request is
+    /// in flight: the `caller:` line under the connection's own.
+    pub fn caller(&self) -> Option<&HttpCaller> {
+        match self {
+            Self::HttpConn { caller, .. } => caller.as_ref(),
+            _ => None,
+        }
+    }
+
     /// The line a target prints as, reading included: the target with
     /// its words in parentheses where those are a line of their own,
     /// the target alone where they are already on it.
@@ -1898,6 +1946,7 @@ mod tests {
                 keep_alive,
                 header_read_timer: false,
                 via: via.map(Box::new),
+                caller: None,
             }
         };
         let rx = WaitTarget::Channel {
@@ -2015,6 +2064,7 @@ mod tests {
             keep_alive: true,
             header_read_timer: false,
             via: None,
+            caller: None,
         };
         assert_eq!(
             negotiating.to_string(),
@@ -2031,6 +2081,7 @@ mod tests {
             keep_alive: true,
             header_read_timer: false,
             via: None,
+            caller: None,
         };
         assert_eq!(
             handling.to_string(),
@@ -2049,6 +2100,7 @@ mod tests {
             keep_alive: true,
             header_read_timer: true,
             via: None,
+            caller: None,
         };
         let idle = armed(HttpPhase::Idle);
         assert_eq!(
@@ -2414,5 +2466,65 @@ mod tests {
             .collect();
         assert_eq!(io, [(0x30, IoSlot::Reader)]);
         assert!(registries.io_of(0x9999).next().is_none());
+    }
+}
+
+#[cfg(test)]
+mod caller_tests {
+    use super::*;
+    use crate::tokio::TaskAddr;
+    use crate::tokio::graph::TaskRef;
+
+    /// The caller a connection's block names, one line per outcome of
+    /// reading the callback's receiver cell — and the connection's own
+    /// line, cell and bucket say nothing of it.
+    #[test]
+    fn test_a_callers_words() {
+        let task = HttpCaller::Task(TaskRef {
+            addr: TaskAddr(0x7ae9380),
+            task_id: Some(4307675),
+        });
+        assert_eq!(task.to_string(), "task 4307675");
+        assert_eq!(HttpCaller::Gone.to_string(), "gone (receiver dropped)");
+        assert_eq!(
+            HttpCaller::Unparked.to_string(),
+            "receiver alive, no waker stored"
+        );
+        assert_eq!(
+            HttpCaller::NotATask {
+                vtable: 0x70738b8,
+                cell: Some(0xc72d9f0),
+            }
+            .to_string(),
+            "not a task (waker vtable 0x70738b8)"
+        );
+        assert_eq!(
+            HttpCaller::Unread.to_string(),
+            "receiver alive, waker unreadable"
+        );
+        let conn = WaitTarget::HttpConn {
+            addr: 0xc72d000,
+            role: HttpRole::Client,
+            version: Some(HttpVersion::Http1),
+            phase: HttpPhase::AwaitingResponse,
+            method: Some("GET".to_owned()),
+            keep_alive: true,
+            header_read_timer: false,
+            via: None,
+            caller: Some(task.clone()),
+        };
+        assert_eq!(conn.caller(), Some(&task));
+        assert_eq!(
+            conn.to_string(),
+            "http1 client 0xc72d000 (GET sent, awaiting response headers)"
+        );
+        assert_eq!(conn.cell(), "http1 client");
+        assert_eq!(conn.group_label(), "http1 client awaiting response");
+        let io = WaitTarget::Io {
+            addr: 0x8058d80,
+            fd: None,
+            interest: None,
+        };
+        assert!(io.caller().is_none());
     }
 }

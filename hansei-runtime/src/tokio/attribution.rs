@@ -39,14 +39,15 @@
 
 use super::RawInstant;
 use super::bundle::{
-    Context, IoResourceInfo, IoSlot, IoWaiterInfo, OneshotSide, OneshotState, Readiness,
-    Registries, TaskList, TimerEntryInfo, WaitTarget, WheelState, channel_words, contains,
-    deadline_text, notify_words, watch_words, watch_words_of,
+    Context, HttpRole, HttpVersion, IoResourceInfo, IoSlot, IoWaiterInfo, OneshotSide,
+    OneshotState, Readiness, Registries, TaskList, TimerEntryInfo, WaitTarget, WheelState,
+    channel_words, contains, deadline_text, http_kind_word, notify_words, watch_words,
+    watch_words_of,
 };
 use super::census::{FutureCensus, Via};
 use super::contract::{Walked, execute_steps_over};
 use super::graph::{Analysis, TaskRef};
-use super::observe::{ReadContext, ValueKey};
+use super::observe::{ReadContext, ResourceObservation, ValueKey};
 use super::semantics::SemanticIndex;
 use super::wakers::{Hit, Owner, WakerSlots};
 use crate::heap::umem::{Liveness, UmemHeap};
@@ -410,6 +411,26 @@ pub enum Attribution {
         path: SlotPath,
         validity: Validity,
     },
+    /// A slot in another task's primitive, placed from that task's
+    /// side: the receiver cell of the oneshot an HTTP client connection
+    /// watches as its response callback, holding the waker of whoever
+    /// awaits the response. The owner's own values never reach the
+    /// cell — the receiver sits behind the client library's boxed
+    /// future — so the connection's observation of the oneshot, and
+    /// the oneshot's own layout, are what place it.
+    Response {
+        /// The oneshot's `Inner`.
+        primitive: u64,
+        reading: OneshotState,
+        /// The task driving the connection, whose verified wait names
+        /// the callback.
+        connection: TaskRef,
+        /// The connection as its verdict names it: the `Conn`'s
+        /// address and its kind words.
+        conn: u64,
+        role: HttpRole,
+        version: Option<HttpVersion>,
+    },
     /// Memory nothing typed reaches: a live allocation no root's
     /// value covers, or — on a target with no allocator index — what
     /// may be a ghost of the storage's last occupant.
@@ -477,6 +498,19 @@ impl AttributedSlot {
                 _ => format!("{} {primitive:#x}", kind.word()),
             },
             Attribution::Typed { holder, .. } => format!("slot {:#x} in {holder}", self.slot),
+            // What the slot is a wait for is what names it: the
+            // response the connection is carrying, not the oneshot's
+            // own words, which the connection's `via` line already says.
+            Attribution::Response {
+                primitive,
+                conn,
+                role,
+                version,
+                ..
+            } => format!(
+                "oneshot rx {primitive:#x} (response for {} {conn:#x})",
+                http_kind_word(*role, *version)
+            ),
             Attribution::Unknown => format!("unknown @ {:#x}", self.slot),
         }
     }
@@ -494,6 +528,7 @@ impl AttributedSlot {
             Attribution::Registry(RegistrySlot::Semaphore { .. }) => "semaphore".to_string(),
             Attribution::Registry(RegistrySlot::Join { task }) => format!("join {task}"),
             Attribution::Owner { kind, .. } => kind.word().to_string(),
+            Attribution::Response { .. } => OwnerKind::OneshotRx.word().to_string(),
             Attribution::Typed { holder, .. } => holder.to_string(),
             Attribution::Unknown => "unknown".to_string(),
         }
@@ -510,6 +545,9 @@ impl AttributedSlot {
             Attribution::Owner {
                 kind, primitive, ..
             } => format!("{} {primitive:#x}", kind.word()),
+            Attribution::Response { primitive, .. } => {
+                format!("{} {primitive:#x}", OwnerKind::OneshotRx.word())
+            }
             // A typed slot's entry is already its address and its
             // holder, with no reading to leave off, so it is its own
             // label.
@@ -539,6 +577,7 @@ impl AttributedSlot {
             }
             Attribution::Registry(RegistrySlot::Join { task }) => format!("join {task}"),
             Attribution::Owner { kind, .. } => kind.word().to_string(),
+            Attribution::Response { .. } => OwnerKind::OneshotRx.word().to_string(),
             Attribution::Typed { holder, .. } => holder.to_string(),
             Attribution::Unknown => "unknown".to_string(),
         }
@@ -583,6 +622,12 @@ impl AttributedSlot {
                 format!("its wake-queue node @ {node:#x}")
             }
             Attribution::Registry(RegistrySlot::Join { .. }) => "its trailer".to_string(),
+            // No path of the owner's reaches the cell; the task whose
+            // path does is named instead, and `whatis` on the
+            // connection's own slot prints that path.
+            Attribution::Response { connection, .. } => {
+                format!("the response callback's receiver cell, held by {connection}")
+            }
             // Where the slot sits is a path, which is a line of its
             // own ([`Self::location`]): the members it names say what
             // holds the waker, and say it the way a `print` reads it.
@@ -704,6 +749,8 @@ pub struct AttributionStats {
     pub registry: usize,
     pub owner: usize,
     pub typed: usize,
+    /// Slots placed from another task's side ([`Attribution::Response`]).
+    pub joined: usize,
     pub unknown: usize,
     pub stale: usize,
     /// Owners whose typed values were walked.
@@ -849,6 +896,7 @@ impl Attributed {
                 Attribution::Registry(_) => self.stats.registry += 1,
                 Attribution::Owner { .. } => self.stats.owner += 1,
                 Attribution::Typed { .. } => self.stats.typed += 1,
+                Attribution::Response { .. } => self.stats.joined += 1,
                 Attribution::Unknown => self.stats.unknown += 1,
             }
         }
@@ -1025,11 +1073,125 @@ impl<'b, T: Target> Context<'b, T> {
             out.slots.extend(slots);
             out.stale.extend(stale);
         }
+        join_response_cells(&mut out.slots, sources);
         out.slots.sort_by_key(|s| s.hit);
         out.stale.sort_by_key(|s| s.hit);
         out.index();
         out.stats.elapsed = started.elapsed();
         out
+    }
+}
+
+/// The receiver cell of a response callback a verified client
+/// connection watches, and what a slot found there is to be named by.
+struct ResponseCell {
+    primitive: u64,
+    reading: OneshotState,
+    connection: TaskRef,
+    conn: u64,
+    role: HttpRole,
+    version: Option<HttpVersion>,
+    /// The task header the connection's own read of the cell named,
+    /// where the waker there is a task's: what the slot's owner must
+    /// agree with.
+    waker_task: Option<u64>,
+}
+
+/// The receiver cells of every response callback the analysis
+/// verified a client connection on, by the cell's address. A
+/// connection with a request in flight is parked on the callback's
+/// sender cell; the same `Inner`'s receiver cell holds the waker of
+/// whoever awaits the response, sixteen bytes away by the oneshot's
+/// own layout — which the observation recorded, so no offset is
+/// assumed here.
+fn response_cells(sources: &Sources<'_>) -> HashMap<u64, ResponseCell> {
+    let mut cells = HashMap::default();
+    for wait in &sources.analysis.waits {
+        let Some(verified) = wait.verified() else {
+            continue;
+        };
+        let WaitTarget::HttpConn {
+            addr: conn,
+            role,
+            version,
+            via: Some(via),
+            ..
+        } = verified.target()
+        else {
+            continue;
+        };
+        let WaitTarget::Oneshot {
+            addr: inner,
+            side: OneshotSide::Tx,
+            ..
+        } = **via
+        else {
+            continue;
+        };
+        let Some(ResourceObservation::HttpConn(http)) = &wait.observation else {
+            continue;
+        };
+        let Some(callback) = http
+            .client
+            .as_ref()
+            .and_then(|client| client.callback.as_ref())
+        else {
+            continue;
+        };
+        // The cell holds a waker only while the state word says so; a
+        // pair found there otherwise is a ghost of an earlier receiver.
+        let Some(cell) = callback.rx_task_at else {
+            continue;
+        };
+        if callback.inner != inner || !callback.state.rx_task_set() {
+            continue;
+        }
+        cells.insert(
+            cell,
+            ResponseCell {
+                primitive: inner,
+                reading: callback.state,
+                connection: wait.task,
+                conn: *conn,
+                role: *role,
+                version: *version,
+                waker_task: callback.rx_waker.as_ref().and_then(|waker| waker.task()),
+            },
+        );
+    }
+    cells
+}
+
+/// Place the slots no owner's own values reached that lie in a
+/// response callback's receiver cell: the caller awaiting a response
+/// the analysis knows from the connection's side. The connection's own
+/// read of the cell, where it named a task, must name the slot's owner
+/// — the join is the address, and that read is its check.
+fn join_response_cells(slots: &mut [AttributedSlot], sources: &Sources<'_>) {
+    let cells = response_cells(sources);
+    if cells.is_empty() {
+        return;
+    }
+    for slot in slots {
+        if !matches!(slot.attribution, Attribution::Unknown) {
+            continue;
+        }
+        let Some(cell) = cells.get(&slot.slot) else {
+            continue;
+        };
+        if let (Some(named), Owner::Task { header, .. }) = (cell.waker_task, slot.owner)
+            && named != header
+        {
+            continue;
+        }
+        slot.attribution = Attribution::Response {
+            primitive: cell.primitive,
+            reading: cell.reading,
+            connection: cell.connection,
+            conn: cell.conn,
+            role: cell.role,
+            version: cell.version,
+        };
     }
 }
 
@@ -2603,10 +2765,12 @@ impl AttributedSlot {
     /// else, so it is the line with room for it.
     pub fn waits_on(&self, stopped: Option<RawInstant>) -> Option<String> {
         match &self.attribution {
-            Attribution::Registry(_) | Attribution::Owner { .. } => Some(match self.words() {
-                Some(words) => format!("{} ({words})", self.entry(stopped)),
-                None => self.entry(stopped),
-            }),
+            Attribution::Registry(_) | Attribution::Owner { .. } | Attribution::Response { .. } => {
+                Some(match self.words() {
+                    Some(words) => format!("{} ({words})", self.entry(stopped)),
+                    None => self.entry(stopped),
+                })
+            }
             Attribution::Typed { .. } | Attribution::Unknown => None,
         }
     }
@@ -3264,6 +3428,146 @@ mod tests {
         assert_eq!(attributed.stats.stale, 0);
     }
 
+    /// The caller's slot in the busy connection's response callback:
+    /// the requester's own values never reach the receiver, so its
+    /// waker in the `rx_task` cell is placed from the connection's
+    /// side and named as the response it awaits, while the
+    /// connection's own sender-cell slot in the same oneshot stands as
+    /// it did. The idle connection, with no callback, joins nothing.
+    #[test]
+    fn test_the_callers_slot_joins_the_connections_callback() {
+        use crate::tokio::bundle::{HttpCaller, HttpPhase};
+        let (bundle, snapshot) = load_any("http-conns");
+        let over = Over::new(&bundle, &snapshot);
+        let attributed = over.attribute();
+        let requester = over.task("http_conns::requester");
+        let slots: Vec<&AttributedSlot> = attributed.of_task(requester.addr.0).collect();
+        assert_eq!(slots.len(), 1, "{slots:?}");
+        let Attribution::Response {
+            primitive,
+            reading,
+            connection,
+            conn,
+            role,
+            version,
+        } = &slots[0].attribution
+        else {
+            panic!("{:?}", slots[0].attribution);
+        };
+        let busy = over
+            .analysis
+            .waits
+            .iter()
+            .find(|wait| {
+                matches!(
+                    wait.verified().map(|v| v.target()),
+                    Some(WaitTarget::HttpConn {
+                        phase: HttpPhase::AwaitingResponse,
+                        ..
+                    })
+                )
+            })
+            .expect("a client awaiting its response");
+        let WaitTarget::HttpConn {
+            addr,
+            via: Some(via),
+            caller,
+            ..
+        } = busy.verified().unwrap().target()
+        else {
+            unreachable!()
+        };
+        let WaitTarget::Oneshot {
+            addr: inner,
+            state,
+            side: OneshotSide::Tx,
+        } = **via
+        else {
+            panic!("{via}")
+        };
+        assert_eq!((*primitive, *conn, *connection), (inner, *addr, busy.task));
+        assert_eq!(
+            (*role, *version),
+            (HttpRole::Client, Some(HttpVersion::Http1))
+        );
+        assert_eq!(*reading, state);
+        assert_eq!(
+            caller,
+            &Some(HttpCaller::Task(TaskRef {
+                addr: requester.addr,
+                task_id: requester.task_id,
+            }))
+        );
+        assert_eq!(
+            slots[0].entry(None),
+            format!("oneshot rx {inner:#x} (response for http1 client {addr:#x})")
+        );
+        assert_eq!(slots[0].reach, Reach::Unlocated);
+        // The connection's own slot in the same oneshot: the sender
+        // cell, a different address in the same `Inner`.
+        let tx = attributed
+            .of_task(busy.task.addr.0)
+            .find(|slot| {
+                matches!(
+                    slot.attribution,
+                    Attribution::Owner {
+                        kind: OwnerKind::OneshotTx,
+                        ..
+                    }
+                )
+            })
+            .expect("the sender-cell slot");
+        let Attribution::Owner {
+            primitive: tx_primitive,
+            ..
+        } = tx.attribution
+        else {
+            unreachable!()
+        };
+        assert_eq!(tx_primitive, inner);
+        assert_ne!(tx.slot, slots[0].slot);
+        assert_eq!(attributed.stats.joined, 1);
+    }
+
+    /// A callback joins only when its receiver cell holds a waker by
+    /// the state word and belongs to the `Inner` the connection waits
+    /// on: either alone leaves the cell a ghost, and nothing joins.
+    #[test]
+    fn test_a_ghost_callback_joins_nothing() {
+        use crate::tokio::observe::OneshotObservation;
+        let (bundle, snapshot) = load_any("http-conns");
+        let requester = |over: &Over<'_>| over.task("http_conns::requester").addr.0;
+        for (what, ghost) in [
+            (
+                "no receiver waker by the state word",
+                (|callback: &mut OneshotObservation| {
+                    callback.state.word &= !hansei_bundle::tokio::oneshot::RX_TASK_SET;
+                }) as fn(&mut OneshotObservation),
+            ),
+            ("another Inner", |callback| callback.inner += 8),
+        ] {
+            let mut over = Over::new(&bundle, &snapshot);
+            for wait in &mut over.analysis.waits {
+                if let Some(ResourceObservation::HttpConn(http)) = &mut wait.observation
+                    && let Some(callback) = http
+                        .client
+                        .as_mut()
+                        .and_then(|client| client.callback.as_mut())
+                {
+                    ghost(callback);
+                }
+            }
+            let attributed = over.attribute();
+            assert_eq!(attributed.stats.joined, 0, "{what}");
+            assert!(
+                attributed
+                    .of_task(requester(&over))
+                    .all(|slot| !matches!(slot.attribution, Attribution::Response { .. })),
+                "{what}"
+            );
+        }
+    }
+
     /// The slot no fixture holds, as it prints: an unknown is its
     /// address and nothing more — no detail, and a line that is the
     /// label alone — under the collapse-free bucket word.
@@ -3619,6 +3923,7 @@ mod join_tests {
                     keep_alive: true,
                     header_read_timer: false,
                     via: Some(Box::new(via)),
+                    caller: None,
                 },
                 None,
             )
@@ -3686,6 +3991,7 @@ mod join_tests {
                 keep_alive: true,
                 header_read_timer: false,
                 via: None,
+                caller: None,
             },
             None,
         );
@@ -5494,5 +5800,63 @@ mod reach_tests {
             reach_of(&planted, &bundle, &owned, nested + 8),
             Reach::Awaited(holding(key(HOLDER, nested), 1, Some("h")))
         );
+    }
+}
+
+#[cfg(test)]
+mod response_tests {
+    use super::*;
+    use crate::tokio::TaskAddr;
+
+    /// A slot placed from the connection's side prints as the response
+    /// it awaits: the oneshot's receiver cell, the connection named by
+    /// its verdict's kind words and address; the cell and the bucket
+    /// are the receiver's kind; the waker line names the task holding
+    /// the cell; and no path of the owner's is claimed for it.
+    #[test]
+    fn test_a_response_slot_is_named_from_the_connections_side() {
+        let slot = AttributedSlot {
+            hit: 0,
+            slot: 0xc72d9f0,
+            owner: Owner::Task {
+                header: 0x7ae9380,
+                index: 3,
+            },
+            attribution: Attribution::Response {
+                primitive: 0xc72d9e0,
+                reading: OneshotState {
+                    word: 0b1001,
+                    value_present: Some(false),
+                },
+                connection: TaskRef {
+                    addr: TaskAddr(0x804ee80),
+                    task_id: Some(4307673),
+                },
+                conn: 0x124bb090,
+                role: HttpRole::Client,
+                version: Some(HttpVersion::Http1),
+            },
+            within: None,
+            through: Vec::new(),
+            aliases: Vec::new(),
+            reach: Reach::Unlocated,
+        };
+        let entry = "oneshot rx 0xc72d9e0 (response for http1 client 0x124bb090)";
+        let detail = "the response callback's receiver cell, held by task 4307673";
+        assert_eq!(slot.entry(None), entry);
+        assert_eq!(slot.label(), "oneshot rx 0xc72d9e0");
+        assert_eq!(slot.cell(), "oneshot rx");
+        assert_eq!(slot.bucket(), "oneshot rx");
+        assert_eq!(slot.place(), entry);
+        assert_eq!(slot.detail(None).as_deref(), Some(detail));
+        assert_eq!(slot.words(), None);
+        assert_eq!(slot.waits_on(None).as_deref(), Some(entry));
+        assert_eq!(slot.line(None), format!("oneshot rx 0xc72d9e0: {detail}"));
+        assert_eq!(slot.entry_line(None), slot.line(None));
+        assert_eq!(slot.location(), None);
+        assert!(slot.path().is_none());
+        let attributed = Attributed::from_slots(vec![slot]);
+        assert_eq!((attributed.stats.joined, attributed.stats.unknown), (1, 0));
+        assert_eq!(attributed.of_task(0x7ae9380).count(), 1);
     }
 }

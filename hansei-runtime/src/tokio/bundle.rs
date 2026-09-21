@@ -3305,17 +3305,24 @@ impl<'b, T: Target> Context<'b, T> {
             word,
             value_present,
         };
-        let task = |role: WalkRole, set: bool| -> Result<Option<QueuedWaker>> {
-            if !set {
-                return Ok(None);
-            }
-            Ok(match self.walk(role).walk_with(read, arc)? {
-                Walked::At(raw) => Some(self.raw_waker(raw)?),
-                _ => None,
-            })
+        // The cell's address is the `Inner`'s layout and reads nothing;
+        // the waker in it is read only where the state word says one
+        // is stored.
+        let task = |role: WalkRole, set: bool| -> Result<(Option<QueuedWaker>, Option<u64>)> {
+            let raw = match (self.walk(role).walk_with(read, arc), set) {
+                (Ok(Walked::At(raw)), _) => raw,
+                (Ok(_), _) | (Err(_), false) => return Ok((None, None)),
+                (Err(e), true) => return Err(e),
+            };
+            let waker = if set {
+                Some(self.raw_waker(raw)?)
+            } else {
+                None
+            };
+            Ok((waker, Some(raw.addr)))
         };
-        let rx_waker = task(WalkRole::OneshotRxTask, state.rx_task_set())?;
-        let tx_waker = task(WalkRole::OneshotTxTask, state.tx_task_set())?;
+        let (rx_waker, rx_task_at) = task(WalkRole::OneshotRxTask, state.rx_task_set())?;
+        let (tx_waker, tx_task_at) = task(WalkRole::OneshotTxTask, state.tx_task_set())?;
         Ok(OneshotObservation {
             future,
             arc: ValueKey::of(arc),
@@ -3323,6 +3330,8 @@ impl<'b, T: Target> Context<'b, T> {
             state,
             rx_waker,
             tx_waker,
+            rx_task_at,
+            tx_task_at,
         })
     }
 

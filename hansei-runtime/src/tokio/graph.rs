@@ -34,7 +34,7 @@ use proc::Target;
 use std::fmt;
 
 /// A task, named by id when it has one.
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub struct TaskRef {
     pub addr: TaskAddr,
     pub task_id: Option<u64>,

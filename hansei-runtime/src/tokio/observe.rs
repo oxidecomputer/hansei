@@ -362,6 +362,13 @@ pub struct OneshotObservation {
     /// a sender's `poll_closed` registration, which an HTTP client
     /// connection parks its response callback on.
     pub tx_waker: Option<QueuedWaker>,
+    /// The `rx_task` cell's own address: the slot a receiver's waker
+    /// occupies, by the `Inner`'s layout, whether or not one is stored
+    /// there now. What joins a slot the sweep found in this oneshot to
+    /// the side that observed it.
+    pub rx_task_at: Option<u64>,
+    /// The `tx_task` cell's own address, likewise.
+    pub tx_task_at: Option<u64>,
 }
 
 /// hyper's `KA`, the connection's keep-alive word.

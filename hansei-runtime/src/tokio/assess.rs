@@ -32,10 +32,11 @@
 //! consumer from turning a weaker relation into one.
 
 use super::bundle::{
-    AwaitChain, ChainEnd, Context, HttpPhase, HttpRole, HttpVersion, IoResourceInfo, IoSlot,
-    OneshotSide, QueuedWaker, Task, TaskKind, TaskList, WaitTarget, semaphore_owner,
+    AwaitChain, ChainEnd, Context, HttpCaller, HttpPhase, HttpRole, HttpVersion, IoResourceInfo,
+    IoSlot, OneshotSide, QueuedWaker, Task, TaskKind, TaskList, WaitTarget, semaphore_owner,
 };
 use super::chain::{FutureInspection, InspectionMode};
+use super::graph::TaskRef;
 use super::observe::{
     AcquireObservation, ChannelObservation, Consistency, HttpConnObservation,
     HttpNegotiatingObservation, HttpReading, HttpWriting, IoFutureState, IoObservation,
@@ -917,6 +918,7 @@ impl<'b, T: Target> Context<'b, T> {
                 unreachable!("a client connection is never in a server phase")
             }
         };
+        let caller = in_flight_caller(phase, client);
         Assessed::of(WaitAssessment::Waiting(VerifiedWait {
             target: WaitTarget::HttpConn {
                 addr: http.conn,
@@ -927,6 +929,7 @@ impl<'b, T: Target> Context<'b, T> {
                 keep_alive,
                 header_read_timer: false,
                 via,
+                caller,
             },
             primitive,
             queue_position: None,
@@ -1624,6 +1627,7 @@ impl<'b, T: Target> Context<'b, T> {
                         keep_alive,
                         header_read_timer: false,
                         via,
+                        caller: in_flight_caller(phase, client),
                     })
                 }
                 HttpRole::Server => {
@@ -1638,6 +1642,7 @@ impl<'b, T: Target> Context<'b, T> {
                         keep_alive,
                         header_read_timer: server.header_read_timer_running,
                         via: None,
+                        caller: None,
                     })
                 }
             },
@@ -1650,8 +1655,49 @@ impl<'b, T: Target> Context<'b, T> {
                 keep_alive: true,
                 header_read_timer: false,
                 via: None,
+                caller: None,
             }),
         }
+    }
+}
+
+/// Who awaits the response a client connection has in flight, from
+/// the response callback's own words: the receiver's task cell where
+/// the state word says a waker is stored, else whether the receiver is
+/// still there at all. `None` in every phase but the two with a
+/// request in flight, and where no callback read.
+fn in_flight_caller(
+    phase: HttpPhase,
+    client: &super::observe::HttpClientObservation,
+) -> Option<HttpCaller> {
+    match phase {
+        HttpPhase::AwaitingResponse | HttpPhase::SendingBody(_) => {
+            client.callback.as_ref().map(http_caller)
+        }
+        _ => None,
+    }
+}
+
+/// The caller a response callback names: the receiver dropped its
+/// side (`CLOSED`) and is gone; else it has parked a waker or not; a
+/// parked waker is a task's, or something else's, or did not read.
+pub fn http_caller(callback: &OneshotObservation) -> HttpCaller {
+    if callback.state.closed() {
+        return HttpCaller::Gone;
+    }
+    if !callback.state.rx_task_set() {
+        return HttpCaller::Unparked;
+    }
+    match &callback.rx_waker {
+        Some(QueuedWaker::Task { addr, task_id }) => HttpCaller::Task(TaskRef {
+            addr: TaskAddr(*addr),
+            task_id: *task_id,
+        }),
+        Some(QueuedWaker::Other { vtable }) => HttpCaller::NotATask {
+            vtable: *vtable,
+            cell: callback.rx_task_at,
+        },
+        Some(QueuedWaker::Unarmed) | None => HttpCaller::Unread,
     }
 }
 
@@ -1821,6 +1867,7 @@ pub fn assess_http_server(http: &HttpConnObservation, primitive: ValueKey) -> As
             keep_alive,
             header_read_timer: server.header_read_timer_running,
             via: None,
+            caller: None,
         },
         primitive,
         queue_position: None,
@@ -1846,6 +1893,7 @@ pub fn assess_http_negotiating(
             keep_alive: true,
             header_read_timer: false,
             via: None,
+            caller: None,
         },
         primitive,
         queue_position: None,
@@ -2126,6 +2174,8 @@ mod tests {
                     },
                     rx_waker: None,
                     tx_waker: None,
+                    rx_task_at: Some(0xc72d9f0),
+                    tx_task_at: Some(0xc72d9e0),
                 }),
                 rx: Some(key),
             }),
@@ -2646,18 +2696,34 @@ mod tests {
             };
             let via = via.as_deref().expect("a client phase with a primitive");
             assert_eq!(via.line(), verified_via.line());
+            // And the caller, read the same way on both: the task
+            // awaiting the parked response, none while idle.
+            assert_eq!(observed.caller(), verified.target().caller());
             match phase {
-                HttpPhase::Idle => assert!(matches!(via, WaitTarget::Channel { .. }), "{via}"),
-                HttpPhase::AwaitingResponse => assert!(
-                    matches!(
-                        via,
-                        WaitTarget::Oneshot {
-                            side: OneshotSide::Tx,
-                            ..
-                        }
-                    ),
-                    "{via}"
-                ),
+                HttpPhase::Idle => {
+                    assert!(matches!(via, WaitTarget::Channel { .. }), "{via}");
+                    assert_eq!(observed.caller(), None);
+                }
+                HttpPhase::AwaitingResponse => {
+                    assert!(
+                        matches!(
+                            via,
+                            WaitTarget::Oneshot {
+                                side: OneshotSide::Tx,
+                                ..
+                            }
+                        ),
+                        "{via}"
+                    );
+                    let requester = task_named(&e.list, "http_conns::requester");
+                    assert_eq!(
+                        observed.caller(),
+                        Some(&HttpCaller::Task(TaskRef {
+                            addr: requester.addr,
+                            task_id: requester.task_id,
+                        }))
+                    );
+                }
                 other => panic!("{other:?}"),
             }
             seen += 1;
@@ -3385,6 +3451,14 @@ mod tests {
         assert!(observed.inner > observed.arc.addr && observed.inner - observed.arc.addr <= 16);
 
         let arc = ctx.read_keyed(observed.arc, &ReadContext::none()).unwrap();
+        // The two task cells sit where the `Inner`'s own layout puts
+        // them, whether or not a waker is stored: what a slot found in
+        // either is joined to this observation by.
+        let inner_ty = arc.ty.member("data").unwrap().ty();
+        let cell = |name: &str| Some(observed.inner + inner_ty.member(name).unwrap().offset());
+        assert_eq!(observed.rx_task_at, cell("rx_task"));
+        assert_eq!(observed.tx_task_at, cell("tx_task"));
+        assert!(!state.tx_task_set() && observed.tx_waker.is_none());
         let state_at = ctx.walk(WalkRole::OneshotState).walk_at(arc).unwrap();
         let word: u64 = state_at.parse(&snapshot).unwrap();
         assert_eq!(word, state.word);
@@ -4063,5 +4137,101 @@ mod tests {
         assert!(!barrier.granted());
         barrier.acquire.needed = 0;
         assert!(barrier.granted());
+    }
+}
+
+#[cfg(test)]
+mod caller_tests {
+    use super::*;
+    use crate::tokio::TaskAddr;
+    use crate::tokio::bundle::OneshotState;
+    use crate::tokio::observe::HttpClientObservation;
+
+    fn callback(word: u64, rx_waker: Option<QueuedWaker>) -> OneshotObservation {
+        let key = ValueKey {
+            addr: 0xc72d000,
+            ty: hansei_bundle::BundleTypeId(7),
+        };
+        OneshotObservation {
+            future: key,
+            arc: key,
+            inner: 0xc72d9e0,
+            state: OneshotState {
+                word,
+                value_present: Some(false),
+            },
+            rx_waker,
+            tx_waker: None,
+            rx_task_at: Some(0xc72d9f0),
+            tx_task_at: Some(0xc72d9e0),
+        }
+    }
+
+    /// Who awaits the response, from the callback's words alone: the
+    /// task whose waker the receiver cell holds; a receiver that closed
+    /// its side is gone whatever else the word says; one that stored no
+    /// waker is alive and unparked; a waker that is no task's is named
+    /// by its vtable; a cell the word says is set but that did not read
+    /// says so — and only the two in-flight phases ask.
+    #[test]
+    fn test_the_caller_is_read_from_the_callback() {
+        use hansei_bundle::tokio::oneshot::{CLOSED, RX_TASK_SET, TX_TASK_SET};
+        let waker = QueuedWaker::Task {
+            addr: 0x7ae9380,
+            task_id: Some(4307675),
+        };
+        let named = HttpCaller::Task(TaskRef {
+            addr: TaskAddr(0x7ae9380),
+            task_id: Some(4307675),
+        });
+        let set = RX_TASK_SET | TX_TASK_SET;
+        assert_eq!(http_caller(&callback(set, Some(waker.clone()))), named);
+        assert_eq!(
+            http_caller(&callback(set | CLOSED, Some(waker.clone()))),
+            HttpCaller::Gone
+        );
+        assert_eq!(
+            http_caller(&callback(TX_TASK_SET, None)),
+            HttpCaller::Unparked
+        );
+        assert_eq!(
+            http_caller(&callback(
+                set,
+                Some(QueuedWaker::Other { vtable: 0x70738b8 })
+            )),
+            HttpCaller::NotATask {
+                vtable: 0x70738b8,
+                cell: Some(0xc72d9f0),
+            }
+        );
+        assert_eq!(http_caller(&callback(set, None)), HttpCaller::Unread);
+        assert_eq!(
+            http_caller(&callback(set, Some(QueuedWaker::Unarmed))),
+            HttpCaller::Unread
+        );
+        let client = HttpClientObservation {
+            callback: Some(callback(set, Some(waker))),
+            rx: None,
+        };
+        assert_eq!(
+            in_flight_caller(HttpPhase::AwaitingResponse, &client),
+            Some(named.clone())
+        );
+        assert_eq!(
+            in_flight_caller(HttpPhase::SendingBody(None), &client),
+            Some(named)
+        );
+        for phase in [
+            HttpPhase::Idle,
+            HttpPhase::ReceivingBody(None),
+            HttpPhase::Closing,
+        ] {
+            assert_eq!(in_flight_caller(phase, &client), None, "{phase:?}");
+        }
+        let unread = HttpClientObservation {
+            callback: None,
+            rx: None,
+        };
+        assert_eq!(in_flight_caller(HttpPhase::AwaitingResponse, &unread), None);
     }
 }
