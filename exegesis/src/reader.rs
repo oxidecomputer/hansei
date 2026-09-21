@@ -436,11 +436,16 @@ impl<'dw> DwReader<'dw> {
     fn finalize_types(&mut self) {
         self.subs.clear();
 
-        let specifications: Vec<_> = self
+        // Several definitions may share one declaration, and the last one
+        // folded is the declaration's canonical. Walk them in id order so
+        // that choice, and every string the bundle interns through it, is
+        // the same on every extraction of one binary.
+        let mut specifications: Vec<_> = self
             .type_specifications
             .iter()
             .map(|(&definition, &declaration)| (definition, declaration))
             .collect();
+        specifications.sort_unstable();
         for (definition, declaration) in specifications {
             self.inherit_type_identity(definition, declaration);
             let canonical = match (
