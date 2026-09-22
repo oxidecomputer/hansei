@@ -330,7 +330,19 @@ fn formats_report(bundles: &[(&str, Bundle)]) -> String {
             if name.starts_with("futures_util::") || name.starts_with("futures_core::") {
                 continue;
             }
-            let stripped = offsets.replace_all(&rendered, "").into_owned();
+            let mut stripped = offsets.replace_all(&rendered, "").into_owned();
+            // The crate release the bundle labeled the type with: on a
+            // cell whose fixture links a crate twice, two classes of
+            // one name render two ways, and the label says which
+            // release each rendering is for. Every tokio type carries
+            // the cell's tokio version here, pinning it beside the
+            // family line.
+            if let Some(release) = BundleView::new(bundle)
+                .ty(*id)
+                .and_then(|ty| ty.crate_release())
+            {
+                stripped.push_str(&format!(" — {release}"));
+            }
             catalog
                 .entry(name.to_owned())
                 .or_default()

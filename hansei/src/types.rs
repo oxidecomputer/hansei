@@ -107,10 +107,10 @@ pub fn describe(
             }
             writeln!(
                 out,
-                "(definition {} of {} — type {})",
+                "(definition {} of {} — {})",
                 i + 1,
                 matches.len(),
-                ty.id().0
+                handle(*ty)
             )?;
         }
         definition(*ty, 0, &mut nesting, out)?;
@@ -280,7 +280,7 @@ pub fn find(
             Some((seen, definitions)) if *seen == name => definitions.push(ty.id()),
             _ => {
                 if let Some((seen, definitions)) = previous.take() {
-                    write_name(out, seen, &definitions)?;
+                    write_name(view, out, seen, &definitions)?;
                 }
                 previous = Some((name, vec![ty.id()]));
                 count += 1;
@@ -288,7 +288,7 @@ pub fn find(
         }
     }
     if let Some((seen, definitions)) = previous {
-        write_name(out, seen, &definitions)?;
+        write_name(view, out, seen, &definitions)?;
     }
     writeln!(out, "\n[{}]", summary::counted(count, "type"))?;
     Ok(())
@@ -299,19 +299,37 @@ pub fn find(
 /// and the id — pasteable as `type <id>` — is the handle that always
 /// works. A name with several definitions names none of them exactly,
 /// so that row carries every id.
-fn write_name(out: &mut dyn io::Write, name: &str, definitions: &[BundleTypeId]) -> Result<()> {
-    match definitions {
-        [id] => writeln!(out, "{name}  (type {})", id.0)?,
-        ids => {
-            let ids = ids
-                .iter()
-                .map(|id| format!("type {}", id.0))
-                .collect::<Vec<_>>()
-                .join(", ");
-            writeln!(out, "{name}  ({} definitions: {ids})", definitions.len())?;
+fn write_name(
+    view: &BundleView<'_>,
+    out: &mut dyn io::Write,
+    name: &str,
+    definitions: &[BundleTypeId],
+) -> Result<()> {
+    let handles: Vec<String> = definitions
+        .iter()
+        .filter_map(|id| view.ty(*id))
+        .map(handle)
+        .collect();
+    match handles.as_slice() {
+        [one] => writeln!(out, "{name}  ({one})")?,
+        several => {
+            let ids = several.join("; ");
+            writeln!(out, "{name}  ({} definitions: {ids})", several.len())?;
         }
     }
     Ok(())
+}
+
+/// The handle a listing prints for one type: `type <id>`, which every
+/// command accepts back, and the crate release the bundle recorded for
+/// it — `type 9507, reqwest 0.13.2` — which is what tells two
+/// definitions of one name apart where a target links their crate at
+/// two releases.
+fn handle(ty: BundleType<'_>) -> String {
+    match ty.crate_release() {
+        Some(release) => format!("type {}, {release}", ty.id().0),
+        None => format!("type {}", ty.id().0),
+    }
 }
 
 fn bytes(size: u64) -> String {
@@ -334,6 +352,18 @@ fn definition(
 
 /// The line a definition opens with: the kind, the name, and the extent.
 fn heading(ty: BundleType<'_>) -> String {
+    let head = kind_and_extent(ty);
+    // The crate release, where the bundle recorded one: the one thing
+    // that tells this definition from a same-named one of the crate's
+    // other release.
+    match ty.crate_release() {
+        Some(release) => format!("{head}, {release}"),
+        None => head,
+    }
+}
+
+/// The kind, the name, and the extent.
+fn kind_and_extent(ty: BundleType<'_>) -> String {
     match ty.def() {
         TypeDef::Base { encoding, .. } => {
             format!("base {} — {}, {encoding:?}", ty.name(), bytes(ty.size()))
@@ -654,6 +684,8 @@ mod tests {
             "opts",
             "app::work::{async_fn_env#0}",
             "Pair<(u64, u64)>",
+            "dup",
+            "2.0.0",
         ] {
             names.insert(name, strings.intern(name));
         }
@@ -823,6 +855,16 @@ mod tests {
             types: TypeTable {
                 types,
                 name_index,
+                // The second `dup::Type` is labeled with its crate's
+                // release, the first not — a generic the crate's own
+                // code never names is declared nowhere inside it.
+                crate_labels: std::collections::BTreeMap::from([(
+                    BundleTypeId(12),
+                    hansei_bundle::CrateLabel {
+                        package: n("dup"),
+                        versions: vec![n("2.0.0")],
+                    },
+                )]),
                 ..Default::default()
             },
             tasks: Default::default(),
@@ -880,10 +922,11 @@ mod tests {
         assert!(out.ends_with("[1 type]\n"), "{out}");
 
         // Repeated definitions of one name collapse into one line,
-        // which carries the ids the shared name cannot tell apart.
+        // which carries the ids the shared name cannot tell apart, and
+        // the crate release beside each id the bundle labeled.
         let out = found("dup");
         assert!(
-            out.contains("dup::Type  (2 definitions: type 11, type 12)"),
+            out.contains("dup::Type  (2 definitions: type 11; type 12, dup 2.0.0)"),
             "{out}"
         );
         assert!(out.ends_with("[1 type]\n"), "{out}");
@@ -975,8 +1018,18 @@ mod tests {
     fn test_describe_prints_every_definition_of_a_name() {
         let out = described("dup::Type", false, 0);
         assert!(out.starts_with("(definition 1 of 2 — type 11)\n"), "{out}");
-        assert!(out.contains("\n\n(definition 2 of 2 — type 12)\n"), "{out}");
+        assert!(
+            out.contains("\n\n(definition 2 of 2 — type 12, dup 2.0.0)\n"),
+            "{out}"
+        );
         assert_eq!(out.matches("struct dup::Type").count(), 2, "{out}");
+        // The labeled definition's heading carries the release too;
+        // the unlabeled one's does not.
+        assert_eq!(out.matches(", dup 2.0.0").count(), 2, "{out}");
+        assert!(
+            out.contains("struct dup::Type — 16 bytes, dup 2.0.0\n"),
+            "{out}"
+        );
     }
 
     /// A type spec resolves to exactly one definition: by id — reaching

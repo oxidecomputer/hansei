@@ -349,6 +349,16 @@ fn stats(path: &Path) -> Result<()> {
         same_named.len(),
         same_named.iter().map(|(_, ids)| ids.len()).sum::<usize>()
     );
+    println!(
+        "    crate labels {} types, {} naming two releases",
+        bundle.types.crate_labels.len(),
+        bundle
+            .types
+            .crate_labels
+            .values()
+            .filter(|label| label.versions.len() > 1)
+            .count()
+    );
     println!("  strings:         {}", bundle.strings.len());
     println!("  poll decls:      {}", bundle.types.poll_decls.len());
     println!(
@@ -522,6 +532,10 @@ fn dump(path: &Path) -> Result<()> {
                 exegesis::describe::describe_node(&bundle, id, format)
             );
         }
+        if let Some(label) = bundle.types.crate_labels.get(&id) {
+            let versions: Vec<&str> = label.versions.iter().map(|&v| s(v)).collect();
+            println!("  crate: {} {}", s(label.package), versions.join("/"));
+        }
     }
 
     // The names two or more types share, so a reader can tell the
@@ -532,7 +546,17 @@ fn dump(path: &Path) -> Result<()> {
     for (name, ids) in &same_named {
         let ids: Vec<String> = ids
             .iter()
-            .map(|id| format!("[{}] size={}", id.0, view.ty(*id).map_or(0, |ty| ty.size())))
+            .map(|id| {
+                let ty = view.ty(*id);
+                let size = ty.map_or(0, |ty| ty.size());
+                // The crate release, where the bundle labeled the type:
+                // the size alone tells two layouts apart, the label
+                // says which release each is.
+                match ty.and_then(|ty| ty.crate_release()) {
+                    Some(release) => format!("[{}] size={size} {release}", id.0),
+                    None => format!("[{}] size={size}", id.0),
+                }
+            })
             .collect();
         println!("{name}: {}", ids.join(", "));
     }
