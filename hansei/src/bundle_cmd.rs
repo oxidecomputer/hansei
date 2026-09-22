@@ -343,6 +343,12 @@ fn stats(path: &Path) -> Result<()> {
             println!("    {name:<10} {count}");
         }
     }
+    let same_named = same_named_types(&bundle);
+    println!(
+        "    same-named {} names, {} types",
+        same_named.len(),
+        same_named.iter().map(|(_, ids)| ids.len()).sum::<usize>()
+    );
     println!("  strings:         {}", bundle.strings.len());
     println!("  poll decls:      {}", bundle.types.poll_decls.len());
     println!(
@@ -395,6 +401,22 @@ fn stats(path: &Path) -> Result<()> {
     );
     println!("  impls:           {}", bundle.impls.entries.len());
     Ok(())
+}
+
+/// The names the bundle records more than one type under, each with
+/// its ids: two releases of one crate whose layouts differ, or two
+/// types one name happens to cover. Grouped off the name index, which
+/// is sorted by name, so a name's types arrive together.
+fn same_named_types(bundle: &Bundle) -> Vec<(&str, Vec<BundleTypeId>)> {
+    let mut groups: Vec<(&str, Vec<BundleTypeId>)> = Vec::new();
+    for (name, ty) in hansei_bundle::BundleView::new(bundle).named_types() {
+        match groups.last_mut() {
+            Some((seen, ids)) if *seen == name => ids.push(ty.id()),
+            _ => groups.push((name, vec![ty.id()])),
+        }
+    }
+    groups.retain(|(_, ids)| ids.len() > 1);
+    groups
 }
 
 fn dump(path: &Path) -> Result<()> {
@@ -502,6 +524,18 @@ fn dump(path: &Path) -> Result<()> {
         }
     }
 
+    // The names two or more types share, so a reader can tell the
+    // types apart by id and size where a name alone cannot.
+    let view = hansei_bundle::BundleView::new(&bundle);
+    let same_named = same_named_types(&bundle);
+    println!("== same-named types ({}) ==", same_named.len());
+    for (name, ids) in &same_named {
+        let ids: Vec<String> = ids
+            .iter()
+            .map(|id| format!("[{}] size={}", id.0, view.ty(*id).map_or(0, |ty| ty.size())))
+            .collect();
+        println!("{name}: {}", ids.join(", "));
+    }
     println!("== tasks ({}) ==", bundle.tasks.entries.len());
     for (i, e) in bundle.tasks.entries.iter().enumerate() {
         println!(
