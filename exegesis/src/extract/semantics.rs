@@ -41,7 +41,7 @@ use crate::bundle::{
 use crate::detect::Family;
 use crate::detect::adapters::{
     self, H1Role, HttpDispatcherLayout, HttpRequestKind, HttpRequestLayout, InstrumentedLayout,
-    Pointee, SelectLayout, StdAdapter, WidePointer, hyper_h1, request,
+    Pointee, PointerDecline, SelectLayout, StdAdapter, WidePointer, hyper_h1, request,
 };
 use crate::detect::semantics::{
     DROPSHOT_HANDLER_V0_17_0, DROPSHOT_SERVER_V0_17_0, FUTURES_UTIL_ADAPTERS_V0_3_30,
@@ -478,6 +478,10 @@ pub(super) struct Seed {
     resource: Option<ResourceKind>,
     container: Option<ContainerKind>,
     adapter: Option<AdapterSeed>,
+    /// Why the std adapter screen declined a type of an adapter's
+    /// shape: a `Box` or `&mut` whose definitions name several targets.
+    /// The continuation's reason where the type earns a record.
+    adapter_declined: Option<Decline>,
     instrumented: Option<InstrumentedSeed>,
     library: Option<LibrarySeed>,
     select: Option<SelectSeed>,
@@ -746,7 +750,8 @@ pub(super) fn collect_semantic_seeds(
             || name.starts_with("alloc::boxed::Box<")
             || name.starts_with("&mut ")
         {
-            if let Some(adapter) = adapters::std_adapter(reader, raw) {
+            let screened = adapters::std_adapter_screen(reader, raw);
+            if let Ok(adapter) = screened {
                 let compiler = verdict(raw, Reviewed::StdAdapters);
                 let mut pointee = |pointee: Pointee| -> Option<PointeeSeed> {
                     Some(match pointee {
@@ -795,6 +800,15 @@ pub(super) fn collect_semantic_seeds(
                 if let Some(seed) = seed {
                     seeds.entry(ty).or_default().adapter = Some(seed);
                 }
+            } else if let Err(PointerDecline::Disagree { targets }) = screened {
+                // The one pointer type stands over several pointees: a
+                // collapse the identity partition did not split. Nothing
+                // else will claim the type, so the reason is recorded
+                // where its continuation would have been.
+                seeds.entry(ty).or_default().adapter_declined = Some((
+                    SemanticIssueKind::AmbiguousLayout,
+                    format!("the pointer's definitions name {targets} targets"),
+                ));
             }
         } else if name.starts_with("tracing::instrument::Instrumented<")
             && let Some(InstrumentedLayout { inner, future }) = adapters::instrumented(reader, raw)
@@ -1545,6 +1559,8 @@ pub(super) fn bind_semantics(
                     }
                     Err(decline) => draft.decline = Some(decline),
                 }
+            } else if let Some(decline) = &seed.adapter_declined {
+                draft.decline = Some(decline.clone());
             } else if let Some(instrumented) = &seed.instrumented {
                 match plan_instrumented(ty, instrumented, seed, types, names, strings) {
                     Ok(plan) => draft.plan = Some(plan),
@@ -6318,6 +6334,58 @@ mod tests {
                 ..
             })
         ));
+        assert!(record.access.is_none());
+        assert!(table.rules.is_empty());
+    }
+
+    /// A `Pin<Box<F>>` whose box's definitions name several `F`s is no
+    /// adapter, and the record it earns as a task's future says so in
+    /// its continuation, over the bare `NoRule`.
+    #[test]
+    fn test_a_disagreeing_box_records_its_reason() {
+        let mut a = adapters();
+        let library = Library {
+            walks: &WalksTable::default(),
+            tokio_version: None,
+            family: Family::select(None),
+        };
+        let mut seeds = SemanticSeeds::new();
+        seeds.insert(
+            PIN_BOX,
+            Seed {
+                adapter_declined: Some((
+                    SemanticIssueKind::AmbiguousLayout,
+                    "the pointer's definitions name 2 targets".to_owned(),
+                )),
+                ..Default::default()
+            },
+        );
+        let mut tasks = vec![TaskFutureEntry {
+            future: PIN_BOX,
+            cell: BundleTypeId(0),
+            stage: BundleTypeId(0),
+            scheduler: BundleTypeId(0),
+            scheduler_binding: None,
+            display_name: a.strings.intern("task"),
+        }];
+        let table = bind_semantics(
+            seeds,
+            &a.types,
+            &a.names,
+            &mut a.strings,
+            &mut tasks,
+            &library,
+        );
+        let record = table.types.iter().find(|r| r.ty == PIN_BOX).unwrap();
+        let Continuation::Unknown(issue) = &record.future.as_ref().unwrap().continuation else {
+            panic!("the box's continuation is unknown");
+        };
+        assert_eq!(issue.kind, SemanticIssueKind::AmbiguousLayout);
+        assert_eq!(
+            issue.detail,
+            Some(a.strings.intern("the pointer's definitions name 2 targets"))
+        );
+        assert_eq!(record.issues.len(), 1, "{:?}", record.issues);
         assert!(record.access.is_none());
         assert!(table.rules.is_empty());
     }

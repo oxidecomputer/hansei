@@ -22,6 +22,8 @@ use crate::extract::{fq_name, ns_path};
 use crate::raw_types::{RawPointer, RawType, RawVariant, VariantShape};
 use crate::{DwReader, StrId, TypeId};
 
+use std::collections::BTreeSet;
+
 /// What a thin or wide pointer adapter points at.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Pointee {
@@ -117,17 +119,31 @@ pub(crate) struct MapLayout {
     pub(crate) future: TypeId,
 }
 
+/// Why a thin pointer was not taken as the shape a screen asked about.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PointerDecline {
+    /// No recorded definition, a nameless one, or one whose name is
+    /// not the shape: the type is something else, and the screen goes
+    /// on to its next shape.
+    NotTheShape,
+    /// Every definition is the shape, but they name `targets` distinct
+    /// canonical targets: one pointer type stands over several
+    /// pointees, a collapse the identity partition did not split. No
+    /// other shape will claim it, and a reader deserves to hear why.
+    Disagree { targets: usize },
+}
+
 /// The canonical target every original definition of the thin pointer
 /// `id` agrees on, provided each definition's own name — before any
 /// declaration inherited one — satisfies `expect` for that target. A
-/// definition with no name, a name that does not, or two definitions
-/// disagreeing on the target decline; so does a pointer with no
-/// recorded definition at all.
+/// definition with no name, a name that does not, or a pointer with no
+/// recorded definition at all is not the shape; definitions naming
+/// different targets decline with their count.
 fn agreed_pointer(
     reader: &DwReader<'_>,
     id: TypeId,
     expect: impl Fn(&str, TypeId) -> bool,
-) -> Option<TypeId> {
+) -> Result<TypeId, PointerDecline> {
     // Definitions agree on the canonical target, not the DIE: each unit
     // emits its own copy of the pointee.
     let definitions = reader.type_definitions(id).map(|die| {
@@ -142,31 +158,33 @@ fn agreed_pointer(
 }
 
 /// The target every definition agrees on, each definition named and
-/// satisfying `expect`; a missing definition, a nameless one, one
-/// `expect` refuses, or two naming different targets decline.
+/// satisfying `expect`; a missing definition, a nameless one, or one
+/// `expect` refuses is not the shape, and definitions naming different
+/// targets decline with how many.
 fn agreed_target(
     definitions: impl Iterator<Item = Option<RawPointer<StrId>>>,
     expect: impl Fn(StrId, TypeId) -> bool,
-) -> Option<TypeId> {
-    let mut agreed = None;
+) -> Result<TypeId, PointerDecline> {
+    let mut targets = BTreeSet::new();
     for pointer in definitions {
-        let pointer = pointer?;
+        let pointer = pointer.ok_or(PointerDecline::NotTheShape)?;
         let target = pointer.target_type_id;
-        if !expect(pointer.name?, target) {
-            return None;
+        if !expect(pointer.name.ok_or(PointerDecline::NotTheShape)?, target) {
+            return Err(PointerDecline::NotTheShape);
         }
-        match agreed {
-            Some(previous) if previous != target => return None,
-            _ => agreed = Some(target),
-        }
+        targets.insert(target);
     }
-    agreed
+    match targets.len() {
+        0 => Err(PointerDecline::NotTheShape),
+        1 => Ok(targets.into_iter().next().expect("one target")),
+        targets => Err(PointerDecline::Disagree { targets }),
+    }
 }
 
 /// `&mut F` as a thin pointer: every definition named `&mut <F>` for the
 /// exact `F` it targets. A raw pointer, a shared reference, or a pointer
 /// whose name was inherited from a declaration is not one.
-fn mut_ref_thin(reader: &DwReader<'_>, id: TypeId) -> Option<TypeId> {
+fn mut_ref_thin(reader: &DwReader<'_>, id: TypeId) -> Result<TypeId, PointerDecline> {
     agreed_pointer(reader, id, |name, target| {
         name.strip_prefix("&mut ")
             .is_some_and(|rest| fq_name(reader, target).as_deref() == Some(rest))
@@ -176,7 +194,7 @@ fn mut_ref_thin(reader: &DwReader<'_>, id: TypeId) -> Option<TypeId> {
 /// A sized `Box<F, Global>` as rustc's debuginfo spells it: a thin
 /// pointer named `alloc::boxed::Box<F, alloc::alloc::Global>` for the
 /// exact `F` it targets, by every definition.
-fn box_thin(reader: &DwReader<'_>, id: TypeId) -> Option<TypeId> {
+fn box_thin(reader: &DwReader<'_>, id: TypeId) -> Result<TypeId, PointerDecline> {
     agreed_pointer(reader, id, |name, target| {
         let Some(("alloc::boxed::Box", args)) = generic_args(name) else {
             return false;
@@ -228,25 +246,35 @@ fn wide(
     })
 }
 
-fn mut_ref(reader: &DwReader<'_>, id: TypeId) -> Option<Pointee> {
-    if let Some(target) = mut_ref_thin(reader, id) {
-        return Some(Pointee::Sized(target));
+/// `&mut F` thin or wide. A thin pointer whose definitions disagree on
+/// `F` is declined with that reason: it is a reference to several
+/// pointees, which no wide screen will claim either.
+fn mut_ref(reader: &DwReader<'_>, id: TypeId) -> Result<Pointee, PointerDecline> {
+    match mut_ref_thin(reader, id) {
+        Ok(target) => return Ok(Pointee::Sized(target)),
+        Err(PointerDecline::NotTheShape) => {}
+        Err(decline) => return Err(decline),
     }
     wide(reader, id, |name, pointee| {
         name.strip_prefix("&mut ") == Some(pointee)
     })
     .map(Pointee::Dyn)
+    .ok_or(PointerDecline::NotTheShape)
 }
 
-fn boxed(reader: &DwReader<'_>, id: TypeId) -> Option<Pointee> {
-    if let Some(target) = box_thin(reader, id) {
-        return Some(Pointee::Sized(target));
+/// `Box<F>` thin or wide, declined the way [`mut_ref`] is.
+fn boxed(reader: &DwReader<'_>, id: TypeId) -> Result<Pointee, PointerDecline> {
+    match box_thin(reader, id) {
+        Ok(target) => return Ok(Pointee::Sized(target)),
+        Err(PointerDecline::NotTheShape) => {}
+        Err(decline) => return Err(decline),
     }
     wide(reader, id, |name, pointee| {
         matches!(generic_args(name), Some(("alloc::boxed::Box", args))
             if args.as_slice() == [pointee, "alloc::alloc::Global"])
     })
     .map(Pointee::Dyn)
+    .ok_or(PointerDecline::NotTheShape)
 }
 
 /// `core::pin::Pin<Ptr>` as std declares it: one template parameter
@@ -280,25 +308,38 @@ fn pin(reader: &DwReader<'_>, id: TypeId) -> Option<(String, TypeId)> {
 /// other `P` — a user pointer with its own `DerefMut`, an `Arc`, a
 /// `Rc` — is not one, however many pointer-sized members it has.
 pub(crate) fn std_adapter(reader: &DwReader<'_>, id: TypeId) -> Option<StdAdapter> {
+    std_adapter_screen(reader, id).ok()
+}
+
+/// [`std_adapter`] with the reason a pointer of the shape was declined:
+/// a `Box` or `&mut` whose definitions name several targets is not an
+/// adapter, and nothing else either, so the reason is the record's.
+pub(crate) fn std_adapter_screen(
+    reader: &DwReader<'_>,
+    id: TypeId,
+) -> Result<StdAdapter, PointerDecline> {
     if let Some((member, ptr)) = pin(reader, id) {
-        if let Some(pointee) = boxed(reader, ptr) {
-            return Some(StdAdapter::PinBox {
-                member,
-                boxed: ptr,
-                pointee,
-            });
+        match boxed(reader, ptr) {
+            Ok(pointee) => {
+                return Ok(StdAdapter::PinBox {
+                    member,
+                    boxed: ptr,
+                    pointee,
+                });
+            }
+            Err(PointerDecline::NotTheShape) => {}
+            Err(decline) => return Err(decline),
         }
-        if let Some(pointee) = mut_ref(reader, ptr) {
-            return Some(StdAdapter::PinMutRef {
-                member,
-                reference: ptr,
-                pointee,
-            });
-        }
-        return None;
+        return mut_ref(reader, ptr).map(|pointee| StdAdapter::PinMutRef {
+            member,
+            reference: ptr,
+            pointee,
+        });
     }
-    if let Some(pointee) = boxed(reader, id) {
-        return Some(StdAdapter::Box(pointee));
+    match boxed(reader, id) {
+        Ok(pointee) => return Ok(StdAdapter::Box(pointee)),
+        Err(PointerDecline::NotTheShape) => {}
+        Err(decline) => return Err(decline),
     }
     mut_ref(reader, id).map(StdAdapter::MutRef)
 }
@@ -538,7 +579,7 @@ pub(crate) fn futures_util_next(reader: &DwReader<'_>, id: TypeId) -> Option<Nex
     let [param] = st.template_params.as_ref() else {
         return None;
     };
-    let target = mut_ref_thin(reader, forward.inner)?;
+    let target = mut_ref_thin(reader, forward.inner).ok()?;
     (param.name.map(|name| reader.strings.get(name)) == Some("St")
         && target == reader.canonicalize(param.type_id))
     .then_some(NextLayout {
@@ -638,7 +679,7 @@ pub(crate) fn tokio_select(reader: &DwReader<'_>, id: TypeId) -> Option<SelectLa
     }
     let (_, disabled) = unique_member(reader, &env.members, "_ref__disabled")?;
     let (_, futures) = unique_member(reader, &env.members, "_ref__futures")?;
-    let mask_word = mut_ref_thin(reader, disabled.type_id)?;
+    let mask_word = mut_ref_thin(reader, disabled.type_id).ok()?;
     let width = match reader.canonical_type(mask_word)? {
         RawType::Base(base) if base.encoding == crate::Encoding::Unsigned => base.size,
         _ => return None,
@@ -646,7 +687,7 @@ pub(crate) fn tokio_select(reader: &DwReader<'_>, id: TypeId) -> Option<SelectLa
     if !matches!(width, 1 | 2 | 4 | 8) {
         return None;
     }
-    let tuple = mut_ref_thin(reader, futures.type_id)?;
+    let tuple = mut_ref_thin(reader, futures.type_id).ok()?;
     let tuple_st = struct_of(reader, tuple)?;
     if !tuple_st
         .name
@@ -727,7 +768,7 @@ pub(crate) fn tokio_interval_tick(reader: &DwReader<'_>, id: TypeId) -> Option<I
         return None;
     }
     let (_, capture) = unique_member(reader, &env.members, "_ref__self")?;
-    let interval = mut_ref_thin(reader, capture.type_id)?;
+    let interval = mut_ref_thin(reader, capture.type_id).ok()?;
     let interval_st = declared_in(reader, interval, "tokio::time::interval", "Interval")?;
     if reader.strings.get(interval_st.name?) != "Interval" {
         return None;
@@ -989,7 +1030,7 @@ pub(crate) fn hyper_h1_dispatcher(
             // is the `Box`, and the box's pointee is the `Option`.
             let in_flight = member_of(reader, dispatch, IN_FLIGHT)?;
             let (in_flight_member, in_flight_box) = pin(reader, in_flight)?;
-            let option = box_thin(reader, in_flight_box)?;
+            let option = box_thin(reader, in_flight_box).ok()?;
             if !fq_name(reader, option)?.starts_with("core::option::Option<") {
                 return None;
             }
@@ -1786,19 +1827,28 @@ mod tests {
             })
         };
         let accept = |_: StrId, _: TypeId| true;
+        let disagree = Err(PointerDecline::Disagree { targets: 2 });
         assert_eq!(
             agreed_target([def(FUT), def(FUT)].into_iter(), accept),
-            Some(FUT)
+            Ok(FUT)
         );
         assert_eq!(
             agreed_target([def(FUT), def(DYN)].into_iter(), accept),
-            None
+            disagree
         );
         assert_eq!(
             agreed_target([def(DYN), def(FUT)].into_iter(), accept),
-            None
+            disagree
         );
-        assert_eq!(agreed_target([def(FUT), None].into_iter(), accept), None);
+        assert_eq!(
+            agreed_target([def(FUT), def(DYN), def(FUT), def(BOX)].into_iter(), accept),
+            Err(PointerDecline::Disagree { targets: 3 })
+        );
+        let not_the_shape = Err(PointerDecline::NotTheShape);
+        assert_eq!(
+            agreed_target([def(FUT), None].into_iter(), accept),
+            not_the_shape
+        );
         assert_eq!(
             agreed_target(
                 [Some(RawPointer {
@@ -1808,13 +1858,13 @@ mod tests {
                 .into_iter(),
                 accept
             ),
-            None
+            not_the_shape
         );
         assert_eq!(
             agreed_target([def(FUT)].into_iter(), |_, target| target != FUT),
-            None
+            not_the_shape
         );
-        assert_eq!(agreed_target(std::iter::empty(), accept), None);
+        assert_eq!(agreed_target(std::iter::empty(), accept), not_the_shape);
     }
 
     #[test]
