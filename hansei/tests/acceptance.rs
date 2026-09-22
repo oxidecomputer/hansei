@@ -4378,3 +4378,79 @@ fn test_armed_select_acceptance() {
         assert!(info.contains("; 0 stale\n"), "{info}");
     });
 }
+
+/// One crate linked at two releases: the keeper's boxes print through
+/// to each release's own `Receiver`, told apart by the listener type
+/// the release keeps; each waiter's chain crosses a pin of the same
+/// eight bytes as the other's to its own release's `Recv`, and stops
+/// on that release's own member; and `find-types` names each release
+/// beside its id.
+#[test]
+fn test_two_releases_acceptance() {
+    let bundle = fixtures().bundle("two-releases");
+    with_core("two-releases", |core| {
+        let rows = list_tasks(&bundle, core);
+        assert_eq!(rows.len(), 3, "{rows:#?}");
+        let keeper = task_with_future(&rows, "async fn two_releases::keeper");
+        let print = |member: &str| {
+            hansei_ok(
+                &bundle,
+                core,
+                &format!("task {}; frame 1; print {member}", keeper.id),
+            )
+        };
+        let old = print("old_box");
+        assert!(old.contains("-> async_channel::Receiver<u32> {"), "{old}");
+        assert!(
+            old.contains("listener: core::option::Option<event_listener::EventListener> {"),
+            "{old}"
+        );
+        let new = print("new_box");
+        assert!(new.contains("-> async_channel::Receiver<u32> {"), "{new}");
+        assert!(
+            new.contains("listener: core::option::Option<event_listener::EventListener<()>> {"),
+            "{new}"
+        );
+        // The option and the sender of each release read through to the
+        // same channel state, three strong holders each: the box, the
+        // option's box and the sender.
+        for member in ["old_some", "new_some"] {
+            let printed = print(member);
+            assert!(
+                printed.contains("::Some(0x")
+                    && printed.contains("-> async_channel::Receiver<u32> {"),
+                "{printed}"
+            );
+        }
+        for member in ["old_tx", "new_tx"] {
+            let printed = print(member);
+            assert!(printed.contains("strong: 3,"), "{printed}");
+            assert!(
+                printed.contains("data: async_channel::Channel<u32> {"),
+                "{printed}"
+            );
+        }
+
+        let old_waiter = task_with_future(&rows, "async fn two_releases::old_waiter");
+        let block = hansei_ok(&bundle, core, &format!("task {}", old_waiter.id));
+        assert!(
+            block.contains("        listener: event_listener::EventListener\n"),
+            "{block}"
+        );
+        let new_waiter = task_with_future(&rows, "async fn two_releases::new_waiter");
+        let block = hansei_ok(&bundle, core, &format!("task {}", new_waiter.id));
+        assert!(
+            block.contains(
+                "        _inner: event_listener_strategy::FutureWrapper<async_channel::RecvInner<u32>>\n"
+            ),
+            "{block}"
+        );
+
+        let found = hansei_ok(&bundle, core, "find-types async_channel::Receiver<u32>");
+        let both = regex::Regex::new(
+            r"(?m)^async_channel::Receiver<u32>  \(2 definitions: type \d+, async-channel 2\.5\.0; type \d+, async-channel 1\.9\.0\)$",
+        )
+        .unwrap();
+        assert!(both.is_match(&found), "{found}");
+    });
+}
