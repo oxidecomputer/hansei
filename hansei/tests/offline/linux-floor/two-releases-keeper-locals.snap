@@ -1,0 +1,28 @@
+---
+source: hansei/src/offline.rs
+description: "`tasks --with type two_releases::keeper --exec up locals` over linux-floor/two-releases"
+---
+task 3
+#1  async fn      two_releases::keeper
+      awaiting at src/bin/two-releases.rs:42 (Suspend0, 6 locals)
+old_tx: async_channel::Sender<u32> = 0xADDR -> alloc::sync::ArcInner<async_channel::Channel<u32>> {
+          strong: 3,
+          weak: 1,
+          data: async_channel::Channel<u32> { .. } @ 0xADDR,
+      }
+new_tx: async_channel::Sender<u32> = 0xADDR -> alloc::sync::ArcInner<async_channel::Channel<u32>> {
+          strong: 3,
+          weak: 1,
+          data: async_channel::Channel<u32> { .. } @ 0xADDR,
+      }
+old_box: alloc::boxed::Box<async_channel::Receiver<u32>, alloc::alloc::Global> = 0xADDR -> async_channel::Receiver<u32> {
+          channel: alloc::sync::Arc<async_channel::Channel<u32>, alloc::alloc::Global> { .. } @ 0xADDR,
+          listener: core::option::Option<event_listener::EventListener> { .. } @ 0xADDR,
+      }
+new_box: alloc::boxed::Box<async_channel::Receiver<u32>, alloc::alloc::Global> = 0xADDR -> async_channel::Receiver<u32> {
+          channel: alloc::sync::Arc<async_channel::Channel<u32>, alloc::alloc::Global> { .. } @ 0xADDR,
+          listener: core::option::Option<event_listener::EventListener<()>> { .. } @ 0xADDR,
+      }
+old_some: core::option::Option<alloc::boxed::Box<async_channel::Receiver<u32>, alloc::alloc::Global>>::Some(0xADDR -> async_channel::Receiver<u32> { .. })
+new_some: core::option::Option<alloc::boxed::Box<async_channel::Receiver<u32>, alloc::alloc::Global>>::Some(0xADDR -> async_channel::Receiver<u32> { .. })
+[Executed against 1 task, 0 failed]

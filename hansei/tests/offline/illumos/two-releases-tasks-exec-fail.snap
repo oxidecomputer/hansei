@@ -1,0 +1,14 @@
+---
+source: hansei/src/offline.rs
+description: "`tasks --exec type no::such::Type` over illumos/two-releases"
+---
+task 3
+error: the tokio info records no type named no::such::Type; try `find-types no::such::Type`
+
+task 4
+error: the tokio info records no type named no::such::Type; try `find-types no::such::Type`
+
+task 5
+error: the tokio info records no type named no::such::Type; try `find-types no::such::Type`
+[Executed against 3 tasks, 3 failed]
+error: --exec failed against 3 of 3 tasks

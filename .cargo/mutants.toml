@@ -38,8 +38,12 @@ gitignore = true
 # baseline that found them already built, cuts it off and reports a
 # timeout where there is no hang. Floor it above a cold fixture build:
 # a real hang is a mutated loop, which trips this in seconds either
-# way.
-minimum_test_timeout = 300
+# way. The floor is set above the whole judging suite run cold in a
+# fresh scratch copy — the fixture build, then every extraction and
+# the acceptance captures — which passed 300 s once the fixtures
+# linked a crate at two releases: the mutant that pays it is reported
+# as a timeout, which counts as caught, and that is a false verdict.
+minimum_test_timeout = 600
 
 # Which crates' tests judge a mutant. The default — the mutated crate's
 # own tests — is wrong here: hansei-runtime is a library its consumers

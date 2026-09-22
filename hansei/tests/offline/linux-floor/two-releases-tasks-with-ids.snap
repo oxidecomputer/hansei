@@ -1,0 +1,7 @@
+---
+source: hansei/src/offline.rs
+description: "`tasks --with id 3,6` over linux-floor/two-releases"
+---
+ID  STATE  FUT  AWAITING AT                 WAITING ON  TYPE
+3   idle     0  src/bin/two-releases.rs:42  oneshot rx  async fn two_releases::keeper
+[1 task]

@@ -1,0 +1,44 @@
+---
+source: hansei/src/offline.rs
+description: "`census` over linux/two-releases"
+---
+Threads: 3 lwps, 3 in runtime 0 @ 0xADDR
+
+COUNT  RT  ROLE             STATE            LWPS
+    1  0   worker           in driver        2179373
+    1  0   worker           parked           2179374
+    1  0   entered runtime  block_on caller  2179371
+    0  0   blocking pool    0 idle, 0 busy   —
+[3 lwps]
+
+Tasks: 3 owned by runtime 0 @ 0xADDR
+
+COUNT  STATE
+    3  idle
+[3 tasks]
+
+COUNT  TYPE / WAITING ON
+    1  async fn two_releases::keeper
+       └─ 1  oneshot rx
+    1  async fn two_releases::new_waiter
+       └─ 1  one of several
+    1  async fn two_releases::old_waiter
+       └─ 1  one of several
+[3 types]
+
+Futures: 6 in flight, on 11 await-chain frames, up to 3 deep
+
+COUNT  HELD IN
+    3  task (its own await chain)
+    3  frame (off any await chain)
+    0  set (0 FuturesUnordered)
+[6 futures]
+
+COUNT  TYPE / WAITING ON
+    1  future event_listener::EventListener
+       └─ 1  unknown
+    1  future event_listener::EventListener<()>
+       └─ 1  unknown
+    1  future event_listener_strategy::FutureWrapper<async_channel::RecvInner<u32>>
+       └─ 1  unknown
+[3 types]

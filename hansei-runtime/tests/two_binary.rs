@@ -1148,6 +1148,14 @@ fn test_the_census_accounting_is_exact_per_program() {
         // and its executor's async blocks two enum finds, one of them
         // a second sighting of a chain frame.
         ("http-conns", 4, 42, 8, 2, 1),
+        // Five chain frames: the keeper's oneshot, and each waiter's
+        // pinned `Recv` and the oneshot behind it. The keeper's six
+        // channel ends are no futures. Two finds by descent, one under
+        // each pin: the old release's listener, and the new release's
+        // wrapper over the channel's own state; the listener inside
+        // that wrapper and the old listener's entry are reached through
+        // an option's active variant.
+        ("two-releases", 0, 5, 2, 2, 0),
     ];
     let named: Vec<&str> = ACCOUNTING.iter().map(|row| row.0).collect();
     assert_eq!(named, PROGRAMS, "every program is accounted for");

@@ -102,6 +102,61 @@ fn test_stats_reports_a_bundle() {
     }
 }
 
+/// A target linking one crate at two releases records its types under
+/// one name twice; `stats` counts those names and `dump` lists them, the
+/// ids told apart by size and by the release each one's declarations
+/// name.
+#[test]
+fn test_stats_and_dump_list_the_same_named_types() {
+    let bundle = fixture_bundles()
+        .into_iter()
+        .find(|p| p.ends_with("two-releases.tinfo"))
+        .expect("the two-releases fixture is checked in");
+    let path = bundle.to_str().unwrap();
+    let stats = stdout(&hansei(&["stats", path]));
+    let line = stats
+        .lines()
+        .find(|l| l.trim_start().starts_with("same-named "))
+        .unwrap_or_else(|| panic!("no same-named line in:\n{stats}"));
+    let names: usize = line
+        .split_whitespace()
+        .nth(1)
+        .and_then(|n| n.parse().ok())
+        .unwrap_or_else(|| panic!("no count in {line:?}"));
+    assert!(names >= 10, "{line}");
+
+    let dump = stdout(&hansei(&["dump", path]));
+    assert!(
+        dump.contains(&format!("== same-named types ({names}) ==")),
+        "dump's section disagrees with stats' {names}:\n{dump}"
+    );
+    // Only a name several types share is listed: every entry carries
+    // at least two ids, and the section holds the counted names alone.
+    let section: Vec<&str> = dump
+        .lines()
+        .skip_while(|l| !l.starts_with("== same-named types"))
+        .skip(1)
+        .take_while(|l| !l.starts_with("=="))
+        .filter(|l| !l.trim().is_empty())
+        .collect();
+    assert_eq!(section.len(), names, "{section:#?}");
+    for entry in &section {
+        assert!(entry.matches(", [").count() >= 1, "one id: {entry}");
+    }
+    let receiver = dump
+        .lines()
+        .find(|l| l.starts_with("async_channel::Receiver<u32>: "))
+        .unwrap_or_else(|| panic!("no split Receiver in:\n{dump}"));
+    assert!(
+        receiver.contains("size=16 async-channel 2.5.0"),
+        "{receiver}"
+    );
+    assert!(
+        receiver.contains("size=24 async-channel 1.9.0"),
+        "{receiver}"
+    );
+}
+
 /// `dump` re-validates a loaded bundle in depth and renders every table,
 /// including each attached display program resolved to the member paths
 /// it addresses — the one production caller of the whole describer.

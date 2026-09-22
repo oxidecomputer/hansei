@@ -1,0 +1,12 @@
+---
+source: hansei/src/offline.rs
+description: "`find-types async_channel::Receiver<u32>` over linux-floor/two-releases"
+---
+&async_channel::Receiver<u32>  (2 definitions: type 37; type 676)
+alloc::boxed::Box<async_channel::Receiver<u32>, alloc::alloc::Global>  (2 definitions: type 728; type 729)
+async_channel::Receiver<u32>  (2 definitions: type 7, async-channel 2.5.0; type 664, async-channel 1.9.0)
+core::option::Option<alloc::boxed::Box<async_channel::Receiver<u32>, alloc::alloc::Global>>  (2 definitions: type 730; type 731)
+core::option::Option<alloc::boxed::Box<async_channel::Receiver<u32>, alloc::alloc::Global>>::None  (2 definitions: type 733; type 735)
+core::option::Option<alloc::boxed::Box<async_channel::Receiver<u32>, alloc::alloc::Global>>::Some  (2 definitions: type 734; type 736)
+
+[6 types]

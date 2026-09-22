@@ -11,6 +11,9 @@ error: the tokio info records no type named no::such::Type; try `find-types no::
 task 5
 error: the tokio info records no type named no::such::Type; try `find-types no::such::Type`
 
+task 7
+error: the tokio info records no type named no::such::Type; try `find-types no::such::Type`
+
 task 8
 error: the tokio info records no type named no::such::Type; try `find-types no::such::Type`
 
@@ -30,9 +33,6 @@ task 13
 error: the tokio info records no type named no::such::Type; try `find-types no::such::Type`
 
 task 14
-error: the tokio info records no type named no::such::Type; try `find-types no::such::Type`
-
-task 15
 error: the tokio info records no type named no::such::Type; try `find-types no::such::Type`
 [Executed against 11 tasks, 11 failed]
 error: --exec failed against 11 of 11 tasks

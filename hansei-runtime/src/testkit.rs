@@ -257,6 +257,7 @@ pub const PROGRAMS: &[&str] = &[
     "armed-select",
     "watch-stream",
     "http-conns",
+    "two-releases",
 ];
 
 /// Mask the run-varying values analysis output carries — heap

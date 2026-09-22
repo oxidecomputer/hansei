@@ -1,0 +1,8 @@
+---
+source: hansei/src/offline.rs
+description: "`whatis 0x5653399a5380` over linux/two-releases"
+---
+Task 3: async fn two_releases::keeper
+    At: offset 0xADDR in the task's allocation (header 0xADDR)
+    State: idle
+    Spawned at: src/bin/two-releases.rs:95:23

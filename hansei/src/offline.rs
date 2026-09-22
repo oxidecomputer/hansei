@@ -276,6 +276,40 @@ fn commands(
     // dispatcher the census holds — the idle and the busy client, the
     // idle and the in-flight server — and the version-choosing read on
     // the connection that never spoke.
+    // One crate at two releases: the two ids behind each name, told
+    // apart by release; the keeper's three pairs of same-named ends
+    // printed through, each landing on its own release's layout; and
+    // each waiter's block, whose chain crosses a pin over its own
+    // release's `Recv`.
+    if program == "two-releases" {
+        for (key, name) in [
+            ("find-types-receiver", "async_channel::Receiver<u32>"),
+            ("find-types-recv", "async_channel::Recv<u32>"),
+            ("find-types-sender", "async_channel::Sender<u32>"),
+        ] {
+            list.push((key, format!("find-types {name}")));
+        }
+        // A fresh task cursor stands on the leaf, the oneshot the keeper
+        // parks on; its own frame is one up.
+        let keeper = |member: &str| {
+            format!("tasks --with type two_releases::keeper --exec up print {member}")
+        };
+        for member in [
+            "old_box", "new_box", "old_some", "new_some", "old_tx", "new_tx",
+        ] {
+            list.push((member, keeper(member)));
+        }
+        list.push((
+            "keeper-locals",
+            "tasks --with type two_releases::keeper --exec up locals".to_owned(),
+        ));
+        for waiter in ["old_waiter", "new_waiter"] {
+            list.push((
+                waiter,
+                format!("tasks --with type two_releases::{waiter} --exec task"),
+            ));
+        }
+    }
     if program == "http-conns" {
         // A connection's dispatcher is the leaf of its task's own chain
         // on either side — the wrappers hyper and hyper-util put around
@@ -283,7 +317,8 @@ fn commands(
         // connection still choosing its version ends one frame up, at
         // the wrapper reading the first bytes, where the cursor stands
         // on the selected state's payload and the read is its member.
-        let client = |member: &str| format!("tasks --with type execute<Pin --exec print {member}");
+        let client =
+            |member: &str| format!("tasks --with type execute<Pin --exec up print {member}");
         let server = |member: &str| {
             format!(
                 "tasks --with type http_conns::serve --with waiting-on http1.server --exec print \
@@ -461,6 +496,7 @@ offline_commands! {
     test_armed_select_commands: "armed-select",
     test_watch_stream_commands: "watch-stream",
     test_http_conns_commands: "http-conns",
+    test_two_releases_commands: "two-releases",
 }
 
 /// The macro above and [`testkit::PROGRAMS`] name the same population:
@@ -489,6 +525,7 @@ fn test_every_program_has_a_command_golden() {
         "armed-select",
         "watch-stream",
         "http-conns",
+        "two-releases",
     ];
     assert_eq!(COVERED, PROGRAMS);
 }

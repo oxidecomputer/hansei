@@ -1,0 +1,9 @@
+---
+source: hansei/src/offline.rs
+description: "`find-types async_channel::Recv<u32>` over illumos/two-releases"
+---
+alloc::boxed::Box<async_channel::Recv<u32>, alloc::alloc::Global>  (2 definitions: type 14; type 748)
+async_channel::Recv<u32>  (2 definitions: type 23; type 753, async-channel 1.9.0)
+core::pin::Pin<alloc::boxed::Box<async_channel::Recv<u32>, alloc::alloc::Global>>  (2 definitions: type 8; type 745)
+
+[3 types]

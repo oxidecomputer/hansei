@@ -1,0 +1,12 @@
+---
+source: hansei/src/offline.rs
+description: "`find-types async_channel::Receiver<u32>` over illumos/two-releases"
+---
+&async_channel::Receiver<u32>  (2 definitions: type 37; type 756)
+alloc::boxed::Box<async_channel::Receiver<u32>, alloc::alloc::Global>  (2 definitions: type 808; type 809)
+async_channel::Receiver<u32>  (2 definitions: type 7, async-channel 2.5.0; type 744, async-channel 1.9.0)
+core::option::Option<alloc::boxed::Box<async_channel::Receiver<u32>, alloc::alloc::Global>>  (2 definitions: type 810; type 811)
+core::option::Option<alloc::boxed::Box<async_channel::Receiver<u32>, alloc::alloc::Global>>::None  (2 definitions: type 813; type 815)
+core::option::Option<alloc::boxed::Box<async_channel::Receiver<u32>, alloc::alloc::Global>>::Some  (2 definitions: type 814; type 816)
+
+[6 types]

@@ -90,6 +90,7 @@ const PROGRAMS: &[&str] = &[
     "armed-select",
     "watch-stream",
     "http-conns",
+    "two-releases",
 ];
 
 fn test_programs_dir() -> PathBuf {

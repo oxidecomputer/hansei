@@ -1,0 +1,20 @@
+---
+source: hansei/src/offline.rs
+description: "`tasks --with type two_releases::new_waiter --exec task` over linux-floor/two-releases"
+---
+task 5
+    state: idle
+    thread: <none>
+    type: async fn two_releases::new_waiter
+    awaiting at: src/bin/two-releases.rs:82
+    awaiting on:
+        _inner: event_listener_strategy::FutureWrapper<async_channel::RecvInner<u32>>
+            held in: frame 0 `_inner`
+            awaiting on: unknown
+            type defined at: event-listener-strategy-0.5.4/src/lib.rs:385
+            waker: event_listener::State::Task @ 0xADDR
+    spawned at: src/bin/two-releases.rs:112:27
+    type defined at: src/bin/two-releases.rs:67
+    held futures: 1
+    join sets: 0
+[Executed against 1 task, 0 failed]

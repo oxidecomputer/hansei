@@ -89,6 +89,7 @@ const PROGRAMS: &[&str] = &[
     "armed-select",
     "watch-stream",
     "http-conns",
+    "two-releases",
 ];
 
 fn workspace_root() -> &'static Path {

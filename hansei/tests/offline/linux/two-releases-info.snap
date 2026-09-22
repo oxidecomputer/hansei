@@ -1,0 +1,14 @@
+---
+source: hansei/src/offline.rs
+description: "`info` over linux/two-releases"
+---
+core:       <snapshot>
+tokio info: <tokio info>
+symbols resolved: 7/7
+allocator evidence: unavailable
+waker slots: 1 copy of tokio's WAKER_VTABLE, 0 set vtables; 4.2 MiB swept in 50 chunks
+    hits: 7 task-pattern, 0 set-pattern; 3 admitted; 2 unlisted headers
+    by class: 4 lwp stack, 3 anon
+    attributed: 0 by a registry, 1 by owner type, 2 by holding type, 0 from another task's side, 0 unknown; 0 stale
+process: not recorded by this target
+signal: none recorded

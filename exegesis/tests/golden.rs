@@ -489,6 +489,37 @@ fn assert_crate_label(program: &str, bundle: &Bundle, type_name: &str, expected:
     }
 }
 
+/// Every type named `type_name` is one of `expected`, matched as a
+/// multiset of (size, crate label): a name a binary carries at two
+/// releases has exactly the ids the pairs say, each with its own
+/// layout and its own release, and a name the two releases lay out
+/// alike has one.
+fn assert_split(program: &str, bundle: &Bundle, type_name: &str, expected: &[(u64, Option<&str>)]) {
+    let view = hansei_bundle::BundleView::new(bundle);
+    let mut found: Vec<(u64, Option<String>)> = bundle
+        .types
+        .find_by_name(&bundle.strings, type_name)
+        .map(|id| {
+            let size = bundle
+                .types
+                .size_of(id)
+                .unwrap_or_else(|| panic!("{program}: {type_name} (type {}) has no size", id.0));
+            let label = view
+                .ty(id)
+                .and_then(|ty| ty.crate_release())
+                .map(|release| release.to_string());
+            (size, label)
+        })
+        .collect();
+    found.sort();
+    let mut expected: Vec<(u64, Option<String>)> = expected
+        .iter()
+        .map(|(size, label)| (*size, label.map(str::to_owned)))
+        .collect();
+    expected.sort();
+    assert_eq!(found, expected, "{program}: the types named {type_name}");
+}
+
 /// The local-decl table's entry for `local` of the coroutine named
 /// `type_name`, as (file, line), or `None` where the table carries
 /// none: a local never held across an await, or one whose copies
@@ -3354,6 +3385,89 @@ fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
             "{program}: the task::local::CURRENT static was not recorded"
         );
     }
+    // One crate at two releases: every type async-channel 1.9 and 2.5 lay
+    // out differently is in the bundle twice under one name, and so is
+    // every wrapper whose only path to the difference runs through a
+    // reference. The pair is pinned by each id's size and release; the
+    // wrappers over it are eight bytes either way, carry no label of
+    // their own, and are two types only because of what they reference.
+    // Both pins delegate to their own release's `Recv`.
+    if program == "two-releases" {
+        const OLD: &str = "async-channel 1.9.0";
+        const NEW: &str = "async-channel 2.5.0";
+        const RECEIVER: &str = "async_channel::Receiver<u32>";
+        const RECV: &str = "async_channel::Recv<u32>";
+        const CHANNEL: &str = "async_channel::Channel<u32>";
+        const PIN: &str = "core::pin::Pin<alloc::boxed::Box<async_channel::Recv<u32>, \
+            alloc::alloc::Global>>";
+        assert_split(
+            program,
+            bundle,
+            RECEIVER,
+            &[(24, Some(OLD)), (16, Some(NEW))],
+        );
+        // The new release defines `Recv` through event-listener-strategy's
+        // `easy_wrapper!`, so the struct and its `poll` are declared in
+        // that crate's file: no path names async-channel, and the type
+        // carries no label rather than a wrong one.
+        assert_split(program, bundle, RECV, &[(24, Some(OLD)), (16, None)]);
+        // The same size in both releases, split by what its members
+        // reference; and a pointer-wide end over it, split the same way.
+        assert_split(
+            program,
+            bundle,
+            CHANNEL,
+            &[(640, Some(OLD)), (640, Some(NEW))],
+        );
+        assert_split(
+            program,
+            bundle,
+            "async_channel::Sender<u32>",
+            &[(8, Some(OLD)), (8, Some(NEW))],
+        );
+        for wrapper in [
+            "alloc::boxed::Box<async_channel::Receiver<u32>, alloc::alloc::Global>",
+            "core::option::Option<alloc::boxed::Box<async_channel::Receiver<u32>, \
+             alloc::alloc::Global>>",
+            "alloc::sync::Arc<async_channel::Channel<u32>, alloc::alloc::Global>",
+            "alloc::boxed::Box<async_channel::Recv<u32>, alloc::alloc::Global>",
+            PIN,
+        ] {
+            assert_split(program, bundle, wrapper, &[(8, None), (8, None)]);
+        }
+        // Each waiter's pin is a type of its own whose definitions agree
+        // on their target, so the std adapter takes both, each to its own
+        // `Recv`.
+        let table = exegesis::describe::describe_semantics(bundle);
+        let pins: Vec<&str> = table
+            .lines()
+            .filter(|line| line.starts_with(&format!("{PIN} :: ")))
+            .collect();
+        assert_eq!(
+            pins.len(),
+            2,
+            "{program}: pin records:\n{}",
+            pins.join("\n")
+        );
+        for waiter in ["old_waiter", "new_waiter"] {
+            assert!(
+                pins.iter().any(|line| {
+                    line.contains(&format!(
+                        "delegated by two_releases::{waiter}::{{async_fn_env#0}}"
+                    )) && line.contains("continuation rule ")
+                        && line.contains(&format!("delegate (exclusive) pointer.*@+0 -> {RECV}"))
+                }),
+                "{program}: no delegating pin record for {waiter}:\n{}",
+                pins.join("\n")
+            );
+        }
+        // No declaration of a split type reaches the bundle: the unit
+        // rule stays covered by the synthetic cases.
+        assert_eq!(
+            stats.declarations_unresolved_emitted, 0,
+            "{program}: an emitted declaration went unplaced"
+        );
+    }
     // The hyper formatters, on both ends of an HTTP/1 connection: the
     // curated `Conn` record aliases each state word and reaches the read
     // buffer's fill through the buffered io, the server's alone carrying
@@ -4306,6 +4420,11 @@ fn test_golden_watch_stream() {
 #[test]
 fn test_golden_http_conns() {
     run_golden("http-conns");
+}
+
+#[test]
+fn test_golden_two_releases() {
+    run_golden("two-releases");
 }
 
 #[test]

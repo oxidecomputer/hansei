@@ -4,6 +4,6 @@ description: "`connections --with role server --with buffered =0` over illumos/h
 ---
 ADDR       TASK  ROLE    VER    PHASE             METHOD  PEER  BUF      DEADLINE  HANDLER                      REQUEST
 0xADDR  4     server  http1  idle              —       —     0/16302  —         —                            —
-0xADDR  9     server  http1  handling request  GET     —     0/16339  —         async fn http_conns::handle  GET /park
-0xADDR  12    server  http1  handling request  GET     —     0/16326  —         async fn http_conns::handle  GET /park
+0xADDR  8     server  http1  handling request  GET     —     0/16339  —         async fn http_conns::handle  GET /park
+0xADDR  11    server  http1  handling request  GET     —     0/16326  —         async fn http_conns::handle  GET /park
 [3 connections]

@@ -22,6 +22,13 @@ full-tokio = ["tokio/full", "tokio/test-util"]
 ct-tokio = ["tokio/rt", "tokio/time", "tokio/sync", "tokio/net"]
 
 [dependencies]
+# `two-releases` links async-channel at two releases side by side, so
+# one binary carries every type the two lay out differently under one
+# name. Both are pinned exactly: the fixture's goldens name each
+# release's layout and label, and either moving would read as a split
+# that stopped happening.
+async-channel = "=2.5.0"
+async_channel_old = { package = "async-channel", version = "=1.9.0" }
 # `http-conns` parks hyper HTTP/1 connections on both ends. hyper and
 # hyper-util are pinned exactly, like tracing: the formatters navigate
 # their private layouts, so a version moving under the fixture would

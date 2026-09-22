@@ -1,0 +1,11 @@
+---
+source: hansei/src/offline.rs
+description: "`future 0x7f5254000c88` over linux-floor/two-releases"
+---
+future 0xADDR
+    type: future event_listener::EventListener
+    held by: task 4 (frame 0, `listener`)
+    depth: 1 frame
+    awaiting on: event_listener::Entry @ 0xADDR
+    held futures: 0
+    join sets: 0

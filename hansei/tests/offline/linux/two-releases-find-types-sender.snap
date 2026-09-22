@@ -1,0 +1,8 @@
+---
+source: hansei/src/offline.rs
+description: "`find-types async_channel::Sender<u32>` over linux/two-releases"
+---
+(async_channel::Sender<u32>, async_channel::Sender<u32>)  (type 1253)
+async_channel::Sender<u32>  (2 definitions: type 788, async-channel 1.9.0; type 789, async-channel 2.5.0)
+
+[2 types]

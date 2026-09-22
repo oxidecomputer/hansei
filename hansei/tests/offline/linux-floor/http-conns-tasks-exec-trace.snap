@@ -114,7 +114,7 @@ task 12
       waiting on http1 client 0xADDR (GET sent, awaiting response headers)
       via oneshot tx 0xADDR (nothing sent, receiver alive)
       caller task 10
-      request GET http://127.0.0.1:43527/park
+      request GET http://127.0.0.1:37939/park
 #1  future        hyper::client::conn::http1::upgrades::UpgradeableConnection<reqwest::connect::sealed::Conn, reqwest::async_impl::body::Body>
       defined at hyper-1.10.1/src/client/conn/http1.rs:622 (Some, 0 locals)
 #2  future        futures_util::future::try_future::into_future::IntoFuture<hyper::client::conn::http1::upgrades::UpgradeableConnection<reqwest::connect::sealed::Conn, reqwest::async_impl::body::Body>>
