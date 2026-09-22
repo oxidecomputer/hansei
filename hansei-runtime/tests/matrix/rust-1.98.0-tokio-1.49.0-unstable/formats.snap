@@ -11,6 +11,7 @@ family: v1_49 (tokio 1.49.0)
 &dyn tracing_core::callsite::Callsite :: Node DynPointer { pointer=pointer, vtable=vtable, slots=[drop_in_place:0, size:1, align:2], tail_prefixes=[] }
 &str :: Node Str { pointer=data_ptr, length=length }
 *const alloc::sync::ArcInner<(dyn core::ops::function::Fn<(&tokio::runtime::task_hooks::TaskMeta), Output=()> + core::marker::Send + core::marker::Sync)> :: Node DynPointer { pointer=pointer, vtable=vtable, slots=[drop_in_place:0, size:1, align:2], tail_prefixes=[16] }
+*const alloc::sync::ArcInner<(dyn core::ops::function::Fn<(&url::Url), Output=core::option::Option<core::result::Result<url::Url, reqwest::error::Error>>> + core::marker::Send + core::marker::Sync)> :: Node DynPointer { pointer=pointer, vtable=vtable, slots=[drop_in_place:0, size:1, align:2], tail_prefixes=[16] }
 *const alloc::sync::ArcInner<(dyn core::ops::function::Fn<(), Output=()> + core::marker::Send + core::marker::Sync)> :: Node DynPointer { pointer=pointer, vtable=vtable, slots=[drop_in_place:0, size:1, align:2], tail_prefixes=[16] }
 *const alloc::sync::ArcInner<(dyn core::ops::function::Fn<(), Output=alloc::string::String> + core::marker::Send + core::marker::Sync)> :: Node DynPointer { pointer=pointer, vtable=vtable, slots=[drop_in_place:0, size:1, align:2], tail_prefixes=[16] }
 *const alloc::sync::ArcInner<(dyn hyper::ext::informational::OnInformationalCallback + core::marker::Send + core::marker::Sync)> :: Node DynPointer { pointer=pointer, vtable=vtable, slots=[drop_in_place:0, size:1, align:2], tail_prefixes=[16] }
@@ -18,6 +19,9 @@ family: v1_49 (tokio 1.49.0)
 *const alloc::sync::ArcInner<(dyn hyper::rt::timer::Timer + core::marker::Send + core::marker::Sync)> :: Node DynPointer { pointer=pointer, vtable=vtable, slots=[drop_in_place:0, size:1, align:2], tail_prefixes=[16] }
 *const alloc::sync::ArcInner<(dyn tracing_core::subscriber::Subscriber + core::marker::Send + core::marker::Sync)> :: Node DynPointer { pointer=pointer, vtable=vtable, slots=[drop_in_place:0, size:1, align:2], tail_prefixes=[16] }
 *const alloc::sync::ArcInner<dyn dyn_future::Aligned> :: Node DynPointer { pointer=pointer, vtable=vtable, slots=[drop_in_place:0, size:1, align:2], tail_prefixes=[16] }
+*const alloc::sync::ArcInner<dyn reqwest::dns::resolve::Resolve> :: Node DynPointer { pointer=pointer, vtable=vtable, slots=[drop_in_place:0, size:1, align:2], tail_prefixes=[16] }
+*const alloc::sync::ArcInner<dyn reqwest::retry::classify::Classify> :: Node DynPointer { pointer=pointer, vtable=vtable, slots=[drop_in_place:0, size:1, align:2], tail_prefixes=[16] }
+*const alloc::sync::ArcInner<dyn reqwest::retry::scope::Scope> :: Node DynPointer { pointer=pointer, vtable=vtable, slots=[drop_in_place:0, size:1, align:2], tail_prefixes=[16] }
 <pointer> :: Node Symbol { <self> }
 alloc::boxed::Box<(dyn core::any::Any + core::marker::Send), alloc::alloc::Global> :: Node DynPointer { pointer=pointer, vtable=vtable, slots=[drop_in_place:0, size:1, align:2], tail_prefixes=[] }
 alloc::boxed::Box<(dyn core::error::Error + core::marker::Send + core::marker::Sync), alloc::alloc::Global> :: Node DynPointer { pointer=pointer, vtable=vtable, slots=[drop_in_place:0, size:1, align:2], tail_prefixes=[] }
@@ -25,10 +29,18 @@ alloc::boxed::Box<(dyn core::future::future::Future<Output=()> + core::marker::S
 alloc::boxed::Box<(dyn core::future::future::Future<Output=()> + core::marker::Send), alloc::alloc::Global> :: Node DynPointer { pointer=pointer, vtable=vtable, slots=[drop_in_place:0, size:1, align:2], tail_prefixes=[] }
 alloc::boxed::Box<(dyn core::future::future::Future<Output=(core::result::Result<(), tokio::sync::watch::error::RecvError>, tokio::sync::watch::Receiver<u32>)> + core::marker::Send), alloc::alloc::Global> :: Node DynPointer { pointer=pointer, vtable=vtable, slots=[drop_in_place:0, size:1, align:2], tail_prefixes=[] }
 alloc::boxed::Box<(dyn core::future::future::Future<Output=core::result::Result<(), tokio::runtime::task::error::JoinError>> + core::marker::Send), alloc::alloc::Global> :: Node DynPointer { pointer=pointer, vtable=vtable, slots=[drop_in_place:0, size:1, align:2], tail_prefixes=[] }
+alloc::boxed::Box<(dyn core::future::future::Future<Output=core::result::Result<alloc::boxed::Box<(dyn core::iter::traits::iterator::Iterator<Item=core::net::socket_addr::SocketAddr> + core::marker::Send), alloc::alloc::Global>, alloc::boxed::Box<(dyn core::error::Error + core::marker::Send + core::marker::Sync), alloc::alloc::Global>>> + core::marker::Send), alloc::alloc::Global> :: Node DynPointer { pointer=pointer, vtable=vtable, slots=[drop_in_place:0, size:1, align:2], tail_prefixes=[] }
 alloc::boxed::Box<(dyn core::future::future::Future<Output=core::result::Result<http::response::Response<hyper::body::incoming::Incoming>, hyper_util::client::legacy::client::Error>> + core::marker::Send), alloc::alloc::Global> :: Node DynPointer { pointer=pointer, vtable=vtable, slots=[drop_in_place:0, size:1, align:2], tail_prefixes=[] }
+alloc::boxed::Box<(dyn core::future::future::Future<Output=core::result::Result<http::response::Response<hyper::body::incoming::Incoming>, reqwest::error::Error>> + core::marker::Send + core::marker::Sync), alloc::alloc::Global> :: Node DynPointer { pointer=pointer, vtable=vtable, slots=[drop_in_place:0, size:1, align:2], tail_prefixes=[] }
 alloc::boxed::Box<(dyn core::future::future::Future<Output=core::result::Result<hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>, hyper_util::client::legacy::connect::http::ConnectError>> + core::marker::Send), alloc::alloc::Global> :: Node DynPointer { pointer=pointer, vtable=vtable, slots=[drop_in_place:0, size:1, align:2], tail_prefixes=[] }
+alloc::boxed::Box<(dyn core::future::future::Future<Output=core::result::Result<reqwest::connect::sealed::Conn, alloc::boxed::Box<(dyn core::error::Error + core::marker::Send + core::marker::Sync), alloc::alloc::Global>>> + core::marker::Send), alloc::alloc::Global> :: Node DynPointer { pointer=pointer, vtable=vtable, slots=[drop_in_place:0, size:1, align:2], tail_prefixes=[] }
 alloc::boxed::Box<(dyn core::future::future::Future<Output=u32> + core::marker::Send), alloc::alloc::Global> :: Node DynPointer { pointer=pointer, vtable=vtable, slots=[drop_in_place:0, size:1, align:2], tail_prefixes=[] }
+alloc::boxed::Box<(dyn core::iter::traits::iterator::Iterator<Item=core::net::socket_addr::SocketAddr> + core::marker::Send), alloc::alloc::Global> :: Node DynPointer { pointer=pointer, vtable=vtable, slots=[drop_in_place:0, size:1, align:2], tail_prefixes=[] }
+alloc::boxed::Box<(dyn core::ops::function::Fn<(reqwest::redirect::Attempt), Output=reqwest::redirect::Action> + core::marker::Send + core::marker::Sync), alloc::alloc::Global> :: Node DynPointer { pointer=pointer, vtable=vtable, slots=[drop_in_place:0, size:1, align:2], tail_prefixes=[] }
+alloc::boxed::Box<(dyn http_body::Body<Data=bytes::bytes::Bytes, Error=alloc::boxed::Box<(dyn core::error::Error + core::marker::Send + core::marker::Sync), alloc::alloc::Global>> + core::marker::Send + core::marker::Sync), alloc::alloc::Global> :: Node DynPointer { pointer=pointer, vtable=vtable, slots=[drop_in_place:0, size:1, align:2], tail_prefixes=[] }
 alloc::boxed::Box<(dyn hyper::upgrade::Io + core::marker::Send), alloc::alloc::Global> :: Node DynPointer { pointer=pointer, vtable=vtable, slots=[drop_in_place:0, size:1, align:2], tail_prefixes=[] }
+alloc::boxed::Box<(dyn tower::util::boxed_clone_sync::CloneService<reqwest::connect::sealed::Unnameable, Response=reqwest::connect::sealed::Conn, Error=alloc::boxed::Box<(dyn core::error::Error + core::marker::Send + core::marker::Sync), alloc::alloc::Global>, Future=core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output=core::result::Result<reqwest::connect::sealed::Conn, alloc::boxed::Box<(dyn core::error::Error + core::marker::Send + core::marker::Sync), alloc::alloc::Global>>> + core::marker::Send), alloc::alloc::Global>>> + core::marker::Send + core::marker::Sync), alloc::alloc::Global> :: Node DynPointer { pointer=pointer, vtable=vtable, slots=[drop_in_place:0, size:1, align:2], tail_prefixes=[] }
+alloc::boxed::Box<[core::sync::atomic::Atomic<isize>], alloc::alloc::Global> :: Node Slice { pointer=data_ptr, length=length, element=core::sync::atomic::Atomic<isize> }
 alloc::boxed::Box<[http::header::map::Pos], alloc::alloc::Global> :: Node Slice { pointer=data_ptr, length=length, element=http::header::map::Pos }
 alloc::boxed::Box<[std::sync::mpmc::array::Slot<()>], alloc::alloc::Global> :: Node Slice { pointer=data_ptr, length=length, element=std::sync::mpmc::array::Slot<()> }
 alloc::boxed::Box<[std::sync::mpmc::array::Slot<usize>], alloc::alloc::Global> :: Node Slice { pointer=data_ptr, length=length, element=std::sync::mpmc::array::Slot<usize> }
@@ -42,22 +54,27 @@ alloc::boxed::Box<[u64], alloc::alloc::Global> :: Node Slice { pointer=data_ptr,
 alloc::boxed::Box<[u8], alloc::alloc::Global> :: Node Slice { pointer=data_ptr, length=length, element=u8 }
 alloc::boxed::Box<dyn hyper::rt::timer::Sleep<Output=()>, alloc::alloc::Global> :: Node DynPointer { pointer=pointer, vtable=vtable, slots=[drop_in_place:0, size:1, align:2], tail_prefixes=[] }
 alloc::boxed::Box<dyn hyper_util::client::legacy::connect::ExtraInner, alloc::alloc::Global> :: Node DynPointer { pointer=pointer, vtable=vtable, slots=[drop_in_place:0, size:1, align:2], tail_prefixes=[] }
+alloc::boxed::Box<dyn reqwest::connect::AsyncConnWithInfo, alloc::alloc::Global> :: Node DynPointer { pointer=pointer, vtable=vtable, slots=[drop_in_place:0, size:1, align:2], tail_prefixes=[] }
 alloc::boxed::Box<dyn select_combinator::Parked<Output=u32>, alloc::alloc::Global> :: Node DynPointer { pointer=pointer, vtable=vtable, slots=[drop_in_place:0, size:1, align:2], tail_prefixes=[] }
 alloc::boxed::Box<str, alloc::alloc::Global> :: Node Str { pointer=data_ptr, length=length }
 alloc::collections::btree::map::BTreeMap<u64, u32, alloc::alloc::Global> :: Node Map { length=length, key=u64, value=u32, entries=BTree { root=root, root_node=__0, height=height, node=node.pointer, leaf=alloc::collections::btree::node::LeafNode<u64, u32>, leaf_len=len, leaf_keys=keys, leaf_values=vals, internal=alloc::collections::btree::node::InternalNode<u64, u32>, internal_data=data, internal_edges=edges, edge=value.value.__0.pointer } }
 alloc::collections::vec_deque::index::WrappedIndex :: Node Alias { __0, follow }
 alloc::ffi::c_str::CString :: Node Str { pointer=inner.data_ptr, length=inner.length, nul_terminated }
 alloc::string::String :: Node Str { pointer=vec.buf.inner.ptr.pointer.pointer, length=vec.len, capacity=vec.buf.inner.cap.__0 }
+alloc::sync::Arc<std::path::Path, alloc::alloc::Global> :: Node Str { pointer=ptr.pointer.data_ptr, length=ptr.pointer.length, offset=+0x10 }
 alloc::vec::Vec<(&str, tokio_stream::wrappers::watch::WatchStream<u32>), alloc::alloc::Global> :: Node Slice { pointer=buf.inner.ptr.pointer.pointer, length=len, capacity=buf.inner.cap.__0, element=(&str, tokio_stream::wrappers::watch::WatchStream<u32>) }
 alloc::vec::Vec<alloc::boxed::Box<tokio::runtime::scheduler::multi_thread::worker::Core, alloc::alloc::Global>, alloc::alloc::Global> :: Node Slice { pointer=buf.inner.ptr.pointer.pointer, length=len, capacity=buf.inner.cap.__0, element=<pointer> }
+alloc::vec::Vec<alloc::string::String, alloc::alloc::Global> :: Node Slice { pointer=buf.inner.ptr.pointer.pointer, length=len, capacity=buf.inner.cap.__0, element=alloc::string::String }
 alloc::vec::Vec<alloc::sync::Arc<tokio::runtime::io::scheduled_io::ScheduledIo, alloc::alloc::Global>, alloc::alloc::Global> :: Node Slice { pointer=buf.inner.ptr.pointer.pointer, length=len, capacity=buf.inner.cap.__0, element=alloc::sync::Arc<tokio::runtime::io::scheduled_io::ScheduledIo, alloc::alloc::Global> }
 alloc::vec::Vec<core::option::Option<h2::hpack::table::Pos>, alloc::alloc::Global> :: Node Slice { pointer=buf.inner.ptr.pointer.pointer, length=len, capacity=buf.inner.cap.__0, element=core::option::Option<h2::hpack::table::Pos> }
 alloc::vec::Vec<core::task::wake::Waker, alloc::alloc::Global> :: Node Slice { pointer=buf.inner.ptr.pointer.pointer, length=len, capacity=buf.inner.cap.__0, element=core::task::wake::Waker }
 alloc::vec::Vec<http::header::map::Bucket<http::header::value::HeaderValue>, alloc::alloc::Global> :: Node Slice { pointer=buf.inner.ptr.pointer.pointer, length=len, capacity=buf.inner.cap.__0, element=http::header::map::Bucket<http::header::value::HeaderValue> }
 alloc::vec::Vec<http::header::map::ExtraValue<http::header::value::HeaderValue>, alloc::alloc::Global> :: Node Slice { pointer=buf.inner.ptr.pointer.pointer, length=len, capacity=buf.inner.cap.__0, element=http::header::map::ExtraValue<http::header::value::HeaderValue> }
 alloc::vec::Vec<http::header::name::HeaderName, alloc::alloc::Global> :: Node Slice { pointer=buf.inner.ptr.pointer.pointer, length=len, capacity=buf.inner.cap.__0, element=http::header::name::HeaderName }
+alloc::vec::Vec<hyper_util::client::proxy::matcher::Ip, alloc::alloc::Global> :: Node Slice { pointer=buf.inner.ptr.pointer.pointer, length=len, capacity=buf.inner.cap.__0, element=hyper_util::client::proxy::matcher::Ip }
 alloc::vec::Vec<indexmap::Bucket<h2::frame::stream_id::StreamId, h2::proto::streams::store::SlabIndex>, alloc::alloc::Global> :: Node Slice { pointer=buf.inner.ptr.pointer.pointer, length=len, capacity=buf.inner.cap.__0, element=indexmap::Bucket<h2::frame::stream_id::StreamId, h2::proto::streams::store::SlabIndex> }
 alloc::vec::Vec<mio::sys::unix::selector::Event, alloc::alloc::Global> :: Node Slice { pointer=buf.inner.ptr.pointer.pointer, length=len, capacity=buf.inner.cap.__0, element=mio::sys::unix::selector::Event }
+alloc::vec::Vec<reqwest::proxy::Matcher, alloc::alloc::Global> :: Node Slice { pointer=buf.inner.ptr.pointer.pointer, length=len, capacity=buf.inner.cap.__0, element=reqwest::proxy::Matcher }
 alloc::vec::Vec<slab::Entry<h2::proto::streams::buffer::Slot<h2::frame::Frame<hyper::proto::h2::SendBuf<bytes::bytes::Bytes>>>>, alloc::alloc::Global> :: Node Slice { pointer=buf.inner.ptr.pointer.pointer, length=len, capacity=buf.inner.cap.__0, element=slab::Entry<h2::proto::streams::buffer::Slot<h2::frame::Frame<hyper::proto::h2::SendBuf<bytes::bytes::Bytes>>>> }
 alloc::vec::Vec<slab::Entry<h2::proto::streams::buffer::Slot<h2::proto::streams::recv::Event>>, alloc::alloc::Global> :: Node Slice { pointer=buf.inner.ptr.pointer.pointer, length=len, capacity=buf.inner.cap.__0, element=slab::Entry<h2::proto::streams::buffer::Slot<h2::proto::streams::recv::Event>> }
 alloc::vec::Vec<slab::Entry<h2::proto::streams::stream::Stream>, alloc::alloc::Global> :: Node Slice { pointer=buf.inner.ptr.pointer.pointer, length=len, capacity=buf.inner.cap.__0, element=slab::Entry<h2::proto::streams::stream::Stream> }
@@ -66,6 +83,7 @@ alloc::vec::Vec<tokio::runtime::time_alt::entry::Handle, alloc::alloc::Global> :
 alloc::vec::Vec<tokio::sync::oneshot::Receiver<()>, alloc::alloc::Global> :: Node Slice { pointer=buf.inner.ptr.pointer.pointer, length=len, capacity=buf.inner.cap.__0, element=tokio::sync::oneshot::Receiver<()> }
 alloc::vec::Vec<u32, alloc::alloc::Global> :: Node Slice { pointer=buf.inner.ptr.pointer.pointer, length=len, capacity=buf.inner.cap.__0, element=u32 }
 alloc::vec::Vec<u8, alloc::alloc::Global> :: Node Slice { pointer=buf.inner.ptr.pointer.pointer, length=len, capacity=buf.inner.cap.__0, element=u8 }
+alloc::vec::Vec<url::Url, alloc::alloc::Global> :: Node Slice { pointer=buf.inner.ptr.pointer.pointer, length=len, capacity=buf.inner.cap.__0, element=url::Url }
 alloc::vec::Vec<usize, alloc::alloc::Global> :: Node Slice { pointer=buf.inner.ptr.pointer.pointer, length=len, capacity=buf.inner.cap.__0, element=usize }
 bytes::bytes::Bytes :: Node Str { pointer=ptr, length=len }
 core::cell::UnsafeCell<()> :: Node Alias { value, follow }
@@ -86,6 +104,7 @@ core::cell::UnsafeCell<core::mem::maybe_uninit::MaybeUninit<()>> :: Node Alias {
 core::cell::UnsafeCell<core::mem::maybe_uninit::MaybeUninit<core::task::wake::Waker>> :: Node Alias { value, follow }
 core::cell::UnsafeCell<core::mem::maybe_uninit::MaybeUninit<http_conns::Event>> :: Node Alias { value, follow }
 core::cell::UnsafeCell<core::mem::maybe_uninit::MaybeUninit<hyper::client::dispatch::Envelope<http::request::Request<http_body_util::empty::Empty<bytes::bytes::Bytes>>, http::response::Response<hyper::body::incoming::Incoming>>>> :: Node Alias { value, follow }
+core::cell::UnsafeCell<core::mem::maybe_uninit::MaybeUninit<hyper::client::dispatch::Envelope<http::request::Request<reqwest::async_impl::body::Body>, http::response::Response<hyper::body::incoming::Incoming>>>> :: Node Alias { value, follow }
 core::cell::UnsafeCell<core::mem::maybe_uninit::MaybeUninit<tokio::runtime::task::Notified<alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle, alloc::alloc::Global>>>> :: Node Alias { value, follow }
 core::cell::UnsafeCell<core::mem::maybe_uninit::MaybeUninit<u32>> :: Node Alias { value, follow }
 core::cell::UnsafeCell<core::mem::maybe_uninit::MaybeUninit<usize>> :: Node Alias { value, follow }
@@ -100,12 +119,14 @@ core::cell::UnsafeCell<core::option::Option<core::num::nonzero::NonZero<u64>>> :
 core::cell::UnsafeCell<core::option::Option<core::ptr::non_null::NonNull<tokio::runtime::task::core::Header>>> :: Node Alias { value, follow }
 core::cell::UnsafeCell<core::option::Option<core::result::Result<(), alloc::boxed::Box<(dyn core::any::Any + core::marker::Send), alloc::alloc::Global>>>> :: Node Alias { value, follow }
 core::cell::UnsafeCell<core::option::Option<core::result::Result<http::response::Response<hyper::body::incoming::Incoming>, hyper::client::dispatch::TrySendError<http::request::Request<http_body_util::empty::Empty<bytes::bytes::Bytes>>>>>> :: Node Alias { value, follow }
+core::cell::UnsafeCell<core::option::Option<core::result::Result<http::response::Response<hyper::body::incoming::Incoming>, hyper::client::dispatch::TrySendError<http::request::Request<reqwest::async_impl::body::Body>>>>> :: Node Alias { value, follow }
 core::cell::UnsafeCell<core::option::Option<core::result::Result<http::response::Response<hyper::body::incoming::Incoming>, hyper::error::Error>>> :: Node Alias { value, follow }
 core::cell::UnsafeCell<core::option::Option<core::result::Result<hyper::upgrade::Upgraded, hyper::error::Error>>> :: Node Alias { value, follow }
 core::cell::UnsafeCell<core::option::Option<core::task::wake::Waker>> :: Node Alias { value, follow }
 core::cell::UnsafeCell<core::option::Option<http::header::map::HeaderMap<http::header::value::HeaderValue>>> :: Node Alias { value, follow }
 core::cell::UnsafeCell<core::option::Option<hyper::error::Error>> :: Node Alias { value, follow }
 core::cell::UnsafeCell<core::option::Option<hyper_util::client::legacy::client::PoolClient<http_body_util::empty::Empty<bytes::bytes::Bytes>>>> :: Node Alias { value, follow }
+core::cell::UnsafeCell<core::option::Option<hyper_util::client::legacy::client::PoolClient<reqwest::async_impl::body::Body>>> :: Node Alias { value, follow }
 core::cell::UnsafeCell<core::option::Option<std::thread::id::ThreadId>> :: Node Alias { value, follow }
 core::cell::UnsafeCell<core::option::Option<tokio::runtime::scheduler::Handle>> :: Node Alias { value, follow }
 core::cell::UnsafeCell<core::option::Option<tokio::runtime::task::id::Id>> :: Node Alias { value, follow }
@@ -137,7 +158,9 @@ core::cell::UnsafeCell<core::sync::atomic::private::Align8<*mut tokio::runtime::
 core::cell::UnsafeCell<core::sync::atomic::private::Align8<*mut tokio::sync::mpsc::block::Block<()>>> :: Node Alias { value, follow }
 core::cell::UnsafeCell<core::sync::atomic::private::Align8<*mut tokio::sync::mpsc::block::Block<http_conns::Event>>> :: Node Alias { value, follow }
 core::cell::UnsafeCell<core::sync::atomic::private::Align8<*mut tokio::sync::mpsc::block::Block<hyper::client::dispatch::Envelope<http::request::Request<http_body_util::empty::Empty<bytes::bytes::Bytes>>, http::response::Response<hyper::body::incoming::Incoming>>>>> :: Node Alias { value, follow }
+core::cell::UnsafeCell<core::sync::atomic::private::Align8<*mut tokio::sync::mpsc::block::Block<hyper::client::dispatch::Envelope<http::request::Request<reqwest::async_impl::body::Body>, http::response::Response<hyper::body::incoming::Incoming>>>>> :: Node Alias { value, follow }
 core::cell::UnsafeCell<core::sync::atomic::private::Align8<*mut tokio::sync::mpsc::block::Block<u32>>> :: Node Alias { value, follow }
+core::cell::UnsafeCell<core::sync::atomic::private::Align8<isize>> :: Node Alias { value, follow }
 core::cell::UnsafeCell<core::sync::atomic::private::Align8<u64>> :: Node Alias { value, follow }
 core::cell::UnsafeCell<core::sync::atomic::private::Align8<usize>> :: Node Alias { value, follow }
 core::cell::UnsafeCell<futures_channel::mpsc::SenderTask> :: Node Alias { value, follow }
@@ -145,6 +168,7 @@ core::cell::UnsafeCell<h2::proto::streams::buffer::Buffer<h2::frame::Frame<hyper
 core::cell::UnsafeCell<h2::proto::streams::streams::Inner> :: Node Alias { value, follow }
 core::cell::UnsafeCell<hyper::proto::h2::ping::Shared> :: Node Alias { value, follow }
 core::cell::UnsafeCell<hyper_util::client::legacy::pool::PoolInner<hyper_util::client::legacy::client::PoolClient<http_body_util::empty::Empty<bytes::bytes::Bytes>>, (http::uri::scheme::Scheme, http::uri::authority::Authority)>> :: Node Alias { value, follow }
+core::cell::UnsafeCell<hyper_util::client::legacy::pool::PoolInner<hyper_util::client::legacy::client::PoolClient<reqwest::async_impl::body::Body>, (http::uri::scheme::Scheme, http::uri::authority::Authority)>> :: Node Alias { value, follow }
 core::cell::UnsafeCell<isize> :: Node Alias { value, follow }
 core::cell::UnsafeCell<libc::new::apple::libpthread::sys::_pthread::_pthread_types::pthread_mutex_t> :: Node Alias { value, follow }
 core::cell::UnsafeCell<std::sync::mpmc::waker::Waker> :: Node Alias { value, follow }
@@ -171,6 +195,7 @@ core::cell::UnsafeCell<tokio::runtime::task::core::Stage<channels::notify_waiter
 core::cell::UnsafeCell<tokio::runtime::task::core::Stage<channels::recv_waiter::{async_fn_env#0}>> :: Node Alias { value, follow }
 core::cell::UnsafeCell<tokio::runtime::task::core::Stage<channels::send_waiter::{async_fn_env#0}>> :: Node Alias { value, follow }
 core::cell::UnsafeCell<tokio::runtime::task::core::Stage<core::pin::Pin<alloc::boxed::Box<&mut delegation_cases::Probe<5>, alloc::alloc::Global>>>> :: Node Alias { value, follow }
+core::cell::UnsafeCell<tokio::runtime::task::core::Stage<core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output=()> + core::marker::Send), alloc::alloc::Global>>>> :: Node Alias { value, follow }
 core::cell::UnsafeCell<tokio::runtime::task::core::Stage<core::pin::Pin<alloc::boxed::Box<alloc::boxed::Box<delegation_cases::Probe<6>, alloc::alloc::Global>, alloc::alloc::Global>>>> :: Node Alias { value, follow }
 core::cell::UnsafeCell<tokio::runtime::task::core::Stage<core::pin::Pin<alloc::boxed::Box<core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output=()> + core::marker::Send), alloc::alloc::Global>>, alloc::alloc::Global>>>> :: Node Alias { value, follow }
 core::cell::UnsafeCell<tokio::runtime::task::core::Stage<core::pin::Pin<alloc::boxed::Box<delegation_cases::Gated<1>, alloc::alloc::Global>>>> :: Node Alias { value, follow }
@@ -196,6 +221,7 @@ core::cell::UnsafeCell<tokio::runtime::task::core::Stage<futurelock::start_backg
 core::cell::UnsafeCell<tokio::runtime::task::core::Stage<http_conns::accept_loop::{async_fn_env#0}>> :: Node Alias { value, follow }
 core::cell::UnsafeCell<tokio::runtime::task::core::Stage<http_conns::raw_holder::{async_fn_env#0}>> :: Node Alias { value, follow }
 core::cell::UnsafeCell<tokio::runtime::task::core::Stage<http_conns::requester::{async_fn_env#0}>> :: Node Alias { value, follow }
+core::cell::UnsafeCell<tokio::runtime::task::core::Stage<http_conns::reqwest_requester::{async_fn_env#0}>> :: Node Alias { value, follow }
 core::cell::UnsafeCell<tokio::runtime::task::core::Stage<http_conns::serve::{async_fn_env#0}>> :: Node Alias { value, follow }
 core::cell::UnsafeCell<tokio::runtime::task::core::Stage<http_conns::{impl#0}::execute::{async_block_env#0}<core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output=()> + core::marker::Send), alloc::alloc::Global>>>>> :: Node Alias { value, follow }
 core::cell::UnsafeCell<tokio::runtime::task::core::Stage<hyper::proto::h2::server::H2Stream<http_conns::handle::{async_fn_env#0}, http_body_util::full::Full<bytes::bytes::Bytes>, hyper_util::rt::tokio::TokioExecutor>>> :: Node Alias { value, follow }
@@ -243,6 +269,7 @@ core::cell::UnsafeCell<tokio::sync::batch_semaphore::Waitlist> :: Node Alias { v
 core::cell::UnsafeCell<tokio::sync::mpsc::chan::RxFields<()>> :: Node Alias { value, follow }
 core::cell::UnsafeCell<tokio::sync::mpsc::chan::RxFields<http_conns::Event>> :: Node Alias { value, follow }
 core::cell::UnsafeCell<tokio::sync::mpsc::chan::RxFields<hyper::client::dispatch::Envelope<http::request::Request<http_body_util::empty::Empty<bytes::bytes::Bytes>>, http::response::Response<hyper::body::incoming::Incoming>>>> :: Node Alias { value, follow }
+core::cell::UnsafeCell<tokio::sync::mpsc::chan::RxFields<hyper::client::dispatch::Envelope<http::request::Request<reqwest::async_impl::body::Body>, http::response::Response<hyper::body::incoming::Incoming>>>> :: Node Alias { value, follow }
 core::cell::UnsafeCell<tokio::sync::mpsc::chan::RxFields<u32>> :: Node Alias { value, follow }
 core::cell::UnsafeCell<tokio::task::coop::Budget> :: Node Alias { value, follow }
 core::cell::UnsafeCell<tokio::time::clock::Inner> :: Node Alias { value, follow }
@@ -261,6 +288,7 @@ core::cell::UnsafeCell<tokio::util::linked_list::PointersInner<tokio::sync::batc
 core::cell::UnsafeCell<tokio::util::linked_list::PointersInner<tokio::sync::notify::Waiter>> :: Node Alias { value, follow }
 core::cell::UnsafeCell<tokio::util::linked_list::PointersInner<tokio::util::idle_notified_set::ListEntry<tokio::runtime::task::join::JoinHandle<u32>>>> :: Node Alias { value, follow }
 core::cell::UnsafeCell<tokio::util::rand::FastRand> :: Node Alias { value, follow }
+core::cell::UnsafeCell<tower::retry::budget::tps_budget::Generation> :: Node Alias { value, follow }
 core::cell::UnsafeCell<u32> :: Node Alias { value, follow }
 core::cell::UnsafeCell<u8> :: Node Alias { value, follow }
 core::cell::UnsafeCell<usize> :: Node Alias { value, follow }
@@ -286,6 +314,7 @@ core::ptr::non_null::NonNull<alloc::collections::btree::node::InternalNode<u64, 
 core::ptr::non_null::NonNull<alloc::collections::btree::node::LeafNode<u64, u32>> :: Node Alias { pointer, follow }
 core::ptr::non_null::NonNull<alloc::rc::RcInner<tokio::task::local::Context>> :: Node Alias { pointer, follow }
 core::ptr::non_null::NonNull<alloc::sync::ArcInner<()>> :: Node Alias { pointer, follow }
+core::ptr::non_null::NonNull<alloc::sync::ArcInner<alloc::vec::Vec<reqwest::proxy::Matcher, alloc::alloc::Global>>> :: Node Alias { pointer, follow }
 core::ptr::non_null::NonNull<alloc::sync::ArcInner<core::sync::atomic::Atomic<bool>>> :: Node Alias { pointer, follow }
 core::ptr::non_null::NonNull<alloc::sync::ArcInner<core::sync::atomic::Atomic<usize>>> :: Node Alias { pointer, follow }
 core::ptr::non_null::NonNull<alloc::sync::ArcInner<dyn_future::Padded>> :: Node Alias { pointer, follow }
@@ -297,6 +326,7 @@ core::ptr::non_null::NonNull<alloc::sync::ArcInner<futures_channel::oneshot::Inn
 core::ptr::non_null::NonNull<alloc::sync::ArcInner<futures_channel::oneshot::Inner<http::header::map::HeaderMap<http::header::value::HeaderValue>>>> :: Node Alias { pointer, follow }
 core::ptr::non_null::NonNull<alloc::sync::ArcInner<futures_channel::oneshot::Inner<hyper::error::Error>>> :: Node Alias { pointer, follow }
 core::ptr::non_null::NonNull<alloc::sync::ArcInner<futures_channel::oneshot::Inner<hyper_util::client::legacy::client::PoolClient<http_body_util::empty::Empty<bytes::bytes::Bytes>>>>> :: Node Alias { pointer, follow }
+core::ptr::non_null::NonNull<alloc::sync::ArcInner<futures_channel::oneshot::Inner<hyper_util::client::legacy::client::PoolClient<reqwest::async_impl::body::Body>>>> :: Node Alias { pointer, follow }
 core::ptr::non_null::NonNull<alloc::sync::ArcInner<futures_util::stream::futures_unordered::ready_to_run_queue::ReadyToRunQueue<armed_select::child::{async_fn_env#0}>>> :: Node Alias { pointer, follow }
 core::ptr::non_null::NonNull<alloc::sync::ArcInner<futures_util::stream::futures_unordered::ready_to_run_queue::ReadyToRunQueue<unordered::leaf::{async_fn_env#0}>>> :: Node Alias { pointer, follow }
 core::ptr::non_null::NonNull<alloc::sync::ArcInner<futures_util::stream::futures_unordered::ready_to_run_queue::ReadyToRunQueue<unordered::set_member::{async_fn_env#0}>>> :: Node Alias { pointer, follow }
@@ -307,11 +337,14 @@ core::ptr::non_null::NonNull<alloc::sync::ArcInner<h2::proto::ping_pong::UserPin
 core::ptr::non_null::NonNull<alloc::sync::ArcInner<h2::proto::streams::streams::SendBuffer<hyper::proto::h2::SendBuf<bytes::bytes::Bytes>>>> :: Node Alias { pointer, follow }
 core::ptr::non_null::NonNull<alloc::sync::ArcInner<hyper::common::watch::Shared>> :: Node Alias { pointer, follow }
 core::ptr::non_null::NonNull<alloc::sync::ArcInner<hyper_util::client::legacy::connect::http::Config>> :: Node Alias { pointer, follow }
+core::ptr::non_null::NonNull<alloc::sync::ArcInner<reqwest::async_impl::client::ClientRef>> :: Node Alias { pointer, follow }
+core::ptr::non_null::NonNull<alloc::sync::ArcInner<reqwest::redirect::Policy>> :: Node Alias { pointer, follow }
 core::ptr::non_null::NonNull<alloc::sync::ArcInner<std::sync::mpmc::context::Inner>> :: Node Alias { pointer, follow }
 core::ptr::non_null::NonNull<alloc::sync::ArcInner<std::sync::poison::mutex::Mutex<futures_channel::mpsc::SenderTask>>> :: Node Alias { pointer, follow }
 core::ptr::non_null::NonNull<alloc::sync::ArcInner<std::sync::poison::mutex::Mutex<h2::proto::streams::streams::Inner>>> :: Node Alias { pointer, follow }
 core::ptr::non_null::NonNull<alloc::sync::ArcInner<std::sync::poison::mutex::Mutex<hyper::proto::h2::ping::Shared>>> :: Node Alias { pointer, follow }
 core::ptr::non_null::NonNull<alloc::sync::ArcInner<std::sync::poison::mutex::Mutex<hyper_util::client::legacy::pool::PoolInner<hyper_util::client::legacy::client::PoolClient<http_body_util::empty::Empty<bytes::bytes::Bytes>>, (http::uri::scheme::Scheme, http::uri::authority::Authority)>>>> :: Node Alias { pointer, follow }
+core::ptr::non_null::NonNull<alloc::sync::ArcInner<std::sync::poison::mutex::Mutex<hyper_util::client::legacy::pool::PoolInner<hyper_util::client::legacy::client::PoolClient<reqwest::async_impl::body::Body>, (http::uri::scheme::Scheme, http::uri::authority::Authority)>>>> :: Node Alias { pointer, follow }
 core::ptr::non_null::NonNull<alloc::sync::ArcInner<std::thread::lifecycle::Packet<()>>> :: Node Alias { pointer, follow }
 core::ptr::non_null::NonNull<alloc::sync::ArcInner<std::thread::scoped::ScopeData>> :: Node Alias { pointer, follow }
 core::ptr::non_null::NonNull<alloc::sync::ArcInner<std::thread::thread::Inner>> :: Node Alias { pointer, follow }
@@ -331,11 +364,13 @@ core::ptr::non_null::NonNull<alloc::sync::ArcInner<tokio::sync::mpsc::chan::Chan
 core::ptr::non_null::NonNull<alloc::sync::ArcInner<tokio::sync::mpsc::chan::Chan<(), tokio::sync::mpsc::unbounded::Semaphore>>> :: Node Alias { pointer, follow }
 core::ptr::non_null::NonNull<alloc::sync::ArcInner<tokio::sync::mpsc::chan::Chan<http_conns::Event, tokio::sync::mpsc::unbounded::Semaphore>>> :: Node Alias { pointer, follow }
 core::ptr::non_null::NonNull<alloc::sync::ArcInner<tokio::sync::mpsc::chan::Chan<hyper::client::dispatch::Envelope<http::request::Request<http_body_util::empty::Empty<bytes::bytes::Bytes>>, http::response::Response<hyper::body::incoming::Incoming>>, tokio::sync::mpsc::unbounded::Semaphore>>> :: Node Alias { pointer, follow }
+core::ptr::non_null::NonNull<alloc::sync::ArcInner<tokio::sync::mpsc::chan::Chan<hyper::client::dispatch::Envelope<http::request::Request<reqwest::async_impl::body::Body>, http::response::Response<hyper::body::incoming::Incoming>>, tokio::sync::mpsc::unbounded::Semaphore>>> :: Node Alias { pointer, follow }
 core::ptr::non_null::NonNull<alloc::sync::ArcInner<tokio::sync::mpsc::chan::Chan<u32, tokio::sync::mpsc::bounded::Semaphore>>> :: Node Alias { pointer, follow }
 core::ptr::non_null::NonNull<alloc::sync::ArcInner<tokio::sync::mutex::Mutex<()>>> :: Node Alias { pointer, follow }
 core::ptr::non_null::NonNull<alloc::sync::ArcInner<tokio::sync::notify::Notify>> :: Node Alias { pointer, follow }
 core::ptr::non_null::NonNull<alloc::sync::ArcInner<tokio::sync::oneshot::Inner<()>>> :: Node Alias { pointer, follow }
 core::ptr::non_null::NonNull<alloc::sync::ArcInner<tokio::sync::oneshot::Inner<core::result::Result<http::response::Response<hyper::body::incoming::Incoming>, hyper::client::dispatch::TrySendError<http::request::Request<http_body_util::empty::Empty<bytes::bytes::Bytes>>>>>>> :: Node Alias { pointer, follow }
+core::ptr::non_null::NonNull<alloc::sync::ArcInner<tokio::sync::oneshot::Inner<core::result::Result<http::response::Response<hyper::body::incoming::Incoming>, hyper::client::dispatch::TrySendError<http::request::Request<reqwest::async_impl::body::Body>>>>>> :: Node Alias { pointer, follow }
 core::ptr::non_null::NonNull<alloc::sync::ArcInner<tokio::sync::oneshot::Inner<core::result::Result<http::response::Response<hyper::body::incoming::Incoming>, hyper::error::Error>>>> :: Node Alias { pointer, follow }
 core::ptr::non_null::NonNull<alloc::sync::ArcInner<tokio::sync::oneshot::Inner<core::result::Result<hyper::upgrade::Upgraded, hyper::error::Error>>>> :: Node Alias { pointer, follow }
 core::ptr::non_null::NonNull<alloc::sync::ArcInner<tokio::sync::oneshot::Inner<hyper::error::Error>>> :: Node Alias { pointer, follow }
@@ -345,6 +380,7 @@ core::ptr::non_null::NonNull<alloc::sync::ArcInner<tokio::sync::oneshot::Sender<
 core::ptr::non_null::NonNull<alloc::sync::ArcInner<tokio::sync::semaphore::Semaphore>> :: Node Alias { pointer, follow }
 core::ptr::non_null::NonNull<alloc::sync::ArcInner<tokio::sync::watch::Shared<u32>>> :: Node Alias { pointer, follow }
 core::ptr::non_null::NonNull<alloc::sync::ArcInner<tokio::task::local::Shared>> :: Node Alias { pointer, follow }
+core::ptr::non_null::NonNull<alloc::sync::ArcInner<tower::retry::budget::tps_budget::TpsBudget>> :: Node Alias { pointer, follow }
 core::ptr::non_null::NonNull<alloc::sync::ArcInner<want::Inner>> :: Node Alias { pointer, follow }
 core::ptr::non_null::NonNull<core::net::socket_addr::SocketAddr> :: Node Alias { pointer, follow }
 core::ptr::non_null::NonNull<tokio::runtime::io::scheduled_io::ScheduledIo> :: Node Alias { pointer, follow }
@@ -356,6 +392,7 @@ core::ptr::non_null::NonNull<tokio::sync::batch_semaphore::Waiter> :: Node Alias
 core::ptr::non_null::NonNull<tokio::sync::mpsc::block::Block<()>> :: Node Alias { pointer, follow }
 core::ptr::non_null::NonNull<tokio::sync::mpsc::block::Block<http_conns::Event>> :: Node Alias { pointer, follow }
 core::ptr::non_null::NonNull<tokio::sync::mpsc::block::Block<hyper::client::dispatch::Envelope<http::request::Request<http_body_util::empty::Empty<bytes::bytes::Bytes>>, http::response::Response<hyper::body::incoming::Incoming>>>> :: Node Alias { pointer, follow }
+core::ptr::non_null::NonNull<tokio::sync::mpsc::block::Block<hyper::client::dispatch::Envelope<http::request::Request<reqwest::async_impl::body::Body>, http::response::Response<hyper::body::incoming::Incoming>>>> :: Node Alias { pointer, follow }
 core::ptr::non_null::NonNull<tokio::sync::mpsc::block::Block<u32>> :: Node Alias { pointer, follow }
 core::ptr::non_null::NonNull<tokio::sync::notify::Waiter> :: Node Alias { pointer, follow }
 core::ptr::non_null::NonNull<tokio::sync::oneshot::Receiver<()>> :: Node Alias { pointer, follow }
@@ -378,8 +415,10 @@ core::sync::atomic::Atomic<*mut tokio::runtime::scheduler::multi_thread::worker:
 core::sync::atomic::Atomic<*mut tokio::sync::mpsc::block::Block<()>> :: Node Alias { v.value.__0 }
 core::sync::atomic::Atomic<*mut tokio::sync::mpsc::block::Block<http_conns::Event>> :: Node Alias { v.value.__0 }
 core::sync::atomic::Atomic<*mut tokio::sync::mpsc::block::Block<hyper::client::dispatch::Envelope<http::request::Request<http_body_util::empty::Empty<bytes::bytes::Bytes>>, http::response::Response<hyper::body::incoming::Incoming>>>> :: Node Alias { v.value.__0 }
+core::sync::atomic::Atomic<*mut tokio::sync::mpsc::block::Block<hyper::client::dispatch::Envelope<http::request::Request<reqwest::async_impl::body::Body>, http::response::Response<hyper::body::incoming::Incoming>>>> :: Node Alias { v.value.__0 }
 core::sync::atomic::Atomic<*mut tokio::sync::mpsc::block::Block<u32>> :: Node Alias { v.value.__0 }
 core::sync::atomic::Atomic<i8> :: Node Alias { v.value.__0 }
+core::sync::atomic::Atomic<isize> :: Node Alias { v.value.__0 }
 core::sync::atomic::Atomic<u32> :: Node Alias { v.value.__0 }
 core::sync::atomic::Atomic<u64> :: Node Alias { v.value.__0 }
 core::sync::atomic::Atomic<u8> :: Node Alias { v.value.__0 }
@@ -387,6 +426,7 @@ core::sync::atomic::Atomic<usize> :: Node Alias { v.value.__0 }
 core::sync::atomic::private::Align1<i8> :: Node Alias { __0, follow }
 core::sync::atomic::private::Align1<u8> :: Node Alias { __0, follow }
 core::sync::atomic::private::Align4<u32> :: Node Alias { __0, follow }
+core::sync::atomic::private::Align8<isize> :: Node Alias { __0, follow }
 core::sync::atomic::private::Align8<u64> :: Node Alias { __0, follow }
 core::sync::atomic::private::Align8<usize> :: Node Alias { __0, follow }
 core::task::wake::RawWaker :: Node Alias { data }
@@ -408,13 +448,16 @@ http::uri::path::PathAndQuery :: Node Alias { data, follow }
 hyper::body::length::DecodedLength :: Node Alias { __0, follow }
 hyper::proto::h1::conn::Conn<hyper_util::common::rewind::Rewind<hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>>, bytes::bytes::Bytes, hyper::proto::h1::role::Server> :: Node Struct { version: Alias { state.version, follow }, keep_alive: Alias { state.keep_alive, follow }, reading: Alias { state.reading, follow }, writing: Alias { state.writing, follow }, method: Alias { state.method, follow }, read_buf_len: io.read_buf.len, read_buf_cap: io.read_buf.cap, header_read_timer: state.h1_header_read_timeout_running }
 hyper::proto::h1::conn::Conn<hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>, bytes::bytes::Bytes, hyper::proto::h1::role::Client> :: Node Struct { version: Alias { state.version, follow }, keep_alive: Alias { state.keep_alive, follow }, reading: Alias { state.reading, follow }, writing: Alias { state.writing, follow }, method: Alias { state.method, follow }, read_buf_len: io.read_buf.len, read_buf_cap: io.read_buf.cap }
+hyper::proto::h1::conn::Conn<reqwest::connect::sealed::Conn, bytes::bytes::Bytes, hyper::proto::h1::role::Client> :: Node Struct { version: Alias { state.version, follow }, keep_alive: Alias { state.keep_alive, follow }, reading: Alias { state.reading, follow }, writing: Alias { state.writing, follow }, method: Alias { state.method, follow }, read_buf_len: io.read_buf.len, read_buf_cap: io.read_buf.cap }
 hyper::proto::h1::dispatch::Dispatcher<hyper::proto::h1::dispatch::Client<http_body_util::empty::Empty<bytes::bytes::Bytes>>, http_body_util::empty::Empty<bytes::bytes::Bytes>, hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>, hyper::proto::h1::role::Client> :: Node Struct { conn: <structural>, dispatch: <structural>, is_closing: <structural> }
+hyper::proto::h1::dispatch::Dispatcher<hyper::proto::h1::dispatch::Client<reqwest::async_impl::body::Body>, reqwest::async_impl::body::Body, reqwest::connect::sealed::Conn, hyper::proto::h1::role::Client> :: Node Struct { conn: <structural>, dispatch: <structural>, is_closing: <structural> }
 hyper::proto::h1::dispatch::Dispatcher<hyper::proto::h1::dispatch::Server<hyper::service::util::ServiceFn<http_conns::serve::{async_fn#0}::{closure_env#0}, hyper::body::incoming::Incoming>, hyper::body::incoming::Incoming>, http_body_util::full::Full<bytes::bytes::Bytes>, hyper_util::common::rewind::Rewind<hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>>, hyper::proto::h1::role::Server> :: Node Struct { conn: <structural>, dispatch: <structural>, is_closing: <structural> }
 hyper_util::common::rewind::Rewind<hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>> :: Node Alias { inner, follow }
 hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream> :: Node Alias { inner, follow }
 indexmap::HashValue :: Node Alias { __0, follow }
 mio::token::Token :: Node Alias { __0, follow }
 parking_lot::raw_mutex::RawMutex :: Node state.v.value.__0
+reqwest::connect::verbose::Wrapper :: Node Alias { __0, follow }
 std::sync::mpmc::select::Operation :: Node Alias { __0, follow }
 std::sys::time::unix::Instant :: Node Alias { t, follow }
 std::time::Instant :: Node Alias { __0, follow }
@@ -447,6 +490,7 @@ tokio::loom::std::unsafe_cell::UnsafeCell<core::mem::maybe_uninit::MaybeUninit<(
 tokio::loom::std::unsafe_cell::UnsafeCell<core::mem::maybe_uninit::MaybeUninit<core::task::wake::Waker>> :: Node Alias { __0, follow }
 tokio::loom::std::unsafe_cell::UnsafeCell<core::mem::maybe_uninit::MaybeUninit<http_conns::Event>> :: Node Alias { __0, follow }
 tokio::loom::std::unsafe_cell::UnsafeCell<core::mem::maybe_uninit::MaybeUninit<hyper::client::dispatch::Envelope<http::request::Request<http_body_util::empty::Empty<bytes::bytes::Bytes>>, http::response::Response<hyper::body::incoming::Incoming>>>> :: Node Alias { __0, follow }
+tokio::loom::std::unsafe_cell::UnsafeCell<core::mem::maybe_uninit::MaybeUninit<hyper::client::dispatch::Envelope<http::request::Request<reqwest::async_impl::body::Body>, http::response::Response<hyper::body::incoming::Incoming>>>> :: Node Alias { __0, follow }
 tokio::loom::std::unsafe_cell::UnsafeCell<core::mem::maybe_uninit::MaybeUninit<tokio::runtime::task::Notified<alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle, alloc::alloc::Global>>>> :: Node Alias { __0, follow }
 tokio::loom::std::unsafe_cell::UnsafeCell<core::mem::maybe_uninit::MaybeUninit<u32>> :: Node Alias { __0, follow }
 tokio::loom::std::unsafe_cell::UnsafeCell<core::option::Option<()>> :: Node Alias { __0, follow }
@@ -454,6 +498,7 @@ tokio::loom::std::unsafe_cell::UnsafeCell<core::option::Option<alloc::rc::Rc<tok
 tokio::loom::std::unsafe_cell::UnsafeCell<core::option::Option<core::num::nonzero::NonZero<u64>>> :: Node Alias { __0, follow }
 tokio::loom::std::unsafe_cell::UnsafeCell<core::option::Option<core::ptr::non_null::NonNull<tokio::runtime::task::core::Header>>> :: Node Alias { __0, follow }
 tokio::loom::std::unsafe_cell::UnsafeCell<core::option::Option<core::result::Result<http::response::Response<hyper::body::incoming::Incoming>, hyper::client::dispatch::TrySendError<http::request::Request<http_body_util::empty::Empty<bytes::bytes::Bytes>>>>>> :: Node Alias { __0, follow }
+tokio::loom::std::unsafe_cell::UnsafeCell<core::option::Option<core::result::Result<http::response::Response<hyper::body::incoming::Incoming>, hyper::client::dispatch::TrySendError<http::request::Request<reqwest::async_impl::body::Body>>>>> :: Node Alias { __0, follow }
 tokio::loom::std::unsafe_cell::UnsafeCell<core::option::Option<core::result::Result<http::response::Response<hyper::body::incoming::Incoming>, hyper::error::Error>>> :: Node Alias { __0, follow }
 tokio::loom::std::unsafe_cell::UnsafeCell<core::option::Option<core::result::Result<hyper::upgrade::Upgraded, hyper::error::Error>>> :: Node Alias { __0, follow }
 tokio::loom::std::unsafe_cell::UnsafeCell<core::option::Option<core::task::wake::Waker>> :: Node Alias { __0, follow }
@@ -475,6 +520,7 @@ tokio::loom::std::unsafe_cell::UnsafeCell<tokio::runtime::task::core::Stage<chan
 tokio::loom::std::unsafe_cell::UnsafeCell<tokio::runtime::task::core::Stage<channels::recv_waiter::{async_fn_env#0}>> :: Node Alias { __0, follow }
 tokio::loom::std::unsafe_cell::UnsafeCell<tokio::runtime::task::core::Stage<channels::send_waiter::{async_fn_env#0}>> :: Node Alias { __0, follow }
 tokio::loom::std::unsafe_cell::UnsafeCell<tokio::runtime::task::core::Stage<core::pin::Pin<alloc::boxed::Box<&mut delegation_cases::Probe<5>, alloc::alloc::Global>>>> :: Node Alias { __0, follow }
+tokio::loom::std::unsafe_cell::UnsafeCell<tokio::runtime::task::core::Stage<core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output=()> + core::marker::Send), alloc::alloc::Global>>>> :: Node Alias { __0, follow }
 tokio::loom::std::unsafe_cell::UnsafeCell<tokio::runtime::task::core::Stage<core::pin::Pin<alloc::boxed::Box<alloc::boxed::Box<delegation_cases::Probe<6>, alloc::alloc::Global>, alloc::alloc::Global>>>> :: Node Alias { __0, follow }
 tokio::loom::std::unsafe_cell::UnsafeCell<tokio::runtime::task::core::Stage<core::pin::Pin<alloc::boxed::Box<core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output=()> + core::marker::Send), alloc::alloc::Global>>, alloc::alloc::Global>>>> :: Node Alias { __0, follow }
 tokio::loom::std::unsafe_cell::UnsafeCell<tokio::runtime::task::core::Stage<core::pin::Pin<alloc::boxed::Box<delegation_cases::Gated<1>, alloc::alloc::Global>>>> :: Node Alias { __0, follow }
@@ -500,6 +546,7 @@ tokio::loom::std::unsafe_cell::UnsafeCell<tokio::runtime::task::core::Stage<futu
 tokio::loom::std::unsafe_cell::UnsafeCell<tokio::runtime::task::core::Stage<http_conns::accept_loop::{async_fn_env#0}>> :: Node Alias { __0, follow }
 tokio::loom::std::unsafe_cell::UnsafeCell<tokio::runtime::task::core::Stage<http_conns::raw_holder::{async_fn_env#0}>> :: Node Alias { __0, follow }
 tokio::loom::std::unsafe_cell::UnsafeCell<tokio::runtime::task::core::Stage<http_conns::requester::{async_fn_env#0}>> :: Node Alias { __0, follow }
+tokio::loom::std::unsafe_cell::UnsafeCell<tokio::runtime::task::core::Stage<http_conns::reqwest_requester::{async_fn_env#0}>> :: Node Alias { __0, follow }
 tokio::loom::std::unsafe_cell::UnsafeCell<tokio::runtime::task::core::Stage<http_conns::serve::{async_fn_env#0}>> :: Node Alias { __0, follow }
 tokio::loom::std::unsafe_cell::UnsafeCell<tokio::runtime::task::core::Stage<http_conns::{impl#0}::execute::{async_block_env#0}<core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output=()> + core::marker::Send), alloc::alloc::Global>>>>> :: Node Alias { __0, follow }
 tokio::loom::std::unsafe_cell::UnsafeCell<tokio::runtime::task::core::Stage<hyper::proto::h2::server::H2Stream<http_conns::handle::{async_fn_env#0}, http_body_util::full::Full<bytes::bytes::Bytes>, hyper_util::rt::tokio::TokioExecutor>>> :: Node Alias { __0, follow }
@@ -543,6 +590,7 @@ tokio::loom::std::unsafe_cell::UnsafeCell<tokio::runtime::task::list::OwnedTasks
 tokio::loom::std::unsafe_cell::UnsafeCell<tokio::sync::mpsc::chan::RxFields<()>> :: Node Alias { __0, follow }
 tokio::loom::std::unsafe_cell::UnsafeCell<tokio::sync::mpsc::chan::RxFields<http_conns::Event>> :: Node Alias { __0, follow }
 tokio::loom::std::unsafe_cell::UnsafeCell<tokio::sync::mpsc::chan::RxFields<hyper::client::dispatch::Envelope<http::request::Request<http_body_util::empty::Empty<bytes::bytes::Bytes>>, http::response::Response<hyper::body::incoming::Incoming>>>> :: Node Alias { __0, follow }
+tokio::loom::std::unsafe_cell::UnsafeCell<tokio::sync::mpsc::chan::RxFields<hyper::client::dispatch::Envelope<http::request::Request<reqwest::async_impl::body::Body>, http::response::Response<hyper::body::incoming::Incoming>>>> :: Node Alias { __0, follow }
 tokio::loom::std::unsafe_cell::UnsafeCell<tokio::sync::mpsc::chan::RxFields<u32>> :: Node Alias { __0, follow }
 tokio::loom::std::unsafe_cell::UnsafeCell<tokio::util::idle_notified_set::List> :: Node Alias { __0, follow }
 tokio::loom::std::unsafe_cell::UnsafeCell<usize> :: Node Alias { __0, follow }
@@ -550,6 +598,7 @@ tokio::runtime::time::entry::TimerEntry :: Node Struct { deadline: Variant { dis
 tokio::sync::batch_semaphore::Semaphore :: Node Struct { waiters: <structural>, permits: permits.inner.value.v.value.__0 }
 tokio::sync::mpsc::block::Block<http_conns::Event> :: Node Struct { header: <structural>, values: SlotCount { bitmap=header.ready_slots.inner.value.v.value.__0, slots=values.__0 } }
 tokio::sync::mpsc::block::Block<hyper::client::dispatch::Envelope<http::request::Request<http_body_util::empty::Empty<bytes::bytes::Bytes>>, http::response::Response<hyper::body::incoming::Incoming>>> :: Node Struct { header: <structural>, values: SlotCount { bitmap=header.ready_slots.inner.value.v.value.__0, slots=values.__0 } }
+tokio::sync::mpsc::block::Block<hyper::client::dispatch::Envelope<http::request::Request<reqwest::async_impl::body::Body>, http::response::Response<hyper::body::incoming::Incoming>>> :: Node Struct { header: <structural>, values: SlotCount { bitmap=header.ready_slots.inner.value.v.value.__0, slots=values.__0 } }
 tokio::sync::mpsc::block::Block<u32> :: Node Struct { header: <structural>, values: SlotCount { bitmap=header.ready_slots.inner.value.v.value.__0, slots=values.__0 } }
 tokio::sync::mpsc::bounded::Receiver<()> :: Node Pointer { at=chan.inner.ptr.pointer, pointee=alloc::sync::ArcInner<tokio::sync::mpsc::chan::Chan<(), tokio::sync::mpsc::bounded::Semaphore>>, via=data, then=Struct { capacity: semaphore.bound, free: semaphore.semaphore.permits.inner.value.v.value.__0, queued: CustomList { vars=[Read(rx_fields.__0.value.list.index), Read(tx.value.tail_position.inner.value.v.value.__0), Read(rx_fields.__0.value.list.head.pointer)], condition=((Var(0) < Var(1)) & (Var(2) != 0x0)), body=[break if (Var(0) < Load((Var(2) + 0x0), 8)); if ((Var(0) - Load((Var(2) + 0x0), 8)) < 0x20) { break if ((Load((Var(2) + 0x10), 8) & (0x1 << (Var(0) - Load((Var(2) + 0x0), 8)))) != (0x1 << (Var(0) - Load((Var(2) + 0x0), 8)))); emit((Var(2) + (0x20 + ((Var(0) - Load((Var(2) + 0x0), 8)) * 0x0)))); Var(0) = (Var(0) + 0x1) } else { Var(2) = Load((Var(2) + 0x8), 8) }], element=() }, tx: <structural>, rx_waker: <structural>, notify_rx_closed: <structural>, semaphore: <structural>, tx_count: <structural>, tx_weak_count: <structural>, rx_fields: <structural> } }
 tokio::sync::mpsc::bounded::Receiver<u32> :: Node Pointer { at=chan.inner.ptr.pointer, pointee=alloc::sync::ArcInner<tokio::sync::mpsc::chan::Chan<u32, tokio::sync::mpsc::bounded::Semaphore>>, via=data, then=Struct { capacity: semaphore.bound, free: semaphore.semaphore.permits.inner.value.v.value.__0, queued: CustomList { vars=[Read(rx_fields.__0.value.list.index), Read(tx.value.tail_position.inner.value.v.value.__0), Read(rx_fields.__0.value.list.head.pointer)], condition=((Var(0) < Var(1)) & (Var(2) != 0x0)), body=[break if (Var(0) < Load((Var(2) + 0x80), 8)); if ((Var(0) - Load((Var(2) + 0x80), 8)) < 0x20) { break if ((Load((Var(2) + 0x90), 8) & (0x1 << (Var(0) - Load((Var(2) + 0x80), 8)))) != (0x1 << (Var(0) - Load((Var(2) + 0x80), 8)))); emit((Var(2) + (0x0 + ((Var(0) - Load((Var(2) + 0x80), 8)) * 0x4)))); Var(0) = (Var(0) + 0x1) } else { Var(2) = Load((Var(2) + 0x88), 8) }], element=u32 }, tx: <structural>, rx_waker: <structural>, notify_rx_closed: <structural>, semaphore: <structural>, tx_count: <structural>, tx_weak_count: <structural>, rx_fields: <structural> } }
@@ -560,10 +609,12 @@ tokio::sync::mpsc::chan::Chan<(), tokio::sync::mpsc::bounded::Semaphore> :: Node
 tokio::sync::mpsc::chan::Chan<(), tokio::sync::mpsc::unbounded::Semaphore> :: Node Struct { queued: CustomList { vars=[Read(rx_fields.__0.value.list.index), Read(tx.value.tail_position.inner.value.v.value.__0), Read(rx_fields.__0.value.list.head.pointer)], condition=((Var(0) < Var(1)) & (Var(2) != 0x0)), body=[break if (Var(0) < Load((Var(2) + 0x0), 8)); if ((Var(0) - Load((Var(2) + 0x0), 8)) < 0x20) { break if ((Load((Var(2) + 0x10), 8) & (0x1 << (Var(0) - Load((Var(2) + 0x0), 8)))) != (0x1 << (Var(0) - Load((Var(2) + 0x0), 8)))); emit((Var(2) + (0x20 + ((Var(0) - Load((Var(2) + 0x0), 8)) * 0x0)))); Var(0) = (Var(0) + 0x1) } else { Var(2) = Load((Var(2) + 0x8), 8) }], element=() }, tx: <structural>, rx_waker: <structural>, notify_rx_closed: <structural>, semaphore: <structural>, tx_count: <structural>, tx_weak_count: <structural>, rx_fields: <structural> }
 tokio::sync::mpsc::chan::Chan<http_conns::Event, tokio::sync::mpsc::unbounded::Semaphore> :: Node Struct { queued: CustomList { vars=[Read(rx_fields.__0.value.list.index), Read(tx.value.tail_position.inner.value.v.value.__0), Read(rx_fields.__0.value.list.head.pointer)], condition=((Var(0) < Var(1)) & (Var(2) != 0x0)), body=[break if (Var(0) < Load((Var(2) + 0x0), 8)); if ((Var(0) - Load((Var(2) + 0x0), 8)) < 0x20) { break if ((Load((Var(2) + 0x10), 8) & (0x1 << (Var(0) - Load((Var(2) + 0x0), 8)))) != (0x1 << (Var(0) - Load((Var(2) + 0x0), 8)))); emit((Var(2) + (0x20 + ((Var(0) - Load((Var(2) + 0x0), 8)) * 0x1)))); Var(0) = (Var(0) + 0x1) } else { Var(2) = Load((Var(2) + 0x8), 8) }], element=http_conns::Event }, tx: <structural>, rx_waker: <structural>, notify_rx_closed: <structural>, semaphore: <structural>, tx_count: <structural>, tx_weak_count: <structural>, rx_fields: <structural> }
 tokio::sync::mpsc::chan::Chan<hyper::client::dispatch::Envelope<http::request::Request<http_body_util::empty::Empty<bytes::bytes::Bytes>>, http::response::Response<hyper::body::incoming::Incoming>>, tokio::sync::mpsc::unbounded::Semaphore> :: Node Struct { queued: CustomList { vars=[Read(rx_fields.__0.value.list.index), Read(tx.value.tail_position.inner.value.v.value.__0), Read(rx_fields.__0.value.list.head.pointer)], condition=((Var(0) < Var(1)) & (Var(2) != 0x0)), body=[break if (Var(0) < Load((Var(2) + 0x1f00), 8)); if ((Var(0) - Load((Var(2) + 0x1f00), 8)) < 0x20) { break if ((Load((Var(2) + 0x1f10), 8) & (0x1 << (Var(0) - Load((Var(2) + 0x1f00), 8)))) != (0x1 << (Var(0) - Load((Var(2) + 0x1f00), 8)))); emit((Var(2) + (0x0 + ((Var(0) - Load((Var(2) + 0x1f00), 8)) * 0xf8)))); Var(0) = (Var(0) + 0x1) } else { Var(2) = Load((Var(2) + 0x1f08), 8) }], element=hyper::client::dispatch::Envelope<http::request::Request<http_body_util::empty::Empty<bytes::bytes::Bytes>>, http::response::Response<hyper::body::incoming::Incoming>> }, tx: <structural>, rx_waker: <structural>, notify_rx_closed: <structural>, semaphore: <structural>, tx_count: <structural>, tx_weak_count: <structural>, rx_fields: <structural> }
+tokio::sync::mpsc::chan::Chan<hyper::client::dispatch::Envelope<http::request::Request<reqwest::async_impl::body::Body>, http::response::Response<hyper::body::incoming::Incoming>>, tokio::sync::mpsc::unbounded::Semaphore> :: Node Struct { queued: CustomList { vars=[Read(rx_fields.__0.value.list.index), Read(tx.value.tail_position.inner.value.v.value.__0), Read(rx_fields.__0.value.list.head.pointer)], condition=((Var(0) < Var(1)) & (Var(2) != 0x0)), body=[break if (Var(0) < Load((Var(2) + 0x2300), 8)); if ((Var(0) - Load((Var(2) + 0x2300), 8)) < 0x20) { break if ((Load((Var(2) + 0x2310), 8) & (0x1 << (Var(0) - Load((Var(2) + 0x2300), 8)))) != (0x1 << (Var(0) - Load((Var(2) + 0x2300), 8)))); emit((Var(2) + (0x0 + ((Var(0) - Load((Var(2) + 0x2300), 8)) * 0x118)))); Var(0) = (Var(0) + 0x1) } else { Var(2) = Load((Var(2) + 0x2308), 8) }], element=hyper::client::dispatch::Envelope<http::request::Request<reqwest::async_impl::body::Body>, http::response::Response<hyper::body::incoming::Incoming>> }, tx: <structural>, rx_waker: <structural>, notify_rx_closed: <structural>, semaphore: <structural>, tx_count: <structural>, tx_weak_count: <structural>, rx_fields: <structural> }
 tokio::sync::mpsc::chan::Chan<u32, tokio::sync::mpsc::bounded::Semaphore> :: Node Struct { queued: CustomList { vars=[Read(rx_fields.__0.value.list.index), Read(tx.value.tail_position.inner.value.v.value.__0), Read(rx_fields.__0.value.list.head.pointer)], condition=((Var(0) < Var(1)) & (Var(2) != 0x0)), body=[break if (Var(0) < Load((Var(2) + 0x80), 8)); if ((Var(0) - Load((Var(2) + 0x80), 8)) < 0x20) { break if ((Load((Var(2) + 0x90), 8) & (0x1 << (Var(0) - Load((Var(2) + 0x80), 8)))) != (0x1 << (Var(0) - Load((Var(2) + 0x80), 8)))); emit((Var(2) + (0x0 + ((Var(0) - Load((Var(2) + 0x80), 8)) * 0x4)))); Var(0) = (Var(0) + 0x1) } else { Var(2) = Load((Var(2) + 0x88), 8) }], element=u32 }, tx: <structural>, rx_waker: <structural>, notify_rx_closed: <structural>, semaphore: <structural>, tx_count: <structural>, tx_weak_count: <structural>, rx_fields: <structural> }
 tokio::sync::notify::Notify :: Node Struct { state: state.inner.value.v.value.__0, mutex: waiters.__1.raw.state.v.value.__0, queue: List { head=waiters.__1.data.value.head, node_ty=tokio::sync::notify::Waiter, next=pointers.inner.value.next, Struct { notification: notification.__0.inner.value.v.value.__0, waker: <structural> } } }
 tokio::sync::oneshot::Inner<()> :: Node Struct { state: state.inner.value.v.value.__0, value: <structural>, tx_task: <structural>, rx_task: <structural> }
 tokio::sync::oneshot::Inner<core::result::Result<http::response::Response<hyper::body::incoming::Incoming>, hyper::client::dispatch::TrySendError<http::request::Request<http_body_util::empty::Empty<bytes::bytes::Bytes>>>>> :: Node Struct { state: state.inner.value.v.value.__0, value: <structural>, tx_task: <structural>, rx_task: <structural> }
+tokio::sync::oneshot::Inner<core::result::Result<http::response::Response<hyper::body::incoming::Incoming>, hyper::client::dispatch::TrySendError<http::request::Request<reqwest::async_impl::body::Body>>>> :: Node Struct { state: state.inner.value.v.value.__0, value: <structural>, tx_task: <structural>, rx_task: <structural> }
 tokio::sync::oneshot::Inner<core::result::Result<http::response::Response<hyper::body::incoming::Incoming>, hyper::error::Error>> :: Node Struct { state: state.inner.value.v.value.__0, value: <structural>, tx_task: <structural>, rx_task: <structural> }
 tokio::sync::oneshot::Inner<core::result::Result<hyper::upgrade::Upgraded, hyper::error::Error>> :: Node Struct { state: state.inner.value.v.value.__0, value: <structural>, tx_task: <structural>, rx_task: <structural> }
 tokio::sync::oneshot::Inner<hyper::error::Error> :: Node Struct { state: state.inner.value.v.value.__0, value: <structural>, tx_task: <structural>, rx_task: <structural> }
@@ -579,6 +630,7 @@ tokio::time::sleep::Sleep :: Node Struct { deadline: Variant { discr=Read(entry.
 tokio::util::cacheline::CachePadded<tokio::sync::mpsc::list::Tx<()>> :: Node Alias { value, follow }
 tokio::util::cacheline::CachePadded<tokio::sync::mpsc::list::Tx<http_conns::Event>> :: Node Alias { value, follow }
 tokio::util::cacheline::CachePadded<tokio::sync::mpsc::list::Tx<hyper::client::dispatch::Envelope<http::request::Request<http_body_util::empty::Empty<bytes::bytes::Bytes>>, http::response::Response<hyper::body::incoming::Incoming>>>> :: Node Alias { value, follow }
+tokio::util::cacheline::CachePadded<tokio::sync::mpsc::list::Tx<hyper::client::dispatch::Envelope<http::request::Request<reqwest::async_impl::body::Body>, http::response::Response<hyper::body::incoming::Incoming>>>> :: Node Alias { value, follow }
 tokio::util::cacheline::CachePadded<tokio::sync::mpsc::list::Tx<u32>> :: Node Alias { value, follow }
 tokio::util::cacheline::CachePadded<tokio::sync::task::atomic_waker::AtomicWaker> :: Node Alias { value, follow }
 tracing_core::metadata::Kind :: Node Alias { __0, follow }

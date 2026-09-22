@@ -3346,7 +3346,7 @@ walk contract (tokio 1.52.4, rustc 1.98.0 (88d9e12ae 2026-08-18)): 173 entries, 
   ok      StreamMap.entry.key
 
 program: http-conns
-walk contract (tokio 1.52.4, rustc 1.98.0 (88d9e12ae 2026-08-18)): 173 entries, 0 broken, 54 absent
+walk contract (tokio 1.52.4, rustc 1.98.0 (88d9e12ae 2026-08-18)): 173 entries, 0 broken, 52 absent
   ok      statics.tls_context_key
   ok      statics.task_waker_vtable
   absent  statics.tls_local_set_key — the target links no tokio::task::local::CURRENT (it uses no LocalSet)
@@ -3388,13 +3388,13 @@ walk contract (tokio 1.52.4, rustc 1.98.0 (88d9e12ae 2026-08-18)): 173 entries, 
   ok      Location.file (spelling 1 of 3)
   ok      Location.line
   ok      Location.col
-  ok      Cell.stage (17 cells)
-  ok      Cell.stage_running (17 cells)
-  ok      Cell.stage_finished (17 cells)
-  ok      Cell.stage_consumed (17 cells)
-  ok      Cell.trailer (17 cells)
-  ok      Cell.task_id (17 cells)
-  ok      Cell.scheduler (17 cells)
+  ok      Cell.stage (21 cells)
+  ok      Cell.stage_running (21 cells)
+  ok      Cell.stage_finished (21 cells)
+  ok      Cell.stage_consumed (21 cells)
+  ok      Cell.trailer (21 cells)
+  ok      Cell.task_id (21 cells)
+  ok      Cell.scheduler (21 cells)
   ok      Sleep.deadline (family v1_49)
   ok      Sleep.deadline.tv_sec
   ok      Sleep.deadline.tv_nsec
@@ -3448,8 +3448,8 @@ walk contract (tokio 1.52.4, rustc 1.98.0 (88d9e12ae 2026-08-18)): 173 entries, 
   ok      net::TcpListener.fd
   absent  net::UdpSocket.shared — no tokio::net::udp::UdpSocket type in the tokio info (the target does not reach one)
   absent  net::UdpSocket.fd — no tokio::net::udp::UdpSocket type in the tokio info (the target does not reach one)
-  absent  net::UnixStream.shared — no tokio::net::unix::stream::UnixStream type in the tokio info (the target does not reach one)
-  absent  net::UnixStream.fd — no tokio::net::unix::stream::UnixStream type in the tokio info (the target does not reach one)
+  ok      net::UnixStream.shared
+  ok      net::UnixStream.fd
   absent  net::UnixListener.shared — no tokio::net::unix::listener::UnixListener type in the tokio info (the target does not reach one)
   absent  net::UnixListener.fd — no tokio::net::unix::listener::UnixListener type in the tokio info (the target does not reach one)
   absent  net::UnixDatagram.shared — no tokio::net::unix::datagram::socket::UnixDatagram type in the tokio info (the target does not reach one)
@@ -3483,19 +3483,19 @@ walk contract (tokio 1.52.4, rustc 1.98.0 (88d9e12ae 2026-08-18)): 173 entries, 
   ok      ScheduledIo.waiters.lock (spelling 1 of 2)
   absent  mpsc::recv.rx — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
   absent  mpsc::Rx.inner.data — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
-  ok      mpsc::Receiver.chan.inner.data (3 types)
-  ok      Chan.tx_count (3 types)
-  ok      Chan.tx.tail_position (3 types)
-  ok      Chan.rx_fields.list.index (3 types)
-  ok      Chan.rx_fields.list.head (3 types)
-  ok      Chan.rx_fields.rx_closed (3 types)
-  ok      Chan.rx_waker.state (3 types)
-  ok      Chan.rx_waker.waker (3 types)
+  ok      mpsc::Receiver.chan.inner.data (4 types)
+  ok      Chan.tx_count (4 types)
+  ok      Chan.tx.tail_position (4 types)
+  ok      Chan.rx_fields.list.index (4 types)
+  ok      Chan.rx_fields.list.head (4 types)
+  ok      Chan.rx_fields.rx_closed (4 types)
+  ok      Chan.rx_waker.state (4 types)
+  ok      Chan.rx_waker.waker (4 types)
   absent  Chan.semaphore.permits — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
   absent  Chan.semaphore.bound — no PollFn<mpsc::bounded::Receiver::recv::{closure}> type in the tokio info (the target does not reach one)
-  ok      Block.header.start_index (3 types)
-  ok      Block.header.next (3 types)
-  ok      Block.header.ready_slots (3 types)
+  ok      Block.header.start_index (4 types)
+  ok      Block.header.next (4 types)
+  ok      Block.header.ready_slots (4 types)
   ok      Notified.notify
   ok      Notified.state
   ok      Notified.notify_waiters_calls
@@ -3506,12 +3506,12 @@ walk contract (tokio 1.52.4, rustc 1.98.0 (88d9e12ae 2026-08-18)): 173 entries, 
   ok      notify::Waiter.next
   ok      notify::Waiter.waker
   ok      notify::Waiter.notification
-  ok      oneshot::Receiver.inner (3 types)
-  ok      oneshot::Sender.inner (5 types)
-  ok      oneshot::Inner.state (3 types)
-  ok      oneshot::Inner.rx_task (spelling 1 of 2; 3 types)
-  ok      oneshot::Inner.tx_task (spelling 1 of 2; 3 types)
-  ok      oneshot::Inner.value (3 types)
+  ok      oneshot::Receiver.inner (4 types)
+  ok      oneshot::Sender.inner (6 types)
+  ok      oneshot::Inner.state (4 types)
+  ok      oneshot::Inner.rx_task (spelling 1 of 2; 4 types)
+  ok      oneshot::Inner.tx_task (spelling 1 of 2; 4 types)
+  ok      oneshot::Inner.value (4 types)
   absent  watch::Receiver.shared — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
   absent  watch::Shared.state — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
   absent  watch::Shared.ref_count_rx — no tokio::sync::watch::Receiver<… type in the tokio info (the target does not reach one)
