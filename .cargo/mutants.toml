@@ -115,10 +115,33 @@ exclude_re = [
     # every spelling folds to the same DwReader. A count of 0 is "pick a
     # default" to the pool builder.
     "replace default_parallelism",
-    # The same knob one layer down: the group-count threshold only routes
-    # the partitioning between the inline and rayon paths, which produce
-    # the same aliases (each id is in exactly one independent group).
-    "replace < with [<=>]+ in DwReader<'dw>::named_aliases",
+    # The same knob one layer down: whether a partition or a placement
+    # runs inline or on the pool only routes the work, and both paths
+    # produce the same result (each id is in exactly one independent
+    # group).
+    "inline_groups",
+    # A tracing count: how many groups a pass changed is logged beside
+    # the pass number, and no test reads the log. The pass and group
+    # counters the summary prints are pinned by the identity tests.
+    "replace \\+= with [*-]= in Fixpoint<'r, 'dw>::cascade",
+    # A tracing predicate: the count of declarations no unit evidence
+    # places is warned about, and no test reads the log; the count
+    # itself, and each declaration, are pinned through the report.
+    "delete ! in DwReader<'dw>::report_identity",
+    # Equivalent mutant: the early exit once a declaration's siblings
+    # vote for two classes is a shortcut — the votes are counted after
+    # the loop, and two of them are ambiguity either way.
+    "replace > with < in DwReader<'dw>::place_declarations",
+    # Equivalent mutant: skipping a duplicate's references when building
+    # a group's dependencies only trims work — walking them too adds
+    # referrers, and a referrer repartitioned once more settles to the
+    # same classes (the worklist test pins the result against a
+    # whole-pass reference).
+    "replace \\|\\| with && in DwReader<'dw>::group_dependencies",
+    # Equivalent mutant: handing a one-class group to the placement too
+    # only adds work — a group with fewer than two classes places
+    # nothing, and the placement screens it out itself.
+    "replace > with >= in DwReader<'dw>::settle_named",
     # And the subprogram sweep's copy of it: the chunked parallel path
     # merges per-worker sweeps in chunk order, which resolves the
     # "first wins" fields exactly as the serial loop does.

@@ -21,11 +21,19 @@ use rayon::iter::{
 use tracing::{debug, warn};
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::fmt;
 use std::num::NonZero;
 
 /// Below this many named-type groups, the parallel layout partitioning in
 /// [`DwReader::named_aliases`] is not worth spawning threads for; run it inline.
 const PARALLEL_ALIAS_GROUP_THRESHOLD: usize = 256;
+
+/// Whether this many groups are too few to spawn threads for, so a
+/// partition or a placement runs inline. A routing knob: both paths
+/// produce the same result.
+fn inline_groups(groups: usize) -> bool {
+    groups < PARALLEL_ALIAS_GROUP_THRESHOLD
+}
 
 /// Cap on how few named-type groups a rayon split may carry, amortizing
 /// scheduling over the many trivial (size-one) groups.
@@ -133,6 +141,9 @@ pub struct DwReader<'dw> {
     pub(crate) types_by_name: HashMap<StrId, Vec<TypeId>>,
     /// Every function by name, built with the type index.
     pub(crate) funcs_by_name: HashMap<StrId, Vec<FuncId>>,
+    /// How the identity partition settled: passes run, declarations
+    /// placed by their unit, declarations nothing placed.
+    pub identity: IdentityReport,
 }
 
 /// Configuration for [`DwarfReader::read_types`].
@@ -145,6 +156,64 @@ pub struct ReadArgs {
     /// ingested by the collector). Defaults to `4 * cgu_parallelism`.
     pub cgus_in_flight: Option<NonZero<usize>>,
 }
+
+/// How the named-type identity partition settled.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct IdentityReport {
+    /// Partition passes run, all rounds counted: the first over every
+    /// named group, each later one over the groups a change reached.
+    pub passes: usize,
+    /// Group partitions computed over all passes; the first pass
+    /// counts every group once.
+    pub groups_repartitioned: usize,
+    /// Declarations placed in a definition class by unit evidence.
+    pub placed_declarations: usize,
+    /// Declarations in a group with several definition classes that no
+    /// unit evidence placed. Each is its own type, with no layout to
+    /// read; the extractor names any the bundle reads through.
+    pub unresolved_declarations: Vec<UnresolvedDeclaration>,
+}
+
+/// A declaration the unit rule could not place, and why.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UnresolvedDeclaration {
+    pub declaration: TypeId,
+    /// The unit the declaration sits in; `None` for a DIE outside every
+    /// unit's range.
+    pub unit: Option<OriginId>,
+    /// The canonical type of each definition class its name has.
+    pub classes: Vec<TypeId>,
+    pub evidence: DeclarationEvidence,
+}
+
+/// What the units defining a declaration's crate said about it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DeclarationEvidence {
+    /// The declaring DIE is in no unit's range.
+    NoUnit,
+    /// No split type of the crate is defined in the declaring unit in a
+    /// way that any one class's defining units share.
+    None,
+    /// The split types the declaring unit defines point at different
+    /// classes.
+    Disagreement,
+}
+
+impl fmt::Display for DeclarationEvidence {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::NoUnit => "the declaring DIE is in no unit",
+            Self::None => "no unit evidence places it",
+            Self::Disagreement => "the declaring unit's evidence points at several classes",
+        })
+    }
+}
+
+/// The most partition passes one round runs before giving up on the
+/// substitutions settling. Splitting is monotone over an equivalence,
+/// so a run that reaches this is a cycle of non-transitive layout
+/// comparisons, which is worth a warning and the last pass's answer.
+const MAX_IDENTITY_PASSES: usize = 64;
 
 impl<'dw> DwReader<'dw> {
     /// Build an indexed view for efficient lookups.
@@ -391,6 +460,7 @@ impl<'dw> DwReader<'dw> {
             producer: None,
             types_by_name: HashMap::new(),
             funcs_by_name: HashMap::new(),
+            identity: IdentityReport::default(),
         }
     }
 
@@ -429,10 +499,15 @@ impl<'dw> DwReader<'dw> {
     /// Build the global alias map after every CGU has been collected.
     ///
     /// Named types are grouped by kind, namespace, and name, then partitioned
-    /// by compatible layout so name collisions are not silently collapsed.
-    /// Anonymous pointers and arrays are deduplicated structurally. That pass
-    /// repeats because an outer pointer may only become equal after its
-    /// pointee was deduplicated in an earlier pass.
+    /// by compatible layout so name collisions are not silently collapsed —
+    /// to a fixed point, so that a wrapper over two incompatible layouts is
+    /// two types as well. Anonymous pointers and arrays are deduplicated
+    /// structurally. That pass repeats because an outer pointer may only
+    /// become equal after its pointee was deduplicated in an earlier pass.
+    ///
+    /// A declaration in a group with several definition classes is
+    /// placed by its unit's evidence, or left as a type of its own and
+    /// reported in [`Self::identity`].
     fn finalize_types(&mut self) {
         self.subs.clear();
 
@@ -483,6 +558,7 @@ impl<'dw> DwReader<'dw> {
                 )
             })
         };
+        let Aliases { subs, report } = subs;
         self.subs = subs;
         self.types_by_name = types_by_name;
         self.funcs_by_name = funcs_by_name;
@@ -493,15 +569,71 @@ impl<'dw> DwReader<'dw> {
             .map(|&id| (self.canonicalize(id), id))
             .collect();
         self.definition_aliases.sort_unstable();
+        self.report_identity(report)
+    }
+
+    /// Keep how the partition settled. A declaration nothing placed
+    /// stays a type of its own; the count is warned about here, and
+    /// the extractor names each one the bundle reads through.
+    fn report_identity(&mut self, report: IdentityReport) {
+        if !report.unresolved_declarations.is_empty() {
+            warn!(
+                count = report.unresolved_declarations.len(),
+                "type declarations no unit evidence places among their name's \
+                 definitions; each stays a type of its own"
+            );
+        }
+        self.identity = report;
+    }
+
+    /// One line on a declaration nothing placed: its path, its unit,
+    /// its name's classes and why the evidence did not decide.
+    pub(crate) fn describe_unresolved(&self, unresolved: &UnresolvedDeclaration) -> String {
+        let unit = unresolved
+            .unit
+            .and_then(|id| self.origins.get(&id))
+            .map_or_else(
+                || "no unit".to_owned(),
+                |origin| format!("unit `{}`", self.strings.get(origin.name)),
+            );
+        let classes: Vec<String> = unresolved
+            .classes
+            .iter()
+            .map(|class| format!("{class:?}"))
+            .collect();
+        format!(
+            "`{}` declared in {unit} ({:?}) has {} definition classes ({}): {}",
+            self.type_path(unresolved.declaration),
+            unresolved.declaration,
+            classes.len(),
+            classes.join(", "),
+            unresolved.evidence
+        )
+    }
+
+    /// The `a::b::Name` of a type by its own name and namespace.
+    fn type_path(&self, id: TypeId) -> String {
+        let Some(ty) = self.types.get(&id) else {
+            return format!("{id:?}");
+        };
+        let name = ty.name().map_or("?", |name| self.strings.get(name));
+        let mut path = vec![name];
+        let mut cursor = ty.namespace();
+        while let Some(ns) = cursor {
+            let entry = self.namespaces.get(ns);
+            path.push(self.strings.get(entry.name));
+            cursor = entry.parent;
+        }
+        path.reverse();
+        path.join("::")
     }
 
     /// The substitutions the alias passes add on top of the
     /// specification ones already in `self.subs`: same-named types
-    /// with compatible layouts, then unnamed pointers and arrays over
-    /// the same target, to a fixed point.
-    fn alias_substitutions(&self) -> HashMap<TypeId, TypeId> {
-        let mut subs = self.subs.clone();
-
+    /// with compatible layouts, to a fixed point over reference
+    /// identity, then unnamed pointers and arrays over the same
+    /// target, to a fixed point of their own.
+    fn alias_substitutions(&self) -> Aliases {
         // Grouping key order does not matter: each type id lands in exactly one
         // group, and every group's canonical is chosen independently (by layout
         // detail then lowest id), so a hash map is both correct and faster than
@@ -516,9 +648,7 @@ impl<'dw> DwReader<'dw> {
             }
         }
         let groups: Vec<&[TypeId]> = named.values().map(Vec::as_slice).collect();
-        for (duplicate, canonical) in self.named_aliases(&groups) {
-            subs.insert(duplicate, canonical);
-        }
+        let (mut subs, report) = self.settle_named(&groups);
 
         loop {
             let old_len = subs.len();
@@ -546,7 +676,371 @@ impl<'dw> DwReader<'dw> {
                 break;
             }
         }
-        subs
+        Aliases { subs, report }
+    }
+
+    /// Partition the named groups to a fixed point over reference
+    /// identity, place the declarations that leaves between classes,
+    /// and repeat until a round places nothing more.
+    ///
+    /// The first pass partitions every group with references identified
+    /// by name. Every later pass identifies them by the class the map
+    /// so far puts them in — but repartitions only the groups that
+    /// reference a group whose result changed in the pass before, since
+    /// any other group's inputs, and so its result, are what they were.
+    /// A round after placements starts over from the first pass's
+    /// results, which do not depend on the map (placing a declaration
+    /// changes no group's by-name partition), so only the groups the
+    /// cascade had moved are reset before it runs again from the same
+    /// seed: the outcome is the whole-pass fixpoint, at the cost of the
+    /// groups a split actually reaches.
+    fn settle_named(&self, groups: &[&[TypeId]]) -> (HashMap<TypeId, TypeId>, IdentityReport) {
+        let started = std::time::Instant::now();
+        let mut fixpoint = Fixpoint::first_pass(self, groups, self.subs.clone());
+        debug!(
+            ms = started.elapsed().as_millis(),
+            groups = groups.len(),
+            "identity first pass"
+        );
+        let mut report = IdentityReport::default();
+        loop {
+            let started = std::time::Instant::now();
+            fixpoint.cascade();
+            let cascaded = started.elapsed().as_millis();
+            let started = std::time::Instant::now();
+            // Only a group with several canonicals can have a
+            // declaration between classes; the rest need no look.
+            let split: Vec<&[TypeId]> = (0..groups.len())
+                .filter(|&group| fixpoint.result(group).canonicals > 1)
+                .map(|group| groups[group])
+                .collect();
+            let placement = self.place_declarations(&split, &fixpoint.base, &fixpoint.subs);
+            debug!(
+                passes = fixpoint.passes,
+                repartitioned = fixpoint.repartitioned,
+                split = split.len(),
+                placed = placement.placed.len(),
+                unresolved = placement.unresolved.len(),
+                cascade_ms = cascaded,
+                place_ms = started.elapsed().as_millis(),
+                "identity round"
+            );
+            if placement.placed.is_empty() {
+                report.unresolved_declarations = placement.unresolved;
+                break;
+            }
+            report.placed_declarations += placement.placed.len();
+            fixpoint.place(placement.placed);
+        }
+        report.passes = fixpoint.passes;
+        report.groups_repartitioned = fixpoint.repartitioned;
+        (fixpoint.subs, report)
+    }
+
+    /// The index a group is filed under, keyed by kind, namespace and
+    /// name off any one member: a map of groups, not of every type id.
+    fn group_index(&self, groups: &[&[TypeId]]) -> HashMap<(u8, Option<NsId>, StrId), usize> {
+        let mut group_of = HashMap::with_capacity(groups.len());
+        for (index, ids) in groups.iter().enumerate() {
+            if let Some(key) = ids.first().and_then(|&id| self.group_key(id)) {
+                group_of.insert(key, index);
+            }
+        }
+        group_of
+    }
+
+    /// The groups one group's definitions reference — through a member,
+    /// a template parameter, a variant, or any chain of anonymous
+    /// pointers and arrays ending at a named type — which is what the
+    /// layout comparison walks. A change in a group's classes can
+    /// change no partition but its referrers', and this inverted is
+    /// how a pass knows them.
+    ///
+    /// One definition per by-name class is walked, its canonical: the
+    /// class's members reference the same names, and the canonical,
+    /// the most detailed layout, references every one the others do.
+    fn group_dependencies(
+        &self,
+        ids: &[TypeId],
+        by_name: &GroupResult,
+        group_of: &HashMap<(u8, Option<NsId>, StrId), usize>,
+    ) -> Vec<usize> {
+        let duplicates: HashSet<TypeId> = by_name
+            .aliases
+            .iter()
+            .map(|&(duplicate, _)| duplicate)
+            .collect();
+        let mut deps = Vec::new();
+        for &id in ids {
+            let id = self.canonicalize(id);
+            if duplicates.contains(&id) || self.type_declarations.contains(&id) {
+                continue;
+            }
+            self.referenced_types(id, |referenced| {
+                if let Some(group) = self.group_reached(referenced, group_of) {
+                    deps.push(group);
+                }
+            });
+        }
+        deps.sort_unstable();
+        deps.dedup();
+        deps
+    }
+
+    /// Every type id a definition's layout comparison reaches directly.
+    fn referenced_types(&self, id: TypeId, mut each: impl FnMut(TypeId)) {
+        match self.types.get(&id) {
+            Some(RawType::Struct(ty)) => {
+                ty.members.iter().for_each(|m| each(m.type_id));
+                ty.template_params.iter().for_each(|p| each(p.type_id));
+            }
+            Some(RawType::Union(ty)) => {
+                ty.members.iter().for_each(|m| each(m.type_id));
+                ty.template_params.iter().for_each(|p| each(p.type_id));
+            }
+            Some(RawType::Enum(ty)) => {
+                ty.template_params.iter().for_each(|p| each(p.type_id));
+                match &ty.shape {
+                    VariantShape::Zero => {}
+                    VariantShape::One(variant) => each(variant.member.type_id),
+                    VariantShape::Many { discr, variants } => {
+                        if let Some(discr) = discr {
+                            each(discr.type_id);
+                        }
+                        variants.iter().for_each(|(_, v)| each(v.member.type_id));
+                    }
+                    VariantShape::CStyle { repr_type_id, .. } => {
+                        if let Some(repr) = repr_type_id {
+                            each(*repr);
+                        }
+                    }
+                }
+            }
+            Some(RawType::Pointer(p)) => each(p.target_type_id),
+            Some(RawType::Array(a)) => each(a.elem_type_id),
+            Some(RawType::Base(_)) | None => {}
+        }
+    }
+
+    /// The named group a reference lands in, through any anonymous
+    /// pointers and arrays on the way; none for a base type, a
+    /// subroutine type, or a chain that never reaches a name.
+    fn group_reached(
+        &self,
+        mut id: TypeId,
+        group_of: &HashMap<(u8, Option<NsId>, StrId), usize>,
+    ) -> Option<usize> {
+        // Anonymous pointer chains are a few levels deep; the bound
+        // guards a cycle through nothing named.
+        for _ in 0..32 {
+            id = self.canonicalize(id);
+            if let Some(key) = self.group_key(id) {
+                return group_of.get(&key).copied();
+            }
+            id = match self.types.get(&id) {
+                Some(RawType::Pointer(p)) => p.target_type_id,
+                Some(RawType::Array(a)) => a.elem_type_id,
+                _ => return None,
+            };
+        }
+        None
+    }
+
+    /// The key a named type's group is filed under; none for an
+    /// unnamed type.
+    fn group_key(&self, id: TypeId) -> Option<(u8, Option<NsId>, StrId)> {
+        let ty = self.types.get(&id)?;
+        Some((raw_type_kind(ty), ty.namespace(), ty.name()?))
+    }
+
+    /// Place, by the unit it sits in, every declaration the passes
+    /// left alone: one in a group with several definition classes.
+    ///
+    /// A unit references the copies it was compiled against, so the
+    /// other split types of the declaration's crates that the unit
+    /// *defines* say which release it links: the declaration's class
+    /// is the one whose defining units define exactly those classes.
+    /// Its crates are every non-std crate its path names, in the
+    /// namespace or a generic argument — a `core` wrapper over a
+    /// `toml_edit` type is placed by `toml_edit`'s evidence — and its
+    /// own group speaks whatever the crates are. One agreeing sibling
+    /// suffices, a sibling the unit does not define is silence, and a
+    /// sibling both of whose classes the unit defines, or one that
+    /// several classes' units share, says nothing. Siblings
+    /// disagreeing, or none speaking, leaves the declaration
+    /// unresolved with that reason.
+    fn place_declarations(
+        &self,
+        groups: &[&[TypeId]],
+        base: &HashMap<TypeId, TypeId>,
+        subs: &HashMap<TypeId, TypeId>,
+    ) -> Placement {
+        /// A group with several definition classes: where each class is
+        /// defined, what each unit defines, and the declarations left.
+        struct Split {
+            crates: BTreeSet<String>,
+            classes: Vec<TypeId>,
+            units_by_class: HashMap<TypeId, BTreeSet<OriginId>>,
+            classes_by_unit: HashMap<OriginId, BTreeSet<TypeId>>,
+            declarations: Vec<TypeId>,
+        }
+
+        let split_of = |ids: &&[TypeId]| -> Option<Split> {
+            let ids: BTreeSet<TypeId> = ids.iter().map(|&id| canonicalize_in(base, id)).collect();
+            let mut classes = BTreeSet::new();
+            let mut declarations = Vec::new();
+            for &id in &ids {
+                if self.type_declarations.contains(&id) {
+                    if canonicalize_in(subs, id) == id {
+                        declarations.push(id);
+                    }
+                } else {
+                    classes.insert(canonicalize_in(subs, id));
+                }
+            }
+            if classes.len() < 2 {
+                return None;
+            }
+            let mut units_by_class: HashMap<TypeId, BTreeSet<OriginId>> = HashMap::new();
+            let mut classes_by_unit: HashMap<OriginId, BTreeSet<TypeId>> = HashMap::new();
+            for &id in &ids {
+                if self.type_declarations.contains(&id) {
+                    continue;
+                }
+                let Some((unit, _)) = self.die_origin(id.0) else {
+                    continue;
+                };
+                let class = canonicalize_in(subs, id);
+                units_by_class.entry(class).or_default().insert(unit);
+                classes_by_unit.entry(unit).or_default().insert(class);
+            }
+            let mut crates = BTreeSet::new();
+            if let Some(&id) = ids.first() {
+                crate_roots(&self.type_path(id), &mut crates);
+            }
+            Some(Split {
+                crates,
+                classes: classes.into_iter().collect(),
+                units_by_class,
+                classes_by_unit,
+                declarations,
+            })
+        };
+        let splits: Vec<Split> = if inline_groups(groups.len()) {
+            groups.iter().filter_map(split_of).collect()
+        } else {
+            groups
+                .par_iter()
+                .with_max_len(ALIAS_BATCH)
+                .filter_map(split_of)
+                .collect()
+        };
+
+        let mut by_crate: HashMap<&str, Vec<usize>> = HashMap::new();
+        for (index, split) in splits.iter().enumerate() {
+            for name in &split.crates {
+                by_crate.entry(name.as_str()).or_default().push(index);
+            }
+        }
+        // What each unit says: for every split group it defines
+        // exactly one class of, that group and that class. A
+        // declaration's unit is asked this once, and the answers are
+        // screened by the declaration's crates; no other sibling can
+        // vote.
+        let mut by_unit: HashMap<OriginId, Vec<(usize, TypeId)>> = HashMap::new();
+        for (index, split) in splits.iter().enumerate() {
+            for (&unit, classes) in &split.classes_by_unit {
+                if let [class] = classes.iter().copied().collect::<Vec<_>>()[..] {
+                    by_unit.entry(unit).or_default().push((index, class));
+                }
+            }
+        }
+        // The units that define exactly one class of a group, by that
+        // class: what a candidate class's defining units are compared
+        // against.
+        let sole_units: Vec<HashMap<TypeId, BTreeSet<OriginId>>> = splits
+            .iter()
+            .map(|split| {
+                let mut sole: HashMap<TypeId, BTreeSet<OriginId>> = HashMap::new();
+                for (&unit, classes) in &split.classes_by_unit {
+                    if classes.len() == 1 {
+                        sole.entry(*classes.first().expect("one class"))
+                            .or_default()
+                            .insert(unit);
+                    }
+                }
+                sole
+            })
+            .collect();
+
+        let mut placement = Placement::default();
+        for (own, split) in splits.iter().enumerate() {
+            if split.declarations.is_empty() {
+                continue;
+            }
+            let siblings: HashSet<usize> = split
+                .crates
+                .iter()
+                .flat_map(|name| by_crate[name.as_str()].iter().copied())
+                .chain(std::iter::once(own))
+                .collect();
+            for &declaration in &split.declarations {
+                let unresolved = |evidence| UnresolvedDeclaration {
+                    declaration,
+                    unit: self.die_origin(declaration.0).map(|(unit, _)| unit),
+                    classes: split.classes.clone(),
+                    evidence,
+                };
+                let Some((unit, _)) = self.die_origin(declaration.0) else {
+                    placement
+                        .unresolved
+                        .push(unresolved(DeclarationEvidence::NoUnit));
+                    continue;
+                };
+                let mut votes = BTreeSet::new();
+                for &(index, defined) in by_unit.get(&unit).map(Vec::as_slice).unwrap_or(&[]) {
+                    if !siblings.contains(&index) {
+                        continue;
+                    }
+                    let Some(agreeing) = sole_units[index].get(&defined) else {
+                        continue;
+                    };
+                    let supporters: Vec<TypeId> = split
+                        .classes
+                        .iter()
+                        .copied()
+                        .filter(|class| {
+                            split
+                                .units_by_class
+                                .get(class)
+                                .is_some_and(|units| !units.is_disjoint(agreeing))
+                        })
+                        .collect();
+                    if let [class] = supporters[..] {
+                        votes.insert(class);
+                        if votes.len() > 1 {
+                            break;
+                        }
+                    }
+                }
+                match votes.len() {
+                    0 => placement
+                        .unresolved
+                        .push(unresolved(DeclarationEvidence::None)),
+                    1 => placement
+                        .placed
+                        .push((declaration, votes.into_iter().next().expect("one vote"))),
+                    _ => placement
+                        .unresolved
+                        .push(unresolved(DeclarationEvidence::Disagreement)),
+                }
+            }
+        }
+        placement.placed.sort_unstable();
+        placement
+            .unresolved
+            .sort_unstable_by_key(|unresolved| unresolved.declaration);
+        placement
     }
 
     /// Build the name indexes for a reader assembled by hand, which
@@ -587,55 +1081,376 @@ impl<'dw> DwReader<'dw> {
         by_name
     }
 
-    /// Partition every named-type group into layout-compatible classes and
-    /// collect the resulting `(duplicate, canonical)` aliases.
+    /// The partition as the first pass sees it: references identified by
+    /// name, over the specification links alone. Tests of the layout
+    /// comparison itself go through this.
+    #[cfg(test)]
+    fn by_name(&self) -> Partition<'_, 'dw> {
+        Partition {
+            reader: self,
+            base: &self.subs,
+            prev: None,
+        }
+    }
+
+    #[cfg(test)]
+    fn types_have_compatible_layout(&self, left: TypeId, right: TypeId) -> bool {
+        self.by_name().types_have_compatible_layout(left, right)
+    }
+
+    #[cfg(test)]
+    fn type_references_have_same_identity(
+        &self,
+        left: TypeId,
+        right: TypeId,
+        visiting: &mut HashSet<(TypeId, TypeId)>,
+    ) -> bool {
+        self.by_name()
+            .type_references_have_same_identity(left, right, visiting)
+    }
+
+    #[cfg(test)]
+    fn members_have_compatible_layout(
+        &self,
+        left: &[RawMember<StrId>],
+        right: &[RawMember<StrId>],
+    ) -> bool {
+        self.by_name().members_have_compatible_layout(left, right)
+    }
+}
+
+/// What the alias passes hand back: the substitutions and how the
+/// named partition settled.
+struct Aliases {
+    subs: HashMap<TypeId, TypeId>,
+    report: IdentityReport,
+}
+
+/// One group's partition: its aliases, and how many canonical types
+/// its ids resolve to — the classes, plus any declaration left between
+/// them, which is a canonical of its own until the unit rule places it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct GroupResult {
+    aliases: Vec<(TypeId, TypeId)>,
+    canonicals: usize,
+}
+
+/// The named partition in progress: the map so far, every group's
+/// first-pass result, the results of the groups the by-class passes
+/// have moved since, and which groups those are.
+struct Fixpoint<'r, 'dw> {
+    reader: &'r DwReader<'dw>,
+    groups: &'r [&'r [TypeId]],
+    /// For every group, the groups whose definitions reference it.
+    referrers: Vec<Vec<usize>>,
+    /// Specification links and placed declarations: what every pass
+    /// canonicalizes a group's ids through before comparing them.
+    base: HashMap<TypeId, TypeId>,
+    /// The map so far: `base` plus every group's current aliases.
+    subs: HashMap<TypeId, TypeId>,
+    /// Every group's result from the first pass, by name — which no
+    /// later placement changes, so a round after one starts from here.
+    first: Vec<GroupResult>,
+    /// A group's result where a by-class pass moved it off its first.
+    current: Vec<Option<GroupResult>>,
+    /// The groups with a `current` result.
+    dirty: Vec<usize>,
+    passes: usize,
+    repartitioned: usize,
+}
+
+impl<'r, 'dw> Fixpoint<'r, 'dw> {
+    /// Partition every group by name, build the map from it, and
+    /// invert the groups' references into the referrer index the
+    /// by-class passes need — in the one sweep over the groups, since
+    /// both walk the same definitions.
+    fn first_pass(
+        reader: &'r DwReader<'dw>,
+        groups: &'r [&'r [TypeId]],
+        base: HashMap<TypeId, TypeId>,
+    ) -> Self {
+        let group_of = reader.group_index(groups);
+        let partition = Partition {
+            reader,
+            base: &base,
+            prev: None,
+        };
+        let one = |ids: &&[TypeId]| {
+            let result = partition.compatible_named_aliases(ids);
+            let deps = reader.group_dependencies(ids, &result, &group_of);
+            (result, deps)
+        };
+        let (first, dependencies): (Vec<GroupResult>, Vec<Vec<usize>>) =
+            if inline_groups(groups.len()) {
+                groups.iter().map(one).unzip()
+            } else {
+                groups.par_iter().with_max_len(ALIAS_BATCH).map(one).unzip()
+            };
+        let mut referrers = vec![Vec::new(); groups.len()];
+        for (group, deps) in dependencies.iter().enumerate() {
+            for &dep in deps {
+                referrers[dep].push(group);
+            }
+        }
+        let mut subs = base.clone();
+        for result in &first {
+            for &(duplicate, canonical) in &result.aliases {
+                subs.insert(duplicate, canonical);
+            }
+        }
+        Self {
+            reader,
+            groups,
+            referrers,
+            base,
+            subs,
+            first,
+            current: vec![None; groups.len()],
+            dirty: Vec::new(),
+            passes: 1,
+            repartitioned: groups.len(),
+        }
+    }
+
+    fn result(&self, group: usize) -> &GroupResult {
+        self.current[group].as_ref().unwrap_or(&self.first[group])
+    }
+
+    /// Where the by-class passes start: every group referencing one
+    /// with more than one canonical, the only place identity by class
+    /// can differ from identity by name.
+    fn seed(&self) -> Vec<usize> {
+        let mut seed: Vec<usize> = (0..self.groups.len())
+            .filter(|&group| self.result(group).canonicals > 1)
+            .flat_map(|group| self.referrers[group].iter().copied())
+            .collect();
+        seed.sort_unstable();
+        seed.dedup();
+        seed
+    }
+
+    /// Repartition, by class under the map so far, the groups whose
+    /// inputs changed in the pass before, until none did.
+    fn cascade(&mut self) {
+        let mut worklist = self.seed();
+        while !worklist.is_empty() {
+            if self.passes >= MAX_IDENTITY_PASSES {
+                warn!(
+                    passes = self.passes,
+                    "the type identity partition did not settle; keeping the last pass"
+                );
+                return;
+            }
+            self.passes += 1;
+            self.repartitioned += worklist.len();
+            let results: Vec<(usize, GroupResult)> = {
+                let partition = Partition {
+                    reader: self.reader,
+                    base: &self.base,
+                    prev: Some(&self.subs),
+                };
+                let groups = self.groups;
+                let one =
+                    |&group: &usize| (group, partition.compatible_named_aliases(groups[group]));
+                if inline_groups(worklist.len()) {
+                    worklist.iter().map(one).collect()
+                } else {
+                    worklist
+                        .par_iter()
+                        .with_max_len(ALIAS_BATCH)
+                        .map(one)
+                        .collect()
+                }
+            };
+            let mut next = Vec::new();
+            let mut changed = 0;
+            for (group, result) in results {
+                if *self.result(group) == result {
+                    continue;
+                }
+                changed += 1;
+                self.apply(group, result);
+                next.extend_from_slice(&self.referrers[group]);
+            }
+            next.sort_unstable();
+            next.dedup();
+            debug!(
+                pass = self.passes,
+                repartitioned = worklist.len(),
+                changed,
+                "identity pass"
+            );
+            worklist = next;
+        }
+    }
+
+    /// Replace a group's aliases in the map with a new result's.
+    fn apply(&mut self, group: usize, result: GroupResult) {
+        let old = self.result(group).aliases.clone();
+        self.swap_aliases(&old, &result.aliases);
+        if self.current[group].is_none() {
+            self.dirty.push(group);
+        }
+        self.current[group] = Some(result);
+    }
+
+    /// Take one result's aliases out of the map and put another's in.
+    /// A duplicate the base already maps — a declaration the by-name
+    /// pass aliased and the unit rule has since placed — keeps the
+    /// base's canonical whatever either result says.
+    fn swap_aliases(&mut self, old: &[(TypeId, TypeId)], new: &[(TypeId, TypeId)]) {
+        for &(duplicate, _) in old {
+            match self.base.get(&duplicate) {
+                Some(&canonical) => {
+                    self.subs.insert(duplicate, canonical);
+                }
+                None => {
+                    self.subs.remove(&duplicate);
+                }
+            }
+        }
+        for &(duplicate, canonical) in new {
+            if !self.base.contains_key(&duplicate) {
+                self.subs.insert(duplicate, canonical);
+            }
+        }
+    }
+
+    /// Take the placed declarations into the base and start over from
+    /// the first pass: every group a by-class pass moved goes back to
+    /// its first-pass result, and the next cascade runs from the seed
+    /// as the first did.
+    fn place(&mut self, placed: Vec<(TypeId, TypeId)>) {
+        for &(declaration, class) in &placed {
+            self.base.insert(declaration, class);
+            self.subs.insert(declaration, class);
+        }
+        for group in std::mem::take(&mut self.dirty) {
+            let old = self.current[group]
+                .take()
+                .map(|result| result.aliases)
+                .unwrap_or_default();
+            let first = self.first[group].aliases.clone();
+            self.swap_aliases(&old, &first);
+        }
+    }
+}
+
+/// The crate roots a type's path names — every identifier opening a
+/// `::` path, in the namespace or inside a generic argument — less the
+/// std crates, which are one release in any binary.
+fn crate_roots(path: &str, out: &mut BTreeSet<String>) {
+    let bytes = path.as_bytes();
+    let ident = |byte: u8| byte.is_ascii_alphanumeric() || byte == b'_';
+    let mut i = 0;
+    while i < bytes.len() {
+        if !ident(bytes[i]) {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < bytes.len() && ident(bytes[i]) {
+            i += 1;
+        }
+        let opens = start < 2 || &bytes[start - 2..start] != b"::";
+        if opens && bytes[i..].starts_with(b"::") {
+            let root = &path[start..i];
+            if !matches!(root, "core" | "alloc" | "std") {
+                out.insert(root.to_owned());
+            }
+        }
+    }
+}
+
+/// What one round of the unit rule decided: the declarations it placed,
+/// each with its class's canonical, and the ones it could not.
+#[derive(Default)]
+struct Placement {
+    placed: Vec<(TypeId, TypeId)>,
+    unresolved: Vec<UnresolvedDeclaration>,
+}
+
+/// One pass of the named-type partition: the substitutions every pass
+/// starts from (specification links and placed declarations), and the
+/// previous pass's whole map, under which two named references have the
+/// same identity when they canonicalize to one type. The first pass has
+/// no previous map and identifies named references by name.
+#[derive(Clone, Copy)]
+struct Partition<'r, 'dw> {
+    reader: &'r DwReader<'dw>,
+    base: &'r HashMap<TypeId, TypeId>,
+    prev: Option<&'r HashMap<TypeId, TypeId>>,
+}
+
+impl<'dw> Partition<'_, 'dw> {
+    fn canonical(&self, id: TypeId) -> TypeId {
+        canonicalize_in(self.base, id)
+    }
+
+    fn get(&self, id: TypeId) -> Option<&RawType<StrId>> {
+        self.reader.types.get(&self.canonical(id))
+    }
+
+    /// Partition every named-type group into layout-compatible classes,
+    /// one result per group in the groups' order — the whole pass the
+    /// worklist is checked against.
     ///
     /// The groups are independent and [`Self::compatible_named_aliases`] only
-    /// reads `self` (the `subs` map is not mutated until every group has been
-    /// processed), so the work is spread across the rayon pool. Each type id
-    /// belongs to exactly one group, so a `duplicate` is produced by exactly
-    /// one group and the merged result does not depend on the order in which
-    /// batches finish. This is the dominant cost of finalization on large
-    /// binaries, and the layout comparisons are CPU-bound and allocation-light,
-    /// so it scales well. Group sizes vary by orders of magnitude (a handful
-    /// of ubiquitous types dominate), so splitting is capped at [`ALIAS_BATCH`]
-    /// groups and work stealing keeps every core busy to the end.
-    fn named_aliases(&self, groups: &[&[TypeId]]) -> Vec<(TypeId, TypeId)> {
-        if groups.len() < PARALLEL_ALIAS_GROUP_THRESHOLD {
+    /// reads the reader and the map so far, so the work is spread across
+    /// the rayon pool. Each type id belongs to exactly one group, so a
+    /// `duplicate` is produced by exactly one group and the merged result
+    /// does not depend on the order in which batches finish. This is the
+    /// dominant cost of finalization on large binaries, and the layout
+    /// comparisons are CPU-bound and allocation-light, so it scales well.
+    /// Group sizes vary by orders of magnitude (a handful of ubiquitous
+    /// types dominate), so splitting is capped at [`ALIAS_BATCH`] groups and
+    /// work stealing keeps every core busy to the end.
+    #[cfg(test)]
+    fn partition_all(&self, groups: &[&[TypeId]]) -> Vec<GroupResult> {
+        if inline_groups(groups.len()) {
             return groups
                 .iter()
-                .flat_map(|ids| self.compatible_named_aliases(ids))
+                .map(|ids| self.compatible_named_aliases(ids))
                 .collect();
         }
 
         groups
             .par_iter()
             .with_max_len(ALIAS_BATCH)
-            .flat_map_iter(|ids| self.compatible_named_aliases(ids))
+            .map(|ids| self.compatible_named_aliases(ids))
             .collect()
     }
 
     /// Partition one named-type group by its own layout and the identities of
     /// referenced types. Complete, incompatible definitions remain separate.
     /// An unlinked declaration is attached only when the name identifies one
-    /// compatible definition class; otherwise retaining it is safer than
-    /// guessing.
-    fn compatible_named_aliases(&self, ids: &[TypeId]) -> Vec<(TypeId, TypeId)> {
-        let resolved: BTreeSet<_> = ids.iter().map(|&id| self.canonicalize(id)).collect();
+    /// compatible definition class; with several, it is left for the unit
+    /// rule.
+    fn compatible_named_aliases(&self, ids: &[TypeId]) -> GroupResult {
+        let reader = self.reader;
+        // Most groups are one id, which has nothing to be aliased to —
+        // definition or declaration, already aliased or not, the
+        // partition below would find one class or none and no alias —
+        // so nothing is compared and nothing allocated for it.
+        if let [_] = ids {
+            return GroupResult {
+                aliases: Vec::new(),
+                canonicals: 1,
+            };
+        }
+        let resolved: BTreeSet<_> = ids.iter().map(|&id| self.canonical(id)).collect();
         let mut definitions: Vec<_> = resolved
             .iter()
             .copied()
-            .filter(|id| !self.type_declarations.contains(id))
+            .filter(|id| !reader.type_declarations.contains(id))
+            .map(|id| (self.layout_detail(id), id))
             .collect();
-        definitions.sort_by(|left, right| {
-            self.layout_detail(*right)
-                .cmp(&self.layout_detail(*left))
-                .then_with(|| left.cmp(right))
-        });
+        definitions.sort_by(|left, right| right.0.cmp(&left.0).then_with(|| left.1.cmp(&right.1)));
+        let definitions = definitions.into_iter().map(|(_, id)| id);
         let declarations: Vec<_> = resolved
             .iter()
             .copied()
-            .filter(|id| self.type_declarations.contains(id))
+            .filter(|id| reader.type_declarations.contains(id))
             .collect();
 
         let mut classes: Vec<Vec<TypeId>> = Vec::new();
@@ -650,6 +1465,13 @@ impl<'dw> DwReader<'dw> {
             }
         }
 
+        // Between several classes a declaration stays a canonical of
+        // its own; with one class, or none, it is aliased below.
+        let between = if classes.len() > 1 {
+            declarations.len()
+        } else {
+            0
+        };
         let mut aliases = Vec::new();
         for class in &classes {
             let canonical = class[0];
@@ -686,11 +1508,14 @@ impl<'dw> DwReader<'dw> {
             _ => {}
         }
 
-        aliases
+        GroupResult {
+            aliases,
+            canonicals: classes.len().max(1) + between,
+        }
     }
 
     fn layout_detail(&self, id: TypeId) -> usize {
-        match self.types.get(&self.canonicalize(id)) {
+        match self.get(id) {
             Some(RawType::Base(_)) => 1,
             Some(RawType::Pointer(_)) | Some(RawType::Array(_)) => 2,
             Some(RawType::Struct(ty)) => ty.members.len() * 2 + ty.template_params.len() + 1,
@@ -711,13 +1536,13 @@ impl<'dw> DwReader<'dw> {
     }
 
     fn types_have_compatible_layout(&self, left: TypeId, right: TypeId) -> bool {
-        let left = self.canonicalize(left);
-        let right = self.canonicalize(right);
+        let left = self.canonical(left);
+        let right = self.canonical(right);
         if left == right {
             return true;
         }
 
-        match (self.types.get(&left), self.types.get(&right)) {
+        match (self.get(left), self.get(right)) {
             (Some(RawType::Base(a)), Some(RawType::Base(b))) => {
                 a.encoding == b.encoding
                     && a.size == b.size
@@ -759,16 +1584,18 @@ impl<'dw> DwReader<'dw> {
 
     /// Compare referenced types by semantic identity rather than requiring
     /// every duplicate DIE below them to carry equally complete layout data.
-    /// Each named child is reconciled independently in its own collision
-    /// group; anonymous pointers and arrays retain their structural identity.
+    /// Two named references are one identity when the previous pass put
+    /// them in one class — by name alone on the first pass, so that each
+    /// group's own partition, not the unit a copy came from, decides.
+    /// Anonymous pointers and arrays retain their structural identity.
     fn type_references_have_same_identity(
         &self,
         left: TypeId,
         right: TypeId,
         visiting: &mut HashSet<(TypeId, TypeId)>,
     ) -> bool {
-        let left = self.canonicalize(left);
-        let right = self.canonicalize(right);
+        let left = self.canonical(left);
+        let right = self.canonical(right);
         if left == right {
             return true;
         }
@@ -777,28 +1604,28 @@ impl<'dw> DwReader<'dw> {
             return true;
         }
 
-        let result = match (self.types.get(&left), self.types.get(&right)) {
-            (Some(left), Some(right)) if left.name().is_some() && right.name().is_some() => {
-                raw_type_kind(left) == raw_type_kind(right)
-                    && left.namespace() == right.namespace()
-                    && left.name() == right.name()
-            }
-            (Some(RawType::Pointer(left)), Some(RawType::Pointer(right))) => self
-                .type_references_have_same_identity(
-                    left.target_type_id,
-                    right.target_type_id,
-                    visiting,
-                ),
-            (Some(RawType::Array(left)), Some(RawType::Array(right))) => {
-                left.count == right.count
+        let result = match (self.get(left), self.get(right)) {
+            (Some(l), Some(r)) if l.name().is_some() && r.name().is_some() => match self.prev {
+                Some(prev) => canonicalize_in(prev, left) == canonicalize_in(prev, right),
+                None => {
+                    raw_type_kind(l) == raw_type_kind(r)
+                        && l.namespace() == r.namespace()
+                        && l.name() == r.name()
+                }
+            },
+            (Some(RawType::Pointer(l)), Some(RawType::Pointer(r))) => self
+                .type_references_have_same_identity(l.target_type_id, r.target_type_id, visiting),
+            (Some(RawType::Array(l)), Some(RawType::Array(r))) => {
+                l.count == r.count
                     && self.type_references_have_same_identity(
-                        left.elem_type_id,
-                        right.elem_type_id,
+                        l.elem_type_id,
+                        r.elem_type_id,
                         visiting,
                     )
             }
             (None, None) => {
-                self.subroutine_types.contains(&left) && self.subroutine_types.contains(&right)
+                self.reader.subroutine_types.contains(&left)
+                    && self.reader.subroutine_types.contains(&right)
             }
             _ => false,
         };
@@ -902,7 +1729,9 @@ impl<'dw> DwReader<'dw> {
             _ => false,
         }
     }
+}
 
+impl<'dw> DwReader<'dw> {
     /// Definitions linked through `DW_AT_specification` may omit their name,
     /// namespace, and declaration coordinates. Carry those descriptive fields
     /// over while retaining the definition's complete layout.
@@ -1263,12 +2092,12 @@ fn compatible_alignment(left: Option<NonZero<u64>>, right: Option<NonZero<u64>>)
 }
 
 fn optional_members_have_compatible_layout(
-    reader: &DwReader<'_>,
+    partition: &Partition<'_, '_>,
     left: Option<&RawMember<StrId>>,
     right: Option<&RawMember<StrId>>,
 ) -> bool {
     match (left, right) {
-        (Some(left), Some(right)) => reader.members_have_compatible_layout(
+        (Some(left), Some(right)) => partition.members_have_compatible_layout(
             std::slice::from_ref(left),
             std::slice::from_ref(right),
         ),
@@ -1278,13 +2107,13 @@ fn optional_members_have_compatible_layout(
 }
 
 fn optional_type_ids_have_compatible_layout(
-    reader: &DwReader<'_>,
+    partition: &Partition<'_, '_>,
     left: Option<TypeId>,
     right: Option<TypeId>,
 ) -> bool {
     match (left, right) {
         (Some(left), Some(right)) => {
-            reader.type_references_have_same_identity(left, right, &mut HashSet::new())
+            partition.type_references_have_same_identity(left, right, &mut HashSet::new())
         }
         (None, None) => true,
         _ => false,
@@ -1933,12 +2762,679 @@ mod tests {
         insert_struct(&mut reader, duplicate_small, Some("Value"), 4);
         reader.type_declarations.insert(declaration);
 
+        // A declaration between two classes with nothing to place it
+        // stays a type of its own, and the report says so.
         reader.finalize_types();
 
         assert_eq!(reader.canonicalize(duplicate_small), small);
         assert_eq!(reader.canonicalize(small), small);
         assert_eq!(reader.canonicalize(large), large);
         assert_eq!(reader.canonicalize(declaration), declaration);
+        assert_eq!(
+            reader.identity.unresolved_declarations,
+            [UnresolvedDeclaration {
+                declaration,
+                unit: None,
+                classes: vec![small, large],
+                evidence: DeclarationEvidence::NoUnit,
+            }]
+        );
+        assert_eq!(reader.identity.placed_declarations, 0);
+        let line = reader.describe_unresolved(&reader.identity.unresolved_declarations[0]);
+        assert!(
+            line.contains("`Value` declared in no unit (0x10)"),
+            "{line}"
+        );
+        assert!(line.contains("2 definition classes (0x20, 0x30)"), "{line}");
+    }
+
+    /// A reader assembled by hand for the identity partition: base
+    /// types, structs with members, named pointers, units and a crate
+    /// namespace, each added by one call.
+    struct Identity {
+        reader: DwReader<'static>,
+    }
+
+    impl Identity {
+        fn new() -> Self {
+            Self {
+                reader: DwReader::new(),
+            }
+        }
+
+        fn unit(&mut self, name: &'static str, start: usize, end: usize) -> OriginId {
+            let id = OriginId(UnitSectionOffset(start));
+            let name = self.reader.strings.intern(name);
+            self.reader.origins.insert(
+                id,
+                UnitOrigin {
+                    name,
+                    producer: None,
+                    end_offset: UnitSectionOffset(end),
+                    dwarf_version: 4,
+                    line_version: None,
+                    source_files: Vec::new(),
+                },
+            );
+            id
+        }
+
+        fn ns(&mut self, name: &'static str) -> NsId {
+            let name = self.reader.strings.intern(name);
+            self.reader.namespaces.insert(None, name)
+        }
+
+        fn ns_path(&mut self, path: &'static str) -> NsId {
+            let mut parent = None;
+            for segment in path.split("::") {
+                let name = self.reader.strings.intern(segment);
+                parent = Some(self.reader.namespaces.insert(parent, name));
+            }
+            parent.expect("a path has a segment")
+        }
+
+        fn base(&mut self, offset: usize, name: &'static str, size: u64) -> TypeId {
+            let id = type_id(offset);
+            let name = Some(self.reader.strings.intern(name));
+            self.reader.types.insert(
+                id,
+                RawType::Base(RawBase {
+                    name,
+                    namespace: None,
+                    encoding: Encoding::Unsigned,
+                    size,
+                    alignment: None,
+                }),
+            );
+            id
+        }
+
+        fn strukt(
+            &mut self,
+            offset: usize,
+            namespace: Option<NsId>,
+            name: &'static str,
+            size: u64,
+            members: &[(&'static str, u64, TypeId)],
+        ) -> TypeId {
+            let id = type_id(offset);
+            let members = members
+                .iter()
+                .map(|&(name, offset, type_id)| member(&mut self.reader, name, offset, type_id))
+                .collect();
+            let name = Some(self.reader.strings.intern(name));
+            self.reader.types.insert(
+                id,
+                RawType::Struct(RawStruct {
+                    name,
+                    namespace,
+                    size,
+                    members,
+                    template_params: Box::new([]),
+                    source_loc: None,
+                }),
+            );
+            id
+        }
+
+        fn declaration(
+            &mut self,
+            offset: usize,
+            namespace: Option<NsId>,
+            name: &'static str,
+        ) -> TypeId {
+            let id = self.strukt(offset, namespace, name, 0, &[]);
+            self.reader.type_declarations.insert(id);
+            id
+        }
+
+        fn pointer(&mut self, offset: usize, name: Option<&'static str>, target: TypeId) -> TypeId {
+            let id = type_id(offset);
+            let name = name.map(|name| self.reader.strings.intern(name));
+            self.reader.types.insert(
+                id,
+                RawType::Pointer(RawPointer {
+                    name,
+                    target_type_id: target,
+                }),
+            );
+            id
+        }
+
+        fn array(&mut self, offset: usize, elem: TypeId, count: u64) -> TypeId {
+            let id = type_id(offset);
+            self.reader.types.insert(
+                id,
+                RawType::Array(RawArray {
+                    elem_type_id: elem,
+                    count,
+                }),
+            );
+            id
+        }
+
+        fn finalize(&mut self) {
+            self.reader.finalize_types();
+        }
+
+        fn same(&self, left: TypeId, right: TypeId) -> bool {
+            self.reader.canonicalize(left) == self.reader.canonicalize(right)
+        }
+    }
+
+    /// Two definitions of one name with different layouts are two
+    /// types; the pointers over them, one name too, split after them,
+    /// and the pointer-sized wrapper over each pointer after that. A
+    /// second such chain whose layouts agree throughout stays one type
+    /// at every level.
+    #[test]
+    fn test_pointers_and_wrappers_split_by_their_targets_class() {
+        let mut fx = Identity::new();
+        let u64_t = fx.base(0x10, "u64", 8);
+        let u32_t = fx.base(0x11, "u32", 4);
+        // `X`: two layouts.
+        let x_a = fx.strukt(0x100, None, "X", 8, &[("a", 0, u64_t)]);
+        let x_b = fx.strukt(0x200, None, "X", 8, &[("b", 0, u32_t)]);
+        let box_a = fx.pointer(0x101, Some("Box<X>"), x_a);
+        let box_b = fx.pointer(0x201, Some("Box<X>"), x_b);
+        let pin_a = fx.strukt(0x102, None, "Pin<Box<X>>", 8, &[("pointer", 0, box_a)]);
+        let pin_b = fx.strukt(0x202, None, "Pin<Box<X>>", 8, &[("pointer", 0, box_b)]);
+        // `Y`: one layout, two copies.
+        let y_a = fx.strukt(0x300, None, "Y", 8, &[("a", 0, u64_t)]);
+        let y_b = fx.strukt(0x400, None, "Y", 8, &[("a", 0, u64_t)]);
+        let box_ya = fx.pointer(0x301, Some("Box<Y>"), y_a);
+        let box_yb = fx.pointer(0x401, Some("Box<Y>"), y_b);
+        let pin_ya = fx.strukt(0x302, None, "Pin<Box<Y>>", 8, &[("pointer", 0, box_ya)]);
+        let pin_yb = fx.strukt(0x402, None, "Pin<Box<Y>>", 8, &[("pointer", 0, box_yb)]);
+        fx.finalize();
+
+        assert!(!fx.same(x_a, x_b));
+        assert!(!fx.same(box_a, box_b), "the pointers follow their targets");
+        assert!(!fx.same(pin_a, pin_b), "the wrappers follow their pointers");
+        assert!(fx.same(y_a, y_b));
+        assert!(fx.same(box_ya, box_yb), "agreeing graphs stay one type");
+        assert!(fx.same(pin_ya, pin_yb));
+        // Name, then the target's class, then the pointer's class; the
+        // second and third passes touch only the group a split reached.
+        assert_eq!(fx.reader.identity.passes, 3);
+        // Eight named groups in the first pass, then `Box<X>`, then
+        // `Pin<Box<X>>`.
+        assert_eq!(fx.reader.identity.groups_repartitioned, 8 + 2);
+        assert!(fx.reader.identity.unresolved_declarations.is_empty());
+    }
+
+    /// A group's canonical count is what the by-class passes seed on:
+    /// one per layout class, plus one per declaration left between
+    /// several classes; a declaration beside one class, or beside none,
+    /// is aliased and counts for nothing.
+    #[test]
+    fn test_a_group_counts_a_declaration_between_classes_as_a_canonical() {
+        let mut fx = Identity::new();
+        let u64_t = fx.base(0x10, "u64", 8);
+        let u32_t = fx.base(0x11, "u32", 4);
+        let x_a = fx.strukt(0x100, None, "X", 8, &[("a", 0, u64_t)]);
+        let x_b = fx.strukt(0x200, None, "X", 8, &[("b", 0, u32_t)]);
+        let x_decl = fx.declaration(0x300, None, "X");
+        let y_a = fx.strukt(0x400, None, "Y", 8, &[("a", 0, u64_t)]);
+        let y_b = fx.strukt(0x500, None, "Y", 8, &[("a", 0, u64_t)]);
+        let y_decl = fx.declaration(0x600, None, "Y");
+        let z_decl1 = fx.declaration(0x700, None, "Z");
+        let z_decl2 = fx.declaration(0x800, None, "Z");
+        let base = HashMap::new();
+        let partition = Partition {
+            reader: &fx.reader,
+            base: &base,
+            prev: None,
+        };
+        let counts = |ids: &[TypeId]| {
+            let result = partition.compatible_named_aliases(ids);
+            (result.canonicals, result.aliases.len())
+        };
+        assert_eq!(counts(&[x_a, x_b, x_decl]), (3, 0));
+        assert_eq!(counts(&[y_a, y_b, y_decl]), (1, 2));
+        assert_eq!(counts(&[z_decl1, z_decl2]), (1, 1));
+        assert_eq!(counts(&[x_decl]), (1, 0));
+    }
+
+    /// A split reaches a holder through an anonymous array as it does
+    /// through an anonymous pointer: two `Holder`s over `[X; 2]`, one
+    /// per layout of `X`, are two types.
+    #[test]
+    fn test_a_holder_splits_through_an_array_of_a_split_type() {
+        let mut fx = Identity::new();
+        let u64_t = fx.base(0x10, "u64", 8);
+        let u32_t = fx.base(0x11, "u32", 4);
+        let x_a = fx.strukt(0x100, None, "X", 8, &[("a", 0, u64_t)]);
+        let x_b = fx.strukt(0x200, None, "X", 8, &[("b", 0, u32_t)]);
+        let xs_a = fx.array(0x101, x_a, 2);
+        let xs_b = fx.array(0x201, x_b, 2);
+        let holder_a = fx.strukt(0x102, None, "Holder", 16, &[("xs", 0, xs_a)]);
+        let holder_b = fx.strukt(0x202, None, "Holder", 16, &[("xs", 0, xs_b)]);
+        fx.finalize();
+
+        assert!(!fx.same(x_a, x_b));
+        assert!(!fx.same(xs_a, xs_b), "the arrays follow their elements");
+        assert!(
+            !fx.same(holder_a, holder_b),
+            "the holders follow their arrays"
+        );
+        assert_eq!(fx.reader.identity.passes, 2);
+    }
+
+    /// Two types referencing each other through anonymous pointers, in
+    /// two copies of which one differs in a leaf: both names split,
+    /// and neither the cycle nor the partition's order changes what
+    /// the split settles to.
+    #[test]
+    fn test_a_recursive_pair_splits_where_a_leaf_diverges() {
+        let mut fx = Identity::new();
+        let u64_t = fx.base(0x10, "u64", 8);
+        let u32_t = fx.base(0x11, "u32", 4);
+        // node -> next: *node, owner: *list, val; list -> head: *node.
+        let (node_a, list_a) = (type_id(0x100), type_id(0x110));
+        let (node_b, list_b) = (type_id(0x200), type_id(0x210));
+        let next_a = fx.pointer(0x101, None, node_a);
+        let owner_a = fx.pointer(0x102, None, list_a);
+        let head_a = fx.pointer(0x111, None, node_a);
+        let next_b = fx.pointer(0x201, None, node_b);
+        let owner_b = fx.pointer(0x202, None, list_b);
+        let head_b = fx.pointer(0x211, None, node_b);
+        fx.strukt(
+            0x100,
+            None,
+            "Node",
+            24,
+            &[
+                ("next", 0, next_a),
+                ("owner", 8, owner_a),
+                ("val", 16, u64_t),
+            ],
+        );
+        fx.strukt(0x110, None, "List", 8, &[("head", 0, head_a)]);
+        fx.strukt(
+            0x200,
+            None,
+            "Node",
+            24,
+            &[
+                ("next", 0, next_b),
+                ("owner", 8, owner_b),
+                ("val", 16, u32_t),
+            ],
+        );
+        fx.strukt(0x210, None, "List", 8, &[("head", 0, head_b)]);
+        // A third copy agreeing with the first, to show a cycle merges
+        // where its leaves agree.
+        let (node_c, list_c) = (type_id(0x300), type_id(0x310));
+        let next_c = fx.pointer(0x301, None, node_c);
+        let owner_c = fx.pointer(0x302, None, list_c);
+        let head_c = fx.pointer(0x311, None, node_c);
+        fx.strukt(
+            0x300,
+            None,
+            "Node",
+            24,
+            &[
+                ("next", 0, next_c),
+                ("owner", 8, owner_c),
+                ("val", 16, u64_t),
+            ],
+        );
+        fx.strukt(0x310, None, "List", 8, &[("head", 0, head_c)]);
+
+        // The partition must settle to the same substitutions whichever
+        // order the groups are handed to it in.
+        let mut groups: Vec<Vec<TypeId>> = {
+            let mut named: BTreeMap<(u8, Option<NsId>, StrId), Vec<TypeId>> = BTreeMap::new();
+            for (&id, ty) in &fx.reader.types {
+                if let Some(name) = ty.name() {
+                    named
+                        .entry((raw_type_kind(ty), ty.namespace(), name))
+                        .or_default()
+                        .push(id);
+                }
+            }
+            named.into_values().collect()
+        };
+        for ids in &mut groups {
+            ids.sort_unstable();
+        }
+        let forward: Vec<&[TypeId]> = groups.iter().map(Vec::as_slice).collect();
+        let (settled_forward, report) = fx.reader.settle_named(&forward);
+        let reversed: Vec<&[TypeId]> = groups.iter().rev().map(Vec::as_slice).collect();
+        let (settled_reversed, _) = fx.reader.settle_named(&reversed);
+        assert_eq!(settled_forward, settled_reversed);
+        assert!(report.passes >= 2, "{}", report.passes);
+
+        fx.finalize();
+        assert!(!fx.same(node_a, node_b));
+        assert!(!fx.same(list_a, list_b));
+        assert!(fx.same(node_a, node_c));
+        assert!(fx.same(list_a, list_c));
+        assert!(fx.same(head_a, head_c));
+        assert!(!fx.same(head_a, head_b));
+    }
+
+    /// The crate `cr` at two releases: `A` and `B` differ between them.
+    /// Units 1 and 2 define one release each. Unit 3 defines `B` as
+    /// unit 2 does and declares `A`: that one sibling places the
+    /// declaration in unit 2's `A`, and the pointer over it joins that
+    /// class's pointers.
+    fn two_release_fixture() -> (Identity, [TypeId; 6]) {
+        let mut fx = Identity::new();
+        let cr = fx.ns("cr");
+        let u64_t = fx.base(0x10, "u64", 8);
+        let u32_t = fx.base(0x11, "u32", 4);
+        fx.unit("one", 0x1000, 0x2000);
+        fx.unit("two", 0x2000, 0x3000);
+        fx.unit("three", 0x3000, 0x4000);
+        let a1 = fx.strukt(0x1100, Some(cr), "A", 8, &[("a", 0, u64_t)]);
+        let _b1 = fx.strukt(0x1200, Some(cr), "B", 8, &[("b", 0, u64_t)]);
+        let box_a1 = fx.pointer(0x1101, Some("Box<cr::A>"), a1);
+        let a2 = fx.strukt(0x2100, Some(cr), "A", 8, &[("a", 0, u32_t)]);
+        let _b2 = fx.strukt(0x2200, Some(cr), "B", 8, &[("b", 0, u32_t)]);
+        let box_a2 = fx.pointer(0x2101, Some("Box<cr::A>"), a2);
+        let _b3 = fx.strukt(0x3200, Some(cr), "B", 8, &[("b", 0, u32_t)]);
+        let decl = fx.declaration(0x3100, Some(cr), "A");
+        let box_decl = fx.pointer(0x3101, Some("Box<cr::A>"), decl);
+        (fx, [a1, a2, decl, box_a1, box_a2, box_decl])
+    }
+
+    #[test]
+    fn test_one_agreeing_sibling_places_a_declaration() {
+        let (mut fx, [a1, a2, decl, box_a1, box_a2, box_decl]) = two_release_fixture();
+        fx.finalize();
+        assert_eq!(fx.reader.canonicalize(decl), a2);
+        assert!(
+            fx.same(box_decl, box_a2),
+            "the pointer over it joins that class"
+        );
+        assert!(!fx.same(box_decl, box_a1));
+        assert!(!fx.same(a1, a2));
+        assert_eq!(fx.reader.identity.placed_declarations, 1);
+        assert!(fx.reader.identity.unresolved_declarations.is_empty());
+        // A first round settles with the declaration apart, the
+        // placement merges its pointer back in a round that repartitions
+        // only the one group the declaration's referrers make.
+        assert_eq!(fx.reader.identity.passes, 3);
+        // The reader speaks of it by its own path and its unit.
+        assert_eq!(fx.reader.type_path(decl), "cr::A");
+    }
+
+    /// The evidence rule is per class, not per pair: with `A` at three
+    /// releases, a unit whose `B` is the third release's places its
+    /// declaration of `A` in the third class.
+    #[test]
+    fn test_a_sibling_places_a_declaration_among_three_classes() {
+        let mut fx = Identity::new();
+        let cr = fx.ns("cr");
+        let u64_t = fx.base(0x10, "u64", 8);
+        let u32_t = fx.base(0x11, "u32", 4);
+        let u16_t = fx.base(0x12, "u16", 2);
+        fx.unit("one", 0x1000, 0x2000);
+        fx.unit("two", 0x2000, 0x3000);
+        fx.unit("three", 0x3000, 0x4000);
+        fx.unit("four", 0x4000, 0x5000);
+        let a1 = fx.strukt(0x1100, Some(cr), "A", 8, &[("a", 0, u64_t)]);
+        fx.strukt(0x1200, Some(cr), "B", 8, &[("b", 0, u64_t)]);
+        let a2 = fx.strukt(0x2100, Some(cr), "A", 8, &[("a", 0, u32_t)]);
+        fx.strukt(0x2200, Some(cr), "B", 8, &[("b", 0, u32_t)]);
+        let a3 = fx.strukt(0x3100, Some(cr), "A", 8, &[("a", 0, u16_t)]);
+        fx.strukt(0x3200, Some(cr), "B", 8, &[("b", 0, u16_t)]);
+        fx.strukt(0x4200, Some(cr), "B", 8, &[("b", 0, u16_t)]);
+        let decl = fx.declaration(0x4100, Some(cr), "A");
+        fx.finalize();
+
+        assert!(!fx.same(a1, a2));
+        assert!(!fx.same(a2, a3));
+        assert!(!fx.same(a1, a3));
+        assert_eq!(fx.reader.canonicalize(decl), a3);
+        assert_eq!(fx.reader.identity.placed_declarations, 1);
+        assert!(fx.reader.identity.unresolved_declarations.is_empty());
+    }
+
+    /// The reason an unresolved declaration is reported with reads as
+    /// a sentence naming what was missing.
+    #[test]
+    fn test_declaration_evidence_says_what_was_missing() {
+        assert_eq!(
+            DeclarationEvidence::NoUnit.to_string(),
+            "the declaring DIE is in no unit"
+        );
+        assert_eq!(
+            DeclarationEvidence::None.to_string(),
+            "no unit evidence places it"
+        );
+        assert_eq!(
+            DeclarationEvidence::Disagreement.to_string(),
+            "the declaring unit's evidence points at several classes"
+        );
+    }
+
+    /// Unit 3 defining both releases' `B` says nothing about which `A`
+    /// it declares; two siblings pointing at different releases say
+    /// less. Either fails the read, names the type, the unit and the
+    /// classes, and is left as a type of its own when the reader is
+    /// told to go on.
+    #[test]
+    fn test_ambiguous_or_disagreeing_siblings_leave_a_declaration_unresolved() {
+        let u32_t = type_id(0x11);
+        let u64_t = type_id(0x10);
+        let cr = |fx: &mut Identity| fx.reader.types[&type_id(0x1100)].namespace();
+        for (evidence, extra) in [
+            (DeclarationEvidence::None, "both"),
+            (DeclarationEvidence::Disagreement, "against"),
+        ] {
+            let (mut fx, [a1, a2, decl, ..]) = two_release_fixture();
+            let ns = cr(&mut fx);
+            match extra {
+                // Unit 3 also defines release one's `B`: both classes
+                // co-occur, so `B` is no evidence.
+                "both" => {
+                    fx.strukt(0x3300, ns, "B", 8, &[("b", 0, u64_t)]);
+                }
+                // A third split type `C`, which unit 3 defines as unit
+                // *one* does: `B` votes for release two, `C` for one.
+                _ => {
+                    fx.strukt(0x1400, ns, "C", 8, &[("c", 0, u64_t)]);
+                    fx.strukt(0x2400, ns, "C", 8, &[("c", 0, u32_t)]);
+                    fx.strukt(0x3400, ns, "C", 8, &[("c", 0, u64_t)]);
+                }
+            }
+            fx.finalize();
+            assert_eq!(fx.reader.canonicalize(decl), decl);
+            assert!(!fx.same(a1, a2));
+            assert_eq!(fx.reader.identity.placed_declarations, 0);
+            assert_eq!(
+                fx.reader.identity.unresolved_declarations,
+                [UnresolvedDeclaration {
+                    declaration: decl,
+                    unit: Some(OriginId(UnitSectionOffset(0x3000))),
+                    classes: vec![a1, a2],
+                    evidence,
+                }]
+            );
+            let line = fx
+                .reader
+                .describe_unresolved(&fx.reader.identity.unresolved_declarations[0]);
+            assert!(
+                line.contains("`cr::A` declared in unit `three` (0x3100)"),
+                "{line}"
+            );
+            assert!(
+                line.contains("2 definition classes (0x1100, 0x2100)"),
+                "{line}"
+            );
+            assert!(line.ends_with(&evidence.to_string()), "{line}");
+        }
+    }
+
+    /// The partition as whole passes compute it: every group
+    /// repartitioned every pass until the map stops changing, and a
+    /// round after placements started over from the first pass. What
+    /// the worklist must agree with, fixture by fixture.
+    fn settle_named_by_whole_passes(
+        reader: &DwReader<'static>,
+        groups: &[&[TypeId]],
+    ) -> HashMap<TypeId, TypeId> {
+        let mut base = reader.subs.clone();
+        loop {
+            let mut prev: Option<HashMap<TypeId, TypeId>> = None;
+            let settled = loop {
+                let partition = Partition {
+                    reader,
+                    base: &base,
+                    prev: prev.as_ref(),
+                };
+                let mut subs = base.clone();
+                for result in partition.partition_all(groups) {
+                    for (duplicate, canonical) in result.aliases {
+                        subs.insert(duplicate, canonical);
+                    }
+                }
+                if prev.as_ref() == Some(&subs) {
+                    break subs;
+                }
+                prev = Some(subs);
+            };
+            let placement = reader.place_declarations(groups, &base, &settled);
+            if placement.placed.is_empty() {
+                return settled;
+            }
+            base.extend(placement.placed);
+        }
+    }
+
+    fn named_groups(reader: &DwReader<'static>) -> Vec<Vec<TypeId>> {
+        let mut named: BTreeMap<(u8, Option<NsId>, StrId), Vec<TypeId>> = BTreeMap::new();
+        for (&id, ty) in &reader.types {
+            if let Some(name) = ty.name() {
+                named
+                    .entry((raw_type_kind(ty), ty.namespace(), name))
+                    .or_default()
+                    .push(id);
+            }
+        }
+        named.into_values().collect()
+    }
+
+    /// The worklist settles to what whole passes settle to, on every
+    /// fixture above: a chain that splits, one that agrees, a recursive
+    /// pair, and the two-release crate with a placed declaration.
+    #[test]
+    fn test_the_worklist_settles_to_the_whole_pass_fixpoint() {
+        let fixtures: Vec<Identity> = vec![
+            {
+                let mut fx = Identity::new();
+                let u64_t = fx.base(0x10, "u64", 8);
+                let u32_t = fx.base(0x11, "u32", 4);
+                let x_a = fx.strukt(0x100, None, "X", 8, &[("a", 0, u64_t)]);
+                let x_b = fx.strukt(0x200, None, "X", 8, &[("b", 0, u32_t)]);
+                let box_a = fx.pointer(0x101, Some("Box<X>"), x_a);
+                let box_b = fx.pointer(0x201, Some("Box<X>"), x_b);
+                fx.strukt(0x102, None, "Pin<Box<X>>", 8, &[("pointer", 0, box_a)]);
+                fx.strukt(0x202, None, "Pin<Box<X>>", 8, &[("pointer", 0, box_b)]);
+                let y_a = fx.strukt(0x300, None, "Y", 8, &[("a", 0, u64_t)]);
+                let box_ya = fx.pointer(0x301, Some("Box<Y>"), y_a);
+                fx.strukt(0x302, None, "Pin<Box<Y>>", 8, &[("pointer", 0, box_ya)]);
+                fx
+            },
+            two_release_fixture().0,
+            {
+                let (mut fx, [a1, a2, ..]) = two_release_fixture();
+                let iter_ns = fx.ns_path("core::slice::iter");
+                let ptr_a1 = fx.pointer(0x1300, None, a1);
+                let ptr_a2 = fx.pointer(0x2300, None, a2);
+                let iter2 = fx.strukt(
+                    0x2301,
+                    Some(iter_ns),
+                    "Iter<cr::A>",
+                    8,
+                    &[("ptr", 0, ptr_a2)],
+                );
+                fx.strukt(
+                    0x1301,
+                    Some(iter_ns),
+                    "Iter<cr::A>",
+                    8,
+                    &[("ptr", 0, ptr_a1)],
+                );
+                let iter_decl = fx.declaration(0x3301, Some(iter_ns), "Iter<cr::A>");
+                fx.pointer(0x3302, Some("&Iter<cr::A>"), iter_decl);
+                fx.pointer(0x2302, Some("&Iter<cr::A>"), iter2);
+                fx
+            },
+        ];
+        for (index, fx) in fixtures.iter().enumerate() {
+            let groups = named_groups(&fx.reader);
+            let groups: Vec<&[TypeId]> = groups.iter().map(Vec::as_slice).collect();
+            let (worklist, report) = fx.reader.settle_named(&groups);
+            let whole = settle_named_by_whole_passes(&fx.reader, &groups);
+            assert_eq!(worklist, whole, "fixture {index}");
+            assert!(report.passes >= 2, "fixture {index}: {}", report.passes);
+        }
+    }
+
+    /// A std wrapper over a split crate type — `Iter<cr::A>`, declared
+    /// under `core::slice::iter` — is placed by `cr`'s evidence, the
+    /// crate its generic argument names, not by `core`'s.
+    #[test]
+    fn test_a_std_wrapper_is_placed_by_the_crate_its_argument_names() {
+        let (mut fx, [a1, a2, ..]) = two_release_fixture();
+        let iter_ns = fx.ns_path("core::slice::iter");
+        let ptr_a1 = fx.pointer(0x1300, None, a1);
+        let ptr_a2 = fx.pointer(0x2300, None, a2);
+        let iter1 = fx.strukt(
+            0x1301,
+            Some(iter_ns),
+            "Iter<cr::A>",
+            8,
+            &[("ptr", 0, ptr_a1)],
+        );
+        let iter2 = fx.strukt(
+            0x2301,
+            Some(iter_ns),
+            "Iter<cr::A>",
+            8,
+            &[("ptr", 0, ptr_a2)],
+        );
+        let iter_decl = fx.declaration(0x3301, Some(iter_ns), "Iter<cr::A>");
+        let ref_decl = fx.pointer(0x3302, Some("&Iter<cr::A>"), iter_decl);
+        let ref2 = fx.pointer(0x2302, Some("&Iter<cr::A>"), iter2);
+        fx.finalize();
+
+        assert!(!fx.same(iter1, iter2), "the wrappers follow their pointees");
+        assert_eq!(fx.reader.canonicalize(iter_decl), iter2);
+        assert!(fx.same(ref_decl, ref2));
+        assert_eq!(fx.reader.identity.placed_declarations, 2);
+        assert!(fx.reader.identity.unresolved_declarations.is_empty());
+
+        let mut roots = BTreeSet::new();
+        crate_roots("core::slice::iter::Iter<toml_edit::key::Key>", &mut roots);
+        assert_eq!(roots, ["toml_edit".to_owned()].into());
+        roots.clear();
+        crate_roots("&mut [toml_edit::item::Item]", &mut roots);
+        assert_eq!(roots, ["toml_edit".to_owned()].into());
+        roots.clear();
+        crate_roots(
+            "nexus_config::nexus_config::_::{impl#0}::deserialize::__Visitor",
+            &mut roots,
+        );
+        assert_eq!(roots, ["nexus_config".to_owned()].into());
+        roots.clear();
+        crate_roots("alloc::vec::Vec<u8, alloc::alloc::Global>", &mut roots);
+        assert!(roots.is_empty());
+        roots.clear();
+        crate_roots(
+            "(dyn core::ops::function::Fn<(a::X, b::Y)> + core::marker::Send)",
+            &mut roots,
+        );
+        assert_eq!(roots, ["a".to_owned(), "b".to_owned()].into());
+        // An identifier after `::` continues a path wherever it sits,
+        // the path's third byte included.
+        roots.clear();
+        crate_roots("::a::X", &mut roots);
+        assert!(roots.is_empty());
     }
 
     #[test]
@@ -2180,19 +3676,19 @@ mod tests {
             Box::new([repr]),
         );
 
-        assert_eq!(reader.layout_detail(base), 1);
-        assert_eq!(reader.layout_detail(pointer), 2);
-        assert_eq!(reader.layout_detail(array), 2);
+        assert_eq!(reader.by_name().layout_detail(base), 1);
+        assert_eq!(reader.by_name().layout_detail(pointer), 2);
+        assert_eq!(reader.by_name().layout_detail(array), 2);
         // 3 members * 2 + 5 params + 1.
-        assert_eq!(reader.layout_detail(rich_struct), 12);
-        assert_eq!(reader.layout_detail(rich_union), 12);
+        assert_eq!(reader.by_name().layout_detail(rich_struct), 12);
+        assert_eq!(reader.by_name().layout_detail(rich_union), 12);
         // 3 variants * 2 + a discriminant + 5 params + 1.
-        assert_eq!(reader.layout_detail(many), 13);
-        assert_eq!(reader.layout_detail(zero), 1);
-        assert_eq!(reader.layout_detail(one), 2);
+        assert_eq!(reader.by_name().layout_detail(many), 13);
+        assert_eq!(reader.by_name().layout_detail(zero), 1);
+        assert_eq!(reader.by_name().layout_detail(one), 2);
         // 2 enumerators + 1 param + 1.
-        assert_eq!(reader.layout_detail(cstyle), 4);
-        assert_eq!(reader.layout_detail(type_id(0xdead)), 0);
+        assert_eq!(reader.by_name().layout_detail(cstyle), 4);
+        assert_eq!(reader.by_name().layout_detail(type_id(0xdead)), 0);
     }
 
     #[test]
@@ -2468,7 +3964,7 @@ mod tests {
         let retargeted = param(&mut reader, "T", type_id(0xdead));
 
         let compat = |left: &[RawGenericParameter<StrId>], right: &[RawGenericParameter<StrId>]| {
-            reader.params_have_compatible_layout(left, right)
+            reader.by_name().params_have_compatible_layout(left, right)
         };
         assert!(compat(&[], std::slice::from_ref(&t)));
         assert!(compat(
@@ -2505,7 +4001,9 @@ mod tests {
         let compat = |reader: &DwReader<'static>,
                       left: &VariantShape<StrId>,
                       right: &VariantShape<StrId>| {
-            reader.variant_shapes_have_compatible_layout(left, right)
+            reader
+                .by_name()
+                .variant_shapes_have_compatible_layout(left, right)
         };
 
         let zero = VariantShape::<StrId>::Zero;
@@ -2554,7 +4052,9 @@ mod tests {
         let compat = |reader: &DwReader<'static>,
                       left: &VariantShape<StrId>,
                       right: &VariantShape<StrId>| {
-            reader.variant_shapes_have_compatible_layout(left, right)
+            reader
+                .by_name()
+                .variant_shapes_have_compatible_layout(left, right)
         };
 
         let colors = [("Red", 0), ("Green", 1)];
@@ -2581,19 +4081,23 @@ mod tests {
         let a_twin = member(&mut reader, "first", 0, type_id(0x10));
         let moved = member(&mut reader, "first", 4, type_id(0x10));
 
-        assert!(optional_members_have_compatible_layout(&reader, None, None));
         assert!(optional_members_have_compatible_layout(
-            &reader,
+            &reader.by_name(),
+            None,
+            None
+        ));
+        assert!(optional_members_have_compatible_layout(
+            &reader.by_name(),
             Some(&a),
             Some(&a_twin)
         ));
         assert!(!optional_members_have_compatible_layout(
-            &reader,
+            &reader.by_name(),
             Some(&a),
             Some(&moved)
         ));
         assert!(!optional_members_have_compatible_layout(
-            &reader,
+            &reader.by_name(),
             Some(&a),
             None
         ));
@@ -2605,20 +4109,22 @@ mod tests {
         insert_named_struct(&mut reader, value_b, "Value");
         insert_named_struct(&mut reader, other, "Other");
         assert!(optional_type_ids_have_compatible_layout(
-            &reader, None, None
+            &reader.by_name(),
+            None,
+            None
         ));
         assert!(optional_type_ids_have_compatible_layout(
-            &reader,
+            &reader.by_name(),
             Some(value_a),
             Some(value_b)
         ));
         assert!(!optional_type_ids_have_compatible_layout(
-            &reader,
+            &reader.by_name(),
             Some(value_a),
             Some(other)
         ));
         assert!(!optional_type_ids_have_compatible_layout(
-            &reader,
+            &reader.by_name(),
             Some(value_a),
             None
         ));

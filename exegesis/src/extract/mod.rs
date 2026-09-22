@@ -175,6 +175,24 @@ pub struct ExtractStats {
     pub types_emitted: usize,
     /// Emitted `Opaque` entries (placeholders included).
     pub opaque_types: usize,
+    /// Partition passes the reader ran over the named types before
+    /// their identities settled.
+    pub identity_passes: usize,
+    /// Group partitions the reader computed over those passes.
+    pub groups_repartitioned: usize,
+    /// Declarations the reader placed in a definition class by the
+    /// evidence of their unit.
+    pub declarations_placed: usize,
+    /// Declarations no unit evidence placed, left as types of their own.
+    pub declarations_unresolved: usize,
+    /// Of those, the ones the bundle reached and emitted: the reads that
+    /// actually go through a declaration nothing placed, each declined
+    /// as a type of its own.
+    pub declarations_unresolved_emitted: usize,
+    /// Each declined declaration the bundle emits, by name, unit and
+    /// classes: what the summary names, where the count alone would
+    /// hide which read lands on a type with no layout.
+    pub declined_declarations: Vec<String>,
     /// Types replaced by an `Opaque` placeholder because a member reached
     /// past the type's declared size (see
     /// `demote_types_with_members_out_of_bounds`).
@@ -246,6 +264,22 @@ impl fmt::Display for ExtractStats {
         writeln!(f, "types:")?;
         writeln!(f, "  emitted:                {}", self.types_emitted)?;
         writeln!(f, "  opaque:                 {}", self.opaque_types)?;
+        writeln!(f, "  identity passes:        {}", self.identity_passes)?;
+        writeln!(f, "  groups repartitioned:   {}", self.groups_repartitioned)?;
+        writeln!(f, "  decls placed by unit:   {}", self.declarations_placed)?;
+        writeln!(
+            f,
+            "  decls unresolved:       {}",
+            self.declarations_unresolved
+        )?;
+        writeln!(
+            f,
+            "  of which emitted:       {}",
+            self.declarations_unresolved_emitted
+        )?;
+        for declined in &self.declined_declarations {
+            writeln!(f, "    declined: {declined}")?;
+        }
         writeln!(
             f,
             "  demoted (bad layout):   {}",
@@ -884,6 +918,10 @@ fn extract_from_view(
 ) -> Result<(Bundle, ExtractStats)> {
     let mut stats = ExtractStats::default();
     let reader = view.collector();
+    stats.identity_passes = reader.identity.passes;
+    stats.groups_repartitioned = reader.identity.groups_repartitioned;
+    stats.declarations_placed = reader.identity.placed_declarations;
+    stats.declarations_unresolved = reader.identity.unresolved_declarations.len();
 
     // Namespace ids for the sweep's membership tests. A missing namespace
     // (e.g. a binary without tokio) simply yields no matches.
@@ -1487,6 +1525,22 @@ fn extract_from_view(
         env_facts,
         type_sources,
     );
+    // A declaration nothing placed matters only where a read goes
+    // through it, which is where the bundle reached it: each of those
+    // is declined — it stays a type of its own, with no layout to read
+    // — and named here; the rest are counted.
+    stats.declined_declarations = reader
+        .identity
+        .unresolved_declarations
+        .iter()
+        .filter(|unresolved| em.bundle_id_of(unresolved.declaration).is_some())
+        .map(|unresolved| {
+            let declined = reader.describe_unresolved(unresolved);
+            warn!("{declined}; the bundle reads through it, and it stays a type of its own");
+            declined
+        })
+        .collect();
+    stats.declarations_unresolved_emitted = stats.declined_declarations.len();
     let emitter::Finished {
         types,
         strings,
@@ -2302,12 +2356,16 @@ mod tests {
     }
 
     fn run(fx: &mut Fx, allow_missing_infra: bool) -> Result<(Bundle, ExtractStats)> {
-        fx.reader.index_names();
-        let view = DwView::new(&fx.reader);
         let opts = ExtractOptions {
             allow_missing_infra,
             ..Default::default()
         };
+        run_with(fx, opts)
+    }
+
+    fn run_with(fx: &mut Fx, opts: ExtractOptions) -> Result<(Bundle, ExtractStats)> {
+        fx.reader.index_names();
+        let view = DwView::new(&fx.reader);
         let ident = Identity {
             binary: BinaryIdent {
                 basename: "synthetic".to_owned(),
@@ -2576,6 +2634,46 @@ mod tests {
         let mut fx = world(false, false);
         let (bundle, _) = run(&mut fx, true).expect("a permissive extraction succeeds");
         assert_eq!(bundle.meta.tokio_unstable, None);
+    }
+
+    /// A declaration nothing placed is declined wherever the bundle
+    /// reads through it — a type of its own, counted as emitted — and
+    /// one nothing reaches is counted and let be; neither stops the
+    /// extraction.
+    #[test]
+    fn test_unresolved_declarations_are_declined_where_emitted() {
+        use crate::reader::{DeclarationEvidence, UnresolvedDeclaration};
+        let unresolved = |declaration| UnresolvedDeclaration {
+            declaration,
+            unit: None,
+            classes: Vec::new(),
+            evidence: DeclarationEvidence::None,
+        };
+
+        // A declaration the bundle never reaches.
+        let mut fx = world(true, false);
+        fx.reader.identity.unresolved_declarations = vec![unresolved(type_id(0xdead))];
+        let (_, stats) = run(&mut fx, true).expect("an unreached declaration changes nothing");
+        assert_eq!(stats.declarations_unresolved, 1);
+        assert_eq!(stats.declarations_unresolved_emitted, 0);
+
+        // A task's own future is emitted, and a read goes through it.
+        let mut fx = world(true, false);
+        fx.reader.identity.unresolved_declarations = vec![unresolved(type_id(0x10))];
+        let (bundle, stats) = run(&mut fx, true).expect("an emitted declaration is declined");
+        assert_eq!(stats.declarations_unresolved, 1);
+        assert_eq!(stats.declarations_unresolved_emitted, 1);
+        assert_eq!(stats.declined_declarations.len(), 1);
+        assert!(
+            stats.declined_declarations[0].contains("`app::FutA` declared in no unit (0x10)"),
+            "{:?}",
+            stats.declined_declarations
+        );
+        assert!(
+            stats.to_string().contains("declined: `app::FutA`"),
+            "{stats}"
+        );
+        assert!(bundle.validate().is_ok());
     }
 
     #[test]
