@@ -177,8 +177,8 @@ fn row_of<T: proc::Target>(
 }
 
 /// The requests the census read, by who holds them: a task's finds, a
-/// set child's chain and the finds under it, a held find's chain and
-/// the finds under it. Built in one pass over the census, since a
+/// set child's chain and every find under it, a held find's chain and
+/// every find under it. Built in one pass over the census, since a
 /// listing asks it of every connection on a target and a walk of the
 /// finds per connection would square the work.
 #[derive(Default)]
@@ -202,28 +202,52 @@ impl RequestIndex {
                 .or_default()
                 .insert(text.clone());
             index.by_held.entry(i).or_default().insert(text.clone());
-            match held.via {
-                Some(census::Via::SetChild { set, child }) => {
-                    index.by_child.entry((set, child)).or_default().insert(text);
-                }
-                Some(census::Via::Held(parent)) => {
-                    index.by_held.entry(parent).or_default().insert(text);
-                }
-                None => {}
-            }
+            index.record_above(census, held.via, &text);
         }
         for (set, futures) in census.sets.iter().enumerate() {
             for (child, found) in futures.children.iter().enumerate() {
                 if let Some(request) = &found.request {
-                    index
-                        .by_child
-                        .entry((set, child))
-                        .or_default()
-                        .insert(request.to_string());
+                    let via = census::Via::SetChild { set, child };
+                    index.record_above(census, Some(via), &request.to_string());
                 }
             }
         }
         index
+    }
+
+    /// Record `text` against every holder from `via` up to the task. A
+    /// request the census read a few chains down — reqwest's request
+    /// behind the box a caller's future keeps, that future inside a set
+    /// child — is the child's, and every find's above it, as much as
+    /// the chain it was read from.
+    fn record_above(
+        &mut self,
+        census: &census::FutureCensus,
+        mut via: Option<census::Via>,
+        text: &str,
+    ) {
+        // The `via` links form a tree toward the task, so the walk ends
+        // within the census's own length; the bound keeps a malformed
+        // one from looping.
+        for _ in 0..=census.held.len() + census.sets.len() {
+            match via {
+                None => return,
+                Some(census::Via::Held(parent)) => {
+                    self.by_held
+                        .entry(parent)
+                        .or_default()
+                        .insert(text.to_string());
+                    via = census.held.get(parent).and_then(|held| held.via);
+                }
+                Some(census::Via::SetChild { set, child }) => {
+                    self.by_child
+                        .entry((set, child))
+                        .or_default()
+                        .insert(text.to_string());
+                    via = census.sets.get(set).and_then(|set| set.via);
+                }
+            }
+        }
     }
 
     /// The one request among `requests`; several name none.
@@ -738,9 +762,9 @@ mod tests {
     use hansei_runtime::tokio::TaskAddr;
     use hansei_runtime::tokio::assess::ContinuationStatus;
     use hansei_runtime::tokio::observe::{
-        HttpConnObservation, HttpNegotiatingObservation, HttpReading, HttpServerObservation,
-        HttpWriting, JoinObservation, KeepAlive, TimerObservation, TimerRegistrationState,
-        ValueKey,
+        HttpConnObservation, HttpNegotiatingObservation, HttpReading, HttpRequestObservation,
+        HttpServerObservation, HttpWriting, JoinObservation, KeepAlive, TimerObservation,
+        TimerRegistrationState, ValueKey,
     };
 
     fn row(addr: u64, role: HttpRole, phase: Option<HttpPhase>) -> ConnRow {
@@ -1083,6 +1107,140 @@ mod tests {
         assert_eq!(held_deadline(&census, 0), Some(instant(9)));
         assert_eq!(held_deadline(&census, 1), Some(instant(5)));
         assert_eq!(held_deadline(&census, 2), None);
+    }
+
+    /// A request the census read under a set child — behind the box a
+    /// caller's future keeps, one chain down from the child's own — is
+    /// the child's, and every find's above it up to the task; a holder
+    /// with several under it names none.
+    #[test]
+    fn test_a_request_under_a_child_names_the_child_and_the_finds_above() {
+        fn request(text: &str) -> HttpRequestObservation {
+            HttpRequestObservation {
+                at: key(0x100),
+                method: Some("GET".to_string()),
+                target: hansei_bundle::HttpRequestTarget::Url,
+                text: Some(text.to_string()),
+            }
+        }
+        fn find(
+            via: Option<census::Via>,
+            request: Option<HttpRequestObservation>,
+        ) -> census::HeldFuture {
+            census::HeldFuture {
+                owner: 0,
+                frame: 0,
+                local: "fut".to_string(),
+                via,
+                slot: 0x100,
+                addr: 0x100,
+                ty: hansei_bundle::BundleTypeId(0),
+                depth: 1,
+                frames: Vec::new(),
+                future: "app::Fut".to_string(),
+                state: None,
+                waiting_on: None,
+                wait: None,
+                observation: None,
+                request,
+                continuation: ContinuationStatus::Primitive,
+            }
+        }
+        fn set_child(request: Option<HttpRequestObservation>) -> census::SetChild {
+            census::SetChild {
+                node: 0x2000,
+                depth: 1,
+                future: Some("app::Child".to_string()),
+                root: None,
+                state: None,
+                waiting_on: None,
+                wait: None,
+                observation: None,
+                request,
+                continuation: ContinuationStatus::Primitive,
+            }
+        }
+        fn set(via: Option<census::Via>, children: Vec<census::SetChild>) -> census::FutureSet {
+            census::FutureSet {
+                owner: 0,
+                frame: 0,
+                local: "set".to_string(),
+                via,
+                addr: 0x3000,
+                ty: "FuturesUnordered<app::Child>".to_string(),
+                children,
+            }
+        }
+        let child_of = |set, child| Some(census::Via::SetChild { set, child });
+        let under = |held| Some(census::Via::Held(held));
+        let census = census::FutureCensus::from_finds(
+            vec![
+                // 0: the caller's future inside set 0's first child, and
+                // 1: the request behind the box it keeps.
+                find(child_of(0, 0), None),
+                find(under(0), Some(request("http://one/"))),
+                // 2: a task's own find holding set 1, whose child reads
+                // its request on its own chain.
+                find(None, None),
+                // 3: the future inside set 0's second child; 4 and 5:
+                // two requests under it.
+                find(child_of(0, 1), None),
+                find(under(3), Some(request("http://two/"))),
+                find(under(3), Some(request("http://three/"))),
+            ],
+            vec![
+                set(None, vec![set_child(None), set_child(None)]),
+                set(under(2), vec![set_child(Some(request("http://four/")))]),
+            ],
+            vec![],
+        );
+        let index = RequestIndex::of(&census);
+        let child = |set, child| Owner::Child { set, child };
+        assert_eq!(
+            index.of_owner(child(0, 0)).as_deref(),
+            Some("GET http://one/")
+        );
+        assert_eq!(index.of_held(0).as_deref(), Some("GET http://one/"));
+        assert_eq!(index.of_held(1).as_deref(), Some("GET http://one/"));
+        // The nested set's child names the find that holds the set.
+        assert_eq!(
+            index.of_owner(child(1, 0)).as_deref(),
+            Some("GET http://four/")
+        );
+        assert_eq!(index.of_held(2).as_deref(), Some("GET http://four/"));
+        // Two under one child: neither the child nor the future between
+        // names one; each request's own find still does.
+        assert_eq!(index.of_owner(child(0, 1)), None);
+        assert_eq!(index.of_held(3), None);
+        assert_eq!(index.of_held(4).as_deref(), Some("GET http://two/"));
+        // The task's own finds carry three: it names none.
+        let task = Owner::Task {
+            header: 0,
+            index: 0,
+        };
+        assert_eq!(index.of_owner(task), None);
+
+        // A chain as long as the census allows still reaches its top:
+        // two links over three finds and no set, and two links over one
+        // find and one set.
+        let census = census::FutureCensus::from_finds(
+            vec![
+                find(None, None),
+                find(under(0), None),
+                find(under(1), Some(request("http://five/"))),
+            ],
+            vec![],
+            vec![],
+        );
+        let index = RequestIndex::of(&census);
+        assert_eq!(index.of_held(0).as_deref(), Some("GET http://five/"));
+        let census = census::FutureCensus::from_finds(
+            vec![find(None, None)],
+            vec![set(under(0), vec![set_child(Some(request("http://six/")))])],
+            vec![],
+        );
+        let index = RequestIndex::of(&census);
+        assert_eq!(index.of_held(0).as_deref(), Some("GET http://six/"));
     }
 
     /// A bucket's sample names up to three members and marks the rest.
