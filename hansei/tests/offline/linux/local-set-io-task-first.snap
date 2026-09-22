@@ -5,10 +5,10 @@ description: "`task 1` over linux/local-set-io"
 task 1
     state: idle
     thread: <none>
-    owner: local set 0 @ 0xADDR (lwp 2744617)
+    owner: local set 0 @ 0xADDR (lwp 2065661)
     type: async fn local_set_io::local_reader
     awaiting at: src/bin/local-set-io.rs:32
-    awaiting on: io fd 9 (readable)
+    awaiting on: io fd 10 (readable)
         waker: the read-waiter slot, awaiting readable, ready: writable
     spawned at: src/bin/local-set-io.rs:143:20
     type defined at: src/bin/local-set-io.rs:28

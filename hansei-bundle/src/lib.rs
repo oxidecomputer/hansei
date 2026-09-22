@@ -20,20 +20,20 @@ mod view;
 
 pub use io::{Error, FORMAT_VERSION, Result, semantic_path_target};
 pub use schema::{
-    Arm, BinaryIdent, BitField, Bundle, BundleTypeId, DebugSourceIdent, DiscrDef, DiscrValue,
-    DiscrValues, DisplayNode, DynFutureTable, FamilyCeiling, Field, FieldRender, FutureKind,
-    ImplTable, InfraTypes, MapEntries, MemberDef, MemberRef, Meta, Notation, Provenance,
-    ProvenanceTable, ScalarDecode, Selector, SourceLoc, StaticDef, StaticRole, StaticsTable, Step,
-    Stmt, SymbolLookup, TaskEntryId, TaskFutureEntry, TaskTable, TypeDef, TypeTable, ValueExpr,
-    VariantDef, VariantShape, VtableDataSource, WalkBinding, WalkOutcome, WalkRole, WalksTable,
-    strip_build_prefix, strip_llvm_suffix,
+    Arm, BinaryIdent, BitField, Bundle, BundleTypeId, CrateLabel, DebugSourceIdent, DiscrDef,
+    DiscrValue, DiscrValues, DisplayNode, DynFutureTable, FamilyCeiling, Field, FieldRender,
+    FutureKind, ImplTable, InfraTypes, MapEntries, MemberDef, MemberRef, Meta, Notation,
+    Provenance, ProvenanceTable, ScalarDecode, Selector, SourceLoc, StaticDef, StaticRole,
+    StaticsTable, Step, Stmt, SymbolLookup, TaskEntryId, TaskFutureEntry, TaskTable, TypeDef,
+    TypeTable, ValueExpr, VariantDef, VariantShape, VtableDataSource, WalkBinding, WalkOutcome,
+    WalkRole, WalksTable, strip_build_prefix, strip_llvm_suffix,
 };
 pub use semantics::*;
 pub use shape::Shape;
 pub use strings::{StrRef, StringInterner, StringTable};
 pub use view::{
     ActiveVariant, BundleMember, BundleMemberIter, BundleType, BundleVariant, BundleView,
-    DynPointer, POINTER_SIZE, TypeClass, TypeKind, VariantError, variant_name,
+    CrateRelease, DynPointer, POINTER_SIZE, TypeClass, TypeKind, VariantError, variant_name,
 };
 
 /// The encoding of a `Base` type.

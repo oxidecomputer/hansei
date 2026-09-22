@@ -433,6 +433,12 @@ exclude_re = [
     # pinned where it is consulted (`never_ready`, unread > 0) — but no
     # target can reach the increment itself.
     "replace \\+= with [*-]= in Context<'b, T>::select_branches",
+    # A count of the types whose own crate's declarations name two
+    # packages, which the label pass declines rather than choose
+    # between. No fixture and no reviewed target has one (nexus and
+    # sled-agent both count zero), so no suite can see the count
+    # skewed; the summary line it feeds is what would say so.
+    "replace \\+= with [*-]= in crate_labels",
     # Equivalent mutant: `StopNames::name` is a memo, not an answer.
     # A member's type id and its recorded type name come from the same
     # `view.ty(..)` — the runtime fills one in only where the other is

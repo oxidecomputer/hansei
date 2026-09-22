@@ -5,5 +5,5 @@ description: "`connections --with request park` over illumos/http-conns"
 ADDR       TASK  ROLE    VER    PHASE              METHOD  PEER  BUF      DEADLINE  HANDLER                      REQUEST
 0xADDR  9     server  http1  handling request   GET     —     0/16339  —         async fn http_conns::handle  GET /park
 0xADDR  12    server  http1  handling request   GET     —     0/16326  —         async fn http_conns::handle  GET /park
-0xADDR  13    client  http1  awaiting response  GET     —     0/8192   —         —                            GET http://127.0.0.1:62503/park
+0xADDR  13    client  http1  awaiting response  GET     —     0/8192   —         —                            GET http://127.0.0.1:53844/park
 [3 connections]

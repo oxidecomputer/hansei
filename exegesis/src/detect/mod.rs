@@ -184,7 +184,15 @@ impl FormatExplanation {
     /// paths it addresses.
     pub fn render(&self, bundle: &Bundle) -> String {
         use ::std::fmt::Write as _;
-        let mut out = format!("{} [type {}]\n", self.name, self.id.0);
+        // The crate release beside the id, where the bundle knows it: on
+        // a target linking a crate twice, the name alone does not say
+        // which of two types this trace is for.
+        let release = crate::bundle::BundleView::new(bundle)
+            .ty(self.id)
+            .and_then(|ty| ty.crate_release())
+            .map(|release| format!(", {release}"))
+            .unwrap_or_default();
+        let mut out = format!("{} [type {}{release}]\n", self.name, self.id.0);
         for line in &self.trace {
             let _ = writeln!(out, "{line}");
         }

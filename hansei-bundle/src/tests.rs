@@ -1721,7 +1721,7 @@ mod view_tests {
     use super::dyn_bundle;
     use crate::Encoding;
     use crate::schema::*;
-    use crate::strings::StringInterner;
+    use crate::strings::{StrRef, StringInterner};
     use crate::view::{BundleView, TypeKind, VariantError};
 
     /// A type's implementation site is its own `poll_decls` entry, file
@@ -1773,6 +1773,95 @@ mod view_tests {
             view.ty(BundleTypeId(0)).unwrap().implementation_site(),
             None
         );
+    }
+
+    /// A type's crate release is its own `crate_labels` entry, package
+    /// and every version as recorded, printed as one word each; nothing
+    /// for a type without one. The entry survives a write and a read,
+    /// and validation refuses one naming no release, a release twice,
+    /// a string the table lacks, or a type the table lacks.
+    #[test]
+    fn test_crate_release_is_the_types_own_entry() {
+        let mut b = super::tiny_bundle();
+        let mut strings = StringInterner::new();
+        let u64_name = strings.intern("u64");
+        let pending = strings.intern("reqwest::async_impl::client::PendingRequest");
+        let plain = strings.intern("app::Plain");
+        let reqwest = strings.intern("reqwest");
+        let old = strings.intern("0.12.28");
+        let new = strings.intern("0.13.2");
+        b.types = TypeTable {
+            types: vec![
+                TypeDef::Base {
+                    name: u64_name,
+                    size: 8,
+                    encoding: Encoding::Unsigned,
+                },
+                TypeDef::Struct {
+                    name: pending,
+                    size: 0,
+                    members: vec![],
+                },
+                TypeDef::Struct {
+                    name: plain,
+                    size: 0,
+                    members: vec![],
+                },
+            ],
+            crate_labels: std::collections::BTreeMap::from([
+                (
+                    BundleTypeId(1),
+                    CrateLabel {
+                        package: reqwest,
+                        versions: vec![new],
+                    },
+                ),
+                (
+                    BundleTypeId(2),
+                    CrateLabel {
+                        package: reqwest,
+                        versions: vec![old, new],
+                    },
+                ),
+            ]),
+            ..Default::default()
+        };
+        b.strings = strings.finish();
+        b.validate().unwrap();
+
+        let mut bytes = Vec::new();
+        b.write_to(&mut bytes).unwrap();
+        let back = Bundle::read_from(bytes.as_slice()).unwrap();
+        assert_eq!(back.types.crate_labels, b.types.crate_labels);
+
+        let view = BundleView::new(&back);
+        let release = view.ty(BundleTypeId(1)).unwrap().crate_release().unwrap();
+        assert_eq!(release.package, "reqwest");
+        assert_eq!(release.versions, vec!["0.13.2"]);
+        assert_eq!(release.to_string(), "reqwest 0.13.2");
+        assert_eq!(
+            view.ty(BundleTypeId(2))
+                .unwrap()
+                .crate_release()
+                .unwrap()
+                .to_string(),
+            "reqwest 0.12.28/0.13.2"
+        );
+        assert_eq!(view.ty(BundleTypeId(0)).unwrap().crate_release(), None);
+
+        let refused = |label: CrateLabel, id: BundleTypeId| {
+            let mut bad = b.clone();
+            bad.types.crate_labels = std::collections::BTreeMap::from([(id, label)]);
+            bad.validate().unwrap_err().to_string()
+        };
+        let label = |versions: Vec<StrRef>| CrateLabel {
+            package: reqwest,
+            versions,
+        };
+        assert!(refused(label(vec![]), BundleTypeId(1)).contains("names no release"));
+        assert!(refused(label(vec![new, new]), BundleTypeId(1)).contains("twice"));
+        assert!(refused(label(vec![StrRef(u32::MAX)]), BundleTypeId(1)).contains("out of range"));
+        assert!(refused(label(vec![new]), BundleTypeId(9)).contains("out of range"));
     }
 
     /// A coroutine's local site is the entry of that name in its own

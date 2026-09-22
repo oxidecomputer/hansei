@@ -13,8 +13,8 @@ use super::passes::{
 };
 use super::paths::{OwnedLoc, display_path};
 use crate::bundle::{
-    BundleTypeId, DiscrDef, DiscrValue, DiscrValues, DisplayNode, ImplTable, MemberDef, MemberRef,
-    SourceLoc, StrRef, StringInterner, TypeDef, TypeTable, VariantDef, VariantShape,
+    BundleTypeId, CrateLabel, DiscrDef, DiscrValue, DiscrValues, DisplayNode, ImplTable, MemberDef,
+    MemberRef, SourceLoc, StrRef, StringInterner, TypeDef, TypeTable, VariantDef, VariantShape,
 };
 use crate::detect::{Family, FormatExplanation, trace, unique_member};
 use crate::raw_types::{DiscrBits, RawType, VariantShape as RawVariantShape};
@@ -67,6 +67,9 @@ pub(crate) struct Emitter<'a> {
     /// declared, keyed by its emitted id — the type table's
     /// `local_decls`.
     local_decls: BTreeMap<BundleTypeId, Vec<(StrRef, SourceLoc)>>,
+    /// The crate release each emitted type's own declarations name,
+    /// keyed by its emitted id — the type table's `crate_labels`.
+    crate_labels: BTreeMap<BundleTypeId, CrateLabel>,
     debug_formats: BTreeMap<BundleTypeId, DisplayNode>,
     /// Fully-qualified names for the name index, parallel to `defs`.
     names: Vec<Option<String>>,
@@ -97,6 +100,7 @@ impl<'a> Emitter<'a> {
             env_decls: BTreeMap::new(),
             poll_decls: BTreeMap::new(),
             local_decls: BTreeMap::new(),
+            crate_labels: BTreeMap::new(),
             debug_formats: BTreeMap::new(),
             names: Vec::new(),
             pending: VecDeque::new(),
@@ -114,6 +118,11 @@ impl<'a> Emitter<'a> {
     /// The bundle id `id` was emitted under, if it has been emitted.
     pub(crate) fn bundle_id_of(&self, id: TypeId) -> Option<BundleTypeId> {
         self.ids.get(&self.reader.canonicalize(id)).copied()
+    }
+
+    /// Every emitted type, DWARF id to bundle id.
+    pub(super) fn emitted_ids(&self) -> impl Iterator<Item = (TypeId, BundleTypeId)> + '_ {
+        self.ids.iter().map(|(&tid, &bid)| (tid, bid))
     }
 
     /// Every emitted type that carries a fully-qualified name — the walk
@@ -287,6 +296,26 @@ impl<'a> Emitter<'a> {
     /// or a wait-set member of that type prints as its `defined at`.
     pub(super) fn record_poll_decl(&mut self, bid: BundleTypeId, loc: SourceLoc) {
         self.poll_decls.insert(bid, loc);
+    }
+
+    /// Record the crate release an emitted type's own declarations
+    /// name — the type table's `crate_labels`, what tells two
+    /// same-named types apart where a target links their crate twice.
+    /// `versions` is ascending, at least one.
+    pub(super) fn record_crate_label(
+        &mut self,
+        bid: BundleTypeId,
+        package: &str,
+        versions: &[semver::Version],
+    ) {
+        let label = CrateLabel {
+            package: self.intern(package),
+            versions: versions
+                .iter()
+                .map(|v| self.intern(&v.to_string()))
+                .collect(),
+        };
+        self.crate_labels.insert(bid, label);
     }
 
     /// Record where a coroutine's frame-resident locals are declared —
@@ -620,6 +649,7 @@ impl<'a> Emitter<'a> {
             env_decls: self.env_decls,
             poll_decls: self.poll_decls,
             local_decls: self.local_decls,
+            crate_labels: self.crate_labels,
             ..Default::default()
         };
         let demoted = demote_types_with_members_out_of_bounds(&mut types, &self.names);

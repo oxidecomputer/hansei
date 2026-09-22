@@ -30,7 +30,7 @@ pub const MAGIC: [u8; 8] = *b"exegesis";
 
 /// The current bundle format version. Bump on any schema change, including
 /// indirect ones (e.g. new [`crate::Encoding`] variants).
-pub const FORMAT_VERSION: u32 = 78;
+pub const FORMAT_VERSION: u32 = 79;
 
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -1312,6 +1312,29 @@ impl Bundle {
         for (&id, loc) in &self.types.poll_decls {
             check_ty("poll decl", id)?;
             check_str("poll decl", loc.file)?;
+        }
+
+        // At least one release, none repeated: a label naming no
+        // release says nothing, and one naming a release twice was
+        // built wrong.
+        for (&id, label) in &self.types.crate_labels {
+            check_ty("crate label", id)?;
+            check_str("crate label", label.package)?;
+            if label.versions.is_empty() {
+                return corrupt(format!("crate label of type {} names no release", id.0));
+            }
+            let mut seen: Vec<&str> = Vec::with_capacity(label.versions.len());
+            for &version in &label.versions {
+                check_str("crate label", version)?;
+                let version = self.strings.get(version).unwrap();
+                if seen.contains(&version) {
+                    return corrupt(format!(
+                        "crate label of type {} names release {version} twice",
+                        id.0
+                    ));
+                }
+                seen.push(version);
+            }
         }
 
         // Strictly increasing by the name's ref: one check for both the

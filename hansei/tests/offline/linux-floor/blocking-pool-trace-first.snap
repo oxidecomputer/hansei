@@ -2,7 +2,7 @@
 source: hansei/src/offline.rs
 description: "`trace 3 -n` over linux-floor/blocking-pool"
 ---
-mid-poll, but lwp 2751268's walked stack holds no frame in the task's poll symbol (its walk ended: no CFI for /usr/lib64/libc.so.6 (none of its pages are in the core, and the backing file is not on this machine); the frame-pointer walk found nothing below 0xADDR); `threads 2751268` shows the raw stack
+mid-poll, but lwp 2078307's walked stack holds no frame in the task's poll symbol (its walk ended: no CFI for /usr/lib64/libc.so.6 (none of its pages are in the core, and the backing file is not on this machine); the frame-pointer walk found nothing below 0xADDR); `threads 2078307` shows the raw stack
 
 the task is mid-poll: its saved state below the root is not read as a chain
 #0  future        tokio::runtime::blocking::task::BlockingTask<blocking_pool::main::{async_block#0}::{closure_env#0}>

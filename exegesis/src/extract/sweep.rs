@@ -124,7 +124,12 @@ pub(super) enum PollTrait {
 /// when the function records no file. Also the source a `select!`
 /// closure's declaration is read as, for the binder's origin check.
 pub(super) fn poll_source(reader: &DwReader<'_>, func: &Func<'_>) -> Option<PollSource> {
-    let loc = func.raw().source_loc.as_deref()?;
+    source_of(reader, func.raw().source_loc.as_deref()?)
+}
+
+/// The file a recorded location names, joined the way [`poll_source`]
+/// says; `None` when it records no file.
+pub(super) fn source_of(reader: &DwReader<'_>, loc: &SourceLoc<StrId>) -> Option<PollSource> {
     let file = reader.strings.get(loc.file?);
     let dir = loc
         .dir

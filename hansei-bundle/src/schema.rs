@@ -204,6 +204,19 @@ pub struct TypeTable {
     /// local. Sparse — a local shadowed across scopes, or one the DWARF
     /// did not place, records nothing.
     pub local_decls: BTreeMap<BundleTypeId, Vec<(StrRef, SourceLoc)>>,
+    /// The crate release each type's own declarations name, keyed by
+    /// type id: the `<crate>-<version>` of the cargo registry path a
+    /// method, a `poll`, or the type's own declaration is written in,
+    /// for a type whose namespace root is that crate. A type of a crate
+    /// the target links at two releases is one type per release where
+    /// the releases disagree on its layout, and this is what tells the
+    /// two apart where a name cannot. Sparse — a std type, a workspace
+    /// type, and a downstream instantiation of a generic (whose only
+    /// declarations are in the crates that use it) record nothing; a
+    /// guess from a unit's compilation directory would name the wrong
+    /// crate, so none is made. A label, never a key: nothing selects a
+    /// type by it.
+    pub crate_labels: BTreeMap<BundleTypeId, CrateLabel>,
     /// O(1) view of `debug_formats`, built on first use: a position per
     /// type id (`u32::MAX` for types without a format) into a flat list
     /// of the display nodes. A census-style walk asks for a type's
@@ -211,6 +224,20 @@ pub struct TypeTable {
     /// hottest leaf of the whole command.
     #[serde(skip)]
     pub format_index: SideTable<(Vec<u32>, Vec<DisplayNode>)>,
+}
+
+/// The crate release a type's declarations name — see
+/// [`TypeTable::crate_labels`].
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub struct CrateLabel {
+    /// The package name as the registry directory spells it
+    /// (`hickory-proto`, where the namespace root is `hickory_proto`).
+    pub package: StrRef,
+    /// Every release the type's declarations are written in, ascending
+    /// by version, at least one. Two releases whose layouts of the type
+    /// agree are one type that both declare, and the label says so
+    /// rather than choosing.
+    pub versions: Vec<StrRef>,
 }
 
 /// A lazily-built in-memory side table riding on serialized data: skipped

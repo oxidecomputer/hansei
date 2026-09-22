@@ -4,13 +4,13 @@ description: "`tasks --exec trace -n` over linux-floor/local-set-io"
 ---
 task 1
 #0  future        tokio::io::util::read::Read<tokio::net::unix::stream::UnixStream>
-      waiting on io fd 9 (readable)
+      waiting on io fd 10 (readable)
 #1  async fn      local_set_io::local_reader
       awaiting at src/bin/local-set-io.rs:32 (Suspend0, 2 locals)
 
 task 2
 #0  future        tokio::runtime::io::scheduled_io::Readiness
-      waiting on io fd 11 (readable)
+      waiting on io fd 12 (readable)
 #1  async fn      tokio::runtime::io::scheduled_io::ScheduledIo::readiness
       awaiting at tokio-1.47.5/src/runtime/io/scheduled_io.rs:385 (Suspend0, 0 locals)
 #2  async fn      tokio::runtime::io::registration::Registration::readiness
@@ -24,7 +24,7 @@ task 2
 
 task 3
 #0  future        tokio::io::util::write_all::WriteAll<tokio::net::unix::stream::UnixStream>
-      waiting on io fd 13 (writable)
+      waiting on io fd 14 (writable)
 #1  async fn      local_set_io::local_writer
       awaiting at src/bin/local-set-io.rs:60 (Suspend1, 2 locals)
 
@@ -36,7 +36,7 @@ task 4
 
 task 5
 #0  future        tokio::io::util::read::Read<tokio::net::unix::stream::UnixStream>
-      waiting on io fd 15 (readable)
+      waiting on io fd 16 (readable)
 #1  async fn      local_set_io::reader
       awaiting at src/bin/local-set-io.rs:114 (Suspend0, 2 locals)
 [Executed against 5 tasks, 0 failed]

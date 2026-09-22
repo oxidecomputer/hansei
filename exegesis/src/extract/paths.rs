@@ -106,24 +106,37 @@ pub(super) fn rustc_version_of(producer: &str) -> String {
     }
 }
 
+/// The crate and version a registry source path names, from its
+/// `<crate>-<semver>` directory: `("tokio", 1.52.3)` for
+/// `…/tokio-1.52.3/src/runtime/task/raw.rs`, whether the path is
+/// absolute (as the line table records it) or already cut to the tail
+/// a reader sees. The first path segment that splits at a `-` into a
+/// nonempty name and a whole version is the crate directory — a name
+/// may carry `-`s of its own (`tokio-util-0.7.12`), but none of its
+/// segments is a version. A path with no such segment (a workspace
+/// crate, a toolchain source) names no crate.
+pub(super) fn crate_version_of(path: &str) -> Option<(&str, semver::Version)> {
+    path.split('/').find_map(|segment| {
+        segment.match_indices('-').find_map(|(at, _)| {
+            let (package, version) = (&segment[..at], &segment[at + 1..]);
+            if package.is_empty() {
+                return None;
+            }
+            semver::Version::parse(version)
+                .ok()
+                .map(|version| (package, version))
+        })
+    })
+}
+
 /// Recover the tokio version from a registry source path such as
 /// `…/tokio-1.52.3/src/runtime/task/raw.rs`.
 pub(super) fn tokio_version_of(loc: &OwnedLoc) -> Option<semver::Version> {
-    for part in [loc.dir.as_deref(), loc.file.as_deref()]
+    [loc.dir.as_deref(), loc.file.as_deref()]
         .into_iter()
         .flatten()
-    {
-        if let Some(i) = part.find("tokio-") {
-            let rest = &part[i + "tokio-".len()..];
-            let end = rest
-                .find(|c: char| c != '.' && !c.is_ascii_digit())
-                .unwrap_or(rest.len());
-            if let Ok(v) = semver::Version::parse(&rest[..end]) {
-                return Some(v);
-            }
-        }
-    }
-    None
+        .filter_map(crate_version_of)
+        .find_map(|(package, version)| (package == "tokio").then_some(version))
 }
 
 /// The display path for a source location: the file joined onto its
@@ -444,6 +457,62 @@ mod tests {
             agreed_site([&own_unit, &other_unit]),
             Agreement::Site(l) if l.file.as_deref() == Some("http1.rs")
         ));
+    }
+
+    #[test]
+    fn test_crate_version_of_reads_the_crate_directory() {
+        use super::{crate_version_of, tokio_version_of};
+        let v = |s: &str| semver::Version::parse(s).unwrap();
+        // Absolute as the line table records it, or cut to the tail.
+        assert_eq!(
+            crate_version_of(
+                "/home/u/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.52.3/src/runtime/task/raw.rs"
+            ),
+            Some(("tokio", v("1.52.3")))
+        );
+        assert_eq!(
+            crate_version_of("tokio-1.52.3/src/runtime/task/raw.rs"),
+            Some(("tokio", v("1.52.3")))
+        );
+        // A name with `-`s of its own splits where the rest is a whole
+        // version; the registry index directory's hash is not one.
+        assert_eq!(
+            crate_version_of(
+                "registry/src/index.crates.io-1949cf8c6b5b557f/hickory-proto-0.25.2/src/xfer/mod.rs"
+            ),
+            Some(("hickory-proto", v("0.25.2")))
+        );
+        assert_eq!(
+            crate_version_of("tracing-core-0.1.33-beta.1/src/lib.rs"),
+            Some(("tracing-core", v("0.1.33-beta.1")))
+        );
+        // No crate directory: a workspace path, a toolchain source, a
+        // bare version, an empty name.
+        for path in [
+            "nexus/db-queries/src/db/datastore/mod.rs",
+            "/rustc/2d8144b78/library/core/src/ptr/mod.rs",
+            "/home/u/.rustup/toolchains/1.98.0-aarch64-apple-darwin/lib/rustlib/src/rust/library/alloc/src/vec/mod.rs",
+            "-1.2.3/src/lib.rs",
+            "",
+        ] {
+            assert_eq!(crate_version_of(path), None, "{path}");
+        }
+        // tokio's version is the same read, filtered to tokio: a path
+        // through `tokio-util` names no tokio version.
+        let loc = |dir: &str| OwnedLoc {
+            file: Some("src/lib.rs".to_owned()),
+            dir: Some(dir.to_owned()),
+            comp_dir: None,
+            line: None,
+        };
+        assert_eq!(
+            tokio_version_of(&loc("/home/u/.cargo/registry/src/idx/tokio-1.52.3")),
+            Some(v("1.52.3"))
+        );
+        assert_eq!(
+            tokio_version_of(&loc("/home/u/.cargo/registry/src/idx/tokio-util-0.7.12")),
+            None
+        );
     }
 
     #[test]

@@ -7,7 +7,7 @@ COUNT  WAITING ON                      TASKS
     2  http1 client awaiting response  9, 12
     2  http1 server handling request   8, 11
     1  http server negotiating         13
-    1  http1 client idle               5
-    1  http1 server idle               4
+    1  http1 client idle               4
+    1  http1 server idle               5
     1  io                              3
 [7 groups]

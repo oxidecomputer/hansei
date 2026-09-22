@@ -166,6 +166,25 @@ pub struct BundleType<'a> {
     id: BundleTypeId,
 }
 
+/// A type's crate release as the bundle recorded it — the strings
+/// behind a [`CrateLabel`](crate::CrateLabel), printed as
+/// `reqwest 0.13.2`, or `reqwest 0.12.28/0.13.2` for a type two releases
+/// declare identically.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct CrateRelease<'a> {
+    /// The package name as the registry directory spells it.
+    pub package: &'a str,
+    /// Every release the type's declarations are written in, ascending,
+    /// at least one.
+    pub versions: Vec<&'a str>,
+}
+
+impl std::fmt::Display for CrateRelease<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} {}", self.package, self.versions.join("/"))
+    }
+}
+
 impl PartialEq for BundleType<'_> {
     fn eq(&self, other: &Self) -> bool {
         std::ptr::eq(self.bundle, other.bundle) && self.id == other.id
@@ -472,6 +491,19 @@ impl<'a> BundleType<'a> {
     pub fn declaration_site(&self) -> Option<(&'a str, u32)> {
         let loc = self.bundle.types.env_decls.get(&self.id)?;
         Some((self.str(loc.file), loc.line))
+    }
+
+    /// The crate release this type's own declarations name, when the
+    /// bundle recorded one: what tells two same-named types apart where
+    /// a target links their crate at two releases. `None` for a std or
+    /// workspace type, and for a generic instantiated only downstream
+    /// of its crate.
+    pub fn crate_release(&self) -> Option<CrateRelease<'a>> {
+        let label = self.bundle.types.crate_labels.get(&self.id)?;
+        Some(CrateRelease {
+            package: self.str(label.package),
+            versions: label.versions.iter().map(|&v| self.str(v)).collect(),
+        })
     }
 
     /// Where this coroutine's frame-resident local `name` is declared,

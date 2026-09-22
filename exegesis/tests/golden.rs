@@ -464,6 +464,31 @@ fn assert_env_decl(program: &str, bundle: &Bundle, type_name: &str, expected: u3
     assert_eq!(line, expected, "{program}: {type_name}'s line");
 }
 
+/// The crate release the bundle labels the type named `type_name` with,
+/// as `find-types` prints it (`tokio 1.52.4`), or `None` where it
+/// carries no label. The type must exist, and every definition under
+/// the name must agree — a fixture links each crate once.
+fn assert_crate_label(program: &str, bundle: &Bundle, type_name: &str, expected: Option<&str>) {
+    let view = hansei_bundle::BundleView::new(bundle);
+    let ids: Vec<_> = bundle
+        .types
+        .find_by_name(&bundle.strings, type_name)
+        .collect();
+    assert!(!ids.is_empty(), "{program}: no type named {type_name}");
+    for id in ids {
+        let label = view
+            .ty(id)
+            .and_then(|ty| ty.crate_release())
+            .map(|release| release.to_string());
+        assert_eq!(
+            label.as_deref(),
+            expected,
+            "{program}: crate label of {type_name} (type {})",
+            id.0
+        );
+    }
+}
+
 /// The local-decl table's entry for `local` of the coroutine named
 /// `type_name`, as (file, line), or `None` where the table carries
 /// none: a local never held across an await, or one whose copies
@@ -2300,6 +2325,20 @@ fn assert_never_ready(program: &str, bundle: &Bundle) {
 
 fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
     assert_addresses_by_name(program, bundle);
+    // The label counters restate the bundle's label table: every label
+    // the pass produced is recorded, and the several-releases count is
+    // what the recorded version lists say.
+    let labels = &bundle.types.crate_labels;
+    assert_eq!(
+        stats.crate_labels,
+        labels.len(),
+        "{program}: crate label count"
+    );
+    assert_eq!(
+        stats.crate_labels_several_releases,
+        labels.values().filter(|l| l.versions.len() > 1).count(),
+        "{program}: crate labels naming several releases"
+    );
     // The impl table records only what the bundle's strings mention —
     // an entry nothing names is dead weight the emit filter should have
     // dropped. (Sortedness and the plain-path value rules are the
@@ -3656,6 +3695,38 @@ fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
             hansei_bundle::ResourceKind::Notified,
         );
         assert_no_resource(program, bundle, "tokio::sync::mpsc::bounded::Receiver<u32>");
+        // A tokio type is labeled with the release its own methods are
+        // declared in — the same registry path the family dispatch
+        // recovered the tokio version from, so the two agree by
+        // construction. The fixture's own coroutine is declared under
+        // no registry path and carries no label.
+        let tokio = bundle
+            .meta
+            .tokio_version
+            .as_ref()
+            .unwrap_or_else(|| panic!("{program}: no tokio version recovered"));
+        assert_crate_label(
+            program,
+            bundle,
+            "tokio::sync::notify::Notify",
+            Some(&format!("tokio {tokio}")),
+        );
+        assert_crate_label(
+            program,
+            bundle,
+            "tokio::sync::notify::Notified",
+            Some(&format!("tokio {tokio}")),
+        );
+        // A tokio coroutine records no declaring file of its own; its
+        // release is read off the resume function whose `self` is the
+        // `Pin<&mut _>` over it.
+        assert_crate_label(
+            program,
+            bundle,
+            "tokio::sync::mpsc::bounded::{impl#0}::recv::{async_fn_env#0}<u32>",
+            Some(&format!("tokio {tokio}")),
+        );
+        assert_crate_label(program, bundle, "channels::hold::{async_fn_env#0}", None);
         // A oneshot receiver is its own future, so the binding is on
         // the receiver itself.
         assert_resource(

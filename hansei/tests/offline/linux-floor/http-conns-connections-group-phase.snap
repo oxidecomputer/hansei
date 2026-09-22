@@ -5,6 +5,6 @@ description: "`connections --group phase` over linux-floor/http-conns"
 COUNT  PHASE              CONNECTIONS
     2  awaiting response  http1 client 0xADDR, http1 client 0xADDR
     2  handling request   http1 server 0xADDR, http1 server 0xADDR
-    2  idle               http1 server 0xADDR, http1 client 0xADDR
+    2  idle               http1 client 0xADDR, http1 server 0xADDR
     1  negotiating        http server 0xADDR
 [4 groups]

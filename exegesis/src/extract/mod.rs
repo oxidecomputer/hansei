@@ -25,6 +25,7 @@
 //!    no silent omissions.
 
 mod emitter;
+mod labels;
 mod passes;
 mod paths;
 mod semantics;
@@ -154,6 +155,15 @@ pub struct ExtractStats {
     /// locals of that name disagreed on where they are declared — a
     /// name shadowed across scopes — so no line was recorded for them.
     pub local_decls_declined: usize,
+    /// Emitted types whose own declarations name their crate's
+    /// release, so the bundle labels them with it.
+    pub crate_labels: usize,
+    /// Of those, types two releases declare with one layout, so the
+    /// label names both.
+    pub crate_labels_several_releases: usize,
+    /// Emitted types whose declarations named two different packages
+    /// that both spell the type's crate, so no label was recorded.
+    pub crate_labels_declined: usize,
     /// Infra types that were not found.
     pub infra_missing: Vec<String>,
     /// Statics that were not found.
@@ -261,6 +271,17 @@ impl fmt::Display for ExtractStats {
         writeln!(f, "  poll decls declined:    {}", self.poll_decls_declined)?;
         writeln!(f, "  local decls:            {}", self.local_decls)?;
         writeln!(f, "  local decls declined:   {}", self.local_decls_declined)?;
+        writeln!(f, "  crate labels:           {}", self.crate_labels)?;
+        writeln!(
+            f,
+            "  of which two releases:  {}",
+            self.crate_labels_several_releases
+        )?;
+        writeln!(
+            f,
+            "  crate labels declined:  {}",
+            self.crate_labels_declined
+        )?;
         writeln!(f, "types:")?;
         writeln!(f, "  emitted:                {}", self.types_emitted)?;
         writeln!(f, "  opaque:                 {}", self.opaque_types)?;
@@ -1368,6 +1389,18 @@ fn extract_from_view(
         {
             em.record_poll_decl(bid, loc);
         }
+    }
+
+    // The crate release each emitted type's own declarations name — what
+    // tells two same-named types apart where the target links their
+    // crate at two releases. Bundle-id order, for the string-table
+    // reason above.
+    let labels = labels::crate_labels(reader, &em);
+    stats.crate_labels = labels.labels.len();
+    stats.crate_labels_several_releases = labels.several_releases();
+    stats.crate_labels_declined = labels.declined;
+    for (bid, (package, versions)) in &labels.labels {
+        em.record_crate_label(*bid, package, versions);
     }
 
     // Where each emitted coroutine's frame-resident locals are declared
