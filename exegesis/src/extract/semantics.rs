@@ -4663,6 +4663,21 @@ mod tests {
                 files: Vec::new(),
             }
         );
+        // A type declared under one release names that release, with
+        // nothing to break a tie against: on a target linking two
+        // releases whose layouts differ, each release's type has its
+        // own poll declaration, and each origin is exact.
+        let own = delegation_origin(
+            &BTreeSet::from([source(
+                "/home/u/.cargo/registry/src/idx/tracing-0.1.41/src/instrument.rs",
+                None,
+            )]),
+            &TRACING_INSTRUMENTED_V0_1_40,
+            "poll",
+        )
+        .unwrap();
+        assert_eq!(own.version, "0.1.41");
+        assert!(own.source.ends_with("tracing-0.1.41/src/instrument.rs"));
         // A checksum the table carried is recorded when reviewed.
         let origin = delegation_origin(
             &BTreeSet::from([source(REGISTRY, Some(reviewed))]),
