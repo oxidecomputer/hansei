@@ -136,8 +136,8 @@ fn commands(
         ),
         ("runtime", "runtime".to_owned()),
         // The connection listing: empty on every fixture but the one
-        // that holds connections, where the rows read the peers, the
-        // handler and the buffers, and a grouping tallies the phases.
+        // that holds connections, where the rows read the phases, the
+        // requests and the buffers, and a grouping tallies the phases.
         ("connections", "connections".to_owned()),
         // The info summary and each section. A snapshot records no
         // process notes and no fd table, so the goldens pin the

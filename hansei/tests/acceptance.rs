@@ -3959,14 +3959,14 @@ fn test_wrong_binary_refused_by_build_id() {
 /// The connection listing over the fixture that holds connections: the
 /// two clients — one idle in its pool, one awaiting the parked GET's
 /// response — and the three servers: idle, running the parked handler,
-/// and still choosing its version. No row names a peer: hyper keeps
-/// none on either side, and the fixture's service is its own closure,
-/// which no reviewed convention says stores one (dropshot's does). The
-/// handler is the fixture's own async fn and the buffers hold nothing
-/// unparsed at the parked state. The idle server has armed its
-/// header-read timer, whose deadline is masked whole — its form is the
-/// system's. Grouping by phase files the five under four buckets, and a
-/// filter on the role keeps the servers.
+/// and still choosing its version. No row names a peer or a server:
+/// hyper keeps neither on either side, and the fixture's service is its
+/// own closure, which no reviewed convention says stores them
+/// (dropshot's does). The buffers hold nothing unparsed at the parked
+/// state. The idle server has armed its header-read timer, whose
+/// deadline is masked whole — its form is the system's. Grouping by
+/// phase files the five under four buckets, and a filter on the role
+/// keeps the servers.
 ///
 /// The rows are compared without their address and task cells and in
 /// sorted order. Every connection is parked by the time the core is
@@ -4015,8 +4015,8 @@ fn test_http_conns_connections_acceptance() {
                 "client http1 awaiting response GET — 0/8192 — — GET http://127.0.0.1:PORT/park",
                 "client http1 awaiting response GET — 0/8192 — — —",
                 "client http1 idle — — 0/8192 — — —",
-                "server http1 handling request GET — 0/16326 — async fn http_conns::handle GET /park",
-                "server http1 handling request GET — 0/16339 — async fn http_conns::handle GET /park",
+                "server http1 handling request GET — 0/16326 — — GET /park",
+                "server http1 handling request GET — 0/16339 — — GET /park",
                 "server http1 idle — — 0/16302 DEADLINE — —",
                 "server — negotiating — — — — — —",
             ],

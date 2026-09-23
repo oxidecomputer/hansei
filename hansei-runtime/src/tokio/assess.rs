@@ -2380,7 +2380,6 @@ mod tests {
             client: None,
             server: Some(HttpServerObservation {
                 in_flight,
-                handler: in_flight.then(|| "app::handle::{async_fn_env#0}".to_owned()),
                 header_read_timer_running: false,
                 header_read_timeout: None,
                 header_read_timer: None,
@@ -2659,7 +2658,6 @@ mod tests {
         // A server observation never carries a client's dispatch.
         let _ = HttpServerObservation {
             in_flight: false,
-            handler: None,
             header_read_timer_running: false,
             header_read_timeout: None,
             header_read_timer: None,

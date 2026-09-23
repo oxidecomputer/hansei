@@ -5,16 +5,15 @@
 //! The `connections` listing: every HTTP connection the target holds,
 //! a row apiece, read from the connection resources the wait analysis
 //! and the census observed — the verdict's words and the facts beside
-//! them (the peer, the handler, the read buffer, an armed timer's
-//! deadline), which the task block does not have room to say.
+//! them (the peer, the accepting server, the read buffer, an armed
+//! timer's deadline), which the task block does not have room to say.
 
 use crate::runtimes::RowOwner;
 use crate::tasks::{Cmp, EMPTY_BUCKET, alternatives, distinct_values, listing_footer, task_id};
 use crate::{Session, output, print_warnings};
 
 use anyhow::{Context as _, Result, anyhow};
-use hansei_bundle::names::ImplFold;
-use hansei_bundle::{HttpRole, names};
+use hansei_bundle::HttpRole;
 use hansei_runtime::tokio::assess::{client_phase, http_caller, server_phase};
 use hansei_runtime::tokio::bundle::{
     HttpCaller, HttpPhase, HttpVersion, TaskList, deadline_text, http_kind_word,
@@ -48,8 +47,9 @@ pub(crate) struct ConnRow {
     /// The peer's address, where the service the server drives keeps
     /// one under a reviewed convention.
     pub(crate) peer: Option<String>,
-    /// A server's running handler, by its future type.
-    pub(crate) handler: Option<String>,
+    /// The context type of the server that accepted the connection,
+    /// where its service names one under a reviewed convention.
+    pub(crate) server: Option<String>,
     /// The read buffer's fill and capacity.
     pub(crate) read_buf: Option<(u64, u64)>,
     /// The header-read timer's deadline, where the server has armed
@@ -159,7 +159,7 @@ fn row_of<T: proc::Target>(
         phase: None,
         method: None,
         peer: None,
-        handler: None,
+        server: None,
         read_buf: None,
         deadline: None,
         request: None,
@@ -171,7 +171,6 @@ fn row_of<T: proc::Target>(
         observation,
         held_deadline(census, owner),
         stopped,
-        &session.impl_fold,
         &request_of,
     )
 }
@@ -311,7 +310,6 @@ fn conn_row(
     observation: &ResourceObservation,
     held: Option<RawInstant>,
     stopped: Option<RawInstant>,
-    impls: &ImplFold,
     request_of: &dyn Fn(&HttpCaller) -> Option<String>,
 ) -> Option<ConnRow> {
     match observation {
@@ -324,7 +322,7 @@ fn conn_row(
             phase: Some(HttpPhase::Negotiating),
             method: None,
             peer: None,
-            handler: None,
+            server: None,
             read_buf: None,
             deadline: None,
             request: None,
@@ -366,12 +364,7 @@ fn conn_row(
                 phase,
                 method: http.method.clone(),
                 peer: server.and_then(|server| server.peer.clone()),
-                handler: server.and_then(|server| {
-                    server
-                        .handler
-                        .as_deref()
-                        .map(|handler| names::display_future_name(handler, impls))
-                }),
+                server: server.and_then(|server| server.context.clone()),
                 read_buf: http.read_buf,
                 deadline,
                 request,
@@ -410,7 +403,7 @@ fn row_cells(row: &ConnRow, groups: bool) -> Vec<String> {
         row.peer.clone().unwrap_or_else(dash),
         row.buffer_cell().unwrap_or_else(dash),
         row.deadline.clone().unwrap_or_else(dash),
-        row.handler.clone().unwrap_or_else(dash),
+        row.server.clone().unwrap_or_else(dash),
         row.request.clone().unwrap_or_else(dash),
     ]);
     cells
@@ -432,7 +425,7 @@ fn print_table(
         header.push("RT");
     }
     header.extend([
-        "ROLE", "VER", "PHASE", "METHOD", "PEER", "BUF", "DEADLINE", "HANDLER", "REQUEST",
+        "ROLE", "VER", "PHASE", "METHOD", "PEER", "BUF", "DEADLINE", "SERVER", "REQUEST",
     ]);
     let columns = header.len();
     let mut table = output::Table::new(columns)
@@ -478,8 +471,8 @@ pub(crate) enum Field {
     Method,
     /// The peer's address as printed.
     Peer,
-    /// The running handler's type.
-    Handler,
+    /// The accepting server's context type.
+    Server,
     /// The request behind the connection, as printed.
     Request,
     /// The bytes read and not yet parsed — compared.
@@ -496,7 +489,7 @@ impl Field {
         ("phase", Field::Phase),
         ("method", Field::Method),
         ("peer", Field::Peer),
-        ("handler", Field::Handler),
+        ("server", Field::Server),
         ("request", Field::Request),
         ("buffered", Field::Buffered),
     ];
@@ -535,7 +528,7 @@ impl Field {
                 | Field::Phase
                 | Field::Method
                 | Field::Peer
-                | Field::Handler
+                | Field::Server
                 | Field::Request
         )
     }
@@ -552,7 +545,7 @@ impl Field {
             Field::Phase => row.phase_word().map(str::to_string),
             Field::Method => row.method.clone(),
             Field::Peer => row.peer.clone(),
-            Field::Handler => row.handler.clone(),
+            Field::Server => row.server.clone(),
             Field::Request => row.request.clone(),
             Field::Buffered => row.read_buf.map(|(len, _)| len.to_string()),
         }
@@ -778,7 +771,7 @@ mod tests {
             phase,
             method: Some("GET".to_string()),
             peer: Some("[fd00::25]:57400".to_string()),
-            handler: None,
+            server: None,
             read_buf: Some((12, 8192)),
             deadline: None,
             request: None,
@@ -791,7 +784,10 @@ mod tests {
     fn test_clauses_select_by_every_field() {
         let rows = [
             row(0x10, HttpRole::Client, Some(HttpPhase::AwaitingResponse)),
-            row(0x20, HttpRole::Server, Some(HttpPhase::Idle)),
+            ConnRow {
+                server: Some("app::Context".to_string()),
+                ..row(0x20, HttpRole::Server, Some(HttpPhase::Idle))
+            },
             ConnRow {
                 version: None,
                 method: None,
@@ -820,6 +816,7 @@ mod tests {
         assert_eq!(select(&["version", "http1"]), [0x10, 0x20, 0x40]);
         assert_eq!(select(&["phase", "awaiting"]), [0x10]);
         assert_eq!(select(&["phase", "idle,negotiating"]), [0x20, 0x30]);
+        assert_eq!(select(&["server", "context"]), [0x20]);
         assert_eq!(select(&["method", "get"]), [0x10, 0x20, 0x40]);
         assert_eq!(select(&["peer", "fd00"]), [0x10, 0x20, 0x40]);
         assert_eq!(select(&["addr", "0x20"]), [0x20]);
@@ -881,7 +878,7 @@ mod tests {
             peer: None,
             read_buf: None,
             deadline: Some("deadline +29.981s".to_string()),
-            handler: Some("app::handle".to_string()),
+            server: Some("app::Context".to_string()),
             ..row(0x30, HttpRole::Server, None)
         };
         assert_eq!(
@@ -896,7 +893,7 @@ mod tests {
                 "—",
                 "—",
                 "deadline +29.981s",
-                "app::handle",
+                "app::Context",
                 "—"
             ]
         );
@@ -918,8 +915,8 @@ mod tests {
         }
     }
 
-    fn server_observation(header_read_timer_running: bool) -> ResourceObservation {
-        ResourceObservation::HttpConn(Box::new(HttpConnObservation {
+    fn server_observation(header_read_timer_running: bool) -> HttpConnObservation {
+        HttpConnObservation {
             dispatcher: key(0x7b78948),
             conn: 0x7b78948,
             role: HttpRole::Server,
@@ -932,22 +929,21 @@ mod tests {
             client: None,
             server: Some(HttpServerObservation {
                 in_flight: false,
-                handler: Some("app::handle::{async_fn_env#0}".to_string()),
                 header_read_timer_running,
                 header_read_timeout: None,
                 header_read_timer: None,
                 peer: Some("[fd00::25]:57400".to_string()),
-                context: None,
+                context: Some("app::Context".to_string()),
                 request: None,
             }),
-        }))
+        }
     }
 
     /// The facts beside the verdict reach the row: the peer, the
-    /// handler as a future is named, the buffer, and the deadline of
-    /// the held timer — only while the header-read timer is armed. A
-    /// negotiating wrapper is a row at its own address with no words;
-    /// any other observation is no row.
+    /// server's context, the buffer, and the deadline of the held timer
+    /// — only while the header-read timer is armed. A negotiating
+    /// wrapper is a row at its own address with no words; any other
+    /// observation is no row.
     #[test]
     fn test_the_observation_fills_the_row() {
         // The base carries a sentinel in every cell the observation
@@ -958,56 +954,39 @@ mod tests {
             phase: Some(HttpPhase::Closing),
             method: Some("SENTINEL".to_string()),
             peer: Some("SENTINEL".to_string()),
-            handler: Some("SENTINEL".to_string()),
+            server: Some("SENTINEL".to_string()),
             read_buf: Some((1, 1)),
             deadline: Some("SENTINEL".to_string()),
             request: Some("SENTINEL".to_string()),
             ..row(0, HttpRole::Client, None)
         };
-        let impls = ImplFold::default();
-        let held = Some(instant(130));
+        let held = Some(RawInstant {
+            tv_sec: 129,
+            tv_nsec: 981_000_000,
+        });
         let stopped = Some(instant(100));
         let none = |_: &HttpCaller| None;
-        let armed = conn_row(
-            base.clone(),
-            &server_observation(true),
-            held,
-            stopped,
-            &impls,
-            &none,
-        )
-        .unwrap();
+        let fill = |observation: HttpConnObservation, held, stopped| {
+            let observation = ResourceObservation::HttpConn(Box::new(observation));
+            conn_row(base.clone(), &observation, held, stopped, &none).unwrap()
+        };
+        let armed = fill(server_observation(true), held, stopped);
         assert_eq!(armed.addr, 0x7b78948);
         assert_eq!(armed.role, HttpRole::Server);
         assert_eq!(armed.version, Some(HttpVersion::Http1));
         assert_eq!(armed.phase, Some(HttpPhase::Idle));
         assert_eq!(armed.method, None);
         assert_eq!(armed.peer.as_deref(), Some("[fd00::25]:57400"));
-        assert_eq!(armed.handler.as_deref(), Some("async fn app::handle"));
+        assert_eq!(armed.server.as_deref(), Some("app::Context"));
         assert_eq!(armed.read_buf, Some((0, 8192)));
-        assert_eq!(armed.deadline.as_deref(), Some("deadline +30.000s"));
+        assert_eq!(armed.deadline.as_deref(), Some("deadline +29.981s"));
         assert_eq!(armed.request, None);
         // The task's cells come from the base.
         assert_eq!(armed.task, "7");
-        let idle = conn_row(
-            base.clone(),
-            &server_observation(false),
-            held,
-            stopped,
-            &impls,
-            &none,
-        )
-        .unwrap();
+        // The timer disarmed or not held leaves no deadline.
+        let idle = fill(server_observation(false), held, stopped);
         assert_eq!(idle.deadline, None);
-        let unheld = conn_row(
-            base.clone(),
-            &server_observation(true),
-            None,
-            stopped,
-            &impls,
-            &none,
-        )
-        .unwrap();
+        let unheld = fill(server_observation(true), None, stopped);
         assert_eq!(unheld.deadline, None);
         let negotiating = conn_row(
             base.clone(),
@@ -1016,7 +995,6 @@ mod tests {
             }),
             held,
             stopped,
-            &impls,
             &none,
         )
         .unwrap();
@@ -1026,7 +1004,7 @@ mod tests {
         assert_eq!(negotiating.version, None);
         assert_eq!(negotiating.method, None);
         assert_eq!(negotiating.peer, None);
-        assert_eq!(negotiating.handler, None);
+        assert_eq!(negotiating.server, None);
         assert_eq!(negotiating.read_buf, None);
         assert_eq!(negotiating.deadline, None);
         assert_eq!(negotiating.request, None);
@@ -1035,7 +1013,7 @@ mod tests {
             handle: key(0x1),
             header: TaskAddr(0x1),
         });
-        assert!(conn_row(base, &other, held, stopped, &impls, &none).is_none());
+        assert!(conn_row(base.clone(), &other, held, stopped, &none).is_none());
     }
 
     /// A caller that is no task is placed by the waker sweep's slot at

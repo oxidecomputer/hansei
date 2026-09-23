@@ -715,12 +715,14 @@ pub enum Command {
     /// role and version, the phase the connection's own words put it
     /// in (the verdict its task block carries), the method in flight,
     /// the peer where the server's service keeps one (a dropshot
-    /// server's does; hyper itself keeps none on either side), the
-    /// read buffer's fill over its capacity, the header-read timer's
-    /// deadline where the server has armed one, a server's running
-    /// handler by its type, and the request behind the connection —
-    /// what the handler is running for, or what the caller awaiting the
-    /// response sent — where either side keeps it.
+    /// server's does; hyper itself keeps none on either side),
+    /// the read buffer's fill over its capacity, the header-read
+    /// timer's deadline where the server has armed one, the context
+    /// type of the server that accepted the connection where its
+    /// service names one (a dropshot server's does), and the request
+    /// behind the connection — what the handler is running for, or
+    /// what the caller awaiting the response sent — where either side
+    /// keeps it.
     ///
     /// The rows are the connection resources the wait analysis and the
     /// census observed, so the first `connections` walks every task's
@@ -729,7 +731,7 @@ pub enum Command {
     /// Filters are the selection: repeatable `--with FIELD ARG` /
     /// `--without FIELD ARG` clauses AND together, and `--group FIELD`
     /// tallies the survivors. The string fields — role, version,
-    /// phase, method, peer, handler — are case-insensitive regexes over
+    /// phase, method, peer, server — are case-insensitive regexes over
     /// the spelled value; task, rt and addr are exact; buffered
     /// compares the bytes read and not yet parsed, spelled '>N', '<N'
     /// or '=N' (quote them from a shell).
@@ -743,7 +745,7 @@ pub enum Command {
 
         /// Keep only the connections whose FIELD matches ARG; repeat
         /// for more clauses, which AND. Fields: role, version, phase,
-        /// method, peer, handler (case-insensitive regexes); task, rt,
+        /// method, peer, server (case-insensitive regexes); task, rt,
         /// addr (exact); buffered ('>N', '<N', '=N'). ARG may list
         /// alternatives, `idle,closing`, of which any matches; a
         /// literal comma is `\,`.

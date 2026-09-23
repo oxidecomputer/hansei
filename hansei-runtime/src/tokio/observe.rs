@@ -452,11 +452,6 @@ pub struct HttpServerObservation {
     /// Whether a handler is running: the `Option` behind `in_flight`
     /// is `Some`.
     pub in_flight: bool,
-    /// The running handler's future type, as the chain walk names it
-    /// past its adapters — the concrete type behind a boxed `dyn` where
-    /// the bundle carries it. `None` between requests, and where the
-    /// box's pointee could not be named.
-    pub handler: Option<String>,
     /// Whether the header-read timer is armed.
     pub header_read_timer_running: bool,
     /// The timeout the header-read timer is armed for, where the server

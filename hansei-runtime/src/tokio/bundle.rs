@@ -3515,15 +3515,12 @@ impl<'b, T: Target> Context<'b, T> {
                 let in_flight = word(&server.in_flight, "in-flight handler")?;
                 let (variant, payload) = in_flight.active_variant_raw()?;
                 let in_flight = variant == "Some";
-                // The handler's type: the pinned box the option holds,
-                // walked as a held future is, past its adapters to the
-                // future itself — which names a boxed `dyn` handler by
-                // its vtable where the bundle carries the pointee.
-                let (handler, request) = in_flight
+                // The request the handler runs for: the pinned box the
+                // option holds, walked as a held future is.
+                let request = in_flight
                     .then(|| payload.member("__0").ok())
                     .flatten()
-                    .map(|boxed| self.handler_facts(boxed, read))
-                    .unwrap_or((None, None));
+                    .and_then(|boxed| self.handler_request(boxed, read));
                 let flag = word(
                     &server.header_read_timeout_running,
                     "header-read timer flag",
@@ -3562,7 +3559,6 @@ impl<'b, T: Target> Context<'b, T> {
                     .map(|ty| ty.name().to_string());
                 Some(HttpServerObservation {
                     in_flight,
-                    handler,
                     header_read_timer_running,
                     header_read_timeout,
                     header_read_timer,
@@ -3588,28 +3584,17 @@ impl<'b, T: Target> Context<'b, T> {
         })
     }
 
-    /// What a server's in-flight handler is and what it is running for:
-    /// the pinned box walked as a held future, the first frame of its
-    /// chain that is not an access adapter — past the `Pin` and the
-    /// `Box`, the handler itself — named by its type, and the request a
-    /// frame of that chain holds. Each `None` where the walk reached no
-    /// such frame, as when a `dyn` box's pointee is not in the bundle.
-    fn handler_facts(
+    /// What a server's in-flight handler is running for: the pinned box
+    /// walked as a held future, and the request a frame of its chain
+    /// holds. `None` where no frame does, as when a `dyn` box's pointee
+    /// is not in the bundle.
+    fn handler_request(
         &self,
         boxed: Value<'b>,
         read: &ReadContext<'_>,
-    ) -> (Option<String>, Option<HttpRequestObservation>) {
+    ) -> Option<HttpRequestObservation> {
         let inspection = self.inspect_future(boxed, super::chain::InspectionMode::Held, read);
-        let handler = inspection
-            .chain
-            .frames
-            .iter()
-            .find(|frame| {
-                self.type_semantics(frame.future.ty.id())
-                    .is_none_or(|record| record.access.is_none())
-            })
-            .map(|frame| frame.future.ty.name().to_string());
-        (handler, self.chain_request(&inspection.chain, read))
+        self.chain_request(&inspection.chain, read)
     }
 
     /// The request a chain carries: the first frame that is itself a
