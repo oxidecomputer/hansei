@@ -497,63 +497,6 @@ pub const HYPER_UTIL_TOKIO_SLEEP_V0_1_10: LibraryConvention = LibraryConvention 
     ],
 };
 
-/// hyper's HTTP/1 connection as 1.6.0 through 1.10.1 implement it,
-/// reviewed in `src/proto/h1/conn.rs`, `src/proto/h1/dispatch.rs`,
-/// `src/proto/h1/decode.rs`, `src/proto/h1/encode.rs`,
-/// `src/client/dispatch.rs`, `src/client/conn/http1.rs` and
-/// `src/server/conn/http1.rs` of every release in the range. The
-/// declarations the rule addresses are the same text in all of them:
-/// `Dispatcher { conn, dispatch, body_tx, body_rx, is_closing }` (only
-/// `body_tx`'s type moved, in 1.10.0, and nothing here names it),
-/// `Conn { io, state, _marker }`, `State`, and its `KA { Idle, Busy,
-/// Disabled }`, `Reading { Init, Continue(Decoder), Body(Decoder),
-/// KeepAlive, Closed }`, `Writing { Init, Body(Encoder), KeepAlive,
-/// Closed }` and `method: Option<Method>`; `Decoder { kind: Kind }`
-/// with `Kind { Length(u64), Chunked { .. }, Eof(bool) }` and `Encoder
-/// { kind: Kind, is_last }` with `Kind { Chunked(..), Length(u64),
-/// CloseDelimited }` (1.9.0 changed what `Chunked` carries, not its
-/// name); the client dispatch `Client { callback: Option<Callback>,
-/// rx: Receiver, rx_closed }` with `Callback { Retry(Option<
-/// oneshot::Sender>), NoRetry(Option<oneshot::Sender>) }` and
-/// `Receiver { inner: UnboundedReceiver, taker }`; and the wrappers
-/// `Connection { inner: Dispatcher }` and `UpgradeableConnection {
-/// inner: Option<Connection> }` on each side. The releases differ in
-/// the dispatcher's write-again loop (1.8.0, 1.10.x), the body
-/// sender's drop guard (1.10.0), where a trailers frame leaves
-/// `reading` (1.9.0: `KeepAlive`, before it `Closed`), h2 plumbing
-/// and docs — none of which changes what a word means.
-///
-/// What the words mean, from `Conn` and the dispatch: `State::busy`
-/// sets `KA::Busy` as a message head is read or written, and
-/// `State::idle` — run by `try_keep_alive` once `reading` and
-/// `writing` are both `KeepAlive` — clears `method` and sets
-/// `KA::Idle`, so `Idle` is a connection between exchanges;
-/// `Disabled` is set by a `Connection: close` or an HTTP/1.0 peer and
-/// never cleared, and `close` puts both directions in `Closed`. The
-/// client's `write_head` records the request's method in `method`
-/// and moves `writing` to `Body(encoder)` when a body follows, else to
-/// `KeepAlive` (or `Closed`); `reading` moves from `Init` to
-/// `Body(decoder)` (or `Continue`) once the response head is parsed
-/// and back through `KeepAlive` when the body ends. The client's
-/// `Dispatch` keeps the response callback in `callback` from the
-/// request's arrival on `rx` until the response head is delivered,
-/// and its `poll_ready` registers the dispatcher's waker on that
-/// callback's oneshot (`poll_canceled`) while `poll_msg` registers it
-/// on `rx` (`poll_recv`) — the two primitives an idle and an in-flight
-/// client connection are parked on beside the socket. `is_closing` is
-/// set by the dispatcher's `close`, after which its poll only flushes.
-/// `Connection::poll` and `UpgradeableConnection::poll` poll the
-/// dispatcher inside them and act on its output alone. A server's
-/// `State` keeps `h1_header_read_timeout: Option<Duration>` as its
-/// builder set it, never changed; `poll_read_head` arms the header-read
-/// timer for the monotonic clock's now plus that timeout whenever
-/// `h1_header_read_timeout_running` is clear, sets the flag, and clears
-/// it once a head is parsed — so while the flag is set, the timer's
-/// deadline less the timeout is when the connection began waiting for
-/// the head.
-///
-/// The ceiling is the newest release the cores on hand build; it
-/// advances by hand when a newer one is read.
 /// dropshot's server as 0.17.0 and 0.17.1 implement it, reviewed in
 /// `src/server.rs` of each release (0.17.1 differs from 0.17.0 in import
 /// order and rustfmt reflow alone): the accept loop takes each
@@ -1091,6 +1034,63 @@ pub const DROPSHOT_HANDLER_V0_17_0: LibraryConvention = LibraryConvention {
     ],
 };
 
+/// hyper's HTTP/1 connection as 1.6.0 through 1.10.1 implement it,
+/// reviewed in `src/proto/h1/conn.rs`, `src/proto/h1/dispatch.rs`,
+/// `src/proto/h1/decode.rs`, `src/proto/h1/encode.rs`,
+/// `src/client/dispatch.rs`, `src/client/conn/http1.rs` and
+/// `src/server/conn/http1.rs` of every release in the range. The
+/// declarations the rule addresses are the same text in all of them:
+/// `Dispatcher { conn, dispatch, body_tx, body_rx, is_closing }` (only
+/// `body_tx`'s type moved, in 1.10.0, and nothing here names it),
+/// `Conn { io, state, _marker }`, `State`, and its `KA { Idle, Busy,
+/// Disabled }`, `Reading { Init, Continue(Decoder), Body(Decoder),
+/// KeepAlive, Closed }`, `Writing { Init, Body(Encoder), KeepAlive,
+/// Closed }` and `method: Option<Method>`; `Decoder { kind: Kind }`
+/// with `Kind { Length(u64), Chunked { .. }, Eof(bool) }` and `Encoder
+/// { kind: Kind, is_last }` with `Kind { Chunked(..), Length(u64),
+/// CloseDelimited }` (1.9.0 changed what `Chunked` carries, not its
+/// name); the client dispatch `Client { callback: Option<Callback>,
+/// rx: Receiver, rx_closed }` with `Callback { Retry(Option<
+/// oneshot::Sender>), NoRetry(Option<oneshot::Sender>) }` and
+/// `Receiver { inner: UnboundedReceiver, taker }`; and the wrappers
+/// `Connection { inner: Dispatcher }` and `UpgradeableConnection {
+/// inner: Option<Connection> }` on each side. The releases differ in
+/// the dispatcher's write-again loop (1.8.0, 1.10.x), the body
+/// sender's drop guard (1.10.0), where a trailers frame leaves
+/// `reading` (1.9.0: `KeepAlive`, before it `Closed`), h2 plumbing
+/// and docs — none of which changes what a word means.
+///
+/// What the words mean, from `Conn` and the dispatch: `State::busy`
+/// sets `KA::Busy` as a message head is read or written, and
+/// `State::idle` — run by `try_keep_alive` once `reading` and
+/// `writing` are both `KeepAlive` — clears `method` and sets
+/// `KA::Idle`, so `Idle` is a connection between exchanges;
+/// `Disabled` is set by a `Connection: close` or an HTTP/1.0 peer and
+/// never cleared, and `close` puts both directions in `Closed`. The
+/// client's `write_head` records the request's method in `method`
+/// and moves `writing` to `Body(encoder)` when a body follows, else to
+/// `KeepAlive` (or `Closed`); `reading` moves from `Init` to
+/// `Body(decoder)` (or `Continue`) once the response head is parsed
+/// and back through `KeepAlive` when the body ends. The client's
+/// `Dispatch` keeps the response callback in `callback` from the
+/// request's arrival on `rx` until the response head is delivered,
+/// and its `poll_ready` registers the dispatcher's waker on that
+/// callback's oneshot (`poll_canceled`) while `poll_msg` registers it
+/// on `rx` (`poll_recv`) — the two primitives an idle and an in-flight
+/// client connection are parked on beside the socket. `is_closing` is
+/// set by the dispatcher's `close`, after which its poll only flushes.
+/// `Connection::poll` and `UpgradeableConnection::poll` poll the
+/// dispatcher inside them and act on its output alone. A server's
+/// `State` keeps `h1_header_read_timeout: Option<Duration>` as its
+/// builder set it, never changed; `poll_read_head` arms the header-read
+/// timer for the monotonic clock's now plus that timeout whenever
+/// `h1_header_read_timeout_running` is clear, sets the flag, and clears
+/// it once a head is parsed — so while the flag is set, the timer's
+/// deadline less the timeout is when the connection began waiting for
+/// the head.
+///
+/// The ceiling is the newest release the cores on hand build; it
+/// advances by hand when a newer one is read.
 pub const HYPER_H1_CONN_V1_6_0: LibraryConvention = LibraryConvention {
     package: "hyper",
     family: "hyper-h1-conn-1.6.0",
