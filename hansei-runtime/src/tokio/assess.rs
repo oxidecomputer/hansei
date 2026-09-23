@@ -841,8 +841,8 @@ impl<'b, T: Target> Context<'b, T> {
                 "the client connection's dispatch is not bound",
             );
         };
-        let waker_is_this_task =
-            |waker: &Option<QueuedWaker>, cell: &str| waker_names_task(waker, task.addr, cell);
+        let decline =
+            |waker: &Option<QueuedWaker>, cell: &str| waker_decline(waker, task.addr, cell);
         let via = match phase {
             HttpPhase::Idle => {
                 let Some(chan) = client.rx else {
@@ -869,9 +869,7 @@ impl<'b, T: Target> Context<'b, T> {
                         );
                     }
                 }
-                if let Err(declined) =
-                    waker_is_this_task(&channel.waker, "request receiver's waker")
-                {
+                if let Some(declined) = decline(&channel.waker, "request receiver's waker") {
                     return declined;
                 }
                 let (Some(senders), Some(index), Some(tail)) =
@@ -902,8 +900,8 @@ impl<'b, T: Target> Context<'b, T> {
                         "the connection awaits a response but watches no callback",
                     );
                 }
-                if let Err(declined) =
-                    waker_is_this_task(&callback.tx_waker, "response callback's sender cell")
+                if let Some(declined) =
+                    decline(&callback.tx_waker, "response callback's sender cell")
                 {
                     return declined;
                 }
@@ -1701,33 +1699,29 @@ pub fn http_caller(callback: &OneshotObservation) -> HttpCaller {
     }
 }
 
-/// Whether a primitive's waker cell holds `task`'s own waker — what a
-/// connection's wait on the primitive is held to, as the tokio
-/// protocols hold theirs: another task's waker is conflicting
-/// evidence, a waker that is not a task's is a state the protocol does
-/// not vouch for, an empty cell beside a parked connection contradicts
-/// it, and a cell that did not read decides nothing. `cell` names the
-/// slot in the decline.
-fn waker_names_task(
-    waker: &Option<QueuedWaker>,
-    task: TaskAddr,
-    cell: &str,
-) -> Result<(), Assessed> {
+/// The decline a primitive's waker cell calls for, `None` where it
+/// holds `task`'s own waker — what a connection's wait on the
+/// primitive is held to, as the tokio protocols hold theirs: another
+/// task's waker is conflicting evidence, a waker that is not a task's
+/// is a state the protocol does not vouch for, an empty cell beside a
+/// parked connection contradicts it, and a cell that did not read
+/// decides nothing. `cell` names the slot in the decline.
+fn waker_decline(waker: &Option<QueuedWaker>, task: TaskAddr, cell: &str) -> Option<Assessed> {
     match waker {
-        Some(QueuedWaker::Task { addr, .. }) if *addr == task.0 => Ok(()),
-        Some(QueuedWaker::Task { addr, .. }) => Err(Assessed::unknown(
+        Some(QueuedWaker::Task { addr, .. }) if *addr == task.0 => None,
+        Some(QueuedWaker::Task { addr, .. }) => Some(Assessed::unknown(
             WaitUnknownReason::ConflictingEvidence,
             format!("the {cell} names the task at {addr:#x}, not this one"),
         )),
-        Some(QueuedWaker::Other { vtable }) => Err(Assessed::unknown(
+        Some(QueuedWaker::Other { vtable }) => Some(Assessed::unknown(
             WaitUnknownReason::ResourceStateUnproven,
             format!("the {cell} is not a task's (vtable {vtable:#x})"),
         )),
-        Some(QueuedWaker::Unarmed) => Err(Assessed::unknown(
+        Some(QueuedWaker::Unarmed) => Some(Assessed::unknown(
             WaitUnknownReason::ConflictingEvidence,
             format!("the connection parked but the {cell} is empty"),
         )),
-        None => Err(Assessed::unknown(
+        None => Some(Assessed::unknown(
             WaitUnknownReason::ResourceUnreadable,
             format!("the {cell} did not read"),
         )),
@@ -2164,7 +2158,7 @@ mod tests {
             is_closing,
             read_buf: Some((0, 8192)),
             client: Some(HttpClientObservation {
-                callback: in_flight.then(|| OneshotObservation {
+                callback: in_flight.then_some(OneshotObservation {
                     future: key,
                     arc: key,
                     inner: 0xc72d9e0,
@@ -2308,12 +2302,11 @@ mod tests {
     #[test]
     fn test_a_connection_primitive_must_hold_this_tasks_waker() {
         let task = TaskAddr(0x7000);
-        let reason = |waker| match waker_names_task(&waker, task, "cell") {
-            Ok(()) => None,
-            Err(assessed) => match assessed.assessment {
-                WaitAssessment::Unknown(reason) => Some((reason, assessed.notes.join(""))),
+        let reason = |waker| {
+            waker_decline(&waker, task, "cell").map(|assessed| match assessed.assessment {
+                WaitAssessment::Unknown(reason) => (reason, assessed.notes.join("")),
                 other => panic!("{other:?}"),
-            },
+            })
         };
         let mine = QueuedWaker::Task {
             addr: 0x7000,

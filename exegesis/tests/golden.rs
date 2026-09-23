@@ -740,6 +740,7 @@ fn route_text(bundle: &Bundle, path: &hansei_bundle::TypedPath) -> String {
 /// Every type named by `key` carries a request binding under `kind`'s
 /// rule, from `package`'s reviewed file, whose method route lands on
 /// http's `Inner` and whose text routes read as `method` and `text`.
+#[allow(clippy::too_many_arguments)]
 fn assert_request(
     program: &str,
     bundle: &Bundle,

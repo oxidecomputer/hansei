@@ -39,8 +39,10 @@
 use std::cell::Cell;
 use std::hint::black_box;
 use std::io::Write;
+#[cfg(target_os = "linux")]
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Mutex, mpsc};
+use std::sync::mpsc;
 use std::thread;
 
 /// A function symbol the suite resolves by name and back by address.

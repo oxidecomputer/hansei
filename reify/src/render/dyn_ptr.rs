@@ -530,7 +530,7 @@ mod tests {
             .symbol(0x4000, &format!("core::ptr::drop_glue::<{BODY}>"))
             .symbol(0x5000, BODY);
 
-        let mut b = four_slot_bundle();
+        let b = four_slot_bundle();
         b.validate().expect("expanded vtable must validate");
         let shown = show_fat_ptr(&b, &mem);
         assert!(shown.contains("pointer: 0x1234,\n"), "{shown}");
