@@ -185,7 +185,7 @@ fn row_of<T: proc::Target>(
     conn_row(
         base,
         observation,
-        held_deadline(census, owner),
+        header_read_deadline(census, observation),
         stopped,
         &request_of,
     )
@@ -318,9 +318,8 @@ pub(crate) fn caller_request(
 
 /// Fill `base` — the row's task cells — from the observation: the
 /// negotiating wrapper's address and phase, or the connection's words
-/// with the facts beside them. `held` is the deadline of a timer the
-/// task holds, which is the header-read timer's when the server has
-/// armed one and nothing otherwise.
+/// with the facts beside them. `held` is the deadline of the
+/// connection's own header-read timer, where the census found it.
 fn conn_row(
     base: ConnRow,
     observation: &ResourceObservation,
@@ -424,13 +423,21 @@ fn duration_text(duration: Duration) -> String {
     }
 }
 
-/// The deadline of a timer the task holds in its own frames — the
-/// header-read sleep the server arms — where the census found one.
-fn held_deadline(census: &census::FutureCensus, owner: usize) -> Option<RawInstant> {
+/// The deadline of a server connection's own header-read timer: the
+/// census's find at the address the connection's box points to, which
+/// no other timer the task holds can be.
+fn header_read_deadline(
+    census: &census::FutureCensus,
+    observation: &ResourceObservation,
+) -> Option<RawInstant> {
+    let ResourceObservation::HttpConn(http) = observation else {
+        return None;
+    };
+    let timer = http.server.as_ref()?.header_read_timer?;
     census
         .held
         .iter()
-        .filter(|held| held.owner == owner)
+        .filter(|held| held.addr == timer)
         .find_map(|held| match &held.observation {
             Some(ResourceObservation::Timer(timer)) => timer.deadline,
             _ => None,
@@ -1025,7 +1032,7 @@ mod tests {
                 in_flight: false,
                 header_read_timer_running,
                 header_read_timeout: Some(Duration::from_secs(30)),
-                header_read_timer: None,
+                header_read_timer: Some(0x100),
                 peer: Some("[fd00::25]:57400".to_string()),
                 context: Some("app::Context".to_string()),
                 request: None,
@@ -1161,17 +1168,19 @@ mod tests {
         assert_eq!(request(None), None);
     }
 
-    /// The held deadline is the owner's own timer find and nothing
-    /// else: another task's timer, or the owner's join, is not it.
+    /// The deadline is the connection's own timer's, found at the
+    /// address its box points to: another timer the same task holds —
+    /// listed first — is not it, nor is a find at that address that is
+    /// no timer, and a server with no timer has no deadline.
     #[test]
-    fn test_the_held_deadline_is_the_owners_timer() {
-        let timer = |owner: usize, deadline: Option<RawInstant>| census::HeldFuture {
-            owner,
+    fn test_the_deadline_is_the_connections_own_timer() {
+        let timer = |addr: u64, deadline: Option<RawInstant>| census::HeldFuture {
+            owner: 0,
             frame: 0,
             local: "sleep".to_string(),
             via: None,
-            slot: 0x100,
-            addr: 0x100,
+            slot: addr,
+            addr,
             ty: hansei_bundle::BundleTypeId(0),
             depth: 1,
             frames: Vec::new(),
@@ -1180,7 +1189,7 @@ mod tests {
             waiting_on: None,
             wait: None,
             observation: Some(ResourceObservation::Timer(TimerObservation {
-                future: key(0x100),
+                future: key(addr),
                 deadline,
                 state: TimerRegistrationState::Deregistered,
             })),
@@ -1192,16 +1201,34 @@ mod tests {
                 handle: key(0x1),
                 header: TaskAddr(0x1),
             })),
-            ..timer(0, None)
+            ..timer(0x300, None)
         };
         let census = census::FutureCensus::from_finds(
-            vec![join, timer(1, Some(instant(5))), timer(0, Some(instant(9)))],
+            vec![
+                timer(0x200, Some(instant(5))),
+                join,
+                timer(0x100, Some(instant(9))),
+            ],
             Vec::new(),
             Vec::new(),
         );
-        assert_eq!(held_deadline(&census, 0), Some(instant(9)));
-        assert_eq!(held_deadline(&census, 1), Some(instant(5)));
-        assert_eq!(held_deadline(&census, 2), None);
+        let at = |timer: Option<u64>| {
+            let mut observation = server_observation(true);
+            observation.server.as_mut().unwrap().header_read_timer = timer;
+            header_read_deadline(
+                &census,
+                &ResourceObservation::HttpConn(Box::new(observation)),
+            )
+        };
+        assert_eq!(at(Some(0x100)), Some(instant(9)));
+        assert_eq!(at(Some(0x300)), None);
+        assert_eq!(at(Some(0x400)), None);
+        assert_eq!(at(None), None);
+        // A negotiating wrapper has no timer to look up.
+        let negotiating = ResourceObservation::HttpNegotiating(HttpNegotiatingObservation {
+            wrapper: key(0x100),
+        });
+        assert_eq!(header_read_deadline(&census, &negotiating), None);
     }
 
     /// A request the census read under a set child — behind the box a
