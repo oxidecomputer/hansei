@@ -543,7 +543,14 @@ pub const HYPER_UTIL_TOKIO_SLEEP_V0_1_10: LibraryConvention = LibraryConvention 
 /// client connection are parked on beside the socket. `is_closing` is
 /// set by the dispatcher's `close`, after which its poll only flushes.
 /// `Connection::poll` and `UpgradeableConnection::poll` poll the
-/// dispatcher inside them and act on its output alone.
+/// dispatcher inside them and act on its output alone. A server's
+/// `State` keeps `h1_header_read_timeout: Option<Duration>` as its
+/// builder set it, never changed; `poll_read_head` arms the header-read
+/// timer for the monotonic clock's now plus that timeout whenever
+/// `h1_header_read_timeout_running` is clear, sets the flag, and clears
+/// it once a head is parsed — so while the flag is set, the timer's
+/// deadline less the timeout is when the connection began waiting for
+/// the head.
 ///
 /// The ceiling is the newest release the cores on hand build; it
 /// advances by hand when a newer one is read.
@@ -557,6 +564,10 @@ pub const HYPER_UTIL_TOKIO_SLEEP_V0_1_10: LibraryConvention = LibraryConvention 
 /// drives as its service. `remote_addr` is the accepted socket's peer
 /// as `SocketAddr`, set once at construction and never changed, so a
 /// server connection's peer is the word its dispatch's service holds.
+/// Its `C` is the context the application built the server with
+/// (`server: Arc<DropshotState<C>>`, whose `private: C` holds it), so
+/// the handler's own type names which of a program's servers a
+/// connection was accepted by.
 ///
 /// The ceiling is the newest release the cores on hand build; it
 /// advances by hand when a newer one is read.

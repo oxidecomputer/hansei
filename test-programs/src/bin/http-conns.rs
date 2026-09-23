@@ -35,7 +35,7 @@ use hyper::service::service_fn;
 use hyper::{Request, Response};
 use hyper_util::client::legacy::Client;
 use hyper_util::client::legacy::connect::HttpConnector;
-use hyper_util::rt::{TokioExecutor, TokioIo};
+use hyper_util::rt::{TokioExecutor, TokioIo, TokioTimer};
 use hyper_util::server::conn::auto;
 use test_programs::census_expect;
 use tokio::net::{TcpListener, TcpStream};
@@ -118,7 +118,10 @@ async fn handle(
 /// Serve one accepted connection through hyper-util's version-choosing
 /// server, with upgrades, the way a dropshot server does. The service
 /// keeps the accepted socket's peer address, as dropshot's does, so a
-/// server connection's dispatch holds a `SocketAddr`.
+/// server connection's dispatch holds a `SocketAddr`. hyper's timer is
+/// installed, as dropshot installs it, with an hour's header-read
+/// timeout — long enough never to fire before the core is taken — so an
+/// idle connection holds its armed header-read timer.
 async fn serve(
     stream: TcpStream,
     peer: SocketAddr,
@@ -126,7 +129,12 @@ async fn serve(
     park: Arc<Notify>,
 ) {
     let service = service_fn(move |req| handle(req, peer, events.clone(), park.clone()));
-    let _ = auto::Builder::new(TokioExecutor::new())
+    let mut builder = auto::Builder::new(TokioExecutor::new());
+    builder
+        .http1()
+        .timer(TokioTimer::new())
+        .header_read_timeout(std::time::Duration::from_secs(3600));
+    let _ = builder
         .serve_connection_with_upgrades(TokioIo::new(stream), service)
         .await;
 }
@@ -274,6 +282,11 @@ fn main() {
         // task's own await chain, reached through hyper's and
         // hyper-util's connection wrappers, so it is no held find.
         census_expect::held_by_task("http_conns::serve", "auto::ReadVersion");
+        // Under the idle server connection of (a): its header-read
+        // timer, armed as it waits for the next request head. hyper
+        // drops the timer once a head is parsed, so the servers
+        // running a handler hold none.
+        census_expect::held_by_task("http_conns::serve", "TokioSleep");
         // Under the reqwest requester: the request itself behind the
         // box reqwest's `send()` future keeps it in, and the two tower
         // layers under it the census descends through to the response

@@ -316,19 +316,36 @@ pub struct HttpServerBinding {
     /// `conn.state.h1_header_read_timeout_running`: whether the
     /// header-read timer the server arms while idle is running.
     pub header_read_timeout_running: TypedPath,
-    /// The peer's address, where the service the dispatch drives is one
-    /// a reviewed convention says stores it: dropshot's request handler.
-    /// `None` for a service the review does not cover.
-    pub peer: Option<HttpPeerBinding>,
+    /// The header-read timeout the timer is armed for, as its
+    /// `Duration`'s two words through the `Option`:
+    /// `conn.state.h1_header_read_timeout.Some.__0.secs`, a `u64`, and
+    /// `.nanos.__0`, a `u32`. A read of either reports the variant
+    /// inactive where the server was built with no timeout.
+    pub header_read_timeout_secs: TypedPath,
+    pub header_read_timeout_nanos: TypedPath,
+    /// The header-read timer's address: the data pointer of the boxed
+    /// `dyn Sleep` in `conn.state.h1_header_read_timeout_fut`, through
+    /// the `Option` and the `Pin` — `...Some.__0.pointer.pointer`. A
+    /// read reports the variant inactive where no timer was made.
+    pub header_read_timer: TypedPath,
+    /// What the service the dispatch drives keeps, where it is one a
+    /// reviewed convention covers: dropshot's request handler. `None`
+    /// for a service the review does not cover.
+    pub service: Option<HttpServiceBinding>,
 }
 
-/// Where a server connection's peer address is stored, under the rule
-/// of the crate whose service type keeps it.
+/// What a server connection's service keeps, under the rule of the
+/// crate whose service type keeps it.
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
-pub struct HttpPeerBinding {
+pub struct HttpServiceBinding {
     pub rule: SemanticRuleId,
-    /// `dispatch.service.remote_addr`, landing on the `SocketAddr` enum.
-    pub addr: TypedPath,
+    /// `dispatch.service.remote_addr`, landing on the `SocketAddr` enum:
+    /// the accepted socket's peer.
+    pub peer: TypedPath,
+    /// The application's context type the server was built with — the
+    /// `C` of `DropshotState<C>`, whose `private` holds it — which is
+    /// what tells one server of a program from another.
+    pub context: BundleTypeId,
 }
 
 /// Where a request's method and target are stored in a value, under

@@ -906,10 +906,32 @@ pub(crate) struct HttpServerLayout {
     pub(crate) in_flight: TypeId,
     /// `conn.state.h1_header_read_timeout_running`, a `bool`.
     pub(crate) header_read_timeout_running: TypeId,
-    /// The service the dispatch drives, and where it keeps the peer's
-    /// address where a reviewed convention says it does.
+    /// The two words of the `Duration` in
+    /// `conn.state.h1_header_read_timeout`'s `Some`: `secs`, a `u64`,
+    /// and `nanos.__0`, the `u32` inside std's `Nanoseconds`.
+    pub(crate) header_read_timeout_secs: TypeId,
+    pub(crate) header_read_timeout_nanos: TypeId,
+    /// The header-read timer itself: the boxed `dyn Sleep` in
+    /// `conn.state.h1_header_read_timeout_fut`'s `Some`, as the `Pin`'s
+    /// member holding the `Box`, the `Box`'s data pointer member, and
+    /// that pointer's type.
+    pub(crate) header_read_timer_pin: String,
+    pub(crate) header_read_timer_pointer: String,
+    pub(crate) header_read_timer: TypeId,
+    /// The service the dispatch drives, and what it keeps where a
+    /// reviewed convention says it does.
     pub(crate) service: TypeId,
-    pub(crate) peer: Option<TypeId>,
+    pub(crate) dropshot: Option<DropshotHandlerLayout>,
+}
+
+/// dropshot's `ServerRequestHandler<C>` as the screen saw it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct DropshotHandlerLayout {
+    /// `remote_addr`, std's `SocketAddr`: the accepted socket's peer.
+    pub(crate) remote_addr: TypeId,
+    /// The declared `C`: the application's context the server was
+    /// built with.
+    pub(crate) context: TypeId,
 }
 
 /// The member names the connection binding's routes are made of, as
@@ -937,6 +959,13 @@ pub(crate) mod hyper_h1 {
     pub(crate) const KIND: &str = "kind";
     pub(crate) const IN_FLIGHT: &str = "in_flight";
     pub(crate) const HEADER_READ_TIMEOUT_RUNNING: &str = "h1_header_read_timeout_running";
+    /// The timeout the header-read timer is armed for, and std's
+    /// `Duration` down to its two words.
+    pub(crate) const HEADER_READ_TIMEOUT: &str = "h1_header_read_timeout";
+    pub(crate) const SECS: &str = "secs";
+    pub(crate) const NANOS: &str = "nanos";
+    /// The header-read timer, a pinned box of hyper's `dyn Sleep`.
+    pub(crate) const HEADER_READ_TIMEOUT_FUT: &str = "h1_header_read_timeout_fut";
     pub(crate) const IO: &str = "io";
     pub(crate) const READ_BUF: &str = "read_buf";
     pub(crate) const LEN: &str = "len";
@@ -1039,14 +1068,45 @@ pub(crate) fn hyper_h1_dispatcher(
             if fq_name(reader, flag).as_deref() != Some("bool") {
                 return None;
             }
+            let (secs, nanos) = duration_words(
+                reader,
+                member_of(
+                    reader,
+                    variant_payload(reader, member_of(reader, state, HEADER_READ_TIMEOUT)?, SOME)?,
+                    PAYLOAD,
+                )?,
+            )?;
+            // The timer: the `Option`'s `Some` pins a `Box` of hyper's
+            // `dyn Sleep`, whose data pointer is the timer's address.
+            // rustc names the object with its `Future` supertrait's
+            // output bound.
+            let timer = variant_payload(
+                reader,
+                member_of(reader, state, HEADER_READ_TIMEOUT_FUT)?,
+                SOME,
+            )?;
+            let (timer_pin, timer_box) = pin(reader, member_of(reader, timer, PAYLOAD)?)?;
+            let Ok(Pointee::Dyn(timer_box)) = boxed(reader, timer_box) else {
+                return None;
+            };
+            if fq_name(reader, timer_box.trait_ty).as_deref()
+                != Some("dyn hyper::rt::timer::Sleep<Output=()>")
+            {
+                return None;
+            }
             let service = member_of(reader, dispatch, SERVICE)?;
             server = Some(HttpServerLayout {
                 in_flight_member,
                 in_flight_box,
                 in_flight: option,
                 header_read_timeout_running: flag,
+                header_read_timeout_secs: secs,
+                header_read_timeout_nanos: nanos,
+                header_read_timer_pin: timer_pin,
+                header_read_timer_pointer: timer_box.pointer,
+                header_read_timer: timer_box.data_ptr,
                 service,
-                peer: dropshot_request_handler(reader, service),
+                dropshot: dropshot_request_handler(reader, service),
             });
             None
         }
@@ -1104,14 +1164,44 @@ pub(crate) fn hyper_h1_dispatcher(
     })
 }
 
+/// std's `Duration { secs: u64, nanos: Nanoseconds }`, whose
+/// `Nanoseconds` is the niche-carrying newtype over a `u32`: the two
+/// words' types, `secs` and `nanos.__0`.
+fn duration_words(reader: &DwReader<'_>, duration: TypeId) -> Option<(TypeId, TypeId)> {
+    use hyper_h1::{NANOS, PAYLOAD, SECS};
+    declared_in(reader, duration, "core::time", "Duration")?;
+    let secs = member_of(reader, duration, SECS)?;
+    let nanos = member_of(reader, duration, NANOS)?;
+    declared_in(reader, nanos, "core::num::niche_types", "Nanoseconds")?;
+    let nanos = member_of(reader, nanos, PAYLOAD)?;
+    (fq_name(reader, secs).as_deref() == Some("u64")
+        && fq_name(reader, nanos).as_deref() == Some("u32"))
+    .then_some((secs, nanos))
+}
+
 /// Screen `service` as dropshot's `ServerRequestHandler<C>`, declared in
-/// `dropshot::server` with a `remote_addr` member holding the accepted
-/// socket's peer as `core::net::SocketAddr`: the address's type, or
-/// `None` for any other service, which the review says nothing about.
-pub(crate) fn dropshot_request_handler(reader: &DwReader<'_>, service: TypeId) -> Option<TypeId> {
-    declared_in(reader, service, "dropshot::server", "ServerRequestHandler<")?;
-    let addr = member_of(reader, service, hyper_h1::REMOTE_ADDR)?;
-    (fq_name(reader, addr).as_deref() == Some("core::net::socket_addr::SocketAddr")).then_some(addr)
+/// `dropshot::server` with its one template parameter `C` — the
+/// application's context — and a `remote_addr` member holding the
+/// accepted socket's peer as `core::net::SocketAddr`; `None` for any
+/// other service, which the review says nothing about.
+pub(crate) fn dropshot_request_handler(
+    reader: &DwReader<'_>,
+    service: TypeId,
+) -> Option<DropshotHandlerLayout> {
+    let st = declared_in(reader, service, "dropshot::server", "ServerRequestHandler<")?;
+    let [param] = st.template_params.as_ref() else {
+        return None;
+    };
+    if param.name.map(|name| reader.strings.get(name)) != Some("C") {
+        return None;
+    }
+    let remote_addr = member_of(reader, service, hyper_h1::REMOTE_ADDR)?;
+    (fq_name(reader, remote_addr).as_deref() == Some("core::net::socket_addr::SocketAddr")).then(
+        || DropshotHandlerLayout {
+            remote_addr,
+            context: reader.canonicalize(param.type_id),
+        },
+    )
 }
 
 /// The member names a request binding's routes are made of, as the
@@ -2864,15 +2954,18 @@ mod tests {
     /// under its generic name: the same name elsewhere, or a struct of
     /// that name, is not it.
     /// dropshot's request handler is the service that keeps a peer
-    /// address: declared in its server module, with `remote_addr` a
-    /// `SocketAddr`. Another crate's handler of the same shape, or the
-    /// member under another type, is no peer.
+    /// address and names the server's context: declared in its server
+    /// module, with `remote_addr` a `SocketAddr` and its one template
+    /// parameter `C`. Another crate's handler of the same shape, the
+    /// member under another type, or a parameter by another name, is
+    /// neither.
     #[test]
-    fn test_dropshot_request_handler_keeps_the_peer_address() {
+    fn test_dropshot_request_handler_keeps_the_peer_and_the_context() {
         const HANDLER: TypeId = TypeId(UnitSectionOffset(0xa0));
         const ADDR: TypeId = TypeId(UnitSectionOffset(0xa1));
         const OTHER: TypeId = TypeId(UnitSectionOffset(0xa2));
         const PAYLOAD: TypeId = TypeId(UnitSectionOffset(0xa3));
+        const CONTEXT: TypeId = TypeId(UnitSectionOffset(0xa4));
         let mut fx = Fx::default();
         let server = fx.ns("dropshot::server");
         let net = fx.ns("core::net::socket_addr");
@@ -2885,32 +2978,88 @@ mod tests {
             &[("V4", PAYLOAD), ("V6", PAYLOAD)],
         );
         fx.strukt(OTHER, Some(app), "Other", &[], &[]);
+        fx.strukt(CONTEXT, Some(app), "Context", &[], &[]);
+        let members = [("server", OTHER, 0), ("remote_addr", ADDR, 8)];
         fx.strukt(
             HANDLER,
             Some(server),
-            "ServerRequestHandler<C>",
-            &[("server", OTHER, 0), ("remote_addr", ADDR, 8)],
-            &[],
+            "ServerRequestHandler<app::Context>",
+            &members,
+            &[("C", CONTEXT)],
         );
-        assert_eq!(dropshot_request_handler(&fx.reader, HANDLER), Some(ADDR));
+        assert_eq!(
+            dropshot_request_handler(&fx.reader, HANDLER),
+            Some(DropshotHandlerLayout {
+                remote_addr: ADDR,
+                context: CONTEXT,
+            })
+        );
         // The same shape in another crate says nothing.
         fx.strukt(
             HANDLER,
             Some(app),
-            "ServerRequestHandler<C>",
-            &[("server", OTHER, 0), ("remote_addr", ADDR, 8)],
-            &[],
+            "ServerRequestHandler<app::Context>",
+            &members,
+            &[("C", CONTEXT)],
         );
         assert_eq!(dropshot_request_handler(&fx.reader, HANDLER), None);
         // The member has to hold the address type.
         fx.strukt(
             HANDLER,
             Some(server),
-            "ServerRequestHandler<C>",
+            "ServerRequestHandler<app::Context>",
             &[("server", OTHER, 0), ("remote_addr", OTHER, 8)],
-            &[],
+            &[("C", CONTEXT)],
         );
         assert_eq!(dropshot_request_handler(&fx.reader, HANDLER), None);
+        // The context is the parameter the review read, and the only one.
+        for params in [&[][..], &[("T", CONTEXT)], &[("C", CONTEXT), ("S", OTHER)]] {
+            fx.strukt(
+                HANDLER,
+                Some(server),
+                "ServerRequestHandler<app::Context>",
+                &members,
+                params,
+            );
+            assert_eq!(
+                dropshot_request_handler(&fx.reader, HANDLER),
+                None,
+                "{params:?}"
+            );
+        }
+    }
+
+    /// std's `Duration` gives up its two words only as std declares
+    /// them: `secs` a `u64`, and `nanos` the `Nanoseconds` newtype over
+    /// a `u32`. Either word of another width, or a `Duration` declared
+    /// elsewhere, is no duration.
+    #[test]
+    fn test_duration_words_are_std_widths() {
+        const DURATION: TypeId = TypeId(UnitSectionOffset(0xb0));
+        const NANOS: TypeId = TypeId(UnitSectionOffset(0xb1));
+        const U64: TypeId = TypeId(UnitSectionOffset(0xb2));
+        const U32: TypeId = TypeId(UnitSectionOffset(0xb3));
+        let mut fx = Fx::default();
+        let time = fx.ns("core::time");
+        let niche = fx.ns("core::num::niche_types");
+        let app = fx.ns("app");
+        fx.base(U64, "u64", Encoding::Unsigned, 8);
+        fx.base(U32, "u32", Encoding::Unsigned, 4);
+        let mut build = |ns, secs, nanos| {
+            fx.strukt(NANOS, Some(niche), "Nanoseconds", &[("__0", nanos, 0)], &[]);
+            fx.strukt(
+                DURATION,
+                Some(ns),
+                "Duration",
+                &[("secs", secs, 0), ("nanos", NANOS, 8)],
+                &[],
+            );
+            duration_words(&fx.reader, DURATION)
+        };
+        assert_eq!(build(time, U64, U32), Some((U64, U32)));
+        assert_eq!(build(time, U32, U32), None);
+        assert_eq!(build(time, U64, U64), None);
+        assert_eq!(build(app, U64, U32), None);
     }
 
     /// The three request layouts: each screen wants its own crate's

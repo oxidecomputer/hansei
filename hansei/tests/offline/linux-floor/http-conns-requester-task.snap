@@ -6,12 +6,12 @@ task 7
     state: idle
     thread: <none>
     type: async fn http_conns::requester
-    awaiting at: src/bin/http-conns.rs:165
+    awaiting at: src/bin/http-conns.rs:173
     awaiting on:
         oneshot rx 0xADDR (response for http1 client 0xADDR)
             waker: the response callback's receiver cell, held by task 9
-    spawned at: src/bin/http-conns.rs:226:26
-    type defined at: src/bin/http-conns.rs:163
+    spawned at: src/bin/http-conns.rs:234:26
+    type defined at: src/bin/http-conns.rs:171
     held futures: 0
     join sets: 0
 [Executed against 1 task, 0 failed]

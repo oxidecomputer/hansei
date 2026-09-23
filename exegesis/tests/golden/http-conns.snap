@@ -12,59 +12,59 @@ task: hyper::proto::h2::server::H2Stream<http_conns::handle::{async_fn_env#0}, h
   stage: Stage<hyper::proto::h2::server::H2Stream<http_conns::handle::{async_fn_env#0}, http_body_util::full::Full<bytes::bytes::Bytes>, hyper_util::rt::tokio::TokioExecutor>>
 task: http_conns::raw_holder::{async_fn_env#0}
   kind: AsyncFn
-  decl: http-conns.rs:176
+  decl: http-conns.rs:184
   entries: 2
   symbols-per-entry: 6,6
   stage: Stage<http_conns::raw_holder::{async_fn_env#0}>
   variants:
-    Unresumed @ http-conns.rs:176
-    Returned @ http-conns.rs:179
-    Panicked @ http-conns.rs:179
-    Suspend0 @ http-conns.rs:178
+    Unresumed @ http-conns.rs:184
+    Returned @ http-conns.rs:187
+    Panicked @ http-conns.rs:187
+    Suspend0 @ http-conns.rs:186
 task: http_conns::accept_loop::{async_fn_env#0}
   kind: AsyncFn
-  decl: http-conns.rs:136
+  decl: http-conns.rs:144
   entries: 2
   symbols-per-entry: 6,6
   stage: Stage<http_conns::accept_loop::{async_fn_env#0}>
   variants:
-    Unresumed @ http-conns.rs:140
-    Returned @ http-conns.rs:149
-    Panicked @ http-conns.rs:149
-    Suspend0 @ http-conns.rs:143
+    Unresumed @ http-conns.rs:148
+    Returned @ http-conns.rs:157
+    Panicked @ http-conns.rs:157
+    Suspend0 @ http-conns.rs:151
 task: http_conns::reqwest_requester::{async_fn_env#0}
   kind: AsyncFn
-  decl: http-conns.rs:170
+  decl: http-conns.rs:178
   entries: 2
   symbols-per-entry: 6,6
   stage: Stage<http_conns::reqwest_requester::{async_fn_env#0}>
   variants:
-    Unresumed @ http-conns.rs:170
-    Returned @ http-conns.rs:173
-    Panicked @ http-conns.rs:173
-    Suspend0 @ http-conns.rs:172
+    Unresumed @ http-conns.rs:178
+    Returned @ http-conns.rs:181
+    Panicked @ http-conns.rs:181
+    Suspend0 @ http-conns.rs:180
 task: http_conns::serve::{async_fn_env#0}
   kind: AsyncFn
-  decl: http-conns.rs:122
+  decl: http-conns.rs:125
   entries: 2
   symbols-per-entry: 6,6
   stage: Stage<http_conns::serve::{async_fn_env#0}>
   variants:
-    Unresumed @ http-conns.rs:127
-    Returned @ http-conns.rs:132
-    Panicked @ http-conns.rs:132
-    Suspend0 @ http-conns.rs:131 (awaited at http-conns.rs:129)
+    Unresumed @ http-conns.rs:130
+    Returned @ http-conns.rs:140
+    Panicked @ http-conns.rs:140
+    Suspend0 @ http-conns.rs:139 (awaited at http-conns.rs:137)
 task: http_conns::requester::{async_fn_env#0}
   kind: AsyncFn
-  decl: http-conns.rs:163
+  decl: http-conns.rs:171
   entries: 2
   symbols-per-entry: 6,6
   stage: Stage<http_conns::requester::{async_fn_env#0}>
   variants:
-    Unresumed @ http-conns.rs:163
-    Returned @ http-conns.rs:166
-    Panicked @ http-conns.rs:166
-    Suspend0 @ http-conns.rs:165
+    Unresumed @ http-conns.rs:171
+    Returned @ http-conns.rs:174
+    Panicked @ http-conns.rs:174
+    Suspend0 @ http-conns.rs:173
 task: http_conns::{impl#0}::execute::{async_block_env#0}<core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output=()> + core::marker::Send), alloc::alloc::Global>>>
   kind: AsyncBlock
   decl: http-conns.rs:75
@@ -100,49 +100,50 @@ dyn: hyper_util::server::conn::auto::UpgradeableConnection<hyper_util::rt::tokio
 dyn: tokio::sync::mpsc::unbounded::{impl#3}::recv::{async_fn_env#0}<http_conns::Event> (poll)
 
 [env-decls]
-env: http_conns::accept_loop::{async_fn_env#0} @ http-conns.rs:136
-env: http_conns::get::{async_fn_env#0} @ http-conns.rs:153
+env: http_conns::accept_loop::{async_fn_env#0} @ http-conns.rs:144
+env: http_conns::get::{async_fn_env#0} @ http-conns.rs:161
 env: http_conns::handle::{async_fn_env#0} @ http-conns.rs:101
-env: http_conns::main::{async_block_env#0} @ http-conns.rs:186
-env: http_conns::raw_holder::{async_fn_env#0} @ http-conns.rs:176
-env: http_conns::requester::{async_fn_env#0} @ http-conns.rs:163
-env: http_conns::reqwest_requester::{async_fn_env#0} @ http-conns.rs:170
-env: http_conns::serve::{async_fn#0}::{closure_env#0} @ http-conns.rs:128
-env: http_conns::serve::{async_fn_env#0} @ http-conns.rs:122
+env: http_conns::main::{async_block_env#0} @ http-conns.rs:194
+env: http_conns::raw_holder::{async_fn_env#0} @ http-conns.rs:184
+env: http_conns::requester::{async_fn_env#0} @ http-conns.rs:171
+env: http_conns::reqwest_requester::{async_fn_env#0} @ http-conns.rs:178
+env: http_conns::serve::{async_fn#0}::{closure_env#0} @ http-conns.rs:131
+env: http_conns::serve::{async_fn_env#0} @ http-conns.rs:125
 env: http_conns::settled::{async_fn_env#0} @ http-conns.rs:91
 env: http_conns::{impl#0}::execute::{async_block_env#0}<core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output=()> + core::marker::Send), alloc::alloc::Global>>> @ http-conns.rs:75
 
 [poll-decls]
 
 [local-decls]
-local: http_conns::accept_loop::{async_fn_env#0} :: events @ http-conns.rs:138
-local: http_conns::accept_loop::{async_fn_env#0} :: listener @ http-conns.rs:137
-local: http_conns::accept_loop::{async_fn_env#0} :: park @ http-conns.rs:139
-local: http_conns::get::{async_fn_env#0} :: client @ http-conns.rs:153
-local: http_conns::get::{async_fn_env#0} :: uri @ http-conns.rs:153
+local: http_conns::accept_loop::{async_fn_env#0} :: events @ http-conns.rs:146
+local: http_conns::accept_loop::{async_fn_env#0} :: listener @ http-conns.rs:145
+local: http_conns::accept_loop::{async_fn_env#0} :: park @ http-conns.rs:147
+local: http_conns::get::{async_fn_env#0} :: client @ http-conns.rs:161
+local: http_conns::get::{async_fn_env#0} :: uri @ http-conns.rs:161
 local: http_conns::handle::{async_fn_env#0} :: events @ http-conns.rs:104
 local: http_conns::handle::{async_fn_env#0} :: park @ http-conns.rs:105
 local: http_conns::handle::{async_fn_env#0} :: peer @ http-conns.rs:103
 local: http_conns::handle::{async_fn_env#0} :: req @ http-conns.rs:102
-local: http_conns::main::{async_block_env#0} :: addr @ http-conns.rs:190
-local: http_conns::main::{async_block_env#0} :: completed @ http-conns.rs:200
-local: http_conns::main::{async_block_env#0} :: done @ http-conns.rs:195
-local: http_conns::main::{async_block_env#0} :: events @ http-conns.rs:191
-local: http_conns::main::{async_block_env#0} :: executor @ http-conns.rs:196
-local: http_conns::main::{async_block_env#0} :: listener @ http-conns.rs:187
-local: http_conns::main::{async_block_env#0} :: park @ http-conns.rs:192
-local: http_conns::main::{async_block_env#0} :: pooled @ http-conns.rs:208
-local: http_conns::main::{async_block_env#0} :: raw @ http-conns.rs:260
-local: http_conns::main::{async_block_env#0} :: uri @ http-conns.rs:209
-local: http_conns::raw_holder::{async_fn_env#0} :: park @ http-conns.rs:176
-local: http_conns::requester::{async_fn_env#0} :: client @ http-conns.rs:163
-local: http_conns::requester::{async_fn_env#0} :: uri @ http-conns.rs:163
-local: http_conns::reqwest_requester::{async_fn_env#0} :: client @ http-conns.rs:170
-local: http_conns::reqwest_requester::{async_fn_env#0} :: url @ http-conns.rs:170
-local: http_conns::serve::{async_fn_env#0} :: events @ http-conns.rs:125
-local: http_conns::serve::{async_fn_env#0} :: park @ http-conns.rs:126
-local: http_conns::serve::{async_fn_env#0} :: peer @ http-conns.rs:124
-local: http_conns::serve::{async_fn_env#0} :: stream @ http-conns.rs:123
+local: http_conns::main::{async_block_env#0} :: addr @ http-conns.rs:198
+local: http_conns::main::{async_block_env#0} :: completed @ http-conns.rs:208
+local: http_conns::main::{async_block_env#0} :: done @ http-conns.rs:203
+local: http_conns::main::{async_block_env#0} :: events @ http-conns.rs:199
+local: http_conns::main::{async_block_env#0} :: executor @ http-conns.rs:204
+local: http_conns::main::{async_block_env#0} :: listener @ http-conns.rs:195
+local: http_conns::main::{async_block_env#0} :: park @ http-conns.rs:200
+local: http_conns::main::{async_block_env#0} :: pooled @ http-conns.rs:216
+local: http_conns::main::{async_block_env#0} :: raw @ http-conns.rs:268
+local: http_conns::main::{async_block_env#0} :: uri @ http-conns.rs:217
+local: http_conns::raw_holder::{async_fn_env#0} :: park @ http-conns.rs:184
+local: http_conns::requester::{async_fn_env#0} :: client @ http-conns.rs:171
+local: http_conns::requester::{async_fn_env#0} :: uri @ http-conns.rs:171
+local: http_conns::reqwest_requester::{async_fn_env#0} :: client @ http-conns.rs:178
+local: http_conns::reqwest_requester::{async_fn_env#0} :: url @ http-conns.rs:178
+local: http_conns::serve::{async_fn_env#0} :: builder @ http-conns.rs:132
+local: http_conns::serve::{async_fn_env#0} :: events @ http-conns.rs:128
+local: http_conns::serve::{async_fn_env#0} :: park @ http-conns.rs:129
+local: http_conns::serve::{async_fn_env#0} :: peer @ http-conns.rs:127
+local: http_conns::serve::{async_fn_env#0} :: stream @ http-conns.rs:126
 local: http_conns::settled::{async_fn_env#0} :: completed @ http-conns.rs:89
 local: http_conns::settled::{async_fn_env#0} :: done @ http-conns.rs:88
 local: http_conns::settled::{async_fn_env#0} :: executor @ http-conns.rs:87

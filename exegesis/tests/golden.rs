@@ -966,9 +966,37 @@ fn assert_http_conn(program: &str, bundle: &Bundle, key: &str, client: bool) {
                     "conn.state.h1_header_read_timeout_running -> bool",
                     "{program}: {name}"
                 );
+                // The timeout's two words, through the `Option` and
+                // std's `Duration`.
+                assert_eq!(
+                    route(&dispatch.header_read_timeout_secs),
+                    "conn.state.h1_header_read_timeout.Some.__0.secs -> u64",
+                    "{program}: {name}"
+                );
+                assert_eq!(
+                    route(&dispatch.header_read_timeout_nanos),
+                    "conn.state.h1_header_read_timeout.Some.__0.nanos.__0 -> u32",
+                    "{program}: {name}"
+                );
+                // The timer's address: through the `Option` and the
+                // `Pin` to the data pointer of the `Box` it holds, which
+                // points at hyper's `dyn Sleep`.
+                assert_eq!(
+                    route_text(bundle, &dispatch.header_read_timer),
+                    "conn.state.h1_header_read_timeout_fut.Some.__0.pointer.pointer",
+                    "{program}: {name}"
+                );
+                match bundle.types.get(dispatch.header_read_timer.target) {
+                    Some(TypeDef::Pointer { target, .. }) => assert_eq!(
+                        name_of(*target),
+                        "dyn hyper::rt::timer::Sleep<Output=()>",
+                        "{program}: {name}"
+                    ),
+                    other => panic!("{program}: {name}: timer pointer {other:?}"),
+                }
                 // The fixture's service is its own closure, which no
-                // convention says keeps a peer address.
-                assert_eq!(dispatch.peer, None, "{program}: {name}");
+                // convention says keeps a peer address or a context.
+                assert_eq!(dispatch.service, None, "{program}: {name}");
             }
             None if client => {}
             other => panic!("{program}: {name}: server dispatch {other:?}"),

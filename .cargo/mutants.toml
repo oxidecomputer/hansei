@@ -451,4 +451,9 @@ exclude_re = [
     # route exists to fold a name once per type rather than once per
     # member.
     "replace StopNames<'a>::name -> Option<String> with None",
+    # Equivalent mutant: the header-read timeout's nanoseconds word is
+    # read only through the `Option`'s `Some`, and a billion is the
+    # niche that `None` is stored as, so `<` and `<=` pass the same
+    # words.
+    "replace < with <= in Context<'b, T>::observe_http_conn",
 ]

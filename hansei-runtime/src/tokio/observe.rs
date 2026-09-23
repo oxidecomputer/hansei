@@ -459,9 +459,18 @@ pub struct HttpServerObservation {
     pub handler: Option<String>,
     /// Whether the header-read timer is armed.
     pub header_read_timer_running: bool,
+    /// The timeout the header-read timer is armed for, where the server
+    /// was built with one and its two words read.
+    pub header_read_timeout: Option<std::time::Duration>,
+    /// The header-read timer's address — the `Sleep` behind its box —
+    /// where the server has made one and the pointer read.
+    pub header_read_timer: Option<u64>,
     /// The peer's address as std spells it, where the binding routes to
     /// one and it read.
     pub peer: Option<String>,
+    /// The context type of the server the connection was accepted by,
+    /// where the service is one a reviewed convention says names it.
+    pub context: Option<String>,
     /// The request the handler is running for, where a frame of the
     /// handler's chain holds a value a reviewed range keeps one in.
     pub request: Option<HttpRequestObservation>,

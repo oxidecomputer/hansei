@@ -665,15 +665,69 @@ impl<'a> Check<'a> {
                     == Some(1),
                 "HTTP header-read timer flag is not one byte",
             )?;
-            // The peer: under the service crate's own rule, an address
-            // enum reached through the dispatch, past the handler.
-            if let Some(peer) = &server.peer {
-                self.rule(peer.rule, &[SemanticRuleKind::DropshotRequestHandler])?;
-                enumeration(&peer.addr, "peer address")?;
+            // The timeout's two words: unsigned words of `Duration`'s
+            // widths, reached through the state the connection's words
+            // sit in and selected out of the `Option`, so a server with
+            // no timeout reads as none rather than as whatever `None`
+            // leaves there.
+            let state = binding
+                .keep_alive
+                .steps
+                .split_last()
+                .map_or(&[][..], |(_, state)| state);
+            for (word, size, what) in [
+                (&server.header_read_timeout_secs, 8, "seconds"),
+                (&server.header_read_timeout_nanos, 4, "nanoseconds"),
+            ] {
+                self.path(record.ty, word)?;
                 require(
-                    peer.addr.steps.len() > 2 && peer.addr.steps[0] == server.in_flight.steps[0],
+                    matches!(
+                        self.ty(word.target)?,
+                        TypeDef::Base {
+                            encoding: crate::Encoding::Unsigned,
+                            size: s,
+                            ..
+                        } if *s == size
+                    ),
+                    &format!("HTTP header-read timeout {what} is not an unsigned word"),
+                )?;
+                require(
+                    !state.is_empty()
+                        && word.steps.starts_with(state)
+                        && word.steps[state.len()..]
+                            .iter()
+                            .any(|step| matches!(step, Step::Variant(_))),
+                    &format!("HTTP header-read timeout {what} is not selected from the state"),
+                )?;
+            }
+            // The timer's address: a pointer, selected out of the
+            // state's `Option` the same way.
+            let timer = &server.header_read_timer;
+            self.path(record.ty, timer)?;
+            require(
+                matches!(self.ty(timer.target)?, TypeDef::Pointer { .. }),
+                "HTTP header-read timer is not a pointer",
+            )?;
+            require(
+                !state.is_empty()
+                    && timer.steps.starts_with(state)
+                    && timer.steps[state.len()..]
+                        .iter()
+                        .any(|step| matches!(step, Step::Variant(_))),
+                "HTTP header-read timer is not selected from the state",
+            )?;
+            // The service: under its crate's own rule, the peer an
+            // address enum reached through the dispatch, past the
+            // handler, and the context a type the table carries.
+            if let Some(service) = &server.service {
+                self.rule(service.rule, &[SemanticRuleKind::DropshotRequestHandler])?;
+                enumeration(&service.peer, "peer address")?;
+                require(
+                    service.peer.steps.len() > 2
+                        && service.peer.steps[0] == server.in_flight.steps[0],
                     "HTTP peer address is not reached through the dispatch",
                 )?;
+                self.ty(service.context)?;
             }
         }
         Ok(())

@@ -3529,18 +3529,45 @@ impl<'b, T: Target> Context<'b, T> {
                     "header-read timer flag",
                 )?;
                 let header_read_timer_running = flag.bytes.first().is_some_and(|byte| *byte != 0);
-                // The peer, where a convention routes to one: a fact
-                // beside the verdict, like the buffer.
-                let peer = server
-                    .peer
-                    .as_ref()
-                    .and_then(|peer| word(&peer.addr, "peer address").ok())
+                // The timeout and the timer, facts beside the verdict:
+                // `None` where the server has none — the `Option`'s
+                // variant is not the one the words sit in — or a word
+                // did not read.
+                let selected = |path: &TypedPath| match at(path) {
+                    Ok(Walked::At(value)) => Some(value),
+                    _ => None,
+                };
+                let header_read_timeout = selected(&server.header_read_timeout_secs)
+                    .and_then(|secs| secs.parse::<u64>(self.proc).ok())
+                    .zip(
+                        selected(&server.header_read_timeout_nanos)
+                            .and_then(|nanos| nanos.parse::<u32>(self.proc).ok())
+                            .filter(|nanos| *nanos < 1_000_000_000),
+                    )
+                    .map(|(secs, nanos)| std::time::Duration::new(secs, nanos));
+                // The timer's address, which is what tells its find
+                // from any other timer the task holds.
+                let header_read_timer = selected(&server.header_read_timer)
+                    .and_then(|pointer| pointer.parse::<u64>(self.proc).ok())
+                    .filter(|addr| *addr != 0);
+                // The peer and the server's context, where a convention
+                // routes to them: facts beside the verdict, like the
+                // buffer.
+                let service = server.service.as_ref();
+                let peer = service
+                    .and_then(|service| word(&service.peer, "peer address").ok())
                     .and_then(socket_addr_text);
+                let context = service
+                    .and_then(|service| self.view.ty(service.context))
+                    .map(|ty| ty.name().to_string());
                 Some(HttpServerObservation {
                     in_flight,
                     handler,
                     header_read_timer_running,
+                    header_read_timeout,
+                    header_read_timer,
                     peer,
+                    context,
                     request,
                 })
             }

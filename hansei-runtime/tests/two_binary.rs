@@ -1146,8 +1146,11 @@ fn test_the_census_accounting_is_exact_per_program() {
         // The reqwest requester adds three finds by descent — the
         // request behind the client's box, the tower layers under it —
         // and its executor's async blocks two enum finds, one of them
-        // a second sighting of a chain frame.
-        ("http-conns", 4, 42, 8, 2, 1),
+        // a second sighting of a chain frame. The idle server's armed
+        // header-read timer adds a find by descent reached through its
+        // option's `Some`, and a chain hit: the tokio `Sleep` inside
+        // hyper-util's `TokioSleep`, met again as its chain's frame.
+        ("http-conns", 4, 43, 9, 3, 1),
         // Five chain frames: the keeper's oneshot, and each waiter's
         // pinned `Recv` and the oneshot behind it. The keeper's six
         // channel ends are no futures. Two finds by descent, one under

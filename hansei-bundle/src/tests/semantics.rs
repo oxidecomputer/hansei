@@ -1834,7 +1834,7 @@ fn test_semantic_never_ready_is_a_whole_program_under_its_own_rule() {
 /// verdict reads, under the hyper rule read off its registry path. The
 /// second value is the client's dispatch routes, kept apart so a
 /// server-shaped record can be built from the same table.
-fn http_conn() -> (Bundle, HttpClientBinding) {
+fn http_conn() -> (Bundle, HttpClientBinding, [TypedPath; 3]) {
     let mut b = base();
     let mut strings = StringInterner::new();
     for s in b.strings.iter() {
@@ -1902,6 +1902,15 @@ fn http_conn() -> (Bundle, HttpClientBinding) {
         name("dropshot-server-0.17.0"),
         name("registry/src/index.crates.io-1949cf8c6b5b557f/dropshot-0.17.1/src/server.rs"),
     );
+    let (timer, timeout, secs, nanos, u32_name, duration_name, nanoseconds_name) = (
+        name("h1_header_read_timeout_fut"),
+        name("h1_header_read_timeout"),
+        name("secs"),
+        name("nanos"),
+        name("u32"),
+        name("core::time::Duration"),
+        name("core::num::niche_types::Nanoseconds"),
+    );
     let (idle, busy, disabled, init, cont, body, length, chunked, get, post, retry, no_retry) = (
         name("Idle"),
         name("Busy"),
@@ -1968,6 +1977,8 @@ fn http_conn() -> (Bundle, HttpClientBinding) {
         (id(), id(), id(), id(), id(), id(), id(), id());
     let (unbounded_t, receiver_t, client_t, dispatcher_t) = (id(), id(), id(), id());
     let (bytes_mut_t, buffered_t) = (id(), id());
+    let (u32_t, nanos_t, duration_t, some_d, opt_timeout) = (id(), id(), id(), id(), id());
+    let (some_t, opt_timer) = (id(), id());
     let variant = |name, discr: u128, payload: MemberDef| VariantDef {
         name,
         discr_values: Some(DiscrValues(vec![DiscrValue::Value(discr)])),
@@ -2062,17 +2073,19 @@ fn http_conn() -> (Bundle, HttpClientBinding) {
         ),
         strukt(
             state_name,
-            80,
+            96,
             vec![
                 member(keep_alive, ka, 0),
                 member(reading, reading_t, 8),
                 member(writing, writing_t, 32),
                 member(method, opt_method, 56),
+                member(timeout, opt_timeout, 64),
+                member(timer, opt_timer, 80),
             ],
         ),
         strukt(
             conn_name,
-            96,
+            112,
             vec![member(io, buffered_t, 0), member(state, state_t, 16)],
         ),
         strukt(sender, 8, vec![member(inner, pointer, 0)]),
@@ -2116,11 +2129,11 @@ fn http_conn() -> (Bundle, HttpClientBinding) {
         ),
         strukt(
             dispatcher,
-            160,
+            168,
             vec![
                 member(conn, conn_t, 0),
-                member(dispatch, client_t, 96),
-                member(is_closing, bool_t, 152),
+                member(dispatch, client_t, 112),
+                member(is_closing, bool_t, 160),
             ],
         ),
         strukt(
@@ -2129,6 +2142,44 @@ fn http_conn() -> (Bundle, HttpClientBinding) {
             vec![member(len, word, 0), member(cap, word, 8)],
         ),
         strukt(buffered_name, 16, vec![member(read_buf, bytes_mut_t, 0)]),
+        TypeDef::Base {
+            name: u32_name,
+            size: 4,
+            encoding: Encoding::Unsigned,
+        },
+        strukt(nanoseconds_name, 4, vec![member(first, u32_t, 0)]),
+        strukt(
+            duration_name,
+            16,
+            vec![member(secs, word, 0), member(nanos, nanos_t, 8)],
+        ),
+        strukt(some, 16, vec![member(first, duration_t, 0)]),
+        // `None` is the nanoseconds word's niche, as rustc lays it out.
+        TypeDef::Enum {
+            name: option,
+            size: 16,
+            shape: VariantShape {
+                discr: Some(DiscrDef {
+                    offset: 8,
+                    ty: u32_t,
+                }),
+                variants: vec![
+                    variant(none, 1_000_000_000, member(none, unit_t, 0)),
+                    variant(some, 0, member(some, some_d, 0)),
+                ],
+            },
+        },
+        // The timer's option, standing in for the pinned box: its `Some`
+        // holds the pointer the timer's address is.
+        strukt(some, 8, vec![member(first, pointer, 0)]),
+        enumeration(
+            option,
+            16,
+            vec![
+                variant(none, 0, member(none, unit_t, 8)),
+                variant(some, 1, member(some, some_t, 8)),
+            ],
+        ),
     ]);
     b.semantics.origins.push(SemanticOrigin::LibraryDelegation {
         package: hyper,
@@ -2236,7 +2287,35 @@ fn http_conn() -> (Bundle, HttpClientBinding) {
     });
     b.semantics.types = vec![r];
     b.validate().unwrap();
-    (b, client_binding)
+    // The header-read timeout's two words, for the server-shaped
+    // records the tests build.
+    let timeout_word = |steps: &[Step], target| {
+        let mut path = vec![
+            named(conn),
+            named(state),
+            named(timeout),
+            Step::Variant(some),
+            named(first),
+        ];
+        path.extend_from_slice(steps);
+        route(path, target)
+    };
+    let timer_route = route(
+        vec![
+            named(conn),
+            named(state),
+            named(timer),
+            Step::Variant(some),
+            named(first),
+        ],
+        pointer,
+    );
+    let server_words = [
+        timeout_word(&[named(secs)], word),
+        timeout_word(&[named(nanos), named(first)], u32_t),
+        timer_route,
+    ];
+    (b, client_binding, server_words)
 }
 
 /// The HTTP connection binding: the resource and the binding come
@@ -2247,7 +2326,7 @@ fn http_conn() -> (Bundle, HttpClientBinding) {
 /// present are the role's own.
 #[test]
 fn test_semantic_http_conn_binding_routes_every_word() {
-    let (b, client) = http_conn();
+    let (b, client, [secs, nanos, timer]) = http_conn();
     let mut bytes = Vec::new();
     b.write_to(&mut bytes).unwrap();
     assert_eq!(Bundle::read_from(bytes.as_slice()).unwrap(), b);
@@ -2326,7 +2405,10 @@ fn test_semantic_http_conn_binding_routes_every_word() {
     let server = HttpServerBinding {
         in_flight: client.callback.clone(),
         header_read_timeout_running: http(&mut b.clone()).is_closing.clone(),
-        peer: None,
+        header_read_timeout_secs: secs.clone(),
+        header_read_timeout_nanos: nanos.clone(),
+        header_read_timer: timer.clone(),
+        service: None,
     };
     let mut wrong = b.clone();
     http(&mut wrong).server = Some(server.clone());
@@ -2351,12 +2433,77 @@ fn test_semantic_http_conn_binding_routes_every_word() {
     let mut wrong = server_conn.clone();
     http(&mut wrong).server.as_mut().unwrap().in_flight = http(&mut wrong).is_closing.clone();
     bad(&wrong, "in-flight handler is not an enum");
-    // The peer: an address enum under the service crate's rule, reached
-    // through the dispatch the handler is.
-    let peer = |rule, addr| Some(HttpPeerBinding { rule, addr });
-    let with_peer = |peer| {
+    // The timeout's words: each an unsigned word of its own width, and
+    // selected out of the state's `Option` — a word of the right width
+    // reached elsewhere is not the timeout's.
+    let mut wrong = server_conn.clone();
+    http(&mut wrong)
+        .server
+        .as_mut()
+        .unwrap()
+        .header_read_timeout_secs = nanos.clone();
+    bad(
+        &wrong,
+        "header-read timeout seconds is not an unsigned word",
+    );
+    let mut wrong = server_conn.clone();
+    http(&mut wrong)
+        .server
+        .as_mut()
+        .unwrap()
+        .header_read_timeout_nanos = secs.clone();
+    bad(
+        &wrong,
+        "header-read timeout nanoseconds is not an unsigned word",
+    );
+    let mut wrong = server_conn.clone();
+    http(&mut wrong)
+        .server
+        .as_mut()
+        .unwrap()
+        .header_read_timeout_secs = http(&mut wrong).read_buf_len.clone();
+    bad(
+        &wrong,
+        "header-read timeout seconds is not selected from the state",
+    );
+    // A word selected out of a variant elsewhere — the callback's
+    // sender, retyped to a word — is not the timeout's either.
+    let mut wrong = server_conn.clone();
+    http(&mut wrong)
+        .server
+        .as_mut()
+        .unwrap()
+        .header_read_timeout_secs = client.retry.clone();
+    wrong.types.types[client.retry.target.0 as usize] =
+        wrong.types.types[secs.target.0 as usize].clone();
+    bad(
+        &wrong,
+        "header-read timeout seconds is not selected from the state",
+    );
+    // The timer's address: a pointer, selected out of the state's
+    // `Option` — a word there is not one, and neither is a pointer
+    // reached through the dispatch.
+    let mut wrong = server_conn.clone();
+    http(&mut wrong).server.as_mut().unwrap().header_read_timer = secs.clone();
+    bad(&wrong, "header-read timer is not a pointer");
+    let mut wrong = server_conn.clone();
+    http(&mut wrong).server.as_mut().unwrap().header_read_timer = client.retry.clone();
+    wrong.types.types[client.retry.target.0 as usize] =
+        wrong.types.types[timer.target.0 as usize].clone();
+    bad(&wrong, "header-read timer is not selected from the state");
+    // The service: the peer an address enum under the service crate's
+    // rule, reached through the dispatch the handler is, and the
+    // context a type the table carries.
+    let peer = |rule, peer| {
+        Some(HttpServiceBinding {
+            rule,
+            peer,
+            context: secs.target,
+        })
+    };
+    let with_peer = |service| {
         let mut conn = server_conn.clone();
-        http(&mut conn).server.as_mut().unwrap().peer = peer;
+        http(&mut conn).server.as_mut().unwrap().service = service;
         conn
     };
     let dropshot_rule = SemanticRuleId(2);
@@ -2392,6 +2539,9 @@ fn test_semantic_http_conn_binding_routes_every_word() {
         &with_peer(peer(dropshot_rule, under_dispatch)),
         "peer address is not reached through the dispatch",
     );
+    let mut service = peer(dropshot_rule, callback_enum.clone());
+    service.as_mut().unwrap().context = BundleTypeId(b.types.types.len() as u32);
+    bad(&with_peer(service), "invalid type id");
     // The rule is hyper's, read off its own file.
     let mut wrong = b.clone();
     wrong.semantics.rules[1].kind = SemanticRuleKind::HyperUtilTokioSleep;
@@ -2408,7 +2558,7 @@ fn test_semantic_http_conn_binding_routes_every_word() {
 /// is a protocol that is not the connection's own rule.
 #[test]
 fn test_semantic_http_negotiating_wrapper_is_the_connection_resource() {
-    let (mut b, _) = http_conn();
+    let (mut b, _, _) = http_conn();
     let dispatcher_t = b.semantics.types[0].ty;
     let hyper_rule = b.semantics.types[0].resource.as_ref().unwrap().rule;
     let u8_t = BundleTypeId(
@@ -2466,11 +2616,11 @@ fn test_semantic_http_negotiating_wrapper_is_the_connection_resource() {
     );
     b.types.types.extend([
         strukt(read_version, 0, vec![]),
-        strukt(h1, 160, vec![member(conn, dispatcher_t, 0)]),
+        strukt(h1, 168, vec![member(conn, dispatcher_t, 0)]),
         strukt(h2, 0, vec![]),
         TypeDef::Enum {
             name: state_name,
-            size: 168,
+            size: 176,
             shape: VariantShape {
                 discr: Some(DiscrDef {
                     offset: 0,
@@ -2483,7 +2633,7 @@ fn test_semantic_http_negotiating_wrapper_is_the_connection_resource() {
                 ],
             },
         },
-        strukt(wrapper_name, 168, vec![member(state, state_t, 0)]),
+        strukt(wrapper_name, 176, vec![member(state, state_t, 0)]),
     ]);
     let origin = SemanticOriginId(b.semantics.origins.len() as u32);
     b.semantics.origins.push(SemanticOrigin::LibraryDelegation {

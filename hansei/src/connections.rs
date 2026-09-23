@@ -934,7 +934,10 @@ mod tests {
                 in_flight: false,
                 handler: Some("app::handle::{async_fn_env#0}".to_string()),
                 header_read_timer_running,
+                header_read_timeout: None,
+                header_read_timer: None,
                 peer: Some("[fd00::25]:57400".to_string()),
+                context: None,
                 request: None,
             }),
         }))

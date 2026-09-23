@@ -6,10 +6,10 @@ task 3
     state: idle
     thread: <none>
     type: async fn http_conns::accept_loop
-    awaiting at: src/bin/http-conns.rs:143
+    awaiting at: src/bin/http-conns.rs:151
     awaiting on: io fd 9 (readable)
         waker: a waiter node, awaiting readable, ready: <none>
-    spawned at: src/bin/http-conns.rs:193:28
-    type defined at: src/bin/http-conns.rs:136
+    spawned at: src/bin/http-conns.rs:201:28
+    type defined at: src/bin/http-conns.rs:144
     held futures: 0
     join sets: 0

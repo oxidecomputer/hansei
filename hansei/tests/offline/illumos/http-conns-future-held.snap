@@ -1,11 +1,12 @@
 ---
 source: hansei/src/offline.rs
-description: "`future 0x1ee9810` over illumos/http-conns"
+description: "`future 0x1980c50` over illumos/http-conns"
 ---
 future 0xADDR
-    type: future futures_util::future::either::Either<tower::retry::future::ResponseFuture<reqwest::retry::Policy, reqwest::async_impl::client::HyperService, http::request::Request<reqwest::async_impl::body::Body>>, tower::util::oneshot::Oneshot<tower::retry::Retry<reqwest::retry::Policy, reqwest::async_impl::client::HyperService>, http::request::Request<reqwest::async_impl::body::Body>>>
-    held by: task 10 (frame 0, `future`), via held future at 0xADDR
-    depth: 1 frame
-    awaiting on: unarmed: unknown at futures_util::future::either::Either
+    type: future hyper_util::rt::tokio::TokioSleep
+    held by: task 4 (frame 0, `conn`)
+    depth: 3 frames
+    awaiting on: timer (deadline TS)
+        waker: timer @ 0xADDR
     held futures: 0
     join sets: 0

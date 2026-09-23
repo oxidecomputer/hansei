@@ -13,10 +13,10 @@ hyper::proto::h1::conn::Conn<hyper_util::common::rewind::Rewind<hyper_util::rt::
     method: core::option::Option<http::method::Method>::None,
     read_buf_len: 0,
     read_buf_cap: 16302,
-    header_read_timer: idle,
+    header_read_timer: armed,
 }
 
-task 8
+task 9
 hyper::proto::h1::conn::Conn<hyper_util::common::rewind::Rewind<hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>>, bytes::bytes::Bytes, hyper::proto::h1::role::Server> {
     version: http::version::Version(
         Http11,
@@ -30,7 +30,7 @@ hyper::proto::h1::conn::Conn<hyper_util::common::rewind::Rewind<hyper_util::rt::
     header_read_timer: idle,
 }
 
-task 11
+task 12
 hyper::proto::h1::conn::Conn<hyper_util::common::rewind::Rewind<hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>>, bytes::bytes::Bytes, hyper::proto::h1::role::Server> {
     version: http::version::Version(
         Http11,

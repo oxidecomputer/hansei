@@ -13,7 +13,7 @@ hyper::proto::h1::conn::Conn<hyper_util::common::rewind::Rewind<hyper_util::rt::
     method: core::option::Option<http::method::Method>::None,
     read_buf_len: 0,
     read_buf_cap: 16302,
-    header_read_timer: idle,
+    header_read_timer: armed,
 }
 
 task 8

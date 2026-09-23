@@ -3962,9 +3962,10 @@ fn test_wrong_binary_refused_by_build_id() {
 /// and still choosing its version. No row names a peer: hyper keeps
 /// none on either side, and the fixture's service is its own closure,
 /// which no reviewed convention says stores one (dropshot's does). The
-/// handler is the fixture's own async fn, the buffers hold nothing
-/// unparsed at the parked state, and no server armed a header-read
-/// timer. Grouping by phase files the five under four buckets, and a
+/// handler is the fixture's own async fn and the buffers hold nothing
+/// unparsed at the parked state. The idle server has armed its
+/// header-read timer, whose deadline is masked whole — its form is the
+/// system's. Grouping by phase files the five under four buckets, and a
 /// filter on the role keeps the servers.
 ///
 /// The rows are compared without their address and task cells and in
@@ -3990,14 +3991,21 @@ fn test_http_conns_connections_acceptance() {
         // else on a row names the loopback address (the peer column is
         // a dropshot server's).
         let port = regex::Regex::new(r"127\.0\.0\.1:\d+").unwrap();
+        // The idle server's deadline: relative where the core records
+        // when the process stopped, else on the monotonic clock.
+        let deadline = regex::Regex::new(
+            r"deadline \+\d+\.\d{3}s|deadline \d+\.\d{3}s on the target's monotonic clock",
+        )
+        .unwrap();
         let mut rows: Vec<String> = out
             .lines()
             .skip(1)
             .take(7)
             .map(|line| {
                 let cells: Vec<&str> = line.split_whitespace().skip(2).collect();
-                port.replace_all(&cells.join(" "), "127.0.0.1:PORT")
-                    .into_owned()
+                let row = cells.join(" ");
+                let row = port.replace_all(&row, "127.0.0.1:PORT");
+                deadline.replace_all(&row, "DEADLINE").into_owned()
             })
             .collect();
         rows.sort();
@@ -4009,7 +4017,7 @@ fn test_http_conns_connections_acceptance() {
                 "client http1 idle — — 0/8192 — — —",
                 "server http1 handling request GET — 0/16326 — async fn http_conns::handle GET /park",
                 "server http1 handling request GET — 0/16339 — async fn http_conns::handle GET /park",
-                "server http1 idle — — 0/16302 — — —",
+                "server http1 idle — — 0/16302 DEADLINE — —",
                 "server — negotiating — — — — — —",
             ],
             "{out}"

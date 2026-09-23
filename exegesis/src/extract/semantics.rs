@@ -28,8 +28,8 @@ use crate::bundle::origin::registry_origin;
 use crate::bundle::{
     AccessBinding, AccessKind, BundleTypeId, ContainerBinding, ContainerKind, Continuation,
     CoroutineLayout, CoroutinePhase, CoroutineState, DynFutureLayout, FutureEvidence, FutureFacts,
-    FutureTarget, HttpClientBinding, HttpConnBinding, HttpPeerBinding, HttpRequestBinding,
-    HttpRequestTarget, HttpRole, HttpServerBinding, IoOperationKind, LayoutSelection, MemberRef,
+    FutureTarget, HttpClientBinding, HttpConnBinding, HttpRequestBinding, HttpRequestTarget,
+    HttpRole, HttpServerBinding, HttpServiceBinding, IoOperationKind, LayoutSelection, MemberRef,
     PollAction, PollCase, PollProgram, ResourceBinding, ResourceKind, SchedulerBinding,
     SchedulerClass, SelectBinding, Selector, SemanticIssue, SemanticIssueKind, SemanticOrigin,
     SemanticOriginId, SemanticRule, SemanticRuleId, SemanticRuleKind, SemanticTable,
@@ -436,22 +436,31 @@ struct HttpClientSeed {
 
 /// The server dispatch by bundle id: the handler's pinned box — the
 /// `Pin`'s member holding the `Box`, the box, and the `Option` behind
-/// it — and the header-read timer's flag.
+/// it — the header-read timer's flag, the two words of the timeout it
+/// is armed for, and the timer's own box: the `Pin`'s member, the
+/// `Box`'s data pointer member, and that pointer.
 #[derive(Clone, Debug)]
 struct HttpServerSeed {
     in_flight_member: String,
     in_flight_box: BundleTypeId,
     in_flight: BundleTypeId,
     header_read_timeout_running: BundleTypeId,
-    /// The peer address the service keeps, where the screen recognized
-    /// the service: the address's type and the service's own method
-    /// declarations, which are what its crate's version is read off.
-    peer: Option<HttpPeerSeed>,
+    header_read_timeout_secs: BundleTypeId,
+    header_read_timeout_nanos: BundleTypeId,
+    header_read_timer_pin: String,
+    header_read_timer_pointer: String,
+    header_read_timer: BundleTypeId,
+    /// What the service keeps, where the screen recognized the service:
+    /// the peer address's type, the context type, and the service's
+    /// own method declarations, which are what its crate's version is
+    /// read off.
+    service: Option<HttpServiceSeed>,
 }
 
 #[derive(Clone, Debug)]
-struct HttpPeerSeed {
-    addr: BundleTypeId,
+struct HttpServiceSeed {
+    peer: BundleTypeId,
+    context: BundleTypeId,
     sources: BTreeSet<PollSource>,
 }
 
@@ -669,11 +678,17 @@ fn http_seed(
             in_flight_box: bundle_id(server.in_flight_box)?,
             in_flight: bundle_id(server.in_flight)?,
             header_read_timeout_running: bundle_id(server.header_read_timeout_running)?,
-            // A peer the table does not carry is no recorded route; the
-            // binding stands without it.
-            peer: server.peer.and_then(|addr| {
-                Some(HttpPeerSeed {
-                    addr: bundle_id(addr)?,
+            header_read_timeout_secs: bundle_id(server.header_read_timeout_secs)?,
+            header_read_timeout_nanos: bundle_id(server.header_read_timeout_nanos)?,
+            header_read_timer_pin: server.header_read_timer_pin,
+            header_read_timer_pointer: server.header_read_timer_pointer,
+            header_read_timer: bundle_id(server.header_read_timer)?,
+            // A service the table does not carry the types of is no
+            // recorded route; the binding stands without it.
+            service: server.dropshot.and_then(|dropshot| {
+                Some(HttpServiceSeed {
+                    peer: bundle_id(dropshot.remote_addr)?,
+                    context: bundle_id(dropshot.context)?,
                     sources: type_sources(server.service),
                 })
             }),
@@ -1768,10 +1783,16 @@ pub(super) fn bind_semantics(
                     server: plan.server.map(|server| HttpServerBinding {
                         in_flight: server.in_flight,
                         header_read_timeout_running: server.header_read_timeout_running,
-                        peer: server.peer.map(|(key, addr)| HttpPeerBinding {
-                            rule: rules.rule(&key, strings, library),
-                            addr,
-                        }),
+                        header_read_timeout_secs: server.header_read_timeout_secs,
+                        header_read_timeout_nanos: server.header_read_timeout_nanos,
+                        header_read_timer: server.header_read_timer,
+                        service: server
+                            .service
+                            .map(|(key, peer, context)| HttpServiceBinding {
+                                rule: rules.rule(&key, strings, library),
+                                peer,
+                                context,
+                            }),
                     }),
                 },
             )
@@ -2692,13 +2713,17 @@ struct HttpPlan {
     peer_declined: Option<Decline>,
 }
 
-/// The server dispatch's routes with the peer's under the key its rule
-/// is interned by once the plan is bound.
+/// The server dispatch's routes with the service's — the peer's route
+/// and the context type — under the key its rule is interned by once
+/// the plan is bound.
 #[derive(Clone, Debug)]
 struct HttpServerPlan {
     in_flight: TypedPath,
     header_read_timeout_running: TypedPath,
-    peer: Option<(RuleKey, TypedPath)>,
+    header_read_timeout_secs: TypedPath,
+    header_read_timeout_nanos: TypedPath,
+    header_read_timer: TypedPath,
+    service: Option<(RuleKey, TypedPath, BundleTypeId)>,
 }
 
 /// Plan hyper's dispatcher as the connection resource: the origin first
@@ -2883,13 +2908,13 @@ fn plan_http(
                 ],
                 server.in_flight,
             )?;
-            // The peer under its own crate's rule: the service's method
-            // declarations say which dropshot, and a version outside the
-            // reviewed range leaves the binding without a peer rather
-            // than without a verdict.
-            let peer = match &server.peer {
-                Some(peer) => {
-                    match delegation_origin(&peer.sources, &DROPSHOT_SERVER_V0_17_0, "method") {
+            // The service under its own crate's rule: the service's
+            // method declarations say which dropshot, and a version
+            // outside the reviewed range leaves the binding without a
+            // peer or a context rather than without a verdict.
+            let service = match &server.service {
+                Some(service) => {
+                    match delegation_origin(&service.sources, &DROPSHOT_SERVER_V0_17_0, "method") {
                         Ok(origin) => Some((
                             RuleKey::Delegation {
                                 kind: SemanticRuleKind::DropshotRequestHandler,
@@ -2898,8 +2923,9 @@ fn plan_http(
                             route(
                                 strings,
                                 &[(M, DISPATCH), (M, SERVICE), (M, REMOTE_ADDR)],
-                                peer.addr,
+                                service.peer,
                             )?,
+                            service.context,
                         )),
                         Err(declined) => {
                             peer_declined = Some(declined);
@@ -2909,6 +2935,19 @@ fn plan_http(
                 }
                 None => None,
             };
+            // The timeout's two words, through the `Option` and std's
+            // `Duration` — `nanos` through its `Nanoseconds` newtype.
+            let timeout_word = |strings: &mut StringInterner, word: &[(bool, &str)], target| {
+                let mut names = vec![
+                    (M, CONN),
+                    (M, STATE),
+                    (M, HEADER_READ_TIMEOUT),
+                    (V, SOME),
+                    (M, PAYLOAD),
+                ];
+                names.extend_from_slice(word);
+                route(strings, &names, target)
+            };
             Some(HttpServerPlan {
                 in_flight,
                 header_read_timeout_running: word(
@@ -2916,7 +2955,32 @@ fn plan_http(
                     HEADER_READ_TIMEOUT_RUNNING,
                     server.header_read_timeout_running,
                 )?,
-                peer,
+                header_read_timeout_secs: timeout_word(
+                    strings,
+                    &[(M, SECS)],
+                    server.header_read_timeout_secs,
+                )?,
+                header_read_timeout_nanos: timeout_word(
+                    strings,
+                    &[(M, NANOS), (M, PAYLOAD)],
+                    server.header_read_timeout_nanos,
+                )?,
+                // The timer's address: through the `Option` and the
+                // `Pin` to the data pointer of the `Box` it holds.
+                header_read_timer: route(
+                    strings,
+                    &[
+                        (M, CONN),
+                        (M, STATE),
+                        (M, HEADER_READ_TIMEOUT_FUT),
+                        (V, SOME),
+                        (M, PAYLOAD),
+                        (M, &server.header_read_timer_pin),
+                        (M, &server.header_read_timer_pointer),
+                    ],
+                    server.header_read_timer,
+                )?,
+                service,
             })
         }
         None => None,

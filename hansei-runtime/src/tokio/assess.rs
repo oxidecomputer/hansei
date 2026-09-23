@@ -2382,7 +2382,10 @@ mod tests {
                 in_flight,
                 handler: in_flight.then(|| "app::handle::{async_fn_env#0}".to_owned()),
                 header_read_timer_running: false,
+                header_read_timeout: None,
+                header_read_timer: None,
                 peer: Some("[fd00::25]:57400".to_owned()),
+                context: Some("app::Context".to_owned()),
                 request: None,
             }),
         }
@@ -2658,7 +2661,10 @@ mod tests {
             in_flight: false,
             handler: None,
             header_read_timer_running: false,
+            header_read_timeout: None,
+            header_read_timer: None,
             peer: None,
+            context: None,
             request: None,
         };
     }

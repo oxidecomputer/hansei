@@ -3,5 +3,5 @@ source: hansei/src/offline.rs
 description: "`threads --without role ^worker --group has-task` over linux/local-set"
 ---
 COUNT  HAS TASK  LWPS
-    1  no        2164775
+    1  no        143637
 [1 group]

@@ -3,16 +3,16 @@ source: hansei/src/offline.rs
 description: "`sync` over illumos/http-conns"
 ---
 oneshot 0xADDR: nothing sent, sender alive
-    rx: task 14
+    rx: task 15
 
 oneshot 0xADDR: nothing sent, sender alive
-    tx: task 9
+    tx: task 10
 
 oneshot 0xADDR: nothing sent, sender alive
-    tx: task 12
+    tx: task 13
 
 mpsc 0xADDR: 1 sender, 0 unread
     rx: task 5
 
 notify 0xADDR: waiting
-    rx: task 8, task 11
+    rx: task 9, task 12

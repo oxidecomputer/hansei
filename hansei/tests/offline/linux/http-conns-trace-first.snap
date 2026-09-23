@@ -13,4 +13,4 @@ description: "`trace 3 -n` over linux/http-conns"
 #4  async fn      tokio::net::tcp::listener::TcpListener::accept
       awaiting at tokio-1.52.4/src/net/tcp/listener.rs:164 (Suspend0, 0 locals)
 #5  async fn      http_conns::accept_loop
-      awaiting at src/bin/http-conns.rs:143 (Suspend0, 3 locals)
+      awaiting at src/bin/http-conns.rs:151 (Suspend0, 3 locals)

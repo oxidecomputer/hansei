@@ -6,19 +6,25 @@ task 4
     state: idle
     thread: <none>
     type: async fn http_conns::serve
-    awaiting at: src/bin/http-conns.rs:129
-    awaiting on: http1 server 0xADDR (idle, keep-alive)
+    awaiting at: src/bin/http-conns.rs:137
+    awaiting on: http1 server 0xADDR (idle, keep-alive, header-read timer armed)
+        note: the wheel entry 0xADDR also holds this task's waker, outside the verified wait
         waker: the read-waiter slot, awaiting readable, ready: writable
-    spawned at: src/bin/http-conns.rs:147:9
-    type defined at: src/bin/http-conns.rs:122
-    held futures: 0
+        timer 0xADDR: hyper_util::rt::tokio::TokioSleep
+            held in: frame 0 `conn`
+            awaiting on: timer (deadline TS)
+            type defined at: hyper-util-0.1.20/src/rt/tokio.rs:314
+            waker: timer @ 0xADDR
+    spawned at: src/bin/http-conns.rs:155:9
+    type defined at: src/bin/http-conns.rs:125
+    held futures: 1
     join sets: 0
 
-task 8
+task 9
     state: idle
     thread: <none>
     type: async fn http_conns::serve
-    awaiting at: src/bin/http-conns.rs:129
+    awaiting at: src/bin/http-conns.rs:137
     awaiting on: http1 server 0xADDR (GET in flight, handler running)
         note: notify rx 0xADDR also holds this task's waker, outside the verified wait
         request: GET /park
@@ -27,16 +33,16 @@ task 8
             held in: frame 0
             awaiting on: notify rx 0xADDR (waiting)
             type defined at: hyper-1.10.1/src/proto/h1/dispatch.rs:497
-    spawned at: src/bin/http-conns.rs:147:9
-    type defined at: src/bin/http-conns.rs:122
+    spawned at: src/bin/http-conns.rs:155:9
+    type defined at: src/bin/http-conns.rs:125
     held futures: 0
     join sets: 0
 
-task 11
+task 12
     state: idle
     thread: <none>
     type: async fn http_conns::serve
-    awaiting at: src/bin/http-conns.rs:129
+    awaiting at: src/bin/http-conns.rs:137
     awaiting on: http1 server 0xADDR (GET in flight, handler running)
         note: notify rx 0xADDR also holds this task's waker, outside the verified wait
         request: GET /park
@@ -45,20 +51,20 @@ task 11
             held in: frame 0
             awaiting on: notify rx 0xADDR (waiting)
             type defined at: hyper-1.10.1/src/proto/h1/dispatch.rs:497
-    spawned at: src/bin/http-conns.rs:147:9
-    type defined at: src/bin/http-conns.rs:122
+    spawned at: src/bin/http-conns.rs:155:9
+    type defined at: src/bin/http-conns.rs:125
     held futures: 0
     join sets: 0
 
-task 13
+task 14
     state: idle
     thread: <none>
     type: async fn http_conns::serve
-    awaiting at: src/bin/http-conns.rs:129
+    awaiting at: src/bin/http-conns.rs:137
     awaiting on: http server 0xADDR (negotiating version)
         waker: the read-waiter slot, awaiting readable, ready: writable
-    spawned at: src/bin/http-conns.rs:147:9
-    type defined at: src/bin/http-conns.rs:122
+    spawned at: src/bin/http-conns.rs:155:9
+    type defined at: src/bin/http-conns.rs:125
     held futures: 1
     join sets: 0
 [Executed against 4 tasks, 0 failed]

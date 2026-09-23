@@ -3,11 +3,12 @@ source: hansei/src/offline.rs
 description: "`tasks --group waiting-on` over linux/http-conns"
 ---
 COUNT  WAITING ON                      TASKS
-    3  oneshot rx                      7, 10, 14
-    2  http1 client awaiting response  9, 12
-    2  http1 server handling request   8, 11
+    2  http1 client awaiting response  8, 12
+    2  http1 server handling request   9, 11
+    2  oneshot rx                      10, 14
     1  http server negotiating         13
-    1  http1 client idle               5
-    1  http1 server idle               4
+    1  http1 client idle               4
+    1  http1 server idle               5
     1  io                              3
-[7 groups]
+    1  oneshot rx, unknown             7
+[8 groups]

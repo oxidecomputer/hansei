@@ -5,9 +5,9 @@ description: "`census` over linux-floor/http-conns"
 Threads: 3 lwps, 3 in runtime 0 @ 0xADDR
 
 COUNT  RT  ROLE             STATE            LWPS
-    1  0   worker           in driver        2177622
-    1  0   worker           parked           2177623
-    1  0   entered runtime  block_on caller  2177620
+    1  0   worker           in driver        153143
+    1  0   worker           parked           153144
+    1  0   entered runtime  block_on caller  153141
     0  0   blocking pool    0 idle, 0 busy   —
 [3 lwps]
 
@@ -32,21 +32,23 @@ COUNT  TYPE / WAITING ON
     2  (2 more types)
 [7 types, 5 shown]
 
-Futures: 15 in flight, on 61 await-chain frames, up to 10 deep
+Futures: 16 in flight, on 64 await-chain frames, up to 10 deep
 
 COUNT  HELD IN
    11  task (its own await chain)
-    4  frame (off any await chain)
+    5  frame (off any await chain)
     0  set (0 FuturesUnordered)
-[15 futures]
+[16 futures]
 
 COUNT  TYPE / WAITING ON
     1  future futures_util::future::either::Either<tower::retry::future::ResponseFuture<reqwest::retry::Policy, reqwest::async_impl::client::HyperService, http::request::Request<reqwest::async_impl::body::Body>>, tower::util::oneshot::Oneshot<tower::retry::Retry<reqwest::retry::Policy, reqwest::async_impl::client::HyperService>, http::request::Request<reqwest::async_impl::body::Body>>>
        └─ 1  unknown
+    1  future hyper_util::rt::tokio::TokioSleep
+       └─ 1  timer
     1  future hyper_util::server::conn::auto::ReadVersion<hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>>
        └─ 1  unknown
     1  future reqwest::async_impl::client::PendingRequest
        └─ 1  unknown
     1  future tower_http::follow_redirect::ResponseFuture<tower::retry::Retry<reqwest::retry::Policy, reqwest::async_impl::client::HyperService>, reqwest::async_impl::body::Body, reqwest::redirect::TowerRedirectPolicy>
        └─ 1  unknown
-[4 types]
+[5 types]
