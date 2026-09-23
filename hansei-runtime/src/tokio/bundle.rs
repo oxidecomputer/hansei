@@ -37,7 +37,7 @@ use hansei_bundle::{
     AccessKind, BundleType, BundleTypeId, BundleView, ContainerKind, Continuation, FutureKind,
     IoOperationKind, MemberRef, PollAction, PollProgram, ResourceKind, SchedulerClass,
     SelectBinding, StaticRole, Step, StoragePolicy, SymbolLookup, TaskEntryId, TaskFutureEntry,
-    TypeDef, TypeSemantics, TypedPath, WalkOutcome, WalkRole, strip_build_prefix,
+    TypeClass, TypeDef, TypeSemantics, TypedPath, WalkOutcome, WalkRole, strip_build_prefix,
     strip_llvm_suffix,
 };
 use proc::{LwpInfo, Mappings, SymbolBuf, Target};
@@ -303,6 +303,11 @@ pub struct Context<'b, T> {
     /// and walks each list once for the target rather than once per
     /// task.
     notify_waiters: Memo<ValueKey, Vec<u64>>,
+    /// Whether a value of the type can hold anything the reference scan
+    /// reports ([`Context::reference_inert`]): the scan meets the same
+    /// few hundred types in every in-flight request of a target, and
+    /// decides each once.
+    reference_inert: Memo<BundleTypeId, bool>,
     semantics: SemanticIndex,
     /// Records standing in for the bundle's own, for a test over a
     /// shape the production binders decline; empty outside the tests
@@ -345,6 +350,7 @@ impl<'b, T: Target> Context<'b, T> {
             task_lookups: Memo::default(),
             dyn_future_lookups: Memo::default(),
             notify_waiters: Memo::default(),
+            reference_inert: Memo::default(),
             semantics,
             test_bindings: &[],
             contract,
@@ -1434,6 +1440,42 @@ impl<'b, T: Target> Context<'b, T> {
     /// The container a type is bound as, if any.
     pub(crate) fn container_kind(&self, id: BundleTypeId) -> Option<ContainerKind> {
         self.type_semantics(id)?.container.as_ref().map(|c| c.kind)
+    }
+
+    /// Whether no value of `ty` can hold anything the reference scan
+    /// reports: nothing in its inline storage — its members, every
+    /// variant's payload — is a bound resource, container, pointer
+    /// adapter, future or coroutine, storage the bundle declares
+    /// unreadable, or an array of aggregates. A pointer no adapter is
+    /// bound for is a word the scan never follows, so it ends the
+    /// question there. A fact of the type, remembered per type.
+    pub(crate) fn reference_inert(&self, ty: BundleType<'b>) -> bool {
+        self.reference_inert.get_or(&ty.id(), || {
+            let bound = self.type_semantics(ty.id()).is_some_and(|record| {
+                record.resource.is_some()
+                    || record.container.is_some()
+                    || record.access.is_some()
+                    || record.future.is_some()
+                    || record.coroutine.is_some()
+                    || matches!(record.storage, StoragePolicy::Unavailable(_))
+            });
+            !bound
+                && match ty.classify() {
+                    TypeClass::Struct => ty
+                        .members()
+                        .all(|member| member.ty().size() == 0 || self.reference_inert(member.ty())),
+                    TypeClass::RustEnum => ty
+                        .variants()
+                        .all(|variant| self.reference_inert(variant.ty)),
+                    TypeClass::Array { element, .. } => !super::scan::holds_aggregates(element),
+                    TypeClass::Union
+                    | TypeClass::Pointer { .. }
+                    | TypeClass::Integer { .. }
+                    | TypeClass::Float { .. }
+                    | TypeClass::CEnum
+                    | TypeClass::Opaque => true,
+                }
+        })
     }
 
     /// The member a fan-out container keeps its entries in, as the

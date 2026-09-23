@@ -14,7 +14,9 @@
 //! never diagnoses a wait, never consults a task list, and never
 //! follows a pointer it has no contract for.
 //!
-//! At each nominal value, in order: its complete inline byte range is
+//! At each nominal value, in order: a value whose type can hold none
+//! of what follows anywhere in its inline storage is skipped unvisited
+//! ([`Context::reference_inert`]); its complete inline byte range is
 //! required; a bound resource is observed and its references emitted,
 //! and its interior is the observer's business, not the scan's; a
 //! recognized container is walked by its own contract, each initialized
@@ -167,6 +169,13 @@ impl<'b, T: Target> Scanner<'_, 'b, T> {
 
     /// One value, `depth` aggregate levels below its origin.
     fn scan(&mut self, value: Value<'b>, depth: u16, frame: Frame) {
+        // Storage whose type can hold nothing this scan reports is not
+        // visited at all: a request's copies of its client's
+        // configuration are hundreds of scalars apiece, and a target
+        // holds tens of thousands of requests.
+        if self.ctx.reference_inert(value.ty) {
+            return;
+        }
         let key = ValueKey::of(value);
         if !self.budget.charge_visit() {
             // Said once per scan: every value after the first refused
@@ -847,7 +856,7 @@ impl<'b, T: Target> Scanner<'_, 'b, T> {
 
 /// Whether an array of `element`s could hold a future or a handle:
 /// an aggregate element might, a scalar cannot.
-fn holds_aggregates(element: hansei_bundle::BundleType<'_>) -> bool {
+pub(super) fn holds_aggregates(element: hansei_bundle::BundleType<'_>) -> bool {
     matches!(
         element.classify(),
         TypeClass::Struct | TypeClass::RustEnum | TypeClass::Union | TypeClass::Array { .. }
@@ -864,7 +873,9 @@ mod tests {
     use crate::tokio::bundle::{FutureInfo, Task, TaskList, TaskStage, WaitKind};
     use crate::tokio::observe::{CollectedReferences, ScanLimits, TaskReference};
 
-    use hansei_bundle::{BundleView, SemanticIssue, StoragePolicy};
+    use hansei_bundle::{
+        Bundle, BundleView, FutureFacts, SemanticIssue, StoragePolicy, TypeSemantics,
+    };
 
     /// An address nothing in a small test program's address space
     /// reaches.
@@ -1731,8 +1742,10 @@ mod tests {
         assert!(!completion.complete);
         assert_eq!(kinds(&sink.issues), [WalkIssueKind::UnsupportedArray]);
         assert_eq!(sink.issues[0].at.addr, 0x1000 + slots.offset());
-        // Every member visited: the array and the two words.
-        assert_eq!(completion.inline_visits, 1 + level.members().count() as u64);
+        // The level and its array visited; the two words beside it can
+        // hold nothing the scan reports, and are not.
+        assert_eq!(level.members().count(), 3);
+        assert_eq!(completion.inline_visits, 2);
 
         let (completion, sink) = scan(ScanLimits {
             max_depth: 0,
@@ -1745,6 +1758,158 @@ mod tests {
                 .iter()
                 .all(|k| *k == WalkIssueKind::DepthLimit)
         );
+    }
+
+    /// A type can hold nothing the scan reports unless something in its
+    /// inline storage is bound — a resource, a container, an adapter, a
+    /// future — or is an array of aggregates; a struct is as live as its
+    /// liveliest member, an enum as its liveliest variant, and a pointer
+    /// no adapter is bound for ends the question. A value of an inert
+    /// type is skipped unvisited: no visit charged, and no issue even
+    /// where the bytes in hand do not cover the type.
+    #[test]
+    fn test_storage_that_cannot_hold_a_reference_is_not_visited() {
+        let (bundle, snapshot) = testkit::load_any("sleep-join");
+        let ctx = testkit::context(&bundle, &snapshot);
+        let types: Vec<_> = (0..bundle.types.types.len() as u32)
+            .filter_map(|i| ctx.view.ty(hansei_bundle::BundleTypeId(i)))
+            .collect();
+        let record = |ty: hansei_bundle::BundleType<'_>| ctx.type_semantics(ty.id());
+        let is_resource = |ty| record(ty).is_some_and(|r| r.resource.is_some());
+        let named = |name| {
+            ctx.view
+                .find_by_name(name)
+                .next()
+                .unwrap_or_else(|| panic!("{name} is in the bundle"))
+        };
+
+        let duration = named("core::time::Duration");
+        assert!(ctx.reference_inert(duration));
+        assert!(ctx.reference_inert(named("*const u8")));
+        assert!(!ctx.reference_inert(named("tokio::runtime::time::wheel::level::Level")));
+        let resource = types
+            .iter()
+            .find(|ty| is_resource(**ty))
+            .expect("a bound resource");
+        assert!(!ctx.reference_inert(*resource));
+        let adapter = types
+            .iter()
+            .find(|ty| record(**ty).is_some_and(|r| r.access.is_some()))
+            .expect("a bound adapter");
+        assert!(!ctx.reference_inert(*adapter));
+        let wrapper = types
+            .iter()
+            .find(|ty| {
+                matches!(ty.classify(), TypeClass::Struct)
+                    && record(**ty).is_none()
+                    && ty.members().any(|m| is_resource(m.ty()))
+            })
+            .expect("an unbound struct holding a resource");
+        assert!(!ctx.reference_inert(*wrapper), "{}", wrapper.name());
+        let mixed = types
+            .iter()
+            .find(|ty| {
+                matches!(ty.classify(), TypeClass::RustEnum)
+                    && record(**ty).is_none()
+                    && ty.variants().any(|v| ctx.reference_inert(v.ty))
+                    && ty.variants().any(|v| !ctx.reference_inert(v.ty))
+            })
+            .expect("an unbound enum with a live and an inert variant");
+        assert!(!ctx.reference_inert(*mixed), "{}", mixed.name());
+
+        let short = vec![0u8; duration.size() as usize - 1];
+        let mut sink = CollectedReferences::default();
+        let mut budget = ScanBudget::default();
+        let completion = ctx.scan_references(
+            Value::new(duration, 0x1000, &short),
+            TaskAddr(0),
+            &ReadContext::none(),
+            &mut budget,
+            &mut sink,
+        );
+        assert!(completion.complete);
+        assert_eq!(completion.inline_visits, 0);
+        assert!(sink.issues.is_empty(), "{:?}", sink.issues);
+        assert!(sink.references.is_empty());
+    }
+
+    /// A binding alone keeps storage of scalars from being skipped: a
+    /// hand-written future with no coroutine layout is still an origin
+    /// the limits count, and storage the bundle declares unreadable —
+    /// with no future record, as an opaque type's is — is still stopped
+    /// at with its reason. Neither shape is in a fixture, so a
+    /// `Duration` stands in for each.
+    #[test]
+    fn test_a_binding_alone_keeps_scalar_storage_visited() {
+        let (bundle, snapshot) = testkit::load_any("sleep-join");
+        let duration_id = testkit::context(&bundle, &snapshot)
+            .view
+            .find_by_name("core::time::Duration")
+            .next()
+            .expect("Duration is in the bundle")
+            .id();
+        let future = bundle
+            .semantics
+            .types
+            .iter()
+            .find_map(|record| record.future.clone())
+            .expect("a future record");
+        let bound = |future: Option<FutureFacts>, storage: StoragePolicy| {
+            let mut bound = bundle.clone();
+            let types = &mut bound.semantics.types;
+            let at = types
+                .binary_search_by_key(&duration_id, |record| record.ty)
+                .expect_err("Duration is unbound in the fixture");
+            types.insert(
+                at,
+                TypeSemantics {
+                    ty: duration_id,
+                    storage,
+                    future,
+                    coroutine: None,
+                    access: None,
+                    resource: None,
+                    container: None,
+                    select: None,
+                    http: None,
+                    request: None,
+                    issues: Vec::new(),
+                },
+            );
+            bound
+        };
+        let scan = |bundle: &Bundle| {
+            let ctx = testkit::context(bundle, &snapshot);
+            let duration = ctx.view.ty(duration_id).unwrap();
+            let zeros = vec![0u8; duration.size() as usize];
+            let mut sink = CollectedReferences::default();
+            let mut budget = ScanBudget::default();
+            let completion = ctx.scan_references(
+                Value::new(duration, 0x1000, &zeros),
+                TaskAddr(0),
+                &ReadContext::none(),
+                &mut budget,
+                &mut sink,
+            );
+            (ctx.reference_inert(duration), completion, sink)
+        };
+
+        let (inert, completion, sink) = scan(&bound(Some(future), StoragePolicy::DeclaredMembers));
+        assert!(!inert);
+        assert!(completion.complete, "{:?}", sink.issues);
+        assert_eq!(completion.inline_visits, 1);
+
+        let (inert, completion, sink) = scan(&bound(
+            None,
+            StoragePolicy::Unavailable(SemanticIssue {
+                kind: SemanticIssueKind::MissingLayout,
+                detail: None,
+            }),
+        ));
+        assert!(!inert);
+        assert!(!completion.complete);
+        assert_eq!(kinds(&sink.issues), [WalkIssueKind::UnknownInitialization]);
+        assert_eq!(completion.inline_visits, 1);
     }
 
     /// The two frame counters move independently.
