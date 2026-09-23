@@ -713,9 +713,11 @@ pub enum Command {
     /// List every HTTP connection the target holds, one row each:
     /// the address a filter names it by, the task driving it, its
     /// role and version, the phase the connection's own words put it
-    /// in (the verdict its task block carries), the method in flight,
-    /// the peer where the server's service keeps one (a dropshot
-    /// server's does; hyper itself keeps none on either side),
+    /// in (the verdict its task block carries) — with how long an idle
+    /// server has waited for the next request, `idle (19ms)`, where its
+    /// header-read timer and the core's stop time say — the method in
+    /// flight, the peer where the server's service keeps one (a
+    /// dropshot server's does; hyper itself keeps none on either side),
     /// the read buffer's fill over its capacity, the header-read
     /// timer's deadline where the server has armed one, the context
     /// type of the server that accepted the connection where its

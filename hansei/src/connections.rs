@@ -6,7 +6,8 @@
 //! a row apiece, read from the connection resources the wait analysis
 //! and the census observed — the verdict's words and the facts beside
 //! them (the peer, the accepting server, the read buffer, an armed
-//! timer's deadline), which the task block does not have room to say.
+//! timer's deadline and how long an idle server has waited), which the
+//! task block does not have room to say.
 
 use crate::runtimes::RowOwner;
 use crate::tasks::{Cmp, EMPTY_BUCKET, alternatives, distinct_values, listing_footer, task_id};
@@ -24,6 +25,7 @@ use hansei_runtime::tokio::{RawInstant, attribution, census};
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io;
+use std::time::Duration;
 
 /// One row of the listing: a connection the target holds, as its
 /// dispatcher's words were read.
@@ -50,6 +52,9 @@ pub(crate) struct ConnRow {
     /// The context type of the server that accepted the connection,
     /// where its service names one under a reviewed convention.
     pub(crate) server: Option<String>,
+    /// How long an idle server connection has waited for the next
+    /// request head, where its header-read timer says.
+    pub(crate) idle_for: Option<Duration>,
     /// The read buffer's fill and capacity.
     pub(crate) read_buf: Option<(u64, u64)>,
     /// The header-read timer's deadline, where the server has armed
@@ -77,6 +82,16 @@ impl ConnRow {
 
     fn phase_word(&self) -> Option<&'static str> {
         self.phase.map(|phase| phase.word())
+    }
+
+    /// The `PHASE` cell: the phase's word, with how long an idle server
+    /// connection has waited beside it — `idle (19ms)`.
+    fn phase_cell(&self) -> Option<String> {
+        let word = self.phase_word()?;
+        Some(match (self.phase, self.idle_for) {
+            (Some(HttpPhase::Idle), Some(idle)) => format!("{word} ({})", duration_text(idle)),
+            _ => word.to_string(),
+        })
     }
 
     /// The `BUF` cell: bytes read and not yet parsed over the capacity.
@@ -160,6 +175,7 @@ fn row_of<T: proc::Target>(
         method: None,
         peer: None,
         server: None,
+        idle_for: None,
         read_buf: None,
         deadline: None,
         request: None,
@@ -323,6 +339,7 @@ fn conn_row(
             method: None,
             peer: None,
             server: None,
+            idle_for: None,
             read_buf: None,
             deadline: None,
             request: None,
@@ -353,10 +370,21 @@ fn conn_row(
                     _ => None,
                 },
             };
-            let deadline = server
-                .filter(|server| server.header_read_timer_running)
+            let armed = server.filter(|server| server.header_read_timer_running);
+            let deadline = armed
                 .and(held)
                 .map(|deadline| deadline_text(deadline, stopped));
+            // hyper arms the header-read timer for the timeout from when
+            // the connection starts waiting for a head, so an idle
+            // server has waited the timeout less what the timer has
+            // left at the capture — where the core records when that
+            // was.
+            let idle_for = match (phase, armed, held, stopped) {
+                (Some(HttpPhase::Idle), Some(server), Some(deadline), Some(stopped)) => server
+                    .header_read_timeout
+                    .and_then(|timeout| waited(timeout, deadline, stopped)),
+                _ => None,
+            };
             Some(ConnRow {
                 addr: http.conn,
                 role: http.role,
@@ -365,6 +393,7 @@ fn conn_row(
                 method: http.method.clone(),
                 peer: server.and_then(|server| server.peer.clone()),
                 server: server.and_then(|server| server.context.clone()),
+                idle_for,
                 read_buf: http.read_buf,
                 deadline,
                 request,
@@ -372,6 +401,26 @@ fn conn_row(
             })
         }
         _ => None,
+    }
+}
+
+/// How long a timer armed for `timeout` has run by `stopped`, given
+/// the `deadline` it was armed for: `None` where the deadline lies
+/// further off than the timeout, which no timer armed for it can.
+fn waited(timeout: Duration, deadline: RawInstant, stopped: RawInstant) -> Option<Duration> {
+    let ns = |i: RawInstant| i.tv_sec as i128 * 1_000_000_000 + i.tv_nsec as i128;
+    let waited = timeout.as_nanos() as i128 - (ns(deadline) - ns(stopped));
+    u64::try_from(waited).ok().map(Duration::from_nanos)
+}
+
+/// A duration as the listing prints one: milliseconds under a second,
+/// seconds to the millisecond above it — `19ms`, `4.250s`.
+fn duration_text(duration: Duration) -> String {
+    let ms = duration.as_millis();
+    if ms < 1000 {
+        format!("{ms}ms")
+    } else {
+        format!("{}.{:03}s", ms / 1000, ms % 1000)
     }
 }
 
@@ -398,7 +447,7 @@ fn row_cells(row: &ConnRow, groups: bool) -> Vec<String> {
     cells.extend([
         row.role_word().to_string(),
         row.version_word().map_or_else(dash, str::to_string),
-        row.phase_word().map_or_else(dash, str::to_string),
+        row.phase_cell().unwrap_or_else(dash),
         row.method.clone().unwrap_or_else(dash),
         row.peer.clone().unwrap_or_else(dash),
         row.buffer_cell().unwrap_or_else(dash),
@@ -772,6 +821,7 @@ mod tests {
             method: Some("GET".to_string()),
             peer: Some("[fd00::25]:57400".to_string()),
             server: None,
+            idle_for: None,
             read_buf: Some((12, 8192)),
             deadline: None,
             request: None,
@@ -784,8 +834,11 @@ mod tests {
     fn test_clauses_select_by_every_field() {
         let rows = [
             row(0x10, HttpRole::Client, Some(HttpPhase::AwaitingResponse)),
+            // An idle server with its wait in the cell: the phase field
+            // is the word alone.
             ConnRow {
                 server: Some("app::Context".to_string()),
+                idle_for: Some(Duration::from_millis(19)),
                 ..row(0x20, HttpRole::Server, Some(HttpPhase::Idle))
             },
             ConnRow {
@@ -816,6 +869,7 @@ mod tests {
         assert_eq!(select(&["version", "http1"]), [0x10, 0x20, 0x40]);
         assert_eq!(select(&["phase", "awaiting"]), [0x10]);
         assert_eq!(select(&["phase", "idle,negotiating"]), [0x20, 0x30]);
+        assert_eq!(select(&["phase", "^idle$"]), [0x20]);
         assert_eq!(select(&["server", "context"]), [0x20]);
         assert_eq!(select(&["method", "get"]), [0x10, 0x20, 0x40]);
         assert_eq!(select(&["peer", "fd00"]), [0x10, 0x20, 0x40]);
@@ -899,6 +953,46 @@ mod tests {
         );
         assert_eq!(full.label(), "http1 client 0x10");
         assert_eq!(bare.label(), "http server 0x30");
+        // An idle server's wait follows its phase, milliseconds under a
+        // second and seconds to the millisecond above; a wait beside
+        // any other phase is not printed.
+        let waited = |phase, ms| ConnRow {
+            idle_for: Some(Duration::from_millis(ms)),
+            ..row(0x40, HttpRole::Server, Some(phase))
+        };
+        for (phase, ms, cell) in [
+            (HttpPhase::Idle, 0, "idle (0ms)"),
+            (HttpPhase::Idle, 19, "idle (19ms)"),
+            (HttpPhase::Idle, 999, "idle (999ms)"),
+            (HttpPhase::Idle, 1000, "idle (1.000s)"),
+            (HttpPhase::Idle, 4250, "idle (4.250s)"),
+            (HttpPhase::HandlingRequest, 19, "handling request"),
+        ] {
+            assert_eq!(row_cells(&waited(phase, ms), false)[4], cell);
+        }
+    }
+
+    /// A timer armed for the timeout has run the timeout less what it
+    /// has left, to the nanosecond — and one whose deadline is further
+    /// off than the timeout was not armed for it.
+    #[test]
+    fn test_the_wait_is_the_timeout_less_what_the_timer_has_left() {
+        let at = |tv_sec, tv_nsec| RawInstant { tv_sec, tv_nsec };
+        let timeout = Duration::from_secs(30);
+        assert_eq!(
+            waited(timeout, at(129, 981_000_000), at(100, 0)),
+            Some(Duration::from_millis(19))
+        );
+        assert_eq!(
+            waited(timeout, at(130, 0), at(100, 0)),
+            Some(Duration::ZERO)
+        );
+        // Overdue: the wait runs past the timeout.
+        assert_eq!(
+            waited(timeout, at(99, 999_999_999), at(100, 0)),
+            Some(Duration::from_nanos(30_000_000_001))
+        );
+        assert_eq!(waited(timeout, at(130, 1), at(100, 0)), None);
     }
 
     fn key(addr: u64) -> ValueKey {
@@ -930,7 +1024,7 @@ mod tests {
             server: Some(HttpServerObservation {
                 in_flight: false,
                 header_read_timer_running,
-                header_read_timeout: None,
+                header_read_timeout: Some(Duration::from_secs(30)),
                 header_read_timer: None,
                 peer: Some("[fd00::25]:57400".to_string()),
                 context: Some("app::Context".to_string()),
@@ -941,9 +1035,10 @@ mod tests {
 
     /// The facts beside the verdict reach the row: the peer, the
     /// server's context, the buffer, and the deadline of the held timer
-    /// — only while the header-read timer is armed. A negotiating
-    /// wrapper is a row at its own address with no words; any other
-    /// observation is no row.
+    /// — only while the header-read timer is armed — with the wait an
+    /// idle server's timer says beside it. A negotiating wrapper is a
+    /// row at its own address with no words; any other observation is
+    /// no row.
     #[test]
     fn test_the_observation_fills_the_row() {
         // The base carries a sentinel in every cell the observation
@@ -955,6 +1050,7 @@ mod tests {
             method: Some("SENTINEL".to_string()),
             peer: Some("SENTINEL".to_string()),
             server: Some("SENTINEL".to_string()),
+            idle_for: Some(Duration::from_secs(7)),
             read_buf: Some((1, 1)),
             deadline: Some("SENTINEL".to_string()),
             request: Some("SENTINEL".to_string()),
@@ -978,16 +1074,33 @@ mod tests {
         assert_eq!(armed.method, None);
         assert_eq!(armed.peer.as_deref(), Some("[fd00::25]:57400"));
         assert_eq!(armed.server.as_deref(), Some("app::Context"));
+        assert_eq!(armed.idle_for, Some(Duration::from_millis(19)));
         assert_eq!(armed.read_buf, Some((0, 8192)));
         assert_eq!(armed.deadline.as_deref(), Some("deadline +29.981s"));
         assert_eq!(armed.request, None);
         // The task's cells come from the base.
         assert_eq!(armed.task, "7");
-        // The timer disarmed or not held leaves no deadline.
+        // The timer disarmed or not held leaves no deadline and no
+        // wait; without the core's stop time, or a timeout, the
+        // deadline stands and the wait is unknown.
         let idle = fill(server_observation(false), held, stopped);
-        assert_eq!(idle.deadline, None);
+        assert_eq!((idle.deadline, idle.idle_for), (None, None));
         let unheld = fill(server_observation(true), None, stopped);
-        assert_eq!(unheld.deadline, None);
+        assert_eq!((unheld.deadline, unheld.idle_for), (None, None));
+        let unstopped = fill(server_observation(true), held, None);
+        assert!(unstopped.deadline.is_some());
+        assert_eq!(unstopped.idle_for, None);
+        let mut untimed = server_observation(true);
+        untimed.server.as_mut().unwrap().header_read_timeout = None;
+        let untimed = fill(untimed, held, stopped);
+        assert!(untimed.deadline.is_some());
+        assert_eq!(untimed.idle_for, None);
+        // A server not idle has waited for no head, whatever its timer.
+        let mut handling = server_observation(true);
+        handling.server.as_mut().unwrap().in_flight = true;
+        let handling = fill(handling, held, stopped);
+        assert_eq!(handling.phase, Some(HttpPhase::HandlingRequest));
+        assert_eq!(handling.idle_for, None);
         let negotiating = conn_row(
             base.clone(),
             &ResourceObservation::HttpNegotiating(HttpNegotiatingObservation {
@@ -1005,6 +1118,7 @@ mod tests {
         assert_eq!(negotiating.method, None);
         assert_eq!(negotiating.peer, None);
         assert_eq!(negotiating.server, None);
+        assert_eq!(negotiating.idle_for, None);
         assert_eq!(negotiating.read_buf, None);
         assert_eq!(negotiating.deadline, None);
         assert_eq!(negotiating.request, None);

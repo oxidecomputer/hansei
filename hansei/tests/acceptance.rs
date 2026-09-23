@@ -3964,9 +3964,10 @@ fn test_wrong_binary_refused_by_build_id() {
 /// own closure, which no reviewed convention says stores them
 /// (dropshot's does). The buffers hold nothing unparsed at the parked
 /// state. The idle server has armed its header-read timer, whose
-/// deadline is masked whole — its form is the system's. Grouping by
-/// phase files the five under four buckets, and a filter on the role
-/// keeps the servers.
+/// deadline is masked whole — its form is the system's — and whose wait
+/// beside the phase only an illumos core, which records when the
+/// process stopped, can put a length to. Grouping by phase files the
+/// five under four buckets, and a filter on the role keeps the servers.
 ///
 /// The rows are compared without their address and task cells and in
 /// sorted order. Every connection is parked by the time the core is
@@ -3991,12 +3992,19 @@ fn test_http_conns_connections_acceptance() {
         // else on a row names the loopback address (the peer column is
         // a dropshot server's).
         let port = regex::Regex::new(r"127\.0\.0\.1:\d+").unwrap();
-        // The idle server's deadline: relative where the core records
-        // when the process stopped, else on the monotonic clock.
+        // The idle server's deadline — relative where the core records
+        // when the process stopped, else on the monotonic clock — and
+        // its wait, which only the former can give.
         let deadline = regex::Regex::new(
             r"deadline \+\d+\.\d{3}s|deadline \d+\.\d{3}s on the target's monotonic clock",
         )
         .unwrap();
+        let waited = regex::Regex::new(r"idle \((\d+ms|\d+\.\d{3}s)\)").unwrap();
+        assert_eq!(
+            waited.find_iter(&out).count(),
+            usize::from(cfg!(target_os = "illumos")),
+            "{out}"
+        );
         let mut rows: Vec<String> = out
             .lines()
             .skip(1)
@@ -4005,7 +4013,8 @@ fn test_http_conns_connections_acceptance() {
                 let cells: Vec<&str> = line.split_whitespace().skip(2).collect();
                 let row = cells.join(" ");
                 let row = port.replace_all(&row, "127.0.0.1:PORT");
-                deadline.replace_all(&row, "DEADLINE").into_owned()
+                let row = deadline.replace_all(&row, "DEADLINE");
+                waited.replace_all(&row, "idle").into_owned()
             })
             .collect();
         rows.sort();
