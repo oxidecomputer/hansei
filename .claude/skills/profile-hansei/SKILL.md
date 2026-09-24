@@ -21,9 +21,11 @@ optimization** so a parked idea is not re-proposed.
   output, so a workload built around a stale id silently measures only
   the commands before it. Prefer the deepest task the core owns.
 - A good render A/B workload exercises enumeration and the deep value
-  render together: `tasks;graph;census;trace <id> -v -d 50`. Timing a
-  *second* identical `-e "trace …"` in the same process isolates warm
-  render cost from startup.
+  render together: `config depth 50;tasks;graph;census;trace <id> -v`.
+  `trace` takes no depth flag; the session's `depth` setting governs its
+  locals, and it defaults to 2, so leaving the `config` out measures a
+  shallow render. Timing a *second* identical `-e "trace …"` in the same
+  process isolates warm render cost from startup.
 - The extraction A/B is `hansei tokio-info extract` on a full debug build
   and on a production-scale one: run both, `cmp` bundles against a
   pre-change build (byte-identical unless the change means to alter
