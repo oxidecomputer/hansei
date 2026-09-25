@@ -59,6 +59,10 @@ pub(crate) struct Emitter<'a> {
     /// Declaration sites of closure/coroutine environment types, keyed
     /// by their emitted id — the type table's `env_decls`.
     env_decls: BTreeMap<BundleTypeId, SourceLoc>,
+    /// Each emitted generic instantiation's type arguments as the
+    /// reader's ids, keyed by its emitted id; resolved to the type
+    /// table's `generic_args` once everything is emitted.
+    generic_params: BTreeMap<BundleTypeId, Vec<TypeId>>,
     /// Where each emitted hand-written future's or stream's poll method
     /// is written, keyed by its emitted id — the type table's
     /// `poll_decls`.
@@ -98,6 +102,7 @@ impl<'a> Emitter<'a> {
             ids: BTreeMap::new(),
             defs: Vec::new(),
             env_decls: BTreeMap::new(),
+            generic_params: BTreeMap::new(),
             poll_decls: BTreeMap::new(),
             local_decls: BTreeMap::new(),
             crate_labels: BTreeMap::new(),
@@ -169,6 +174,10 @@ impl<'a> Emitter<'a> {
         while let Some((tid, bid)) = self.pending.pop_front() {
             let def = self.convert(tid);
             self.defs[bid.0 as usize] = def;
+            let args = self.generic_params_of(tid);
+            if !args.is_empty() {
+                self.generic_params.insert(bid, args);
+            }
             let name = fq_name(self.reader, tid);
             let node = match self.explained(name.as_deref()) {
                 Some(wanted) => {
@@ -188,6 +197,59 @@ impl<'a> Emitter<'a> {
             }
         }
         root
+    }
+
+    /// The generic type arguments of a struct, union or enum, as the
+    /// reader's ids: the type's own `DW_TAG_template_type_parameter`s,
+    /// or, for an enum, which rustc gives none, those of its first
+    /// variant payload. Every payload of one instantiation carries the
+    /// same bindings, a unit variant's included (nexus and sled-agent
+    /// hold no enum whose payloads disagree); were a first payload ever
+    /// to carry none, the enum would record none, which reads as "not
+    /// named" — the safe answer. Not reserved: see
+    /// [`Self::resolve_generic_args`].
+    fn generic_params_of(&self, id: TypeId) -> Vec<TypeId> {
+        let reader = self.reader;
+        let params = match reader.types.get(&id) {
+            Some(RawType::Struct(st)) => &st.template_params,
+            Some(RawType::Union(u)) => &u.template_params,
+            Some(RawType::Enum(e)) => {
+                let first = match &e.shape {
+                    RawVariantShape::One(v) => &v.member,
+                    RawVariantShape::Many { variants, .. } => match variants.first() {
+                        Some((_, v)) => &v.member,
+                        None => return Vec::new(),
+                    },
+                    RawVariantShape::Zero | RawVariantShape::CStyle { .. } => return Vec::new(),
+                };
+                match reader.types.get(&reader.canonicalize(first.type_id)) {
+                    Some(RawType::Struct(st)) => &st.template_params,
+                    _ => return Vec::new(),
+                }
+            }
+            _ => return Vec::new(),
+        };
+        params.iter().map(|p| p.type_id).collect()
+    }
+
+    /// Each instantiation's generic arguments as emitted ids, keeping
+    /// only the arguments that were emitted on their own. An argument
+    /// nothing else reaches — an allocator, a `PhantomData`'s marker — is
+    /// never a value the render meets, and reserving it would pull its
+    /// whole closure into the bundle for nothing (3.5k more types on
+    /// nexus). Leaving one out can only answer "not named" for a type
+    /// the name describes, which the render takes the qualified way.
+    fn resolve_generic_args(&self) -> BTreeMap<BundleTypeId, Vec<BundleTypeId>> {
+        self.generic_params
+            .iter()
+            .filter_map(|(&bid, params)| {
+                let args: Vec<BundleTypeId> = params
+                    .iter()
+                    .filter_map(|&p| self.ids.get(&self.reader.canonicalize(p)).copied())
+                    .collect();
+                (!args.is_empty()).then_some((bid, args))
+            })
+            .collect()
     }
 
     /// Assign a bundle id for a type, queueing its conversion if new.
@@ -641,6 +703,7 @@ impl<'a> Emitter<'a> {
             .into_iter()
             .map(|(n, id)| (self.interner.intern(&n), id))
             .collect();
+        let generic_args = self.resolve_generic_args();
 
         let mut types = TypeTable {
             types: self.defs,
@@ -650,6 +713,7 @@ impl<'a> Emitter<'a> {
             poll_decls: self.poll_decls,
             local_decls: self.local_decls,
             crate_labels: self.crate_labels,
+            generic_args,
             ..Default::default()
         };
         let demoted = demote_types_with_members_out_of_bounds(&mut types, &self.names);

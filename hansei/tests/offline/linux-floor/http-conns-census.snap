@@ -5,9 +5,9 @@ description: "`census` over linux-floor/http-conns"
 Threads: 3 lwps, 3 in runtime 0 @ 0xADDR
 
 COUNT  RT  ROLE             STATE            LWPS
-    1  0   worker           in driver        153143
-    1  0   worker           parked           153144
-    1  0   entered runtime  block_on caller  153141
+    1  0   worker           in driver        70108
+    1  0   worker           parked           70107
+    1  0   entered runtime  block_on caller  70105
     0  0   blocking pool    0 idle, 0 busy   —
 [3 lwps]
 

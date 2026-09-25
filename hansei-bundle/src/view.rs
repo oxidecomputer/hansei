@@ -493,6 +493,20 @@ impl<'a> BundleType<'a> {
         Some((self.str(loc.file), loc.line))
     }
 
+    /// The generic type arguments this instantiation's name lists, in
+    /// declaration order, as DWARF binds them: `u32` and `my::Error` for
+    /// a `Result<u32, my::Error>`. Empty for a type that has none.
+    pub fn generic_args(&self) -> impl Iterator<Item = BundleType<'a>> + 'a {
+        let me = *self;
+        let args: &'a [BundleTypeId] = self
+            .bundle
+            .types
+            .generic_args
+            .get(&self.id)
+            .map_or(&[], Vec::as_slice);
+        args.iter().map(move |&id| me.at(id))
+    }
+
     /// The crate release this type's own declarations name, when the
     /// bundle recorded one: what tells two same-named types apart where
     /// a target links their crate at two releases. `None` for a std or

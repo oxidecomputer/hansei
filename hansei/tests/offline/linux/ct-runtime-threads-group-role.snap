@@ -3,5 +3,5 @@ source: hansei/src/offline.rs
 description: "`threads --group role` over linux/ct-runtime"
 ---
 COUNT  ROLE             LWPS
-    1  block_on caller  143388
+    1  block_on caller  55295
 [1 group]

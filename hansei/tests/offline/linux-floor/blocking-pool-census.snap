@@ -5,8 +5,8 @@ description: "`census` over linux-floor/blocking-pool"
 Threads: 4 lwps, 4 in runtime 0 @ 0xADDR
 
 COUNT  RT  ROLE             STATE                     LWPS
-    1  0   worker           in driver                 152051
-    1  0   worker           parked                    152052
+    1  0   worker           in driver                 69004
+    1  0   worker           parked                    69003
     1  0   blocking pool    0 idle, 1 busy, 2 queued  —
     1  0   entered runtime  block_on caller           —
 [4 lwps]

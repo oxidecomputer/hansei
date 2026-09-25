@@ -217,6 +217,14 @@ pub struct TypeTable {
     /// crate, so none is made. A label, never a key: nothing selects a
     /// type by it.
     pub crate_labels: BTreeMap<BundleTypeId, CrateLabel>,
+    /// The generic type arguments of each generic struct, union and
+    /// enum instantiation, keyed by type id, in declaration order: the
+    /// types its name lists between `<` and `>`, as DWARF's
+    /// `DW_TAG_template_type_parameter`s bind them rather than as the name
+    /// prints them. An enum's are the ones its variant payloads carry,
+    /// since rustc places none on the enum itself. Sparse — a type with
+    /// no generic type arguments records nothing.
+    pub generic_args: BTreeMap<BundleTypeId, Vec<BundleTypeId>>,
     /// O(1) view of `debug_formats`, built on first use: a position per
     /// type id (`u32::MAX` for types without a format) into a flat list
     /// of the display nodes. A census-style walk asks for a type's

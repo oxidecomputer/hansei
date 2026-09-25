@@ -3,6 +3,6 @@ source: hansei/src/offline.rs
 description: "`threads --group role` over linux-floor/http-conns"
 ---
 COUNT  ROLE             LWPS
-    2  worker           153143, 153144
-    1  entered runtime  153141
+    2  worker           70107, 70108
+    1  entered runtime  70105
 [2 groups]

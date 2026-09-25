@@ -3,11 +3,11 @@ source: hansei/src/offline.rs
 description: "`tasks --with type http_conns::serve --with waiting-on http1.server --exec print dispatch.service.f.peer` over illumos/http-conns"
 ---
 task 4
-core::net::socket_addr::SocketAddr = V4(127.0.0.1:63043)
+core::net::socket_addr::SocketAddr = V4(127.0.0.1:58035)
 
 task 9
-core::net::socket_addr::SocketAddr = V4(127.0.0.1:36613)
+core::net::socket_addr::SocketAddr = V4(127.0.0.1:35703)
 
 task 12
-core::net::socket_addr::SocketAddr = V4(127.0.0.1:53930)
+core::net::socket_addr::SocketAddr = V4(127.0.0.1:41830)
 [Executed against 3 tasks, 0 failed]

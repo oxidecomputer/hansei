@@ -2,10 +2,10 @@
 source: hansei/src/offline.rs
 description: "`threads` over linux/futurelock"
 ---
-LWP     NAME  ROLE                 TASK  FRAME 0
-142030  —     entered runtime      —     0xADDR
-142032  —     worker 3, parked     —     0xADDR
-142033  —     worker 1, parked     —     0xADDR
-142034  —     worker 0, parked     —     0xADDR
-142035  —     worker 2, in driver  —     0xADDR
+LWP    NAME  ROLE                 TASK  FRAME 0
+54007  —     entered runtime      —     0xADDR
+54009  —     worker 0, parked     —     0xADDR
+54010  —     worker 1, parked     —     0xADDR
+54011  —     worker 2, in driver  —     0xADDR
+54012  —     worker 3, parked     —     0xADDR
 [5 threads]

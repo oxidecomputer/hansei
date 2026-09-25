@@ -10,6 +10,7 @@ task 7
     awaiting on:
         oneshot rx 0xADDR (response for http1 client 0xADDR)
             waker: the response callback's receiver cell, held by task 9
+        unknown @ 0xADDR
     spawned at: src/bin/http-conns.rs:234:26
     type defined at: src/bin/http-conns.rs:171
     held futures: 0

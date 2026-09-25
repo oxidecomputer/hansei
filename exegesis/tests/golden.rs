@@ -464,6 +464,26 @@ fn assert_env_decl(program: &str, bundle: &Bundle, type_name: &str, expected: u3
     assert_eq!(line, expected, "{program}: {type_name}'s line");
 }
 
+/// The type named `type_name` records `expected` as its generic
+/// arguments, by name, in declaration order. Every definition under the
+/// name must agree.
+fn assert_generic_args(program: &str, bundle: &Bundle, type_name: &str, expected: &[&str]) {
+    let ids: Vec<hansei_bundle::BundleTypeId> = (0..bundle.types.types.len() as u32)
+        .map(hansei_bundle::BundleTypeId)
+        .filter(|&id| type_name_of(bundle, id) == type_name)
+        .collect();
+    assert!(!ids.is_empty(), "{program}: no type named {type_name}");
+    for id in ids {
+        let args: Vec<String> = bundle
+            .types
+            .generic_args
+            .get(&id)
+            .map(|args| args.iter().map(|&a| type_name_of(bundle, a)).collect())
+            .unwrap_or_default();
+        assert_eq!(args, expected, "{program}: {type_name}'s generic arguments");
+    }
+}
+
 /// The crate release the bundle labels the type named `type_name` with,
 /// as `find-types` prints it (`tokio 1.52.4`), or `None` where it
 /// carries no label. The type must exist, and every definition under
@@ -809,6 +829,7 @@ fn type_name_of(bundle: &Bundle, id: hansei_bundle::BundleTypeId) -> String {
     match bundle.types.get(id) {
         Some(
             TypeDef::Struct { name, .. }
+            | TypeDef::Union { name, .. }
             | TypeDef::Enum { name, .. }
             | TypeDef::CEnum { name, .. }
             | TypeDef::Base { name, .. }
@@ -2623,6 +2644,29 @@ fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
             bundle,
             "simple_await::ready_value::{async_fn_env#0}",
             17,
+        );
+        // Generic arguments, as DWARF binds them: a struct's own, a
+        // union's own (the map's leaves keep their keys in
+        // `MaybeUninit`s), and an enum's from its variant payloads,
+        // rustc placing none on the enum itself.
+        assert_generic_args(
+            program,
+            bundle,
+            "alloc::collections::btree::map::BTreeMap<u64, u32, alloc::alloc::Global>",
+            &["u64", "u32", "alloc::alloc::Global"],
+        );
+        assert_generic_args(
+            program,
+            bundle,
+            "core::mem::maybe_uninit::MaybeUninit<u64>",
+            &["u64"],
+        );
+        assert_generic_args(
+            program,
+            bundle,
+            "core::option::Option<alloc::sync::Arc<tokio::sync::oneshot::Inner<u32>, \
+             alloc::alloc::Global>>",
+            &["alloc::sync::Arc<tokio::sync::oneshot::Inner<u32>, alloc::alloc::Global>"],
         );
     }
     if program == "joinset" {
