@@ -17,7 +17,7 @@ use std::fmt;
 use super::dyn_ptr::eval_dyn_pointer;
 use super::{
     RenderCtx, write_display_value, write_field_prefix, write_named_bytes, write_record_close,
-    write_seq_close, write_seq_prefix,
+    write_seq_close, write_seq_prefix, write_variant_name,
 };
 
 /// True when `members` are a Rust tuple aggregate — a tuple struct or a tuple
@@ -61,14 +61,15 @@ fn has_named_single_field<'a>(ty: &BundleType<'a>) -> bool {
     }
 }
 
-/// Render one member's value (or `<truncated>`) at its offset, recursing with
-/// the deeper context. Shared by the tuple and named aggregate bodies.
+/// Render one member's value (or `<truncated>`) at its offset, with
+/// `child`, the context the caller made for it one level deeper. Shared
+/// by the tuple and named aggregate bodies.
 fn write_member_value<'a, T: Target>(
     f: &mut fmt::Formatter<'_>,
     member: &BundleMember<'a>,
     bytes: &'a [u8],
     addr: u64,
-    ctx: RenderCtx<'_, 'a, T>,
+    child: RenderCtx<'_, 'a, T>,
     pretty: bool,
 ) -> fmt::Result {
     let mem_ty = member.ty();
@@ -76,12 +77,12 @@ fn write_member_value<'a, T: Target>(
     let end = start + mem_ty.size() as usize;
     match bytes.get(start..end) {
         Some(mem_bytes) => {
-            let child = Value {
+            let value = Value {
                 ty: mem_ty,
                 addr: addr + member.offset(),
                 bytes: mem_bytes,
             };
-            write_display_value(f, &child, ctx.deeper(), pretty)
+            write_display_value(f, &value, child, pretty)
         }
         None => write!(f, "<truncated>"),
     }
@@ -90,10 +91,13 @@ fn write_member_value<'a, T: Target>(
 /// Render the body of a struct or enum-variant payload after its name/variant
 /// has been written: a tuple aggregate as `(v0, v1)` (labels elided), a named
 /// aggregate as ` { field: v, … }`, and an empty/all-ZST aggregate as nothing
-/// (a unit). Zero-sized members are never displayed.
+/// (a unit). Zero-sized members are never displayed. A tuple's fields stand
+/// in slots of `container` — the tuple struct, or the enum whose variant
+/// this is — whose type name is what may already name theirs.
 fn write_aggregate_body<'a, T: Target>(
     f: &mut fmt::Formatter<'_>,
     ty: &BundleType<'a>,
+    container: &'a str,
     bytes: &'a [u8],
     addr: u64,
     ctx: RenderCtx<'_, 'a, T>,
@@ -113,7 +117,8 @@ fn write_aggregate_body<'a, T: Target>(
         write!(f, "(")?;
         for (i, member) in shown.enumerate() {
             write_seq_prefix(f, pretty, ctx.prefix, ctx.depth, i == 0)?;
-            write_member_value(f, &member, bytes, addr, ctx, pretty)?;
+            let child = ctx.deeper().positional(container);
+            write_member_value(f, &member, bytes, addr, child, pretty)?;
             if pretty {
                 write!(f, ",")?;
             }
@@ -126,7 +131,7 @@ fn write_aggregate_body<'a, T: Target>(
             write_field_prefix(f, pretty, ctx.prefix, ctx.depth, i == 0)?;
             f.write_str(member.name())?;
             f.write_str(": ")?;
-            write_member_value(f, &member, bytes, addr, ctx, pretty)?;
+            write_member_value(f, &member, bytes, addr, ctx.deeper(), pretty)?;
             if pretty {
                 write!(f, ",")?;
             }
@@ -146,7 +151,15 @@ pub(crate) fn write_struct_fields<'a, T: Target>(
     if !name.is_empty() {
         f.write_str(name)?;
     }
-    write_aggregate_body(f, &info.ty, info.bytes, info.addr, ctx, pretty)
+    write_aggregate_body(
+        f,
+        &info.ty,
+        info.ty.name(),
+        info.bytes,
+        info.addr,
+        ctx,
+        pretty,
+    )
 }
 
 pub(crate) fn write_rust_enum<'a, T: Target>(
@@ -173,11 +186,10 @@ pub(crate) fn write_rust_enum<'a, T: Target>(
     }
     .peel();
 
-    if !name.is_empty() {
-        f.write_str(name)?;
-        f.write_str("::")?;
-    }
-    f.write_str(variant_name)?;
+    write_variant_name(f, name, variant_name, ctx.slot)?;
+    // What the payload holds is named by the enum's own type:
+    // `Option<Waker>` says what its `Some` carries.
+    let container = info.ty.name();
 
     // Zero-sized variant (unit variant)
     if var_ty.size() == 0 {
@@ -193,7 +205,15 @@ pub(crate) fn write_rust_enum<'a, T: Target>(
     // own is left to the delegation below, which is what a `String`-like
     // wrapper needs, and a tuple variant's synthetic `__0` stays elided.
     if (ctx.ugly || ctx.debug_format(&var_ty).is_none()) && has_named_single_field(&var_ty) {
-        return write_aggregate_body(f, &var_ty, variant_bytes, variant_addr, ctx, pretty);
+        return write_aggregate_body(
+            f,
+            &var_ty,
+            container,
+            variant_bytes,
+            variant_addr,
+            ctx,
+            pretty,
+        );
     }
 
     if !ctx.ugly
@@ -222,7 +242,7 @@ pub(crate) fn write_rust_enum<'a, T: Target>(
         // Peeling into the payload's own formatter is a representation detail,
         // so it stays at the same depth.
         write!(f, "(")?;
-        write_display_value(f, &variant_info, ctx, pretty)?;
+        write_display_value(f, &variant_info, ctx.positional(container), pretty)?;
         return write!(f, ")");
     }
 
@@ -243,7 +263,8 @@ pub(crate) fn write_rust_enum<'a, T: Target>(
         TypeKind::Struct | TypeKind::Union | TypeKind::Other
     ) {
         write!(f, "(")?;
-        write_display_value(f, &variant_info, ctx.deeper(), pretty)?;
+        let child = ctx.deeper().positional(container);
+        write_display_value(f, &variant_info, child, pretty)?;
         return write!(f, ")");
     }
 
@@ -253,6 +274,7 @@ pub(crate) fn write_rust_enum<'a, T: Target>(
     write_aggregate_body(
         f,
         &variant_info.ty,
+        container,
         variant_info.bytes,
         variant_info.addr,
         ctx,
@@ -288,7 +310,7 @@ mod tests {
         let value = Value::new(v.ty(OPT).unwrap(), 0, &bytes);
         assert_eq!(
             format!("{}", value.display().ugly()),
-            "Opt::Some { data_ptr: 0x3000, length: 8 }"
+            "Opt = Some { data_ptr: 0x3000, length: 8 }"
         );
     }
 
@@ -317,7 +339,7 @@ mod tests {
         let value = Value::new(v.ty(FLAVOR).unwrap(), 0, &bytes);
         assert_eq!(
             format!("{}", value.display().depth(4)),
-            "Flavor::A { x: 5 }"
+            "Flavor = A { x: 5 }"
         );
     }
 
@@ -366,14 +388,14 @@ mod tests {
         let value = Value::new(v.ty(OPT).unwrap(), 0, &bytes);
         assert_eq!(
             format!("{}", value.display_from_target(&mem, 8)),
-            "Opt::Some(\"hi\\nthere\")"
+            "Opt = Some(\"hi\\nthere\")"
         );
         // The payload is a value, not a record, so pretty mode has nothing to
         // lay out and renders the same -- the parenthesised form is the
         // variant's, not the payload's.
         assert_eq!(
             format!("{:#}", value.display_from_target(&mem, 8)),
-            "Opt::Some(\"hi\\nthere\")"
+            "Opt = Some(\"hi\\nthere\")"
         );
     }
 
@@ -418,7 +440,7 @@ mod tests {
         let value = Value::new(v.ty(OPT).unwrap(), 0, &bytes);
         assert_eq!(
             format!("{}", value.display_from_target(&mem, 8)),
-            "Opt::Some(\"hi\\nthere\")"
+            "Opt = Some(\"hi\\nthere\")"
         );
     }
 
@@ -440,17 +462,17 @@ mod tests {
         // A(Point): the payload's own fields, prefixed with the variant.
         let a = variant(0, &u32s(&[1, 2]));
         let a = Value::new(msg, 0, &a);
-        assert_eq!(format!("{}", a.display()), "Msg::A { x: 1, y: 2 }");
+        assert_eq!(format!("{}", a.display()), "Msg = A { x: 1, y: 2 }");
         assert_eq!(
             format!("{:#}", a.display()),
-            "Msg::A {\n    x: 1,\n    y: 2,\n}"
+            "Msg = A {\n    x: 1,\n    y: 2,\n}"
         );
 
         // C(unit): a zero-sized payload writes no body at all.
         let c = variant(2, &[]);
         let c = Value::new(msg, 0, &c);
-        assert_eq!(format!("{}", c.display()), "Msg::C");
-        assert_eq!(format!("{:#}", c.display()), "Msg::C");
+        assert_eq!(format!("{}", c.display()), "Msg = C");
+        assert_eq!(format!("{:#}", c.display()), "Msg = C");
 
         // B(u64): the payload type is a bare scalar, with no members for
         // the aggregate body to walk, so it is written positionally --
@@ -458,8 +480,8 @@ mod tests {
         // no structure to lay out, so both spellings agree.
         let b_bytes = variant(1, &7u64.to_le_bytes());
         let b_val = Value::new(msg, 0, &b_bytes);
-        assert_eq!(format!("{}", b_val.display()), "Msg::B(7)");
-        assert_eq!(format!("{:#}", b_val.display()), "Msg::B(7)");
+        assert_eq!(format!("{}", b_val.display()), "Msg = B(7)");
+        assert_eq!(format!("{:#}", b_val.display()), "Msg = B(7)");
     }
 
     /// The shape extracted DWARF actually produces: a variant's payload
@@ -478,10 +500,10 @@ mod tests {
         let v = BundleView::new(&named);
         let bytes = 7u64.to_le_bytes();
         let value = Value::new(v.ty(OPT).unwrap(), 0, &bytes);
-        assert_eq!(format!("{}", value.display()), "Opt::Some { value: 7 }");
+        assert_eq!(format!("{}", value.display()), "Opt = Some { value: 7 }");
         assert_eq!(
             format!("{:#}", value.display()),
-            "Opt::Some {\n    value: 7,\n}"
+            "Opt = Some {\n    value: 7,\n}"
         );
 
         // The same payload with the field named as rustc names a tuple
@@ -490,7 +512,7 @@ mod tests {
         let tuple = single_field_payload(true);
         let v = BundleView::new(&tuple);
         let value = Value::new(v.ty(OPT).unwrap(), 0, &bytes);
-        assert_eq!(format!("{}", value.display()), "Opt::Some(7)");
+        assert_eq!(format!("{}", value.display()), "Opt = Some(7)");
     }
 
     /// A copy of the fixture bundle whose `Opt::Some` payload is

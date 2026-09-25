@@ -15,7 +15,7 @@ waiter: tokio::sync::notify::Waiter {
       pointers: tokio::util::linked_list::Pointers<tokio::sync::notify::Waiter> {
           inner: core::cell::UnsafeCell<tokio::util::linked_list::PointersInner<tokio::sync::notify::Waiter>> { .. } @ 0xADDR (task 3),
       },
-      waker: core::option::Option<core::task::wake::Waker>::Some(task 3),
+      waker: core::option::Option<core::task::wake::Waker> = Some(task 3),
       notification: tokio::sync::notify::AtomicNotification(
           0,
       ),

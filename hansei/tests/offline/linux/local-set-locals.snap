@@ -2,7 +2,7 @@
 source: hansei/src/offline.rs
 description: "`locals` over linux/local-set"
 ---
-entry: tokio::runtime::Timer::Traditional(tokio::runtime::time::entry::TimerEntry {
+entry: tokio::runtime::Timer = Traditional(tokio::runtime::time::entry::TimerEntry {
       deadline: 1000000.001s,
       state: registered,
   })

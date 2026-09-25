@@ -72,8 +72,9 @@ pub(crate) fn eval_slice<'a, T: Target>(
         };
     }
 
-    // Vec elements pick their own integer rendering (never hex).
-    let element_ctx = ctx.deeper().with_hex(false);
+    // Vec elements pick their own integer rendering (never hex), and
+    // stand in a `[…]` that prints no type to name theirs.
+    let element_ctx = ctx.deeper().with_hex(false).unnamed();
     let len = elements.len();
     write!(f, "[")?;
 
@@ -182,7 +183,8 @@ pub(crate) fn eval_map<'a, T: Target>(
         return write!(f, "}}");
     }
 
-    let entry_ctx = ctx.deeper();
+    // Keys and values stand in slots of the map, whose type names both.
+    let entry_ctx = ctx.deeper().positional(ty.name());
 
     // A big map formats its entries on worker threads: the storage walk
     // runs once collecting entry addresses, then chunks of entries
@@ -590,8 +592,17 @@ pub(crate) fn eval_list<'a, T: Target>(
         };
         write_seq_prefix(f, pretty, ctx.prefix, ctx.depth, !any)?;
         any = true;
-        // Each element renders inline (`pretty = false`) even in pretty mode.
-        eval_node(f, node, node_ty, node_bytes, cur, ctx.deeper(), false)?;
+        // Each element renders inline (`pretty = false`) even in pretty mode,
+        // in a `[…]` that prints no type of its own.
+        eval_node(
+            f,
+            node,
+            node_ty,
+            node_bytes,
+            cur,
+            ctx.deeper().unnamed(),
+            false,
+        )?;
         if pretty {
             write!(f, ",")?;
         }

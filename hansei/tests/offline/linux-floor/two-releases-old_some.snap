@@ -5,5 +5,5 @@ description: "`tasks --with type two_releases::keeper --exec up print old_some` 
 task 3
 #1  async fn      two_releases::keeper
       awaiting at src/bin/two-releases.rs:42 (Suspend0, 6 locals)
-core::option::Option<alloc::boxed::Box<async_channel::Receiver<u32>, alloc::alloc::Global>>::Some(0xADDR -> async_channel::Receiver<u32> { .. })
+core::option::Option<alloc::boxed::Box<async_channel::Receiver<u32>, alloc::alloc::Global>> = Some(0xADDR -> async_channel::Receiver<u32> { .. })
 [Executed against 1 task, 0 failed]

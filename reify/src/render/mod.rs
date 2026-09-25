@@ -184,6 +184,7 @@ impl<'a, T: Target> fmt::Display for DisplayValue<'_, 'a, T> {
             // A collection only fans out when its entries read through a
             // target; the bytes in hand render inline.
             parallel: self.proc.is_some(),
+            slot: Slot::Labelled,
         };
         write_display_value(f, self.info, ctx, f.alternate())
     }
@@ -284,6 +285,28 @@ pub(crate) struct RenderCtx<'buf, 'a, T> {
     /// for the pointee of a pointer render that just wrote `0x… -> `,
     /// whose address is already on the line.
     suppress_addr: bool,
+    /// Where the value stands: after a label of its own, or in a slot
+    /// its container's type already names; see [`Slot`].
+    slot: Slot<'a>,
+}
+
+/// Where a value is written, which decides how an enum names its type.
+/// A labelled value — a member after its `name: `, the value `print`
+/// was asked for, a pointer's target — is the first mention of its
+/// type on the line, so an enum there writes it: `Type = Variant`. A
+/// positional one — a variant's payload, a tuple's field, a map's key
+/// or value, a sequence's element — sits inside a container, and is
+/// written bare when the container's printed type name already spells
+/// the enum's out (`Option<Waker>` names what its `Some` holds), and
+/// qualified by the enum's last path segment otherwise.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Slot<'a> {
+    Labelled,
+    /// Inside a container whose type name is this, and printed.
+    Named(&'a str),
+    /// Inside a container that prints no type name of its own: a
+    /// sequence's `[…]`.
+    Unnamed,
 }
 
 // Derived `Copy`/`Clone` would demand `T: Copy` even though only `&T` is
@@ -316,6 +339,7 @@ impl<'buf, 'a, T> RenderCtx<'buf, 'a, T> {
             max_str_len: None,
             max_array_len: None,
             prefix: "",
+            slot: Slot::Labelled,
         }
     }
 
@@ -333,6 +357,7 @@ impl<'buf, 'a, T> RenderCtx<'buf, 'a, T> {
             max_str_len: self.max_str_len,
             max_array_len: self.max_array_len,
             prefix: self.prefix,
+            slot: self.slot,
         }
     }
 
@@ -368,11 +393,31 @@ impl<'buf, 'a, T> RenderCtx<'buf, 'a, T> {
         resolved
     }
 
-    /// The context for a value nested one level deeper.
+    /// The context for a value nested one level deeper: labelled, until
+    /// a positional caller says otherwise with [`Self::positional`].
     fn deeper(self) -> Self {
         Self {
             depth: self.depth + 1,
             suppress_addr: false,
+            slot: Slot::Labelled,
+            ..self
+        }
+    }
+
+    /// The same context for a value in a slot of `container`, the
+    /// printed type name that may already name the value's.
+    fn positional(self, container: &'a str) -> Self {
+        Self {
+            slot: Slot::Named(container),
+            ..self
+        }
+    }
+
+    /// The same context for a value in a slot of a container that
+    /// prints no type name.
+    fn unnamed(self) -> Self {
+        Self {
+            slot: Slot::Unnamed,
             ..self
         }
     }
@@ -583,7 +628,7 @@ pub(crate) fn write_display_value<'a, T: Target>(
         }
 
         TypeClass::CEnum => match ty.enumerator_name(bytes) {
-            Some(name) => f.write_str(name),
+            Some(name) => write_variant_name(f, ty.name(), name, ctx.slot),
             // A value no enumerator claims: the bytes are the only
             // honest thing to say about it.
             None => write_hex_bytes(f, bytes),
@@ -631,7 +676,8 @@ pub(crate) fn write_display_value<'a, T: Target>(
                     addr: info.addr + start as u64,
                     bytes: elem_bytes,
                 };
-                write_display_value(f, &child, ctx.deeper().with_hex(hex_elements), pretty)?;
+                let element_ctx = ctx.deeper().with_hex(hex_elements).unnamed();
+                write_display_value(f, &child, element_ctx, pretty)?;
                 if pretty {
                     write!(f, ",")?;
                 }
@@ -822,6 +868,43 @@ pub(crate) fn write_record_close(
     }
 }
 
+/// An enum value's variant, named as its [`Slot`] calls for: `Type =
+/// Variant` after a label; bare `Variant` in a slot whose container's
+/// printed type name contains the enum's; otherwise
+/// `Last<args>::Variant`, the enum's path cut to its last segment with
+/// its generic arguments kept whole. A nameless enum writes the
+/// variant alone.
+pub(crate) fn write_variant_name(
+    f: &mut fmt::Formatter<'_>,
+    enum_name: &str,
+    variant: &str,
+    slot: Slot<'_>,
+) -> fmt::Result {
+    if !enum_name.is_empty() {
+        match slot {
+            Slot::Labelled => {
+                f.write_str(enum_name)?;
+                f.write_str(" = ")?;
+            }
+            Slot::Named(container) if container.contains(enum_name) => {}
+            Slot::Named(_) | Slot::Unnamed => {
+                f.write_str(last_segment(enum_name))?;
+                f.write_str("::")?;
+            }
+        }
+    }
+    f.write_str(variant)
+}
+
+/// `name` from its last path segment on: `core::result::Result<u32,
+/// my::Error>` is `Result<u32, my::Error>` — only the path ahead of the
+/// generic arguments is cut, never the arguments.
+fn last_segment(name: &str) -> &str {
+    let path_end = name.find('<').unwrap_or(name.len());
+    let start = name[..path_end].rfind("::").map_or(0, |i| i + 2);
+    &name[start..]
+}
+
 /// `Name [0x…]` — the type's name (when it has one) over a raw byte dump,
 /// the fallback for an opaque and for an enum that cannot be decoded.
 pub(crate) fn write_named_bytes(
@@ -944,7 +1027,7 @@ mod tests {
     use crate::Value;
     use crate::testhelper::*;
 
-    use hansei_bundle::BundleView;
+    use hansei_bundle::{BundleView, TypeDef};
 
     #[test]
     fn test_ugly_suppresses_custom_formatters() {
@@ -1143,7 +1226,7 @@ mod tests {
         );
     }
 
-    /// A C enumeration renders as the name of the enumerator its bytes
+    /// A C enumeration renders as its type and the enumerator its bytes
     /// hold, at the repr's width and sign — so a negative enumerator over
     /// an `i8` repr matches its sign-extended byte — and dumps the bytes
     /// when no enumerator claims the value.
@@ -1153,15 +1236,56 @@ mod tests {
         let v = BundleView::new(&b);
         let color = v.ty(COLOR).unwrap();
         let show = |bytes: &[u8]| format!("{}", Value::new(color, 0, bytes).display());
-        assert_eq!(show(&0u32.to_le_bytes()), "Red");
-        assert_eq!(show(&1u32.to_le_bytes()), "Green");
+        assert_eq!(show(&0u32.to_le_bytes()), "Color = Red");
+        assert_eq!(show(&1u32.to_le_bytes()), "Color = Green");
         assert_eq!(show(&7u32.to_le_bytes()), "[0x07, 0x00, 0x00, 0x00]");
 
         let shade = v.ty(SHADE).unwrap();
         let show = |bytes: &[u8]| format!("{}", Value::new(shade, 0, bytes).display());
-        assert_eq!(show(&[0xff]), "Dark");
-        assert_eq!(show(&[0x01]), "Light");
+        assert_eq!(show(&[0xff]), "Shade = Dark");
+        assert_eq!(show(&[0x01]), "Shade = Light");
         assert_eq!(show(&[0x7f]), "[0x7f]");
+    }
+
+    /// An enum names its type once. Labelled, it writes `Type = Variant`;
+    /// in a slot whose container prints a name holding the enum's, the
+    /// variant alone; in any other slot — a `[…]` prints no type, a
+    /// container's name may not mention it — the variant qualified by the
+    /// enum's last path segment, generic arguments whole.
+    #[test]
+    fn test_an_enum_names_its_type_once_per_slot() {
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+        let show =
+            |id, bytes: &[u8]| format!("{}", Value::new(v.ty(id).unwrap(), 0, bytes).display());
+        assert_eq!(show(TAG, &[1]), "demo::Tag<demo::Arg> = On");
+        assert_eq!(
+            show(TAG_ARR, &[0, 1]),
+            "[Tag<demo::Arg>::Off, Tag<demo::Arg>::On]"
+        );
+        assert_eq!(
+            show(TAG_HOLDER, &[0, 1]),
+            "demo::Holder(Tag<demo::Arg>::Off, Tag<demo::Arg>::On)"
+        );
+        assert_eq!(
+            show(TAG_BOXED, &[0, 1]),
+            "demo::Boxed<demo::Tag<demo::Arg>>(Off, On)"
+        );
+
+        // A payload stands in a slot of its enum, whose name `Opt` does
+        // not mention what `Some` holds here.
+        let mut b = test_bundle();
+        let TypeDef::Enum { shape, .. } = &mut b.types.types[OPT.0 as usize] else {
+            panic!("Opt is not an enum");
+        };
+        shape.variants[1].payload.ty = TAG;
+        b.validate().expect("retargeted enum bundle must validate");
+        let v = BundleView::new(&b);
+        let bytes = 1u64.to_le_bytes();
+        assert_eq!(
+            format!("{}", Value::new(v.ty(OPT).unwrap(), 0, &bytes).display()),
+            "Opt = Some(Tag<demo::Arg>::On)"
+        );
     }
 
     /// A buffer shorter than the type is reported rather than read past. The

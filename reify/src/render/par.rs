@@ -17,7 +17,7 @@
 use crate::heap::Heap;
 use crate::render::AddrAnnotator;
 
-use super::{FormatCache, RenderCtx};
+use super::{FormatCache, RenderCtx, Slot};
 
 use foldhash::HashSet;
 
@@ -53,6 +53,7 @@ pub(crate) struct WorkerCtx<'buf, 'a, T> {
     pub(super) max_str_len: Option<u64>,
     pub(super) max_array_len: Option<u64>,
     pub(super) prefix: &'buf str,
+    pub(super) slot: Slot<'a>,
 }
 
 // Derived `Copy`/`Clone` would demand `T: Copy` even though only `&T` is
@@ -92,6 +93,7 @@ impl<'buf, 'a, T> WorkerCtx<'buf, 'a, T> {
             max_str_len: self.max_str_len,
             max_array_len: self.max_array_len,
             prefix: self.prefix,
+            slot: self.slot,
         }
     }
 }

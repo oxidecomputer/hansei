@@ -534,7 +534,8 @@ fn eval_stmts<'a, T: Target>(
                     addr: target,
                     bytes: element_bytes,
                 };
-                write_display_value(f, &child, ctx.deeper(), pretty)?;
+                // An element of a `[…]`, which prints no type of its own.
+                write_display_value(f, &child, ctx.deeper().unnamed(), pretty)?;
                 if pretty {
                     write!(f, ",")?;
                 }
@@ -755,9 +756,9 @@ mod tests {
             "tokio::sync::notify::Notify { state: state=idle, generation=0, \
              mutex: locked=false, parked=false, queue: [\
              tokio::sync::notify::Waiter { notification: kind=none, order=fifo, \
-             waker: Option<Waker>::None }, \
+             waker: Option<Waker> = None }, \
              tokio::sync::notify::Waiter { notification: kind=one, order=fifo, \
-             waker: Option<Waker>::Some(0x77a0) }] }"
+             waker: Option<Waker> = Some(0x77a0) }] }"
         );
 
         // An address annotator reaches the armed waker's data word, and a
@@ -769,7 +770,7 @@ mod tests {
             value.display_from_target(&mem, 8).annotate_addrs(&annotate)
         );
         assert!(
-            shown.contains("waker: Option<Waker>::Some(task 7)"),
+            shown.contains("waker: Option<Waker> = Some(task 7)"),
             "{shown}"
         );
 
@@ -801,9 +802,9 @@ mod tests {
              \x20   mutex: locked=false, parked=false,\n\
              \x20   queue: [\n\
              \x20       tokio::sync::notify::Waiter { notification: kind=none, order=fifo, \
-             waker: Option<Waker>::None },\n\
+             waker: Option<Waker> = None },\n\
              \x20       tokio::sync::notify::Waiter { notification: kind=one, order=fifo, \
-             waker: Option<Waker>::Some(0x77a0) },\n\
+             waker: Option<Waker> = Some(0x77a0) },\n\
              \x20   ],\n\
              }"
         );
@@ -1150,9 +1151,9 @@ mod tests {
             "tokio::sync::mpsc::bounded::Semaphore { mutex: locked=false, parked=false, \
              closed: false, permits: closed=false, permits=10, bound: 16, queue: [\
              tokio::sync::batch_semaphore::Waiter { permits_needed: 2, \
-             waker: Option<Waker>::None }, \
+             waker: Option<Waker> = None }, \
              tokio::sync::batch_semaphore::Waiter { permits_needed: 1, \
-             waker: Option<Waker>::None }] }"
+             waker: Option<Waker> = None }] }"
         );
 
         // Locked, closed, no permits, empty queue (null head).
@@ -1187,9 +1188,9 @@ mod tests {
              \x20   bound: 16,\n\
              \x20   queue: [\n\
              \x20       tokio::sync::batch_semaphore::Waiter { permits_needed: 2, \
-             waker: Option<Waker>::None },\n\
+             waker: Option<Waker> = None },\n\
              \x20       tokio::sync::batch_semaphore::Waiter { permits_needed: 1, \
-             waker: Option<Waker>::None },\n\
+             waker: Option<Waker> = None },\n\
              \x20   ],\n\
              }"
         );
@@ -1713,7 +1714,7 @@ mod tests {
         let mut bytes = vec![0u8; 24];
         bytes[8..16].copy_from_slice(&5u64.to_le_bytes());
         let shown = format!("{}", Value::new(v.ty(FLAVOR).unwrap(), 0, &bytes).display());
-        assert!(shown.starts_with("Flavor::A"), "{shown}");
+        assert!(shown.starts_with("Flavor = A"), "{shown}");
     }
 
     /// A node that resolves its selector to a bare offset cannot carry the

@@ -1659,7 +1659,7 @@ fn test_futurelock_acceptance() {
         );
         assert!(
             deep.contains(&format!(
-                "waker: core::option::Option<core::task::wake::Waker>::Some(task {})",
+                "waker: core::option::Option<core::task::wake::Waker> = Some(task {})",
                 task.id
             )),
             "{deep}"
@@ -1729,9 +1729,9 @@ fn test_enum_reprs_acceptance() {
         let task = task_with_future(&rows, "async fn enum_reprs::hold");
         let verbose = trace(&bundle, core, &task.id, true);
         for local in [
-            "signed32: enum_reprs::Signed32::Below(1)",
-            "signed64: enum_reprs::Signed64::Below(2)",
-            "unsigned32: enum_reprs::Unsigned32::Byte(3)",
+            "signed32: enum_reprs::Signed32 = Below(1)",
+            "signed64: enum_reprs::Signed64 = Below(2)",
+            "unsigned32: enum_reprs::Unsigned32 = Byte(3)",
             "level: enum_reprs::Level = Below",
         ] {
             assert!(verbose.contains(local), "{local} missing from {verbose}");
@@ -4434,7 +4434,7 @@ fn test_two_releases_acceptance() {
         for member in ["old_some", "new_some"] {
             let printed = print(member);
             assert!(
-                printed.contains("::Some(0x")
+                printed.contains(" = Some(0x")
                     && printed.contains("-> async_channel::Receiver<u32> {"),
                 "{printed}"
             );

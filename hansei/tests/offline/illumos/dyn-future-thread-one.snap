@@ -3,10 +3,10 @@ source: hansei/src/offline.rs
 description: "`thread 1` over illumos/dyn-future"
 ---
 lwp 1  polling no task
-    thread_id: core::option::Option<tokio::runtime::thread_id::ThreadId>::None
+    thread_id: core::option::Option<tokio::runtime::thread_id::ThreadId> = None
     runtime:
-      tokio::runtime::context::runtime::EnterRuntime::Entered {
+      tokio::runtime::context::runtime::EnterRuntime = Entered {
           allow_block_in_place: true,
       }
-    budget: core::option::Option<u8>::None
+    budget: core::option::Option<u8> = None
     not in the scheduler's run loop

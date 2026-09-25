@@ -15,7 +15,7 @@ tokio::sync::mpsc::bounded::Receiver<u32> {
     },
     rx_waker: tokio::sync::task::atomic_waker::AtomicWaker {
         state: 0,
-        waker: core::option::Option<core::task::wake::Waker>::None,
+        waker: core::option::Option<core::task::wake::Waker> = None,
     },
     notify_rx_closed: tokio::sync::notify::Notify {
         state: state=idle, generation=0,
@@ -68,8 +68,8 @@ alloc::sync::Arc<tokio::sync::semaphore::Semaphore, alloc::alloc::Global> {
                         raw: parking_lot::raw_mutex::RawMutex: locked=false, parked=false,
                         data: tokio::sync::batch_semaphore::Waitlist {
                             queue: tokio::util::linked_list::LinkedList<tokio::sync::batch_semaphore::Waiter, tokio::sync::batch_semaphore::Waiter> {
-                                head: core::option::Option<core::ptr::non_null::NonNull<tokio::sync::batch_semaphore::Waiter>>::None,
-                                tail: core::option::Option<core::ptr::non_null::NonNull<tokio::sync::batch_semaphore::Waiter>>::None,
+                                head: core::option::Option<core::ptr::non_null::NonNull<tokio::sync::batch_semaphore::Waiter>> = None,
+                                tail: core::option::Option<core::ptr::non_null::NonNull<tokio::sync::batch_semaphore::Waiter>> = None,
                             },
                             closed: false,
                         },
@@ -89,7 +89,7 @@ alloc::sync::Arc<tokio::sync::notify::Notify, alloc::alloc::Global> {
                 state: state=waiting, generation=0,
                 mutex: locked=false, parked=false,
                 queue: [
-                    tokio::sync::notify::Waiter { notification: kind=none, order=fifo, waker: core::option::Option<core::task::wake::Waker>::Some(0xADDR) },
+                    tokio::sync::notify::Waiter { notification: kind=none, order=fifo, waker: core::option::Option<core::task::wake::Waker> = Some(0xADDR) },
                 ],
             },
         },
@@ -115,7 +115,7 @@ tokio::sync::mpsc::bounded::Sender<u32> {
     },
     rx_waker: tokio::sync::task::atomic_waker::AtomicWaker {
         state: 0,
-        waker: core::option::Option<core::task::wake::Waker>::None,
+        waker: core::option::Option<core::task::wake::Waker> = None,
     },
     notify_rx_closed: tokio::sync::notify::Notify {
         state: state=idle, generation=0,

@@ -11,15 +11,15 @@ runtime 0 @ 0xADDR
     found via: a thread's runtime context
     drivers:
       tokio::runtime::driver::Handle {
-          io: tokio::runtime::driver::IoHandle::Enabled {
+          io: tokio::runtime::driver::IoHandle = Enabled {
               registry: mio::poll::Registry { .. } @ 0xADDR,
               registrations: tokio::runtime::io::registration_set::RegistrationSet { .. } @ 0xADDR,
               synced: tokio::loom::std::parking_lot::Mutex<tokio::runtime::io::registration_set::Synced> { .. } @ 0xADDR,
               waker: mio::waker::Waker { .. } @ 0xADDR,
               metrics: tokio::runtime::metrics::io::IoDriverMetrics { .. } @ 0xADDR,
           },
-          signal: core::option::Option<tokio::runtime::signal::Handle>::Some(0xADDR -> alloc::sync::ArcInner<()> { .. }),
-          time: core::option::Option<tokio::runtime::time::handle::Handle>::Some {
+          signal: core::option::Option<tokio::runtime::signal::Handle> = Some(0xADDR -> alloc::sync::ArcInner<()> { .. }),
+          time: core::option::Option<tokio::runtime::time::handle::Handle> = Some {
               time_source: tokio::runtime::time::source::TimeSource { .. } @ 0xADDR,
               inner: tokio::runtime::time::Inner { .. } @ 0xADDR,
           },
@@ -53,7 +53,7 @@ runtime 0 @ 0xADDR
               disable_lifo_slot: true,
               seed_generator: tokio::util::rand::rt::RngSeedGenerator { .. } @ 0xADDR,
               metrics_poll_count_histogram: core::option::Option<tokio::runtime::metrics::histogram::HistogramBuilder> { .. } @ 0xADDR,
-              unhandled_panic: Ignore,
+              unhandled_panic: tokio::runtime::builder::UnhandledPanic = Ignore,
               enable_eager_driver_handoff: false,
           },
           scheduler_metrics: tokio::runtime::metrics::scheduler::SchedulerMetrics {

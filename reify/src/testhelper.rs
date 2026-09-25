@@ -654,6 +654,11 @@ fixture_ids! {
     // scope_id, port }` over the address types above: the two spellings
     // of the socket-address node, the v6 one with a scope word to read.
     SOCKADDR_V4, SOCKADDR_V6,
+    // A C enumeration with a path and generic arguments, `demo::Tag<demo::Arg>`,
+    // in each kind of slot an enum is named for: an array's element (a
+    // `[…]` prints no type), a tuple struct's field under a name that does
+    // not mention it, and one under a name that does.
+    TAG, TAG_ARR, TAG_HOLDER, TAG_BOXED,
 }
 
 /// A hand-built mini-bundle exercising every TypeDef kind reify touches:
@@ -729,6 +734,13 @@ pub fn test_bundle() -> Bundle {
         s("scope_id"),
     );
     let hashn = s("tufaceous_artifact::artifact::ArtifactHash");
+    let (tagn, offn, onn, tag_holdern, tag_boxedn) = (
+        s("demo::Tag<demo::Arg>"),
+        s("Off"),
+        s("On"),
+        s("demo::Holder"),
+        s("demo::Boxed<demo::Tag<demo::Arg>>"),
+    );
     let (vecn, ptrn, vec_lenn, capacityn) =
         (s("alloc::vec::Vec<u32>"), s("ptr"), s("len"), s("capacity"));
     let slicen = s("&[u32]");
@@ -2099,6 +2111,39 @@ pub fn test_bundle() -> Bundle {
                 m(scope_idn, U32, 20),
                 m(portn, U16, 24),
             ],
+        },
+    );
+    types.add(
+        TAG,
+        TypeDef::CEnum {
+            name: tagn,
+            size: 1,
+            repr: U8,
+            enumerators: vec![(offn, 0), (onn, 1)],
+        },
+    );
+    types.add(
+        TAG_ARR,
+        TypeDef::Array {
+            elem: TAG,
+            count: 2,
+        },
+    );
+    // Two fields apiece, so neither is a single-member wrapper.
+    types.add(
+        TAG_HOLDER,
+        TypeDef::Struct {
+            name: tag_holdern,
+            size: 2,
+            members: vec![m(tuple0n, TAG, 0), m(tuple1n, TAG, 1)],
+        },
+    );
+    types.add(
+        TAG_BOXED,
+        TypeDef::Struct {
+            name: tag_boxedn,
+            size: 2,
+            members: vec![m(tuple0n, TAG, 0), m(tuple1n, TAG, 1)],
         },
     );
 

@@ -1006,7 +1006,7 @@ mod tests {
             .collect();
         let value = Value::new(v.ty(OPT).unwrap(), 0, &bytes);
         let shown = format!("{:#}", value.display_from_target(&mem, 8));
-        assert!(shown.starts_with("Opt::Some {"), "{shown}");
+        assert!(shown.starts_with("Opt = Some {"), "{shown}");
         assert!(!shown.contains("FatPtr"), "{shown}");
         assert!(shown.contains("concrete type: <unknown>,"), "{shown}");
     }

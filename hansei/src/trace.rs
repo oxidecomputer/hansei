@@ -2234,14 +2234,14 @@ mod variable_format_tests {
         );
     }
 
-    /// An enum render opens with the type followed by `::Variant`;
-    /// that still counts as leading with the type. A mere word prefix
-    /// of the first line does not.
+    /// An enum render opens with the type followed by ` = Variant`;
+    /// that still counts as leading with the type, so it is not named
+    /// twice. A mere word prefix of the first line does not.
     #[test]
     fn typed_prefix_must_end_at_a_delimiter() {
         let mut out = Vec::new();
-        print_variable(&mut out, "", "w", Some("Option<W>"), &"Option<W>::Some(1)").unwrap();
-        assert_eq!(String::from_utf8(out).unwrap(), "w: Option<W>::Some(1)\n");
+        print_variable(&mut out, "", "w", Some("Option<W>"), &"Option<W> = Some(1)").unwrap();
+        assert_eq!(String::from_utf8(out).unwrap(), "w: Option<W> = Some(1)\n");
         let mut out = Vec::new();
         print_variable(&mut out, "", "n", Some("u3"), &"u32max").unwrap();
         assert_eq!(String::from_utf8(out).unwrap(), "n: u3 = u32max\n");

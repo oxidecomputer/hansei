@@ -317,7 +317,7 @@ Tab to receive autocomplete suggestions for field names.
 
 ----
 hansei : task 2439 #0> print head_all.future
-core::option::Option<support_bundle_collection::steps::host_info::save_zone_log_zip_or_error::{async_fn_env#0}>::Some(support_bundle_collection::steps::host_info::save_zone_log_zip_or_error::{async_fn_env#0}::3 {
+core::option::Option<support_bundle_collection::steps::host_info::save_zone_log_zip_or_error::{async_fn_env#0}> = Some(3 {
         logger: 0x111e0a40 -> slog::Logger<alloc::sync::Arc<dyn slog::SendSyncRefUnwindSafeDrain<Ok=(), Err=core::convert::Infallible>, alloc::alloc::Global>> { .. },
         zone: "oxz_propolis-server_bb36cd0f-4603-425c-9a58-5f17bc454b85",
         path: "/var/tmp/.tmpXWNr2l/rack/de608e01-b8e4-4d93-b972-a7dbed36dd22/sled/a2adea92-b56e-44fc-8a0d-7d63b5fd3b93",
