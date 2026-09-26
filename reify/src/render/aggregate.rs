@@ -50,7 +50,7 @@ pub(crate) fn tuple_field_index(name: &str) -> Option<usize> {
 /// source-level name. This is the shape peeling dissolves — a struct
 /// variant declared with a single field — and the name goes with it
 /// unless the body is written from the payload as declared.
-fn has_named_single_field<'a>(ty: &BundleType<'a>) -> bool {
+pub(crate) fn has_named_single_field<'a>(ty: &BundleType<'a>) -> bool {
     if ty.kind() != TypeKind::Struct {
         return false;
     }
@@ -284,7 +284,7 @@ mod tests {
     use crate::Value;
     use crate::testhelper::*;
 
-    use hansei_bundle::{Bundle, BundleView, DisplayNode as BundleNode, TypeDef};
+    use hansei_bundle::{BundleView, DisplayNode as BundleNode, TypeDef};
 
     #[test]
     fn test_ugly_suppresses_enum_payload_formatter() {
@@ -510,35 +510,6 @@ mod tests {
         let v = BundleView::new(&tuple);
         let value = Value::new(v.ty(OPT).unwrap(), 0, &bytes);
         assert_eq!(format!("{}", value.display()), "Opt = Some(7)");
-    }
-
-    /// A copy of the fixture bundle whose `Opt::Some` payload is
-    /// `AtomicStorage<u32>` — a one-field struct over a scalar, with no
-    /// display format of its own — keeping the field's declared name or
-    /// giving it the `__0` rustc gives a tuple variant's.
-    fn single_field_payload(synthetic: bool) -> Bundle {
-        let mut b = test_bundle();
-        if synthetic {
-            // `LoomUnsafeCell` is the fixture's one tuple-named member,
-            // and so its source of an interned `__0`.
-            let TypeDef::Struct { members, .. } = &b.types.types[LOOM_CELL.0 as usize] else {
-                panic!("LoomUnsafeCell is not a struct");
-            };
-            let name = members[0].name;
-            assert_eq!(b.strings.get(name), Some("__0"), "not a tuple field name");
-            let TypeDef::Struct { members, .. } = &mut b.types.types[ATOMIC_STORAGE.0 as usize]
-            else {
-                panic!("AtomicStorage is not a struct");
-            };
-            members[0].name = name;
-        }
-        let TypeDef::Enum { size, shape, .. } = &mut b.types.types[OPT.0 as usize] else {
-            panic!("Opt is not an enum");
-        };
-        *size = 8;
-        shape.variants[1].payload.ty = ATOMIC_STORAGE;
-        b.validate().expect("modified enum bundle must validate");
-        b
     }
 
     /// An enum whose discriminant matches no variant cannot be decoded into a

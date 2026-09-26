@@ -107,7 +107,7 @@ pub(crate) fn path_members<T: proc::Target>(
     let root = root_value(session, root)?;
     let mut names = Vec::new();
     for r in reify::path::resolve(session.ctx.proc, root, &steps)? {
-        for name in reify::path::member_names(session.ctx.proc, &r.node) {
+        for name in reify::path::resolved_member_names(session.ctx.proc, &r) {
             if !names.contains(&name) {
                 names.push(name);
             }
@@ -382,17 +382,20 @@ mod tests {
         cursor::select_task(&session, TraceTarget::Task(id)).expect("the task selects");
         let members = |args: &[&str]| path_members(&session, &w(args));
 
-        // #0 is the leaf, a oneshot receiver: its one member, and —
-        // since a step at the root reads through that single member
-        // — the Option's live variant, where the listing stops: the
-        // Arc behind it is reached as `.Some`, and offered there.
+        // #0 is the leaf, a oneshot receiver: its one member, as `print`
+        // shows it. Behind that, the Option prints as
+        // `Some(0x… -> ArcInner { strong, weak, data })` — the Arc and its
+        // pointer peeled as a payload is — so its live variant is offered
+        // joined to the heap header's names, and each path resolves.
         let root = members(&[]).unwrap();
-        assert_eq!(root, ["inner", "Some"]);
-        assert_eq!(members(&["inner."]).unwrap(), root[1..]);
-        let behind = members(&["inner.Some."]).unwrap();
-        for expected in ["strong", "weak", "data", "state", "value"] {
-            assert!(behind.iter().any(|n| n == expected), "{behind:?}");
+        assert_eq!(root, ["inner"]);
+        let behind = ["strong", "weak", "data"];
+        let offered = members(&["inner."]).unwrap();
+        assert_eq!(offered, behind.map(|n| format!("Some.{n}")));
+        for name in &offered {
+            members(&[&format!("inner.{name}.")]).expect("an offered path resolves");
         }
+        assert_eq!(members(&["inner.Some."]).unwrap(), behind);
         // The spelled-out `.` reads the same frame.
         assert_eq!(members(&["."]).unwrap(), root);
 

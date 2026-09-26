@@ -17,6 +17,7 @@
 //! element, and the result is a list labeled `[i]` per element.
 
 use crate::debug_type::{DisplayNode, TypeKind};
+use crate::render::aggregate::{has_named_single_field, tuple_field_index};
 use crate::render::collections::{MapWalkError, walk_map_entries};
 use crate::render::scalar::read_unsigned_at;
 use crate::render::{FormatCache, RenderCtx};
@@ -125,6 +126,11 @@ pub enum Node<'a> {
 pub struct Resolved<'a> {
     pub label: String,
     pub node: Node<'a>,
+    /// Whether the last step named a variant, making `node` its payload
+    /// as the enum holds it: raw, so a `.0` reaches its slots, where
+    /// `print` shows it peeled the way a payload renders inside its
+    /// variant (see [`resolved_member_names`]).
+    pub payload: bool,
 }
 
 /// Apply `steps` to `root`, reading through `proc` wherever a step
@@ -139,15 +145,20 @@ pub fn resolve<'a, T: Target>(
     let mut nodes = vec![Resolved {
         label: String::new(),
         node: Node::Value(root),
+        payload: false,
     }];
     for step in steps {
         let mut next = Vec::new();
         for r in nodes {
             match step {
-                Step::Member(name) => next.push(Resolved {
-                    label: r.label,
-                    node: member_step(proc, r.node, name)?,
-                }),
+                Step::Member(name) => {
+                    let (node, payload) = member_step(proc, r.node, name)?;
+                    next.push(Resolved {
+                        label: r.label,
+                        node,
+                        payload,
+                    });
+                }
                 Step::Deref => {
                     let Node::Value(v) = r.node else {
                         return Err(Error::entry_step("*"));
@@ -155,6 +166,7 @@ pub fn resolve<'a, T: Target>(
                     next.push(Resolved {
                         label: r.label,
                         node: Node::Value(deref_step(proc, v)?),
+                        payload: false,
                     });
                 }
                 Step::Index(n) => {
@@ -164,6 +176,7 @@ pub fn resolve<'a, T: Target>(
                     next.push(Resolved {
                         label: r.label,
                         node: element_at(proc, &v, *n)?,
+                        payload: false,
                     });
                 }
                 Step::Range {
@@ -178,6 +191,7 @@ pub fn resolve<'a, T: Target>(
                         next.push(Resolved {
                             label: format!("{}[{i}]", r.label),
                             node,
+                            payload: false,
                         });
                     }
                 }
@@ -194,13 +208,14 @@ pub fn resolve<'a, T: Target>(
 /// again. An enum is not followed: its variant is a step of its own,
 /// and a name that is no variant refuses, naming the one that is
 /// active. Bounded so a cyclic pointer chain refuses instead of
-/// spinning.
-fn member_step<'a, T: Target>(proc: &'a T, node: Node<'a>, name: &str) -> Result<Node<'a>> {
+/// spinning. Also answers whether the name was a variant's, so the node
+/// is a payload.
+fn member_step<'a, T: Target>(proc: &'a T, node: Node<'a>, name: &str) -> Result<(Node<'a>, bool)> {
     let v = match node {
         Node::Entry { key, value } => {
             return match name {
-                "0" | "__0" => Ok(Node::Value(key)),
-                "1" | "__1" => Ok(Node::Value(value)),
+                "0" | "__0" => Ok((Node::Value(key), false)),
+                "1" | "__1" => Ok((Node::Value(value), false)),
                 _ => Err(Error::entry_step(&format!(".{name}"))),
             };
         }
@@ -209,7 +224,7 @@ fn member_step<'a, T: Target>(proc: &'a T, node: Node<'a>, name: &str) -> Result
     let mut v = v;
     for _ in 0..32 {
         if let Some(m) = try_member_spellings(&v, name)? {
-            return Ok(Node::Value(m));
+            return Ok((Node::Value(m), false));
         }
         match v.ty.kind() {
             TypeKind::Enum => {
@@ -217,7 +232,7 @@ fn member_step<'a, T: Target>(proc: &'a T, node: Node<'a>, name: &str) -> Result
                 // answers its payload, and anything else is refused
                 // with the name of the variant that is live.
                 return match v.try_select_variant_raw(name) {
-                    Ok(Some(payload)) => Ok(Node::Value(payload)),
+                    Ok(Some(payload)) => Ok((Node::Value(payload), true)),
                     Ok(None) => Err(Error::inactive_variant(
                         name.to_string(),
                         v.active_variant_raw()?.0.to_string(),
@@ -250,72 +265,122 @@ fn member_step<'a, T: Target>(proc: &'a T, node: Node<'a>, name: &str) -> Result
 }
 
 /// The names a `.name` step could take next from `node` — what a
-/// prompt offers after a trailing `.`. They are the members
-/// [`member_step`] would find: the value's own, and, wherever its
-/// auto-deref would look further, the ones it would find there — a
-/// pointer's target's, the data behind a heap header, a transparent
-/// wrapper's inner — in that order, each name once; an enum offers
-/// its active variant and ends the listing, since the step past it
-/// is that name. Compiler slots (`__…`) are left out, except a
-/// tuple's fields, offered as the `.0` the grammar reads. A value
-/// that cannot be followed (an unreadable pointer) ends the listing
-/// with what was found so far, and an enum whose discriminant cannot
-/// be read offers every variant, any of which could be the live one.
+/// prompt offers after a trailing `.`. They are the names `print` shows
+/// a level into the value, each one a path [`member_step`] resolves:
+///
+/// - a struct offers its own fields — a heap header its counts and
+///   `data`, a wrapper whose one field has a name that field — less the
+///   zero-sized ones `print` leaves out and the compiler's `__N` slots,
+///   except an anonymous tuple's, offered as the `.0` the grammar reads;
+/// - a wrapper whose one field is a tuple slot, and one whose format
+///   aliases its one field, print as that field's value, so they offer
+///   what it offers;
+/// - a pointer offers its target's;
+/// - an enum offers its live variant, joined to each name its payload
+///   offers (`Some.data`, `Running.tag`), since `print` shows those
+///   inside the variant and a path reaches them through it; a variant
+///   with nothing named behind it (`None`, `Some(5)`) is offered bare,
+///   and an enum whose discriminant cannot be read offers every
+///   variant, any of which could be the live one.
+///
+/// A value that cannot be followed (an unreadable pointer) offers
+/// nothing.
 pub fn member_names<T: Target>(proc: &T, node: &Node<'_>) -> Vec<String> {
-    let mut v = match node {
-        Node::Entry { .. } => return vec!["0".to_string(), "1".to_string()],
-        Node::Value(v) => *v,
+    match node {
+        Node::Entry { .. } => vec!["0".to_string(), "1".to_string()],
+        Node::Value(v) => shown_names(proc, *v, NAMES_DEPTH),
+    }
+}
+
+/// [`member_names`] for a path's result: a variant's payload offers what
+/// it shows inside its variant, as it prints (see [`Resolved::payload`]).
+pub fn resolved_member_names<T: Target>(proc: &T, r: &Resolved<'_>) -> Vec<String> {
+    match (&r.node, r.payload) {
+        (Node::Value(payload), true) => payload_names(proc, *payload, NAMES_DEPTH),
+        (node, _) => member_names(proc, node),
+    }
+}
+
+/// How many layers a listing looks through before giving up.
+const NAMES_DEPTH: u32 = 32;
+
+/// The names a variant's payload shows inside its variant, as `print`
+/// writes it there: a struct variant with one named field keeps its
+/// label, and any other payload is peeled through every single-member
+/// layer.
+fn payload_names<T: Target>(proc: &T, payload: Value<'_>, depth: u32) -> Vec<String> {
+    if payload.ty.debug_format().is_none() && has_named_single_field(&payload.ty) {
+        own_names(&payload)
+    } else {
+        shown_names(proc, payload.peel(), depth)
+    }
+}
+
+/// [`member_names`] for a value, looking through at most `depth` layers.
+fn shown_names<T: Target>(proc: &T, v: Value<'_>, depth: u32) -> Vec<String> {
+    let Some(depth) = depth.checked_sub(1) else {
+        return Vec::new();
     };
-    let mut names: Vec<String> = Vec::new();
-    let offer = |names: &mut Vec<String>, name: String| {
-        if !names.contains(&name) {
-            names.push(name);
-        }
-    };
-    for _ in 0..32 {
-        let tuple = v.ty.name().starts_with('(');
-        for m in v.ty.members() {
-            match m.name().strip_prefix("__") {
-                None => offer(&mut names, m.name().to_string()),
-                Some(index) if tuple && index.chars().all(|c| c.is_ascii_digit()) => {
-                    offer(&mut names, index.to_string())
-                }
-                Some(_) => {}
-            }
-        }
-        match v.ty.kind() {
-            TypeKind::Enum => {
-                match v.active_variant_raw() {
-                    // Only the live variant: `.name` refuses the
-                    // others, so offering them would offer what
-                    // cannot resolve.
-                    Ok((active, _)) => offer(&mut names, active.to_string()),
-                    // With no discriminant to read, any of them could
-                    // be the one.
-                    Err(_) => {
-                        for variant in v.ty.variants() {
-                            offer(&mut names, variant.name.to_string());
-                        }
-                    }
-                }
-                break;
-            }
-            TypeKind::Pointer => match v.deref_ptr(proc) {
-                Ok(target) => v = target,
-                Err(_) => break,
-            },
-            _ => {
-                if let Ok(Some(data)) = heap_header_data(&v) {
-                    v = data;
-                } else if let Some(inner) = single_sized_member(&v) {
-                    v = inner;
+    match v.ty.kind() {
+        TypeKind::Enum => match v.active_variant_raw() {
+            Ok((active, payload)) => {
+                let inside = payload_names(proc, payload, depth);
+                if inside.is_empty() {
+                    vec![active.to_string()]
                 } else {
-                    break;
+                    inside
+                        .into_iter()
+                        .map(|n| format!("{active}.{n}"))
+                        .collect()
                 }
             }
+            Err(_) => {
+                v.ty.variants()
+                    .map(|variant| variant.name.to_string())
+                    .collect()
+            }
+        },
+        TypeKind::Pointer => match v.deref_ptr(proc) {
+            Ok(target) => shown_names(proc, target, depth),
+            Err(_) => Vec::new(),
+        },
+        _ => match single_sized_member(&v) {
+            Some(inner) if prints_as_its_field(&v) => shown_names(proc, inner, depth),
+            _ => own_names(&v),
+        },
+    }
+}
+
+/// Whether a struct with one sized field prints as that field's value:
+/// its field is a tuple slot, with no name to show, or its format is an
+/// alias to the value it holds.
+fn prints_as_its_field(v: &Value<'_>) -> bool {
+    match v.ty.debug_format() {
+        Some(hansei_bundle::DisplayNode::Alias { .. }) => true,
+        Some(_) => false,
+        None => {
+            v.ty.members()
+                .find(|m| m.ty().size() > 0)
+                .is_some_and(|m| tuple_field_index(m.name()).is_some())
         }
     }
-    names
+}
+
+/// The names `.name` reads on `v` itself, as `print` shows them: its
+/// sized members, less compiler slots (`__…`), except an anonymous
+/// tuple's fields, offered as the `.0` the grammar reads.
+fn own_names(v: &Value<'_>) -> Vec<String> {
+    let tuple = v.ty.name().starts_with('(');
+    v.ty.members()
+        .filter(|m| m.ty().size() > 0)
+        .filter_map(|m| match tuple_field_index(m.name()) {
+            Some(index) if tuple => Some(index.to_string()),
+            // Every other `__` member is the compiler's: a tuple struct's
+            // slot, a coroutine's `__awaitee`.
+            _ if m.name().starts_with("__") => None,
+            _ => Some(m.name().to_string()),
+        })
+        .collect()
 }
 
 /// `.name` against the members the type declares, with the tuple
@@ -514,7 +579,7 @@ mod tests {
     use super::*;
     use crate::testhelper::*;
 
-    use hansei_bundle::BundleView;
+    use hansei_bundle::{BundleView, TypeDef};
 
     /// The single value a path without a range resolves to.
     fn one<'a>(mut r: Vec<Resolved<'a>>) -> Value<'a> {
@@ -622,12 +687,12 @@ mod tests {
             shown(resolve(&mem, outer, &parse(".x").unwrap()).unwrap()),
             "3"
         );
-        // And the prompt offers each layer's names, in the order the
-        // descent would try them.
-        assert_eq!(
-            member_names(&mem, &Node::Value(outer)),
-            ["inner", "pad", "point", "x", "y"]
-        );
+        // And the prompt offers the layer `print` shows a level down: a
+        // wrapper whose field has a name prints that field, so its name
+        // is what is offered, and then the next layer's.
+        assert_eq!(member_names(&mem, &Node::Value(outer)), ["inner"]);
+        let inner = resolve(&mem, outer, &parse(".inner").unwrap()).unwrap();
+        assert_eq!(member_names(&mem, &inner[0].node), ["point"]);
     }
 
     /// `.member` finds a wrapper's own member, descends transparent
@@ -758,70 +823,152 @@ mod tests {
         );
     }
 
-    /// The names offered after a `.` are the ones `.name` would then
-    /// accept: a struct's own; a wrapper's own and then its inner's; an
-    /// enum's active variant alone; a pointer's target's;
-    /// a heap header's own and the data's behind it. Compiler slots
-    /// are left out, a tuple's fields offered as digits, a map entry's
-    /// halves as `0` and `1`.
+    /// The names offered after a `.` are the ones `print` shows a level
+    /// in, and each one resolves: a struct's own; what a wrapper shows —
+    /// the field of one whose field has a name, the value of one whose
+    /// field is a tuple slot or whose format aliases its field; a
+    /// pointer's target's; a heap header's own; an enum's live variant
+    /// joined to what its payload shows, or bare where nothing is named
+    /// behind it. Compiler slots are left out, a tuple's fields offered
+    /// as digits, a map entry's halves as `0` and `1`.
     #[test]
-    fn test_member_names_follow_the_auto_deref() {
+    fn test_member_names_are_what_print_shows() {
         let b = test_bundle();
         let v = BundleView::new(&b);
+        // Each offered name, and that a path through it resolves.
         let names = |mem: &FakeMem, value: Value<'_>| -> Vec<String> {
-            member_names(mem, &Node::Value(value))
+            let names = member_names(mem, &Node::Value(value));
+            for name in &names {
+                resolve(mem, value, &parse(&format!(".{name}")).unwrap())
+                    .unwrap_or_else(|e| panic!(".{name} does not resolve: {e}"));
+            }
+            names
         };
 
         let mem = FakeMem::new();
         let bytes = u32s(&[3, 4]);
         let point = Value::new(v.ty(POINT).unwrap(), 0x100, &bytes);
         assert_eq!(names(&mem, point), ["x", "y"]);
+        // `Wrap` aliases its `inner` in its format and prints as the point;
+        // `LoomCell(Wrap)` holds it in a tuple slot and prints the same.
         let wrap = Value::new(v.ty(WRAP).unwrap(), 0x100, &bytes);
-        assert_eq!(names(&mem, wrap), ["inner", "x", "y"]);
+        assert_eq!(names(&mem, wrap), ["x", "y"]);
+        let cell = Value::new(v.ty(LOOM_CELL).unwrap(), 0x100, &bytes);
+        assert_eq!(names(&mem, cell), ["x", "y"]);
         // `Pair(u32, u32)` is a tuple struct with a name, so its `__0`
-        // is a compiler spelling and stays out; a bare tuple's is `.0`.
+        // is a compiler slot and stays out; a bare tuple's is `.0`.
         let pair = Value::new(v.ty(PAIR).unwrap(), 0x100, &bytes);
         assert!(names(&mem, pair).is_empty(), "{:?}", names(&mem, pair));
         let tuple = Value::new(v.ty(TUPLE2).unwrap(), 0x100, &bytes);
         assert_eq!(names(&mem, tuple), ["0", "1"]);
 
         // Msg::A(Point { 7, 9 }): the live variant alone — B and C
-        // would refuse, and the payload's members stand behind `.A`.
+        // would refuse — joined to the payload's members behind it.
         let mut bytes = vec![0u8; 16];
         bytes[8..12].copy_from_slice(&7u32.to_le_bytes());
         bytes[12..16].copy_from_slice(&9u32.to_le_bytes());
         let msg = Value::new(v.ty(MSG).unwrap(), 0x100, &bytes);
-        assert_eq!(names(&mem, msg), ["A"]);
+        assert_eq!(names(&mem, msg), ["A.x", "A.y"]);
         let payload = resolve(&mem, msg, &parse(".A").unwrap()).unwrap();
         assert_eq!(member_names(&mem, &payload[0].node), ["x", "y"]);
+        // Msg::B(u64) and Msg::C name nothing behind the variant.
+        let b_bytes = msg_wrap(1, 5);
+        assert_eq!(
+            names(&mem, Value::new(v.ty(MSG).unwrap(), 0x100, &b_bytes)),
+            ["B"]
+        );
+        let c_bytes = msg_wrap(2, 0);
+        assert_eq!(
+            names(&mem, Value::new(v.ty(MSG).unwrap(), 0x100, &c_bytes)),
+            ["C"]
+        );
 
         let mem = FakeMem::new()
             .at(0x1000, u64s(&[0x2000]))
             .at(0x2000, u32s(&[7, 9]));
         let ptr = Value::read(&mem, v.ty(PTR).unwrap(), 0x1000).unwrap();
         assert_eq!(names(&mem, ptr), ["x", "y"]);
-        // An unreadable target ends the listing with nothing.
+        // An unreadable target offers nothing.
         let dangling = u64s(&[0x9000]);
         let ptr = Value::new(v.ty(PTR).unwrap(), 0x100, &dangling);
         assert!(names(&mem, ptr).is_empty());
 
-        // ArcInner { strong, weak, data: Shared { state, value } }.
+        // ArcInner { strong, weak, data: Shared { state, value } }: the
+        // header prints its counts and `data`, so those are offered.
         let mut inner = u64s(&[1, 1, 5]);
         inner.extend_from_slice(&u32s(&[9]));
         inner.extend_from_slice(&[0u8; 4]);
         let mem = FakeMem::new().at(0x4000, inner);
         let ptr_bytes = u64s(&[0x4000]);
         let arc = Value::new(v.ty(WATCH_ARC_INNER_PTR).unwrap(), 0x100, &ptr_bytes);
-        assert_eq!(
-            names(&mem, arc),
-            ["strong", "weak", "data", "state", "value"]
-        );
+        assert_eq!(names(&mem, arc), ["strong", "weak", "data"]);
 
         let entry = Node::Entry {
             key: point,
             value: point,
         };
         assert_eq!(member_names(&mem, &entry), ["0", "1"]);
+    }
+
+    /// A wrapper's one field is its one *sized* field, wherever the
+    /// zero-sized ones stand: `Padded((), Point)` prints as its point
+    /// and offers the point's names; a zero-sized `__0` ahead of a named
+    /// `point` does not make it a tuple slot, so `point` is offered.
+    #[test]
+    fn test_a_wrappers_field_is_its_sized_one() {
+        let mem = FakeMem::new();
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+        let mut bytes = vec![0u8; 8];
+        bytes.extend_from_slice(&u32s(&[3, 4]));
+        let padded = Value::new(v.ty(POINT_PADDED).unwrap(), 0x100, &bytes);
+        assert_eq!(member_names(&mem, &Node::Value(padded)), ["x", "y"]);
+
+        // `PadWrap { pad: (), point }` with its marker named as a slot.
+        let mut b = test_bundle();
+        let TypeDef::Struct { members, .. } = &b.types.types[LOOM_CELL.0 as usize] else {
+            panic!("LoomUnsafeCell is not a struct");
+        };
+        let slot = members[0].name;
+        assert_eq!(b.strings.get(slot), Some("__0"), "not a tuple field name");
+        let TypeDef::Struct { members, .. } = &mut b.types.types[PAD_WRAP.0 as usize] else {
+            panic!("PadWrap is not a struct");
+        };
+        members[0].name = slot;
+        let v = BundleView::new(&b);
+        let pad_wrap = Value::new(v.ty(PAD_WRAP).unwrap(), 0x100, &bytes[..12]);
+        assert_eq!(member_names(&mem, &Node::Value(pad_wrap)), ["point"]);
+    }
+
+    /// A variant's payload offers what `print` shows inside the variant:
+    /// a struct variant with one named field keeps the label, so
+    /// `Some { value: 7 }` offers `Some.value`, and the `.Some` step's
+    /// result offers `value`; with the field named as rustc names a
+    /// tuple variant's, `Some(7)` names nothing, and the variant is
+    /// offered bare.
+    #[test]
+    fn test_a_payload_offers_what_its_variant_shows() {
+        let mem = FakeMem::new();
+        let bytes = 7u64.to_le_bytes();
+        for (synthetic, expected, behind) in [
+            (false, &["Some.value"][..], &["value"][..]),
+            (true, &["Some"][..], &[][..]),
+        ] {
+            let b = single_field_payload(synthetic);
+            let v = BundleView::new(&b);
+            let opt = Value::new(v.ty(OPT).unwrap(), 0x100, &bytes);
+            assert_eq!(member_names(&mem, &Node::Value(opt)), expected);
+            let some = resolve(&mem, opt, &parse(".Some").unwrap()).unwrap();
+            assert!(some[0].payload, "`.Some` answers a payload");
+            assert_eq!(resolved_member_names(&mem, &some[0]), behind);
+        }
+        // A member step answers no payload.
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+        let point_bytes = u32s(&[3, 4]);
+        let point = Value::new(v.ty(POINT).unwrap(), 0x100, &point_bytes);
+        let x = resolve(&mem, point, &parse(".x").unwrap()).unwrap();
+        assert!(!x[0].payload);
     }
 
     /// `[N]` and every range form over a `Vec`, mirroring Rust

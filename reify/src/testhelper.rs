@@ -352,6 +352,34 @@ pub fn sync_waiter_waking(state: u64, next: u64, data: u64) -> Vec<u8> {
     bytes
 }
 
+/// A copy of [`test_bundle`] whose `Opt::Some` payload is
+/// `AtomicStorage<u32>` — a one-field struct over a scalar, with no
+/// display format of its own — keeping the field's declared name or
+/// giving it the `__0` rustc gives a tuple variant's.
+pub fn single_field_payload(synthetic: bool) -> Bundle {
+    let mut b = test_bundle();
+    if synthetic {
+        // `LoomUnsafeCell` is the fixture's one tuple-named member, and
+        // so its source of an interned `__0`.
+        let TypeDef::Struct { members, .. } = &b.types.types[LOOM_CELL.0 as usize] else {
+            panic!("LoomUnsafeCell is not a struct");
+        };
+        let name = members[0].name;
+        assert_eq!(b.strings.get(name), Some("__0"), "not a tuple field name");
+        let TypeDef::Struct { members, .. } = &mut b.types.types[ATOMIC_STORAGE.0 as usize] else {
+            panic!("AtomicStorage is not a struct");
+        };
+        members[0].name = name;
+    }
+    let TypeDef::Enum { size, shape, .. } = &mut b.types.types[OPT.0 as usize] else {
+        panic!("Opt is not an enum");
+    };
+    *size = 8;
+    shape.variants[1].payload.ty = ATOMIC_STORAGE;
+    b.validate().expect("modified enum bundle must validate");
+    b
+}
+
 /// Bytes for a [`MSG_WRAP`] value: the wrapped `Msg`'s tag byte and its
 /// 8-byte payload word (`B`'s u64; the other variants read their own shapes
 /// from the same storage).
