@@ -3599,7 +3599,7 @@ mod node_validation {
         DisplayNode::Map {
             length: Selector::member(0),
             key: BundleTypeId(0),
-            value: BundleTypeId(0),
+            value: Some(BundleTypeId(0)),
             entries: Box::new(MapEntries::BTree {
                 root: Selector::member(1),
                 // The Some payload *is* the node reference, and an edge
@@ -3650,7 +3650,10 @@ mod node_validation {
                 leaf_keys,
                 leaf_values,
                 ..
-            } = e;
+            } = e
+            else {
+                unreachable!()
+            };
             // Both sides at the empty array: the counts still agree, so
             // only their being zero is wrong.
             *leaf_keys = Selector::member(5);
@@ -3664,7 +3667,9 @@ mod node_validation {
     #[test]
     fn test_validate_rejects_leaf_storage_of_unequal_slots() {
         let b = broken_map(|e| {
-            let MapEntries::BTree { leaf_values, .. } = e;
+            let MapEntries::BTree { leaf_values, .. } = e else {
+                unreachable!()
+            };
             *leaf_values = Selector::member(3);
         });
         rejects(&b, "incompatible key/value slots");
@@ -3678,7 +3683,9 @@ mod node_validation {
     #[test]
     fn test_validate_rejects_internal_data_at_a_nonzero_offset() {
         let b = broken_map(|e| {
-            let MapEntries::BTree { internal_data, .. } = e;
+            let MapEntries::BTree { internal_data, .. } = e else {
+                unreachable!()
+            };
             *internal_data = Selector::member(2);
         });
         rejects(&b, "internal data is not its leaf prefix");
@@ -3687,7 +3694,9 @@ mod node_validation {
     #[test]
     fn test_validate_rejects_a_root_reused_as_length() {
         let b = broken_map(|e| {
-            let MapEntries::BTree { root, .. } = e;
+            let MapEntries::BTree { root, .. } = e else {
+                unreachable!()
+            };
             *root = Selector::member(0);
         });
         rejects(&b, "reuses root as length");
@@ -3696,7 +3705,9 @@ mod node_validation {
     #[test]
     fn test_validate_rejects_a_non_enum_root() {
         let b = broken_map(|e| {
-            let MapEntries::BTree { root, .. } = e;
+            let MapEntries::BTree { root, .. } = e else {
+                unreachable!()
+            };
             *root = Selector::member(2);
         });
         rejects(&b, "B-tree root is not an enum");
@@ -3715,7 +3726,9 @@ mod node_validation {
     #[test]
     fn test_validate_rejects_a_non_integer_height() {
         let b = broken_map(|e| {
-            let MapEntries::BTree { height, .. } = e;
+            let MapEntries::BTree { height, .. } = e else {
+                unreachable!()
+            };
             *height = Selector::member(1);
         });
         rejects(&b, "height is not an unsigned integer");
@@ -3724,7 +3737,9 @@ mod node_validation {
     #[test]
     fn test_validate_rejects_a_node_pointer_to_the_wrong_type() {
         let b = broken_map(|e| {
-            let MapEntries::BTree { leaf, .. } = e;
+            let MapEntries::BTree { leaf, .. } = e else {
+                unreachable!()
+            };
             *leaf = INTERNAL;
         });
         rejects(&b, "node selector does not point to its leaf type");
@@ -3733,7 +3748,9 @@ mod node_validation {
     #[test]
     fn test_validate_rejects_a_non_integer_leaf_length() {
         let b = broken_map(|e| {
-            let MapEntries::BTree { leaf_len, .. } = e;
+            let MapEntries::BTree { leaf_len, .. } = e else {
+                unreachable!()
+            };
             *leaf_len = Selector::member(1);
         });
         rejects(&b, "leaf length is not an unsigned integer");
@@ -3754,7 +3771,9 @@ mod node_validation {
     #[test]
     fn test_validate_rejects_internal_data_that_is_not_the_leaf_prefix() {
         let b = broken_map(|e| {
-            let MapEntries::BTree { internal_data, .. } = e;
+            let MapEntries::BTree { internal_data, .. } = e else {
+                unreachable!()
+            };
             *internal_data = Selector::member(1);
         });
         rejects(&b, "internal data is not its leaf prefix");
@@ -3785,11 +3804,257 @@ mod node_validation {
         let mut b = map_bundle();
         let mut node = map_node();
         match &mut node {
-            DisplayNode::Map { value, .. } => *value = BundleTypeId(99),
+            DisplayNode::Map { value, .. } => *value = Some(BundleTypeId(99)),
             _ => unreachable!(),
         }
         b.types.debug_formats.insert(MAP_HOLDER, node);
         rejects(&b, "map value type id 99 out of range");
+    }
+
+    /// A B-tree walk reads each leaf's values beside its keys, so it has
+    /// no set form: a B-tree map without a value type is refused.
+    #[test]
+    fn test_validate_rejects_a_btree_map_without_values() {
+        let mut b = map_bundle();
+        let mut node = map_node();
+        match &mut node {
+            DisplayNode::Map { value, .. } => *value = None,
+            _ => unreachable!(),
+        }
+        b.types.debug_formats.insert(MAP_HOLDER, node);
+        rejects(&b, "B-tree map has no value type");
+    }
+
+    // -------------------------------------------------------------------
+    // The hash table MapEntries
+    // -------------------------------------------------------------------
+
+    const HASH_U8: BundleTypeId = BundleTypeId(1);
+    const WORD_PTR: BundleTypeId = BundleTypeId(7);
+    const HASH_MAP: BundleTypeId = BundleTypeId(4);
+    const HASH_SET: BundleTypeId = BundleTypeId(8);
+
+    /// A miniature hashbrown table — its three words flattened into one
+    /// struct — with a map's `(u64, u64)` bucket and a set's `(u64, ())`,
+    /// complete enough to satisfy every constraint `check_hash_entries`
+    /// states, and with the programs rendering both attached.
+    fn hash_bundle() -> Bundle {
+        let mut b = super::tiny_bundle();
+        let mut strings = StringInterner::new();
+        let names: BTreeMap<&str, StrRef> = [
+            "u64",
+            "u8",
+            "(u64, u64)",
+            "Table",
+            "(u64, ())",
+            "()",
+            "SetTable",
+            "ctrl",
+            "bucket_mask",
+            "items",
+            "__0",
+            "__1",
+        ]
+        .iter()
+        .map(|n| (*n, strings.intern(n)))
+        .collect();
+        let n = |name: &str| names[name];
+        let member = |name: &str, ty: BundleTypeId, offset: u64| MemberDef {
+            name: n(name),
+            ty,
+            offset,
+        };
+        let table = |name: &str| TypeDef::Struct {
+            name: n(name),
+            size: 24,
+            members: vec![
+                member("ctrl", BundleTypeId(2), 0),
+                member("bucket_mask", BundleTypeId(0), 8),
+                member("items", BundleTypeId(0), 16),
+            ],
+        };
+        let types = vec![
+            // 0: u64
+            TypeDef::Base {
+                name: n("u64"),
+                size: 8,
+                encoding: Encoding::Unsigned,
+            },
+            // 1: u8
+            TypeDef::Base {
+                name: n("u8"),
+                size: 1,
+                encoding: Encoding::Unsigned,
+            },
+            // 2: *const u8
+            TypeDef::Pointer {
+                name: None,
+                target: HASH_U8,
+            },
+            // 3: (u64, u64)
+            TypeDef::Struct {
+                name: n("(u64, u64)"),
+                size: 16,
+                members: vec![
+                    member("__0", BundleTypeId(0), 0),
+                    member("__1", BundleTypeId(0), 8),
+                ],
+            },
+            // 4: the map's table
+            table("Table"),
+            // 5: (u64, ())
+            TypeDef::Struct {
+                name: n("(u64, ())"),
+                size: 8,
+                members: vec![
+                    member("__0", BundleTypeId(0), 0),
+                    member("__1", BundleTypeId(6), 8),
+                ],
+            },
+            // 6: ()
+            TypeDef::Struct {
+                name: n("()"),
+                size: 0,
+                members: vec![],
+            },
+            // 7: *const u64, a control pointer that does not read bytes
+            TypeDef::Pointer {
+                name: None,
+                target: BundleTypeId(0),
+            },
+            // 8: the set's table
+            table("SetTable"),
+        ];
+        b.strings = strings.finish();
+        b.types = TypeTable {
+            types,
+            debug_formats: BTreeMap::from([
+                (HASH_MAP, hash_node(&b.strings, false)),
+                (HASH_SET, hash_node(&b.strings, true)),
+            ]),
+            name_index: vec![],
+            ..Default::default()
+        };
+        b
+    }
+
+    /// The selector naming `name`, which the fixture interned.
+    fn named(strings: &crate::StringTable, name: &str) -> Selector {
+        let at = strings.iter().position(|s| s == name).expect("interned");
+        Selector::named_path(&[StrRef(at as u32)])
+    }
+
+    fn hash_node(strings: &crate::StringTable, set: bool) -> DisplayNode {
+        let named = |name: &str| named(strings, name);
+        DisplayNode::Map {
+            length: named("items"),
+            key: BundleTypeId(0),
+            value: (!set).then_some(BundleTypeId(0)),
+            entries: Box::new(MapEntries::Hash {
+                bucket_mask: named("bucket_mask"),
+                ctrl: named("ctrl"),
+                bucket: BundleTypeId(if set { 5 } else { 3 }),
+                key: named("__0"),
+                value: (!set).then(|| named("__1")),
+            }),
+        }
+    }
+
+    /// The hash fixture's map program with one part rewritten.
+    fn broken_hash(f: impl FnOnce(&mut DisplayNode, &crate::StringTable)) -> Bundle {
+        let mut b = hash_bundle();
+        let mut node = hash_node(&b.strings, false);
+        f(&mut node, &b.strings);
+        b.types.debug_formats.insert(HASH_MAP, node);
+        b
+    }
+
+    /// Both baselines are genuinely valid, so each rejection below fails
+    /// for the corruption it plants and not for a broken fixture.
+    #[test]
+    fn test_validate_accepts_a_hash_map_and_set() {
+        hash_bundle().validate().expect("both programs are sound");
+    }
+
+    #[test]
+    fn test_validate_rejects_a_control_pointer_to_words() {
+        let mut b = hash_bundle();
+        let TypeDef::Struct { members, .. } = &mut b.types.types[HASH_MAP.0 as usize] else {
+            unreachable!();
+        };
+        members[0].ty = WORD_PTR;
+        rejects(&b, "control pointer does not read bytes");
+    }
+
+    /// The bucket's key slot has to hold the map's key: reading a
+    /// different type there renders every entry as something it is not.
+    #[test]
+    fn test_validate_rejects_a_key_of_another_type() {
+        let b = broken_hash(|node, _| match node {
+            DisplayNode::Map { key, .. } => *key = HASH_U8,
+            _ => unreachable!(),
+        });
+        rejects(&b, "hash table key is not the map's key type");
+    }
+
+    /// A map whose walk has no value slot, or a set whose walk has one,
+    /// would read a value nothing says where to find, or drop one the
+    /// map claims to have.
+    #[test]
+    fn test_validate_rejects_a_walk_that_disagrees_about_being_a_set() {
+        let b = broken_hash(|node, _| match node {
+            DisplayNode::Map { entries, .. } => {
+                let MapEntries::Hash { value, .. } = entries.as_mut() else {
+                    unreachable!()
+                };
+                *value = None;
+            }
+            _ => unreachable!(),
+        });
+        rejects(&b, "disagree on whether it is a set");
+    }
+
+    /// The mask, the control pointer and the length are three words,
+    /// and no two may be one member read twice. The two words share a
+    /// shape, so reading the length as the mask is the check's to
+    /// refuse; the control pointer's shape parts it from both, so
+    /// reading either word as it is refused by the shape table.
+    #[test]
+    fn test_validate_rejects_a_hash_word_read_as_another() {
+        for (mask_at, ctrl_at, reason) in [
+            ("items", "ctrl", "reuses its length as its bucket mask"),
+            ("bucket_mask", "items", "control bytes"),
+            ("ctrl", "ctrl", "bucket mask"),
+        ] {
+            let b = broken_hash(|node, strings| match node {
+                DisplayNode::Map { entries, .. } => {
+                    let MapEntries::Hash {
+                        bucket_mask, ctrl, ..
+                    } = entries.as_mut()
+                    else {
+                        unreachable!()
+                    };
+                    *bucket_mask = named(strings, mask_at);
+                    *ctrl = named(strings, ctrl_at);
+                }
+                _ => unreachable!(),
+            });
+            rejects(&b, reason);
+        }
+    }
+
+    #[test]
+    fn test_validate_rejects_a_bucket_type_out_of_range() {
+        let b = broken_hash(|node, _| match node {
+            DisplayNode::Map { entries, .. } => {
+                let MapEntries::Hash { bucket, .. } = entries.as_mut() else {
+                    unreachable!()
+                };
+                *bucket = BundleTypeId(99);
+            }
+            _ => unreachable!(),
+        });
+        rejects(&b, "bucket type id 99 out of range");
     }
 
     /// The tokio constants both layers decode, held to the values

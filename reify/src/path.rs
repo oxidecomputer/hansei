@@ -460,10 +460,11 @@ fn deref_step<'a, T: Target>(proc: &'a T, v: Value<'a>) -> Result<Value<'a>> {
 
 /// A value's elements, however its container spells them: the map
 /// entries a `Map` display program walks, or the sequence
-/// [`Value::elements`] reads (a `Vec`, a slice, an inline array).
+/// [`Value::elements`] reads (a `Vec`, a slice, an inline array). A
+/// set's entries have no value, and each is its key.
 enum Seq<'a> {
     Elems(crate::Elements<'a>),
-    Entries(Vec<(Value<'a>, Value<'a>)>),
+    Entries(Vec<(Value<'a>, Option<Value<'a>>)>),
 }
 
 impl<'a> Seq<'a> {
@@ -477,10 +478,10 @@ impl<'a> Seq<'a> {
     fn get(&self, i: u64) -> Node<'a> {
         match self {
             Seq::Elems(e) => Node::Value(e.get(i)),
-            Seq::Entries(v) => {
-                let (key, value) = v[i as usize];
-                Node::Entry { key, value }
-            }
+            Seq::Entries(v) => match v[i as usize] {
+                (key, Some(value)) => Node::Entry { key, value },
+                (key, None) => Node::Value(key),
+            },
         }
     }
 }
@@ -497,28 +498,18 @@ fn seq_of<'a, T: Target>(proc: &'a T, v: &Value<'a>) -> Result<Seq<'a>> {
     {
         let claimed = read_unsigned_at(v.bytes, length_offset, u64::from(length_size))
             .ok_or_else(|| Error::invalid_sequence(v.ty.name(), "truncated length"))?;
-        let mut collected: Vec<(Value<'a>, Value<'a>)> = Vec::new();
+        let mut collected: Vec<(Value<'a>, Option<Value<'a>>)> = Vec::new();
         let formats = FormatCache::default();
         let ctx = RenderCtx::for_walk(proc, &formats);
-        let walk = walk_map_entries(
-            v.bytes,
-            ctx,
-            key,
-            value,
-            &entries,
-            &mut |key_addr, key_bytes, value_addr, value_bytes| {
-                if collected.len() as u64 == claimed {
-                    return Err(MapWalkError::Invalid(
-                        "tree contains more entries than length",
-                    ));
-                }
-                collected.push((
-                    Value::new(key, key_addr, key_bytes),
-                    Value::new(value, value_addr, value_bytes),
+        let walk = walk_map_entries(v.bytes, ctx, key, value, &entries, &mut |key, value| {
+            if collected.len() as u64 == claimed {
+                return Err(MapWalkError::Invalid(
+                    "map contains more entries than length",
                 ));
-                Ok(())
-            },
-        );
+            }
+            collected.push((key, value));
+            Ok(())
+        });
         if let Err(MapWalkError::Invalid(why) | MapWalkError::Marker(why)) = walk {
             // A cut-off walk still resolves the entries it reached;
             // only an index past them reports why the rest is missing.
@@ -1072,6 +1063,55 @@ mod tests {
             let err = run(path).expect_err(path).to_string();
             assert!(err.contains(want), "{path}: {err}");
         }
+    }
+
+    /// A hash map's `[N]` is its `N`th full bucket, an entry like any
+    /// map's; a hash set's is its `N`th key, a value of its own, since a
+    /// set's entries carry nothing beside the key.
+    #[test]
+    fn test_hash_table_entries_index_in_bucket_order() {
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+        let map_mem = FakeMem::new().at(
+            0x1000,
+            hash_table(
+                &[0xff, 0x01, 0x02, 0xff],
+                8,
+                &[(1, u32s(&[5, 50])), (2, u32s(&[6, 60]))],
+            ),
+        );
+        let map_bytes = u64s(&[0x1000 + 4 * 8, 3, 0, 2]);
+        let map = Value::new(v.ty(HASH_MAP).unwrap(), 0x5000, &map_bytes);
+        let run = |path: &str| resolve(&map_mem, map, &parse(path).unwrap());
+        assert_eq!(shown(run("[0].0").unwrap()), "5");
+        assert_eq!(shown(run("[1].1").unwrap()), "60");
+        // Where each is, which is what a `print` of it names: bucket
+        // `i` ends `i` buckets below the control bytes, so entry 0 —
+        // bucket 1 — starts two buckets up from the table's base, and
+        // entry 1 — bucket 2 — one.
+        assert_eq!(one(run("[0].0").unwrap()).addr, 0x1010);
+        assert_eq!(one(run("[0].1").unwrap()).addr, 0x1014);
+        assert_eq!(one(run("[1].1").unwrap()).addr, 0x100c);
+        assert!(matches!(
+            run("[1]").unwrap().pop().unwrap().node,
+            Node::Entry { .. }
+        ));
+
+        let set_mem = FakeMem::new().at(0x1000, hash_table(&[0x03, 0xff], 4, &[(0, u32s(&[42]))]));
+        let set_bytes = u64s(&[0x1000 + 2 * 4, 1, 0, 1]);
+        let set = Value::new(v.ty(HASH_SET).unwrap(), 0x5000, &set_bytes);
+        assert_eq!(
+            shown(resolve(&set_mem, set, &parse("[0]").unwrap()).unwrap()),
+            "42"
+        );
+        assert_eq!(
+            one(resolve(&set_mem, set, &parse("[0]").unwrap()).unwrap()).addr,
+            0x1004
+        );
+        let err = resolve(&set_mem, set, &parse("[1]").unwrap())
+            .expect_err("one key")
+            .to_string();
+        assert!(err.contains("1 element"), "{err}");
     }
 
     /// Inline arrays and borrowed slices answer the same element steps.

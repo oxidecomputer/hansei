@@ -704,17 +704,20 @@ pub enum DisplayNode {
         align: u32,
         tail_prefixes: Vec<u64>,
     },
-    /// Render an associative collection as `{ key: value, ... }`.
+    /// Render an associative collection as `{ key: value, ... }`, or a set
+    /// as `{ key, ... }`.
     ///
     /// `length` reaches the collection's initialized entry count. `key` and
     /// `value` identify the types yielded by `entries`; the entry source owns
     /// only the storage-specific traversal. This keeps presentation, recursive
     /// key/value display, and exact-length accounting shared while allowing
     /// genuinely different collection layouts to retain dedicated walkers.
+    /// `value` is `None` for a set, whose entries are keys alone: its storage
+    /// keeps a unit beside each key, which says nothing worth printing.
     Map {
         length: Selector,
         key: BundleTypeId,
-        value: BundleTypeId,
+        value: Option<BundleTypeId>,
         entries: Box<MapEntries>,
     },
     /// Select one of several renderings by matching a computed discriminant,
@@ -944,6 +947,24 @@ pub enum MapEntries {
         internal_data: Selector,
         internal_edges: Selector,
         edge: Selector,
+    },
+    /// Walk a hashbrown `RawTable` — the storage of hashbrown's `HashMap`
+    /// and `HashSet`, and of std's, which wrap them — in bucket order.
+    ///
+    /// `bucket_mask` reaches the word one less than the number of buckets,
+    /// and `ctrl` the pointer to the control bytes, one per bucket: a byte
+    /// with its top bit clear marks a full bucket. The buckets sit below
+    /// the control bytes in reverse, so bucket `i` is the `bucket` value
+    /// ending `i` buckets below `ctrl` — `ctrl - (i + 1) * size`. `key` and
+    /// `value` begin at `bucket`, the `(K, V)` a map stores or the `(T, ())`
+    /// a set does, and `value` is absent exactly when the map's is: a set's
+    /// unit is never read.
+    Hash {
+        bucket_mask: Selector,
+        ctrl: Selector,
+        bucket: BundleTypeId,
+        key: Selector,
+        value: Option<Selector>,
     },
 }
 

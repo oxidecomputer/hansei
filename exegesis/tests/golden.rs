@@ -2935,6 +2935,43 @@ fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
              internal_data=data@+0, internal_edges=edges@+144, \
              edge=value.value.__0.pointer@+0 } }",
         );
+        // std's hash map and set reach hashbrown's table through `base`
+        // (and a set through hashbrown's `map` after it), and hashbrown's
+        // own map renders from the same table words: one walk, whichever
+        // type holds it. A set's walk reads no value.
+        assert_format(
+            program,
+            bundle,
+            "std::collections::hash::map::HashMap<u64, u32, std::hash::random::RandomState, \
+             alloc::alloc::Global>",
+            "std::collections::hash::map::HashMap<u64, u32, std::hash::random::RandomState, \
+             alloc::alloc::Global> :: Node Map { length=base.table.table.items@+24, key=u64, \
+             value=u32, entries=Hash { bucket_mask=base.table.table.bucket_mask@+8, \
+             ctrl=base.table.table.ctrl.pointer@+0, bucket=(u64, u32), key=__0@+0, \
+             value=__1@+8 } }",
+        );
+        assert_format(
+            program,
+            bundle,
+            "hashbrown::map::HashMap<u64, u32, std::hash::random::RandomState, \
+             alloc::alloc::Global>",
+            "hashbrown::map::HashMap<u64, u32, std::hash::random::RandomState, \
+             alloc::alloc::Global> :: Node Map { length=table.table.items@+24, key=u64, \
+             value=u32, entries=Hash { bucket_mask=table.table.bucket_mask@+8, \
+             ctrl=table.table.ctrl.pointer@+0, bucket=(u64, u32), key=__0@+0, \
+             value=__1@+8 } }",
+        );
+        assert_format(
+            program,
+            bundle,
+            "std::collections::hash::set::HashSet<u32, std::hash::random::RandomState, \
+             alloc::alloc::Global>",
+            "std::collections::hash::set::HashSet<u32, std::hash::random::RandomState, \
+             alloc::alloc::Global> :: Node Map { length=base.map.table.table.items@+24, \
+             key=u32, value=<set>, entries=Hash { \
+             bucket_mask=base.map.table.table.bucket_mask@+8, \
+             ctrl=base.map.table.table.ctrl.pointer@+0, bucket=(u32, ()), key=__0@+0 } }",
+        );
         // A `char` is a 4-byte `DW_ATE_UTF` base type, which is what
         // reify's code-point reading of it rests on: a 1-byte char is C's
         // and stays a byte.

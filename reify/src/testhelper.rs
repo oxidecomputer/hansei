@@ -310,6 +310,22 @@ pub fn btree_internal(entries: &[(u32, u32)], edges: &[u64]) -> Vec<u8> {
     bytes
 }
 
+/// A hashbrown table's allocation: `ctrl.len()` buckets of `stride` bytes,
+/// then their control bytes, which is where the table's `ctrl` pointer
+/// lands — `ctrl.len() * stride` bytes in. Bucket `i` ends `i` buckets
+/// below it, and is filled from `full` where that names it; every other
+/// bucket keeps the `0xaa` fill of memory nothing wrote.
+pub fn hash_table(ctrl: &[u8], stride: usize, full: &[(usize, Vec<u8>)]) -> Vec<u8> {
+    let buckets = ctrl.len();
+    let mut bytes = vec![0xaa; buckets * stride];
+    for (index, bucket) in full {
+        let start = (buckets - 1 - index) * stride;
+        bytes[start..start + stride].copy_from_slice(bucket);
+    }
+    bytes.extend_from_slice(ctrl);
+    bytes
+}
+
 /// Every slot of a [`mpsc_block`] written: the four ready bits set, nothing
 /// above them.
 pub const MPSC_ALL_READY: u64 = 0b1111;
@@ -698,6 +714,10 @@ fixture_ids! {
     // `demo::Padded((), Point)`: a tuple-slot wrapper whose one sized
     // field sits past a zero-sized one, at offset 8.
     POINT_PADDED,
+    // hashbrown tables flattened to their four words — `ctrl` first, as
+    // rustc lays `RawTableInner` out — and the buckets each keeps below
+    // its control bytes: a map's `(u32, u32)`, a set's `(u32, ())`.
+    HASH_MAP, HASH_SET, HASH_MAP_BUCKET, HASH_SET_BUCKET,
 }
 
 /// A hand-built mini-bundle exercising every TypeDef kind reify touches:
@@ -787,6 +807,14 @@ pub fn test_bundle() -> Bundle {
     );
     let (tag_kindn, tag_outern) = (s("demo::Kind"), s("demo::Outer"));
     let point_paddedn = s("demo::Padded");
+    let (hash_mapn, hash_setn, hash_map_bucketn, hash_set_bucketn) = (
+        s("hashbrown::map::HashMap<u32, u32>"),
+        s("hashbrown::set::HashSet<u32>"),
+        s("(u32, u32)"),
+        s("(u32, ())"),
+    );
+    let (bucket_maskn, ctrln, growth_leftn, itemsn) =
+        (s("bucket_mask"), s("ctrl"), s("growth_left"), s("items"));
     let (vecn, ptrn, vec_lenn, capacityn) =
         (s("alloc::vec::Vec<u32>"), s("ptr"), s("len"), s("capacity"));
     let slicen = s("&[u32]");
@@ -2247,6 +2275,34 @@ pub fn test_bundle() -> Bundle {
             members: vec![m(tuple0n, UNIT, 0), m(tuple1n, POINT, 8)],
         },
     );
+    let raw_table = |name| TypeDef::Struct {
+        name,
+        size: 32,
+        members: vec![
+            m(ctrln, U8_PTR, 0),
+            m(bucket_maskn, U64, 8),
+            m(growth_leftn, U64, 16),
+            m(itemsn, U64, 24),
+        ],
+    };
+    types.add(HASH_MAP, raw_table(hash_mapn));
+    types.add(HASH_SET, raw_table(hash_setn));
+    types.add(
+        HASH_MAP_BUCKET,
+        TypeDef::Struct {
+            name: hash_map_bucketn,
+            size: 8,
+            members: vec![m(tuple0n, U32, 0), m(tuple1n, U32, 4)],
+        },
+    );
+    types.add(
+        HASH_SET_BUCKET,
+        TypeDef::Struct {
+            name: hash_set_bucketn,
+            size: 4,
+            members: vec![m(tuple0n, U32, 0), m(tuple1n, UNIT, 4)],
+        },
+    );
 
     let types = types.finish();
 
@@ -2432,7 +2488,7 @@ pub fn test_bundle() -> Bundle {
                     BundleNode::Map {
                         length: sel(&[1]),
                         key: U32,
-                        value: U32,
+                        value: Some(U32),
                         entries: Box::new(BundleMapEntries::BTree {
                             root: sel(&[0]),
                             root_node: sel(&[]),
@@ -2446,6 +2502,36 @@ pub fn test_bundle() -> Bundle {
                             internal_data: sel(&[0]),
                             internal_edges: sel(&[1]),
                             edge: sel(&[]),
+                        }),
+                    },
+                ),
+                (
+                    HASH_MAP,
+                    BundleNode::Map {
+                        length: nsel(&[itemsn]),
+                        key: U32,
+                        value: Some(U32),
+                        entries: Box::new(BundleMapEntries::Hash {
+                            bucket_mask: nsel(&[bucket_maskn]),
+                            ctrl: nsel(&[ctrln]),
+                            bucket: HASH_MAP_BUCKET,
+                            key: nsel(&[tuple0n]),
+                            value: Some(nsel(&[tuple1n])),
+                        }),
+                    },
+                ),
+                (
+                    HASH_SET,
+                    BundleNode::Map {
+                        length: nsel(&[itemsn]),
+                        key: U32,
+                        value: None,
+                        entries: Box::new(BundleMapEntries::Hash {
+                            bucket_mask: nsel(&[bucket_maskn]),
+                            ctrl: nsel(&[ctrln]),
+                            bucket: HASH_SET_BUCKET,
+                            key: nsel(&[tuple0n]),
+                            value: None,
                         }),
                     },
                 ),

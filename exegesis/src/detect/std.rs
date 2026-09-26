@@ -246,7 +246,7 @@ pub(super) fn btree_map_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<Di
     Some(DisplayNode::Map {
         length: emitter.walk(id, &reach![Named("length")])?.0,
         key: emitter.reserve(key),
-        value: emitter.reserve(value),
+        value: Some(emitter.reserve(value)),
         entries: Box::new(MapEntries::BTree {
             root: emitter.walk(id, &reach![Named("root")])?.0,
             root_node: emitter.readdress(some.type_id, &root_node)?,

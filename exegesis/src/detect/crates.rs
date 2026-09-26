@@ -8,12 +8,13 @@
 //! the toolchain and tokio.
 
 use super::ReachStep::{Named, PeelTo, Resolved};
+use super::adapters::hash_table;
 use super::std::{VecShape, buffer_node, vec_shape};
 use super::{
     Reach, Through, Want, find_unique, is_byte_array, is_unsigned_integer, reach,
     sole_param_target, struct_of, unique_member,
 };
-use crate::bundle::{DisplayNode, Field, Notation, ScalarDecode, Shape};
+use crate::bundle::{DisplayNode, Field, MapEntries, Notation, ScalarDecode, Shape};
 use crate::extract::{Emitter, fq_name};
 use crate::raw_types::RawStruct;
 use crate::{DwReader, StrId, TypeId};
@@ -81,6 +82,39 @@ pub(super) fn allocator_api2_vec_shape(emitter: &mut Emitter<'_>, id: TypeId) ->
         length: emitter.walk(id, &reach![Named("len")])?.0,
         capacity: emitter.walk(id, &reach![Named("buf"), Named("cap")])?.0,
         element,
+    })
+}
+
+/// hashbrown's `HashMap` and `HashSet`, and std's, which wrap them, render
+/// as a `Map` over the table's full buckets — a set with its keys alone.
+/// The layout is hashbrown's whoever wraps it, so all four types are one
+/// detector over the screen the semantic binder shares. The bucket
+/// type is reserved as well as the key and value: nothing else reaches
+/// it, since the table names it only through a `PhantomData`.
+pub(super) fn hash_table_node(emitter: &mut Emitter<'_>, id: TypeId) -> Option<DisplayNode> {
+    use super::adapters::hash_table::{BUCKET_MASK, CTRL, ITEMS, KEY, POINTER, TABLE, VALUE};
+    let layout = hash_table(emitter.reader, id)?;
+    let words = |path: &[&'static str]| -> Reach<'static> {
+        let mut reach: Reach<'static> = layout.kind.outer().iter().map(|&m| Named(m)).collect();
+        reach.extend([Named(TABLE), Named(TABLE)]);
+        reach.extend(path.iter().map(|&m| Named(m)));
+        reach
+    };
+    let value = match layout.kind.is_set() {
+        true => None,
+        false => Some(emitter.walk(layout.bucket, &reach![Named(VALUE)])?.0),
+    };
+    Some(DisplayNode::Map {
+        length: emitter.walk(id, &words(&[ITEMS]))?.0,
+        key: emitter.reserve(layout.key),
+        value: value.is_some().then(|| emitter.reserve(layout.value)),
+        entries: Box::new(MapEntries::Hash {
+            bucket_mask: emitter.walk(id, &words(&[BUCKET_MASK]))?.0,
+            ctrl: emitter.walk(id, &words(&[CTRL, POINTER]))?.0,
+            bucket: emitter.reserve(layout.bucket),
+            key: emitter.walk(layout.bucket, &reach![Named(KEY)])?.0,
+            value,
+        }),
     })
 }
 

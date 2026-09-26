@@ -1538,6 +1538,148 @@ pub(crate) fn hyper_util_auto_upgradeable(
     })
 }
 
+/// The member names a hash table's routes are made of, as hashbrown's
+/// `HashMap` and `HashSet` and std's wrappers around them declare them.
+/// One list, shared by the screen, the display program built on it and
+/// the binder that holds the same names to the final table.
+pub(crate) mod hash_table {
+    /// std's `HashMap` and `HashSet`: the hashbrown value each wraps.
+    pub(crate) const BASE: &str = "base";
+    /// hashbrown's `HashSet`: the `HashMap<T, ()>` it is.
+    pub(crate) const MAP: &str = "map";
+    /// hashbrown's `HashMap`: its `RawTable`, and the `RawTableInner`
+    /// that one keeps the words in, both under this name.
+    pub(crate) const TABLE: &str = "table";
+    pub(crate) const BUCKET_MASK: &str = "bucket_mask";
+    pub(crate) const ITEMS: &str = "items";
+    /// The `NonNull<u8>` control pointer, and the raw pointer in it.
+    pub(crate) const CTRL: &str = "ctrl";
+    pub(crate) const POINTER: &str = "pointer";
+    /// A bucket's key and value: the two slots of its `(K, V)`.
+    pub(crate) const KEY: &str = "__0";
+    pub(crate) const VALUE: &str = "__1";
+}
+
+/// Which type a hash table was screened as.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub(crate) enum HashTableKind {
+    HashbrownMap,
+    HashbrownSet,
+    StdMap,
+    StdSet,
+}
+
+impl HashTableKind {
+    /// The members from the screened type to hashbrown's `HashMap`.
+    pub(crate) fn outer(self) -> &'static [&'static str] {
+        use hash_table::{BASE, MAP};
+        match self {
+            HashTableKind::HashbrownMap => &[],
+            HashTableKind::HashbrownSet => &[MAP],
+            HashTableKind::StdMap => &[BASE],
+            HashTableKind::StdSet => &[BASE, MAP],
+        }
+    }
+
+    /// Whether the table's values are a set's units, never read.
+    pub(crate) fn is_set(self) -> bool {
+        matches!(self, HashTableKind::HashbrownSet | HashTableKind::StdSet)
+    }
+}
+
+/// A hash table as the raw screen saw it: the hashbrown `HashMap` the
+/// screened type is or wraps, the bucket type its `RawTable` stores and
+/// that bucket's key and value, and the types of the words the walk
+/// reads — each reached by the member names [`hash_table`] lists.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct HashTableLayout {
+    pub(crate) kind: HashTableKind,
+    /// hashbrown's `HashMap<K, V, S, A>`: whose release the layout is.
+    pub(crate) map: TypeId,
+    /// The `(K, V)` the table stores, `(T, ())` for a set.
+    pub(crate) bucket: TypeId,
+    pub(crate) key: TypeId,
+    pub(crate) value: TypeId,
+    /// `table.table.bucket_mask` and `.items`, both `usize`.
+    pub(crate) bucket_mask: TypeId,
+    pub(crate) items: TypeId,
+    /// `table.table.ctrl.pointer`, the `*const u8` under the `NonNull`.
+    pub(crate) ctrl: TypeId,
+}
+
+/// Screen `id` as a hash table: hashbrown's `HashMap<K, V>` or its
+/// `HashSet<T>` (a `HashMap<T, ()>` in `map`), or std's wrapper of
+/// either (in `base`). The table is the `RawTable<(K, V)>` in `table`,
+/// whose own `table` is the `RawTableInner` holding `bucket_mask`,
+/// `ctrl` and `items`, and whose `T` is the bucket: a `(K, V)` whose
+/// slots are the map's own `K` and `V`.
+pub(crate) fn hash_table(reader: &DwReader<'_>, id: TypeId) -> Option<HashTableLayout> {
+    use hash_table::{BUCKET_MASK, CTRL, ITEMS, KEY, POINTER, TABLE, VALUE};
+    let kind = if declared_in(reader, id, "hashbrown::map", "HashMap<").is_some() {
+        HashTableKind::HashbrownMap
+    } else if declared_in(reader, id, "hashbrown::set", "HashSet<").is_some() {
+        HashTableKind::HashbrownSet
+    } else if declared_in(reader, id, "std::collections::hash::map", "HashMap<").is_some() {
+        HashTableKind::StdMap
+    } else if declared_in(reader, id, "std::collections::hash::set", "HashSet<").is_some() {
+        HashTableKind::StdSet
+    } else {
+        return None;
+    };
+    let mut map = reader.canonicalize(id);
+    for (depth, member) in kind.outer().iter().enumerate() {
+        map = member_of(reader, map, member)?;
+        let expected = match (kind, depth) {
+            (HashTableKind::StdSet, 0) => ("hashbrown::set", "HashSet<"),
+            _ => ("hashbrown::map", "HashMap<"),
+        };
+        declared_in(reader, map, expected.0, expected.1)?;
+    }
+
+    let st = declared_in(reader, map, "hashbrown::map", "HashMap<")?;
+    let param = |name: &str| {
+        st.template_params
+            .iter()
+            .find(|param| param.name.map(|n| reader.strings.get(n)) == Some(name))
+            .map(|param| reader.canonicalize(param.type_id))
+    };
+    let (key, value) = (param("K")?, param("V")?);
+    let raw = member_of(reader, map, TABLE)?;
+    let raw_table = declared_in(reader, raw, "hashbrown::raw", "RawTable<")?;
+    let bucket = raw_table
+        .template_params
+        .iter()
+        .find(|param| param.name.map(|n| reader.strings.get(n)) == Some("T"))
+        .map(|param| reader.canonicalize(param.type_id))?;
+    if member_of(reader, bucket, KEY)? != key || member_of(reader, bucket, VALUE)? != value {
+        return None;
+    }
+    if kind.is_set() && fq_name(reader, value).as_deref() != Some("()") {
+        return None;
+    }
+
+    let inner = member_of(reader, raw, TABLE)?;
+    declared_in(reader, inner, "hashbrown::raw", "RawTableInner")?;
+    let bucket_mask = member_of(reader, inner, BUCKET_MASK)?;
+    let items = member_of(reader, inner, ITEMS)?;
+    let non_null = member_of(reader, inner, CTRL)?;
+    declared_in(reader, non_null, "core::ptr::non_null", "NonNull<")?;
+    let ctrl = member_of(reader, non_null, POINTER)?;
+    (super::is_unsigned_integer(reader, bucket_mask, 8)
+        && super::is_unsigned_integer(reader, items, 8)
+        && is_byte_pointer(reader, ctrl))
+    .then_some(HashTableLayout {
+        kind,
+        map,
+        bucket,
+        key,
+        value,
+        bucket_mask,
+        items,
+        ctrl,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3426,5 +3568,105 @@ mod tests {
             auto_path,
             "UpgradeableConnState<"
         ));
+    }
+
+    /// A hashbrown map is screened as its table: the bucket its
+    /// `RawTable` stores has to be the map's own `(K, V)` in both
+    /// slots, and the table's three words have to be two unsigned words
+    /// and a byte pointer. Any one of them departing is no table.
+    #[test]
+    fn test_a_hash_table_screen_holds_every_part_of_the_layout() {
+        use hash_table::{BUCKET_MASK, CTRL, ITEMS, KEY, POINTER, TABLE, VALUE};
+        let t = |n: u32| TypeId(UnitSectionOffset(0xc00 + n as usize));
+        let (word, u32_t, u8_t, byte_ptr, word_ptr, non_null) =
+            (t(0), t(1), t(2), t(3), t(4), t(5));
+        let (inner, raw, bucket, map) = (t(6), t(7), t(8), t(9));
+        // What the map's parts are made of, each part from `parts`.
+        let build = |parts: [TypeId; 5]| {
+            let [bucket_key, bucket_mask, items, ctrl, value] = parts;
+            let mut fx = Fx::default();
+            fx.base(word, "usize", Encoding::Unsigned, 8);
+            fx.base(u32_t, "u32", Encoding::Unsigned, 4);
+            fx.base(u8_t, "u8", Encoding::Unsigned, 1);
+            fx.pointer(byte_ptr, Some("*const u8"), u8_t);
+            fx.pointer(word_ptr, Some("*const usize"), word);
+            let ptr_ns = fx.ns("core::ptr::non_null");
+            fx.strukt(
+                non_null,
+                Some(ptr_ns),
+                "NonNull<u8>",
+                &[(POINTER, ctrl, 0)],
+                &[],
+            );
+            let raw_ns = fx.ns("hashbrown::raw");
+            fx.strukt(
+                inner,
+                Some(raw_ns),
+                "RawTableInner",
+                &[
+                    (BUCKET_MASK, bucket_mask, 0),
+                    (CTRL, non_null, 8),
+                    ("growth_left", word, 16),
+                    (ITEMS, items, 24),
+                ],
+                &[],
+            );
+            fx.strukt(
+                raw,
+                Some(raw_ns),
+                "RawTable<(usize, u32), alloc::alloc::Global>",
+                &[(TABLE, inner, 0)],
+                &[("T", bucket)],
+            );
+            fx.strukt(
+                bucket,
+                None,
+                "(usize, u32)",
+                &[(KEY, bucket_key, 0), (VALUE, value, 8)],
+                &[],
+            );
+            let map_ns = fx.ns("hashbrown::map");
+            fx.strukt(
+                map,
+                Some(map_ns),
+                "HashMap<usize, u32>",
+                &[(TABLE, raw, 0)],
+                &[("K", word), ("V", u32_t)],
+            );
+            fx
+        };
+        let sound = [word, word, word, byte_ptr, u32_t];
+        let fx = build(sound);
+        assert_eq!(
+            hash_table(&fx.reader, map),
+            Some(HashTableLayout {
+                kind: HashTableKind::HashbrownMap,
+                map,
+                bucket,
+                key: word,
+                value: u32_t,
+                bucket_mask: word,
+                items: word,
+                ctrl: byte_ptr,
+            })
+        );
+        // One part at a time: a bucket whose key or value is another
+        // type than the map's, a mask or a count narrower than a word,
+        // a control pointer to words rather than bytes.
+        for (at, other, what) in [
+            (0, u32_t, "a bucket key"),
+            (4, word, "a bucket value"),
+            (1, u32_t, "a bucket mask"),
+            (2, u32_t, "an item count"),
+            (3, word_ptr, "a control pointer"),
+        ] {
+            let mut parts = sound;
+            parts[at] = other;
+            assert_eq!(
+                hash_table(&build(parts).reader, map),
+                None,
+                "{what} of the wrong type still screens"
+            );
+        }
     }
 }

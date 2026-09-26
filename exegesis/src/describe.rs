@@ -248,6 +248,50 @@ fn array_elem(bundle: &Bundle, id: BundleTypeId) -> Option<BundleTypeId> {
     }
 }
 
+/// A B-tree map's entry walk, each selector resolved against the node type
+/// the walk had reached when it reads it.
+fn describe_btree_entries(bundle: &Bundle, root: BundleTypeId, entries: &MapEntries) -> String {
+    let MapEntries::BTree {
+        root: map_root,
+        root_node,
+        height,
+        node,
+        leaf,
+        leaf_len,
+        leaf_keys,
+        leaf_values,
+        internal,
+        internal_data,
+        internal_edges,
+        edge,
+    } = entries
+    else {
+        return String::new();
+    };
+    let (_, _, root_ty) = walk(bundle, root, map_root);
+    let some = some_payload(bundle, root_ty).unwrap_or(root_ty);
+    let (_, _, node_ref) = walk(bundle, some, root_node);
+    let (_, _, edges_ty) = walk(bundle, *internal, internal_edges);
+    let edge_elem = array_elem(bundle, edges_ty).unwrap_or(*internal);
+    format!(
+        "BTree {{ root={}, root_node={}, height={}, node={}, leaf={}, leaf_len={}, \
+         leaf_keys={}, leaf_values={}, internal={}, internal_data={}, internal_edges={}, \
+         edge={} }}",
+        field(bundle, root, map_root),
+        field(bundle, some, root_node),
+        field(bundle, node_ref, height),
+        field(bundle, node_ref, node),
+        fq_name(bundle, *leaf),
+        field(bundle, *leaf, leaf_len),
+        field(bundle, *leaf, leaf_keys),
+        field(bundle, *leaf, leaf_values),
+        fq_name(bundle, *internal),
+        field(bundle, *internal, internal_data),
+        field(bundle, *internal, internal_edges),
+        field(bundle, edge_elem, edge),
+    )
+}
+
 /// Render a [`DisplayNode`] tree, resolving every selector against the type it
 /// is rooted at — the enclosing value for most, a list's node type, a pointer's
 /// pointee, or whichever storage type a map's walk had reached.
@@ -379,44 +423,34 @@ pub fn describe_node(bundle: &Bundle, root: BundleTypeId, node: &DisplayNode) ->
             value,
             entries,
         } => {
-            let MapEntries::BTree {
-                root: map_root,
-                root_node,
-                height,
-                node,
-                leaf,
-                leaf_len,
-                leaf_keys,
-                leaf_values,
-                internal,
-                internal_data,
-                internal_edges,
-                edge,
-            } = entries.as_ref();
-            let (_, _, root_ty) = walk(bundle, root, map_root);
-            let some = some_payload(bundle, root_ty).unwrap_or(root_ty);
-            let (_, _, node_ref) = walk(bundle, some, root_node);
-            let (_, _, edges_ty) = walk(bundle, *internal, internal_edges);
-            let edge_elem = array_elem(bundle, edges_ty).unwrap_or(*internal);
+            let value = match value {
+                Some(value) => fq_name(bundle, *value),
+                None => "<set>".to_string(),
+            };
+            let entries = match entries.as_ref() {
+                MapEntries::BTree { .. } => describe_btree_entries(bundle, root, entries),
+                MapEntries::Hash {
+                    bucket_mask,
+                    ctrl,
+                    bucket,
+                    key: key_at,
+                    value: value_at,
+                } => format!(
+                    "Hash {{ bucket_mask={}, ctrl={}, bucket={}, key={}{} }}",
+                    field(bundle, root, bucket_mask),
+                    field(bundle, root, ctrl),
+                    fq_name(bundle, *bucket),
+                    field(bundle, *bucket, key_at),
+                    match value_at {
+                        Some(value_at) => format!(", value={}", field(bundle, *bucket, value_at)),
+                        None => String::new(),
+                    },
+                ),
+            };
             format!(
-                "Map {{ length={}, key={}, value={}, entries=BTree {{ root={}, root_node={}, \
-                 height={}, node={}, leaf={}, leaf_len={}, leaf_keys={}, leaf_values={}, \
-                 internal={}, internal_data={}, internal_edges={}, edge={} }} }}",
+                "Map {{ length={}, key={}, value={value}, entries={entries} }}",
                 field(bundle, root, length),
                 fq_name(bundle, *key),
-                fq_name(bundle, *value),
-                field(bundle, root, map_root),
-                field(bundle, some, root_node),
-                field(bundle, node_ref, height),
-                field(bundle, node_ref, node),
-                fq_name(bundle, *leaf),
-                field(bundle, *leaf, leaf_len),
-                field(bundle, *leaf, leaf_keys),
-                field(bundle, *leaf, leaf_values),
-                fq_name(bundle, *internal),
-                field(bundle, *internal, internal_data),
-                field(bundle, *internal, internal_edges),
-                field(bundle, edge_elem, edge),
             )
         }
         DisplayNode::Variant {

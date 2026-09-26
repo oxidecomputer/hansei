@@ -163,11 +163,12 @@ pub enum DisplayNode<'a> {
     },
     /// Render an associative collection, using `entries` to produce exactly
     /// `length` key/value pairs and the shared map presentation for output.
+    /// A set has no `value`: its entries are keys alone.
     Map {
         length_offset: u64,
         length_size: u32,
         key: BundleType<'a>,
-        value: BundleType<'a>,
+        value: Option<BundleType<'a>>,
         entries: Box<MapEntries<'a>>,
     },
     /// Select one of `arms` (else `default`) by matching the value the
@@ -348,6 +349,15 @@ pub enum MapEntries<'a> {
         edges_offset: u64,
         edge: BundleType<'a>,
         edge_pointer_offset: u64,
+    },
+    /// Resolved hashbrown table words and bucket layout.
+    Hash {
+        bucket_mask_offset: u64,
+        ctrl_offset: u64,
+        bucket: BundleType<'a>,
+        key_offset: u64,
+        /// Absent for a set.
+        value_offset: Option<u64>,
     },
 }
 
@@ -908,7 +918,7 @@ impl<'a> DisplayNode<'a> {
                 } => {
                     let (length_ty, length_offset) = resolve_selector(scope, length)?;
                     let key = scope.related_type(*key);
-                    let value = scope.related_type(*value);
+                    let value = value.map(|value| scope.related_type(value));
                     Some(DisplayNode::Map {
                         length_offset,
                         length_size: length_ty.size() as u32,
@@ -972,23 +982,29 @@ impl<'a> DisplayNode<'a> {
         fn resolve_map_entries<'a>(
             scope: BundleType<'a>,
             key: BundleType<'a>,
-            value: BundleType<'a>,
+            value: Option<BundleType<'a>>,
             entries: &hansei_bundle::MapEntries,
         ) -> Option<MapEntries<'a>> {
-            let hansei_bundle::MapEntries::BTree {
-                root,
-                root_node,
-                height,
-                node,
-                leaf,
-                leaf_len,
-                leaf_keys,
-                leaf_values,
-                internal,
-                internal_data: _,
-                internal_edges,
-                edge: edge_path,
-            } = entries;
+            let (
+                hansei_bundle::MapEntries::BTree {
+                    root,
+                    root_node,
+                    height,
+                    node,
+                    leaf,
+                    leaf_len,
+                    leaf_keys,
+                    leaf_values,
+                    internal,
+                    internal_data: _,
+                    internal_edges,
+                    edge: edge_path,
+                },
+                Some(value),
+            ) = (entries, value)
+            else {
+                return resolve_hash_entries(scope, key, value, entries);
+            };
 
             let (root, root_offset) = resolve_selector(scope, root)?;
             let (some, some_offset) = root.variant("Some")?;
@@ -1039,6 +1055,52 @@ impl<'a> DisplayNode<'a> {
                 edges_offset,
                 edge,
                 edge_pointer_offset,
+            })
+        }
+
+        /// The hash table walk: its two words in the map, and where the key
+        /// and value sit in a bucket. Each must be the type the map claims.
+        fn resolve_hash_entries<'a>(
+            scope: BundleType<'a>,
+            key: BundleType<'a>,
+            value: Option<BundleType<'a>>,
+            entries: &hansei_bundle::MapEntries,
+        ) -> Option<MapEntries<'a>> {
+            let hansei_bundle::MapEntries::Hash {
+                bucket_mask,
+                ctrl,
+                bucket,
+                key: key_at,
+                value: value_at,
+            } = entries
+            else {
+                return None;
+            };
+            let (_, bucket_mask_offset) = resolve_selector(scope, bucket_mask)?;
+            let (ctrl, ctrl_offset) = resolve_selector(scope, ctrl)?;
+            ctrl.pointer_target()?;
+            let bucket = scope.related_type(*bucket);
+            let (key_ty, key_offset) = resolve_selector(bucket, key_at)?;
+            if key_ty.id() != key.id() {
+                return None;
+            }
+            let value_offset = match (value, value_at) {
+                (Some(value), Some(value_at)) => {
+                    let (value_ty, value_offset) = resolve_selector(bucket, value_at)?;
+                    if value_ty.id() != value.id() {
+                        return None;
+                    }
+                    Some(value_offset)
+                }
+                (None, None) => None,
+                _ => return None,
+            };
+            Some(MapEntries::Hash {
+                bucket_mask_offset,
+                ctrl_offset,
+                bucket,
+                key_offset,
+                value_offset,
             })
         }
 

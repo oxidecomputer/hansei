@@ -189,11 +189,23 @@ impl DisplayNode {
             DisplayNode::Map {
                 length, entries, ..
             } => {
-                let MapEntries::BTree { root, .. } = entries.as_ref();
-                vec![
-                    Addressed::new("a map length", length, Shape::Uint(word)),
-                    Addressed::new("a B-tree root", root, Shape::Any),
-                ]
+                let length = Addressed::new("a map length", length, Shape::Uint(word));
+                match entries.as_ref() {
+                    MapEntries::BTree { root, .. } => {
+                        vec![length, Addressed::new("a B-tree root", root, Shape::Any)]
+                    }
+                    MapEntries::Hash {
+                        bucket_mask, ctrl, ..
+                    } => vec![
+                        length,
+                        Addressed::new(
+                            "a hash table's bucket mask",
+                            bucket_mask,
+                            Shape::Uint(word),
+                        ),
+                        Addressed::new("a hash table's control bytes", ctrl, Shape::Pointer),
+                    ],
+                }
             }
             // A `Struct`'s fields address members by index, not by selector;
             // a `Variant`, a `Computed`, and a `CustomList` address through

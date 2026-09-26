@@ -30,7 +30,7 @@ pub const MAGIC: [u8; 8] = *b"exegesis";
 
 /// The current bundle format version. Bump on any schema change, including
 /// indirect ones (e.g. new [`crate::Encoding`] variants).
-pub const FORMAT_VERSION: u32 = 81;
+pub const FORMAT_VERSION: u32 = 82;
 
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -806,11 +806,24 @@ fn check_node(bundle: &Bundle, scope: BundleTypeId, node: &DisplayNode, what: &s
             value,
             entries,
         } => {
-            let MapEntries::BTree { root, .. } = entries.as_ref();
-            if root == length {
-                return corrupt("B-tree map reuses root as length".to_string());
+            match entries.as_ref() {
+                MapEntries::BTree { root, .. } => {
+                    if root == length {
+                        return corrupt("B-tree map reuses root as length".to_string());
+                    }
+                }
+                // The control pointer's shape already parts it from the
+                // two words; only they can be one member read twice.
+                MapEntries::Hash { bucket_mask, .. } => {
+                    if bucket_mask == length {
+                        return corrupt(
+                            "hash table reuses its length as its bucket mask".to_string(),
+                        );
+                    }
+                }
             }
-            for (kind, ty) in [("key", *key), ("value", *value)] {
+            for (kind, ty) in [("key", Some(*key)), ("value", *value)] {
+                let Some(ty) = ty else { continue };
                 if bundle.types.get(ty).is_none() {
                     return corrupt(format!("map {kind} type id {} out of range", ty.0));
                 }
@@ -986,25 +999,42 @@ fn check_map_entries(
     bundle: &Bundle,
     scope: BundleTypeId,
     key: BundleTypeId,
-    value: BundleTypeId,
+    value: Option<BundleTypeId>,
     entries: &MapEntries,
     what: &str,
 ) -> Result<()> {
     let corrupt = |msg: String| Err(Error::Corrupt(format!("{what}: {msg}")));
-    let MapEntries::BTree {
-        root,
-        root_node,
-        height,
-        node,
-        leaf,
-        leaf_len,
-        leaf_keys,
-        leaf_values,
-        internal,
-        internal_data,
-        internal_edges,
-        edge,
-    } = entries;
+    let (
+        MapEntries::BTree {
+            root,
+            root_node,
+            height,
+            node,
+            leaf,
+            leaf_len,
+            leaf_keys,
+            leaf_values,
+            internal,
+            internal_data,
+            internal_edges,
+            edge,
+        },
+        Some(value),
+    ) = (entries, value)
+    else {
+        return match entries {
+            MapEntries::Hash {
+                ctrl,
+                bucket,
+                key: key_at,
+                value: value_at,
+                ..
+            } => check_hash_entries(
+                bundle, scope, key, value, ctrl, *bucket, key_at, value_at, what,
+            ),
+            MapEntries::BTree { .. } => corrupt("B-tree map has no value type".to_string()),
+        };
+    };
 
     let root = check_selector(bundle, scope, root, Shape::Any, false, what)?;
     let Some(TypeDef::Enum { shape, .. }) = bundle.types.get(root) else {
@@ -1099,6 +1129,63 @@ fn check_map_entries(
     if !matches!(bundle.types.get(edge_ptr), Some(TypeDef::Pointer { target, .. }) if target == leaf)
     {
         return corrupt("B-tree edge does not point to its leaf type".to_string());
+    }
+    Ok(())
+}
+
+/// The part of a hash table's walk the shape table cannot state: that the
+/// control pointer reads bytes, and that the key and value the walk hands
+/// out are the map's own, reached inside its bucket type.
+#[allow(clippy::too_many_arguments)]
+fn check_hash_entries(
+    bundle: &Bundle,
+    scope: BundleTypeId,
+    key: BundleTypeId,
+    value: Option<BundleTypeId>,
+    ctrl: &Selector,
+    bucket: BundleTypeId,
+    key_at: &Selector,
+    value_at: &Option<Selector>,
+    what: &str,
+) -> Result<()> {
+    let corrupt = |msg: String| Err(Error::Corrupt(format!("{what}: {msg}")));
+    let ctrl = check_selector(bundle, scope, ctrl, Shape::Pointer, false, what)?;
+    let Some(TypeDef::Pointer { target, .. }) = bundle.types.get(ctrl) else {
+        unreachable!("check_selector verified a pointer");
+    };
+    if !matches!(
+        bundle.types.get(*target),
+        Some(TypeDef::Base {
+            size: 1,
+            encoding: crate::Encoding::Unsigned,
+            ..
+        })
+    ) {
+        return corrupt("hash table control pointer does not read bytes".to_string());
+    }
+    if bundle.types.get(bucket).is_none() {
+        return corrupt(format!(
+            "hash table bucket type id {} out of range",
+            bucket.0
+        ));
+    }
+    if bundle.types.size_of(bucket).is_none() {
+        return corrupt(format!(
+            "hash table has an unsized bucket type {}",
+            bucket.0
+        ));
+    }
+    if check_selector(bundle, bucket, key_at, Shape::Any, false, what)? != key {
+        return corrupt("hash table key is not the map's key type".to_string());
+    }
+    match (value, value_at) {
+        (Some(value), Some(value_at)) => {
+            if check_selector(bundle, bucket, value_at, Shape::Any, false, what)? != value {
+                return corrupt("hash table value is not the map's value type".to_string());
+            }
+        }
+        (None, None) => {}
+        _ => return corrupt("hash table and map disagree on whether it is a set".to_string()),
     }
     Ok(())
 }

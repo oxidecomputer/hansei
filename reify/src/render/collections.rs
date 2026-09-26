@@ -7,6 +7,7 @@
 
 use crate::debug_type::{DisplayNode, FatHeader, MapEntries};
 use crate::elements::{Elements, HeapGate, SeqError, Shortfall};
+use crate::heap::{Gate, Liveness};
 use crate::value::Value;
 
 use hansei_bundle::BundleType;
@@ -171,7 +172,7 @@ pub(crate) fn eval_map<'a, T: Target>(
     length_offset: u64,
     length_size: u32,
     key: BundleType<'a>,
-    value: BundleType<'a>,
+    value: Option<BundleType<'a>>,
     entries: &MapEntries<'a>,
 ) -> fmt::Result {
     let Some(map_length) = read_unsigned_at(bytes, length_offset, u64::from(length_size)) else {
@@ -199,39 +200,24 @@ pub(crate) fn eval_map<'a, T: Target>(
     }
 
     let mut emitted = 0u64;
-    let walk = walk_map_entries(
-        bytes,
-        ctx,
-        key,
-        value,
-        entries,
-        &mut |key_addr, key_bytes, value_addr, value_bytes| {
-            if emitted == map_length {
-                return Err(MapWalkError::Invalid(
-                    "tree contains more entries than length",
-                ));
-            }
-            write_field_prefix(f, pretty, ctx.prefix, ctx.depth, emitted == 0)?;
-            let key = Value {
-                ty: key,
-                addr: key_addr,
-                bytes: key_bytes,
-            };
-            let value = Value {
-                ty: value,
-                addr: value_addr,
-                bytes: value_bytes,
-            };
-            write_display_value(f, &key, entry_ctx, pretty)?;
+    let walk = walk_map_entries(bytes, ctx, key, value, entries, &mut |key, value| {
+        if emitted == map_length {
+            return Err(MapWalkError::Invalid(
+                "map contains more entries than length",
+            ));
+        }
+        write_field_prefix(f, pretty, ctx.prefix, ctx.depth, emitted == 0)?;
+        write_display_value(f, &key, entry_ctx, pretty)?;
+        if let Some(value) = value {
             write!(f, ": ")?;
             write_display_value(f, &value, entry_ctx, pretty)?;
-            if pretty {
-                write!(f, ",")?;
-            }
-            emitted += 1;
-            Ok(())
-        },
-    );
+        }
+        if pretty {
+            write!(f, ",")?;
+        }
+        emitted += 1;
+        Ok(())
+    });
 
     write_map_tail(f, ctx.prefix, walk, emitted, map_length, pretty, ctx.depth)
 }
@@ -252,7 +238,7 @@ fn write_map_tail(
         Ok(()) if emitted == map_length => {}
         Ok(()) => {
             write_field_prefix(f, pretty, prefix, depth, emitted == 0)?;
-            write!(f, "<invalid: tree contains fewer entries than length>")?;
+            write!(f, "<invalid: map contains fewer entries than length>")?;
         }
         Err(MapWalkError::Invalid(reason)) => {
             write_field_prefix(f, pretty, prefix, depth, emitted == 0)?;
@@ -285,26 +271,19 @@ fn eval_map_parallel<'a, T: Target>(
     pretty: bool,
     map_length: u64,
     key: BundleType<'a>,
-    value: BundleType<'a>,
+    value: Option<BundleType<'a>>,
     entries: &MapEntries<'a>,
 ) -> fmt::Result {
-    let mut collected: Vec<(u64, u64)> = Vec::new();
-    let walk = walk_map_entries(
-        bytes,
-        ctx,
-        key,
-        value,
-        entries,
-        &mut |key_addr, _, value_addr, _| {
-            if collected.len() as u64 == map_length {
-                return Err(MapWalkError::Invalid(
-                    "tree contains more entries than length",
-                ));
-            }
-            collected.push((key_addr, value_addr));
-            Ok(())
-        },
-    );
+    let mut collected: Vec<(u64, Option<u64>)> = Vec::new();
+    let walk = walk_map_entries(bytes, ctx, key, value, entries, &mut |key, value| {
+        if collected.len() as u64 == map_length {
+            return Err(MapWalkError::Invalid(
+                "map contains more entries than length",
+            ));
+        }
+        collected.push((key.addr, value.map(|value| value.addr)));
+        Ok(())
+    });
 
     let seed = visited.borrow().clone();
     let worker = entry_ctx.for_workers();
@@ -319,8 +298,9 @@ fn eval_map_parallel<'a, T: Target>(
             DisplayWith(|f: &mut fmt::Formatter<'_>| {
                 for index in range.clone() {
                     let (key_addr, value_addr) = entries_ref[index];
+                    let value = value.zip(value_addr);
                     write_field_prefix(f, pretty, task_ctx.prefix, depth, index == 0)?;
-                    write_map_entry(f, key, key_addr, value, value_addr, task_ctx, pretty)?;
+                    write_map_entry(f, key, key_addr, value, task_ctx, pretty)?;
                 }
                 Ok(())
             })
@@ -338,72 +318,73 @@ fn eval_map_parallel<'a, T: Target>(
     )
 }
 
-/// One map entry — `key: value` and pretty's trailing comma — from the
-/// addresses the collect pass recorded. The walk had these very bytes in
-/// hand; a target that stops answering between the walk and the format
-/// degrades like any other failed read.
+/// One map entry — `key: value`, or a set's `key`, and pretty's trailing
+/// comma — from the addresses the collect pass recorded. The walk had
+/// these very bytes in hand; a target that stops answering between the
+/// walk and the format degrades like any other failed read.
 fn write_map_entry<'a, T: Target>(
     f: &mut fmt::Formatter<'_>,
     key: BundleType<'a>,
     key_addr: u64,
-    value: BundleType<'a>,
-    value_addr: u64,
+    value: Option<(BundleType<'a>, u64)>,
     ctx: RenderCtx<'_, 'a, T>,
     pretty: bool,
 ) -> fmt::Result {
-    let (key_bytes, value_bytes) = match (
-        ctx.read(key_addr, key.size()),
-        ctx.read(value_addr, value.size()),
-    ) {
-        (Ok(key_bytes), Ok(value_bytes)) => (key_bytes, value_bytes),
-        (Err(marker), _) | (_, Err(marker)) => return f.write_str(marker),
+    let read = |ty: BundleType<'a>, addr: u64| {
+        ctx.read(addr, ty.size())
+            .map(|bytes| Value { ty, addr, bytes })
     };
-    let key = Value {
-        ty: key,
-        addr: key_addr,
-        bytes: key_bytes,
-    };
-    let value = Value {
-        ty: value,
-        addr: value_addr,
-        bytes: value_bytes,
+    let (key, value) = match (read(key, key_addr), value.map(|(ty, addr)| read(ty, addr))) {
+        (Ok(key), None) => (key, None),
+        (Ok(key), Some(Ok(value))) => (key, Some(value)),
+        (Err(marker), _) | (_, Some(Err(marker))) => return f.write_str(marker),
     };
     write_display_value(f, &key, ctx, pretty)?;
-    write!(f, ": ")?;
-    write_display_value(f, &value, ctx, pretty)?;
+    if let Some(value) = value {
+        write!(f, ": ")?;
+        write_display_value(f, &value, ctx, pretty)?;
+    }
     if pretty {
         write!(f, ",")?;
     }
     Ok(())
 }
 
+/// Hand each entry of a map to `emit`, in the storage's own order: its key,
+/// and its value unless the map is a set.
 pub(crate) fn walk_map_entries<'a, T: Target>(
     bytes: &[u8],
     ctx: RenderCtx<'_, 'a, T>,
     key: BundleType<'a>,
-    value: BundleType<'a>,
+    value: Option<BundleType<'a>>,
     entries: &MapEntries<'a>,
-    emit: &mut impl FnMut(u64, &'a [u8], u64, &'a [u8]) -> std::result::Result<(), MapWalkError>,
+    emit: &mut impl FnMut(Value<'a>, Option<Value<'a>>) -> std::result::Result<(), MapWalkError>,
 ) -> std::result::Result<(), MapWalkError> {
-    let MapEntries::BTree {
-        root,
-        root_offset,
-        root_node,
-        root_node_offset,
-        height,
-        height_offset,
-        node_offset,
-        leaf,
-        leaf_len,
-        leaf_len_offset,
-        keys_offset,
-        key_slots,
-        values_offset,
-        internal,
-        edges_offset,
-        edge,
-        edge_pointer_offset,
-    } = entries;
+    let (
+        MapEntries::BTree {
+            root,
+            root_offset,
+            root_node,
+            root_node_offset,
+            height,
+            height_offset,
+            node_offset,
+            leaf,
+            leaf_len,
+            leaf_len_offset,
+            keys_offset,
+            key_slots,
+            values_offset,
+            internal,
+            edges_offset,
+            edge,
+            edge_pointer_offset,
+        },
+        Some(value),
+    ) = (entries, value)
+    else {
+        return walk_hash_entries(bytes, ctx, key, value, entries, emit);
+    };
 
     let root_bytes = byte_range(bytes, *root_offset, root.size())
         .ok_or(MapWalkError::Marker("<truncated root>"))?;
@@ -448,7 +429,7 @@ fn walk_btree_node<'a, T: Target>(
     address: u64,
     height: u64,
     visited: &mut HashSet<u64>,
-    emit: &mut impl FnMut(u64, &'a [u8], u64, &'a [u8]) -> std::result::Result<(), MapWalkError>,
+    emit: &mut impl FnMut(Value<'a>, Option<Value<'a>>) -> std::result::Result<(), MapWalkError>,
 ) -> std::result::Result<(), MapWalkError> {
     if address == 0 {
         return Err(MapWalkError::Invalid("null node pointer"));
@@ -512,7 +493,17 @@ fn walk_btree_node<'a, T: Target>(
             let value_addr = address
                 .checked_add(value_start)
                 .ok_or(MapWalkError::Invalid("value address overflow"))?;
-            emit(key_addr, key_bytes, value_addr, value_bytes)?;
+            let key = Value {
+                ty: layout.key,
+                addr: key_addr,
+                bytes: key_bytes,
+            };
+            let value = Value {
+                ty: layout.value,
+                addr: value_addr,
+                bytes: value_bytes,
+            };
+            emit(key, Some(value))?;
         }
         if height > 0 {
             let child = btree_edge_address(bytes, layout, len)?;
@@ -539,6 +530,111 @@ fn btree_edge_address<'a>(
         .and_then(|offset| offset.checked_add(layout.edge_pointer_offset))
         .ok_or(MapWalkError::Invalid("edge offset overflow"))?;
     read_u64_at(bytes, offset).ok_or(MapWalkError::Invalid("truncated edge slot"))
+}
+
+/// The most buckets a hash table is believed to have. Its control bytes are
+/// read in one piece, one per bucket, so a mask out of dead memory would
+/// otherwise ask for whatever its bits say.
+const MAX_HASH_BUCKETS: u64 = 1 << 32;
+
+/// Walk a hashbrown table's full buckets in bucket order. The control bytes
+/// are read first and the buckets only where one of them is full, so an
+/// empty table — whose control pointer names a static group with nothing
+/// of the table's below it — reads nothing it does not have.
+fn walk_hash_entries<'a, T: Target>(
+    bytes: &[u8],
+    ctx: RenderCtx<'_, 'a, T>,
+    key: BundleType<'a>,
+    value: Option<BundleType<'a>>,
+    entries: &MapEntries<'a>,
+    emit: &mut impl FnMut(Value<'a>, Option<Value<'a>>) -> std::result::Result<(), MapWalkError>,
+) -> std::result::Result<(), MapWalkError> {
+    let MapEntries::Hash {
+        bucket_mask_offset,
+        ctrl_offset,
+        bucket,
+        key_offset,
+        value_offset,
+    } = entries
+    else {
+        return Err(MapWalkError::Invalid(
+            "storage does not match the map's value",
+        ));
+    };
+    let mask = read_u64_at(bytes, *bucket_mask_offset)
+        .ok_or(MapWalkError::Marker("<truncated bucket mask>"))?;
+    let ctrl = read_u64_at(bytes, *ctrl_offset)
+        .ok_or(MapWalkError::Marker("<truncated control pointer>"))?;
+    let buckets = mask
+        .checked_add(1)
+        .filter(|buckets| buckets.is_power_of_two())
+        .ok_or(MapWalkError::Invalid(
+            "bucket mask is not a power of two less one",
+        ))?;
+    if buckets > MAX_HASH_BUCKETS {
+        return Err(MapWalkError::Invalid("implausible bucket count"));
+    }
+    if ctrl == 0 {
+        return Err(MapWalkError::Invalid("null control pointer"));
+    }
+    let stride = bucket.size();
+    let span = buckets
+        .checked_mul(stride)
+        .ok_or(MapWalkError::Invalid("table size overflow"))?;
+    let base = ctrl
+        .checked_sub(span)
+        .ok_or(MapWalkError::Invalid("buckets start below address zero"))?;
+    let unreadable = |what| {
+        move |marker| match marker {
+            "<freed>" => MapWalkError::Marker("<freed table>"),
+            "<target unavailable>" => MapWalkError::Marker("<target unavailable>"),
+            _ => MapWalkError::Invalid(what),
+        }
+    };
+    let control = ctx
+        .read(ctrl, buckets)
+        .map_err(unreadable("unreadable control bytes"))?;
+    if control.iter().all(|byte| byte & 0x80 != 0) {
+        return Ok(());
+    }
+
+    // The buckets and the control bytes are one allocation, the buckets
+    // at its start: a block that does not hold both is not this table's.
+    // One the allocator took back the bucket read below refuses.
+    if let Some(heap) = ctx.heap
+        && let Liveness::Live { block } = heap.locate(base)
+        && block.end < ctrl.saturating_add(buckets)
+    {
+        heap.note(Gate::Clipped);
+        return Err(MapWalkError::Invalid("table runs past its allocation"));
+    }
+    let slots = ctx
+        .read(base, span)
+        .map_err(unreadable("unreadable buckets"))?;
+    for (index, byte) in control.iter().enumerate() {
+        if byte & 0x80 != 0 {
+            continue;
+        }
+        // Bucket `i` ends `i` buckets below the control bytes.
+        let start = (buckets - 1 - index as u64) * stride;
+        let entry = |ty: BundleType<'a>, offset: u64, what| {
+            let at = start + offset;
+            byte_range(slots, at, ty.size())
+                .map(|bytes| Value {
+                    ty,
+                    addr: base + at,
+                    bytes,
+                })
+                .ok_or(MapWalkError::Invalid(what))
+        };
+        let key = entry(key, *key_offset, "truncated key slot")?;
+        let value = match value.zip(*value_offset) {
+            Some((value, offset)) => Some(entry(value, offset, "truncated value slot")?),
+            None => None,
+        };
+        emit(key, value)?;
+    }
+    Ok(())
 }
 
 /// Walk the intrusive linked list at `head_offset` (0 = empty), rendering each
@@ -829,7 +925,7 @@ mod tests {
         let value = Value::new(ty, 0x5000, &bytes);
         let shown = format!("{}", value.display_from_target(&one_leaf, 8));
         assert!(
-            shown.contains("<invalid: tree contains fewer entries than length>"),
+            shown.contains("<invalid: map contains fewer entries than length>"),
             "{shown}"
         );
 
@@ -962,14 +1058,14 @@ mod tests {
         assert_eq!(
             show(&one, 2),
             "alloc::collections::btree::map::BTreeMap<u32, u32> \
-             { 1: 10, <invalid: tree contains fewer entries than length> }"
+             { 1: 10, <invalid: map contains fewer entries than length> }"
         );
         // No entries against a claim of one: the marker is the whole body.
         let empty = FakeMem::new().at(0x1000, btree_leaf(&[]));
         assert_eq!(
             show(&empty, 1),
             "alloc::collections::btree::map::BTreeMap<u32, u32> \
-             { <invalid: tree contains fewer entries than length> }"
+             { <invalid: map contains fewer entries than length> }"
         );
         // Two entries against a claim of one: the walk is cut off after the
         // rendered entry and the marker follows it.
@@ -977,8 +1073,196 @@ mod tests {
         assert_eq!(
             show(&two, 1),
             "alloc::collections::btree::map::BTreeMap<u32, u32> \
-             { 1: 10, <invalid: tree contains more entries than length> }"
+             { 1: 10, <invalid: map contains more entries than length> }"
         );
+    }
+
+    /// A hash table's words as [`HASH_MAP`]/[`HASH_SET`] lay them out.
+    fn table_words(ctrl: u64, buckets: u64, items: u64) -> Vec<u8> {
+        u64s(&[ctrl, buckets - 1, 0, items])
+    }
+
+    fn pair(key: u32, value: u32) -> Vec<u8> {
+        u32s(&[key, value])
+    }
+
+    /// Only a control byte with its top bit clear is a full bucket, and
+    /// the buckets are read in control-byte order from below the control
+    /// bytes: an EMPTY (`0xff`) and a DELETED (`0x80`) bucket are skipped
+    /// whatever their slots hold, and a set prints its keys alone.
+    #[test]
+    fn test_hash_map_displays_full_buckets_in_bucket_order() {
+        let table = hash_table(
+            &[0x11, 0xff, 0x80, 0x7f],
+            8,
+            &[(0, pair(1, 10)), (2, pair(99, 99)), (3, pair(3, 30))],
+        );
+        let ctrl = 0x1000 + 4 * 8;
+        let mem = FakeMem::new().at(0x1000, table);
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+        let bytes = table_words(ctrl, 4, 2);
+        let value = Value::new(v.ty(HASH_MAP).unwrap(), 0x5000, &bytes);
+        assert_eq!(
+            format!("{}", value.display_from_target(&mem, 8)),
+            "hashbrown::map::HashMap<u32, u32> { 1: 10, 3: 30 }"
+        );
+        assert_eq!(
+            format!("{:#}", value.display_from_target(&mem, 8)),
+            "hashbrown::map::HashMap<u32, u32> {\n    1: 10,\n    3: 30,\n}"
+        );
+
+        let set = hash_table(
+            &[0xff, 0x05, 0x06, 0xff],
+            4,
+            &[(1, u32s(&[7])), (2, u32s(&[9]))],
+        );
+        let mem = FakeMem::new().at(0x1000, set);
+        let bytes = table_words(0x1000 + 4 * 4, 4, 2);
+        let value = Value::new(v.ty(HASH_SET).unwrap(), 0x5000, &bytes);
+        assert_eq!(
+            format!("{}", value.display_from_target(&mem, 8)),
+            "hashbrown::set::HashSet<u32> { 7, 9 }"
+        );
+    }
+
+    /// An empty table is known from its item count alone: its control
+    /// pointer names a static group with nothing of the table's around it,
+    /// so nothing is read.
+    #[test]
+    fn test_an_empty_hash_map_reads_nothing() {
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+        let bytes = table_words(0x9999_0000, 1, 0);
+        let value = Value::new(v.ty(HASH_MAP).unwrap(), 0x5000, &bytes);
+        assert_eq!(
+            format!("{}", value.display_from_target(&FakeMem::new(), 8)),
+            "hashbrown::map::HashMap<u32, u32> {}"
+        );
+    }
+
+    /// The words a table is walked from are believed only as far as they
+    /// describe a table: a mask that is not a power of two less one, a
+    /// null control pointer, an item count the full buckets do not bear
+    /// out, control bytes the target cannot serve, and a bucket count past
+    /// any real table each end the walk with the reason.
+    #[test]
+    fn test_hash_map_refuses_words_that_describe_no_table() {
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+        let ty = v.ty(HASH_MAP).unwrap();
+        let table = hash_table(&[0x11, 0xff], 8, &[(0, pair(1, 10))]);
+        let mem = FakeMem::new().at(0x1000, table);
+        let ctrl = 0x1000 + 2 * 8;
+        let show = |words: &[u64]| {
+            let bytes = u64s(words);
+            format!(
+                "{}",
+                Value::new(ty, 0x5000, &bytes).display_from_target(&mem, 8)
+            )
+        };
+        let name = "hashbrown::map::HashMap<u32, u32>";
+        assert_eq!(
+            show(&[ctrl, 2, 0, 1]),
+            format!("{name} {{ <invalid: bucket mask is not a power of two less one> }}")
+        );
+        assert_eq!(
+            show(&[0, 1, 0, 1]),
+            format!("{name} {{ <invalid: null control pointer> }}")
+        );
+        assert_eq!(
+            show(&[ctrl, 1, 0, 2]),
+            format!("{name} {{ 1: 10, <invalid: map contains fewer entries than length> }}")
+        );
+        assert_eq!(
+            show(&[0x7000, 1, 0, 1]),
+            format!("{name} {{ <invalid: unreadable control bytes> }}")
+        );
+        assert_eq!(
+            show(&[ctrl, (1 << 40) - 1, 0, 1]),
+            format!("{name} {{ <invalid: implausible bucket count> }}")
+        );
+        // The cap itself is a count a table may have: believed, and
+        // then held to what the target can serve.
+        assert_eq!(
+            show(&[1 << 40, (1 << 32) - 1, 0, 1]),
+            format!("{name} {{ <invalid: unreadable control bytes> }}")
+        );
+        // Control bytes marking nothing full are read and nothing more:
+        // no bucket below them is asked for, whether or not the target
+        // has one. Every one full, every one is read.
+        let empty = FakeMem::new().at(0x2000, vec![0xff, 0xff]);
+        let bytes = u64s(&[0x2000, 1, 0, 1]);
+        assert_eq!(
+            format!(
+                "{}",
+                Value::new(ty, 0x5000, &bytes).display_from_target(&empty, 8)
+            ),
+            format!("{name} {{ <invalid: map contains fewer entries than length> }}")
+        );
+        let full = FakeMem::new().at(
+            0x1000,
+            hash_table(&[0x01, 0x02], 8, &[(0, pair(1, 10)), (1, pair(2, 20))]),
+        );
+        let bytes = u64s(&[0x1000 + 2 * 8, 1, 0, 2]);
+        assert_eq!(
+            format!(
+                "{}",
+                Value::new(ty, 0x5000, &bytes).display_from_target(&full, 8)
+            ),
+            format!("{name} {{ 1: 10, 2: 20 }}")
+        );
+        // With no target to read at all, that is what the walk says:
+        // nothing is wrong with the table.
+        let bytes = u64s(&[ctrl, 1, 0, 1]);
+        assert_eq!(
+            format!("{}", Value::new(ty, 0x5000, &bytes).display()),
+            format!("{name} {{ <target unavailable> }}")
+        );
+    }
+
+    /// The buckets and their control bytes are one allocation: a table in
+    /// a block the allocator took back is refused, and so is one whose
+    /// control bytes run past the end of the block its buckets start in.
+    #[test]
+    fn test_a_hash_table_is_held_to_its_allocation() {
+        let table = hash_table(&[0x11, 0xff], 8, &[(0, pair(1, 10))]);
+        let mem = FakeMem::new().at(0x1000, table);
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+        let bytes = table_words(0x1000 + 2 * 8, 2, 1);
+        let value = Value::new(v.ty(HASH_MAP).unwrap(), 0x5000, &bytes);
+        let shown = |heap: &FakeHeap| format!("{}", value.display_from_target(&mem, 8).heap(heap));
+
+        let live = FakeHeap::new().live(0x1000, 0x40);
+        assert_eq!(shown(&live), "hashbrown::map::HashMap<u32, u32> { 1: 10 }");
+        assert_eq!(live.counts(), (0, 0, 0));
+        // A block ending at the last control byte holds the table.
+        let exact = FakeHeap::new().live(0x1000, 2 * 8 + 2);
+        assert_eq!(shown(&exact), "hashbrown::map::HashMap<u32, u32> { 1: 10 }");
+        assert_eq!(exact.counts(), (0, 0, 0));
+
+        let freed = FakeHeap::new().freed(0x1000, 0x40);
+        assert!(shown(&freed).contains("<freed table>"), "{}", shown(&freed));
+        assert_eq!(freed.counts(), (1, 0, 0));
+
+        // Freed under the buckets alone, the control bytes past it: the
+        // bytes read, and the buckets they mark are refused.
+        let buckets_freed = FakeHeap::new().freed(0x1000, 2 * 8);
+        assert!(
+            shown(&buckets_freed).contains("<freed table>"),
+            "{}",
+            shown(&buckets_freed)
+        );
+        assert_eq!(buckets_freed.counts(), (1, 0, 0));
+
+        let short = FakeHeap::new().live(0x1000, 0x11);
+        assert!(
+            shown(&short).contains("<invalid: table runs past its allocation>"),
+            "{}",
+            shown(&short)
+        );
+        assert_eq!(short.counts(), (0, 1, 0));
     }
 
     /// A chain of distinct nodes longer than the iteration cap stops at the

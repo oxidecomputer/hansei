@@ -33,8 +33,9 @@ mod tokio_v1_53;
 pub mod walk;
 
 use self::crates::{
-    bytes_node, hex_bytes_node, http_text_node, hyper_h1_conn_node, hyper_h1_dispatcher_node,
-    hyper_util_io_wrapper_node, raw_mutex_node, utf8_path_buf_node, utf8_path_node, uuid_node,
+    bytes_node, hash_table_node, hex_bytes_node, http_text_node, hyper_h1_conn_node,
+    hyper_h1_dispatcher_node, hyper_util_io_wrapper_node, raw_mutex_node, utf8_path_buf_node,
+    utf8_path_node, uuid_node,
 };
 use self::std::{
     atomic_node, btree_map_node, cstr_node, cstring_node, dyn_pointer_node, function_pointer_node,
@@ -439,6 +440,8 @@ static BY_NAME: &[(&str, Row<Detector>)] = &[
         All(raw_waker_vtable_node),
     ),
     ("core::task::wake::Waker", All(waker_node)),
+    ("hashbrown::map::HashMap", All(hash_table_node)),
+    ("hashbrown::set::HashSet", All(hash_table_node)),
     ("http::byte_str::ByteStr", All(http_text_node)),
     ("http::uri::authority::Authority", All(http_text_node)),
     ("http::uri::path::PathAndQuery", All(http_text_node)),
@@ -456,6 +459,8 @@ static BY_NAME: &[(&str, Row<Detector>)] = &[
         All(hyper_util_io_wrapper_node),
     ),
     ("parking_lot::raw_mutex::RawMutex", All(raw_mutex_node)),
+    ("std::collections::hash::map::HashMap", All(hash_table_node)),
+    ("std::collections::hash::set::HashSet", All(hash_table_node)),
     ("std::sys::time::unix::Instant", All(instant_alias_node)),
     ("std::time::Instant", All(instant_alias_node)),
     (
