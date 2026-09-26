@@ -1428,7 +1428,7 @@ mod tests {
         let mut out = Vec::new();
         exec_children(&session, None, &mut out).expect("children lists the task's finds");
         let by_id = String::from_utf8(out).expect("the listing is UTF-8");
-        assert!(by_id.starts_with("held futures: 5\n"), "{by_id}");
+        assert!(by_id.starts_with("held futures: 7\n"), "{by_id}");
         assert!(by_id.contains("\njoin sets: 1 (3 futures)\n"), "{by_id}");
         *session.cursor.borrow_mut() = Cursor {
             root: Some(TraceTarget::Future(task.addr.0)),

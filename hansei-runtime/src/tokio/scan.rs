@@ -46,6 +46,7 @@ use super::TaskAddr;
 use super::bundle::{ChainEnd, Context};
 use super::census::{
     NodeStop, join_set_entry_task, walk_fanout_entries, walk_join_set_entries, walk_set_nodes,
+    walk_table_buckets,
 };
 use super::chain::NextFuture;
 use super::contract::{self, Walked};
@@ -258,6 +259,16 @@ impl<'b, T: Target> Scanner<'_, 'b, T> {
                 return;
             }
             None => {}
+        }
+
+        // A hash table: its full buckets are the value's own storage,
+        // one dereference away, scanned as members are. Its words are
+        // the table's to read, so nothing else of it is descended.
+        if let Some(table) = record.and_then(|r| r.table.as_ref()) {
+            if once(self) {
+                self.table(value, key, table, depth, frame);
+            }
+            return;
         }
 
         // 3. A supported pointer adapter: its referent by the route its
@@ -816,6 +827,49 @@ impl<'b, T: Target> Scanner<'_, 'b, T> {
         self.path.pop();
     }
 
+    /// A hash table: each full bucket, one dereference from here and one
+    /// referent expansion each, scanned a level down as owned storage —
+    /// a handle in it names its task, a future in it is a new origin, as
+    /// either would be as a member.
+    fn table(
+        &mut self,
+        map: Value<'b>,
+        key: ValueKey,
+        table: &hansei_bundle::HashTableBinding,
+        depth: u16,
+        frame: Frame,
+    ) {
+        let max = self.budget.limits.max_children as usize;
+        let mut buckets: Vec<Value<'b>> = Vec::new();
+        let ctx = self.ctx;
+        let read = self.read;
+        let budget = &mut *self.budget;
+        let visit = &mut |_index: usize, bucket: Value<'b>| -> std::result::Result<(), NodeStop> {
+            if !budget.charge_referent() {
+                return Err(Self::spent(budget));
+            }
+            buckets.push(bucket);
+            Ok(())
+        };
+        match walk_table_buckets(ctx, &read, map, table, max, visit) {
+            Ok(count) if count.full as u64 != count.items => self.report(WalkIssue::new(
+                key,
+                WalkIssueKind::CountMismatch,
+                format!(
+                    "the table counts {} items, and {} of its buckets are full",
+                    count.items, count.full
+                ),
+            )),
+            Ok(_) => {}
+            Err(stop) => self.node_stop(key, stop),
+        }
+        self.path.push(Step::Deref);
+        for bucket in buckets {
+            self.scan(bucket, depth + 1, frame);
+        }
+        self.path.pop();
+    }
+
     /// A `JoinSet`: each entry's handle names a task.
     fn join_set(&mut self, set: Value<'b>, key: ValueKey) {
         let max = self.budget.limits.max_children as usize;
@@ -1338,10 +1392,10 @@ mod tests {
         // One expansion per child, plus the two adapters the driver's
         // frames hold: the `boxed` local's pin, and the `&mut
         // FuturesUnordered` the `Next` awaitee borrows — which lands on
-        // the set held by value, walked once. The `Notify` the
-        // children park in costs nothing here: the sweep that built
-        // `run` walked its list, and the tasks it names are kept per
-        // target.
+        // the set held by value, walked once — and one per full bucket
+        // of the `keyed` map's table. The `Notify` the children park
+        // in costs nothing here: the sweep that built `run` walked its
+        // list, and the tasks it names are kept per target.
         assert!(
             run.census
                 .sets
@@ -1349,7 +1403,7 @@ mod tests {
                 .flat_map(|s| s.children.iter())
                 .any(|c| matches!(c.wait, Some(WaitKind::Notify { .. })))
         );
-        assert_eq!(completion.referent_expansions, total as u64 + 2);
+        assert_eq!(completion.referent_expansions, total as u64 + 2 + 2);
         let (expansions, visits) = (completion.referent_expansions, completion.inline_visits);
 
         // Every child scanned once: a second scan of the same root
@@ -1440,8 +1494,9 @@ mod tests {
         assert!(completion.inline_visits < visits);
         // The nested set sits inside a child, so it is never walked:
         // its nodes are the expansions the unbounded scan made and
-        // this one did not.
-        assert!(completion.referent_expansions < total as u64 + 2);
+        // this one did not. The map's buckets are the frame's storage,
+        // no hop, so they are walked either way.
+        assert!(completion.referent_expansions < total as u64 + 2 + 2);
 
         // One hop allowed: the children are scanned, the set nested in
         // one of them is walked, and its own children are the limit —
@@ -2032,6 +2087,135 @@ mod tests {
             sink.issues
         );
         assert_eq!(spent.referent_expansions, 0);
+    }
+
+    /// A hash table's full buckets are its map's storage: `unordered`'s
+    /// driver keeps two futures only in its map's table, and the scan
+    /// reaches each as a future nested in the driver's storage — which
+    /// the nesting limit stops, at the future inside the bucket. With
+    /// no referent budget the table's walk stops at the map and says so.
+    #[test]
+    fn test_a_hash_table_is_scanned_through_its_buckets() {
+        let (bundle, snapshot) = testkit::load_any("unordered");
+        let ctx = testkit::context(&bundle, &snapshot);
+        let list = testkit::tasks(&ctx, &snapshot);
+        let driver = task_named(&list, "driver");
+        let map = testkit::frame_local(&ctx, driver, "driver", "keyed");
+        let map_key = ValueKey::of(map);
+        let table = ctx
+            .type_semantics(map.ty.id())
+            .and_then(|record| record.table.as_ref())
+            .expect("the map binds its table");
+        let word = |path: &hansei_bundle::TypedPath| -> u64 {
+            contract::execute_steps(&ctx, &ReadContext::none(), map, &path.steps)
+                .unwrap()
+                .optional()
+                .unwrap()
+                .parse(ctx.proc)
+                .unwrap()
+        };
+        let ctrl = word(&table.ctrl);
+        let base =
+            ctrl - (word(&table.bucket_mask) + 1) * ctx.view.ty(table.bucket).unwrap().size();
+        let (completion, sink) = scan_task(&ctx, driver);
+        assert!(
+            !sink.issues.iter().any(|i| i.at == map_key),
+            "{:?}",
+            sink.issues
+        );
+
+        let (limited, sink) = scan_task_with(
+            &ctx,
+            driver,
+            &ReadContext::none(),
+            ScanLimits {
+                max_future_nesting: 0,
+                ..ScanLimits::default()
+            },
+        );
+        assert!(!limited.complete);
+        let in_table: Vec<&WalkIssue> = sink
+            .issues
+            .iter()
+            .filter(|i| i.kind == WalkIssueKind::HopLimit && (base..ctrl).contains(&i.at.addr))
+            .collect();
+        assert_eq!(in_table.len(), 2, "{:?}", sink.issues);
+        assert!(
+            in_table.iter().all(
+                |i| ctx.view.ty(i.at.ty).unwrap().name() == "unordered::leaf::{async_fn_env#0}"
+            ),
+            "{in_table:?}"
+        );
+        assert!(limited.referent_expansions < completion.referent_expansions);
+
+        let (spent, sink) = scan_task_with(
+            &ctx,
+            driver,
+            &ReadContext::none(),
+            ScanLimits {
+                max_referent_expansions: 0,
+                ..ScanLimits::default()
+            },
+        );
+        assert!(!spent.complete);
+        assert!(
+            sink.issues
+                .iter()
+                .any(|i| i.kind == WalkIssueKind::VisitLimit && i.at == map_key),
+            "{:?}",
+            sink.issues
+        );
+
+        // A bucket is one aggregate level below its map, so a depth
+        // limit that admits the map stops at each bucket, and one level
+        // more admits them both.
+        let bucket_ty = table.bucket;
+        let stopped_at_buckets = |max_depth: u16| {
+            let (_, sink) = scan_task_with(
+                &ctx,
+                driver,
+                &ReadContext::none(),
+                ScanLimits {
+                    max_depth,
+                    ..ScanLimits::default()
+                },
+            );
+            sink.issues
+                .iter()
+                .filter(|i| i.kind == WalkIssueKind::DepthLimit && i.at.ty == bucket_ty)
+                .count()
+        };
+        let at_map = (0..8)
+            .find(|&depth| stopped_at_buckets(depth) > 0)
+            .expect("some depth limit stops at the buckets");
+        assert_eq!(stopped_at_buckets(at_map), 2);
+        assert_eq!(stopped_at_buckets(at_map + 1), 0);
+        // The map itself sits at that depth, so the limit one below it
+        // stops at the map instead, never reaching a bucket.
+        assert!(at_map > 0);
+
+        // A count its full buckets do not bear out is a mismatch at the
+        // map, and the buckets the control bytes mark are scanned all
+        // the same.
+        let items = contract::execute_steps(&ctx, &ReadContext::none(), map, &table.items.steps)
+            .unwrap()
+            .optional()
+            .unwrap();
+        let whole = testkit::corrupt::Corrupt::new(&snapshot);
+        let ctx = Context::new(&whole, hansei_bundle::BundleView::new(&bundle)).unwrap();
+        let (counted, _) = scan_task(&ctx, driver);
+        let cut = testkit::corrupt::Corrupt::new(&snapshot).patch(items.addr, 3);
+        let ctx = Context::new(&cut, hansei_bundle::BundleView::new(&bundle)).unwrap();
+        let (miscounted, sink) = scan_task(&ctx, driver);
+        assert!(!miscounted.complete);
+        assert!(
+            sink.issues
+                .iter()
+                .any(|i| i.kind == WalkIssueKind::CountMismatch && i.at == map_key),
+            "{:?}",
+            sink.issues
+        );
+        assert_eq!(miscounted.referent_expansions, counted.referent_expansions);
     }
 
     /// A counting sink sees the same references as the collecting

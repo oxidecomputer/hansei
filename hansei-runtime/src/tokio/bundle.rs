@@ -35,10 +35,10 @@ use hansei_bundle::symbols::normalized_v0_key;
 use hansei_bundle::tokio::{semaphore, timer};
 use hansei_bundle::{
     AccessKind, BundleType, BundleTypeId, BundleView, ContainerKind, Continuation, FutureKind,
-    IoOperationKind, MemberRef, PollAction, PollProgram, ResourceKind, SchedulerClass,
-    SelectBinding, StaticRole, Step, StoragePolicy, SymbolLookup, TaskEntryId, TaskFutureEntry,
-    TypeClass, TypeDef, TypeSemantics, TypedPath, WalkOutcome, WalkRole, strip_build_prefix,
-    strip_llvm_suffix,
+    HashTableBinding, IoOperationKind, MemberRef, PollAction, PollProgram, ResourceKind,
+    SchedulerClass, SelectBinding, StaticRole, Step, StoragePolicy, SymbolLookup, TaskEntryId,
+    TaskFutureEntry, TypeClass, TypeDef, TypeSemantics, TypedPath, WalkOutcome, WalkRole,
+    strip_build_prefix, strip_llvm_suffix,
 };
 use proc::{LwpInfo, Mappings, SymbolBuf, Target};
 use reify::Value;
@@ -1442,11 +1442,21 @@ impl<'b, T: Target> Context<'b, T> {
         self.type_semantics(id)?.container.as_ref().map(|c| c.kind)
     }
 
+    /// The hash table a type keeps, where the bundle binds one whose
+    /// buckets could hold something a scan reports: a table of plain
+    /// data is not worth walking for what it cannot hold.
+    pub(crate) fn scanned_table(&self, id: BundleTypeId) -> Option<&'b HashTableBinding> {
+        let table = self.type_semantics(id)?.table.as_ref()?;
+        let bucket = self.view.ty(table.bucket)?;
+        (!self.reference_inert(bucket)).then_some(table)
+    }
+
     /// Whether no value of `ty` can hold anything the reference scan
     /// reports: nothing in its inline storage — its members, every
     /// variant's payload — is a bound resource, container, pointer
     /// adapter, future or coroutine, storage the bundle declares
-    /// unreadable, or an array of aggregates. A pointer no adapter is
+    /// unreadable, or an array of aggregates, and no hash table it
+    /// keeps has buckets that could hold one. A pointer no adapter is
     /// bound for is a word the scan never follows, so it ends the
     /// question there. A fact of the type, remembered per type.
     pub(crate) fn reference_inert(&self, ty: BundleType<'b>) -> bool {
@@ -1458,6 +1468,11 @@ impl<'b, T: Target> Context<'b, T> {
                     || record.future.is_some()
                     || record.coroutine.is_some()
                     || matches!(record.storage, StoragePolicy::Unavailable(_))
+                    || record.table.as_ref().is_some_and(|table| {
+                        self.view
+                            .ty(table.bucket)
+                            .is_some_and(|bucket| !self.reference_inert(bucket))
+                    })
             });
             !bound
                 && match ty.classify() {

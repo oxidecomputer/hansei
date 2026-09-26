@@ -2420,14 +2420,15 @@ fn test_futures_acceptance() {
         let rows = list_tasks(&bundle, core);
         let driver = task_with_future(&rows, "async fn unordered::driver");
 
-        // Five held futures, and one set holding three children — the
-        // driver's own finds, counted apart from what the census went
-        // on to find inside them. `task` carries both counts, and says
-        // `0` for a task the census found nothing for rather than
-        // staying silent; `children` lists what each counted, under
-        // its own row, at the margin — under the task's scope it
-        // prints no heading of its own.
-        assert_eq!(driver.futures, "5", "{rows:?}");
+        // Seven held futures, two of them in a map's buckets, and one
+        // set holding three children — the driver's own finds, counted
+        // apart from what the census went on to find inside them.
+        // `task` carries both counts, and says `0` for a task the
+        // census found nothing for rather than staying silent;
+        // `children` lists what each counted, under its own row, at the
+        // margin — under the task's scope it prints no heading of its
+        // own.
+        assert_eq!(driver.futures, "7", "{rows:?}");
         assert_eq!(driver.sets, "1 (3 futures)", "{rows:?}");
         for row in rows.iter().filter(|row| row.id != driver.id) {
             assert_eq!(row.futures, "0", "{row:?}");
@@ -2435,11 +2436,11 @@ fn test_futures_acceptance() {
         }
         let block = hansei_ok(&bundle, core, &format!("task {}", driver.id));
         assert!(
-            block.ends_with("\n    held futures: 5\n    join sets: 1 (3 futures)\n"),
+            block.ends_with("\n    held futures: 7\n    join sets: 1 (3 futures)\n"),
             "{block}"
         );
         let futures = hansei_ok(&bundle, core, &format!("task {} children", driver.id));
-        assert!(futures.starts_with("held futures: 5\n    "), "{futures}");
+        assert!(futures.starts_with("held futures: 7\n    "), "{futures}");
         assert!(
             futures.contains("\njoin sets: 1 (3 futures)\n    - "),
             "{futures}"
@@ -3306,7 +3307,7 @@ fn test_census_prints_only_the_sections_named() {
 
 /// What a set holds is counted apart from what a frame holds, with the
 /// same split `children` lists: five children in flight across
-/// the two sets, and nine futures held in frames beside them.
+/// the two sets, and eleven futures held in frames beside them.
 ///
 /// The census counts a find wherever the scan reached it, so nesting
 /// moves nothing between the two populations — a future held inside a
@@ -3318,17 +3319,18 @@ fn test_census_counts_a_set_and_what_is_held_beside_it() {
         let out = hansei_ok(&bundle, core, "census");
         assert!(
             out.contains(
-                "    9  frame (off any await chain)\n    \
+                "   11  frame (off any await chain)\n    \
                  5  set (2 FuturesUnordered)\n"
             ),
             "{out}"
         );
         // The leaves are what the nesting added: one per set child, two
-        // the driver holds inside a tuple and an enum, the nested set's
-        // own two children, and the one carried by the future the
-        // driver holds for it — none of them ever polled.
+        // the driver holds inside a tuple and an enum, two more in its
+        // map's buckets, the nested set's own two children, and the one
+        // carried by the future the driver holds for it — none of them
+        // ever polled.
         assert!(
-            out.contains("    8  async fn unordered::leaf\n       └─ 8  — (unresumed)\n"),
+            out.contains("   10  async fn unordered::leaf\n       └─ 10  — (unresumed)\n"),
             "{out}"
         );
         // What all five of them are — the set's children and the two

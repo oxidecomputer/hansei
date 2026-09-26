@@ -3212,7 +3212,7 @@ mod trace_render_tests {
             "#0  future        tokio::sync::oneshot::Receiver<u32>
       waiting on oneshot rx 0xADDR (nothing sent, sender alive)
 #1  async fn      simple_await::work
-      awaiting at src/bin/simple-await.rs:47 (Suspend1, 13 locals)
+      awaiting at src/bin/simple-await.rs:51 (Suspend1, 15 locals)
 "
         );
     }
@@ -3394,15 +3394,15 @@ mod trace_render_tests {
         let rendered = trace("simple-await", "simple_await::work::{async_fn_env#0}", true);
         assert!(
             rendered.contains(
-                "      awaiting at src/bin/simple-await.rs:47 (Suspend1, 13 locals)\
+                "      awaiting at src/bin/simple-await.rs:51 (Suspend1, 15 locals)\
                  \n      locals:\n        count: u32 = 3\n"
             ),
             "{rendered}"
         );
         assert!(
             rendered.contains(
-                "      other suspend points:\n        Suspend0 — src/bin/simple-await.rs:45 \
-                 (14 locals) → async fn simple_await::ready_value\n"
+                "      other suspend points:\n        Suspend0 — src/bin/simple-await.rs:49 \
+                 (16 locals) → async fn simple_await::ready_value\n"
             ),
             "{rendered}"
         );
@@ -3465,7 +3465,7 @@ mod trace_render_tests {
         assert!(
             styled.contains(
                 "      \x1b[2mother suspend points:\x1b[0m\n        \
-                 \x1b[2mSuspend0 — src/bin/simple-await.rs:45 (14 locals) \
+                 \x1b[2mSuspend0 — src/bin/simple-await.rs:49 (16 locals) \
                  → async fn simple_await::ready_value\x1b[0m\n"
             ),
             "{styled}"

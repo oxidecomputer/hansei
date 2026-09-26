@@ -2,7 +2,7 @@
 source: hansei/src/offline.rs
 description: "`threads` over linux/foreign-runtime"
 ---
-LWP    NAME  ROLE             TASK  FRAME 0
-56295  —     block_on caller  —     0xADDR
-56297  —     entered runtime  —     0xADDR
+LWP      NAME  ROLE             TASK  FRAME 0
+3619877  —     block_on caller  —     0xADDR
+3619879  —     entered runtime  —     0xADDR
 [2 threads]

@@ -5,9 +5,9 @@ description: "`runtime` over linux/unordered"
 runtime 0 @ 0xADDR
     flavor: multi_thread
     tasks: 1
-    futures: 15
+    futures: 17
     workers: 2
-    threads: 3 (lwp 54777, 54780, 54779)
+    threads: 3 (lwp 3618270, 3618273, 3618272)
     found via: a thread's runtime context
     drivers:
       tokio::runtime::driver::Handle {

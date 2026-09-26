@@ -2,8 +2,8 @@
 source: hansei/src/offline.rs
 description: "`find-types async_channel::Recv<u32>` over linux/two-releases"
 ---
-alloc::boxed::Box<async_channel::Recv<u32>, alloc::alloc::Global>  (2 definitions: type 14; type 730)
-async_channel::Recv<u32>  (2 definitions: type 23; type 735, async-channel 1.9.0)
-core::pin::Pin<alloc::boxed::Box<async_channel::Recv<u32>, alloc::alloc::Global>>  (2 definitions: type 8; type 727)
+alloc::boxed::Box<async_channel::Recv<u32>, alloc::alloc::Global>  (2 definitions: type 14; type 731)
+async_channel::Recv<u32>  (2 definitions: type 23; type 736, async-channel 1.9.0)
+core::pin::Pin<alloc::boxed::Box<async_channel::Recv<u32>, alloc::alloc::Global>>  (2 definitions: type 8; type 728)
 
 [3 types]

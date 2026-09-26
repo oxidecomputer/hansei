@@ -584,7 +584,10 @@ impl<'b, T: Target> Context<'b, T> {
                     // set's own wakers, and a set here is not a branch
                     // of this task's waker.
                     Find::Fanout(map) => (map, false),
-                    Find::Set(_) | Find::JoinSet(_) => continue,
+                    // `Branching` recognizes no table: that a frame holds
+                    // futures in a map says nothing of its polling them
+                    // with this task's context, as a `StreamMap` does.
+                    Find::Set(_) | Find::JoinSet(_) | Find::Table(_) => continue,
                 };
                 if branches.len() >= scan.max_branches {
                     capped += 1;
@@ -1795,15 +1798,17 @@ mod tests {
     }
 
     /// The branch scan's recognition is the census's with one row
-    /// more: a borrowed adapter is followed. Judged over every type of
-    /// every pair against the semantics records themselves, so the
-    /// expectation is not the code under test restated.
+    /// more — a borrowed adapter is followed — and one fewer: a hash
+    /// table the census walks holds no branch of the task's. Judged
+    /// over every type of every pair against the semantics records
+    /// themselves, so the expectation is not the code under test
+    /// restated.
     #[test]
     fn test_recognition_admits_borrowed_adapters_and_nothing_else() {
         use crate::tokio::census::{Recognize, Recognized};
         use hansei_bundle::{ContainerKind, StoragePolicy};
 
-        let (mut borrowed, mut unavailable, mut plain) = (0, 0, 0);
+        let (mut borrowed, mut unavailable, mut plain, mut tables) = (0, 0, 0, 0);
         for program in testkit::PROGRAMS {
             let (bundle, snapshot) = load_any(program);
             let ctx = testkit::context(&bundle, &snapshot);
@@ -1853,20 +1858,28 @@ mod tests {
                         .map(|t| t.name().to_owned())
                         .unwrap_or_default()
                 );
-                // Against the census's own recognition, the one difference.
+                // Against the census's own recognition, the two
+                // differences.
                 let census = ctx.recognize(id);
                 let same = std::mem::discriminant(&got) == std::mem::discriminant(&census);
                 let differs_on_borrow = matches!(got, Recognized::Adapter)
                     && matches!(census, Recognized::Other)
                     && ctx.any_adapter(id)
                     && !ctx.owned_adapter(id);
+                let differs_on_table = matches!(got, Recognized::Other)
+                    && matches!(census, Recognized::Table)
+                    && ctx.scanned_table(id).is_some();
+                if differs_on_table {
+                    tables += 1;
+                }
                 assert!(
-                    same || differs_on_borrow,
+                    same || differs_on_borrow || differs_on_table,
                     "type {id:?}: {got:?} vs {census:?}"
                 );
             }
         }
         assert!(borrowed > 0, "some pair holds a borrowed adapter");
+        assert!(tables > 0, "some pair keeps futures in a hash table");
         assert!(plain > 0);
         // No captured pair declares storage unavailable, so that row is
         // held to the record where it occurs and nowhere yet.

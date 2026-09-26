@@ -2,8 +2,8 @@
 source: hansei/src/offline.rs
 description: "`threads` over linux/armed-select"
 ---
-LWP    NAME  ROLE                 TASK  FRAME 0
-57563  —     entered runtime      —     0xADDR
-57565  —     worker 0, in driver  —     0xADDR
-57566  —     worker 1, parked     —     0xADDR
+LWP      NAME  ROLE                 TASK  FRAME 0
+3621154  —     entered runtime      —     0xADDR
+3621156  —     worker 1, in driver  —     0xADDR
+3621157  —     worker 0, parked     —     0xADDR
 [3 threads]

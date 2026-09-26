@@ -5,7 +5,7 @@ description: "`runtime` over illumos/unordered"
 runtime 0 @ 0xADDR
     flavor: multi_thread
     tasks: 1
-    futures: 15
+    futures: 17
     workers: 2
     threads: 3 (lwp 1, 2, 3)
     found via: a thread's runtime context

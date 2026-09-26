@@ -824,6 +824,9 @@ pub(crate) enum Find<'b> {
     /// An owned adapter whose referent, by its recorded route, is the
     /// find.
     Adapter(Value<'b>),
+    /// A hash table whose buckets could hold a find: each full bucket
+    /// is scanned as storage of the value keeping the table.
+    Table(Value<'b>),
 }
 
 /// The census walker: the context and task listing it scans over, and
@@ -1085,7 +1088,8 @@ impl<'b, T: Target> Walker<'_, 'b, T> {
             | Find::JoinSet(value)
             | Find::Fanout(value)
             | Find::Future(value)
-            | Find::Adapter(value) => value,
+            | Find::Adapter(value)
+            | Find::Table(value) => value,
         };
         // Asked before the find is recorded rather than after the
         // listing is built, because the walk goes on *through* what it
@@ -1107,6 +1111,9 @@ impl<'b, T: Target> Walker<'_, 'b, T> {
             Find::JoinSet(value) => self.record_join_set(owner, frame, local, via, value),
             Find::Fanout(value) => {
                 self.record_fanout(owner, frame, local, via, value, nesting, on_chain)
+            }
+            Find::Table(value) => {
+                self.record_table(owner, frame, local, via, value, nesting, on_chain)
             }
             // The adapter's referent is the find — under the adapter's
             // slot, so a `Box<F>` local lists `F` where the local is.
@@ -1334,6 +1341,64 @@ impl<'b, T: Target> Walker<'_, 'b, T> {
         }
     }
 
+    /// Record one hash table: walk its full buckets, and scan each as a
+    /// value the task holds at `local[index]`, as a fan-out container's
+    /// entries are. The table itself is no row: its buckets are the
+    /// storage of the value keeping it, and what one holds is held by
+    /// the frame that value is in.
+    #[allow(clippy::too_many_arguments)]
+    fn record_table(
+        &mut self,
+        owner: usize,
+        frame: usize,
+        local: &str,
+        via: Option<Via>,
+        value: Value<'b>,
+        nesting: usize,
+        on_chain: &HashSet<ValueKey>,
+    ) {
+        let Some(table) = self.ctx.scanned_table(value.ty.id()) else {
+            return;
+        };
+        let mut buckets = Vec::new();
+        let visit = &mut |index: usize, bucket: Value<'b>| -> std::result::Result<(), NodeStop> {
+            buckets.push((index, bucket));
+            Ok(())
+        };
+        match walk_table_buckets(self.ctx, &self.read, value, table, MAX_CHILDREN, visit) {
+            Ok(count) if count.full as u64 != count.items => self.errors.push(anyhow!(
+                "the hash table at {:#x} counts {} items, and {} of its buckets are full",
+                value.addr,
+                count.items,
+                count.full
+            )),
+            Ok(_) => {}
+            Err(e) => self.errors.push(anyhow::Error::from(e).context(format!(
+                "the hash table at {:#x} lists only {} of its entries",
+                value.addr,
+                buckets.len()
+            ))),
+        }
+        for (index, bucket) in buckets {
+            let mut found = Vec::new();
+            scan_value(
+                bucket,
+                self.ctx,
+                0,
+                self.bounds.scan_depth,
+                Path::default(),
+                &mut found,
+                &mut self.capped,
+                &mut self.plans,
+                &mut self.stats,
+            );
+            let local = format!("{local}[{index}]");
+            for find in found {
+                self.record(owner, frame, &local, via, find, nesting, on_chain);
+            }
+        }
+    }
+
     /// Record one join set: walk its two entry lists for the tasks it
     /// holds.
     ///
@@ -1410,6 +1475,9 @@ pub(crate) enum Recognized {
     /// Future>` inside a pinned one — whose access binding records the
     /// route to what it holds.
     Adapter,
+    /// A hash table the bundle binds, whose bucket type could hold a
+    /// find: its buckets are the value's storage, read by the binding.
+    Table,
     /// Storage the bundle declares unreadable, with no identity that
     /// would make the value a find: stopped at, never descended into.
     Unavailable,
@@ -1430,6 +1498,7 @@ impl<T: Target> Recognize for Context<'_, T> {
             Some(hansei_bundle::ContainerKind::StreamMap) => Recognized::Fanout,
             None if self.recognized_future(id) => Recognized::Future,
             None if self.owned_adapter(id) => Recognized::Adapter,
+            None if self.scanned_table(id).is_some() => Recognized::Table,
             None if self.storage_unavailable(id) => Recognized::Unavailable,
             None => Recognized::Other,
         }
@@ -1451,6 +1520,9 @@ pub(crate) enum ScanPlan {
     /// An owned pointer adapter: followed by its recorded route to the
     /// future it holds, which is then the find.
     Adapter,
+    /// A hash table: walked by its binding, each full bucket scanned as
+    /// storage of the value.
+    Table,
     /// Storage the bundle declares unreadable: counted as a place the
     /// scan stopped short, never scanned as the enum it is shaped as.
     Unavailable,
@@ -1476,6 +1548,7 @@ fn scan_plan(value: Value<'_>, facts: &dyn Recognize) -> ScanPlan {
         Recognized::Fanout => return ScanPlan::Fanout,
         Recognized::Future => return ScanPlan::Future,
         Recognized::Adapter => return ScanPlan::Adapter,
+        Recognized::Table => return ScanPlan::Table,
         Recognized::Unavailable => return ScanPlan::Unavailable,
         Recognized::Other => {}
     }
@@ -1547,7 +1620,12 @@ pub(crate) fn scan_value<'b>(
     };
     if matches!(
         plan,
-        ScanPlan::Set | ScanPlan::JoinSet | ScanPlan::Fanout | ScanPlan::Future | ScanPlan::Adapter
+        ScanPlan::Set
+            | ScanPlan::JoinSet
+            | ScanPlan::Fanout
+            | ScanPlan::Future
+            | ScanPlan::Adapter
+            | ScanPlan::Table
     ) {
         if path.descended {
             stats.descend_finds += 1;
@@ -1562,6 +1640,7 @@ pub(crate) fn scan_value<'b>(
         ScanPlan::Fanout => found.push(Find::Fanout(value)),
         ScanPlan::Future => found.push(Find::Future(value)),
         ScanPlan::Adapter => found.push(Find::Adapter(value)),
+        ScanPlan::Table => found.push(Find::Table(value)),
         ScanPlan::Unavailable => capped.unavailable += 1,
         ScanPlan::Descend(members) => {
             let path = Path {
@@ -2062,6 +2141,125 @@ pub(crate) fn walk_fanout_entries<'b, T: Target>(
     Ok(total)
 }
 
+/// What a hash table walk counted: the items the table says it holds,
+/// and the full buckets its control bytes mark. The two agree in any
+/// table not caught halfway through an insert or a removal.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub(crate) struct TableCount {
+    pub(crate) items: u64,
+    pub(crate) full: usize,
+}
+
+/// Walk a hash table's full buckets — a hashbrown map's or set's, or
+/// std's around one — handing each to `visit` in bucket order with its
+/// place among the full ones, by the words the type's table binding
+/// routes to. A table with no items is known from its count alone: its
+/// control pointer names a static group with nothing of the table's
+/// below it. Otherwise the buckets and their control bytes are one
+/// allocation, the buckets first, held to the allocator's word as a
+/// map's entries buffer is; past `max` full buckets the walk stops and
+/// says so.
+pub(crate) fn walk_table_buckets<'b, T: Target>(
+    ctx: &Context<'b, T>,
+    read: &ReadContext<'_>,
+    map: Value<'b>,
+    table: &hansei_bundle::HashTableBinding,
+    max: usize,
+    visit: &mut dyn FnMut(usize, Value<'b>) -> std::result::Result<(), NodeStop>,
+) -> std::result::Result<TableCount, NodeStop> {
+    let word = |path: &hansei_bundle::TypedPath, what: &str| -> Result<u64> {
+        let landed = super::contract::execute_steps(ctx, read, map, &path.steps)?
+            .optional()
+            .filter(|landed| landed.ty.id() == path.target)
+            .ok_or_else(|| {
+                anyhow!(
+                    "the hash table's {what} at {:#x} is not where its binding says",
+                    map.addr
+                )
+            })?;
+        Ok(landed.parse(ctx.proc)?)
+    };
+    let items = word(&table.items, "item count")?;
+    if items == 0 {
+        return Ok(TableCount { items, full: 0 });
+    }
+    let mask = word(&table.bucket_mask, "bucket mask")?;
+    let ctrl = word(&table.ctrl, "control pointer")?;
+    let buckets = mask
+        .checked_add(1)
+        .filter(|buckets| buckets.is_power_of_two())
+        .ok_or_else(|| {
+            anyhow!(
+                "the hash table at {:#x} has a bucket mask {mask:#x}, not a power of two less one",
+                map.addr
+            )
+        })?;
+    if items > buckets {
+        return Err(NodeStop::Failed(anyhow!(
+            "the hash table at {:#x} claims {items} items in {buckets} buckets",
+            map.addr
+        )));
+    }
+    let bucket = ctx.view.ty(table.bucket).ok_or_else(|| {
+        anyhow!(
+            "the tokio info records no bucket type {} for the hash table",
+            table.bucket.0
+        )
+    })?;
+    // A zero-sized bucket has no storage for anything to be found in.
+    let stride = bucket.size();
+    if stride == 0 {
+        return Ok(TableCount { items, full: 0 });
+    }
+    let base = buckets
+        .checked_mul(stride)
+        .and_then(|span| ctrl.checked_sub(span))
+        .ok_or_else(|| {
+            anyhow!(
+                "the hash table at {:#x} places its buckets below address zero",
+                map.addr
+            )
+        })?;
+    for addr in [base, ctrl] {
+        if !ctx.mappings.contains_addr(addr) {
+            return Err(NodeStop::Unmapped {
+                what: "hash table",
+                addr,
+            });
+        }
+    }
+    if let Some(refusal) = read.refusal(base, ctrl - base + buckets) {
+        return Err(NodeStop::Refused {
+            what: "hash table",
+            addr: base,
+            refusal,
+        });
+    }
+    let control = ctx
+        .proc
+        .read_bytes(ctrl, buckets)
+        .with_context(|| format!("failed to read the hash table's control bytes at {ctrl:#x}"))?;
+    let mut full = 0;
+    for (index, byte) in control.iter().enumerate() {
+        if byte & 0x80 != 0 {
+            continue;
+        }
+        if full == max {
+            return Err(NodeStop::Capped {
+                unit: "buckets",
+                max,
+            });
+        }
+        // Bucket `i` ends `i` buckets below the control bytes.
+        let addr = ctrl - (index as u64 + 1) * stride;
+        let value = Value::read(ctx.proc, bucket, addr)
+            .map_err(|e| anyhow!(e).context(format!("failed to read the bucket at {addr:#x}")))?;
+        visit(full, value)?;
+        full += 1;
+    }
+    Ok(TableCount { items, full })
+}
+
 /// Walk a `JoinSet`'s two entry lists, handing each entry to `visit`
 /// as it is reached and leaving the set's own count in `length`.
 ///
@@ -2322,6 +2520,7 @@ mod tests {
                 Find::Fanout(_) => "fan-out",
                 Find::Future(_) => "future",
                 Find::Adapter(_) => "adapter",
+                Find::Table(_) => "table",
             }
         }
 
@@ -2331,7 +2530,8 @@ mod tests {
                 | Find::JoinSet(v)
                 | Find::Fanout(v)
                 | Find::Future(v)
-                | Find::Adapter(v) => v,
+                | Find::Adapter(v)
+                | Find::Table(v) => v,
             }
         }
     }
@@ -3330,16 +3530,25 @@ mod tests {
     #[test]
     fn test_the_nesting_bound_keeps_the_find_it_stops_at() {
         // With no hops allowed, a task's own frames are all that is
-        // scanned: the five futures the driver holds and the set it
-        // drives, whose children are walked (a set's own child list is
-        // not a hop) but never scanned.
+        // scanned: the seven futures the driver holds — two of them in
+        // its map's buckets, which are the frame's storage and no hop —
+        // and the set it drives, whose children are walked (a set's own
+        // child list is not a hop) but never scanned.
         let census = unordered_census(nesting(0));
         assert_eq!(census.sets.len(), 1, "{:#?}", census.sets);
         assert_eq!(census.sets[0].children.len(), 3, "{:#?}", census.sets[0]);
         let own: Vec<&str> = census.held.iter().map(|h| h.local.as_str()).collect();
         assert_eq!(
             own,
-            ["held", "boxed", "pair", "maybe", "nested_hold"],
+            [
+                "held",
+                "boxed",
+                "pair",
+                "maybe",
+                "nested_hold",
+                "keyed[0]",
+                "keyed[1]"
+            ],
             "{:#?}",
             census.held
         );
@@ -3349,18 +3558,18 @@ mod tests {
             census.held
         );
 
-        // Five held futures and three resident set children: eight
+        // Seven held futures and three resident set children: ten
         // chains the census reached and declined to scan.
         assert_eq!(
             census.capped,
             Capped {
                 deep: 0,
-                distant: 8,
+                distant: 10,
                 unavailable: 0,
             }
         );
         assert!(census.capped.any());
-        assert_eq!(census.capped.total(), 8);
+        assert_eq!(census.capped.total(), 10);
     }
 
     /// The bound counts where the walk stopped, not what it found: one
@@ -4655,5 +4864,265 @@ mod fanout_tests {
         let (whole, n) = walk(&FakeHeap::new().live(base..base + 3 * stride));
         assert!(matches!(whole, Ok(3)), "{whole:?}");
         assert_eq!(n, 3);
+    }
+}
+
+#[cfg(test)]
+mod table_tests {
+    use super::*;
+    use crate::testkit::heap::FakeHeap;
+    use crate::testkit::{self, load_any};
+    use crate::tokio::bundle::{FutureInfo, Task};
+    use crate::tokio::contract;
+
+    use proc::snapshot::Snapshot;
+
+    /// `unordered`'s driver task, and the map it keeps two futures in.
+    fn keyed<'b>(ctx: &Context<'b, Snapshot>, list: &'b TaskList) -> (&'b Task, Value<'b>) {
+        let task: &Task = list
+            .tasks
+            .iter()
+            .find(
+                |t| matches!(&t.future, FutureInfo::Known(k) if k.display_name.contains("driver")),
+            )
+            .expect("the fixture lists the driver");
+        (task, testkit::frame_local(ctx, task, "driver", "keyed"))
+    }
+
+    /// A word of the table, read by its binding's route.
+    fn word(ctx: &Context<'_, Snapshot>, map: Value<'_>, path: &hansei_bundle::TypedPath) -> u64 {
+        contract::execute_steps(ctx, &ReadContext::none(), map, &path.steps)
+            .unwrap()
+            .optional()
+            .unwrap()
+            .parse(ctx.proc)
+            .unwrap()
+    }
+
+    /// The table's two full buckets are the driver's two futures, each
+    /// a `(u32, F)` whose value is the leaf future, handed over in
+    /// bucket order; exactly two is under the cap and past it the walk
+    /// stops and says so. The map binds because its bucket could hold
+    /// a find; one of plain data would not be walked at all.
+    #[test]
+    fn test_the_table_walk_hands_over_each_full_bucket() {
+        let (bundle, snapshot) = load_any("unordered");
+        let ctx = testkit::context(&bundle, &snapshot);
+        let list = testkit::tasks(&ctx, &snapshot);
+        let (_, map) = keyed(&ctx, &list);
+        let table = ctx
+            .scanned_table(map.ty.id())
+            .expect("the map binds its table");
+        let read = ReadContext::none();
+        let mut seen: Vec<(usize, u64, String)> = Vec::new();
+        let count = walk_table_buckets(&ctx, &read, map, table, MAX_CHILDREN, &mut |i, b| {
+            seen.push((i, b.addr, b.ty.name().to_string()));
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(count, TableCount { items: 2, full: 2 });
+        assert_eq!(seen.iter().map(|(i, ..)| *i).collect::<Vec<_>>(), [0, 1]);
+        assert!(
+            seen.iter()
+                .all(|(.., name)| name == "(u32, unordered::leaf::{async_fn_env#0})"),
+            "{seen:?}"
+        );
+        // In bucket order, which puts each lower than the last: bucket
+        // `i` ends `i` buckets below the control bytes.
+        assert!(seen[0].1 > seen[1].1, "{seen:?}");
+        let mut n = 0;
+        let stop = walk_table_buckets(&ctx, &read, map, table, 1, &mut |_, _| {
+            n += 1;
+            Ok(())
+        })
+        .unwrap_err();
+        assert!(
+            matches!(
+                stop,
+                NodeStop::Capped {
+                    unit: "buckets",
+                    max: 1
+                }
+            ),
+            "{stop}"
+        );
+        assert_eq!(n, 1);
+    }
+
+    /// The buckets and their control bytes are one allocation, held to
+    /// the allocator's word before any bucket is read: freed, the walk
+    /// refuses it; a block ending short of the last control byte refuses
+    /// it as outside its allocation; one holding the buckets and every
+    /// control byte admits it.
+    #[test]
+    fn test_the_table_walk_holds_the_table_to_the_allocator() {
+        let (bundle, snapshot) = load_any("unordered");
+        let ctx = testkit::context(&bundle, &snapshot);
+        let list = testkit::tasks(&ctx, &snapshot);
+        let (_, map) = keyed(&ctx, &list);
+        let table = ctx
+            .scanned_table(map.ty.id())
+            .expect("the map binds its table");
+        let ctrl = word(&ctx, map, &table.ctrl);
+        let buckets = word(&ctx, map, &table.bucket_mask) + 1;
+        let stride = ctx.view.ty(table.bucket).unwrap().size();
+        let base = ctrl - buckets * stride;
+        let walk = |heap: &FakeHeap| {
+            let mut n = 0;
+            let outcome = walk_table_buckets(
+                &ctx,
+                &ReadContext::with_heap(heap),
+                map,
+                table,
+                MAX_CHILDREN,
+                &mut |_, _| {
+                    n += 1;
+                    Ok(())
+                },
+            );
+            (outcome, n)
+        };
+        let (freed, n) = walk(&FakeHeap::new().freed(base..ctrl + buckets));
+        assert!(
+            matches!(
+                freed,
+                Err(NodeStop::Refused {
+                    refusal: Refusal::Freed { .. },
+                    ..
+                })
+            ),
+            "{freed:?}"
+        );
+        assert_eq!(n, 0);
+        let (short, n) = walk(&FakeHeap::new().live(base..ctrl + buckets - 1));
+        assert!(
+            matches!(
+                short,
+                Err(NodeStop::Refused {
+                    refusal: Refusal::OutsideAllocation { .. },
+                    ..
+                })
+            ),
+            "{short:?}"
+        );
+        assert_eq!(n, 0);
+        let (whole, n) = walk(&FakeHeap::new().live(base..ctrl + buckets));
+        assert!(
+            matches!(whole, Ok(TableCount { items: 2, full: 2 })),
+            "{whole:?}"
+        );
+        assert_eq!(n, 2);
+    }
+
+    /// The census finds what the map holds as the driver's own, at the
+    /// map's local and the entry's place among the full buckets.
+    #[test]
+    fn test_the_census_finds_the_futures_a_map_holds() {
+        let (bundle, snapshot) = load_any("unordered");
+        let ctx = testkit::context(&bundle, &snapshot);
+        let list = testkit::tasks(&ctx, &snapshot);
+        let census = census(&ctx, &list);
+        let mut locals: Vec<&str> = census
+            .held
+            .iter()
+            .map(|h| h.local.as_str())
+            .filter(|local| local.starts_with("keyed"))
+            .collect();
+        locals.sort();
+        assert_eq!(locals, ["keyed[0]", "keyed[1]"], "{:?}", census.errors);
+        assert!(census.errors.is_empty(), "{:?}", census.errors);
+    }
+
+    /// A map whose item count its full buckets do not bear out — a core
+    /// taken halfway through an insert — is reported, and what its full
+    /// buckets hold is still found: the control bytes are what say
+    /// where the entries are, and the count is only checked against
+    /// them.
+    #[test]
+    fn test_a_table_whose_count_disagrees_is_reported() {
+        let (bundle, snapshot) = load_any("unordered");
+        let ctx = testkit::context(&bundle, &snapshot);
+        let list = testkit::tasks(&ctx, &snapshot);
+        let (_, map) = keyed(&ctx, &list);
+        let table = ctx
+            .scanned_table(map.ty.id())
+            .expect("the map binds its table");
+        let items = contract::execute_steps(&ctx, &ReadContext::none(), map, &table.items.steps)
+            .unwrap()
+            .optional()
+            .unwrap();
+        let cut = testkit::corrupt::Corrupt::new(&snapshot).patch(items.addr, 3);
+        let ctx = Context::new(&cut, hansei_bundle::BundleView::new(&bundle)).unwrap();
+        let census = census(&ctx, &list);
+        let reports: Vec<String> = census.errors.iter().map(|e| format!("{e:#}")).collect();
+        assert!(
+            reports
+                .iter()
+                .any(|r| r.contains(&format!("{:#x} counts 3 items, and 2", map.addr))),
+            "{reports:#?}"
+        );
+        let keyed = census
+            .held
+            .iter()
+            .filter(|h| h.local.starts_with("keyed"))
+            .count();
+        assert_eq!(keyed, 2, "{:#?}", census.held);
+    }
+
+    /// A table holds at most one item per bucket: a count past the
+    /// bucket count is no table's, and the walk refuses it before it
+    /// reads a bucket; a count of every bucket is a full table, walked.
+    #[test]
+    fn test_the_table_walk_refuses_more_items_than_buckets() {
+        let (bundle, snapshot) = load_any("unordered");
+        let ctx = testkit::context(&bundle, &snapshot);
+        let list = testkit::tasks(&ctx, &snapshot);
+        let (_, map) = keyed(&ctx, &list);
+        let table = ctx
+            .scanned_table(map.ty.id())
+            .expect("the map binds its table");
+        let buckets = word(&ctx, map, &table.bucket_mask) + 1;
+        let items = contract::execute_steps(&ctx, &ReadContext::none(), map, &table.items.steps)
+            .unwrap()
+            .optional()
+            .unwrap();
+        let walk = |count: u64| {
+            let cut = testkit::corrupt::Corrupt::new(&snapshot).patch(items.addr, count);
+            let ctx = Context::new(&cut, hansei_bundle::BundleView::new(&bundle)).unwrap();
+            let map = Value::read(ctx.proc, map.ty, map.addr).unwrap();
+            let mut n = 0;
+            let outcome = walk_table_buckets(
+                &ctx,
+                &ReadContext::none(),
+                map,
+                table,
+                MAX_CHILDREN,
+                &mut |_, _| {
+                    n += 1;
+                    Ok(())
+                },
+            )
+            .map_err(|stop| stop.to_string());
+            (outcome, n)
+        };
+        let (over, n) = walk(buckets + 1);
+        let over = over.unwrap_err();
+        assert!(
+            over.contains(&format!(
+                "claims {} items in {buckets} buckets",
+                buckets + 1
+            )),
+            "{over}"
+        );
+        assert_eq!(n, 0);
+        let (full, n) = walk(buckets);
+        assert_eq!(
+            full,
+            Ok(TableCount {
+                items: buckets,
+                full: 2
+            })
+        );
+        assert_eq!(n, 2);
     }
 }
