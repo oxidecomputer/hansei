@@ -93,11 +93,11 @@ fn write_member_value<'a, T: Target>(
 /// aggregate as ` { field: v, … }`, and an empty/all-ZST aggregate as nothing
 /// (a unit). Zero-sized members are never displayed. A tuple's fields stand
 /// in slots of `container` — the tuple struct, or the enum whose variant
-/// this is — whose type name is what may already name theirs.
+/// this is — whose type is what may already name theirs.
 fn write_aggregate_body<'a, T: Target>(
     f: &mut fmt::Formatter<'_>,
     ty: &BundleType<'a>,
-    container: &'a str,
+    container: BundleType<'a>,
     bytes: &'a [u8],
     addr: u64,
     ctx: RenderCtx<'_, 'a, T>,
@@ -151,15 +151,7 @@ pub(crate) fn write_struct_fields<'a, T: Target>(
     if !name.is_empty() {
         f.write_str(name)?;
     }
-    write_aggregate_body(
-        f,
-        &info.ty,
-        info.ty.name(),
-        info.bytes,
-        info.addr,
-        ctx,
-        pretty,
-    )
+    write_aggregate_body(f, &info.ty, info.ty, info.bytes, info.addr, ctx, pretty)
 }
 
 pub(crate) fn write_rust_enum<'a, T: Target>(
@@ -186,10 +178,10 @@ pub(crate) fn write_rust_enum<'a, T: Target>(
     }
     .peel();
 
-    write_variant_name(f, name, variant_name, ctx.slot)?;
+    write_variant_name(f, &info.ty, variant_name, ctx.slot)?;
     // What the payload holds is named by the enum's own type:
     // `Option<Waker>` says what its `Some` carries.
-    let container = info.ty.name();
+    let container = info.ty;
 
     // Zero-sized variant (unit variant)
     if var_ty.size() == 0 {

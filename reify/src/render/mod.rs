@@ -19,7 +19,7 @@ pub(crate) mod node;
 pub(crate) mod par;
 pub(crate) mod scalar;
 
-use crate::debug_type::{DisplayNode, TypeClass};
+use crate::debug_type::{DisplayNode, TypeClass, TypeKind};
 use crate::heap::{Gate, Heap, Liveness};
 use crate::value::Value;
 use proc::Target;
@@ -296,14 +296,14 @@ pub(crate) struct RenderCtx<'buf, 'a, T> {
 /// type on the line, so an enum there writes it: `Type = Variant`. A
 /// positional one — a variant's payload, a tuple's field, a map's key
 /// or value, a sequence's element — sits inside a container, and is
-/// written bare when the container's printed type name already spells
+/// written bare when the container's printed type name already writes
 /// the enum's out (`Option<Waker>` names what its `Some` holds), and
 /// qualified by the enum's last path segment otherwise.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy)]
 pub(crate) enum Slot<'a> {
     Labelled,
-    /// Inside a container whose type name is this, and printed.
-    Named(&'a str),
+    /// Inside a container of this type, whose name is printed.
+    Named(BundleType<'a>),
     /// Inside a container that prints no type name of its own: a
     /// sequence's `[…]`.
     Unnamed,
@@ -404,9 +404,9 @@ impl<'buf, 'a, T> RenderCtx<'buf, 'a, T> {
         }
     }
 
-    /// The same context for a value in a slot of `container`, the
-    /// printed type name that may already name the value's.
-    fn positional(self, container: &'a str) -> Self {
+    /// The same context for a value in a slot of `container`, whose
+    /// printed name may already name the value's type.
+    fn positional(self, container: BundleType<'a>) -> Self {
         Self {
             slot: Slot::Named(container),
             ..self
@@ -628,7 +628,7 @@ pub(crate) fn write_display_value<'a, T: Target>(
         }
 
         TypeClass::CEnum => match ty.enumerator_name(bytes) {
-            Some(name) => write_variant_name(f, ty.name(), name, ctx.slot),
+            Some(name) => write_variant_name(f, &ty, name, ctx.slot),
             // A value no enumerator claims: the bytes are the only
             // honest thing to say about it.
             None => write_hex_bytes(f, bytes),
@@ -870,23 +870,24 @@ pub(crate) fn write_record_close(
 
 /// An enum value's variant, named as its [`Slot`] calls for: `Type =
 /// Variant` after a label; bare `Variant` in a slot whose container's
-/// printed type name contains the enum's; otherwise
+/// type writes the enum's out (see [`names_type`]); otherwise
 /// `Last<args>::Variant`, the enum's path cut to its last segment with
 /// its generic arguments kept whole. A nameless enum writes the
 /// variant alone.
 pub(crate) fn write_variant_name(
     f: &mut fmt::Formatter<'_>,
-    enum_name: &str,
+    enum_ty: &BundleType<'_>,
     variant: &str,
     slot: Slot<'_>,
 ) -> fmt::Result {
+    let enum_name = enum_ty.name();
     if !enum_name.is_empty() {
         match slot {
             Slot::Labelled => {
                 f.write_str(enum_name)?;
                 f.write_str(" = ")?;
             }
-            Slot::Named(container) if container.contains(enum_name) => {}
+            Slot::Named(container) if names_type(&container, enum_ty, NAMES_DEPTH) => {}
             Slot::Named(_) | Slot::Unnamed => {
                 f.write_str(last_segment(enum_name))?;
                 f.write_str("::")?;
@@ -894,6 +895,37 @@ pub(crate) fn write_variant_name(
         }
     }
     f.write_str(variant)
+}
+
+/// How many layers of the types a name is built from [`names_type`]
+/// looks through: deeper than any name a person reads to the end.
+const NAMES_DEPTH: u32 = 16;
+
+/// Whether `container`'s name writes `target` out, by type rather than
+/// by text: `target` is one of the types the name is built from, or is
+/// among theirs. A name is built from its generic arguments (as DWARF
+/// binds them — `Option<Waker>` from `Waker`), an anonymous tuple's from
+/// its members (`(Msg, u8)`), a pointer's from its target and an array's
+/// from its element. A tuple *struct*'s name writes none of its fields,
+/// so `Holder(Msg)` does not name `Msg`. The anonymous tuple is told
+/// apart by the name rustc gives it, which is the only mark DWARF
+/// leaves: one opening with `(`.
+fn names_type(container: &BundleType<'_>, target: &BundleType<'_>, depth: u32) -> bool {
+    let Some(depth) = depth.checked_sub(1) else {
+        return false;
+    };
+    let hit = |t: BundleType<'_>| t.id() == target.id() || names_type(&t, target, depth);
+    if container.generic_args().any(hit) {
+        return true;
+    }
+    match container.kind() {
+        TypeKind::Pointer => container.pointer_target().is_some_and(hit),
+        TypeKind::Array => container.array_info().is_some_and(|(elem, _)| hit(elem)),
+        TypeKind::Struct if container.name().starts_with('(') => {
+            container.members().any(|m| hit(m.ty()))
+        }
+        _ => false,
+    }
 }
 
 /// `name` from its last path segment on: `core::result::Result<u32,
@@ -1024,6 +1056,7 @@ pub(crate) fn write_hex_bytes(f: &mut fmt::Formatter<'_>, bytes: &[u8]) -> fmt::
 
 #[cfg(test)]
 mod tests {
+    use super::{NAMES_DEPTH, names_type};
     use crate::Value;
     use crate::testhelper::*;
 
@@ -1247,8 +1280,48 @@ mod tests {
         assert_eq!(show(&[0x7f]), "[0x7f]");
     }
 
+    /// A container names a type by what its name is built from, never by
+    /// the text: its generic arguments, theirs in turn, and an anonymous
+    /// tuple's members — not a tuple struct's fields, and not a name that
+    /// merely holds the other as a substring.
+    #[test]
+    fn test_a_container_names_the_types_it_is_built_from() {
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+        let ty = |id| v.ty(id).unwrap();
+        let names = |container, target| names_type(&ty(container), &ty(target), NAMES_DEPTH);
+        assert!(names(TAG_BOXED, TAG));
+        assert!(names(TAG_NESTED, TAG_BOXED));
+        assert!(names(TAG_NESTED, TAG));
+        assert!(names(MSG_TUPLE, MSG));
+        assert!(!names(TAG_HOLDER, TAG));
+        assert!(!names(MSG_PAIR, MSG));
+        assert!(!names(TAG, TAG));
+        // The walk gives up past its depth rather than follow forever.
+        assert!(!names_type(&ty(TAG_NESTED), &ty(TAG), 1));
+        assert!(names_type(&ty(TAG_NESTED), &ty(TAG), 2));
+
+        // A pointer's name is built from its target and an array's from
+        // its element: `Holder<*const Tag>` and `Holder<[Tag; 2]>` both
+        // name the tag.
+        let mut b = test_bundle();
+        let TypeDef::Pointer { target, .. } = &mut b.types.types[PTR.0 as usize] else {
+            panic!("the fixture's PTR is not a pointer");
+        };
+        *target = TAG;
+        for arg in [PTR, TAG_ARR] {
+            b.types.generic_args.insert(TAG_HOLDER, vec![arg]);
+            let v = BundleView::new(&b);
+            let ty = |id| v.ty(id).unwrap();
+            assert!(
+                names_type(&ty(TAG_HOLDER), &ty(TAG), NAMES_DEPTH),
+                "through {arg:?}"
+            );
+        }
+    }
+
     /// An enum names its type once. Labelled, it writes `Type = Variant`;
-    /// in a slot whose container prints a name holding the enum's, the
+    /// in a slot whose container's type writes the enum's out, the
     /// variant alone; in any other slot — a `[…]` prints no type, a
     /// container's name may not mention it — the variant qualified by the
     /// enum's last path segment, generic arguments whole.
@@ -1271,6 +1344,16 @@ mod tests {
             show(TAG_BOXED, &[0, 1]),
             "demo::Boxed<demo::Tag<demo::Arg>>(Off, On)"
         );
+        assert_eq!(
+            show(TAG_NESTED, &[0, 1]),
+            "demo::Nested<demo::Boxed<demo::Tag<demo::Arg>>>(Off, On)"
+        );
+        // `MsgPair` holds `Msg` as a substring, not as a type it names;
+        // the anonymous tuple is built from it.
+        let mut pair = msg_wrap(1, 42);
+        pair.extend_from_slice(&[7, 0, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(show(MSG_PAIR, &pair), "MsgPair(Msg::B(42), 7)");
+        assert_eq!(show(MSG_TUPLE, &pair), "(Msg, u8)(B(42), 7)");
 
         // A payload stands in a slot of its enum, whose name `Opt` does
         // not mention what `Some` holds here.

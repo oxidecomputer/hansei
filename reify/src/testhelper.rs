@@ -659,6 +659,11 @@ fixture_ids! {
     // `[…]` prints no type), a tuple struct's field under a name that does
     // not mention it, and one under a name that does.
     TAG, TAG_ARR, TAG_HOLDER, TAG_BOXED,
+    // `MsgPair(Msg, u8)`: a container whose name holds the enum's as a
+    // substring without naming it; the anonymous tuple `(Msg, u8)`, whose
+    // name is built from its members; and `demo::Nested<…>`, which names
+    // the tag only through its argument `demo::Boxed<demo::Tag<…>>`.
+    MSG_PAIR, MSG_TUPLE, TAG_NESTED,
 }
 
 /// A hand-built mini-bundle exercising every TypeDef kind reify touches:
@@ -740,6 +745,11 @@ pub fn test_bundle() -> Bundle {
         s("On"),
         s("demo::Holder"),
         s("demo::Boxed<demo::Tag<demo::Arg>>"),
+    );
+    let (msg_pairn, msg_tuplen, tag_nestedn) = (
+        s("MsgPair"),
+        s("(Msg, u8)"),
+        s("demo::Nested<demo::Boxed<demo::Tag<demo::Arg>>>"),
     );
     let (vecn, ptrn, vec_lenn, capacityn) =
         (s("alloc::vec::Vec<u32>"), s("ptr"), s("len"), s("capacity"));
@@ -2146,6 +2156,30 @@ pub fn test_bundle() -> Bundle {
             members: vec![m(tuple0n, TAG, 0), m(tuple1n, TAG, 1)],
         },
     );
+    types.add(
+        MSG_PAIR,
+        TypeDef::Struct {
+            name: msg_pairn,
+            size: 24,
+            members: vec![m(tuple0n, MSG, 0), m(tuple1n, U8, 16)],
+        },
+    );
+    types.add(
+        MSG_TUPLE,
+        TypeDef::Struct {
+            name: msg_tuplen,
+            size: 24,
+            members: vec![m(tuple0n, MSG, 0), m(tuple1n, U8, 16)],
+        },
+    );
+    types.add(
+        TAG_NESTED,
+        TypeDef::Struct {
+            name: tag_nestedn,
+            size: 2,
+            members: vec![m(tuple0n, TAG, 0), m(tuple1n, TAG, 1)],
+        },
+    );
 
     let types = types.finish();
 
@@ -2699,6 +2733,11 @@ pub fn test_bundle() -> Bundle {
                 ),
             ]),
             name_index: vec![(pointn, POINT), (self_refn, SELF_REF)],
+            // What each generic fixture's name is built from.
+            generic_args: std::collections::BTreeMap::from([
+                (TAG_BOXED, vec![TAG]),
+                (TAG_NESTED, vec![TAG_BOXED]),
+            ]),
             ..Default::default()
         },
         tasks: TaskTable::default(),

@@ -184,7 +184,7 @@ pub(crate) fn eval_map<'a, T: Target>(
     }
 
     // Keys and values stand in slots of the map, whose type names both.
-    let entry_ctx = ctx.deeper().positional(ty.name());
+    let entry_ctx = ctx.deeper().positional(*ty);
 
     // A big map formats its entries on worker threads: the storage walk
     // runs once collecting entry addresses, then chunks of entries
