@@ -711,8 +711,8 @@ pub enum Command {
     /// does on a large target. The walk is kept, so a later `census`,
     /// `futures`, `graph` or `whatis` costs nothing.
     /// List every HTTP connection the target holds, one row each:
-    /// the address a filter names it by, the task driving it, its
-    /// role and version, the phase the connection's own words put it
+    /// the task driving it, its role, the phase the connection's own
+    /// words put it
     /// in (the verdict its task block carries) — with how long an idle
     /// server has waited for the next request, `idle (19ms)`, where its
     /// header-read timer and the core's stop time say — the method in
@@ -732,11 +732,11 @@ pub enum Command {
     ///
     /// Filters are the selection: repeatable `--with FIELD ARG` /
     /// `--without FIELD ARG` clauses AND together, and `--group FIELD`
-    /// tallies the survivors. The string fields — role, version,
-    /// phase, method, peer, server — are case-insensitive regexes over
-    /// the spelled value; task, rt and addr are exact; buffered
-    /// compares the bytes read and not yet parsed, spelled '>N', '<N'
-    /// or '=N' (quote them from a shell).
+    /// tallies the survivors. The string fields — role, phase, method,
+    /// peer, server, request — are case-insensitive regexes over the
+    /// printed value; task and rt are exact; buffered compares the
+    /// bytes read and not yet parsed, written '>N', '<N' or '=N'
+    /// (quote them from a shell).
     Connections {
         /// Show at most this many connections — or, under --group,
         /// this many buckets; a footer counts what the cut left out.
@@ -746,9 +746,9 @@ pub enum Command {
         limit: Option<usize>,
 
         /// Keep only the connections whose FIELD matches ARG; repeat
-        /// for more clauses, which AND. Fields: role, version, phase,
-        /// method, peer, server (case-insensitive regexes); task, rt,
-        /// addr (exact); buffered ('>N', '<N', '=N'). ARG may list
+        /// for more clauses, which AND. Fields: role, phase, method,
+        /// peer, server, request (case-insensitive regexes); task, rt
+        /// (exact); buffered ('>N', '<N', '=N'). ARG may list
         /// alternatives, `idle,closing`, of which any matches; a
         /// literal comma is `\,`.
         #[arg(long, short = 'w', num_args = 2, value_names = ["FIELD", "ARG"])]

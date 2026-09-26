@@ -3969,8 +3969,7 @@ fn test_wrong_binary_refused_by_build_id() {
 /// process stopped, can put a length to. Grouping by phase files the
 /// five under four buckets, and a filter on the role keeps the servers.
 ///
-/// The rows are compared without their address and task cells and in
-/// sorted order. Every connection is parked by the time the core is
+/// The rows are compared without their task cell and in sorted order. Every connection is parked by the time the core is
 /// taken — that is what `READY` waits for — but the ids tokio hands
 /// the parked request's tasks are not the fixture's to order: its
 /// connection task is spawned by hyper-util's client inside
@@ -3995,10 +3994,9 @@ fn test_http_conns_connections_acceptance() {
         // The idle server's deadline — relative where the core records
         // when the process stopped, else on the monotonic clock — and
         // its wait, which only the former can give.
-        let deadline = regex::Regex::new(
-            r"deadline \+\d+\.\d{3}s|deadline \d+\.\d{3}s on the target's monotonic clock",
-        )
-        .unwrap();
+        let deadline =
+            regex::Regex::new(r"\+\d+\.\d{3}s|\d+\.\d{3}s on the target's monotonic clock")
+                .unwrap();
         let waited = regex::Regex::new(r"idle \((\d+ms|\d+\.\d{3}s)\)").unwrap();
         assert_eq!(
             waited.find_iter(&out).count(),
@@ -4010,7 +4008,7 @@ fn test_http_conns_connections_acceptance() {
             .skip(1)
             .take(7)
             .map(|line| {
-                let cells: Vec<&str> = line.split_whitespace().skip(2).collect();
+                let cells: Vec<&str> = line.split_whitespace().skip(1).collect();
                 let row = cells.join(" ");
                 let row = port.replace_all(&row, "127.0.0.1:PORT");
                 let row = deadline.replace_all(&row, "DEADLINE");
@@ -4021,13 +4019,13 @@ fn test_http_conns_connections_acceptance() {
         assert_eq!(
             rows,
             [
-                "client http1 awaiting response GET — 0/8192 — — GET http://127.0.0.1:PORT/park",
-                "client http1 awaiting response GET — 0/8192 — — —",
-                "client http1 idle — — 0/8192 — — —",
-                "server http1 handling request GET — 0/16326 — — GET /park",
-                "server http1 handling request GET — 0/16339 — — GET /park",
-                "server http1 idle — — 0/16302 DEADLINE — —",
-                "server — negotiating — — — — — —",
+                "client awaiting response — 0/8192 — — GET http://127.0.0.1:PORT/park",
+                "client awaiting response — 0/8192 — — GET —",
+                "client idle — 0/8192 — — — —",
+                "server handling request — 0/16326 — — GET /park",
+                "server handling request — 0/16339 — — GET /park",
+                "server idle DEADLINE 0/16302 — — — —",
+                "server negotiating — — — — — —",
             ],
             "{out}"
         );

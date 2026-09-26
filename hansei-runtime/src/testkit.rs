@@ -263,17 +263,20 @@ pub const PROGRAMS: &[&str] = &[
 /// Mask the run-varying values analysis output carries — heap
 /// addresses and timer deadlines (relative to the stop instant, so
 /// they shift with how long the capture took) — so goldens over the
-/// pairs compare exactly.
+/// pairs compare exactly. A deadline is masked with the word before it
+/// and without: the `connections` column prints it bare, `+29.981s`,
+/// under a header that already says what it is.
 pub fn mask(s: &str) -> String {
     let addrs = regex::Regex::new(r"0x[0-9a-f]+").unwrap();
     let deadlines = regex::Regex::new(r"deadline \+?\d+\.\d{3}s").unwrap();
+    let relative = regex::Regex::new(r"\+\d+\.\d{3}s").unwrap();
+    let monotonic = regex::Regex::new(r"\d+\.\d{3}s on the target's monotonic clock").unwrap();
     let overdue = regex::Regex::new(r"overdue by \d+\.\d{3}s").unwrap();
-    overdue
-        .replace_all(
-            &deadlines.replace_all(&addrs.replace_all(s, "0xADDR"), "deadline TS"),
-            "overdue by TS",
-        )
-        .into_owned()
+    let s = addrs.replace_all(s, "0xADDR");
+    let s = deadlines.replace_all(&s, "deadline TS");
+    let s = relative.replace_all(&s, "+TS");
+    let s = monotonic.replace_all(&s, "TS on the target's monotonic clock");
+    overdue.replace_all(&s, "overdue by TS").into_owned()
 }
 
 /// Load a program's pair from whichever set, for a test that wants

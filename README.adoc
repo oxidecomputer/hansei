@@ -455,7 +455,7 @@ hansei_example::Config {
 `census`, `graph`, and `futures` may be interesting to view as well.
 
 // WILLTODO: Add documentation for the `connections` listing (one row per
-// HTTP connection: role, version, phase, method, peer, read buffer,
+// HTTP connection: task, role, phase, method, peer, read buffer,
 // header-read deadline, running handler, request), and for the
 // `request:` line under a connection's `caller:` in the task block
 // (the method and URL the caller sent, read off reqwest's in-flight

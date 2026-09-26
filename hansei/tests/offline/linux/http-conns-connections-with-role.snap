@@ -2,8 +2,8 @@
 source: hansei/src/offline.rs
 description: "`connections --with role server --with buffered =0` over linux/http-conns"
 ---
-ADDR            TASK  ROLE    VER    PHASE             METHOD  PEER  BUF      DEADLINE                                               SERVER  REQUEST
-0xADDR  4     server  http1  idle              —       —     0/16302  deadline TS on the target's monotonic clock  —       —
-0xADDR  8     server  http1  handling request  GET     —     0/16339  —                                                      —       GET /park
-0xADDR  11    server  http1  handling request  GET     —     0/16326  —                                                      —       GET /park
+TASK  ROLE    PHASE             DEADLINE                                      BUF      PEER  SERVER  METHOD  REQUEST
+4     server  idle              TS on the target's monotonic clock  0/16302  —     —       —       —
+8     server  handling request  —                                             0/16339  —     —       GET     /park
+11    server  handling request  —                                             0/16326  —     —       GET     /park
 [3 connections]

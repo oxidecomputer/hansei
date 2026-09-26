@@ -16,10 +16,8 @@ use crate::{Session, output, print_warnings};
 use anyhow::{Context as _, Result, anyhow};
 use hansei_bundle::HttpRole;
 use hansei_runtime::tokio::assess::{client_phase, http_caller, server_phase};
-use hansei_runtime::tokio::bundle::{
-    HttpCaller, HttpPhase, HttpVersion, TaskList, deadline_text, http_kind_word,
-};
-use hansei_runtime::tokio::observe::ResourceObservation;
+use hansei_runtime::tokio::bundle::{HttpCaller, HttpPhase, TaskList, deadline_text};
+use hansei_runtime::tokio::observe::{HttpRequestObservation, ResourceObservation};
 use hansei_runtime::tokio::wakers::Owner;
 use hansei_runtime::tokio::{RawInstant, attribution, census};
 
@@ -32,7 +30,9 @@ use std::time::Duration;
 #[derive(Clone, Debug)]
 pub(crate) struct ConnRow {
     /// The `Conn`'s address — the wrapper's own for a connection still
-    /// choosing its version — which is what a filter names.
+    /// choosing its version — which tells one connection from another
+    /// and orders a task's rows; nothing else prints it, so no cell
+    /// does.
     pub(crate) addr: u64,
     /// The task driving the connection, as an index and as `tasks`
     /// names it.
@@ -40,7 +40,6 @@ pub(crate) struct ConnRow {
     pub(crate) task: String,
     pub(crate) rt: RowOwner,
     pub(crate) role: HttpRole,
-    pub(crate) version: Option<HttpVersion>,
     /// The phase the verdict decided, or `None` where the words did
     /// not decide one.
     pub(crate) phase: Option<HttpPhase>,
@@ -63,7 +62,37 @@ pub(crate) struct ConnRow {
     /// The request behind the connection: what the server's handler is
     /// running for, or what the client's caller sent, where either was
     /// read.
-    pub(crate) request: Option<String>,
+    pub(crate) request: Option<RequestLine>,
+}
+
+/// A request as the census read it: its method and its target's text,
+/// kept apart so the listing can print the method in its own column
+/// beside the text.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct RequestLine {
+    pub(crate) method: Option<String>,
+    pub(crate) text: Option<String>,
+}
+
+impl From<&HttpRequestObservation> for RequestLine {
+    fn from(request: &HttpRequestObservation) -> Self {
+        RequestLine {
+            method: request.method.clone(),
+            text: request.text.clone(),
+        }
+    }
+}
+
+impl std::fmt::Display for RequestLine {
+    /// The whole line, as a block prints it and as
+    /// [`HttpRequestObservation`] prints itself: `GET /park`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.method.as_deref().unwrap_or("request"))?;
+        if let Some(text) = &self.text {
+            write!(f, " {text}")?;
+        }
+        Ok(())
+    }
 }
 
 impl ConnRow {
@@ -74,10 +103,20 @@ impl ConnRow {
         }
     }
 
-    fn version_word(&self) -> Option<&'static str> {
-        self.version.map(|version| match version {
-            HttpVersion::Http1 => "http1",
-        })
+    /// The `METHOD` cell: the message in flight's, or — where the
+    /// connection's words did not keep one — the request's, so that
+    /// the `REQUEST` cell beside it can leave the method off.
+    fn method_word(&self) -> Option<&str> {
+        match &self.method {
+            Some(method) => Some(method),
+            None => self.request.as_ref()?.method.as_deref(),
+        }
+    }
+
+    /// The `REQUEST` cell: the target's text alone, the URL or the
+    /// path — the method is `METHOD`'s, the cell to its left.
+    fn request_text(&self) -> Option<&str> {
+        self.request.as_ref()?.text.as_deref()
     }
 
     fn phase_word(&self) -> Option<&'static str> {
@@ -99,14 +138,23 @@ impl ConnRow {
         self.read_buf.map(|(len, cap)| format!("{len}/{cap}"))
     }
 
-    /// How the row names itself in a bucket's sample: the kind word
-    /// and the address, as the task block's line opens.
-    fn label(&self) -> String {
-        format!(
-            "{} {:#x}",
-            http_kind_word(self.role, self.version),
-            self.addr
+    /// The `DEADLINE` cell: the timer's deadline as the task block
+    /// prints it, less the word the column's header already says —
+    /// `+29.981s`.
+    fn deadline_cell(&self) -> Option<String> {
+        let deadline = self.deadline.as_deref()?;
+        Some(
+            deadline
+                .strip_prefix("deadline ")
+                .unwrap_or(deadline)
+                .to_string(),
         )
+    }
+
+    /// How the row names itself in a bucket's sample: the role and the
+    /// task driving it — `client task 7`.
+    fn label(&self) -> String {
+        format!("{} task {}", self.role_word(), self.task)
     }
 }
 
@@ -170,7 +218,6 @@ fn row_of<T: proc::Target>(
         task: task_id(list, owner),
         rt: RowOwner::of(&list.tasks[owner], &session.owners),
         role: HttpRole::Server,
-        version: None,
         phase: None,
         method: None,
         peer: None,
@@ -181,7 +228,7 @@ fn row_of<T: proc::Target>(
         request: None,
     };
     let request_of =
-        |caller: &HttpCaller| caller_request(list, requests, session.attribution(), caller);
+        |caller: &HttpCaller| caller_request_line(list, requests, session.attribution(), caller);
     conn_row(
         base,
         observation,
@@ -198,9 +245,9 @@ fn row_of<T: proc::Target>(
 /// finds per connection would square the work.
 #[derive(Default)]
 pub(crate) struct RequestIndex {
-    by_task: HashMap<usize, BTreeSet<String>>,
-    by_child: HashMap<(usize, usize), BTreeSet<String>>,
-    by_held: HashMap<usize, BTreeSet<String>>,
+    by_task: HashMap<usize, BTreeSet<RequestLine>>,
+    by_child: HashMap<(usize, usize), BTreeSet<RequestLine>>,
+    by_held: HashMap<usize, BTreeSet<RequestLine>>,
 }
 
 impl RequestIndex {
@@ -210,27 +257,27 @@ impl RequestIndex {
             let Some(request) = &held.request else {
                 continue;
             };
-            let text = request.to_string();
+            let line = RequestLine::from(request);
             index
                 .by_task
                 .entry(held.owner)
                 .or_default()
-                .insert(text.clone());
-            index.by_held.entry(i).or_default().insert(text.clone());
-            index.record_above(census, held.via, &text);
+                .insert(line.clone());
+            index.by_held.entry(i).or_default().insert(line.clone());
+            index.record_above(census, held.via, &line);
         }
         for (set, futures) in census.sets.iter().enumerate() {
             for (child, found) in futures.children.iter().enumerate() {
                 if let Some(request) = &found.request {
                     let via = census::Via::SetChild { set, child };
-                    index.record_above(census, Some(via), &request.to_string());
+                    index.record_above(census, Some(via), &RequestLine::from(request));
                 }
             }
         }
         index
     }
 
-    /// Record `text` against every holder from `via` up to the task. A
+    /// Record `line` against every holder from `via` up to the task. A
     /// request the census read a few chains down — reqwest's request
     /// behind the box a caller's future keeps, that future inside a set
     /// child — is the child's, and every find's above it, as much as
@@ -239,7 +286,7 @@ impl RequestIndex {
         &mut self,
         census: &census::FutureCensus,
         mut via: Option<census::Via>,
-        text: &str,
+        line: &RequestLine,
     ) {
         // The `via` links form a tree toward the task, so the walk ends
         // within the census's own length; the bound keeps a malformed
@@ -248,17 +295,14 @@ impl RequestIndex {
             match via {
                 None => return,
                 Some(census::Via::Held(parent)) => {
-                    self.by_held
-                        .entry(parent)
-                        .or_default()
-                        .insert(text.to_string());
+                    self.by_held.entry(parent).or_default().insert(line.clone());
                     via = census.held.get(parent).and_then(|held| held.via);
                 }
                 Some(census::Via::SetChild { set, child }) => {
                     self.by_child
                         .entry((set, child))
                         .or_default()
-                        .insert(text.to_string());
+                        .insert(line.clone());
                     via = census.sets.get(set).and_then(|set| set.via);
                 }
             }
@@ -266,7 +310,7 @@ impl RequestIndex {
     }
 
     /// The one request among `requests`; several name none.
-    fn unique(requests: Option<&BTreeSet<String>>) -> Option<String> {
+    fn unique(requests: Option<&BTreeSet<RequestLine>>) -> Option<RequestLine> {
         let requests = requests?;
         match requests.len() {
             1 => requests.iter().next().cloned(),
@@ -279,12 +323,12 @@ impl RequestIndex {
     /// request holds it one chain down, behind the box the client put
     /// it in. A find with several under it names none.
     pub(crate) fn of_held(&self, index: usize) -> Option<String> {
-        Self::unique(self.by_held.get(&index))
+        Self::unique(self.by_held.get(&index)).map(|line| line.to_string())
     }
 
     /// The one request among an owner's finds: a task's held finds, or a
     /// set child's own chain and the finds under it.
-    fn of_owner(&self, owner: Owner) -> Option<String> {
+    fn of_owner(&self, owner: Owner) -> Option<RequestLine> {
         match owner {
             Owner::Task { index, .. } => Self::unique(self.by_task.get(&index)),
             Owner::Child { set, child } => Self::unique(self.by_child.get(&(set, child))),
@@ -303,6 +347,16 @@ pub(crate) fn caller_request(
     slots: &attribution::Attributed,
     caller: &HttpCaller,
 ) -> Option<String> {
+    caller_request_line(list, requests, slots, caller).map(|line| line.to_string())
+}
+
+/// [`caller_request`] with the method and the text kept apart.
+fn caller_request_line(
+    list: &TaskList,
+    requests: &RequestIndex,
+    slots: &attribution::Attributed,
+    caller: &HttpCaller,
+) -> Option<RequestLine> {
     let owner = match caller {
         HttpCaller::Task(task) => Owner::Task {
             header: task.addr.0,
@@ -325,7 +379,7 @@ fn conn_row(
     observation: &ResourceObservation,
     held: Option<RawInstant>,
     stopped: Option<RawInstant>,
-    request_of: &dyn Fn(&HttpCaller) -> Option<String>,
+    request_of: &dyn Fn(&HttpCaller) -> Option<RequestLine>,
 ) -> Option<ConnRow> {
     match observation {
         // A wrapper still reading the first bytes has no version, no
@@ -333,7 +387,6 @@ fn conn_row(
         ResourceObservation::HttpNegotiating(negotiating) => Some(ConnRow {
             addr: negotiating.wrapper.addr,
             role: HttpRole::Server,
-            version: None,
             phase: Some(HttpPhase::Negotiating),
             method: None,
             peer: None,
@@ -358,7 +411,7 @@ fn conn_row(
             let request = match http.role {
                 HttpRole::Server => server
                     .and_then(|server| server.request.as_ref())
-                    .map(ToString::to_string),
+                    .map(RequestLine::from),
                 HttpRole::Client => match phase {
                     Some(HttpPhase::AwaitingResponse | HttpPhase::SendingBody(_)) => http
                         .client
@@ -387,7 +440,6 @@ fn conn_row(
             Some(ConnRow {
                 addr: http.conn,
                 role: http.role,
-                version: Some(HttpVersion::Http1),
                 phase,
                 method: http.method.clone(),
                 peer: server.and_then(|server| server.peer.clone()),
@@ -445,44 +497,38 @@ fn header_read_deadline(
 }
 
 /// One row's table cells, in column order.
-fn row_cells(row: &ConnRow, groups: bool) -> Vec<String> {
+fn row_cells(row: &ConnRow) -> Vec<String> {
     let dash = || "—".to_string();
-    let mut cells = vec![format!("{:#x}", row.addr), row.task.clone()];
-    if groups {
-        cells.push(row.rt.cell());
-    }
-    cells.extend([
+    vec![
+        row.task.clone(),
         row.role_word().to_string(),
-        row.version_word().map_or_else(dash, str::to_string),
         row.phase_cell().unwrap_or_else(dash),
-        row.method.clone().unwrap_or_else(dash),
-        row.peer.clone().unwrap_or_else(dash),
+        row.deadline_cell().unwrap_or_else(dash),
         row.buffer_cell().unwrap_or_else(dash),
-        row.deadline.clone().unwrap_or_else(dash),
+        row.peer.clone().unwrap_or_else(dash),
         row.server.clone().unwrap_or_else(dash),
-        row.request.clone().unwrap_or_else(dash),
-    ]);
-    cells
+        row.method_word().map_or_else(dash, str::to_string),
+        row.request_text().map_or_else(dash, str::to_string),
+    ]
 }
 
 /// Print the listing: one row per connection, the request last since a
-/// URL is the one cell that runs wide, and the count under it.
+/// URL is the one cell that runs wide, its method just before it so the
+/// two read as the request line, and the count under it. The deadline
+/// follows the phase it times, the buffer the deadline. The
+/// runtime is the task's to say, under `tasks`: a target seldom holds
+/// more than one, so the column would repeat one value down the page.
 fn print_table(
     rows: &[&ConnRow],
-    groups: bool,
     limit: Option<usize>,
     fit: Option<usize>,
     theme: output::Theme,
     out: &mut dyn io::Write,
 ) -> Result<()> {
     let shown = limit.unwrap_or(rows.len()).min(rows.len());
-    let mut header = vec!["ADDR", "TASK"];
-    if groups {
-        header.push("RT");
-    }
-    header.extend([
-        "ROLE", "VER", "PHASE", "METHOD", "PEER", "BUF", "DEADLINE", "SERVER", "REQUEST",
-    ]);
+    let header = [
+        "TASK", "ROLE", "PHASE", "DEADLINE", "BUF", "PEER", "SERVER", "METHOD", "REQUEST",
+    ];
     let columns = header.len();
     let mut table = output::Table::new(columns)
         .header(header)
@@ -490,7 +536,7 @@ fn print_table(
         .fit(fit)
         .theme(theme);
     for row in &rows[..shown] {
-        table.row(row_cells(row, groups));
+        table.row(row_cells(row));
     }
     if !table.is_empty() {
         table.write(out)?;
@@ -515,12 +561,8 @@ pub(crate) enum Field {
     Task,
     /// The owner's group index `runtimes` prints — exact.
     Rt,
-    /// The address — exact.
-    Addr,
     /// `client` or `server`.
     Role,
-    /// The version word, `http1`.
-    Version,
     /// The phase as the bucket names it.
     Phase,
     /// The method in flight.
@@ -536,12 +578,10 @@ pub(crate) enum Field {
 }
 
 impl Field {
-    const NAMES: [(&'static str, Field); 11] = [
+    const NAMES: [(&'static str, Field); 9] = [
         ("task", Field::Task),
         ("rt", Field::Rt),
-        ("addr", Field::Addr),
         ("role", Field::Role),
-        ("version", Field::Version),
         ("phase", Field::Phase),
         ("method", Field::Method),
         ("peer", Field::Peer),
@@ -580,7 +620,6 @@ impl Field {
         matches!(
             self,
             Field::Role
-                | Field::Version
                 | Field::Phase
                 | Field::Method
                 | Field::Peer
@@ -595,14 +634,12 @@ impl Field {
         match self {
             Field::Task => Some(row.task.clone()),
             Field::Rt => Some(row.rt.cell()),
-            Field::Addr => Some(format!("{:#x}", row.addr)),
             Field::Role => Some(row.role_word().to_string()),
-            Field::Version => row.version_word().map(str::to_string),
             Field::Phase => row.phase_word().map(str::to_string),
-            Field::Method => row.method.clone(),
+            Field::Method => row.method_word().map(str::to_string),
             Field::Peer => row.peer.clone(),
             Field::Server => row.server.clone(),
-            Field::Request => row.request.clone(),
+            Field::Request => row.request_text().map(str::to_string),
             Field::Buffered => row.read_buf.map(|(len, _)| len.to_string()),
         }
     }
@@ -631,7 +668,7 @@ pub(crate) fn field_values<T: proc::Target>(
 #[derive(Debug)]
 enum Matcher {
     Pattern(crate::pattern::Pattern),
-    /// Exact text: the task id, the owner cell, the address.
+    /// Exact text: the task id, the owner cell.
     Exact(String),
     /// `'>N'` / `'<N'` / `'=N'`: the buffered count.
     Cmp(Cmp),
@@ -667,24 +704,13 @@ fn parse_clauses(with: &[String], without: &[String], handles: &[u64]) -> Result
     Ok(clauses)
 }
 
-/// The matcher one field's argument compiles to: an address is held to
-/// the `0x` form the listing prints, an owner to the group cell
-/// `runtimes` numbers (the `?`/`!` marks, or the words for them).
+/// The matcher one field's argument compiles to: an owner is held to
+/// the group cell `runtimes` numbers (the `?`/`!` marks, or the words
+/// for them).
 fn matcher(field: Field, arg: &str, handles: &[u64]) -> Result<Matcher> {
     Ok(match field {
         Field::Task => Matcher::Exact(arg.to_string()),
         Field::Rt => Matcher::Exact(crate::tasks::resolve_rt(arg, handles)?.cell()),
-        Field::Addr => {
-            let digits = arg
-                .strip_prefix("0x")
-                .or_else(|| arg.strip_prefix("0X"))
-                .ok_or_else(|| {
-                    anyhow!("an addr is the 0x address a connections row prints, got {arg:?}")
-                })?;
-            let addr = u64::from_str_radix(digits, 16)
-                .map_err(|e| anyhow!("invalid address {arg:?}: {e}"))?;
-            Matcher::Exact(format!("{addr:#x}"))
-        }
         Field::Buffered => Matcher::Cmp(Cmp::parse(arg)?),
         _ => Matcher::Pattern(crate::pattern::Pattern::new(arg)?),
     })
@@ -745,16 +771,8 @@ pub(crate) fn exec_connections<T: proc::Target>(
             out,
         );
     }
-    let groups = session.owner_column();
     let selected: Vec<&ConnRow> = survivors.iter().map(|&i| &rows[i]).collect();
-    print_table(
-        &selected,
-        groups,
-        cmd.limit,
-        session.fit_width(theme),
-        theme,
-        out,
-    )?;
+    print_table(&selected, cmd.limit, session.fit_width(theme), theme, out)?;
     print_warnings(&session.tasks.errors)?;
     Ok(())
 }
@@ -823,7 +841,6 @@ mod tests {
             task: "7".to_string(),
             rt: RowOwner::Group(0),
             role,
-            version: Some(HttpVersion::Http1),
             phase,
             method: Some("GET".to_string()),
             peer: Some("[fd00::25]:57400".to_string()),
@@ -849,7 +866,6 @@ mod tests {
                 ..row(0x20, HttpRole::Server, Some(HttpPhase::Idle))
             },
             ConnRow {
-                version: None,
                 method: None,
                 peer: None,
                 read_buf: None,
@@ -873,14 +889,12 @@ mod tests {
         };
         assert_eq!(select(&["role", "client"]), [0x10, 0x40]);
         assert_eq!(select(&["role", "server"]), [0x20, 0x30]);
-        assert_eq!(select(&["version", "http1"]), [0x10, 0x20, 0x40]);
         assert_eq!(select(&["phase", "awaiting"]), [0x10]);
         assert_eq!(select(&["phase", "idle,negotiating"]), [0x20, 0x30]);
         assert_eq!(select(&["phase", "^idle$"]), [0x20]);
         assert_eq!(select(&["server", "context"]), [0x20]);
         assert_eq!(select(&["method", "get"]), [0x10, 0x20, 0x40]);
         assert_eq!(select(&["peer", "fd00"]), [0x10, 0x20, 0x40]);
-        assert_eq!(select(&["addr", "0x20"]), [0x20]);
         assert_eq!(select(&["task", "7"]), [0x10, 0x20, 0x30]);
         assert_eq!(select(&["task", "17"]), [0x40]);
         assert_eq!(select(&["rt", "0"]), [0x10, 0x20, 0x30]);
@@ -907,34 +921,60 @@ mod tests {
             format!("{:#}", parse_clauses(&with, &[], &[]).unwrap_err())
         };
         assert!(refused(&["nope", "x"]).contains("no field \"nope\""));
-        assert!(refused(&["addr", "20"]).contains("0x address"));
+        // The address and the version are no fields: no cell prints
+        // either.
+        assert!(refused(&["addr", "0x20"]).contains("no field \"addr\""));
+        assert!(refused(&["version", "http1"]).contains("no field \"version\""));
         assert!(refused(&["buffered", "many"]).contains("'>N', '<N' or '=N'"));
     }
 
-    /// The cells spell the row: a dash where a column is empty, the
-    /// buffer as fill over capacity, the owner only when asked.
+    fn line(method: Option<&str>, text: Option<&str>) -> RequestLine {
+        RequestLine {
+            method: method.map(str::to_string),
+            text: text.map(str::to_string),
+        }
+    }
+
+    /// The cells print the row: a dash where a column is empty, the
+    /// buffer as fill over capacity, the deadline without the word its
+    /// header says, the method beside the request's text and not in
+    /// it; no address, owner or version.
     #[test]
-    fn test_cells_spell_the_row() {
-        let full = row(0x10, HttpRole::Client, Some(HttpPhase::AwaitingResponse));
+    fn test_cells_print_the_row() {
+        let full = ConnRow {
+            request: Some(line(Some("GET"), Some("http://one/park"))),
+            ..row(0x10, HttpRole::Client, Some(HttpPhase::AwaitingResponse))
+        };
         assert_eq!(
-            row_cells(&full, true),
+            row_cells(&full),
             [
-                "0x10",
                 "7",
-                "0",
                 "client",
-                "http1",
                 "awaiting response",
-                "GET",
-                "[fd00::25]:57400",
+                "—",
                 "12/8192",
+                "[fd00::25]:57400",
                 "—",
-                "—",
-                "—"
+                "GET",
+                "http://one/park"
             ]
         );
+        // The method is the connection's where its words keep one, and
+        // the request's where they do not; a request whose text did
+        // not read leaves its cell empty.
+        for (method, request, cells) in [
+            (Some("GET"), line(Some("POST"), None), ["GET", "—"]),
+            (None, line(Some("POST"), Some("/park")), ["POST", "/park"]),
+            (None, line(None, Some("/park")), ["—", "/park"]),
+        ] {
+            let at = ConnRow {
+                method: method.map(str::to_string),
+                request: Some(request),
+                ..full.clone()
+            };
+            assert_eq!(row_cells(&at)[7..], cells);
+        }
         let bare = ConnRow {
-            version: None,
             method: None,
             peer: None,
             read_buf: None,
@@ -943,23 +983,37 @@ mod tests {
             ..row(0x30, HttpRole::Server, None)
         };
         assert_eq!(
-            row_cells(&bare, false),
+            row_cells(&bare),
             [
-                "0x30",
                 "7",
                 "server",
                 "—",
+                "+29.981s",
                 "—",
                 "—",
-                "—",
-                "—",
-                "deadline +29.981s",
                 "app::Context",
+                "—",
                 "—"
             ]
         );
-        assert_eq!(full.label(), "http1 client 0x10");
-        assert_eq!(bare.label(), "http server 0x30");
+        // Every form `deadline_text` takes loses the word and nothing
+        // else.
+        for (text, cell) in [
+            ("deadline +29.981s", "+29.981s"),
+            ("overdue by 0.500s", "overdue by 0.500s"),
+            (
+                "deadline 12.345s on the target's monotonic clock",
+                "12.345s on the target's monotonic clock",
+            ),
+        ] {
+            let at = ConnRow {
+                deadline: Some(text.to_string()),
+                ..bare.clone()
+            };
+            assert_eq!(row_cells(&at)[3], cell);
+        }
+        assert_eq!(full.label(), "client task 7");
+        assert_eq!(bare.label(), "server task 7");
         // An idle server's wait follows its phase, milliseconds under a
         // second and seconds to the millisecond above; a wait beside
         // any other phase is not printed.
@@ -975,7 +1029,7 @@ mod tests {
             (HttpPhase::Idle, 4250, "idle (4.250s)"),
             (HttpPhase::HandlingRequest, 19, "handling request"),
         ] {
-            assert_eq!(row_cells(&waited(phase, ms), false)[4], cell);
+            assert_eq!(row_cells(&waited(phase, ms))[2], cell);
         }
     }
 
@@ -1052,7 +1106,6 @@ mod tests {
         // fills, so a cell the arm left to the base is told from one
         // it set.
         let base = ConnRow {
-            version: Some(HttpVersion::Http1),
             phase: Some(HttpPhase::Closing),
             method: Some("SENTINEL".to_string()),
             peer: Some("SENTINEL".to_string()),
@@ -1060,7 +1113,7 @@ mod tests {
             idle_for: Some(Duration::from_secs(7)),
             read_buf: Some((1, 1)),
             deadline: Some("SENTINEL".to_string()),
-            request: Some("SENTINEL".to_string()),
+            request: Some(line(Some("SENTINEL"), Some("SENTINEL"))),
             ..row(0, HttpRole::Client, None)
         };
         let held = Some(RawInstant {
@@ -1076,7 +1129,6 @@ mod tests {
         let armed = fill(server_observation(true), held, stopped);
         assert_eq!(armed.addr, 0x7b78948);
         assert_eq!(armed.role, HttpRole::Server);
-        assert_eq!(armed.version, Some(HttpVersion::Http1));
         assert_eq!(armed.phase, Some(HttpPhase::Idle));
         assert_eq!(armed.method, None);
         assert_eq!(armed.peer.as_deref(), Some("[fd00::25]:57400"));
@@ -1121,7 +1173,6 @@ mod tests {
         assert_eq!(negotiating.addr, 0x12345);
         assert_eq!(negotiating.role, HttpRole::Server);
         assert_eq!(negotiating.phase, Some(HttpPhase::Negotiating));
-        assert_eq!(negotiating.version, None);
         assert_eq!(negotiating.method, None);
         assert_eq!(negotiating.peer, None);
         assert_eq!(negotiating.server, None);
@@ -1129,7 +1180,7 @@ mod tests {
         assert_eq!(negotiating.read_buf, None);
         assert_eq!(negotiating.deadline, None);
         assert_eq!(negotiating.request, None);
-        assert_eq!(negotiating.label(), "http server 0x12345");
+        assert_eq!(negotiating.label(), "server task 7");
         let other = ResourceObservation::Join(JoinObservation {
             handle: key(0x1),
             header: TaskAddr(0x1),
@@ -1144,7 +1195,7 @@ mod tests {
     fn test_a_caller_that_is_no_task_is_placed_by_its_waker_cell() {
         use hansei_runtime::tokio::attribution::{Attributed, AttributedSlot, Attribution, Reach};
         let requests = RequestIndex {
-            by_child: HashMap::from([((0, 1), BTreeSet::from(["GET /one".to_string()]))]),
+            by_child: HashMap::from([((0, 1), BTreeSet::from([line(Some("GET"), Some("/one"))]))]),
             ..RequestIndex::default()
         };
         let slots = Attributed::from_slots(vec![AttributedSlot {
@@ -1319,15 +1370,15 @@ mod tests {
         let index = RequestIndex::of(&census);
         let child = |set, child| Owner::Child { set, child };
         assert_eq!(
-            index.of_owner(child(0, 0)).as_deref(),
-            Some("GET http://one/")
+            index.of_owner(child(0, 0)),
+            Some(line(Some("GET"), Some("http://one/")))
         );
         assert_eq!(index.of_held(0).as_deref(), Some("GET http://one/"));
         assert_eq!(index.of_held(1).as_deref(), Some("GET http://one/"));
         // The nested set's child names the find that holds the set.
         assert_eq!(
-            index.of_owner(child(1, 0)).as_deref(),
-            Some("GET http://four/")
+            index.of_owner(child(1, 0)),
+            Some(line(Some("GET"), Some("http://four/")))
         );
         assert_eq!(index.of_held(2).as_deref(), Some("GET http://four/"));
         // Two under one child: neither the child nor the future between
@@ -1369,15 +1420,18 @@ mod tests {
     #[test]
     fn test_a_bucket_sample_is_three_members_and_a_mark() {
         let rows: Vec<ConnRow> = (0..4)
-            .map(|i| row(0x10 * (i + 1), HttpRole::Client, None))
+            .map(|i| ConnRow {
+                task: (i + 1).to_string(),
+                ..row(0x10 * (i + 1), HttpRole::Client, None)
+            })
             .collect();
         assert_eq!(
             member_sample(&rows, &[0, 1, 2]),
-            "http1 client 0x10, http1 client 0x20, http1 client 0x30"
+            "client task 1, client task 2, client task 3"
         );
         assert_eq!(
             member_sample(&rows, &[0, 1, 2, 3]),
-            "http1 client 0x10, http1 client 0x20, http1 client 0x30, …"
+            "client task 1, client task 2, client task 3, …"
         );
     }
 
@@ -1399,22 +1453,26 @@ mod tests {
         assert!(pattern);
         assert!(phases.contains(&"idle".to_string()), "{phases:?}");
         assert_eq!(phases.len(), 4, "{phases:?}");
-        let (addrs, pattern) = field_values(&session, "addr").unwrap();
+        let (tasks, pattern) = field_values(&session, "task").unwrap();
         assert!(!pattern);
-        assert_eq!(addrs.len(), 7, "{addrs:?}");
+        assert_eq!(tasks.len(), 7, "{tasks:?}");
         // The request reaches the prompt's offers as the URL and the
-        // path the two parked handlers and the reqwest requester carry.
+        // path the two parked handlers and the reqwest requester carry,
+        // the method left to its own field.
         let (requests, pattern) = field_values(&session, "request").unwrap();
         assert!(pattern);
         assert_eq!(requests.len(), 2, "{requests:?}");
-        assert!(requests.iter().any(|r| r == "GET /park"), "{requests:?}");
+        assert!(requests.iter().any(|r| r == "/park"), "{requests:?}");
         assert!(
             requests
                 .iter()
-                .any(|r| r.starts_with("GET http://127.0.0.1:") && r.ends_with("/park")),
+                .any(|r| r.starts_with("http://127.0.0.1:") && r.ends_with("/park")),
             "{requests:?}"
         );
-        assert!(addrs.iter().all(|a| a.starts_with("0x")), "{addrs:?}");
+        assert_eq!(
+            field_values(&session, "method"),
+            Some((vec!["GET".to_string()], true))
+        );
         assert_eq!(field_values(&session, "buffered"), None);
         assert_eq!(field_values(&session, "colour"), None);
     }
@@ -1429,9 +1487,9 @@ mod tests {
         assert_eq!(Field::Phase.values(&rows).unwrap(), ["idle"]);
         assert_eq!(Field::Buffered.values(&rows), None);
         assert!(Field::Peer.is_pattern());
-        assert!(!Field::Addr.is_pattern());
+        assert!(!Field::Task.is_pattern());
         let names: Vec<&str> = Field::names().collect();
-        assert_eq!(names.len(), 11);
+        assert_eq!(names.len(), 9);
         for name in names {
             assert_eq!(Field::parse(name).unwrap().name(), name);
         }
