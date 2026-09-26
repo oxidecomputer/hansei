@@ -12,6 +12,8 @@ delegation_cases::Gated<1> {
         tag: 1,
     },
     ready: std::sync::mpsc::Sender<usize> {
-        inner: std::sync::mpmc::Sender<usize> { .. } @ 0xADDR,
+        inner: std::sync::mpmc::Sender<usize> {
+            flavor: std::sync::mpmc::SenderFlavor<usize> = List(0xADDR -> std::sync::mpmc::counter::Counter<std::sync::mpmc::list::Channel<usize>> { .. }),
+        },
     },
 }

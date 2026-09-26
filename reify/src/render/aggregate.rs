@@ -16,8 +16,8 @@ use std::fmt;
 
 use super::dyn_ptr::eval_dyn_pointer;
 use super::{
-    RenderCtx, write_display_value, write_field_prefix, write_named_bytes, write_record_close,
-    write_seq_close, write_seq_prefix, write_variant_name,
+    RenderCtx, wrapped_member, write_display_value, write_field_prefix, write_named_bytes,
+    write_record_close, write_seq_close, write_seq_prefix, write_variant_name,
 };
 
 /// True when `members` are a Rust tuple aggregate — a tuple struct or a tuple
@@ -41,7 +41,7 @@ pub(crate) fn is_tuple<'a>(members: impl Iterator<Item = BundleMember<'a>>) -> b
 /// The position a synthetic tuple-field name encodes, if it is one:
 /// rustc names a tuple struct's and a tuple variant's fields `__0`,
 /// `__1`, … A field named anything else came from the source.
-fn tuple_field_index(name: &str) -> Option<usize> {
+pub(crate) fn tuple_field_index(name: &str) -> Option<usize> {
     name.strip_prefix("__")
         .and_then(|rest| rest.parse::<usize>().ok())
 }
@@ -126,12 +126,17 @@ fn write_aggregate_body<'a, T: Target>(
         write_seq_close(f, pretty, ctx.prefix, ctx.depth, true)?;
         write!(f, ")")
     } else {
+        // A wrapper's one field is reached at no cost to the budget.
+        let child = match wrapped_member(ty, ctx) {
+            Some(_) => ctx.through_wrapper(),
+            None => ctx.deeper(),
+        };
         write!(f, " {{")?;
         for (i, member) in shown.enumerate() {
             write_field_prefix(f, pretty, ctx.prefix, ctx.depth, i == 0)?;
             f.write_str(member.name())?;
             f.write_str(": ")?;
-            write_member_value(f, &member, bytes, addr, ctx.deeper(), pretty)?;
+            write_member_value(f, &member, bytes, addr, child, pretty)?;
             if pretty {
                 write!(f, ",")?;
             }

@@ -16,11 +16,15 @@ new_tx: async_channel::Sender<u32> = 0xADDR -> alloc::sync::ArcInner<async_chann
           data: async_channel::Channel<u32> { .. } @ 0xADDR,
       }
 old_box: alloc::boxed::Box<async_channel::Receiver<u32>, alloc::alloc::Global> = 0xADDR -> async_channel::Receiver<u32> {
-          channel: alloc::sync::Arc<async_channel::Channel<u32>, alloc::alloc::Global> { .. } @ 0xADDR,
+          channel: alloc::sync::Arc<async_channel::Channel<u32>, alloc::alloc::Global> {
+              ptr: 0xADDR -> alloc::sync::ArcInner<async_channel::Channel<u32>> { .. },
+          },
           listener: core::option::Option<event_listener::EventListener> { .. } @ 0xADDR,
       }
 new_box: alloc::boxed::Box<async_channel::Receiver<u32>, alloc::alloc::Global> = 0xADDR -> async_channel::Receiver<u32> {
-          channel: alloc::sync::Arc<async_channel::Channel<u32>, alloc::alloc::Global> { .. } @ 0xADDR,
+          channel: alloc::sync::Arc<async_channel::Channel<u32>, alloc::alloc::Global> {
+              ptr: 0xADDR -> alloc::sync::ArcInner<async_channel::Channel<u32>> { .. },
+          },
           listener: core::option::Option<event_listener::EventListener<()>> { .. } @ 0xADDR,
       }
 old_some: core::option::Option<alloc::boxed::Box<async_channel::Receiver<u32>, alloc::alloc::Global>> = Some(0xADDR -> async_channel::Receiver<u32> { .. })

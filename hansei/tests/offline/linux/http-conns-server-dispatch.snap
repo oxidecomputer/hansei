@@ -8,7 +8,19 @@ hyper::proto::h1::dispatch::Server<hyper::service::util::ServiceFn<http_conns::s
         pointer: 0xADDR -> core::option::Option<http_conns::handle::{async_fn_env#0}> { .. },
     },
     service: hyper::service::util::ServiceFn<http_conns::serve::{async_fn#0}::{closure_env#0}, hyper::body::incoming::Incoming> {
-        f: http_conns::serve::{async_fn#0}::{closure_env#0} { .. } @ 0xADDR,
+        f: http_conns::serve::{async_fn#0}::{closure_env#0} {
+            peer: core::net::socket_addr::SocketAddr { .. } @ 0xADDR,
+            events: tokio::sync::mpsc::unbounded::UnboundedSender<http_conns::Event> {
+                chan: tokio::sync::mpsc::chan::Tx<http_conns::Event, tokio::sync::mpsc::unbounded::Semaphore> {
+                    inner: alloc::sync::Arc<tokio::sync::mpsc::chan::Chan<http_conns::Event, tokio::sync::mpsc::unbounded::Semaphore>, alloc::alloc::Global> {
+                        ptr: 0xADDR -> alloc::sync::ArcInner<tokio::sync::mpsc::chan::Chan<http_conns::Event, tokio::sync::mpsc::unbounded::Semaphore>> { .. },
+                    },
+                },
+            },
+            park: alloc::sync::Arc<tokio::sync::notify::Notify, alloc::alloc::Global> {
+                ptr: 0xADDR -> alloc::sync::ArcInner<tokio::sync::notify::Notify> { .. },
+            },
+        },
     },
 }
 
@@ -18,7 +30,19 @@ hyper::proto::h1::dispatch::Server<hyper::service::util::ServiceFn<http_conns::s
         pointer: 0xADDR -> core::option::Option<http_conns::handle::{async_fn_env#0}> { .. },
     },
     service: hyper::service::util::ServiceFn<http_conns::serve::{async_fn#0}::{closure_env#0}, hyper::body::incoming::Incoming> {
-        f: http_conns::serve::{async_fn#0}::{closure_env#0} { .. } @ 0xADDR,
+        f: http_conns::serve::{async_fn#0}::{closure_env#0} {
+            peer: core::net::socket_addr::SocketAddr { .. } @ 0xADDR,
+            events: tokio::sync::mpsc::unbounded::UnboundedSender<http_conns::Event> {
+                chan: tokio::sync::mpsc::chan::Tx<http_conns::Event, tokio::sync::mpsc::unbounded::Semaphore> {
+                    inner: alloc::sync::Arc<tokio::sync::mpsc::chan::Chan<http_conns::Event, tokio::sync::mpsc::unbounded::Semaphore>, alloc::alloc::Global> {
+                        ptr: 0xADDR -> alloc::sync::ArcInner<tokio::sync::mpsc::chan::Chan<http_conns::Event, tokio::sync::mpsc::unbounded::Semaphore>> { .. },
+                    },
+                },
+            },
+            park: alloc::sync::Arc<tokio::sync::notify::Notify, alloc::alloc::Global> {
+                ptr: 0xADDR -> alloc::sync::ArcInner<tokio::sync::notify::Notify> { .. },
+            },
+        },
     },
 }
 
@@ -28,7 +52,19 @@ hyper::proto::h1::dispatch::Server<hyper::service::util::ServiceFn<http_conns::s
         pointer: 0xADDR -> core::option::Option<http_conns::handle::{async_fn_env#0}> { .. },
     },
     service: hyper::service::util::ServiceFn<http_conns::serve::{async_fn#0}::{closure_env#0}, hyper::body::incoming::Incoming> {
-        f: http_conns::serve::{async_fn#0}::{closure_env#0} { .. } @ 0xADDR,
+        f: http_conns::serve::{async_fn#0}::{closure_env#0} {
+            peer: core::net::socket_addr::SocketAddr { .. } @ 0xADDR,
+            events: tokio::sync::mpsc::unbounded::UnboundedSender<http_conns::Event> {
+                chan: tokio::sync::mpsc::chan::Tx<http_conns::Event, tokio::sync::mpsc::unbounded::Semaphore> {
+                    inner: alloc::sync::Arc<tokio::sync::mpsc::chan::Chan<http_conns::Event, tokio::sync::mpsc::unbounded::Semaphore>, alloc::alloc::Global> {
+                        ptr: 0xADDR -> alloc::sync::ArcInner<tokio::sync::mpsc::chan::Chan<http_conns::Event, tokio::sync::mpsc::unbounded::Semaphore>> { .. },
+                    },
+                },
+            },
+            park: alloc::sync::Arc<tokio::sync::notify::Notify, alloc::alloc::Global> {
+                ptr: 0xADDR -> alloc::sync::ArcInner<tokio::sync::notify::Notify> { .. },
+            },
+        },
     },
 }
 [Executed against 3 tasks, 0 failed]

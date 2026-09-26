@@ -664,6 +664,12 @@ fixture_ids! {
     // name is built from its members; and `demo::Nested<…>`, which names
     // the tag only through its argument `demo::Boxed<demo::Tag<…>>`.
     MSG_PAIR, MSG_TUPLE, TAG_NESTED,
+    // Newtypes whose one field is a tuple slot: `demo::Kind(Tag)`, a pair
+    // of them in an array, and `demo::Outer(Kind)`, two such layers.
+    TAG_KIND, TAG_KINDS, TAG_OUTER,
+    // `demo::Padded((), Point)`: a tuple-slot wrapper whose one sized
+    // field sits past a zero-sized one, at offset 8.
+    POINT_PADDED,
 }
 
 /// A hand-built mini-bundle exercising every TypeDef kind reify touches:
@@ -751,6 +757,8 @@ pub fn test_bundle() -> Bundle {
         s("(Msg, u8)"),
         s("demo::Nested<demo::Boxed<demo::Tag<demo::Arg>>>"),
     );
+    let (tag_kindn, tag_outern) = (s("demo::Kind"), s("demo::Outer"));
+    let point_paddedn = s("demo::Padded");
     let (vecn, ptrn, vec_lenn, capacityn) =
         (s("alloc::vec::Vec<u32>"), s("ptr"), s("len"), s("capacity"));
     let slicen = s("&[u32]");
@@ -2178,6 +2186,37 @@ pub fn test_bundle() -> Bundle {
             name: tag_nestedn,
             size: 2,
             members: vec![m(tuple0n, TAG, 0), m(tuple1n, TAG, 1)],
+        },
+    );
+    types.add(
+        TAG_KIND,
+        TypeDef::Struct {
+            name: tag_kindn,
+            size: 1,
+            members: vec![m(tuple0n, TAG, 0)],
+        },
+    );
+    types.add(
+        TAG_KINDS,
+        TypeDef::Array {
+            elem: TAG_KIND,
+            count: 2,
+        },
+    );
+    types.add(
+        TAG_OUTER,
+        TypeDef::Struct {
+            name: tag_outern,
+            size: 1,
+            members: vec![m(tuple0n, TAG_KIND, 0)],
+        },
+    );
+    types.add(
+        POINT_PADDED,
+        TypeDef::Struct {
+            name: point_paddedn,
+            size: 16,
+            members: vec![m(tuple0n, UNIT, 0), m(tuple1n, POINT, 8)],
         },
     );
 

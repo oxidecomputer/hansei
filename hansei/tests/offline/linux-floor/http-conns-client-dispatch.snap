@@ -8,8 +8,18 @@ task 5
 hyper::proto::h1::dispatch::Client<http_body_util::empty::Empty<bytes::bytes::Bytes>> {
     callback: core::option::Option<hyper::client::dispatch::Callback<http::request::Request<http_body_util::empty::Empty<bytes::bytes::Bytes>>, http::response::Response<hyper::body::incoming::Incoming>>> = None,
     rx: hyper::client::dispatch::Receiver<http::request::Request<http_body_util::empty::Empty<bytes::bytes::Bytes>>, http::response::Response<hyper::body::incoming::Incoming>> {
-        inner: tokio::sync::mpsc::unbounded::UnboundedReceiver<hyper::client::dispatch::Envelope<http::request::Request<http_body_util::empty::Empty<bytes::bytes::Bytes>>, http::response::Response<hyper::body::incoming::Incoming>>> { .. } @ 0xADDR,
-        taker: want::Taker { .. } @ 0xADDR,
+        inner: tokio::sync::mpsc::unbounded::UnboundedReceiver<hyper::client::dispatch::Envelope<http::request::Request<http_body_util::empty::Empty<bytes::bytes::Bytes>>, http::response::Response<hyper::body::incoming::Incoming>>> {
+            chan: tokio::sync::mpsc::chan::Rx<hyper::client::dispatch::Envelope<http::request::Request<http_body_util::empty::Empty<bytes::bytes::Bytes>>, http::response::Response<hyper::body::incoming::Incoming>>, tokio::sync::mpsc::unbounded::Semaphore> {
+                inner: alloc::sync::Arc<tokio::sync::mpsc::chan::Chan<hyper::client::dispatch::Envelope<http::request::Request<http_body_util::empty::Empty<bytes::bytes::Bytes>>, http::response::Response<hyper::body::incoming::Incoming>>, tokio::sync::mpsc::unbounded::Semaphore>, alloc::alloc::Global> {
+                    ptr: 0xADDR -> alloc::sync::ArcInner<tokio::sync::mpsc::chan::Chan<hyper::client::dispatch::Envelope<http::request::Request<http_body_util::empty::Empty<bytes::bytes::Bytes>>, http::response::Response<hyper::body::incoming::Incoming>>, tokio::sync::mpsc::unbounded::Semaphore>> { .. },
+                },
+            },
+        },
+        taker: want::Taker {
+            inner: alloc::sync::Arc<want::Inner, alloc::alloc::Global> {
+                ptr: 0xADDR -> alloc::sync::ArcInner<want::Inner> { .. },
+            },
+        },
     },
     rx_closed: false,
 }
@@ -20,8 +30,18 @@ task 9
 hyper::proto::h1::dispatch::Client<http_body_util::empty::Empty<bytes::bytes::Bytes>> {
     callback: core::option::Option<hyper::client::dispatch::Callback<http::request::Request<http_body_util::empty::Empty<bytes::bytes::Bytes>>, http::response::Response<hyper::body::incoming::Incoming>>> = Some(hyper::client::dispatch::Callback<http::request::Request<http_body_util::empty::Empty<bytes::bytes::Bytes>>, http::response::Response<hyper::body::incoming::Incoming>> { .. } @ 0xADDR),
     rx: hyper::client::dispatch::Receiver<http::request::Request<http_body_util::empty::Empty<bytes::bytes::Bytes>>, http::response::Response<hyper::body::incoming::Incoming>> {
-        inner: tokio::sync::mpsc::unbounded::UnboundedReceiver<hyper::client::dispatch::Envelope<http::request::Request<http_body_util::empty::Empty<bytes::bytes::Bytes>>, http::response::Response<hyper::body::incoming::Incoming>>> { .. } @ 0xADDR,
-        taker: want::Taker { .. } @ 0xADDR,
+        inner: tokio::sync::mpsc::unbounded::UnboundedReceiver<hyper::client::dispatch::Envelope<http::request::Request<http_body_util::empty::Empty<bytes::bytes::Bytes>>, http::response::Response<hyper::body::incoming::Incoming>>> {
+            chan: tokio::sync::mpsc::chan::Rx<hyper::client::dispatch::Envelope<http::request::Request<http_body_util::empty::Empty<bytes::bytes::Bytes>>, http::response::Response<hyper::body::incoming::Incoming>>, tokio::sync::mpsc::unbounded::Semaphore> {
+                inner: alloc::sync::Arc<tokio::sync::mpsc::chan::Chan<hyper::client::dispatch::Envelope<http::request::Request<http_body_util::empty::Empty<bytes::bytes::Bytes>>, http::response::Response<hyper::body::incoming::Incoming>>, tokio::sync::mpsc::unbounded::Semaphore>, alloc::alloc::Global> {
+                    ptr: 0xADDR -> alloc::sync::ArcInner<tokio::sync::mpsc::chan::Chan<hyper::client::dispatch::Envelope<http::request::Request<http_body_util::empty::Empty<bytes::bytes::Bytes>>, http::response::Response<hyper::body::incoming::Incoming>>, tokio::sync::mpsc::unbounded::Semaphore>> { .. },
+                },
+            },
+        },
+        taker: want::Taker {
+            inner: alloc::sync::Arc<want::Inner, alloc::alloc::Global> {
+                ptr: 0xADDR -> alloc::sync::ArcInner<want::Inner> { .. },
+            },
+        },
     },
     rx_closed: false,
 }

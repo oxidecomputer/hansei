@@ -23,7 +23,9 @@ lwp 56798  polling no task  runtime 0 @ 0xADDR
           tasks: alloc::collections::vec_deque::VecDeque<tokio::runtime::task::Notified<alloc::sync::Arc<tokio::runtime::scheduler::current_thread::Handle, alloc::alloc::Global>>, alloc::alloc::Global> {
               head: 7,
               len: 0,
-              buf: alloc::raw_vec::RawVec<tokio::runtime::task::Notified<alloc::sync::Arc<tokio::runtime::scheduler::current_thread::Handle, alloc::alloc::Global>>, alloc::alloc::Global> { .. } @ 0xADDR,
+              buf: alloc::raw_vec::RawVec<tokio::runtime::task::Notified<alloc::sync::Arc<tokio::runtime::scheduler::current_thread::Handle, alloc::alloc::Global>>, alloc::alloc::Global> {
+                  inner: alloc::raw_vec::RawVecInner<alloc::alloc::Global> { .. } @ 0xADDR,
+              },
           },
           tick: 10,
           driver: core::option::Option<tokio::runtime::driver::Driver> = None,

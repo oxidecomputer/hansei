@@ -44,6 +44,7 @@ impl<F: Fn(&mut fmt::Formatter<'_>) -> fmt::Result> fmt::Display for DisplayWith
 /// cycle guard and format cache, which each worker owns for itself.
 pub(crate) struct WorkerCtx<'buf, 'a, T> {
     pub(super) depth: usize,
+    pub(super) free: usize,
     pub(super) max_depth: usize,
     pub(super) proc: Option<&'a T>,
     pub(super) hex_integers: bool,
@@ -80,6 +81,7 @@ impl<'buf, 'a, T> WorkerCtx<'buf, 'a, T> {
     {
         RenderCtx {
             depth: self.depth,
+            free: self.free,
             max_depth: self.max_depth,
             proc: self.proc,
             visited: Some(visited),

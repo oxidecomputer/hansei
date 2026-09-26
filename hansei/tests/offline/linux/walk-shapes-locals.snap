@@ -6,7 +6,9 @@ tag: u64 = 7
 inner: walk_shapes::WrapE<walk_shapes::deep::{async_fn_env#0}> = Running {
       tag: 9,
       inner: walk_shapes::deep::{async_fn_env#0} = 3 {
-          park: alloc::sync::Arc<tokio::sync::notify::Notify, alloc::alloc::Global> { .. } @ 0xADDR (task 1),
+          park: alloc::sync::Arc<tokio::sync::notify::Notify, alloc::alloc::Global> {
+              ptr: 0xADDR -> alloc::sync::ArcInner<tokio::sync::notify::Notify> { .. },
+          },
           __awaitee: tokio::sync::notify::Notified { .. } @ 0xADDR (task 1),
       },
   }

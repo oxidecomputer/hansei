@@ -162,7 +162,7 @@ pub(crate) fn eval_dyn_pointer<'a, T: Target>(
     write!(f, "vtable: ")?;
 
     match words.as_deref() {
-        Some(words) if ctx.depth + 1 < ctx.max_depth => {
+        Some(words) if ctx.spent() + 1 < ctx.max_depth => {
             write!(f, "{{")?;
             write_dyn_field_prefix(f, pretty, ctx.prefix, ctx.depth + 1)?;
             let drop_address = words

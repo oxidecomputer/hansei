@@ -24,7 +24,7 @@ use crate::heap::{Gate, Heap, Liveness};
 use crate::value::Value;
 use proc::Target;
 
-use hansei_bundle::{BundleType, BundleTypeId};
+use hansei_bundle::{BundleMember, BundleType, BundleTypeId};
 
 use aggregate::{write_rust_enum, write_struct_fields};
 use node::eval_node;
@@ -169,6 +169,7 @@ impl<'a, T: Target> fmt::Display for DisplayValue<'_, 'a, T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let ctx = RenderCtx {
             depth: 0,
+            free: 0,
             max_depth: self.max_depth,
             proc: self.proc,
             visited: Some(&self.visited),
@@ -249,7 +250,12 @@ impl<'a> Value<'a> {
 /// a [`Value`] of the same value lifetime as the one being rendered, and
 /// its bytes are the read's.
 pub(crate) struct RenderCtx<'buf, 'a, T> {
+    /// How deeply this value nests, which is how far it is indented.
     depth: usize,
+    /// How many of those levels were a wrapper's field (see
+    /// [`Self::through_wrapper`]), which indent but do not count
+    /// against `max_depth`; see [`Self::spent`].
+    free: usize,
     max_depth: usize,
     proc: Option<&'a T>,
     visited: Option<&'buf RefCell<HashSet<(u64, &'a str)>>>,
@@ -326,6 +332,7 @@ impl<'buf, 'a, T> RenderCtx<'buf, 'a, T> {
     pub(crate) fn for_walk(proc: &'a T, formats: &'buf FormatCache<'a>) -> Self {
         RenderCtx {
             depth: 0,
+            free: 0,
             max_depth: 0,
             proc: Some(proc),
             visited: None,
@@ -348,6 +355,7 @@ impl<'buf, 'a, T> RenderCtx<'buf, 'a, T> {
     pub(crate) fn for_workers(&self) -> WorkerCtx<'buf, 'a, T> {
         WorkerCtx {
             depth: self.depth,
+            free: self.free,
             max_depth: self.max_depth,
             proc: self.proc,
             hex_integers: self.hex_integers,
@@ -402,6 +410,22 @@ impl<'buf, 'a, T> RenderCtx<'buf, 'a, T> {
             slot: Slot::Labelled,
             ..self
         }
+    }
+
+    /// The context for the one field of a wrapper (see [`wrapped_member`]):
+    /// nested and labelled like [`Self::deeper`]'s, but free of the depth
+    /// budget, since a layer that holds nothing else costs it nothing.
+    fn through_wrapper(self) -> Self {
+        Self {
+            free: self.free + 1,
+            ..self.deeper()
+        }
+    }
+
+    /// How much of the depth budget this value has spent: its nesting,
+    /// less the wrapper layers that cost nothing.
+    fn spent(&self) -> usize {
+        self.depth - self.free
     }
 
     /// The same context for a value in a slot of `container`, whose
@@ -467,12 +491,33 @@ pub(crate) fn write_display_value<'a, T: Target>(
         return f.write_str(ty.name());
     }
 
+    // A wrapper — one field and nothing more (see [`wrapped_member`]) —
+    // costs no depth. One whose field is a tuple slot has no name to
+    // keep, so it prints as the value it holds, its own type named once:
+    // `Outer = value` after a label, the value alone in a slot, where
+    // the container's type is what names things. One whose field has a
+    // name renders as the struct it is, its field at its own depth.
+    let wrapper = wrapped_member(&ty, ctx);
+    if let Some(member) = &wrapper
+        && aggregate::tuple_field_index(member.name()).is_some()
+        && let Some(inner) = tuple_wrapper_inner(info, ctx)
+    {
+        if matches!(ctx.slot, Slot::Labelled) && !ty.name().is_empty() {
+            f.write_str(ty.name())?;
+            f.write_str(" = ")?;
+            return write_display_value(f, &inner, ctx.positional(ty), pretty);
+        }
+        return write_display_value(f, &inner, ctx, pretty);
+    }
+
     // The depth budget pays for structure, so a leaf — a scalar, a
     // string, a decoded notation — renders whole at the limit, and an
     // aggregate elides to a placeholder that says what stands here and
     // where: its type, the rest-pattern brackets of its shape, and its
-    // address, ready for a `print <addr> "<type>"` to chase.
-    if ctx.depth >= ctx.max_depth
+    // address, ready for a `print <addr> "<type>"` to chase. A wrapper
+    // is no structure to pay for: its field is what elides, if anything.
+    if ctx.spent() >= ctx.max_depth
+        && wrapper.is_none()
         && let Some(brackets) = elision_brackets(&ty, ctx)
     {
         return write_elision(f, &ty, brackets, info.addr, ctx);
@@ -866,6 +911,48 @@ pub(crate) fn write_record_close(
     } else {
         f.write_str(" ")
     }
+}
+
+/// The one field of a wrapper, or `None` when `ty` is not one. A
+/// wrapper is a struct whose one sized member is all of it — any other
+/// member is zero-sized — and that carries no display format: a format
+/// already says how the type reads (an alias to the value it holds, a
+/// decoded record), and it is left to say so. `--ugly` has none, so
+/// that every layer keeps its depth there.
+pub(crate) fn wrapped_member<'a, T>(
+    ty: &BundleType<'a>,
+    ctx: RenderCtx<'_, 'a, T>,
+) -> Option<BundleMember<'a>> {
+    if ctx.ugly || ty.kind() != TypeKind::Struct || ctx.debug_format(ty).is_some() {
+        return None;
+    }
+    let mut sized = ty.members().filter(|m| m.ty().size() > 0);
+    match (sized.next(), sized.next()) {
+        (Some(member), None) => Some(member),
+        _ => None,
+    }
+}
+
+/// The value a wrapper whose field is a tuple slot holds, peeled through
+/// every such layer at once: stopping at the first value that is not
+/// one — a wrapper whose field has a name keeps it — or whose bytes the
+/// buffer does not cover. `None` when `info` itself is no such wrapper.
+fn tuple_wrapper_inner<'a, T>(info: &Value<'a>, ctx: RenderCtx<'_, 'a, T>) -> Option<Value<'a>> {
+    let mut cur = *info;
+    while let Some(member) = wrapped_member(&cur.ty, ctx)
+        && aggregate::tuple_field_index(member.name()).is_some()
+    {
+        let start = member.offset() as usize;
+        let Some(bytes) = cur.bytes.get(start..start + member.ty().size() as usize) else {
+            break;
+        };
+        cur = Value {
+            ty: member.ty(),
+            addr: cur.addr + member.offset(),
+            bytes,
+        };
+    }
+    (cur.ty.id() != info.ty.id()).then_some(cur)
 }
 
 /// An enum value's variant, named as its [`Slot`] calls for: `Type =
@@ -1368,6 +1455,65 @@ mod tests {
         assert_eq!(
             format!("{}", Value::new(v.ty(OPT).unwrap(), 0, &bytes).display()),
             "Opt = Some(Tag<demo::Arg>::On)"
+        );
+    }
+
+    /// A wrapper whose one field is a tuple slot has no name to keep: it
+    /// prints as the value it holds, through every such layer, its own
+    /// type named once after a label and not at all in a slot. `--ugly`
+    /// keeps every layer.
+    #[test]
+    fn test_a_tuple_slot_wrapper_prints_as_its_value() {
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+        let value = |id, bytes: &'static [u8]| Value::new(v.ty(id).unwrap(), 0, bytes);
+        let show = |id, bytes| format!("{}", value(id, bytes).display());
+        // `Kind` names no `Tag`, so the variant keeps its enum's name.
+        assert_eq!(show(TAG_KIND, &[1]), "demo::Kind = Tag<demo::Arg>::On");
+        assert_eq!(show(TAG_OUTER, &[0]), "demo::Outer = Tag<demo::Arg>::Off");
+        assert_eq!(
+            show(TAG_KINDS, &[0, 1]),
+            "[Tag<demo::Arg>::Off, Tag<demo::Arg>::On]"
+        );
+        assert_eq!(
+            format!("{}", value(TAG_OUTER, &[1]).display().ugly()),
+            "demo::Outer(demo::Kind(Tag<demo::Arg>::On))"
+        );
+        // The value keeps the address it holds: a point past a zero-sized
+        // field, elided at no depth, is placed at its own offset.
+        let mut padded = vec![0u8; 8];
+        padded.extend_from_slice(&u32s(&[3, 4]));
+        let padded = Value::new(v.ty(POINT_PADDED).unwrap(), 0x100, &padded);
+        assert_eq!(
+            format!("{}", padded.display().depth(0)),
+            "demo::Padded = Point { .. } @ 0x108"
+        );
+    }
+
+    /// A wrapper whose one field has a name renders as the struct it is,
+    /// but its field is reached at no cost to the depth budget: a depth
+    /// that stops a struct's fields at a placeholder reaches through two
+    /// wrapper layers to the point they hold. `--ugly` pays for each.
+    #[test]
+    fn test_a_named_field_wrapper_costs_no_depth() {
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+        // WrapWrap { inner: PadWrap { pad: (), point: Point { 3, 4 } } }.
+        let mut bytes = vec![0u8; 4];
+        bytes.extend_from_slice(&u32s(&[3, 4]));
+        let outer = Value::new(v.ty(WRAP_WRAP).unwrap(), 0x100, &bytes);
+        assert_eq!(
+            format!("{}", outer.display().depth(1)),
+            "WrapWrap { inner: PadWrap { point: Point { x: 3, y: 4 } } }"
+        );
+        let point = Value::new(v.ty(POINT).unwrap(), 0x100, &bytes[4..]);
+        assert_eq!(
+            format!("{}", point.display().depth(0)),
+            "Point { .. } @ 0x100"
+        );
+        assert_eq!(
+            format!("{}", outer.display().depth(1).ugly()),
+            "WrapWrap { inner: PadWrap { .. } @ 0x100 }"
         );
     }
 

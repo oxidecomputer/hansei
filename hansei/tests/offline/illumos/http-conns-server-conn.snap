@@ -4,9 +4,7 @@ description: "`tasks --with type http_conns::serve --with waiting-on http1.serve
 ---
 task 4
 hyper::proto::h1::conn::Conn<hyper_util::common::rewind::Rewind<hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>>, bytes::bytes::Bytes, hyper::proto::h1::role::Server> {
-    version: http::version::Version(
-        Http::Http11,
-    ),
+    version: http::version::Version = Http::Http11,
     keep_alive: hyper::proto::h1::conn::KA = Idle,
     reading: hyper::proto::h1::conn::Reading = Init,
     writing: hyper::proto::h1::conn::Writing = Init,
@@ -18,9 +16,7 @@ hyper::proto::h1::conn::Conn<hyper_util::common::rewind::Rewind<hyper_util::rt::
 
 task 9
 hyper::proto::h1::conn::Conn<hyper_util::common::rewind::Rewind<hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>>, bytes::bytes::Bytes, hyper::proto::h1::role::Server> {
-    version: http::version::Version(
-        Http::Http11,
-    ),
+    version: http::version::Version = Http::Http11,
     keep_alive: hyper::proto::h1::conn::KA = Busy,
     reading: hyper::proto::h1::conn::Reading = KeepAlive,
     writing: hyper::proto::h1::conn::Writing = Init,
@@ -32,9 +28,7 @@ hyper::proto::h1::conn::Conn<hyper_util::common::rewind::Rewind<hyper_util::rt::
 
 task 12
 hyper::proto::h1::conn::Conn<hyper_util::common::rewind::Rewind<hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>>, bytes::bytes::Bytes, hyper::proto::h1::role::Server> {
-    version: http::version::Version(
-        Http::Http11,
-    ),
+    version: http::version::Version = Http::Http11,
     keep_alive: hyper::proto::h1::conn::KA = Busy,
     reading: hyper::proto::h1::conn::Reading = KeepAlive,
     writing: hyper::proto::h1::conn::Writing = Init,
