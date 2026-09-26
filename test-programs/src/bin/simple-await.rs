@@ -9,7 +9,7 @@
 //! a oneshot whose sender is intentionally leaked. `READY` on stdout
 //! means the state is stable — no timing involved.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::ffi::{CStr, CString};
 use std::net::{Ipv4Addr, Ipv6Addr};
 use tokio::sync::oneshot;
@@ -42,6 +42,10 @@ async fn work(ready: oneshot::Sender<()>, park: oneshot::Receiver<u32>) -> u32 {
     // A non-ASCII `char` whose low byte is printable ASCII (`-`), so a
     // render that reads one byte of it prints a plausible wrong character.
     let glyph = '中';
+    // std's hash map and set, which wrap hashbrown's: the golden test
+    // asserts both tables' resolved member paths.
+    let ports = HashMap::from([(80u64, 1u32), (443, 2)]);
+    let seen = HashSet::from([7u32, 9]);
     let first = ready_value().await;
     ready.send(()).expect("main waits for readiness");
     let second = park.await.unwrap_or(0);
@@ -59,6 +63,8 @@ async fn work(ready: oneshot::Sender<()>, park: oneshot::Receiver<u32>) -> u32 {
         + c_owned.as_bytes().len() as u32
         + c_borrowed.to_bytes().len() as u32
         + glyph.len_utf8() as u32
+        + ports.get(&80).copied().unwrap_or(0)
+        + seen.len() as u32
 }
 
 // Keep the map live across `park.await` so its private layout remains part of

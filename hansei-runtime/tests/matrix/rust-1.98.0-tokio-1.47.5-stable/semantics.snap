@@ -81,10 +81,10 @@ rule 9: StdMutRefAccess rev 1 origin 3
 rule 10: StdMutRefPoll rev 1 origin 3
 rule 11: StdPinMutRefAccess rev 1 origin 3
 rule 12: StdPinMutRefPoll rev 1 origin 3
-rule 13: TokioMultiThreadScheduler rev 1 origin 1
-rule 14: TokioCurrentThreadScheduler rev 1 origin 1
+rule 13: TokioCurrentThreadScheduler rev 1 origin 1
+rule 14: TokioMultiThreadScheduler rev 1 origin 1
 rule 15: TokioBlockingScheduler rev 1 origin 1
-simple_await::work::{async_fn_env#0} :: states future[task 0, task 1, coroutine rule 0] continuation rule 0 match <self>@+0 -> simple_await::work::{async_fn_env#0} {0: unresumed} {1: returned} {2: panicked} {3: delegate (exclusive) {3}.__awaitee@+208 -> simple_await::ready_value::{async_fn_env#0}} {4: delegate (exclusive) {4}.__awaitee@+208 -> tokio::sync::oneshot::Receiver<u32>} coroutine rule 0 {0:Unresumed[ready,park]() 1:Returned[]() 2:Panicked[]() 3:Suspended[ready,park,count,labels,values,boxed,slice,ipv4,ipv6,borrowed,owned,c_owned,c_borrowed,glyph,__awaitee,__15,__16]() 4:Suspended[count,labels,values,boxed,slice,ipv4,ipv6,borrowed,owned,c_owned,c_borrowed,glyph,first,__awaitee,__14,__15]()}
+simple_await::work::{async_fn_env#0} :: states future[task 0, task 1, coroutine rule 0] continuation rule 0 match <self>@+0 -> simple_await::work::{async_fn_env#0} {0: unresumed} {1: returned} {2: panicked} {3: delegate (exclusive) {3}.__awaitee@+304 -> simple_await::ready_value::{async_fn_env#0}} {4: delegate (exclusive) {4}.__awaitee@+304 -> tokio::sync::oneshot::Receiver<u32>} coroutine rule 0 {0:Unresumed[ready,park]() 1:Returned[]() 2:Panicked[]() 3:Suspended[ready,park,count,labels,values,boxed,slice,ipv4,ipv6,borrowed,owned,c_owned,c_borrowed,glyph,ports,seen,__awaitee,__17,__18]() 4:Suspended[count,labels,values,boxed,slice,ipv4,ipv6,borrowed,owned,c_owned,c_borrowed,glyph,ports,seen,first,__awaitee,__16,__17]()}
 tokio::sync::oneshot::Receiver<u32> :: members future[poll, delegated by simple_await::work::{async_fn_env#0}] continuation rule 1 primitive resource OneshotRecv rule 1 state rule 2 exclusive-pending
 simple_await::ready_value::{async_fn_env#0} :: states future[coroutine rule 0, delegated by simple_await::work::{async_fn_env#0}] continuation rule 0 match <self>@+0 -> simple_await::ready_value::{async_fn_env#0} {0: unresumed} {1: returned} {2: panicked} coroutine rule 0 {0:Unresumed[]() 1:Returned[]() 2:Panicked[]()}
 tokio::runtime::blocking::task::BlockingTask<tokio::runtime::scheduler::multi_thread::worker::{impl#0}::launch::{closure_env#0}> :: members future[task 2, poll] continuation unknown (NoRule)
@@ -101,8 +101,8 @@ core::pin::Pin<&mut tokio::sync::notify::Notified> :: members access Borrowed ru
 core::pin::Pin<&mut simple_await::main::{async_block_env#0}> :: members future[poll] continuation rule 12 delegate (exclusive) pointer.*@+0 -> simple_await::main::{async_block_env#0} access Borrowed rule 11 pointer.*@+0 -> simple_await::main::{async_block_env#0}
 &mut tokio::sync::notify::Notified :: members access Borrowed rule 9 *@+0 -> tokio::sync::notify::Notified
 &mut simple_await::main::{async_block_env#0} :: members access Borrowed rule 9 *@+0 -> simple_await::main::{async_block_env#0}
-task 0: scheduler alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle, alloc::alloc::Global> :: MultiThread rule 13
-task 1: scheduler alloc::sync::Arc<tokio::runtime::scheduler::current_thread::Handle, alloc::alloc::Global> :: CurrentThread rule 14
+task 0: scheduler alloc::sync::Arc<tokio::runtime::scheduler::current_thread::Handle, alloc::alloc::Global> :: CurrentThread rule 13
+task 1: scheduler alloc::sync::Arc<tokio::runtime::scheduler::multi_thread::handle::Handle, alloc::alloc::Global> :: MultiThread rule 14
 task 2: scheduler tokio::runtime::blocking::schedule::BlockingSchedule :: Blocking rule 15
 
 program: nested-await

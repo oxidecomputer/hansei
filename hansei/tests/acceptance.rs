@@ -1358,13 +1358,13 @@ fn test_simple_await_acceptance() {
         assert_eq!(rows.len(), 1, "{rows:#?}");
         let task = task_with_future(&rows, "async fn simple_await::work");
         assert_eq!(task.state, "idle");
-        assert_eq!(task.spawned, spawned("src/bin/simple-await.rs:83:21"));
+        assert_eq!(task.spawned, spawned("src/bin/simple-await.rs:89:21"));
         assert_eq!(task.defined, "src/bin/simple-await.rs:21");
 
         let out = trace(&bundle, core, &task.id, false);
         assert_spawned_at(
             &hansei_ok(&bundle, core, &format!("task {}", task.id)),
-            "src/bin/simple-await.rs:83:21",
+            "src/bin/simple-await.rs:89:21",
         );
         golden(
             "simple-await-trace",
@@ -1375,10 +1375,10 @@ fn test_simple_await_acceptance() {
         // extractor drops what rustc lists in a state that is not that
         // state's own, and whether it dropped the right things is a
         // question about `simple-await.rs` that only the source
-        // answers. Every name here is bound between lines 18 and 37
-        // and read again at 40..52, so each has to survive both awaits;
-        // `first` is bound *by* the line-38 await. The arguments
-        // `ready` and `park` are gone by line 39 — one consumed by
+        // answers. Every name here is bound between lines 23 and 48
+        // and read again at 52..67, so each has to survive both awaits;
+        // `first` is bound *by* the line-49 await. The arguments
+        // `ready` and `park` are gone by line 51 — one consumed by
         // `send()`, the other moved into the awaitee — and the offsets
         // they left behind are not this state's to report.
         //
@@ -1401,6 +1401,8 @@ fn test_simple_await_acceptance() {
                 "c_owned",
                 "c_borrowed",
                 "glyph",
+                "ports",
+                "seen",
                 "first"
             ],
             "in:\n{verbose}"
@@ -3383,7 +3385,7 @@ fn test_type_and_find_types() {
         // The state the task is parked in, at the await point rustc
         // recorded for it — the same line the trace prints.
         assert!(out.contains("Suspend1"), "{out}");
-        assert!(out.contains("src/bin/simple-await.rs:47"), "{out}");
+        assert!(out.contains("src/bin/simple-await.rs:51"), "{out}");
 
         // The locals held across that await — and only those. The
         // arguments rustc also lists here belong to `Unresumed`, whose
