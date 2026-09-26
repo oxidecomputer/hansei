@@ -17,8 +17,11 @@
 //! that what the census attributes to whom is pinned by something
 //! other than a comment. Both ways out of a task's own frames are
 //! covered: through a set's child, and through a future the driver
-//! holds (`nested_hold`), which carries a future of its own.
+//! holds (`nested_hold`), which carries a future of its own. And one
+//! way out of the frame's bytes: futures kept as a hash map's values
+//! (`keyed`), which only the table's buckets hold.
 
+use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -33,6 +36,9 @@ const CHILDREN: usize = 3;
 
 /// How many futures the nesting child's own set holds.
 const NESTED: usize = 2;
+
+/// How many futures the driver keeps in its map.
+const KEYED: u32 = 2;
 
 /// The bottom of every chain here, and the one future type that holds
 /// nothing itself: a child of a nested set, or a future held inside a
@@ -98,6 +104,9 @@ async fn driver(ready: oneshot::Sender<()>, notify: Arc<Notify>) -> u32 {
     // frame carries the future passed to it, so what the census finds
     // here holds a future of its own.
     let nested_hold = holder(leaf(notify.clone()), notify.clone());
+    // Out of the frame's bytes: futures the frame holds only through a
+    // map's heap table, each in the bucket the map keeps it in.
+    let keyed: HashMap<u32, _> = (0..KEYED).map(|k| (k, leaf(notify.clone()))).collect();
 
     // Ground truth for the census diff: everything built above, at the
     // slot it sits in — and the future `holder` carries, which has no
@@ -113,11 +122,17 @@ async fn driver(ready: oneshot::Sender<()>, notify: Arc<Notify>) -> u32 {
     );
     census_expect::held(&nested_hold as *const _ as u64, "unordered::holder");
     census_expect::held_in(&nested_hold as *const _ as u64, "unordered::leaf");
+    for future in keyed.values() {
+        census_expect::held(future as *const _ as u64, "unordered::leaf");
+    }
 
     ready.send(()).expect("main waits for readiness");
     let mut sum = 0;
     while let Some(value) = set.next().await {
         sum += value;
+    }
+    for (_, future) in keyed {
+        sum += future.await;
     }
     sum + held.await
         + boxed.await

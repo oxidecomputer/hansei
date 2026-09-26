@@ -4552,12 +4552,26 @@ fn run_golden(program: &str) {
                 assert_walk(program, &bundle, WalkRole::StreamMapEntryStream, "__1");
                 assert_walk(program, &bundle, WalkRole::StreamMapEntryKey, "__0");
             }
-            "unordered" => assert_container(
-                program,
-                &bundle,
-                "futures_util::stream::futures_unordered::FuturesUnordered<",
-                ContainerKind::FuturesUnordered,
-            ),
+            // The set, and the map whose buckets are the only place
+            // two of the driver's futures are kept: its table binds
+            // with the future as the bucket's value.
+            "unordered" => {
+                assert_container(
+                    program,
+                    &bundle,
+                    "futures_util::stream::futures_unordered::FuturesUnordered<",
+                    ContainerKind::FuturesUnordered,
+                );
+                assert_table(
+                    program,
+                    &bundle,
+                    "std::collections::hash::map::HashMap<u32, unordered::leaf::{async_fn_env#0}, \
+                     std::hash::random::RandomState, alloc::alloc::Global>",
+                    "0.17.1",
+                    "base.",
+                    "(u32, unordered::leaf::{async_fn_env#0})",
+                );
+            }
             _ => {}
         }
     }
