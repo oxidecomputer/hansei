@@ -750,6 +750,73 @@ fn route_text(bundle: &Bundle, path: &hansei_bundle::TypedPath) -> String {
         .join(".")
 }
 
+/// The hash table a type keeps: every instantiation the key names binds
+/// its table under the hashbrown layout rule, at the release `version`
+/// inside the reviewed range, through `outer` to hashbrown's map and
+/// `table.table` to its words, with `bucket` the type it reads entries
+/// as.
+fn assert_table(
+    program: &str,
+    bundle: &Bundle,
+    key: &str,
+    version: &str,
+    outer: &str,
+    bucket: &str,
+) {
+    use hansei_bundle::{LayoutSelection, SemanticOrigin, SemanticRuleKind};
+    let s = |id| bundle.strings.get(id).unwrap();
+    let mut seen = 0;
+    for (name, _, record) in types_named(bundle, key) {
+        let record = record.unwrap_or_else(|| panic!("{program}: {name} has no semantic record"));
+        let table = record
+            .table
+            .as_ref()
+            .unwrap_or_else(|| panic!("{program}: {name} has no table binding: {record:?}"));
+        let rule = &bundle.semantics.rules[table.rule.0 as usize];
+        assert_eq!(
+            rule.kind,
+            SemanticRuleKind::HashbrownTable,
+            "{program}: {name}"
+        );
+        assert!(
+            matches!(
+                &bundle.semantics.origins[rule.origin.0 as usize],
+                SemanticOrigin::LibraryLayout {
+                    package,
+                    version: Some(v),
+                    selection: LayoutSelection::ReviewedRange,
+                    ..
+                } if s(*package) == "hashbrown" && s(*v) == version
+            ),
+            "{program}: {name}: {:?}",
+            bundle.semantics.origins[rule.origin.0 as usize]
+        );
+        let route = |path: &hansei_bundle::TypedPath| {
+            format!(
+                "{} -> {}",
+                route_text(bundle, path),
+                type_name_of(bundle, path.target)
+            )
+        };
+        assert_eq!(
+            [&table.bucket_mask, &table.ctrl, &table.items].map(route),
+            [
+                format!("{outer}table.table.bucket_mask -> usize"),
+                format!("{outer}table.table.ctrl.pointer -> *const u8"),
+                format!("{outer}table.table.items -> usize"),
+            ],
+            "{program}: {name}"
+        );
+        assert_eq!(
+            type_name_of(bundle, table.bucket),
+            bucket,
+            "{program}: {name}"
+        );
+        seen += 1;
+    }
+    assert!(seen > 0, "{program}: no type named {key}");
+}
+
 /// hyper's dispatcher as the HTTP connection resource: every
 /// instantiation the key names carries the resource under the hyper
 /// rule — read off `proto/h1/dispatch.rs` at a reviewed version, and
@@ -1974,6 +2041,19 @@ fn assert_library_bindings(program: &str, bundle: &Bundle) {
             } if s(*package) == "futures-util" => {
                 assert_eq!(*selection, LayoutSelection::VersionUnknown, "{program}");
             }
+            // std's maps, whose hashbrown is the one the pinned toolchain
+            // vendors: the fixtures link no registry release of it.
+            SemanticOrigin::LibraryLayout {
+                package,
+                version,
+                family,
+                selection,
+            } if s(*package) == "hashbrown" => {
+                use exegesis::detect::semantics::HASHBROWN_TABLE_V0_12_3;
+                assert_eq!(version.map(s), Some("0.17.1"), "{program}");
+                assert_eq!(s(*family), HASHBROWN_TABLE_V0_12_3.family, "{program}");
+                assert_eq!(*selection, LayoutSelection::ReviewedRange, "{program}");
+            }
             other => panic!("{program}: unexpected semantic origin {other:?}"),
         }
     }
@@ -2971,6 +3051,36 @@ fn assert_clean(program: &str, bundle: &Bundle, stats: &ExtractStats) {
              key=u32, value=<set>, entries=Hash { \
              bucket_mask=base.map.table.table.bucket_mask@+8, \
              ctrl=base.map.table.table.ctrl.pointer@+0, bucket=(u32, ()), key=__0@+0 } }",
+        );
+        // And the same tables bind as storage, under the release the
+        // pinned toolchain vendors for std: read off hashbrown's map
+        // whichever type holds it.
+        assert_table(
+            program,
+            bundle,
+            "std::collections::hash::map::HashMap<u64, u32, std::hash::random::RandomState, \
+             alloc::alloc::Global>",
+            "0.17.1",
+            "base.",
+            "(u64, u32)",
+        );
+        assert_table(
+            program,
+            bundle,
+            "hashbrown::map::HashMap<u64, u32, std::hash::random::RandomState, \
+             alloc::alloc::Global>",
+            "0.17.1",
+            "",
+            "(u64, u32)",
+        );
+        assert_table(
+            program,
+            bundle,
+            "std::collections::hash::set::HashSet<u32, std::hash::random::RandomState, \
+             alloc::alloc::Global>",
+            "0.17.1",
+            "base.map.",
+            "(u32, ())",
         );
         // A `char` is a 4-byte `DW_ATE_UTF` base type, which is what
         // reify's code-point reading of it rests on: a 1-byte char is C's

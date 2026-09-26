@@ -52,6 +52,12 @@ pub struct TypeSemantics {
     /// beside the record, read wherever a chain or a frame holds the
     /// value; the type polls nothing through it.
     pub request: Option<HttpRequestBinding>,
+    /// The hash table this value keeps its entries in, where its type
+    /// is hashbrown's map or set, or std's wrapper of either, under a
+    /// reviewed range: the words that say which buckets are full, and
+    /// what a bucket holds. What reads the entries — as owned storage
+    /// of the value — reads them through this.
+    pub table: Option<HashTableBinding>,
     pub issues: Vec<SemanticIssue>,
 }
 
@@ -378,6 +384,29 @@ pub enum HttpRequestTarget {
     PathAndQuery,
 }
 
+/// A hashbrown `RawTable` as a reviewed range lays it out, reached from
+/// the record's type: hashbrown's `HashMap` or `HashSet`, or std's,
+/// which wrap them. The table has `bucket_mask + 1` buckets, a power of
+/// two, and one control byte per bucket at `ctrl`; a byte with its top
+/// bit clear marks a full bucket, and `items` counts them. The buckets
+/// sit below the control bytes in reverse, so bucket `i` is the
+/// `bucket` value ending `i` buckets below `ctrl`, at `ctrl - (i + 1) *
+/// size`. Every path starts at the record's type and names its members.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub struct HashTableBinding {
+    pub rule: SemanticRuleId,
+    /// `…table.table.bucket_mask`, a `usize`.
+    pub bucket_mask: TypedPath,
+    /// `…table.table.ctrl.pointer`: the `*const u8` to the control
+    /// bytes, under the `NonNull` holding it.
+    pub ctrl: TypedPath,
+    /// `…table.table.items`, a `usize`.
+    pub items: TypedPath,
+    /// What a bucket holds: the `(K, V)` a map stores, the `(T, ())` a
+    /// set does.
+    pub bucket: BundleTypeId,
+}
+
 #[derive(Copy, Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub enum IoOperationKind {
     Read,
@@ -583,6 +612,13 @@ pub enum SemanticRuleKind {
     /// its `request` keeps the `method` and `uri` of the request its
     /// handler is running for.
     DropshotRequestContext,
+    /// hashbrown's `RawTable` under a reviewed range, as its `HashMap`
+    /// and `HashSet` keep it and std's wrap them: which buckets are full
+    /// and where each sits, which is what reads a map's entries. A
+    /// layout rule, whose version is read off the declarations of
+    /// hashbrown's map — a cargo registry release, or the one the
+    /// toolchain vendors for std.
+    HashbrownTable,
 }
 
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]

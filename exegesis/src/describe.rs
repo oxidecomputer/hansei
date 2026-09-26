@@ -842,6 +842,17 @@ pub fn describe_semantics(bundle: &Bundle) -> String {
                 path(record.ty, &request.target_ptr)
             );
         }
+        if let Some(table) = &record.table {
+            let _ = write!(
+                line,
+                " table rule {} mask {} ctrl {} items {} bucket {}",
+                table.rule.0,
+                path(record.ty, &table.bucket_mask),
+                path(record.ty, &table.ctrl),
+                path(record.ty, &table.items),
+                fq_name(bundle, table.bucket)
+            );
+        }
         if let Some(select) = &record.select {
             let branches: Vec<String> = select
                 .branches

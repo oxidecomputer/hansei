@@ -28,29 +28,31 @@ use crate::bundle::origin::registry_origin;
 use crate::bundle::{
     AccessBinding, AccessKind, BundleTypeId, ContainerBinding, ContainerKind, Continuation,
     CoroutineLayout, CoroutinePhase, CoroutineState, DynFutureLayout, FutureEvidence, FutureFacts,
-    FutureTarget, HttpClientBinding, HttpConnBinding, HttpRequestBinding, HttpRequestTarget,
-    HttpRole, HttpServerBinding, HttpServiceBinding, IoOperationKind, LayoutSelection, MemberRef,
-    PollAction, PollCase, PollProgram, ResourceBinding, ResourceKind, SchedulerBinding,
-    SchedulerClass, SelectBinding, Selector, SemanticIssue, SemanticIssueKind, SemanticOrigin,
-    SemanticOriginId, SemanticRule, SemanticRuleId, SemanticRuleKind, SemanticTable,
-    SourceFileEvidence, SourceLoc, Step, StoragePolicy, StrRef, StringInterner, TaskEntryId,
-    TaskFutureEntry, TypeDef, TypeSemantics, TypeTable, TypedPath, WalkOutcome, WalkRole,
-    WalksTable, container_roles, container_routes, required_resource_roles,
+    FutureTarget, HashTableBinding, HttpClientBinding, HttpConnBinding, HttpRequestBinding,
+    HttpRequestTarget, HttpRole, HttpServerBinding, HttpServiceBinding, IoOperationKind,
+    LayoutSelection, MemberRef, PollAction, PollCase, PollProgram, ResourceBinding, ResourceKind,
+    SchedulerBinding, SchedulerClass, SelectBinding, Selector, SemanticIssue, SemanticIssueKind,
+    SemanticOrigin, SemanticOriginId, SemanticRule, SemanticRuleId, SemanticRuleKind,
+    SemanticTable, SourceFileEvidence, SourceLoc, Step, StoragePolicy, StrRef, StringInterner,
+    TaskEntryId, TaskFutureEntry, TypeDef, TypeSemantics, TypeTable, TypedPath, WalkOutcome,
+    WalkRole, WalksTable, container_roles, container_routes, required_resource_roles,
     required_resource_routes, scheduler_role, semantic_path_target,
 };
 use crate::detect::Family;
 use crate::detect::adapters::{
-    self, H1Role, HttpDispatcherLayout, HttpRequestKind, HttpRequestLayout, InstrumentedLayout,
-    Pointee, PointerDecline, SelectLayout, StdAdapter, WidePointer, hyper_h1, request,
+    self, H1Role, HashTableLayout, HttpDispatcherLayout, HttpRequestKind, HttpRequestLayout,
+    InstrumentedLayout, Pointee, PointerDecline, SelectLayout, StdAdapter, WidePointer, hash_table,
+    hyper_h1, request,
 };
 use crate::detect::semantics::{
     DROPSHOT_HANDLER_V0_17_0, DROPSHOT_SERVER_V0_17_0, FUTURES_UTIL_ADAPTERS_V0_3_30,
-    HTTP_REQUEST_V1_0_0, HYPER_H1_CONN_V1_6_0, HYPER_UTIL_AUTO_CONN_V0_1_10,
-    HYPER_UTIL_TOKIO_SLEEP_V0_1_10, LibraryConvention, REQWEST_PENDING_REQUEST_V0_12_0,
-    RustcConvention, TOKIO_INTERVAL_TICK_V1_47, TOKIO_SELECT_V1_47, TOKIO_STREAM_MAP_V0_1_14,
-    TOKIO_STREAM_WATCH_V0_1_14, TOKIO_UTIL_REUSABLE_BOX_V0_7_11, TRACING_INSTRUMENTED_V0_1_40,
-    library_convention, rustc_core_pending_convention, rustc_coroutine_convention,
-    rustc_dyn_future_abi_convention, rustc_std_adapter_convention, tokio_state_protocol,
+    HASHBROWN_TABLE_V0_12_3, HTTP_REQUEST_V1_0_0, HYPER_H1_CONN_V1_6_0,
+    HYPER_UTIL_AUTO_CONN_V0_1_10, HYPER_UTIL_TOKIO_SLEEP_V0_1_10, LibraryConvention,
+    REQWEST_PENDING_REQUEST_V0_12_0, RustcConvention, TOKIO_INTERVAL_TICK_V1_47,
+    TOKIO_SELECT_V1_47, TOKIO_STREAM_MAP_V0_1_14, TOKIO_STREAM_WATCH_V0_1_14,
+    TOKIO_UTIL_REUSABLE_BOX_V0_7_11, TRACING_INSTRUMENTED_V0_1_40, library_convention,
+    rustc_core_pending_convention, rustc_coroutine_convention, rustc_dyn_future_abi_convention,
+    rustc_std_adapter_convention, tokio_state_protocol,
 };
 
 use std::borrow::Cow;
@@ -478,6 +480,38 @@ struct RequestSeed {
     sources: BTreeSet<PollSource>,
 }
 
+/// A hash table as its screen saw it, by bundle id: which of the four
+/// types holds it, the types of the three words the walk reads and of a
+/// bucket, and the declarations of hashbrown's own map inside it, which
+/// the hashbrown release is read off.
+#[derive(Clone, Debug)]
+struct TableSeed {
+    kind: adapters::HashTableKind,
+    bucket_mask: BundleTypeId,
+    ctrl: BundleTypeId,
+    items: BundleTypeId,
+    bucket: BundleTypeId,
+    sources: BTreeSet<PollSource>,
+}
+
+/// The screen's table layout by bundle id. `None` when a type it names
+/// was not emitted: the bucket is reached only through a `PhantomData`,
+/// so it is in the table only where the display program reserved it.
+fn table_seed(
+    layout: HashTableLayout,
+    bundle_id: impl Fn(TypeId) -> Option<BundleTypeId>,
+    sources: BTreeSet<PollSource>,
+) -> Option<TableSeed> {
+    Some(TableSeed {
+        kind: layout.kind,
+        bucket_mask: bundle_id(layout.bucket_mask)?,
+        ctrl: bundle_id(layout.ctrl)?,
+        items: bundle_id(layout.items)?,
+        bucket: bundle_id(layout.bucket)?,
+        sources,
+    })
+}
+
 #[derive(Default)]
 pub(super) struct Seed {
     polls: BTreeSet<String>,
@@ -500,6 +534,9 @@ pub(super) struct Seed {
     /// A type keeping a request's words, where the type is one: a fact
     /// read wherever a chain or a frame holds a value of it.
     request: Option<RequestSeed>,
+    /// A hash table, where the type is one: a fact read wherever a value
+    /// of it is scanned as storage.
+    table: Option<TableSeed>,
     /// core's `Pending<T>` as its screen saw it: the compiler verdict on
     /// its defining units, which is the whole of the rule's origin. The
     /// layout is the screen's; there is no member to route through.
@@ -523,6 +560,7 @@ impl Seed {
             || self.select.is_some()
             || self.http.is_some()
             || self.request.is_some()
+            || self.table.is_some()
     }
 }
 
@@ -872,6 +910,17 @@ pub(super) fn collect_semantic_seeds(
                 seed.type_sources = type_sources(raw);
             }
             seed.library = Some(library);
+        } else if HASH_TABLES.iter().any(|prefix| name.starts_with(prefix))
+            && let Some(layout) = adapters::hash_table(reader, raw)
+        {
+            // The release is hashbrown's, so it is read off hashbrown's
+            // map — the one type all four hold — and not off a
+            // wrapper std declares, nor off the `RawTable`, whose name
+            // std's vendored copy and a registry release share.
+            let sources = type_sources(layout.map);
+            if let Some(seed) = table_seed(layout, bundle_id, sources) {
+                seeds.entry(ty).or_default().table = Some(seed);
+            }
         } else if name.starts_with(STREAM_MAP) {
             // The map's layout is the walk contract's to bind, by the
             // roles rooted at its name; its origin is the type's own
@@ -1028,6 +1077,15 @@ const CONTAINER_KINDS: [(ContainerKind, SemanticRuleKind); 3] = [
 /// seed the container.
 const STREAM_MAP: &str = "tokio_stream::stream_map::StreamMap<";
 
+/// The names a hash table is screened under: hashbrown's map and set,
+/// and std's wrappers of each.
+const HASH_TABLES: [&str; 4] = [
+    "hashbrown::map::HashMap<",
+    "hashbrown::set::HashSet<",
+    "std::collections::hash::map::HashMap<",
+    "std::collections::hash::set::HashSet<",
+];
+
 /// The rule a container binds under. The two tokio and futures-util
 /// sets bind under the bundle's one layout origin for their library;
 /// the map is a third-party type whose layout the contract binds by
@@ -1137,6 +1195,14 @@ enum RuleKey {
         kind: SemanticRuleKind,
         origin: DelegationOrigin,
     },
+    /// A layout rule over a release its declarations named, under the
+    /// origin of that package, release and reviewed family.
+    Layout {
+        kind: SemanticRuleKind,
+        package: &'static str,
+        version: String,
+        family: &'static str,
+    },
 }
 
 /// The origins and rules a bundle applied, interned on first use in
@@ -1149,6 +1215,7 @@ struct Rules {
     futures_util: Option<SemanticOriginId>,
     rustc: BTreeMap<(String, &'static str), SemanticOriginId>,
     delegation: BTreeMap<DelegationOrigin, SemanticOriginId>,
+    layout: BTreeMap<(&'static str, String, &'static str), SemanticOriginId>,
 }
 
 impl Rules {
@@ -1161,6 +1228,7 @@ impl Rules {
             futures_util: None,
             rustc: BTreeMap::new(),
             delegation: BTreeMap::new(),
+            layout: BTreeMap::new(),
         }
     }
 
@@ -1266,6 +1334,30 @@ impl Rules {
                                 .collect(),
                         });
                         self.delegation.insert(origin.clone(), id);
+                        id
+                    }
+                };
+                (*kind, id)
+            }
+            RuleKey::Layout {
+                kind,
+                package,
+                version,
+                family,
+            } => {
+                let slot = (*package, version.clone(), *family);
+                let id = match self.layout.get(&slot) {
+                    Some(id) => *id,
+                    None => {
+                        // Only a release inside the reviewed range is
+                        // planned under a layout key.
+                        let id = self.push_origin(SemanticOrigin::LibraryLayout {
+                            package: strings.intern(package),
+                            version: Some(strings.intern(version)),
+                            family: strings.intern(family),
+                            selection: LayoutSelection::ReviewedRange,
+                        });
+                        self.layout.insert(slot, id);
                         id
                     }
                 };
@@ -1458,6 +1550,9 @@ struct Draft {
     /// The request's words this value keeps, where its type is one a
     /// reviewed range says does.
     request: Option<RequestPlan>,
+    /// The hash table this value keeps, where its type is one a
+    /// reviewed range lays out.
+    table: Option<TablePlan>,
     own_record: bool,
 }
 
@@ -1636,6 +1731,14 @@ pub(super) fn bind_semantics(
         if readable && let Some(request) = &seed.request {
             match plan_request(ty, request, &seed.poll_sources, types, strings) {
                 Ok(plan) => draft.request = Some(plan),
+                Err(decline) => draft.issues.push(decline),
+            }
+        }
+        // Likewise the table: what a scan reads a map's entries through,
+        // and an issue beside the record where it declines.
+        if readable && let Some(table) = &seed.table {
+            match plan_table(ty, table, types, strings) {
+                Ok(plan) => draft.table = Some(plan),
                 Err(decline) => draft.issues.push(decline),
             }
         }
@@ -1964,6 +2067,16 @@ pub(super) fn bind_semantics(
                 target_ptr: plan.target_ptr,
                 target_len: plan.target_len,
             });
+        let table = draft
+            .table
+            .filter(|_| readable)
+            .map(|plan| HashTableBinding {
+                rule: rules.rule(&plan.rule, strings, library),
+                bucket_mask: plan.bucket_mask,
+                ctrl: plan.ctrl,
+                items: plan.items,
+                bucket: plan.bucket,
+            });
         records.push(TypeSemantics {
             ty,
             storage,
@@ -1978,6 +2091,7 @@ pub(super) fn bind_semantics(
             select,
             http,
             request,
+            table,
             issues,
         });
     }
@@ -3129,6 +3243,124 @@ fn plan_request(
         target_ptr: member_route(types, strings, ty, &ptr, seed.target_ptr)?,
         target_len: member_route(types, strings, ty, &len, seed.target_len)?,
     })
+}
+
+/// Where the toolchain's own copies of the crates std depends on are
+/// compiled from, each in a `<crate>-<version>` directory, as a line
+/// table records it.
+const TOOLCHAIN_DEPS: &str = "/rust/deps/";
+
+struct TablePlan {
+    rule: RuleKey,
+    bucket_mask: TypedPath,
+    ctrl: TypedPath,
+    items: TypedPath,
+    bucket: BundleTypeId,
+}
+
+/// Plan a hash table's binding: the hashbrown release first, read off
+/// the declarations of hashbrown's map, then the three routes to the
+/// table's words by the member names the reviewed layout declares, held
+/// to the final table and landing on the types the screen saw.
+fn plan_table(
+    ty: BundleTypeId,
+    seed: &TableSeed,
+    types: &TypeTable,
+    strings: &mut StringInterner,
+) -> Result<TablePlan, Decline> {
+    use hash_table::{BUCKET_MASK, CTRL, ITEMS, POINTER, TABLE};
+    let convention = &HASHBROWN_TABLE_V0_12_3;
+    let version = table_release(&seed.sources, convention)?;
+    let rule = RuleKey::Layout {
+        kind: SemanticRuleKind::HashbrownTable,
+        package: convention.package,
+        version,
+        family: convention.family,
+    };
+    let words = |word: &[&'static str]| -> Vec<&'static str> {
+        seed.kind
+            .outer()
+            .iter()
+            .chain(&[TABLE, TABLE])
+            .chain(word)
+            .copied()
+            .collect()
+    };
+    Ok(TablePlan {
+        rule,
+        bucket_mask: member_route(types, strings, ty, &words(&[BUCKET_MASK]), seed.bucket_mask)?,
+        ctrl: member_route(types, strings, ty, &words(&[CTRL, POINTER]), seed.ctrl)?,
+        items: member_route(types, strings, ty, &words(&[ITEMS]), seed.items)?,
+        bucket: seed.bucket,
+    })
+}
+
+/// The hashbrown release a table's map was declared in: a cargo registry
+/// release, or the one the toolchain vendors for std. A declaration in
+/// another crate — a trait some other crate implements on the map —
+/// says nothing about which hashbrown laid it out and is set aside.
+/// Where every release named is inside the reviewed range the binding
+/// holds for each, and the origin names the newest, as a delegation's
+/// does; where one is outside, or none is named at all, there is no
+/// binding.
+fn table_release(
+    sources: &BTreeSet<PollSource>,
+    convention: &'static LibraryConvention,
+) -> Result<String, Decline> {
+    let decline = |detail: String| (SemanticIssueKind::UnsupportedOrigin, detail);
+    let package = convention.package;
+    let mut releases: BTreeSet<semver::Version> = BTreeSet::new();
+    for source in sources {
+        let release = match registry_origin(&source.path) {
+            Some(origin) => Some((origin.package, origin.version)),
+            None if source.path.contains(TOOLCHAIN_DEPS) => {
+                super::paths::crate_version_of(&source.path)
+            }
+            None => None,
+        };
+        let Some((named, version)) = release else {
+            continue;
+        };
+        if named != package {
+            continue;
+        }
+        if let Some(md5) = &source.md5
+            && !convention.reviewed_checksum(md5)
+        {
+            return Err(decline(format!(
+                "{} has checksum {}, not a reviewed revision of {}",
+                source.path,
+                hex(md5),
+                convention.family
+            )));
+        }
+        releases.insert(version);
+    }
+    let Some(newest) = releases.last() else {
+        return Err(decline(match sources.first() {
+            None => format!("no method declaration records which {package} release this is"),
+            Some(source) => format!(
+                "declared in {}, which names no {package} release",
+                source.path
+            ),
+        }));
+    };
+    if let Some(side) = releases.iter().find_map(|version| {
+        library_convention(convention, version)
+            .err()
+            .map(|s| (version, s))
+    }) {
+        let (version, side) = side;
+        let side = match side {
+            LayoutSelection::BelowFloor => "below",
+            _ => "above",
+        };
+        return Err(decline(format!(
+            "{package} {version} is {side} the reviewed range {}",
+            convention.range()
+        )));
+    }
+    Ok(newest.to_string())
 }
 
 /// Plan a `select!`'s binding: the origin first — the closure
@@ -4497,6 +4729,74 @@ mod tests {
             let (kind, detail) = container_rule(ContainerKind::StreamMap, &seed).unwrap_err();
             assert_eq!(kind, SemanticIssueKind::UnsupportedOrigin, "{detail}");
             assert!(detail.contains(expected), "{detail}");
+        }
+    }
+
+    /// A table's hashbrown release is read off its map's declarations:
+    /// a registry release, or the one the toolchain vendors for std.
+    /// Another crate's declaration on the map names nothing and is set
+    /// aside; releases on both paths bind together where each is
+    /// reviewed, as the newest; and one outside the range, a checksum
+    /// that is no reviewed file's, or no release named at all, declines.
+    #[test]
+    fn test_a_table_release_is_read_off_either_hashbrown_path() {
+        let registry = |package: &str, version: &str| {
+            source(
+                &format!(
+                    "/home/u/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/\
+                     {package}-{version}/src/map.rs"
+                ),
+                None,
+            )
+        };
+        let vendored =
+            |version: &str| source(&format!("/rust/deps/hashbrown-{version}/src/map.rs"), None);
+        let release = |sources: &[PollSource]| {
+            table_release(&sources.iter().cloned().collect(), &HASHBROWN_TABLE_V0_12_3)
+        };
+        assert_eq!(
+            release(&[registry("hashbrown", "0.15.5")]).unwrap(),
+            "0.15.5"
+        );
+        assert_eq!(release(&[vendored("0.17.1")]).unwrap(), "0.17.1");
+        assert_eq!(
+            release(&[
+                vendored("0.17.1"),
+                registry("hashbrown", "0.14.5"),
+                registry("serde", "1.0.228"),
+            ])
+            .unwrap(),
+            "0.17.1"
+        );
+        for (sources, expected) in [
+            (vec![], "no method declaration"),
+            (
+                vec![registry("serde", "1.0.228")],
+                "names no hashbrown release",
+            ),
+            (
+                vec![source("/build/vendor/hashbrown-0.15.5/src/map.rs", None)],
+                "names no hashbrown release",
+            ),
+            (
+                vec![vendored("0.12.2")],
+                "0.12.2 is below the reviewed range",
+            ),
+            (
+                vec![vendored("0.17.1"), registry("hashbrown", "0.18.0")],
+                "0.18.0 is above the reviewed range",
+            ),
+            (
+                vec![source(
+                    "/rust/deps/hashbrown-0.17.1/src/map.rs",
+                    Some([9; 16]),
+                )],
+                "not a reviewed revision",
+            ),
+        ] {
+            let (kind, detail) = release(&sources).unwrap_err();
+            assert_eq!(kind, SemanticIssueKind::UnsupportedOrigin, "{detail}");
+            assert!(detail.contains(expected), "{expected}: {detail}");
         }
     }
 

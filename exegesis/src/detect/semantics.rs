@@ -1590,6 +1590,30 @@ pub const TOKIO_STREAM_MAP_V0_1_14: LibraryConvention = LibraryConvention {
     ],
 };
 
+/// hashbrown's `RawTable` as 0.12.3 through 0.17.1 lay it out, read in
+/// every release of that range (`src/raw/mod.rs`, `src/raw.rs` from
+/// 0.17.0, beside `src/map.rs` and `src/set.rs`): `HashMap` is
+/// `{ hash_builder, table: RawTable<(K, V), A> }`, `HashSet` is
+/// `{ map: HashMap<T, (), S, A> }`, and a `RawTable`'s `table` is the
+/// `RawTableInner` holding `bucket_mask`, `ctrl: NonNull<u8>`,
+/// `growth_left` and `items` — its allocator moved out to the
+/// `RawTable` at 0.14.1, which no route crosses. A table has
+/// `bucket_mask + 1` buckets and a control byte for each at `ctrl`, one
+/// with its top bit clear (`is_full`) for every full bucket, of which
+/// `items` counts the number; `data_end` is `ctrl` itself, and bucket
+/// `i` is the `T` ending `i` buckets below it (`from_base_index` takes
+/// `base.sub(index)`, `as_ptr` one `T` below that). std vendors the
+/// crate, so its maps follow whichever release the toolchain carries;
+/// the version is read off the declarations either way. No reviewed
+/// file's checksum is listed: rustc's DWARF 4 records none to check.
+pub const HASHBROWN_TABLE_V0_12_3: LibraryConvention = LibraryConvention {
+    package: "hashbrown",
+    family: "hashbrown-table-0.12.3",
+    floor: (0, 12, 3),
+    ceiling: (0, 17, 1),
+    checksums: &[],
+};
+
 /// The reviewed implementation a version selects, or which side of the
 /// reviewed range it falls on. A version outside gets no rule, however
 /// familiar the layout looks: a delegation authorizes following a poll,

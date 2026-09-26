@@ -1873,6 +1873,7 @@ mod tests {
                     select: None,
                     http: None,
                     request: None,
+                    table: None,
                     issues: Vec::new(),
                 },
             );

@@ -36,6 +36,7 @@ fn record(ty: BundleTypeId) -> TypeSemantics {
         select: None,
         http: None,
         request: None,
+        table: None,
         issues: Vec::new(),
     }
 }
@@ -2950,6 +2951,194 @@ fn test_semantic_request_binding_routes_the_method_and_the_target_text() {
         target: BundleTypeId(0),
     };
     bad(&wrong, "not under one member");
+    // A record with no readable storage keeps no binding.
+    let mut wrong = b.clone();
+    wrong.semantics.types[0].storage = StoragePolicy::Unavailable(issue());
+    bad(&wrong, "unavailable storage carries a readable capability");
+}
+
+/// A hashbrown map bound as a table — `{ table: RawTable { table:
+/// RawTableInner { ctrl: NonNull<u8>, bucket_mask, growth_left, items } } }`
+/// over `(u64, u64)` buckets — under a reviewed hashbrown layout origin,
+/// with a tokio origin and an unreviewed hashbrown one beside it for the
+/// test to point the rule at.
+fn hash_table() -> (Bundle, HashTableBinding) {
+    let mut b = base();
+    let mut strings = StringInterner::new();
+    for s in b.strings.iter() {
+        strings.intern(s);
+    }
+    let mut name = |s: &str| strings.intern(s);
+    let (hashbrown, version, newer, family, other_family) = (
+        name("hashbrown"),
+        name("0.17.1"),
+        name("0.18.0"),
+        name("hashbrown-table-0.12.3"),
+        name("decoy-family"),
+    );
+    let (u8_name, non_null, inner_name, raw_name, map_name, bucket_name) = (
+        name("u8"),
+        name("core::ptr::non_null::NonNull<u8>"),
+        name("hashbrown::raw::RawTableInner"),
+        name("hashbrown::raw::RawTable<(u64, u64), alloc::alloc::Global>"),
+        name("hashbrown::map::HashMap<u64, u64>"),
+        name("(u64, u64)"),
+    );
+    let (table, ctrl, pointer, bucket_mask, growth_left, items, first, second) = (
+        name("table"),
+        name("ctrl"),
+        name("pointer"),
+        name("bucket_mask"),
+        name("growth_left"),
+        name("items"),
+        name("__0"),
+        name("__1"),
+    );
+    let tokio = name("tokio");
+    b.strings = strings.finish();
+    let member = |name, ty, offset| MemberDef { name, ty, offset };
+    let mut next = b.types.types.len() as u32;
+    let mut id = || {
+        next += 1;
+        BundleTypeId(next - 1)
+    };
+    let (u8_t, byte_ptr, non_null_t, inner_t, raw_t, map_t, bucket_t) =
+        (id(), id(), id(), id(), id(), id(), id());
+    let word = BundleTypeId(0);
+    let strukt = |name, size, members| TypeDef::Struct {
+        name,
+        size,
+        members,
+    };
+    b.types.types.extend([
+        TypeDef::Base {
+            name: u8_name,
+            size: 1,
+            encoding: Encoding::Unsigned,
+        },
+        TypeDef::Pointer {
+            name: None,
+            target: u8_t,
+        },
+        strukt(non_null, 8, vec![member(pointer, byte_ptr, 0)]),
+        strukt(
+            inner_name,
+            32,
+            vec![
+                member(ctrl, non_null_t, 0),
+                member(bucket_mask, word, 8),
+                member(growth_left, word, 16),
+                member(items, word, 24),
+            ],
+        ),
+        strukt(raw_name, 32, vec![member(table, inner_t, 0)]),
+        strukt(map_name, 32, vec![member(table, raw_t, 0)]),
+        strukt(
+            bucket_name,
+            16,
+            vec![member(first, word, 0), member(second, word, 8)],
+        ),
+    ]);
+    let origin = SemanticOriginId(b.semantics.origins.len() as u32);
+    b.semantics.origins.extend([
+        SemanticOrigin::LibraryLayout {
+            package: hashbrown,
+            version: Some(version),
+            family,
+            selection: LayoutSelection::ReviewedRange,
+        },
+        SemanticOrigin::LibraryLayout {
+            package: tokio,
+            version: None,
+            family: other_family,
+            selection: LayoutSelection::VersionUnknown,
+        },
+        SemanticOrigin::LibraryLayout {
+            package: hashbrown,
+            version: Some(newer),
+            family,
+            selection: LayoutSelection::AboveReviewedRange,
+        },
+    ]);
+    let rule = SemanticRuleId(b.semantics.rules.len() as u32);
+    b.semantics.rules.push(SemanticRule {
+        kind: SemanticRuleKind::HashbrownTable,
+        revision: 1,
+        origin,
+    });
+    let words = |last: &[StrRef], target| TypedPath {
+        steps: [table, table]
+            .iter()
+            .chain(last)
+            .map(|&name| named(name))
+            .collect(),
+        target,
+    };
+    let binding = HashTableBinding {
+        rule,
+        bucket_mask: words(&[bucket_mask], word),
+        ctrl: words(&[ctrl, pointer], byte_ptr),
+        items: words(&[items], word),
+        bucket: bucket_t,
+    };
+    let mut r = record(map_t);
+    r.future = None;
+    r.table = Some(binding.clone());
+    b.semantics.types = vec![r];
+    b.validate().unwrap();
+    (b, binding)
+}
+
+/// The table binding: under hashbrown's layout rule at a reviewed
+/// release, two unsigned words and a pointer to the control bytes, each
+/// its own member, and a sized bucket; a record with no readable
+/// storage carries none.
+#[test]
+fn test_semantic_table_binding_routes_the_words_of_a_reviewed_release() {
+    let (b, binding) = hash_table();
+    let mut bytes = Vec::new();
+    b.write_to(&mut bytes).unwrap();
+    assert_eq!(Bundle::read_from(bytes.as_slice()).unwrap(), b);
+
+    fn table(b: &mut Bundle) -> &mut HashTableBinding {
+        b.semantics.types[0].table.as_mut().unwrap()
+    }
+    // The rule has to be the table rule: a pointer adapter's is not.
+    let mut wrong = b.clone();
+    table(&mut wrong).rule = SemanticRuleId(0);
+    bad(&wrong, "rule has an incompatible capability");
+    // The rule's origin is hashbrown's layout, at a release the review
+    // read: tokio's origin is another crate's, and a newer release than
+    // the range is unread.
+    let rule = binding.rule.0 as usize;
+    let origin = b.semantics.rules[rule].origin.0;
+    let mut wrong = b.clone();
+    wrong.semantics.rules[rule].origin = SemanticOriginId(origin + 1);
+    bad(&wrong, "layout rule has an incompatible library origin");
+    let mut wrong = b.clone();
+    wrong.semantics.rules[rule].origin = SemanticOriginId(origin + 2);
+    bad(&wrong, "hash table rule requires a reviewed range");
+    // The mask and the count are words, the control bytes a pointer to
+    // bytes: the `NonNull` holding that pointer is no pointer itself.
+    let mut wrong = b.clone();
+    table(&mut wrong).bucket_mask = binding.ctrl.clone();
+    bad(&wrong, "bucket mask is not an unsigned word");
+    let mut wrong = b.clone();
+    table(&mut wrong).items = binding.ctrl.clone();
+    bad(&wrong, "item count is not an unsigned word");
+    let mut wrong = b.clone();
+    table(&mut wrong).ctrl.steps.pop();
+    table(&mut wrong).ctrl.target = BundleTypeId(binding.ctrl.target.0 + 1);
+    bad(&wrong, "control bytes are not reached by a pointer");
+    // Each word is its own member: a mask that is the count reads one
+    // word as both.
+    let mut wrong = b.clone();
+    table(&mut wrong).items = binding.bucket_mask.clone();
+    bad(&wrong, "reads one member as two of its words");
+    // The bucket is a type the table has.
+    let mut wrong = b.clone();
+    table(&mut wrong).bucket = BundleTypeId(u32::MAX);
+    bad(&wrong, "invalid type id");
     // A record with no readable storage keeps no binding.
     let mut wrong = b.clone();
     wrong.semantics.types[0].storage = StoragePolicy::Unavailable(issue());

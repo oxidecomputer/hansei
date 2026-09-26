@@ -4621,6 +4621,7 @@ mod synthetic_tests {
                 select: None,
                 http: None,
                 request: None,
+                table: None,
                 issues: Vec::new(),
             }],
             ..Default::default()

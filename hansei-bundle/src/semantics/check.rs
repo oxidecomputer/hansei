@@ -235,6 +235,10 @@ impl<'a> Check<'a> {
             | TokioNotifiedState
             | TokioOneshotRecv
             | TokioOneshotRecvState => "tokio",
+            // A layout rule whose version is read off the declarations
+            // of hashbrown's map, where std's vendored copy has no cargo
+            // registry path to be a delegation origin by.
+            HashbrownTable => "hashbrown",
         };
         require(
             matches!(origin, SemanticOrigin::LibraryLayout { package: p, .. }
@@ -265,6 +269,21 @@ impl<'a> Check<'a> {
                     }
                 ),
                 "state rule requires a reviewed range",
+            )?;
+        }
+        if rule.kind == HashbrownTable {
+            // The table rule authorizes reading a map's buckets as the
+            // value's storage, so like a state protocol it binds only on
+            // a release the review read.
+            require(
+                matches!(
+                    origin,
+                    SemanticOrigin::LibraryLayout {
+                        selection: LayoutSelection::ReviewedRange,
+                        ..
+                    }
+                ),
+                "hash table rule requires a reviewed range",
             )?;
         }
         Ok(())
@@ -557,6 +576,65 @@ impl<'a> Check<'a> {
                 && binding.target_len.steps.len() > 1
                 && binding.target_ptr.steps[0] == binding.target_len.steps[0],
             "HTTP request target pointer and length are not under one member",
+        )
+    }
+
+    /// A hash table's words: two unsigned words and a pointer to the
+    /// control bytes, each its own member, and a sized bucket type the
+    /// entries are read as.
+    fn table(&self, record: &TypeSemantics, binding: &HashTableBinding) -> Result<()> {
+        self.rule(binding.rule, &[SemanticRuleKind::HashbrownTable])?;
+        let word = |ty: &TypeDef| {
+            matches!(
+                ty,
+                TypeDef::Base {
+                    encoding: crate::Encoding::Unsigned,
+                    size: 8,
+                    ..
+                }
+            )
+        };
+        self.path(record.ty, &binding.bucket_mask)?;
+        require(
+            word(self.ty(binding.bucket_mask.target)?),
+            "hash table bucket mask is not an unsigned word",
+        )?;
+        self.path(record.ty, &binding.items)?;
+        require(
+            word(self.ty(binding.items.target)?),
+            "hash table item count is not an unsigned word",
+        )?;
+        self.path(record.ty, &binding.ctrl)?;
+        let byte = match self.ty(binding.ctrl.target)? {
+            TypeDef::Pointer { target, .. } => self.ty(*target)?,
+            _ => {
+                return require(
+                    false,
+                    "hash table control bytes are not reached by a pointer",
+                );
+            }
+        };
+        require(
+            matches!(
+                byte,
+                TypeDef::Base {
+                    encoding: crate::Encoding::Unsigned,
+                    size: 1,
+                    ..
+                }
+            ),
+            "hash table control pointer does not point at bytes",
+        )?;
+        require(
+            binding.bucket_mask.steps != binding.items.steps
+                && binding.bucket_mask.steps != binding.ctrl.steps
+                && binding.items.steps != binding.ctrl.steps,
+            "hash table reads one member as two of its words",
+        )?;
+        self.ty(binding.bucket)?;
+        require(
+            self.0.types.size_of(binding.bucket).is_some(),
+            "hash table bucket type is unsized",
         )
     }
 
@@ -1287,7 +1365,8 @@ pub(crate) fn check_semantics(bundle: &Bundle) -> Result<()> {
                         && record.container.is_none()
                         && record.select.is_none()
                         && record.http.is_none()
-                        && record.request.is_none(),
+                        && record.request.is_none()
+                        && record.table.is_none(),
                     "unavailable storage carries a readable capability",
                 )?;
             }
@@ -1345,6 +1424,13 @@ pub(crate) fn check_semantics(bundle: &Bundle) -> Result<()> {
                 "HTTP request binding needs declared-member storage",
             )?;
             check.request(record, request)?;
+        }
+        if let Some(table) = &record.table {
+            require(
+                matches!(record.storage, StoragePolicy::DeclaredMembers),
+                "hash table binding needs declared-member storage",
+            )?;
+            check.table(record, table)?;
         }
         if let Some(container) = &record.container {
             let kind = match container.kind {
