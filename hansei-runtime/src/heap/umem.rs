@@ -1006,7 +1006,7 @@ impl<'t, T: Target> Walk<'t, T> {
     /// cache is found, so a walk that cannot trust it has no population
     /// to be partly right about.
     fn walk_caches(&mut self, anchor: u64) -> Option<()> {
-        let mut addr = self.read(anchor + self.layout.cache_next)?;
+        let mut addr = self.read_at(anchor, self.layout.cache_next)?;
         let mut prev = anchor;
         let mut seen = 0;
         while addr != anchor {
@@ -1018,12 +1018,12 @@ impl<'t, T: Target> Walk<'t, T> {
             // an entry whose `cache_prev` is not where we came from is
             // a misread pointer or a corrupt list, and either way the
             // rest of the walk is guesswork.
-            if self.read(addr + self.layout.cache_prev)? != prev {
+            if self.read_at(addr, self.layout.cache_prev)? != prev {
                 return None;
             }
             self.walk_cache(addr);
             prev = addr;
-            addr = self.read(addr + self.layout.cache_next)?;
+            addr = self.read_at(addr, self.layout.cache_next)?;
         }
         (self.stats.caches > 0).then_some(())
     }
@@ -1076,22 +1076,25 @@ impl<'t, T: Target> Walk<'t, T> {
     /// that could exist: a buffer fits its chunk, a chunk fits its
     /// slab, and neither is zero.
     fn read_cache(&self, addr: u64) -> Option<Cache> {
-        let bufsize = self.read(addr + self.layout.cache_bufsize)?;
-        let chunksize = self.read(addr + self.layout.cache_chunksize)?;
-        let slabsize = self.read(addr + self.layout.cache_slabsize)?;
-        let flags = self.target.read_u32(addr + self.layout.cache_flags).ok()?;
+        let bufsize = self.read_at(addr, self.layout.cache_bufsize)?;
+        let chunksize = self.read_at(addr, self.layout.cache_chunksize)?;
+        let slabsize = self.read_at(addr, self.layout.cache_slabsize)?;
+        let flags = self
+            .target
+            .read_u32(addr.checked_add(self.layout.cache_flags)?)
+            .ok()?;
         if bufsize == 0 || bufsize > chunksize || chunksize > slabsize {
             return None;
         }
         // The embedded bufctl a non-hashed cache's freelist is chained
         // through has to be inside the buffer it belongs to.
-        let bufctl = self.read(addr + self.layout.cache_bufctl)?;
+        let bufctl = self.read_at(addr, self.layout.cache_bufctl)?;
         if flags & UMF_HASH == 0 && bufctl >= chunksize {
             return None;
         }
         Some(Cache {
             addr,
-            name: self.read_name(addr + self.layout.cache_name)?,
+            name: self.read_name_at(addr, self.layout.cache_name)?,
             bufsize,
             chunksize,
             slabsize,
@@ -1110,8 +1113,8 @@ impl<'t, T: Target> Walk<'t, T> {
     /// `cache_nullslab`. `None` means the list itself is unwalkable;
     /// individual slabs decline on their own without ending the walk.
     fn walk_slabs(&mut self, cache_addr: u64, cache: &mut Cache, index: u32) -> Option<()> {
-        let anchor = cache_addr + self.layout.cache_nullslab;
-        let mut addr = self.read(anchor + self.layout.slab_next)?;
+        let anchor = cache_addr.checked_add(self.layout.cache_nullslab)?;
+        let mut addr = self.read_at(anchor, self.layout.slab_next)?;
         let mut prev = anchor;
         let mut seen = 0;
         while addr != anchor {
@@ -1119,7 +1122,7 @@ impl<'t, T: Target> Walk<'t, T> {
             if seen > MAX_SLABS_PER_CACHE {
                 return None;
             }
-            if self.read(addr + self.layout.slab_prev)? != prev {
+            if self.read_at(addr, self.layout.slab_prev)? != prev {
                 return None;
             }
             match self.read_slab(addr, cache_addr, cache, index) {
@@ -1137,7 +1140,7 @@ impl<'t, T: Target> Walk<'t, T> {
                 }
             }
             prev = addr;
-            addr = self.read(addr + self.layout.slab_next)?;
+            addr = self.read_at(addr, self.layout.slab_next)?;
         }
         Some(())
     }
@@ -1181,7 +1184,7 @@ impl<'t, T: Target> Walk<'t, T> {
                 return None;
             }
             let buf = match cache.hashed() {
-                true => self.read(bufctl + self.layout.bufctl_addr)?,
+                true => self.read_at(bufctl, self.layout.bufctl_addr)?,
                 // A raw cache chains through a bufctl embedded in the
                 // buffer itself, at a distance the cache records.
                 false => bufctl.checked_sub(cache.bufctl)?,
@@ -1198,7 +1201,7 @@ impl<'t, T: Target> Walk<'t, T> {
                 return None;
             }
             free[chunk as usize / 64] |= 1 << (chunk % 64);
-            bufctl = self.read(bufctl + self.layout.bufctl_next)?;
+            bufctl = self.read_at(bufctl, self.layout.bufctl_next)?;
         }
         // The cross-check.
         if freed != chunks - refcnt {
@@ -1226,8 +1229,8 @@ impl<'t, T: Target> Walk<'t, T> {
     /// independent reading of the same population.
     fn hash_agrees(&self, cache_addr: u64, cache: &Cache, slabs: &[Slab]) -> bool {
         let (Some(table), Some(mask)) = (
-            self.read(cache_addr + self.layout.cache_hash_table),
-            self.read(cache_addr + self.layout.cache_hash_mask),
+            self.read_at(cache_addr, self.layout.cache_hash_table),
+            self.read_at(cache_addr, self.layout.cache_hash_mask),
         ) else {
             return false;
         };
@@ -1244,7 +1247,7 @@ impl<'t, T: Target> Walk<'t, T> {
 
         let mut entries = 0u64;
         for bucket in 0..buckets {
-            let Some(mut bufctl) = self.read(table + bucket * 8) else {
+            let Some(mut bufctl) = self.read_at(table, bucket * 8) else {
                 return false;
             };
             while bufctl != 0 {
@@ -1253,8 +1256,8 @@ impl<'t, T: Target> Walk<'t, T> {
                     return false;
                 }
                 let (Some(buf), Some(next)) = (
-                    self.read(bufctl + self.layout.bufctl_addr),
-                    self.read(bufctl + self.layout.bufctl_next),
+                    self.read_at(bufctl, self.layout.bufctl_addr),
+                    self.read_at(bufctl, self.layout.bufctl_next),
                 ) else {
                     return false;
                 };
@@ -1306,8 +1309,8 @@ impl<'t, T: Target> Walk<'t, T> {
     /// the allocator itself reads — and the magazine type the cache
     /// points at answers for a cache that has never loaded one there.
     fn magazine_size(&self, cache_addr: u64, cache: &Cache) -> Option<i32> {
-        let cpu = cache_addr + self.layout.cache_cpu;
-        match self.read_i32(cpu + self.layout.cc_magsize)? {
+        let cpu = cache_addr.checked_add(self.layout.cache_cpu)?;
+        match self.read_i32_at(cpu, self.layout.cc_magsize)? {
             size @ 1..=MAX_ROUNDS => return Some(size),
             0 => {}
             _ => return None,
@@ -1315,11 +1318,11 @@ impl<'t, T: Target> Walk<'t, T> {
         if cache.flags & UMF_NOMAGAZINE != 0 {
             return Some(0);
         }
-        let magtype = self.read(cache_addr + self.layout.cache_magtype)?;
+        let magtype = self.read_at(cache_addr, self.layout.cache_magtype)?;
         if magtype == 0 {
             return Some(0);
         }
-        let magsize = self.read_i32(magtype + self.layout.mt_magsize)?;
+        let magsize = self.read_i32_at(magtype, self.layout.mt_magsize)?;
         (0..=MAX_ROUNDS).contains(&magsize).then_some(magsize)
     }
 
@@ -1334,9 +1337,9 @@ impl<'t, T: Target> Walk<'t, T> {
         index: u32,
         out: &mut Vec<(u32, u64)>,
     ) -> Option<()> {
-        let depot = cache_addr + self.layout.cache_full;
-        let head = self.read(depot + self.layout.ml_list)?;
-        let total = self.read(depot + self.layout.ml_total)?;
+        let depot = cache_addr.checked_add(self.layout.cache_full)?;
+        let head = self.read_at(depot, self.layout.ml_list)?;
+        let total = self.read_at(depot, self.layout.ml_total)?;
         if total > MAX_MAGAZINES {
             return None;
         }
@@ -1348,7 +1351,7 @@ impl<'t, T: Target> Walk<'t, T> {
                 return None;
             }
             self.read_rounds(mag, magsize, cache, index, out)?;
-            mag = self.read(mag + self.layout.mag_next)?;
+            mag = self.read_at(mag, self.layout.mag_next)?;
             if mag == head {
                 break;
             }
@@ -1369,15 +1372,17 @@ impl<'t, T: Target> Walk<'t, T> {
     ) -> Option<()> {
         let mask = self
             .target
-            .read_u32(cache_addr + self.layout.cache_cpu_mask)
+            .read_u32(cache_addr.checked_add(self.layout.cache_cpu_mask)?)
             .ok()?;
         let cpus = mask as u64 + 1;
         if !cpus.is_power_of_two() || cpus > MAX_CPUS {
             return None;
         }
         for cpu in 0..cpus {
-            let cpu = cache_addr + self.layout.cache_cpu + cpu * self.layout.cpu_cache;
-            let magsize = self.read_i32(cpu + self.layout.cc_magsize)?;
+            let cpu = cache_addr
+                .checked_add(self.layout.cache_cpu)?
+                .checked_add(cpu * self.layout.cpu_cache)?;
+            let magsize = self.read_i32_at(cpu, self.layout.cc_magsize)?;
             for (rounds, loaded) in [
                 (self.layout.cc_rounds, self.layout.cc_loaded),
                 (self.layout.cc_prounds, self.layout.cc_ploaded),
@@ -1387,14 +1392,14 @@ impl<'t, T: Target> Walk<'t, T> {
                 // sentinel is the common case rather than an edge: most
                 // CPUs of a real target never allocated from this cache
                 // at all.
-                let rounds = self.read_i32(cpu + rounds)?;
+                let rounds = self.read_i32_at(cpu, rounds)?;
                 if rounds <= 0 {
                     continue;
                 }
                 if rounds > magsize {
                     return None;
                 }
-                let mag = self.read(cpu + loaded)?;
+                let mag = self.read_at(cpu, loaded)?;
                 if mag == 0 {
                     return None;
                 }
@@ -1415,7 +1420,7 @@ impl<'t, T: Target> Walk<'t, T> {
         out: &mut Vec<(u32, u64)>,
     ) -> Option<()> {
         for round in 0..rounds as u64 {
-            let buf = self.read(mag + self.layout.mag_round + round * 8)?;
+            let buf = self.read_at(mag, self.layout.mag_round + round * 8)?;
             if buf == 0 {
                 return None;
             }
@@ -1640,7 +1645,7 @@ impl<'t, T: Target> Walk<'t, T> {
         // A static holding a pointer is worth what the thing it points
         // at says it is: an arena names itself, and one that does not
         // carry the name this static was supposed to name is not it.
-        if self.read_name(arena + self.layout.vm_name)? != name {
+        if self.read_name_at(arena, self.layout.vm_name)? != name {
             return None;
         }
         let mut out = Arena {
@@ -1651,8 +1656,8 @@ impl<'t, T: Target> Walk<'t, T> {
             freed: 0,
             live_bytes: 0,
         };
-        let anchor = arena + self.layout.vm_seg0;
-        let mut addr = self.read(anchor + self.layout.vs_anext)?;
+        let anchor = arena.checked_add(self.layout.vm_seg0)?;
+        let mut addr = self.read_at(anchor, self.layout.vs_anext)?;
         let mut prev = anchor;
         let mut seen = 0;
         // What the arena imported. The segments below tile it in
@@ -1666,12 +1671,16 @@ impl<'t, T: Target> Walk<'t, T> {
             if seen > MAX_SEGS {
                 return None;
             }
-            if self.read(addr + self.layout.vs_aprev)? != prev {
+            if self.read_at(addr, self.layout.vs_aprev)? != prev {
                 return None;
             }
-            let start = self.read(addr + self.layout.vs_start)?;
-            let end = self.read(addr + self.layout.vs_end)?;
-            match self.target.read_u8(addr + self.layout.vs_type).ok()? {
+            let start = self.read_at(addr, self.layout.vs_start)?;
+            let end = self.read_at(addr, self.layout.vs_end)?;
+            match self
+                .target
+                .read_u8(addr.checked_add(self.layout.vs_type)?)
+                .ok()?
+            {
                 VMEM_SPAN => {
                     if start >= end {
                         return None;
@@ -1705,7 +1714,7 @@ impl<'t, T: Target> Walk<'t, T> {
                 _ => {}
             }
             prev = addr;
-            addr = self.read(addr + self.layout.vs_anext)?;
+            addr = self.read_at(addr, self.layout.vs_anext)?;
         }
         Some(out)
     }
@@ -1768,10 +1777,24 @@ impl<'t, T: Target> Walk<'t, T> {
         self.target.read_u64(addr).ok()
     }
 
+    /// The word `offset` bytes into the structure at `base`. Every base
+    /// the walk reaches a field through is itself a word it read, and a
+    /// corrupt one near the top of the address space is no structure:
+    /// the field's address must not wrap, so such a read refuses.
+    fn read_at(&self, base: u64, offset: u64) -> Option<u64> {
+        self.read(base.checked_add(offset)?)
+    }
+
     /// A signed count, of which libumem has several: a magazine's
     /// rounds are minus one where there is no magazine.
     fn read_i32(&self, addr: u64) -> Option<i32> {
         self.target.read_u32(addr).ok().map(|word| word as i32)
+    }
+
+    /// [`Self::read_i32`] at a field of the structure at `base`, which
+    /// refuses as [`Self::read_at`] does.
+    fn read_i32_at(&self, base: u64, offset: u64) -> Option<i32> {
+        self.read_i32(base.checked_add(offset)?)
     }
 
     /// A `char[32]` cache name, up to its NUL.
@@ -1779,6 +1802,12 @@ impl<'t, T: Target> Walk<'t, T> {
         let bytes = self.target.read_bytes(addr, 32).ok()?;
         let end = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
         Some(String::from_utf8_lossy(&bytes[..end]).into_owned())
+    }
+
+    /// [`Self::read_name`] at a field of the structure at `base`, which
+    /// refuses as [`Self::read_at`] does.
+    fn read_name_at(&self, base: u64, offset: u64) -> Option<String> {
+        self.read_name(base.checked_add(offset)?)
     }
 }
 
