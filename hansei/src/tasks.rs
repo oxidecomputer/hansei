@@ -875,7 +875,7 @@ pub(crate) fn apply_slots(
             request_of: Some(&request_of),
         };
         let owned: Vec<&attribution::AttributedSlot> = slots.of_task(task.addr.0).collect();
-        if owned.is_empty() && !row.waiting_on.starts_with('—') {
+        if owned.is_empty() && waits_on_something(&wait.assessment) {
             row.waiting_on = format!("unarmed: {}", row.waiting_on);
             row.waiting_kind = row.waiting_kind.take().map(|k| format!("unarmed: {k}"));
         }
@@ -1279,6 +1279,23 @@ pub(crate) fn assessment_kind(wait: &rt_graph::TaskWait, stops: &StopNames<'_>) 
         WaitAssessment::NeverReady { .. } => Some("never ready".to_string()),
         WaitAssessment::Unresumed | WaitAssessment::NotWaiting(_) | WaitAssessment::Runnable(_) => {
             None
+        }
+    }
+}
+
+/// Whether an assessment has the task waiting on anything — what a
+/// task with no waker installed anywhere is then `unarmed` against.
+/// Never polled, finished and runnable tasks wait on nothing, so no
+/// missing waker says anything about them.
+fn waits_on_something(assessment: &WaitAssessment) -> bool {
+    match assessment {
+        WaitAssessment::Waiting(_)
+        | WaitAssessment::Set(_)
+        | WaitAssessment::ResourceReady(_)
+        | WaitAssessment::Unknown(_)
+        | WaitAssessment::NeverReady { .. } => true,
+        WaitAssessment::Unresumed | WaitAssessment::NotWaiting(_) | WaitAssessment::Runnable(_) => {
+            false
         }
     }
 }
