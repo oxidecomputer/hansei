@@ -674,42 +674,6 @@ pub enum Command {
         scope: Option<RuntimeScope>,
     },
 
-    /// List every runtime the target holds — one table row per
-    /// discovered runtime: its index, scheduler flavor and handle
-    /// address, the tasks and futures the merged population attributes
-    /// to it, its worker count (a multi_thread runtime's worker slots;
-    /// one for a current_thread runtime, which runs everything on the
-    /// thread that entered it), the threads inside it, and the route
-    /// discovery reached it by. One runtime in full — its lwps by id,
-    /// its drivers and the scheduler state its workers share — is
-    /// `runtime N`.
-    ///
-    /// The index each row carries is the one the task listing tags its
-    /// blocks with, the one `--runtime` selects by, and the one
-    /// `runtime` takes; the handle address beside it names the same
-    /// thing and can be given anywhere the index can. A `LocalSet`
-    /// shares that tag space (its tasks are tagged `local set N`) but
-    /// is not a runtime and has no row here; `whatis` on its shared
-    /// state names it.
-    ///
-    /// A row's threads and route are worth reading together, because
-    /// the list is a lower bound by construction: a runtime no thread
-    /// is inside is only found when something already discovered
-    /// points at it — the route says what — so one whose `block_on`
-    /// has returned and whose tasks nothing outside it names cannot
-    /// be found at all.
-    ///
-    /// Filters are the selection: repeatable `--with FIELD ARG` /
-    /// `--without FIELD ARG` clauses AND together, and `--group FIELD`
-    /// tallies the survivors. The string fields — flavor, found-via —
-    /// are case-insensitive regexes over the spelled value; id and
-    /// handle are exact; tasks, futures, workers and threads compare
-    /// counts, spelled '>N', '<N' or '=N' (quote them from a shell).
-    ///
-    /// The future counts are the census's, so the first `runtimes`
-    /// walks every task's await chain — the slowest thing a session
-    /// does on a large target. The walk is kept, so a later `census`,
-    /// `futures`, `graph` or `whatis` costs nothing.
     /// List every HTTP connection the target holds, one row each:
     /// the task driving it, the task that sent a client's request in
     /// flight (the one awaiting the response, or the one polling the
@@ -768,6 +732,42 @@ pub enum Command {
         group: Option<String>,
     },
 
+    /// List every runtime the target holds — one table row per
+    /// discovered runtime: its index, scheduler flavor and handle
+    /// address, the tasks and futures the merged population attributes
+    /// to it, its worker count (a multi_thread runtime's worker slots;
+    /// one for a current_thread runtime, which runs everything on the
+    /// thread that entered it), the threads inside it, and the route
+    /// discovery reached it by. One runtime in full — its lwps by id,
+    /// its drivers and the scheduler state its workers share — is
+    /// `runtime N`.
+    ///
+    /// The index each row carries is the one the task listing tags its
+    /// blocks with, the one `--runtime` selects by, and the one
+    /// `runtime` takes; the handle address beside it names the same
+    /// thing and can be given anywhere the index can. A `LocalSet`
+    /// shares that tag space (its tasks are tagged `local set N`) but
+    /// is not a runtime and has no row here; `whatis` on its shared
+    /// state names it.
+    ///
+    /// A row's threads and route are worth reading together, because
+    /// the list is a lower bound by construction: a runtime no thread
+    /// is inside is only found when something already discovered
+    /// points at it — the route says what — so one whose `block_on`
+    /// has returned and whose tasks nothing outside it names cannot
+    /// be found at all.
+    ///
+    /// Filters are the selection: repeatable `--with FIELD ARG` /
+    /// `--without FIELD ARG` clauses AND together, and `--group FIELD`
+    /// tallies the survivors. The string fields — flavor, found-via —
+    /// are case-insensitive regexes over the printed value; id and
+    /// handle are exact; tasks, futures, workers and threads compare
+    /// counts, written '>N', '<N' or '=N' (quote them from a shell).
+    ///
+    /// The future counts are the census's, so the first `runtimes`
+    /// walks every task's await chain — the slowest thing a session
+    /// does on a large target. The walk is kept, so a later `census`,
+    /// `futures`, `graph` or `whatis` costs nothing.
     Runtimes {
         // The runtime names the old grammar took, kept so the refusal
         // can name the way forward rather than clap's bare "unexpected

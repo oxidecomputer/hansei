@@ -2523,6 +2523,30 @@ mod tests {
         }
     }
 
+    /// Every command `help` lists has a description of its own. A
+    /// variant's doc comment that runs straight into the next one's,
+    /// with no blank line between, joins the two: clap gives the
+    /// later variant both and the earlier one none, so the listing
+    /// prints one command empty and its neighbor with the other's
+    /// text.
+    #[test]
+    fn test_every_listed_command_has_its_own_description() {
+        let mut root = Line::command();
+        root.build();
+        let mut seen: HashMap<String, &str> = HashMap::new();
+        for command in root.get_subcommands().filter(|c| !c.is_hide_set()) {
+            let name = command.get_name();
+            let about = command
+                .get_about()
+                .map(|a| a.to_string())
+                .unwrap_or_default();
+            assert!(!about.trim().is_empty(), "{name} has no description");
+            if let Some(other) = seen.insert(about, name) {
+                panic!("{name} and {other} share one description");
+            }
+        }
+    }
+
     /// Words flow greedily, break at spaces, and a word wider than the
     /// line stands alone rather than being cut.
     #[test]
