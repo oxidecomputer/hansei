@@ -13,7 +13,7 @@ use crate::schema::{
     Bundle, BundleTypeId, MemberDef, Provenance, SymbolLookup, TaskEntryId, TypeDef, VariantDef,
     VariantShape, WalkOutcome, WalkRole,
 };
-use crate::semantics::{CoroutineLayout, CoroutinePhase, TypeSemantics};
+use crate::semantics::{CoroutineLayout, CoroutinePhase, LockWord, TypeSemantics};
 use crate::strings::StrRef;
 
 use std::fmt;
@@ -626,6 +626,13 @@ impl<'a> BundleType<'a> {
             .value
             .resolve(members.len(), |i, name| members[i].name_ref() == name)?;
         members.get(at).copied()
+    }
+
+    /// The word a raw lock of this type keeps its state in, and the bits
+    /// that say it is held, where the bundle recorded this type as a
+    /// lock a reviewed implementation defines.
+    pub fn lock_word(&self) -> Option<LockWord> {
+        Some(self.semantics()?.lock.as_ref()?.word)
     }
 
     /// The semantic record the bundle keeps for this type, if any.

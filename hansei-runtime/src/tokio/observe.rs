@@ -931,38 +931,16 @@ impl ReferenceSink for CollectedReferences {
     }
 }
 
-/// The raw lock words guarding tokio's wait lists. Like the task state
-/// bits, these are constants folded into their crates' code, knowable
-/// only from source: parking_lot's `RawMutex` keeps its state in one
-/// byte whose low bit is the lock, and std's futex mutex keeps a word
-/// that reads zero while unlocked. Every other guard representation —
-/// the pthread mutex std uses where there is no futex — is one this
-/// reader does not decode.
-pub(crate) mod lock {
-    pub const PARKING_LOT_RAW_MUTEX: &str = "parking_lot::raw_mutex::RawMutex";
-    pub const PARKING_LOT_LOCKED_BIT: u8 = 0b01;
-    pub const STD_FUTEX_MUTEX: &str = "std::sys::sync::mutex::futex::Mutex";
-    pub const STD_FUTEX_UNLOCKED: u32 = 0;
-}
-
-/// Whether the guard `lock` was read locked, by its concrete
-/// representation. `Unknown` for any representation this does not
-/// decode, and for one whose bytes are short.
+/// Whether the guard `lock` was read locked, by the word the bundle
+/// records its reviewed implementation keeping — parking_lot's state
+/// byte, std's futex word. `Unknown` for a lock no reviewed rule covers
+/// — the pthread mutex std uses where there is no futex among them —
+/// and for one whose bytes are short.
 pub(crate) fn lock_consistency(lock: reify::Value<'_>) -> Consistency {
-    match lock.ty.name() {
-        lock::PARKING_LOT_RAW_MUTEX => match lock.bytes.first() {
-            Some(state) if state & lock::PARKING_LOT_LOCKED_BIT != 0 => Consistency::Mutating,
-            Some(_) => Consistency::Quiescent,
-            None => Consistency::Unknown,
-        },
-        lock::STD_FUTEX_MUTEX => match lock.bytes.first_chunk::<4>() {
-            Some(word) if u32::from_le_bytes(*word) != lock::STD_FUTEX_UNLOCKED => {
-                Consistency::Mutating
-            }
-            Some(_) => Consistency::Quiescent,
-            None => Consistency::Unknown,
-        },
-        _ => Consistency::Unknown,
+    match lock.ty.lock_word().and_then(|word| word.held(lock.bytes)) {
+        Some(true) => Consistency::Mutating,
+        Some(false) => Consistency::Quiescent,
+        None => Consistency::Unknown,
     }
 }
 
@@ -1043,12 +1021,12 @@ mod tests {
         assert_eq!(budget.referent_expansions, 1);
     }
 
-    /// The guard decoder knows two representations by name — the
-    /// parking_lot byte with its lock bit, the std futex word that
-    /// reads zero unlocked — and answers `Unknown` for anything else,
-    /// short bytes included.
+    /// The guard decoder reads the word extraction recorded for each
+    /// reviewed lock — the parking_lot byte with its lock bit, the std
+    /// futex word that reads zero unlocked — and answers `Unknown` for
+    /// anything else, short bytes included.
     #[test]
-    fn test_the_guard_decoder_reads_each_representation_by_name() {
+    fn test_the_guard_decoder_reads_each_recorded_lock_word() {
         use crate::testkit;
         use hansei_bundle::BundleView;
 
@@ -1056,11 +1034,11 @@ mod tests {
         let (bundle, _) = testkit::load("linux", "futurelock");
         let view = BundleView::new(&bundle);
         let raw_mutex = view
-            .find_by_name(lock::PARKING_LOT_RAW_MUTEX)
+            .find_by_name("parking_lot::raw_mutex::RawMutex")
             .next()
             .expect("parking_lot's RawMutex");
         let futex = view
-            .find_by_name(lock::STD_FUTEX_MUTEX)
+            .find_by_name("std::sys::sync::mutex::futex::Mutex")
             .next()
             .expect("std's futex Mutex");
         let other = view.find_by_name("u32").next().unwrap();
