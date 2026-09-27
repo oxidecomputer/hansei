@@ -395,19 +395,15 @@ fn try_member_spellings<'a>(v: &Value<'a>, name: &str) -> Result<Option<Value<'a
     Ok(None)
 }
 
-/// The `data`/`value` behind a heap header the auto-deref landed on: a
-/// sized `Arc<T>` dereferences to `ArcInner<T> { strong, weak, data }`,
-/// and the member the user named lives past the counts.
+/// The value behind a heap header the auto-deref landed on: a sized
+/// `Arc<T>` dereferences to `ArcInner<T> { strong, weak, data }`, and
+/// the member the user named lives in the value past the counts — the
+/// member the bundle records the header keeping it in.
 fn heap_header_data<'a>(v: &Value<'a>) -> Result<Option<Value<'a>>> {
-    let name = v.ty.name();
-    let inner = if name.starts_with("alloc::sync::ArcInner<") {
-        "data"
-    } else if name.starts_with("alloc::rc::RcBox<") || name.starts_with("alloc::rc::RcInner<") {
-        "value"
-    } else {
-        return Ok(None);
-    };
-    v.member_raw(inner).map(Some)
+    match v.ty.refcount_value() {
+        Some(value) => v.member_raw(value.name()).map(Some),
+        None => Ok(None),
+    }
 }
 
 /// The single sized member a transparent wrapper descends to — one

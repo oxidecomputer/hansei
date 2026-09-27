@@ -14,9 +14,11 @@ use hansei_bundle::{
     Arm, BitField as BundleBitField, Bundle, BundleTypeId, DiscrDef, DiscrValue, DiscrValues,
     DisplayNode as BundleNode, DynFutureTable, FORMAT_VERSION, Field as BundleField,
     FieldRender as BundleFieldRender, ImplTable, InfraTypes, MapEntries as BundleMapEntries,
-    MemberDef, MemberRef, Meta, Notation, ProvenanceTable, ScalarDecode as BundleScalarDecode,
-    Selector, StaticsTable, Step, Stmt as BundleStmt, StrRef, StringInterner, TaskTable, TypeDef,
-    TypeTable, ValueExpr, VariantDef, VariantShape, WalksTable,
+    MemberDef, MemberRef, Meta, Notation, ProvenanceTable, RefcountBinding,
+    ScalarDecode as BundleScalarDecode, Selector, SemanticOrigin, SemanticOriginId, SemanticRule,
+    SemanticRuleId, SemanticRuleKind, SemanticTable, StaticsTable, Step, Stmt as BundleStmt,
+    StoragePolicy, StrRef, StringInterner, TaskTable, TypeDef, TypeSemantics, TypeTable, ValueExpr,
+    VariantDef, VariantShape, WalksTable,
 };
 
 use std::collections::BTreeMap;
@@ -2418,6 +2420,18 @@ pub fn test_bundle() -> Bundle {
     let emptyl = s("");
     let bool_decode =
         || BundleScalarDecode::Bits(vec![ebf(emptyl, 0, 0, vec![(0, falsel), (1, truel)])]);
+    // What extraction records for the refcount headers: each header's
+    // value member, under std's rule for a compiler of the reviewed
+    // range.
+    let semantics = refcount_semantics(
+        s("rustc version 1.98.0 (fixture)"),
+        s("rustc-std-refcount-1.97"),
+        &[
+            (ARC_INNER, datan),
+            (WATCH_ARC_INNER, datan),
+            (RC_BOX, valuen),
+        ],
+    );
 
     let mut b = Bundle {
         meta: Meta {
@@ -2935,11 +2949,56 @@ pub fn test_bundle() -> Bundle {
         },
         provenance: ProvenanceTable::default(),
         impls: ImplTable::default(),
-        semantics: Default::default(),
+        semantics,
     };
     b.types.build_normalized_index(&b.strings);
     b.validate().expect("test bundle must validate");
     b
+}
+
+/// The semantic table extraction builds for refcount headers alone:
+/// each of `headers` keeping its value in the named member, under one
+/// std rule for the compiler `producer`.
+fn refcount_semantics(
+    producer: StrRef,
+    family: StrRef,
+    headers: &[(BundleTypeId, StrRef)],
+) -> SemanticTable {
+    let mut types: Vec<TypeSemantics> = headers
+        .iter()
+        .map(|&(ty, value)| TypeSemantics {
+            ty,
+            storage: StoragePolicy::DeclaredMembers,
+            future: None,
+            coroutine: None,
+            access: None,
+            resource: None,
+            container: None,
+            select: None,
+            http: None,
+            request: None,
+            table: None,
+            pool: None,
+            refcount: Some(RefcountBinding {
+                rule: SemanticRuleId(0),
+                value: MemberRef::Named(value),
+            }),
+            lock: None,
+            acquires_for: None,
+            coroutine_kind: None,
+            issues: Vec::new(),
+        })
+        .collect();
+    types.sort_by_key(|record| record.ty);
+    SemanticTable {
+        origins: vec![SemanticOrigin::Rustc { producer, family }],
+        rules: vec![SemanticRule {
+            kind: SemanticRuleKind::StdRefcountHeader,
+            revision: 1,
+            origin: SemanticOriginId(0),
+        }],
+        types,
+    }
 }
 
 // -----------------------------------------------------------------------

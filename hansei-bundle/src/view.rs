@@ -13,7 +13,7 @@ use crate::schema::{
     Bundle, BundleTypeId, MemberDef, Provenance, SymbolLookup, TaskEntryId, TypeDef, VariantDef,
     VariantShape, WalkOutcome, WalkRole,
 };
-use crate::semantics::{CoroutineLayout, CoroutinePhase};
+use crate::semantics::{CoroutineLayout, CoroutinePhase, TypeSemantics};
 use crate::strings::StrRef;
 
 use std::fmt;
@@ -613,11 +613,28 @@ impl<'a> BundleType<'a> {
     /// states, each with its stage and the locals it holds. `None` for
     /// a type that is no coroutine, and for one no reviewed rule covers.
     pub fn coroutine_layout(&self) -> Option<&'a CoroutineLayout> {
+        self.semantics()?.coroutine.as_ref()
+    }
+
+    /// The member a refcounted allocation's header keeps its value in,
+    /// where the bundle recorded this type as one: `ArcInner<T>`'s
+    /// `data`. `None` for any other type.
+    pub fn refcount_value(&self) -> Option<BundleMember<'a>> {
+        let binding = self.semantics()?.refcount.as_ref()?;
+        let members: Vec<BundleMember<'a>> = self.members().collect();
+        let at = binding
+            .value
+            .resolve(members.len(), |i, name| members[i].name_ref() == name)?;
+        members.get(at).copied()
+    }
+
+    /// The semantic record the bundle keeps for this type, if any.
+    fn semantics(&self) -> Option<&'a TypeSemantics> {
         let records = &self.bundle.semantics.types;
         let at = records
             .binary_search_by_key(&self.id, |record| record.ty)
             .ok()?;
-        records[at].coroutine.as_ref()
+        Some(&records[at])
     }
 
     /// If this is a Rust enum, decode which variant `bytes` holds.
