@@ -3,7 +3,7 @@ source: hansei/src/offline.rs
 description: "`threads` over linux/simple-await"
 ---
 LWP      NAME  ROLE                 TASK  FRAME 0
-1487717  —     entered runtime      —     0xADDR
-1487719  —     worker 0, parked     —     0xADDR
-1487720  —     worker 1, in driver  —     0xADDR
+1984391  —     entered runtime      —     0xADDR
+1984393  —     worker 1, in driver  —     0xADDR
+1984394  —     worker 0, parked     —     0xADDR
 [3 threads]

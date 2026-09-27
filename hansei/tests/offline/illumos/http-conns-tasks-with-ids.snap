@@ -4,5 +4,4 @@ description: "`tasks --with id 3,6` over illumos/http-conns"
 ---
 ID  STATE  FUT  AWAITING AT                WAITING ON  TYPE
 3   idle     0  src/bin/http-conns.rs:151  io          async fn http_conns::accept_loop
-6   idle     0  src/bin/http-conns.rs:173  oneshot rx  async fn http_conns::requester
-[2 tasks]
+[1 task]

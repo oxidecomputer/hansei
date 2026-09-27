@@ -57,8 +57,10 @@ oxide-tokio-rt = { version = "0.1.2", optional = true }
 # future keeps the request's method and URL: the words a request line
 # is read from. Pinned exactly for the same reason as hyper; no TLS,
 # no HTTP/2, no proxy discovery, since the fixture talks plain HTTP/1
-# to its own listener.
-reqwest = { version = "=0.13.2", default-features = false }
+# to its own listener. `cookies` is on because the programs hansei
+# reads build it: it puts reqwest's cookie layer in every client's
+# in-flight stack, so the fixture walks the layers they do.
+reqwest = { version = "=0.13.2", default-features = false, features = ["cookies"] }
 tokio = { version = ">=1.47", default-features = false }
 # `watch-stream` parks on tokio-stream's `WatchStream` and `StreamMap`;
 # the box behind a `WatchStream` is tokio-util's `ReusableBoxFuture`.

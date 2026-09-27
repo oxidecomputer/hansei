@@ -1051,7 +1051,8 @@ fn assert_pool(program: &str, bundle: &Bundle) {
 
 /// The forwards between reqwest's in-flight future and hyper-util's
 /// request, each program as its rule reviewed it: every `Either` matches
-/// on itself, polling the future its side holds; tower's retry matches
+/// on itself, polling the future its side holds; reqwest's cookie layer
+/// polls the future it wraps; tower's retry matches
 /// on its `state`, polling the service's or the policy's future and
 /// neither while retrying; hyper-util's response future polls the box
 /// its wrapper lends, and nothing else.
@@ -1086,7 +1087,7 @@ fn assert_layers(program: &str, bundle: &Bundle) {
         let bound = record
             .and_then(|r| r.future.as_ref())
             .is_some_and(|f| matches!(f.continuation, Continuation::Bound { .. }));
-        if !bound && !name.contains("tower::retry::future::ResponseFuture<") {
+        if !bound && !name.contains("reqwest::cookie::service::ResponseFuture<") {
             continue;
         }
         let (kind, program_) = program_of(name, record);
@@ -1114,6 +1115,17 @@ fn assert_layers(program: &str, bundle: &Bundle) {
         seen += 1;
     }
     assert!(seen > 0, "{program}: no Either");
+    let mut seen = 0;
+    for (name, _, record) in types_named(bundle, "reqwest::cookie::service::ResponseFuture<") {
+        let (kind, program_) = program_of(name, record);
+        assert_eq!(kind, SemanticRuleKind::ReqwestCookie, "{program}: {name}");
+        let PollProgram::Direct(action) = program_ else {
+            panic!("{program}: {name}: {program_:?}");
+        };
+        assert_eq!(delegate(&action), "future", "{program}: {name}");
+        seen += 1;
+    }
+    assert!(seen > 0, "{program}: no cookie future");
     let mut seen = 0;
     for (name, _, record) in types_named(bundle, "tower::retry::future::ResponseFuture<") {
         let (kind, program_) = program_of(name, record);
@@ -2233,15 +2245,19 @@ fn assert_library_bindings(program: &str, bundle: &Bundle) {
                 // The request bindings: reqwest's in-flight request off its
                 // `poll`, http's request off the type's own methods, each
                 // under its crate's reviewed range, which only the hyper
-                // fixture links.
+                // fixture links; and reqwest's cookie layer off its own.
                 "reqwest" | "http" => {
                     use exegesis::detect::semantics::{
-                        HTTP_REQUEST_V1_0_0, REQWEST_PENDING_REQUEST_V0_12_0,
+                        HTTP_REQUEST_V1_0_0, REQWEST_COOKIE_V0_12_24,
+                        REQWEST_PENDING_REQUEST_V0_12_0,
                     };
                     let SemanticOrigin::LibraryDelegation { family, source, .. } = origin else {
                         unreachable!()
                     };
                     let convention = match s(*package) {
+                        "reqwest" if s(*family) == REQWEST_COOKIE_V0_12_24.family => {
+                            &REQWEST_COOKIE_V0_12_24
+                        }
                         "reqwest" => &REQWEST_PENDING_REQUEST_V0_12_0,
                         _ => &HTTP_REQUEST_V1_0_0,
                     };

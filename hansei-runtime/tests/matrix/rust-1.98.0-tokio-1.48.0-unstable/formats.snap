@@ -20,6 +20,7 @@ family: v1_47 (tokio 1.48.0)
 *const alloc::sync::ArcInner<(dyn hyper::rt::timer::Timer + core::marker::Send + core::marker::Sync)> :: Node DynPointer { pointer=pointer, vtable=vtable, slots=[drop_in_place:0, size:1, align:2], tail_prefixes=[16] }
 *const alloc::sync::ArcInner<(dyn tracing_core::subscriber::Subscriber + core::marker::Send + core::marker::Sync)> :: Node DynPointer { pointer=pointer, vtable=vtable, slots=[drop_in_place:0, size:1, align:2], tail_prefixes=[16] }
 *const alloc::sync::ArcInner<dyn dyn_future::Aligned> :: Node DynPointer { pointer=pointer, vtable=vtable, slots=[drop_in_place:0, size:1, align:2], tail_prefixes=[16] }
+*const alloc::sync::ArcInner<dyn reqwest::cookie::CookieStore> :: Node DynPointer { pointer=pointer, vtable=vtable, slots=[drop_in_place:0, size:1, align:2], tail_prefixes=[16] }
 *const alloc::sync::ArcInner<dyn reqwest::dns::resolve::Resolve> :: Node DynPointer { pointer=pointer, vtable=vtable, slots=[drop_in_place:0, size:1, align:2], tail_prefixes=[16] }
 *const alloc::sync::ArcInner<dyn reqwest::retry::classify::Classify> :: Node DynPointer { pointer=pointer, vtable=vtable, slots=[drop_in_place:0, size:1, align:2], tail_prefixes=[16] }
 *const alloc::sync::ArcInner<dyn reqwest::retry::scope::Scope> :: Node DynPointer { pointer=pointer, vtable=vtable, slots=[drop_in_place:0, size:1, align:2], tail_prefixes=[16] }

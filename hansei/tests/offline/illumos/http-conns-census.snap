@@ -5,8 +5,8 @@ description: "`census` over illumos/http-conns"
 Threads: 3 lwps, 3 in runtime 0 @ 0xADDR
 
 COUNT  RT  ROLE             STATE            LWPS
-    1  0   worker           in driver        2
-    1  0   worker           parked           3
+    1  0   worker           in driver        3
+    1  0   worker           parked           2
     1  0   entered runtime  block_on caller  1
     0  0   blocking pool    0 idle, 0 busy   —
 [3 lwps]
@@ -24,7 +24,7 @@ COUNT  TYPE / WAITING ON
     3  future Pin<Box<(dyn Future<Output=()> + Send)>>
        ├─ 2  http1 client
        └─ 1  one of several
-    2  async block http_conns::Reporting::execute<Pin<Box<(dyn Future<Output=()> + Send)>>>
+    2  async block http_conns::{impl#0}::execute<Pin<Box<(dyn Future<Output=()> + Send)>>>
        └─ 2  http1 client
     1  async fn http_conns::accept_loop
        └─ 1  io
@@ -33,7 +33,7 @@ COUNT  TYPE / WAITING ON
     2  (2 more types)
 [7 types, 5 shown]
 
-Futures: 23 in flight, on 105 await-chain frames, up to 11 deep
+Futures: 23 in flight, on 106 await-chain frames, up to 12 deep
 
 COUNT  HELD IN
    14  task (its own await chain)
@@ -46,7 +46,7 @@ COUNT  TYPE / WAITING ON
        └─ 3  timer
     2  future futures_channel::oneshot::Receiver<core::convert::Infallible>
        └─ 2  unknown
-    1  future futures_util::future::either::Either<tower::retry::future::ResponseFuture<reqwest::retry::Policy, reqwest::async_impl::client::HyperService, http::request::Request<reqwest::async_impl::body::Body>>, tower::util::oneshot::Oneshot<tower::retry::Retry<reqwest::retry::Policy, reqwest::async_impl::client::HyperService>, http::request::Request<reqwest::async_impl::body::Body>>>
+    1  future futures_util::future::either::Either<reqwest::cookie::service::ResponseFuture<tower::retry::Retry<reqwest::retry::Policy, reqwest::async_impl::client::HyperService>, reqwest::async_impl::body::Body>, tower::util::oneshot::Oneshot<reqwest::cookie::service::CookieService<tower::retry::Retry<reqwest::retry::Policy, reqwest::async_impl::client::HyperService>>, http::request::Request<reqwest::async_impl::body::Body>>>
        └─ 1  oneshot rx
     1  future hyper_util::server::conn::auto::ReadVersion<hyper_util::rt::tokio::TokioIo<tokio::net::tcp::stream::TcpStream>>
        └─ 1  unknown

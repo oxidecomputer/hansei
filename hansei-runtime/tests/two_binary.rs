@@ -1158,8 +1158,10 @@ fn test_the_census_accounting_is_exact_per_program() {
         // future into hyper-util's request frames, down to the send on
         // the checked-out connection: thirteen chain hits more, two
         // finds by descent, and four locals of those frames whose
-        // initialization the layout cannot vouch for.
-        ("http-conns", 8, 69, 17, 6, 3),
+        // initialization the layout cannot vouch for. The reqwest
+        // requester's chain passes reqwest's cookie layer on the way:
+        // one chain hit more.
+        ("http-conns", 8, 70, 17, 6, 3),
         // Five chain frames: the keeper's oneshot, and each waiter's
         // pinned `Recv` and the oneshot behind it. The keeper's six
         // channel ends are no futures. Two finds by descent, one under

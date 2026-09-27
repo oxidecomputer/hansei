@@ -1815,6 +1815,37 @@ mod tests {
         );
     }
 
+    /// A type that reaches itself through its own map — publicsuffix's
+    /// trie node keeps its children in a `HashMap<Vec<u8>, Node>` — is
+    /// asked about once per type, and a trie of bytes holds nothing the
+    /// scan reports.
+    #[test]
+    fn test_a_type_reached_through_its_own_table_is_asked_about_once() {
+        let (bundle, snapshot) = testkit::load_any("http-conns");
+        let ctx = testkit::context(&bundle, &snapshot);
+        let node = ctx
+            .view
+            .find_by_name("publicsuffix::Node")
+            .next()
+            .expect("the trie node is in the bundle");
+        let children = node
+            .members()
+            .find(|member| member.name() == "children")
+            .expect("the node keeps its children")
+            .ty();
+        let table = ctx
+            .type_semantics(children.id())
+            .and_then(|record| record.table.as_ref())
+            .expect("the children map binds its table");
+        let bucket = ctx.view.ty(table.bucket).expect("the bucket type");
+        assert!(
+            bucket.members().any(|member| member.ty().id() == node.id()),
+            "the bucket holds a node"
+        );
+        assert!(ctx.reference_inert(node));
+        assert!(ctx.reference_inert(bucket));
+    }
+
     /// A type can hold nothing the scan reports unless something in its
     /// inline storage is bound — a resource, a container, an adapter, a
     /// future — or is an array of aggregates; a struct is as live as its
