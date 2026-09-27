@@ -65,11 +65,6 @@ use reify::Value;
 /// down, never dozens.
 const MAX_DEPTH: usize = 24;
 
-/// The type a slot is: `Waker { waker: RawWaker }`, whose `RawWaker`
-/// starts at its own address.
-const WAKER: &str = "core::task::wake::Waker";
-const RAW_WAKER: &str = "core::task::wake::RawWaker";
-
 /// Types that are storage for one value spelled another way, never the
 /// owner of a slot: the walk passes through them to name what holds
 /// them. Matched by prefix, since each is generic.
@@ -992,6 +987,25 @@ impl<'b> Types<'_, 'b> {
         self.semantics
             .get(ty)
             .map(|index| &self.view.bundle().semantics.types[index])
+    }
+
+    /// Whether `ty` is the type a slot is: a `RawWaker` — a type the
+    /// waker-word roles root at — or a struct that is one at its own
+    /// address and nothing else, as `Waker { waker: RawWaker }` is.
+    fn is_waker(&self, ty: BundleType<'b>) -> bool {
+        let raw = self.view.walk_roots(WalkRole::WakerData);
+        if raw.contains(&ty.id()) {
+            return true;
+        }
+        if !matches!(ty.classify(), TypeClass::Struct) {
+            return false;
+        }
+        let mut sized = ty.members().filter(|m| m.ty().size() > 0);
+        matches!(
+            (sized.next(), sized.next()),
+            (Some(m), None)
+                if m.offset() == 0 && m.ty().size() == ty.size() && raw.contains(&m.ty().id())
+        )
     }
 }
 
@@ -2113,7 +2127,7 @@ impl<'a, 'b, T: Target> Attributor<'a, 'b, T> {
             let ty = cur.ty;
             let name = ty.name();
             let at_terminal = match terminal {
-                Terminal::Waker => name == WAKER || name == RAW_WAKER,
+                Terminal::Waker => self.types.is_waker(ty),
                 Terminal::Pointer => matches!(ty.classify(), TypeClass::Pointer { .. }),
             };
             if at_terminal {
@@ -4713,6 +4727,20 @@ mod synthetic_tests {
         ] {
             b.walks.entries.insert(role, bind(last));
         }
+        // The waker words, rooted at the `RawWaker` as extraction roots
+        // them: what makes it, and the `Waker` around it, a slot.
+        b.walks.entries.insert(
+            WalkRole::WakerData,
+            WalkBinding {
+                roots: vec![id(RAW_WAKER)],
+                steps: vec![WalkStep::Member(MemberRef::Named(datan))],
+                outcome: WalkOutcome::Bound {
+                    spelling: 0,
+                    spellings: 1,
+                    note: None,
+                },
+            },
+        );
         b
     }
 

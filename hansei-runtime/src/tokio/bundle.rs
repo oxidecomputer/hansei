@@ -2296,7 +2296,7 @@ impl<'b, T: Target> Context<'b, T> {
     /// The first recorded root type of a bound role — how a probe that
     /// constructs its own root value (a TLS payload) knows the layout
     /// to read it with.
-    fn walk_root_ty(&self, role: WalkRole) -> Option<BundleType<'b>> {
+    pub(crate) fn walk_root_ty(&self, role: WalkRole) -> Option<BundleType<'b>> {
         let binding = self.view.bundle().walks.entries.get(&role)?;
         if !matches!(binding.outcome, WalkOutcome::Bound { .. }) {
             return None;

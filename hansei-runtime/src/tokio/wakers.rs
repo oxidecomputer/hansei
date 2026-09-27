@@ -459,13 +459,10 @@ impl<'b, T: Target> Context<'b, T> {
     }
 
     /// The offsets of a `RawWaker`'s two words, from the walk contract's
-    /// `RawWaker.data`/`RawWaker.vtable` bindings over the bundle's own
-    /// type. `None` where either is unbound.
+    /// `RawWaker.data`/`RawWaker.vtable` bindings over the type they
+    /// root at. `None` where either is unbound.
     pub fn raw_waker_layout(&self) -> Option<PairLayout> {
-        let ty = self
-            .view
-            .find_by_name("core::task::wake::RawWaker")
-            .next()?;
+        let ty = self.walk_root_ty(hansei_bundle::WalkRole::WakerData)?;
         let data = self
             .walk(hansei_bundle::WalkRole::WakerData)
             .member_offset(ty)?;
