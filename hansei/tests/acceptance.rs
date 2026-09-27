@@ -1984,6 +1984,16 @@ fn test_blocking_pool_acceptance() {
         // A blocking cell waits on a pool thread, not on a future, so
         // `task` prints no wait line for it.
         assert_eq!(running.waiting, "", "{rows:#?}");
+        // The pool's thread is inside the running closure, which is
+        // itself parked on a channel receive — through the primitives an
+        // idle pool thread parks in. The task machinery between the
+        // closure and the pool's loop is what says it is running.
+        let threads = hansei_ok(&bundle, core, "threads");
+        let row = threads
+            .lines()
+            .find(|line| line.split_whitespace().next() == Some(running.thread.as_str()))
+            .unwrap_or_else(|| panic!("no row for lwp {}: {threads}", running.thread));
+        assert!(row.contains("blocking, running"), "{threads}");
 
         // The join edges point at listed rows, plainly named: the
         // verified join is the wait line, with the trailer slot under

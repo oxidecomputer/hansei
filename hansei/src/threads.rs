@@ -182,26 +182,30 @@ fn park_word(park: Option<ParkState>, polling: bool) -> &'static str {
     }
 }
 
-/// The blocking-pool spellings, classified from the unwound stack: a
-/// thread inside `blocking::pool::Inner::run` is the pool's, idle when
-/// it is parked above that frame and running someone's closure
-/// otherwise. `None` for every other stack — including an absent one,
-/// which cannot testify either way. The loop is named
+/// The blocking-pool roles, classified from the unwound stack: a
+/// thread inside `blocking::pool::Inner::run` is the pool's, running
+/// someone's closure when tokio's task machinery sits above that frame
+/// and idle otherwise. A closure is reached only through its task's
+/// vtable poll, which no inlining folds into `run`, so those frames are
+/// there whatever the closure is doing — and a closure blocked on a
+/// lock or a condvar parks through the very primitives an idle pool
+/// thread does, so the park frames cannot tell the two apart. `None`
+/// for every other stack — including an absent one, which cannot
+/// testify either way. The loop is named
 /// `<tokio::runtime::blocking::pool::Inner>::run` under v0 mangling and
 /// without the brackets under legacy mangling; either is the frame.
 fn blocking_role(frames: &[String]) -> Option<&'static str> {
     let run = frames.iter().position(|name| {
         name.contains("blocking::pool::Inner>::run") || name.contains("blocking::pool::Inner::run")
     })?;
-    let parked = frames[..run].iter().any(|name| {
-        name.contains("std::thread::park")
-            || name.contains("cond_wait")
-            || name.contains("__lwp_park")
-            || name.contains("futex")
+    let running = frames[..run].iter().any(|name| {
+        name.strip_prefix('<')
+            .unwrap_or(name)
+            .starts_with("tokio::runtime::task::")
     });
-    Some(match parked {
-        true => "blocking, idle",
-        false => "blocking, running",
+    Some(match running {
+        true => "blocking, running",
+        false => "blocking, idle",
     })
 }
 
@@ -1079,15 +1083,15 @@ mod tests {
     }
 
     /// A blocking-pool thread is known by its stack — `Inner::run`
-    /// below, a park above when idle — and no other stack, absent
-    /// ones included, testifies at all.
+    /// below, the task machinery above when it runs a closure — and no
+    /// other stack, absent ones included, testifies at all.
     #[test]
     fn test_the_blocking_role_is_read_from_the_stack() {
         let names = |list: &[&str]| -> Vec<String> { list.iter().map(|s| s.to_string()).collect() };
         let idle = names(&[
             "__lwp_park",
             "cond_wait_queue",
-            "std::thread::park",
+            "std::sync::poison::condvar::Condvar::wait_timeout",
             "tokio::runtime::blocking::pool::Inner::run",
             "std::sys::pal::unix::thread::Thread::new::thread_start",
         ]);
@@ -1096,6 +1100,8 @@ mod tests {
         let running = names(&[
             "memcpy",
             "app::compress",
+            "<tokio::runtime::blocking::task::BlockingTask<F> as core::future::future::Future>::poll",
+            "tokio::runtime::task::raw::poll",
             "tokio::runtime::blocking::pool::Inner::run",
         ]);
         assert_eq!(blocking_role(&running), Some("blocking, running"));
@@ -1103,10 +1109,26 @@ mod tests {
         // The same loop under v0 mangling, as a current rustc names it.
         let v0 = names(&[
             "app::compress",
+            "<tokio::runtime::task::harness::Harness<app::Task, tokio::runtime::blocking::schedule::BlockingSchedule>>::poll",
             "<tokio::runtime::blocking::pool::Inner>::run",
             "<std::sys::thread::unix::Thread>::new::thread_start",
         ]);
         assert_eq!(blocking_role(&v0), Some("blocking, running"));
+
+        // A closure blocked on a lock parks through the same primitives
+        // an idle thread does; the task machinery under it is what says
+        // it is running.
+        for park in ["futex_wait", "__lwp_park", "std::thread::park"] {
+            let blocked = names(&[
+                park,
+                "std::sys::sync::mutex::futex::Mutex::lock_contended",
+                "app::compress",
+                "tokio::runtime::task::harness::Harness<T,S>::poll",
+                "tokio::runtime::task::raw::poll",
+                "tokio::runtime::blocking::pool::Inner::run",
+            ]);
+            assert_eq!(blocking_role(&blocked), Some("blocking, running"), "{park}");
+        }
 
         // A worker parks through the same condvars without ever being
         // the pool's; nothing below says Inner::run, so nothing is
@@ -1114,18 +1136,6 @@ mod tests {
         let worker = names(&["__lwp_park", "cond_wait_queue", "worker::run"]);
         assert_eq!(blocking_role(&worker), None);
         assert_eq!(blocking_role(&[]), None);
-
-        // Each parked spelling testifies alone — the two systems park
-        // through different symbols, and no capture shows them all.
-        for park in [
-            "std::thread::park",
-            "cond_wait_queue",
-            "__lwp_park",
-            "futex_wait",
-        ] {
-            let idle = names(&[park, "tokio::runtime::blocking::pool::Inner::run"]);
-            assert_eq!(blocking_role(&idle), Some("blocking, idle"), "{park}");
-        }
     }
 
     /// A row as the table would build it, with the fields the filters
