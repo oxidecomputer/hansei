@@ -20,6 +20,7 @@ use crate::render::AddrAnnotator;
 use super::{FormatCache, RenderCtx, Slot};
 
 use foldhash::HashSet;
+use hansei_bundle::BundleTypeId;
 
 use std::cell::RefCell;
 use std::fmt;
@@ -73,7 +74,7 @@ impl<'buf, 'a, T> WorkerCtx<'buf, 'a, T> {
     /// level that parallelizes.
     pub(crate) fn ctx<'x>(
         &self,
-        visited: &'x RefCell<HashSet<(u64, &'a str)>>,
+        visited: &'x RefCell<HashSet<(u64, BundleTypeId)>>,
         formats: &'x FormatCache<'a>,
     ) -> RenderCtx<'x, 'a, T>
     where

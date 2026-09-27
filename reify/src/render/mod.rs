@@ -97,7 +97,7 @@ pub struct DisplayValue<'r, 'a, T> {
     max_str_len: Option<u64>,
     max_array_len: Option<u64>,
     prefix: &'r str,
-    visited: RefCell<HashSet<(u64, &'a str)>>,
+    visited: RefCell<HashSet<(u64, BundleTypeId)>>,
     formats: FormatCache<'a>,
 }
 
@@ -258,7 +258,7 @@ pub(crate) struct RenderCtx<'buf, 'a, T> {
     free: usize,
     max_depth: usize,
     proc: Option<&'a T>,
-    visited: Option<&'buf RefCell<HashSet<(u64, &'a str)>>>,
+    visited: Option<&'buf RefCell<HashSet<(u64, BundleTypeId)>>>,
     /// Where this pass memoizes resolved display programs.
     formats: &'buf FormatCache<'a>,
     /// Whether a collection may fan its entries out across worker
@@ -618,7 +618,7 @@ pub(crate) fn write_display_value<'a, T: Target>(
             let (Some(_), Some(visited)) = (ctx.proc, ctx.visited) else {
                 return write_addr_or_label(f, addr, ctx.annotate);
             };
-            let key = (addr, target.name());
+            let key = (addr, target.id());
             if !visited.borrow_mut().insert(key) {
                 write_annotated_addr(f, addr, ctx.annotate)?;
                 return f.write_str(" -> <cycle>");
@@ -1612,6 +1612,27 @@ mod tests {
         assert_eq!(
             shown,
             "Node { value: 1, next: 0x300 -> Node { value: 9, next: null } }"
+        );
+    }
+
+    /// The cycle guard keys a pointee by its type, not by the name it
+    /// prints: every array is nameless, so an array of pointers at 0x100
+    /// whose element points at a `[u32; 3]` there too is two values at
+    /// one address, not one value reached twice.
+    #[test]
+    fn test_the_cycle_guard_tells_nameless_types_apart() {
+        let mem = FakeMem::new().at(0x100, u64s(&[0x100, 0x7]));
+        let b = test_bundle();
+        let v = BundleView::new(&b);
+        let ptr = v.ty(PTR_ARR_PTR).unwrap();
+        assert_eq!(v.ty(PTR_ARR).unwrap().name(), v.ty(ARR).unwrap().name());
+        let head = 0x100u64.to_le_bytes();
+        assert_eq!(
+            format!(
+                "{}",
+                Value::new(ptr, 0, &head).display_from_target(&mem, 16)
+            ),
+            "0x100 -> [0x100 -> [0x00000100, 0x00000000, 0x00000007]]"
         );
     }
 

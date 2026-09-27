@@ -116,7 +116,7 @@ pub(crate) fn eval_dyn_pointer<'a, T: Target>(
         ctx.proc,
         ctx.visited,
     ) {
-        let key = pointee_address.map(|address| (address, concrete_ty.name()));
+        let key = pointee_address.map(|address| (address, concrete_ty.id()));
         match key {
             // A header is in the way and the word that says how far it
             // reaches is not an alignment: nothing places the value.

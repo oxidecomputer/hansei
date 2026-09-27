@@ -10,7 +10,7 @@ use crate::elements::{Elements, HeapGate, SeqError, Shortfall};
 use crate::heap::{Gate, Liveness};
 use crate::value::Value;
 
-use hansei_bundle::BundleType;
+use hansei_bundle::{BundleType, BundleTypeId};
 
 use proc::Target;
 
@@ -267,7 +267,7 @@ fn eval_map_parallel<'a, T: Target>(
     bytes: &[u8],
     ctx: RenderCtx<'_, 'a, T>,
     entry_ctx: RenderCtx<'_, 'a, T>,
-    visited: &RefCell<HashSet<(u64, &'a str)>>,
+    visited: &RefCell<HashSet<(u64, BundleTypeId)>>,
     pretty: bool,
     map_length: u64,
     key: BundleType<'a>,

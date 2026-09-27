@@ -718,6 +718,10 @@ fixture_ids! {
     // rustc lays `RawTableInner` out — and the buckets each keeps below
     // its control bytes: a map's `(u32, u32)`, a set's `(u32, ())`.
     HASH_MAP, HASH_SET, HASH_MAP_BUCKET, HASH_SET_BUCKET,
+    // `*const [*const [u32; 3]; 1]`: two nameless arrays, the outer one's
+    // element pointing at an address the outer array may itself occupy —
+    // two types at one address, which only their ids tell apart.
+    ARR_PTR, PTR_ARR, PTR_ARR_PTR,
 }
 
 /// A hand-built mini-bundle exercising every TypeDef kind reify touches:
@@ -2301,6 +2305,27 @@ pub fn test_bundle() -> Bundle {
             name: hash_set_bucketn,
             size: 4,
             members: vec![m(tuple0n, U32, 0), m(tuple1n, UNIT, 4)],
+        },
+    );
+    types.add(
+        ARR_PTR,
+        TypeDef::Pointer {
+            name: None,
+            target: ARR,
+        },
+    );
+    types.add(
+        PTR_ARR,
+        TypeDef::Array {
+            elem: ARR_PTR,
+            count: 1,
+        },
+    );
+    types.add(
+        PTR_ARR_PTR,
+        TypeDef::Pointer {
+            name: None,
+            target: PTR_ARR,
         },
     );
 
