@@ -29,6 +29,10 @@
 //! is. A held value's inspection says what *it* is parked on; it never
 //! says its owner polls it.
 //!
+//! A task mid-poll is the exception to the walk: its frames are being
+//! rewritten, so only the sets they hold are read from them, and
+//! nothing else.
+//!
 //! What a frame's scan looks at is its own storage: a coroutine's
 //! locals as its layout lists them for the active state, a plain
 //! future's members. What it leaves alone is the chain itself — a
@@ -834,6 +838,15 @@ pub(crate) enum Find<'b> {
     Table(Value<'b>),
 }
 
+/// Which finds a scan of a chain's frames records.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+enum Scope {
+    /// Every find: a parked chain's frames hold what they say.
+    All,
+    /// Sets alone: a running task's frames ([`Walker::scan_running`]).
+    Sets,
+}
+
 /// The census walker: the context and task listing it scans over, and
 /// its running state.
 struct Walker<'a, 'b, T> {
@@ -950,8 +963,13 @@ pub fn census_bounded<T: Target>(
         };
         // A task mid-poll is mutating its frames: its saved state is
         // not read as a chain, and its locals are not scanned for
-        // finds that may be half-written.
+        // finds that may be half-written — except for the sets they
+        // hold ([`Walker::scan_running`]).
         if matches!(inspection.chain.end, super::bundle::ChainEnd::ActivePoll) {
+            if let Some(root) = inspection.chain.frames.first() {
+                let saved = ctx.inspect_future(root.future, InspectionMode::Held, read);
+                walker.scan_running(owner, &saved.chain);
+            }
             continue;
         }
         walker.scan_chain(owner, None, &inspection.chain, 0);
@@ -1029,6 +1047,39 @@ impl<'b, T: Target> Walker<'_, 'b, T> {
         chain: &AwaitChain<'b>,
         nesting: usize,
     ) {
+        self.scan_frames(owner, via, chain, nesting, Scope::All);
+    }
+
+    /// Scan a running task's saved state — `chain`, its root read as
+    /// though the task were parked — for the sets its frames hold, and
+    /// nothing else.
+    ///
+    /// A set is what its children's wakers name the task by: a child
+    /// wakes the set's ready-to-run queue, and the queue wakes whoever
+    /// polls the set. That task is running exactly when a child has
+    /// just woken it, so a census blind to running tasks loses the
+    /// wakers of the busiest sets. The frames a set sits in are ones
+    /// the poll re-enters rather than rewrites, and futures-util takes
+    /// the child it is polling off the set's list for the length of
+    /// that poll, so the nodes the walk reaches are parked ones. What
+    /// else the frames hold — a future the poll may be moving, a pool
+    /// or table it may be filling — stays unread. A local the frames
+    /// withhold is not counted among those the census could not read:
+    /// that count warns of the held futures it hides, and a running
+    /// task's are not listed in any case.
+    fn scan_running(&mut self, owner: usize, chain: &AwaitChain<'b>) {
+        self.scan_frames(owner, None, chain, 0, Scope::Sets);
+    }
+
+    /// [`Self::scan_chain`], recording the finds `scope` admits.
+    fn scan_frames(
+        &mut self,
+        owner: usize,
+        via: Option<Via>,
+        chain: &AwaitChain<'b>,
+        nesting: usize,
+        scope: Scope,
+    ) {
         let on_chain: HashSet<ValueKey> = chain.referents().collect();
         for (frame_index, frame) in chain.frames.iter().enumerate() {
             // Recorded display-numbered — #0 the most recently polled
@@ -1041,6 +1092,9 @@ impl<'b, T: Target> Walker<'_, 'b, T> {
             // them in. Its members are not scanned besides, since that
             // member is the buffer's header and nothing else.
             if self.ctx.recognize(frame.future.ty.id()) == Recognized::Fanout {
+                if scope == Scope::Sets {
+                    continue;
+                }
                 let storage = self.ctx.fanout_storage_name().to_string();
                 self.record(
                     owner,
@@ -1054,17 +1108,20 @@ impl<'b, T: Target> Walker<'_, 'b, T> {
                 continue;
             }
             let locals = frame_locals(self.ctx, frame);
-            if locals.unavailable {
-                self.capped.unavailable += 1;
+            if scope == Scope::All {
+                if locals.unavailable {
+                    self.capped.unavailable += 1;
+                }
+                self.uncertain += locals.uncertain;
             }
-            self.uncertain += locals.uncertain;
             for (name, local) in locals.locals {
                 // A pool the frame holds names the pooled connections'
                 // far ends: a fact beside the finds, read once per value.
-                if let Some(pool) = self
-                    .ctx
-                    .type_semantics(local.ty.id())
-                    .and_then(|record| record.pool.as_ref())
+                if scope == Scope::All
+                    && let Some(pool) = self
+                        .ctx
+                        .type_semantics(local.ty.id())
+                        .and_then(|record| record.pool.as_ref())
                     && self.visited.insert((local.addr, local.ty.id()))
                     && let Err(e) = super::pool::read_pool(
                         self.ctx,
@@ -1089,6 +1146,9 @@ impl<'b, T: Target> Walker<'_, 'b, T> {
                     &mut self.stats,
                 );
                 for find in found {
+                    if scope == Scope::Sets && !matches!(find, Find::Set(_)) {
+                        continue;
+                    }
                     self.record(owner, display, name, via, find, nesting, &on_chain);
                 }
             }
@@ -3192,6 +3252,74 @@ mod tests {
             "{} < {expected}",
             census.uncertain
         );
+    }
+
+    /// A running task's frames are read for the sets they hold and
+    /// nothing else: marked running, the task that polls the fixture's
+    /// sets still lists every one of them, with the same nodes and the
+    /// finds under them, while the futures its own frames hold, and
+    /// the locals they withhold, drop out.
+    #[test]
+    fn test_a_running_task_still_holds_its_sets() {
+        let (bundle, snapshot) = testkit::load_any("unordered");
+        let ctx = testkit::context(&bundle, &snapshot);
+        let list = testkit::tasks(&ctx, &snapshot);
+        let parked = census(&ctx, &list);
+        let owner = parked
+            .sets
+            .iter()
+            .find(|set| set.via.is_none() && !set.children.is_empty())
+            .expect("the fixture's task holds a set with children")
+            .owner;
+        let own_held = |census: &FutureCensus| {
+            census
+                .held
+                .iter()
+                .filter(|h| h.owner == owner && h.via.is_none())
+                .count()
+        };
+        assert!(
+            own_held(&parked) > 0,
+            "the owner holds futures beside its sets"
+        );
+
+        let mut tasks = list.tasks.clone();
+        tasks[owner].state = TaskState(tasks[owner].state.0 | 0b1);
+        let list = TaskList::new(tasks);
+        assert!(
+            matches!(
+                ctx.inspect_task(&list.tasks[owner], &ReadContext::none())
+                    .unwrap()
+                    .expect("the owner still has a root")
+                    .chain
+                    .end,
+                super::super::bundle::ChainEnd::ActivePoll
+            ),
+            "the owner reads as mid-poll"
+        );
+        let running = census(&ctx, &list);
+
+        let sets_of = |census: &FutureCensus| -> Vec<(u64, Vec<u64>)> {
+            census
+                .sets
+                .iter()
+                .filter(|set| set.owner == owner && set.via.is_none())
+                .map(|s| (s.addr, s.children.iter().map(|c| c.node).collect()))
+                .collect()
+        };
+        assert_eq!(sets_of(&running), sets_of(&parked));
+        // What the children hold is theirs, not the running frames':
+        // it is listed as before.
+        let under_children = |census: &FutureCensus| {
+            census
+                .held
+                .iter()
+                .filter(|h| h.owner == owner && matches!(h.via, Some(Via::SetChild { .. })))
+                .count()
+        };
+        assert_eq!(under_children(&running), under_children(&parked));
+        assert_eq!(own_held(&running), 0, "{:#?}", running.held);
+        assert!(running.uncertain <= parked.uncertain);
     }
 
     #[test]
