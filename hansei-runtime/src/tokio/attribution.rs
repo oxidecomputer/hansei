@@ -65,19 +65,30 @@ use reify::Value;
 /// down, never dozens.
 const MAX_DEPTH: usize = 24;
 
-/// Types that are storage for one value spelled another way, never the
-/// owner of a slot: the walk passes through them to name what holds
-/// them. Matched by prefix, since each is generic.
-const WRAPPERS: &[&str] = &[
-    "core::option::Option<",
-    "core::mem::maybe_uninit::MaybeUninit<",
-    "core::mem::manually_drop::ManuallyDrop<",
-    "core::cell::UnsafeCell<",
-    "tokio::loom::std::unsafe_cell::UnsafeCell<",
-    "tokio::sync::oneshot::Task",
-    "crossbeam_utils::cache_padded::CachePadded<",
-    "tokio::util::cacheline::CachePadded<",
-];
+/// Whether `ty` is storage for one value named another way, never the
+/// owner of a slot: the walk passes through it to name what holds it.
+/// That is a struct or union whose one sized member sits at its start
+/// — an `UnsafeCell`, a `ManuallyDrop`, a `MaybeUninit`, a
+/// `CachePadded` whatever its padding — or an `Option`-shaped enum, whose
+/// `Some` is the value itself.
+fn is_wrapper(ty: BundleType<'_>) -> bool {
+    match ty.classify() {
+        TypeClass::Struct | TypeClass::Union => {
+            let mut sized = ty.members().filter(|m| m.ty().size() > 0);
+            matches!((sized.next(), sized.next()), (Some(m), None) if m.offset() == 0)
+        }
+        TypeClass::RustEnum => is_option_shaped(ty),
+        _ => false,
+    }
+}
+
+/// Whether `ty` is an enum of a `None` and a `Some` alone: storage that
+/// says for itself whether a value is there.
+fn is_option_shaped(ty: BundleType<'_>) -> bool {
+    let mut names: Vec<&str> = ty.variants().map(|v| v.name).collect();
+    names.sort_unstable();
+    names == ["None", "Some"]
+}
 
 /// What the containing type says about whether a slot is current.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
@@ -2007,10 +2018,7 @@ impl<'a, 'b, T: Target> Attributor<'a, 'b, T> {
         let innermost = trail
             .iter()
             .rev()
-            .find(|s| {
-                let name = s.holder.ty.name();
-                s.holder.ty.size() > waker_size && !WRAPPERS.iter().any(|w| name.starts_with(w))
-            })
+            .find(|s| s.holder.ty.size() > waker_size && !is_wrapper(s.holder.ty))
             .or(trail.first());
         let (holder, member) = match innermost {
             Some(step) => (
@@ -2125,7 +2133,6 @@ impl<'a, 'b, T: Target> Attributor<'a, 'b, T> {
         let not_a_waker = Err(StaleReason::NotAWaker);
         for _ in 0..MAX_DEPTH {
             let ty = cur.ty;
-            let name = ty.name();
             let at_terminal = match terminal {
                 Terminal::Waker => self.types.is_waker(ty),
                 Terminal::Pointer => matches!(ty.classify(), TypeClass::Pointer { .. }),
@@ -2191,7 +2198,7 @@ impl<'a, 'b, T: Target> Attributor<'a, 'b, T> {
                     let Some(next) = sub(cur, active.offset, payload) else {
                         return not_a_waker;
                     };
-                    if name.starts_with("core::option::Option<") {
+                    if is_option_shaped(ty) {
                         descent.crossed_option = true;
                     }
                     // A coroutine's payload is its locals; the active
@@ -5053,6 +5060,86 @@ mod synthetic_tests {
             panic!("a typed slot");
         };
         assert_eq!((holder.as_str(), member.as_str()), ("x::Chanlike", "cp"));
+    }
+
+    /// A zero-sized member is no company: a struct whose one sized
+    /// member sits at its start beside a zero-sized one is a wrapper,
+    /// and one whose sized member is a `RawWaker` a waker. An enum of a
+    /// `None` and a `Some` alone is a wrapper, however wide its tag
+    /// makes it; one of other variants is not.
+    #[test]
+    fn test_zero_sized_members_and_options_are_passed_over() {
+        let mut b = bundle();
+        let mut strings = StringInterner::new();
+        for s in b.strings.iter() {
+            strings.intern(s);
+        }
+        let mut n = |s: &str| strings.intern(s);
+        let (markern, valuen, wakerm, zeron) = (n("marker"), n("value"), n("waker"), n("__0"));
+        let (nonen, somen, leftn, rightn) = (n("None"), n("Some"), n("Left"), n("Right"));
+        let (celln, markedn, optn, eithern) = (
+            n("x::Cell"),
+            n("x::MarkedWaker"),
+            n("core::option::Option<x::Slim>"),
+            n("x::Either"),
+        );
+        b.strings = strings.finish();
+        let member = |name, ty, offset| MemberDef { name, ty, offset };
+        let variant = |name, discr, payload| VariantDef {
+            name,
+            discr_values: Some(DiscrValues(vec![DiscrValue::Value(discr)])),
+            payload: member(zeron, payload, 8),
+            decl: None,
+            await_site: None,
+        };
+        let tagged = |name, variants| TypeDef::Enum {
+            name,
+            size: 24,
+            shape: VariantShape {
+                discr: Some(DiscrDef {
+                    offset: 0,
+                    ty: id(U64),
+                }),
+                variants,
+            },
+        };
+        let first = b.types.types.len() as u32;
+        b.types.types.extend([
+            TypeDef::Struct {
+                name: celln,
+                size: 8,
+                members: vec![member(markern, id(UNIT), 0), member(valuen, id(U64), 0)],
+            },
+            TypeDef::Struct {
+                name: markedn,
+                size: 16,
+                members: vec![
+                    member(markern, id(UNIT), 0),
+                    member(wakerm, id(RAW_WAKER), 0),
+                ],
+            },
+            tagged(
+                optn,
+                vec![variant(nonen, 0, id(UNIT)), variant(somen, 1, id(SLIM))],
+            ),
+            tagged(
+                eithern,
+                vec![variant(leftn, 0, id(SLIM)), variant(rightn, 1, id(SLIM))],
+            ),
+        ]);
+        let view = BundleView::new(&b);
+        let ty = |at: u32| view.ty(BundleTypeId(first + at)).unwrap();
+        assert!(is_wrapper(ty(0)), "a cell beside a marker");
+        assert!(is_wrapper(ty(2)), "a tagged option");
+        assert!(!is_wrapper(ty(3)), "an enum of two values");
+        let semantics = SemanticIndex::new(b.types.types.len(), &[]).unwrap();
+        let types = Types {
+            view,
+            semantics: &semantics,
+            test_bindings: &[],
+        };
+        assert!(types.is_waker(ty(1)), "a raw waker beside a marker");
+        assert!(!types.is_waker(ty(0)), "a word beside a marker");
     }
 
     /// A hop corroborates only a slot inside the pointee: at its first
